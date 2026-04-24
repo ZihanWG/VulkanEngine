@@ -49,6 +49,7 @@ void VulkanSwapchain::cleanup()
 
     colorFormat_ = VK_FORMAT_UNDEFINED;
     depthFormat_ = VK_FORMAT_UNDEFINED;
+    depthImageLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     extent_ = {};
 }
 
@@ -136,6 +137,7 @@ void VulkanSwapchain::createDepthImage()
     depthInfo.debugName = "SwapchainDepth";
 
     depthImage_.create(*context_, depthInfo);
+    depthImageLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 }
 
 VkSurfaceFormatKHR VulkanSwapchain::chooseSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats) const

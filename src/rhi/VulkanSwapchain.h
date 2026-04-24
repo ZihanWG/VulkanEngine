@@ -34,7 +34,10 @@ public:
     void setImageLayout(uint32_t index, VkImageLayout layout) { imageLayouts_.at(index) = layout; }
 
     [[nodiscard]] VkFormat depthFormat() const { return depthFormat_; }
+    [[nodiscard]] VkImage depthImage() const { return depthImage_.image(); }
     [[nodiscard]] VkImageView depthImageView() const { return depthImage_.imageView(); }
+    [[nodiscard]] VkImageLayout depthImageLayout() const { return depthImageLayout_; }
+    void setDepthImageLayout(VkImageLayout layout) { depthImageLayout_ = layout; }
 
 private:
     void create(WindowExtent desiredExtent);
@@ -63,6 +66,7 @@ private:
 
     // Created now so triangle/depth work can use the same swapchain lifetime.
     VulkanImage depthImage_;
+    VkImageLayout depthImageLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 };
 
 } // namespace ve::rhi

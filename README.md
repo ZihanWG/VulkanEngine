@@ -2,7 +2,7 @@
 
 Modern C++20 Vulkan 1.3 renderer skeleton inspired by the educational flow of [Sascha Willems' HowToVulkan](https://github.com/SaschaWillems/HowToVulkan), but split into engine-style modules instead of a single tutorial file.
 
-The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads triangle geometry into GPU-local vertex and index buffers, and draws it every frame using Dynamic Rendering and Synchronization2.
+The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube geometry into GPU-local vertex and index buffers, and draws a rotating depth-tested object every frame using Dynamic Rendering and Synchronization2.
 
 ## Dependencies
 
@@ -37,7 +37,7 @@ For CLion, open this folder as a CMake project and use a Debug profile. Validati
 - `Renderer` owns the frame loop and orchestrates frame resources.
 - `VulkanContext` owns the Vulkan instance, debug messenger, surface, selected device, queues, and VMA allocator.
 - `VulkanDevice` selects a Vulkan 1.3 GPU, finds queue families, enables Synchronization2, Dynamic Rendering, Buffer Device Address, and descriptor indexing features when supported.
-- `VulkanSwapchain` owns swapchain images, image views, image layout tracking, and a depth image for later milestones.
+- `VulkanSwapchain` owns swapchain images, image views, color/depth image layout tracking, and the depth image used by Dynamic Rendering.
 - `VulkanCommandContext` owns the graphics command pool and per-frame command buffers.
 - `VulkanSync` owns per-frame fences and semaphores.
 - `VulkanPipeline` loads compiled SPIR-V shader modules and creates a Dynamic Rendering graphics pipeline.
@@ -64,13 +64,15 @@ For CLion, open this folder as a CMake project and use a Debug profile. Validati
 4. Record Synchronization2 image barriers:
    - previous layout to `VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL`
    - `VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL` to `VK_IMAGE_LAYOUT_PRESENT_SRC_KHR`
-5. Begin Dynamic Rendering with a clear color attachment.
-6. Bind the graphics pipeline.
-7. Set dynamic viewport and scissor from the current swapchain extent.
-8. Bind the device-local vertex and index buffers.
-9. Draw the triangle with `vkCmdDrawIndexed`.
-10. End rendering and submit with `vkQueueSubmit2`.
-11. Present the image and recreate the swapchain if it is out of date.
+5. Transition the depth image to `VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL`.
+6. Begin Dynamic Rendering with clear color and depth attachments.
+7. Bind the graphics pipeline.
+8. Upload per-frame MVP data and push the storage buffer device address.
+9. Set dynamic viewport and scissor from the current swapchain extent.
+10. Bind the device-local vertex and index buffers.
+11. Draw the rotating cube with `vkCmdDrawIndexed`.
+12. End rendering and submit with `vkQueueSubmit2`.
+13. Present the image and recreate the swapchain if it is out of date.
 
 ## Milestone 2: Triangle Rendering
 
@@ -86,8 +88,14 @@ Dynamic Rendering does not use a legacy `VkRenderPass`, so the pipeline declares
 
 The renderer owns one hard-coded triangle for this milestone: a `Vertex` with position and color, a device-local vertex buffer, and a device-local `uint16_t` index buffer. The pipeline receives explicit vertex binding and attribute descriptions, and `simple.vert` now reads locations 0 and 1 instead of generating positions from `gl_VertexIndex`.
 
+## Milestone 4: Depth And MVP
+
+Dynamic Rendering now binds both color and depth attachments. The swapchain depth image is transitioned with Synchronization2 into `VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL` before rendering, and the graphics pipeline enables depth testing with the swapchain depth format.
+
+The renderer owns one hard-coded colored cube. Each frame updates an MVP matrix with GLM (`GLM_FORCE_DEPTH_ZERO_TO_ONE` is enabled by CMake), writes it to a per-frame storage buffer, and passes that buffer's device address to the vertex shader through a small push constant. This keeps the milestone free of descriptor sets while still exercising per-frame GPU buffer data.
+
 ## Next Milestones
 
-Milestone 4 should connect `Mesh`, `Material`, `Camera`, transforms, and MVP shader data into a simple render object list.
+Milestone 5 can extract the hard-coded geometry and temporary MVP calculation into simple `Mesh`, `Camera`, transform, and render-object structures.
 
-Milestone 5 should turn the descriptor indexing support into an optional bindless-style texture array path.
+Later milestones can turn descriptor indexing support into an optional bindless-style texture array path.

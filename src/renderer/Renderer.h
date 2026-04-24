@@ -8,6 +8,7 @@
 #include "rhi/VulkanSwapchain.h"
 #include "rhi/VulkanSync.h"
 
+#include <chrono>
 #include <vector>
 
 namespace ve {
@@ -30,6 +31,8 @@ public:
 private:
     void createPipeline();
     void createGeometryBuffers();
+    void createFrameDataBuffers();
+    void updateFrameData(uint32_t frameIndex);
     void recreateSwapchain();
     void recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     void transitionSwapchainImage(
@@ -37,6 +40,7 @@ private:
         VkImage image,
         VkImageLayout oldLayout,
         VkImageLayout newLayout);
+    void transitionDepthImage(VkCommandBuffer commandBuffer);
 
     Window& window_;
     rhi::VulkanContext context_;
@@ -47,11 +51,13 @@ private:
     rhi::VulkanSync sync_;
     rhi::VulkanBuffer vertexBuffer_;
     rhi::VulkanBuffer indexBuffer_;
+    std::vector<rhi::VulkanBuffer> frameDataBuffers_;
     std::vector<VkFence> imagesInFlight_;
     VkFormat pipelineColorFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat pipelineDepthFormat_ = VK_FORMAT_UNDEFINED;
     uint32_t indexCount_ = 0;
     uint32_t currentFrame_ = 0;
+    std::chrono::steady_clock::time_point startTime_ = std::chrono::steady_clock::now();
     bool initialized_ = false;
 };
 

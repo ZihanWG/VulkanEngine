@@ -3,10 +3,14 @@
 #include "core/Window.h"
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
-#include <glm/vec2.hpp>
+#include <glm/ext/matrix_clip_space.hpp>
+#include <glm/ext/matrix_transform.hpp>
+#include <glm/geometric.hpp>
+#include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
 #include <span>
 #include <stdexcept>
@@ -17,20 +21,36 @@ namespace ve {
 namespace {
 
 struct Vertex {
-    glm::vec2 position;
+    glm::vec3 position;
     glm::vec3 color;
 };
 
-const std::array<Vertex, 3> kTriangleVertices = {{
-    {{0.0f, -0.5f}, {1.0f, 0.2f, 0.2f}},
-    {{0.5f, 0.5f}, {0.2f, 1.0f, 0.2f}},
-    {{-0.5f, 0.5f}, {0.2f, 0.4f, 1.0f}}
+struct FrameData {
+    glm::mat4 mvp{1.0f};
+};
+
+struct PushConstants {
+    VkDeviceAddress frameDataAddress = 0;
+};
+
+const std::array<Vertex, 8> kCubeVertices = {{
+    {{-0.5f, -0.5f, -0.5f}, {1.0f, 0.1f, 0.1f}},
+    {{0.5f, -0.5f, -0.5f}, {0.1f, 1.0f, 0.1f}},
+    {{0.5f, 0.5f, -0.5f}, {0.1f, 0.2f, 1.0f}},
+    {{-0.5f, 0.5f, -0.5f}, {1.0f, 1.0f, 0.1f}},
+    {{-0.5f, -0.5f, 0.5f}, {1.0f, 0.1f, 1.0f}},
+    {{0.5f, -0.5f, 0.5f}, {0.1f, 1.0f, 1.0f}},
+    {{0.5f, 0.5f, 0.5f}, {1.0f, 0.5f, 0.1f}},
+    {{-0.5f, 0.5f, 0.5f}, {0.8f, 0.8f, 0.8f}}
 }};
 
-const std::array<uint16_t, 3> kTriangleIndices = {
-    0,
-    1,
-    2
+const std::array<uint16_t, 36> kCubeIndices = {
+    0, 2, 1, 0, 3, 2,
+    4, 5, 6, 4, 6, 7,
+    0, 1, 5, 0, 5, 4,
+    3, 6, 2, 3, 7, 6,
+    1, 2, 6, 1, 6, 5,
+    0, 4, 7, 0, 7, 3
 };
 
 VkVertexInputBindingDescription vertexBindingDescription()
@@ -48,7 +68,7 @@ std::array<VkVertexInputAttributeDescription, 2> vertexAttributeDescriptions()
 
     attributes[0].location = 0;
     attributes[0].binding = 0;
-    attributes[0].format = VK_FORMAT_R32G32_SFLOAT;
+    attributes[0].format = VK_FORMAT_R32G32B32_SFLOAT;
     attributes[0].offset = static_cast<uint32_t>(offsetof(Vertex, position));
 
     attributes[1].location = 1;
@@ -57,6 +77,28 @@ std::array<VkVertexInputAttributeDescription, 2> vertexAttributeDescriptions()
     attributes[1].offset = static_cast<uint32_t>(offsetof(Vertex, color));
 
     return attributes;
+}
+
+FrameData buildFrameData(float elapsedSeconds, VkExtent2D extent)
+{
+    const float aspect = extent.height == 0
+        ? 1.0f
+        : static_cast<float>(extent.width) / static_cast<float>(extent.height);
+
+    const glm::mat4 model = glm::rotate(
+        glm::mat4{1.0f},
+        elapsedSeconds,
+        glm::normalize(glm::vec3{0.35f, 1.0f, 0.0f}));
+
+    const glm::mat4 view = glm::lookAt(
+        glm::vec3{0.0f, 0.0f, 3.0f},
+        glm::vec3{0.0f, 0.0f, 0.0f},
+        glm::vec3{0.0f, 1.0f, 0.0f});
+
+    glm::mat4 projection = glm::perspective(glm::radians(60.0f), aspect, 0.1f, 100.0f);
+    projection[1][1] *= -1.0f;
+
+    return FrameData{projection * view * model};
 }
 
 std::filesystem::path shaderPath(const char* filename)
@@ -80,6 +122,7 @@ Renderer::Renderer(Window& window)
     createPipeline();
     commandContext_.initialize(context_, frames_);
     createGeometryBuffers();
+    createFrameDataBuffers();
     sync_.initialize(context_, frames_);
     imagesInFlight_.assign(swapchain_.imageCount(), VK_NULL_HANDLE);
 
@@ -132,6 +175,7 @@ void Renderer::drawFrame()
     VK_CHECK(vkResetFences(context_.vkDevice(), 1, &frame.inFlightFence));
     VK_CHECK(vkResetCommandBuffer(frame.commandBuffer, 0));
 
+    updateFrameData(currentFrame_);
     recordRenderCommands(frame.commandBuffer, imageIndex);
 
     VkSemaphoreSubmitInfo waitSemaphore{};
@@ -195,6 +239,11 @@ void Renderer::createPipeline()
 {
     const VkVertexInputBindingDescription binding = vertexBindingDescription();
     const std::array<VkVertexInputAttributeDescription, 2> attributes = vertexAttributeDescriptions();
+    const VkPushConstantRange pushConstantRange{
+        VK_SHADER_STAGE_VERTEX_BIT,
+        0,
+        static_cast<uint32_t>(sizeof(PushConstants))
+    };
 
     rhi::VulkanPipelineCreateInfo pipelineInfo{};
     pipelineInfo.vertexShaderPath = shaderPath("simple.vert.spv");
@@ -203,7 +252,8 @@ void Renderer::createPipeline()
     pipelineInfo.depthFormat = swapchain_.depthFormat();
     pipelineInfo.vertexBindings = std::span<const VkVertexInputBindingDescription>(&binding, 1);
     pipelineInfo.vertexAttributes = std::span<const VkVertexInputAttributeDescription>(attributes.data(), attributes.size());
-    pipelineInfo.enableDepth = false;
+    pipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&pushConstantRange, 1);
+    pipelineInfo.enableDepth = true;
 
     pipeline_.create(context_.vkDevice(), pipelineInfo);
     pipelineColorFormat_ = pipelineInfo.colorFormat;
@@ -215,16 +265,41 @@ void Renderer::createGeometryBuffers()
     vertexBuffer_.createDeviceLocal(
         context_,
         commandContext_,
-        std::as_bytes(std::span<const Vertex>(kTriangleVertices.data(), kTriangleVertices.size())),
+        std::as_bytes(std::span<const Vertex>(kCubeVertices.data(), kCubeVertices.size())),
         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
 
     indexBuffer_.createDeviceLocal(
         context_,
         commandContext_,
-        std::as_bytes(std::span<const uint16_t>(kTriangleIndices.data(), kTriangleIndices.size())),
+        std::as_bytes(std::span<const uint16_t>(kCubeIndices.data(), kCubeIndices.size())),
         VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
 
-    indexCount_ = static_cast<uint32_t>(kTriangleIndices.size());
+    indexCount_ = static_cast<uint32_t>(kCubeIndices.size());
+}
+
+void Renderer::createFrameDataBuffers()
+{
+    frameDataBuffers_.resize(frames_.size());
+
+    for (rhi::VulkanBuffer& frameDataBuffer : frameDataBuffers_) {
+        rhi::VulkanBufferCreateInfo bufferInfo{};
+        bufferInfo.size = sizeof(FrameData);
+        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        bufferInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
+        bufferInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+        bufferInfo.requestDeviceAddress = true;
+        frameDataBuffer.createBuffer(context_, bufferInfo);
+    }
+}
+
+void Renderer::updateFrameData(uint32_t frameIndex)
+{
+    const auto now = std::chrono::steady_clock::now();
+    const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
+    const FrameData frameData = buildFrameData(elapsedSeconds, swapchain_.extent());
+
+    frameDataBuffers_.at(frameIndex).upload(
+        std::as_bytes(std::span<const FrameData>(&frameData, 1)));
 }
 
 void Renderer::recreateSwapchain()
@@ -263,6 +338,8 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     swapchain_.setImageLayout(imageIndex, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
+    transitionDepthImage(commandBuffer);
+
     VkClearValue clearColor{};
     clearColor.color.float32[0] = 0.03f;
     clearColor.color.float32[1] = 0.04f;
@@ -277,6 +354,18 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     colorAttachment.clearValue = clearColor;
 
+    VkClearValue depthClear{};
+    depthClear.depthStencil.depth = 1.0f;
+    depthClear.depthStencil.stencil = 0;
+
+    VkRenderingAttachmentInfo depthAttachment{};
+    depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    depthAttachment.imageView = swapchain_.depthImageView();
+    depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAttachment.clearValue = depthClear;
+
     VkRenderingInfo renderingInfo{};
     renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
     renderingInfo.renderArea.offset = {0, 0};
@@ -284,9 +373,21 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     renderingInfo.layerCount = 1;
     renderingInfo.colorAttachmentCount = 1;
     renderingInfo.pColorAttachments = &colorAttachment;
+    renderingInfo.pDepthAttachment = &depthAttachment;
 
     vkCmdBeginRendering(commandBuffer, &renderingInfo);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.pipeline());
+
+    const PushConstants pushConstants{
+        frameDataBuffers_.at(currentFrame_).deviceAddress()
+    };
+    vkCmdPushConstants(
+        commandBuffer,
+        pipeline_.layout(),
+        VK_SHADER_STAGE_VERTEX_BIT,
+        0,
+        static_cast<uint32_t>(sizeof(PushConstants)),
+        &pushConstants);
 
     const VkExtent2D extent = swapchain_.extent();
     VkViewport viewport{};
@@ -369,6 +470,47 @@ void Renderer::transitionSwapchainImage(
     dependencyInfo.pImageMemoryBarriers = &barrier;
 
     vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
+}
+
+void Renderer::transitionDepthImage(VkCommandBuffer commandBuffer)
+{
+    const VkImageLayout oldLayout = swapchain_.depthImageLayout();
+    constexpr VkImageLayout newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+
+    VkPipelineStageFlags2 srcStage = VK_PIPELINE_STAGE_2_NONE;
+    VkAccessFlags2 srcAccess = VK_ACCESS_2_NONE;
+
+    if (oldLayout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL) {
+        srcStage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+        srcAccess = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    }
+
+    VkImageMemoryBarrier2 barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    barrier.srcStageMask = srcStage;
+    barrier.srcAccessMask = srcAccess;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    barrier.oldLayout = oldLayout;
+    barrier.newLayout = newLayout;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = swapchain_.depthImage();
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+
+    VkDependencyInfo dependencyInfo{};
+    dependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dependencyInfo.imageMemoryBarrierCount = 1;
+    dependencyInfo.pImageMemoryBarriers = &barrier;
+
+    // Depth is cleared and written every frame. This barrier initializes the
+    // image after swapchain creation and orders later depth writes on the queue.
+    vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
+    swapchain_.setDepthImageLayout(newLayout);
 }
 
 } // namespace ve

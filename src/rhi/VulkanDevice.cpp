@@ -130,7 +130,8 @@ bool VulkanDevice::isDeviceSuitable(VkPhysicalDevice candidate) const
 
     return features13.dynamicRendering == VK_TRUE
         && features13.synchronization2 == VK_TRUE
-        && features12.bufferDeviceAddress == VK_TRUE;
+        && features12.bufferDeviceAddress == VK_TRUE
+        && features12.separateDepthStencilLayouts == VK_TRUE;
 }
 
 int VulkanDevice::scoreDevice(VkPhysicalDevice candidate) const
@@ -190,6 +191,7 @@ void VulkanDevice::createLogicalDevice()
     enabled12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
     enabled12.pNext = &enabled13;
     enabled12.bufferDeviceAddress = VK_TRUE;
+    enabled12.separateDepthStencilLayouts = VK_TRUE;
 
     if (descriptorIndexingEnabled_) {
         enabled12.descriptorIndexing = VK_TRUE;
