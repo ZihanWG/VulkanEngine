@@ -2,7 +2,7 @@
 
 Modern C++20 Vulkan 1.3 renderer skeleton inspired by the educational flow of [Sascha Willems' HowToVulkan](https://github.com/SaschaWillems/HowToVulkan), but split into engine-style modules instead of a single tutorial file.
 
-The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads triangle geometry into GPU buffers, and draws it every frame using Dynamic Rendering and Synchronization2.
+The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads triangle geometry into GPU-local vertex and index buffers, and draws it every frame using Dynamic Rendering and Synchronization2.
 
 ## Dependencies
 
