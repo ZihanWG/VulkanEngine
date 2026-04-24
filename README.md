@@ -2,7 +2,7 @@
 
 Modern C++20 Vulkan 1.3 renderer skeleton inspired by the educational flow of [Sascha Willems' HowToVulkan](https://github.com/SaschaWillems/HowToVulkan), but split into engine-style modules instead of a single tutorial file.
 
-This first milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, and clears the current swapchain image every frame using Dynamic Rendering and Synchronization2.
+The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, and draws a shader-generated triangle every frame using Dynamic Rendering and Synchronization2.
 
 ## Dependencies
 
@@ -10,7 +10,7 @@ Required:
 
 - CMake 3.25+
 - C++20 compiler, MSVC recommended on Windows
-- Vulkan SDK with Vulkan 1.3 headers and `glslc`
+- Vulkan SDK with Vulkan 1.3 headers and `glslc` for shader compilation
 - SDL3
 - Volk
 - Vulkan Memory Allocator
@@ -38,6 +38,7 @@ For CLion, open this folder as a CMake project and use a Debug profile. Validati
 - `VulkanSwapchain` owns swapchain images, image views, image layout tracking, and a depth image for later milestones.
 - `VulkanCommandContext` owns the graphics command pool and per-frame command buffers.
 - `VulkanSync` owns per-frame fences and semaphores.
+- `VulkanPipeline` loads compiled SPIR-V shader modules and creates a Dynamic Rendering graphics pipeline.
 - `VulkanImage` and `VulkanBuffer` are RAII resource wrappers around Vulkan objects plus VMA allocations.
 
 ## Vulkan Initialization Flow
@@ -50,7 +51,7 @@ For CLion, open this folder as a CMake project and use a Debug profile. Validati
 6. Create a logical device with Vulkan 1.3 feature chains.
 7. Load device functions through Volk.
 8. Create a VMA allocator with Buffer Device Address support.
-9. Create swapchain images, image views, depth image, command buffers, and synchronization objects.
+9. Create swapchain images, image views, depth image, graphics pipeline, command buffers, and synchronization objects.
 
 ## One-Frame Rendering Flow
 
@@ -61,12 +62,21 @@ For CLion, open this folder as a CMake project and use a Debug profile. Validati
    - previous layout to `VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL`
    - `VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL` to `VK_IMAGE_LAYOUT_PRESENT_SRC_KHR`
 5. Begin Dynamic Rendering with a clear color attachment.
-6. End rendering and submit with `vkQueueSubmit2`.
-7. Present the image and recreate the swapchain if it is out of date.
+6. Bind the graphics pipeline.
+7. Set dynamic viewport and scissor from the current swapchain extent.
+8. Draw three vertices with `vkCmdDraw`; the vertex shader uses `gl_VertexIndex`, so no vertex buffer is needed yet.
+9. End rendering and submit with `vkQueueSubmit2`.
+10. Present the image and recreate the swapchain if it is out of date.
+
+## Milestone 2: Triangle Rendering
+
+`src/shaders/simple.vert` and `src/shaders/simple.frag` are compiled by CMake into SPIR-V files under the build directory. `VulkanPipeline` loads those `.spv` files, creates shader modules, creates an empty pipeline layout, and builds a graphics pipeline with `VkPipelineRenderingCreateInfo`.
+
+The empty pipeline layout still matters because Vulkan pipelines always need a layout describing descriptor sets and push constants. It is empty for the triangle milestone, but future MVP data, materials, and bindless descriptors will extend it.
+
+Dynamic Rendering does not use a legacy `VkRenderPass`, so the pipeline declares compatible color and optional depth formats through `VkPipelineRenderingCreateInfo`. Viewport and scissor are dynamic states so resizing the window does not require rebuilding the pipeline when only the extent changes.
 
 ## Next Milestones
-
-Milestone 2 should compile `simple.vert` and `simple.frag`, create a graphics pipeline using Dynamic Rendering state, and issue `vkCmdDraw` for a triangle.
 
 Milestone 3 should expand `VulkanBuffer` into a staging upload path and add vertex and index buffer helpers.
 

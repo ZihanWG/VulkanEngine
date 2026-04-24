@@ -166,6 +166,8 @@ set(SHADER_SOURCES
     "${SHADER_SOURCE_DIR}/simple.frag"
 )
 
+target_compile_definitions(VulkanEngine PRIVATE VULKAN_ENGINE_SHADER_DIR="${SHADER_BINARY_DIR}")
+
 set(GLSLC_EXECUTABLE "")
 if(Vulkan_GLSLC_EXECUTABLE AND EXISTS "${Vulkan_GLSLC_EXECUTABLE}")
     set(GLSLC_EXECUTABLE "${Vulkan_GLSLC_EXECUTABLE}")
@@ -192,7 +194,7 @@ if(GLSLC_EXECUTABLE)
     add_custom_target(VulkanEngineShaders DEPENDS ${SHADER_OUTPUTS})
     add_dependencies(VulkanEngine VulkanEngineShaders)
 else()
-    message(WARNING "glslc was not found. Milestone 1 does not need shaders; install the Vulkan SDK before Milestone 2.")
+    message(FATAL_ERROR "glslc was not found. Milestone 2 needs compiled SPIR-V shaders; install the Vulkan SDK.")
 endif()
 
 if(WIN32)

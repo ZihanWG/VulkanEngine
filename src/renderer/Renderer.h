@@ -3,6 +3,7 @@
 #include "renderer/FrameResources.h"
 #include "rhi/VulkanCommandContext.h"
 #include "rhi/VulkanContext.h"
+#include "rhi/VulkanPipeline.h"
 #include "rhi/VulkanSwapchain.h"
 #include "rhi/VulkanSync.h"
 
@@ -26,8 +27,9 @@ public:
     void waitIdle();
 
 private:
+    void createPipeline();
     void recreateSwapchain();
-    void recordClearCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex);
+    void recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     void transitionSwapchainImage(
         VkCommandBuffer commandBuffer,
         VkImage image,
@@ -38,9 +40,12 @@ private:
     rhi::VulkanContext context_;
     std::vector<renderer::FrameResources> frames_;
     rhi::VulkanSwapchain swapchain_;
+    rhi::VulkanPipeline pipeline_;
     rhi::VulkanCommandContext commandContext_;
     rhi::VulkanSync sync_;
     std::vector<VkFence> imagesInFlight_;
+    VkFormat pipelineColorFormat_ = VK_FORMAT_UNDEFINED;
+    VkFormat pipelineDepthFormat_ = VK_FORMAT_UNDEFINED;
     uint32_t currentFrame_ = 0;
     bool initialized_ = false;
 };

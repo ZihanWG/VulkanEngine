@@ -2,11 +2,24 @@
 
 #include "core/Window.h"
 
-#include <array>
+#include <filesystem>
 #include <stdexcept>
 #include <string>
 
 namespace ve {
+
+namespace {
+
+std::filesystem::path shaderPath(const char* filename)
+{
+#if defined(VULKAN_ENGINE_SHADER_DIR)
+    return std::filesystem::path(VULKAN_ENGINE_SHADER_DIR) / filename;
+#else
+    return std::filesystem::path("shaders") / filename;
+#endif
+}
+
+} // namespace
 
 Renderer::Renderer(Window& window)
     : window_(window)
@@ -15,6 +28,7 @@ Renderer::Renderer(Window& window)
 
     frames_.resize(rhi::kMaxFramesInFlight);
     swapchain_.initialize(context_, window_.framebufferExtent());
+    createPipeline();
     commandContext_.initialize(context_, frames_);
     sync_.initialize(context_, frames_);
     imagesInFlight_.assign(swapchain_.imageCount(), VK_NULL_HANDLE);
@@ -68,7 +82,7 @@ void Renderer::drawFrame()
     VK_CHECK(vkResetFences(context_.vkDevice(), 1, &frame.inFlightFence));
     VK_CHECK(vkResetCommandBuffer(frame.commandBuffer, 0));
 
-    recordClearCommands(frame.commandBuffer, imageIndex);
+    recordRenderCommands(frame.commandBuffer, imageIndex);
 
     VkSemaphoreSubmitInfo waitSemaphore{};
     waitSemaphore.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
@@ -127,6 +141,20 @@ void Renderer::waitIdle()
     context_.waitIdle();
 }
 
+void Renderer::createPipeline()
+{
+    rhi::VulkanPipelineCreateInfo pipelineInfo{};
+    pipelineInfo.vertexShaderPath = shaderPath("simple.vert.spv");
+    pipelineInfo.fragmentShaderPath = shaderPath("simple.frag.spv");
+    pipelineInfo.colorFormat = swapchain_.colorFormat();
+    pipelineInfo.depthFormat = swapchain_.depthFormat();
+    pipelineInfo.enableDepth = false;
+
+    pipeline_.create(context_.vkDevice(), pipelineInfo);
+    pipelineColorFormat_ = pipelineInfo.colorFormat;
+    pipelineDepthFormat_ = pipelineInfo.depthFormat;
+}
+
 void Renderer::recreateSwapchain()
 {
     if (window_.isMinimized()) {
@@ -135,10 +163,18 @@ void Renderer::recreateSwapchain()
 
     context_.waitIdle();
     swapchain_.recreate(context_, window_.framebufferExtent());
+
+    const bool pipelineNeedsRecreate = pipeline_.pipeline() == VK_NULL_HANDLE
+        || pipelineColorFormat_ != swapchain_.colorFormat()
+        || pipelineDepthFormat_ != swapchain_.depthFormat();
+    if (pipelineNeedsRecreate) {
+        createPipeline();
+    }
+
     imagesInFlight_.assign(swapchain_.imageCount(), VK_NULL_HANDLE);
 }
 
-void Renderer::recordClearCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex)
+void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex)
 {
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -178,6 +214,27 @@ void Renderer::recordClearCommands(VkCommandBuffer commandBuffer, uint32_t image
     renderingInfo.pColorAttachments = &colorAttachment;
 
     vkCmdBeginRendering(commandBuffer, &renderingInfo);
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.pipeline());
+
+    const VkExtent2D extent = swapchain_.extent();
+    VkViewport viewport{};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = static_cast<float>(extent.width);
+    viewport.height = static_cast<float>(extent.height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+
+    VkRect2D scissor{};
+    scissor.offset = {0, 0};
+    scissor.extent = extent;
+
+    // Viewport and scissor depend on the current swapchain extent, so they stay
+    // dynamic instead of forcing a new pipeline for every resize.
+    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
     vkCmdEndRendering(commandBuffer);
 
     // Synchronization2 barrier: presentation reads from images in PRESENT_SRC_KHR layout.
