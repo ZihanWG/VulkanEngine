@@ -1,6 +1,7 @@
 #pragma once
 
 #include "renderer/FrameResources.h"
+#include "rhi/VulkanBuffer.h"
 #include "rhi/VulkanCommandContext.h"
 #include "rhi/VulkanContext.h"
 #include "rhi/VulkanPipeline.h"
@@ -28,6 +29,7 @@ public:
 
 private:
     void createPipeline();
+    void createGeometryBuffers();
     void recreateSwapchain();
     void recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     void transitionSwapchainImage(
@@ -43,9 +45,12 @@ private:
     rhi::VulkanPipeline pipeline_;
     rhi::VulkanCommandContext commandContext_;
     rhi::VulkanSync sync_;
+    rhi::VulkanBuffer vertexBuffer_;
+    rhi::VulkanBuffer indexBuffer_;
     std::vector<VkFence> imagesInFlight_;
     VkFormat pipelineColorFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat pipelineDepthFormat_ = VK_FORMAT_UNDEFINED;
+    uint32_t indexCount_ = 0;
     uint32_t currentFrame_ = 0;
     bool initialized_ = false;
 };

@@ -3,6 +3,7 @@
 #include "rhi/VulkanCommon.h"
 
 #include <filesystem>
+#include <span>
 
 namespace ve::rhi {
 
@@ -11,6 +12,8 @@ struct VulkanPipelineCreateInfo {
     std::filesystem::path fragmentShaderPath;
     VkFormat colorFormat = VK_FORMAT_UNDEFINED;
     VkFormat depthFormat = VK_FORMAT_UNDEFINED;
+    std::span<const VkVertexInputBindingDescription> vertexBindings;
+    std::span<const VkVertexInputAttributeDescription> vertexAttributes;
     bool enableDepth = false;
 };
 

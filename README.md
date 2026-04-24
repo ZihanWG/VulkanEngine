@@ -2,7 +2,7 @@
 
 Modern C++20 Vulkan 1.3 renderer skeleton inspired by the educational flow of [Sascha Willems' HowToVulkan](https://github.com/SaschaWillems/HowToVulkan), but split into engine-style modules instead of a single tutorial file.
 
-The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, and draws a shader-generated triangle every frame using Dynamic Rendering and Synchronization2.
+The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads triangle geometry into GPU buffers, and draws it every frame using Dynamic Rendering and Synchronization2.
 
 ## Dependencies
 
@@ -18,7 +18,7 @@ Required:
 
 The CMake project first looks for installed packages. If they are missing, `VULKAN_ENGINE_FETCH_DEPS=ON` downloads SDL3, Volk, VMA, and GLM with FetchContent.
 
-Milestone 2 requires `glslc`. CMake compiles shaders into `<build>/shaders` and embeds that absolute shader directory in the executable, so running from Visual Studio, CLion, or PowerShell does not depend on the current working directory.
+Milestone 2 and later require `glslc`. CMake compiles shaders into `<build>/shaders` and embeds that absolute shader directory in the executable, so running from Visual Studio, CLion, or PowerShell does not depend on the current working directory.
 
 ## Build
 
@@ -41,7 +41,8 @@ For CLion, open this folder as a CMake project and use a Debug profile. Validati
 - `VulkanCommandContext` owns the graphics command pool and per-frame command buffers.
 - `VulkanSync` owns per-frame fences and semaphores.
 - `VulkanPipeline` loads compiled SPIR-V shader modules and creates a Dynamic Rendering graphics pipeline.
-- `VulkanImage` and `VulkanBuffer` are RAII resource wrappers around Vulkan objects plus VMA allocations.
+- `VulkanBuffer` owns `VkBuffer` plus VMA allocation, supports CPU-visible uploads, staging copies, and optional Buffer Device Address lookup.
+- `VulkanImage` owns `VkImage` plus VMA allocation and image view lifetime.
 
 ## Vulkan Initialization Flow
 
@@ -66,9 +67,10 @@ For CLion, open this folder as a CMake project and use a Debug profile. Validati
 5. Begin Dynamic Rendering with a clear color attachment.
 6. Bind the graphics pipeline.
 7. Set dynamic viewport and scissor from the current swapchain extent.
-8. Draw three vertices with `vkCmdDraw`; the vertex shader uses `gl_VertexIndex`, so no vertex buffer is needed yet.
-9. End rendering and submit with `vkQueueSubmit2`.
-10. Present the image and recreate the swapchain if it is out of date.
+8. Bind the device-local vertex and index buffers.
+9. Draw the triangle with `vkCmdDrawIndexed`.
+10. End rendering and submit with `vkQueueSubmit2`.
+11. Present the image and recreate the swapchain if it is out of date.
 
 ## Milestone 2: Triangle Rendering
 
@@ -78,9 +80,13 @@ The empty pipeline layout still matters because Vulkan pipelines always need a l
 
 Dynamic Rendering does not use a legacy `VkRenderPass`, so the pipeline declares compatible color and optional depth formats through `VkPipelineRenderingCreateInfo`. Viewport and scissor are dynamic states so resizing the window does not require rebuilding the pipeline when only the extent changes.
 
-## Next Milestones
+## Milestone 3: GPU Buffers
 
-Milestone 3 should expand `VulkanBuffer` into a staging upload path and add vertex and index buffer helpers.
+`VulkanBuffer` is now the RAII owner for buffer handles and VMA allocations. CPU-visible buffers can be filled through `upload`, while GPU-local buffers use a temporary staging buffer and a one-time `vkCmdCopyBuffer` submission. The copy command records a Synchronization2 buffer barrier so transfer writes are visible to vertex and index fetch.
+
+The renderer owns one hard-coded triangle for this milestone: a `Vertex` with position and color, a device-local vertex buffer, and a device-local `uint16_t` index buffer. The pipeline receives explicit vertex binding and attribute descriptions, and `simple.vert` now reads locations 0 and 1 instead of generating positions from `gl_VertexIndex`.
+
+## Next Milestones
 
 Milestone 4 should connect `Mesh`, `Material`, `Camera`, transforms, and MVP shader data into a simple render object list.
 

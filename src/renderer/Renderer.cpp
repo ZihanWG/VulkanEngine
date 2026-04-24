@@ -2,13 +2,62 @@
 
 #include "core/Window.h"
 
+#include <array>
+#include <cstddef>
+#include <cstdint>
 #include <filesystem>
+#include <glm/vec2.hpp>
+#include <glm/vec3.hpp>
+#include <span>
 #include <stdexcept>
 #include <string>
 
 namespace ve {
 
 namespace {
+
+struct Vertex {
+    glm::vec2 position;
+    glm::vec3 color;
+};
+
+const std::array<Vertex, 3> kTriangleVertices = {{
+    {{0.0f, -0.5f}, {1.0f, 0.2f, 0.2f}},
+    {{0.5f, 0.5f}, {0.2f, 1.0f, 0.2f}},
+    {{-0.5f, 0.5f}, {0.2f, 0.4f, 1.0f}}
+}};
+
+const std::array<uint16_t, 3> kTriangleIndices = {
+    0,
+    1,
+    2
+};
+
+VkVertexInputBindingDescription vertexBindingDescription()
+{
+    VkVertexInputBindingDescription binding{};
+    binding.binding = 0;
+    binding.stride = static_cast<uint32_t>(sizeof(Vertex));
+    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    return binding;
+}
+
+std::array<VkVertexInputAttributeDescription, 2> vertexAttributeDescriptions()
+{
+    std::array<VkVertexInputAttributeDescription, 2> attributes{};
+
+    attributes[0].location = 0;
+    attributes[0].binding = 0;
+    attributes[0].format = VK_FORMAT_R32G32_SFLOAT;
+    attributes[0].offset = static_cast<uint32_t>(offsetof(Vertex, position));
+
+    attributes[1].location = 1;
+    attributes[1].binding = 0;
+    attributes[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attributes[1].offset = static_cast<uint32_t>(offsetof(Vertex, color));
+
+    return attributes;
+}
 
 std::filesystem::path shaderPath(const char* filename)
 {
@@ -30,6 +79,7 @@ Renderer::Renderer(Window& window)
     swapchain_.initialize(context_, window_.framebufferExtent());
     createPipeline();
     commandContext_.initialize(context_, frames_);
+    createGeometryBuffers();
     sync_.initialize(context_, frames_);
     imagesInFlight_.assign(swapchain_.imageCount(), VK_NULL_HANDLE);
 
@@ -143,16 +193,38 @@ void Renderer::waitIdle()
 
 void Renderer::createPipeline()
 {
+    const VkVertexInputBindingDescription binding = vertexBindingDescription();
+    const std::array<VkVertexInputAttributeDescription, 2> attributes = vertexAttributeDescriptions();
+
     rhi::VulkanPipelineCreateInfo pipelineInfo{};
     pipelineInfo.vertexShaderPath = shaderPath("simple.vert.spv");
     pipelineInfo.fragmentShaderPath = shaderPath("simple.frag.spv");
     pipelineInfo.colorFormat = swapchain_.colorFormat();
     pipelineInfo.depthFormat = swapchain_.depthFormat();
+    pipelineInfo.vertexBindings = std::span<const VkVertexInputBindingDescription>(&binding, 1);
+    pipelineInfo.vertexAttributes = std::span<const VkVertexInputAttributeDescription>(attributes.data(), attributes.size());
     pipelineInfo.enableDepth = false;
 
     pipeline_.create(context_.vkDevice(), pipelineInfo);
     pipelineColorFormat_ = pipelineInfo.colorFormat;
     pipelineDepthFormat_ = pipelineInfo.depthFormat;
+}
+
+void Renderer::createGeometryBuffers()
+{
+    vertexBuffer_.createDeviceLocal(
+        context_,
+        commandContext_,
+        std::as_bytes(std::span<const Vertex>(kTriangleVertices.data(), kTriangleVertices.size())),
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+
+    indexBuffer_.createDeviceLocal(
+        context_,
+        commandContext_,
+        std::as_bytes(std::span<const uint16_t>(kTriangleIndices.data(), kTriangleIndices.size())),
+        VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+
+    indexCount_ = static_cast<uint32_t>(kTriangleIndices.size());
 }
 
 void Renderer::recreateSwapchain()
@@ -234,7 +306,12 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
     vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+    const VkBuffer vertexBuffers[] = {vertexBuffer_.buffer()};
+    const VkDeviceSize vertexOffsets[] = {0};
+    vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
+    vkCmdBindIndexBuffer(commandBuffer, indexBuffer_.buffer(), 0, VK_INDEX_TYPE_UINT16);
+
+    vkCmdDrawIndexed(commandBuffer, indexCount_, 1, 0, 0, 0);
     vkCmdEndRendering(commandBuffer);
 
     // Synchronization2 barrier: presentation reads from images in PRESENT_SRC_KHR layout.

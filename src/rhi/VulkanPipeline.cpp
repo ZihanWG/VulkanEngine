@@ -86,6 +86,10 @@ void VulkanPipeline::create(VkDevice device, const VulkanPipelineCreateInfo& cre
 
     VkPipelineVertexInputStateCreateInfo vertexInput{};
     vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertexInput.vertexBindingDescriptionCount = static_cast<uint32_t>(createInfo.vertexBindings.size());
+    vertexInput.pVertexBindingDescriptions = createInfo.vertexBindings.data();
+    vertexInput.vertexAttributeDescriptionCount = static_cast<uint32_t>(createInfo.vertexAttributes.size());
+    vertexInput.pVertexAttributeDescriptions = createInfo.vertexAttributes.data();
 
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
     inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
