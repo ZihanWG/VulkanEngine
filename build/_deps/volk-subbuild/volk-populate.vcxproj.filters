@@ -1,0 +1,44 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="E:\VulkanEngine\build\_deps\volk-subbuild\CMakeFiles\a616b0fced37da5e7354b55d65c268f7\volk-populate-mkdir.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="E:\VulkanEngine\build\_deps\volk-subbuild\CMakeFiles\a616b0fced37da5e7354b55d65c268f7\volk-populate-download.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="E:\VulkanEngine\build\_deps\volk-subbuild\CMakeFiles\a616b0fced37da5e7354b55d65c268f7\volk-populate-update.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="E:\VulkanEngine\build\_deps\volk-subbuild\CMakeFiles\a616b0fced37da5e7354b55d65c268f7\volk-populate-patch.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="E:\VulkanEngine\build\_deps\volk-subbuild\CMakeFiles\a616b0fced37da5e7354b55d65c268f7\volk-populate-configure.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="E:\VulkanEngine\build\_deps\volk-subbuild\CMakeFiles\a616b0fced37da5e7354b55d65c268f7\volk-populate-build.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="E:\VulkanEngine\build\_deps\volk-subbuild\CMakeFiles\a616b0fced37da5e7354b55d65c268f7\volk-populate-install.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="E:\VulkanEngine\build\_deps\volk-subbuild\CMakeFiles\a616b0fced37da5e7354b55d65c268f7\volk-populate-test.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="E:\VulkanEngine\build\_deps\volk-subbuild\CMakeFiles\1375c63b2de58a9761023a5d60c28471\volk-populate-complete.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="E:\VulkanEngine\build\_deps\volk-subbuild\CMakeFiles\daef34f907b742da67c061ca09acfa79\volk-populate.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="E:\VulkanEngine\build\_deps\volk-subbuild\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="E:\VulkanEngine\build\_deps\volk-subbuild\CMakeFiles\volk-populate" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{3C2EE393-8659-3B15-8F64-10BA834471D1}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

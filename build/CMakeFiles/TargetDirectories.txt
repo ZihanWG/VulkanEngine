@@ -1,0 +1,12 @@
+E:/VulkanEngine/build/CMakeFiles/VulkanEngine.dir
+E:/VulkanEngine/build/CMakeFiles/VulkanEngineShaders.dir
+E:/VulkanEngine/build/CMakeFiles/ALL_BUILD.dir
+E:/VulkanEngine/build/CMakeFiles/ZERO_CHECK.dir
+E:/VulkanEngine/build/_deps/sdl3-build/CMakeFiles/SDL3-shared.dir
+E:/VulkanEngine/build/_deps/sdl3-build/CMakeFiles/SDL_uclibc.dir
+E:/VulkanEngine/build/_deps/sdl3-build/CMakeFiles/ALL_BUILD.dir
+E:/VulkanEngine/build/_deps/glm-build/CMakeFiles/ALL_BUILD.dir
+E:/VulkanEngine/build/_deps/glm-build/glm/CMakeFiles/glm.dir
+E:/VulkanEngine/build/_deps/volk-build/CMakeFiles/volk.dir
+E:/VulkanEngine/build/_deps/volk-build/CMakeFiles/ALL_BUILD.dir
+E:/VulkanEngine/build/_deps/vma-build/CMakeFiles/ALL_BUILD.dir

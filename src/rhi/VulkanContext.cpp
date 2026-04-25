@@ -155,12 +155,16 @@ void VulkanContext::setupDebugMessenger()
 
 void VulkanContext::createAllocator()
 {
+    vmaVulkanFunctions_.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
+    vmaVulkanFunctions_.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
+
     VmaAllocatorCreateInfo allocatorInfo{};
     allocatorInfo.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
     allocatorInfo.physicalDevice = device_.physicalDevice();
     allocatorInfo.device = device_.device();
     allocatorInfo.instance = instance_;
     allocatorInfo.vulkanApiVersion = VK_API_VERSION_1_3;
+    allocatorInfo.pVulkanFunctions = &vmaVulkanFunctions_;
 
     VK_CHECK(vmaCreateAllocator(&allocatorInfo, &allocator_));
 }

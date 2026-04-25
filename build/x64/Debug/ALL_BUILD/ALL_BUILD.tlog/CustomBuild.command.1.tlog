@@ -1,0 +1,10 @@
+^E:\VULKANENGINE\CMAKELISTS.TXT
+setlocal
+"D:\Microsoft Visual Studio\2022\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -SE:/VulkanEngine -BE:/VulkanEngine/build --check-stamp-file E:/VulkanEngine/build/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

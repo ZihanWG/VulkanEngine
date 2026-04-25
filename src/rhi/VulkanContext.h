@@ -56,6 +56,7 @@ private:
     VulkanDevice device_;
 
     // VMA centralizes Vulkan memory allocation for images and buffers.
+    VmaVulkanFunctions vmaVulkanFunctions_{};
     VmaAllocator allocator_ = VK_NULL_HANDLE;
 };
 

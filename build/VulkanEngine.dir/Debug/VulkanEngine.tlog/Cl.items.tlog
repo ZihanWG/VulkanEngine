@@ -1,0 +1,15 @@
+E:\VulkanEngine\src\main.cpp;E:\VulkanEngine\build\VulkanEngine.dir\Debug\main.obj
+E:\VulkanEngine\src\core\Application.cpp;E:\VulkanEngine\build\VulkanEngine.dir\Debug\Application.obj
+E:\VulkanEngine\src\core\Logger.cpp;E:\VulkanEngine\build\VulkanEngine.dir\Debug\Logger.obj
+E:\VulkanEngine\src\core\Window.cpp;E:\VulkanEngine\build\VulkanEngine.dir\Debug\Window.obj
+E:\VulkanEngine\src\renderer\Renderer.cpp;E:\VulkanEngine\build\VulkanEngine.dir\Debug\Renderer.obj
+E:\VulkanEngine\src\rhi\VulkanBuffer.cpp;E:\VulkanEngine\build\VulkanEngine.dir\Debug\VulkanBuffer.obj
+E:\VulkanEngine\src\rhi\VulkanCommandContext.cpp;E:\VulkanEngine\build\VulkanEngine.dir\Debug\VulkanCommandContext.obj
+E:\VulkanEngine\src\rhi\VulkanContext.cpp;E:\VulkanEngine\build\VulkanEngine.dir\Debug\VulkanContext.obj
+E:\VulkanEngine\src\rhi\VulkanDescriptor.cpp;E:\VulkanEngine\build\VulkanEngine.dir\Debug\VulkanDescriptor.obj
+E:\VulkanEngine\src\rhi\VulkanDevice.cpp;E:\VulkanEngine\build\VulkanEngine.dir\Debug\VulkanDevice.obj
+E:\VulkanEngine\src\rhi\VulkanImage.cpp;E:\VulkanEngine\build\VulkanEngine.dir\Debug\VulkanImage.obj
+E:\VulkanEngine\src\rhi\VulkanMemory.cpp;E:\VulkanEngine\build\VulkanEngine.dir\Debug\VulkanMemory.obj
+E:\VulkanEngine\src\rhi\VulkanPipeline.cpp;E:\VulkanEngine\build\VulkanEngine.dir\Debug\VulkanPipeline.obj
+E:\VulkanEngine\src\rhi\VulkanSwapchain.cpp;E:\VulkanEngine\build\VulkanEngine.dir\Debug\VulkanSwapchain.obj
+E:\VulkanEngine\src\rhi\VulkanSync.cpp;E:\VulkanEngine\build\VulkanEngine.dir\Debug\VulkanSync.obj

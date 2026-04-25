@@ -1,0 +1,150 @@
+^E:\VULKANENGINE\BUILD\_DEPS\VMA-SUBBUILD\CMAKEFILES\2FE0F7AD3B295C7B14B77BABDDB647D3\VMA-POPULATE-MKDIR.RULE
+setlocal
+"D:\Microsoft Visual Studio\2022\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -Dcfgdir=/Debug -P E:/VulkanEngine/build/_deps/vma-subbuild/vma-populate-prefix/tmp/vma-populate-mkdirs.cmake
+if %errorlevel% neq 0 goto :cmEnd
+"D:\Microsoft Visual Studio\2022\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -E touch E:/VulkanEngine/build/_deps/vma-subbuild/vma-populate-prefix/src/vma-populate-stamp/Debug/vma-populate-mkdir
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^E:\VULKANENGINE\BUILD\_DEPS\VMA-SUBBUILD\CMAKEFILES\2FE0F7AD3B295C7B14B77BABDDB647D3\VMA-POPULATE-DOWNLOAD.RULE
+setlocal
+cd E:\VulkanEngine\build\_deps
+if %errorlevel% neq 0 goto :cmEnd
+E:
+if %errorlevel% neq 0 goto :cmEnd
+"D:\Microsoft Visual Studio\2022\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -DCMAKE_MESSAGE_LOG_LEVEL=VERBOSE -P E:/VulkanEngine/build/_deps/vma-subbuild/vma-populate-prefix/tmp/vma-populate-gitclone.cmake
+if %errorlevel% neq 0 goto :cmEnd
+"D:\Microsoft Visual Studio\2022\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -E touch E:/VulkanEngine/build/_deps/vma-subbuild/vma-populate-prefix/src/vma-populate-stamp/Debug/vma-populate-download
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^E:\VULKANENGINE\BUILD\_DEPS\VMA-SUBBUILD\CMAKEFILES\2FE0F7AD3B295C7B14B77BABDDB647D3\VMA-POPULATE-UPDATE.RULE
+setlocal
+cd E:\VulkanEngine\build\_deps\vma-src
+if %errorlevel% neq 0 goto :cmEnd
+E:
+if %errorlevel% neq 0 goto :cmEnd
+"D:\Microsoft Visual Studio\2022\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -Dcan_fetch=YES -DCMAKE_MESSAGE_LOG_LEVEL=VERBOSE -P E:/VulkanEngine/build/_deps/vma-subbuild/vma-populate-prefix/tmp/vma-populate-gitupdate.cmake
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^E:\VULKANENGINE\BUILD\_DEPS\VMA-SUBBUILD\CMAKEFILES\2FE0F7AD3B295C7B14B77BABDDB647D3\VMA-POPULATE-PATCH.RULE
+setlocal
+"D:\Microsoft Visual Studio\2022\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -E echo_append
+if %errorlevel% neq 0 goto :cmEnd
+"D:\Microsoft Visual Studio\2022\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -E touch E:/VulkanEngine/build/_deps/vma-subbuild/vma-populate-prefix/src/vma-populate-stamp/Debug/vma-populate-patch
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^E:\VULKANENGINE\BUILD\_DEPS\VMA-SUBBUILD\CMAKEFILES\2FE0F7AD3B295C7B14B77BABDDB647D3\VMA-POPULATE-CONFIGURE.RULE
+setlocal
+cd E:\VulkanEngine\build\_deps\vma-build
+if %errorlevel% neq 0 goto :cmEnd
+E:
+if %errorlevel% neq 0 goto :cmEnd
+"D:\Microsoft Visual Studio\2022\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -E echo_append
+if %errorlevel% neq 0 goto :cmEnd
+"D:\Microsoft Visual Studio\2022\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -E touch E:/VulkanEngine/build/_deps/vma-subbuild/vma-populate-prefix/src/vma-populate-stamp/Debug/vma-populate-configure
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^E:\VULKANENGINE\BUILD\_DEPS\VMA-SUBBUILD\CMAKEFILES\2FE0F7AD3B295C7B14B77BABDDB647D3\VMA-POPULATE-BUILD.RULE
+setlocal
+cd E:\VulkanEngine\build\_deps\vma-build
+if %errorlevel% neq 0 goto :cmEnd
+E:
+if %errorlevel% neq 0 goto :cmEnd
+"D:\Microsoft Visual Studio\2022\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -E echo_append
+if %errorlevel% neq 0 goto :cmEnd
+"D:\Microsoft Visual Studio\2022\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -E touch E:/VulkanEngine/build/_deps/vma-subbuild/vma-populate-prefix/src/vma-populate-stamp/Debug/vma-populate-build
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^E:\VULKANENGINE\BUILD\_DEPS\VMA-SUBBUILD\CMAKEFILES\2FE0F7AD3B295C7B14B77BABDDB647D3\VMA-POPULATE-INSTALL.RULE
+setlocal
+cd E:\VulkanEngine\build\_deps\vma-build
+if %errorlevel% neq 0 goto :cmEnd
+E:
+if %errorlevel% neq 0 goto :cmEnd
+"D:\Microsoft Visual Studio\2022\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -E echo_append
+if %errorlevel% neq 0 goto :cmEnd
+"D:\Microsoft Visual Studio\2022\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -E touch E:/VulkanEngine/build/_deps/vma-subbuild/vma-populate-prefix/src/vma-populate-stamp/Debug/vma-populate-install
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^E:\VULKANENGINE\BUILD\_DEPS\VMA-SUBBUILD\CMAKEFILES\2FE0F7AD3B295C7B14B77BABDDB647D3\VMA-POPULATE-TEST.RULE
+setlocal
+cd E:\VulkanEngine\build\_deps\vma-build
+if %errorlevel% neq 0 goto :cmEnd
+E:
+if %errorlevel% neq 0 goto :cmEnd
+"D:\Microsoft Visual Studio\2022\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -E echo_append
+if %errorlevel% neq 0 goto :cmEnd
+"D:\Microsoft Visual Studio\2022\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -E touch E:/VulkanEngine/build/_deps/vma-subbuild/vma-populate-prefix/src/vma-populate-stamp/Debug/vma-populate-test
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^E:\VULKANENGINE\BUILD\_DEPS\VMA-SUBBUILD\CMAKEFILES\3023E2C4CC1BA3A6AD21B9B218BE019C\VMA-POPULATE-COMPLETE.RULE
+setlocal
+"D:\Microsoft Visual Studio\2022\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -E make_directory E:/VulkanEngine/build/_deps/vma-subbuild/CMakeFiles/Debug
+if %errorlevel% neq 0 goto :cmEnd
+"D:\Microsoft Visual Studio\2022\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -E touch E:/VulkanEngine/build/_deps/vma-subbuild/CMakeFiles/Debug/vma-populate-complete
+if %errorlevel% neq 0 goto :cmEnd
+"D:\Microsoft Visual Studio\2022\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -E touch E:/VulkanEngine/build/_deps/vma-subbuild/vma-populate-prefix/src/vma-populate-stamp/Debug/vma-populate-done
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^E:\VULKANENGINE\BUILD\_DEPS\VMA-SUBBUILD\CMAKEFILES\DB0530752FFC4283417910FC289019E2\VMA-POPULATE.RULE
+setlocal
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^E:\VULKANENGINE\BUILD\_DEPS\VMA-SUBBUILD\CMAKELISTS.TXT
+setlocal
+"D:\Microsoft Visual Studio\2022\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -SE:/VulkanEngine/build/_deps/vma-subbuild -BE:/VulkanEngine/build/_deps/vma-subbuild --check-stamp-file E:/VulkanEngine/build/_deps/vma-subbuild/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

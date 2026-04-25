@@ -1,0 +1,46 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "E:/VulkanEngine/build/_deps/volk-subbuild/CMakeFiles/volk-populate"
+		},
+		{
+			"file" : "E:/VulkanEngine/build/_deps/volk-subbuild/CMakeFiles/daef34f907b742da67c061ca09acfa79/volk-populate.rule"
+		},
+		{
+			"file" : "E:/VulkanEngine/build/_deps/volk-subbuild/CMakeFiles/1375c63b2de58a9761023a5d60c28471/volk-populate-complete.rule"
+		},
+		{
+			"file" : "E:/VulkanEngine/build/_deps/volk-subbuild/CMakeFiles/a616b0fced37da5e7354b55d65c268f7/volk-populate-build.rule"
+		},
+		{
+			"file" : "E:/VulkanEngine/build/_deps/volk-subbuild/CMakeFiles/a616b0fced37da5e7354b55d65c268f7/volk-populate-configure.rule"
+		},
+		{
+			"file" : "E:/VulkanEngine/build/_deps/volk-subbuild/CMakeFiles/a616b0fced37da5e7354b55d65c268f7/volk-populate-download.rule"
+		},
+		{
+			"file" : "E:/VulkanEngine/build/_deps/volk-subbuild/CMakeFiles/a616b0fced37da5e7354b55d65c268f7/volk-populate-install.rule"
+		},
+		{
+			"file" : "E:/VulkanEngine/build/_deps/volk-subbuild/CMakeFiles/a616b0fced37da5e7354b55d65c268f7/volk-populate-mkdir.rule"
+		},
+		{
+			"file" : "E:/VulkanEngine/build/_deps/volk-subbuild/CMakeFiles/a616b0fced37da5e7354b55d65c268f7/volk-populate-patch.rule"
+		},
+		{
+			"file" : "E:/VulkanEngine/build/_deps/volk-subbuild/CMakeFiles/a616b0fced37da5e7354b55d65c268f7/volk-populate-test.rule"
+		},
+		{
+			"file" : "E:/VulkanEngine/build/_deps/volk-subbuild/CMakeFiles/a616b0fced37da5e7354b55d65c268f7/volk-populate-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"volk-populate"
+		],
+		"name" : "volk-populate"
+	}
+}
