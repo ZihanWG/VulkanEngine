@@ -140,8 +140,6 @@ void VulkanPipeline::create(VkDevice device, const VulkanPipelineCreateInfo& cre
 
     VkPipelineLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    layoutInfo.setLayoutCount = static_cast<uint32_t>(createInfo.descriptorSetLayouts.size());
-    layoutInfo.pSetLayouts = createInfo.descriptorSetLayouts.data();
     layoutInfo.pushConstantRangeCount = static_cast<uint32_t>(createInfo.pushConstantRanges.size());
     layoutInfo.pPushConstantRanges = createInfo.pushConstantRanges.data();
     VK_CHECK(vkCreatePipelineLayout(device_, &layoutInfo, nullptr, &layout_));
