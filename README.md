@@ -77,9 +77,9 @@ For CLion, open this folder as a CMake project and use a Debug profile. Validati
 
 ## Milestone 2: Triangle Rendering
 
-`src/shaders/simple.vert` and `src/shaders/simple.frag` are compiled by CMake into SPIR-V files under the build directory. `VulkanPipeline` loads those `.spv` files, creates shader modules, creates an empty pipeline layout, and builds a graphics pipeline with `VkPipelineRenderingCreateInfo`.
+`src/shaders/simple.vert` and `src/shaders/simple.frag` are compiled by CMake into SPIR-V files under the build directory. `VulkanPipeline` loads those `.spv` files, creates shader modules, creates a pipeline layout, and builds a graphics pipeline with `VkPipelineRenderingCreateInfo`.
 
-The empty pipeline layout still matters because Vulkan pipelines always need a layout describing descriptor sets and push constants. It is empty for the triangle milestone, while later milestones will extend it with push constants or descriptor sets as needed.
+The pipeline layout still matters because Vulkan pipelines always need a layout describing descriptor sets and push constants. The current renderer uses a vertex-stage push constant for frame data, while descriptor sets are intentionally left for later texture and material work.
 
 Dynamic Rendering does not use a legacy `VkRenderPass`, so the pipeline declares compatible color and optional depth formats through `VkPipelineRenderingCreateInfo`. Viewport and scissor are dynamic states so resizing the window does not require rebuilding the pipeline when only the extent changes.
 
@@ -93,7 +93,7 @@ The renderer uses an explicit `Vertex` layout with position and color, device-lo
 
 Dynamic Rendering now binds both color and depth attachments. The swapchain depth image is transitioned with Synchronization2 into `VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL` before rendering, and the graphics pipeline enables depth testing with the swapchain depth format.
 
-The renderer owns one hard-coded colored cube. Each frame writes an MVP matrix to that frame's CPU-visible storage buffer. Those frame-data buffers are created with Buffer Device Address support, so the renderer can query each `VkDeviceAddress`.
+Milestone 4 introduced a colored cube, depth testing, and per-frame MVP data. Each frame writes an MVP matrix to that frame's CPU-visible storage buffer. Those frame-data buffers are created with Buffer Device Address support, so the renderer can query each `VkDeviceAddress`.
 
 The vertex shader reads the MVP through `GL_EXT_buffer_reference`. A small vertex-stage push constant carries only the `VkDeviceAddress` of the current frame-data buffer, so no descriptor set is used for MVP data in this milestone.
 

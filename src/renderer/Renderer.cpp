@@ -186,11 +186,7 @@ void Renderer::createPipeline()
 void Renderer::createScene()
 {
     cubeMesh_ = renderer::Mesh::createCube(context_, commandContext_);
-
-    renderer::RenderObject cube{};
-    cube.mesh = &cubeMesh_;
-    cube.debugName = "BuiltInCube";
-    renderObjects_.push_back(std::move(cube));
+    renderObjects_.push_back({&cubeMesh_, renderer::Transform{}, "Cube"});
 }
 
 void Renderer::createFrameDataBuffers()
