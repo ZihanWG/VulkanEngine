@@ -18,7 +18,7 @@ Required:
 
 The CMake project first looks for installed packages. If they are missing, `VULKAN_ENGINE_FETCH_DEPS=ON` downloads SDL3, Volk, VMA, and GLM with FetchContent.
 
-Milestone 2 and later require `glslc`. CMake compiles shaders into `<build>/shaders` and embeds that absolute shader directory in the executable, so running from Visual Studio, CLion, or PowerShell does not depend on the current working directory.
+Milestone 2 and later require `glslc`. CMake compiles shaders into the build-directory shader folder (`<build>/shaders`) and embeds that absolute shader directory in the executable, so running from Visual Studio, CLion, or PowerShell does not depend on the current working directory.
 
 ## Build
 
@@ -94,7 +94,7 @@ Dynamic Rendering now binds both color and depth attachments. The swapchain dept
 
 The renderer owns one hard-coded colored cube. Each frame updates an MVP matrix with GLM (`GLM_FORCE_DEPTH_ZERO_TO_ONE` is enabled by CMake) and writes it to that frame's CPU-visible storage buffer. Those frame-data buffers are created with Buffer Device Address support, so the renderer can query each `VkDeviceAddress`.
 
-The vertex shader reads the MVP through `GL_EXT_buffer_reference`. A small vertex-stage push constant carries only the `VkDeviceAddress` of the current frame-data buffer, keeping this milestone free of descriptor sets while still exercising per-frame shader data.
+The vertex shader reads the MVP through `GL_EXT_buffer_reference`. A small vertex-stage push constant carries only the `VkDeviceAddress` of the current frame-data buffer. No MVP descriptor set layout or `vkCmdBindDescriptorSets` call is used in this milestone.
 
 ## Next Milestones
 
