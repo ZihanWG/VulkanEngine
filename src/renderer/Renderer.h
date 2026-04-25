@@ -4,6 +4,7 @@
 #include "rhi/VulkanBuffer.h"
 #include "rhi/VulkanCommandContext.h"
 #include "rhi/VulkanContext.h"
+#include "rhi/VulkanDescriptor.h"
 #include "rhi/VulkanPipeline.h"
 #include "rhi/VulkanSwapchain.h"
 #include "rhi/VulkanSync.h"
@@ -29,9 +30,12 @@ public:
     void waitIdle();
 
 private:
+    void createMvpDescriptorSetLayout();
     void createPipeline();
     void createGeometryBuffers();
-    void createFrameDataBuffers();
+    void createUniformBuffers();
+    void createDescriptorPool();
+    void createDescriptorSets();
     void updateFrameData(uint32_t frameIndex);
     void recreateSwapchain();
     void recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex);
@@ -46,12 +50,15 @@ private:
     rhi::VulkanContext context_;
     std::vector<renderer::FrameResources> frames_;
     rhi::VulkanSwapchain swapchain_;
+    rhi::VulkanDescriptorSetLayout mvpDescriptorSetLayout_;
     rhi::VulkanPipeline pipeline_;
     rhi::VulkanCommandContext commandContext_;
     rhi::VulkanSync sync_;
     rhi::VulkanBuffer vertexBuffer_;
     rhi::VulkanBuffer indexBuffer_;
-    std::vector<rhi::VulkanBuffer> frameDataBuffers_;
+    std::vector<rhi::VulkanBuffer> uniformBuffers_;
+    rhi::VulkanDescriptorPool descriptorPool_;
+    std::vector<VkDescriptorSet> descriptorSets_;
     std::vector<VkFence> imagesInFlight_;
     VkFormat pipelineColorFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat pipelineDepthFormat_ = VK_FORMAT_UNDEFINED;

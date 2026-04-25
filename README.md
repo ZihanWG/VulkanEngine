@@ -67,7 +67,7 @@ For CLion, open this folder as a CMake project and use a Debug profile. Validati
 5. Transition the depth image to `VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL`.
 6. Begin Dynamic Rendering with clear color and depth attachments.
 7. Bind the graphics pipeline.
-8. Upload per-frame MVP data and push that buffer's device address.
+8. Upload per-frame MVP data and bind the matching uniform-buffer descriptor set.
 9. Set dynamic viewport and scissor from the current swapchain extent.
 10. Bind the device-local vertex and index buffers.
 11. Draw the rotating cube with `vkCmdDrawIndexed`.
@@ -92,9 +92,9 @@ The renderer uses an explicit `Vertex` layout with position and color, device-lo
 
 Dynamic Rendering now binds both color and depth attachments. The swapchain depth image is transitioned with Synchronization2 into `VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL` before rendering, and the graphics pipeline enables depth testing with the swapchain depth format.
 
-The renderer owns one hard-coded colored cube. Each frame updates an MVP matrix with GLM (`GLM_FORCE_DEPTH_ZERO_TO_ONE` is enabled by CMake) and writes it to that frame's CPU-visible storage buffer. Those frame-data buffers are created with Buffer Device Address support, so the renderer can query each `VkDeviceAddress`.
+The renderer owns one hard-coded colored cube. Each frame updates an MVP matrix with GLM (`GLM_FORCE_DEPTH_ZERO_TO_ONE` is enabled by CMake), writes it to that frame's CPU-visible uniform buffer, and binds a descriptor set that exposes the buffer at `set = 0, binding = 0` in the vertex shader.
 
-The vertex shader reads the MVP through `GL_EXT_buffer_reference`. A small vertex-stage push constant carries only the `VkDeviceAddress` of the current frame-data buffer. No MVP descriptor set layout or `vkCmdBindDescriptorSets` call is used in this milestone.
+Descriptor setup is intentionally small: one descriptor set layout for MVP data, one descriptor pool sized for the frames in flight, and one descriptor set per frame. Buffer Device Address remains enabled in the engine and can be revisited later for GPU-driven rendering or bindless-style data access.
 
 ## Next Milestones
 
