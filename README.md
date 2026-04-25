@@ -18,7 +18,7 @@ Required:
 
 The CMake project first looks for installed packages. If they are missing, `VULKAN_ENGINE_FETCH_DEPS=ON` downloads SDL3, Volk, VMA, and GLM with FetchContent.
 
-Milestone 2 and later require `glslc`. CMake compiles shaders into the build-directory shader folder (`<build>/shaders`) and embeds that absolute shader directory in the executable, so running from Visual Studio, CLion, or PowerShell does not depend on the current working directory.
+Milestone 2 and later require `glslc`. CMake compiles shaders into the build-directory shader folder, for example `build/shaders`, and embeds that absolute shader directory into the executable, so running from Visual Studio, CLion, or PowerShell does not depend on the current working directory.
 
 ## Build
 
