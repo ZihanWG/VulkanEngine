@@ -41,7 +41,6 @@ For CLion, open this folder as a CMake project and use a Debug profile. Validati
 - `VulkanCommandContext` owns the graphics command pool and per-frame command buffers.
 - `VulkanSync` owns per-frame fences and semaphores.
 - `VulkanPipeline` loads compiled SPIR-V shader modules and creates a Dynamic Rendering graphics pipeline.
-- `VulkanDescriptor` wraps descriptor set layout and descriptor pool lifetime for shader resources.
 - `VulkanBuffer` owns `VkBuffer` plus VMA allocation, supports CPU-visible uploads, staging copies, and optional Buffer Device Address lookup.
 - `VulkanImage` owns `VkImage` plus VMA allocation and image view lifetime.
 
@@ -68,7 +67,7 @@ For CLion, open this folder as a CMake project and use a Debug profile. Validati
 5. Transition the depth image to `VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL`.
 6. Begin Dynamic Rendering with clear color and depth attachments.
 7. Bind the graphics pipeline.
-8. Upload per-frame MVP data and bind the matching uniform-buffer descriptor set.
+8. Upload per-frame MVP data and push that buffer's device address.
 9. Set dynamic viewport and scissor from the current swapchain extent.
 10. Bind the device-local vertex and index buffers.
 11. Draw the rotating cube with `vkCmdDrawIndexed`.
@@ -87,15 +86,15 @@ Dynamic Rendering does not use a legacy `VkRenderPass`, so the pipeline declares
 
 `VulkanBuffer` is now the RAII owner for buffer handles and VMA allocations. CPU-visible buffers can be filled through `upload`, while GPU-local buffers use a temporary staging buffer and a one-time `vkCmdCopyBuffer` submission. The copy command records a Synchronization2 buffer barrier so transfer writes are visible to vertex and index fetch.
 
-The renderer owns one hard-coded triangle for this milestone: a `Vertex` with position and color, a device-local vertex buffer, and a device-local `uint16_t` index buffer. The pipeline receives explicit vertex binding and attribute descriptions, and `simple.vert` now reads locations 0 and 1 instead of generating positions from `gl_VertexIndex`.
+The renderer uses an explicit `Vertex` layout with position and color, device-local vertex and index buffers, and `vkCmdDrawIndexed`. The pipeline receives explicit vertex binding and attribute descriptions, and `simple.vert` reads locations 0 and 1 instead of generating positions from `gl_VertexIndex`.
 
 ## Milestone 4: Depth And MVP
 
 Dynamic Rendering now binds both color and depth attachments. The swapchain depth image is transitioned with Synchronization2 into `VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL` before rendering, and the graphics pipeline enables depth testing with the swapchain depth format.
 
-The renderer owns one hard-coded colored cube. Each frame updates an MVP matrix with GLM (`GLM_FORCE_DEPTH_ZERO_TO_ONE` is enabled by CMake), writes it to that frame's CPU-visible uniform buffer, and binds a descriptor set that exposes the buffer at `set = 0, binding = 0` in the vertex shader.
+The renderer owns one hard-coded colored cube. Each frame updates an MVP matrix with GLM (`GLM_FORCE_DEPTH_ZERO_TO_ONE` is enabled by CMake) and writes it to that frame's CPU-visible storage buffer. Those frame-data buffers are created with Buffer Device Address support, so the renderer can query each `VkDeviceAddress`.
 
-Descriptor setup is intentionally small: one descriptor set layout for MVP data, one descriptor pool sized for the frames in flight, and one descriptor set per frame. Textures, materials, bindless descriptors, and render graph concepts are still left for later milestones.
+The vertex shader reads the MVP through `GL_EXT_buffer_reference`. A small vertex-stage push constant carries only the `VkDeviceAddress` of the current frame-data buffer, keeping this milestone free of descriptor sets while still exercising per-frame shader data.
 
 ## Next Milestones
 

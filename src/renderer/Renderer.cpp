@@ -15,7 +15,6 @@
 #include <span>
 #include <stdexcept>
 #include <string>
-#include <vector>
 
 namespace ve {
 
@@ -28,6 +27,10 @@ struct Vertex {
 
 struct FrameData {
     glm::mat4 mvp{1.0f};
+};
+
+struct PushConstants {
+    VkDeviceAddress frameDataAddress = 0;
 };
 
 const std::array<Vertex, 8> kCubeVertices = {{
@@ -116,13 +119,10 @@ Renderer::Renderer(Window& window)
 
     frames_.resize(rhi::kMaxFramesInFlight);
     swapchain_.initialize(context_, window_.framebufferExtent());
-    createMvpDescriptorSetLayout();
     createPipeline();
     commandContext_.initialize(context_, frames_);
     createGeometryBuffers();
-    createUniformBuffers();
-    createDescriptorPool();
-    createDescriptorSets();
+    createFrameDataBuffers();
     sync_.initialize(context_, frames_);
     imagesInFlight_.assign(swapchain_.imageCount(), VK_NULL_HANDLE);
 
@@ -235,26 +235,15 @@ void Renderer::waitIdle()
     context_.waitIdle();
 }
 
-void Renderer::createMvpDescriptorSetLayout()
-{
-    // Set 0 binding 0 is the per-frame MVP uniform consumed by the vertex shader.
-    // The pipeline layout later references this layout so descriptor binding is explicit.
-    VkDescriptorSetLayoutBinding mvpBinding{};
-    mvpBinding.binding = 0;
-    mvpBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    mvpBinding.descriptorCount = 1;
-    mvpBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-
-    mvpDescriptorSetLayout_.create(
-        context_.vkDevice(),
-        std::span<const VkDescriptorSetLayoutBinding>(&mvpBinding, 1));
-}
-
 void Renderer::createPipeline()
 {
     const VkVertexInputBindingDescription binding = vertexBindingDescription();
     const std::array<VkVertexInputAttributeDescription, 2> attributes = vertexAttributeDescriptions();
-    const VkDescriptorSetLayout descriptorSetLayout = mvpDescriptorSetLayout_.handle();
+    const VkPushConstantRange pushConstantRange{
+        VK_SHADER_STAGE_VERTEX_BIT,
+        0,
+        static_cast<uint32_t>(sizeof(PushConstants))
+    };
 
     rhi::VulkanPipelineCreateInfo pipelineInfo{};
     pipelineInfo.vertexShaderPath = shaderPath("simple.vert.spv");
@@ -263,7 +252,7 @@ void Renderer::createPipeline()
     pipelineInfo.depthFormat = swapchain_.depthFormat();
     pipelineInfo.vertexBindings = std::span<const VkVertexInputBindingDescription>(&binding, 1);
     pipelineInfo.vertexAttributes = std::span<const VkVertexInputAttributeDescription>(attributes.data(), attributes.size());
-    pipelineInfo.descriptorSetLayouts = std::span<const VkDescriptorSetLayout>(&descriptorSetLayout, 1);
+    pipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&pushConstantRange, 1);
     pipelineInfo.enableDepth = true;
 
     pipeline_.create(context_.vkDevice(), pipelineInfo);
@@ -288,62 +277,18 @@ void Renderer::createGeometryBuffers()
     indexCount_ = static_cast<uint32_t>(kCubeIndices.size());
 }
 
-void Renderer::createUniformBuffers()
+void Renderer::createFrameDataBuffers()
 {
-    uniformBuffers_.resize(frames_.size());
+    frameDataBuffers_.resize(frames_.size());
 
-    for (rhi::VulkanBuffer& uniformBuffer : uniformBuffers_) {
+    for (rhi::VulkanBuffer& frameDataBuffer : frameDataBuffers_) {
         rhi::VulkanBufferCreateInfo bufferInfo{};
         bufferInfo.size = sizeof(FrameData);
-        bufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
         bufferInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
         bufferInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-        uniformBuffer.createBuffer(context_, bufferInfo);
-    }
-}
-
-void Renderer::createDescriptorPool()
-{
-    VkDescriptorPoolSize uniformPoolSize{};
-    uniformPoolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    uniformPoolSize.descriptorCount = static_cast<uint32_t>(frames_.size());
-
-    descriptorPool_.create(
-        context_.vkDevice(),
-        std::span<const VkDescriptorPoolSize>(&uniformPoolSize, 1),
-        static_cast<uint32_t>(frames_.size()));
-}
-
-void Renderer::createDescriptorSets()
-{
-    const std::vector<VkDescriptorSetLayout> layouts(frames_.size(), mvpDescriptorSetLayout_.handle());
-
-    VkDescriptorSetAllocateInfo allocateInfo{};
-    allocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocateInfo.descriptorPool = descriptorPool_.handle();
-    allocateInfo.descriptorSetCount = static_cast<uint32_t>(layouts.size());
-    allocateInfo.pSetLayouts = layouts.data();
-
-    descriptorSets_.resize(frames_.size());
-    VK_CHECK(vkAllocateDescriptorSets(context_.vkDevice(), &allocateInfo, descriptorSets_.data()));
-
-    // Each frame gets its own uniform buffer descriptor so CPU writes do not race
-    // with another frame still reading its MVP data on the GPU.
-    for (size_t index = 0; index < descriptorSets_.size(); ++index) {
-        VkDescriptorBufferInfo bufferInfo{};
-        bufferInfo.buffer = uniformBuffers_.at(index).buffer();
-        bufferInfo.offset = 0;
-        bufferInfo.range = sizeof(FrameData);
-
-        VkWriteDescriptorSet write{};
-        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet = descriptorSets_[index];
-        write.dstBinding = 0;
-        write.descriptorCount = 1;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        write.pBufferInfo = &bufferInfo;
-
-        vkUpdateDescriptorSets(context_.vkDevice(), 1, &write, 0, nullptr);
+        bufferInfo.requestDeviceAddress = true;
+        frameDataBuffer.createBuffer(context_, bufferInfo);
     }
 }
 
@@ -353,7 +298,7 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
     const FrameData frameData = buildFrameData(elapsedSeconds, swapchain_.extent());
 
-    uniformBuffers_.at(frameIndex).upload(
+    frameDataBuffers_.at(frameIndex).upload(
         std::as_bytes(std::span<const FrameData>(&frameData, 1)));
 }
 
@@ -433,16 +378,16 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     vkCmdBeginRendering(commandBuffer, &renderingInfo);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.pipeline());
 
-    const VkDescriptorSet descriptorSet = descriptorSets_.at(currentFrame_);
-    vkCmdBindDescriptorSets(
+    const PushConstants pushConstants{
+        frameDataBuffers_.at(currentFrame_).deviceAddress()
+    };
+    vkCmdPushConstants(
         commandBuffer,
-        VK_PIPELINE_BIND_POINT_GRAPHICS,
         pipeline_.layout(),
+        VK_SHADER_STAGE_VERTEX_BIT,
         0,
-        1,
-        &descriptorSet,
-        0,
-        nullptr);
+        static_cast<uint32_t>(sizeof(PushConstants)),
+        &pushConstants);
 
     const VkExtent2D extent = swapchain_.extent();
     VkViewport viewport{};
