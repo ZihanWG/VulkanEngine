@@ -127,7 +127,6 @@ add_executable(VulkanEngine
     src/rhi/VulkanPipeline.cpp
     src/rhi/VulkanSwapchain.cpp
     src/rhi/VulkanSync.cpp
-    src/rhi/VulkanTexture.cpp
 )
 
 target_include_directories(VulkanEngine PRIVATE src)

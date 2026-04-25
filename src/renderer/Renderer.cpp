@@ -4,7 +4,6 @@
 
 #include <array>
 #include <chrono>
-#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <glm/mat4x4.hpp>
@@ -12,7 +11,6 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
-#include <vector>
 
 namespace ve {
 
@@ -44,12 +42,9 @@ Renderer::Renderer(Window& window)
 
     frames_.resize(rhi::kMaxFramesInFlight);
     swapchain_.initialize(context_, window_.framebufferExtent());
-    commandContext_.initialize(context_, frames_);
-    createTextureDescriptorSetLayout();
     createPipeline();
+    commandContext_.initialize(context_, frames_);
     createScene();
-    createCheckerboardTexture();
-    createTextureDescriptorSet();
     createFrameDataBuffers();
     sync_.initialize(context_, frames_);
     imagesInFlight_.assign(swapchain_.imageCount(), VK_NULL_HANDLE);
@@ -163,26 +158,10 @@ void Renderer::waitIdle()
     context_.waitIdle();
 }
 
-void Renderer::createTextureDescriptorSetLayout()
-{
-    VkDescriptorSetLayoutBinding textureBinding{};
-    textureBinding.binding = 0;
-    textureBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    textureBinding.descriptorCount = 1;
-    textureBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-    // Set 0 is reserved for material/texture data. MVP data intentionally stays
-    // on the existing Buffer Device Address push-constant path.
-    textureDescriptorSetLayout_.create(
-        context_.vkDevice(),
-        std::span<const VkDescriptorSetLayoutBinding>(&textureBinding, 1));
-}
-
 void Renderer::createPipeline()
 {
     const VkVertexInputBindingDescription binding = renderer::vertexBindingDescription();
-    const std::array<VkVertexInputAttributeDescription, 3> attributes = renderer::vertexAttributeDescriptions();
-    const VkDescriptorSetLayout descriptorSetLayout = textureDescriptorSetLayout_.handle();
+    const std::array<VkVertexInputAttributeDescription, 2> attributes = renderer::vertexAttributeDescriptions();
     const VkPushConstantRange pushConstantRange{
         VK_SHADER_STAGE_VERTEX_BIT,
         0,
@@ -196,7 +175,6 @@ void Renderer::createPipeline()
     pipelineInfo.depthFormat = swapchain_.depthFormat();
     pipelineInfo.vertexBindings = std::span<const VkVertexInputBindingDescription>(&binding, 1);
     pipelineInfo.vertexAttributes = std::span<const VkVertexInputAttributeDescription>(attributes.data(), attributes.size());
-    pipelineInfo.descriptorSetLayouts = std::span<const VkDescriptorSetLayout>(&descriptorSetLayout, 1);
     pipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&pushConstantRange, 1);
     pipelineInfo.enableDepth = true;
 
@@ -209,62 +187,6 @@ void Renderer::createScene()
 {
     cubeMesh_ = renderer::Mesh::createCube(context_, commandContext_);
     renderObjects_.push_back({&cubeMesh_, renderer::Transform{}, "Cube"});
-}
-
-void Renderer::createCheckerboardTexture()
-{
-    constexpr uint32_t kTextureWidth = 128;
-    constexpr uint32_t kTextureHeight = 128;
-    constexpr uint32_t kCheckerSize = 16;
-
-    std::vector<std::byte> pixels(static_cast<size_t>(kTextureWidth) * kTextureHeight * 4);
-    for (uint32_t y = 0; y < kTextureHeight; ++y) {
-        for (uint32_t x = 0; x < kTextureWidth; ++x) {
-            const bool bright = ((x / kCheckerSize) + (y / kCheckerSize)) % 2 == 0;
-            const size_t offset = (static_cast<size_t>(y) * kTextureWidth + x) * 4;
-
-            pixels[offset + 0] = static_cast<std::byte>(bright ? 245 : 30);
-            pixels[offset + 1] = static_cast<std::byte>(bright ? 245 : 80);
-            pixels[offset + 2] = static_cast<std::byte>(bright ? 245 : 190);
-            pixels[offset + 3] = static_cast<std::byte>(255);
-        }
-    }
-
-    checkerboardTexture_.createFromRgba8(
-        context_,
-        commandContext_,
-        kTextureWidth,
-        kTextureHeight,
-        std::span<const std::byte>(pixels.data(), pixels.size()));
-}
-
-void Renderer::createTextureDescriptorSet()
-{
-    const VkDescriptorPoolSize poolSize{
-        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        1
-    };
-    textureDescriptorPool_.create(context_.vkDevice(), std::span<const VkDescriptorPoolSize>(&poolSize, 1), 1);
-
-    const VkDescriptorSetLayout setLayout = textureDescriptorSetLayout_.handle();
-    VkDescriptorSetAllocateInfo allocateInfo{};
-    allocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocateInfo.descriptorPool = textureDescriptorPool_.handle();
-    allocateInfo.descriptorSetCount = 1;
-    allocateInfo.pSetLayouts = &setLayout;
-    VK_CHECK(vkAllocateDescriptorSets(context_.vkDevice(), &allocateInfo, &textureDescriptorSet_));
-
-    const VkDescriptorImageInfo imageInfo = checkerboardTexture_.descriptorInfo();
-    VkWriteDescriptorSet write{};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = textureDescriptorSet_;
-    write.dstBinding = 0;
-    write.descriptorCount = 1;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.pImageInfo = &imageInfo;
-
-    // Descriptor update connects set 0/binding 0 in the fragment shader to the checkerboard image and sampler.
-    vkUpdateDescriptorSets(context_.vkDevice(), 1, &write, 0, nullptr);
 }
 
 void Renderer::createFrameDataBuffers()
@@ -381,15 +303,6 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
 
     vkCmdBeginRendering(commandBuffer, &renderingInfo);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.pipeline());
-    vkCmdBindDescriptorSets(
-        commandBuffer,
-        VK_PIPELINE_BIND_POINT_GRAPHICS,
-        pipeline_.layout(),
-        0,
-        1,
-        &textureDescriptorSet_,
-        0,
-        nullptr);
 
     const PushConstants pushConstants{
         frameDataBuffers_.at(currentFrame_).deviceAddress()

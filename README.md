@@ -2,7 +2,7 @@
 
 Modern C++20 Vulkan 1.3 renderer skeleton inspired by the educational flow of [Sascha Willems' HowToVulkan](https://github.com/SaschaWillems/HowToVulkan), but split into engine-style modules instead of a single tutorial file.
 
-The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube geometry into GPU-local vertex and index buffers, and draws a rotating textured cube every frame using Dynamic Rendering and Synchronization2.
+The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube geometry into GPU-local vertex and index buffers, and draws a rotating depth-tested scene object every frame using Dynamic Rendering and Synchronization2.
 
 ## Dependencies
 
@@ -43,7 +43,6 @@ For CLion, open this folder as a CMake project and use a Debug profile. Validati
 - `VulkanPipeline` loads compiled SPIR-V shader modules and creates a Dynamic Rendering graphics pipeline.
 - `VulkanBuffer` owns `VkBuffer` plus VMA allocation, supports CPU-visible uploads, staging copies, and optional Buffer Device Address lookup.
 - `VulkanImage` owns `VkImage` plus VMA allocation and image view lifetime.
-- `VulkanTexture` owns a sampled 2D image, image view, sampler, and staging upload path.
 - `Mesh`, `RenderObject`, `Transform`, and `Camera` provide the first renderer-side scene abstractions without introducing ECS or a render graph.
 
 ## Vulkan Initialization Flow
@@ -69,20 +68,18 @@ For CLion, open this folder as a CMake project and use a Debug profile. Validati
 5. Transition the depth image to `VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL`.
 6. Begin Dynamic Rendering with clear color and depth attachments.
 7. Bind the graphics pipeline.
-8. Bind the texture descriptor set.
-9. Update the render object's transform and upload camera-derived MVP data.
-10. Push the MVP buffer device address.
-11. Set dynamic viewport and scissor from the current swapchain extent.
-12. Bind the device-local vertex and index buffers.
-13. Draw render objects with `vkCmdDrawIndexed`.
-14. End rendering and submit with `vkQueueSubmit2`.
-15. Present the image and recreate the swapchain if it is out of date.
+8. Update the render object's transform and upload camera-derived MVP data.
+9. Set dynamic viewport and scissor from the current swapchain extent.
+10. Bind the device-local vertex and index buffers.
+11. Push the MVP buffer device address and draw render objects with `vkCmdDrawIndexed`.
+12. End rendering and submit with `vkQueueSubmit2`.
+13. Present the image and recreate the swapchain if it is out of date.
 
 ## Milestone 2: Triangle Rendering
 
 `src/shaders/simple.vert` and `src/shaders/simple.frag` are compiled by CMake into SPIR-V files under the build directory. `VulkanPipeline` loads those `.spv` files, creates shader modules, creates a pipeline layout, and builds a graphics pipeline with `VkPipelineRenderingCreateInfo`.
 
-The pipeline layout still matters because Vulkan pipelines always need a layout describing descriptor sets and push constants. The current renderer uses a descriptor set for texture sampling and a vertex-stage push constant for frame data.
+The pipeline layout still matters because Vulkan pipelines always need a layout describing descriptor sets and push constants. The current renderer uses a vertex-stage push constant for frame data, while descriptor sets are intentionally left for later texture and sampler work.
 
 Dynamic Rendering does not use a legacy `VkRenderPass`, so the pipeline declares compatible color and optional depth formats through `VkPipelineRenderingCreateInfo`. Viewport and scissor are dynamic states so resizing the window does not require rebuilding the pipeline when only the extent changes.
 
@@ -98,7 +95,7 @@ Dynamic Rendering now binds both color and depth attachments. The swapchain dept
 
 Milestone 4 introduced a colored cube, depth testing, and per-frame MVP data. Each frame writes an MVP matrix to that frame's CPU-visible storage buffer. Those frame-data buffers are created with Buffer Device Address support, so the renderer can query each `VkDeviceAddress`.
 
-The vertex shader reads the MVP through `GL_EXT_buffer_reference`. A small vertex-stage push constant carries only the `VkDeviceAddress` of the current frame-data buffer, so no descriptor set is used for MVP data.
+The vertex shader reads the MVP through `GL_EXT_buffer_reference`. A small vertex-stage push constant carries only the `VkDeviceAddress` of the current frame-data buffer, so no descriptor set is used for MVP data in this milestone.
 
 ## Milestone 5: Scene Abstractions
 
@@ -106,16 +103,10 @@ The hard-coded cube vertex and index data has moved out of `Renderer` and into `
 
 `Renderer` now owns a `Camera`, one cube `Mesh`, and a list of `RenderObject` entries. Each `RenderObject` references a `Mesh` and owns its own `Transform`, giving the renderer a simple draw list instead of direct single-cube draw state.
 
-The per-frame MVP is now generated from `Camera + Transform`, then uploaded through the existing Buffer Device Address storage-buffer path. A vertex-stage push constant passes the frame-data buffer address to the shader, which reads the MVP through `GL_EXT_buffer_reference`.
-
-## Milestone 6: Basic Texture Descriptor
-
-Texture sampling now uses a conventional Vulkan descriptor set while the MVP path remains unchanged. `VulkanTexture` creates a GPU-local RGBA8 image, uploads CPU-generated pixels through a staging buffer, transitions the image with Synchronization2 barriers, owns the image view, and creates the sampler used by the fragment shader.
-
-The renderer creates one procedural checkerboard texture in code, allocates one descriptor set at set 0/binding 0, and updates it as a `VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER`. The pipeline layout now contains both that descriptor set layout and the existing vertex-stage push constant range for the Buffer Device Address frame data.
-
-The cube vertex layout now includes UV coordinates at location 2. The vertex shader passes UVs to the fragment shader, and the fragment shader samples the checkerboard texture. File texture loading, material abstractions, and bindless descriptor arrays are later milestones.
+The per-frame MVP is generated from `Camera + Transform`, then uploaded through the existing Buffer Device Address storage-buffer path. A vertex-stage push constant passes the frame-data buffer address to the shader, which reads the MVP through `GL_EXT_buffer_reference`. Descriptor sets are not used for MVP data yet.
 
 ## Next Milestones
 
-Later milestones can introduce texture file loading, material objects, lighting, and optional descriptor indexing for larger texture arrays.
+### Milestone 6: Texture + Descriptor Set
+
+Introduce descriptor sets for texture and sampler binding, not for MVP data. The MVP path should remain the current Buffer Device Address storage-buffer path, with `vkCmdPushConstants` passing the frame-data address to the vertex shader.
