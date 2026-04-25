@@ -78,7 +78,7 @@ For CLion, open this folder as a CMake project and use a Debug profile. Validati
 
 `src/shaders/simple.vert` and `src/shaders/simple.frag` are compiled by CMake into SPIR-V files under the build directory. `VulkanPipeline` loads those `.spv` files, creates shader modules, creates an empty pipeline layout, and builds a graphics pipeline with `VkPipelineRenderingCreateInfo`.
 
-The empty pipeline layout still matters because Vulkan pipelines always need a layout describing descriptor sets and push constants. It is empty for the triangle milestone, but future MVP data, materials, and bindless descriptors will extend it.
+The empty pipeline layout still matters because Vulkan pipelines always need a layout describing descriptor sets and push constants. It is empty for the triangle milestone, while later milestones will extend it with push constants or descriptor sets as needed.
 
 Dynamic Rendering does not use a legacy `VkRenderPass`, so the pipeline declares compatible color and optional depth formats through `VkPipelineRenderingCreateInfo`. Viewport and scissor are dynamic states so resizing the window does not require rebuilding the pipeline when only the extent changes.
 
@@ -100,4 +100,4 @@ The vertex shader reads the MVP through `GL_EXT_buffer_reference`. A small verte
 
 Milestone 5 can extract the hard-coded geometry and temporary MVP calculation into simple `Mesh`, `Camera`, transform, and render-object structures.
 
-Later milestones can turn descriptor indexing support into an optional bindless-style texture array path.
+Later milestones can introduce descriptor sets for textures and materials. Descriptor indexing support can be explored after that as an optional extension.
