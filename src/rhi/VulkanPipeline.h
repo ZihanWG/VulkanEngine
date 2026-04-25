@@ -14,6 +14,7 @@ struct VulkanPipelineCreateInfo {
     VkFormat depthFormat = VK_FORMAT_UNDEFINED;
     std::span<const VkVertexInputBindingDescription> vertexBindings;
     std::span<const VkVertexInputAttributeDescription> vertexAttributes;
+    std::span<const VkDescriptorSetLayout> descriptorSetLayouts;
     std::span<const VkPushConstantRange> pushConstantRanges;
     bool enableDepth = false;
 };

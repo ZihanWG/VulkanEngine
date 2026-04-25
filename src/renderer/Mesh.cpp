@@ -11,24 +11,46 @@ namespace ve::renderer {
 
 namespace {
 
-const std::array<Vertex, 8> kCubeVertices = {{
-    {{-0.5f, -0.5f, -0.5f}, {1.0f, 0.1f, 0.1f}},
-    {{0.5f, -0.5f, -0.5f}, {0.1f, 1.0f, 0.1f}},
-    {{0.5f, 0.5f, -0.5f}, {0.1f, 0.2f, 1.0f}},
-    {{-0.5f, 0.5f, -0.5f}, {1.0f, 1.0f, 0.1f}},
-    {{-0.5f, -0.5f, 0.5f}, {1.0f, 0.1f, 1.0f}},
-    {{0.5f, -0.5f, 0.5f}, {0.1f, 1.0f, 1.0f}},
-    {{0.5f, 0.5f, 0.5f}, {1.0f, 0.5f, 0.1f}},
-    {{-0.5f, 0.5f, 0.5f}, {0.8f, 0.8f, 0.8f}}
+const std::array<Vertex, 24> kCubeVertices = {{
+    // Front
+    {{-0.5f, -0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}},
+    {{0.5f, -0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}},
+    {{0.5f, 0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}, {1.0f, 0.0f}},
+    {{-0.5f, 0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}, {0.0f, 0.0f}},
+    // Back
+    {{0.5f, -0.5f, -0.5f}, {0.9f, 0.9f, 1.0f}, {0.0f, 1.0f}},
+    {{-0.5f, -0.5f, -0.5f}, {0.9f, 0.9f, 1.0f}, {1.0f, 1.0f}},
+    {{-0.5f, 0.5f, -0.5f}, {0.9f, 0.9f, 1.0f}, {1.0f, 0.0f}},
+    {{0.5f, 0.5f, -0.5f}, {0.9f, 0.9f, 1.0f}, {0.0f, 0.0f}},
+    // Left
+    {{-0.5f, -0.5f, -0.5f}, {1.0f, 0.9f, 0.9f}, {0.0f, 1.0f}},
+    {{-0.5f, -0.5f, 0.5f}, {1.0f, 0.9f, 0.9f}, {1.0f, 1.0f}},
+    {{-0.5f, 0.5f, 0.5f}, {1.0f, 0.9f, 0.9f}, {1.0f, 0.0f}},
+    {{-0.5f, 0.5f, -0.5f}, {1.0f, 0.9f, 0.9f}, {0.0f, 0.0f}},
+    // Right
+    {{0.5f, -0.5f, 0.5f}, {0.9f, 1.0f, 0.9f}, {0.0f, 1.0f}},
+    {{0.5f, -0.5f, -0.5f}, {0.9f, 1.0f, 0.9f}, {1.0f, 1.0f}},
+    {{0.5f, 0.5f, -0.5f}, {0.9f, 1.0f, 0.9f}, {1.0f, 0.0f}},
+    {{0.5f, 0.5f, 0.5f}, {0.9f, 1.0f, 0.9f}, {0.0f, 0.0f}},
+    // Top
+    {{-0.5f, 0.5f, 0.5f}, {1.0f, 1.0f, 0.9f}, {0.0f, 1.0f}},
+    {{0.5f, 0.5f, 0.5f}, {1.0f, 1.0f, 0.9f}, {1.0f, 1.0f}},
+    {{0.5f, 0.5f, -0.5f}, {1.0f, 1.0f, 0.9f}, {1.0f, 0.0f}},
+    {{-0.5f, 0.5f, -0.5f}, {1.0f, 1.0f, 0.9f}, {0.0f, 0.0f}},
+    // Bottom
+    {{-0.5f, -0.5f, -0.5f}, {0.9f, 1.0f, 1.0f}, {0.0f, 1.0f}},
+    {{0.5f, -0.5f, -0.5f}, {0.9f, 1.0f, 1.0f}, {1.0f, 1.0f}},
+    {{0.5f, -0.5f, 0.5f}, {0.9f, 1.0f, 1.0f}, {1.0f, 0.0f}},
+    {{-0.5f, -0.5f, 0.5f}, {0.9f, 1.0f, 1.0f}, {0.0f, 0.0f}}
 }};
 
 const std::array<uint16_t, 36> kCubeIndices = {
-    0, 2, 1, 0, 3, 2,
+    0, 1, 2, 0, 2, 3,
     4, 5, 6, 4, 6, 7,
-    0, 1, 5, 0, 5, 4,
-    3, 6, 2, 3, 7, 6,
-    1, 2, 6, 1, 6, 5,
-    0, 4, 7, 0, 7, 3
+    8, 9, 10, 8, 10, 11,
+    12, 13, 14, 12, 14, 15,
+    16, 17, 18, 16, 18, 19,
+    20, 21, 22, 20, 22, 23
 };
 
 } // namespace
@@ -42,9 +64,9 @@ VkVertexInputBindingDescription vertexBindingDescription()
     return binding;
 }
 
-std::array<VkVertexInputAttributeDescription, 2> vertexAttributeDescriptions()
+std::array<VkVertexInputAttributeDescription, 3> vertexAttributeDescriptions()
 {
-    std::array<VkVertexInputAttributeDescription, 2> attributes{};
+    std::array<VkVertexInputAttributeDescription, 3> attributes{};
 
     attributes[0].location = 0;
     attributes[0].binding = 0;
@@ -55,6 +77,11 @@ std::array<VkVertexInputAttributeDescription, 2> vertexAttributeDescriptions()
     attributes[1].binding = 0;
     attributes[1].format = VK_FORMAT_R32G32B32_SFLOAT;
     attributes[1].offset = static_cast<uint32_t>(offsetof(Vertex, color));
+
+    attributes[2].location = 2;
+    attributes[2].binding = 0;
+    attributes[2].format = VK_FORMAT_R32G32_SFLOAT;
+    attributes[2].offset = static_cast<uint32_t>(offsetof(Vertex, uv));
 
     return attributes;
 }
