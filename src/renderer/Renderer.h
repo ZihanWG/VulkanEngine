@@ -1,6 +1,9 @@
 #pragma once
 
+#include "renderer/Camera.h"
 #include "renderer/FrameResources.h"
+#include "renderer/Mesh.h"
+#include "renderer/RenderObject.h"
 #include "rhi/VulkanBuffer.h"
 #include "rhi/VulkanCommandContext.h"
 #include "rhi/VulkanContext.h"
@@ -30,7 +33,7 @@ public:
 
 private:
     void createPipeline();
-    void createGeometryBuffers();
+    void createScene();
     void createFrameDataBuffers();
     void updateFrameData(uint32_t frameIndex);
     void recreateSwapchain();
@@ -49,13 +52,13 @@ private:
     rhi::VulkanPipeline pipeline_;
     rhi::VulkanCommandContext commandContext_;
     rhi::VulkanSync sync_;
-    rhi::VulkanBuffer vertexBuffer_;
-    rhi::VulkanBuffer indexBuffer_;
+    renderer::Camera camera_;
+    renderer::Mesh cubeMesh_;
+    std::vector<renderer::RenderObject> renderObjects_;
     std::vector<rhi::VulkanBuffer> frameDataBuffers_;
     std::vector<VkFence> imagesInFlight_;
     VkFormat pipelineColorFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat pipelineDepthFormat_ = VK_FORMAT_UNDEFINED;
-    uint32_t indexCount_ = 0;
     uint32_t currentFrame_ = 0;
     std::chrono::steady_clock::time_point startTime_ = std::chrono::steady_clock::now();
     bool initialized_ = false;

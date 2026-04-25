@@ -2,7 +2,7 @@
 
 Modern C++20 Vulkan 1.3 renderer skeleton inspired by the educational flow of [Sascha Willems' HowToVulkan](https://github.com/SaschaWillems/HowToVulkan), but split into engine-style modules instead of a single tutorial file.
 
-The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube geometry into GPU-local vertex and index buffers, and draws a rotating depth-tested object every frame using Dynamic Rendering and Synchronization2.
+The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube geometry into GPU-local vertex and index buffers, and draws a rotating depth-tested scene object every frame using Dynamic Rendering and Synchronization2.
 
 ## Dependencies
 
@@ -43,6 +43,7 @@ For CLion, open this folder as a CMake project and use a Debug profile. Validati
 - `VulkanPipeline` loads compiled SPIR-V shader modules and creates a Dynamic Rendering graphics pipeline.
 - `VulkanBuffer` owns `VkBuffer` plus VMA allocation, supports CPU-visible uploads, staging copies, and optional Buffer Device Address lookup.
 - `VulkanImage` owns `VkImage` plus VMA allocation and image view lifetime.
+- `Mesh`, `RenderObject`, `Transform`, and `Camera` provide the first renderer-side scene abstractions without introducing ECS or a render graph.
 
 ## Vulkan Initialization Flow
 
@@ -67,10 +68,10 @@ For CLion, open this folder as a CMake project and use a Debug profile. Validati
 5. Transition the depth image to `VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL`.
 6. Begin Dynamic Rendering with clear color and depth attachments.
 7. Bind the graphics pipeline.
-8. Upload per-frame MVP data and push that buffer's device address.
+8. Update the render object's transform and upload camera-derived MVP data.
 9. Set dynamic viewport and scissor from the current swapchain extent.
 10. Bind the device-local vertex and index buffers.
-11. Draw the rotating cube with `vkCmdDrawIndexed`.
+11. Push the MVP buffer device address and draw render objects with `vkCmdDrawIndexed`.
 12. End rendering and submit with `vkQueueSubmit2`.
 13. Present the image and recreate the swapchain if it is out of date.
 
@@ -92,12 +93,16 @@ The renderer uses an explicit `Vertex` layout with position and color, device-lo
 
 Dynamic Rendering now binds both color and depth attachments. The swapchain depth image is transitioned with Synchronization2 into `VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL` before rendering, and the graphics pipeline enables depth testing with the swapchain depth format.
 
-The renderer owns one hard-coded colored cube. Each frame updates an MVP matrix with GLM (`GLM_FORCE_DEPTH_ZERO_TO_ONE` is enabled by CMake) and writes it to that frame's CPU-visible storage buffer. Those frame-data buffers are created with Buffer Device Address support, so the renderer can query each `VkDeviceAddress`.
+The renderer owns one hard-coded colored cube. Each frame writes an MVP matrix to that frame's CPU-visible storage buffer. Those frame-data buffers are created with Buffer Device Address support, so the renderer can query each `VkDeviceAddress`.
 
 The vertex shader reads the MVP through `GL_EXT_buffer_reference`. A small vertex-stage push constant carries only the `VkDeviceAddress` of the current frame-data buffer, so no descriptor set is used for MVP data in this milestone.
 
-## Next Milestones
+## Milestone 5: Scene Abstractions
 
-Milestone 5 can extract the hard-coded geometry and temporary MVP calculation into simple `Mesh`, `Camera`, transform, and render-object structures.
+The hard-coded cube vertex and index data now lives in `Mesh`, which owns the GPU-local vertex and index buffers and exposes a built-in cube factory. `RenderObject` references a mesh and owns a `Transform`, giving the renderer a simple draw list instead of direct single-cube draw state.
+
+`Camera` owns view/projection settings and applies the Vulkan Y flip in its projection helper. The per-frame MVP is now generated from `Camera + Transform`, then uploaded through the existing Buffer Device Address storage-buffer path and passed to the vertex shader with the same push constant.
+
+## Next Milestones
 
 Later milestones can introduce descriptor sets for textures and materials. Descriptor indexing support can be explored after that as an optional extension.

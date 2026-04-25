@@ -115,6 +115,7 @@ add_executable(VulkanEngine
     src/core/Application.cpp
     src/core/Logger.cpp
     src/core/Window.cpp
+    src/renderer/Mesh.cpp
     src/renderer/Renderer.cpp
     src/rhi/VulkanBuffer.cpp
     src/rhi/VulkanCommandContext.cpp

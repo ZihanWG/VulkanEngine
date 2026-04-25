@@ -4,26 +4,17 @@
 
 #include <array>
 #include <chrono>
-#include <cstddef>
 #include <cstdint>
 #include <filesystem>
-#include <glm/ext/matrix_clip_space.hpp>
-#include <glm/ext/matrix_transform.hpp>
-#include <glm/geometric.hpp>
 #include <glm/mat4x4.hpp>
-#include <glm/vec3.hpp>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace ve {
 
 namespace {
-
-struct Vertex {
-    glm::vec3 position;
-    glm::vec3 color;
-};
 
 struct FrameData {
     glm::mat4 mvp{1.0f};
@@ -32,74 +23,6 @@ struct FrameData {
 struct PushConstants {
     VkDeviceAddress frameDataAddress = 0;
 };
-
-const std::array<Vertex, 8> kCubeVertices = {{
-    {{-0.5f, -0.5f, -0.5f}, {1.0f, 0.1f, 0.1f}},
-    {{0.5f, -0.5f, -0.5f}, {0.1f, 1.0f, 0.1f}},
-    {{0.5f, 0.5f, -0.5f}, {0.1f, 0.2f, 1.0f}},
-    {{-0.5f, 0.5f, -0.5f}, {1.0f, 1.0f, 0.1f}},
-    {{-0.5f, -0.5f, 0.5f}, {1.0f, 0.1f, 1.0f}},
-    {{0.5f, -0.5f, 0.5f}, {0.1f, 1.0f, 1.0f}},
-    {{0.5f, 0.5f, 0.5f}, {1.0f, 0.5f, 0.1f}},
-    {{-0.5f, 0.5f, 0.5f}, {0.8f, 0.8f, 0.8f}}
-}};
-
-const std::array<uint16_t, 36> kCubeIndices = {
-    0, 2, 1, 0, 3, 2,
-    4, 5, 6, 4, 6, 7,
-    0, 1, 5, 0, 5, 4,
-    3, 6, 2, 3, 7, 6,
-    1, 2, 6, 1, 6, 5,
-    0, 4, 7, 0, 7, 3
-};
-
-VkVertexInputBindingDescription vertexBindingDescription()
-{
-    VkVertexInputBindingDescription binding{};
-    binding.binding = 0;
-    binding.stride = static_cast<uint32_t>(sizeof(Vertex));
-    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-    return binding;
-}
-
-std::array<VkVertexInputAttributeDescription, 2> vertexAttributeDescriptions()
-{
-    std::array<VkVertexInputAttributeDescription, 2> attributes{};
-
-    attributes[0].location = 0;
-    attributes[0].binding = 0;
-    attributes[0].format = VK_FORMAT_R32G32B32_SFLOAT;
-    attributes[0].offset = static_cast<uint32_t>(offsetof(Vertex, position));
-
-    attributes[1].location = 1;
-    attributes[1].binding = 0;
-    attributes[1].format = VK_FORMAT_R32G32B32_SFLOAT;
-    attributes[1].offset = static_cast<uint32_t>(offsetof(Vertex, color));
-
-    return attributes;
-}
-
-FrameData buildFrameData(float elapsedSeconds, VkExtent2D extent)
-{
-    const float aspect = extent.height == 0
-        ? 1.0f
-        : static_cast<float>(extent.width) / static_cast<float>(extent.height);
-
-    const glm::mat4 model = glm::rotate(
-        glm::mat4{1.0f},
-        elapsedSeconds,
-        glm::normalize(glm::vec3{0.35f, 1.0f, 0.0f}));
-
-    const glm::mat4 view = glm::lookAt(
-        glm::vec3{0.0f, 0.0f, 3.0f},
-        glm::vec3{0.0f, 0.0f, 0.0f},
-        glm::vec3{0.0f, 1.0f, 0.0f});
-
-    glm::mat4 projection = glm::perspective(glm::radians(60.0f), aspect, 0.1f, 100.0f);
-    projection[1][1] *= -1.0f;
-
-    return FrameData{projection * view * model};
-}
 
 std::filesystem::path shaderPath(const char* filename)
 {
@@ -121,7 +44,7 @@ Renderer::Renderer(Window& window)
     swapchain_.initialize(context_, window_.framebufferExtent());
     createPipeline();
     commandContext_.initialize(context_, frames_);
-    createGeometryBuffers();
+    createScene();
     createFrameDataBuffers();
     sync_.initialize(context_, frames_);
     imagesInFlight_.assign(swapchain_.imageCount(), VK_NULL_HANDLE);
@@ -237,8 +160,8 @@ void Renderer::waitIdle()
 
 void Renderer::createPipeline()
 {
-    const VkVertexInputBindingDescription binding = vertexBindingDescription();
-    const std::array<VkVertexInputAttributeDescription, 2> attributes = vertexAttributeDescriptions();
+    const VkVertexInputBindingDescription binding = renderer::vertexBindingDescription();
+    const std::array<VkVertexInputAttributeDescription, 2> attributes = renderer::vertexAttributeDescriptions();
     const VkPushConstantRange pushConstantRange{
         VK_SHADER_STAGE_VERTEX_BIT,
         0,
@@ -260,21 +183,14 @@ void Renderer::createPipeline()
     pipelineDepthFormat_ = pipelineInfo.depthFormat;
 }
 
-void Renderer::createGeometryBuffers()
+void Renderer::createScene()
 {
-    vertexBuffer_.createDeviceLocal(
-        context_,
-        commandContext_,
-        std::as_bytes(std::span<const Vertex>(kCubeVertices.data(), kCubeVertices.size())),
-        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+    cubeMesh_ = renderer::Mesh::createCube(context_, commandContext_);
 
-    indexBuffer_.createDeviceLocal(
-        context_,
-        commandContext_,
-        std::as_bytes(std::span<const uint16_t>(kCubeIndices.data(), kCubeIndices.size())),
-        VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
-
-    indexCount_ = static_cast<uint32_t>(kCubeIndices.size());
+    renderer::RenderObject cube{};
+    cube.mesh = &cubeMesh_;
+    cube.debugName = "BuiltInCube";
+    renderObjects_.push_back(std::move(cube));
 }
 
 void Renderer::createFrameDataBuffers()
@@ -296,7 +212,21 @@ void Renderer::updateFrameData(uint32_t frameIndex)
 {
     const auto now = std::chrono::steady_clock::now();
     const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
-    const FrameData frameData = buildFrameData(elapsedSeconds, swapchain_.extent());
+    FrameData frameData{};
+
+    if (!renderObjects_.empty()) {
+        renderer::RenderObject& object = renderObjects_.front();
+        object.transform.rotationRadians = {elapsedSeconds * 0.35f, elapsedSeconds, 0.0f};
+
+        const VkExtent2D extent = swapchain_.extent();
+        const float aspect = extent.height == 0
+            ? 1.0f
+            : static_cast<float>(extent.width) / static_cast<float>(extent.height);
+
+        frameData.mvp = camera_.projectionMatrix(aspect)
+            * camera_.viewMatrix()
+            * object.transform.modelMatrix();
+    }
 
     frameDataBuffers_.at(frameIndex).upload(
         std::as_bytes(std::span<const FrameData>(&frameData, 1)));
@@ -407,12 +337,18 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
     vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-    const VkBuffer vertexBuffers[] = {vertexBuffer_.buffer()};
-    const VkDeviceSize vertexOffsets[] = {0};
-    vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
-    vkCmdBindIndexBuffer(commandBuffer, indexBuffer_.buffer(), 0, VK_INDEX_TYPE_UINT16);
+    for (const renderer::RenderObject& object : renderObjects_) {
+        if (!object.mesh) {
+            continue;
+        }
 
-    vkCmdDrawIndexed(commandBuffer, indexCount_, 1, 0, 0, 0);
+        const VkBuffer vertexBuffers[] = {object.mesh->vertexBuffer()};
+        const VkDeviceSize vertexOffsets[] = {0};
+        vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
+        vkCmdBindIndexBuffer(commandBuffer, object.mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT16);
+
+        vkCmdDrawIndexed(commandBuffer, object.mesh->indexCount(), 1, 0, 0, 0);
+    }
     vkCmdEndRendering(commandBuffer);
 
     // Synchronization2 barrier: presentation reads from images in PRESENT_SRC_KHR layout.
