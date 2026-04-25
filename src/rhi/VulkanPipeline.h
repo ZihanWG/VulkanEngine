@@ -14,6 +14,7 @@ struct VulkanPipelineCreateInfo {
     VkFormat depthFormat = VK_FORMAT_UNDEFINED;
     std::span<const VkVertexInputBindingDescription> vertexBindings;
     std::span<const VkVertexInputAttributeDescription> vertexAttributes;
+    std::span<const VkDescriptorSetLayout> descriptorSetLayouts;
     std::span<const VkPushConstantRange> pushConstantRanges;
     bool enableDepth = false;
 };
@@ -42,8 +43,8 @@ private:
     VkShaderModule vertexShaderModule_ = VK_NULL_HANDLE;
     VkShaderModule fragmentShaderModule_ = VK_NULL_HANDLE;
 
-    // A pipeline layout is required even before descriptors or push constants exist.
-    // It is the shader resource contract that future descriptor sets will plug into.
+    // The pipeline layout is the shader resource contract: descriptor set layouts
+    // and push constants must match what shaders declare before a pipeline can bind them.
     VkPipelineLayout layout_ = VK_NULL_HANDLE;
 
     // Graphics pipeline state is immutable; resize-sensitive state is kept dynamic.

@@ -41,6 +41,7 @@ For CLion, open this folder as a CMake project and use a Debug profile. Validati
 - `VulkanCommandContext` owns the graphics command pool and per-frame command buffers.
 - `VulkanSync` owns per-frame fences and semaphores.
 - `VulkanPipeline` loads compiled SPIR-V shader modules and creates a Dynamic Rendering graphics pipeline.
+- `VulkanDescriptor` wraps descriptor set layout and descriptor pool lifetime for shader resources.
 - `VulkanBuffer` owns `VkBuffer` plus VMA allocation, supports CPU-visible uploads, staging copies, and optional Buffer Device Address lookup.
 - `VulkanImage` owns `VkImage` plus VMA allocation and image view lifetime.
 
@@ -67,7 +68,7 @@ For CLion, open this folder as a CMake project and use a Debug profile. Validati
 5. Transition the depth image to `VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL`.
 6. Begin Dynamic Rendering with clear color and depth attachments.
 7. Bind the graphics pipeline.
-8. Upload per-frame MVP data and push the storage buffer device address.
+8. Upload per-frame MVP data and bind the matching uniform-buffer descriptor set.
 9. Set dynamic viewport and scissor from the current swapchain extent.
 10. Bind the device-local vertex and index buffers.
 11. Draw the rotating cube with `vkCmdDrawIndexed`.
@@ -92,7 +93,9 @@ The renderer owns one hard-coded triangle for this milestone: a `Vertex` with po
 
 Dynamic Rendering now binds both color and depth attachments. The swapchain depth image is transitioned with Synchronization2 into `VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL` before rendering, and the graphics pipeline enables depth testing with the swapchain depth format.
 
-The renderer owns one hard-coded colored cube. Each frame updates an MVP matrix with GLM (`GLM_FORCE_DEPTH_ZERO_TO_ONE` is enabled by CMake), writes it to a per-frame storage buffer, and passes that buffer's device address to the vertex shader through a small push constant. This keeps the milestone free of descriptor sets while still exercising per-frame GPU buffer data.
+The renderer owns one hard-coded colored cube. Each frame updates an MVP matrix with GLM (`GLM_FORCE_DEPTH_ZERO_TO_ONE` is enabled by CMake), writes it to that frame's CPU-visible uniform buffer, and binds a descriptor set that exposes the buffer at `set = 0, binding = 0` in the vertex shader.
+
+Descriptor setup is intentionally small: one descriptor set layout for MVP data, one descriptor pool sized for the frames in flight, and one descriptor set per frame. Textures, materials, bindless descriptors, and render graph concepts are still left for later milestones.
 
 ## Next Milestones
 
