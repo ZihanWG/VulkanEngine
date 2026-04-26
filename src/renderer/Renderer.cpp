@@ -49,7 +49,7 @@ Renderer::Renderer(Window& window)
     createCheckerboardTexture();
     createTextureDescriptorSet();
     createFrameDataBuffers();
-    sync_.initialize(context_, frames_);
+    sync_.initialize(context_, frames_, swapchain_.imageCount());
     imagesInFlight_.assign(swapchain_.imageCount(), VK_NULL_HANDLE);
 
     initialized_ = true;
@@ -103,6 +103,7 @@ void Renderer::drawFrame()
 
     updateFrameData(currentFrame_);
     recordRenderCommands(frame.commandBuffer, imageIndex);
+    const VkSemaphore renderFinished = sync_.renderFinishedSemaphore(imageIndex);
 
     VkSemaphoreSubmitInfo waitSemaphore{};
     waitSemaphore.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
@@ -115,7 +116,7 @@ void Renderer::drawFrame()
 
     VkSemaphoreSubmitInfo signalSemaphore{};
     signalSemaphore.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-    signalSemaphore.semaphore = frame.renderFinished;
+    signalSemaphore.semaphore = renderFinished;
     signalSemaphore.stageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT;
 
     VkSubmitInfo2 submitInfo{};
@@ -132,7 +133,7 @@ void Renderer::drawFrame()
     VkPresentInfoKHR presentInfo{};
     presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
     presentInfo.waitSemaphoreCount = 1;
-    presentInfo.pWaitSemaphores = &frame.renderFinished;
+    presentInfo.pWaitSemaphores = &renderFinished;
     presentInfo.swapchainCount = 1;
     const VkSwapchainKHR swapchain = swapchain_.handle();
     presentInfo.pSwapchains = &swapchain;
@@ -304,6 +305,7 @@ void Renderer::recreateSwapchain()
 
     context_.waitIdle();
     swapchain_.recreate(context_, window_.framebufferExtent());
+    sync_.recreateRenderFinishedSemaphores(swapchain_.imageCount());
 
     const bool pipelineNeedsRecreate = pipeline_.pipeline() == VK_NULL_HANDLE
         || pipelineColorFormat_ != swapchain_.colorFormat()
