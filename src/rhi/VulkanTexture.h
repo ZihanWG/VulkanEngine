@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <span>
 
 namespace ve::rhi {
@@ -26,13 +27,19 @@ public:
         const VulkanCommandContext& commandContext,
         uint32_t width = 256,
         uint32_t height = 256);
+    void createFromFile(
+        VulkanContext& context,
+        const VulkanCommandContext& commandContext,
+        const std::filesystem::path& path,
+        bool generateMipmaps = true);
     void createFromRgba8(
         VulkanContext& context,
         const VulkanCommandContext& commandContext,
         uint32_t width,
         uint32_t height,
         std::span<const uint8_t> pixels,
-        VkFormat format = VK_FORMAT_R8G8B8A8_UNORM);
+        VkFormat format = VK_FORMAT_R8G8B8A8_UNORM,
+        bool generateMipmaps = true);
     void reset();
     void destroy() { reset(); }
 
@@ -41,6 +48,7 @@ public:
     [[nodiscard]] VkSampler sampler() const { return sampler_; }
     [[nodiscard]] uint32_t width() const { return width_; }
     [[nodiscard]] uint32_t height() const { return height_; }
+    [[nodiscard]] uint32_t mipLevels() const { return mipLevels_; }
     [[nodiscard]] VkFormat format() const { return format_; }
     [[nodiscard]] bool valid() const { return image_ != VK_NULL_HANDLE; }
 
@@ -49,6 +57,7 @@ private:
         VulkanContext& context,
         const VulkanCommandContext& commandContext,
         std::span<const std::byte> pixels);
+    void generateMipmaps(VkCommandBuffer commandBuffer);
     void createImageView();
     void createSampler();
     void moveFrom(VulkanTexture& other) noexcept;
@@ -65,6 +74,7 @@ private:
 
     uint32_t width_ = 0;
     uint32_t height_ = 0;
+    uint32_t mipLevels_ = 0;
     VkFormat format_ = VK_FORMAT_UNDEFINED;
 };
 

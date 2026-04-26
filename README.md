@@ -2,7 +2,7 @@
 
 Modern C++20 Vulkan 1.3 renderer skeleton inspired by the educational flow of [Sascha Willems' HowToVulkan](https://github.com/SaschaWillems/HowToVulkan), but split into engine-style modules instead of a single tutorial file.
 
-The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube geometry into GPU-local vertex and index buffers, uploads a procedural checkerboard texture into a GPU-local image, and draws multiple independently rotating textured cubes through a minimal material abstraction every frame using Dynamic Rendering and Synchronization2.
+The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube geometry into GPU-local vertex and index buffers, loads a small RGBA texture from disk with a procedural fallback, and draws multiple independently rotating textured cubes through a minimal material abstraction every frame using Dynamic Rendering and Synchronization2.
 
 ## Dependencies
 
@@ -15,10 +15,13 @@ Required:
 - Volk
 - Vulkan Memory Allocator
 - GLM
+- stb_image, vendored as `external/stb_image.h`
 
 The CMake project first looks for installed packages. If they are missing, `VULKAN_ENGINE_FETCH_DEPS=ON` downloads SDL3, Volk, VMA, and GLM with FetchContent.
 
 Milestone 2 and later require `glslc`. CMake compiles shaders into the build-directory shader folder, for example `build/shaders`, and embeds that absolute shader directory into the executable, so running from Visual Studio, CLion, or PowerShell does not depend on the current working directory.
+
+Milestone 9 embeds the source `assets` directory path into the executable. The demo tries to load `assets/textures/checker.png`; if that file is missing or cannot be decoded, the renderer falls back to its procedural checkerboard texture.
 
 ## Build
 
@@ -29,6 +32,8 @@ cmake --build build --config Debug
 ```
 
 For CLion, open this folder as a CMake project and use a Debug profile. Validation layers are enabled only in Debug builds.
+
+The run path for the demo texture is `assets/textures/checker.png`. CMake embeds the source asset directory, and the renderer uses the procedural checkerboard fallback if that PNG is missing.
 
 ## Architecture
 
@@ -43,7 +48,7 @@ For CLion, open this folder as a CMake project and use a Debug profile. Validati
 - `VulkanPipeline` loads compiled SPIR-V shader modules and creates a Dynamic Rendering graphics pipeline.
 - `VulkanBuffer` owns `VkBuffer` plus VMA allocation, supports CPU-visible uploads, staging copies, and optional Buffer Device Address lookup.
 - `VulkanImage` owns `VkImage` plus VMA allocation and image view lifetime.
-- `VulkanTexture` owns a sampled image, VMA allocation, image view, and sampler, and uploads procedural RGBA8 data through a staging buffer.
+- `VulkanTexture` owns a sampled image, VMA allocation, image view, and sampler, and uploads RGBA8 texture data through a staging buffer. It can load image files through stb_image, generate mipmaps on the GPU when supported, or use a procedural checkerboard fallback.
 - `Mesh`, `Material`, `RenderObject`, `Transform`, and `Camera` provide the first renderer-side scene abstractions without introducing ECS or a render graph.
 
 ## Vulkan Initialization Flow
@@ -169,10 +174,22 @@ MVP data is now per object. Each frame owns one CPU-visible storage buffer large
 
 The shader still uses `GL_EXT_buffer_reference`. For each draw, the renderer pushes the Buffer Device Address of the current object's `ObjectFrameData` entry to the vertex stage. MVP data still does not use uniform buffer descriptors.
 
-The texture path is unchanged: texture/sampler data still uses descriptor set 0 binding 0 as a combined image sampler visible to the fragment shader.
+The texture path is unchanged in Milestone 8: texture/sampler data still uses descriptor set 0 binding 0 as a combined image sampler visible to the fragment shader.
 
 This milestone does not add lighting, PBR, bindless descriptors, file texture loading, model loading, ECS, ImGui, or a render graph.
 
+## Milestone 9: File Texture Loading and Mipmaps
+
+Milestone 9 adds file-based texture loading while keeping the existing renderer contracts intact. `VulkanTexture::createFromFile()` loads image data from disk with stb_image, forces RGBA8 pixels, uploads through a CPU-visible staging buffer, and stores the result in a GPU-local `VkImage` allocated with VMA.
+
+When mipmap generation is requested, the texture computes `floor(log2(max(width, height))) + 1` mip levels, creates the image with transfer source, transfer destination, and sampled usage, then generates the mip chain on the GPU with `vkCmdBlitImage`. Synchronization2 image barriers transition all levels from `UNDEFINED` to `TRANSFER_DST_OPTIMAL`, copy level 0, move each previous level to `TRANSFER_SRC_OPTIMAL`, blit into the next level, and finally transition every level to `SHADER_READ_ONLY_OPTIMAL`.
+
+If the format does not support the blit path needed for this simple GPU mip generation, the texture falls back to one mip level. The sampler uses linear min/mag filtering, linear mip filtering, repeat addressing, and a `maxLod` matching the texture mip count. Anisotropy stays disabled for now because the current device wrapper does not explicitly expose and enable `samplerAnisotropy`.
+
+The texture/sampler descriptor contract remains set 0, binding 0 as a combined image sampler. MVP data still uses Buffer Device Address plus a vertex-stage push constant, and the vertex shader still reads per-object MVP data through `GL_EXT_buffer_reference`; MVP data has not moved into uniform buffer descriptors.
+
+`Renderer` tries to load `assets/textures/checker.png` into the existing `checkerboardMaterial_`. If the asset is absent or stb_image fails to decode it, the procedural checkerboard path remains as the fallback. `Material` remains minimal: debug name, base color texture pointer, and descriptor set. This milestone does not add PBR parameters, normal maps, material asset files, bindless descriptors, model loading, lighting, ECS, ImGui, or a render graph.
+
 ## Next Milestones
 
-Future milestones can build on this multi-object material foundation with file texture loading, mipmaps, lighting, bindless descriptors, model loading, and render graph work once the minimal texture path is stable.
+Future milestones can build on this multi-object material foundation with lighting, bindless descriptors, model loading, and render graph work once the minimal texture path is stable.

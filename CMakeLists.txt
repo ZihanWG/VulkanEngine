@@ -131,6 +131,7 @@ add_executable(VulkanEngine
 )
 
 target_include_directories(VulkanEngine PRIVATE src)
+target_include_directories(VulkanEngine SYSTEM PRIVATE external)
 
 target_link_libraries(VulkanEngine PRIVATE
     ${SDL3_TARGET}
@@ -163,7 +164,9 @@ endif()
 
 set(SHADER_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders")
 set(SHADER_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
+set(ASSET_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/assets")
 cmake_path(CONVERT "${SHADER_BINARY_DIR}" TO_CMAKE_PATH_LIST VULKAN_ENGINE_SHADER_DIR NORMALIZE)
+cmake_path(CONVERT "${ASSET_SOURCE_DIR}" TO_CMAKE_PATH_LIST VULKAN_ENGINE_ASSET_DIR NORMALIZE)
 set(SHADER_SOURCES
     "${SHADER_SOURCE_DIR}/simple.vert"
     "${SHADER_SOURCE_DIR}/simple.frag"
@@ -171,6 +174,7 @@ set(SHADER_SOURCES
 
 target_compile_definitions(VulkanEngine PRIVATE
     "VULKAN_ENGINE_SHADER_DIR=\"${VULKAN_ENGINE_SHADER_DIR}\""
+    "VULKAN_ENGINE_ASSET_DIR=\"${VULKAN_ENGINE_ASSET_DIR}\""
 )
 
 set(GLSLC_EXECUTABLE "")

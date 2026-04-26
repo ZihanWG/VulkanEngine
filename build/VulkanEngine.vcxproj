@@ -87,7 +87,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <AdditionalIncludeDirectories>E:\VulkanEngine\src;E:\VulkanEngine\build\_deps\sdl3-build\include-revision;E:\VulkanEngine\build\_deps\sdl3-src\include;E:\VulkanEngine\build\_deps\volk-src;E:\VulkanEngine\build\_deps\vma-src\include;E:\VulkanEngine\build\_deps\glm-src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <AdditionalOptions>%(AdditionalOptions) /external:I "D:/VulkanSDK/1.4.328.1/Include" /utf-8</AdditionalOptions>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "E:/VulkanEngine/external" /external:I "D:/VulkanSDK/1.4.328.1/Include" /utf-8</AdditionalOptions>
       <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <ConformanceMode>true</ConformanceMode>
@@ -103,16 +103,16 @@
       <SupportJustMyCode></SupportJustMyCode>
       <UseFullPaths>false</UseFullPaths>
       <WarningLevel>Level4</WarningLevel>
-      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;VK_NO_PROTOTYPES;GLM_FORCE_RADIANS;GLM_FORCE_DEPTH_ZERO_TO_ONE;VMA_STATIC_VULKAN_FUNCTIONS=0;VMA_DYNAMIC_VULKAN_FUNCTIONS=1;VULKAN_ENGINE_ENABLE_VALIDATION=1;VULKAN_ENGINE_SHADER_DIR="E:/VulkanEngine/build/shaders";CMAKE_INTDIR="Debug"</PreprocessorDefinitions>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;VK_NO_PROTOTYPES;GLM_FORCE_RADIANS;GLM_FORCE_DEPTH_ZERO_TO_ONE;VMA_STATIC_VULKAN_FUNCTIONS=0;VMA_DYNAMIC_VULKAN_FUNCTIONS=1;VULKAN_ENGINE_ENABLE_VALIDATION=1;VULKAN_ENGINE_SHADER_DIR="E:/VulkanEngine/build/shaders";VULKAN_ENGINE_ASSET_DIR="E:/VulkanEngine/assets";CMAKE_INTDIR="Debug"</PreprocessorDefinitions>
       <ObjectFileName>$(IntDir)</ObjectFileName>
       <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
     </ClCompile>
     <ResourceCompile>
-      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_DEBUG;_WINDOWS;VK_NO_PROTOTYPES;GLM_FORCE_RADIANS;GLM_FORCE_DEPTH_ZERO_TO_ONE;VMA_STATIC_VULKAN_FUNCTIONS=0;VMA_DYNAMIC_VULKAN_FUNCTIONS=1;VULKAN_ENGINE_ENABLE_VALIDATION=1;VULKAN_ENGINE_SHADER_DIR=\"E:/VulkanEngine/build/shaders\";CMAKE_INTDIR=\"Debug\"</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>E:\VulkanEngine\src;E:\VulkanEngine\build\_deps\sdl3-build\include-revision;E:\VulkanEngine\build\_deps\sdl3-src\include;E:\VulkanEngine\build\_deps\volk-src;E:\VulkanEngine\build\_deps\vma-src\include;E:\VulkanEngine\build\_deps\glm-src;D:\VulkanSDK\1.4.328.1\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_DEBUG;_WINDOWS;VK_NO_PROTOTYPES;GLM_FORCE_RADIANS;GLM_FORCE_DEPTH_ZERO_TO_ONE;VMA_STATIC_VULKAN_FUNCTIONS=0;VMA_DYNAMIC_VULKAN_FUNCTIONS=1;VULKAN_ENGINE_ENABLE_VALIDATION=1;VULKAN_ENGINE_SHADER_DIR=\"E:/VulkanEngine/build/shaders\";VULKAN_ENGINE_ASSET_DIR=\"E:/VulkanEngine/assets\";CMAKE_INTDIR=\"Debug\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>E:\VulkanEngine\src;E:\VulkanEngine\build\_deps\sdl3-build\include-revision;E:\VulkanEngine\build\_deps\sdl3-src\include;E:\VulkanEngine\build\_deps\volk-src;E:\VulkanEngine\build\_deps\vma-src\include;E:\VulkanEngine\build\_deps\glm-src;E:\VulkanEngine\external;D:\VulkanSDK\1.4.328.1\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>
     <Midl>
-      <AdditionalIncludeDirectories>E:\VulkanEngine\src;E:\VulkanEngine\build\_deps\sdl3-build\include-revision;E:\VulkanEngine\build\_deps\sdl3-src\include;E:\VulkanEngine\build\_deps\volk-src;E:\VulkanEngine\build\_deps\vma-src\include;E:\VulkanEngine\build\_deps\glm-src;D:\VulkanSDK\1.4.328.1\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>E:\VulkanEngine\src;E:\VulkanEngine\build\_deps\sdl3-build\include-revision;E:\VulkanEngine\build\_deps\sdl3-src\include;E:\VulkanEngine\build\_deps\volk-src;E:\VulkanEngine\build\_deps\vma-src\include;E:\VulkanEngine\build\_deps\glm-src;E:\VulkanEngine\external;D:\VulkanSDK\1.4.328.1\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
       <HeaderFileName>%(Filename).h</HeaderFileName>
       <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
@@ -148,7 +148,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
       <AdditionalIncludeDirectories>E:\VulkanEngine\src;E:\VulkanEngine\build\_deps\sdl3-build\include-revision;E:\VulkanEngine\build\_deps\sdl3-src\include;E:\VulkanEngine\build\_deps\volk-src;E:\VulkanEngine\build\_deps\vma-src\include;E:\VulkanEngine\build\_deps\glm-src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <AdditionalOptions>%(AdditionalOptions) /external:I "D:/VulkanSDK/1.4.328.1/Include" /utf-8</AdditionalOptions>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "E:/VulkanEngine/external" /external:I "D:/VulkanSDK/1.4.328.1/Include" /utf-8</AdditionalOptions>
       <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
       <ConformanceMode>true</ConformanceMode>
@@ -163,18 +163,18 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <SupportJustMyCode></SupportJustMyCode>
       <UseFullPaths>false</UseFullPaths>
       <WarningLevel>Level4</WarningLevel>
-      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;VK_NO_PROTOTYPES;GLM_FORCE_RADIANS;GLM_FORCE_DEPTH_ZERO_TO_ONE;VMA_STATIC_VULKAN_FUNCTIONS=0;VMA_DYNAMIC_VULKAN_FUNCTIONS=1;VULKAN_ENGINE_ENABLE_VALIDATION=0;VULKAN_ENGINE_SHADER_DIR="E:/VulkanEngine/build/shaders";CMAKE_INTDIR="Release"</PreprocessorDefinitions>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;VK_NO_PROTOTYPES;GLM_FORCE_RADIANS;GLM_FORCE_DEPTH_ZERO_TO_ONE;VMA_STATIC_VULKAN_FUNCTIONS=0;VMA_DYNAMIC_VULKAN_FUNCTIONS=1;VULKAN_ENGINE_ENABLE_VALIDATION=0;VULKAN_ENGINE_SHADER_DIR="E:/VulkanEngine/build/shaders";VULKAN_ENGINE_ASSET_DIR="E:/VulkanEngine/assets";CMAKE_INTDIR="Release"</PreprocessorDefinitions>
       <ObjectFileName>$(IntDir)</ObjectFileName>
       <DebugInformationFormat>
       </DebugInformationFormat>
       <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
     </ClCompile>
     <ResourceCompile>
-      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;VK_NO_PROTOTYPES;GLM_FORCE_RADIANS;GLM_FORCE_DEPTH_ZERO_TO_ONE;VMA_STATIC_VULKAN_FUNCTIONS=0;VMA_DYNAMIC_VULKAN_FUNCTIONS=1;VULKAN_ENGINE_ENABLE_VALIDATION=0;VULKAN_ENGINE_SHADER_DIR=\"E:/VulkanEngine/build/shaders\";CMAKE_INTDIR=\"Release\"</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>E:\VulkanEngine\src;E:\VulkanEngine\build\_deps\sdl3-build\include-revision;E:\VulkanEngine\build\_deps\sdl3-src\include;E:\VulkanEngine\build\_deps\volk-src;E:\VulkanEngine\build\_deps\vma-src\include;E:\VulkanEngine\build\_deps\glm-src;D:\VulkanSDK\1.4.328.1\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;VK_NO_PROTOTYPES;GLM_FORCE_RADIANS;GLM_FORCE_DEPTH_ZERO_TO_ONE;VMA_STATIC_VULKAN_FUNCTIONS=0;VMA_DYNAMIC_VULKAN_FUNCTIONS=1;VULKAN_ENGINE_ENABLE_VALIDATION=0;VULKAN_ENGINE_SHADER_DIR=\"E:/VulkanEngine/build/shaders\";VULKAN_ENGINE_ASSET_DIR=\"E:/VulkanEngine/assets\";CMAKE_INTDIR=\"Release\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>E:\VulkanEngine\src;E:\VulkanEngine\build\_deps\sdl3-build\include-revision;E:\VulkanEngine\build\_deps\sdl3-src\include;E:\VulkanEngine\build\_deps\volk-src;E:\VulkanEngine\build\_deps\vma-src\include;E:\VulkanEngine\build\_deps\glm-src;E:\VulkanEngine\external;D:\VulkanSDK\1.4.328.1\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>
     <Midl>
-      <AdditionalIncludeDirectories>E:\VulkanEngine\src;E:\VulkanEngine\build\_deps\sdl3-build\include-revision;E:\VulkanEngine\build\_deps\sdl3-src\include;E:\VulkanEngine\build\_deps\volk-src;E:\VulkanEngine\build\_deps\vma-src\include;E:\VulkanEngine\build\_deps\glm-src;D:\VulkanSDK\1.4.328.1\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>E:\VulkanEngine\src;E:\VulkanEngine\build\_deps\sdl3-build\include-revision;E:\VulkanEngine\build\_deps\sdl3-src\include;E:\VulkanEngine\build\_deps\volk-src;E:\VulkanEngine\build\_deps\vma-src\include;E:\VulkanEngine\build\_deps\glm-src;E:\VulkanEngine\external;D:\VulkanSDK\1.4.328.1\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
       <HeaderFileName>%(Filename).h</HeaderFileName>
       <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
@@ -210,7 +210,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">
     <ClCompile>
       <AdditionalIncludeDirectories>E:\VulkanEngine\src;E:\VulkanEngine\build\_deps\sdl3-build\include-revision;E:\VulkanEngine\build\_deps\sdl3-src\include;E:\VulkanEngine\build\_deps\volk-src;E:\VulkanEngine\build\_deps\vma-src\include;E:\VulkanEngine\build\_deps\glm-src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <AdditionalOptions>%(AdditionalOptions) /external:I "D:/VulkanSDK/1.4.328.1/Include" /utf-8</AdditionalOptions>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "E:/VulkanEngine/external" /external:I "D:/VulkanSDK/1.4.328.1/Include" /utf-8</AdditionalOptions>
       <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
       <ConformanceMode>true</ConformanceMode>
@@ -225,18 +225,18 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <SupportJustMyCode></SupportJustMyCode>
       <UseFullPaths>false</UseFullPaths>
       <WarningLevel>Level4</WarningLevel>
-      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;VK_NO_PROTOTYPES;GLM_FORCE_RADIANS;GLM_FORCE_DEPTH_ZERO_TO_ONE;VMA_STATIC_VULKAN_FUNCTIONS=0;VMA_DYNAMIC_VULKAN_FUNCTIONS=1;VULKAN_ENGINE_ENABLE_VALIDATION=0;VULKAN_ENGINE_SHADER_DIR="E:/VulkanEngine/build/shaders";CMAKE_INTDIR="MinSizeRel"</PreprocessorDefinitions>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;VK_NO_PROTOTYPES;GLM_FORCE_RADIANS;GLM_FORCE_DEPTH_ZERO_TO_ONE;VMA_STATIC_VULKAN_FUNCTIONS=0;VMA_DYNAMIC_VULKAN_FUNCTIONS=1;VULKAN_ENGINE_ENABLE_VALIDATION=0;VULKAN_ENGINE_SHADER_DIR="E:/VulkanEngine/build/shaders";VULKAN_ENGINE_ASSET_DIR="E:/VulkanEngine/assets";CMAKE_INTDIR="MinSizeRel"</PreprocessorDefinitions>
       <ObjectFileName>$(IntDir)</ObjectFileName>
       <DebugInformationFormat>
       </DebugInformationFormat>
       <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
     </ClCompile>
     <ResourceCompile>
-      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;VK_NO_PROTOTYPES;GLM_FORCE_RADIANS;GLM_FORCE_DEPTH_ZERO_TO_ONE;VMA_STATIC_VULKAN_FUNCTIONS=0;VMA_DYNAMIC_VULKAN_FUNCTIONS=1;VULKAN_ENGINE_ENABLE_VALIDATION=0;VULKAN_ENGINE_SHADER_DIR=\"E:/VulkanEngine/build/shaders\";CMAKE_INTDIR=\"MinSizeRel\"</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>E:\VulkanEngine\src;E:\VulkanEngine\build\_deps\sdl3-build\include-revision;E:\VulkanEngine\build\_deps\sdl3-src\include;E:\VulkanEngine\build\_deps\volk-src;E:\VulkanEngine\build\_deps\vma-src\include;E:\VulkanEngine\build\_deps\glm-src;D:\VulkanSDK\1.4.328.1\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;VK_NO_PROTOTYPES;GLM_FORCE_RADIANS;GLM_FORCE_DEPTH_ZERO_TO_ONE;VMA_STATIC_VULKAN_FUNCTIONS=0;VMA_DYNAMIC_VULKAN_FUNCTIONS=1;VULKAN_ENGINE_ENABLE_VALIDATION=0;VULKAN_ENGINE_SHADER_DIR=\"E:/VulkanEngine/build/shaders\";VULKAN_ENGINE_ASSET_DIR=\"E:/VulkanEngine/assets\";CMAKE_INTDIR=\"MinSizeRel\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>E:\VulkanEngine\src;E:\VulkanEngine\build\_deps\sdl3-build\include-revision;E:\VulkanEngine\build\_deps\sdl3-src\include;E:\VulkanEngine\build\_deps\volk-src;E:\VulkanEngine\build\_deps\vma-src\include;E:\VulkanEngine\build\_deps\glm-src;E:\VulkanEngine\external;D:\VulkanSDK\1.4.328.1\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>
     <Midl>
-      <AdditionalIncludeDirectories>E:\VulkanEngine\src;E:\VulkanEngine\build\_deps\sdl3-build\include-revision;E:\VulkanEngine\build\_deps\sdl3-src\include;E:\VulkanEngine\build\_deps\volk-src;E:\VulkanEngine\build\_deps\vma-src\include;E:\VulkanEngine\build\_deps\glm-src;D:\VulkanSDK\1.4.328.1\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>E:\VulkanEngine\src;E:\VulkanEngine\build\_deps\sdl3-build\include-revision;E:\VulkanEngine\build\_deps\sdl3-src\include;E:\VulkanEngine\build\_deps\volk-src;E:\VulkanEngine\build\_deps\vma-src\include;E:\VulkanEngine\build\_deps\glm-src;E:\VulkanEngine\external;D:\VulkanSDK\1.4.328.1\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
       <HeaderFileName>%(Filename).h</HeaderFileName>
       <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
@@ -272,7 +272,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">
     <ClCompile>
       <AdditionalIncludeDirectories>E:\VulkanEngine\src;E:\VulkanEngine\build\_deps\sdl3-build\include-revision;E:\VulkanEngine\build\_deps\sdl3-src\include;E:\VulkanEngine\build\_deps\volk-src;E:\VulkanEngine\build\_deps\vma-src\include;E:\VulkanEngine\build\_deps\glm-src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <AdditionalOptions>%(AdditionalOptions) /external:I "D:/VulkanSDK/1.4.328.1/Include" /utf-8</AdditionalOptions>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "E:/VulkanEngine/external" /external:I "D:/VulkanSDK/1.4.328.1/Include" /utf-8</AdditionalOptions>
       <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
       <ConformanceMode>true</ConformanceMode>
@@ -288,16 +288,16 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <SupportJustMyCode></SupportJustMyCode>
       <UseFullPaths>false</UseFullPaths>
       <WarningLevel>Level4</WarningLevel>
-      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;VK_NO_PROTOTYPES;GLM_FORCE_RADIANS;GLM_FORCE_DEPTH_ZERO_TO_ONE;VMA_STATIC_VULKAN_FUNCTIONS=0;VMA_DYNAMIC_VULKAN_FUNCTIONS=1;VULKAN_ENGINE_ENABLE_VALIDATION=0;VULKAN_ENGINE_SHADER_DIR="E:/VulkanEngine/build/shaders";CMAKE_INTDIR="RelWithDebInfo"</PreprocessorDefinitions>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;VK_NO_PROTOTYPES;GLM_FORCE_RADIANS;GLM_FORCE_DEPTH_ZERO_TO_ONE;VMA_STATIC_VULKAN_FUNCTIONS=0;VMA_DYNAMIC_VULKAN_FUNCTIONS=1;VULKAN_ENGINE_ENABLE_VALIDATION=0;VULKAN_ENGINE_SHADER_DIR="E:/VulkanEngine/build/shaders";VULKAN_ENGINE_ASSET_DIR="E:/VulkanEngine/assets";CMAKE_INTDIR="RelWithDebInfo"</PreprocessorDefinitions>
       <ObjectFileName>$(IntDir)</ObjectFileName>
       <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
     </ClCompile>
     <ResourceCompile>
-      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;VK_NO_PROTOTYPES;GLM_FORCE_RADIANS;GLM_FORCE_DEPTH_ZERO_TO_ONE;VMA_STATIC_VULKAN_FUNCTIONS=0;VMA_DYNAMIC_VULKAN_FUNCTIONS=1;VULKAN_ENGINE_ENABLE_VALIDATION=0;VULKAN_ENGINE_SHADER_DIR=\"E:/VulkanEngine/build/shaders\";CMAKE_INTDIR=\"RelWithDebInfo\"</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>E:\VulkanEngine\src;E:\VulkanEngine\build\_deps\sdl3-build\include-revision;E:\VulkanEngine\build\_deps\sdl3-src\include;E:\VulkanEngine\build\_deps\volk-src;E:\VulkanEngine\build\_deps\vma-src\include;E:\VulkanEngine\build\_deps\glm-src;D:\VulkanSDK\1.4.328.1\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;VK_NO_PROTOTYPES;GLM_FORCE_RADIANS;GLM_FORCE_DEPTH_ZERO_TO_ONE;VMA_STATIC_VULKAN_FUNCTIONS=0;VMA_DYNAMIC_VULKAN_FUNCTIONS=1;VULKAN_ENGINE_ENABLE_VALIDATION=0;VULKAN_ENGINE_SHADER_DIR=\"E:/VulkanEngine/build/shaders\";VULKAN_ENGINE_ASSET_DIR=\"E:/VulkanEngine/assets\";CMAKE_INTDIR=\"RelWithDebInfo\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>E:\VulkanEngine\src;E:\VulkanEngine\build\_deps\sdl3-build\include-revision;E:\VulkanEngine\build\_deps\sdl3-src\include;E:\VulkanEngine\build\_deps\volk-src;E:\VulkanEngine\build\_deps\vma-src\include;E:\VulkanEngine\build\_deps\glm-src;E:\VulkanEngine\external;D:\VulkanSDK\1.4.328.1\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>
     <Midl>
-      <AdditionalIncludeDirectories>E:\VulkanEngine\src;E:\VulkanEngine\build\_deps\sdl3-build\include-revision;E:\VulkanEngine\build\_deps\sdl3-src\include;E:\VulkanEngine\build\_deps\volk-src;E:\VulkanEngine\build\_deps\vma-src\include;E:\VulkanEngine\build\_deps\glm-src;D:\VulkanSDK\1.4.328.1\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>E:\VulkanEngine\src;E:\VulkanEngine\build\_deps\sdl3-build\include-revision;E:\VulkanEngine\build\_deps\sdl3-src\include;E:\VulkanEngine\build\_deps\volk-src;E:\VulkanEngine\build\_deps\vma-src\include;E:\VulkanEngine\build\_deps\glm-src;E:\VulkanEngine\external;D:\VulkanSDK\1.4.328.1\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
       <HeaderFileName>%(Filename).h</HeaderFileName>
       <TypeLibraryName>%(Filename).tlb</TypeLibraryName>

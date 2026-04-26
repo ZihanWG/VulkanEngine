@@ -1,6 +1,8 @@
 # external
 
-This project does not vendor third-party source by default.
+This folder vendors small header-only dependencies that are simpler than a package-manager integration.
+
+- `stb_image.h` is used by Milestone 9 for RGBA image file loading.
 
 CMake uses installed packages first and can fetch missing dependencies with `VULKAN_ENGINE_FETCH_DEPS=ON`:
 

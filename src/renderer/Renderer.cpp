@@ -1,11 +1,13 @@
 #include "renderer/Renderer.h"
 
+#include "core/Logger.h"
 #include "core/Window.h"
 
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
 #include <glm/mat4x4.hpp>
 #include <span>
@@ -39,6 +41,15 @@ std::filesystem::path shaderPath(const char* filename)
     return std::filesystem::path(VULKAN_ENGINE_SHADER_DIR) / filename;
 #else
     return std::filesystem::path("shaders") / filename;
+#endif
+}
+
+std::filesystem::path assetPath(const char* relativePath)
+{
+#if defined(VULKAN_ENGINE_ASSET_DIR)
+    return std::filesystem::path(VULKAN_ENGINE_ASSET_DIR) / relativePath;
+#else
+    return std::filesystem::path("assets") / relativePath;
 #endif
 }
 
@@ -246,6 +257,19 @@ void Renderer::createScene()
 
 void Renderer::createCheckerboardTexture()
 {
+    const std::filesystem::path texturePath = assetPath("textures/checker.png");
+    if (std::filesystem::exists(texturePath)) {
+        try {
+            checkerboardTexture_.createFromFile(context_, commandContext_, texturePath, true);
+            Logger::info("Loaded texture: " + texturePath.string());
+            return;
+        } catch (const std::exception& error) {
+            Logger::warn("Failed to load texture '" + texturePath.string() + "': " + error.what());
+        }
+    } else {
+        Logger::warn("Texture asset missing, using procedural checkerboard fallback: " + texturePath.string());
+    }
+
     checkerboardTexture_.createCheckerboard(context_, commandContext_, 256, 256);
 }
 
