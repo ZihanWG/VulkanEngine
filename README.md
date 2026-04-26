@@ -2,7 +2,7 @@
 
 Modern C++20 Vulkan 1.3 renderer skeleton inspired by the educational flow of [Sascha Willems' HowToVulkan](https://github.com/SaschaWillems/HowToVulkan), but split into engine-style modules instead of a single tutorial file.
 
-The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube geometry into GPU-local vertex and index buffers, loads a small RGBA texture from disk with a procedural fallback, and draws multiple independently rotating textured cubes through a minimal material abstraction every frame using Dynamic Rendering and Synchronization2.
+The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube geometry with normals into GPU-local vertex and index buffers, loads a small RGBA texture from disk with a procedural fallback, and draws multiple independently rotating textured cubes with minimal directional lighting every frame using Dynamic Rendering and Synchronization2.
 
 ## Dependencies
 
@@ -80,7 +80,7 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 2. Acquire the next swapchain image with an image-available semaphore.
 3. Reset the fence and command buffer.
 4. Update all object transforms.
-5. Upload per-object MVP data into the current frame's object-data buffer.
+5. Upload per-object MVP/model/light data into the current frame's object-data buffer.
 6. Record the command buffer.
 7. Transition the swapchain image to `VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL`.
 8. Transition the depth image to `VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL`.
@@ -88,7 +88,7 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 10. Bind the graphics pipeline.
 11. Set dynamic viewport and scissor from the current swapchain extent.
 12. For each `RenderObject`, bind its material descriptor set 0.
-13. Push that object's MVP buffer device address.
+13. Push that object's object-data buffer device address.
 14. Bind the object's device-local vertex and index buffers.
 15. Draw the object with `vkCmdDrawIndexed`.
 16. End Dynamic Rendering.
@@ -201,6 +201,20 @@ The texture/sampler descriptor contract remains set 0, binding 0 as a combined i
 
 `Renderer` tries to load `assets/textures/checker.png` into the existing `checkerboardMaterial_`. If the asset is absent or stb_image fails to decode it, the procedural checkerboard path remains as the fallback. `Material` remains minimal: debug name, base color texture pointer, and descriptor set. This milestone does not add PBR parameters, normal maps, material asset files, bindless descriptors, model loading, lighting, ECS, ImGui, or a render graph.
 
+## Milestone 10: Basic Directional Lighting
+
+Milestone 10 adds minimal, non-PBR directional lighting to the textured cube scene. Mesh vertices now contain position, color, UV, and normal attributes. The built-in cube still uses duplicated vertices per face so each face has clean flat normals and UVs.
+
+The vertex shader keeps the existing `GL_EXT_buffer_reference` path. A vertex-stage push constant still carries the Buffer Device Address of the current object's frame-data entry. That entry now contains MVP, model, light direction, light color, and ambient color values. MVP has not moved to a uniform-buffer descriptor.
+
+Normals are transformed to world space in the vertex shader with `transpose(inverse(mat3(model)))`, then passed to the fragment shader. The fragment shader keeps the texture/sampler at descriptor set 0 binding 0, samples the base color texture, and applies a simple Lambert diffuse term with a small ambient contribution:
+
+```glsl
+baseColor * vertexColor * (ambient + diffuse)
+```
+
+`Material` remains minimal: debug name, base color texture pointer, and descriptor set. This milestone does not add PBR, specular BRDFs, normal maps, shadows, image-based lighting, material parameter buffers, bindless descriptors, model loading, ImGui, ECS, or a render graph.
+
 ## Next Milestones
 
-Future milestones can build on this multi-object material foundation with lighting, bindless descriptors, model loading, and render graph work once the minimal texture path is stable.
+Future milestones can build on this multi-object material foundation with richer material parameters, shadows, bindless descriptors, model loading, and render graph work once the minimal texture and lighting path is stable.

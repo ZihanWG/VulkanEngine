@@ -6,10 +6,12 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <filesystem>
 #include <glm/mat4x4.hpp>
+#include <glm/vec4.hpp>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -22,14 +24,27 @@ namespace {
 
 struct ObjectFrameData {
     glm::mat4 mvp{1.0f};
+    glm::mat4 model{1.0f};
+    glm::vec4 lightDirection{0.35f, -0.65f, -0.55f, 0.0f};
+    glm::vec4 lightColor{0.85f, 0.85f, 0.85f, 1.0f};
+    glm::vec4 ambientColor{0.15f, 0.15f, 0.15f, 1.0f};
 };
 
-// The shader buffer_reference block contains one std430 mat4. Each entry is
-// 64 bytes, a multiple of the 16-byte matrix alignment, so base + index * size
-// remains correctly aligned for this simple per-object MVP array.
-static_assert(sizeof(ObjectFrameData) == 64);
+// Mirrors the shader's std430 buffer_reference block. std430 stores mat4 as
+// four 16-byte columns and vec4 as 16 bytes, so this 176-byte stride keeps each
+// field and each per-object BDA entry on a 16-byte boundary.
+static_assert(offsetof(ObjectFrameData, mvp) == 0);
+static_assert(offsetof(ObjectFrameData, model) == 64);
+static_assert(offsetof(ObjectFrameData, lightDirection) == 128);
+static_assert(offsetof(ObjectFrameData, lightColor) == 144);
+static_assert(offsetof(ObjectFrameData, ambientColor) == 160);
+static_assert(sizeof(ObjectFrameData) == 176);
 
 constexpr uint32_t kMaxFrameObjects = 64;
+
+const glm::vec4 kDirectionalLightDirection{0.35f, -0.65f, -0.55f, 0.0f};
+const glm::vec4 kDirectionalLightColor{0.85f, 0.85f, 0.85f, 1.0f};
+const glm::vec4 kAmbientLightColor{0.15f, 0.15f, 0.15f, 1.0f};
 
 struct PushConstants {
     VkDeviceAddress objectFrameDataAddress = 0;
@@ -188,8 +203,8 @@ void Renderer::createMaterialDescriptorSetLayout()
     textureBinding.descriptorCount = 1;
     textureBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    // Set 0 binding 0 is intentionally only for the sampled texture. MVP data
-    // stays on the Buffer Device Address + vertex push constant path.
+    // Set 0 binding 0 is intentionally only for the sampled texture. Object
+    // MVP/model/light data stays on the BDA + vertex push constant path.
     materialDescriptorSetLayout_.create(
         context_.vkDevice(),
         std::span<const VkDescriptorSetLayoutBinding>(&textureBinding, 1));
@@ -198,7 +213,7 @@ void Renderer::createMaterialDescriptorSetLayout()
 void Renderer::createPipeline()
 {
     const VkVertexInputBindingDescription binding = renderer::vertexBindingDescription();
-    const std::array<VkVertexInputAttributeDescription, 3> attributes = renderer::vertexAttributeDescriptions();
+    const std::array<VkVertexInputAttributeDescription, 4> attributes = renderer::vertexAttributeDescriptions();
     const VkDescriptorSetLayout descriptorSetLayout = materialDescriptorSetLayout_.handle();
     const VkPushConstantRange pushConstantRange{
         VK_SHADER_STAGE_VERTEX_BIT,
@@ -385,7 +400,12 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         }
 
         const glm::mat4 model = object.transform.modelMatrix();
-        objectFrameData[objectIndex].mvp = projection * view * model;
+        ObjectFrameData& frameData = objectFrameData[objectIndex];
+        frameData.mvp = projection * view * model;
+        frameData.model = model;
+        frameData.lightDirection = kDirectionalLightDirection;
+        frameData.lightColor = kDirectionalLightColor;
+        frameData.ambientColor = kAmbientLightColor;
     }
 
     frameObjectDataBuffers_.at(frameIndex).upload(
@@ -512,7 +532,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         };
 
         // The material descriptor binds the texture/sampler for the fragment shader.
-        // The pushed address points at this object's MVP data for the vertex shader.
+        // The pushed address points at this object's BDA frame data for the vertex shader.
         vkCmdPushConstants(
             commandBuffer,
             pipeline_.layout(),

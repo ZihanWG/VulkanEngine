@@ -13,10 +13,11 @@ struct Vertex {
     glm::vec3 position;
     glm::vec3 color;
     glm::vec2 uv;
+    glm::vec3 normal;
 };
 
 [[nodiscard]] VkVertexInputBindingDescription vertexBindingDescription();
-[[nodiscard]] std::array<VkVertexInputAttributeDescription, 3> vertexAttributeDescriptions();
+[[nodiscard]] std::array<VkVertexInputAttributeDescription, 4> vertexAttributeDescriptions();
 
 class Mesh final {
 public:
