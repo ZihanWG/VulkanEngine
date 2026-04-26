@@ -13,6 +13,9 @@
     <ClCompile Include="E:\VulkanEngine\src\core\Window.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="E:\VulkanEngine\src\renderer\Mesh.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="E:\VulkanEngine\src\renderer\Renderer.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -44,6 +47,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="E:\VulkanEngine\src\rhi\VulkanSync.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\VulkanEngine\src\rhi\VulkanTexture.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

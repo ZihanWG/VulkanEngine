@@ -7,9 +7,11 @@
 #include "rhi/VulkanBuffer.h"
 #include "rhi/VulkanCommandContext.h"
 #include "rhi/VulkanContext.h"
+#include "rhi/VulkanDescriptor.h"
 #include "rhi/VulkanPipeline.h"
 #include "rhi/VulkanSwapchain.h"
 #include "rhi/VulkanSync.h"
+#include "rhi/VulkanTexture.h"
 
 #include <chrono>
 #include <vector>
@@ -32,8 +34,11 @@ public:
     void waitIdle();
 
 private:
+    void createTextureDescriptorSetLayout();
     void createPipeline();
     void createScene();
+    void createCheckerboardTexture();
+    void createTextureDescriptorSet();
     void createFrameDataBuffers();
     void updateFrameData(uint32_t frameIndex);
     void recreateSwapchain();
@@ -49,14 +54,18 @@ private:
     rhi::VulkanContext context_;
     std::vector<renderer::FrameResources> frames_;
     rhi::VulkanSwapchain swapchain_;
+    rhi::VulkanDescriptorSetLayout textureDescriptorSetLayout_;
     rhi::VulkanPipeline pipeline_;
     rhi::VulkanCommandContext commandContext_;
     rhi::VulkanSync sync_;
+    rhi::VulkanTexture checkerboardTexture_;
+    rhi::VulkanDescriptorPool textureDescriptorPool_;
     renderer::Camera camera_;
     renderer::Mesh cubeMesh_;
     std::vector<renderer::RenderObject> renderObjects_;
     std::vector<rhi::VulkanBuffer> frameDataBuffers_;
     std::vector<VkFence> imagesInFlight_;
+    VkDescriptorSet textureDescriptorSet_ = VK_NULL_HANDLE;
     VkFormat pipelineColorFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat pipelineDepthFormat_ = VK_FORMAT_UNDEFINED;
     uint32_t currentFrame_ = 0;

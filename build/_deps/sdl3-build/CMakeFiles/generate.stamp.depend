@@ -1,27 +1,13 @@
 # CMake generation dependency list for this directory.
 D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/BasicConfigVersion-AnyNewerVersion.cmake.in
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CMakeCCompiler.cmake.in
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CMakeCCompilerABI.c
 D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CMakeCInformation.cmake
 D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CMakeCheckCompilerFlagCommonPatterns.cmake
 D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CMakeCommonLanguageInclude.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CMakeCompilerIdDetection.cmake
 D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CMakeDependentOption.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CMakeDetermineCCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CMakeDetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CMakeDetermineCompilerABI.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CMakeDetermineCompilerId.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CMakeDetermineCompilerSupport.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CMakeFindBinUtils.cmake
 D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CMakeLanguageInformation.cmake
 D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CMakePackageConfigHelpers.cmake
 D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CMakeParseArguments.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CMakeParseImplicitIncludeInfo.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CMakeParseImplicitLinkInfo.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CMakeParseLibraryArchitecture.cmake
 D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CMakePushCheckState.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CMakeTestCCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CMakeTestCompilerCommon.cmake
 D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CheckCCompilerFlag.cmake
 D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CheckCSourceCompiles.cmake
 D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CheckCSourceRuns.cmake
@@ -35,52 +21,9 @@ D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMa
 D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CheckSourceCompiles.cmake
 D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CheckStructHasMember.cmake
 D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CheckSymbolExists.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/ADSP-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/ARMCC-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/ARMClang-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/AppleClang-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/Borland-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/Bruce-C-DetermineCompiler.cmake
 D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/CMakeCommonCompilerMacros.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/Clang-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/Clang-DetermineCompilerInternal.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/Compaq-C-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/Cray-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/CrayClang-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/Embarcadero-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/Fujitsu-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/FujitsuClang-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/GHS-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/GNU-C-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/HP-C-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/IAR-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/IBMCPP-C-DetermineVersionInternal.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/IBMClang-C-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/Intel-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/IntelLLVM-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/LCC-C-DetermineCompiler.cmake
 D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/MSVC-C.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/MSVC-DetermineCompiler.cmake
 D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/MSVC.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/NVHPC-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/NVIDIA-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/OpenWatcom-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/OrangeC-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/PGI-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/PathScale-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/SCO-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/SDCC-C-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/SunPro-C-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/TI-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/TIClang-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/Tasking-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/TinyCC-C-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/VisualAge-C-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/Watcom-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/XL-C-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/XLClang-C-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Compiler/zOS-C-DetermineCompiler.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CompilerId/VS-10.vcxproj.in
 D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/FindGit.cmake
 D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/FindPackageHandleStandardArgs.cmake
 D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/FindPackageMessage.cmake
@@ -88,13 +31,11 @@ D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMa
 D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/GNUInstallDirs.cmake
 D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Internal/CMakeCLinkerInformation.cmake
 D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Internal/CMakeCommonLinkerInformation.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Internal/CMakeDetermineLinkerId.cmake
 D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Internal/CheckCompilerFlag.cmake
 D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Internal/CheckFlagCommonConfig.cmake
 D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Internal/CheckLinkerFlag.cmake
 D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Internal/CheckSourceCompiles.cmake
 D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Internal/CheckSourceRuns.cmake
-D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Internal/FeatureTesting.cmake
 D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Platform/Linker/Windows-MSVC-C.cmake
 D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Platform/Linker/Windows-MSVC.cmake
 D:/Microsoft Visual Studio/2022/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Platform/Windows-MSVC-C.cmake
@@ -105,7 +46,6 @@ E:/VulkanEngine/build/CMakeFiles/cmake.verify_globs
 E:/VulkanEngine/build/_deps/sdl3-build/CMakeFiles/SDL_build_config.h.intermediate
 E:/VulkanEngine/build/_deps/sdl3-build/CMakeFiles/git-data/grabRef.cmake
 E:/VulkanEngine/build/_deps/sdl3-src/.git/HEAD
-E:/VulkanEngine/build/_deps/sdl3-src/.git/refs/heads/main
 E:/VulkanEngine/build/_deps/sdl3-src/CMakeLists.txt
 E:/VulkanEngine/build/_deps/sdl3-src/cmake/3rdparty.cmake
 E:/VulkanEngine/build/_deps/sdl3-src/cmake/FindLibUSB.cmake

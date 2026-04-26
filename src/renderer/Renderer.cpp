@@ -42,9 +42,12 @@ Renderer::Renderer(Window& window)
 
     frames_.resize(rhi::kMaxFramesInFlight);
     swapchain_.initialize(context_, window_.framebufferExtent());
+    createTextureDescriptorSetLayout();
     createPipeline();
     commandContext_.initialize(context_, frames_);
     createScene();
+    createCheckerboardTexture();
+    createTextureDescriptorSet();
     createFrameDataBuffers();
     sync_.initialize(context_, frames_);
     imagesInFlight_.assign(swapchain_.imageCount(), VK_NULL_HANDLE);
@@ -158,10 +161,26 @@ void Renderer::waitIdle()
     context_.waitIdle();
 }
 
+void Renderer::createTextureDescriptorSetLayout()
+{
+    VkDescriptorSetLayoutBinding textureBinding{};
+    textureBinding.binding = 0;
+    textureBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    textureBinding.descriptorCount = 1;
+    textureBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    // Set 0 binding 0 is intentionally only for the sampled texture. MVP data
+    // stays on the Buffer Device Address + vertex push constant path.
+    textureDescriptorSetLayout_.create(
+        context_.vkDevice(),
+        std::span<const VkDescriptorSetLayoutBinding>(&textureBinding, 1));
+}
+
 void Renderer::createPipeline()
 {
     const VkVertexInputBindingDescription binding = renderer::vertexBindingDescription();
-    const std::array<VkVertexInputAttributeDescription, 2> attributes = renderer::vertexAttributeDescriptions();
+    const std::array<VkVertexInputAttributeDescription, 3> attributes = renderer::vertexAttributeDescriptions();
+    const VkDescriptorSetLayout descriptorSetLayout = textureDescriptorSetLayout_.handle();
     const VkPushConstantRange pushConstantRange{
         VK_SHADER_STAGE_VERTEX_BIT,
         0,
@@ -175,6 +194,7 @@ void Renderer::createPipeline()
     pipelineInfo.depthFormat = swapchain_.depthFormat();
     pipelineInfo.vertexBindings = std::span<const VkVertexInputBindingDescription>(&binding, 1);
     pipelineInfo.vertexAttributes = std::span<const VkVertexInputAttributeDescription>(attributes.data(), attributes.size());
+    pipelineInfo.descriptorSetLayouts = std::span<const VkDescriptorSetLayout>(&descriptorSetLayout, 1);
     pipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&pushConstantRange, 1);
     pipelineInfo.enableDepth = true;
 
@@ -192,6 +212,49 @@ void Renderer::createScene()
     cube.debugName = "Cube";
     cube.transform = renderer::Transform{};
     renderObjects_.push_back(std::move(cube));
+}
+
+void Renderer::createCheckerboardTexture()
+{
+    checkerboardTexture_.createCheckerboard(context_, commandContext_, 256, 256);
+}
+
+void Renderer::createTextureDescriptorSet()
+{
+    VkDescriptorPoolSize poolSize{};
+    poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSize.descriptorCount = 1;
+
+    textureDescriptorPool_.create(
+        context_.vkDevice(),
+        std::span<const VkDescriptorPoolSize>(&poolSize, 1),
+        1);
+
+    const VkDescriptorSetLayout descriptorSetLayout = textureDescriptorSetLayout_.handle();
+    VkDescriptorSetAllocateInfo allocateInfo{};
+    allocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocateInfo.descriptorPool = textureDescriptorPool_.handle();
+    allocateInfo.descriptorSetCount = 1;
+    allocateInfo.pSetLayouts = &descriptorSetLayout;
+    VK_CHECK(vkAllocateDescriptorSets(context_.vkDevice(), &allocateInfo, &textureDescriptorSet_));
+
+    VkDescriptorImageInfo imageInfo{};
+    imageInfo.sampler = checkerboardTexture_.sampler();
+    imageInfo.imageView = checkerboardTexture_.imageView();
+    imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = textureDescriptorSet_;
+    write.dstBinding = 0;
+    write.dstArrayElement = 0;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo = &imageInfo;
+
+    // The descriptor stores the sampler, image view, and final shader-read layout.
+    // The image contents are already uploaded before this update happens.
+    vkUpdateDescriptorSets(context_.vkDevice(), 1, &write, 0, nullptr);
 }
 
 void Renderer::createFrameDataBuffers()
@@ -309,17 +372,6 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     vkCmdBeginRendering(commandBuffer, &renderingInfo);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.pipeline());
 
-    const PushConstants pushConstants{
-        frameDataBuffers_.at(currentFrame_).deviceAddress()
-    };
-    vkCmdPushConstants(
-        commandBuffer,
-        pipeline_.layout(),
-        VK_SHADER_STAGE_VERTEX_BIT,
-        0,
-        static_cast<uint32_t>(sizeof(PushConstants)),
-        &pushConstants);
-
     const VkExtent2D extent = swapchain_.extent();
     VkViewport viewport{};
     viewport.x = 0.0f;
@@ -337,6 +389,30 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     // dynamic instead of forcing a new pipeline for every resize.
     vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
     vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+    vkCmdBindDescriptorSets(
+        commandBuffer,
+        VK_PIPELINE_BIND_POINT_GRAPHICS,
+        pipeline_.layout(),
+        0,
+        1,
+        &textureDescriptorSet_,
+        0,
+        nullptr);
+
+    const PushConstants pushConstants{
+        frameDataBuffers_.at(currentFrame_).deviceAddress()
+    };
+
+    // The descriptor set binds the texture/sampler for the fragment shader.
+    // The MVP remains a buffer device address pushed only to the vertex stage.
+    vkCmdPushConstants(
+        commandBuffer,
+        pipeline_.layout(),
+        VK_SHADER_STAGE_VERTEX_BIT,
+        0,
+        static_cast<uint32_t>(sizeof(PushConstants)),
+        &pushConstants);
 
     for (const renderer::RenderObject& object : renderObjects_) {
         if (!object.mesh) {

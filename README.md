@@ -2,7 +2,7 @@
 
 Modern C++20 Vulkan 1.3 renderer skeleton inspired by the educational flow of [Sascha Willems' HowToVulkan](https://github.com/SaschaWillems/HowToVulkan), but split into engine-style modules instead of a single tutorial file.
 
-The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube geometry into GPU-local vertex and index buffers, and draws a rotating depth-tested scene object every frame using Dynamic Rendering and Synchronization2.
+The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube geometry into GPU-local vertex and index buffers, uploads a procedural checkerboard texture into a GPU-local image, and draws a rotating depth-tested textured scene object every frame using Dynamic Rendering and Synchronization2.
 
 ## Dependencies
 
@@ -43,6 +43,7 @@ For CLion, open this folder as a CMake project and use a Debug profile. Validati
 - `VulkanPipeline` loads compiled SPIR-V shader modules and creates a Dynamic Rendering graphics pipeline.
 - `VulkanBuffer` owns `VkBuffer` plus VMA allocation, supports CPU-visible uploads, staging copies, and optional Buffer Device Address lookup.
 - `VulkanImage` owns `VkImage` plus VMA allocation and image view lifetime.
+- `VulkanTexture` owns a sampled image, VMA allocation, image view, and sampler, and uploads procedural RGBA8 data through a staging buffer.
 - `Mesh`, `RenderObject`, `Transform`, and `Camera` provide the first renderer-side scene abstractions without introducing ECS or a render graph.
 
 ## Vulkan Initialization Flow
@@ -70,10 +71,12 @@ For CLion, open this folder as a CMake project and use a Debug profile. Validati
 7. Bind the graphics pipeline.
 8. Update the render object's transform and upload camera-derived MVP data.
 9. Set dynamic viewport and scissor from the current swapchain extent.
-10. Bind the device-local vertex and index buffers.
-11. Push the MVP buffer device address and draw render objects with `vkCmdDrawIndexed`.
-12. End rendering and submit with `vkQueueSubmit2`.
-13. Present the image and recreate the swapchain if it is out of date.
+10. Bind texture descriptor set 0.
+11. Push the MVP buffer device address.
+12. Bind the device-local vertex and index buffers.
+13. Draw render objects with `vkCmdDrawIndexed`.
+14. End rendering and submit with `vkQueueSubmit2`.
+15. Present the image and recreate the swapchain if it is out of date.
 
 ## Milestone 2: Triangle Rendering
 
@@ -105,8 +108,33 @@ The hard-coded cube vertex and index data has moved out of `Renderer` and into `
 
 The per-frame MVP is generated from `Camera + Transform`, then uploaded through the existing Buffer Device Address storage-buffer path. A vertex-stage push constant passes the frame-data buffer address to the shader, which reads the MVP through `GL_EXT_buffer_reference`. Descriptor sets are not used for MVP data yet.
 
+## Milestone 6: Basic Texture Descriptor
+
+Milestone 6 introduces descriptor sets only for texture sampling. MVP still uses the existing Buffer Device Address storage-buffer path, with a vertex-stage push constant carrying the current frame-data buffer address. The vertex shader still reads MVP through `GL_EXT_buffer_reference`; it has not moved to a uniform buffer descriptor.
+
+The texture binding contract is:
+
+- set 0, binding 0
+- `VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER`
+- fragment shader visibility
+
+The current texture is a CPU-generated RGBA8 checkerboard. No image files are loaded, and no `stb_image` dependency is used.
+
+Texture upload uses a CPU-visible staging buffer, a GPU-local `VkImage`, `vkCmdCopyBufferToImage`, and Synchronization2 image barriers:
+
+- `VK_IMAGE_LAYOUT_UNDEFINED` to `VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL`
+- `VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL` to `VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL`
+
+The frame binding flow is now:
+
+1. Bind pipeline.
+2. Bind texture descriptor set 0.
+3. Push MVP buffer device address.
+4. Bind vertex and index buffers.
+5. Draw indexed.
+
+File texture loading, mipmaps, materials, bindless descriptors, and model loading are future work.
+
 ## Next Milestones
 
-### Milestone 6: Texture + Descriptor Set
-
-Introduce descriptor sets for texture and sampler binding, not for MVP data. The MVP path should remain the current Buffer Device Address storage-buffer path, with `vkCmdPushConstants` passing the frame-data address to the vertex shader.
+Future milestones can build on this descriptor foundation with file texture loading, mipmaps, and material abstractions once the minimal texture path is stable.
