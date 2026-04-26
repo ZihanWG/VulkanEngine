@@ -35,6 +35,17 @@ For CLion, open this folder as a CMake project and use a Debug profile. Validati
 
 The run path for the demo texture is `assets/textures/checker.png`. CMake embeds the source asset directory, and the renderer uses the procedural checkerboard fallback if that PNG is missing.
 
+## Validated Environment
+
+Validated locally on:
+
+- Windows
+- Visual Studio 2022 MSVC x64
+- Vulkan SDK 1.4.328.1
+- NVIDIA GeForce RTX 3080 Ti Laptop GPU
+
+Galaxy overlay layer naming warnings may appear in Debug runs. They come from an external Vulkan layer and are unrelated to renderer validation.
+
 ## Architecture
 
 - `Application` owns the `Window` and `Renderer`.
@@ -125,7 +136,7 @@ The texture binding contract is:
 - `VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER`
 - fragment shader visibility
 
-The current texture is a CPU-generated RGBA8 checkerboard. No image files are loaded, and no `stb_image` dependency is used.
+At Milestone 6, the texture was still a CPU-generated RGBA8 checkerboard. No image files were loaded at that stage, and no `stb_image` dependency was used yet.
 
 Texture upload uses a CPU-visible staging buffer, a GPU-local `VkImage`, `vkCmdCopyBufferToImage`, and Synchronization2 image barriers:
 
@@ -140,7 +151,7 @@ The frame binding flow is now:
 4. Bind vertex and index buffers.
 5. Draw indexed.
 
-File texture loading, mipmaps, bindless descriptors, lighting, model loading, and render graph work are future milestones.
+Milestone 9 later adds stb_image-based file texture loading and GPU mipmap generation. Bindless descriptors, lighting, model loading, and render graph work remain future milestones.
 
 ## Milestone 7: Basic Material Abstraction
 
@@ -180,7 +191,7 @@ This milestone does not add lighting, PBR, bindless descriptors, file texture lo
 
 ## Milestone 9: File Texture Loading and Mipmaps
 
-Milestone 9 adds file-based texture loading while keeping the existing renderer contracts intact. `VulkanTexture::createFromFile()` loads image data from disk with stb_image, forces RGBA8 pixels, uploads through a CPU-visible staging buffer, and stores the result in a GPU-local `VkImage` allocated with VMA.
+Milestone 9 adds stb_image-based file texture loading and GPU mipmap generation while keeping the existing renderer contracts intact. `VulkanTexture::createFromFile()` loads image data from disk with stb_image, forces RGBA8 pixels, uploads through a CPU-visible staging buffer, and stores the result in a GPU-local `VkImage` allocated with VMA.
 
 When mipmap generation is requested, the texture computes `floor(log2(max(width, height))) + 1` mip levels, creates the image with transfer source, transfer destination, and sampled usage, then generates the mip chain on the GPU with `vkCmdBlitImage`. Synchronization2 image barriers transition all levels from `UNDEFINED` to `TRANSFER_DST_OPTIMAL`, copy level 0, move each previous level to `TRANSFER_SRC_OPTIMAL`, blit into the next level, and finally transition every level to `SHADER_READ_ONLY_OPTIMAL`.
 

@@ -1,3 +1,0 @@
-E:/VulkanEngine/build/_deps/vma-subbuild/CMakeFiles/vma-populate.dir
-E:/VulkanEngine/build/_deps/vma-subbuild/CMakeFiles/ALL_BUILD.dir
-E:/VulkanEngine/build/_deps/vma-subbuild/CMakeFiles/ZERO_CHECK.dir
