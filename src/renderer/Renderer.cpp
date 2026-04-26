@@ -2,6 +2,7 @@
 
 #include "core/Window.h"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -11,17 +12,25 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace ve {
 
 namespace {
 
-struct FrameData {
+struct ObjectFrameData {
     glm::mat4 mvp{1.0f};
 };
 
+// The shader buffer_reference block contains one std430 mat4. Each entry is
+// 64 bytes, a multiple of the 16-byte matrix alignment, so base + index * size
+// remains correctly aligned for this simple per-object MVP array.
+static_assert(sizeof(ObjectFrameData) == 64);
+
+constexpr uint32_t kMaxFrameObjects = 64;
+
 struct PushConstants {
-    VkDeviceAddress frameDataAddress = 0;
+    VkDeviceAddress objectFrameDataAddress = 0;
 };
 
 std::filesystem::path shaderPath(const char* filename)
@@ -46,7 +55,7 @@ Renderer::Renderer(Window& window)
     createPipeline();
     commandContext_.initialize(context_, frames_);
     createScene();
-    createFrameDataBuffers();
+    createObjectFrameDataBuffers();
     sync_.initialize(context_, frames_, swapchain_.imageCount());
     imagesInFlight_.assign(swapchain_.imageCount(), VK_NULL_HANDLE);
 
@@ -210,12 +219,29 @@ void Renderer::createScene()
     createCheckerboardTexture();
     createMaterial();
 
-    renderer::RenderObject cube{};
-    cube.mesh = &cubeMesh_;
-    cube.material = &checkerboardMaterial_;
-    cube.debugName = "Textured Cube";
-    cube.transform = renderer::Transform{};
-    renderObjects_.push_back(std::move(cube));
+    camera_.position = {0.0f, 0.35f, 5.5f};
+    camera_.target = {0.0f, 0.1f, 0.0f};
+
+    renderObjects_.reserve(4);
+    const auto addCube = [this](
+                             std::string debugName,
+                             const glm::vec3& position,
+                             const glm::vec3& rotationRadians,
+                             const glm::vec3& scale) {
+        renderer::RenderObject cube{};
+        cube.mesh = &cubeMesh_;
+        cube.material = &checkerboardMaterial_;
+        cube.debugName = std::move(debugName);
+        cube.transform.position = position;
+        cube.transform.rotationRadians = rotationRadians;
+        cube.transform.scale = scale;
+        renderObjects_.push_back(std::move(cube));
+    };
+
+    addCube("Center Cube", {0.0f, -0.1f, 0.0f}, {0.2f, 0.0f, 0.0f}, {0.7f, 0.7f, 0.7f});
+    addCube("Left Cube", {-1.35f, -0.15f, -0.35f}, {0.0f, 0.35f, 0.2f}, {0.5f, 0.5f, 0.5f});
+    addCube("Right Cube", {1.35f, -0.05f, -0.25f}, {0.25f, -0.35f, 0.0f}, {0.55f, 0.8f, 0.55f});
+    addCube("Elevated Cube", {0.0f, 1.0f, -0.7f}, {-0.3f, 0.2f, 0.45f}, {0.45f, 0.45f, 0.45f});
 }
 
 void Renderer::createCheckerboardTexture()
@@ -275,18 +301,18 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     vkUpdateDescriptorSets(context_.vkDevice(), 1, &write, 0, nullptr);
 }
 
-void Renderer::createFrameDataBuffers()
+void Renderer::createObjectFrameDataBuffers()
 {
-    frameDataBuffers_.resize(frames_.size());
+    frameObjectDataBuffers_.resize(frames_.size());
 
-    for (rhi::VulkanBuffer& frameDataBuffer : frameDataBuffers_) {
+    for (rhi::VulkanBuffer& frameObjectDataBuffer : frameObjectDataBuffers_) {
         rhi::VulkanBufferCreateInfo bufferInfo{};
-        bufferInfo.size = sizeof(FrameData);
+        bufferInfo.size = static_cast<VkDeviceSize>(kMaxFrameObjects * sizeof(ObjectFrameData));
         bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
         bufferInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
         bufferInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
         bufferInfo.requestDeviceAddress = true;
-        frameDataBuffer.createBuffer(context_, bufferInfo);
+        frameObjectDataBuffer.createBuffer(context_, bufferInfo);
     }
 }
 
@@ -294,24 +320,52 @@ void Renderer::updateFrameData(uint32_t frameIndex)
 {
     const auto now = std::chrono::steady_clock::now();
     const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
-    FrameData frameData{};
 
-    if (!renderObjects_.empty()) {
-        renderer::RenderObject& object = renderObjects_.front();
-        object.transform.rotationRadians = {elapsedSeconds * 0.35f, elapsedSeconds, 0.0f};
-
-        const VkExtent2D extent = swapchain_.extent();
-        const float aspect = extent.height == 0
-            ? 1.0f
-            : static_cast<float>(extent.width) / static_cast<float>(extent.height);
-
-        frameData.mvp = camera_.projectionMatrix(aspect)
-            * camera_.viewMatrix()
-            * object.transform.modelMatrix();
+    if (renderObjects_.empty()) {
+        return;
     }
 
-    frameDataBuffers_.at(frameIndex).upload(
-        std::as_bytes(std::span<const FrameData>(&frameData, 1)));
+    const size_t objectCount = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
+    std::vector<ObjectFrameData> objectFrameData(objectCount);
+
+    const VkExtent2D extent = swapchain_.extent();
+    const float aspect = extent.height == 0
+        ? 1.0f
+        : static_cast<float>(extent.width) / static_cast<float>(extent.height);
+    const glm::mat4 view = camera_.viewMatrix();
+    const glm::mat4 projection = camera_.projectionMatrix(aspect);
+
+    for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+        renderer::RenderObject& object = renderObjects_[objectIndex];
+
+        switch (objectIndex) {
+        case 0:
+            object.transform.rotationRadians = {0.2f, elapsedSeconds, 0.0f};
+            break;
+        case 1:
+            object.transform.rotationRadians = {elapsedSeconds * 1.15f, 0.35f, 0.2f};
+            break;
+        case 2:
+            object.transform.rotationRadians = {0.25f, -0.35f, elapsedSeconds * 0.9f};
+            break;
+        case 3:
+            object.transform.rotationRadians = {elapsedSeconds * 0.35f, elapsedSeconds * 0.55f, 0.45f};
+            break;
+        default:
+            object.transform.rotationRadians = {
+                elapsedSeconds * (0.2f + 0.05f * static_cast<float>(objectIndex)),
+                elapsedSeconds * 0.4f,
+                elapsedSeconds * 0.3f
+            };
+            break;
+        }
+
+        const glm::mat4 model = object.transform.modelMatrix();
+        objectFrameData[objectIndex].mvp = projection * view * model;
+    }
+
+    frameObjectDataBuffers_.at(frameIndex).upload(
+        std::as_bytes(std::span<const ObjectFrameData>(objectFrameData.data(), objectFrameData.size())));
 }
 
 void Renderer::recreateSwapchain()
@@ -409,11 +463,11 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
     vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-    const PushConstants pushConstants{
-        frameDataBuffers_.at(currentFrame_).deviceAddress()
-    };
+    const VkDeviceAddress objectFrameDataBaseAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
+    const size_t objectCount = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
 
-    for (const renderer::RenderObject& object : renderObjects_) {
+    for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+        const renderer::RenderObject& object = renderObjects_[objectIndex];
         if (!object.mesh || !object.material || object.material->descriptorSet == VK_NULL_HANDLE) {
             continue;
         }
@@ -429,8 +483,12 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
             0,
             nullptr);
 
+        const PushConstants pushConstants{
+            objectFrameDataBaseAddress + static_cast<VkDeviceAddress>(objectIndex * sizeof(ObjectFrameData))
+        };
+
         // The material descriptor binds the texture/sampler for the fragment shader.
-        // The MVP remains a buffer device address pushed only to the vertex stage.
+        // The pushed address points at this object's MVP data for the vertex shader.
         vkCmdPushConstants(
             commandBuffer,
             pipeline_.layout(),

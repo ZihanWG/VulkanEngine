@@ -41,7 +41,7 @@ private:
     void createCheckerboardTexture();
     void createMaterial();
     void createMaterialDescriptorSet(renderer::Material& material);
-    void createFrameDataBuffers();
+    void createObjectFrameDataBuffers();
     void updateFrameData(uint32_t frameIndex);
     void recreateSwapchain();
     void recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex);
@@ -66,7 +66,7 @@ private:
     renderer::Mesh cubeMesh_;
     renderer::Material checkerboardMaterial_;
     std::vector<renderer::RenderObject> renderObjects_;
-    std::vector<rhi::VulkanBuffer> frameDataBuffers_;
+    std::vector<rhi::VulkanBuffer> frameObjectDataBuffers_;
     std::vector<VkFence> imagesInFlight_;
     VkFormat pipelineColorFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat pipelineDepthFormat_ = VK_FORMAT_UNDEFINED;

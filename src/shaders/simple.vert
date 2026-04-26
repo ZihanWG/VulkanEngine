@@ -2,12 +2,12 @@
 
 #extension GL_EXT_buffer_reference : require
 
-layout(buffer_reference, std430) readonly buffer FrameDataBuffer {
+layout(buffer_reference, std430) readonly buffer ObjectFrameDataBuffer {
     mat4 mvp;
 };
 
 layout(push_constant) uniform PushConstants {
-    FrameDataBuffer frameData;
+    ObjectFrameDataBuffer objectFrameData;
 } pc;
 
 layout(location = 0) in vec3 inPosition;
@@ -18,7 +18,7 @@ layout(location = 1) out vec2 vUV;
 
 void main()
 {
-    gl_Position = pc.frameData.mvp * vec4(inPosition, 1.0);
+    gl_Position = pc.objectFrameData.mvp * vec4(inPosition, 1.0);
     vColor = inColor;
     vUV = inUV;
 }
