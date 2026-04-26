@@ -213,7 +213,7 @@ Normals are transformed to world space in the vertex shader with `transpose(inve
 baseColor * vertexColor * (ambient + diffuse)
 ```
 
-`Material` remains minimal: debug name, base color texture pointer, and descriptor set. This milestone does not add PBR, specular BRDFs, normal maps, shadows, image-based lighting, material parameter buffers, bindless descriptors, model loading, ImGui, ECS, or a render graph.
+`Material` remains minimal: debug name, base color texture pointer, and descriptor set. PBR, specular BRDFs, normal maps, shadows, IBL/image-based lighting, material parameter buffers, bindless descriptors, model loading, ImGui, ECS, and render graph work remain future milestones.
 
 ## Next Milestones
 
