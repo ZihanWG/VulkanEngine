@@ -63,20 +63,21 @@ For CLion, open this folder as a CMake project and use a Debug profile. Validati
 1. Wait for the current frame fence.
 2. Acquire the next swapchain image with an image-available semaphore.
 3. Reset the fence and command buffer.
-4. Record Synchronization2 image barriers:
-   - previous layout to `VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL`
-   - `VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL` to `VK_IMAGE_LAYOUT_PRESENT_SRC_KHR`
-5. Transition the depth image to `VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL`.
-6. Begin Dynamic Rendering with clear color and depth attachments.
-7. Bind the graphics pipeline.
-8. Update the render object's transform and upload camera-derived MVP data.
-9. Set dynamic viewport and scissor from the current swapchain extent.
-10. Bind texture descriptor set 0.
-11. Push the MVP buffer device address.
-12. Bind the device-local vertex and index buffers.
-13. Draw render objects with `vkCmdDrawIndexed`.
-14. End rendering and submit with `vkQueueSubmit2`.
-15. Present the image and recreate the swapchain if it is out of date.
+4. Update the render object's transform and upload camera-derived MVP data.
+5. Record the command buffer.
+6. Transition the swapchain image to `VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL`.
+7. Transition the depth image to `VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL`.
+8. Begin Dynamic Rendering with clear color and depth attachments.
+9. Bind the graphics pipeline.
+10. Set dynamic viewport and scissor from the current swapchain extent.
+11. Bind texture descriptor set 0.
+12. Push the MVP buffer device address.
+13. Bind the device-local vertex and index buffers.
+14. Draw render objects with `vkCmdDrawIndexed`.
+15. End Dynamic Rendering.
+16. Transition the swapchain image to `VK_IMAGE_LAYOUT_PRESENT_SRC_KHR`.
+17. Submit with `vkQueueSubmit2`.
+18. Present the image and recreate the swapchain if it is out of date.
 
 ## Milestone 2: Triangle Rendering
 
@@ -106,11 +107,11 @@ The hard-coded cube vertex and index data has moved out of `Renderer` and into `
 
 `Renderer` now owns a `Camera`, one cube `Mesh`, and a list of `RenderObject` entries. Each `RenderObject` references a `Mesh` and owns its own `Transform`, giving the renderer a simple draw list instead of direct single-cube draw state.
 
-The per-frame MVP is generated from `Camera + Transform`, then uploaded through the existing Buffer Device Address storage-buffer path. A vertex-stage push constant passes the frame-data buffer address to the shader, which reads the MVP through `GL_EXT_buffer_reference`. Descriptor sets are not used for MVP data yet.
+The per-frame MVP is generated from `Camera + Transform`, then uploaded through the existing Buffer Device Address storage-buffer path. A vertex-stage push constant passes the frame-data buffer address to the shader, which reads the MVP through `GL_EXT_buffer_reference`. Descriptor sets are not used for MVP data.
 
 ## Milestone 6: Basic Texture Descriptor
 
-Milestone 6 introduces descriptor sets only for texture sampling. MVP still uses the existing Buffer Device Address storage-buffer path, with a vertex-stage push constant carrying the current frame-data buffer address. The vertex shader still reads MVP through `GL_EXT_buffer_reference`; it has not moved to a uniform buffer descriptor.
+Milestone 6 is implemented and introduces descriptor sets only for texture sampling. MVP still uses the existing Buffer Device Address storage-buffer path, with a vertex-stage push constant carrying the current frame-data buffer address. The vertex shader still reads MVP through `GL_EXT_buffer_reference`; it has not moved to a uniform buffer descriptor.
 
 The texture binding contract is:
 
@@ -133,8 +134,8 @@ The frame binding flow is now:
 4. Bind vertex and index buffers.
 5. Draw indexed.
 
-File texture loading, mipmaps, materials, bindless descriptors, and model loading are future work.
+File texture loading, mipmaps, material abstraction, bindless descriptors, lighting, model loading, and render graph work are future milestones.
 
 ## Next Milestones
 
-Future milestones can build on this descriptor foundation with file texture loading, mipmaps, and material abstractions once the minimal texture path is stable.
+Future milestones can build on this descriptor foundation with file texture loading, mipmaps, material abstraction, lighting, bindless descriptors, model loading, and render graph work once the minimal texture path is stable.
