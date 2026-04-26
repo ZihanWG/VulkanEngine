@@ -42,12 +42,10 @@ Renderer::Renderer(Window& window)
 
     frames_.resize(rhi::kMaxFramesInFlight);
     swapchain_.initialize(context_, window_.framebufferExtent());
-    createTextureDescriptorSetLayout();
+    createMaterialDescriptorSetLayout();
     createPipeline();
     commandContext_.initialize(context_, frames_);
     createScene();
-    createCheckerboardTexture();
-    createTextureDescriptorSet();
     createFrameDataBuffers();
     sync_.initialize(context_, frames_, swapchain_.imageCount());
     imagesInFlight_.assign(swapchain_.imageCount(), VK_NULL_HANDLE);
@@ -162,7 +160,7 @@ void Renderer::waitIdle()
     context_.waitIdle();
 }
 
-void Renderer::createTextureDescriptorSetLayout()
+void Renderer::createMaterialDescriptorSetLayout()
 {
     VkDescriptorSetLayoutBinding textureBinding{};
     textureBinding.binding = 0;
@@ -172,7 +170,7 @@ void Renderer::createTextureDescriptorSetLayout()
 
     // Set 0 binding 0 is intentionally only for the sampled texture. MVP data
     // stays on the Buffer Device Address + vertex push constant path.
-    textureDescriptorSetLayout_.create(
+    materialDescriptorSetLayout_.create(
         context_.vkDevice(),
         std::span<const VkDescriptorSetLayoutBinding>(&textureBinding, 1));
 }
@@ -181,7 +179,7 @@ void Renderer::createPipeline()
 {
     const VkVertexInputBindingDescription binding = renderer::vertexBindingDescription();
     const std::array<VkVertexInputAttributeDescription, 3> attributes = renderer::vertexAttributeDescriptions();
-    const VkDescriptorSetLayout descriptorSetLayout = textureDescriptorSetLayout_.handle();
+    const VkDescriptorSetLayout descriptorSetLayout = materialDescriptorSetLayout_.handle();
     const VkPushConstantRange pushConstantRange{
         VK_SHADER_STAGE_VERTEX_BIT,
         0,
@@ -206,11 +204,16 @@ void Renderer::createPipeline()
 
 void Renderer::createScene()
 {
+    renderObjects_.clear();
+
     cubeMesh_ = renderer::Mesh::createCube(context_, commandContext_);
+    createCheckerboardTexture();
+    createMaterial();
 
     renderer::RenderObject cube{};
     cube.mesh = &cubeMesh_;
-    cube.debugName = "Cube";
+    cube.material = &checkerboardMaterial_;
+    cube.debugName = "Textured Cube";
     cube.transform = renderer::Transform{};
     renderObjects_.push_back(std::move(cube));
 }
@@ -220,41 +223,55 @@ void Renderer::createCheckerboardTexture()
     checkerboardTexture_.createCheckerboard(context_, commandContext_, 256, 256);
 }
 
-void Renderer::createTextureDescriptorSet()
+void Renderer::createMaterial()
 {
+    checkerboardMaterial_ = renderer::Material{};
+    checkerboardMaterial_.debugName = "Checkerboard";
+    checkerboardMaterial_.baseColorTexture = &checkerboardTexture_;
+    createMaterialDescriptorSet(checkerboardMaterial_);
+}
+
+void Renderer::createMaterialDescriptorSet(renderer::Material& material)
+{
+    if (!material.baseColorTexture || !material.baseColorTexture->valid()) {
+        throw std::runtime_error("Cannot create a material descriptor set without a valid base color texture.");
+    }
+
     VkDescriptorPoolSize poolSize{};
     poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     poolSize.descriptorCount = 1;
 
-    textureDescriptorPool_.create(
-        context_.vkDevice(),
-        std::span<const VkDescriptorPoolSize>(&poolSize, 1),
-        1);
+    if (materialDescriptorPool_.handle() == VK_NULL_HANDLE) {
+        materialDescriptorPool_.create(
+            context_.vkDevice(),
+            std::span<const VkDescriptorPoolSize>(&poolSize, 1),
+            1);
+    }
 
-    const VkDescriptorSetLayout descriptorSetLayout = textureDescriptorSetLayout_.handle();
+    const VkDescriptorSetLayout descriptorSetLayout = materialDescriptorSetLayout_.handle();
     VkDescriptorSetAllocateInfo allocateInfo{};
     allocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocateInfo.descriptorPool = textureDescriptorPool_.handle();
+    allocateInfo.descriptorPool = materialDescriptorPool_.handle();
     allocateInfo.descriptorSetCount = 1;
     allocateInfo.pSetLayouts = &descriptorSetLayout;
-    VK_CHECK(vkAllocateDescriptorSets(context_.vkDevice(), &allocateInfo, &textureDescriptorSet_));
+    VK_CHECK(vkAllocateDescriptorSets(context_.vkDevice(), &allocateInfo, &material.descriptorSet));
 
     VkDescriptorImageInfo imageInfo{};
-    imageInfo.sampler = checkerboardTexture_.sampler();
-    imageInfo.imageView = checkerboardTexture_.imageView();
+    imageInfo.sampler = material.baseColorTexture->sampler();
+    imageInfo.imageView = material.baseColorTexture->imageView();
     imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     VkWriteDescriptorSet write{};
     write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = textureDescriptorSet_;
+    write.dstSet = material.descriptorSet;
     write.dstBinding = 0;
     write.dstArrayElement = 0;
     write.descriptorCount = 1;
     write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     write.pImageInfo = &imageInfo;
 
-    // The descriptor stores the sampler, image view, and final shader-read layout.
-    // The image contents are already uploaded before this update happens.
+    // The material descriptor stores the sampler, image view, and final shader-read layout.
+    // The texture contents are already uploaded before this update happens.
     vkUpdateDescriptorSets(context_.vkDevice(), 1, &write, 0, nullptr);
 }
 
@@ -392,34 +409,35 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
     vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-    vkCmdBindDescriptorSets(
-        commandBuffer,
-        VK_PIPELINE_BIND_POINT_GRAPHICS,
-        pipeline_.layout(),
-        0,
-        1,
-        &textureDescriptorSet_,
-        0,
-        nullptr);
-
     const PushConstants pushConstants{
         frameDataBuffers_.at(currentFrame_).deviceAddress()
     };
 
-    // The descriptor set binds the texture/sampler for the fragment shader.
-    // The MVP remains a buffer device address pushed only to the vertex stage.
-    vkCmdPushConstants(
-        commandBuffer,
-        pipeline_.layout(),
-        VK_SHADER_STAGE_VERTEX_BIT,
-        0,
-        static_cast<uint32_t>(sizeof(PushConstants)),
-        &pushConstants);
-
     for (const renderer::RenderObject& object : renderObjects_) {
-        if (!object.mesh) {
+        if (!object.mesh || !object.material || object.material->descriptorSet == VK_NULL_HANDLE) {
             continue;
         }
+
+        const VkDescriptorSet descriptorSet = object.material->descriptorSet;
+        vkCmdBindDescriptorSets(
+            commandBuffer,
+            VK_PIPELINE_BIND_POINT_GRAPHICS,
+            pipeline_.layout(),
+            0,
+            1,
+            &descriptorSet,
+            0,
+            nullptr);
+
+        // The material descriptor binds the texture/sampler for the fragment shader.
+        // The MVP remains a buffer device address pushed only to the vertex stage.
+        vkCmdPushConstants(
+            commandBuffer,
+            pipeline_.layout(),
+            VK_SHADER_STAGE_VERTEX_BIT,
+            0,
+            static_cast<uint32_t>(sizeof(PushConstants)),
+            &pushConstants);
 
         const VkBuffer vertexBuffers[] = {object.mesh->vertexBuffer()};
         const VkDeviceSize vertexOffsets[] = {0};

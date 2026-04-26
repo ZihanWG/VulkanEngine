@@ -1,11 +1,21 @@
 #pragma once
 
-#include <cstdint>
+#include "rhi/VulkanCommon.h"
+
+#include <string>
+
+namespace ve::rhi {
+
+class VulkanTexture;
+
+} // namespace ve::rhi
 
 namespace ve::renderer {
 
 struct Material {
-    uint32_t baseColorTextureIndex = UINT32_MAX;
+    std::string debugName;
+    const rhi::VulkanTexture* baseColorTexture = nullptr;
+    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
 };
 
 } // namespace ve::renderer

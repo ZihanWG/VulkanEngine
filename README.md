@@ -2,7 +2,7 @@
 
 Modern C++20 Vulkan 1.3 renderer skeleton inspired by the educational flow of [Sascha Willems' HowToVulkan](https://github.com/SaschaWillems/HowToVulkan), but split into engine-style modules instead of a single tutorial file.
 
-The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube geometry into GPU-local vertex and index buffers, uploads a procedural checkerboard texture into a GPU-local image, and draws a rotating depth-tested textured scene object every frame using Dynamic Rendering and Synchronization2.
+The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube geometry into GPU-local vertex and index buffers, uploads a procedural checkerboard texture into a GPU-local image, and draws a rotating depth-tested textured scene object through a minimal material abstraction every frame using Dynamic Rendering and Synchronization2.
 
 ## Dependencies
 
@@ -44,7 +44,7 @@ For CLion, open this folder as a CMake project and use a Debug profile. Validati
 - `VulkanBuffer` owns `VkBuffer` plus VMA allocation, supports CPU-visible uploads, staging copies, and optional Buffer Device Address lookup.
 - `VulkanImage` owns `VkImage` plus VMA allocation and image view lifetime.
 - `VulkanTexture` owns a sampled image, VMA allocation, image view, and sampler, and uploads procedural RGBA8 data through a staging buffer.
-- `Mesh`, `RenderObject`, `Transform`, and `Camera` provide the first renderer-side scene abstractions without introducing ECS or a render graph.
+- `Mesh`, `Material`, `RenderObject`, `Transform`, and `Camera` provide the first renderer-side scene abstractions without introducing ECS or a render graph.
 
 ## Vulkan Initialization Flow
 
@@ -70,10 +70,10 @@ For CLion, open this folder as a CMake project and use a Debug profile. Validati
 8. Begin Dynamic Rendering with clear color and depth attachments.
 9. Bind the graphics pipeline.
 10. Set dynamic viewport and scissor from the current swapchain extent.
-11. Bind texture descriptor set 0.
+11. For each `RenderObject`, bind its material descriptor set 0.
 12. Push the MVP buffer device address.
-13. Bind the device-local vertex and index buffers.
-14. Draw render objects with `vkCmdDrawIndexed`.
+13. Bind the object's device-local vertex and index buffers.
+14. Draw the object with `vkCmdDrawIndexed`.
 15. End Dynamic Rendering.
 16. Transition the swapchain image to `VK_IMAGE_LAYOUT_PRESENT_SRC_KHR`.
 17. Submit with `vkQueueSubmit2`.
@@ -134,8 +134,32 @@ The frame binding flow is now:
 4. Bind vertex and index buffers.
 5. Draw indexed.
 
-File texture loading, mipmaps, material abstraction, bindless descriptors, lighting, model loading, and render graph work are future milestones.
+File texture loading, mipmaps, bindless descriptors, lighting, model loading, and render graph work are future milestones.
+
+## Milestone 7: Basic Material Abstraction
+
+`Material` is now the minimal link between a render object and texture sampling state. It stores a debug name, references a base color `VulkanTexture`, and stores the descriptor set used by the fragment shader's texture binding.
+
+`Renderer` still owns the actual checkerboard `VulkanTexture`, the checkerboard `Material`, the cube `Mesh`, the `Camera`, and the `RenderObject` list. `RenderObject` now references both `Mesh` and `Material`, while continuing to own its `Transform` and debug name.
+
+The descriptor contract is unchanged from Milestone 6:
+
+- set 0, binding 0
+- `VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER`
+- fragment shader visibility
+
+MVP data still uses Buffer Device Address plus a vertex-stage push constant. The vertex shader still reads the MVP through `GL_EXT_buffer_reference`, and MVP data has not moved into descriptor uniform buffers.
+
+The per-object draw flow is now:
+
+1. Bind pipeline.
+2. For each `RenderObject`, bind its material descriptor set.
+3. Push the MVP buffer device address.
+4. Bind the object's mesh vertex and index buffers.
+5. Draw indexed.
+
+This milestone does not add PBR, lighting, bindless descriptors, descriptor indexing texture arrays, file texture loading, or model loading.
 
 ## Next Milestones
 
-Future milestones can build on this descriptor foundation with file texture loading, mipmaps, material abstraction, lighting, bindless descriptors, model loading, and render graph work once the minimal texture path is stable.
+Future milestones can build on this material foundation with file texture loading, mipmaps, lighting, bindless descriptors, model loading, and render graph work once the minimal texture path is stable.

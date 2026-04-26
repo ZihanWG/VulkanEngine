@@ -2,6 +2,7 @@
 
 #include "renderer/Camera.h"
 #include "renderer/FrameResources.h"
+#include "renderer/Material.h"
 #include "renderer/Mesh.h"
 #include "renderer/RenderObject.h"
 #include "rhi/VulkanBuffer.h"
@@ -34,11 +35,12 @@ public:
     void waitIdle();
 
 private:
-    void createTextureDescriptorSetLayout();
+    void createMaterialDescriptorSetLayout();
     void createPipeline();
     void createScene();
     void createCheckerboardTexture();
-    void createTextureDescriptorSet();
+    void createMaterial();
+    void createMaterialDescriptorSet(renderer::Material& material);
     void createFrameDataBuffers();
     void updateFrameData(uint32_t frameIndex);
     void recreateSwapchain();
@@ -54,18 +56,18 @@ private:
     rhi::VulkanContext context_;
     std::vector<renderer::FrameResources> frames_;
     rhi::VulkanSwapchain swapchain_;
-    rhi::VulkanDescriptorSetLayout textureDescriptorSetLayout_;
+    rhi::VulkanDescriptorSetLayout materialDescriptorSetLayout_;
     rhi::VulkanPipeline pipeline_;
     rhi::VulkanCommandContext commandContext_;
     rhi::VulkanSync sync_;
     rhi::VulkanTexture checkerboardTexture_;
-    rhi::VulkanDescriptorPool textureDescriptorPool_;
+    rhi::VulkanDescriptorPool materialDescriptorPool_;
     renderer::Camera camera_;
     renderer::Mesh cubeMesh_;
+    renderer::Material checkerboardMaterial_;
     std::vector<renderer::RenderObject> renderObjects_;
     std::vector<rhi::VulkanBuffer> frameDataBuffers_;
     std::vector<VkFence> imagesInFlight_;
-    VkDescriptorSet textureDescriptorSet_ = VK_NULL_HANDLE;
     VkFormat pipelineColorFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat pipelineDepthFormat_ = VK_FORMAT_UNDEFINED;
     uint32_t currentFrame_ = 0;

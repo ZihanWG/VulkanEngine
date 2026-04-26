@@ -1,5 +1,6 @@
 #pragma once
 
+#include "renderer/Material.h"
 #include "renderer/Mesh.h"
 #include "renderer/Transform.h"
 
@@ -9,6 +10,7 @@ namespace ve::renderer {
 
 struct RenderObject {
     const Mesh* mesh = nullptr;
+    const Material* material = nullptr;
     Transform transform{};
     std::string debugName;
 };
