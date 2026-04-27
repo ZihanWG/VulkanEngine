@@ -125,6 +125,7 @@ add_executable(VulkanEngine
     src/rhi/VulkanImage.cpp
     src/rhi/VulkanMemory.cpp
     src/rhi/VulkanPipeline.cpp
+    src/rhi/VulkanShadowMap.cpp
     src/rhi/VulkanSwapchain.cpp
     src/rhi/VulkanSync.cpp
     src/rhi/VulkanTexture.cpp
@@ -170,6 +171,7 @@ cmake_path(CONVERT "${ASSET_SOURCE_DIR}" TO_CMAKE_PATH_LIST VULKAN_ENGINE_ASSET_
 set(SHADER_SOURCES
     "${SHADER_SOURCE_DIR}/simple.vert"
     "${SHADER_SOURCE_DIR}/simple.frag"
+    "${SHADER_SOURCE_DIR}/shadow.vert"
 )
 
 target_compile_definitions(VulkanEngine PRIVATE

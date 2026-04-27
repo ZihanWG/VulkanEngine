@@ -59,13 +59,19 @@ void VulkanPipeline::create(VkDevice device, const VulkanPipelineCreateInfo& cre
 {
     reset();
 
-    if (createInfo.colorFormat == VK_FORMAT_UNDEFINED) {
+    if (createInfo.enableColorAttachment && createInfo.colorFormat == VK_FORMAT_UNDEFINED) {
         throw std::runtime_error("Cannot create graphics pipeline with an undefined color format.");
+    }
+    if (createInfo.enableDepth && createInfo.depthFormat == VK_FORMAT_UNDEFINED) {
+        throw std::runtime_error("Cannot create depth-enabled graphics pipeline with an undefined depth format.");
     }
 
     device_ = device;
     vertexShaderModule_ = createShaderModule(createInfo.vertexShaderPath);
-    fragmentShaderModule_ = createShaderModule(createInfo.fragmentShaderPath);
+    const bool hasFragmentShader = !createInfo.fragmentShaderPath.empty();
+    if (hasFragmentShader) {
+        fragmentShaderModule_ = createShaderModule(createInfo.fragmentShaderPath);
+    }
 
     VkPipelineShaderStageCreateInfo vertexStage{};
     vertexStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -73,16 +79,17 @@ void VulkanPipeline::create(VkDevice device, const VulkanPipelineCreateInfo& cre
     vertexStage.module = vertexShaderModule_;
     vertexStage.pName = "main";
 
-    VkPipelineShaderStageCreateInfo fragmentStage{};
-    fragmentStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    fragmentStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    fragmentStage.module = fragmentShaderModule_;
-    fragmentStage.pName = "main";
-
-    const std::array<VkPipelineShaderStageCreateInfo, 2> shaderStages = {
-        vertexStage,
-        fragmentStage
-    };
+    std::array<VkPipelineShaderStageCreateInfo, 2> shaderStages = {vertexStage, {}};
+    uint32_t shaderStageCount = 1;
+    if (hasFragmentShader) {
+        VkPipelineShaderStageCreateInfo fragmentStage{};
+        fragmentStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        fragmentStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        fragmentStage.module = fragmentShaderModule_;
+        fragmentStage.pName = "main";
+        shaderStages[1] = fragmentStage;
+        shaderStageCount = 2;
+    }
 
     VkPipelineVertexInputStateCreateInfo vertexInput{};
     vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -103,8 +110,12 @@ void VulkanPipeline::create(VkDevice device, const VulkanPipelineCreateInfo& cre
     VkPipelineRasterizationStateCreateInfo rasterization{};
     rasterization.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rasterization.polygonMode = VK_POLYGON_MODE_FILL;
-    rasterization.cullMode = VK_CULL_MODE_NONE;
+    rasterization.cullMode = createInfo.cullMode;
     rasterization.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rasterization.depthBiasEnable = createInfo.enableDepthBias ? VK_TRUE : VK_FALSE;
+    rasterization.depthBiasConstantFactor = createInfo.depthBiasConstantFactor;
+    rasterization.depthBiasClamp = createInfo.depthBiasClamp;
+    rasterization.depthBiasSlopeFactor = createInfo.depthBiasSlopeFactor;
     rasterization.lineWidth = 1.0f;
 
     VkPipelineMultisampleStateCreateInfo multisampling{};
@@ -114,8 +125,8 @@ void VulkanPipeline::create(VkDevice device, const VulkanPipelineCreateInfo& cre
     VkPipelineDepthStencilStateCreateInfo depthStencil{};
     depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
     depthStencil.depthTestEnable = createInfo.enableDepth ? VK_TRUE : VK_FALSE;
-    depthStencil.depthWriteEnable = createInfo.enableDepth ? VK_TRUE : VK_FALSE;
-    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+    depthStencil.depthWriteEnable = (createInfo.enableDepth && createInfo.depthWriteEnable) ? VK_TRUE : VK_FALSE;
+    depthStencil.depthCompareOp = createInfo.depthCompareOp;
 
     VkPipelineColorBlendAttachmentState colorBlendAttachment{};
     colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT
@@ -125,8 +136,8 @@ void VulkanPipeline::create(VkDevice device, const VulkanPipelineCreateInfo& cre
 
     VkPipelineColorBlendStateCreateInfo colorBlend{};
     colorBlend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    colorBlend.attachmentCount = 1;
-    colorBlend.pAttachments = &colorBlendAttachment;
+    colorBlend.attachmentCount = createInfo.enableColorAttachment ? 1u : 0u;
+    colorBlend.pAttachments = createInfo.enableColorAttachment ? &colorBlendAttachment : nullptr;
 
     const std::array<VkDynamicState, 2> dynamicStates = {
         VK_DYNAMIC_STATE_VIEWPORT,
@@ -149,8 +160,8 @@ void VulkanPipeline::create(VkDevice device, const VulkanPipelineCreateInfo& cre
     VkFormat colorFormat = createInfo.colorFormat;
     VkPipelineRenderingCreateInfo renderingInfo{};
     renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    renderingInfo.colorAttachmentCount = 1;
-    renderingInfo.pColorAttachmentFormats = &colorFormat;
+    renderingInfo.colorAttachmentCount = createInfo.enableColorAttachment ? 1u : 0u;
+    renderingInfo.pColorAttachmentFormats = createInfo.enableColorAttachment ? &colorFormat : nullptr;
     renderingInfo.depthAttachmentFormat = createInfo.enableDepth ? createInfo.depthFormat : VK_FORMAT_UNDEFINED;
 
     // Dynamic Rendering has no VkRenderPass compatibility object, so the pipeline
@@ -158,7 +169,7 @@ void VulkanPipeline::create(VkDevice device, const VulkanPipelineCreateInfo& cre
     VkGraphicsPipelineCreateInfo pipelineInfo{};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     pipelineInfo.pNext = &renderingInfo;
-    pipelineInfo.stageCount = static_cast<uint32_t>(shaderStages.size());
+    pipelineInfo.stageCount = shaderStageCount;
     pipelineInfo.pStages = shaderStages.data();
     pipelineInfo.pVertexInputState = &vertexInput;
     pipelineInfo.pInputAssemblyState = &inputAssembly;

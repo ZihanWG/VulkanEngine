@@ -16,7 +16,15 @@ struct VulkanPipelineCreateInfo {
     std::span<const VkVertexInputAttributeDescription> vertexAttributes;
     std::span<const VkDescriptorSetLayout> descriptorSetLayouts;
     std::span<const VkPushConstantRange> pushConstantRanges;
+    bool enableColorAttachment = true;
     bool enableDepth = false;
+    bool depthWriteEnable = true;
+    bool enableDepthBias = false;
+    VkCullModeFlags cullMode = VK_CULL_MODE_NONE;
+    VkCompareOp depthCompareOp = VK_COMPARE_OP_LESS;
+    float depthBiasConstantFactor = 0.0f;
+    float depthBiasClamp = 0.0f;
+    float depthBiasSlopeFactor = 0.0f;
 };
 
 class VulkanPipeline final {
@@ -44,7 +52,7 @@ private:
     VkShaderModule fragmentShaderModule_ = VK_NULL_HANDLE;
 
     // The pipeline layout is the shader resource contract: descriptor sets for
-    // sampled textures plus the push constant range carrying the MVP buffer address.
+    // sampled images plus the push constant range carrying the object-data address.
     VkPipelineLayout layout_ = VK_NULL_HANDLE;
 
     // Graphics pipeline state is immutable; resize-sensitive state is kept dynamic.

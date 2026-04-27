@@ -2,7 +2,7 @@
 
 Modern C++20 Vulkan 1.3 renderer skeleton inspired by the educational flow of [Sascha Willems' HowToVulkan](https://github.com/SaschaWillems/HowToVulkan), but split into engine-style modules instead of a single tutorial file.
 
-The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube geometry with normals into GPU-local vertex and index buffers, loads a small RGBA texture from disk with a procedural fallback, and draws multiple independently rotating textured cubes with minimal directional lighting every frame using Dynamic Rendering and Synchronization2.
+The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube geometry with normals into GPU-local vertex and index buffers, loads a small RGBA texture from disk with a procedural fallback, and draws multiple independently rotating textured cubes with minimal directional lighting and a basic directional shadow map every frame using Dynamic Rendering and Synchronization2.
 
 ## Dependencies
 
@@ -60,6 +60,7 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - `VulkanBuffer` owns `VkBuffer` plus VMA allocation, supports CPU-visible uploads, staging copies, and optional Buffer Device Address lookup.
 - `VulkanImage` owns `VkImage` plus VMA allocation and image view lifetime.
 - `VulkanTexture` owns a sampled image, VMA allocation, image view, and sampler, and uploads RGBA8 texture data through a staging buffer. It can load image files through stb_image, generate mipmaps on the GPU when supported, or use a procedural checkerboard fallback.
+- `VulkanShadowMap` owns the fixed-size sampled depth image, image view, sampler, and current layout used by the directional shadow pass.
 - `Mesh`, `Material`, `RenderObject`, `Transform`, and `Camera` provide the first renderer-side scene abstractions without introducing ECS or a render graph.
 
 ## Vulkan Initialization Flow
@@ -80,21 +81,25 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 2. Acquire the next swapchain image with an image-available semaphore.
 3. Reset the fence and command buffer.
 4. Update all object transforms.
-5. Upload per-object MVP/model/light data into the current frame's object-data buffer.
+5. Upload per-object MVP/model/light/light-MVP data into the current frame's object-data buffer.
 6. Record the command buffer.
-7. Transition the swapchain image to `VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL`.
-8. Transition the depth image to `VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL`.
-9. Begin Dynamic Rendering with clear color and depth attachments.
-10. Bind the graphics pipeline.
-11. Set dynamic viewport and scissor from the current swapchain extent.
-12. For each `RenderObject`, bind its material descriptor set 0.
-13. Push that object's object-data buffer device address.
-14. Bind the object's device-local vertex and index buffers.
-15. Draw the object with `vkCmdDrawIndexed`.
-16. End Dynamic Rendering.
-17. Transition the swapchain image to `VK_IMAGE_LAYOUT_PRESENT_SRC_KHR`.
-18. Submit with `vkQueueSubmit2`.
-19. Present the image and recreate the swapchain if it is out of date.
+7. Transition the shadow map to `VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL`.
+8. Begin depth-only Dynamic Rendering for the shadow pass.
+9. Bind the shadow pipeline and draw each `RenderObject` with the BDA object-data push constant.
+10. End the shadow pass and transition the shadow map to `VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL`.
+11. Transition the swapchain image to `VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL`.
+12. Transition the main depth image to `VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL`.
+13. Begin main Dynamic Rendering with clear color and depth attachments.
+14. Bind the main graphics pipeline.
+15. Set dynamic viewport and scissor from the current swapchain extent.
+16. For each `RenderObject`, bind its material descriptor set 0.
+17. Push that object's object-data buffer device address.
+18. Bind the object's device-local vertex and index buffers.
+19. Draw the object with `vkCmdDrawIndexed`.
+20. End Dynamic Rendering.
+21. Transition the swapchain image to `VK_IMAGE_LAYOUT_PRESENT_SRC_KHR`.
+22. Submit with `vkQueueSubmit2`.
+23. Present the image and recreate the swapchain if it is out of date.
 
 ## Milestone 2: Triangle Rendering
 
@@ -213,8 +218,18 @@ Normals are transformed to world space in the vertex shader with `transpose(inve
 baseColor * vertexColor * (ambient + diffuse)
 ```
 
-`Material` remains minimal: debug name, base color texture pointer, and descriptor set. PBR, specular BRDFs, normal maps, shadows, IBL/image-based lighting, material parameter buffers, bindless descriptors, model loading, ImGui, ECS, and render graph work remain future milestones.
+`Material` remains minimal: debug name, base color texture pointer, and descriptor set. PBR, specular BRDFs, normal maps, IBL/image-based lighting, material parameter buffers, bindless descriptors, model loading, ImGui, ECS, and render graph work remain future milestones.
+
+## Milestone 11: Basic Shadow Mapping
+
+Milestone 11 adds a minimal directional shadow map for the existing directional light. A fixed 2048x2048 sampled depth image is rendered first with a depth-only Dynamic Rendering pass from a simple orthographic light camera covering the cube scene. The shadow pass uses a vertex-only pipeline, depth writes, and static depth bias to reduce acne.
+
+The main pass samples that depth image in the fragment shader and performs one manual depth comparison. The base color texture remains descriptor set 0 binding 0, and the shadow map is descriptor set 0 binding 1. One material descriptor set is still used for now; there are no descriptor arrays or bindless resources.
+
+Object data still uses Buffer Device Address plus a vertex-stage push constant. `ObjectFrameData` now contains `mvp`, `model`, `lightMvp`, light direction, light color, and ambient color. MVP and lighting data have not moved to UBO descriptors.
+
+This is intentionally not a cascaded shadow implementation. PCF, cascaded shadow maps, better shadow filtering, stable texel snapping, broader scene fitting, PBR, normal maps, multiple lights, model loading, ECS, ImGui, and a render graph remain future work.
 
 ## Next Milestones
 
-Future milestones can build on this multi-object material foundation with richer material parameters, shadows, bindless descriptors, model loading, and render graph work once the minimal texture and lighting path is stable.
+Future milestones can build on this multi-object material foundation with richer material parameters, improved shadow quality, bindless descriptors, model loading, and render graph work once the minimal texture, lighting, and shadow path is stable.

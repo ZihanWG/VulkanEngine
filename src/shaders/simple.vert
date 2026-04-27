@@ -5,6 +5,7 @@
 layout(buffer_reference, std430) readonly buffer ObjectFrameDataBuffer {
     mat4 mvp;
     mat4 model;
+    mat4 lightMvp;
     vec4 lightDirection;
     vec4 lightColor;
     vec4 ambientColor;
@@ -24,6 +25,7 @@ layout(location = 2) out vec3 vNormal;
 layout(location = 3) out vec3 vLightDirection;
 layout(location = 4) out vec3 vLightColor;
 layout(location = 5) out vec3 vAmbientColor;
+layout(location = 6) out vec4 vLightSpacePosition;
 
 void main()
 {
@@ -36,4 +38,5 @@ void main()
     vLightDirection = pc.objectFrameData.lightDirection.xyz;
     vLightColor = pc.objectFrameData.lightColor.xyz;
     vAmbientColor = pc.objectFrameData.ambientColor.xyz;
+    vLightSpacePosition = pc.objectFrameData.lightMvp * vec4(inPosition, 1.0);
 }

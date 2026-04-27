@@ -10,6 +10,7 @@
 #include "rhi/VulkanContext.h"
 #include "rhi/VulkanDescriptor.h"
 #include "rhi/VulkanPipeline.h"
+#include "rhi/VulkanShadowMap.h"
 #include "rhi/VulkanSwapchain.h"
 #include "rhi/VulkanSync.h"
 #include "rhi/VulkanTexture.h"
@@ -36,6 +37,7 @@ public:
 
 private:
     void createMaterialDescriptorSetLayout();
+    void createShadowMap();
     void createPipeline();
     void createScene();
     void createCheckerboardTexture();
@@ -51,13 +53,19 @@ private:
         VkImageLayout oldLayout,
         VkImageLayout newLayout);
     void transitionDepthImage(VkCommandBuffer commandBuffer);
+    void transitionShadowMapImage(
+        VkCommandBuffer commandBuffer,
+        VkImageLayout oldLayout,
+        VkImageLayout newLayout);
 
     Window& window_;
     rhi::VulkanContext context_;
     std::vector<renderer::FrameResources> frames_;
     rhi::VulkanSwapchain swapchain_;
     rhi::VulkanDescriptorSetLayout materialDescriptorSetLayout_;
+    rhi::VulkanShadowMap shadowMap_;
     rhi::VulkanPipeline pipeline_;
+    rhi::VulkanPipeline shadowPipeline_;
     rhi::VulkanCommandContext commandContext_;
     rhi::VulkanSync sync_;
     rhi::VulkanTexture checkerboardTexture_;
@@ -70,6 +78,7 @@ private:
     std::vector<VkFence> imagesInFlight_;
     VkFormat pipelineColorFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat pipelineDepthFormat_ = VK_FORMAT_UNDEFINED;
+    VkFormat shadowPipelineDepthFormat_ = VK_FORMAT_UNDEFINED;
     uint32_t currentFrame_ = 0;
     std::chrono::steady_clock::time_point startTime_ = std::chrono::steady_clock::now();
     bool initialized_ = false;
