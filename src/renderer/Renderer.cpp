@@ -244,6 +244,8 @@ void Renderer::createMaterialDescriptorSetLayout()
 
 void Renderer::createShadowMap()
 {
+    // The directional shadow map is fixed-size for now and intentionally independent
+    // of swapchain resize; only the main color/depth targets follow the window extent.
     shadowMap_.create(context_, kShadowMapExtent, kShadowMapExtent);
 }
 
@@ -282,6 +284,7 @@ void Renderer::createPipeline()
     shadowPipelineInfo.enableColorAttachment = false;
     shadowPipelineInfo.enableDepth = true;
     shadowPipelineInfo.depthWriteEnable = true;
+    // Static raster depth bias keeps the first shadow pass simple while reducing acne.
     shadowPipelineInfo.enableDepthBias = true;
     shadowPipelineInfo.cullMode = VK_CULL_MODE_NONE;
     shadowPipelineInfo.depthBiasConstantFactor = 1.25f;
@@ -516,6 +519,8 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     const VkDeviceAddress objectFrameDataBaseAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
     const size_t objectCount = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
 
+    // Shadow map layout transition: previous shader reads must finish before this
+    // frame clears and writes the depth attachment.
     transitionShadowMapImage(
         commandBuffer,
         shadowMap_.layout(),
@@ -534,6 +539,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     shadowDepthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     shadowDepthAttachment.clearValue = shadowDepthClear;
 
+    // Depth-only Dynamic Rendering writes the scene from the directional light.
     VkRenderingInfo shadowRenderingInfo{};
     shadowRenderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
     shadowRenderingInfo.renderArea.offset = {0, 0};
@@ -589,6 +595,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
 
     vkCmdEndRendering(commandBuffer);
 
+    // The main pass samples this depth image in the fragment shader at set 0 binding 1.
     transitionShadowMapImage(
         commandBuffer,
         VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
@@ -640,6 +647,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     renderingInfo.pColorAttachments = &colorAttachment;
     renderingInfo.pDepthAttachment = &depthAttachment;
 
+    // Main Dynamic Rendering consumes the shadow map through the material descriptor set.
     vkCmdBeginRendering(commandBuffer, &renderingInfo);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.pipeline());
 
@@ -717,6 +725,8 @@ void Renderer::transitionShadowMapImage(
     VkImageLayout oldLayout,
     VkImageLayout newLayout)
 {
+    // Synchronization2 orders shadow depth writes against later fragment shader sampling,
+    // and orders previous frame sampling before this frame overwrites the map.
     VkPipelineStageFlags2 srcStage = VK_PIPELINE_STAGE_2_NONE;
     VkAccessFlags2 srcAccess = VK_ACCESS_2_NONE;
     VkPipelineStageFlags2 dstStage = VK_PIPELINE_STAGE_2_NONE;

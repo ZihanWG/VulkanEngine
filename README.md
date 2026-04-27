@@ -156,7 +156,7 @@ The frame binding flow is now:
 4. Bind vertex and index buffers.
 5. Draw indexed.
 
-Milestone 9 later adds stb_image-based file texture loading and GPU mipmap generation. Bindless descriptors, lighting, model loading, and render graph work remain future milestones.
+Milestone 9 later adds stb_image-based file texture loading and GPU mipmap generation. At Milestone 6, bindless descriptors, lighting, model loading, and render graph work were still future milestones.
 
 ## Milestone 7: Basic Material Abstraction
 
@@ -227,6 +227,14 @@ Milestone 11 adds a minimal directional shadow map for the existing directional 
 The main pass samples that depth image in the fragment shader and performs one manual depth comparison. The base color texture remains descriptor set 0 binding 0, and the shadow map is descriptor set 0 binding 1. One material descriptor set is still used for now; there are no descriptor arrays or bindless resources.
 
 Object data still uses Buffer Device Address plus a vertex-stage push constant. `ObjectFrameData` now contains `mvp`, `model`, `lightMvp`, light direction, light color, and ambient color. MVP and lighting data have not moved to UBO descriptors.
+
+The Milestone 11 shader/resource contract is:
+
+- set 0 binding 0 = base color combined image sampler
+- set 0 binding 1 = shadow map combined image sampler
+- object data = Buffer Device Address plus a vertex-stage push constant
+- shadow pass = depth-only Dynamic Rendering from the directional light
+- main pass = fragment shader samples the shadow map and applies a single depth comparison
 
 This is intentionally not a cascaded shadow implementation. PCF, cascaded shadow maps, better shadow filtering, stable texel snapping, broader scene fitting, PBR, normal maps, multiple lights, model loading, ECS, ImGui, and a render graph remain future work.
 
