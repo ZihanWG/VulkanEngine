@@ -9,6 +9,7 @@ layout(buffer_reference, std430) readonly buffer ObjectFrameDataBuffer {
     vec4 lightDirection;
     vec4 lightColor;
     vec4 ambientColor;
+    vec4 shadowSettings;
 };
 
 layout(push_constant) uniform PushConstants {
@@ -26,6 +27,7 @@ layout(location = 3) out vec3 vLightDirection;
 layout(location = 4) out vec3 vLightColor;
 layout(location = 5) out vec3 vAmbientColor;
 layout(location = 6) out vec4 vLightSpacePosition;
+layout(location = 7) flat out vec4 vShadowSettings;
 
 void main()
 {
@@ -39,4 +41,5 @@ void main()
     vLightColor = pc.objectFrameData.lightColor.xyz;
     vAmbientColor = pc.objectFrameData.ambientColor.xyz;
     vLightSpacePosition = pc.objectFrameData.lightMvp * vec4(inPosition, 1.0);
+    vShadowSettings = pc.objectFrameData.shadowSettings;
 }

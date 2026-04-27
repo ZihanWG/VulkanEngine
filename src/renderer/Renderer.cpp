@@ -34,10 +34,11 @@ struct ObjectFrameData {
     glm::vec4 lightDirection{0.35f, -0.65f, -0.55f, 0.0f};
     glm::vec4 lightColor{0.85f, 0.85f, 0.85f, 1.0f};
     glm::vec4 ambientColor{0.15f, 0.15f, 0.15f, 1.0f};
+    glm::vec4 shadowSettings{0.002f, 0.005f, 1.0f, 1.0f};
 };
 
 // Mirrors the shader's std430 buffer_reference block. std430 stores mat4 as
-// four 16-byte columns and vec4 as 16 bytes, so this 240-byte stride keeps each
+// four 16-byte columns and vec4 as 16 bytes, so this 256-byte stride keeps each
 // field and each per-object BDA entry on a 16-byte boundary.
 static_assert(offsetof(ObjectFrameData, mvp) == 0);
 static_assert(offsetof(ObjectFrameData, model) == 64);
@@ -45,14 +46,22 @@ static_assert(offsetof(ObjectFrameData, lightMvp) == 128);
 static_assert(offsetof(ObjectFrameData, lightDirection) == 192);
 static_assert(offsetof(ObjectFrameData, lightColor) == 208);
 static_assert(offsetof(ObjectFrameData, ambientColor) == 224);
-static_assert(sizeof(ObjectFrameData) == 240);
+static_assert(offsetof(ObjectFrameData, shadowSettings) == 240);
+static_assert(sizeof(ObjectFrameData) == 256);
 
 constexpr uint32_t kMaxFrameObjects = 64;
-constexpr uint32_t kShadowMapExtent = 2048;
 
 const glm::vec4 kDirectionalLightDirection{0.35f, -0.65f, -0.55f, 0.0f};
 const glm::vec4 kDirectionalLightColor{0.85f, 0.85f, 0.85f, 1.0f};
 const glm::vec4 kAmbientLightColor{0.15f, 0.15f, 0.15f, 1.0f};
+
+struct ShadowSceneBounds {
+    glm::vec3 center{0.0f};
+    float radius = 1.0f;
+    float lightDistance = 8.0f;
+    float nearPlane = 0.1f;
+    float farPlane = 12.0f;
+};
 
 struct PushConstants {
     VkDeviceAddress objectFrameDataAddress = 0;
@@ -76,6 +85,25 @@ std::filesystem::path assetPath(const char* relativePath)
 #endif
 }
 
+ShadowSceneBounds fixedCubeSceneShadowBounds()
+{
+    // This fixed sphere covers the current four-cube demo through their rotations.
+    // It is stable because it does not chase the camera, but it is not a substitute
+    // for cascaded shadow maps or texel snapping once the scene grows.
+    const glm::vec3 sceneCenter{0.0f, 0.25f, -0.3f};
+    constexpr float sceneRadius = 3.4f;
+    constexpr float lightDistance = 8.4f;
+    constexpr float farPadding = 1.0f;
+
+    return {
+        sceneCenter,
+        sceneRadius,
+        lightDistance,
+        0.1f,
+        lightDistance + sceneRadius + farPadding
+    };
+}
+
 glm::mat4 directionalLightViewProjection()
 {
     const glm::vec3 lightDirection = glm::normalize(glm::vec3{
@@ -83,15 +111,23 @@ glm::mat4 directionalLightViewProjection()
         kDirectionalLightDirection.y,
         kDirectionalLightDirection.z
     });
-    const glm::vec3 sceneCenter{0.0f, 0.15f, -0.3f};
-    const glm::vec3 lightPosition = sceneCenter - lightDirection * 6.0f;
+    const ShadowSceneBounds sceneBounds = fixedCubeSceneShadowBounds();
+    const glm::vec3 lightPosition = sceneBounds.center - lightDirection * sceneBounds.lightDistance;
     const glm::vec3 up = std::abs(glm::dot(lightDirection, glm::vec3{0.0f, 1.0f, 0.0f})) > 0.95f
         ? glm::vec3{0.0f, 0.0f, 1.0f}
         : glm::vec3{0.0f, 1.0f, 0.0f};
 
-    glm::mat4 lightProjection = glm::ortho(-4.0f, 4.0f, -4.0f, 4.0f, 0.1f, 12.0f);
+    // The orthographic extent and near/far planes come from a fixed demo-scene
+    // bound. A tighter bound gives the 2048 shadow map more useful texel density.
+    glm::mat4 lightProjection = glm::ortho(
+        -sceneBounds.radius,
+        sceneBounds.radius,
+        -sceneBounds.radius,
+        sceneBounds.radius,
+        sceneBounds.nearPlane,
+        sceneBounds.farPlane);
     lightProjection[1][1] *= -1.0f;
-    return lightProjection * glm::lookAt(lightPosition, sceneCenter, up);
+    return lightProjection * glm::lookAt(lightPosition, sceneBounds.center, up);
 }
 
 } // namespace
@@ -246,7 +282,7 @@ void Renderer::createShadowMap()
 {
     // The directional shadow map is fixed-size for now and intentionally independent
     // of swapchain resize; only the main color/depth targets follow the window extent.
-    shadowMap_.create(context_, kShadowMapExtent, kShadowMapExtent);
+    shadowMap_.create(context_, shadowSettings_.resolution, shadowSettings_.resolution);
 }
 
 void Renderer::createPipeline()
@@ -284,11 +320,12 @@ void Renderer::createPipeline()
     shadowPipelineInfo.enableColorAttachment = false;
     shadowPipelineInfo.enableDepth = true;
     shadowPipelineInfo.depthWriteEnable = true;
-    // Static raster depth bias keeps the first shadow pass simple while reducing acne.
+    // Static raster depth bias offsets shadow caster depth to reduce shadow acne.
+    // Bias is a tradeoff: too much separation causes peter panning.
     shadowPipelineInfo.enableDepthBias = true;
     shadowPipelineInfo.cullMode = VK_CULL_MODE_NONE;
-    shadowPipelineInfo.depthBiasConstantFactor = 1.25f;
-    shadowPipelineInfo.depthBiasSlopeFactor = 1.75f;
+    shadowPipelineInfo.depthBiasConstantFactor = shadowSettings_.rasterDepthBiasConstantFactor;
+    shadowPipelineInfo.depthBiasSlopeFactor = shadowSettings_.rasterDepthBiasSlopeFactor;
 
     shadowPipeline_.create(context_.vkDevice(), shadowPipelineInfo);
     shadowPipelineDepthFormat_ = shadowPipelineInfo.depthFormat;
@@ -481,6 +518,12 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         frameData.lightDirection = kDirectionalLightDirection;
         frameData.lightColor = kDirectionalLightColor;
         frameData.ambientColor = kAmbientLightColor;
+        frameData.shadowSettings = {
+            shadowSettings_.constantBias,
+            shadowSettings_.slopeBias,
+            shadowSettings_.enablePcf ? 1.0f : 0.0f,
+            static_cast<float>(std::max(shadowSettings_.pcfRadius, 0))
+        };
     }
 
     frameObjectDataBuffers_.at(frameIndex).upload(

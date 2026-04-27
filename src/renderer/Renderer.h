@@ -16,6 +16,7 @@
 #include "rhi/VulkanTexture.h"
 
 #include <chrono>
+#include <cstdint>
 #include <vector>
 
 namespace ve {
@@ -36,6 +37,16 @@ public:
     void waitIdle();
 
 private:
+    struct ShadowSettings {
+        uint32_t resolution = 2048;
+        float constantBias = 0.002f;
+        float slopeBias = 0.005f;
+        bool enablePcf = true;
+        int pcfRadius = 1;
+        float rasterDepthBiasConstantFactor = 1.25f;
+        float rasterDepthBiasSlopeFactor = 1.75f;
+    };
+
     void createMaterialDescriptorSetLayout();
     void createShadowMap();
     void createPipeline();
@@ -76,6 +87,7 @@ private:
     std::vector<renderer::RenderObject> renderObjects_;
     std::vector<rhi::VulkanBuffer> frameObjectDataBuffers_;
     std::vector<VkFence> imagesInFlight_;
+    ShadowSettings shadowSettings_{};
     VkFormat pipelineColorFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat pipelineDepthFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat shadowPipelineDepthFormat_ = VK_FORMAT_UNDEFINED;
