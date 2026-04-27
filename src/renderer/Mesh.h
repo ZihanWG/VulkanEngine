@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
+#include <glm/vec4.hpp>
 
 namespace ve::renderer {
 
@@ -14,10 +15,11 @@ struct Vertex {
     glm::vec3 color;
     glm::vec2 uv;
     glm::vec3 normal;
+    glm::vec4 tangent;
 };
 
 [[nodiscard]] VkVertexInputBindingDescription vertexBindingDescription();
-[[nodiscard]] std::array<VkVertexInputAttributeDescription, 4> vertexAttributeDescriptions();
+[[nodiscard]] std::array<VkVertexInputAttributeDescription, 5> vertexAttributeDescriptions();
 
 class Mesh final {
 public:

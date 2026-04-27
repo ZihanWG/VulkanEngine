@@ -268,7 +268,7 @@ void Renderer::waitIdle()
 
 void Renderer::createMaterialDescriptorSetLayout()
 {
-    std::array<VkDescriptorSetLayoutBinding, 2> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 3> bindings{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[0].descriptorCount = 1;
@@ -279,7 +279,13 @@ void Renderer::createMaterialDescriptorSetLayout()
     bindings[1].descriptorCount = 1;
     bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    // Set 0 binding 0 is the base color texture, and binding 1 is the shadow map.
+    bindings[2].binding = 2;
+    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    // Set 0 binding 0 is the base color texture, binding 1 is the shadow map,
+    // and binding 2 is the tangent-space normal map.
     // Object MVP/model/light/material data stays on the BDA + vertex push constant path.
     materialDescriptorSetLayout_.create(
         context_.vkDevice(),
@@ -296,7 +302,7 @@ void Renderer::createShadowMap()
 void Renderer::createPipeline()
 {
     const VkVertexInputBindingDescription binding = renderer::vertexBindingDescription();
-    const std::array<VkVertexInputAttributeDescription, 4> attributes = renderer::vertexAttributeDescriptions();
+    const std::array<VkVertexInputAttributeDescription, 5> attributes = renderer::vertexAttributeDescriptions();
     const VkDescriptorSetLayout descriptorSetLayout = materialDescriptorSetLayout_.handle();
     const VkPushConstantRange pushConstantRange{
         VK_SHADER_STAGE_VERTEX_BIT,
@@ -345,6 +351,7 @@ void Renderer::createScene()
 
     cubeMesh_ = renderer::Mesh::createCube(context_, commandContext_);
     createCheckerboardTexture();
+    createNormalTexture();
     createMaterial();
 
     camera_.position = {0.0f, 0.35f, 5.5f};
@@ -391,6 +398,44 @@ void Renderer::createCheckerboardTexture()
     checkerboardTexture_.createCheckerboard(context_, commandContext_, 256, 256);
 }
 
+void Renderer::createNormalTexture()
+{
+    normalMapAssetLoaded_ = false;
+
+    const std::filesystem::path texturePath = assetPath("textures/checker_normal.png");
+    if (std::filesystem::exists(texturePath)) {
+        try {
+            normalMapTexture_.createFromFile(context_, commandContext_, texturePath, true);
+            normalMapAssetLoaded_ = true;
+            Logger::info("Loaded normal texture: " + texturePath.string());
+            return;
+        } catch (const std::exception& error) {
+            Logger::warn("Failed to load normal texture '" + texturePath.string() + "': " + error.what());
+        }
+    } else {
+        Logger::warn("Normal texture asset missing, using procedural flat normal fallback: " + texturePath.string());
+    }
+
+    constexpr uint32_t width = 4;
+    constexpr uint32_t height = 4;
+    std::array<uint8_t, width * height * 4> pixels{};
+    for (size_t offset = 0; offset < pixels.size(); offset += 4) {
+        pixels[offset + 0] = 128;
+        pixels[offset + 1] = 128;
+        pixels[offset + 2] = 255;
+        pixels[offset + 3] = 255;
+    }
+
+    normalMapTexture_.createFromRgba8(
+        context_,
+        commandContext_,
+        width,
+        height,
+        std::span<const uint8_t>(pixels.data(), pixels.size()),
+        VK_FORMAT_R8G8B8A8_UNORM,
+        false);
+}
+
 void Renderer::createMaterial()
 {
     materialVariants_.clear();
@@ -404,9 +449,11 @@ void Renderer::createMaterial()
         renderer::Material material{};
         material.debugName = std::move(debugName);
         material.baseColorTexture = &checkerboardTexture_;
+        material.normalTexture = &normalMapTexture_;
         material.baseColorFactor = baseColorFactor;
         material.metallic = metallic;
         material.roughness = roughness;
+        material.hasNormalMap = normalMapAssetLoaded_;
         createMaterialDescriptorSet(material);
         materialVariants_.push_back(std::move(material));
     };
@@ -424,13 +471,16 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     if (!material.baseColorTexture || !material.baseColorTexture->valid()) {
         throw std::runtime_error("Cannot create a material descriptor set without a valid base color texture.");
     }
+    if (!material.normalTexture || !material.normalTexture->valid()) {
+        throw std::runtime_error("Cannot create a material descriptor set without a valid normal texture.");
+    }
     if (!shadowMap_.valid()) {
         throw std::runtime_error("Cannot create a material descriptor set without a valid shadow map.");
     }
 
     VkDescriptorPoolSize poolSize{};
     poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = kMaxMaterialDescriptorSets * 2;
+    poolSize.descriptorCount = kMaxMaterialDescriptorSets * 3;
 
     if (materialDescriptorPool_.handle() == VK_NULL_HANDLE) {
         materialDescriptorPool_.create(
@@ -457,7 +507,12 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     shadowInfo.imageView = shadowMap_.imageView();
     shadowInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
 
-    std::array<VkWriteDescriptorSet, 2> writes{};
+    VkDescriptorImageInfo normalInfo{};
+    normalInfo.sampler = material.normalTexture->sampler();
+    normalInfo.imageView = material.normalTexture->imageView();
+    normalInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    std::array<VkWriteDescriptorSet, 3> writes{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = material.descriptorSet;
     writes[0].dstBinding = 0;
@@ -474,8 +529,16 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[1].pImageInfo = &shadowInfo;
 
+    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet = material.descriptorSet;
+    writes[2].dstBinding = 2;
+    writes[2].dstArrayElement = 0;
+    writes[2].descriptorCount = 1;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[2].pImageInfo = &normalInfo;
+
     // The material descriptor stores sampled images only: base color at binding 0,
-    // shadow map at binding 1. Object data remains outside descriptors.
+    // shadow map at binding 1, and normal map at binding 2. Object data remains outside descriptors.
     vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 

@@ -2,6 +2,7 @@
 
 layout(set = 0, binding = 0) uniform sampler2D uTexture;
 layout(set = 0, binding = 1) uniform sampler2D uShadowMap;
+layout(set = 0, binding = 2) uniform sampler2D uNormalMap;
 
 layout(location = 0) in vec3 vColor;
 layout(location = 1) in vec2 vUV;
@@ -15,16 +16,17 @@ layout(location = 8) in vec3 vWorldPosition;
 layout(location = 9) flat in vec3 vCameraPosition;
 layout(location = 10) flat in vec4 vBaseColorFactor;
 layout(location = 11) flat in vec4 vMaterialParams;
+layout(location = 12) in vec3 vTangent;
+layout(location = 13) in vec3 vBitangent;
 layout(location = 0) out vec4 outColor;
 
 const float PI = 3.14159265359;
 const float EPSILON = 0.0001;
 
-float shadowDepthBias()
+float shadowDepthBias(vec3 normal)
 {
     float constantBias = max(vShadowSettings.x, 0.0);
     float slopeBias = max(vShadowSettings.y, 0.0);
-    vec3 normal = normalize(vNormal);
     vec3 lightToSurface = normalize(-vLightDirection);
     float normalLight = max(dot(normal, lightToSurface), 0.0);
 
@@ -40,7 +42,7 @@ float compareShadowDepth(vec2 shadowUV, float currentDepth, float bias)
     return currentDepth - bias <= closestDepth ? 1.0 : 0.0;
 }
 
-float sampleShadowFactor()
+float sampleShadowFactor(vec3 normal)
 {
     vec3 shadowCoord = vLightSpacePosition.xyz / vLightSpacePosition.w;
     vec2 shadowUV = shadowCoord.xy * 0.5 + 0.5;
@@ -52,7 +54,7 @@ float sampleShadowFactor()
     }
 
     float currentDepth = shadowCoord.z;
-    float bias = shadowDepthBias();
+    float bias = shadowDepthBias(normal);
     bool enablePcf = vShadowSettings.z > 0.5;
     int pcfRadius = clamp(int(vShadowSettings.w + 0.5), 0, 4);
 
@@ -119,7 +121,9 @@ void main()
     float metallic = clamp(vMaterialParams.x, 0.0, 1.0);
     float roughness = clamp(vMaterialParams.y, 0.04, 1.0);
 
-    vec3 normal = normalize(vNormal);
+    vec3 normalTS = texture(uNormalMap, vUV).xyz * 2.0 - 1.0;
+    mat3 tbn = mat3(normalize(vTangent), normalize(vBitangent), normalize(vNormal));
+    vec3 normal = normalize(tbn * normalTS);
     vec3 lightDirection = normalize(-vLightDirection);
     vec3 viewDirection = normalize(vCameraPosition - vWorldPosition);
     vec3 halfVector = normalize(viewDirection + lightDirection);
@@ -136,7 +140,7 @@ void main()
     vec3 diffuse = (1.0 - metallic) * baseColor / PI;
     vec3 specular = distribution * geometry * fresnel / max(4.0 * normalView * normalLight, EPSILON);
 
-    float shadowFactor = sampleShadowFactor();
+    float shadowFactor = sampleShadowFactor(normal);
     vec3 ambient = vAmbientColor * baseColor;
     vec3 direct = (diffuse + specular) * vLightColor * normalLight * shadowFactor;
 

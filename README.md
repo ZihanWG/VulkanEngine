@@ -2,7 +2,7 @@
 
 Modern C++20 Vulkan 1.3 renderer skeleton inspired by the educational flow of [Sascha Willems' HowToVulkan](https://github.com/SaschaWillems/HowToVulkan), but split into engine-style modules instead of a single tutorial file.
 
-The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube geometry with normals into GPU-local vertex and index buffers, loads a small RGBA texture from disk with a procedural fallback, and draws multiple independently rotating textured cubes with direct-light Cook-Torrance GGX material response, directional lighting, and a PCF-filtered directional shadow map every frame using Dynamic Rendering and Synchronization2.
+The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube geometry with normals and tangents into GPU-local vertex and index buffers, loads small RGBA base color and normal textures from disk with procedural fallbacks, and draws multiple independently rotating textured cubes with tangent-space normal mapping, direct-light Cook-Torrance GGX material response, directional lighting, and a PCF-filtered directional shadow map every frame using Dynamic Rendering and Synchronization2.
 
 ## Dependencies
 
@@ -279,8 +279,24 @@ The shader computes base color from the texture multiplied by `baseColorFactor`,
 
 Lighting is still direct lighting only. The PCF-filtered directional shadow factor still modulates the direct light, and ambient remains a simple unshadowed term. There is still no IBL, split-sum BRDF LUT, Kulla-Conty multi-scattering compensation, normal maps, metallic/roughness textures, bindless descriptors, model loading, ECS, ImGui, or render graph.
 
-Future material and lighting work includes IBL diffuse/specular, a split-sum BRDF LUT, Kulla-Conty multi-scattering compensation, normal maps, material texture maps, and bindless descriptors.
+At the end of Milestone 14, future material and lighting work included IBL diffuse/specular, a split-sum BRDF LUT, Kulla-Conty multi-scattering compensation, normal maps, material texture maps, and bindless descriptors.
+
+## Milestone 15: Basic Normal Mapping
+
+Milestone 15 adds basic tangent-space normal mapping while keeping the renderer architecture simple. Mesh vertices now contain position, color, UV, normal, and tangent attributes. The built-in cube still uses duplicated vertices per face, and its tangents are hardcoded per face; general tangent generation for imported meshes is future work.
+
+`Material` can now reference a normal map in addition to its base color texture. Descriptor set 0 keeps the existing bindings and adds one new sampler:
+
+- set 0 binding 0 = base color combined image sampler
+- set 0 binding 1 = shadow map combined image sampler
+- set 0 binding 2 = normal map combined image sampler
+
+The vertex shader reads the tangent at location 4, transforms the normal and tangent to world space, computes the bitangent from `cross(normal, tangent) * tangent.w`, and passes the TBN basis to the fragment shader. The fragment shader samples the normal map, decodes the tangent-space normal from `[0, 1]` to `[-1, 1]`, transforms it through TBN, and uses that world-space normal for Cook-Torrance GGX direct lighting and the shadow bias path.
+
+`Renderer` loads `assets/textures/checker_normal.png` when present. If that file is missing or cannot be decoded, it creates a small procedural flat normal texture with RGBA `(128, 128, 255, 255)` and still binds it at descriptor set 0 binding 2. This keeps materials descriptor-complete without adding shader branching or dynamic descriptor behavior.
+
+Object data still uses Buffer Device Address plus a vertex-stage push constant. Normal map state stays in the material descriptor set; `ObjectFrameData` is unchanged. This milestone is still not IBL, a BRDF LUT, Kulla-Conty multi-scattering compensation, bindless descriptors, model loading, glTF, ECS, ImGui, or a render graph.
 
 ## Next Milestones
 
-Future milestones can build on this multi-object material foundation with IBL, material texture maps, improved shadow quality, bindless descriptors, model loading, and render graph work once the minimal texture, lighting, and shadow path is stable.
+Future milestones can build on this multi-object material foundation with IBL, a BRDF LUT, Kulla-Conty multi-scattering compensation, material texture maps, general tangent generation, improved shadow quality, bindless descriptors, model loading, and render graph work once the minimal texture, lighting, and shadow path is stable.
