@@ -253,6 +253,8 @@ The Milestone 12 resource contract remains:
 - set 0 binding 0 = base color combined image sampler
 - set 0 binding 1 = shadow map combined image sampler
 - object data = Buffer Device Address plus a vertex-stage push constant
+- shadow pass = depth-only Dynamic Rendering from the directional light
+- main pass = fragment shader shadow-map sampling with simple 3x3 manual PCF
 - no PBR, normal maps, bindless descriptors, model loading, ECS, ImGui, or render graph
 
 Future shadow and lighting work includes cascaded shadow maps, texel snapping for stable shadows, variance or EVSM shadows, PBR, IBL, and a render graph.
