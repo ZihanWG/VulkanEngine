@@ -10,6 +10,9 @@ layout(buffer_reference, std430) readonly buffer ObjectFrameDataBuffer {
     vec4 lightColor;
     vec4 ambientColor;
     vec4 shadowSettings;
+    vec4 baseColorFactor;
+    vec4 materialParams;
+    vec4 cameraPosition;
 };
 
 layout(push_constant) uniform PushConstants {
@@ -28,9 +31,14 @@ layout(location = 4) out vec3 vLightColor;
 layout(location = 5) out vec3 vAmbientColor;
 layout(location = 6) out vec4 vLightSpacePosition;
 layout(location = 7) flat out vec4 vShadowSettings;
+layout(location = 8) out vec3 vWorldPosition;
+layout(location = 9) flat out vec3 vCameraPosition;
+layout(location = 10) flat out vec4 vBaseColorFactor;
+layout(location = 11) flat out vec4 vMaterialParams;
 
 void main()
 {
+    vec4 worldPosition = pc.objectFrameData.model * vec4(inPosition, 1.0);
     gl_Position = pc.objectFrameData.mvp * vec4(inPosition, 1.0);
     mat3 normalMatrix = transpose(inverse(mat3(pc.objectFrameData.model)));
 
@@ -42,4 +50,8 @@ void main()
     vAmbientColor = pc.objectFrameData.ambientColor.xyz;
     vLightSpacePosition = pc.objectFrameData.lightMvp * vec4(inPosition, 1.0);
     vShadowSettings = pc.objectFrameData.shadowSettings;
+    vWorldPosition = worldPosition.xyz;
+    vCameraPosition = pc.objectFrameData.cameraPosition.xyz;
+    vBaseColorFactor = pc.objectFrameData.baseColorFactor;
+    vMaterialParams = pc.objectFrameData.materialParams;
 }

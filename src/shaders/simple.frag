@@ -11,6 +11,10 @@ layout(location = 4) in vec3 vLightColor;
 layout(location = 5) in vec3 vAmbientColor;
 layout(location = 6) in vec4 vLightSpacePosition;
 layout(location = 7) flat in vec4 vShadowSettings;
+layout(location = 8) in vec3 vWorldPosition;
+layout(location = 9) flat in vec3 vCameraPosition;
+layout(location = 10) flat in vec4 vBaseColorFactor;
+layout(location = 11) flat in vec4 vMaterialParams;
 layout(location = 0) out vec4 outColor;
 
 float shadowDepthBias()
@@ -74,12 +78,28 @@ float sampleShadowFactor()
 void main()
 {
     vec4 texColor = texture(uTexture, vUV);
+    vec4 materialColor = texColor * vBaseColorFactor;
+    vec3 baseColor = materialColor.rgb * vColor;
+    float alpha = materialColor.a;
+    float metallic = clamp(vMaterialParams.x, 0.0, 1.0);
+    float roughness = clamp(vMaterialParams.y, 0.04, 1.0);
+
     vec3 normal = normalize(vNormal);
     vec3 lightToSurface = normalize(-vLightDirection);
-    float diffuse = max(dot(normal, lightToSurface), 0.0);
-    float shadowFactor = sampleShadowFactor();
-    vec3 lighting = vAmbientColor + vLightColor * diffuse * shadowFactor;
-    vec3 baseColor = texColor.rgb * vColor;
+    vec3 viewDirection = normalize(vCameraPosition - vWorldPosition);
+    vec3 halfVector = normalize(lightToSurface + viewDirection);
 
-    outColor = vec4(baseColor * lighting, texColor.a);
+    float diffuse = max(dot(normal, lightToSurface), 0.0);
+    float specularAngle = max(dot(normal, halfVector), 0.0);
+    float shininess = mix(128.0, 4.0, roughness);
+    float specularStrength = mix(1.0, 0.2, roughness);
+    vec3 diffuseColor = baseColor * (1.0 - metallic);
+    vec3 specularColor = mix(vec3(0.04), baseColor, metallic);
+    vec3 specular = specularColor * pow(specularAngle, shininess) * specularStrength * diffuse;
+
+    float shadowFactor = sampleShadowFactor();
+    vec3 ambient = vAmbientColor * baseColor * (1.0 - metallic * 0.5);
+    vec3 direct = vLightColor * (diffuseColor * diffuse + specular) * shadowFactor;
+
+    outColor = vec4(ambient + direct, alpha);
 }

@@ -2,7 +2,7 @@
 
 Modern C++20 Vulkan 1.3 renderer skeleton inspired by the educational flow of [Sascha Willems' HowToVulkan](https://github.com/SaschaWillems/HowToVulkan), but split into engine-style modules instead of a single tutorial file.
 
-The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube geometry with normals into GPU-local vertex and index buffers, loads a small RGBA texture from disk with a procedural fallback, and draws multiple independently rotating textured cubes with minimal directional lighting and a PCF-filtered directional shadow map every frame using Dynamic Rendering and Synchronization2.
+The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube geometry with normals into GPU-local vertex and index buffers, loads a small RGBA texture from disk with a procedural fallback, and draws multiple independently rotating textured cubes with minimal PBR-style material parameters, directional lighting, and a PCF-filtered directional shadow map every frame using Dynamic Rendering and Synchronization2.
 
 ## Dependencies
 
@@ -81,7 +81,7 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 2. Acquire the next swapchain image with an image-available semaphore.
 3. Reset the fence and command buffer.
 4. Update all object transforms.
-5. Upload per-object MVP/model/light/light-MVP data into the current frame's object-data buffer.
+5. Upload per-object MVP/model/light/light-MVP/material data into the current frame's object-data buffer.
 6. Record the command buffer.
 7. Transition the shadow map to `VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL`.
 8. Begin depth-only Dynamic Rendering for the shadow pass.
@@ -259,6 +259,18 @@ The Milestone 12 resource contract remains:
 
 Future shadow and lighting work includes cascaded shadow maps, texel snapping for stable shadows, variance or EVSM shadows, PBR, IBL, and a render graph.
 
+## Milestone 13: Basic PBR Material Parameters
+
+Milestone 13 adds minimal PBR-style material parameters without changing the descriptor layout. `Material` now stores `baseColorFactor`, `metallic`, and `roughness` in addition to its debug name, base color texture pointer, and descriptor set.
+
+Material parameters are passed through the existing Buffer Device Address object-data path. Each `ObjectFrameData` entry now includes `baseColorFactor`, `materialParams`, and `cameraPosition`; `materialParams.x` is metallic, `materialParams.y` is roughness, and `materialParams.zw` are reserved.
+
+The fragment shader still samples the base color texture from descriptor set 0 binding 0 and the shadow map from descriptor set 0 binding 1. It multiplies the texture by `baseColorFactor`, then applies a simple non-IBL diffuse plus Blinn-style specular approximation controlled by roughness and metallic.
+
+This is not full PBR yet. There is still no BRDF LUT, IBL, Kulla-Conty multi-scattering compensation, normal maps, metallic/roughness texture maps, bindless material descriptors, model loading, ECS, ImGui, or render graph.
+
+Future material and lighting work includes Cook-Torrance GGX, IBL, a BRDF LUT, Kulla-Conty multi-scattering compensation, normal maps, metallic/roughness texture maps, and bindless material descriptors.
+
 ## Next Milestones
 
-Future milestones can build on this multi-object material foundation with richer material parameters, improved shadow quality, bindless descriptors, model loading, and render graph work once the minimal texture, lighting, and shadow path is stable.
+Future milestones can build on this multi-object material foundation with fuller PBR lighting, improved shadow quality, bindless descriptors, model loading, and render graph work once the minimal texture, lighting, and shadow path is stable.

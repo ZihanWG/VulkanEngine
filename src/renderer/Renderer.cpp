@@ -35,11 +35,15 @@ struct ObjectFrameData {
     glm::vec4 lightColor{0.85f, 0.85f, 0.85f, 1.0f};
     glm::vec4 ambientColor{0.15f, 0.15f, 0.15f, 1.0f};
     glm::vec4 shadowSettings{0.002f, 0.005f, 1.0f, 1.0f};
+    glm::vec4 baseColorFactor{1.0f};
+    glm::vec4 materialParams{0.0f, 0.5f, 0.0f, 0.0f};
+    glm::vec4 cameraPosition{0.0f, 0.0f, 0.0f, 1.0f};
 };
 
 // Mirrors the shader's std430 buffer_reference block. std430 stores mat4 as
-// four 16-byte columns and vec4 as 16 bytes, so this 256-byte stride keeps each
-// field and each per-object BDA entry on a 16-byte boundary.
+// four 16-byte columns and vec4 as 16 bytes, so this 304-byte stride keeps each
+// field and each per-object BDA entry on a 16-byte boundary. materialParams.xy
+// are metallic and roughness; zw are reserved for future scalar material data.
 static_assert(offsetof(ObjectFrameData, mvp) == 0);
 static_assert(offsetof(ObjectFrameData, model) == 64);
 static_assert(offsetof(ObjectFrameData, lightMvp) == 128);
@@ -47,9 +51,13 @@ static_assert(offsetof(ObjectFrameData, lightDirection) == 192);
 static_assert(offsetof(ObjectFrameData, lightColor) == 208);
 static_assert(offsetof(ObjectFrameData, ambientColor) == 224);
 static_assert(offsetof(ObjectFrameData, shadowSettings) == 240);
-static_assert(sizeof(ObjectFrameData) == 256);
+static_assert(offsetof(ObjectFrameData, baseColorFactor) == 256);
+static_assert(offsetof(ObjectFrameData, materialParams) == 272);
+static_assert(offsetof(ObjectFrameData, cameraPosition) == 288);
+static_assert(sizeof(ObjectFrameData) == 304);
 
 constexpr uint32_t kMaxFrameObjects = 64;
+constexpr uint32_t kMaxMaterialDescriptorSets = 8;
 
 const glm::vec4 kDirectionalLightDirection{0.35f, -0.65f, -0.55f, 0.0f};
 const glm::vec4 kDirectionalLightColor{0.85f, 0.85f, 0.85f, 1.0f};
@@ -272,7 +280,7 @@ void Renderer::createMaterialDescriptorSetLayout()
     bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     // Set 0 binding 0 is the base color texture, and binding 1 is the shadow map.
-    // Object MVP/model/light data stays on the BDA + vertex push constant path.
+    // Object MVP/model/light/material data stays on the BDA + vertex push constant path.
     materialDescriptorSetLayout_.create(
         context_.vkDevice(),
         std::span<const VkDescriptorSetLayoutBinding>(bindings.data(), bindings.size()));
@@ -345,12 +353,13 @@ void Renderer::createScene()
     renderObjects_.reserve(4);
     const auto addCube = [this](
                              std::string debugName,
+                             const renderer::Material* material,
                              const glm::vec3& position,
                              const glm::vec3& rotationRadians,
                              const glm::vec3& scale) {
         renderer::RenderObject cube{};
         cube.mesh = &cubeMesh_;
-        cube.material = &checkerboardMaterial_;
+        cube.material = material;
         cube.debugName = std::move(debugName);
         cube.transform.position = position;
         cube.transform.rotationRadians = rotationRadians;
@@ -358,10 +367,10 @@ void Renderer::createScene()
         renderObjects_.push_back(std::move(cube));
     };
 
-    addCube("Center Cube", {0.0f, -0.1f, 0.0f}, {0.2f, 0.0f, 0.0f}, {0.7f, 0.7f, 0.7f});
-    addCube("Left Cube", {-1.35f, -0.15f, -0.35f}, {0.0f, 0.35f, 0.2f}, {0.5f, 0.5f, 0.5f});
-    addCube("Right Cube", {1.35f, -0.05f, -0.25f}, {0.25f, -0.35f, 0.0f}, {0.55f, 0.8f, 0.55f});
-    addCube("Elevated Cube", {0.0f, 1.0f, -0.7f}, {-0.3f, 0.2f, 0.45f}, {0.45f, 0.45f, 0.45f});
+    addCube("Center Cube", &materialVariants_.at(0), {0.0f, -0.1f, 0.0f}, {0.2f, 0.0f, 0.0f}, {0.7f, 0.7f, 0.7f});
+    addCube("Left Cube", &materialVariants_.at(1), {-1.35f, -0.15f, -0.35f}, {0.0f, 0.35f, 0.2f}, {0.5f, 0.5f, 0.5f});
+    addCube("Right Cube", &materialVariants_.at(2), {1.35f, -0.05f, -0.25f}, {0.25f, -0.35f, 0.0f}, {0.55f, 0.8f, 0.55f});
+    addCube("Elevated Cube", &materialVariants_.at(3), {0.0f, 1.0f, -0.7f}, {-0.3f, 0.2f, 0.45f}, {0.45f, 0.45f, 0.45f});
 }
 
 void Renderer::createCheckerboardTexture()
@@ -384,10 +393,30 @@ void Renderer::createCheckerboardTexture()
 
 void Renderer::createMaterial()
 {
-    checkerboardMaterial_ = renderer::Material{};
-    checkerboardMaterial_.debugName = "Checkerboard";
-    checkerboardMaterial_.baseColorTexture = &checkerboardTexture_;
-    createMaterialDescriptorSet(checkerboardMaterial_);
+    materialVariants_.clear();
+    materialVariants_.reserve(4);
+
+    const auto addMaterial = [this](
+                                 std::string debugName,
+                                 const glm::vec4& baseColorFactor,
+                                 float metallic,
+                                 float roughness) {
+        renderer::Material material{};
+        material.debugName = std::move(debugName);
+        material.baseColorTexture = &checkerboardTexture_;
+        material.baseColorFactor = baseColorFactor;
+        material.metallic = metallic;
+        material.roughness = roughness;
+        createMaterialDescriptorSet(material);
+        materialVariants_.push_back(std::move(material));
+    };
+
+    addMaterial("Checkerboard Matte", {1.0f, 1.0f, 1.0f, 1.0f}, 0.0f, 0.75f);
+    addMaterial("Checkerboard Warm Semi-Metal", {1.0f, 0.82f, 0.65f, 1.0f}, 0.35f, 0.38f);
+    addMaterial("Checkerboard Cool Rough Metal", {0.72f, 0.84f, 1.0f, 1.0f}, 0.85f, 0.62f);
+    addMaterial("Checkerboard Glossy Dielectric", {0.9f, 1.0f, 0.78f, 1.0f}, 0.0f, 0.18f);
+
+    checkerboardMaterial_ = materialVariants_.front();
 }
 
 void Renderer::createMaterialDescriptorSet(renderer::Material& material)
@@ -401,13 +430,13 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
 
     VkDescriptorPoolSize poolSize{};
     poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = 2;
+    poolSize.descriptorCount = kMaxMaterialDescriptorSets * 2;
 
     if (materialDescriptorPool_.handle() == VK_NULL_HANDLE) {
         materialDescriptorPool_.create(
             context_.vkDevice(),
             std::span<const VkDescriptorPoolSize>(&poolSize, 1),
-            1);
+            kMaxMaterialDescriptorSets);
     }
 
     const VkDescriptorSetLayout descriptorSetLayout = materialDescriptorSetLayout_.handle();
@@ -524,6 +553,16 @@ void Renderer::updateFrameData(uint32_t frameIndex)
             shadowSettings_.enablePcf ? 1.0f : 0.0f,
             static_cast<float>(std::max(shadowSettings_.pcfRadius, 0))
         };
+        if (object.material) {
+            frameData.baseColorFactor = object.material->baseColorFactor;
+            frameData.materialParams = {
+                object.material->metallic,
+                object.material->roughness,
+                0.0f,
+                0.0f
+            };
+        }
+        frameData.cameraPosition = glm::vec4(camera_.position, 1.0f);
     }
 
     frameObjectDataBuffers_.at(frameIndex).upload(

@@ -2,6 +2,7 @@
 
 #include "rhi/VulkanCommon.h"
 
+#include <glm/vec4.hpp>
 #include <string>
 
 namespace ve::rhi {
@@ -16,6 +17,9 @@ struct Material {
     std::string debugName;
     const rhi::VulkanTexture* baseColorTexture = nullptr;
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    glm::vec4 baseColorFactor = glm::vec4(1.0f);
+    float metallic = 0.0f;
+    float roughness = 0.5f;
 };
 
 } // namespace ve::renderer

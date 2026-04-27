@@ -84,6 +84,7 @@ private:
     renderer::Camera camera_;
     renderer::Mesh cubeMesh_;
     renderer::Material checkerboardMaterial_;
+    std::vector<renderer::Material> materialVariants_;
     std::vector<renderer::RenderObject> renderObjects_;
     std::vector<rhi::VulkanBuffer> frameObjectDataBuffers_;
     std::vector<VkFence> imagesInFlight_;
