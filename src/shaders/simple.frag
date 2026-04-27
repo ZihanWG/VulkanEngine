@@ -17,6 +17,9 @@ layout(location = 10) flat in vec4 vBaseColorFactor;
 layout(location = 11) flat in vec4 vMaterialParams;
 layout(location = 0) out vec4 outColor;
 
+const float PI = 3.14159265359;
+const float EPSILON = 0.0001;
+
 float shadowDepthBias()
 {
     float constantBias = max(vShadowSettings.x, 0.0);
@@ -75,31 +78,67 @@ float sampleShadowFactor()
     return litSamples / float(sampleCount);
 }
 
+float distributionGGX(vec3 normal, vec3 halfVector, float roughness)
+{
+    float alpha = roughness * roughness;
+    float alphaSquared = alpha * alpha;
+    float normalHalf = max(dot(normal, halfVector), 0.0);
+    float normalHalfSquared = normalHalf * normalHalf;
+    float denominator = normalHalfSquared * (alphaSquared - 1.0) + 1.0;
+
+    return alphaSquared / max(PI * denominator * denominator, EPSILON);
+}
+
+float geometrySchlickGGX(float normalDirection, float roughness)
+{
+    float r = roughness + 1.0;
+    float k = (r * r) / 8.0;
+
+    return normalDirection / max(normalDirection * (1.0 - k) + k, EPSILON);
+}
+
+float geometrySmith(vec3 normal, vec3 viewDirection, vec3 lightDirection, float roughness)
+{
+    float normalView = max(dot(normal, viewDirection), 0.0);
+    float normalLight = max(dot(normal, lightDirection), 0.0);
+
+    return geometrySchlickGGX(normalView, roughness) * geometrySchlickGGX(normalLight, roughness);
+}
+
+vec3 fresnelSchlick(float cosTheta, vec3 f0)
+{
+    return f0 + (1.0 - f0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
 void main()
 {
     vec4 texColor = texture(uTexture, vUV);
     vec4 materialColor = texColor * vBaseColorFactor;
-    vec3 baseColor = materialColor.rgb * vColor;
+    vec3 baseColor = materialColor.rgb;
     float alpha = materialColor.a;
     float metallic = clamp(vMaterialParams.x, 0.0, 1.0);
     float roughness = clamp(vMaterialParams.y, 0.04, 1.0);
 
     vec3 normal = normalize(vNormal);
-    vec3 lightToSurface = normalize(-vLightDirection);
+    vec3 lightDirection = normalize(-vLightDirection);
     vec3 viewDirection = normalize(vCameraPosition - vWorldPosition);
-    vec3 halfVector = normalize(lightToSurface + viewDirection);
+    vec3 halfVector = normalize(viewDirection + lightDirection);
 
-    float diffuse = max(dot(normal, lightToSurface), 0.0);
-    float specularAngle = max(dot(normal, halfVector), 0.0);
-    float shininess = mix(128.0, 4.0, roughness);
-    float specularStrength = mix(1.0, 0.2, roughness);
-    vec3 diffuseColor = baseColor * (1.0 - metallic);
-    vec3 specularColor = mix(vec3(0.04), baseColor, metallic);
-    vec3 specular = specularColor * pow(specularAngle, shininess) * specularStrength * diffuse;
+    float normalLight = max(dot(normal, lightDirection), 0.0);
+    float normalView = max(dot(normal, viewDirection), 0.0);
+    float halfView = max(dot(halfVector, viewDirection), 0.0);
+
+    vec3 f0 = mix(vec3(0.04), baseColor, metallic);
+    vec3 fresnel = fresnelSchlick(halfView, f0);
+    float distribution = distributionGGX(normal, halfVector, roughness);
+    float geometry = geometrySmith(normal, viewDirection, lightDirection, roughness);
+
+    vec3 diffuse = (1.0 - metallic) * baseColor / PI;
+    vec3 specular = distribution * geometry * fresnel / max(4.0 * normalView * normalLight, EPSILON);
 
     float shadowFactor = sampleShadowFactor();
-    vec3 ambient = vAmbientColor * baseColor * (1.0 - metallic * 0.5);
-    vec3 direct = vLightColor * (diffuseColor * diffuse + specular) * shadowFactor;
+    vec3 ambient = vAmbientColor * baseColor;
+    vec3 direct = (diffuse + specular) * vLightColor * normalLight * shadowFactor;
 
     outColor = vec4(ambient + direct, alpha);
 }

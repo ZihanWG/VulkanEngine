@@ -2,7 +2,7 @@
 
 Modern C++20 Vulkan 1.3 renderer skeleton inspired by the educational flow of [Sascha Willems' HowToVulkan](https://github.com/SaschaWillems/HowToVulkan), but split into engine-style modules instead of a single tutorial file.
 
-The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube geometry with normals into GPU-local vertex and index buffers, loads a small RGBA texture from disk with a procedural fallback, and draws multiple independently rotating textured cubes with minimal PBR-style material parameters, directional lighting, and a PCF-filtered directional shadow map every frame using Dynamic Rendering and Synchronization2.
+The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube geometry with normals into GPU-local vertex and index buffers, loads a small RGBA texture from disk with a procedural fallback, and draws multiple independently rotating textured cubes with direct-light Cook-Torrance GGX material response, directional lighting, and a PCF-filtered directional shadow map every frame using Dynamic Rendering and Synchronization2.
 
 ## Dependencies
 
@@ -269,8 +269,18 @@ The fragment shader still samples the base color texture from descriptor set 0 b
 
 This is not full PBR yet. There is still no BRDF LUT, IBL, Kulla-Conty multi-scattering compensation, normal maps, metallic/roughness texture maps, bindless material descriptors, model loading, ECS, ImGui, or render graph.
 
-Future material and lighting work includes Cook-Torrance GGX, IBL, a BRDF LUT, Kulla-Conty multi-scattering compensation, normal maps, metallic/roughness texture maps, and bindless material descriptors.
+At the end of Milestone 13, future material and lighting work included Cook-Torrance GGX, IBL, a BRDF LUT, Kulla-Conty multi-scattering compensation, normal maps, metallic/roughness texture maps, and bindless material descriptors.
+
+## Milestone 14: Cook-Torrance GGX Direct Lighting
+
+Milestone 14 replaces the Milestone 13 Blinn-style specular approximation with a direct-light Cook-Torrance GGX BRDF in the fragment shader. The renderer still samples the base color texture from descriptor set 0 binding 0 and the shadow map from descriptor set 0 binding 1, with material values coming through the existing Buffer Device Address object-data path.
+
+The shader computes base color from the texture multiplied by `baseColorFactor`, reads metallic from `materialParams.x`, and reads roughness from `materialParams.y`. Roughness is clamped to `[0.04, 1.0]` to avoid unstable highlights. The direct light BRDF now uses the GGX / Trowbridge-Reitz normal distribution function, Smith geometry function, and Schlick Fresnel approximation. Metallic and roughness now affect the diffuse/specular energy split, `F0`, highlight width, and specular intensity.
+
+Lighting is still direct lighting only. The PCF-filtered directional shadow factor still modulates the direct light, and ambient remains a simple unshadowed term. There is still no IBL, split-sum BRDF LUT, Kulla-Conty multi-scattering compensation, normal maps, metallic/roughness textures, bindless descriptors, model loading, ECS, ImGui, or render graph.
+
+Future material and lighting work includes IBL diffuse/specular, a split-sum BRDF LUT, Kulla-Conty multi-scattering compensation, normal maps, material texture maps, and bindless descriptors.
 
 ## Next Milestones
 
-Future milestones can build on this multi-object material foundation with fuller PBR lighting, improved shadow quality, bindless descriptors, model loading, and render graph work once the minimal texture, lighting, and shadow path is stable.
+Future milestones can build on this multi-object material foundation with IBL, material texture maps, improved shadow quality, bindless descriptors, model loading, and render graph work once the minimal texture, lighting, and shadow path is stable.
