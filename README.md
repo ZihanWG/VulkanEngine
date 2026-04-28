@@ -76,7 +76,7 @@ Descriptor set 0 is the material/shadow texture set used by the main fragment sh
 
 Skybox rendering uses a separate descriptor set layout and pipeline:
 
-- skybox set 0 binding 0 = environment cubemap combined image sampler
+- skybox set 0 binding 0 = visible environment cubemap combined image sampler
 
 The material descriptor set above is still separate from the skybox descriptor set. The material shader samples the diffuse irradiance cubemap at binding 4 for environment diffuse lighting; the skybox continues to sample the visible environment cubemap from its own set. There is still no specular IBL, BRDF LUT, Kulla-Conty term, bindless descriptor path, or model-loading path.
 
@@ -344,7 +344,7 @@ GGX direct lighting uses the resulting metallic and roughness values together wi
 
 ## Milestone 17: IBL Preparation and Environment Texture Infrastructure
 
-Milestone 17 prepares the renderer for image-based lighting without changing the lighting model yet. A new `VulkanEnvironmentMap` wrapper owns a cube-compatible `VkImage`, VMA allocation, `VK_IMAGE_VIEW_TYPE_CUBE` view, and clamp-to-edge sampler. The renderer creates a small generated six-face RGBA8 cubemap during scene setup so future diffuse irradiance, prefiltered specular, and skybox work have a real GPU cubemap resource to build from.
+Milestone 17 prepares the renderer for image-based lighting without changing the lighting model yet. A new `VulkanEnvironmentMap` wrapper owns a cube-compatible `VkImage`, VMA allocation, `VK_IMAGE_VIEW_TYPE_CUBE` view, and clamp-to-edge sampler. The renderer creates a small generated six-face RGBA8 cubemap during scene setup so later skybox and image-based-lighting milestones have a real GPU cubemap resource to build from.
 
 The environment map upload path uses the same explicit staging-buffer and Synchronization2 style as the existing texture code: all six cube faces are copied into array layers 0 through 5, then transitioned to `VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL`. At Milestone 17, the shader pipeline did not sample this cubemap, so descriptor set 0 remained unchanged and no environment descriptor binding was added in that milestone.
 
@@ -352,19 +352,21 @@ This is intentionally infrastructure only. There is still no split-sum BRDF LUT,
 
 ## Milestone 18: Skybox Rendering
 
-Milestone 18 renders the procedural environment cubemap from Milestone 17 as a skybox background. The skybox uses a fullscreen triangle, a separate graphics pipeline, and a separate descriptor set layout where set 0 binding 0 is the environment cubemap combined image sampler.
+Milestone 18 renders the procedural environment cubemap from Milestone 17 as a skybox background. The skybox uses a fullscreen triangle, a separate graphics pipeline, and a separate descriptor set layout where skybox set 0 binding 0 is the visible environment cubemap combined image sampler.
 
-Material descriptor set 0 remains unchanged for mesh rendering: base color, shadow map, normal map, and metallic-roughness map stay at bindings 0 through 3. Object data still uses Buffer Device Address plus the existing vertex-stage push constant. The skybox has its own vertex-stage push constant containing the inverse view-projection matrix with camera translation removed.
+At Milestone 18, material descriptor set 0 still contained only the mesh texture and shadow bindings from 0 through 3. Object data continued to use Buffer Device Address plus the existing vertex-stage push constant. The skybox has its own descriptor set and its own vertex-stage push constant containing the inverse view-projection matrix with camera translation removed.
 
 The main Dynamic Rendering pass clears color/depth, draws the skybox first with depth writes disabled, then draws the normal `RenderObject` meshes as before. The shadow pass is unchanged and still runs before the main pass.
 
-This is still not IBL. The cubemap is visible as a background, but it is not used for diffuse irradiance or specular reflections in the Cook-Torrance shader yet.
+Milestone 19 keeps the visible skybox cubemap and diffuse irradiance cubemap as separate resources. The skybox cubemap remains the background source, while mesh materials sample the diffuse irradiance cubemap for ambient/environment diffuse lighting only.
 
-Future environment work includes diffuse irradiance convolution, a prefiltered specular cubemap, split-sum BRDF LUT, Kulla-Conty compensation, bindless descriptors, model loading, and a render graph.
+Future environment work includes a prefiltered specular cubemap, split-sum BRDF LUT, Kulla-Conty multi-scattering compensation, HDR environment loading, bindless descriptors, model loading, and a render graph.
 
 ## Milestone 19: Diffuse IBL Irradiance
 
-Milestone 19 adds simple diffuse image-based lighting while keeping the visible skybox path unchanged. The renderer now owns both `environmentMap_` for the skybox and `diffuseIrradianceMap_` for mesh materials. The irradiance cubemap is generated on the CPU from the same six procedural environment face colors, stored as a small RGBA8 cubemap, uploaded through the existing `VulkanEnvironmentMap` staging-buffer path, and sampled as a cube image.
+Milestone 17 created the reusable environment cubemap resource, and Milestone 18 rendered that cubemap as a visible skybox. Milestone 19 adds simple diffuse image-based lighting while keeping the visible skybox path unchanged. The renderer now owns both `environmentMap_` for the skybox and `diffuseIrradianceMap_` for mesh materials.
+
+The diffuse irradiance cubemap is generated procedurally on the CPU from the same six environment face colors, stored as a small low-frequency RGBA8 cubemap, uploaded through the existing `VulkanEnvironmentMap` staging-buffer path, and sampled as a cube image.
 
 Mesh material descriptor set 0 now adds one fragment-stage binding:
 
@@ -383,12 +385,10 @@ This milestone is diffuse IBL only. There is still no prefiltered specular envir
 
 Future milestones can build on this multi-object material foundation with:
 
-- higher-quality diffuse irradiance convolution
 - prefiltered specular cubemap
 - split-sum BRDF LUT
 - Kulla-Conty multi-scattering compensation
 - HDR environment loading
-- glTF material conventions
 - bindless descriptors
 - model loading
 - render graph
