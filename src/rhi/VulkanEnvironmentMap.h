@@ -25,6 +25,10 @@ public:
         VulkanContext& context,
         const VulkanCommandContext& commandContext,
         uint32_t faceSize = 32);
+    void createProceduralDiffuseIrradiance(
+        VulkanContext& context,
+        const VulkanCommandContext& commandContext,
+        uint32_t faceSize = 32);
     void createFromRgba8Faces(
         VulkanContext& context,
         const VulkanCommandContext& commandContext,

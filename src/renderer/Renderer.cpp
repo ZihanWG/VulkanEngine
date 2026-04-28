@@ -276,7 +276,7 @@ void Renderer::waitIdle()
 
 void Renderer::createMaterialDescriptorSetLayout()
 {
-    std::array<VkDescriptorSetLayoutBinding, 4> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 5> bindings{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[0].descriptorCount = 1;
@@ -297,9 +297,14 @@ void Renderer::createMaterialDescriptorSetLayout()
     bindings[3].descriptorCount = 1;
     bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+    bindings[4].binding = 4;
+    bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[4].descriptorCount = 1;
+    bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
     // Set 0 binding 0 is the base color texture, binding 1 is the shadow map,
     // binding 2 is the tangent-space normal map, and binding 3 is the
-    // metallic-roughness map.
+    // metallic-roughness map. Binding 4 is the diffuse irradiance cubemap.
     // Object MVP/model/light/material data stays on the BDA + vertex push constant path.
     materialDescriptorSetLayout_.create(
         context_.vkDevice(),
@@ -527,11 +532,38 @@ void Renderer::createMetallicRoughnessTexture()
 
 void Renderer::createEnvironmentMap()
 {
-    // The environment cubemap is sampled by the skybox only. It is not part of
-    // the material descriptor set and is not used for image-based lighting yet.
+    // The visible environment cubemap stays dedicated to the skybox. A separate
+    // low-frequency cubemap derived from the same procedural colors feeds diffuse IBL.
     environmentMap_.createProcedural(context_, commandContext_, 32);
+    createDiffuseIrradianceMap();
     createSkyboxDescriptorSet();
-    Logger::info("Created procedural environment cubemap for skybox rendering.");
+    Logger::info("Created procedural environment cubemap for skybox rendering and diffuse IBL.");
+}
+
+void Renderer::createDiffuseIrradianceMap()
+{
+    try {
+        diffuseIrradianceMap_.createProceduralDiffuseIrradiance(context_, commandContext_, 32);
+        return;
+    } catch (const std::exception& error) {
+        Logger::warn(std::string("Failed to create procedural diffuse irradiance cubemap, using neutral fallback: ")
+            + error.what());
+    }
+
+    std::array<uint8_t, 6 * 4> neutralPixels{};
+    for (size_t offset = 0; offset < neutralPixels.size(); offset += 4) {
+        neutralPixels[offset + 0] = 80;
+        neutralPixels[offset + 1] = 80;
+        neutralPixels[offset + 2] = 80;
+        neutralPixels[offset + 3] = 255;
+    }
+
+    diffuseIrradianceMap_.createFromRgba8Faces(
+        context_,
+        commandContext_,
+        1,
+        std::span<const uint8_t>(neutralPixels.data(), neutralPixels.size()),
+        VK_FORMAT_R8G8B8A8_UNORM);
 }
 
 void Renderer::createMaterial()
@@ -580,10 +612,13 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     if (!shadowMap_.valid()) {
         throw std::runtime_error("Cannot create a material descriptor set without a valid shadow map.");
     }
+    if (!diffuseIrradianceMap_.valid()) {
+        throw std::runtime_error("Cannot create a material descriptor set without a valid diffuse irradiance map.");
+    }
 
     VkDescriptorPoolSize poolSize{};
     poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = kMaxMaterialDescriptorSets * 4;
+    poolSize.descriptorCount = kMaxMaterialDescriptorSets * 5;
 
     if (materialDescriptorPool_.handle() == VK_NULL_HANDLE) {
         materialDescriptorPool_.create(
@@ -620,7 +655,12 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     metallicRoughnessInfo.imageView = material.metallicRoughnessTexture->imageView();
     metallicRoughnessInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    std::array<VkWriteDescriptorSet, 4> writes{};
+    VkDescriptorImageInfo diffuseIrradianceInfo{};
+    diffuseIrradianceInfo.sampler = diffuseIrradianceMap_.sampler();
+    diffuseIrradianceInfo.imageView = diffuseIrradianceMap_.imageView();
+    diffuseIrradianceInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    std::array<VkWriteDescriptorSet, 5> writes{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = material.descriptorSet;
     writes[0].dstBinding = 0;
@@ -653,9 +693,18 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[3].pImageInfo = &metallicRoughnessInfo;
 
+    writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[4].dstSet = material.descriptorSet;
+    writes[4].dstBinding = 4;
+    writes[4].dstArrayElement = 0;
+    writes[4].descriptorCount = 1;
+    writes[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[4].pImageInfo = &diffuseIrradianceInfo;
+
     // The material descriptor stores sampled images only: base color at binding 0,
     // shadow map at binding 1, normal map at binding 2, and metallic-roughness
-    // map at binding 3. Object data remains outside descriptors.
+    // map at binding 3. Binding 4 is the diffuse irradiance cubemap. Object data
+    // remains outside descriptors.
     vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 

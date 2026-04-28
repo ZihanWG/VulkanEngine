@@ -2,7 +2,7 @@
 
 Modern C++20 Vulkan 1.3 renderer skeleton inspired by the educational flow of [Sascha Willems' HowToVulkan](https://github.com/SaschaWillems/HowToVulkan), but split into engine-style modules instead of a single tutorial file.
 
-The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube geometry with normals and tangents into GPU-local vertex and index buffers, loads small RGBA base color, normal, and metallic-roughness textures from disk with procedural fallbacks, creates and renders a simple procedural environment cubemap as a skybox background, and draws multiple independently rotating textured cubes with tangent-space normal mapping, direct-light Cook-Torrance GGX material response, directional lighting, and a PCF-filtered directional shadow map every frame using Dynamic Rendering and Synchronization2.
+The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube geometry with normals and tangents into GPU-local vertex and index buffers, loads small RGBA base color, normal, and metallic-roughness textures from disk with procedural fallbacks, creates and renders a simple procedural environment cubemap as a skybox background, creates a low-frequency diffuse irradiance cubemap from the same procedural environment colors, and draws multiple independently rotating textured cubes with tangent-space normal mapping, direct-light Cook-Torrance GGX material response, diffuse image-based lighting, directional lighting, and a PCF-filtered directional shadow map every frame using Dynamic Rendering and Synchronization2.
 
 ## Dependencies
 
@@ -60,7 +60,7 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - `VulkanBuffer` owns `VkBuffer` plus VMA allocation, supports CPU-visible uploads, staging copies, and optional Buffer Device Address lookup.
 - `VulkanImage` owns `VkImage` plus VMA allocation and image view lifetime.
 - `VulkanTexture` owns a sampled image, VMA allocation, image view, and sampler, and uploads RGBA8 texture data through a staging buffer. It can load image files through stb_image, generate mipmaps on the GPU when supported, or use a procedural checkerboard fallback.
-- `VulkanEnvironmentMap` owns a cube-compatible sampled image, cube image view, and clamp sampler. Milestone 18 samples the generated six-face RGBA8 cubemap through a separate skybox pipeline, but it is still not used for image-based lighting.
+- `VulkanEnvironmentMap` owns a cube-compatible sampled image, cube image view, and clamp sampler. The renderer uses one generated cubemap for the visible skybox and a second low-frequency generated cubemap for diffuse irradiance.
 - `VulkanShadowMap` owns the fixed-size sampled depth image, image view, sampler, and current layout used by the directional shadow pass.
 - `Mesh`, `Material`, `RenderObject`, `Transform`, and `Camera` provide the first renderer-side scene abstractions without introducing ECS or a render graph.
 
@@ -72,12 +72,13 @@ Descriptor set 0 is the material/shadow texture set used by the main fragment sh
 - set 0 binding 1 = shadow map combined image sampler
 - set 0 binding 2 = normal map combined image sampler
 - set 0 binding 3 = metallic-roughness combined image sampler
+- set 0 binding 4 = diffuse irradiance cubemap combined image sampler
 
 Skybox rendering uses a separate descriptor set layout and pipeline:
 
 - skybox set 0 binding 0 = environment cubemap combined image sampler
 
-The material descriptor set above remains unchanged for mesh rendering. The skybox cubemap is visible as a background, but it is still not sampled by the Cook-Torrance material shader and does not provide diffuse or specular image-based lighting. There is still no BRDF LUT, Kulla-Conty term, bindless descriptor path, or model-loading path.
+The material descriptor set above is still separate from the skybox descriptor set. The material shader samples the diffuse irradiance cubemap at binding 4 for environment diffuse lighting; the skybox continues to sample the visible environment cubemap from its own set. There is still no specular IBL, BRDF LUT, Kulla-Conty term, bindless descriptor path, or model-loading path.
 
 Object and material scalar data still use Buffer Device Address plus a vertex-stage push constant. MVP, model, light, camera, base-color factor, metallic factor, and roughness factor data have not moved into descriptor UBOs.
 
@@ -361,14 +362,32 @@ This is still not IBL. The cubemap is visible as a background, but it is not use
 
 Future environment work includes diffuse irradiance convolution, a prefiltered specular cubemap, split-sum BRDF LUT, Kulla-Conty compensation, bindless descriptors, model loading, and a render graph.
 
+## Milestone 19: Diffuse IBL Irradiance
+
+Milestone 19 adds simple diffuse image-based lighting while keeping the visible skybox path unchanged. The renderer now owns both `environmentMap_` for the skybox and `diffuseIrradianceMap_` for mesh materials. The irradiance cubemap is generated on the CPU from the same six procedural environment face colors, stored as a small RGBA8 cubemap, uploaded through the existing `VulkanEnvironmentMap` staging-buffer path, and sampled as a cube image.
+
+Mesh material descriptor set 0 now adds one fragment-stage binding:
+
+- set 0 binding 0 = base color texture
+- set 0 binding 1 = shadow map
+- set 0 binding 2 = normal map
+- set 0 binding 3 = metallic-roughness map
+- set 0 binding 4 = diffuse irradiance cubemap
+- skybox set 0 binding 0 = visible environment cubemap
+
+The fragment shader samples `uDiffuseIrradianceMap` with the current world-space normal after tangent-space normal mapping. Diffuse IBL contributes `irradiance * baseColor * (1.0 - metallic)` as the ambient/environment diffuse term, with the old ambient color retained only as a small fallback. Direct Cook-Torrance GGX lighting, Schlick Fresnel, Smith geometry, the GGX NDF, metallic-roughness sampling, normal mapping, and PCF shadow filtering remain unchanged; the shadow factor still affects direct lighting only.
+
+This milestone is diffuse IBL only. There is still no prefiltered specular environment map, split-sum BRDF LUT, Kulla-Conty multi-scattering compensation, HDR environment loading, bindless descriptors, model loading, ECS, ImGui, or render graph.
+
 ## Next Milestones
 
 Future milestones can build on this multi-object material foundation with:
 
-- diffuse irradiance convolution
+- higher-quality diffuse irradiance convolution
 - prefiltered specular cubemap
 - split-sum BRDF LUT
 - Kulla-Conty multi-scattering compensation
+- HDR environment loading
 - glTF material conventions
 - bindless descriptors
 - model loading

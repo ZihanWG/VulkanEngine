@@ -4,6 +4,7 @@ layout(set = 0, binding = 0) uniform sampler2D uTexture;
 layout(set = 0, binding = 1) uniform sampler2D uShadowMap;
 layout(set = 0, binding = 2) uniform sampler2D uNormalMap;
 layout(set = 0, binding = 3) uniform sampler2D uMetallicRoughnessMap;
+layout(set = 0, binding = 4) uniform samplerCube uDiffuseIrradianceMap;
 
 layout(location = 0) in vec3 vColor;
 layout(location = 1) in vec2 vUV;
@@ -145,7 +146,10 @@ void main()
     vec3 specular = distribution * geometry * fresnel / max(4.0 * normalView * normalLight, EPSILON);
 
     float shadowFactor = sampleShadowFactor(normal);
-    vec3 ambient = vAmbientColor * baseColor;
+    vec3 irradiance = texture(uDiffuseIrradianceMap, normal).rgb;
+    vec3 kD = (1.0 - metallic) * baseColor;
+    vec3 diffuseIbl = irradiance * kD;
+    vec3 ambient = diffuseIbl + vAmbientColor * baseColor * 0.05;
     vec3 direct = (diffuse + specular) * vLightColor * normalLight * shadowFactor;
 
     outColor = vec4(ambient + direct, alpha);

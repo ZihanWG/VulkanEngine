@@ -57,6 +57,7 @@ private:
     void createNormalTexture();
     void createMetallicRoughnessTexture();
     void createEnvironmentMap();
+    void createDiffuseIrradianceMap();
     void createMaterial();
     void createMaterialDescriptorSet(renderer::Material& material);
     void createSkyboxDescriptorSet();
@@ -91,6 +92,7 @@ private:
     rhi::VulkanTexture normalMapTexture_;
     rhi::VulkanTexture metallicRoughnessTexture_;
     rhi::VulkanEnvironmentMap environmentMap_;
+    rhi::VulkanEnvironmentMap diffuseIrradianceMap_;
     rhi::VulkanDescriptorPool materialDescriptorPool_;
     rhi::VulkanDescriptorPool skyboxDescriptorPool_;
     VkDescriptorSet skyboxDescriptorSet_ = VK_NULL_HANDLE;

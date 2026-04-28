@@ -19,16 +19,140 @@ namespace {
 
 constexpr uint32_t kCubeFaceCount = 6;
 constexpr uint32_t kRgbaChannels = 4;
+constexpr float kByteScale = 1.0f / 255.0f;
+constexpr float kIrradianceScale = 0.55f;
 
 struct FaceGradient {
     std::array<uint8_t, 3> horizon;
     std::array<uint8_t, 3> zenith;
 };
 
-uint8_t lerpByte(uint8_t a, uint8_t b, float t)
+struct Vec3 {
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+};
+
+constexpr std::array<FaceGradient, kCubeFaceCount> kProceduralFaceGradients = {{
+    {{{82, 110, 142}}, {{150, 191, 226}}},
+    {{{72, 105, 126}}, {{128, 168, 203}}},
+    {{{106, 153, 211}}, {{190, 223, 247}}},
+    {{{58, 53, 48}}, {{137, 119, 91}}},
+    {{{76, 108, 150}}, {{154, 198, 235}}},
+    {{{48, 61, 89}}, {{111, 138, 181}}},
+}};
+
+constexpr std::array<Vec3, kCubeFaceCount> kCubeFaceDirections = {{
+    {1.0f, 0.0f, 0.0f},
+    {-1.0f, 0.0f, 0.0f},
+    {0.0f, 1.0f, 0.0f},
+    {0.0f, -1.0f, 0.0f},
+    {0.0f, 0.0f, 1.0f},
+    {0.0f, 0.0f, -1.0f},
+}};
+
+float lerpFloat(float a, float b, float t)
 {
-    const float value = static_cast<float>(a) * (1.0f - t) + static_cast<float>(b) * t;
-    return static_cast<uint8_t>(std::clamp(value, 0.0f, 255.0f));
+    return a * (1.0f - t) + b * t;
+}
+
+uint8_t floatToByte(float value)
+{
+    return static_cast<uint8_t>(std::clamp(value * 255.0f, 0.0f, 255.0f));
+}
+
+Vec3 operator+(Vec3 lhs, Vec3 rhs)
+{
+    return {lhs.x + rhs.x, lhs.y + rhs.y, lhs.z + rhs.z};
+}
+
+Vec3 operator*(Vec3 value, float scale)
+{
+    return {value.x * scale, value.y * scale, value.z * scale};
+}
+
+float dot(Vec3 lhs, Vec3 rhs)
+{
+    return lhs.x * rhs.x + lhs.y * rhs.y + lhs.z * rhs.z;
+}
+
+Vec3 normalize(Vec3 value)
+{
+    const float length = std::sqrt(dot(value, value));
+    if (length <= 0.0f) {
+        return {0.0f, 1.0f, 0.0f};
+    }
+
+    const float inverseLength = 1.0f / length;
+    return value * inverseLength;
+}
+
+Vec3 cubemapTexelDirection(uint32_t face, float u, float v)
+{
+    const float sc = u * 2.0f - 1.0f;
+    const float tc = v * 2.0f - 1.0f;
+
+    switch (face) {
+    case 0:
+        return normalize({1.0f, -tc, -sc});
+    case 1:
+        return normalize({-1.0f, -tc, sc});
+    case 2:
+        return normalize({sc, 1.0f, tc});
+    case 3:
+        return normalize({sc, -1.0f, -tc});
+    case 4:
+        return normalize({sc, -tc, 1.0f});
+    case 5:
+        return normalize({-sc, -tc, -1.0f});
+    default:
+        return {0.0f, 1.0f, 0.0f};
+    }
+}
+
+Vec3 proceduralFaceColor(uint32_t face, float u, float v)
+{
+    const FaceGradient& gradient = kProceduralFaceGradients.at(face);
+    const float sideShade = 0.9f + 0.1f * (1.0f - std::abs(u * 2.0f - 1.0f));
+
+    return {
+        lerpFloat(
+            static_cast<float>(gradient.horizon[0]),
+            static_cast<float>(gradient.zenith[0]) * sideShade,
+            v) * kByteScale,
+        lerpFloat(
+            static_cast<float>(gradient.horizon[1]),
+            static_cast<float>(gradient.zenith[1]) * sideShade,
+            v) * kByteScale,
+        lerpFloat(
+            static_cast<float>(gradient.horizon[2]),
+            static_cast<float>(gradient.zenith[2]) * sideShade,
+            v) * kByteScale,
+    };
+}
+
+Vec3 averageProceduralFaceColor(uint32_t face)
+{
+    constexpr uint32_t kSampleCount = 4;
+    Vec3 color{};
+
+    for (uint32_t y = 0; y < kSampleCount; ++y) {
+        const float v = (static_cast<float>(y) + 0.5f) / static_cast<float>(kSampleCount);
+        for (uint32_t x = 0; x < kSampleCount; ++x) {
+            const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(kSampleCount);
+            color = color + proceduralFaceColor(face, u, v);
+        }
+    }
+
+    return color * (1.0f / static_cast<float>(kSampleCount * kSampleCount));
+}
+
+void writeRgba(std::vector<uint8_t>& pixels, size_t offset, Vec3 color)
+{
+    pixels[offset + 0] = floatToByte(color.x);
+    pixels[offset + 1] = floatToByte(color.y);
+    pixels[offset + 2] = floatToByte(color.z);
+    pixels[offset + 3] = 255;
 }
 
 std::vector<uint8_t> makeProceduralEnvironmentFaces(uint32_t faceSize)
@@ -37,21 +161,11 @@ std::vector<uint8_t> makeProceduralEnvironmentFaces(uint32_t faceSize)
         throw std::runtime_error("Cannot create a zero-sized procedural environment map.");
     }
 
-    // Layer order follows Vulkan cube-map convention: +X, -X, +Y, -Y, +Z, -Z.
-    constexpr std::array<FaceGradient, kCubeFaceCount> gradients = {{
-        {{{82, 110, 142}}, {{150, 191, 226}}},
-        {{{72, 105, 126}}, {{128, 168, 203}}},
-        {{{106, 153, 211}}, {{190, 223, 247}}},
-        {{{58, 53, 48}}, {{137, 119, 91}}},
-        {{{76, 108, 150}}, {{154, 198, 235}}},
-        {{{48, 61, 89}}, {{111, 138, 181}}},
-    }};
-
     std::vector<uint8_t> pixels(
         static_cast<size_t>(faceSize) * faceSize * kCubeFaceCount * kRgbaChannels);
 
+    // Layer order follows Vulkan cube-map convention: +X, -X, +Y, -Y, +Z, -Z.
     for (uint32_t face = 0; face < kCubeFaceCount; ++face) {
-        const FaceGradient& gradient = gradients.at(face);
         for (uint32_t y = 0; y < faceSize; ++y) {
             const float v = faceSize == 1
                 ? 1.0f
@@ -60,23 +174,53 @@ std::vector<uint8_t> makeProceduralEnvironmentFaces(uint32_t faceSize)
                 const float u = faceSize == 1
                     ? 0.5f
                     : static_cast<float>(x) / static_cast<float>(faceSize - 1);
-                const float sideShade = 0.9f + 0.1f * (1.0f - std::abs(u * 2.0f - 1.0f));
                 const size_t offset = ((static_cast<size_t>(face) * faceSize * faceSize)
                     + (static_cast<size_t>(y) * faceSize + x)) * kRgbaChannels;
 
-                pixels[offset + 0] = lerpByte(
-                    gradient.horizon[0],
-                    static_cast<uint8_t>(static_cast<float>(gradient.zenith[0]) * sideShade),
-                    v);
-                pixels[offset + 1] = lerpByte(
-                    gradient.horizon[1],
-                    static_cast<uint8_t>(static_cast<float>(gradient.zenith[1]) * sideShade),
-                    v);
-                pixels[offset + 2] = lerpByte(
-                    gradient.horizon[2],
-                    static_cast<uint8_t>(static_cast<float>(gradient.zenith[2]) * sideShade),
-                    v);
-                pixels[offset + 3] = 255;
+                writeRgba(pixels, offset, proceduralFaceColor(face, u, v));
+            }
+        }
+    }
+
+    return pixels;
+}
+
+std::vector<uint8_t> makeProceduralDiffuseIrradianceFaces(uint32_t faceSize)
+{
+    if (faceSize == 0) {
+        throw std::runtime_error("Cannot create a zero-sized procedural diffuse irradiance map.");
+    }
+
+    std::array<Vec3, kCubeFaceCount> faceColors{};
+    for (uint32_t face = 0; face < kCubeFaceCount; ++face) {
+        faceColors.at(face) = averageProceduralFaceColor(face);
+    }
+
+    std::vector<uint8_t> pixels(
+        static_cast<size_t>(faceSize) * faceSize * kCubeFaceCount * kRgbaChannels);
+
+    for (uint32_t face = 0; face < kCubeFaceCount; ++face) {
+        for (uint32_t y = 0; y < faceSize; ++y) {
+            const float v = (static_cast<float>(y) + 0.5f) / static_cast<float>(faceSize);
+            for (uint32_t x = 0; x < faceSize; ++x) {
+                const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(faceSize);
+                const Vec3 normal = cubemapTexelDirection(face, u, v);
+                Vec3 irradiance{};
+                float totalWeight = 0.0f;
+
+                for (uint32_t sourceFace = 0; sourceFace < kCubeFaceCount; ++sourceFace) {
+                    const float weight = std::max(dot(normal, kCubeFaceDirections.at(sourceFace)), 0.0f);
+                    irradiance = irradiance + faceColors.at(sourceFace) * weight;
+                    totalWeight += weight;
+                }
+
+                if (totalWeight > 0.0f) {
+                    irradiance = irradiance * (kIrradianceScale / totalWeight);
+                }
+
+                const size_t offset = ((static_cast<size_t>(face) * faceSize * faceSize)
+                    + (static_cast<size_t>(y) * faceSize + x)) * kRgbaChannels;
+                writeRgba(pixels, offset, irradiance);
             }
         }
     }
@@ -163,6 +307,20 @@ void VulkanEnvironmentMap::createProcedural(
     uint32_t faceSize)
 {
     const std::vector<uint8_t> pixels = makeProceduralEnvironmentFaces(faceSize);
+    createFromRgba8Faces(
+        context,
+        commandContext,
+        faceSize,
+        std::span<const uint8_t>(pixels.data(), pixels.size()),
+        VK_FORMAT_R8G8B8A8_UNORM);
+}
+
+void VulkanEnvironmentMap::createProceduralDiffuseIrradiance(
+    VulkanContext& context,
+    const VulkanCommandContext& commandContext,
+    uint32_t faceSize)
+{
+    const std::vector<uint8_t> pixels = makeProceduralDiffuseIrradianceFaces(faceSize);
     createFromRgba8Faces(
         context,
         commandContext,
