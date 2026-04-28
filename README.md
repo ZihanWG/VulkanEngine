@@ -63,6 +63,17 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - `VulkanShadowMap` owns the fixed-size sampled depth image, image view, sampler, and current layout used by the directional shadow pass.
 - `Mesh`, `Material`, `RenderObject`, `Transform`, and `Camera` provide the first renderer-side scene abstractions without introducing ECS or a render graph.
 
+## Current Descriptor Contract
+
+Descriptor set 0 is the material/shadow texture set used by the main fragment shader:
+
+- set 0 binding 0 = base color combined image sampler
+- set 0 binding 1 = shadow map combined image sampler
+- set 0 binding 2 = normal map combined image sampler
+- set 0 binding 3 = metallic-roughness combined image sampler
+
+Object and material scalar data still use Buffer Device Address plus a vertex-stage push constant. MVP, model, light, camera, base-color factor, metallic factor, and roughness factor data have not moved into descriptor UBOs.
+
 ## Vulkan Initialization Flow
 
 1. Initialize Volk global function loading.
@@ -267,9 +278,9 @@ Material parameters are passed through the existing Buffer Device Address object
 
 The fragment shader still samples the base color texture from descriptor set 0 binding 0 and the shadow map from descriptor set 0 binding 1. It multiplies the texture by `baseColorFactor`, then applies a simple non-IBL diffuse plus Blinn-style specular approximation controlled by roughness and metallic.
 
-This is not full PBR yet. There is still no BRDF LUT, IBL, Kulla-Conty multi-scattering compensation, normal maps, metallic/roughness texture maps, bindless material descriptors, model loading, ECS, ImGui, or render graph.
+This was not full PBR yet. At Milestone 13 there was still no BRDF LUT, IBL, Kulla-Conty multi-scattering compensation, normal maps, metallic/roughness texture maps, bindless material descriptors, model loading, ECS, ImGui, or render graph.
 
-At the end of Milestone 13, future material and lighting work included Cook-Torrance GGX, IBL, a BRDF LUT, Kulla-Conty multi-scattering compensation, normal maps, metallic/roughness texture maps, and bindless material descriptors.
+Cook-Torrance GGX, normal mapping, and metallic-roughness texture support are now covered by later milestones. Remaining material and lighting work is tracked in the Next Milestones section.
 
 ## Milestone 14: Cook-Torrance GGX Direct Lighting
 
@@ -277,9 +288,9 @@ Milestone 14 replaces the Milestone 13 Blinn-style specular approximation with a
 
 The shader computes base color from the texture multiplied by `baseColorFactor`, reads metallic from `materialParams.x`, and reads roughness from `materialParams.y`. Roughness is clamped to `[0.04, 1.0]` to avoid unstable highlights. The direct light BRDF now uses the GGX / Trowbridge-Reitz normal distribution function, Smith geometry function, and Schlick Fresnel approximation. Metallic and roughness now affect the diffuse/specular energy split, `F0`, highlight width, and specular intensity.
 
-Lighting is still direct lighting only. The PCF-filtered directional shadow factor still modulates the direct light, and ambient remains a simple unshadowed term. There is still no IBL, split-sum BRDF LUT, Kulla-Conty multi-scattering compensation, normal maps, metallic/roughness textures, bindless descriptors, model loading, ECS, ImGui, or render graph.
+Lighting was still direct lighting only at Milestone 14. The PCF-filtered directional shadow factor still modulated the direct light, and ambient remained a simple unshadowed term. There was still no IBL, split-sum BRDF LUT, Kulla-Conty multi-scattering compensation, normal maps, metallic/roughness textures, bindless descriptors, model loading, ECS, ImGui, or render graph.
 
-At the end of Milestone 14, future material and lighting work included IBL diffuse/specular, a split-sum BRDF LUT, Kulla-Conty multi-scattering compensation, normal maps, material texture maps, and bindless descriptors.
+Normal mapping and metallic-roughness maps are now implemented in Milestones 15 and 16. Remaining material and lighting work is tracked in the Next Milestones section.
 
 ## Milestone 15: Basic Normal Mapping
 
@@ -299,7 +310,9 @@ Object data still uses Buffer Device Address plus a vertex-stage push constant. 
 
 ## Milestone 16: Metallic-Roughness Texture Map
 
-Milestone 16 adds a basic metallic-roughness texture map while keeping the same simple material and object-data architecture. `Material` can now reference a metallic-roughness texture in addition to its base color and normal textures. Object data still uses Buffer Device Address plus a vertex-stage push constant, and `materialParams.xy` remain the scalar metallic and roughness values.
+Milestone 16 adds a basic metallic-roughness texture map while keeping the same simple material and object-data architecture. `Material` can now reference a metallic-roughness texture in addition to its base color and normal textures. `Renderer` loads `assets/textures/checker_mr.png` when available; if the file is missing or cannot be decoded, it creates a small procedural fallback texture instead.
+
+Object data still uses Buffer Device Address plus a vertex-stage push constant, and `materialParams.xy` remain the scalar metallic and roughness factors.
 
 Descriptor set 0 is still the material/shadow texture set:
 
@@ -308,17 +321,25 @@ Descriptor set 0 is still the material/shadow texture set:
 - set 0 binding 2 = normal map combined image sampler
 - set 0 binding 3 = metallic-roughness combined image sampler
 
-The demo texture is `assets/textures/checker_mr.png`. Its R channel controls metallic and its G channel controls roughness; B and A are unused by the shader. The fragment shader multiplies the sampled texture values by the scalar material factors:
+The metallic-roughness texture uses the R channel as the metallic factor and the G channel as the roughness factor. B and A are unused by the shader. The fragment shader multiplies the sampled texture values by the scalar material factors:
 
 ```glsl
 metallic = clamp(materialMetallic * textureMetallic, 0.0, 1.0);
 roughness = clamp(materialRoughness * textureRoughness, 0.04, 1.0);
 ```
 
-If the asset is missing or fails to decode, the renderer creates a small procedural metallic-roughness fallback texture. The fallback uses neutral R/G factors so the existing scalar `Material::metallic` and `Material::roughness` values remain the visible fallback behavior.
+The procedural fallback uses neutral R/G factors so the existing scalar `Material::metallic` and `Material::roughness` values remain the visible fallback behavior.
 
 GGX direct lighting uses the resulting metallic and roughness values together with the existing normal map and PCF shadow paths. This is still direct lighting only: no IBL, no split-sum BRDF LUT, no Kulla-Conty multi-scattering compensation, and not full glTF material support.
 
 ## Next Milestones
 
-Future milestones can build on this multi-object material foundation with IBL, a split-sum BRDF LUT, Kulla-Conty multi-scattering compensation, glTF material conventions, general tangent generation, improved shadow quality, bindless descriptors, model loading, and render graph work once the minimal texture, lighting, and shadow path is stable.
+Future milestones can build on this multi-object material foundation with:
+
+- IBL diffuse/specular
+- split-sum BRDF LUT
+- Kulla-Conty multi-scattering compensation
+- glTF material conventions
+- bindless descriptors
+- model loading
+- render graph
