@@ -359,6 +359,7 @@ void Renderer::createScene()
     createCheckerboardTexture();
     createNormalTexture();
     createMetallicRoughnessTexture();
+    createEnvironmentMap();
     createMaterial();
 
     camera_.position = {0.0f, 0.35f, 5.5f};
@@ -479,6 +480,14 @@ void Renderer::createMetallicRoughnessTexture()
         std::span<const uint8_t>(pixels.data(), pixels.size()),
         VK_FORMAT_R8G8B8A8_UNORM,
         false);
+}
+
+void Renderer::createEnvironmentMap()
+{
+    // Milestone 17 creates the cubemap resource now, but leaves it unbound until
+    // a later IBL pass actually samples environment lighting.
+    environmentMap_.createProcedural(context_, commandContext_, 32);
+    Logger::info("Created procedural environment cubemap for future IBL sampling.");
 }
 
 void Renderer::createMaterial()

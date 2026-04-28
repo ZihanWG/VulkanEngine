@@ -2,7 +2,7 @@
 
 Modern C++20 Vulkan 1.3 renderer skeleton inspired by the educational flow of [Sascha Willems' HowToVulkan](https://github.com/SaschaWillems/HowToVulkan), but split into engine-style modules instead of a single tutorial file.
 
-The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube geometry with normals and tangents into GPU-local vertex and index buffers, loads small RGBA base color, normal, and metallic-roughness textures from disk with procedural fallbacks, and draws multiple independently rotating textured cubes with tangent-space normal mapping, direct-light Cook-Torrance GGX material response, directional lighting, and a PCF-filtered directional shadow map every frame using Dynamic Rendering and Synchronization2.
+The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube geometry with normals and tangents into GPU-local vertex and index buffers, loads small RGBA base color, normal, and metallic-roughness textures from disk with procedural fallbacks, creates a simple procedural environment cubemap for future IBL work, and draws multiple independently rotating textured cubes with tangent-space normal mapping, direct-light Cook-Torrance GGX material response, directional lighting, and a PCF-filtered directional shadow map every frame using Dynamic Rendering and Synchronization2.
 
 ## Dependencies
 
@@ -60,6 +60,7 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - `VulkanBuffer` owns `VkBuffer` plus VMA allocation, supports CPU-visible uploads, staging copies, and optional Buffer Device Address lookup.
 - `VulkanImage` owns `VkImage` plus VMA allocation and image view lifetime.
 - `VulkanTexture` owns a sampled image, VMA allocation, image view, and sampler, and uploads RGBA8 texture data through a staging buffer. It can load image files through stb_image, generate mipmaps on the GPU when supported, or use a procedural checkerboard fallback.
+- `VulkanEnvironmentMap` owns a cube-compatible sampled image, cube image view, and clamp sampler. Milestone 17 generates a small six-face RGBA8 cubemap as infrastructure for future IBL passes, but it is not sampled by the current shaders.
 - `VulkanShadowMap` owns the fixed-size sampled depth image, image view, sampler, and current layout used by the directional shadow pass.
 - `Mesh`, `Material`, `RenderObject`, `Transform`, and `Camera` provide the first renderer-side scene abstractions without introducing ECS or a render graph.
 
@@ -71,6 +72,8 @@ Descriptor set 0 is the material/shadow texture set used by the main fragment sh
 - set 0 binding 1 = shadow map combined image sampler
 - set 0 binding 2 = normal map combined image sampler
 - set 0 binding 3 = metallic-roughness combined image sampler
+
+Milestone 17 creates a renderer-owned environment cubemap, but it is intentionally not bound to a descriptor set yet because the active shaders do not sample image-based lighting. There is still no environment descriptor binding, BRDF LUT, Kulla-Conty term, bindless descriptor path, or model-loading path.
 
 Object and material scalar data still use Buffer Device Address plus a vertex-stage push constant. MVP, model, light, camera, base-color factor, metallic factor, and roughness factor data have not moved into descriptor UBOs.
 
@@ -331,6 +334,14 @@ roughness = clamp(materialRoughness * textureRoughness, 0.04, 1.0);
 The procedural fallback uses neutral R/G factors so the existing scalar `Material::metallic` and `Material::roughness` values remain the visible fallback behavior.
 
 GGX direct lighting uses the resulting metallic and roughness values together with the existing normal map and PCF shadow paths. This is still direct lighting only: no IBL, no split-sum BRDF LUT, no Kulla-Conty multi-scattering compensation, and not full glTF material support.
+
+## Milestone 17: IBL Preparation and Environment Texture Infrastructure
+
+Milestone 17 prepares the renderer for image-based lighting without changing the lighting model yet. A new `VulkanEnvironmentMap` wrapper owns a cube-compatible `VkImage`, VMA allocation, `VK_IMAGE_VIEW_TYPE_CUBE` view, and clamp-to-edge sampler. The renderer creates a small generated six-face RGBA8 cubemap during scene setup so future diffuse irradiance, prefiltered specular, and skybox work have a real GPU cubemap resource to build from.
+
+The environment map upload path uses the same explicit staging-buffer and Synchronization2 style as the existing texture code: all six cube faces are copied into array layers 0 through 5, then transitioned to `VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL`. The current shader pipeline does not sample this cubemap, so descriptor set 0 remains unchanged and no environment descriptor binding is added in this milestone.
+
+This is intentionally infrastructure only. There is still no split-sum BRDF LUT, no Kulla-Conty multi-scattering compensation, no bindless descriptors, no skybox draw, no environment prefiltering, and no model loading.
 
 ## Next Milestones
 

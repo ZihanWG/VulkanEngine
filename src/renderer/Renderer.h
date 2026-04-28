@@ -9,6 +9,7 @@
 #include "rhi/VulkanCommandContext.h"
 #include "rhi/VulkanContext.h"
 #include "rhi/VulkanDescriptor.h"
+#include "rhi/VulkanEnvironmentMap.h"
 #include "rhi/VulkanPipeline.h"
 #include "rhi/VulkanShadowMap.h"
 #include "rhi/VulkanSwapchain.h"
@@ -54,6 +55,7 @@ private:
     void createCheckerboardTexture();
     void createNormalTexture();
     void createMetallicRoughnessTexture();
+    void createEnvironmentMap();
     void createMaterial();
     void createMaterialDescriptorSet(renderer::Material& material);
     void createObjectFrameDataBuffers();
@@ -84,6 +86,7 @@ private:
     rhi::VulkanTexture checkerboardTexture_;
     rhi::VulkanTexture normalMapTexture_;
     rhi::VulkanTexture metallicRoughnessTexture_;
+    rhi::VulkanEnvironmentMap environmentMap_;
     rhi::VulkanDescriptorPool materialDescriptorPool_;
     renderer::Camera camera_;
     renderer::Mesh cubeMesh_;

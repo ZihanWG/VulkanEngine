@@ -122,6 +122,7 @@ add_executable(VulkanEngine
     src/rhi/VulkanContext.cpp
     src/rhi/VulkanDescriptor.cpp
     src/rhi/VulkanDevice.cpp
+    src/rhi/VulkanEnvironmentMap.cpp
     src/rhi/VulkanImage.cpp
     src/rhi/VulkanMemory.cpp
     src/rhi/VulkanPipeline.cpp
