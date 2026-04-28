@@ -49,6 +49,7 @@ private:
     };
 
     void createMaterialDescriptorSetLayout();
+    void createSkyboxDescriptorSetLayout();
     void createShadowMap();
     void createPipeline();
     void createScene();
@@ -58,6 +59,7 @@ private:
     void createEnvironmentMap();
     void createMaterial();
     void createMaterialDescriptorSet(renderer::Material& material);
+    void createSkyboxDescriptorSet();
     void createObjectFrameDataBuffers();
     void updateFrameData(uint32_t frameIndex);
     void recreateSwapchain();
@@ -78,8 +80,10 @@ private:
     std::vector<renderer::FrameResources> frames_;
     rhi::VulkanSwapchain swapchain_;
     rhi::VulkanDescriptorSetLayout materialDescriptorSetLayout_;
+    rhi::VulkanDescriptorSetLayout skyboxDescriptorSetLayout_;
     rhi::VulkanShadowMap shadowMap_;
     rhi::VulkanPipeline pipeline_;
+    rhi::VulkanPipeline skyboxPipeline_;
     rhi::VulkanPipeline shadowPipeline_;
     rhi::VulkanCommandContext commandContext_;
     rhi::VulkanSync sync_;
@@ -88,6 +92,8 @@ private:
     rhi::VulkanTexture metallicRoughnessTexture_;
     rhi::VulkanEnvironmentMap environmentMap_;
     rhi::VulkanDescriptorPool materialDescriptorPool_;
+    rhi::VulkanDescriptorPool skyboxDescriptorPool_;
+    VkDescriptorSet skyboxDescriptorSet_ = VK_NULL_HANDLE;
     renderer::Camera camera_;
     renderer::Mesh cubeMesh_;
     renderer::Material checkerboardMaterial_;
@@ -98,6 +104,8 @@ private:
     ShadowSettings shadowSettings_{};
     VkFormat pipelineColorFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat pipelineDepthFormat_ = VK_FORMAT_UNDEFINED;
+    VkFormat skyboxPipelineColorFormat_ = VK_FORMAT_UNDEFINED;
+    VkFormat skyboxPipelineDepthFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat shadowPipelineDepthFormat_ = VK_FORMAT_UNDEFINED;
     uint32_t currentFrame_ = 0;
     std::chrono::steady_clock::time_point startTime_ = std::chrono::steady_clock::now();

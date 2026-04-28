@@ -172,6 +172,8 @@ cmake_path(CONVERT "${ASSET_SOURCE_DIR}" TO_CMAKE_PATH_LIST VULKAN_ENGINE_ASSET_
 set(SHADER_SOURCES
     "${SHADER_SOURCE_DIR}/simple.vert"
     "${SHADER_SOURCE_DIR}/simple.frag"
+    "${SHADER_SOURCE_DIR}/skybox.vert"
+    "${SHADER_SOURCE_DIR}/skybox.frag"
     "${SHADER_SOURCE_DIR}/shadow.vert"
 )
 

@@ -51,8 +51,8 @@ private:
     VkShaderModule vertexShaderModule_ = VK_NULL_HANDLE;
     VkShaderModule fragmentShaderModule_ = VK_NULL_HANDLE;
 
-    // The pipeline layout is the shader resource contract: descriptor sets for
-    // sampled images plus the push constant range carrying the object-data address.
+    // The pipeline layout is the shader resource contract: descriptor sets plus
+    // any push constant ranges required by that pipeline.
     VkPipelineLayout layout_ = VK_NULL_HANDLE;
 
     // Graphics pipeline state is immutable; resize-sensitive state is kept dynamic.

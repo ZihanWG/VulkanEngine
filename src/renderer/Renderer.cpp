@@ -14,6 +14,7 @@
 #include <glm/ext/matrix_clip_space.hpp>
 #include <glm/ext/matrix_transform.hpp>
 #include <glm/geometric.hpp>
+#include <glm/gtc/matrix_inverse.hpp>
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
@@ -74,6 +75,12 @@ struct ShadowSceneBounds {
 struct PushConstants {
     VkDeviceAddress objectFrameDataAddress = 0;
 };
+
+struct SkyboxPushConstants {
+    glm::mat4 inverseViewProjection{1.0f};
+};
+
+static_assert(sizeof(SkyboxPushConstants) == sizeof(glm::mat4));
 
 std::filesystem::path shaderPath(const char* filename)
 {
@@ -148,6 +155,7 @@ Renderer::Renderer(Window& window)
     frames_.resize(rhi::kMaxFramesInFlight);
     swapchain_.initialize(context_, window_.framebufferExtent());
     createMaterialDescriptorSetLayout();
+    createSkyboxDescriptorSetLayout();
     createShadowMap();
     createPipeline();
     commandContext_.initialize(context_, frames_);
@@ -298,6 +306,19 @@ void Renderer::createMaterialDescriptorSetLayout()
         std::span<const VkDescriptorSetLayoutBinding>(bindings.data(), bindings.size()));
 }
 
+void Renderer::createSkyboxDescriptorSetLayout()
+{
+    VkDescriptorSetLayoutBinding binding{};
+    binding.binding = 0;
+    binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    binding.descriptorCount = 1;
+    binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    skyboxDescriptorSetLayout_.create(
+        context_.vkDevice(),
+        std::span<const VkDescriptorSetLayoutBinding>(&binding, 1));
+}
+
 void Renderer::createShadowMap()
 {
     // The directional shadow map is fixed-size for now and intentionally independent
@@ -310,10 +331,16 @@ void Renderer::createPipeline()
     const VkVertexInputBindingDescription binding = renderer::vertexBindingDescription();
     const std::array<VkVertexInputAttributeDescription, 5> attributes = renderer::vertexAttributeDescriptions();
     const VkDescriptorSetLayout descriptorSetLayout = materialDescriptorSetLayout_.handle();
+    const VkDescriptorSetLayout skyboxDescriptorSetLayout = skyboxDescriptorSetLayout_.handle();
     const VkPushConstantRange pushConstantRange{
         VK_SHADER_STAGE_VERTEX_BIT,
         0,
         static_cast<uint32_t>(sizeof(PushConstants))
+    };
+    const VkPushConstantRange skyboxPushConstantRange{
+        VK_SHADER_STAGE_VERTEX_BIT,
+        0,
+        static_cast<uint32_t>(sizeof(SkyboxPushConstants))
     };
 
     rhi::VulkanPipelineCreateInfo pipelineInfo{};
@@ -330,6 +357,22 @@ void Renderer::createPipeline()
     pipeline_.create(context_.vkDevice(), pipelineInfo);
     pipelineColorFormat_ = pipelineInfo.colorFormat;
     pipelineDepthFormat_ = pipelineInfo.depthFormat;
+
+    rhi::VulkanPipelineCreateInfo skyboxPipelineInfo{};
+    skyboxPipelineInfo.vertexShaderPath = shaderPath("skybox.vert.spv");
+    skyboxPipelineInfo.fragmentShaderPath = shaderPath("skybox.frag.spv");
+    skyboxPipelineInfo.colorFormat = swapchain_.colorFormat();
+    skyboxPipelineInfo.depthFormat = swapchain_.depthFormat();
+    skyboxPipelineInfo.descriptorSetLayouts = std::span<const VkDescriptorSetLayout>(&skyboxDescriptorSetLayout, 1);
+    skyboxPipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&skyboxPushConstantRange, 1);
+    skyboxPipelineInfo.enableDepth = true;
+    skyboxPipelineInfo.depthWriteEnable = false;
+    skyboxPipelineInfo.depthCompareOp = VK_COMPARE_OP_ALWAYS;
+    skyboxPipelineInfo.cullMode = VK_CULL_MODE_NONE;
+
+    skyboxPipeline_.create(context_.vkDevice(), skyboxPipelineInfo);
+    skyboxPipelineColorFormat_ = skyboxPipelineInfo.colorFormat;
+    skyboxPipelineDepthFormat_ = skyboxPipelineInfo.depthFormat;
 
     rhi::VulkanPipelineCreateInfo shadowPipelineInfo{};
     shadowPipelineInfo.vertexShaderPath = shaderPath("shadow.vert.spv");
@@ -484,10 +527,11 @@ void Renderer::createMetallicRoughnessTexture()
 
 void Renderer::createEnvironmentMap()
 {
-    // Milestone 17 creates the cubemap resource now, but leaves it unbound until
-    // a later IBL pass actually samples environment lighting.
+    // The environment cubemap is sampled by the skybox only. It is not part of
+    // the material descriptor set and is not used for image-based lighting yet.
     environmentMap_.createProcedural(context_, commandContext_, 32);
-    Logger::info("Created procedural environment cubemap for future IBL sampling.");
+    createSkyboxDescriptorSet();
+    Logger::info("Created procedural environment cubemap for skybox rendering.");
 }
 
 void Renderer::createMaterial()
@@ -615,6 +659,47 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
+void Renderer::createSkyboxDescriptorSet()
+{
+    if (!environmentMap_.valid()) {
+        throw std::runtime_error("Cannot create a skybox descriptor set without a valid environment map.");
+    }
+
+    VkDescriptorPoolSize poolSize{};
+    poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSize.descriptorCount = 1;
+
+    skyboxDescriptorSet_ = VK_NULL_HANDLE;
+    skyboxDescriptorPool_.create(
+        context_.vkDevice(),
+        std::span<const VkDescriptorPoolSize>(&poolSize, 1),
+        1);
+
+    const VkDescriptorSetLayout descriptorSetLayout = skyboxDescriptorSetLayout_.handle();
+    VkDescriptorSetAllocateInfo allocateInfo{};
+    allocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocateInfo.descriptorPool = skyboxDescriptorPool_.handle();
+    allocateInfo.descriptorSetCount = 1;
+    allocateInfo.pSetLayouts = &descriptorSetLayout;
+    VK_CHECK(vkAllocateDescriptorSets(context_.vkDevice(), &allocateInfo, &skyboxDescriptorSet_));
+
+    VkDescriptorImageInfo environmentInfo{};
+    environmentInfo.sampler = environmentMap_.sampler();
+    environmentInfo.imageView = environmentMap_.imageView();
+    environmentInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = skyboxDescriptorSet_;
+    write.dstBinding = 0;
+    write.dstArrayElement = 0;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo = &environmentInfo;
+
+    vkUpdateDescriptorSets(context_.vkDevice(), 1, &write, 0, nullptr);
+}
+
 void Renderer::createObjectFrameDataBuffers()
 {
     frameObjectDataBuffers_.resize(frames_.size());
@@ -718,6 +803,9 @@ void Renderer::recreateSwapchain()
     const bool pipelineNeedsRecreate = pipeline_.pipeline() == VK_NULL_HANDLE
         || pipelineColorFormat_ != swapchain_.colorFormat()
         || pipelineDepthFormat_ != swapchain_.depthFormat()
+        || skyboxPipeline_.pipeline() == VK_NULL_HANDLE
+        || skyboxPipelineColorFormat_ != swapchain_.colorFormat()
+        || skyboxPipelineDepthFormat_ != swapchain_.depthFormat()
         || shadowPipelineDepthFormat_ != shadowMap_.format();
     if (pipelineNeedsRecreate) {
         createPipeline();
@@ -865,9 +953,9 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     renderingInfo.pColorAttachments = &colorAttachment;
     renderingInfo.pDepthAttachment = &depthAttachment;
 
-    // Main Dynamic Rendering consumes the shadow map through the material descriptor set.
+    // Main Dynamic Rendering draws the skybox first, then consumes the shadow map
+    // through the mesh material descriptor set.
     vkCmdBeginRendering(commandBuffer, &renderingInfo);
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.pipeline());
 
     const VkExtent2D extent = swapchain_.extent();
     VkViewport viewport{};
@@ -886,6 +974,39 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     // dynamic instead of forcing a new pipeline for every resize.
     vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
     vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+    if (skyboxDescriptorSet_ != VK_NULL_HANDLE) {
+        const float aspect = extent.height == 0
+            ? 1.0f
+            : static_cast<float>(extent.width) / static_cast<float>(extent.height);
+        glm::mat4 skyboxView = camera_.viewMatrix();
+        skyboxView[3] = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+        const glm::mat4 projection = camera_.projectionMatrix(aspect);
+        const SkyboxPushConstants skyboxPushConstants{
+            glm::inverse(projection * skyboxView)
+        };
+
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, skyboxPipeline_.pipeline());
+        vkCmdBindDescriptorSets(
+            commandBuffer,
+            VK_PIPELINE_BIND_POINT_GRAPHICS,
+            skyboxPipeline_.layout(),
+            0,
+            1,
+            &skyboxDescriptorSet_,
+            0,
+            nullptr);
+        vkCmdPushConstants(
+            commandBuffer,
+            skyboxPipeline_.layout(),
+            VK_SHADER_STAGE_VERTEX_BIT,
+            0,
+            static_cast<uint32_t>(sizeof(SkyboxPushConstants)),
+            &skyboxPushConstants);
+        vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+    }
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.pipeline());
 
     for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
         const renderer::RenderObject& object = renderObjects_[objectIndex];
