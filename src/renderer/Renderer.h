@@ -53,6 +53,7 @@ private:
     void createScene();
     void createCheckerboardTexture();
     void createNormalTexture();
+    void createMetallicRoughnessTexture();
     void createMaterial();
     void createMaterialDescriptorSet(renderer::Material& material);
     void createObjectFrameDataBuffers();
@@ -82,6 +83,7 @@ private:
     rhi::VulkanSync sync_;
     rhi::VulkanTexture checkerboardTexture_;
     rhi::VulkanTexture normalMapTexture_;
+    rhi::VulkanTexture metallicRoughnessTexture_;
     rhi::VulkanDescriptorPool materialDescriptorPool_;
     renderer::Camera camera_;
     renderer::Mesh cubeMesh_;
@@ -98,6 +100,7 @@ private:
     std::chrono::steady_clock::time_point startTime_ = std::chrono::steady_clock::now();
     bool initialized_ = false;
     bool normalMapAssetLoaded_ = false;
+    bool metallicRoughnessMapAssetLoaded_ = false;
 };
 
 } // namespace ve

@@ -268,7 +268,7 @@ void Renderer::waitIdle()
 
 void Renderer::createMaterialDescriptorSetLayout()
 {
-    std::array<VkDescriptorSetLayoutBinding, 3> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 4> bindings{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[0].descriptorCount = 1;
@@ -284,8 +284,14 @@ void Renderer::createMaterialDescriptorSetLayout()
     bindings[2].descriptorCount = 1;
     bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+    bindings[3].binding = 3;
+    bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[3].descriptorCount = 1;
+    bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
     // Set 0 binding 0 is the base color texture, binding 1 is the shadow map,
-    // and binding 2 is the tangent-space normal map.
+    // binding 2 is the tangent-space normal map, and binding 3 is the
+    // metallic-roughness map.
     // Object MVP/model/light/material data stays on the BDA + vertex push constant path.
     materialDescriptorSetLayout_.create(
         context_.vkDevice(),
@@ -352,6 +358,7 @@ void Renderer::createScene()
     cubeMesh_ = renderer::Mesh::createCube(context_, commandContext_);
     createCheckerboardTexture();
     createNormalTexture();
+    createMetallicRoughnessTexture();
     createMaterial();
 
     camera_.position = {0.0f, 0.35f, 5.5f};
@@ -436,6 +443,44 @@ void Renderer::createNormalTexture()
         false);
 }
 
+void Renderer::createMetallicRoughnessTexture()
+{
+    metallicRoughnessMapAssetLoaded_ = false;
+
+    const std::filesystem::path texturePath = assetPath("textures/checker_mr.png");
+    if (std::filesystem::exists(texturePath)) {
+        try {
+            metallicRoughnessTexture_.createFromFile(context_, commandContext_, texturePath, true);
+            metallicRoughnessMapAssetLoaded_ = true;
+            Logger::info("Loaded metallic-roughness texture: " + texturePath.string());
+            return;
+        } catch (const std::exception& error) {
+            Logger::warn("Failed to load metallic-roughness texture '" + texturePath.string() + "': " + error.what());
+        }
+    } else {
+        Logger::warn("Metallic-roughness texture asset missing, using procedural neutral fallback: " + texturePath.string());
+    }
+
+    constexpr uint32_t width = 4;
+    constexpr uint32_t height = 4;
+    std::array<uint8_t, width * height * 4> pixels{};
+    for (size_t offset = 0; offset < pixels.size(); offset += 4) {
+        pixels[offset + 0] = 255;
+        pixels[offset + 1] = 255;
+        pixels[offset + 2] = 0;
+        pixels[offset + 3] = 255;
+    }
+
+    metallicRoughnessTexture_.createFromRgba8(
+        context_,
+        commandContext_,
+        width,
+        height,
+        std::span<const uint8_t>(pixels.data(), pixels.size()),
+        VK_FORMAT_R8G8B8A8_UNORM,
+        false);
+}
+
 void Renderer::createMaterial()
 {
     materialVariants_.clear();
@@ -450,10 +495,12 @@ void Renderer::createMaterial()
         material.debugName = std::move(debugName);
         material.baseColorTexture = &checkerboardTexture_;
         material.normalTexture = &normalMapTexture_;
+        material.metallicRoughnessTexture = &metallicRoughnessTexture_;
         material.baseColorFactor = baseColorFactor;
         material.metallic = metallic;
         material.roughness = roughness;
         material.hasNormalMap = normalMapAssetLoaded_;
+        material.hasMetallicRoughnessMap = metallicRoughnessMapAssetLoaded_;
         createMaterialDescriptorSet(material);
         materialVariants_.push_back(std::move(material));
     };
@@ -474,13 +521,16 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     if (!material.normalTexture || !material.normalTexture->valid()) {
         throw std::runtime_error("Cannot create a material descriptor set without a valid normal texture.");
     }
+    if (!material.metallicRoughnessTexture || !material.metallicRoughnessTexture->valid()) {
+        throw std::runtime_error("Cannot create a material descriptor set without a valid metallic-roughness texture.");
+    }
     if (!shadowMap_.valid()) {
         throw std::runtime_error("Cannot create a material descriptor set without a valid shadow map.");
     }
 
     VkDescriptorPoolSize poolSize{};
     poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = kMaxMaterialDescriptorSets * 3;
+    poolSize.descriptorCount = kMaxMaterialDescriptorSets * 4;
 
     if (materialDescriptorPool_.handle() == VK_NULL_HANDLE) {
         materialDescriptorPool_.create(
@@ -512,7 +562,12 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     normalInfo.imageView = material.normalTexture->imageView();
     normalInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    std::array<VkWriteDescriptorSet, 3> writes{};
+    VkDescriptorImageInfo metallicRoughnessInfo{};
+    metallicRoughnessInfo.sampler = material.metallicRoughnessTexture->sampler();
+    metallicRoughnessInfo.imageView = material.metallicRoughnessTexture->imageView();
+    metallicRoughnessInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    std::array<VkWriteDescriptorSet, 4> writes{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = material.descriptorSet;
     writes[0].dstBinding = 0;
@@ -537,8 +592,17 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[2].pImageInfo = &normalInfo;
 
+    writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[3].dstSet = material.descriptorSet;
+    writes[3].dstBinding = 3;
+    writes[3].dstArrayElement = 0;
+    writes[3].descriptorCount = 1;
+    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[3].pImageInfo = &metallicRoughnessInfo;
+
     // The material descriptor stores sampled images only: base color at binding 0,
-    // shadow map at binding 1, and normal map at binding 2. Object data remains outside descriptors.
+    // shadow map at binding 1, normal map at binding 2, and metallic-roughness
+    // map at binding 3. Object data remains outside descriptors.
     vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 

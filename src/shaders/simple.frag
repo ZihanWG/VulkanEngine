@@ -3,6 +3,7 @@
 layout(set = 0, binding = 0) uniform sampler2D uTexture;
 layout(set = 0, binding = 1) uniform sampler2D uShadowMap;
 layout(set = 0, binding = 2) uniform sampler2D uNormalMap;
+layout(set = 0, binding = 3) uniform sampler2D uMetallicRoughnessMap;
 
 layout(location = 0) in vec3 vColor;
 layout(location = 1) in vec2 vUV;
@@ -118,8 +119,11 @@ void main()
     vec4 materialColor = texColor * vBaseColorFactor;
     vec3 baseColor = materialColor.rgb;
     float alpha = materialColor.a;
-    float metallic = clamp(vMaterialParams.x, 0.0, 1.0);
-    float roughness = clamp(vMaterialParams.y, 0.04, 1.0);
+    vec4 mrSample = texture(uMetallicRoughnessMap, vUV);
+    float textureMetallic = mrSample.r;
+    float textureRoughness = mrSample.g;
+    float metallic = clamp(vMaterialParams.x * textureMetallic, 0.0, 1.0);
+    float roughness = clamp(vMaterialParams.y * textureRoughness, 0.04, 1.0);
 
     vec3 normalTS = texture(uNormalMap, vUV).xyz * 2.0 - 1.0;
     mat3 tbn = mat3(normalize(vTangent), normalize(vBitangent), normalize(vNormal));

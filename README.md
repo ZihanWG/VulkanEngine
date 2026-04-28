@@ -2,7 +2,7 @@
 
 Modern C++20 Vulkan 1.3 renderer skeleton inspired by the educational flow of [Sascha Willems' HowToVulkan](https://github.com/SaschaWillems/HowToVulkan), but split into engine-style modules instead of a single tutorial file.
 
-The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube geometry with normals and tangents into GPU-local vertex and index buffers, loads small RGBA base color and normal textures from disk with procedural fallbacks, and draws multiple independently rotating textured cubes with tangent-space normal mapping, direct-light Cook-Torrance GGX material response, directional lighting, and a PCF-filtered directional shadow map every frame using Dynamic Rendering and Synchronization2.
+The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube geometry with normals and tangents into GPU-local vertex and index buffers, loads small RGBA base color, normal, and metallic-roughness textures from disk with procedural fallbacks, and draws multiple independently rotating textured cubes with tangent-space normal mapping, direct-light Cook-Torrance GGX material response, directional lighting, and a PCF-filtered directional shadow map every frame using Dynamic Rendering and Synchronization2.
 
 ## Dependencies
 
@@ -21,7 +21,7 @@ The CMake project first looks for installed packages. If they are missing, `VULK
 
 Milestone 2 and later require `glslc`. CMake compiles shaders into the build-directory shader folder, for example `build/shaders`, and embeds that absolute shader directory into the executable, so running from Visual Studio, CLion, or PowerShell does not depend on the current working directory.
 
-Milestone 9 embeds the source `assets` directory path into the executable. The demo tries to load `assets/textures/checker.png`; if that file is missing or cannot be decoded, the renderer falls back to its procedural checkerboard texture.
+Milestone 9 embeds the source `assets` directory path into the executable. The demo tries to load `assets/textures/checker.png`, while later material milestones also load `assets/textures/checker_normal.png` and `assets/textures/checker_mr.png`; if any of those files are missing or cannot be decoded, the renderer falls back to procedural textures.
 
 ## Build
 
@@ -33,7 +33,7 @@ cmake --build build --config Debug
 
 For CLion, open this folder as a CMake project and use a Debug profile. Validation layers are enabled only in Debug builds.
 
-The run path for the demo texture is `assets/textures/checker.png`. CMake embeds the source asset directory, and the renderer uses the procedural checkerboard fallback if that PNG is missing.
+The run paths for the demo textures are `assets/textures/checker.png`, `assets/textures/checker_normal.png`, and `assets/textures/checker_mr.png`. CMake embeds the source asset directory, and the renderer uses procedural fallbacks if those PNGs are missing.
 
 ## Validated Environment
 
@@ -297,6 +297,28 @@ The vertex shader reads the tangent at location 4, transforms the normal and tan
 
 Object data still uses Buffer Device Address plus a vertex-stage push constant. Normal map state stays in the material descriptor set; `ObjectFrameData` is unchanged. This milestone is still not IBL, a BRDF LUT, Kulla-Conty multi-scattering compensation, bindless descriptors, model loading, glTF, ECS, ImGui, or a render graph.
 
+## Milestone 16: Metallic-Roughness Texture Map
+
+Milestone 16 adds a basic metallic-roughness texture map while keeping the same simple material and object-data architecture. `Material` can now reference a metallic-roughness texture in addition to its base color and normal textures. Object data still uses Buffer Device Address plus a vertex-stage push constant, and `materialParams.xy` remain the scalar metallic and roughness values.
+
+Descriptor set 0 is still the material/shadow texture set:
+
+- set 0 binding 0 = base color combined image sampler
+- set 0 binding 1 = shadow map combined image sampler
+- set 0 binding 2 = normal map combined image sampler
+- set 0 binding 3 = metallic-roughness combined image sampler
+
+The demo texture is `assets/textures/checker_mr.png`. Its R channel controls metallic and its G channel controls roughness; B and A are unused by the shader. The fragment shader multiplies the sampled texture values by the scalar material factors:
+
+```glsl
+metallic = clamp(materialMetallic * textureMetallic, 0.0, 1.0);
+roughness = clamp(materialRoughness * textureRoughness, 0.04, 1.0);
+```
+
+If the asset is missing or fails to decode, the renderer creates a small procedural metallic-roughness fallback texture. The fallback uses neutral R/G factors so the existing scalar `Material::metallic` and `Material::roughness` values remain the visible fallback behavior.
+
+GGX direct lighting uses the resulting metallic and roughness values together with the existing normal map and PCF shadow paths. This is still direct lighting only: no IBL, no split-sum BRDF LUT, no Kulla-Conty multi-scattering compensation, and not full glTF material support.
+
 ## Next Milestones
 
-Future milestones can build on this multi-object material foundation with IBL, a BRDF LUT, Kulla-Conty multi-scattering compensation, material texture maps, general tangent generation, improved shadow quality, bindless descriptors, model loading, and render graph work once the minimal texture, lighting, and shadow path is stable.
+Future milestones can build on this multi-object material foundation with IBL, a split-sum BRDF LUT, Kulla-Conty multi-scattering compensation, glTF material conventions, general tangent generation, improved shadow quality, bindless descriptors, model loading, and render graph work once the minimal texture, lighting, and shadow path is stable.
