@@ -66,7 +66,7 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 
 ## Current Descriptor Contract
 
-Descriptor set 0 is the material/shadow texture set used by the main fragment shader:
+Material descriptor set 0:
 
 - set 0 binding 0 = base color combined image sampler
 - set 0 binding 1 = shadow map combined image sampler
@@ -74,7 +74,7 @@ Descriptor set 0 is the material/shadow texture set used by the main fragment sh
 - set 0 binding 3 = metallic-roughness combined image sampler
 - set 0 binding 4 = diffuse irradiance cubemap combined image sampler
 
-Skybox rendering uses a separate descriptor set layout and pipeline:
+Skybox descriptor set:
 
 - skybox set 0 binding 0 = visible environment cubemap combined image sampler
 
