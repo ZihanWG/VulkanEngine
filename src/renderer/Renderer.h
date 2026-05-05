@@ -4,6 +4,7 @@
 #include "renderer/FrameResources.h"
 #include "renderer/Material.h"
 #include "renderer/Mesh.h"
+#include "renderer/RenderGraph.h"
 #include "renderer/RenderObject.h"
 #include "rhi/VulkanBuffer.h"
 #include "rhi/VulkanBrdfLut.h"
@@ -68,21 +69,12 @@ private:
     void updateFrameData(uint32_t frameIndex);
     void recreateSwapchain();
     void recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex);
-    void transitionSwapchainImage(
-        VkCommandBuffer commandBuffer,
-        VkImage image,
-        VkImageLayout oldLayout,
-        VkImageLayout newLayout);
-    void transitionDepthImage(VkCommandBuffer commandBuffer);
-    void transitionShadowMapImage(
-        VkCommandBuffer commandBuffer,
-        VkImageLayout oldLayout,
-        VkImageLayout newLayout);
 
     Window& window_;
     rhi::VulkanContext context_;
     std::vector<renderer::FrameResources> frames_;
     rhi::VulkanSwapchain swapchain_;
+    renderer::RenderGraph renderGraph_;
     rhi::VulkanDescriptorSetLayout materialDescriptorSetLayout_;
     rhi::VulkanDescriptorSetLayout skyboxDescriptorSetLayout_;
     rhi::VulkanShadowMap shadowMap_;

@@ -2,7 +2,7 @@
 
 Modern C++20 Vulkan 1.3 renderer skeleton inspired by the educational flow of [Sascha Willems' HowToVulkan](https://github.com/SaschaWillems/HowToVulkan), but split into engine-style modules instead of a single tutorial file.
 
-The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube geometry with normals and tangents into GPU-local vertex and index buffers, loads small RGBA base color, normal, and metallic-roughness textures from disk with procedural fallbacks, creates and renders a simple procedural environment cubemap as a skybox background, creates low-frequency diffuse irradiance and mipmapped prefiltered specular cubemaps from the same procedural environment colors, generates a 2D split-sum BRDF LUT, and draws multiple independently rotating textured cubes with tangent-space normal mapping, direct-light Cook-Torrance GGX material response, diffuse and specular image-based lighting, compact Kulla-Conty-style multi-scattering compensation, directional lighting, and a PCF-filtered directional shadow map every frame using Dynamic Rendering and Synchronization2.
+The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube geometry with normals and tangents into GPU-local vertex and index buffers, loads small RGBA base color, normal, and metallic-roughness textures from disk with procedural fallbacks, creates and renders a simple procedural environment cubemap as a skybox background, creates low-frequency diffuse irradiance and mipmapped prefiltered specular cubemaps from the same procedural environment colors, generates a 2D split-sum BRDF LUT, and draws multiple independently rotating textured cubes with tangent-space normal mapping, direct-light Cook-Torrance GGX material response, diffuse and specular image-based lighting, compact Kulla-Conty-style multi-scattering compensation, directional lighting, and a PCF-filtered directional shadow map every frame using Dynamic Rendering and Synchronization2. A minimal render graph now documents the shadow and main pass order, records manual resource usage, and centralizes the frame's image transitions.
 
 ## Dependencies
 
@@ -56,6 +56,7 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - `VulkanSwapchain` owns swapchain images, image views, color/depth image layout tracking, and the depth image used by Dynamic Rendering.
 - `VulkanCommandContext` owns the graphics command pool and per-frame command buffers.
 - `VulkanSync` owns per-frame image-available semaphores and fences, plus render-finished semaphores scoped per swapchain image.
+- `RenderGraph` owns the minimal ShadowPass/MainPass frame structure and the explicit Synchronization2 transitions for the shadow map, swapchain color image, and main depth image.
 - `VulkanPipeline` loads compiled SPIR-V shader modules and creates a Dynamic Rendering graphics pipeline.
 - `VulkanBuffer` owns `VkBuffer` plus VMA allocation, supports CPU-visible uploads, staging copies, and optional Buffer Device Address lookup.
 - `VulkanImage` owns `VkImage` plus VMA allocation and image view lifetime.
@@ -63,7 +64,7 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - `VulkanEnvironmentMap` owns a cube-compatible sampled image, cube image view, and clamp sampler. The renderer uses one generated cubemap for the visible skybox, a second low-frequency generated cubemap for diffuse irradiance, and a mipmapped generated cubemap for prefiltered specular IBL.
 - `VulkanBrdfLut` owns the generated 2D `VK_FORMAT_R8G8_UNORM` split-sum BRDF lookup texture used by specular IBL.
 - `VulkanShadowMap` owns the fixed-size sampled depth image, image view, sampler, and current layout used by the directional shadow pass.
-- `Mesh`, `Material`, `RenderObject`, `Transform`, and `Camera` provide the first renderer-side scene abstractions without introducing ECS or a render graph.
+- `Mesh`, `Material`, `RenderObject`, `Transform`, and `Camera` provide the first renderer-side scene abstractions without introducing ECS, glTF loading, or bindless rendering.
 
 ## Current Descriptor Contract
 
@@ -104,13 +105,13 @@ Object and material scalar data still use Buffer Device Address plus a vertex-st
 3. Reset the fence and command buffer.
 4. Update all object transforms.
 5. Upload per-object MVP/model/light/light-MVP/material data into the current frame's object-data buffer.
-6. Record the command buffer.
-7. Transition the shadow map to `VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL`.
+6. Record the command buffer through the minimal `RenderGraph`.
+7. `RenderGraph` begins `ShadowPass` and transitions the shadow map to `VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL`.
 8. Begin depth-only Dynamic Rendering for the shadow pass.
 9. Bind the shadow pipeline and draw each `RenderObject` with the BDA object-data push constant.
-10. End the shadow pass and transition the shadow map to `VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL`.
-11. Transition the swapchain image to `VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL`.
-12. Transition the main depth image to `VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL`.
+10. `RenderGraph` ends `ShadowPass` and transitions the shadow map to `VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL`.
+11. `RenderGraph` begins `MainPass` and transitions the swapchain image to `VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL`.
+12. `RenderGraph` transitions the main depth image to `VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL`.
 13. Begin main Dynamic Rendering with clear color and depth attachments.
 14. Set dynamic viewport and scissor from the current swapchain extent.
 15. Bind the skybox pipeline and skybox descriptor set 0.
@@ -121,7 +122,7 @@ Object and material scalar data still use Buffer Device Address plus a vertex-st
 20. Bind the object's device-local vertex and index buffers.
 21. Draw the object with `vkCmdDrawIndexed`.
 22. End Dynamic Rendering.
-23. Transition the swapchain image to `VK_IMAGE_LAYOUT_PRESENT_SRC_KHR`.
+23. `RenderGraph` ends `MainPass` and transitions the swapchain image to `VK_IMAGE_LAYOUT_PRESENT_SRC_KHR`.
 24. Submit with `vkQueueSubmit2`.
 25. Present the image and recreate the swapchain if it is out of date.
 
@@ -438,6 +439,29 @@ metallic-weighted, and `multiScatterStrength` scaled term to specular IBL.
 This is an educational approximation, not a full production Kulla-Conty LUT
 implementation.
 
+## Milestone 22: Minimal Render Graph
+
+Milestone 22 adds a small `RenderGraph` layer without changing the renderer's
+visual output. The current frame is represented as two pass nodes:
+
+- `ShadowPass` writes the directional shadow map depth image.
+- `MainPass` reads the shadow map, writes the swapchain color image, writes the
+  main depth image, reads the material textures, and reads the IBL resources.
+
+`MainPass` still draws the skybox first and then the mesh `RenderObject`s. The
+material descriptor set remains set 0 bindings 0 through 6, the skybox
+descriptor set remains separate, and object/material data still uses Buffer
+Device Address plus the vertex-stage push constant.
+
+The graph centralizes the existing Synchronization2 transitions for the shadow
+map, swapchain color image, main depth image, and present transition. Dynamic
+Rendering is still used for both the depth-only shadow pass and the main
+color/depth pass.
+
+This is not a full production render graph yet. It does not perform automatic
+dependency inference, transient resource allocation, attachment aliasing, async
+compute scheduling, pass culling, or render graph visualization.
+
 ## Next Milestones
 
 Future milestones can build on this multi-object material foundation with:
@@ -448,4 +472,9 @@ Future milestones can build on this multi-object material foundation with:
 - importance-sampled prefiltering
 - bindless descriptors
 - model loading
-- render graph
+- automatic render graph dependency inference
+- transient resource allocation
+- attachment aliasing
+- async compute
+- pass culling
+- render graph visualization

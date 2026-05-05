@@ -926,45 +926,14 @@ void Renderer::recreateSwapchain()
 
 void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex)
 {
-    VkCommandBufferBeginInfo beginInfo{};
-    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    VK_CHECK(vkBeginCommandBuffer(commandBuffer, &beginInfo));
-
-    const VkImage swapchainImage = swapchain_.image(imageIndex);
     const VkDeviceAddress objectFrameDataBaseAddress =
         frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
     const size_t objectCount =
         std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
 
-    // Shadow map layout transition: previous shader reads must finish before this
-    // frame clears and writes the depth attachment.
-    transitionShadowMapImage(commandBuffer, shadowMap_.layout(),
-                             VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
-    shadowMap_.setLayout(VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
+    renderGraph_.beginFrame(commandBuffer, swapchain_, shadowMap_, imageIndex);
 
-    VkClearValue shadowDepthClear{};
-    shadowDepthClear.depthStencil.depth = 1.0f;
-    shadowDepthClear.depthStencil.stencil = 0;
-
-    VkRenderingAttachmentInfo shadowDepthAttachment{};
-    shadowDepthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    shadowDepthAttachment.imageView = shadowMap_.imageView();
-    shadowDepthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-    shadowDepthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    shadowDepthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    shadowDepthAttachment.clearValue = shadowDepthClear;
-
-    // Depth-only Dynamic Rendering writes the scene from the directional light.
-    VkRenderingInfo shadowRenderingInfo{};
-    shadowRenderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-    shadowRenderingInfo.renderArea.offset = {0, 0};
-    shadowRenderingInfo.renderArea.extent = shadowMap_.extent();
-    shadowRenderingInfo.layerCount = 1;
-    shadowRenderingInfo.colorAttachmentCount = 0;
-    shadowRenderingInfo.pDepthAttachment = &shadowDepthAttachment;
-
-    vkCmdBeginRendering(commandBuffer, &shadowRenderingInfo);
+    renderGraph_.beginShadowPass();
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline_.pipeline());
 
     const VkExtent2D shadowExtent = shadowMap_.extent();
@@ -1004,58 +973,9 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         vkCmdDrawIndexed(commandBuffer, object.mesh->indexCount(), 1, 0, 0, 0);
     }
 
-    vkCmdEndRendering(commandBuffer);
+    renderGraph_.endShadowPass();
 
-    // The main pass samples this depth image in the fragment shader at set 0 binding 1.
-    transitionShadowMapImage(commandBuffer, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-                             VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL);
-    shadowMap_.setLayout(VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL);
-
-    // Synchronization2 barrier: make the acquired present image writable as a color attachment.
-    transitionSwapchainImage(commandBuffer, swapchainImage, swapchain_.imageLayout(imageIndex),
-                             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-    swapchain_.setImageLayout(imageIndex, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-
-    transitionDepthImage(commandBuffer);
-
-    VkClearValue clearColor{};
-    clearColor.color.float32[0] = 0.03f;
-    clearColor.color.float32[1] = 0.04f;
-    clearColor.color.float32[2] = 0.07f;
-    clearColor.color.float32[3] = 1.0f;
-
-    VkRenderingAttachmentInfo colorAttachment{};
-    colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    colorAttachment.imageView = swapchain_.imageView(imageIndex);
-    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    colorAttachment.clearValue = clearColor;
-
-    VkClearValue depthClear{};
-    depthClear.depthStencil.depth = 1.0f;
-    depthClear.depthStencil.stencil = 0;
-
-    VkRenderingAttachmentInfo depthAttachment{};
-    depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    depthAttachment.imageView = swapchain_.depthImageView();
-    depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    depthAttachment.clearValue = depthClear;
-
-    VkRenderingInfo renderingInfo{};
-    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-    renderingInfo.renderArea.offset = {0, 0};
-    renderingInfo.renderArea.extent = swapchain_.extent();
-    renderingInfo.layerCount = 1;
-    renderingInfo.colorAttachmentCount = 1;
-    renderingInfo.pColorAttachments = &colorAttachment;
-    renderingInfo.pDepthAttachment = &depthAttachment;
-
-    // Main Dynamic Rendering draws the skybox first, then consumes the shadow map
-    // through the mesh material descriptor set.
-    vkCmdBeginRendering(commandBuffer, &renderingInfo);
+    renderGraph_.beginMainPass();
 
     const VkExtent2D extent = swapchain_.extent();
     VkViewport viewport{};
@@ -1122,156 +1042,9 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
 
         vkCmdDrawIndexed(commandBuffer, object.mesh->indexCount(), 1, 0, 0, 0);
     }
-    vkCmdEndRendering(commandBuffer);
 
-    // Synchronization2 barrier: presentation reads from images in PRESENT_SRC_KHR layout.
-    transitionSwapchainImage(commandBuffer, swapchainImage,
-                             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                             VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
-    swapchain_.setImageLayout(imageIndex, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
-
-    VK_CHECK(vkEndCommandBuffer(commandBuffer));
-}
-
-void Renderer::transitionShadowMapImage(VkCommandBuffer commandBuffer, VkImageLayout oldLayout,
-                                        VkImageLayout newLayout)
-{
-    // Synchronization2 orders shadow depth writes against later fragment shader sampling,
-    // and orders previous frame sampling before this frame overwrites the map.
-    VkPipelineStageFlags2 srcStage = VK_PIPELINE_STAGE_2_NONE;
-    VkAccessFlags2 srcAccess = VK_ACCESS_2_NONE;
-    VkPipelineStageFlags2 dstStage = VK_PIPELINE_STAGE_2_NONE;
-    VkAccessFlags2 dstAccess = VK_ACCESS_2_NONE;
-
-    if (oldLayout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL) {
-        srcStage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-                   VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-        srcAccess = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    } else if (oldLayout == VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL) {
-        srcStage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-        srcAccess = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-    }
-
-    if (newLayout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL) {
-        dstStage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-                   VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-        dstAccess = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                    VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    } else if (newLayout == VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL) {
-        dstStage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-        dstAccess = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-    }
-
-    VkImageMemoryBarrier2 barrier{};
-    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    barrier.srcStageMask = srcStage;
-    barrier.srcAccessMask = srcAccess;
-    barrier.dstStageMask = dstStage;
-    barrier.dstAccessMask = dstAccess;
-    barrier.oldLayout = oldLayout;
-    barrier.newLayout = newLayout;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = shadowMap_.image();
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
-
-    VkDependencyInfo dependencyInfo{};
-    dependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dependencyInfo.imageMemoryBarrierCount = 1;
-    dependencyInfo.pImageMemoryBarriers = &barrier;
-
-    vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
-}
-
-void Renderer::transitionSwapchainImage(VkCommandBuffer commandBuffer, VkImage image,
-                                        VkImageLayout oldLayout, VkImageLayout newLayout)
-{
-    VkPipelineStageFlags2 srcStage = VK_PIPELINE_STAGE_2_NONE;
-    VkAccessFlags2 srcAccess = VK_ACCESS_2_NONE;
-    VkPipelineStageFlags2 dstStage = VK_PIPELINE_STAGE_2_NONE;
-    VkAccessFlags2 dstAccess = VK_ACCESS_2_NONE;
-
-    if (oldLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
-        srcStage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-        srcAccess = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-    }
-
-    if (newLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
-        dstStage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-        dstAccess = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-    }
-
-    VkImageMemoryBarrier2 barrier{};
-    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    barrier.srcStageMask = srcStage;
-    barrier.srcAccessMask = srcAccess;
-    barrier.dstStageMask = dstStage;
-    barrier.dstAccessMask = dstAccess;
-    barrier.oldLayout = oldLayout;
-    barrier.newLayout = newLayout;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = image;
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
-
-    VkDependencyInfo dependencyInfo{};
-    dependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dependencyInfo.imageMemoryBarrierCount = 1;
-    dependencyInfo.pImageMemoryBarriers = &barrier;
-
-    vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
-}
-
-void Renderer::transitionDepthImage(VkCommandBuffer commandBuffer)
-{
-    const VkImageLayout oldLayout = swapchain_.depthImageLayout();
-    constexpr VkImageLayout newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-
-    VkPipelineStageFlags2 srcStage = VK_PIPELINE_STAGE_2_NONE;
-    VkAccessFlags2 srcAccess = VK_ACCESS_2_NONE;
-
-    if (oldLayout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL) {
-        srcStage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-                   VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-        srcAccess = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    }
-
-    VkImageMemoryBarrier2 barrier{};
-    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    barrier.srcStageMask = srcStage;
-    barrier.srcAccessMask = srcAccess;
-    barrier.dstStageMask =
-        VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-    barrier.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    barrier.oldLayout = oldLayout;
-    barrier.newLayout = newLayout;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = swapchain_.depthImage();
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
-
-    VkDependencyInfo dependencyInfo{};
-    dependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dependencyInfo.imageMemoryBarrierCount = 1;
-    dependencyInfo.pImageMemoryBarriers = &barrier;
-
-    // Depth is cleared and written every frame. This barrier initializes the
-    // image after swapchain creation and orders later depth writes on the queue.
-    vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
-    swapchain_.setDepthImageLayout(newLayout);
+    renderGraph_.endMainPass();
+    renderGraph_.endFrame();
 }
 
 } // namespace ve
