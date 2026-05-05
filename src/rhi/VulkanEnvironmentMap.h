@@ -29,10 +29,21 @@ public:
         VulkanContext& context,
         const VulkanCommandContext& commandContext,
         uint32_t faceSize = 32);
+    void createProceduralPrefilteredSpecular(
+        VulkanContext& context,
+        const VulkanCommandContext& commandContext,
+        uint32_t faceSize = 64);
     void createFromRgba8Faces(
         VulkanContext& context,
         const VulkanCommandContext& commandContext,
         uint32_t faceSize,
+        std::span<const uint8_t> pixels,
+        VkFormat format = VK_FORMAT_R8G8B8A8_UNORM);
+    void createFromRgba8MipFaces(
+        VulkanContext& context,
+        const VulkanCommandContext& commandContext,
+        uint32_t faceSize,
+        uint32_t mipLevels,
         std::span<const uint8_t> pixels,
         VkFormat format = VK_FORMAT_R8G8B8A8_UNORM);
     void reset();
@@ -48,7 +59,7 @@ public:
     [[nodiscard]] bool valid() const { return image_ != VK_NULL_HANDLE; }
 
 private:
-    void uploadFaces(
+    void uploadMipFaces(
         VulkanContext& context,
         const VulkanCommandContext& commandContext,
         std::span<const std::byte> pixels);

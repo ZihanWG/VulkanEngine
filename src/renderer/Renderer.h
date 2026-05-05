@@ -6,6 +6,7 @@
 #include "renderer/Mesh.h"
 #include "renderer/RenderObject.h"
 #include "rhi/VulkanBuffer.h"
+#include "rhi/VulkanBrdfLut.h"
 #include "rhi/VulkanCommandContext.h"
 #include "rhi/VulkanContext.h"
 #include "rhi/VulkanDescriptor.h"
@@ -58,6 +59,8 @@ private:
     void createMetallicRoughnessTexture();
     void createEnvironmentMap();
     void createDiffuseIrradianceMap();
+    void createPrefilteredEnvironmentMap();
+    void createBrdfLutTexture();
     void createMaterial();
     void createMaterialDescriptorSet(renderer::Material& material);
     void createSkyboxDescriptorSet();
@@ -93,6 +96,8 @@ private:
     rhi::VulkanTexture metallicRoughnessTexture_;
     rhi::VulkanEnvironmentMap environmentMap_;
     rhi::VulkanEnvironmentMap diffuseIrradianceMap_;
+    rhi::VulkanEnvironmentMap prefilteredEnvironmentMap_;
+    rhi::VulkanBrdfLut brdfLutTexture_;
     rhi::VulkanDescriptorPool materialDescriptorPool_;
     rhi::VulkanDescriptorPool skyboxDescriptorPool_;
     VkDescriptorSet skyboxDescriptorSet_ = VK_NULL_HANDLE;

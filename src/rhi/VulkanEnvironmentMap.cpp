@@ -56,6 +56,31 @@ float lerpFloat(float a, float b, float t)
     return a * (1.0f - t) + b * t;
 }
 
+uint32_t calculateMipLevels(uint32_t faceSize)
+{
+    return static_cast<uint32_t>(std::floor(std::log2(static_cast<double>(faceSize)))) + 1;
+}
+
+uint32_t mipFaceSize(uint32_t faceSize, uint32_t mipLevel)
+{
+    return std::max(1u, faceSize >> mipLevel);
+}
+
+size_t mipFaceByteCount(uint32_t faceSize, uint32_t mipLevel)
+{
+    const uint32_t size = mipFaceSize(faceSize, mipLevel);
+    return static_cast<size_t>(size) * size * kRgbaChannels;
+}
+
+size_t mipChainByteCount(uint32_t faceSize, uint32_t mipLevels)
+{
+    size_t byteCount = 0;
+    for (uint32_t mipLevel = 0; mipLevel < mipLevels; ++mipLevel) {
+        byteCount += mipFaceByteCount(faceSize, mipLevel) * kCubeFaceCount;
+    }
+    return byteCount;
+}
+
 uint8_t floatToByte(float value)
 {
     return static_cast<uint8_t>(std::clamp(value * 255.0f, 0.0f, 255.0f));
@@ -228,6 +253,66 @@ std::vector<uint8_t> makeProceduralDiffuseIrradianceFaces(uint32_t faceSize)
     return pixels;
 }
 
+std::vector<uint8_t> makeProceduralPrefilteredSpecularFaces(uint32_t faceSize)
+{
+    if (faceSize == 0) {
+        throw std::runtime_error("Cannot create a zero-sized procedural prefiltered environment map.");
+    }
+
+    const uint32_t mipLevels = calculateMipLevels(faceSize);
+
+    std::array<Vec3, kCubeFaceCount> faceColors{};
+    Vec3 globalColor{};
+    for (uint32_t face = 0; face < kCubeFaceCount; ++face) {
+        faceColors.at(face) = averageProceduralFaceColor(face);
+        globalColor = globalColor + faceColors.at(face);
+    }
+    globalColor = globalColor * (1.0f / static_cast<float>(kCubeFaceCount));
+
+    std::vector<uint8_t> pixels(mipChainByteCount(faceSize, mipLevels));
+    size_t mipOffset = 0;
+
+    // This is intentionally a cheap CPU approximation: higher roughness mips
+    // blend each texel toward a per-face average and then toward the global sky
+    // color instead of doing importance-sampled convolution.
+    for (uint32_t mipLevel = 0; mipLevel < mipLevels; ++mipLevel) {
+        const uint32_t size = mipFaceSize(faceSize, mipLevel);
+        const float roughness = mipLevels == 1
+            ? 0.0f
+            : static_cast<float>(mipLevel) / static_cast<float>(mipLevels - 1);
+        const float blurBlend = std::clamp(std::pow(roughness, 0.75f), 0.0f, 1.0f);
+        const float globalBlend = roughness * roughness * 0.6f;
+        const float roughnessEnergy = lerpFloat(1.08f, 0.78f, roughness);
+
+        for (uint32_t face = 0; face < kCubeFaceCount; ++face) {
+            const Vec3 lowFrequency =
+                faceColors.at(face) * (1.0f - globalBlend) + globalColor * globalBlend;
+
+            for (uint32_t y = 0; y < size; ++y) {
+                const float v = size == 1
+                    ? 0.5f
+                    : static_cast<float>(y) / static_cast<float>(size - 1);
+                for (uint32_t x = 0; x < size; ++x) {
+                    const float u = size == 1
+                        ? 0.5f
+                        : static_cast<float>(x) / static_cast<float>(size - 1);
+                    const Vec3 baseColor = proceduralFaceColor(face, u, v);
+                    const Vec3 color =
+                        (baseColor * (1.0f - blurBlend) + lowFrequency * blurBlend) * roughnessEnergy;
+                    const size_t offset = mipOffset
+                        + ((static_cast<size_t>(face) * size * size)
+                            + (static_cast<size_t>(y) * size + x)) * kRgbaChannels;
+                    writeRgba(pixels, offset, color);
+                }
+            }
+        }
+
+        mipOffset += mipFaceByteCount(faceSize, mipLevel) * kCubeFaceCount;
+    }
+
+    return pixels;
+}
+
 void validateEnvironmentFormatSupport(VkPhysicalDevice physicalDevice, VkFormat format)
 {
     VkFormatProperties properties{};
@@ -249,7 +334,8 @@ VkImageMemoryBarrier2 environmentBarrier(
     VkPipelineStageFlags2 srcStageMask,
     VkAccessFlags2 srcAccessMask,
     VkPipelineStageFlags2 dstStageMask,
-    VkAccessFlags2 dstAccessMask)
+    VkAccessFlags2 dstAccessMask,
+    uint32_t levelCount)
 {
     VkImageMemoryBarrier2 barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
@@ -264,7 +350,7 @@ VkImageMemoryBarrier2 environmentBarrier(
     barrier.image = image;
     barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.levelCount = levelCount;
     barrier.subresourceRange.baseArrayLayer = 0;
     barrier.subresourceRange.layerCount = kCubeFaceCount;
     return barrier;
@@ -329,10 +415,42 @@ void VulkanEnvironmentMap::createProceduralDiffuseIrradiance(
         VK_FORMAT_R8G8B8A8_UNORM);
 }
 
+void VulkanEnvironmentMap::createProceduralPrefilteredSpecular(
+    VulkanContext& context,
+    const VulkanCommandContext& commandContext,
+    uint32_t faceSize)
+{
+    const std::vector<uint8_t> pixels = makeProceduralPrefilteredSpecularFaces(faceSize);
+    createFromRgba8MipFaces(
+        context,
+        commandContext,
+        faceSize,
+        calculateMipLevels(faceSize),
+        std::span<const uint8_t>(pixels.data(), pixels.size()),
+        VK_FORMAT_R8G8B8A8_UNORM);
+}
+
 void VulkanEnvironmentMap::createFromRgba8Faces(
     VulkanContext& context,
     const VulkanCommandContext& commandContext,
     uint32_t faceSize,
+    std::span<const uint8_t> pixels,
+    VkFormat format)
+{
+    createFromRgba8MipFaces(
+        context,
+        commandContext,
+        faceSize,
+        1,
+        pixels,
+        format);
+}
+
+void VulkanEnvironmentMap::createFromRgba8MipFaces(
+    VulkanContext& context,
+    const VulkanCommandContext& commandContext,
+    uint32_t faceSize,
+    uint32_t mipLevels,
     std::span<const uint8_t> pixels,
     VkFormat format)
 {
@@ -341,16 +459,18 @@ void VulkanEnvironmentMap::createFromRgba8Faces(
     if (faceSize == 0) {
         throw std::runtime_error("Cannot create a zero-sized environment map.");
     }
+    if (mipLevels == 0) {
+        throw std::runtime_error("Cannot create an environment map with zero mip levels.");
+    }
 
-    const size_t expectedByteCount =
-        static_cast<size_t>(faceSize) * faceSize * kCubeFaceCount * kRgbaChannels;
+    const size_t expectedByteCount = mipChainByteCount(faceSize, mipLevels);
     if (pixels.size_bytes() != expectedByteCount) {
-        throw std::runtime_error("Environment cubemap RGBA8 face data has the wrong byte count.");
+        throw std::runtime_error("Environment cubemap RGBA8 mip data has the wrong byte count.");
     }
 
     context_ = &context;
     faceSize_ = faceSize;
-    mipLevels_ = 1;
+    mipLevels_ = mipLevels;
     format_ = format;
     layout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 
@@ -376,7 +496,7 @@ void VulkanEnvironmentMap::createFromRgba8Faces(
 
     VK_CHECK(vmaCreateImage(context.allocator(), &imageInfo, &allocationInfo, &image_, &allocation_, nullptr));
 
-    uploadFaces(context, commandContext, std::as_bytes(pixels));
+    uploadMipFaces(context, commandContext, std::as_bytes(pixels));
     createImageView();
     createSampler();
 }
@@ -410,7 +530,7 @@ void VulkanEnvironmentMap::reset()
     layout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 }
 
-void VulkanEnvironmentMap::uploadFaces(
+void VulkanEnvironmentMap::uploadMipFaces(
     VulkanContext& context,
     const VulkanCommandContext& commandContext,
     std::span<const std::byte> pixels)
@@ -445,23 +565,33 @@ void VulkanEnvironmentMap::uploadFaces(
         VK_PIPELINE_STAGE_2_NONE,
         VK_ACCESS_2_NONE,
         VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-        VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        mipLevels_);
     recordImageBarrier(commandBuffer, toTransfer);
 
-    std::array<VkBufferImageCopy, kCubeFaceCount> copyRegions{};
-    const VkDeviceSize faceByteSize =
-        static_cast<VkDeviceSize>(faceSize_) * faceSize_ * kRgbaChannels;
-    for (uint32_t face = 0; face < kCubeFaceCount; ++face) {
-        VkBufferImageCopy& copyRegion = copyRegions.at(face);
-        copyRegion.bufferOffset = faceByteSize * face;
-        copyRegion.bufferRowLength = 0;
-        copyRegion.bufferImageHeight = 0;
-        copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        copyRegion.imageSubresource.mipLevel = 0;
-        copyRegion.imageSubresource.baseArrayLayer = face;
-        copyRegion.imageSubresource.layerCount = 1;
-        copyRegion.imageOffset = {0, 0, 0};
-        copyRegion.imageExtent = {faceSize_, faceSize_, 1};
+    std::vector<VkBufferImageCopy> copyRegions;
+    copyRegions.reserve(static_cast<size_t>(mipLevels_) * kCubeFaceCount);
+
+    VkDeviceSize bufferOffset = 0;
+    for (uint32_t mipLevel = 0; mipLevel < mipLevels_; ++mipLevel) {
+        const uint32_t size = mipFaceSize(faceSize_, mipLevel);
+        const VkDeviceSize faceByteSize = static_cast<VkDeviceSize>(mipFaceByteCount(faceSize_, mipLevel));
+
+        for (uint32_t face = 0; face < kCubeFaceCount; ++face) {
+            VkBufferImageCopy copyRegion{};
+            copyRegion.bufferOffset = bufferOffset + faceByteSize * face;
+            copyRegion.bufferRowLength = 0;
+            copyRegion.bufferImageHeight = 0;
+            copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            copyRegion.imageSubresource.mipLevel = mipLevel;
+            copyRegion.imageSubresource.baseArrayLayer = face;
+            copyRegion.imageSubresource.layerCount = 1;
+            copyRegion.imageOffset = {0, 0, 0};
+            copyRegion.imageExtent = {size, size, 1};
+            copyRegions.push_back(copyRegion);
+        }
+
+        bufferOffset += faceByteSize * kCubeFaceCount;
     }
 
     vkCmdCopyBufferToImage(
@@ -479,7 +609,8 @@ void VulkanEnvironmentMap::uploadFaces(
         VK_PIPELINE_STAGE_2_TRANSFER_BIT,
         VK_ACCESS_2_TRANSFER_WRITE_BIT,
         VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        mipLevels_);
     recordImageBarrier(commandBuffer, toShaderRead);
 
     VK_CHECK(vkEndCommandBuffer(commandBuffer));
@@ -531,7 +662,7 @@ void VulkanEnvironmentMap::createSampler()
     samplerInfo.compareEnable = VK_FALSE;
     samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
     samplerInfo.minLod = 0.0f;
-    samplerInfo.maxLod = static_cast<float>(mipLevels_);
+    samplerInfo.maxLod = mipLevels_ > 0 ? static_cast<float>(mipLevels_ - 1) : 0.0f;
     samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
     samplerInfo.unnormalizedCoordinates = VK_FALSE;
 

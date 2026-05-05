@@ -5,6 +5,8 @@ layout(set = 0, binding = 1) uniform sampler2D uShadowMap;
 layout(set = 0, binding = 2) uniform sampler2D uNormalMap;
 layout(set = 0, binding = 3) uniform sampler2D uMetallicRoughnessMap;
 layout(set = 0, binding = 4) uniform samplerCube uDiffuseIrradianceMap;
+layout(set = 0, binding = 5) uniform samplerCube uPrefilteredEnvMap;
+layout(set = 0, binding = 6) uniform sampler2D uBrdfLut;
 
 layout(location = 0) in vec3 vColor;
 layout(location = 1) in vec2 vUV;
@@ -149,7 +151,15 @@ void main()
     vec3 irradiance = texture(uDiffuseIrradianceMap, normal).rgb;
     vec3 kD = (1.0 - metallic) * baseColor;
     vec3 diffuseIbl = irradiance * kD;
-    vec3 ambient = diffuseIbl + vAmbientColor * baseColor * 0.05;
+
+    vec3 reflectionDirection = reflect(-viewDirection, normal);
+    float maxPrefilterMip = max(float(textureQueryLevels(uPrefilteredEnvMap) - 1), 0.0);
+    vec3 prefilteredColor = textureLod(uPrefilteredEnvMap, reflectionDirection, roughness * maxPrefilterMip).rgb;
+    vec2 brdf = texture(uBrdfLut, vec2(clamp(normalView, 0.0, 1.0), roughness)).rg;
+    vec3 iblFresnel = fresnelSchlick(normalView, f0);
+    vec3 specularIbl = prefilteredColor * (iblFresnel * brdf.x + brdf.y);
+
+    vec3 ambient = diffuseIbl + specularIbl + vAmbientColor * baseColor * 0.05;
     vec3 direct = (diffuse + specular) * vLightColor * normalLight * shadowFactor;
 
     outColor = vec4(ambient + direct, alpha);

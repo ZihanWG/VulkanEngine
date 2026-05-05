@@ -276,7 +276,7 @@ void Renderer::waitIdle()
 
 void Renderer::createMaterialDescriptorSetLayout()
 {
-    std::array<VkDescriptorSetLayoutBinding, 5> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 7> bindings{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[0].descriptorCount = 1;
@@ -302,9 +302,20 @@ void Renderer::createMaterialDescriptorSetLayout()
     bindings[4].descriptorCount = 1;
     bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+    bindings[5].binding = 5;
+    bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[5].descriptorCount = 1;
+    bindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    bindings[6].binding = 6;
+    bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[6].descriptorCount = 1;
+    bindings[6].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
     // Set 0 binding 0 is the base color texture, binding 1 is the shadow map,
     // binding 2 is the tangent-space normal map, and binding 3 is the
-    // metallic-roughness map. Binding 4 is the diffuse irradiance cubemap.
+    // metallic-roughness map. Binding 4 is diffuse irradiance, binding 5 is
+    // prefiltered environment specular, and binding 6 is the split-sum BRDF LUT.
     // Object MVP/model/light/material data stays on the BDA + vertex push constant path.
     materialDescriptorSetLayout_.create(
         context_.vkDevice(),
@@ -533,11 +544,14 @@ void Renderer::createMetallicRoughnessTexture()
 void Renderer::createEnvironmentMap()
 {
     // The visible environment cubemap stays dedicated to the skybox. A separate
-    // low-frequency cubemap derived from the same procedural colors feeds diffuse IBL.
+    // low-frequency cubemap feeds diffuse IBL, while a mipmapped cubemap and 2D
+    // BRDF LUT feed split-sum specular IBL.
     environmentMap_.createProcedural(context_, commandContext_, 32);
     createDiffuseIrradianceMap();
+    createPrefilteredEnvironmentMap();
+    createBrdfLutTexture();
     createSkyboxDescriptorSet();
-    Logger::info("Created procedural environment cubemap for skybox rendering and diffuse IBL.");
+    Logger::info("Created procedural environment cubemaps and BRDF LUT for skybox, diffuse IBL, and specular IBL.");
 }
 
 void Renderer::createDiffuseIrradianceMap()
@@ -564,6 +578,37 @@ void Renderer::createDiffuseIrradianceMap()
         1,
         std::span<const uint8_t>(neutralPixels.data(), neutralPixels.size()),
         VK_FORMAT_R8G8B8A8_UNORM);
+}
+
+void Renderer::createPrefilteredEnvironmentMap()
+{
+    try {
+        prefilteredEnvironmentMap_.createProceduralPrefilteredSpecular(context_, commandContext_, 64);
+        return;
+    } catch (const std::exception& error) {
+        Logger::warn(std::string("Failed to create procedural prefiltered specular cubemap, using neutral fallback: ")
+            + error.what());
+    }
+
+    std::array<uint8_t, 6 * 4> neutralPixels{};
+    for (size_t offset = 0; offset < neutralPixels.size(); offset += 4) {
+        neutralPixels[offset + 0] = 96;
+        neutralPixels[offset + 1] = 96;
+        neutralPixels[offset + 2] = 96;
+        neutralPixels[offset + 3] = 255;
+    }
+
+    prefilteredEnvironmentMap_.createFromRgba8Faces(
+        context_,
+        commandContext_,
+        1,
+        std::span<const uint8_t>(neutralPixels.data(), neutralPixels.size()),
+        VK_FORMAT_R8G8B8A8_UNORM);
+}
+
+void Renderer::createBrdfLutTexture()
+{
+    brdfLutTexture_.create(context_, commandContext_, 256);
 }
 
 void Renderer::createMaterial()
@@ -615,10 +660,16 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     if (!diffuseIrradianceMap_.valid()) {
         throw std::runtime_error("Cannot create a material descriptor set without a valid diffuse irradiance map.");
     }
+    if (!prefilteredEnvironmentMap_.valid()) {
+        throw std::runtime_error("Cannot create a material descriptor set without a valid prefiltered environment map.");
+    }
+    if (!brdfLutTexture_.valid()) {
+        throw std::runtime_error("Cannot create a material descriptor set without a valid BRDF LUT texture.");
+    }
 
     VkDescriptorPoolSize poolSize{};
     poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = kMaxMaterialDescriptorSets * 5;
+    poolSize.descriptorCount = kMaxMaterialDescriptorSets * 7;
 
     if (materialDescriptorPool_.handle() == VK_NULL_HANDLE) {
         materialDescriptorPool_.create(
@@ -660,7 +711,17 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     diffuseIrradianceInfo.imageView = diffuseIrradianceMap_.imageView();
     diffuseIrradianceInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    std::array<VkWriteDescriptorSet, 5> writes{};
+    VkDescriptorImageInfo prefilteredEnvironmentInfo{};
+    prefilteredEnvironmentInfo.sampler = prefilteredEnvironmentMap_.sampler();
+    prefilteredEnvironmentInfo.imageView = prefilteredEnvironmentMap_.imageView();
+    prefilteredEnvironmentInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkDescriptorImageInfo brdfLutInfo{};
+    brdfLutInfo.sampler = brdfLutTexture_.sampler();
+    brdfLutInfo.imageView = brdfLutTexture_.imageView();
+    brdfLutInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    std::array<VkWriteDescriptorSet, 7> writes{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = material.descriptorSet;
     writes[0].dstBinding = 0;
@@ -701,10 +762,26 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     writes[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[4].pImageInfo = &diffuseIrradianceInfo;
 
+    writes[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[5].dstSet = material.descriptorSet;
+    writes[5].dstBinding = 5;
+    writes[5].dstArrayElement = 0;
+    writes[5].descriptorCount = 1;
+    writes[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[5].pImageInfo = &prefilteredEnvironmentInfo;
+
+    writes[6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[6].dstSet = material.descriptorSet;
+    writes[6].dstBinding = 6;
+    writes[6].dstArrayElement = 0;
+    writes[6].descriptorCount = 1;
+    writes[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[6].pImageInfo = &brdfLutInfo;
+
     // The material descriptor stores sampled images only: base color at binding 0,
     // shadow map at binding 1, normal map at binding 2, and metallic-roughness
-    // map at binding 3. Binding 4 is the diffuse irradiance cubemap. Object data
-    // remains outside descriptors.
+    // map at binding 3. Bindings 4-6 are diffuse irradiance, prefiltered specular
+    // environment, and the BRDF LUT. Object data remains outside descriptors.
     vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 

@@ -118,6 +118,7 @@ add_executable(VulkanEngine
     src/renderer/Mesh.cpp
     src/renderer/Renderer.cpp
     src/rhi/VulkanBuffer.cpp
+    src/rhi/VulkanBrdfLut.cpp
     src/rhi/VulkanCommandContext.cpp
     src/rhi/VulkanContext.cpp
     src/rhi/VulkanDescriptor.cpp
