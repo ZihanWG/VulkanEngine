@@ -42,25 +42,27 @@ struct RenderPassNode {
 
 // This is a deliberately minimal frame graph. It documents the current pass
 // order and resource usage, then centralizes the explicit Synchronization2
-// transitions those passes need. It does not schedule passes automatically,
-// allocate transient resources, alias attachments, cull passes, or use async
-// compute yet.
+// transitions those passes need. It does not infer dependencies, allocate
+// transient resources, alias attachments, cull passes, schedule async compute,
+// or generate visualization yet.
 class RenderGraph final {
 public:
     RenderGraph();
 
-    void beginFrame(
-        VkCommandBuffer commandBuffer,
-        rhi::VulkanSwapchain& swapchain,
-        rhi::VulkanShadowMap& shadowMap,
-        uint32_t imageIndex);
+    void beginFrame(VkCommandBuffer commandBuffer,
+                    rhi::VulkanSwapchain& swapchain,
+                    rhi::VulkanShadowMap& shadowMap,
+                    uint32_t imageIndex);
     void beginShadowPass();
     void endShadowPass();
     void beginMainPass();
     void endMainPass();
     void endFrame();
 
-    [[nodiscard]] const std::vector<RenderPassNode>& passes() const { return passes_; }
+    [[nodiscard]] const std::vector<RenderPassNode>& passes() const
+    {
+        return passes_;
+    }
 
 private:
     struct FrameState {
@@ -73,10 +75,7 @@ private:
 
     void requireFrameActive(const char* operation) const;
     void transitionShadowMapImage(VkImageLayout oldLayout, VkImageLayout newLayout);
-    void transitionSwapchainImage(
-        VkImage image,
-        VkImageLayout oldLayout,
-        VkImageLayout newLayout);
+    void transitionSwapchainImage(VkImage image, VkImageLayout oldLayout, VkImageLayout newLayout);
     void transitionDepthImage();
 
     FrameState frame_{};

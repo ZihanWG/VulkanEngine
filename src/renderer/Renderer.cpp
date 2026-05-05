@@ -111,14 +111,13 @@ ShadowSceneBounds fixedCubeSceneShadowBounds()
     constexpr float lightDistance = 8.4f;
     constexpr float farPadding = 1.0f;
 
-    return {sceneCenter, sceneRadius, lightDistance, 0.1f,
-            lightDistance + sceneRadius + farPadding};
+    return {sceneCenter, sceneRadius, lightDistance, 0.1f, lightDistance + sceneRadius + farPadding};
 }
 
 glm::mat4 directionalLightViewProjection()
 {
-    const glm::vec3 lightDirection = glm::normalize(glm::vec3{
-        kDirectionalLightDirection.x, kDirectionalLightDirection.y, kDirectionalLightDirection.z});
+    const glm::vec3 lightDirection = glm::normalize(
+        glm::vec3{kDirectionalLightDirection.x, kDirectionalLightDirection.y, kDirectionalLightDirection.z});
     const ShadowSceneBounds sceneBounds = fixedCubeSceneShadowBounds();
     const glm::vec3 lightPosition = sceneBounds.center - lightDirection * sceneBounds.lightDistance;
     const glm::vec3 up = std::abs(glm::dot(lightDirection, glm::vec3{0.0f, 1.0f, 0.0f})) > 0.95f
@@ -127,9 +126,12 @@ glm::mat4 directionalLightViewProjection()
 
     // The orthographic extent and near/far planes come from a fixed demo-scene
     // bound. A tighter bound gives the 2048 shadow map more useful texel density.
-    glm::mat4 lightProjection =
-        glm::ortho(-sceneBounds.radius, sceneBounds.radius, -sceneBounds.radius, sceneBounds.radius,
-                   sceneBounds.nearPlane, sceneBounds.farPlane);
+    glm::mat4 lightProjection = glm::ortho(-sceneBounds.radius,
+                                           sceneBounds.radius,
+                                           -sceneBounds.radius,
+                                           sceneBounds.radius,
+                                           sceneBounds.nearPlane,
+                                           sceneBounds.farPlane);
     lightProjection[1][1] *= -1.0f;
     return lightProjection * glm::lookAt(lightPosition, sceneBounds.center, up);
 }
@@ -177,22 +179,19 @@ void Renderer::drawFrame()
     VK_CHECK(vkWaitForFences(context_.vkDevice(), 1, &frame.inFlightFence, VK_TRUE, UINT64_MAX));
 
     uint32_t imageIndex = 0;
-    const VkResult acquireResult =
-        vkAcquireNextImageKHR(context_.vkDevice(), swapchain_.handle(), UINT64_MAX,
-                              frame.imageAvailable, VK_NULL_HANDLE, &imageIndex);
+    const VkResult acquireResult = vkAcquireNextImageKHR(
+        context_.vkDevice(), swapchain_.handle(), UINT64_MAX, frame.imageAvailable, VK_NULL_HANDLE, &imageIndex);
 
     if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
         recreateSwapchain();
         return;
     }
     if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
-        throw std::runtime_error(std::string("vkAcquireNextImageKHR failed: ") +
-                                 rhi::vkResultToString(acquireResult));
+        throw std::runtime_error(std::string("vkAcquireNextImageKHR failed: ") + rhi::vkResultToString(acquireResult));
     }
 
     if (imagesInFlight_[imageIndex] != VK_NULL_HANDLE) {
-        VK_CHECK(vkWaitForFences(context_.vkDevice(), 1, &imagesInFlight_[imageIndex], VK_TRUE,
-                                 UINT64_MAX));
+        VK_CHECK(vkWaitForFences(context_.vkDevice(), 1, &imagesInFlight_[imageIndex], VK_TRUE, UINT64_MAX));
     }
     imagesInFlight_[imageIndex] = frame.inFlightFence;
 
@@ -238,14 +237,12 @@ void Renderer::drawFrame()
     presentInfo.pImageIndices = &imageIndex;
 
     const VkResult presentResult = vkQueuePresentKHR(context_.presentQueue(), &presentInfo);
-    const bool needsRecreate = presentResult == VK_ERROR_OUT_OF_DATE_KHR ||
-                               presentResult == VK_SUBOPTIMAL_KHR ||
+    const bool needsRecreate = presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR ||
                                acquireResult == VK_SUBOPTIMAL_KHR || window_.wasResized();
 
     if (presentResult != VK_SUCCESS && presentResult != VK_ERROR_OUT_OF_DATE_KHR &&
         presentResult != VK_SUBOPTIMAL_KHR) {
-        throw std::runtime_error(std::string("vkQueuePresentKHR failed: ") +
-                                 rhi::vkResultToString(presentResult));
+        throw std::runtime_error(std::string("vkQueuePresentKHR failed: ") + rhi::vkResultToString(presentResult));
     }
 
     if (needsRecreate) {
@@ -305,8 +302,7 @@ void Renderer::createMaterialDescriptorSetLayout()
     // prefiltered environment specular, and binding 6 is the split-sum BRDF LUT.
     // Object MVP/model/light/material data stays on the BDA + vertex push constant path.
     materialDescriptorSetLayout_.create(
-        context_.vkDevice(),
-        std::span<const VkDescriptorSetLayoutBinding>(bindings.data(), bindings.size()));
+        context_.vkDevice(), std::span<const VkDescriptorSetLayoutBinding>(bindings.data(), bindings.size()));
 }
 
 void Renderer::createSkyboxDescriptorSetLayout()
@@ -317,8 +313,7 @@ void Renderer::createSkyboxDescriptorSetLayout()
     binding.descriptorCount = 1;
     binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    skyboxDescriptorSetLayout_.create(context_.vkDevice(),
-                                      std::span<const VkDescriptorSetLayoutBinding>(&binding, 1));
+    skyboxDescriptorSetLayout_.create(context_.vkDevice(), std::span<const VkDescriptorSetLayoutBinding>(&binding, 1));
 }
 
 void Renderer::createShadowMap()
@@ -331,12 +326,11 @@ void Renderer::createShadowMap()
 void Renderer::createPipeline()
 {
     const VkVertexInputBindingDescription binding = renderer::vertexBindingDescription();
-    const std::array<VkVertexInputAttributeDescription, 5> attributes =
-        renderer::vertexAttributeDescriptions();
+    const std::array<VkVertexInputAttributeDescription, 5> attributes = renderer::vertexAttributeDescriptions();
     const VkDescriptorSetLayout descriptorSetLayout = materialDescriptorSetLayout_.handle();
     const VkDescriptorSetLayout skyboxDescriptorSetLayout = skyboxDescriptorSetLayout_.handle();
-    const VkPushConstantRange pushConstantRange{VK_SHADER_STAGE_VERTEX_BIT, 0,
-                                                static_cast<uint32_t>(sizeof(PushConstants))};
+    const VkPushConstantRange pushConstantRange{
+        VK_SHADER_STAGE_VERTEX_BIT, 0, static_cast<uint32_t>(sizeof(PushConstants))};
     const VkPushConstantRange skyboxPushConstantRange{
         VK_SHADER_STAGE_VERTEX_BIT, 0, static_cast<uint32_t>(sizeof(SkyboxPushConstants))};
 
@@ -348,8 +342,7 @@ void Renderer::createPipeline()
     pipelineInfo.vertexBindings = std::span<const VkVertexInputBindingDescription>(&binding, 1);
     pipelineInfo.vertexAttributes =
         std::span<const VkVertexInputAttributeDescription>(attributes.data(), attributes.size());
-    pipelineInfo.descriptorSetLayouts =
-        std::span<const VkDescriptorSetLayout>(&descriptorSetLayout, 1);
+    pipelineInfo.descriptorSetLayouts = std::span<const VkDescriptorSetLayout>(&descriptorSetLayout, 1);
     pipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&pushConstantRange, 1);
     pipelineInfo.enableDepth = true;
 
@@ -362,10 +355,8 @@ void Renderer::createPipeline()
     skyboxPipelineInfo.fragmentShaderPath = shaderPath("skybox.frag.spv");
     skyboxPipelineInfo.colorFormat = swapchain_.colorFormat();
     skyboxPipelineInfo.depthFormat = swapchain_.depthFormat();
-    skyboxPipelineInfo.descriptorSetLayouts =
-        std::span<const VkDescriptorSetLayout>(&skyboxDescriptorSetLayout, 1);
-    skyboxPipelineInfo.pushConstantRanges =
-        std::span<const VkPushConstantRange>(&skyboxPushConstantRange, 1);
+    skyboxPipelineInfo.descriptorSetLayouts = std::span<const VkDescriptorSetLayout>(&skyboxDescriptorSetLayout, 1);
+    skyboxPipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&skyboxPushConstantRange, 1);
     skyboxPipelineInfo.enableDepth = true;
     skyboxPipelineInfo.depthWriteEnable = false;
     skyboxPipelineInfo.depthCompareOp = VK_COMPARE_OP_ALWAYS;
@@ -378,12 +369,9 @@ void Renderer::createPipeline()
     rhi::VulkanPipelineCreateInfo shadowPipelineInfo{};
     shadowPipelineInfo.vertexShaderPath = shaderPath("shadow.vert.spv");
     shadowPipelineInfo.depthFormat = shadowMap_.format();
-    shadowPipelineInfo.vertexBindings =
-        std::span<const VkVertexInputBindingDescription>(&binding, 1);
-    shadowPipelineInfo.vertexAttributes =
-        std::span<const VkVertexInputAttributeDescription>(attributes.data(), 1);
-    shadowPipelineInfo.pushConstantRanges =
-        std::span<const VkPushConstantRange>(&pushConstantRange, 1);
+    shadowPipelineInfo.vertexBindings = std::span<const VkVertexInputBindingDescription>(&binding, 1);
+    shadowPipelineInfo.vertexAttributes = std::span<const VkVertexInputAttributeDescription>(attributes.data(), 1);
+    shadowPipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&pushConstantRange, 1);
     shadowPipelineInfo.enableColorAttachment = false;
     shadowPipelineInfo.enableDepth = true;
     shadowPipelineInfo.depthWriteEnable = true;
@@ -413,8 +401,10 @@ void Renderer::createScene()
     camera_.target = {0.0f, 0.1f, 0.0f};
 
     renderObjects_.reserve(4);
-    const auto addCube = [this](std::string debugName, const renderer::Material* material,
-                                const glm::vec3& position, const glm::vec3& rotationRadians,
+    const auto addCube = [this](std::string debugName,
+                                const renderer::Material* material,
+                                const glm::vec3& position,
+                                const glm::vec3& rotationRadians,
                                 const glm::vec3& scale) {
         renderer::RenderObject cube{};
         cube.mesh = &cubeMesh_;
@@ -426,14 +416,12 @@ void Renderer::createScene()
         renderObjects_.push_back(std::move(cube));
     };
 
-    addCube("Center Cube", &materialVariants_.at(0), {0.0f, -0.1f, 0.0f}, {0.2f, 0.0f, 0.0f},
-            {0.7f, 0.7f, 0.7f});
-    addCube("Left Cube", &materialVariants_.at(1), {-1.35f, -0.15f, -0.35f}, {0.0f, 0.35f, 0.2f},
-            {0.5f, 0.5f, 0.5f});
-    addCube("Right Cube", &materialVariants_.at(2), {1.35f, -0.05f, -0.25f}, {0.25f, -0.35f, 0.0f},
-            {0.55f, 0.8f, 0.55f});
-    addCube("Elevated Cube", &materialVariants_.at(3), {0.0f, 1.0f, -0.7f}, {-0.3f, 0.2f, 0.45f},
-            {0.45f, 0.45f, 0.45f});
+    addCube("Center Cube", &materialVariants_.at(0), {0.0f, -0.1f, 0.0f}, {0.2f, 0.0f, 0.0f}, {0.7f, 0.7f, 0.7f});
+    addCube("Left Cube", &materialVariants_.at(1), {-1.35f, -0.15f, -0.35f}, {0.0f, 0.35f, 0.2f}, {0.5f, 0.5f, 0.5f});
+    addCube(
+        "Right Cube", &materialVariants_.at(2), {1.35f, -0.05f, -0.25f}, {0.25f, -0.35f, 0.0f}, {0.55f, 0.8f, 0.55f});
+    addCube(
+        "Elevated Cube", &materialVariants_.at(3), {0.0f, 1.0f, -0.7f}, {-0.3f, 0.2f, 0.45f}, {0.45f, 0.45f, 0.45f});
 }
 
 void Renderer::createCheckerboardTexture()
@@ -448,8 +436,7 @@ void Renderer::createCheckerboardTexture()
             Logger::warn("Failed to load texture '" + texturePath.string() + "': " + error.what());
         }
     } else {
-        Logger::warn("Texture asset missing, using procedural checkerboard fallback: " +
-                     texturePath.string());
+        Logger::warn("Texture asset missing, using procedural checkerboard fallback: " + texturePath.string());
     }
 
     checkerboardTexture_.createCheckerboard(context_, commandContext_, 256, 256);
@@ -467,12 +454,10 @@ void Renderer::createNormalTexture()
             Logger::info("Loaded normal texture: " + texturePath.string());
             return;
         } catch (const std::exception& error) {
-            Logger::warn("Failed to load normal texture '" + texturePath.string() +
-                         "': " + error.what());
+            Logger::warn("Failed to load normal texture '" + texturePath.string() + "': " + error.what());
         }
     } else {
-        Logger::warn("Normal texture asset missing, using procedural flat normal fallback: " +
-                     texturePath.string());
+        Logger::warn("Normal texture asset missing, using procedural flat normal fallback: " + texturePath.string());
     }
 
     constexpr uint32_t width = 4;
@@ -485,9 +470,13 @@ void Renderer::createNormalTexture()
         pixels[offset + 3] = 255;
     }
 
-    normalMapTexture_.createFromRgba8(context_, commandContext_, width, height,
+    normalMapTexture_.createFromRgba8(context_,
+                                      commandContext_,
+                                      width,
+                                      height,
                                       std::span<const uint8_t>(pixels.data(), pixels.size()),
-                                      VK_FORMAT_R8G8B8A8_UNORM, false);
+                                      VK_FORMAT_R8G8B8A8_UNORM,
+                                      false);
 }
 
 void Renderer::createMetallicRoughnessTexture()
@@ -502,13 +491,11 @@ void Renderer::createMetallicRoughnessTexture()
             Logger::info("Loaded metallic-roughness texture: " + texturePath.string());
             return;
         } catch (const std::exception& error) {
-            Logger::warn("Failed to load metallic-roughness texture '" + texturePath.string() +
-                         "': " + error.what());
+            Logger::warn("Failed to load metallic-roughness texture '" + texturePath.string() + "': " + error.what());
         }
     } else {
-        Logger::warn(
-            "Metallic-roughness texture asset missing, using procedural neutral fallback: " +
-            texturePath.string());
+        Logger::warn("Metallic-roughness texture asset missing, using procedural neutral fallback: " +
+                     texturePath.string());
     }
 
     constexpr uint32_t width = 4;
@@ -521,9 +508,13 @@ void Renderer::createMetallicRoughnessTexture()
         pixels[offset + 3] = 255;
     }
 
-    metallicRoughnessTexture_.createFromRgba8(
-        context_, commandContext_, width, height,
-        std::span<const uint8_t>(pixels.data(), pixels.size()), VK_FORMAT_R8G8B8A8_UNORM, false);
+    metallicRoughnessTexture_.createFromRgba8(context_,
+                                              commandContext_,
+                                              width,
+                                              height,
+                                              std::span<const uint8_t>(pixels.data(), pixels.size()),
+                                              VK_FORMAT_R8G8B8A8_UNORM,
+                                              false);
 }
 
 void Renderer::createEnvironmentMap()
@@ -559,17 +550,17 @@ void Renderer::createDiffuseIrradianceMap()
         neutralPixels[offset + 3] = 255;
     }
 
-    diffuseIrradianceMap_.createFromRgba8Faces(
-        context_, commandContext_, 1,
-        std::span<const uint8_t>(neutralPixels.data(), neutralPixels.size()),
-        VK_FORMAT_R8G8B8A8_UNORM);
+    diffuseIrradianceMap_.createFromRgba8Faces(context_,
+                                               commandContext_,
+                                               1,
+                                               std::span<const uint8_t>(neutralPixels.data(), neutralPixels.size()),
+                                               VK_FORMAT_R8G8B8A8_UNORM);
 }
 
 void Renderer::createPrefilteredEnvironmentMap()
 {
     try {
-        prefilteredEnvironmentMap_.createProceduralPrefilteredSpecular(context_, commandContext_,
-                                                                       64);
+        prefilteredEnvironmentMap_.createProceduralPrefilteredSpecular(context_, commandContext_, 64);
         return;
     } catch (const std::exception& error) {
         Logger::warn(std::string("Failed to create procedural prefiltered specular cubemap, using "
@@ -586,7 +577,9 @@ void Renderer::createPrefilteredEnvironmentMap()
     }
 
     prefilteredEnvironmentMap_.createFromRgba8Faces(
-        context_, commandContext_, 1,
+        context_,
+        commandContext_,
+        1,
         std::span<const uint8_t>(neutralPixels.data(), neutralPixels.size()),
         VK_FORMAT_R8G8B8A8_UNORM);
 }
@@ -601,8 +594,11 @@ void Renderer::createMaterial()
     materialVariants_.clear();
     materialVariants_.reserve(4);
 
-    const auto addMaterial = [this](std::string debugName, const glm::vec4& baseColorFactor,
-                                    float metallic, float roughness, float multiScatterStrength) {
+    const auto addMaterial = [this](std::string debugName,
+                                    const glm::vec4& baseColorFactor,
+                                    float metallic,
+                                    float roughness,
+                                    float multiScatterStrength) {
         renderer::Material material{};
         material.debugName = std::move(debugName);
         material.baseColorTexture = &checkerboardTexture_;
@@ -629,32 +625,26 @@ void Renderer::createMaterial()
 void Renderer::createMaterialDescriptorSet(renderer::Material& material)
 {
     if (!material.baseColorTexture || !material.baseColorTexture->valid()) {
-        throw std::runtime_error(
-            "Cannot create a material descriptor set without a valid base color texture.");
+        throw std::runtime_error("Cannot create a material descriptor set without a valid base color texture.");
     }
     if (!material.normalTexture || !material.normalTexture->valid()) {
-        throw std::runtime_error(
-            "Cannot create a material descriptor set without a valid normal texture.");
+        throw std::runtime_error("Cannot create a material descriptor set without a valid normal texture.");
     }
     if (!material.metallicRoughnessTexture || !material.metallicRoughnessTexture->valid()) {
-        throw std::runtime_error(
-            "Cannot create a material descriptor set without a valid metallic-roughness texture.");
+        throw std::runtime_error("Cannot create a material descriptor set without a valid metallic-roughness texture.");
     }
     if (!shadowMap_.valid()) {
-        throw std::runtime_error(
-            "Cannot create a material descriptor set without a valid shadow map.");
+        throw std::runtime_error("Cannot create a material descriptor set without a valid shadow map.");
     }
     if (!diffuseIrradianceMap_.valid()) {
-        throw std::runtime_error(
-            "Cannot create a material descriptor set without a valid diffuse irradiance map.");
+        throw std::runtime_error("Cannot create a material descriptor set without a valid diffuse irradiance map.");
     }
     if (!prefilteredEnvironmentMap_.valid()) {
         throw std::runtime_error(
             "Cannot create a material descriptor set without a valid prefiltered environment map.");
     }
     if (!brdfLutTexture_.valid()) {
-        throw std::runtime_error(
-            "Cannot create a material descriptor set without a valid BRDF LUT texture.");
+        throw std::runtime_error("Cannot create a material descriptor set without a valid BRDF LUT texture.");
     }
 
     VkDescriptorPoolSize poolSize{};
@@ -662,9 +652,8 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     poolSize.descriptorCount = kMaxMaterialDescriptorSets * 7;
 
     if (materialDescriptorPool_.handle() == VK_NULL_HANDLE) {
-        materialDescriptorPool_.create(context_.vkDevice(),
-                                       std::span<const VkDescriptorPoolSize>(&poolSize, 1),
-                                       kMaxMaterialDescriptorSets);
+        materialDescriptorPool_.create(
+            context_.vkDevice(), std::span<const VkDescriptorPoolSize>(&poolSize, 1), kMaxMaterialDescriptorSets);
     }
 
     const VkDescriptorSetLayout descriptorSetLayout = materialDescriptorSetLayout_.handle();
@@ -771,15 +760,13 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     // shadow map at binding 1, normal map at binding 2, and metallic-roughness
     // map at binding 3. Bindings 4-6 are diffuse irradiance, prefiltered specular
     // environment, and the BRDF LUT. Object data remains outside descriptors.
-    vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(),
-                           0, nullptr);
+    vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
 void Renderer::createSkyboxDescriptorSet()
 {
     if (!environmentMap_.valid()) {
-        throw std::runtime_error(
-            "Cannot create a skybox descriptor set without a valid environment map.");
+        throw std::runtime_error("Cannot create a skybox descriptor set without a valid environment map.");
     }
 
     VkDescriptorPoolSize poolSize{};
@@ -787,8 +774,7 @@ void Renderer::createSkyboxDescriptorSet()
     poolSize.descriptorCount = 1;
 
     skyboxDescriptorSet_ = VK_NULL_HANDLE;
-    skyboxDescriptorPool_.create(context_.vkDevice(),
-                                 std::span<const VkDescriptorPoolSize>(&poolSize, 1), 1);
+    skyboxDescriptorPool_.create(context_.vkDevice(), std::span<const VkDescriptorPoolSize>(&poolSize, 1), 1);
 
     const VkDescriptorSetLayout descriptorSetLayout = skyboxDescriptorSetLayout_.handle();
     VkDescriptorSetAllocateInfo allocateInfo{};
@@ -822,8 +808,7 @@ void Renderer::createObjectFrameDataBuffers()
     for (rhi::VulkanBuffer& frameObjectDataBuffer : frameObjectDataBuffers_) {
         rhi::VulkanBufferCreateInfo bufferInfo{};
         bufferInfo.size = static_cast<VkDeviceSize>(kMaxFrameObjects * sizeof(ObjectFrameData));
-        bufferInfo.usage =
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
         bufferInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
         bufferInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
         bufferInfo.requestDeviceAddress = true;
@@ -840,14 +825,12 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         return;
     }
 
-    const size_t objectCount =
-        std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
+    const size_t objectCount = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
     std::vector<ObjectFrameData> objectFrameData(objectCount);
 
     const VkExtent2D extent = swapchain_.extent();
-    const float aspect = extent.height == 0
-                             ? 1.0f
-                             : static_cast<float>(extent.width) / static_cast<float>(extent.height);
+    const float aspect =
+        extent.height == 0 ? 1.0f : static_cast<float>(extent.width) / static_cast<float>(extent.height);
     const glm::mat4 view = camera_.viewMatrix();
     const glm::mat4 projection = camera_.projectionMatrix(aspect);
     const glm::mat4 lightViewProjection = directionalLightViewProjection();
@@ -866,13 +849,12 @@ void Renderer::updateFrameData(uint32_t frameIndex)
             object.transform.rotationRadians = {0.25f, -0.35f, elapsedSeconds * 0.9f};
             break;
         case 3:
-            object.transform.rotationRadians = {elapsedSeconds * 0.35f, elapsedSeconds * 0.55f,
-                                                0.45f};
+            object.transform.rotationRadians = {elapsedSeconds * 0.35f, elapsedSeconds * 0.55f, 0.45f};
             break;
         default:
-            object.transform.rotationRadians = {
-                elapsedSeconds * (0.2f + 0.05f * static_cast<float>(objectIndex)),
-                elapsedSeconds * 0.4f, elapsedSeconds * 0.3f};
+            object.transform.rotationRadians = {elapsedSeconds * (0.2f + 0.05f * static_cast<float>(objectIndex)),
+                                                elapsedSeconds * 0.4f,
+                                                elapsedSeconds * 0.3f};
             break;
         }
 
@@ -884,20 +866,20 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         frameData.lightDirection = kDirectionalLightDirection;
         frameData.lightColor = kDirectionalLightColor;
         frameData.ambientColor = kAmbientLightColor;
-        frameData.shadowSettings = {shadowSettings_.constantBias, shadowSettings_.slopeBias,
+        frameData.shadowSettings = {shadowSettings_.constantBias,
+                                    shadowSettings_.slopeBias,
                                     shadowSettings_.enablePcf ? 1.0f : 0.0f,
                                     static_cast<float>(std::max(shadowSettings_.pcfRadius, 0))};
         if (object.material) {
             frameData.baseColorFactor = object.material->baseColorFactor;
-            frameData.materialParams = {object.material->metallic, object.material->roughness,
-                                        object.material->multiScatterStrength, 0.0f};
+            frameData.materialParams = {
+                object.material->metallic, object.material->roughness, object.material->multiScatterStrength, 0.0f};
         }
         frameData.cameraPosition = glm::vec4(camera_.position, 1.0f);
     }
 
     frameObjectDataBuffers_.at(frameIndex)
-        .upload(std::as_bytes(
-            std::span<const ObjectFrameData>(objectFrameData.data(), objectFrameData.size())));
+        .upload(std::as_bytes(std::span<const ObjectFrameData>(objectFrameData.data(), objectFrameData.size())));
 }
 
 void Renderer::recreateSwapchain()
@@ -910,13 +892,11 @@ void Renderer::recreateSwapchain()
     swapchain_.recreate(context_, window_.framebufferExtent());
     sync_.recreateRenderFinishedSemaphores(swapchain_.imageCount());
 
-    const bool pipelineNeedsRecreate = pipeline_.pipeline() == VK_NULL_HANDLE ||
-                                       pipelineColorFormat_ != swapchain_.colorFormat() ||
-                                       pipelineDepthFormat_ != swapchain_.depthFormat() ||
-                                       skyboxPipeline_.pipeline() == VK_NULL_HANDLE ||
-                                       skyboxPipelineColorFormat_ != swapchain_.colorFormat() ||
-                                       skyboxPipelineDepthFormat_ != swapchain_.depthFormat() ||
-                                       shadowPipelineDepthFormat_ != shadowMap_.format();
+    const bool pipelineNeedsRecreate =
+        pipeline_.pipeline() == VK_NULL_HANDLE || pipelineColorFormat_ != swapchain_.colorFormat() ||
+        pipelineDepthFormat_ != swapchain_.depthFormat() || skyboxPipeline_.pipeline() == VK_NULL_HANDLE ||
+        skyboxPipelineColorFormat_ != swapchain_.colorFormat() ||
+        skyboxPipelineDepthFormat_ != swapchain_.depthFormat() || shadowPipelineDepthFormat_ != shadowMap_.format();
     if (pipelineNeedsRecreate) {
         createPipeline();
     }
@@ -926,10 +906,8 @@ void Renderer::recreateSwapchain()
 
 void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex)
 {
-    const VkDeviceAddress objectFrameDataBaseAddress =
-        frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
-    const size_t objectCount =
-        std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
+    const VkDeviceAddress objectFrameDataBaseAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
+    const size_t objectCount = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
 
     renderGraph_.beginFrame(commandBuffer, swapchain_, shadowMap_, imageIndex);
 
@@ -958,12 +936,15 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
             continue;
         }
 
-        const PushConstants pushConstants{
-            objectFrameDataBaseAddress +
-            static_cast<VkDeviceAddress>(objectIndex * sizeof(ObjectFrameData))};
+        const PushConstants pushConstants{objectFrameDataBaseAddress +
+                                          static_cast<VkDeviceAddress>(objectIndex * sizeof(ObjectFrameData))};
 
-        vkCmdPushConstants(commandBuffer, shadowPipeline_.layout(), VK_SHADER_STAGE_VERTEX_BIT, 0,
-                           static_cast<uint32_t>(sizeof(PushConstants)), &pushConstants);
+        vkCmdPushConstants(commandBuffer,
+                           shadowPipeline_.layout(),
+                           VK_SHADER_STAGE_VERTEX_BIT,
+                           0,
+                           static_cast<uint32_t>(sizeof(PushConstants)),
+                           &pushConstants);
 
         const VkBuffer vertexBuffers[] = {object.mesh->vertexBuffer()};
         const VkDeviceSize vertexOffsets[] = {0};
@@ -996,19 +977,26 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
     if (skyboxDescriptorSet_ != VK_NULL_HANDLE) {
-        const float aspect = extent.height == 0 ? 1.0f
-                                                : static_cast<float>(extent.width) /
-                                                      static_cast<float>(extent.height);
+        const float aspect =
+            extent.height == 0 ? 1.0f : static_cast<float>(extent.width) / static_cast<float>(extent.height);
         glm::mat4 skyboxView = camera_.viewMatrix();
         skyboxView[3] = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
         const glm::mat4 projection = camera_.projectionMatrix(aspect);
         const SkyboxPushConstants skyboxPushConstants{glm::inverse(projection * skyboxView)};
 
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          skyboxPipeline_.pipeline());
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                skyboxPipeline_.layout(), 0, 1, &skyboxDescriptorSet_, 0, nullptr);
-        vkCmdPushConstants(commandBuffer, skyboxPipeline_.layout(), VK_SHADER_STAGE_VERTEX_BIT, 0,
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, skyboxPipeline_.pipeline());
+        vkCmdBindDescriptorSets(commandBuffer,
+                                VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                skyboxPipeline_.layout(),
+                                0,
+                                1,
+                                &skyboxDescriptorSet_,
+                                0,
+                                nullptr);
+        vkCmdPushConstants(commandBuffer,
+                           skyboxPipeline_.layout(),
+                           VK_SHADER_STAGE_VERTEX_BIT,
+                           0,
                            static_cast<uint32_t>(sizeof(SkyboxPushConstants)),
                            &skyboxPushConstants);
         vkCmdDraw(commandBuffer, 3, 1, 0, 0);
@@ -1023,17 +1011,20 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         }
 
         const VkDescriptorSet descriptorSet = object.material->descriptorSet;
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.layout(),
-                                0, 1, &descriptorSet, 0, nullptr);
+        vkCmdBindDescriptorSets(
+            commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.layout(), 0, 1, &descriptorSet, 0, nullptr);
 
-        const PushConstants pushConstants{
-            objectFrameDataBaseAddress +
-            static_cast<VkDeviceAddress>(objectIndex * sizeof(ObjectFrameData))};
+        const PushConstants pushConstants{objectFrameDataBaseAddress +
+                                          static_cast<VkDeviceAddress>(objectIndex * sizeof(ObjectFrameData))};
 
         // The material descriptor binds the texture/sampler for the fragment shader.
         // The pushed address points at this object's BDA frame data for the vertex shader.
-        vkCmdPushConstants(commandBuffer, pipeline_.layout(), VK_SHADER_STAGE_VERTEX_BIT, 0,
-                           static_cast<uint32_t>(sizeof(PushConstants)), &pushConstants);
+        vkCmdPushConstants(commandBuffer,
+                           pipeline_.layout(),
+                           VK_SHADER_STAGE_VERTEX_BIT,
+                           0,
+                           static_cast<uint32_t>(sizeof(PushConstants)),
+                           &pushConstants);
 
         const VkBuffer vertexBuffers[] = {object.mesh->vertexBuffer()};
         const VkDeviceSize vertexOffsets[] = {0};

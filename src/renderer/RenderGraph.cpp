@@ -24,27 +24,28 @@ RenderGraph::RenderGraph()
               "ShadowPass",
               RenderPassType::Shadow,
               {
-                  {kShadowMapDepth, RenderResourceAccess::Write,
-                   "Writes the directional shadow map depth image."},
+                  {kShadowMapDepth, RenderResourceAccess::Write, "Writes the directional shadow map depth image."},
               }},
           RenderPassNode{
               "MainPass",
               RenderPassType::Main,
               {
-                  {kShadowMapDepth, RenderResourceAccess::Read,
+                  {kShadowMapDepth,
+                   RenderResourceAccess::Read,
                    "Samples the shadow map from material set 0 binding 1."},
-                  {kSwapchainColor, RenderResourceAccess::Write,
-                   "Writes the acquired swapchain color image."},
-                  {kMainDepth, RenderResourceAccess::Write,
+                  {kSwapchainColor, RenderResourceAccess::Write, "Writes the acquired swapchain color image."},
+                  {kMainDepth,
+                   RenderResourceAccess::Write,
                    "Clears and writes the main Dynamic Rendering depth image."},
-                  {kMaterialTextures, RenderResourceAccess::Read,
+                  {kMaterialTextures,
+                   RenderResourceAccess::Read,
                    "Samples material textures from descriptor set 0 bindings 0, 2, and 3."},
-                  {kIblResources, RenderResourceAccess::Read,
+                  {kIblResources,
+                   RenderResourceAccess::Read,
                    "Samples diffuse IBL, prefiltered specular IBL, and the BRDF LUT."},
               }},
       }
-{
-}
+{}
 
 void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
                              rhi::VulkanSwapchain& swapchain,
@@ -115,8 +116,7 @@ void RenderGraph::endShadowPass()
 
     vkCmdEndRendering(frame_.commandBuffer);
 
-    transitionShadowMapImage(VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-                             VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL);
+    transitionShadowMapImage(VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL);
     frame_.shadowMap->setLayout(VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL);
     shadowPassActive_ = false;
 }
@@ -183,9 +183,8 @@ void RenderGraph::endMainPass()
 
     vkCmdEndRendering(frame_.commandBuffer);
 
-    transitionSwapchainImage(frame_.swapchainImage,
-                             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                             VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    transitionSwapchainImage(
+        frame_.swapchainImage, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     frame_.swapchain->setImageLayout(frame_.imageIndex, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     mainPassActive_ = false;
 }
@@ -218,8 +217,7 @@ void RenderGraph::transitionShadowMapImage(VkImageLayout oldLayout, VkImageLayou
     VkAccessFlags2 dstAccess = VK_ACCESS_2_NONE;
 
     if (oldLayout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL) {
-        srcStage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-                   VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+        srcStage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
         srcAccess = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
     } else if (oldLayout == VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL) {
         srcStage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
@@ -227,10 +225,8 @@ void RenderGraph::transitionShadowMapImage(VkImageLayout oldLayout, VkImageLayou
     }
 
     if (newLayout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL) {
-        dstStage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-                   VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-        dstAccess = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                    VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        dstStage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+        dstAccess = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
     } else if (newLayout == VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL) {
         dstStage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
         dstAccess = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
@@ -261,9 +257,7 @@ void RenderGraph::transitionShadowMapImage(VkImageLayout oldLayout, VkImageLayou
     vkCmdPipelineBarrier2(frame_.commandBuffer, &dependencyInfo);
 }
 
-void RenderGraph::transitionSwapchainImage(VkImage image,
-                                           VkImageLayout oldLayout,
-                                           VkImageLayout newLayout)
+void RenderGraph::transitionSwapchainImage(VkImage image, VkImageLayout oldLayout, VkImageLayout newLayout)
 {
     VkPipelineStageFlags2 srcStage = VK_PIPELINE_STAGE_2_NONE;
     VkAccessFlags2 srcAccess = VK_ACCESS_2_NONE;
@@ -314,8 +308,7 @@ void RenderGraph::transitionDepthImage()
     VkAccessFlags2 srcAccess = VK_ACCESS_2_NONE;
 
     if (oldLayout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL) {
-        srcStage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-                   VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+        srcStage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
         srcAccess = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
     }
 
@@ -323,10 +316,9 @@ void RenderGraph::transitionDepthImage()
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
     barrier.srcStageMask = srcStage;
     barrier.srcAccessMask = srcAccess;
-    barrier.dstStageMask =
-        VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-    barrier.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+    barrier.dstAccessMask =
+        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
     barrier.oldLayout = oldLayout;
     barrier.newLayout = newLayout;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
