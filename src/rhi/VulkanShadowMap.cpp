@@ -1,6 +1,7 @@
 #include "rhi/VulkanShadowMap.h"
 
 #include "rhi/VulkanContext.h"
+#include "rhi/VulkanDebugUtils.h"
 
 #include <array>
 #include <stdexcept>
@@ -12,14 +13,10 @@ namespace {
 
 VkFormat chooseShadowMapFormat(VkPhysicalDevice physicalDevice)
 {
-    constexpr std::array<VkFormat, 2> candidates = {
-        VK_FORMAT_D32_SFLOAT,
-        VK_FORMAT_D16_UNORM
-    };
+    constexpr std::array<VkFormat, 2> candidates = {VK_FORMAT_D32_SFLOAT, VK_FORMAT_D16_UNORM};
 
     constexpr VkFormatFeatureFlags requiredFeatures =
-        VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
-        | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+        VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
 
     for (VkFormat format : candidates) {
         VkFormatProperties properties{};
@@ -114,6 +111,7 @@ void VulkanShadowMap::createSampler()
     samplerInfo.unnormalizedCoordinates = VK_FALSE;
 
     VK_CHECK(vkCreateSampler(device_, &samplerInfo, nullptr, &sampler_));
+    debug::setObjectName(device_, sampler_, VK_OBJECT_TYPE_SAMPLER, "DirectionalShadowMapSampler");
 }
 
 void VulkanShadowMap::moveFrom(VulkanShadowMap& other) noexcept

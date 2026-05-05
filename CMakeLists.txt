@@ -122,6 +122,7 @@ add_executable(VulkanEngine
     src/rhi/VulkanBrdfLut.cpp
     src/rhi/VulkanCommandContext.cpp
     src/rhi/VulkanContext.cpp
+    src/rhi/VulkanDebugUtils.cpp
     src/rhi/VulkanDescriptor.cpp
     src/rhi/VulkanDevice.cpp
     src/rhi/VulkanEnvironmentMap.cpp
@@ -131,6 +132,7 @@ add_executable(VulkanEngine
     src/rhi/VulkanShadowMap.cpp
     src/rhi/VulkanSwapchain.cpp
     src/rhi/VulkanSync.cpp
+    src/rhi/VulkanTimestampQuery.cpp
     src/rhi/VulkanTexture.cpp
 )
 

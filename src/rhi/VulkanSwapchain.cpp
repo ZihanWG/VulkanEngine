@@ -1,11 +1,13 @@
 #include "rhi/VulkanSwapchain.h"
 
 #include "rhi/VulkanContext.h"
+#include "rhi/VulkanDebugUtils.h"
 
 #include <algorithm>
 #include <array>
 #include <limits>
 #include <stdexcept>
+#include <string>
 
 namespace ve::rhi {
 
@@ -66,10 +68,7 @@ void VulkanSwapchain::create(WindowExtent desiredExtent)
     }
 
     const QueueFamilyIndices& indices = context_->queueFamilies();
-    std::array<uint32_t, 2> queueFamilyIndices = {
-        indices.graphicsFamily.value(),
-        indices.presentFamily.value()
-    };
+    std::array<uint32_t, 2> queueFamilyIndices = {indices.graphicsFamily.value(), indices.presentFamily.value()};
     const bool usesSeparateQueues = indices.graphicsFamily.value() != indices.presentFamily.value();
 
     VkSwapchainCreateInfoKHR createInfo{};
@@ -100,6 +99,11 @@ void VulkanSwapchain::create(WindowExtent desiredExtent)
     extent_ = selectedExtent;
     imageLayouts_.assign(images_.size(), VK_IMAGE_LAYOUT_UNDEFINED);
 
+    for (size_t index = 0; index < images_.size(); ++index) {
+        debug::setObjectName(
+            context_->vkDevice(), images_[index], VK_OBJECT_TYPE_IMAGE, "SwapchainImage" + std::to_string(index));
+    }
+
     createImageViews();
     createDepthImage();
 }
@@ -121,6 +125,10 @@ void VulkanSwapchain::createImageViews()
         viewInfo.subresourceRange.layerCount = 1;
 
         VK_CHECK(vkCreateImageView(context_->vkDevice(), &viewInfo, nullptr, &imageViews_[index]));
+        debug::setObjectName(context_->vkDevice(),
+                             imageViews_[index],
+                             VK_OBJECT_TYPE_IMAGE_VIEW,
+                             "SwapchainImageView" + std::to_string(index));
     }
 }
 
@@ -134,7 +142,7 @@ void VulkanSwapchain::createDepthImage()
     depthInfo.format = depthFormat_;
     depthInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
     depthInfo.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    depthInfo.debugName = "SwapchainDepth";
+    depthInfo.debugName = "MainDepth";
 
     depthImage_.create(*context_, depthInfo);
     depthImageLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -174,23 +182,19 @@ VkExtent2D VulkanSwapchain::chooseExtent(const VkSurfaceCapabilitiesKHR& capabil
         return capabilities.currentExtent;
     }
 
-    VkExtent2D actualExtent{
-        desiredExtent.width,
-        desiredExtent.height
-    };
+    VkExtent2D actualExtent{desiredExtent.width, desiredExtent.height};
 
-    actualExtent.width = std::clamp(actualExtent.width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width);
-    actualExtent.height = std::clamp(actualExtent.height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
+    actualExtent.width =
+        std::clamp(actualExtent.width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width);
+    actualExtent.height =
+        std::clamp(actualExtent.height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
     return actualExtent;
 }
 
 VkFormat VulkanSwapchain::findDepthFormat() const
 {
     const std::array<VkFormat, 3> candidates = {
-        VK_FORMAT_D32_SFLOAT,
-        VK_FORMAT_D32_SFLOAT_S8_UINT,
-        VK_FORMAT_D24_UNORM_S8_UINT
-    };
+        VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT};
 
     for (VkFormat format : candidates) {
         VkFormatProperties properties{};

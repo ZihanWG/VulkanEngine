@@ -16,10 +16,12 @@
 #include "rhi/VulkanShadowMap.h"
 #include "rhi/VulkanSwapchain.h"
 #include "rhi/VulkanSync.h"
+#include "rhi/VulkanTimestampQuery.h"
 #include "rhi/VulkanTexture.h"
 
 #include <chrono>
 #include <cstdint>
+#include <string_view>
 #include <vector>
 
 namespace ve {
@@ -69,10 +71,15 @@ private:
     void updateFrameData(uint32_t frameIndex);
     void recreateSwapchain();
     void recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex);
+    void nameTextureResources(const rhi::VulkanTexture& texture, std::string_view name) const;
+    void nameEnvironmentMapResources(const rhi::VulkanEnvironmentMap& environmentMap, std::string_view name) const;
+    void nameBrdfLutResources(const rhi::VulkanBrdfLut& brdfLut, std::string_view name) const;
+    void tryPrintGpuTimings(uint32_t frameIndex);
 
     Window& window_;
     rhi::VulkanContext context_;
     std::vector<renderer::FrameResources> frames_;
+    rhi::VulkanTimestampQuery timestampQuery_;
     rhi::VulkanSwapchain swapchain_;
     renderer::RenderGraph renderGraph_;
     rhi::VulkanDescriptorSetLayout materialDescriptorSetLayout_;
@@ -108,6 +115,7 @@ private:
     VkFormat shadowPipelineDepthFormat_ = VK_FORMAT_UNDEFINED;
     uint32_t currentFrame_ = 0;
     std::chrono::steady_clock::time_point startTime_ = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point lastGpuTimingPrint_ = std::chrono::steady_clock::now();
     bool initialized_ = false;
     bool normalMapAssetLoaded_ = false;
     bool metallicRoughnessMapAssetLoaded_ = false;

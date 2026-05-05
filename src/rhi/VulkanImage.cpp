@@ -1,7 +1,9 @@
 #include "rhi/VulkanImage.h"
 
 #include "rhi/VulkanContext.h"
+#include "rhi/VulkanDebugUtils.h"
 
+#include <string>
 #include <utility>
 
 namespace ve::rhi {
@@ -32,11 +34,7 @@ void VulkanImage::create(VulkanContext& context, const VulkanImageCreateInfo& cr
 
     context_ = &context;
     format_ = createInfo.format;
-    extent_ = {
-        createInfo.width,
-        createInfo.height,
-        1
-    };
+    extent_ = {createInfo.width, createInfo.height, 1};
 
     VkImageCreateInfo imageInfo{};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -69,6 +67,11 @@ void VulkanImage::create(VulkanContext& context, const VulkanImageCreateInfo& cr
     viewInfo.subresourceRange.layerCount = 1;
 
     VK_CHECK(vkCreateImageView(context.vkDevice(), &viewInfo, nullptr, &imageView_));
+
+    if (!createInfo.debugName.empty()) {
+        debug::setObjectName(context.vkDevice(), image_, VK_OBJECT_TYPE_IMAGE, createInfo.debugName);
+        debug::setObjectName(context.vkDevice(), imageView_, VK_OBJECT_TYPE_IMAGE_VIEW, createInfo.debugName + "View");
+    }
 }
 
 void VulkanImage::reset()

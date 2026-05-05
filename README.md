@@ -462,6 +462,52 @@ This is not a full production render graph yet. It does not perform automatic
 dependency inference, transient resource allocation, attachment aliasing, async
 compute scheduling, pass culling, or render graph visualization.
 
+## Milestone 23: GPU Debug Labels and Timestamp Profiling
+
+Milestone 23 adds lightweight GPU inspection and profiling support without
+changing visual output, descriptor layouts, the Buffer Device Address object-data
+path, or render graph pass order.
+
+`VulkanDebugUtils` wraps `VK_EXT_debug_utils` object names and command-buffer
+labels. If the extension or function pointers are unavailable, the helpers are
+safe no-ops. When available, major Vulkan objects get readable names, including
+swapchain images and image views, the main depth image, shadow map resources,
+material textures, IBL cubemaps, the BRDF LUT, pipelines, descriptor set
+layouts, and pipeline layouts.
+
+Frame command recording now emits debug labels around:
+
+- `Frame`
+- `ShadowPass`
+- `MainPass`
+- `Skybox`
+- `RenderObjects`
+
+These labels are intended to show up in RenderDoc and NSight captures.
+
+`VulkanTimestampQuery` owns a timestamp query pool split by frame-in-flight slot.
+Each frame resets its slot, writes begin/end timestamps for `ShadowPass`,
+`MainPass`, `Skybox`, and `RenderObjects`, then reads the previous use of that
+frame slot after the existing fence wait. Elapsed GPU time is computed from the
+device timestamp period as `(end - begin) * timestampPeriod / 1e6`.
+
+Timing output is throttled to about once per second to avoid console spam:
+
+```text
+GPU timings:
+  ShadowPass: X ms
+  MainPass: Y ms
+  Skybox: Z ms
+  RenderObjects: W ms
+```
+
+If timestamp queries are not supported, the engine prints one warning and leaves
+profiling disabled.
+
+Future profiling/debugging work can add more detailed per-material or per-draw
+profiling, GPU/CPU frame timeline visualization, a documented RenderDoc capture
+workflow, an in-engine profiler UI, and ImGui integration.
+
 ## Next Milestones
 
 Future milestones can build on this multi-object material foundation with:
@@ -478,3 +524,7 @@ Future milestones can build on this multi-object material foundation with:
 - async compute
 - pass culling
 - render graph visualization
+- detailed GPU/CPU frame timeline visualization
+- RenderDoc capture workflow documentation
+- in-engine profiler UI
+- ImGui integration

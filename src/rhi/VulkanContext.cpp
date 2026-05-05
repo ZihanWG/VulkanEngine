@@ -19,17 +19,15 @@ constexpr bool kEnableValidationLayers = true;
 constexpr bool kEnableValidationLayers = false;
 #endif
 
-constexpr std::array<const char*, 1> kValidationLayers = {
-    "VK_LAYER_KHRONOS_validation"
-};
+constexpr std::array<const char*, 1> kValidationLayers = {"VK_LAYER_KHRONOS_validation"};
 
-VKAPI_ATTR VkBool32 VKAPI_CALL validationCallback(
-    VkDebugUtilsMessageSeverityFlagBitsEXT severity,
-    VkDebugUtilsMessageTypeFlagsEXT,
-    const VkDebugUtilsMessengerCallbackDataEXT* callbackData,
-    void*)
+VKAPI_ATTR VkBool32 VKAPI_CALL validationCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+                                                  VkDebugUtilsMessageTypeFlagsEXT,
+                                                  const VkDebugUtilsMessengerCallbackDataEXT* callbackData,
+                                                  void*)
 {
-    const char* message = callbackData && callbackData->pMessage ? callbackData->pMessage : "Unknown validation message";
+    const char* message =
+        callbackData && callbackData->pMessage ? callbackData->pMessage : "Unknown validation message";
 
     if ((severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) {
         Logger::error(message);
@@ -46,12 +44,12 @@ VkDebugUtilsMessengerCreateInfoEXT debugMessengerCreateInfo()
 {
     VkDebugUtilsMessengerCreateInfoEXT createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
-    createInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT
-        | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT
-        | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-    createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT
-        | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
-        | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    createInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+                                 VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                                 VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                             VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                             VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
     createInfo.pfnUserCallback = validationCallback;
     return createInfo;
 }
@@ -96,7 +94,9 @@ void VulkanContext::cleanup()
     }
 
     if (debugMessenger_) {
-        vkDestroyDebugUtilsMessengerEXT(instance_, debugMessenger_, nullptr);
+        if (vkDestroyDebugUtilsMessengerEXT != nullptr) {
+            vkDestroyDebugUtilsMessengerEXT(instance_, debugMessenger_, nullptr);
+        }
         debugMessenger_ = VK_NULL_HANDLE;
     }
 
@@ -147,6 +147,10 @@ void VulkanContext::setupDebugMessenger()
     if (!kEnableValidationLayers) {
         return;
     }
+    if (vkCreateDebugUtilsMessengerEXT == nullptr) {
+        Logger::warn("Vulkan validation messenger unavailable because VK_EXT_debug_utils functions were not loaded.");
+        return;
+    }
 
     const VkDebugUtilsMessengerCreateInfoEXT createInfo = debugMessengerCreateInfo();
     VK_CHECK(vkCreateDebugUtilsMessengerEXT(instance_, &createInfo, nullptr, &debugMessenger_));
@@ -177,10 +181,8 @@ bool VulkanContext::validationLayersAvailable() const
     VK_CHECK(vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.data()));
 
     for (const char* layerName : kValidationLayers) {
-        const auto layerIt = std::find_if(
-            availableLayers.begin(),
-            availableLayers.end(),
-            [layerName](const VkLayerProperties& layer) {
+        const auto layerIt =
+            std::find_if(availableLayers.begin(), availableLayers.end(), [layerName](const VkLayerProperties& layer) {
                 return std::strcmp(layer.layerName, layerName) == 0;
             });
 
@@ -196,25 +198,35 @@ std::vector<const char*> VulkanContext::requiredInstanceExtensions(const Window&
 {
     std::vector<const char*> extensions = window.requiredVulkanInstanceExtensions();
 
-    if (kEnableValidationLayers) {
-        extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-    }
-
     uint32_t extensionCount = 0;
     VK_CHECK(vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, nullptr));
     std::vector<VkExtensionProperties> availableExtensions(extensionCount);
     VK_CHECK(vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, availableExtensions.data()));
 
-    for (const char* requiredExtension : extensions) {
-        const auto extensionIt = std::find_if(
-            availableExtensions.begin(),
-            availableExtensions.end(),
-            [requiredExtension](const VkExtensionProperties& extension) {
-                return std::strcmp(extension.extensionName, requiredExtension) == 0;
-            });
+    const auto hasExtension = [&availableExtensions](const char* extensionName) {
+        return std::find_if(availableExtensions.begin(),
+                            availableExtensions.end(),
+                            [extensionName](const VkExtensionProperties& extension) {
+                                return std::strcmp(extension.extensionName, extensionName) == 0;
+                            }) != availableExtensions.end();
+    };
 
-        if (extensionIt == availableExtensions.end()) {
-            throw std::runtime_error(std::string("Required Vulkan instance extension is missing: ") + requiredExtension);
+    const bool debugUtilsAvailable = hasExtension(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    const bool debugUtilsRequested = std::find_if(extensions.begin(), extensions.end(), [](const char* extensionName) {
+                                         return std::strcmp(extensionName, VK_EXT_DEBUG_UTILS_EXTENSION_NAME) == 0;
+                                     }) != extensions.end();
+    if (!debugUtilsRequested && debugUtilsAvailable) {
+        extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    }
+    if (kEnableValidationLayers && !debugUtilsAvailable) {
+        throw std::runtime_error(std::string("Required Vulkan instance extension is missing: ") +
+                                 VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    }
+
+    for (const char* requiredExtension : extensions) {
+        if (!hasExtension(requiredExtension)) {
+            throw std::runtime_error(std::string("Required Vulkan instance extension is missing: ") +
+                                     requiredExtension);
         }
     }
 

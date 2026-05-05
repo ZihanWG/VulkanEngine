@@ -2,6 +2,7 @@
 
 #include "core/Logger.h"
 #include "core/Window.h"
+#include "rhi/VulkanDebugUtils.h"
 
 #include <algorithm>
 #include <array>
@@ -18,9 +19,12 @@
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
+#include <iomanip>
 #include <span>
+#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -143,6 +147,7 @@ Renderer::Renderer(Window& window) : window_(window)
     context_.initialize(window_);
 
     frames_.resize(rhi::kMaxFramesInFlight);
+    timestampQuery_.initialize(context_, static_cast<uint32_t>(frames_.size()));
     swapchain_.initialize(context_, window_.framebufferExtent());
     createMaterialDescriptorSetLayout();
     createSkyboxDescriptorSetLayout();
@@ -177,6 +182,7 @@ void Renderer::drawFrame()
 
     renderer::FrameResources& frame = frames_[currentFrame_];
     VK_CHECK(vkWaitForFences(context_.vkDevice(), 1, &frame.inFlightFence, VK_TRUE, UINT64_MAX));
+    tryPrintGpuTimings(currentFrame_);
 
     uint32_t imageIndex = 0;
     const VkResult acquireResult = vkAcquireNextImageKHR(
@@ -226,6 +232,7 @@ void Renderer::drawFrame()
     submitInfo.pSignalSemaphoreInfos = &signalSemaphore;
 
     VK_CHECK(vkQueueSubmit2(context_.graphicsQueue(), 1, &submitInfo, frame.inFlightFence));
+    timestampQuery_.markFrameSubmitted(currentFrame_);
 
     VkPresentInfoKHR presentInfo{};
     presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -303,6 +310,10 @@ void Renderer::createMaterialDescriptorSetLayout()
     // Object MVP/model/light/material data stays on the BDA + vertex push constant path.
     materialDescriptorSetLayout_.create(
         context_.vkDevice(), std::span<const VkDescriptorSetLayoutBinding>(bindings.data(), bindings.size()));
+    rhi::debug::setObjectName(context_.vkDevice(),
+                              materialDescriptorSetLayout_.handle(),
+                              VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
+                              "MaterialDescriptorSetLayout");
 }
 
 void Renderer::createSkyboxDescriptorSetLayout()
@@ -314,6 +325,10 @@ void Renderer::createSkyboxDescriptorSetLayout()
     binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     skyboxDescriptorSetLayout_.create(context_.vkDevice(), std::span<const VkDescriptorSetLayoutBinding>(&binding, 1));
+    rhi::debug::setObjectName(context_.vkDevice(),
+                              skyboxDescriptorSetLayout_.handle(),
+                              VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
+                              "SkyboxDescriptorSetLayout");
 }
 
 void Renderer::createShadowMap()
@@ -347,6 +362,10 @@ void Renderer::createPipeline()
     pipelineInfo.enableDepth = true;
 
     pipeline_.create(context_.vkDevice(), pipelineInfo);
+    rhi::debug::setObjectName(
+        context_.vkDevice(), pipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "MainGraphicsPipeline");
+    rhi::debug::setObjectName(
+        context_.vkDevice(), pipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "MainPipelineLayout");
     pipelineColorFormat_ = pipelineInfo.colorFormat;
     pipelineDepthFormat_ = pipelineInfo.depthFormat;
 
@@ -363,6 +382,10 @@ void Renderer::createPipeline()
     skyboxPipelineInfo.cullMode = VK_CULL_MODE_NONE;
 
     skyboxPipeline_.create(context_.vkDevice(), skyboxPipelineInfo);
+    rhi::debug::setObjectName(
+        context_.vkDevice(), skyboxPipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "SkyboxPipeline");
+    rhi::debug::setObjectName(
+        context_.vkDevice(), skyboxPipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "SkyboxPipelineLayout");
     skyboxPipelineColorFormat_ = skyboxPipelineInfo.colorFormat;
     skyboxPipelineDepthFormat_ = skyboxPipelineInfo.depthFormat;
 
@@ -383,6 +406,10 @@ void Renderer::createPipeline()
     shadowPipelineInfo.depthBiasSlopeFactor = shadowSettings_.rasterDepthBiasSlopeFactor;
 
     shadowPipeline_.create(context_.vkDevice(), shadowPipelineInfo);
+    rhi::debug::setObjectName(
+        context_.vkDevice(), shadowPipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "ShadowPipeline");
+    rhi::debug::setObjectName(
+        context_.vkDevice(), shadowPipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "ShadowPipelineLayout");
     shadowPipelineDepthFormat_ = shadowPipelineInfo.depthFormat;
 }
 
@@ -430,6 +457,7 @@ void Renderer::createCheckerboardTexture()
     if (std::filesystem::exists(texturePath)) {
         try {
             checkerboardTexture_.createFromFile(context_, commandContext_, texturePath, true);
+            nameTextureResources(checkerboardTexture_, "BaseColorTexture");
             Logger::info("Loaded texture: " + texturePath.string());
             return;
         } catch (const std::exception& error) {
@@ -440,6 +468,7 @@ void Renderer::createCheckerboardTexture()
     }
 
     checkerboardTexture_.createCheckerboard(context_, commandContext_, 256, 256);
+    nameTextureResources(checkerboardTexture_, "BaseColorTexture");
 }
 
 void Renderer::createNormalTexture()
@@ -451,6 +480,7 @@ void Renderer::createNormalTexture()
         try {
             normalMapTexture_.createFromFile(context_, commandContext_, texturePath, true);
             normalMapAssetLoaded_ = true;
+            nameTextureResources(normalMapTexture_, "NormalTexture");
             Logger::info("Loaded normal texture: " + texturePath.string());
             return;
         } catch (const std::exception& error) {
@@ -477,6 +507,7 @@ void Renderer::createNormalTexture()
                                       std::span<const uint8_t>(pixels.data(), pixels.size()),
                                       VK_FORMAT_R8G8B8A8_UNORM,
                                       false);
+    nameTextureResources(normalMapTexture_, "NormalTexture");
 }
 
 void Renderer::createMetallicRoughnessTexture()
@@ -488,6 +519,7 @@ void Renderer::createMetallicRoughnessTexture()
         try {
             metallicRoughnessTexture_.createFromFile(context_, commandContext_, texturePath, true);
             metallicRoughnessMapAssetLoaded_ = true;
+            nameTextureResources(metallicRoughnessTexture_, "MetallicRoughnessTexture");
             Logger::info("Loaded metallic-roughness texture: " + texturePath.string());
             return;
         } catch (const std::exception& error) {
@@ -515,6 +547,7 @@ void Renderer::createMetallicRoughnessTexture()
                                               std::span<const uint8_t>(pixels.data(), pixels.size()),
                                               VK_FORMAT_R8G8B8A8_UNORM,
                                               false);
+    nameTextureResources(metallicRoughnessTexture_, "MetallicRoughnessTexture");
 }
 
 void Renderer::createEnvironmentMap()
@@ -523,6 +556,7 @@ void Renderer::createEnvironmentMap()
     // low-frequency cubemap feeds diffuse IBL, while a mipmapped cubemap and 2D
     // BRDF LUT feed split-sum specular IBL.
     environmentMap_.createProcedural(context_, commandContext_, 32);
+    nameEnvironmentMapResources(environmentMap_, "EnvironmentCubemap");
     createDiffuseIrradianceMap();
     createPrefilteredEnvironmentMap();
     createBrdfLutTexture();
@@ -535,6 +569,7 @@ void Renderer::createDiffuseIrradianceMap()
 {
     try {
         diffuseIrradianceMap_.createProceduralDiffuseIrradiance(context_, commandContext_, 32);
+        nameEnvironmentMapResources(diffuseIrradianceMap_, "DiffuseIrradianceCubemap");
         return;
     } catch (const std::exception& error) {
         Logger::warn(std::string("Failed to create procedural diffuse irradiance cubemap, using "
@@ -555,12 +590,14 @@ void Renderer::createDiffuseIrradianceMap()
                                                1,
                                                std::span<const uint8_t>(neutralPixels.data(), neutralPixels.size()),
                                                VK_FORMAT_R8G8B8A8_UNORM);
+    nameEnvironmentMapResources(diffuseIrradianceMap_, "DiffuseIrradianceCubemap");
 }
 
 void Renderer::createPrefilteredEnvironmentMap()
 {
     try {
         prefilteredEnvironmentMap_.createProceduralPrefilteredSpecular(context_, commandContext_, 64);
+        nameEnvironmentMapResources(prefilteredEnvironmentMap_, "PrefilteredSpecularCubemap");
         return;
     } catch (const std::exception& error) {
         Logger::warn(std::string("Failed to create procedural prefiltered specular cubemap, using "
@@ -582,11 +619,13 @@ void Renderer::createPrefilteredEnvironmentMap()
         1,
         std::span<const uint8_t>(neutralPixels.data(), neutralPixels.size()),
         VK_FORMAT_R8G8B8A8_UNORM);
+    nameEnvironmentMapResources(prefilteredEnvironmentMap_, "PrefilteredSpecularCubemap");
 }
 
 void Renderer::createBrdfLutTexture()
 {
     brdfLutTexture_.create(context_, commandContext_, 256);
+    nameBrdfLutResources(brdfLutTexture_, "BrdfLut");
 }
 
 void Renderer::createMaterial()
@@ -816,6 +855,67 @@ void Renderer::createObjectFrameDataBuffers()
     }
 }
 
+void Renderer::nameTextureResources(const rhi::VulkanTexture& texture, std::string_view name) const
+{
+    if (!texture.valid()) {
+        return;
+    }
+
+    const std::string prefix{name};
+    rhi::debug::setObjectName(context_.vkDevice(), texture.image(), VK_OBJECT_TYPE_IMAGE, prefix + "Image");
+    rhi::debug::setObjectName(context_.vkDevice(), texture.imageView(), VK_OBJECT_TYPE_IMAGE_VIEW, prefix + "View");
+    rhi::debug::setObjectName(context_.vkDevice(), texture.sampler(), VK_OBJECT_TYPE_SAMPLER, prefix + "Sampler");
+}
+
+void Renderer::nameEnvironmentMapResources(const rhi::VulkanEnvironmentMap& environmentMap, std::string_view name) const
+{
+    if (!environmentMap.valid()) {
+        return;
+    }
+
+    const std::string prefix{name};
+    rhi::debug::setObjectName(context_.vkDevice(), environmentMap.image(), VK_OBJECT_TYPE_IMAGE, prefix + "Image");
+    rhi::debug::setObjectName(
+        context_.vkDevice(), environmentMap.imageView(), VK_OBJECT_TYPE_IMAGE_VIEW, prefix + "View");
+    rhi::debug::setObjectName(
+        context_.vkDevice(), environmentMap.sampler(), VK_OBJECT_TYPE_SAMPLER, prefix + "Sampler");
+}
+
+void Renderer::nameBrdfLutResources(const rhi::VulkanBrdfLut& brdfLut, std::string_view name) const
+{
+    if (!brdfLut.valid()) {
+        return;
+    }
+
+    const std::string prefix{name};
+    rhi::debug::setObjectName(context_.vkDevice(), brdfLut.image(), VK_OBJECT_TYPE_IMAGE, prefix + "Image");
+    rhi::debug::setObjectName(context_.vkDevice(), brdfLut.imageView(), VK_OBJECT_TYPE_IMAGE_VIEW, prefix + "View");
+    rhi::debug::setObjectName(context_.vkDevice(), brdfLut.sampler(), VK_OBJECT_TYPE_SAMPLER, prefix + "Sampler");
+}
+
+void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
+{
+    rhi::VulkanTimestampQuery::Results results{};
+    if (!timestampQuery_.readFrame(frameIndex, results) || !results.valid) {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now - lastGpuTimingPrint_ < std::chrono::seconds(1)) {
+        return;
+    }
+
+    lastGpuTimingPrint_ = now;
+
+    std::ostringstream message;
+    message << std::fixed << std::setprecision(3) << "GPU timings:\n"
+            << "  ShadowPass: " << results.shadowPassMs << " ms\n"
+            << "  MainPass: " << results.mainPassMs << " ms\n"
+            << "  Skybox: " << results.skyboxMs << " ms\n"
+            << "  RenderObjects: " << results.renderObjectsMs << " ms";
+    Logger::info(message.str());
+}
+
 void Renderer::updateFrameData(uint32_t frameIndex)
 {
     const auto now = std::chrono::steady_clock::now();
@@ -910,7 +1010,11 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     const size_t objectCount = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
 
     renderGraph_.beginFrame(commandBuffer, swapchain_, shadowMap_, imageIndex);
+    rhi::debug::beginLabel(commandBuffer, "Frame");
+    timestampQuery_.resetFrame(commandBuffer, currentFrame_);
 
+    rhi::debug::beginLabel(commandBuffer, "ShadowPass");
+    timestampQuery_.writeBegin(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::ShadowPass);
     renderGraph_.beginShadowPass();
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline_.pipeline());
 
@@ -955,7 +1059,11 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     }
 
     renderGraph_.endShadowPass();
+    timestampQuery_.writeEnd(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::ShadowPass);
+    rhi::debug::endLabel(commandBuffer);
 
+    rhi::debug::beginLabel(commandBuffer, "MainPass");
+    timestampQuery_.writeBegin(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::MainPass);
     renderGraph_.beginMainPass();
 
     const VkExtent2D extent = swapchain_.extent();
@@ -976,6 +1084,8 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
     vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
+    rhi::debug::beginLabel(commandBuffer, "Skybox");
+    timestampQuery_.writeBegin(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::Skybox);
     if (skyboxDescriptorSet_ != VK_NULL_HANDLE) {
         const float aspect =
             extent.height == 0 ? 1.0f : static_cast<float>(extent.width) / static_cast<float>(extent.height);
@@ -1001,7 +1111,11 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                            &skyboxPushConstants);
         vkCmdDraw(commandBuffer, 3, 1, 0, 0);
     }
+    timestampQuery_.writeEnd(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::Skybox);
+    rhi::debug::endLabel(commandBuffer);
 
+    rhi::debug::beginLabel(commandBuffer, "RenderObjects");
+    timestampQuery_.writeBegin(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::RenderObjects);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.pipeline());
 
     for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
@@ -1033,8 +1147,13 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
 
         vkCmdDrawIndexed(commandBuffer, object.mesh->indexCount(), 1, 0, 0, 0);
     }
+    timestampQuery_.writeEnd(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::RenderObjects);
+    rhi::debug::endLabel(commandBuffer);
 
     renderGraph_.endMainPass();
+    timestampQuery_.writeEnd(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::MainPass);
+    rhi::debug::endLabel(commandBuffer);
+    rhi::debug::endLabel(commandBuffer);
     renderGraph_.endFrame();
 }
 
