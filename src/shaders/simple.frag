@@ -52,9 +52,8 @@ float sampleShadowFactor(vec3 normal)
     vec3 shadowCoord = vLightSpacePosition.xyz / vLightSpacePosition.w;
     vec2 shadowUV = shadowCoord.xy * 0.5 + 0.5;
 
-    if (shadowCoord.z < 0.0 || shadowCoord.z > 1.0
-        || shadowUV.x < 0.0 || shadowUV.x > 1.0
-        || shadowUV.y < 0.0 || shadowUV.y > 1.0) {
+    if (shadowCoord.z < 0.0 || shadowCoord.z > 1.0 || shadowUV.x < 0.0 || shadowUV.x > 1.0 ||
+        shadowUV.y < 0.0 || shadowUV.y > 1.0) {
         return 1.0;
     }
 
@@ -172,7 +171,8 @@ void main()
     float geometry = geometrySmith(normal, viewDirection, lightDirection, roughness);
 
     vec3 diffuse = (1.0 - metallic) * baseColor / PI;
-    vec3 specular = distribution * geometry * fresnel / max(4.0 * normalView * normalLight, EPSILON);
+    vec3 specular =
+        distribution * geometry * fresnel / max(4.0 * normalView * normalLight, EPSILON);
 
     float shadowFactor = sampleShadowFactor(normal);
     vec3 irradiance = texture(uDiffuseIrradianceMap, normal).rgb;
@@ -181,7 +181,8 @@ void main()
 
     vec3 reflectionDirection = reflect(-viewDirection, normal);
     float maxPrefilterMip = max(float(textureQueryLevels(uPrefilteredEnvMap) - 1), 0.0);
-    vec3 prefilteredColor = textureLod(uPrefilteredEnvMap, reflectionDirection, roughness * maxPrefilterMip).rgb;
+    vec3 prefilteredColor =
+        textureLod(uPrefilteredEnvMap, reflectionDirection, roughness * maxPrefilterMip).rgb;
     vec2 brdf = texture(uBrdfLut, vec2(clamp(normalView, 0.0, 1.0), roughness)).rg;
     vec3 iblFresnel = fresnelSchlick(normalView, f0);
     vec3 specularIbl = prefilteredColor * (iblFresnel * brdf.x + brdf.y);

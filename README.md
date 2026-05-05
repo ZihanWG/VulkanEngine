@@ -406,9 +406,16 @@ The fragment shader combines direct Cook-Torrance GGX lighting, PCF shadows on d
 
 ## Milestone 21: Kulla-Conty-Style Multi-Scattering Compensation
 
-Milestone 21 adds a compact multi-scattering compensation approximation for rough metallic/specular materials. The goal is to reduce the energy loss that single-scatter GGX can show as roughness increases, especially on high-metallic materials.
+Milestone 21 is implemented and adds a compact multi-scattering compensation
+approximation for rough metallic/specular materials. The goal is to reduce the
+energy loss that single-scatter GGX can show as roughness increases, especially
+on high-metallic materials.
 
-`Material` now has `multiScatterStrength`. The value is passed through `ObjectFrameData::materialParams.z`, with `materialParams.x` still metallic, `materialParams.y` still roughness, and `materialParams.w` reserved. Object/material scalar data remains on the Buffer Device Address plus vertex-stage push-constant path.
+`Material` now has `multiScatterStrength`. The value is passed through
+`ObjectFrameData::materialParams.z`, with `materialParams.x` still metallic,
+`materialParams.y` still roughness, and `materialParams.w` reserved.
+Object/material scalar data remains on the Buffer Device Address plus
+vertex-stage push-constant path.
 
 The descriptor layout remains unchanged:
 
@@ -420,18 +427,25 @@ The descriptor layout remains unchanged:
 - binding 5 = prefiltered specular cubemap
 - binding 6 = BRDF LUT
 
-The fragment shader keeps the existing direct GGX, PCF shadow, diffuse IBL, prefiltered specular IBL, BRDF LUT, and normal-map paths. It estimates average Schlick Fresnel, uses the existing BRDF LUT scale/bias to estimate remaining single-scatter specular energy, and adds a bounded roughness-squared, mostly metallic-weighted, and `multiScatterStrength` scaled term to specular IBL.
+No descriptor layout change was required for this milestone.
 
-This is an educational approximation, not a full production Kulla-Conty LUT implementation.
+The fragment shader keeps the existing direct GGX, PCF shadow, diffuse IBL,
+prefiltered specular IBL, BRDF LUT, and normal-map paths. It estimates average
+Schlick Fresnel, uses the existing BRDF LUT scale/bias to estimate remaining
+single-scatter specular energy, and adds a bounded roughness-squared, mostly
+metallic-weighted, and `multiScatterStrength` scaled term to specular IBL.
+
+This is an educational approximation, not a full production Kulla-Conty LUT
+implementation.
 
 ## Next Milestones
 
 Future milestones can build on this multi-object material foundation with:
 
 - dedicated Kulla-Conty LUT
-- energy compensation validation
+- energy validation
 - HDR environment loading
-- proper importance-sampled prefiltering
+- importance-sampled prefiltering
 - bindless descriptors
 - model loading
 - render graph
