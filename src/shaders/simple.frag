@@ -26,6 +26,7 @@ layout(location = 0) out vec4 outColor;
 
 const float PI = 3.14159265359;
 const float EPSILON = 0.0001;
+const float SCHLICK_FRESNEL_AVERAGE = 1.0 / 21.0;
 
 float shadowDepthBias(vec3 normal)
 {
@@ -116,6 +117,31 @@ vec3 fresnelSchlick(float cosTheta, vec3 f0)
     return f0 + (1.0 - f0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
+vec3 approximateMultiScatterCompensation(
+    vec3 f0,
+    float roughness,
+    float metallic,
+    float multiScatterStrength,
+    vec3 prefilteredColor,
+    vec2 brdf)
+{
+    // Compact Kulla-Conty-inspired approximation. A production implementation
+    // would use a dedicated energy-compensation LUT; this estimates missing
+    // single-scatter energy from the existing split-sum BRDF lookup.
+    vec3 averageFresnel = f0 + (1.0 - f0) * SCHLICK_FRESNEL_AVERAGE;
+    vec3 singleScatterEnergy = clamp(averageFresnel * brdf.x + vec3(brdf.y), vec3(0.0), vec3(1.0));
+    vec3 missingEnergy = max(vec3(1.0) - singleScatterEnergy, vec3(0.0));
+    float roughEnergy = roughness * roughness;
+    float specularWeight = mix(0.25, 1.0, metallic);
+
+    return prefilteredColor
+        * averageFresnel
+        * missingEnergy
+        * roughEnergy
+        * specularWeight
+        * clamp(multiScatterStrength, 0.0, 1.0);
+}
+
 void main()
 {
     vec4 texColor = texture(uTexture, vUV);
@@ -127,6 +153,7 @@ void main()
     float textureRoughness = mrSample.g;
     float metallic = clamp(vMaterialParams.x * textureMetallic, 0.0, 1.0);
     float roughness = clamp(vMaterialParams.y * textureRoughness, 0.04, 1.0);
+    float multiScatterStrength = vMaterialParams.z;
 
     vec3 normalTS = texture(uNormalMap, vUV).xyz * 2.0 - 1.0;
     mat3 tbn = mat3(normalize(vTangent), normalize(vBitangent), normalize(vNormal));
@@ -158,6 +185,13 @@ void main()
     vec2 brdf = texture(uBrdfLut, vec2(clamp(normalView, 0.0, 1.0), roughness)).rg;
     vec3 iblFresnel = fresnelSchlick(normalView, f0);
     vec3 specularIbl = prefilteredColor * (iblFresnel * brdf.x + brdf.y);
+    specularIbl += approximateMultiScatterCompensation(
+        f0,
+        roughness,
+        metallic,
+        multiScatterStrength,
+        prefilteredColor,
+        brdf);
 
     vec3 ambient = diffuseIbl + specularIbl + vAmbientColor * baseColor * 0.05;
     vec3 direct = (diffuse + specular) * vLightColor * normalLight * shadowFactor;

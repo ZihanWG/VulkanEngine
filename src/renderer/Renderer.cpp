@@ -37,14 +37,15 @@ struct ObjectFrameData {
     glm::vec4 ambientColor{0.15f, 0.15f, 0.15f, 1.0f};
     glm::vec4 shadowSettings{0.002f, 0.005f, 1.0f, 1.0f};
     glm::vec4 baseColorFactor{1.0f};
-    glm::vec4 materialParams{0.0f, 0.5f, 0.0f, 0.0f};
+    glm::vec4 materialParams{0.0f, 0.5f, 1.0f, 0.0f};
     glm::vec4 cameraPosition{0.0f, 0.0f, 0.0f, 1.0f};
 };
 
 // Mirrors the shader's std430 buffer_reference block. std430 stores mat4 as
 // four 16-byte columns and vec4 as 16 bytes, so this 304-byte stride keeps each
-// field and each per-object BDA entry on a 16-byte boundary. materialParams.xy
-// are metallic and roughness; zw are reserved for future scalar material data.
+// field and each per-object BDA entry on a 16-byte boundary.
+// materialParams.x = metallic, y = roughness, z = multi-scatter strength,
+// and w is reserved for future scalar material data.
 static_assert(offsetof(ObjectFrameData, mvp) == 0);
 static_assert(offsetof(ObjectFrameData, model) == 64);
 static_assert(offsetof(ObjectFrameData, lightMvp) == 128);
@@ -620,7 +621,8 @@ void Renderer::createMaterial()
                                  std::string debugName,
                                  const glm::vec4& baseColorFactor,
                                  float metallic,
-                                 float roughness) {
+                                 float roughness,
+                                 float multiScatterStrength) {
         renderer::Material material{};
         material.debugName = std::move(debugName);
         material.baseColorTexture = &checkerboardTexture_;
@@ -629,16 +631,17 @@ void Renderer::createMaterial()
         material.baseColorFactor = baseColorFactor;
         material.metallic = metallic;
         material.roughness = roughness;
+        material.multiScatterStrength = multiScatterStrength;
         material.hasNormalMap = normalMapAssetLoaded_;
         material.hasMetallicRoughnessMap = metallicRoughnessMapAssetLoaded_;
         createMaterialDescriptorSet(material);
         materialVariants_.push_back(std::move(material));
     };
 
-    addMaterial("Checkerboard Matte", {1.0f, 1.0f, 1.0f, 1.0f}, 0.0f, 0.75f);
-    addMaterial("Checkerboard Warm Semi-Metal", {1.0f, 0.82f, 0.65f, 1.0f}, 0.35f, 0.38f);
-    addMaterial("Checkerboard Cool Rough Metal", {0.72f, 0.84f, 1.0f, 1.0f}, 0.85f, 0.62f);
-    addMaterial("Checkerboard Glossy Dielectric", {0.9f, 1.0f, 0.78f, 1.0f}, 0.0f, 0.18f);
+    addMaterial("Checkerboard Matte", {1.0f, 1.0f, 1.0f, 1.0f}, 0.0f, 0.75f, 0.0f);
+    addMaterial("Checkerboard Warm Semi-Metal", {1.0f, 0.82f, 0.65f, 1.0f}, 0.35f, 0.38f, 0.5f);
+    addMaterial("Checkerboard Cool Rough Metal", {0.72f, 0.84f, 1.0f, 1.0f}, 0.85f, 0.62f, 1.0f);
+    addMaterial("Checkerboard Glossy Dielectric", {0.9f, 1.0f, 0.78f, 1.0f}, 0.0f, 0.18f, 0.25f);
 
     checkerboardMaterial_ = materialVariants_.front();
 }
@@ -905,7 +908,7 @@ void Renderer::updateFrameData(uint32_t frameIndex)
             frameData.materialParams = {
                 object.material->metallic,
                 object.material->roughness,
-                0.0f,
+                object.material->multiScatterStrength,
                 0.0f
             };
         }
