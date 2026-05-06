@@ -53,11 +53,14 @@ private:
         float rasterDepthBiasSlopeFactor = 1.75f;
     };
 
-    struct FrameDrawItem {
-        const renderer::RenderObject* object = nullptr;
-        const renderer::MeshPrimitive* primitive = nullptr;
+    struct DrawItem {
+        const renderer::Mesh* mesh = nullptr;
         const renderer::Material* material = nullptr;
-        size_t objectIndex = 0;
+        uint32_t objectIndex = 0;
+        uint32_t submeshIndex = 0;
+        uint32_t firstIndex = 0;
+        uint32_t indexCount = 0;
+        int32_t vertexOffset = 0;
     };
 
     struct CullingStats {
@@ -86,8 +89,12 @@ private:
     void createImportedGltfMaterials(const std::vector<renderer::GltfMaterialInfo>& materialInfos);
     void createSkyboxDescriptorSet();
     void createObjectFrameDataBuffers();
+    void createIndirectDrawBuffers();
     void updateFrameData(uint32_t frameIndex);
-    void buildFrameDrawItems();
+    void buildDrawItems();
+    void buildVisibleDrawItems(const renderer::Frustum& frustum);
+    bool appendDrawItemsForObject(uint32_t objectIndex, std::vector<DrawItem>& drawItems) const;
+    void updateIndirectDrawBuffer(uint32_t frameIndex);
     [[nodiscard]] const renderer::Material* resolveMaterial(
         const renderer::RenderObject& object,
         const renderer::MeshPrimitive* primitive) const;
@@ -132,9 +139,10 @@ private:
     std::vector<renderer::Material> materialVariants_;
     std::vector<renderer::Material> importedMaterials_;
     std::vector<renderer::RenderObject> renderObjects_;
-    std::vector<FrameDrawItem> frameDrawItems_;
-    std::vector<uint8_t> mainPassObjectVisible_;
+    std::vector<DrawItem> drawItems_;
+    std::vector<DrawItem> visibleDrawItems_;
     std::vector<rhi::VulkanBuffer> frameObjectDataBuffers_;
+    std::vector<rhi::VulkanBuffer> frameIndirectDrawBuffers_;
     std::vector<VkFence> imagesInFlight_;
     ShadowSettings shadowSettings_{};
     VkFormat pipelineColorFormat_ = VK_FORMAT_UNDEFINED;

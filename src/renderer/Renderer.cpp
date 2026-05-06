@@ -63,7 +63,8 @@ static_assert(offsetof(ObjectFrameData, materialParams) == 272);
 static_assert(offsetof(ObjectFrameData, cameraPosition) == 288);
 static_assert(sizeof(ObjectFrameData) == 304);
 
-constexpr uint32_t kMaxFrameDrawItems = 1024;
+constexpr uint32_t kMaxFrameObjects = 1024;
+constexpr uint32_t kMaxDrawItems = 1024;
 constexpr uint32_t kMaxMaterialDescriptorSets = 256;
 
 const glm::vec4 kDirectionalLightDirection{0.35f, -0.65f, -0.55f, 0.0f};
@@ -157,6 +158,7 @@ Renderer::Renderer(Window& window) : window_(window)
     commandContext_.initialize(context_, frames_);
     createScene();
     createObjectFrameDataBuffers();
+    createIndirectDrawBuffers();
     sync_.initialize(context_, frames_, swapchain_.imageCount());
     imagesInFlight_.assign(swapchain_.imageCount(), VK_NULL_HANDLE);
 
@@ -417,8 +419,8 @@ void Renderer::createPipeline()
 void Renderer::createScene()
 {
     renderObjects_.clear();
-    frameDrawItems_.clear();
-    mainPassObjectVisible_.clear();
+    drawItems_.clear();
+    visibleDrawItems_.clear();
     cullingStats_ = {};
     importedMeshes_.clear();
     importedMaterials_.clear();
@@ -1059,14 +1061,38 @@ void Renderer::createObjectFrameDataBuffers()
 {
     frameObjectDataBuffers_.resize(frames_.size());
 
-    for (rhi::VulkanBuffer& frameObjectDataBuffer : frameObjectDataBuffers_) {
+    for (size_t frameIndex = 0; frameIndex < frameObjectDataBuffers_.size(); ++frameIndex) {
+        rhi::VulkanBuffer& frameObjectDataBuffer = frameObjectDataBuffers_[frameIndex];
         rhi::VulkanBufferCreateInfo bufferInfo{};
-        bufferInfo.size = static_cast<VkDeviceSize>(kMaxFrameDrawItems * sizeof(ObjectFrameData));
+        bufferInfo.size = static_cast<VkDeviceSize>(kMaxFrameObjects * sizeof(ObjectFrameData));
         bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
         bufferInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
         bufferInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
         bufferInfo.requestDeviceAddress = true;
         frameObjectDataBuffer.createBuffer(context_, bufferInfo);
+        rhi::debug::setObjectName(context_.vkDevice(),
+                                  frameObjectDataBuffer.buffer(),
+                                  VK_OBJECT_TYPE_BUFFER,
+                                  "ObjectFrameDataBuffer" + std::to_string(frameIndex));
+    }
+}
+
+void Renderer::createIndirectDrawBuffers()
+{
+    frameIndirectDrawBuffers_.resize(frames_.size());
+
+    for (size_t frameIndex = 0; frameIndex < frameIndirectDrawBuffers_.size(); ++frameIndex) {
+        rhi::VulkanBuffer& indirectDrawBuffer = frameIndirectDrawBuffers_[frameIndex];
+        rhi::VulkanBufferCreateInfo bufferInfo{};
+        bufferInfo.size = static_cast<VkDeviceSize>(kMaxDrawItems * sizeof(VkDrawIndexedIndirectCommand));
+        bufferInfo.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+        bufferInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
+        bufferInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+        indirectDrawBuffer.createBuffer(context_, bufferInfo);
+        rhi::debug::setObjectName(context_.vkDevice(),
+                                  indirectDrawBuffer.buffer(),
+                                  VK_OBJECT_TYPE_BUFFER,
+                                  "IndirectDrawCommandBuffer" + std::to_string(frameIndex));
     }
 }
 
@@ -1080,33 +1106,118 @@ const renderer::Material* Renderer::resolveMaterial(const renderer::RenderObject
     return object.material;
 }
 
-void Renderer::buildFrameDrawItems()
+bool Renderer::appendDrawItemsForObject(uint32_t objectIndex, std::vector<DrawItem>& drawItems) const
 {
-    frameDrawItems_.clear();
-    frameDrawItems_.reserve(renderObjects_.size());
+    if (objectIndex >= renderObjects_.size()) {
+        return true;
+    }
 
-    for (size_t objectIndex = 0; objectIndex < renderObjects_.size(); ++objectIndex) {
-        const renderer::RenderObject& object = renderObjects_[objectIndex];
-        if (!object.mesh) {
-            continue;
-        }
+    const renderer::RenderObject& object = renderObjects_[objectIndex];
+    const renderer::Mesh* mesh = object.mesh;
+    if (!mesh || !mesh->valid()) {
+        return true;
+    }
 
-        if (object.mesh->hasSubMeshes()) {
-            for (const renderer::MeshPrimitive& primitive : object.mesh->primitives()) {
-                if (frameDrawItems_.size() >= kMaxFrameDrawItems) {
-                    return;
-                }
-
-                frameDrawItems_.push_back({&object, &primitive, resolveMaterial(object, &primitive), objectIndex});
+    if (mesh->hasSubMeshes()) {
+        const std::span<const renderer::MeshPrimitive> primitives = mesh->primitives();
+        for (size_t primitiveIndex = 0; primitiveIndex < primitives.size(); ++primitiveIndex) {
+            if (drawItems.size() >= kMaxDrawItems) {
+                return false;
             }
-            continue;
-        }
 
-        if (frameDrawItems_.size() >= kMaxFrameDrawItems) {
+            const renderer::MeshPrimitive& primitive = primitives[primitiveIndex];
+            if (primitive.indexCount == 0) {
+                continue;
+            }
+
+            DrawItem drawItem{};
+            drawItem.mesh = mesh;
+            drawItem.material = resolveMaterial(object, &primitive);
+            drawItem.objectIndex = objectIndex;
+            drawItem.submeshIndex = static_cast<uint32_t>(primitiveIndex);
+            drawItem.firstIndex = primitive.firstIndex;
+            drawItem.indexCount = primitive.indexCount;
+            drawItems.push_back(drawItem);
+        }
+        return true;
+    }
+
+    if (mesh->indexCount() == 0) {
+        return true;
+    }
+    if (drawItems.size() >= kMaxDrawItems) {
+        return false;
+    }
+
+    DrawItem drawItem{};
+    drawItem.mesh = mesh;
+    drawItem.material = object.material;
+    drawItem.objectIndex = objectIndex;
+    drawItem.indexCount = mesh->indexCount();
+    drawItems.push_back(drawItem);
+    return true;
+}
+
+void Renderer::buildDrawItems()
+{
+    drawItems_.clear();
+    drawItems_.reserve(renderObjects_.size());
+
+    const size_t objectCount = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
+    for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+        if (!appendDrawItemsForObject(static_cast<uint32_t>(objectIndex), drawItems_)) {
             return;
         }
-        frameDrawItems_.push_back({&object, nullptr, object.material, objectIndex});
     }
+}
+
+void Renderer::buildVisibleDrawItems(const renderer::Frustum& frustum)
+{
+    visibleDrawItems_.clear();
+    visibleDrawItems_.reserve(drawItems_.size());
+    cullingStats_ = {};
+
+    const size_t objectCount = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
+    for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+        const renderer::RenderObject& object = renderObjects_[objectIndex];
+        if (!object.mesh || !object.mesh->valid()) {
+            continue;
+        }
+
+        ++cullingStats_.totalObjects;
+        const renderer::Aabb worldBounds = object.worldBounds();
+        if (worldBounds.valid() && !frustum.testAabb(worldBounds)) {
+            ++cullingStats_.culledObjects;
+            continue;
+        }
+
+        ++cullingStats_.visibleObjects;
+        if (!appendDrawItemsForObject(static_cast<uint32_t>(objectIndex), visibleDrawItems_)) {
+            return;
+        }
+    }
+}
+
+void Renderer::updateIndirectDrawBuffer(uint32_t frameIndex)
+{
+    if (visibleDrawItems_.empty()) {
+        return;
+    }
+
+    std::vector<VkDrawIndexedIndirectCommand> indirectCommands(visibleDrawItems_.size());
+    for (size_t drawIndex = 0; drawIndex < visibleDrawItems_.size(); ++drawIndex) {
+        const DrawItem& drawItem = visibleDrawItems_[drawIndex];
+        VkDrawIndexedIndirectCommand& command = indirectCommands[drawIndex];
+        command.indexCount = drawItem.indexCount;
+        command.instanceCount = 1;
+        command.firstIndex = drawItem.firstIndex;
+        command.vertexOffset = drawItem.vertexOffset;
+        command.firstInstance = 0;
+    }
+
+    frameIndirectDrawBuffers_.at(frameIndex)
+        .upload(std::as_bytes(std::span<const VkDrawIndexedIndirectCommand>(indirectCommands.data(),
+                                                                            indirectCommands.size())));
 }
 
 void Renderer::nameTextureResources(const rhi::VulkanTexture& texture, std::string_view name) const
@@ -1179,8 +1290,8 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
 
     if (renderObjects_.empty()) {
-        frameDrawItems_.clear();
-        mainPassObjectVisible_.clear();
+        drawItems_.clear();
+        visibleDrawItems_.clear();
         cullingStats_ = {};
         return;
     }
@@ -1220,41 +1331,22 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         }
     }
 
+    buildDrawItems();
     const renderer::Frustum cameraFrustum = renderer::Frustum::fromViewProjection(viewProjection);
-    mainPassObjectVisible_.assign(renderObjects_.size(), 0);
-    cullingStats_ = {};
-    for (size_t objectIndex = 0; objectIndex < renderObjects_.size(); ++objectIndex) {
+    buildVisibleDrawItems(cameraFrustum);
+    updateIndirectDrawBuffer(frameIndex);
+
+    const size_t objectFrameCount = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
+    std::vector<ObjectFrameData> objectFrameData(objectFrameCount);
+
+    for (size_t objectIndex = 0; objectIndex < objectFrameCount; ++objectIndex) {
         const renderer::RenderObject& object = renderObjects_[objectIndex];
         if (!object.mesh) {
             continue;
         }
 
-        ++cullingStats_.totalObjects;
-        const renderer::Aabb worldBounds = object.worldBounds();
-        if (worldBounds.valid() && !cameraFrustum.testAabb(worldBounds)) {
-            ++cullingStats_.culledObjects;
-            continue;
-        }
-
-        mainPassObjectVisible_[objectIndex] = 1;
-        ++cullingStats_.visibleObjects;
-    }
-
-    buildFrameDrawItems();
-    if (frameDrawItems_.empty()) {
-        return;
-    }
-
-    std::vector<ObjectFrameData> objectFrameData(frameDrawItems_.size());
-
-    for (size_t drawIndex = 0; drawIndex < frameDrawItems_.size(); ++drawIndex) {
-        const FrameDrawItem& drawItem = frameDrawItems_[drawIndex];
-        if (!drawItem.object) {
-            continue;
-        }
-
-        const glm::mat4 model = drawItem.object->transform.modelMatrix();
-        ObjectFrameData& frameData = objectFrameData[drawIndex];
+        const glm::mat4 model = object.transform.modelMatrix();
+        ObjectFrameData& frameData = objectFrameData[objectIndex];
         frameData.mvp = viewProjection * model;
         frameData.model = model;
         frameData.lightMvp = lightViewProjection * model;
@@ -1265,11 +1357,11 @@ void Renderer::updateFrameData(uint32_t frameIndex)
                                     shadowSettings_.slopeBias,
                                     shadowSettings_.enablePcf ? 1.0f : 0.0f,
                                     static_cast<float>(std::max(shadowSettings_.pcfRadius, 0))};
-        if (drawItem.material) {
-            frameData.baseColorFactor = drawItem.material->baseColorFactor;
-            frameData.materialParams = {drawItem.material->metallic,
-                                        drawItem.material->roughness,
-                                        drawItem.material->multiScatterStrength,
+        if (object.material) {
+            frameData.baseColorFactor = object.material->baseColorFactor;
+            frameData.materialParams = {object.material->metallic,
+                                        object.material->roughness,
+                                        object.material->multiScatterStrength,
                                         0.0f};
         }
         frameData.cameraPosition = glm::vec4(camera_.position, 1.0f);
@@ -1304,7 +1396,8 @@ void Renderer::recreateSwapchain()
 void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex)
 {
     const VkDeviceAddress objectFrameDataBaseAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
-    const size_t drawItemCount = frameDrawItems_.size();
+    const size_t shadowDrawItemCount = drawItems_.size();
+    const size_t visibleDrawItemCount = visibleDrawItems_.size();
 
     renderGraph_.beginFrame(commandBuffer, swapchain_, shadowMap_, imageIndex);
     rhi::debug::beginLabel(commandBuffer, "Frame");
@@ -1332,14 +1425,14 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     vkCmdSetScissor(commandBuffer, 0, 1, &shadowScissor);
 
     const renderer::Mesh* boundShadowMesh = nullptr;
-    for (size_t drawIndex = 0; drawIndex < drawItemCount; ++drawIndex) {
-        const FrameDrawItem& drawItem = frameDrawItems_[drawIndex];
-        if (!drawItem.object || !drawItem.object->mesh) {
+    for (size_t drawIndex = 0; drawIndex < shadowDrawItemCount; ++drawIndex) {
+        const DrawItem& drawItem = drawItems_[drawIndex];
+        if (!drawItem.mesh || drawItem.objectIndex >= kMaxFrameObjects) {
             continue;
         }
 
         const PushConstants pushConstants{objectFrameDataBaseAddress +
-                                          static_cast<VkDeviceAddress>(drawIndex * sizeof(ObjectFrameData))};
+                                          static_cast<VkDeviceAddress>(drawItem.objectIndex * sizeof(ObjectFrameData))};
 
         vkCmdPushConstants(commandBuffer,
                            shadowPipeline_.layout(),
@@ -1348,7 +1441,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                            static_cast<uint32_t>(sizeof(PushConstants)),
                            &pushConstants);
 
-        const renderer::Mesh* mesh = drawItem.object->mesh;
+        const renderer::Mesh* mesh = drawItem.mesh;
         if (boundShadowMesh != mesh) {
             const VkBuffer vertexBuffers[] = {mesh->vertexBuffer()};
             const VkDeviceSize vertexOffsets[] = {0};
@@ -1357,10 +1450,9 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
             boundShadowMesh = mesh;
         }
 
-        const uint32_t firstIndex = drawItem.primitive ? drawItem.primitive->firstIndex : 0;
-        const uint32_t indexCount = drawItem.primitive ? drawItem.primitive->indexCount : mesh->indexCount();
-        if (indexCount > 0) {
-            vkCmdDrawIndexed(commandBuffer, indexCount, 1, firstIndex, 0, 0);
+        if (drawItem.indexCount > 0) {
+            vkCmdDrawIndexed(
+                commandBuffer, drawItem.indexCount, 1, drawItem.firstIndex, drawItem.vertexOffset, 0);
         }
     }
 
@@ -1421,19 +1513,17 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     rhi::debug::endLabel(commandBuffer);
 
     rhi::debug::beginLabel(commandBuffer,
-                           "RenderObjects visible " + std::to_string(cullingStats_.visibleObjects) + "/" +
+                           "MainPass IndirectDrawItems " + std::to_string(visibleDrawItemCount) + " visible objects " +
+                               std::to_string(cullingStats_.visibleObjects) + "/" +
                                std::to_string(cullingStats_.totalObjects));
     timestampQuery_.writeBegin(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::RenderObjects);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.pipeline());
 
     const renderer::Mesh* boundMesh = nullptr;
-    for (size_t drawIndex = 0; drawIndex < drawItemCount; ++drawIndex) {
-        const FrameDrawItem& drawItem = frameDrawItems_[drawIndex];
-        if (drawItem.objectIndex >= mainPassObjectVisible_.size() ||
-            mainPassObjectVisible_[drawItem.objectIndex] == 0) {
-            continue;
-        }
-        if (!drawItem.object || !drawItem.object->mesh || !drawItem.material ||
+    const VkBuffer indirectDrawBuffer = frameIndirectDrawBuffers_.at(currentFrame_).buffer();
+    for (size_t drawIndex = 0; drawIndex < visibleDrawItemCount; ++drawIndex) {
+        const DrawItem& drawItem = visibleDrawItems_[drawIndex];
+        if (!drawItem.mesh || !drawItem.material ||
             drawItem.material->descriptorSet == VK_NULL_HANDLE) {
             continue;
         }
@@ -1443,7 +1533,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
             commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.layout(), 0, 1, &descriptorSet, 0, nullptr);
 
         const PushConstants pushConstants{objectFrameDataBaseAddress +
-                                          static_cast<VkDeviceAddress>(drawIndex * sizeof(ObjectFrameData))};
+                                          static_cast<VkDeviceAddress>(drawItem.objectIndex * sizeof(ObjectFrameData))};
 
         // The material descriptor binds the texture/sampler for the fragment shader.
         // The pushed address points at this object's BDA frame data for the vertex shader.
@@ -1454,7 +1544,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                            static_cast<uint32_t>(sizeof(PushConstants)),
                            &pushConstants);
 
-        const renderer::Mesh* mesh = drawItem.object->mesh;
+        const renderer::Mesh* mesh = drawItem.mesh;
         if (boundMesh != mesh) {
             const VkBuffer vertexBuffers[] = {mesh->vertexBuffer()};
             const VkDeviceSize vertexOffsets[] = {0};
@@ -1463,10 +1553,11 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
             boundMesh = mesh;
         }
 
-        const uint32_t firstIndex = drawItem.primitive ? drawItem.primitive->firstIndex : 0;
-        const uint32_t indexCount = drawItem.primitive ? drawItem.primitive->indexCount : mesh->indexCount();
-        if (indexCount > 0) {
-            vkCmdDrawIndexed(commandBuffer, indexCount, 1, firstIndex, 0, 0);
+        if (drawItem.indexCount > 0) {
+            const VkDeviceSize indirectOffset =
+                static_cast<VkDeviceSize>(drawIndex * sizeof(VkDrawIndexedIndirectCommand));
+            vkCmdDrawIndexedIndirect(
+                commandBuffer, indirectDrawBuffer, indirectOffset, 1, sizeof(VkDrawIndexedIndirectCommand));
         }
     }
     timestampQuery_.writeEnd(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::RenderObjects);

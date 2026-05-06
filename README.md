@@ -2,7 +2,7 @@
 
 Modern C++20 Vulkan 1.3 renderer skeleton inspired by the educational flow of [Sascha Willems' HowToVulkan](https://github.com/SaschaWillems/HowToVulkan), but split into engine-style modules instead of a single tutorial file.
 
-The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube or imported glTF geometry with normals, tangents, submesh material ranges, and local-space bounds into GPU-local vertex and index buffers, loads small RGBA base color, normal, and metallic-roughness textures from disk with procedural fallbacks, loads basic glTF PBR material factors and base color/normal/metallic-roughness textures when available, traverses the default glTF scene hierarchy to instantiate static `RenderObject`s with accumulated node transforms, creates and renders a simple procedural environment cubemap as a skybox background, creates low-frequency diffuse irradiance and mipmapped prefiltered specular cubemaps from the same procedural environment colors, generates a 2D split-sum BRDF LUT, and first tries to draw a static glTF test scene with tangent-space normal mapping, direct-light Cook-Torrance GGX material response, diffuse and specular image-based lighting, compact Kulla-Conty-style multi-scattering compensation, directional lighting, CPU main-pass frustum culling, and a PCF-filtered directional shadow map every frame using Dynamic Rendering and Synchronization2. If no supported glTF asset loads, the renderer falls back to the previous multi-cube demo scene. A minimal render graph now documents the shadow and main pass order, records manual resource usage, and centralizes the frame's image transitions.
+The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube or imported glTF geometry with normals, tangents, submesh material ranges, and local-space bounds into GPU-local vertex and index buffers, loads small RGBA base color, normal, and metallic-roughness textures from disk with procedural fallbacks, loads basic glTF PBR material factors and base color/normal/metallic-roughness textures when available, traverses the default glTF scene hierarchy to instantiate static `RenderObject`s with accumulated node transforms, creates and renders a simple procedural environment cubemap as a skybox background, creates low-frequency diffuse irradiance and mipmapped prefiltered specular cubemaps from the same procedural environment colors, generates a 2D split-sum BRDF LUT, and first tries to draw a static glTF test scene with tangent-space normal mapping, direct-light Cook-Torrance GGX material response, diffuse and specular image-based lighting, compact Kulla-Conty-style multi-scattering compensation, directional lighting, CPU main-pass frustum culling, CPU-built `DrawItem` records, `VkDrawIndexedIndirectCommand` upload for visible main-pass draws, and a PCF-filtered directional shadow map every frame using Dynamic Rendering and Synchronization2. If no supported glTF asset loads, the renderer falls back to the previous multi-cube demo scene. A minimal render graph now documents the shadow and main pass order, records manual resource usage, and centralizes the frame's image transitions.
 
 ## Dependencies
 
@@ -65,7 +65,7 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - `VulkanEnvironmentMap` owns a cube-compatible sampled image, cube image view, and clamp sampler. The renderer uses one generated cubemap for the visible skybox, a second low-frequency generated cubemap for diffuse irradiance, and a mipmapped generated cubemap for prefiltered specular IBL.
 - `VulkanBrdfLut` owns the generated 2D `VK_FORMAT_R8G8_UNORM` split-sum BRDF lookup texture used by specular IBL.
 - `VulkanShadowMap` owns the fixed-size sampled depth image, image view, sampler, and current layout used by the directional shadow pass.
-- `Mesh`, `Material`, `RenderObject`, `Transform`, and `Camera` provide the first renderer-side scene abstractions. `Mesh::createFromGltf()` can load static glTF triangle geometry, submesh material ranges, basic glTF material factors, glTF texture references, and static scene node instances without introducing ECS, animation, skinning, morph targets, glTF cameras/lights, or bindless rendering.
+- `Mesh`, `Material`, `RenderObject`, `DrawItem`, `Transform`, and `Camera` provide the first renderer-side scene abstractions. `Mesh::createFromGltf()` can load static glTF triangle geometry, submesh material ranges, basic glTF material factors, glTF texture references, and static scene node instances without introducing ECS, animation, skinning, morph targets, glTF cameras/lights, or bindless rendering.
 
 ## Current Descriptor Contract
 
@@ -105,28 +105,30 @@ Object and material scalar data still use Buffer Device Address plus a vertex-st
 2. Acquire the next swapchain image with an image-available semaphore.
 3. Reset the fence and command buffer.
 4. Update all object transforms.
-5. Extract the camera frustum from `projection * view` and mark main-pass-visible `RenderObject`s by testing world-space AABBs.
-6. Upload per-object MVP/model/light/light-MVP/material data into the current frame's object-data buffer.
-7. Record the command buffer through the minimal `RenderGraph`.
-8. `RenderGraph` begins `ShadowPass` and transitions the shadow map to `VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL`.
-9. Begin depth-only Dynamic Rendering for the shadow pass.
-10. Bind the shadow pipeline and draw each `RenderObject` with the BDA object-data push constant.
-11. `RenderGraph` ends `ShadowPass` and transitions the shadow map to `VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL`.
-12. `RenderGraph` begins `MainPass` and transitions the swapchain image to `VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL`.
-13. `RenderGraph` transitions the main depth image to `VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL`.
-14. Begin main Dynamic Rendering with clear color and depth attachments.
-15. Set dynamic viewport and scissor from the current swapchain extent.
-16. Bind the skybox pipeline and skybox descriptor set 0.
-17. Push the skybox inverse view-projection matrix and draw a fullscreen triangle.
-18. Bind the main graphics pipeline.
-19. For each main-pass-visible `RenderObject`, bind its material descriptor set 0.
-20. Push that object's object-data buffer device address.
-21. Bind the object's device-local vertex and index buffers.
-22. Draw the object with `vkCmdDrawIndexed`.
-23. End Dynamic Rendering.
-24. `RenderGraph` ends `MainPass` and transitions the swapchain image to `VK_IMAGE_LAYOUT_PRESENT_SRC_KHR`.
-25. Submit with `vkQueueSubmit2`.
-26. Present the image and recreate the swapchain if it is out of date.
+5. Build all `DrawItem` records from `RenderObject`s and `MeshPrimitive` submesh ranges.
+6. Extract the camera frustum from `projection * view` and build the visible main-pass `DrawItem` list from world-space AABB tests.
+7. Upload one `VkDrawIndexedIndirectCommand` per visible main-pass `DrawItem`.
+8. Upload per-object MVP/model/light/light-MVP/material data into the current frame's object-data buffer.
+9. Record the command buffer through the minimal `RenderGraph`.
+10. `RenderGraph` begins `ShadowPass` and transitions the shadow map to `VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL`.
+11. Begin depth-only Dynamic Rendering for the shadow pass.
+12. Bind the shadow pipeline and draw each shadow `DrawItem` with direct `vkCmdDrawIndexed`.
+13. `RenderGraph` ends `ShadowPass` and transitions the shadow map to `VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL`.
+14. `RenderGraph` begins `MainPass` and transitions the swapchain image to `VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL`.
+15. `RenderGraph` transitions the main depth image to `VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL`.
+16. Begin main Dynamic Rendering with clear color and depth attachments.
+17. Set dynamic viewport and scissor from the current swapchain extent.
+18. Bind the skybox pipeline and skybox descriptor set 0.
+19. Push the skybox inverse view-projection matrix and draw a fullscreen triangle.
+20. Bind the main graphics pipeline.
+21. For each visible main-pass `DrawItem`, bind its material descriptor set 0.
+22. Push that draw item's object-data buffer device address.
+23. Bind the draw item's device-local vertex and index buffers.
+24. Draw the item with `vkCmdDrawIndexedIndirect`.
+25. End Dynamic Rendering.
+26. `RenderGraph` ends `MainPass` and transitions the swapchain image to `VK_IMAGE_LAYOUT_PRESENT_SRC_KHR`.
+27. Submit with `vkQueueSubmit2`.
+28. Present the image and recreate the swapchain if it is out of date.
 
 ## Milestone 2: Triangle Rendering
 
@@ -568,7 +570,7 @@ Each `RenderObject` can compute a world-space AABB by transforming its mesh-loca
 
 The camera frustum is extracted from `projection * view`. The extraction code rebuilds GLM matrix rows explicitly because GLM stores matrices by column, then uses Vulkan clip-space rules: `x` and `y` are in `[-w, w]`, while `z` is in `[0, w]`. Planes are normalized before AABB tests.
 
-Main-pass drawing now skips objects whose world-space AABB is outside the camera frustum. The shadow pass still draws all objects for now, so shadow behavior stays simple and unchanged. Object/material scalar data is still uploaded for all frame draw items through the existing Buffer Device Address path; culling only skips main-pass draw calls.
+Main-pass drawing now skips objects whose world-space AABB is outside the camera frustum. The shadow pass still draws all objects for now, so shadow behavior stays simple and unchanged. Object/material scalar data is still uploaded through the existing Buffer Device Address path; culling only skips main-pass draw calls.
 
 Culling statistics are logged with the throttled GPU timing output:
 
@@ -578,7 +580,21 @@ Culling: total=N visible=M culled=K
 
 This is CPU frustum culling only. It does not add occlusion culling, GPU culling, indirect drawing, a BVH, an octree, LOD, ECS, animation, skinning, bindless descriptors, shader binding changes, descriptor layout changes, or render graph scheduling changes.
 
-Future culling and scene-management work can add shadow caster culling, aggregate scene bounds, spatial partitioning, BVH or octree acceleration, GPU culling, indirect drawing, occlusion culling, and LOD.
+Future culling and scene-management work can add shadow caster culling, aggregate scene bounds, spatial partitioning, BVH or octree acceleration, GPU culling, compute-built indirect commands, occlusion culling, and LOD.
+
+## Milestone 28: Indirect Draw Preparation
+
+Milestone 28 introduces a compact `DrawItem` record as the renderer-side bridge between scene objects and Vulkan draw commands. Each draw item stores the mesh, resolved material, render object index, submesh index, index range, and vertex offset. The renderer builds draw items from `RenderObject`s and `MeshPrimitive` submeshes, so imported glTF submesh material assignments still decide which material descriptor set is bound.
+
+CPU frustum culling now produces a separate visible main-pass draw item list. The culling test still runs per `RenderObject` against its world-space AABB, and the shadow pass is intentionally left on the simpler all-objects path for now.
+
+Visible main-pass draws are also mirrored into a CPU-visible per-frame indirect command buffer. Each visible draw item writes one `VkDrawIndexedIndirectCommand` with `indexCount`, `instanceCount = 1`, `firstIndex`, `vertexOffset`, and `firstInstance = 0`.
+
+The main pass now uses `vkCmdDrawIndexedIndirect` for mesh draws. It still loops over visible draw items because material descriptors are not bindless and object/material scalar data still uses the Buffer Device Address plus vertex-stage push constant path. Each draw therefore still binds descriptor set 0, pushes the selected object's BDA address, binds the mesh vertex/index buffers when needed, and then issues a one-command indirect indexed draw.
+
+This is preparation for GPU culling and bindless rendering. It does not add GPU culling, compute-built command generation, multi-draw indirect count, descriptor indexing arrays, ECS, ImGui, animation, skinning, occlusion culling, BVH or octree acceleration, shader resource model changes, descriptor layout changes, or render graph scheduling changes.
+
+Future GPU-driven rendering work can add GPU culling, compute-built indirect commands, multi-draw indirect count, bindless material descriptors, compact object/material buffers, shadow caster culling, aggregate scene bounds, spatial partitioning, BVH / octree acceleration, occlusion culling, and LOD.
 
 ## Next Milestones
 
@@ -592,12 +608,15 @@ Future milestones can build on this multi-object material foundation with:
 - skinning
 - morph targets
 - glTF cameras/lights
-- scene bounds
+- aggregate scene bounds
 - shadow caster culling
 - spatial partitioning
 - BVH / octree
 - GPU culling
-- indirect drawing
+- compute-built indirect commands
+- multi-draw indirect count
+- bindless material descriptors
+- compact object/material buffers
 - occlusion culling
 - LOD
 - alpha modes
