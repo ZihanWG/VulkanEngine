@@ -3,6 +3,7 @@
 This folder vendors small header-only dependencies that are simpler than a package-manager integration.
 
 - `stb_image.h` is used by Milestone 9 for RGBA image file loading.
+- `tiny_gltf.h` and `json.hpp` are used by Milestone 24 for static glTF geometry loading.
 
 CMake uses installed packages first and can fetch missing dependencies with `VULKAN_ENGINE_FETCH_DEPS=ON`:
 

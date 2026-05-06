@@ -427,7 +427,6 @@ void Renderer::createScene()
     camera_.position = {0.0f, 0.35f, 5.5f};
     camera_.target = {0.0f, 0.1f, 0.0f};
 
-    renderObjects_.reserve(4);
     const auto addCube = [this](std::string debugName,
                                 const renderer::Material* material,
                                 const glm::vec3& position,
@@ -443,12 +442,55 @@ void Renderer::createScene()
         renderObjects_.push_back(std::move(cube));
     };
 
-    addCube("Center Cube", &materialVariants_.at(0), {0.0f, -0.1f, 0.0f}, {0.2f, 0.0f, 0.0f}, {0.7f, 0.7f, 0.7f});
-    addCube("Left Cube", &materialVariants_.at(1), {-1.35f, -0.15f, -0.35f}, {0.0f, 0.35f, 0.2f}, {0.5f, 0.5f, 0.5f});
-    addCube(
-        "Right Cube", &materialVariants_.at(2), {1.35f, -0.05f, -0.25f}, {0.25f, -0.35f, 0.0f}, {0.55f, 0.8f, 0.55f});
-    addCube(
-        "Elevated Cube", &materialVariants_.at(3), {0.0f, 1.0f, -0.7f}, {-0.3f, 0.2f, 0.45f}, {0.45f, 0.45f, 0.45f});
+    const auto addCubeFallbackScene = [&addCube, this]() {
+        renderObjects_.reserve(4);
+        addCube(
+            "Center Cube", &materialVariants_.at(0), {0.0f, -0.1f, 0.0f}, {0.2f, 0.0f, 0.0f}, {0.7f, 0.7f, 0.7f});
+        addCube(
+            "Left Cube", &materialVariants_.at(1), {-1.35f, -0.15f, -0.35f}, {0.0f, 0.35f, 0.2f}, {0.5f, 0.5f, 0.5f});
+        addCube("Right Cube",
+                &materialVariants_.at(2),
+                {1.35f, -0.05f, -0.25f},
+                {0.25f, -0.35f, 0.0f},
+                {0.55f, 0.8f, 0.55f});
+        addCube("Elevated Cube",
+                &materialVariants_.at(3),
+                {0.0f, 1.0f, -0.7f},
+                {-0.3f, 0.2f, 0.45f},
+                {0.45f, 0.45f, 0.45f});
+    };
+
+    const std::array<std::filesystem::path, 2> modelCandidates = {
+        assetPath("models/test_mesh.gltf"),
+        assetPath("models/test_mesh.glb"),
+    };
+
+    for (const std::filesystem::path& modelPath : modelCandidates) {
+        if (!std::filesystem::exists(modelPath)) {
+            continue;
+        }
+
+        try {
+            importedMesh_ = renderer::Mesh::createFromGltf(context_, commandContext_, modelPath);
+
+            renderer::RenderObject importedObject{};
+            importedObject.mesh = &importedMesh_;
+            importedObject.material = &materialVariants_.at(0);
+            importedObject.debugName = "Imported glTF Mesh";
+            importedObject.transform.position = {0.0f, -0.15f, 0.0f};
+            importedObject.transform.scale = {1.2f, 1.2f, 1.2f};
+            renderObjects_.reserve(1);
+            renderObjects_.push_back(std::move(importedObject));
+
+            Logger::info("Loaded glTF mesh: " + modelPath.string());
+            return;
+        } catch (const std::exception& error) {
+            Logger::warn("Failed to load glTF mesh '" + modelPath.string() + "': " + error.what());
+        }
+    }
+
+    Logger::warn("No supported glTF mesh asset loaded; using built-in cube fallback scene.");
+    addCubeFallbackScene();
 }
 
 void Renderer::createCheckerboardTexture()
@@ -1053,7 +1095,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         const VkBuffer vertexBuffers[] = {object.mesh->vertexBuffer()};
         const VkDeviceSize vertexOffsets[] = {0};
         vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
-        vkCmdBindIndexBuffer(commandBuffer, object.mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT16);
+        vkCmdBindIndexBuffer(commandBuffer, object.mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
 
         vkCmdDrawIndexed(commandBuffer, object.mesh->indexCount(), 1, 0, 0, 0);
     }
@@ -1143,7 +1185,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         const VkBuffer vertexBuffers[] = {object.mesh->vertexBuffer()};
         const VkDeviceSize vertexOffsets[] = {0};
         vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
-        vkCmdBindIndexBuffer(commandBuffer, object.mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT16);
+        vkCmdBindIndexBuffer(commandBuffer, object.mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
 
         vkCmdDrawIndexed(commandBuffer, object.mesh->indexCount(), 1, 0, 0, 0);
     }

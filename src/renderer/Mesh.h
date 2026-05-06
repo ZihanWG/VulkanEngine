@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
@@ -34,6 +35,11 @@ public:
     [[nodiscard]] static Mesh createCube(
         rhi::VulkanContext& context,
         const rhi::VulkanCommandContext& commandContext);
+
+    [[nodiscard]] static Mesh createFromGltf(
+        rhi::VulkanContext& context,
+        const rhi::VulkanCommandContext& commandContext,
+        const std::filesystem::path& path);
 
     [[nodiscard]] VkBuffer vertexBuffer() const { return vertexBuffer_.buffer(); }
     [[nodiscard]] VkBuffer indexBuffer() const { return indexBuffer_.buffer(); }

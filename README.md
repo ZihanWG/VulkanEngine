@@ -2,7 +2,7 @@
 
 Modern C++20 Vulkan 1.3 renderer skeleton inspired by the educational flow of [Sascha Willems' HowToVulkan](https://github.com/SaschaWillems/HowToVulkan), but split into engine-style modules instead of a single tutorial file.
 
-The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube geometry with normals and tangents into GPU-local vertex and index buffers, loads small RGBA base color, normal, and metallic-roughness textures from disk with procedural fallbacks, creates and renders a simple procedural environment cubemap as a skybox background, creates low-frequency diffuse irradiance and mipmapped prefiltered specular cubemaps from the same procedural environment colors, generates a 2D split-sum BRDF LUT, and draws multiple independently rotating textured cubes with tangent-space normal mapping, direct-light Cook-Torrance GGX material response, diffuse and specular image-based lighting, compact Kulla-Conty-style multi-scattering compensation, directional lighting, and a PCF-filtered directional shadow map every frame using Dynamic Rendering and Synchronization2. A minimal render graph now documents the shadow and main pass order, records manual resource usage, and centralizes the frame's image transitions.
+The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube or imported glTF geometry with normals and tangents into GPU-local vertex and index buffers, loads small RGBA base color, normal, and metallic-roughness textures from disk with procedural fallbacks, creates and renders a simple procedural environment cubemap as a skybox background, creates low-frequency diffuse irradiance and mipmapped prefiltered specular cubemaps from the same procedural environment colors, generates a 2D split-sum BRDF LUT, and first tries to draw a static glTF test mesh with tangent-space normal mapping, direct-light Cook-Torrance GGX material response, diffuse and specular image-based lighting, compact Kulla-Conty-style multi-scattering compensation, directional lighting, and a PCF-filtered directional shadow map every frame using Dynamic Rendering and Synchronization2. If no supported glTF asset loads, the renderer falls back to the previous multi-cube demo scene. A minimal render graph now documents the shadow and main pass order, records manual resource usage, and centralizes the frame's image transitions.
 
 ## Dependencies
 
@@ -16,12 +16,13 @@ Required:
 - Vulkan Memory Allocator
 - GLM
 - stb_image, vendored as `external/stb_image.h`
+- tinygltf and nlohmann JSON, vendored as `external/tiny_gltf.h` and `external/json.hpp`
 
 The CMake project first looks for installed packages. If they are missing, `VULKAN_ENGINE_FETCH_DEPS=ON` downloads SDL3, Volk, VMA, and GLM with FetchContent.
 
 Milestone 2 and later require `glslc`. CMake compiles shaders into the build-directory shader folder, for example `build/shaders`, and embeds that absolute shader directory into the executable, so running from Visual Studio, CLion, or PowerShell does not depend on the current working directory.
 
-Milestone 9 embeds the source `assets` directory path into the executable. The demo tries to load `assets/textures/checker.png`, while later material milestones also load `assets/textures/checker_normal.png` and `assets/textures/checker_mr.png`; if any of those files are missing or cannot be decoded, the renderer falls back to procedural textures.
+Milestone 9 embeds the source `assets` directory path into the executable. The demo tries to load `assets/textures/checker.png`, while later material milestones also load `assets/textures/checker_normal.png` and `assets/textures/checker_mr.png`; if any of those files are missing or cannot be decoded, the renderer falls back to procedural textures. Milestone 24 also tries `assets/models/test_mesh.gltf` and then `assets/models/test_mesh.glb`; if neither static mesh loads, the built-in cube scene remains the fallback.
 
 ## Build
 
@@ -33,7 +34,7 @@ cmake --build build --config Debug
 
 For CLion, open this folder as a CMake project and use a Debug profile. Validation layers are enabled only in Debug builds.
 
-The run paths for the demo textures are `assets/textures/checker.png`, `assets/textures/checker_normal.png`, and `assets/textures/checker_mr.png`. CMake embeds the source asset directory, and the renderer uses procedural fallbacks if those PNGs are missing.
+The run paths for the demo textures are `assets/textures/checker.png`, `assets/textures/checker_normal.png`, and `assets/textures/checker_mr.png`. The run path for the imported geometry smoke test is `assets/models/test_mesh.gltf`. CMake embeds the source asset directory, and the renderer uses procedural texture fallbacks plus the built-in cube fallback scene if assets are missing.
 
 ## Validated Environment
 
@@ -64,7 +65,7 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - `VulkanEnvironmentMap` owns a cube-compatible sampled image, cube image view, and clamp sampler. The renderer uses one generated cubemap for the visible skybox, a second low-frequency generated cubemap for diffuse irradiance, and a mipmapped generated cubemap for prefiltered specular IBL.
 - `VulkanBrdfLut` owns the generated 2D `VK_FORMAT_R8G8_UNORM` split-sum BRDF lookup texture used by specular IBL.
 - `VulkanShadowMap` owns the fixed-size sampled depth image, image view, sampler, and current layout used by the directional shadow pass.
-- `Mesh`, `Material`, `RenderObject`, `Transform`, and `Camera` provide the first renderer-side scene abstractions without introducing ECS, glTF loading, or bindless rendering.
+- `Mesh`, `Material`, `RenderObject`, `Transform`, and `Camera` provide the first renderer-side scene abstractions. `Mesh::createFromGltf()` can load static glTF triangle geometry into the existing vertex format without introducing ECS, glTF material loading, or bindless rendering.
 
 ## Current Descriptor Contract
 
@@ -82,7 +83,7 @@ Skybox descriptor set:
 
 - binding 0 = visible environment cubemap combined image sampler
 
-The material descriptor set above is still separate from the skybox descriptor set. The material shader samples the diffuse irradiance cubemap at binding 4 for environment diffuse lighting, the prefiltered specular cubemap at binding 5, and the BRDF LUT at binding 6; the skybox continues to sample the visible environment cubemap from its own set. There is still no bindless descriptor path or model-loading path.
+The material descriptor set above is still separate from the skybox descriptor set. The material shader samples the diffuse irradiance cubemap at binding 4 for environment diffuse lighting, the prefiltered specular cubemap at binding 5, and the BRDF LUT at binding 6; the skybox continues to sample the visible environment cubemap from its own set. Static glTF geometry uses this same material descriptor contract; there is still no bindless descriptor path.
 
 Object and material scalar data still use Buffer Device Address plus a vertex-stage push constant. MVP, model, light, camera, base-color factor, metallic factor, roughness factor, and multi-scatter strength data have not moved into descriptor UBOs.
 
@@ -508,6 +509,24 @@ Future profiling/debugging work can add more detailed per-material or per-draw
 profiling, GPU/CPU frame timeline visualization, a documented RenderDoc capture
 workflow, an in-engine profiler UI, and ImGui integration.
 
+## Milestone 24: Static glTF Mesh Loading
+
+Milestone 24 loads static glTF geometry only. glTF material and texture loading are future work.
+
+The renderer uses tinygltf to load the first glTF mesh and merges supported triangle primitives into one `Mesh`. Geometry is converted into the existing `Vertex` format:
+
+- `POSITION` -> location 0 `vec3 position`, required
+- missing vertex color -> location 1 `vec3 color = vec3(1.0)`
+- `TEXCOORD_0` -> location 2 `vec2 uv`, fallback `vec2(0.0)`
+- `NORMAL` -> location 3 `vec3 normal`, fallback `vec3(0.0, 1.0, 0.0)`
+- `TANGENT` -> location 4 `vec4 tangent`, fallback `vec4(1.0, 0.0, 0.0, 1.0)`
+
+Indices are converted to `uint32_t`; unsigned byte, unsigned short, and unsigned int index accessors are supported. If a primitive has no index accessor, the loader generates sequential indices. Non-triangle primitives are skipped with a warning.
+
+Loaded vertices and indices are uploaded through the existing staging-buffer path into GPU-local vertex and index buffers. Imported geometry uses the existing engine `Material` objects and descriptor set layout. The renderer tries `assets/models/test_mesh.gltf` and then `assets/models/test_mesh.glb`; if loading fails or assets are missing, the built-in cube scene remains the fallback and useful test geometry.
+
+This milestone does not load glTF materials, textures, animations, skins, or node hierarchy. glTF positions are currently preserved as authored; no handedness, up-axis, or scene-node transform conversion is applied yet. Proper tangent generation for meshes without tangents is also future work.
+
 ## Next Milestones
 
 Future milestones can build on this multi-object material foundation with:
@@ -517,7 +536,12 @@ Future milestones can build on this multi-object material foundation with:
 - HDR environment loading
 - importance-sampled prefiltering
 - bindless descriptors
-- model loading
+- glTF materials
+- glTF texture loading
+- scene node hierarchy
+- tangent generation
+- skeletal animation
+- bindless material descriptors
 - automatic render graph dependency inference
 - transient resource allocation
 - attachment aliasing
