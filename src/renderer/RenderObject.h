@@ -17,6 +17,15 @@ struct RenderObject {
     Transform transform{};
     std::string debugName;
     bool animateTransform = false;
+
+    [[nodiscard]] Aabb worldBounds() const
+    {
+        if (!mesh) {
+            return {};
+        }
+
+        return mesh->localBounds().transform(transform.modelMatrix());
+    }
 };
 
 } // namespace ve::renderer

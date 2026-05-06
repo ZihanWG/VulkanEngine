@@ -20,6 +20,7 @@
 #include "rhi/VulkanTexture.h"
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <string_view>
 #include <vector>
@@ -56,6 +57,13 @@ private:
         const renderer::RenderObject* object = nullptr;
         const renderer::MeshPrimitive* primitive = nullptr;
         const renderer::Material* material = nullptr;
+        size_t objectIndex = 0;
+    };
+
+    struct CullingStats {
+        size_t totalObjects = 0;
+        size_t visibleObjects = 0;
+        size_t culledObjects = 0;
     };
 
     void createMaterialDescriptorSetLayout();
@@ -125,6 +133,7 @@ private:
     std::vector<renderer::Material> importedMaterials_;
     std::vector<renderer::RenderObject> renderObjects_;
     std::vector<FrameDrawItem> frameDrawItems_;
+    std::vector<uint8_t> mainPassObjectVisible_;
     std::vector<rhi::VulkanBuffer> frameObjectDataBuffers_;
     std::vector<VkFence> imagesInFlight_;
     ShadowSettings shadowSettings_{};
@@ -136,6 +145,7 @@ private:
     uint32_t currentFrame_ = 0;
     std::chrono::steady_clock::time_point startTime_ = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point lastGpuTimingPrint_ = std::chrono::steady_clock::now();
+    CullingStats cullingStats_{};
     bool initialized_ = false;
     bool normalMapAssetLoaded_ = false;
     bool metallicRoughnessMapAssetLoaded_ = false;

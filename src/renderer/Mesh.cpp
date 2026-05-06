@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -244,6 +245,29 @@ struct GltfAccessorView {
     }
 
     return result;
+}
+
+[[nodiscard]] Aabb accessorMinMaxBounds(const tinygltf::Accessor& accessor)
+{
+    Aabb bounds{};
+    if (accessor.minValues.size() < 3 || accessor.maxValues.size() < 3) {
+        return bounds;
+    }
+
+    const glm::vec3 minBounds{static_cast<float>(accessor.minValues[0]),
+                              static_cast<float>(accessor.minValues[1]),
+                              static_cast<float>(accessor.minValues[2])};
+    const glm::vec3 maxBounds{static_cast<float>(accessor.maxValues[0]),
+                              static_cast<float>(accessor.maxValues[1]),
+                              static_cast<float>(accessor.maxValues[2])};
+    if (!std::isfinite(minBounds.x) || !std::isfinite(minBounds.y) || !std::isfinite(minBounds.z) ||
+        !std::isfinite(maxBounds.x) || !std::isfinite(maxBounds.y) || !std::isfinite(maxBounds.z)) {
+        return bounds;
+    }
+
+    bounds.expand(minBounds);
+    bounds.expand(maxBounds);
+    return bounds;
 }
 
 [[nodiscard]] uint32_t readIndexValue(const GltfAccessorView& view, size_t elementIndex)
@@ -603,6 +627,9 @@ std::array<VkVertexInputAttributeDescription, 5> vertexAttributeDescriptions()
 Mesh Mesh::createCube(rhi::VulkanContext& context, const rhi::VulkanCommandContext& commandContext)
 {
     Mesh mesh;
+    for (const Vertex& vertex : kCubeVertices) {
+        mesh.localBounds_.expand(vertex.position);
+    }
 
     mesh.vertexBuffer_.createDeviceLocal(
         context,
@@ -685,6 +712,7 @@ LoadedGltfAsset Mesh::createFromGltf(
         std::vector<Vertex> vertices;
         std::vector<uint32_t> indices;
         std::vector<MeshPrimitive> subMeshes;
+        Aabb localBounds{};
 
         for (size_t primitiveIndex = 0; primitiveIndex < sourceMesh.primitives.size(); ++primitiveIndex) {
             const tinygltf::Primitive& primitive = sourceMesh.primitives[primitiveIndex];
@@ -714,6 +742,11 @@ LoadedGltfAsset Mesh::createFromGltf(
             const GltfAccessorView texcoords =
                 makeOptionalAttributeView(model, primitive, "TEXCOORD_0", 2, vertexCount);
             const GltfAccessorView tangents = makeOptionalAttributeView(model, primitive, "TANGENT", 4, vertexCount);
+            const Aabb positionAccessorBounds = accessorMinMaxBounds(*positions.accessor);
+            const bool hasPositionAccessorBounds = positionAccessorBounds.valid();
+            if (hasPositionAccessorBounds) {
+                localBounds.merge(positionAccessorBounds);
+            }
 
             const uint32_t baseVertex = static_cast<uint32_t>(vertices.size());
             const uint32_t firstIndex = static_cast<uint32_t>(indices.size());
@@ -734,6 +767,9 @@ LoadedGltfAsset Mesh::createFromGltf(
                 vertex.uv = glm::vec2(uv);
                 vertex.normal = glm::vec3(normal);
                 vertex.tangent = tangent;
+                if (!hasPositionAccessorBounds) {
+                    localBounds.expand(vertex.position);
+                }
                 vertices.push_back(vertex);
             }
 
@@ -791,6 +827,7 @@ LoadedGltfAsset Mesh::createFromGltf(
 
         mesh.indexCount_ = static_cast<uint32_t>(indices.size());
         mesh.subMeshes_ = std::move(subMeshes);
+        mesh.localBounds_ = localBounds;
 
         const std::string debugName = path.stem().string() + "Mesh" + std::to_string(meshIndex);
         rhi::debug::setObjectName(

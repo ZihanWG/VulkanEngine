@@ -30,6 +30,11 @@ struct Camera {
         projection[1][1] *= -1.0f;
         return projection;
     }
+
+    [[nodiscard]] glm::mat4 viewProjectionMatrix(float aspectRatio) const
+    {
+        return projectionMatrix(aspectRatio) * viewMatrix();
+    }
 };
 
 } // namespace ve::renderer

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "renderer/Bounds.h"
 #include "rhi/VulkanBuffer.h"
 
 #include <array>
@@ -81,6 +82,7 @@ public:
     [[nodiscard]] uint32_t indexCount() const { return indexCount_; }
     [[nodiscard]] std::span<const MeshPrimitive> primitives() const { return subMeshes_; }
     [[nodiscard]] bool hasSubMeshes() const { return !subMeshes_.empty(); }
+    [[nodiscard]] const Aabb& localBounds() const { return localBounds_; }
     [[nodiscard]] bool valid() const { return vertexBuffer_.buffer() != VK_NULL_HANDLE && indexCount_ > 0; }
 
 private:
@@ -89,6 +91,7 @@ private:
     rhi::VulkanBuffer indexBuffer_;
     uint32_t indexCount_ = 0;
     std::vector<MeshPrimitive> subMeshes_;
+    Aabb localBounds_{};
 };
 
 struct LoadedGltfAsset {

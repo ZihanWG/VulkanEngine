@@ -2,6 +2,7 @@
 
 #include "core/Logger.h"
 #include "core/Window.h"
+#include "renderer/Bounds.h"
 #include "rhi/VulkanDebugUtils.h"
 
 #include <algorithm>
@@ -417,6 +418,8 @@ void Renderer::createScene()
 {
     renderObjects_.clear();
     frameDrawItems_.clear();
+    mainPassObjectVisible_.clear();
+    cullingStats_ = {};
     importedMeshes_.clear();
     importedMaterials_.clear();
     importedTextures_.clear();
@@ -1082,7 +1085,8 @@ void Renderer::buildFrameDrawItems()
     frameDrawItems_.clear();
     frameDrawItems_.reserve(renderObjects_.size());
 
-    for (const renderer::RenderObject& object : renderObjects_) {
+    for (size_t objectIndex = 0; objectIndex < renderObjects_.size(); ++objectIndex) {
+        const renderer::RenderObject& object = renderObjects_[objectIndex];
         if (!object.mesh) {
             continue;
         }
@@ -1093,7 +1097,7 @@ void Renderer::buildFrameDrawItems()
                     return;
                 }
 
-                frameDrawItems_.push_back({&object, &primitive, resolveMaterial(object, &primitive)});
+                frameDrawItems_.push_back({&object, &primitive, resolveMaterial(object, &primitive), objectIndex});
             }
             continue;
         }
@@ -1101,7 +1105,7 @@ void Renderer::buildFrameDrawItems()
         if (frameDrawItems_.size() >= kMaxFrameDrawItems) {
             return;
         }
-        frameDrawItems_.push_back({&object, nullptr, object.material});
+        frameDrawItems_.push_back({&object, nullptr, object.material, objectIndex});
     }
 }
 
@@ -1162,7 +1166,10 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
             << "  ShadowPass: " << results.shadowPassMs << " ms\n"
             << "  MainPass: " << results.mainPassMs << " ms\n"
             << "  Skybox: " << results.skyboxMs << " ms\n"
-            << "  RenderObjects: " << results.renderObjectsMs << " ms";
+            << "  RenderObjects: " << results.renderObjectsMs << " ms\n"
+            << "Culling: total=" << cullingStats_.totalObjects
+            << " visible=" << cullingStats_.visibleObjects
+            << " culled=" << cullingStats_.culledObjects;
     Logger::info(message.str());
 }
 
@@ -1173,6 +1180,8 @@ void Renderer::updateFrameData(uint32_t frameIndex)
 
     if (renderObjects_.empty()) {
         frameDrawItems_.clear();
+        mainPassObjectVisible_.clear();
+        cullingStats_ = {};
         return;
     }
 
@@ -1181,6 +1190,7 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         extent.height == 0 ? 1.0f : static_cast<float>(extent.width) / static_cast<float>(extent.height);
     const glm::mat4 view = camera_.viewMatrix();
     const glm::mat4 projection = camera_.projectionMatrix(aspect);
+    const glm::mat4 viewProjection = projection * view;
     const glm::mat4 lightViewProjection = directionalLightViewProjection();
 
     for (size_t objectIndex = 0; objectIndex < renderObjects_.size(); ++objectIndex) {
@@ -1210,6 +1220,26 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         }
     }
 
+    const renderer::Frustum cameraFrustum = renderer::Frustum::fromViewProjection(viewProjection);
+    mainPassObjectVisible_.assign(renderObjects_.size(), 0);
+    cullingStats_ = {};
+    for (size_t objectIndex = 0; objectIndex < renderObjects_.size(); ++objectIndex) {
+        const renderer::RenderObject& object = renderObjects_[objectIndex];
+        if (!object.mesh) {
+            continue;
+        }
+
+        ++cullingStats_.totalObjects;
+        const renderer::Aabb worldBounds = object.worldBounds();
+        if (worldBounds.valid() && !cameraFrustum.testAabb(worldBounds)) {
+            ++cullingStats_.culledObjects;
+            continue;
+        }
+
+        mainPassObjectVisible_[objectIndex] = 1;
+        ++cullingStats_.visibleObjects;
+    }
+
     buildFrameDrawItems();
     if (frameDrawItems_.empty()) {
         return;
@@ -1225,7 +1255,7 @@ void Renderer::updateFrameData(uint32_t frameIndex)
 
         const glm::mat4 model = drawItem.object->transform.modelMatrix();
         ObjectFrameData& frameData = objectFrameData[drawIndex];
-        frameData.mvp = projection * view * model;
+        frameData.mvp = viewProjection * model;
         frameData.model = model;
         frameData.lightMvp = lightViewProjection * model;
         frameData.lightDirection = kDirectionalLightDirection;
@@ -1390,13 +1420,19 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     timestampQuery_.writeEnd(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::Skybox);
     rhi::debug::endLabel(commandBuffer);
 
-    rhi::debug::beginLabel(commandBuffer, "RenderObjects");
+    rhi::debug::beginLabel(commandBuffer,
+                           "RenderObjects visible " + std::to_string(cullingStats_.visibleObjects) + "/" +
+                               std::to_string(cullingStats_.totalObjects));
     timestampQuery_.writeBegin(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::RenderObjects);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.pipeline());
 
     const renderer::Mesh* boundMesh = nullptr;
     for (size_t drawIndex = 0; drawIndex < drawItemCount; ++drawIndex) {
         const FrameDrawItem& drawItem = frameDrawItems_[drawIndex];
+        if (drawItem.objectIndex >= mainPassObjectVisible_.size() ||
+            mainPassObjectVisible_[drawItem.objectIndex] == 0) {
+            continue;
+        }
         if (!drawItem.object || !drawItem.object->mesh || !drawItem.material ||
             drawItem.material->descriptorSet == VK_NULL_HANDLE) {
             continue;
