@@ -16,6 +16,7 @@ struct RenderObject {
     size_t materialCount = 0;
     Transform transform{};
     std::string debugName;
+    bool animateTransform = false;
 };
 
 } // namespace ve::renderer

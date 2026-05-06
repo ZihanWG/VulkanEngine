@@ -119,7 +119,7 @@ private:
     VkDescriptorSet skyboxDescriptorSet_ = VK_NULL_HANDLE;
     renderer::Camera camera_;
     renderer::Mesh cubeMesh_;
-    renderer::Mesh importedMesh_;
+    std::vector<renderer::Mesh> importedMeshes_;
     renderer::Material checkerboardMaterial_;
     std::vector<renderer::Material> materialVariants_;
     std::vector<renderer::Material> importedMaterials_;

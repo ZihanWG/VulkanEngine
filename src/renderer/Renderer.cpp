@@ -417,6 +417,7 @@ void Renderer::createScene()
 {
     renderObjects_.clear();
     frameDrawItems_.clear();
+    importedMeshes_.clear();
     importedMaterials_.clear();
     importedTextures_.clear();
 
@@ -442,6 +443,7 @@ void Renderer::createScene()
         cube.transform.position = position;
         cube.transform.rotationRadians = rotationRadians;
         cube.transform.scale = scale;
+        cube.animateTransform = true;
         renderObjects_.push_back(std::move(cube));
     };
 
@@ -478,23 +480,37 @@ void Renderer::createScene()
                 renderer::Mesh::createFromGltf(context_, commandContext_, modelPath);
             createImportedGltfTextures(loadedAsset.textures);
             createImportedGltfMaterials(loadedAsset.materials);
-            importedMesh_ = std::move(loadedAsset.mesh);
+            importedMeshes_ = std::move(loadedAsset.meshes);
 
-            renderer::RenderObject importedObject{};
-            importedObject.mesh = &importedMesh_;
-            importedObject.material =
-                importedMaterials_.empty() ? &materialVariants_.at(0) : &importedMaterials_.front();
-            if (!importedMaterials_.empty()) {
-                importedObject.materialTable = importedMaterials_.data();
-                importedObject.materialCount = importedMaterials_.size();
+            renderObjects_.reserve(loadedAsset.nodeMeshInstances.size());
+            for (const renderer::GltfNodeMeshInstance& instance : loadedAsset.nodeMeshInstances) {
+                if (instance.meshIndex >= importedMeshes_.size() || !importedMeshes_[instance.meshIndex].valid()) {
+                    Logger::warn("Skipping imported glTF RenderObject with invalid mesh index " +
+                                 std::to_string(instance.meshIndex) + ".");
+                    continue;
+                }
+
+                renderer::RenderObject importedObject{};
+                importedObject.mesh = &importedMeshes_[instance.meshIndex];
+                importedObject.material =
+                    importedMaterials_.empty() ? &materialVariants_.at(0) : &importedMaterials_.front();
+                if (!importedMaterials_.empty()) {
+                    importedObject.materialTable = importedMaterials_.data();
+                    importedObject.materialCount = importedMaterials_.size();
+                }
+                importedObject.debugName =
+                    instance.debugName.empty() ? "Imported glTF Node" : instance.debugName;
+                importedObject.transform = renderer::Transform::fromMatrix(instance.transform);
+                renderObjects_.push_back(std::move(importedObject));
             }
-            importedObject.debugName = "Imported glTF Mesh";
-            importedObject.transform.position = {0.0f, -0.15f, 0.0f};
-            importedObject.transform.scale = {1.2f, 1.2f, 1.2f};
-            renderObjects_.reserve(1);
-            renderObjects_.push_back(std::move(importedObject));
 
-            Logger::info("Loaded glTF mesh: " + modelPath.string() + " with " +
+            if (renderObjects_.empty()) {
+                throw std::runtime_error("Loaded glTF asset did not produce any valid RenderObjects.");
+            }
+
+            Logger::info("Loaded glTF scene: " + modelPath.string() + " with " +
+                         std::to_string(importedMeshes_.size()) + " mesh slot(s), " +
+                         std::to_string(renderObjects_.size()) + " render object(s), and " +
                          std::to_string(importedMaterials_.size()) + " material(s).");
             return;
         } catch (const std::exception& error) {
@@ -1169,6 +1185,9 @@ void Renderer::updateFrameData(uint32_t frameIndex)
 
     for (size_t objectIndex = 0; objectIndex < renderObjects_.size(); ++objectIndex) {
         renderer::RenderObject& object = renderObjects_[objectIndex];
+        if (!object.animateTransform) {
+            continue;
+        }
 
         switch (objectIndex) {
         case 0:

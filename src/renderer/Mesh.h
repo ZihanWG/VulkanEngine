@@ -5,6 +5,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
@@ -45,6 +46,12 @@ struct GltfMaterialInfo {
     int metallicRoughnessTextureIndex = -1;
 };
 
+struct GltfNodeMeshInstance {
+    uint32_t meshIndex = 0;
+    glm::mat4 transform{1.0f};
+    std::string debugName;
+};
+
 struct LoadedGltfAsset;
 
 [[nodiscard]] VkVertexInputBindingDescription vertexBindingDescription();
@@ -74,6 +81,7 @@ public:
     [[nodiscard]] uint32_t indexCount() const { return indexCount_; }
     [[nodiscard]] std::span<const MeshPrimitive> primitives() const { return subMeshes_; }
     [[nodiscard]] bool hasSubMeshes() const { return !subMeshes_.empty(); }
+    [[nodiscard]] bool valid() const { return vertexBuffer_.buffer() != VK_NULL_HANDLE && indexCount_ > 0; }
 
 private:
     // Mesh owns the GPU-local buffers for one drawable piece of geometry.
@@ -84,7 +92,8 @@ private:
 };
 
 struct LoadedGltfAsset {
-    Mesh mesh;
+    std::vector<Mesh> meshes;
+    std::vector<GltfNodeMeshInstance> nodeMeshInstances;
     std::vector<GltfMaterialInfo> materials;
     std::vector<GltfTextureInfo> textures;
 };

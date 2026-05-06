@@ -16,6 +16,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <glm/ext/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
+#include <glm/mat4x4.hpp>
 #include <limits>
 #include <span>
 #include <stdexcept>
@@ -481,6 +484,79 @@ bool copyEncodedImageData(tinygltf::Image* image,
     return materials;
 }
 
+[[nodiscard]] glm::mat4 loadNodeLocalTransform(const tinygltf::Node& node)
+{
+    if (!node.matrix.empty()) {
+        if (node.matrix.size() != 16) {
+            throw std::runtime_error("glTF node matrix must contain 16 values.");
+        }
+
+        glm::mat4 transform{1.0f};
+        for (int column = 0; column < 4; ++column) {
+            for (int row = 0; row < 4; ++row) {
+                transform[column][row] = static_cast<float>(node.matrix[static_cast<size_t>(column * 4 + row)]);
+            }
+        }
+        return transform;
+    }
+
+    glm::vec3 translation{0.0f};
+    if (!node.translation.empty()) {
+        if (node.translation.size() != 3) {
+            throw std::runtime_error("glTF node translation must contain 3 values.");
+        }
+        translation = {static_cast<float>(node.translation[0]),
+                       static_cast<float>(node.translation[1]),
+                       static_cast<float>(node.translation[2])};
+    }
+
+    glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
+    if (!node.rotation.empty()) {
+        if (node.rotation.size() != 4) {
+            throw std::runtime_error("glTF node rotation must contain 4 values.");
+        }
+        rotation = glm::quat{static_cast<float>(node.rotation[3]),
+                             static_cast<float>(node.rotation[0]),
+                             static_cast<float>(node.rotation[1]),
+                             static_cast<float>(node.rotation[2])};
+    }
+
+    glm::vec3 scale{1.0f};
+    if (!node.scale.empty()) {
+        if (node.scale.size() != 3) {
+            throw std::runtime_error("glTF node scale must contain 3 values.");
+        }
+        scale = {static_cast<float>(node.scale[0]),
+                 static_cast<float>(node.scale[1]),
+                 static_cast<float>(node.scale[2])};
+    }
+
+    return glm::translate(glm::mat4{1.0f}, translation) * glm::mat4_cast(rotation) *
+           glm::scale(glm::mat4{1.0f}, scale);
+}
+
+[[nodiscard]] std::string meshDebugName(const tinygltf::Mesh& mesh, size_t meshIndex)
+{
+    return mesh.name.empty() ? "glTF Mesh " + std::to_string(meshIndex) : mesh.name;
+}
+
+[[nodiscard]] std::string nodeMeshInstanceDebugName(const tinygltf::Model& model,
+                                                    const tinygltf::Node& node,
+                                                    size_t nodeIndex)
+{
+    if (!node.name.empty()) {
+        return node.name;
+    }
+
+    if (node.mesh >= 0 && static_cast<size_t>(node.mesh) < model.meshes.size()) {
+        const std::string meshName = meshDebugName(model.meshes[static_cast<size_t>(node.mesh)],
+                                                  static_cast<size_t>(node.mesh));
+        return "glTF Node " + std::to_string(nodeIndex) + " (" + meshName + ")";
+    }
+
+    return "glTF Node " + std::to_string(nodeIndex);
+}
+
 } // namespace
 
 VkVertexInputBindingDescription vertexBindingDescription()
@@ -574,9 +650,6 @@ LoadedGltfAsset Mesh::createFromGltf(
         throw std::runtime_error("glTF file contains no meshes: " + filename);
     }
 
-    std::vector<Vertex> vertices;
-    std::vector<uint32_t> indices;
-    std::vector<MeshPrimitive> subMeshes;
     std::vector<GltfTextureInfo> textureInfos = loadGltfTextureInfos(model, path);
     std::vector<GltfMaterialInfo> materialInfos = loadGltfMaterialInfos(model);
     uint32_t defaultMaterialIndex = 0;
@@ -607,118 +680,221 @@ LoadedGltfAsset Mesh::createFromGltf(
         return static_cast<uint32_t>(primitive.material);
     };
 
-    const tinygltf::Mesh& sourceMesh = model.meshes.front();
-    for (size_t primitiveIndex = 0; primitiveIndex < sourceMesh.primitives.size(); ++primitiveIndex) {
-        const tinygltf::Primitive& primitive = sourceMesh.primitives[primitiveIndex];
-        if (!isTrianglePrimitive(primitive)) {
-            Logger::warn("Skipping non-triangle glTF primitive " + std::to_string(primitiveIndex) + " in " + filename);
-            continue;
-        }
+    const auto createMeshFromSource = [&](size_t meshIndex) {
+        const tinygltf::Mesh& sourceMesh = model.meshes[meshIndex];
+        std::vector<Vertex> vertices;
+        std::vector<uint32_t> indices;
+        std::vector<MeshPrimitive> subMeshes;
 
-        const int positionAccessorIndex = findAttribute(primitive, "POSITION");
-        if (positionAccessorIndex < 0) {
-            Logger::warn("Skipping glTF primitive without POSITION attribute in " + filename);
-            continue;
-        }
-
-        const GltfAccessorView positions = makeAccessorView(model, positionAccessorIndex, "POSITION", 3);
-        const size_t vertexCount = positions.accessor->count;
-        if (vertexCount == 0) {
-            Logger::warn("Skipping empty glTF primitive in " + filename);
-            continue;
-        }
-        if (vertices.size() > static_cast<size_t>(std::numeric_limits<uint32_t>::max()) - vertexCount) {
-            throw std::runtime_error("glTF mesh has too many vertices for a uint32_t index buffer.");
-        }
-
-        const GltfAccessorView normals = makeOptionalAttributeView(model, primitive, "NORMAL", 3, vertexCount);
-        const GltfAccessorView texcoords = makeOptionalAttributeView(model, primitive, "TEXCOORD_0", 2, vertexCount);
-        const GltfAccessorView tangents = makeOptionalAttributeView(model, primitive, "TANGENT", 4, vertexCount);
-
-        const uint32_t baseVertex = static_cast<uint32_t>(vertices.size());
-        const uint32_t firstIndex = static_cast<uint32_t>(indices.size());
-        const uint32_t materialIndex = resolvePrimitiveMaterialIndex(primitive, primitiveIndex, filename);
-        vertices.reserve(vertices.size() + vertexCount);
-        for (size_t vertexIndex = 0; vertexIndex < vertexCount; ++vertexIndex) {
-            const glm::vec4 position = readAccessorVec4(positions, vertexIndex, glm::vec4(0.0f));
-            const glm::vec4 normal = readAccessorVec4(normals, vertexIndex, glm::vec4(0.0f, 1.0f, 0.0f, 0.0f));
-            const glm::vec4 uv = readAccessorVec4(texcoords, vertexIndex, glm::vec4(0.0f));
-            // Missing tangents use a stable axis fallback. Proper imported-mesh tangent
-            // generation is future work.
-            const glm::vec4 tangent = readAccessorVec4(tangents, vertexIndex, glm::vec4(1.0f, 0.0f, 0.0f, 1.0f));
-
-            Vertex vertex{};
-            vertex.position = glm::vec3(position);
-            vertex.color = glm::vec3(1.0f);
-            vertex.uv = glm::vec2(uv);
-            vertex.normal = glm::vec3(normal);
-            vertex.tangent = tangent;
-            vertices.push_back(vertex);
-        }
-
-        if (primitive.indices >= 0) {
-            const GltfAccessorView sourceIndices = makeAccessorView(model, primitive.indices, "indices", 1);
-            if (sourceIndices.accessor->type != TINYGLTF_TYPE_SCALAR) {
-                throw std::runtime_error("glTF index accessor must be SCALAR.");
+        for (size_t primitiveIndex = 0; primitiveIndex < sourceMesh.primitives.size(); ++primitiveIndex) {
+            const tinygltf::Primitive& primitive = sourceMesh.primitives[primitiveIndex];
+            if (!isTrianglePrimitive(primitive)) {
+                Logger::warn("Skipping non-triangle glTF primitive " + std::to_string(primitiveIndex) + " in " +
+                             filename);
+                continue;
             }
 
-            indices.reserve(indices.size() + sourceIndices.accessor->count);
-            for (size_t indexElement = 0; indexElement < sourceIndices.accessor->count; ++indexElement) {
-                const uint32_t localIndex = readIndexValue(sourceIndices, indexElement);
-                if (localIndex >= vertexCount) {
-                    throw std::runtime_error("glTF index references a vertex outside the primitive.");
-                }
-                indices.push_back(baseVertex + localIndex);
+            const int positionAccessorIndex = findAttribute(primitive, "POSITION");
+            if (positionAccessorIndex < 0) {
+                Logger::warn("Skipping glTF primitive without POSITION attribute in " + filename);
+                continue;
             }
-        } else {
-            indices.reserve(indices.size() + vertexCount);
+
+            const GltfAccessorView positions = makeAccessorView(model, positionAccessorIndex, "POSITION", 3);
+            const size_t vertexCount = positions.accessor->count;
+            if (vertexCount == 0) {
+                Logger::warn("Skipping empty glTF primitive in " + filename);
+                continue;
+            }
+            if (vertices.size() > static_cast<size_t>(std::numeric_limits<uint32_t>::max()) - vertexCount) {
+                throw std::runtime_error("glTF mesh has too many vertices for a uint32_t index buffer.");
+            }
+
+            const GltfAccessorView normals = makeOptionalAttributeView(model, primitive, "NORMAL", 3, vertexCount);
+            const GltfAccessorView texcoords =
+                makeOptionalAttributeView(model, primitive, "TEXCOORD_0", 2, vertexCount);
+            const GltfAccessorView tangents = makeOptionalAttributeView(model, primitive, "TANGENT", 4, vertexCount);
+
+            const uint32_t baseVertex = static_cast<uint32_t>(vertices.size());
+            const uint32_t firstIndex = static_cast<uint32_t>(indices.size());
+            const uint32_t materialIndex = resolvePrimitiveMaterialIndex(primitive, primitiveIndex, filename);
+            vertices.reserve(vertices.size() + vertexCount);
             for (size_t vertexIndex = 0; vertexIndex < vertexCount; ++vertexIndex) {
-                indices.push_back(baseVertex + static_cast<uint32_t>(vertexIndex));
+                const glm::vec4 position = readAccessorVec4(positions, vertexIndex, glm::vec4(0.0f));
+                const glm::vec4 normal = readAccessorVec4(normals, vertexIndex, glm::vec4(0.0f, 1.0f, 0.0f, 0.0f));
+                const glm::vec4 uv = readAccessorVec4(texcoords, vertexIndex, glm::vec4(0.0f));
+                // Missing tangents use a stable axis fallback. Proper imported-mesh tangent
+                // generation is future work.
+                const glm::vec4 tangent =
+                    readAccessorVec4(tangents, vertexIndex, glm::vec4(1.0f, 0.0f, 0.0f, 1.0f));
+
+                Vertex vertex{};
+                vertex.position = glm::vec3(position);
+                vertex.color = glm::vec3(1.0f);
+                vertex.uv = glm::vec2(uv);
+                vertex.normal = glm::vec3(normal);
+                vertex.tangent = tangent;
+                vertices.push_back(vertex);
+            }
+
+            if (primitive.indices >= 0) {
+                const GltfAccessorView sourceIndices = makeAccessorView(model, primitive.indices, "indices", 1);
+                if (sourceIndices.accessor->type != TINYGLTF_TYPE_SCALAR) {
+                    throw std::runtime_error("glTF index accessor must be SCALAR.");
+                }
+
+                indices.reserve(indices.size() + sourceIndices.accessor->count);
+                for (size_t indexElement = 0; indexElement < sourceIndices.accessor->count; ++indexElement) {
+                    const uint32_t localIndex = readIndexValue(sourceIndices, indexElement);
+                    if (localIndex >= vertexCount) {
+                        throw std::runtime_error("glTF index references a vertex outside the primitive.");
+                    }
+                    indices.push_back(baseVertex + localIndex);
+                }
+            } else {
+                indices.reserve(indices.size() + vertexCount);
+                for (size_t vertexIndex = 0; vertexIndex < vertexCount; ++vertexIndex) {
+                    indices.push_back(baseVertex + static_cast<uint32_t>(vertexIndex));
+                }
+            }
+
+            const uint32_t indexCount = static_cast<uint32_t>(indices.size()) - firstIndex;
+            if (indexCount > 0) {
+                subMeshes.push_back({firstIndex, indexCount, materialIndex});
             }
         }
 
-        const uint32_t indexCount = static_cast<uint32_t>(indices.size()) - firstIndex;
-        if (indexCount > 0) {
-            subMeshes.push_back({firstIndex, indexCount, materialIndex});
+        if (vertices.empty() || indices.empty()) {
+            throw std::runtime_error("glTF mesh contains no supported triangle geometry.");
+        }
+        if (indices.size() > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
+            throw std::runtime_error("glTF mesh has too many indices for this renderer.");
+        }
+        if ((indices.size() % 3) != 0) {
+            Logger::warn("Loaded glTF triangle mesh has an index count that is not divisible by 3: " + filename);
+        }
+
+        // Milestone 26 preserves glTF positions and node transforms as authored.
+        // No handedness or up-axis conversion is applied yet.
+        Mesh mesh;
+        mesh.vertexBuffer_.createDeviceLocal(
+            context,
+            commandContext,
+            std::as_bytes(std::span<const Vertex>(vertices.data(), vertices.size())),
+            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+
+        mesh.indexBuffer_.createDeviceLocal(
+            context,
+            commandContext,
+            std::as_bytes(std::span<const uint32_t>(indices.data(), indices.size())),
+            VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+
+        mesh.indexCount_ = static_cast<uint32_t>(indices.size());
+        mesh.subMeshes_ = std::move(subMeshes);
+
+        const std::string debugName = path.stem().string() + "Mesh" + std::to_string(meshIndex);
+        rhi::debug::setObjectName(
+            context.vkDevice(), mesh.vertexBuffer_.buffer(), VK_OBJECT_TYPE_BUFFER, debugName + "VertexBuffer");
+        rhi::debug::setObjectName(
+            context.vkDevice(), mesh.indexBuffer_.buffer(), VK_OBJECT_TYPE_BUFFER, debugName + "IndexBuffer");
+
+        return mesh;
+    };
+
+    std::vector<Mesh> meshes(model.meshes.size());
+    std::vector<bool> meshLoaded(model.meshes.size(), false);
+    size_t loadedMeshCount = 0;
+    for (size_t meshIndex = 0; meshIndex < model.meshes.size(); ++meshIndex) {
+        try {
+            meshes[meshIndex] = createMeshFromSource(meshIndex);
+            meshLoaded[meshIndex] = true;
+            ++loadedMeshCount;
+        } catch (const std::exception& error) {
+            Logger::warn("Skipping glTF mesh " + std::to_string(meshIndex) + " (" +
+                         meshDebugName(model.meshes[meshIndex], meshIndex) + "): " + error.what());
         }
     }
 
-    if (vertices.empty() || indices.empty()) {
+    if (loadedMeshCount == 0) {
         throw std::runtime_error("glTF file contains no supported triangle geometry: " + filename);
     }
-    if (indices.size() > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
-        throw std::runtime_error("glTF mesh has too many indices for this renderer.");
+
+    std::vector<GltfNodeMeshInstance> nodeMeshInstances;
+    nodeMeshInstances.reserve(model.nodes.size());
+
+    const auto addFallbackFirstMeshInstance = [&nodeMeshInstances, &meshLoaded]() {
+        for (size_t meshIndex = 0; meshIndex < meshLoaded.size(); ++meshIndex) {
+            if (meshLoaded[meshIndex]) {
+                GltfNodeMeshInstance instance{};
+                instance.meshIndex = static_cast<uint32_t>(meshIndex);
+                instance.transform = glm::mat4{1.0f};
+                instance.debugName = "Imported glTF Mesh " + std::to_string(meshIndex);
+                nodeMeshInstances.push_back(std::move(instance));
+                return true;
+            }
+        }
+
+        return false;
+    };
+
+    const auto traverseNode = [&](auto&& self, int nodeIndex, const glm::mat4& parentTransform, size_t depth) -> void {
+        if (nodeIndex < 0 || static_cast<size_t>(nodeIndex) >= model.nodes.size()) {
+            Logger::warn("Skipping out-of-range glTF scene node index " + std::to_string(nodeIndex) + ".");
+            return;
+        }
+        if (depth > model.nodes.size()) {
+            Logger::warn("Stopping glTF node traversal because the hierarchy appears cyclic.");
+            return;
+        }
+
+        const tinygltf::Node& node = model.nodes[static_cast<size_t>(nodeIndex)];
+        const glm::mat4 worldTransform = parentTransform * loadNodeLocalTransform(node);
+
+        if (node.mesh >= 0) {
+            if (static_cast<size_t>(node.mesh) >= meshLoaded.size()) {
+                Logger::warn("Skipping glTF node mesh reference " + std::to_string(node.mesh) +
+                             " because it is out of range.");
+            } else if (!meshLoaded[static_cast<size_t>(node.mesh)]) {
+                Logger::warn("Skipping glTF node mesh reference " + std::to_string(node.mesh) +
+                             " because the mesh has no supported geometry.");
+            } else {
+                GltfNodeMeshInstance instance{};
+                instance.meshIndex = static_cast<uint32_t>(node.mesh);
+                instance.transform = worldTransform;
+                instance.debugName = nodeMeshInstanceDebugName(model, node, static_cast<size_t>(nodeIndex));
+                nodeMeshInstances.push_back(std::move(instance));
+            }
+        }
+
+        for (int childNodeIndex : node.children) {
+            self(self, childNodeIndex, worldTransform, depth + 1);
+        }
+    };
+
+    if (!model.scenes.empty()) {
+        const int sceneIndex = model.defaultScene >= 0 ? model.defaultScene : 0;
+        if (sceneIndex < 0 || static_cast<size_t>(sceneIndex) >= model.scenes.size()) {
+            Logger::warn("glTF default scene index is out of range; using the first loaded mesh at identity.");
+        } else {
+            const tinygltf::Scene& scene = model.scenes[static_cast<size_t>(sceneIndex)];
+            for (int rootNodeIndex : scene.nodes) {
+                traverseNode(traverseNode, rootNodeIndex, glm::mat4{1.0f}, 0);
+            }
+        }
+    } else {
+        Logger::warn("glTF file has no scenes; using the first loaded mesh at identity.");
     }
-    if ((indices.size() % 3) != 0) {
-        Logger::warn("Loaded glTF triangle mesh has an index count that is not divisible by 3: " + filename);
+
+    if (nodeMeshInstances.empty()) {
+        Logger::warn("glTF scene contains no supported mesh nodes; using the first loaded mesh at identity.");
+        if (!addFallbackFirstMeshInstance()) {
+            throw std::runtime_error("glTF file contains no supported mesh nodes: " + filename);
+        }
     }
-
-    // Milestone 24 preserves glTF positions as authored. No handedness, up-axis, or
-    // node transform conversion is applied until scene hierarchy support exists.
-    Mesh mesh;
-    mesh.vertexBuffer_.createDeviceLocal(
-        context,
-        commandContext,
-        std::as_bytes(std::span<const Vertex>(vertices.data(), vertices.size())),
-        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-
-    mesh.indexBuffer_.createDeviceLocal(
-        context,
-        commandContext,
-        std::as_bytes(std::span<const uint32_t>(indices.data(), indices.size())),
-        VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
-
-    mesh.indexCount_ = static_cast<uint32_t>(indices.size());
-    mesh.subMeshes_ = std::move(subMeshes);
-
-    const std::string debugName = path.stem().string();
-    rhi::debug::setObjectName(
-        context.vkDevice(), mesh.vertexBuffer_.buffer(), VK_OBJECT_TYPE_BUFFER, debugName + "VertexBuffer");
-    rhi::debug::setObjectName(
-        context.vkDevice(), mesh.indexBuffer_.buffer(), VK_OBJECT_TYPE_BUFFER, debugName + "IndexBuffer");
 
     LoadedGltfAsset loadedAsset{};
-    loadedAsset.mesh = std::move(mesh);
+    loadedAsset.meshes = std::move(meshes);
+    loadedAsset.nodeMeshInstances = std::move(nodeMeshInstances);
     loadedAsset.materials = std::move(materialInfos);
     loadedAsset.textures = std::move(textureInfos);
     return loadedAsset;

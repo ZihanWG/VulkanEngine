@@ -2,7 +2,7 @@
 
 Modern C++20 Vulkan 1.3 renderer skeleton inspired by the educational flow of [Sascha Willems' HowToVulkan](https://github.com/SaschaWillems/HowToVulkan), but split into engine-style modules instead of a single tutorial file.
 
-The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube or imported glTF geometry with normals, tangents, and submesh material ranges into GPU-local vertex and index buffers, loads small RGBA base color, normal, and metallic-roughness textures from disk with procedural fallbacks, loads basic glTF PBR material factors and base color/normal/metallic-roughness textures when available, creates and renders a simple procedural environment cubemap as a skybox background, creates low-frequency diffuse irradiance and mipmapped prefiltered specular cubemaps from the same procedural environment colors, generates a 2D split-sum BRDF LUT, and first tries to draw a static glTF test mesh with tangent-space normal mapping, direct-light Cook-Torrance GGX material response, diffuse and specular image-based lighting, compact Kulla-Conty-style multi-scattering compensation, directional lighting, and a PCF-filtered directional shadow map every frame using Dynamic Rendering and Synchronization2. If no supported glTF asset loads, the renderer falls back to the previous multi-cube demo scene. A minimal render graph now documents the shadow and main pass order, records manual resource usage, and centralizes the frame's image transitions.
+The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube or imported glTF geometry with normals, tangents, and submesh material ranges into GPU-local vertex and index buffers, loads small RGBA base color, normal, and metallic-roughness textures from disk with procedural fallbacks, loads basic glTF PBR material factors and base color/normal/metallic-roughness textures when available, traverses the default glTF scene hierarchy to instantiate static `RenderObject`s with accumulated node transforms, creates and renders a simple procedural environment cubemap as a skybox background, creates low-frequency diffuse irradiance and mipmapped prefiltered specular cubemaps from the same procedural environment colors, generates a 2D split-sum BRDF LUT, and first tries to draw a static glTF test scene with tangent-space normal mapping, direct-light Cook-Torrance GGX material response, diffuse and specular image-based lighting, compact Kulla-Conty-style multi-scattering compensation, directional lighting, and a PCF-filtered directional shadow map every frame using Dynamic Rendering and Synchronization2. If no supported glTF asset loads, the renderer falls back to the previous multi-cube demo scene. A minimal render graph now documents the shadow and main pass order, records manual resource usage, and centralizes the frame's image transitions.
 
 ## Dependencies
 
@@ -22,7 +22,7 @@ The CMake project first looks for installed packages. If they are missing, `VULK
 
 Milestone 2 and later require `glslc`. CMake compiles shaders into the build-directory shader folder, for example `build/shaders`, and embeds that absolute shader directory into the executable, so running from Visual Studio, CLion, or PowerShell does not depend on the current working directory.
 
-Milestone 9 embeds the source `assets` directory path into the executable. The demo tries to load `assets/textures/checker.png`, while later material milestones also load `assets/textures/checker_normal.png` and `assets/textures/checker_mr.png`; if any of those files are missing or cannot be decoded, the renderer falls back to procedural textures. Milestone 25 also tries `assets/models/test_mesh.gltf` and then `assets/models/test_mesh.glb`; if neither static mesh loads, the built-in cube scene remains the fallback. External glTF image URIs are resolved relative to the `.gltf` file.
+Milestone 9 embeds the source `assets` directory path into the executable. The demo tries to load `assets/textures/checker.png`, while later material milestones also load `assets/textures/checker_normal.png` and `assets/textures/checker_mr.png`; if any of those files are missing or cannot be decoded, the renderer falls back to procedural textures. Milestone 26 also tries `assets/models/test_mesh.gltf` and then `assets/models/test_mesh.glb`; if neither static glTF scene loads, the built-in cube scene remains the fallback. External glTF image URIs are resolved relative to the `.gltf` file.
 
 ## Build
 
@@ -65,7 +65,7 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - `VulkanEnvironmentMap` owns a cube-compatible sampled image, cube image view, and clamp sampler. The renderer uses one generated cubemap for the visible skybox, a second low-frequency generated cubemap for diffuse irradiance, and a mipmapped generated cubemap for prefiltered specular IBL.
 - `VulkanBrdfLut` owns the generated 2D `VK_FORMAT_R8G8_UNORM` split-sum BRDF lookup texture used by specular IBL.
 - `VulkanShadowMap` owns the fixed-size sampled depth image, image view, sampler, and current layout used by the directional shadow pass.
-- `Mesh`, `Material`, `RenderObject`, `Transform`, and `Camera` provide the first renderer-side scene abstractions. `Mesh::createFromGltf()` can load static glTF triangle geometry, submesh material ranges, basic glTF material factors, and glTF texture references without introducing ECS, animation, skinning, full node hierarchy, or bindless rendering.
+- `Mesh`, `Material`, `RenderObject`, `Transform`, and `Camera` provide the first renderer-side scene abstractions. `Mesh::createFromGltf()` can load static glTF triangle geometry, submesh material ranges, basic glTF material factors, glTF texture references, and static scene node instances without introducing ECS, animation, skinning, morph targets, glTF cameras/lights, or bindless rendering.
 
 ## Current Descriptor Contract
 
@@ -525,7 +525,7 @@ Indices are converted to `uint32_t`; unsigned byte, unsigned short, and unsigned
 
 Loaded vertices and indices are uploaded through the existing staging-buffer path into GPU-local vertex and index buffers. At Milestone 24, imported geometry used existing engine `Material` objects and the existing descriptor set layout. The renderer tries `assets/models/test_mesh.gltf` and then `assets/models/test_mesh.glb`; if loading fails or assets are missing, the built-in cube scene remains the fallback and useful test geometry.
 
-At Milestone 24, glTF material and texture loading were still future work; Milestone 25 adds the first material and texture loading path. glTF positions are currently preserved as authored; no handedness, up-axis, or scene-node transform conversion is applied yet. Proper tangent generation for meshes without tangents is also future work.
+At Milestone 24, glTF material and texture loading were still future work; Milestone 25 adds the first material and texture loading path, and Milestone 26 adds static scene node traversal. glTF positions and node transforms are currently preserved as authored; no handedness or up-axis conversion is applied yet. Proper tangent generation for meshes without tangents is also future work.
 
 ## Milestone 25: glTF Material and Texture Loading
 
@@ -545,7 +545,19 @@ Missing or failed material textures use descriptor-complete fallbacks: base colo
 
 Each imported glTF material gets its own descriptor set, while global shadow and IBL resources are shared. Object/material scalar data continues to use Buffer Device Address plus the existing vertex-stage push constant.
 
-This milestone does not add animation, skinning, alpha blending, emissive textures, occlusion textures, bindless descriptors, descriptor indexing arrays, full scene node hierarchy, render graph scheduling changes, or HDR environment loading.
+This milestone does not add animation, skinning, alpha blending, emissive textures, occlusion textures, bindless descriptors, descriptor indexing arrays, render graph scheduling changes, or HDR environment loading.
+
+## Milestone 26: glTF Scene Node Hierarchy
+
+Milestone 26 traverses the default glTF scene when one is present, or scene 0 otherwise. Root `scene.nodes` are visited recursively, each node's local transform is computed, and parent/child transforms are accumulated into a world matrix. Nodes with a mesh create renderer `RenderObject`s using that world transform.
+
+Both glTF node transform forms are supported. If `node.matrix` is authored, the loader uses the 4x4 matrix directly. Otherwise it builds `translation * rotation * scale` from TRS fields, with glTF quaternions interpreted as `[x, y, z, w]`. The accumulated world matrix is stored through `Transform::fromMatrix()`, so static imported objects can preserve hierarchy results that do not map cleanly to the engine's Euler TRS fields.
+
+Imported `Mesh` objects are stored by glTF mesh index in renderer-owned mesh slots. Multiple glTF nodes referencing the same mesh create multiple `RenderObject`s that point at the same uploaded mesh buffers. Meshes still merge supported triangle primitives into one `Mesh`, and `MeshPrimitive` material assignment continues to control submesh material binding.
+
+Current coordinate assumptions are intentionally simple: glTF's right-handed authoring convention is used as-is. There is no handedness, up-axis, unit, or scene-scale conversion yet.
+
+This is static hierarchy support only. It does not add animation, skinning, morph targets, glTF cameras, glTF lights, ECS, bindless descriptors, or material/shader binding changes. If glTF loading fails, or if no supported glTF asset exists, the built-in cube fallback scene remains available.
 
 ## Next Milestones
 
@@ -555,14 +567,18 @@ Future milestones can build on this multi-object material foundation with:
 - energy validation
 - HDR environment loading
 - importance-sampled prefiltering
-- glTF scene node hierarchy
-- transform hierarchy
+- animation
+- skinning
+- morph targets
+- glTF cameras/lights
+- scene bounds
+- frustum culling
 - alpha modes
 - occlusion and emissive textures
 - proper tangent generation for meshes without tangents
-- skeletal animation
-- bindless material descriptors
+- bindless descriptors
 - automatic render graph dependency inference
+- render graph scheduling improvements
 - transient resource allocation
 - attachment aliasing
 - async compute

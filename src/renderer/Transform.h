@@ -10,9 +10,23 @@ struct Transform {
     glm::vec3 position{0.0f, 0.0f, 0.0f};
     glm::vec3 rotationRadians{0.0f, 0.0f, 0.0f};
     glm::vec3 scale{1.0f, 1.0f, 1.0f};
+    glm::mat4 matrixOverride{1.0f};
+    bool useMatrixOverride = false;
+
+    [[nodiscard]] static Transform fromMatrix(const glm::mat4& matrix)
+    {
+        Transform transform{};
+        transform.matrixOverride = matrix;
+        transform.useMatrixOverride = true;
+        return transform;
+    }
 
     [[nodiscard]] glm::mat4 modelMatrix() const
     {
+        if (useMatrixOverride) {
+            return matrixOverride;
+        }
+
         glm::mat4 model{1.0f};
         model = glm::translate(model, position);
         model = glm::rotate(model, rotationRadians.x, glm::vec3{1.0f, 0.0f, 0.0f});
