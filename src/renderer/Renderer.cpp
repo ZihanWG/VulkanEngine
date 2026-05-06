@@ -66,6 +66,8 @@ static_assert(sizeof(ObjectFrameData) == 304);
 constexpr uint32_t kMaxFrameObjects = 1024;
 constexpr uint32_t kMaxDrawItems = 1024;
 constexpr uint32_t kMaxMaterialDescriptorSets = 256;
+constexpr uint32_t kGpuCullLocalSize = 64;
+constexpr float kUnboundedCullExtent = 100000000.0f;
 
 const glm::vec4 kDirectionalLightDirection{0.35f, -0.65f, -0.55f, 0.0f};
 const glm::vec4 kDirectionalLightColor{0.85f, 0.85f, 0.85f, 1.0f};
@@ -82,6 +84,36 @@ struct ShadowSceneBounds {
 struct PushConstants {
     VkDeviceAddress objectFrameDataAddress = 0;
 };
+
+// Mirrors src/shaders/cull.comp. std430 keeps vec4 members 16-byte aligned,
+// then packs the four scalar draw fields into the next 16 bytes, for a 48-byte
+// runtime-array stride.
+struct GpuCullDrawItem {
+    glm::vec4 boundsMin{0.0f};
+    glm::vec4 boundsMax{0.0f};
+    uint32_t indexCount = 0;
+    uint32_t firstIndex = 0;
+    int32_t vertexOffset = 0;
+    uint32_t objectIndex = 0;
+};
+
+static_assert(offsetof(GpuCullDrawItem, boundsMin) == 0);
+static_assert(offsetof(GpuCullDrawItem, boundsMax) == 16);
+static_assert(offsetof(GpuCullDrawItem, indexCount) == 32);
+static_assert(offsetof(GpuCullDrawItem, firstIndex) == 36);
+static_assert(offsetof(GpuCullDrawItem, vertexOffset) == 40);
+static_assert(offsetof(GpuCullDrawItem, objectIndex) == 44);
+static_assert(sizeof(GpuCullDrawItem) == 48);
+
+struct GpuCullPushConstants {
+    std::array<glm::vec4, 6> frustumPlanes{};
+    glm::uvec4 params{0, 0, 0, 0};
+};
+
+static_assert(offsetof(GpuCullPushConstants, frustumPlanes) == 0);
+static_assert(offsetof(GpuCullPushConstants, params) == 96);
+static_assert(sizeof(GpuCullPushConstants) == 112);
+static_assert(sizeof(GpuCullPushConstants) <= 128);
 
 struct SkyboxPushConstants {
     glm::mat4 inverseViewProjection{1.0f};
@@ -159,6 +191,7 @@ Renderer::Renderer(Window& window) : window_(window)
     createScene();
     createObjectFrameDataBuffers();
     createIndirectDrawBuffers();
+    createGpuCullingResources();
     sync_.initialize(context_, frames_, swapchain_.imageCount());
     imagesInFlight_.assign(swapchain_.imageCount(), VK_NULL_HANDLE);
 
@@ -332,6 +365,136 @@ void Renderer::createSkyboxDescriptorSetLayout()
                               skyboxDescriptorSetLayout_.handle(),
                               VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
                               "SkyboxDescriptorSetLayout");
+}
+
+void Renderer::createGpuCullingResources()
+{
+    destroyGpuCullingResources();
+
+    if (!useGpuCulling_) {
+        return;
+    }
+
+    try {
+        if (frameIndirectDrawBuffers_.size() != frames_.size()) {
+            throw std::runtime_error("GPU culling requires one indirect output buffer per frame.");
+        }
+
+        std::array<VkDescriptorSetLayoutBinding, 2> bindings{};
+        bindings[0].binding = 0;
+        bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[0].descriptorCount = 1;
+        bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+        bindings[1].binding = 1;
+        bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[1].descriptorCount = 1;
+        bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+        gpuCullDescriptorSetLayout_.create(
+            context_.vkDevice(), std::span<const VkDescriptorSetLayoutBinding>(bindings.data(), bindings.size()));
+        rhi::debug::setObjectName(context_.vkDevice(),
+                                  gpuCullDescriptorSetLayout_.handle(),
+                                  VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
+                                  "GpuCullDescriptorSetLayout");
+
+        const VkDescriptorSetLayout cullDescriptorSetLayout = gpuCullDescriptorSetLayout_.handle();
+        const VkPushConstantRange pushConstantRange{
+            VK_SHADER_STAGE_COMPUTE_BIT, 0, static_cast<uint32_t>(sizeof(GpuCullPushConstants))};
+
+        rhi::VulkanComputePipelineCreateInfo pipelineInfo{};
+        pipelineInfo.shaderPath = shaderPath("cull.comp.spv");
+        pipelineInfo.descriptorSetLayouts = std::span<const VkDescriptorSetLayout>(&cullDescriptorSetLayout, 1);
+        pipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&pushConstantRange, 1);
+        gpuCullPipeline_.create(context_.vkDevice(), pipelineInfo);
+        rhi::debug::setObjectName(
+            context_.vkDevice(), gpuCullPipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "GpuCullComputePipeline");
+        rhi::debug::setObjectName(
+            context_.vkDevice(), gpuCullPipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "GpuCullPipelineLayout");
+
+        frameCullInputBuffers_.resize(frames_.size());
+        for (size_t frameIndex = 0; frameIndex < frameCullInputBuffers_.size(); ++frameIndex) {
+            rhi::VulkanBufferCreateInfo bufferInfo{};
+            bufferInfo.size = static_cast<VkDeviceSize>(kMaxDrawItems * sizeof(GpuCullDrawItem));
+            bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+            bufferInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
+            bufferInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+            frameCullInputBuffers_[frameIndex].createBuffer(context_, bufferInfo);
+            rhi::debug::setObjectName(context_.vkDevice(),
+                                      frameCullInputBuffers_[frameIndex].buffer(),
+                                      VK_OBJECT_TYPE_BUFFER,
+                                      "GpuCullInputBuffer" + std::to_string(frameIndex));
+        }
+
+        VkDescriptorPoolSize poolSize{};
+        poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        poolSize.descriptorCount = static_cast<uint32_t>(frames_.size() * bindings.size());
+
+        gpuCullDescriptorPool_.create(
+            context_.vkDevice(), std::span<const VkDescriptorPoolSize>(&poolSize, 1), static_cast<uint32_t>(frames_.size()));
+        rhi::debug::setObjectName(context_.vkDevice(),
+                                  gpuCullDescriptorPool_.handle(),
+                                  VK_OBJECT_TYPE_DESCRIPTOR_POOL,
+                                  "GpuCullDescriptorPool");
+
+        gpuCullDescriptorSets_.resize(frames_.size(), VK_NULL_HANDLE);
+        std::vector<VkDescriptorSetLayout> setLayouts(frames_.size(), gpuCullDescriptorSetLayout_.handle());
+        VkDescriptorSetAllocateInfo allocateInfo{};
+        allocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocateInfo.descriptorPool = gpuCullDescriptorPool_.handle();
+        allocateInfo.descriptorSetCount = static_cast<uint32_t>(gpuCullDescriptorSets_.size());
+        allocateInfo.pSetLayouts = setLayouts.data();
+        VK_CHECK(vkAllocateDescriptorSets(context_.vkDevice(), &allocateInfo, gpuCullDescriptorSets_.data()));
+
+        for (size_t frameIndex = 0; frameIndex < gpuCullDescriptorSets_.size(); ++frameIndex) {
+            VkDescriptorBufferInfo inputBufferInfo{};
+            inputBufferInfo.buffer = frameCullInputBuffers_[frameIndex].buffer();
+            inputBufferInfo.offset = 0;
+            inputBufferInfo.range = frameCullInputBuffers_[frameIndex].size();
+
+            VkDescriptorBufferInfo outputBufferInfo{};
+            outputBufferInfo.buffer = frameIndirectDrawBuffers_[frameIndex].buffer();
+            outputBufferInfo.offset = 0;
+            outputBufferInfo.range = frameIndirectDrawBuffers_[frameIndex].size();
+
+            std::array<VkWriteDescriptorSet, 2> writes{};
+            writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[0].dstSet = gpuCullDescriptorSets_[frameIndex];
+            writes[0].dstBinding = 0;
+            writes[0].descriptorCount = 1;
+            writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[0].pBufferInfo = &inputBufferInfo;
+
+            writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[1].dstSet = gpuCullDescriptorSets_[frameIndex];
+            writes[1].dstBinding = 1;
+            writes[1].descriptorCount = 1;
+            writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[1].pBufferInfo = &outputBufferInfo;
+
+            vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+            rhi::debug::setObjectName(context_.vkDevice(),
+                                      gpuCullDescriptorSets_[frameIndex],
+                                      VK_OBJECT_TYPE_DESCRIPTOR_SET,
+                                      "GpuCullDescriptorSet" + std::to_string(frameIndex));
+        }
+
+        gpuCullingAvailable_ = true;
+        Logger::info("GPU frustum culling enabled for main-pass indirect command generation.");
+    } catch (const std::exception& error) {
+        Logger::warn(std::string("GPU frustum culling unavailable; falling back to CPU culling: ") + error.what());
+        destroyGpuCullingResources();
+    }
+}
+
+void Renderer::destroyGpuCullingResources()
+{
+    gpuCullingAvailable_ = false;
+    gpuCullDescriptorSets_.clear();
+    gpuCullDescriptorPool_.reset();
+    frameCullInputBuffers_.clear();
+    gpuCullPipeline_.reset();
+    gpuCullDescriptorSetLayout_.reset();
 }
 
 void Renderer::createShadowMap()
@@ -1085,7 +1248,7 @@ void Renderer::createIndirectDrawBuffers()
         rhi::VulkanBuffer& indirectDrawBuffer = frameIndirectDrawBuffers_[frameIndex];
         rhi::VulkanBufferCreateInfo bufferInfo{};
         bufferInfo.size = static_cast<VkDeviceSize>(kMaxDrawItems * sizeof(VkDrawIndexedIndirectCommand));
-        bufferInfo.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
         bufferInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
         bufferInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
         indirectDrawBuffer.createBuffer(context_, bufferInfo);
@@ -1176,6 +1339,7 @@ void Renderer::buildVisibleDrawItems(const renderer::Frustum& frustum)
     visibleDrawItems_.clear();
     visibleDrawItems_.reserve(drawItems_.size());
     cullingStats_ = {};
+    cullingStats_.totalDrawItems = drawItems_.size();
 
     const size_t objectCount = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
     for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
@@ -1196,6 +1360,43 @@ void Renderer::buildVisibleDrawItems(const renderer::Frustum& frustum)
             return;
         }
     }
+}
+
+void Renderer::updateGpuCullInputBuffer(uint32_t frameIndex)
+{
+    if (drawItems_.empty()) {
+        return;
+    }
+    if (frameIndex >= frameCullInputBuffers_.size()) {
+        throw std::runtime_error("GPU cull input buffer frame index is out of range.");
+    }
+
+    std::vector<GpuCullDrawItem> cullDrawItems(drawItems_.size());
+    for (size_t drawIndex = 0; drawIndex < drawItems_.size(); ++drawIndex) {
+        const DrawItem& drawItem = drawItems_[drawIndex];
+        GpuCullDrawItem& gpuDrawItem = cullDrawItems[drawIndex];
+
+        renderer::Aabb worldBounds{};
+        if (drawItem.objectIndex < renderObjects_.size()) {
+            worldBounds = renderObjects_[drawItem.objectIndex].worldBounds();
+        }
+
+        if (worldBounds.valid()) {
+            gpuDrawItem.boundsMin = glm::vec4(worldBounds.min, 0.0f);
+            gpuDrawItem.boundsMax = glm::vec4(worldBounds.max, 0.0f);
+        } else {
+            gpuDrawItem.boundsMin = glm::vec4(-kUnboundedCullExtent, -kUnboundedCullExtent, -kUnboundedCullExtent, 0.0f);
+            gpuDrawItem.boundsMax = glm::vec4(kUnboundedCullExtent, kUnboundedCullExtent, kUnboundedCullExtent, 0.0f);
+        }
+
+        gpuDrawItem.indexCount = drawItem.indexCount;
+        gpuDrawItem.firstIndex = drawItem.firstIndex;
+        gpuDrawItem.vertexOffset = drawItem.vertexOffset;
+        gpuDrawItem.objectIndex = drawItem.objectIndex;
+    }
+
+    frameCullInputBuffers_.at(frameIndex)
+        .upload(std::as_bytes(std::span<const GpuCullDrawItem>(cullDrawItems.data(), cullDrawItems.size())));
 }
 
 void Renderer::updateIndirectDrawBuffer(uint32_t frameIndex)
@@ -1277,10 +1478,17 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
             << "  ShadowPass: " << results.shadowPassMs << " ms\n"
             << "  MainPass: " << results.mainPassMs << " ms\n"
             << "  Skybox: " << results.skyboxMs << " ms\n"
-            << "  RenderObjects: " << results.renderObjectsMs << " ms\n"
-            << "Culling: total=" << cullingStats_.totalObjects
-            << " visible=" << cullingStats_.visibleObjects
-            << " culled=" << cullingStats_.culledObjects;
+            << "  RenderObjects: " << results.renderObjectsMs << " ms\n";
+    if (cullingStats_.gpuCulling) {
+        message << "Culling: totalDrawItems=" << cullingStats_.totalDrawItems
+                << " totalObjects=" << cullingStats_.totalObjects << "\n"
+                << "GPU culling enabled; visible count not read back yet.";
+    } else {
+        message << "Culling: total=" << cullingStats_.totalObjects
+                << " visible=" << cullingStats_.visibleObjects
+                << " culled=" << cullingStats_.culledObjects
+                << " drawItems=" << cullingStats_.totalDrawItems;
+    }
     Logger::info(message.str());
 }
 
@@ -1333,8 +1541,22 @@ void Renderer::updateFrameData(uint32_t frameIndex)
 
     buildDrawItems();
     const renderer::Frustum cameraFrustum = renderer::Frustum::fromViewProjection(viewProjection);
-    buildVisibleDrawItems(cameraFrustum);
-    updateIndirectDrawBuffer(frameIndex);
+    for (size_t planeIndex = 0; planeIndex < frameFrustumPlanes_.size(); ++planeIndex) {
+        const renderer::FrustumPlane& plane = cameraFrustum.planes[planeIndex];
+        frameFrustumPlanes_[planeIndex] = glm::vec4(plane.normal, plane.distance);
+    }
+
+    if (isGpuCullingActive()) {
+        visibleDrawItems_ = drawItems_;
+        cullingStats_ = {};
+        cullingStats_.gpuCulling = true;
+        cullingStats_.totalObjects = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
+        cullingStats_.totalDrawItems = drawItems_.size();
+        updateGpuCullInputBuffer(frameIndex);
+    } else {
+        buildVisibleDrawItems(cameraFrustum);
+        updateIndirectDrawBuffer(frameIndex);
+    }
 
     const size_t objectFrameCount = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
     std::vector<ObjectFrameData> objectFrameData(objectFrameCount);
@@ -1393,11 +1615,77 @@ void Renderer::recreateSwapchain()
     imagesInFlight_.assign(swapchain_.imageCount(), VK_NULL_HANDLE);
 }
 
+bool Renderer::isGpuCullingActive() const
+{
+    return useGpuCulling_ && gpuCullingAvailable_ && gpuCullPipeline_.pipeline() != VK_NULL_HANDLE &&
+           gpuCullPipeline_.layout() != VK_NULL_HANDLE && !gpuCullDescriptorSets_.empty() &&
+           frameCullInputBuffers_.size() == frames_.size();
+}
+
+void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
+{
+    if (!isGpuCullingActive() || drawItems_.empty()) {
+        return;
+    }
+    if (currentFrame_ >= gpuCullDescriptorSets_.size()) {
+        return;
+    }
+
+    rhi::debug::beginLabel(commandBuffer, "GpuCulling");
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, gpuCullPipeline_.pipeline());
+
+    const VkDescriptorSet descriptorSet = gpuCullDescriptorSets_[currentFrame_];
+    vkCmdBindDescriptorSets(commandBuffer,
+                            VK_PIPELINE_BIND_POINT_COMPUTE,
+                            gpuCullPipeline_.layout(),
+                            0,
+                            1,
+                            &descriptorSet,
+                            0,
+                            nullptr);
+
+    GpuCullPushConstants pushConstants{};
+    pushConstants.frustumPlanes = frameFrustumPlanes_;
+    pushConstants.params = glm::uvec4(static_cast<uint32_t>(drawItems_.size()), 0, 0, 0);
+    vkCmdPushConstants(commandBuffer,
+                       gpuCullPipeline_.layout(),
+                       VK_SHADER_STAGE_COMPUTE_BIT,
+                       0,
+                       static_cast<uint32_t>(sizeof(GpuCullPushConstants)),
+                       &pushConstants);
+
+    rhi::debug::beginLabel(commandBuffer, "ComputeCullDispatch");
+    const uint32_t groupCount =
+        (static_cast<uint32_t>(drawItems_.size()) + kGpuCullLocalSize - 1) / kGpuCullLocalSize;
+    vkCmdDispatch(commandBuffer, groupCount, 1, 1);
+    rhi::debug::endLabel(commandBuffer);
+
+    VkBufferMemoryBarrier2 barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.buffer = frameIndirectDrawBuffers_.at(currentFrame_).buffer();
+    barrier.offset = 0;
+    barrier.size = static_cast<VkDeviceSize>(drawItems_.size() * sizeof(VkDrawIndexedIndirectCommand));
+
+    VkDependencyInfo dependencyInfo{};
+    dependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dependencyInfo.bufferMemoryBarrierCount = 1;
+    dependencyInfo.pBufferMemoryBarriers = &barrier;
+    vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
+
+    rhi::debug::endLabel(commandBuffer);
+}
+
 void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex)
 {
     const VkDeviceAddress objectFrameDataBaseAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
     const size_t shadowDrawItemCount = drawItems_.size();
-    const size_t visibleDrawItemCount = visibleDrawItems_.size();
+    const size_t mainDrawItemCount = visibleDrawItems_.size();
 
     renderGraph_.beginFrame(commandBuffer, swapchain_, shadowMap_, imageIndex);
     rhi::debug::beginLabel(commandBuffer, "Frame");
@@ -1460,6 +1748,8 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     timestampQuery_.writeEnd(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::ShadowPass);
     rhi::debug::endLabel(commandBuffer);
 
+    recordGpuCullingCommands(commandBuffer);
+
     rhi::debug::beginLabel(commandBuffer, "MainPass");
     timestampQuery_.writeBegin(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::MainPass);
     renderGraph_.beginMainPass();
@@ -1512,16 +1802,18 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     timestampQuery_.writeEnd(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::Skybox);
     rhi::debug::endLabel(commandBuffer);
 
-    rhi::debug::beginLabel(commandBuffer,
-                           "MainPass IndirectDrawItems " + std::to_string(visibleDrawItemCount) + " visible objects " +
-                               std::to_string(cullingStats_.visibleObjects) + "/" +
-                               std::to_string(cullingStats_.totalObjects));
+    const std::string objectDrawLabel =
+        cullingStats_.gpuCulling
+            ? "MainPass IndirectDrawItems " + std::to_string(mainDrawItemCount) + " GPU culling"
+            : "MainPass IndirectDrawItems " + std::to_string(mainDrawItemCount) + " visible objects " +
+                  std::to_string(cullingStats_.visibleObjects) + "/" + std::to_string(cullingStats_.totalObjects);
+    rhi::debug::beginLabel(commandBuffer, objectDrawLabel);
     timestampQuery_.writeBegin(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::RenderObjects);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.pipeline());
 
     const renderer::Mesh* boundMesh = nullptr;
     const VkBuffer indirectDrawBuffer = frameIndirectDrawBuffers_.at(currentFrame_).buffer();
-    for (size_t drawIndex = 0; drawIndex < visibleDrawItemCount; ++drawIndex) {
+    for (size_t drawIndex = 0; drawIndex < mainDrawItemCount; ++drawIndex) {
         const DrawItem& drawItem = visibleDrawItems_[drawIndex];
         if (!drawItem.mesh || !drawItem.material ||
             drawItem.material->descriptorSet == VK_NULL_HANDLE) {

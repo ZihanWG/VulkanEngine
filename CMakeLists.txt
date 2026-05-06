@@ -121,6 +121,7 @@ add_executable(VulkanEngine
     src/rhi/VulkanBuffer.cpp
     src/rhi/VulkanBrdfLut.cpp
     src/rhi/VulkanCommandContext.cpp
+    src/rhi/VulkanComputePipeline.cpp
     src/rhi/VulkanContext.cpp
     src/rhi/VulkanDebugUtils.cpp
     src/rhi/VulkanDescriptor.cpp
@@ -179,6 +180,7 @@ set(SHADER_SOURCES
     "${SHADER_SOURCE_DIR}/skybox.vert"
     "${SHADER_SOURCE_DIR}/skybox.frag"
     "${SHADER_SOURCE_DIR}/shadow.vert"
+    "${SHADER_SOURCE_DIR}/cull.comp"
 )
 
 target_compile_definitions(VulkanEngine PRIVATE

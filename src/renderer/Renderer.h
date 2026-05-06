@@ -9,6 +9,7 @@
 #include "rhi/VulkanBuffer.h"
 #include "rhi/VulkanBrdfLut.h"
 #include "rhi/VulkanCommandContext.h"
+#include "rhi/VulkanComputePipeline.h"
 #include "rhi/VulkanContext.h"
 #include "rhi/VulkanDescriptor.h"
 #include "rhi/VulkanEnvironmentMap.h"
@@ -19,9 +20,11 @@
 #include "rhi/VulkanTimestampQuery.h"
 #include "rhi/VulkanTexture.h"
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <glm/vec4.hpp>
 #include <string_view>
 #include <vector>
 
@@ -67,10 +70,14 @@ private:
         size_t totalObjects = 0;
         size_t visibleObjects = 0;
         size_t culledObjects = 0;
+        size_t totalDrawItems = 0;
+        bool gpuCulling = false;
     };
 
     void createMaterialDescriptorSetLayout();
     void createSkyboxDescriptorSetLayout();
+    void createGpuCullingResources();
+    void destroyGpuCullingResources();
     void createShadowMap();
     void createPipeline();
     void createScene();
@@ -90,6 +97,7 @@ private:
     void createSkyboxDescriptorSet();
     void createObjectFrameDataBuffers();
     void createIndirectDrawBuffers();
+    void updateGpuCullInputBuffer(uint32_t frameIndex);
     void updateFrameData(uint32_t frameIndex);
     void buildDrawItems();
     void buildVisibleDrawItems(const renderer::Frustum& frustum);
@@ -100,6 +108,8 @@ private:
         const renderer::MeshPrimitive* primitive) const;
     void recreateSwapchain();
     void recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex);
+    void recordGpuCullingCommands(VkCommandBuffer commandBuffer);
+    [[nodiscard]] bool isGpuCullingActive() const;
     void nameTextureResources(const rhi::VulkanTexture& texture, std::string_view name) const;
     void nameEnvironmentMapResources(const rhi::VulkanEnvironmentMap& environmentMap, std::string_view name) const;
     void nameBrdfLutResources(const rhi::VulkanBrdfLut& brdfLut, std::string_view name) const;
@@ -113,10 +123,12 @@ private:
     renderer::RenderGraph renderGraph_;
     rhi::VulkanDescriptorSetLayout materialDescriptorSetLayout_;
     rhi::VulkanDescriptorSetLayout skyboxDescriptorSetLayout_;
+    rhi::VulkanDescriptorSetLayout gpuCullDescriptorSetLayout_;
     rhi::VulkanShadowMap shadowMap_;
     rhi::VulkanPipeline pipeline_;
     rhi::VulkanPipeline skyboxPipeline_;
     rhi::VulkanPipeline shadowPipeline_;
+    rhi::VulkanComputePipeline gpuCullPipeline_;
     rhi::VulkanCommandContext commandContext_;
     rhi::VulkanSync sync_;
     rhi::VulkanTexture checkerboardTexture_;
@@ -131,7 +143,9 @@ private:
     std::vector<rhi::VulkanTexture> importedTextures_;
     rhi::VulkanDescriptorPool materialDescriptorPool_;
     rhi::VulkanDescriptorPool skyboxDescriptorPool_;
+    rhi::VulkanDescriptorPool gpuCullDescriptorPool_;
     VkDescriptorSet skyboxDescriptorSet_ = VK_NULL_HANDLE;
+    std::vector<VkDescriptorSet> gpuCullDescriptorSets_;
     renderer::Camera camera_;
     renderer::Mesh cubeMesh_;
     std::vector<renderer::Mesh> importedMeshes_;
@@ -142,6 +156,7 @@ private:
     std::vector<DrawItem> drawItems_;
     std::vector<DrawItem> visibleDrawItems_;
     std::vector<rhi::VulkanBuffer> frameObjectDataBuffers_;
+    std::vector<rhi::VulkanBuffer> frameCullInputBuffers_;
     std::vector<rhi::VulkanBuffer> frameIndirectDrawBuffers_;
     std::vector<VkFence> imagesInFlight_;
     ShadowSettings shadowSettings_{};
@@ -153,8 +168,11 @@ private:
     uint32_t currentFrame_ = 0;
     std::chrono::steady_clock::time_point startTime_ = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point lastGpuTimingPrint_ = std::chrono::steady_clock::now();
+    std::array<glm::vec4, 6> frameFrustumPlanes_{};
     CullingStats cullingStats_{};
     bool initialized_ = false;
+    bool useGpuCulling_ = true;
+    bool gpuCullingAvailable_ = false;
     bool normalMapAssetLoaded_ = false;
     bool metallicRoughnessMapAssetLoaded_ = false;
 };
