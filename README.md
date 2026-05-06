@@ -523,9 +523,9 @@ The renderer uses tinygltf to load the first glTF mesh and merges supported tria
 
 Indices are converted to `uint32_t`; unsigned byte, unsigned short, and unsigned int index accessors are supported. If a primitive has no index accessor, the loader generates sequential indices. Non-triangle primitives are skipped with a warning.
 
-Loaded vertices and indices are uploaded through the existing staging-buffer path into GPU-local vertex and index buffers. Imported geometry uses the existing engine `Material` objects and descriptor set layout. The renderer tries `assets/models/test_mesh.gltf` and then `assets/models/test_mesh.glb`; if loading fails or assets are missing, the built-in cube scene remains the fallback and useful test geometry.
+Loaded vertices and indices are uploaded through the existing staging-buffer path into GPU-local vertex and index buffers. At Milestone 24, imported geometry used existing engine `Material` objects and the existing descriptor set layout. The renderer tries `assets/models/test_mesh.gltf` and then `assets/models/test_mesh.glb`; if loading fails or assets are missing, the built-in cube scene remains the fallback and useful test geometry.
 
-This milestone does not load glTF materials, textures, animations, skins, or node hierarchy. glTF positions are currently preserved as authored; no handedness, up-axis, or scene-node transform conversion is applied yet. Proper tangent generation for meshes without tangents is also future work.
+At Milestone 24, glTF material and texture loading were still future work; Milestone 25 adds the first material and texture loading path. glTF positions are currently preserved as authored; no handedness, up-axis, or scene-node transform conversion is applied yet. Proper tangent generation for meshes without tangents is also future work.
 
 ## Milestone 25: glTF Material and Texture Loading
 
@@ -556,9 +556,10 @@ Future milestones can build on this multi-object material foundation with:
 - HDR environment loading
 - importance-sampled prefiltering
 - glTF scene node hierarchy
+- transform hierarchy
 - alpha modes
 - occlusion and emissive textures
-- tangent generation
+- proper tangent generation for meshes without tangents
 - skeletal animation
 - bindless material descriptors
 - automatic render graph dependency inference
