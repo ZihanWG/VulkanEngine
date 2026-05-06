@@ -8,6 +8,9 @@
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
+#include <span>
+#include <string>
+#include <vector>
 
 namespace ve::renderer {
 
@@ -18,6 +21,31 @@ struct Vertex {
     glm::vec3 normal;
     glm::vec4 tangent;
 };
+
+struct MeshPrimitive {
+    uint32_t firstIndex = 0;
+    uint32_t indexCount = 0;
+    uint32_t materialIndex = 0;
+};
+
+struct GltfTextureInfo {
+    std::string debugName;
+    std::filesystem::path path;
+    std::vector<uint8_t> encodedData;
+    bool embedded = false;
+};
+
+struct GltfMaterialInfo {
+    std::string debugName;
+    glm::vec4 baseColorFactor = glm::vec4(1.0f);
+    float metallic = 1.0f;
+    float roughness = 1.0f;
+    int baseColorTextureIndex = -1;
+    int normalTextureIndex = -1;
+    int metallicRoughnessTextureIndex = -1;
+};
+
+struct LoadedGltfAsset;
 
 [[nodiscard]] VkVertexInputBindingDescription vertexBindingDescription();
 [[nodiscard]] std::array<VkVertexInputAttributeDescription, 5> vertexAttributeDescriptions();
@@ -36,7 +64,7 @@ public:
         rhi::VulkanContext& context,
         const rhi::VulkanCommandContext& commandContext);
 
-    [[nodiscard]] static Mesh createFromGltf(
+    [[nodiscard]] static LoadedGltfAsset createFromGltf(
         rhi::VulkanContext& context,
         const rhi::VulkanCommandContext& commandContext,
         const std::filesystem::path& path);
@@ -44,12 +72,21 @@ public:
     [[nodiscard]] VkBuffer vertexBuffer() const { return vertexBuffer_.buffer(); }
     [[nodiscard]] VkBuffer indexBuffer() const { return indexBuffer_.buffer(); }
     [[nodiscard]] uint32_t indexCount() const { return indexCount_; }
+    [[nodiscard]] std::span<const MeshPrimitive> primitives() const { return subMeshes_; }
+    [[nodiscard]] bool hasSubMeshes() const { return !subMeshes_.empty(); }
 
 private:
     // Mesh owns the GPU-local buffers for one drawable piece of geometry.
     rhi::VulkanBuffer vertexBuffer_;
     rhi::VulkanBuffer indexBuffer_;
     uint32_t indexCount_ = 0;
+    std::vector<MeshPrimitive> subMeshes_;
+};
+
+struct LoadedGltfAsset {
+    Mesh mesh;
+    std::vector<GltfMaterialInfo> materials;
+    std::vector<GltfTextureInfo> textures;
 };
 
 } // namespace ve::renderer

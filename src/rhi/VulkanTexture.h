@@ -32,6 +32,11 @@ public:
         const VulkanCommandContext& commandContext,
         const std::filesystem::path& path,
         bool generateMipmaps = true);
+    void createFromEncodedBytes(
+        VulkanContext& context,
+        const VulkanCommandContext& commandContext,
+        std::span<const uint8_t> encodedBytes,
+        bool generateMipmaps = true);
     void createFromRgba8(
         VulkanContext& context,
         const VulkanCommandContext& commandContext,

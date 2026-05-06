@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <span>
 #include <stdexcept>
@@ -184,6 +185,48 @@ void VulkanTexture::createFromFile(VulkanContext& context,
     }
     if (loadedWidth <= 0 || loadedHeight <= 0) {
         throw std::runtime_error("Texture file has invalid dimensions: " + filename);
+    }
+
+    const uint32_t width = static_cast<uint32_t>(loadedWidth);
+    const uint32_t height = static_cast<uint32_t>(loadedHeight);
+    const size_t byteCount = static_cast<size_t>(width) * height * kRgbaChannels;
+    createFromRgba8(context,
+                    commandContext,
+                    width,
+                    height,
+                    std::span<const uint8_t>(loadedPixels.get(), byteCount),
+                    VK_FORMAT_R8G8B8A8_UNORM,
+                    generateMipmaps);
+}
+
+void VulkanTexture::createFromEncodedBytes(VulkanContext& context,
+                                           const VulkanCommandContext& commandContext,
+                                           std::span<const uint8_t> encodedBytes,
+                                           bool generateMipmaps)
+{
+    if (encodedBytes.empty()) {
+        throw std::runtime_error("Encoded texture data is empty.");
+    }
+    if (encodedBytes.size() > static_cast<size_t>((std::numeric_limits<int>::max)())) {
+        throw std::runtime_error("Encoded texture data is too large for stb_image.");
+    }
+
+    int loadedWidth = 0;
+    int loadedHeight = 0;
+    StbiPixels loadedPixels(stbi_load_from_memory(encodedBytes.data(),
+                                                  static_cast<int>(encodedBytes.size()),
+                                                  &loadedWidth,
+                                                  &loadedHeight,
+                                                  nullptr,
+                                                  STBI_rgb_alpha));
+
+    if (!loadedPixels) {
+        const char* failureReason = stbi_failure_reason();
+        throw std::runtime_error(std::string("Failed to decode embedded texture: ") +
+                                 (failureReason ? failureReason : "unknown stb_image error"));
+    }
+    if (loadedWidth <= 0 || loadedHeight <= 0) {
+        throw std::runtime_error("Embedded texture has invalid dimensions.");
     }
 
     const uint32_t width = static_cast<uint32_t>(loadedWidth);

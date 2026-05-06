@@ -52,6 +52,12 @@ private:
         float rasterDepthBiasSlopeFactor = 1.75f;
     };
 
+    struct FrameDrawItem {
+        const renderer::RenderObject* object = nullptr;
+        const renderer::MeshPrimitive* primitive = nullptr;
+        const renderer::Material* material = nullptr;
+    };
+
     void createMaterialDescriptorSetLayout();
     void createSkyboxDescriptorSetLayout();
     void createShadowMap();
@@ -59,16 +65,24 @@ private:
     void createScene();
     void createCheckerboardTexture();
     void createNormalTexture();
+    void createFlatNormalTexture();
     void createMetallicRoughnessTexture();
+    void createNeutralMetallicRoughnessTexture();
     void createEnvironmentMap();
     void createDiffuseIrradianceMap();
     void createPrefilteredEnvironmentMap();
     void createBrdfLutTexture();
     void createMaterial();
     void createMaterialDescriptorSet(renderer::Material& material);
+    void createImportedGltfTextures(const std::vector<renderer::GltfTextureInfo>& textureInfos);
+    void createImportedGltfMaterials(const std::vector<renderer::GltfMaterialInfo>& materialInfos);
     void createSkyboxDescriptorSet();
     void createObjectFrameDataBuffers();
     void updateFrameData(uint32_t frameIndex);
+    void buildFrameDrawItems();
+    [[nodiscard]] const renderer::Material* resolveMaterial(
+        const renderer::RenderObject& object,
+        const renderer::MeshPrimitive* primitive) const;
     void recreateSwapchain();
     void recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     void nameTextureResources(const rhi::VulkanTexture& texture, std::string_view name) const;
@@ -92,11 +106,14 @@ private:
     rhi::VulkanSync sync_;
     rhi::VulkanTexture checkerboardTexture_;
     rhi::VulkanTexture normalMapTexture_;
+    rhi::VulkanTexture flatNormalTexture_;
     rhi::VulkanTexture metallicRoughnessTexture_;
+    rhi::VulkanTexture neutralMetallicRoughnessTexture_;
     rhi::VulkanEnvironmentMap environmentMap_;
     rhi::VulkanEnvironmentMap diffuseIrradianceMap_;
     rhi::VulkanEnvironmentMap prefilteredEnvironmentMap_;
     rhi::VulkanBrdfLut brdfLutTexture_;
+    std::vector<rhi::VulkanTexture> importedTextures_;
     rhi::VulkanDescriptorPool materialDescriptorPool_;
     rhi::VulkanDescriptorPool skyboxDescriptorPool_;
     VkDescriptorSet skyboxDescriptorSet_ = VK_NULL_HANDLE;
@@ -105,7 +122,9 @@ private:
     renderer::Mesh importedMesh_;
     renderer::Material checkerboardMaterial_;
     std::vector<renderer::Material> materialVariants_;
+    std::vector<renderer::Material> importedMaterials_;
     std::vector<renderer::RenderObject> renderObjects_;
+    std::vector<FrameDrawItem> frameDrawItems_;
     std::vector<rhi::VulkanBuffer> frameObjectDataBuffers_;
     std::vector<VkFence> imagesInFlight_;
     ShadowSettings shadowSettings_{};

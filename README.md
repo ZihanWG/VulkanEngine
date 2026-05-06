@@ -2,7 +2,7 @@
 
 Modern C++20 Vulkan 1.3 renderer skeleton inspired by the educational flow of [Sascha Willems' HowToVulkan](https://github.com/SaschaWillems/HowToVulkan), but split into engine-style modules instead of a single tutorial file.
 
-The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube or imported glTF geometry with normals and tangents into GPU-local vertex and index buffers, loads small RGBA base color, normal, and metallic-roughness textures from disk with procedural fallbacks, creates and renders a simple procedural environment cubemap as a skybox background, creates low-frequency diffuse irradiance and mipmapped prefiltered specular cubemaps from the same procedural environment colors, generates a 2D split-sum BRDF LUT, and first tries to draw a static glTF test mesh with tangent-space normal mapping, direct-light Cook-Torrance GGX material response, diffuse and specular image-based lighting, compact Kulla-Conty-style multi-scattering compensation, directional lighting, and a PCF-filtered directional shadow map every frame using Dynamic Rendering and Synchronization2. If no supported glTF asset loads, the renderer falls back to the previous multi-cube demo scene. A minimal render graph now documents the shadow and main pass order, records manual resource usage, and centralizes the frame's image transitions.
+The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube or imported glTF geometry with normals, tangents, and submesh material ranges into GPU-local vertex and index buffers, loads small RGBA base color, normal, and metallic-roughness textures from disk with procedural fallbacks, loads basic glTF PBR material factors and base color/normal/metallic-roughness textures when available, creates and renders a simple procedural environment cubemap as a skybox background, creates low-frequency diffuse irradiance and mipmapped prefiltered specular cubemaps from the same procedural environment colors, generates a 2D split-sum BRDF LUT, and first tries to draw a static glTF test mesh with tangent-space normal mapping, direct-light Cook-Torrance GGX material response, diffuse and specular image-based lighting, compact Kulla-Conty-style multi-scattering compensation, directional lighting, and a PCF-filtered directional shadow map every frame using Dynamic Rendering and Synchronization2. If no supported glTF asset loads, the renderer falls back to the previous multi-cube demo scene. A minimal render graph now documents the shadow and main pass order, records manual resource usage, and centralizes the frame's image transitions.
 
 ## Dependencies
 
@@ -22,7 +22,7 @@ The CMake project first looks for installed packages. If they are missing, `VULK
 
 Milestone 2 and later require `glslc`. CMake compiles shaders into the build-directory shader folder, for example `build/shaders`, and embeds that absolute shader directory into the executable, so running from Visual Studio, CLion, or PowerShell does not depend on the current working directory.
 
-Milestone 9 embeds the source `assets` directory path into the executable. The demo tries to load `assets/textures/checker.png`, while later material milestones also load `assets/textures/checker_normal.png` and `assets/textures/checker_mr.png`; if any of those files are missing or cannot be decoded, the renderer falls back to procedural textures. Milestone 24 also tries `assets/models/test_mesh.gltf` and then `assets/models/test_mesh.glb`; if neither static mesh loads, the built-in cube scene remains the fallback.
+Milestone 9 embeds the source `assets` directory path into the executable. The demo tries to load `assets/textures/checker.png`, while later material milestones also load `assets/textures/checker_normal.png` and `assets/textures/checker_mr.png`; if any of those files are missing or cannot be decoded, the renderer falls back to procedural textures. Milestone 25 also tries `assets/models/test_mesh.gltf` and then `assets/models/test_mesh.glb`; if neither static mesh loads, the built-in cube scene remains the fallback. External glTF image URIs are resolved relative to the `.gltf` file.
 
 ## Build
 
@@ -65,7 +65,7 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - `VulkanEnvironmentMap` owns a cube-compatible sampled image, cube image view, and clamp sampler. The renderer uses one generated cubemap for the visible skybox, a second low-frequency generated cubemap for diffuse irradiance, and a mipmapped generated cubemap for prefiltered specular IBL.
 - `VulkanBrdfLut` owns the generated 2D `VK_FORMAT_R8G8_UNORM` split-sum BRDF lookup texture used by specular IBL.
 - `VulkanShadowMap` owns the fixed-size sampled depth image, image view, sampler, and current layout used by the directional shadow pass.
-- `Mesh`, `Material`, `RenderObject`, `Transform`, and `Camera` provide the first renderer-side scene abstractions. `Mesh::createFromGltf()` can load static glTF triangle geometry into the existing vertex format without introducing ECS, glTF material loading, or bindless rendering.
+- `Mesh`, `Material`, `RenderObject`, `Transform`, and `Camera` provide the first renderer-side scene abstractions. `Mesh::createFromGltf()` can load static glTF triangle geometry, submesh material ranges, basic glTF material factors, and glTF texture references without introducing ECS, animation, skinning, full node hierarchy, or bindless rendering.
 
 ## Current Descriptor Contract
 
@@ -83,7 +83,7 @@ Skybox descriptor set:
 
 - binding 0 = visible environment cubemap combined image sampler
 
-The material descriptor set above is still separate from the skybox descriptor set. The material shader samples the diffuse irradiance cubemap at binding 4 for environment diffuse lighting, the prefiltered specular cubemap at binding 5, and the BRDF LUT at binding 6; the skybox continues to sample the visible environment cubemap from its own set. Static glTF geometry uses this same material descriptor contract; there is still no bindless descriptor path.
+The material descriptor set above is still separate from the skybox descriptor set. The material shader samples the diffuse irradiance cubemap at binding 4 for environment diffuse lighting, the prefiltered specular cubemap at binding 5, and the BRDF LUT at binding 6; the skybox continues to sample the visible environment cubemap from its own set. Static glTF geometry and glTF-loaded materials use this same material descriptor contract; global shadow and IBL resources are shared across material descriptor sets, and there is still no bindless descriptor path.
 
 Object and material scalar data still use Buffer Device Address plus a vertex-stage push constant. MVP, model, light, camera, base-color factor, metallic factor, roughness factor, and multi-scatter strength data have not moved into descriptor UBOs.
 
@@ -511,7 +511,7 @@ workflow, an in-engine profiler UI, and ImGui integration.
 
 ## Milestone 24: Static glTF Mesh Loading
 
-Milestone 24 loads static glTF geometry only. glTF material and texture loading are future work.
+Milestone 24 added static glTF geometry only. Milestone 25 extends this with basic glTF material and texture loading.
 
 The renderer uses tinygltf to load the first glTF mesh and merges supported triangle primitives into one `Mesh`. Geometry is converted into the existing `Vertex` format:
 
@@ -527,6 +527,26 @@ Loaded vertices and indices are uploaded through the existing staging-buffer pat
 
 This milestone does not load glTF materials, textures, animations, skins, or node hierarchy. glTF positions are currently preserved as authored; no handedness, up-axis, or scene-node transform conversion is applied yet. Proper tangent generation for meshes without tangents is also future work.
 
+## Milestone 25: glTF Material and Texture Loading
+
+Milestone 25 reads glTF primitive material indices and stores them as `MeshPrimitive` ranges with `firstIndex`, `indexCount`, and `materialIndex`. Imported geometry can remain in one uploaded `Mesh`, while the renderer draws each submesh range with the assigned engine `Material`.
+
+glTF `baseColorFactor`, `metallicFactor`, and `roughnessFactor` are mapped into engine material scalar data. glTF base color, normal, and metallic-roughness texture references are read from the material's PBR fields, and external image URIs are resolved relative to the source `.gltf` file before loading through `VulkanTexture::createFromFile()`. Embedded/data-URI image bytes are also accepted when tinygltf exposes them as encoded PNG/JPEG data.
+
+Missing or failed material textures use descriptor-complete fallbacks: base color uses the existing checker/base texture, normal uses a flat procedural normal texture, and metallic-roughness uses a neutral procedural MR texture. The material descriptor set layout remains unchanged:
+
+- binding 0 = material base color texture
+- binding 1 = global shadow map
+- binding 2 = material normal map
+- binding 3 = material metallic-roughness map
+- binding 4 = global diffuse irradiance cubemap
+- binding 5 = global prefiltered specular cubemap
+- binding 6 = global BRDF LUT
+
+Each imported glTF material gets its own descriptor set, while global shadow and IBL resources are shared. Object/material scalar data continues to use Buffer Device Address plus the existing vertex-stage push constant.
+
+This milestone does not add animation, skinning, alpha blending, emissive textures, occlusion textures, bindless descriptors, descriptor indexing arrays, full scene node hierarchy, render graph scheduling changes, or HDR environment loading.
+
 ## Next Milestones
 
 Future milestones can build on this multi-object material foundation with:
@@ -535,10 +555,9 @@ Future milestones can build on this multi-object material foundation with:
 - energy validation
 - HDR environment loading
 - importance-sampled prefiltering
-- bindless descriptors
-- glTF materials
-- glTF texture loading
-- scene node hierarchy
+- glTF scene node hierarchy
+- alpha modes
+- occlusion and emissive textures
 - tangent generation
 - skeletal animation
 - bindless material descriptors

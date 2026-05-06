@@ -62,8 +62,8 @@ static_assert(offsetof(ObjectFrameData, materialParams) == 272);
 static_assert(offsetof(ObjectFrameData, cameraPosition) == 288);
 static_assert(sizeof(ObjectFrameData) == 304);
 
-constexpr uint32_t kMaxFrameObjects = 64;
-constexpr uint32_t kMaxMaterialDescriptorSets = 8;
+constexpr uint32_t kMaxFrameDrawItems = 1024;
+constexpr uint32_t kMaxMaterialDescriptorSets = 256;
 
 const glm::vec4 kDirectionalLightDirection{0.35f, -0.65f, -0.55f, 0.0f};
 const glm::vec4 kDirectionalLightColor{0.85f, 0.85f, 0.85f, 1.0f};
@@ -416,6 +416,9 @@ void Renderer::createPipeline()
 void Renderer::createScene()
 {
     renderObjects_.clear();
+    frameDrawItems_.clear();
+    importedMaterials_.clear();
+    importedTextures_.clear();
 
     cubeMesh_ = renderer::Mesh::createCube(context_, commandContext_);
     createCheckerboardTexture();
@@ -471,18 +474,28 @@ void Renderer::createScene()
         }
 
         try {
-            importedMesh_ = renderer::Mesh::createFromGltf(context_, commandContext_, modelPath);
+            renderer::LoadedGltfAsset loadedAsset =
+                renderer::Mesh::createFromGltf(context_, commandContext_, modelPath);
+            createImportedGltfTextures(loadedAsset.textures);
+            createImportedGltfMaterials(loadedAsset.materials);
+            importedMesh_ = std::move(loadedAsset.mesh);
 
             renderer::RenderObject importedObject{};
             importedObject.mesh = &importedMesh_;
-            importedObject.material = &materialVariants_.at(0);
+            importedObject.material =
+                importedMaterials_.empty() ? &materialVariants_.at(0) : &importedMaterials_.front();
+            if (!importedMaterials_.empty()) {
+                importedObject.materialTable = importedMaterials_.data();
+                importedObject.materialCount = importedMaterials_.size();
+            }
             importedObject.debugName = "Imported glTF Mesh";
             importedObject.transform.position = {0.0f, -0.15f, 0.0f};
             importedObject.transform.scale = {1.2f, 1.2f, 1.2f};
             renderObjects_.reserve(1);
             renderObjects_.push_back(std::move(importedObject));
 
-            Logger::info("Loaded glTF mesh: " + modelPath.string());
+            Logger::info("Loaded glTF mesh: " + modelPath.string() + " with " +
+                         std::to_string(importedMaterials_.size()) + " material(s).");
             return;
         } catch (const std::exception& error) {
             Logger::warn("Failed to load glTF mesh '" + modelPath.string() + "': " + error.what());
@@ -516,6 +529,7 @@ void Renderer::createCheckerboardTexture()
 void Renderer::createNormalTexture()
 {
     normalMapAssetLoaded_ = false;
+    bool loadedAsset = false;
 
     const std::filesystem::path texturePath = assetPath("textures/checker_normal.png");
     if (std::filesystem::exists(texturePath)) {
@@ -524,7 +538,7 @@ void Renderer::createNormalTexture()
             normalMapAssetLoaded_ = true;
             nameTextureResources(normalMapTexture_, "NormalTexture");
             Logger::info("Loaded normal texture: " + texturePath.string());
-            return;
+            loadedAsset = true;
         } catch (const std::exception& error) {
             Logger::warn("Failed to load normal texture '" + texturePath.string() + "': " + error.what());
         }
@@ -532,6 +546,32 @@ void Renderer::createNormalTexture()
         Logger::warn("Normal texture asset missing, using procedural flat normal fallback: " + texturePath.string());
     }
 
+    if (!loadedAsset) {
+        constexpr uint32_t width = 4;
+        constexpr uint32_t height = 4;
+        std::array<uint8_t, width * height * 4> pixels{};
+        for (size_t offset = 0; offset < pixels.size(); offset += 4) {
+            pixels[offset + 0] = 128;
+            pixels[offset + 1] = 128;
+            pixels[offset + 2] = 255;
+            pixels[offset + 3] = 255;
+        }
+
+        normalMapTexture_.createFromRgba8(context_,
+                                          commandContext_,
+                                          width,
+                                          height,
+                                          std::span<const uint8_t>(pixels.data(), pixels.size()),
+                                          VK_FORMAT_R8G8B8A8_UNORM,
+                                          false);
+        nameTextureResources(normalMapTexture_, "NormalTexture");
+    }
+
+    createFlatNormalTexture();
+}
+
+void Renderer::createFlatNormalTexture()
+{
     constexpr uint32_t width = 4;
     constexpr uint32_t height = 4;
     std::array<uint8_t, width * height * 4> pixels{};
@@ -542,19 +582,20 @@ void Renderer::createNormalTexture()
         pixels[offset + 3] = 255;
     }
 
-    normalMapTexture_.createFromRgba8(context_,
-                                      commandContext_,
-                                      width,
-                                      height,
-                                      std::span<const uint8_t>(pixels.data(), pixels.size()),
-                                      VK_FORMAT_R8G8B8A8_UNORM,
-                                      false);
-    nameTextureResources(normalMapTexture_, "NormalTexture");
+    flatNormalTexture_.createFromRgba8(context_,
+                                       commandContext_,
+                                       width,
+                                       height,
+                                       std::span<const uint8_t>(pixels.data(), pixels.size()),
+                                       VK_FORMAT_R8G8B8A8_UNORM,
+                                       false);
+    nameTextureResources(flatNormalTexture_, "FlatNormalTexture");
 }
 
 void Renderer::createMetallicRoughnessTexture()
 {
     metallicRoughnessMapAssetLoaded_ = false;
+    bool loadedAsset = false;
 
     const std::filesystem::path texturePath = assetPath("textures/checker_mr.png");
     if (std::filesystem::exists(texturePath)) {
@@ -563,7 +604,7 @@ void Renderer::createMetallicRoughnessTexture()
             metallicRoughnessMapAssetLoaded_ = true;
             nameTextureResources(metallicRoughnessTexture_, "MetallicRoughnessTexture");
             Logger::info("Loaded metallic-roughness texture: " + texturePath.string());
-            return;
+            loadedAsset = true;
         } catch (const std::exception& error) {
             Logger::warn("Failed to load metallic-roughness texture '" + texturePath.string() + "': " + error.what());
         }
@@ -572,6 +613,32 @@ void Renderer::createMetallicRoughnessTexture()
                      texturePath.string());
     }
 
+    if (!loadedAsset) {
+        constexpr uint32_t width = 4;
+        constexpr uint32_t height = 4;
+        std::array<uint8_t, width * height * 4> pixels{};
+        for (size_t offset = 0; offset < pixels.size(); offset += 4) {
+            pixels[offset + 0] = 255;
+            pixels[offset + 1] = 255;
+            pixels[offset + 2] = 0;
+            pixels[offset + 3] = 255;
+        }
+
+        metallicRoughnessTexture_.createFromRgba8(context_,
+                                                  commandContext_,
+                                                  width,
+                                                  height,
+                                                  std::span<const uint8_t>(pixels.data(), pixels.size()),
+                                                  VK_FORMAT_R8G8B8A8_UNORM,
+                                                  false);
+        nameTextureResources(metallicRoughnessTexture_, "MetallicRoughnessTexture");
+    }
+
+    createNeutralMetallicRoughnessTexture();
+}
+
+void Renderer::createNeutralMetallicRoughnessTexture()
+{
     constexpr uint32_t width = 4;
     constexpr uint32_t height = 4;
     std::array<uint8_t, width * height * 4> pixels{};
@@ -582,14 +649,14 @@ void Renderer::createMetallicRoughnessTexture()
         pixels[offset + 3] = 255;
     }
 
-    metallicRoughnessTexture_.createFromRgba8(context_,
-                                              commandContext_,
-                                              width,
-                                              height,
-                                              std::span<const uint8_t>(pixels.data(), pixels.size()),
-                                              VK_FORMAT_R8G8B8A8_UNORM,
-                                              false);
-    nameTextureResources(metallicRoughnessTexture_, "MetallicRoughnessTexture");
+    neutralMetallicRoughnessTexture_.createFromRgba8(context_,
+                                                     commandContext_,
+                                                     width,
+                                                     height,
+                                                     std::span<const uint8_t>(pixels.data(), pixels.size()),
+                                                     VK_FORMAT_R8G8B8A8_UNORM,
+                                                     false);
+    nameTextureResources(neutralMetallicRoughnessTexture_, "NeutralMetallicRoughnessTexture");
 }
 
 void Renderer::createEnvironmentMap()
@@ -844,6 +911,93 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
+void Renderer::createImportedGltfTextures(const std::vector<renderer::GltfTextureInfo>& textureInfos)
+{
+    importedTextures_.clear();
+    importedTextures_.resize(textureInfos.size());
+
+    for (size_t textureIndex = 0; textureIndex < textureInfos.size(); ++textureIndex) {
+        const renderer::GltfTextureInfo& textureInfo = textureInfos[textureIndex];
+        if (textureInfo.path.empty() && textureInfo.encodedData.empty()) {
+            continue;
+        }
+
+        try {
+            if (!textureInfo.path.empty()) {
+                if (!std::filesystem::exists(textureInfo.path)) {
+                    Logger::warn("glTF texture image is missing; material fallback will be used: " +
+                                 textureInfo.path.string());
+                    continue;
+                }
+
+                importedTextures_[textureIndex].createFromFile(context_, commandContext_, textureInfo.path, true);
+                Logger::info("Loaded glTF texture: " + textureInfo.path.string());
+            } else {
+                importedTextures_[textureIndex].createFromEncodedBytes(
+                    context_,
+                    commandContext_,
+                    std::span<const uint8_t>(textureInfo.encodedData.data(), textureInfo.encodedData.size()),
+                    true);
+                Logger::info("Loaded embedded glTF texture: " + textureInfo.debugName);
+            }
+
+            nameTextureResources(importedTextures_[textureIndex], "GltfTexture" + std::to_string(textureIndex));
+        } catch (const std::exception& error) {
+            const std::string textureName =
+                !textureInfo.path.empty() ? textureInfo.path.string() : textureInfo.debugName;
+            Logger::warn("Failed to load glTF texture '" + textureName +
+                         "'; material fallback will be used: " + error.what());
+        }
+    }
+}
+
+void Renderer::createImportedGltfMaterials(const std::vector<renderer::GltfMaterialInfo>& materialInfos)
+{
+    std::vector<renderer::GltfMaterialInfo> defaultMaterialInfos;
+    const std::vector<renderer::GltfMaterialInfo>* sourceMaterialInfos = &materialInfos;
+    if (materialInfos.empty()) {
+        renderer::GltfMaterialInfo defaultMaterial{};
+        defaultMaterial.debugName = "Default glTF Material";
+        defaultMaterialInfos.push_back(std::move(defaultMaterial));
+        sourceMaterialInfos = &defaultMaterialInfos;
+    }
+
+    importedMaterials_.clear();
+    importedMaterials_.reserve(sourceMaterialInfos->size());
+
+    const auto textureOrFallback = [this](int textureIndex,
+                                          const rhi::VulkanTexture& fallbackTexture) -> const rhi::VulkanTexture* {
+        if (textureIndex >= 0 && static_cast<size_t>(textureIndex) < importedTextures_.size() &&
+            importedTextures_[static_cast<size_t>(textureIndex)].valid()) {
+            return &importedTextures_[static_cast<size_t>(textureIndex)];
+        }
+        return &fallbackTexture;
+    };
+
+    const auto textureLoaded = [this](int textureIndex) {
+        return textureIndex >= 0 && static_cast<size_t>(textureIndex) < importedTextures_.size() &&
+               importedTextures_[static_cast<size_t>(textureIndex)].valid();
+    };
+
+    for (const renderer::GltfMaterialInfo& materialInfo : *sourceMaterialInfos) {
+        renderer::Material material{};
+        material.debugName = materialInfo.debugName.empty() ? "glTF Material" : materialInfo.debugName;
+        material.baseColorTexture = textureOrFallback(materialInfo.baseColorTextureIndex, checkerboardTexture_);
+        material.normalTexture = textureOrFallback(materialInfo.normalTextureIndex, flatNormalTexture_);
+        material.metallicRoughnessTexture =
+            textureOrFallback(materialInfo.metallicRoughnessTextureIndex, neutralMetallicRoughnessTexture_);
+        material.baseColorFactor = materialInfo.baseColorFactor;
+        material.metallic = materialInfo.metallic;
+        material.roughness = materialInfo.roughness;
+        material.multiScatterStrength = 1.0f;
+        material.hasNormalMap = textureLoaded(materialInfo.normalTextureIndex);
+        material.hasMetallicRoughnessMap = textureLoaded(materialInfo.metallicRoughnessTextureIndex);
+
+        createMaterialDescriptorSet(material);
+        importedMaterials_.push_back(std::move(material));
+    }
+}
+
 void Renderer::createSkyboxDescriptorSet()
 {
     if (!environmentMap_.valid()) {
@@ -888,12 +1042,50 @@ void Renderer::createObjectFrameDataBuffers()
 
     for (rhi::VulkanBuffer& frameObjectDataBuffer : frameObjectDataBuffers_) {
         rhi::VulkanBufferCreateInfo bufferInfo{};
-        bufferInfo.size = static_cast<VkDeviceSize>(kMaxFrameObjects * sizeof(ObjectFrameData));
+        bufferInfo.size = static_cast<VkDeviceSize>(kMaxFrameDrawItems * sizeof(ObjectFrameData));
         bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
         bufferInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
         bufferInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
         bufferInfo.requestDeviceAddress = true;
         frameObjectDataBuffer.createBuffer(context_, bufferInfo);
+    }
+}
+
+const renderer::Material* Renderer::resolveMaterial(const renderer::RenderObject& object,
+                                                    const renderer::MeshPrimitive* primitive) const
+{
+    if (primitive && object.materialTable && primitive->materialIndex < object.materialCount) {
+        return &object.materialTable[primitive->materialIndex];
+    }
+
+    return object.material;
+}
+
+void Renderer::buildFrameDrawItems()
+{
+    frameDrawItems_.clear();
+    frameDrawItems_.reserve(renderObjects_.size());
+
+    for (const renderer::RenderObject& object : renderObjects_) {
+        if (!object.mesh) {
+            continue;
+        }
+
+        if (object.mesh->hasSubMeshes()) {
+            for (const renderer::MeshPrimitive& primitive : object.mesh->primitives()) {
+                if (frameDrawItems_.size() >= kMaxFrameDrawItems) {
+                    return;
+                }
+
+                frameDrawItems_.push_back({&object, &primitive, resolveMaterial(object, &primitive)});
+            }
+            continue;
+        }
+
+        if (frameDrawItems_.size() >= kMaxFrameDrawItems) {
+            return;
+        }
+        frameDrawItems_.push_back({&object, nullptr, object.material});
     }
 }
 
@@ -964,11 +1156,9 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
 
     if (renderObjects_.empty()) {
+        frameDrawItems_.clear();
         return;
     }
-
-    const size_t objectCount = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
-    std::vector<ObjectFrameData> objectFrameData(objectCount);
 
     const VkExtent2D extent = swapchain_.extent();
     const float aspect =
@@ -977,7 +1167,7 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     const glm::mat4 projection = camera_.projectionMatrix(aspect);
     const glm::mat4 lightViewProjection = directionalLightViewProjection();
 
-    for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    for (size_t objectIndex = 0; objectIndex < renderObjects_.size(); ++objectIndex) {
         renderer::RenderObject& object = renderObjects_[objectIndex];
 
         switch (objectIndex) {
@@ -999,9 +1189,23 @@ void Renderer::updateFrameData(uint32_t frameIndex)
                                                 elapsedSeconds * 0.3f};
             break;
         }
+    }
 
-        const glm::mat4 model = object.transform.modelMatrix();
-        ObjectFrameData& frameData = objectFrameData[objectIndex];
+    buildFrameDrawItems();
+    if (frameDrawItems_.empty()) {
+        return;
+    }
+
+    std::vector<ObjectFrameData> objectFrameData(frameDrawItems_.size());
+
+    for (size_t drawIndex = 0; drawIndex < frameDrawItems_.size(); ++drawIndex) {
+        const FrameDrawItem& drawItem = frameDrawItems_[drawIndex];
+        if (!drawItem.object) {
+            continue;
+        }
+
+        const glm::mat4 model = drawItem.object->transform.modelMatrix();
+        ObjectFrameData& frameData = objectFrameData[drawIndex];
         frameData.mvp = projection * view * model;
         frameData.model = model;
         frameData.lightMvp = lightViewProjection * model;
@@ -1012,10 +1216,12 @@ void Renderer::updateFrameData(uint32_t frameIndex)
                                     shadowSettings_.slopeBias,
                                     shadowSettings_.enablePcf ? 1.0f : 0.0f,
                                     static_cast<float>(std::max(shadowSettings_.pcfRadius, 0))};
-        if (object.material) {
-            frameData.baseColorFactor = object.material->baseColorFactor;
-            frameData.materialParams = {
-                object.material->metallic, object.material->roughness, object.material->multiScatterStrength, 0.0f};
+        if (drawItem.material) {
+            frameData.baseColorFactor = drawItem.material->baseColorFactor;
+            frameData.materialParams = {drawItem.material->metallic,
+                                        drawItem.material->roughness,
+                                        drawItem.material->multiScatterStrength,
+                                        0.0f};
         }
         frameData.cameraPosition = glm::vec4(camera_.position, 1.0f);
     }
@@ -1049,7 +1255,7 @@ void Renderer::recreateSwapchain()
 void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex)
 {
     const VkDeviceAddress objectFrameDataBaseAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
-    const size_t objectCount = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
+    const size_t drawItemCount = frameDrawItems_.size();
 
     renderGraph_.beginFrame(commandBuffer, swapchain_, shadowMap_, imageIndex);
     rhi::debug::beginLabel(commandBuffer, "Frame");
@@ -1076,14 +1282,15 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     vkCmdSetViewport(commandBuffer, 0, 1, &shadowViewport);
     vkCmdSetScissor(commandBuffer, 0, 1, &shadowScissor);
 
-    for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
-        const renderer::RenderObject& object = renderObjects_[objectIndex];
-        if (!object.mesh) {
+    const renderer::Mesh* boundShadowMesh = nullptr;
+    for (size_t drawIndex = 0; drawIndex < drawItemCount; ++drawIndex) {
+        const FrameDrawItem& drawItem = frameDrawItems_[drawIndex];
+        if (!drawItem.object || !drawItem.object->mesh) {
             continue;
         }
 
         const PushConstants pushConstants{objectFrameDataBaseAddress +
-                                          static_cast<VkDeviceAddress>(objectIndex * sizeof(ObjectFrameData))};
+                                          static_cast<VkDeviceAddress>(drawIndex * sizeof(ObjectFrameData))};
 
         vkCmdPushConstants(commandBuffer,
                            shadowPipeline_.layout(),
@@ -1092,12 +1299,20 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                            static_cast<uint32_t>(sizeof(PushConstants)),
                            &pushConstants);
 
-        const VkBuffer vertexBuffers[] = {object.mesh->vertexBuffer()};
-        const VkDeviceSize vertexOffsets[] = {0};
-        vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
-        vkCmdBindIndexBuffer(commandBuffer, object.mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+        const renderer::Mesh* mesh = drawItem.object->mesh;
+        if (boundShadowMesh != mesh) {
+            const VkBuffer vertexBuffers[] = {mesh->vertexBuffer()};
+            const VkDeviceSize vertexOffsets[] = {0};
+            vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
+            vkCmdBindIndexBuffer(commandBuffer, mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+            boundShadowMesh = mesh;
+        }
 
-        vkCmdDrawIndexed(commandBuffer, object.mesh->indexCount(), 1, 0, 0, 0);
+        const uint32_t firstIndex = drawItem.primitive ? drawItem.primitive->firstIndex : 0;
+        const uint32_t indexCount = drawItem.primitive ? drawItem.primitive->indexCount : mesh->indexCount();
+        if (indexCount > 0) {
+            vkCmdDrawIndexed(commandBuffer, indexCount, 1, firstIndex, 0, 0);
+        }
     }
 
     renderGraph_.endShadowPass();
@@ -1160,18 +1375,20 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     timestampQuery_.writeBegin(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::RenderObjects);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.pipeline());
 
-    for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
-        const renderer::RenderObject& object = renderObjects_[objectIndex];
-        if (!object.mesh || !object.material || object.material->descriptorSet == VK_NULL_HANDLE) {
+    const renderer::Mesh* boundMesh = nullptr;
+    for (size_t drawIndex = 0; drawIndex < drawItemCount; ++drawIndex) {
+        const FrameDrawItem& drawItem = frameDrawItems_[drawIndex];
+        if (!drawItem.object || !drawItem.object->mesh || !drawItem.material ||
+            drawItem.material->descriptorSet == VK_NULL_HANDLE) {
             continue;
         }
 
-        const VkDescriptorSet descriptorSet = object.material->descriptorSet;
+        const VkDescriptorSet descriptorSet = drawItem.material->descriptorSet;
         vkCmdBindDescriptorSets(
             commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.layout(), 0, 1, &descriptorSet, 0, nullptr);
 
         const PushConstants pushConstants{objectFrameDataBaseAddress +
-                                          static_cast<VkDeviceAddress>(objectIndex * sizeof(ObjectFrameData))};
+                                          static_cast<VkDeviceAddress>(drawIndex * sizeof(ObjectFrameData))};
 
         // The material descriptor binds the texture/sampler for the fragment shader.
         // The pushed address points at this object's BDA frame data for the vertex shader.
@@ -1182,12 +1399,20 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                            static_cast<uint32_t>(sizeof(PushConstants)),
                            &pushConstants);
 
-        const VkBuffer vertexBuffers[] = {object.mesh->vertexBuffer()};
-        const VkDeviceSize vertexOffsets[] = {0};
-        vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
-        vkCmdBindIndexBuffer(commandBuffer, object.mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+        const renderer::Mesh* mesh = drawItem.object->mesh;
+        if (boundMesh != mesh) {
+            const VkBuffer vertexBuffers[] = {mesh->vertexBuffer()};
+            const VkDeviceSize vertexOffsets[] = {0};
+            vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
+            vkCmdBindIndexBuffer(commandBuffer, mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+            boundMesh = mesh;
+        }
 
-        vkCmdDrawIndexed(commandBuffer, object.mesh->indexCount(), 1, 0, 0, 0);
+        const uint32_t firstIndex = drawItem.primitive ? drawItem.primitive->firstIndex : 0;
+        const uint32_t indexCount = drawItem.primitive ? drawItem.primitive->indexCount : mesh->indexCount();
+        if (indexCount > 0) {
+            vkCmdDrawIndexed(commandBuffer, indexCount, 1, firstIndex, 0, 0);
+        }
     }
     timestampQuery_.writeEnd(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::RenderObjects);
     rhi::debug::endLabel(commandBuffer);

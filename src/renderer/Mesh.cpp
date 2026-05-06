@@ -6,6 +6,7 @@
 #include "rhi/VulkanDebugUtils.h"
 
 #define TINYGLTF_IMPLEMENTATION
+#define TINYGLTF_NO_EXTERNAL_IMAGE
 #define TINYGLTF_NO_STB_IMAGE
 #define TINYGLTF_NO_STB_IMAGE_WRITE
 #include <tiny_gltf.h>
@@ -20,6 +21,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace ve::renderer {
@@ -286,7 +288,8 @@ struct GltfAccessorView {
     try {
         GltfAccessorView view = makeAccessorView(model, accessorIndex, name, minimumComponentCount);
         if (view.accessor->count < vertexCount) {
-            Logger::warn("Ignoring glTF attribute " + std::string(name) + " because it has fewer elements than POSITION.");
+            Logger::warn("Ignoring glTF attribute " + std::string(name) +
+                         " because it has fewer elements than POSITION.");
             return {};
         }
         return view;
@@ -299,6 +302,183 @@ struct GltfAccessorView {
 [[nodiscard]] bool isTrianglePrimitive(const tinygltf::Primitive& primitive)
 {
     return primitive.mode == -1 || primitive.mode == TINYGLTF_MODE_TRIANGLES;
+}
+
+bool copyEncodedImageData(tinygltf::Image* image,
+                          const int imageIndex,
+                          std::string* error,
+                          std::string* warning,
+                          int requestedWidth,
+                          int requestedHeight,
+                          const unsigned char* bytes,
+                          int size,
+                          void* userData)
+{
+    (void)imageIndex;
+    (void)warning;
+    (void)userData;
+
+    if (!image || !bytes || size <= 0) {
+        if (error) {
+            *error += "Embedded glTF image data is empty.\n";
+        }
+        return false;
+    }
+
+    image->image.assign(bytes, bytes + size);
+    image->as_is = true;
+    if (requestedWidth > 0) {
+        image->width = requestedWidth;
+    }
+    if (requestedHeight > 0) {
+        image->height = requestedHeight;
+    }
+    return true;
+}
+
+[[nodiscard]] std::filesystem::path resolveImagePath(const std::filesystem::path& gltfPath, const std::string& uri)
+{
+    std::string decodedUri = uri;
+    if (!tinygltf::URIDecode(uri, &decodedUri, nullptr)) {
+        Logger::warn("Failed to decode glTF image URI '" + uri + "'; using it as written.");
+        decodedUri = uri;
+    }
+
+    std::filesystem::path imagePath(decodedUri);
+    if (imagePath.is_relative()) {
+        imagePath = gltfPath.parent_path() / imagePath;
+    }
+    return imagePath.lexically_normal();
+}
+
+[[nodiscard]] std::string textureDebugName(const tinygltf::Texture& texture,
+                                           const tinygltf::Image& image,
+                                           size_t textureIndex)
+{
+    if (!texture.name.empty()) {
+        return texture.name;
+    }
+    if (!image.name.empty()) {
+        return image.name;
+    }
+    return "glTF Texture " + std::to_string(textureIndex);
+}
+
+[[nodiscard]] std::vector<GltfTextureInfo> loadGltfTextureInfos(const tinygltf::Model& model,
+                                                                const std::filesystem::path& gltfPath)
+{
+    std::vector<GltfTextureInfo> textures(model.textures.size());
+
+    for (size_t textureIndex = 0; textureIndex < model.textures.size(); ++textureIndex) {
+        const tinygltf::Texture& sourceTexture = model.textures[textureIndex];
+        if (sourceTexture.source < 0 || static_cast<size_t>(sourceTexture.source) >= model.images.size()) {
+            Logger::warn("glTF texture " + std::to_string(textureIndex) + " does not reference a valid image.");
+            continue;
+        }
+
+        const tinygltf::Image& sourceImage = model.images[static_cast<size_t>(sourceTexture.source)];
+        GltfTextureInfo& texture = textures[textureIndex];
+        texture.debugName = textureDebugName(sourceTexture, sourceImage, textureIndex);
+
+        if (!sourceImage.uri.empty()) {
+            texture.path = resolveImagePath(gltfPath, sourceImage.uri);
+            continue;
+        }
+
+        if (!sourceImage.image.empty()) {
+            texture.encodedData = sourceImage.image;
+            texture.embedded = true;
+            continue;
+        }
+
+        Logger::warn("glTF image for texture " + std::to_string(textureIndex) +
+                     " has neither an external URI nor embedded encoded data.");
+    }
+
+    return textures;
+}
+
+[[nodiscard]] int validTextureIndex(const tinygltf::Model& model,
+                                    int textureIndex,
+                                    std::string_view materialName,
+                                    std::string_view slotName)
+{
+    if (textureIndex < 0) {
+        return -1;
+    }
+    if (static_cast<size_t>(textureIndex) >= model.textures.size()) {
+        Logger::warn("glTF material '" + std::string(materialName) + "' references an out-of-range " +
+                     std::string(slotName) + " texture index.");
+        return -1;
+    }
+
+    const tinygltf::Texture& texture = model.textures[static_cast<size_t>(textureIndex)];
+    if (texture.source < 0 || static_cast<size_t>(texture.source) >= model.images.size()) {
+        Logger::warn("glTF material '" + std::string(materialName) + "' references a " + std::string(slotName) +
+                     " texture without a valid image source.");
+        return -1;
+    }
+
+    return textureIndex;
+}
+
+[[nodiscard]] GltfMaterialInfo makeDefaultGltfMaterial(std::string debugName)
+{
+    GltfMaterialInfo material{};
+    material.debugName = std::move(debugName);
+    return material;
+}
+
+[[nodiscard]] GltfMaterialInfo loadGltfMaterialInfo(const tinygltf::Model& model,
+                                                    const tinygltf::Material& sourceMaterial,
+                                                    size_t materialIndex)
+{
+    GltfMaterialInfo material{};
+    material.debugName =
+        sourceMaterial.name.empty() ? "glTF Material " + std::to_string(materialIndex) : sourceMaterial.name;
+
+    const tinygltf::PbrMetallicRoughness& pbr = sourceMaterial.pbrMetallicRoughness;
+    if (pbr.baseColorFactor.size() >= 4) {
+        material.baseColorFactor = {static_cast<float>(pbr.baseColorFactor[0]),
+                                    static_cast<float>(pbr.baseColorFactor[1]),
+                                    static_cast<float>(pbr.baseColorFactor[2]),
+                                    static_cast<float>(pbr.baseColorFactor[3])};
+    }
+    material.metallic = static_cast<float>(pbr.metallicFactor);
+    material.roughness = static_cast<float>(pbr.roughnessFactor);
+    material.baseColorTextureIndex =
+        validTextureIndex(model, pbr.baseColorTexture.index, material.debugName, "base color");
+    material.normalTextureIndex =
+        validTextureIndex(model, sourceMaterial.normalTexture.index, material.debugName, "normal");
+    material.metallicRoughnessTextureIndex =
+        validTextureIndex(model, pbr.metallicRoughnessTexture.index, material.debugName, "metallic-roughness");
+
+    if (pbr.baseColorTexture.index >= 0 && pbr.baseColorTexture.texCoord != 0) {
+        Logger::warn("glTF material '" + material.debugName +
+                     "' uses a base color texCoord set other than TEXCOORD_0; TEXCOORD_0 will be sampled.");
+    }
+    if (sourceMaterial.normalTexture.index >= 0 && sourceMaterial.normalTexture.texCoord != 0) {
+        Logger::warn("glTF material '" + material.debugName +
+                     "' uses a normal texCoord set other than TEXCOORD_0; TEXCOORD_0 will be sampled.");
+    }
+    if (pbr.metallicRoughnessTexture.index >= 0 && pbr.metallicRoughnessTexture.texCoord != 0) {
+        Logger::warn("glTF material '" + material.debugName +
+                     "' uses a metallic-roughness texCoord set other than TEXCOORD_0; TEXCOORD_0 will be sampled.");
+    }
+
+    return material;
+}
+
+[[nodiscard]] std::vector<GltfMaterialInfo> loadGltfMaterialInfos(const tinygltf::Model& model)
+{
+    std::vector<GltfMaterialInfo> materials;
+    materials.reserve(model.materials.size());
+
+    for (size_t materialIndex = 0; materialIndex < model.materials.size(); ++materialIndex) {
+        materials.push_back(loadGltfMaterialInfo(model, model.materials[materialIndex], materialIndex));
+    }
+
+    return materials;
 }
 
 } // namespace
@@ -364,12 +544,14 @@ Mesh Mesh::createCube(rhi::VulkanContext& context, const rhi::VulkanCommandConte
     return mesh;
 }
 
-Mesh Mesh::createFromGltf(
+LoadedGltfAsset Mesh::createFromGltf(
     rhi::VulkanContext& context,
     const rhi::VulkanCommandContext& commandContext,
     const std::filesystem::path& path)
 {
     tinygltf::TinyGLTF loader;
+    loader.SetImageLoader(copyEncodedImageData, nullptr);
+
     tinygltf::Model model;
     std::string error;
     std::string warning;
@@ -394,6 +576,36 @@ Mesh Mesh::createFromGltf(
 
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;
+    std::vector<MeshPrimitive> subMeshes;
+    std::vector<GltfTextureInfo> textureInfos = loadGltfTextureInfos(model, path);
+    std::vector<GltfMaterialInfo> materialInfos = loadGltfMaterialInfos(model);
+    uint32_t defaultMaterialIndex = 0;
+    bool hasDefaultMaterial = false;
+
+    const auto ensureDefaultMaterial = [&materialInfos, &defaultMaterialIndex, &hasDefaultMaterial]() {
+        if (!hasDefaultMaterial) {
+            defaultMaterialIndex = static_cast<uint32_t>(materialInfos.size());
+            materialInfos.push_back(makeDefaultGltfMaterial("Default glTF Material"));
+            hasDefaultMaterial = true;
+        }
+        return defaultMaterialIndex;
+    };
+
+    const auto resolvePrimitiveMaterialIndex = [&model, &ensureDefaultMaterial](const tinygltf::Primitive& primitive,
+                                                                                size_t primitiveIndex,
+                                                                                const std::string& filename) {
+        if (primitive.material < 0) {
+            return ensureDefaultMaterial();
+        }
+
+        if (static_cast<size_t>(primitive.material) >= model.materials.size()) {
+            Logger::warn("glTF primitive " + std::to_string(primitiveIndex) + " in " + filename +
+                         " references an out-of-range material; using the default material.");
+            return ensureDefaultMaterial();
+        }
+
+        return static_cast<uint32_t>(primitive.material);
+    };
 
     const tinygltf::Mesh& sourceMesh = model.meshes.front();
     for (size_t primitiveIndex = 0; primitiveIndex < sourceMesh.primitives.size(); ++primitiveIndex) {
@@ -424,6 +636,8 @@ Mesh Mesh::createFromGltf(
         const GltfAccessorView tangents = makeOptionalAttributeView(model, primitive, "TANGENT", 4, vertexCount);
 
         const uint32_t baseVertex = static_cast<uint32_t>(vertices.size());
+        const uint32_t firstIndex = static_cast<uint32_t>(indices.size());
+        const uint32_t materialIndex = resolvePrimitiveMaterialIndex(primitive, primitiveIndex, filename);
         vertices.reserve(vertices.size() + vertexCount);
         for (size_t vertexIndex = 0; vertexIndex < vertexCount; ++vertexIndex) {
             const glm::vec4 position = readAccessorVec4(positions, vertexIndex, glm::vec4(0.0f));
@@ -462,6 +676,11 @@ Mesh Mesh::createFromGltf(
                 indices.push_back(baseVertex + static_cast<uint32_t>(vertexIndex));
             }
         }
+
+        const uint32_t indexCount = static_cast<uint32_t>(indices.size()) - firstIndex;
+        if (indexCount > 0) {
+            subMeshes.push_back({firstIndex, indexCount, materialIndex});
+        }
     }
 
     if (vertices.empty() || indices.empty()) {
@@ -490,6 +709,7 @@ Mesh Mesh::createFromGltf(
         VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
 
     mesh.indexCount_ = static_cast<uint32_t>(indices.size());
+    mesh.subMeshes_ = std::move(subMeshes);
 
     const std::string debugName = path.stem().string();
     rhi::debug::setObjectName(
@@ -497,7 +717,11 @@ Mesh Mesh::createFromGltf(
     rhi::debug::setObjectName(
         context.vkDevice(), mesh.indexBuffer_.buffer(), VK_OBJECT_TYPE_BUFFER, debugName + "IndexBuffer");
 
-    return mesh;
+    LoadedGltfAsset loadedAsset{};
+    loadedAsset.mesh = std::move(mesh);
+    loadedAsset.materials = std::move(materialInfos);
+    loadedAsset.textures = std::move(textureInfos);
+    return loadedAsset;
 }
 
 } // namespace ve::renderer
