@@ -182,6 +182,26 @@ void VulkanBuffer::upload(std::span<const std::byte> data, VkDeviceSize offset)
     unmap();
 }
 
+void VulkanBuffer::download(std::span<std::byte> data, VkDeviceSize offset)
+{
+    if (data.empty()) {
+        return;
+    }
+
+    const VkDeviceSize byteSize = static_cast<VkDeviceSize>(data.size_bytes());
+    if (offset > size_ || byteSize > size_ - offset) {
+        throw std::runtime_error("VulkanBuffer download would exceed buffer size.");
+    }
+    if (!context_ || !allocation_) {
+        throw std::runtime_error("Cannot download from an uninitialized VulkanBuffer.");
+    }
+
+    auto* source = static_cast<std::byte*>(map()) + static_cast<size_t>(offset);
+    VK_CHECK(vmaInvalidateAllocation(context_->allocator(), allocation_, offset, byteSize));
+    std::memcpy(data.data(), source, data.size_bytes());
+    unmap();
+}
+
 void VulkanBuffer::copyBuffer(
     const VulkanContext& context,
     const VulkanCommandContext& commandContext,

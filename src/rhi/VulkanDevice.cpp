@@ -56,6 +56,8 @@ void VulkanDevice::cleanup()
     bufferDeviceAddressEnabled_ = false;
     multiDrawIndirectEnabled_ = false;
     drawIndirectFirstInstanceEnabled_ = false;
+    drawIndexedIndirectCountAvailable_ = false;
+    maxDrawIndirectCount_ = 0;
 }
 
 void VulkanDevice::pickPhysicalDevice()
@@ -227,6 +229,11 @@ void VulkanDevice::createLogicalDevice()
     vkGetDeviceQueue(device_, queueFamilies_.graphicsFamily.value(), 0, &graphicsQueue_);
     vkGetDeviceQueue(device_, queueFamilies_.presentFamily.value(), 0, &presentQueue_);
 
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
+    maxDrawIndirectCount_ = properties.limits.maxDrawIndirectCount;
+    drawIndexedIndirectCountAvailable_ = vkCmdDrawIndexedIndirectCount != nullptr && maxDrawIndirectCount_ > 0;
+
     if (descriptorIndexingEnabled_) {
         Logger::info("Descriptor indexing features for bindless material textures are enabled.");
     } else {
@@ -239,6 +246,13 @@ void VulkanDevice::createLogicalDevice()
     } else {
         Logger::warn("Multi-draw indirect object-data array indexing is not fully supported; "
                      "the main pass will use per-draw indirect fallback recording.");
+    }
+
+    if (drawIndexedIndirectCountAvailable_) {
+        Logger::info("vkCmdDrawIndexedIndirectCount is available. maxDrawIndirectCount=" +
+                     std::to_string(maxDrawIndirectCount_) + ".");
+    } else {
+        Logger::warn("vkCmdDrawIndexedIndirectCount is unavailable; indirect-count drawing will remain disabled.");
     }
 }
 

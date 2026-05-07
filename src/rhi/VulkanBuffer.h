@@ -47,6 +47,7 @@ public:
     void* map();
     void unmap();
     void upload(std::span<const std::byte> data, VkDeviceSize offset = 0);
+    void download(std::span<std::byte> data, VkDeviceSize offset = 0);
 
     static void copyBuffer(
         const VulkanContext& context,

@@ -122,6 +122,7 @@ private:
     void recreateSwapchain();
     void recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     void recordGpuCullingCommands(VkCommandBuffer commandBuffer);
+    bool readGpuVisibleCount(uint32_t frameIndex, uint32_t& visibleCount);
     [[nodiscard]] bool isGpuCullingActive() const;
     [[nodiscard]] bool isBindlessMaterialTextureActive() const;
     [[nodiscard]] bool isMainPassMultiDrawIndirectActive() const;
@@ -176,6 +177,10 @@ private:
     std::vector<rhi::VulkanBuffer> frameObjectDataBuffers_;
     std::vector<rhi::VulkanBuffer> frameCullInputBuffers_;
     std::vector<rhi::VulkanBuffer> frameIndirectDrawBuffers_;
+    std::vector<rhi::VulkanBuffer> frameVisibleCountBuffers_;
+    std::vector<rhi::VulkanBuffer> frameVisibleCountReadbackBuffers_;
+    std::vector<uint32_t> frameGpuCullTotalDrawItems_;
+    std::vector<uint8_t> frameGpuCullReadbackReady_;
     std::vector<VkFence> imagesInFlight_;
     ShadowSettings shadowSettings_{};
     VkFormat pipelineColorFormat_ = VK_FORMAT_UNDEFINED;

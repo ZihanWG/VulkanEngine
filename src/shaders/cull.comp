@@ -35,9 +35,13 @@ layout(set = 0, binding = 1, std430) writeonly buffer IndirectOutputBuffer {
     DrawIndexedIndirectCommand commands[];
 } indirectOutput;
 
+layout(set = 0, binding = 2, std430) buffer VisibleCountBuffer {
+    uint visibleCount;
+} visibleCountOutput;
+
 layout(push_constant) uniform CullPushConstants {
     vec4 frustumPlanes[6];
-    uvec4 params; // x = draw item count, y = write objectFrameDataIndex to firstInstance
+    uvec4 params; // x = draw item count, y = write objectFrameDataIndex to firstInstance, z = compact visible commands
 } pc;
 
 bool testAabb(vec3 boundsMin, vec3 boundsMax)
@@ -66,6 +70,17 @@ void main()
 
     GpuCullDrawItem drawItem = cullInput.drawItems[drawIndex];
     bool visible = testAabb(drawItem.boundsMin.xyz, drawItem.boundsMax.xyz);
+    bool compactCommands = pc.params.z != 0;
+
+    uint outputIndex = drawIndex;
+    if (compactCommands) {
+        if (!visible) {
+            return;
+        }
+        outputIndex = atomicAdd(visibleCountOutput.visibleCount, 1);
+    } else if (visible) {
+        atomicAdd(visibleCountOutput.visibleCount, 1);
+    }
 
     DrawIndexedIndirectCommand command;
     command.indexCount = visible ? drawItem.indexCount : 0;
@@ -74,5 +89,5 @@ void main()
     command.vertexOffset = drawItem.vertexOffset;
     command.firstInstance = pc.params.y != 0 ? drawItem.objectFrameDataIndex : 0;
 
-    indirectOutput.commands[drawIndex] = command;
+    indirectOutput.commands[outputIndex] = command;
 }

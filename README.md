@@ -2,7 +2,7 @@
 
 Modern C++20 Vulkan 1.3 renderer skeleton inspired by the educational flow of [Sascha Willems' HowToVulkan](https://github.com/SaschaWillems/HowToVulkan), but split into engine-style modules instead of a single tutorial file.
 
-The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube or imported glTF geometry with normals, tangents, submesh material ranges, and local-space bounds into GPU-local vertex and index buffers, loads small RGBA base color, normal, and metallic-roughness textures from disk with procedural fallbacks, loads basic glTF PBR material factors and base color/normal/metallic-roughness textures when available, traverses the default glTF scene hierarchy to instantiate static `RenderObject`s with accumulated node transforms, creates and renders a simple procedural environment cubemap as a skybox background, creates low-frequency diffuse irradiance and mipmapped prefiltered specular cubemaps from the same procedural environment colors, generates a 2D split-sum BRDF LUT, and first tries to draw a static glTF test scene with tangent-space normal mapping, direct-light Cook-Torrance GGX material response, diffuse and specular image-based lighting, compact Kulla-Conty-style multi-scattering compensation, directional lighting, bindless material texture descriptors when descriptor indexing is available, compute-based main-pass frustum culling, GPU-written `VkDrawIndexedIndirectCommand` entries, a CPU culling fallback, and a PCF-filtered directional shadow map every frame using Dynamic Rendering and Synchronization2. If no supported glTF asset loads, the renderer falls back to the previous multi-cube demo scene. A minimal render graph now documents the shadow and main pass order, records manual resource usage, and centralizes the frame's image transitions.
+The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube or imported glTF geometry with normals, tangents, submesh material ranges, and local-space bounds into GPU-local vertex and index buffers, loads small RGBA base color, normal, and metallic-roughness textures from disk with procedural fallbacks, loads basic glTF PBR material factors and base color/normal/metallic-roughness textures when available, traverses the default glTF scene hierarchy to instantiate static `RenderObject`s with accumulated node transforms, creates and renders a simple procedural environment cubemap as a skybox background, creates low-frequency diffuse irradiance and mipmapped prefiltered specular cubemaps from the same procedural environment colors, generates a 2D split-sum BRDF LUT, and first tries to draw a static glTF test scene with tangent-space normal mapping, direct-light Cook-Torrance GGX material response, diffuse and specular image-based lighting, compact Kulla-Conty-style multi-scattering compensation, directional lighting, bindless material texture descriptors when descriptor indexing is available, compute-based main-pass frustum culling, GPU-written `VkDrawIndexedIndirectCommand` entries, GPU visible draw count readback, a CPU culling fallback, and a PCF-filtered directional shadow map every frame using Dynamic Rendering and Synchronization2. If no supported glTF asset loads, the renderer falls back to the previous multi-cube demo scene. A minimal render graph now documents the shadow and main pass order, records manual resource usage, and centralizes the frame's image transitions.
 
 ## Dependencies
 
@@ -53,14 +53,14 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - `Window` owns SDL initialization, the native window, Vulkan instance extensions, and surface creation.
 - `Renderer` owns the frame loop and orchestrates frame resources.
 - `VulkanContext` owns the Vulkan instance, debug messenger, surface, selected device, queues, and VMA allocator.
-- `VulkanDevice` selects a Vulkan 1.3 GPU, finds queue families, enables Synchronization2, Dynamic Rendering, Buffer Device Address, and descriptor indexing features when supported.
+- `VulkanDevice` selects a Vulkan 1.3 GPU, finds queue families, enables Synchronization2, Dynamic Rendering, Buffer Device Address, and descriptor indexing features when supported, and logs indirect-count draw support plus `maxDrawIndirectCount`.
 - `VulkanSwapchain` owns swapchain images, image views, color/depth image layout tracking, and the depth image used by Dynamic Rendering.
 - `VulkanCommandContext` owns the graphics command pool and per-frame command buffers.
 - `VulkanSync` owns per-frame image-available semaphores and fences, plus render-finished semaphores scoped per swapchain image.
 - `RenderGraph` owns the minimal ShadowPass/MainPass frame structure and the explicit Synchronization2 transitions for the shadow map, swapchain color image, and main depth image.
 - `VulkanPipeline` loads compiled SPIR-V shader modules and creates a Dynamic Rendering graphics pipeline.
 - `VulkanComputePipeline` loads a compiled compute SPIR-V module and creates the descriptor/push-constant pipeline layout plus compute pipeline used by GPU frustum culling.
-- `VulkanBuffer` owns `VkBuffer` plus VMA allocation, supports CPU-visible uploads, staging copies, and optional Buffer Device Address lookup.
+- `VulkanBuffer` owns `VkBuffer` plus VMA allocation, supports CPU-visible uploads/readbacks, staging copies, and optional Buffer Device Address lookup.
 - `VulkanImage` owns `VkImage` plus VMA allocation and image view lifetime.
 - `VulkanTexture` owns a sampled image, VMA allocation, image view, and sampler, and uploads RGBA8 texture data through a staging buffer. It can load image files through stb_image, generate mipmaps on the GPU when supported, or use a procedural checkerboard fallback.
 - `VulkanEnvironmentMap` owns a cube-compatible sampled image, cube image view, and clamp sampler. The renderer uses one generated cubemap for the visible skybox, a second low-frequency generated cubemap for diffuse irradiance, and a mipmapped generated cubemap for prefiltered specular IBL.
@@ -101,6 +101,7 @@ GPU culling compute descriptor set:
 
 - binding 0 = per-frame culling input storage buffer
 - binding 1 = per-frame indirect command output storage buffer
+- binding 2 = per-frame visible draw count storage buffer
 
 The bindless path uses a transitional set 0 layout that is compatible with the legacy material set, but `simple_bindless.frag` only reads the global resources from it. Material textures come from set 1 indices. Static glTF geometry and glTF-loaded materials use bindless material texture indices on devices with descriptor indexing support, while devices without the required features keep the older per-material descriptor set path.
 
@@ -134,7 +135,7 @@ Object and material scalar data still use Buffer Device Address plus a vertex-st
 12. Begin depth-only Dynamic Rendering for the shadow pass.
 13. Bind the shadow pipeline and draw each shadow `DrawItem` with direct `vkCmdDrawIndexed`.
 14. `RenderGraph` ends `ShadowPass` and transitions the shadow map to `VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL`.
-15. If GPU culling is active, bind the compute cull pipeline, bind the cull descriptor set, push the six frustum planes, dispatch one invocation per draw item, and insert a Synchronization2 buffer barrier from shader storage writes to indirect command reads.
+15. If GPU culling is active, reset the per-frame visible count buffer, bind the compute cull pipeline, bind the cull descriptor set, push the six frustum planes, dispatch one invocation per draw item, insert Synchronization2 buffer barriers from shader storage writes to indirect command/count reads, and copy the visible count to a small readback buffer.
 16. `RenderGraph` begins `MainPass` and transitions the swapchain image to `VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL`.
 17. `RenderGraph` transitions the main depth image to `VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL`.
 18. Begin main Dynamic Rendering with clear color and depth attachments.
@@ -647,9 +648,9 @@ After the shadow pass, the renderer records the `GpuCulling` / `ComputeCullDispa
 
 At Milestone 29, the CPU still looped over main-pass draw items because material descriptors were still bound per draw and object/material scalar data still used the existing BDA plus vertex-stage push constant path. Each draw still bound material descriptor set 0, pushed the selected object's object-data address, bound the mesh buffers as needed, and issued one indirect indexed draw. GPU culling simply made culled commands do zero work. Milestone 30 adds the bindless material texture path so per-material descriptor binding is no longer needed on devices that support descriptor indexing.
 
-CPU frustum culling remains the fallback if `useGpuCulling_` is false or GPU culling resource creation fails. In the GPU path, visible count readback is intentionally not implemented yet; the timing log reports total draw items and prints `GPU culling enabled; visible count not read back yet.` The shadow pass remains direct `vkCmdDrawIndexed` over all draw items for now.
+CPU frustum culling remains the fallback if `useGpuCulling_` is false or GPU culling resource creation fails. At Milestone 29 the GPU path did not read the visible count back yet; Milestone 32 later adds that count without changing the zero-count indirect command fallback. The shadow pass remains direct `vkCmdDrawIndexed` over all draw items for now.
 
-Future GPU-driven rendering work can add multi-draw indirect count, GPU visible count readback, compact object/material buffers, GPU-driven material indexing, occlusion culling, BVH / spatial partitioning, and LOD. Milestone 30 adds the first bindless material descriptor path.
+Future GPU-driven rendering work can add multi-draw indirect count, compact object/material buffers, GPU-driven material indexing, occlusion culling, BVH / spatial partitioning, and LOD. Milestone 30 adds the first bindless material descriptor path.
 
 ## Milestone 30: Bindless Material Descriptors
 
@@ -693,7 +694,34 @@ The shadow pass remains the simpler direct path for now. It still draws all shad
 
 The renderer checks and enables `multiDrawIndirect` and `drawIndirectFirstInstance` when the device supports them. If descriptor indexing or the required indirect features are unavailable, the main pass falls back to the Milestone 29 style: CPU loop over draw items, one indirect command per draw, per-draw BDA push constants, and per-material descriptor binding when bindless textures are unavailable.
 
-Milestone 31 is a bridge toward full GPU-driven rendering. Future work can add `vkCmdDrawIndexedIndirectCount`, compacted visible command buffers, GPU visible count readback, fully GPU-built draw batches, bindless object/material buffers, shadow pass indirect drawing, occlusion culling, BVH or other spatial partitioning, and LOD.
+Milestone 31 is a bridge toward full GPU-driven rendering. Future work can add `vkCmdDrawIndexedIndirectCount`, compacted visible command buffers, fully GPU-built draw batches, bindless object/material buffers, shadow pass indirect drawing, occlusion culling, BVH or other spatial partitioning, and LOD.
+
+## Milestone 32: GPU Visible Count and Indirect Count Preparation
+
+Milestone 32 adds a per-frame GPU visible draw count to the main-pass compute culling path. Each frame owns a 32-bit visible count buffer with storage, indirect, transfer-destination, and transfer-source usage. Before the culling dispatch, the renderer resets that count with `vkCmdFillBuffer`, then uses a Synchronization2 buffer barrier so the compute shader's atomic increment path sees the cleared value.
+
+The GPU culling compute descriptor set now has three storage-buffer bindings:
+
+- binding 0 = per-frame culling input storage buffer
+- binding 1 = per-frame indirect command output storage buffer
+- binding 2 = per-frame visible draw count storage buffer
+
+`cull.comp` now increments the visible count for each draw item whose world-space AABB passes the frustum test. The active path still writes one indirect command per draw item: visible items keep `indexCount`, `instanceCount = 1`, `firstIndex`, `vertexOffset`, and `firstInstance = objectFrameDataIndex`, while culled items write zero-count commands. The shader also has a compact-output mode for future work, but the renderer leaves it disabled in this milestone so mesh-compatible batch ranges stay valid.
+
+After compute culling, the renderer barriers the indirect command buffer for draw-indirect reads and barriers the visible count buffer for future draw-indirect count reads plus a transfer read. It then copies the count into a small CPU-visible readback buffer and reads it after the existing frame fence. The throttled GPU timing log now includes:
+
+```text
+GPU culling:
+  total draw items: N
+  visible draw items: M
+  culled draw items: N - M
+```
+
+`VulkanDevice` also queries and logs `vkCmdDrawIndexedIndirectCount` availability and `maxDrawIndirectCount`. The renderer does not use `vkCmdDrawIndexedIndirectCount` yet, because the current compacted command stream would need per-batch visible ranges or per-batch count buffers to preserve mesh-compatible binding. The fallback remains the Milestone 31 zero-count indirect command buffer, and devices without the required indirect features continue to use the existing CPU/per-draw indirect path.
+
+Bindless material descriptors, the `ObjectFrameData` Buffer Device Address array, `firstInstance` object-data indexing, timestamp profiling, render graph pass order, shadow mapping, IBL, the BRDF LUT, and Kulla-Conty-style compensation are unchanged. The shadow pass remains direct draw over all draw items.
+
+Future GPU-driven work can add compacted visible command buffers, per-batch indirect count buffers, `vkCmdDrawIndexedIndirectCount` for each mesh batch, fully GPU-built mesh batches, shadow caster culling, occlusion culling, BVH or other spatial partitioning, and LOD.
 
 ## Next Milestones
 
@@ -711,8 +739,9 @@ Future milestones can build on this multi-object material foundation with:
 - shadow caster culling
 - spatial partitioning
 - BVH / octree
+- compacted visible command buffers
+- per-batch indirect count buffers
 - multi-draw indirect count
-- GPU visible count readback
 - compact object/material buffers
 - GPU-driven material indexing
 - occlusion culling
