@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <exception>
 #include <filesystem>
+#include <functional>
 #include <glm/ext/matrix_clip_space.hpp>
 #include <glm/ext/matrix_transform.hpp>
 #include <glm/geometric.hpp>
@@ -90,14 +91,15 @@ struct PushConstants {
 
 // Mirrors src/shaders/cull.comp. std430 keeps vec4 members 16-byte aligned,
 // then packs the four scalar draw fields into the next 16 bytes, for a 48-byte
-// runtime-array stride.
+// runtime-array stride. objectFrameDataIndex becomes VkDrawIndexedIndirectCommand::firstInstance
+// on the Milestone 31 bindless multi-draw path.
 struct GpuCullDrawItem {
     glm::vec4 boundsMin{0.0f};
     glm::vec4 boundsMax{0.0f};
     uint32_t indexCount = 0;
     uint32_t firstIndex = 0;
     int32_t vertexOffset = 0;
-    uint32_t objectIndex = 0;
+    uint32_t objectFrameDataIndex = 0;
 };
 
 static_assert(offsetof(GpuCullDrawItem, boundsMin) == 0);
@@ -105,7 +107,7 @@ static_assert(offsetof(GpuCullDrawItem, boundsMax) == 16);
 static_assert(offsetof(GpuCullDrawItem, indexCount) == 32);
 static_assert(offsetof(GpuCullDrawItem, firstIndex) == 36);
 static_assert(offsetof(GpuCullDrawItem, vertexOffset) == 40);
-static_assert(offsetof(GpuCullDrawItem, objectIndex) == 44);
+static_assert(offsetof(GpuCullDrawItem, objectFrameDataIndex) == 44);
 static_assert(sizeof(GpuCullDrawItem) == 48);
 
 struct GpuCullPushConstants {
@@ -1403,8 +1405,16 @@ void Renderer::buildDrawItems()
     const size_t objectCount = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
     for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
         if (!appendDrawItemsForObject(static_cast<uint32_t>(objectIndex), drawItems_)) {
-            return;
+            break;
         }
+    }
+
+    std::stable_sort(drawItems_.begin(), drawItems_.end(), [](const DrawItem& lhs, const DrawItem& rhs) {
+        return std::less<const renderer::Mesh*>{}(lhs.mesh, rhs.mesh);
+    });
+
+    for (size_t drawIndex = 0; drawIndex < drawItems_.size(); ++drawIndex) {
+        drawItems_[drawIndex].frameDataIndex = static_cast<uint32_t>(drawIndex);
     }
 }
 
@@ -1441,6 +1451,36 @@ void Renderer::buildVisibleDrawItems(const renderer::Frustum& frustum)
     }
 }
 
+void Renderer::buildMeshDrawBatches()
+{
+    meshDrawBatches_.clear();
+    cullingStats_.commandCount = visibleDrawItems_.size();
+
+    const renderer::Mesh* currentMesh = nullptr;
+    MeshDrawBatch* currentBatch = nullptr;
+    for (size_t commandIndex = 0; commandIndex < visibleDrawItems_.size(); ++commandIndex) {
+        const DrawItem& drawItem = visibleDrawItems_[commandIndex];
+        if (!drawItem.mesh || drawItem.frameDataIndex >= kMaxDrawItems) {
+            currentMesh = nullptr;
+            currentBatch = nullptr;
+            continue;
+        }
+
+        if (!currentBatch || currentMesh != drawItem.mesh) {
+            MeshDrawBatch batch{};
+            batch.mesh = drawItem.mesh;
+            batch.firstCommand = static_cast<uint32_t>(commandIndex);
+            meshDrawBatches_.push_back(batch);
+            currentBatch = &meshDrawBatches_.back();
+            currentMesh = drawItem.mesh;
+        }
+
+        ++currentBatch->commandCount;
+    }
+
+    cullingStats_.batchCount = meshDrawBatches_.size();
+}
+
 void Renderer::updateGpuCullInputBuffer(uint32_t frameIndex)
 {
     if (drawItems_.empty()) {
@@ -1471,7 +1511,7 @@ void Renderer::updateGpuCullInputBuffer(uint32_t frameIndex)
         gpuDrawItem.indexCount = drawItem.indexCount;
         gpuDrawItem.firstIndex = drawItem.firstIndex;
         gpuDrawItem.vertexOffset = drawItem.vertexOffset;
-        gpuDrawItem.objectIndex = drawItem.objectIndex;
+        gpuDrawItem.objectFrameDataIndex = drawItem.frameDataIndex;
     }
 
     frameCullInputBuffers_.at(frameIndex)
@@ -1485,6 +1525,7 @@ void Renderer::updateIndirectDrawBuffer(uint32_t frameIndex)
     }
 
     std::vector<VkDrawIndexedIndirectCommand> indirectCommands(visibleDrawItems_.size());
+    const bool objectDataArrayIndexingActive = isMainPassMultiDrawIndirectActive();
     for (size_t drawIndex = 0; drawIndex < visibleDrawItems_.size(); ++drawIndex) {
         const DrawItem& drawItem = visibleDrawItems_[drawIndex];
         VkDrawIndexedIndirectCommand& command = indirectCommands[drawIndex];
@@ -1492,7 +1533,7 @@ void Renderer::updateIndirectDrawBuffer(uint32_t frameIndex)
         command.instanceCount = 1;
         command.firstIndex = drawItem.firstIndex;
         command.vertexOffset = drawItem.vertexOffset;
-        command.firstInstance = 0;
+        command.firstInstance = objectDataArrayIndexingActive ? drawItem.frameDataIndex : 0;
     }
 
     frameIndirectDrawBuffers_.at(frameIndex)
@@ -1560,13 +1601,17 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
             << "  RenderObjects: " << results.renderObjectsMs << " ms\n";
     if (cullingStats_.gpuCulling) {
         message << "Culling: totalDrawItems=" << cullingStats_.totalDrawItems
-                << " totalObjects=" << cullingStats_.totalObjects << "\n"
-                << "GPU culling enabled; visible count not read back yet.";
+                << " totalObjects=" << cullingStats_.totalObjects
+                << " meshBatches=" << cullingStats_.batchCount
+                << " commandCount=" << cullingStats_.commandCount << "\n"
+                << "GPU culling enabled; visible count not read back in Milestone 31.";
     } else {
         message << "Culling: total=" << cullingStats_.totalObjects
                 << " visible=" << cullingStats_.visibleObjects
                 << " culled=" << cullingStats_.culledObjects
-                << " drawItems=" << cullingStats_.totalDrawItems;
+                << " drawItems=" << cullingStats_.totalDrawItems
+                << " meshBatches=" << cullingStats_.batchCount
+                << " commandCount=" << cullingStats_.commandCount;
     }
     Logger::info(message.str());
 }
@@ -1579,6 +1624,7 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     if (renderObjects_.empty()) {
         drawItems_.clear();
         visibleDrawItems_.clear();
+        meshDrawBatches_.clear();
         cullingStats_ = {};
         return;
     }
@@ -1636,6 +1682,7 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         buildVisibleDrawItems(cameraFrustum);
         updateIndirectDrawBuffer(frameIndex);
     }
+    buildMeshDrawBatches();
 
     const size_t objectFrameCount = std::min(drawItems_.size(), static_cast<size_t>(kMaxDrawItems));
     std::vector<ObjectFrameData> objectFrameData(objectFrameCount);
@@ -1716,6 +1763,12 @@ bool Renderer::isBindlessMaterialTextureActive() const
     return useBindlessMaterialTextures_ && bindlessMaterialTexturesAvailable_ && bindlessTextureHeap_.valid();
 }
 
+bool Renderer::isMainPassMultiDrawIndirectActive() const
+{
+    return isBindlessMaterialTextureActive() && context_.device().multiDrawIndirectEnabled() &&
+           context_.device().drawIndirectFirstInstanceEnabled();
+}
+
 VkDescriptorSet Renderer::globalMaterialDescriptorSet() const
 {
     if (!materialVariants_.empty()) {
@@ -1749,7 +1802,10 @@ void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
 
     GpuCullPushConstants pushConstants{};
     pushConstants.frustumPlanes = frameFrustumPlanes_;
-    pushConstants.params = glm::uvec4(static_cast<uint32_t>(drawItems_.size()), 0, 0, 0);
+    pushConstants.params = glm::uvec4(static_cast<uint32_t>(drawItems_.size()),
+                                      isMainPassMultiDrawIndirectActive() ? 1U : 0U,
+                                      0,
+                                      0);
     vkCmdPushConstants(commandBuffer,
                        gpuCullPipeline_.layout(),
                        VK_SHADER_STAGE_COMPUTE_BIT,
@@ -1907,15 +1963,18 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
 
     const std::string objectDrawLabel =
         cullingStats_.gpuCulling
-            ? "MainPass IndirectDrawItems " + std::to_string(mainDrawItemCount) + " GPU culling"
+            ? "MainPass IndirectDrawItems " + std::to_string(mainDrawItemCount) + " GPU culling batches " +
+                  std::to_string(meshDrawBatches_.size())
             : "MainPass IndirectDrawItems " + std::to_string(mainDrawItemCount) + " visible objects " +
-                  std::to_string(cullingStats_.visibleObjects) + "/" + std::to_string(cullingStats_.totalObjects);
+                  std::to_string(cullingStats_.visibleObjects) + "/" + std::to_string(cullingStats_.totalObjects) +
+                  " batches " + std::to_string(meshDrawBatches_.size());
     rhi::debug::beginLabel(commandBuffer, objectDrawLabel);
     timestampQuery_.writeBegin(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::RenderObjects);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.pipeline());
 
     const VkDescriptorSet globalDescriptorSet = globalMaterialDescriptorSet();
     const bool bindlessMaterialTexturesActive = isBindlessMaterialTextureActive();
+    const bool multiDrawIndirectActive = isMainPassMultiDrawIndirectActive();
     bool bindlessDescriptorSetsBound = false;
     if (bindlessMaterialTexturesActive) {
         if (globalDescriptorSet != VK_NULL_HANDLE) {
@@ -1937,52 +1996,100 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
 
     const renderer::Mesh* boundMesh = nullptr;
     const VkBuffer indirectDrawBuffer = frameIndirectDrawBuffers_.at(currentFrame_).buffer();
-    for (size_t drawIndex = 0; drawIndex < mainDrawItemCount; ++drawIndex) {
-        const DrawItem& drawItem = visibleDrawItems_[drawIndex];
-        if (!drawItem.mesh || drawItem.frameDataIndex >= kMaxDrawItems) {
-            continue;
-        }
+    if (multiDrawIndirectActive) {
+        if (bindlessDescriptorSetsBound) {
+            const PushConstants pushConstants{objectFrameDataBaseAddress};
+            vkCmdPushConstants(commandBuffer,
+                               pipeline_.layout(),
+                               VK_SHADER_STAGE_VERTEX_BIT,
+                               0,
+                               static_cast<uint32_t>(sizeof(PushConstants)),
+                               &pushConstants);
 
-        if (bindlessMaterialTexturesActive) {
-            if (!bindlessDescriptorSetsBound) {
+            const std::string batchesLabel =
+                "MultiDrawIndirectBatches " + std::to_string(meshDrawBatches_.size()) + " commands " +
+                std::to_string(mainDrawItemCount);
+            rhi::debug::beginLabel(commandBuffer, batchesLabel);
+            for (const MeshDrawBatch& batch : meshDrawBatches_) {
+                if (!batch.mesh || batch.commandCount == 0) {
+                    continue;
+                }
+
+                if (boundMesh != batch.mesh) {
+                    const VkBuffer vertexBuffers[] = {batch.mesh->vertexBuffer()};
+                    const VkDeviceSize vertexOffsets[] = {0};
+                    vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
+                    vkCmdBindIndexBuffer(commandBuffer, batch.mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+                    boundMesh = batch.mesh;
+                }
+
+                const std::string batchLabel = "MeshBatchDraw commands " + std::to_string(batch.commandCount);
+                rhi::debug::beginLabel(commandBuffer, batchLabel);
+                const VkDeviceSize indirectOffset =
+                    static_cast<VkDeviceSize>(batch.firstCommand * sizeof(VkDrawIndexedIndirectCommand));
+                vkCmdDrawIndexedIndirect(commandBuffer,
+                                         indirectDrawBuffer,
+                                         indirectOffset,
+                                         batch.commandCount,
+                                         sizeof(VkDrawIndexedIndirectCommand));
+                rhi::debug::endLabel(commandBuffer);
+            }
+            rhi::debug::endLabel(commandBuffer);
+        }
+    } else {
+        for (size_t drawIndex = 0; drawIndex < mainDrawItemCount; ++drawIndex) {
+            const DrawItem& drawItem = visibleDrawItems_[drawIndex];
+            if (!drawItem.mesh || drawItem.frameDataIndex >= kMaxDrawItems) {
                 continue;
             }
-        } else {
-            if (!drawItem.material || drawItem.material->descriptorSet == VK_NULL_HANDLE) {
-                continue;
+
+            if (bindlessMaterialTexturesActive) {
+                if (!bindlessDescriptorSetsBound) {
+                    continue;
+                }
+            } else {
+                if (!drawItem.material || drawItem.material->descriptorSet == VK_NULL_HANDLE) {
+                    continue;
+                }
+
+                const VkDescriptorSet descriptorSet = drawItem.material->descriptorSet;
+                vkCmdBindDescriptorSets(commandBuffer,
+                                        VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        pipeline_.layout(),
+                                        0,
+                                        1,
+                                        &descriptorSet,
+                                        0,
+                                        nullptr);
             }
 
-            const VkDescriptorSet descriptorSet = drawItem.material->descriptorSet;
-            vkCmdBindDescriptorSets(
-                commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.layout(), 0, 1, &descriptorSet, 0, nullptr);
-        }
+            const PushConstants pushConstants{
+                objectFrameDataBaseAddress +
+                static_cast<VkDeviceAddress>(drawItem.frameDataIndex * sizeof(ObjectFrameData))};
 
-        const PushConstants pushConstants{objectFrameDataBaseAddress +
-                                          static_cast<VkDeviceAddress>(drawItem.frameDataIndex * sizeof(ObjectFrameData))};
+            // Fallback recording pushes the address of this draw's object data; firstInstance stays zero.
+            vkCmdPushConstants(commandBuffer,
+                               pipeline_.layout(),
+                               VK_SHADER_STAGE_VERTEX_BIT,
+                               0,
+                               static_cast<uint32_t>(sizeof(PushConstants)),
+                               &pushConstants);
 
-        // The pushed address points at this draw's BDA frame data. Bindless mode
-        // keeps material texture descriptors bound once and reads indices from that data.
-        vkCmdPushConstants(commandBuffer,
-                           pipeline_.layout(),
-                           VK_SHADER_STAGE_VERTEX_BIT,
-                           0,
-                           static_cast<uint32_t>(sizeof(PushConstants)),
-                           &pushConstants);
+            const renderer::Mesh* mesh = drawItem.mesh;
+            if (boundMesh != mesh) {
+                const VkBuffer vertexBuffers[] = {mesh->vertexBuffer()};
+                const VkDeviceSize vertexOffsets[] = {0};
+                vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
+                vkCmdBindIndexBuffer(commandBuffer, mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+                boundMesh = mesh;
+            }
 
-        const renderer::Mesh* mesh = drawItem.mesh;
-        if (boundMesh != mesh) {
-            const VkBuffer vertexBuffers[] = {mesh->vertexBuffer()};
-            const VkDeviceSize vertexOffsets[] = {0};
-            vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
-            vkCmdBindIndexBuffer(commandBuffer, mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
-            boundMesh = mesh;
-        }
-
-        if (drawItem.indexCount > 0) {
-            const VkDeviceSize indirectOffset =
-                static_cast<VkDeviceSize>(drawIndex * sizeof(VkDrawIndexedIndirectCommand));
-            vkCmdDrawIndexedIndirect(
-                commandBuffer, indirectDrawBuffer, indirectOffset, 1, sizeof(VkDrawIndexedIndirectCommand));
+            if (drawItem.indexCount > 0) {
+                const VkDeviceSize indirectOffset =
+                    static_cast<VkDeviceSize>(drawIndex * sizeof(VkDrawIndexedIndirectCommand));
+                vkCmdDrawIndexedIndirect(
+                    commandBuffer, indirectDrawBuffer, indirectOffset, 1, sizeof(VkDrawIndexedIndirectCommand));
+            }
         }
     }
     timestampQuery_.writeEnd(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::RenderObjects);

@@ -66,11 +66,28 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - `VulkanEnvironmentMap` owns a cube-compatible sampled image, cube image view, and clamp sampler. The renderer uses one generated cubemap for the visible skybox, a second low-frequency generated cubemap for diffuse irradiance, and a mipmapped generated cubemap for prefiltered specular IBL.
 - `VulkanBrdfLut` owns the generated 2D `VK_FORMAT_R8G8_UNORM` split-sum BRDF lookup texture used by specular IBL.
 - `VulkanShadowMap` owns the fixed-size sampled depth image, image view, sampler, and current layout used by the directional shadow pass.
-- `Mesh`, `Material`, `RenderObject`, `DrawItem`, `Transform`, and `Camera` provide the first renderer-side scene abstractions. `Mesh::createFromGltf()` can load static glTF triangle geometry, submesh material ranges, basic glTF material factors, glTF texture references, and static scene node instances without introducing ECS, animation, skinning, morph targets, glTF cameras/lights, or bindless rendering.
+- `Mesh`, `Material`, `RenderObject`, `DrawItem`, `Transform`, and `Camera` provide the first renderer-side scene abstractions. `Mesh::createFromGltf()` can load static glTF triangle geometry, submesh material ranges, basic glTF material factors, glTF texture references, and static scene node instances without introducing ECS, animation, skinning, morph targets, or glTF cameras/lights.
 
 ## Current Descriptor Contract
 
-Material/global descriptor set 0 remains the compatibility layout:
+Bindless main-pass global/material resource descriptor set 0:
+
+- binding 1 = shadow map combined image sampler
+- binding 4 = diffuse irradiance cubemap combined image sampler
+- binding 5 = prefiltered specular cubemap combined image sampler
+- binding 6 = BRDF LUT combined image sampler
+
+Bindless material texture descriptor set 1:
+
+- binding 0 = base color combined image sampler runtime array
+- binding 1 = normal map combined image sampler runtime array
+- binding 2 = metallic-roughness combined image sampler runtime array
+
+Skybox descriptor set:
+
+- set 0 binding 0 = visible environment cubemap combined image sampler
+
+Legacy fallback material descriptor set 0, used when descriptor indexing is unavailable:
 
 - binding 0 = base color combined image sampler
 - binding 1 = shadow map combined image sampler
@@ -80,24 +97,14 @@ Material/global descriptor set 0 remains the compatibility layout:
 - binding 5 = prefiltered specular cubemap combined image sampler
 - binding 6 = BRDF LUT combined image sampler
 
-When bindless material descriptors are active, the main shader still binds set 0 once but only uses the global resources at bindings 1, 4, 5, and 6. Material textures move to bindless descriptor set 1:
-
-- binding 0 = base color combined image sampler runtime array
-- binding 1 = normal map combined image sampler runtime array
-- binding 2 = metallic-roughness combined image sampler runtime array
-
-Skybox descriptor set:
-
-- binding 0 = visible environment cubemap combined image sampler
-
 GPU culling compute descriptor set:
 
 - binding 0 = per-frame culling input storage buffer
 - binding 1 = per-frame indirect command output storage buffer
 
-The material/global descriptor set above is still separate from the skybox descriptor set. The bindless material texture set is separate from both. Static glTF geometry and glTF-loaded materials use bindless material texture indices on devices with descriptor indexing support, while devices without the required features keep the older per-material descriptor set path.
+The bindless path uses a transitional set 0 layout that is compatible with the legacy material set, but `simple_bindless.frag` only reads the global resources from it. Material textures come from set 1 indices. Static glTF geometry and glTF-loaded materials use bindless material texture indices on devices with descriptor indexing support, while devices without the required features keep the older per-material descriptor set path.
 
-Object and material scalar data still use Buffer Device Address plus a vertex-stage push constant. MVP, model, light, camera, base-color factor, metallic factor, roughness factor, and multi-scatter strength data have not moved into descriptor UBOs.
+Object and material scalar data still use Buffer Device Address plus a vertex-stage push constant. On the bindless multi-draw path, the pushed address is the base of the current frame's `ObjectFrameData` array, and indirect `firstInstance` selects the object-data entry. The fallback path still pushes one per-draw object-data address with `firstInstance = 0`. MVP, model, light, camera, base-color factor, metallic factor, roughness factor, and multi-scatter strength data have not moved into descriptor UBOs.
 
 ## Vulkan Initialization Flow
 
@@ -598,17 +605,17 @@ Future culling and scene-management work can add shadow caster culling, aggregat
 
 ## Milestone 28: Indirect Draw Preparation
 
-Milestone 28 introduces a compact `DrawItem` record as the renderer-side bridge between scene objects and Vulkan draw commands. Each draw item stores the mesh, resolved material, render object index, submesh index, index range, and vertex offset. The renderer builds draw items from `RenderObject`s and `MeshPrimitive` submeshes, so imported glTF submesh material assignments still decide which material descriptor set is bound.
+Milestone 28 introduces a compact `DrawItem` record as the renderer-side bridge between scene objects and Vulkan draw commands. Each draw item stores the mesh, resolved material, render object index, submesh index, index range, and vertex offset. The renderer builds draw items from `RenderObject`s and `MeshPrimitive` submeshes, so imported glTF submesh material assignments decide which material is used for the draw.
 
 CPU frustum culling now produces a separate visible main-pass draw item list. The culling test still runs per `RenderObject` against its world-space AABB, and the shadow pass is intentionally left on the simpler all-objects path for now.
 
 Visible main-pass draws are also mirrored into a CPU-visible per-frame indirect command buffer. Each visible draw item writes one `VkDrawIndexedIndirectCommand` with `indexCount`, `instanceCount = 1`, `firstIndex`, `vertexOffset`, and `firstInstance = 0`.
 
-The main pass now uses `vkCmdDrawIndexedIndirect` for mesh draws. It still loops over visible draw items because material descriptors are not bindless and object/material scalar data still uses the Buffer Device Address plus vertex-stage push constant path. Each draw therefore still binds descriptor set 0, pushes the selected object's BDA address, binds the mesh vertex/index buffers when needed, and then issues a one-command indirect indexed draw.
+The main pass now uses `vkCmdDrawIndexedIndirect` for mesh draws. At Milestone 28, material descriptors were still bound per draw and object/material scalar data still used the Buffer Device Address plus vertex-stage push constant path. Each draw therefore bound descriptor set 0, pushed the selected object's BDA address, bound the mesh vertex/index buffers when needed, and then issued a one-command indirect indexed draw.
 
-This is preparation for GPU culling and bindless rendering. It does not add GPU culling, compute-built command generation, multi-draw indirect count, descriptor indexing arrays, ECS, ImGui, animation, skinning, occlusion culling, BVH or octree acceleration, shader resource model changes, descriptor layout changes, or render graph scheduling changes.
+This was preparation for GPU culling and later bindless rendering. It did not add GPU culling, compute-built command generation, multi-draw indirect count, descriptor indexing arrays, ECS, ImGui, animation, skinning, occlusion culling, BVH or octree acceleration, shader resource model changes, descriptor layout changes, or render graph scheduling changes.
 
-Future GPU-driven rendering work can add GPU culling, compute-built indirect commands, multi-draw indirect count, bindless material descriptors, compact object/material buffers, shadow caster culling, aggregate scene bounds, spatial partitioning, BVH / octree acceleration, occlusion culling, and LOD.
+Milestone 29 adds GPU culling and compute-built indirect commands. Milestone 30 adds the bindless material texture path.
 
 ## Milestone 29: Compute-Based GPU Frustum Culling
 
@@ -638,7 +645,7 @@ The GPU culling descriptor set is separate from material set 0:
 
 After the shadow pass, the renderer records the `GpuCulling` / `ComputeCullDispatch` debug labels, binds the compute pipeline, binds the current frame's cull descriptor set, pushes the frustum planes, dispatches `ceil(drawItemCount / 64)` workgroups, and inserts a Synchronization2 buffer barrier from compute shader storage writes to draw-indirect command reads. The main pass then continues to use `vkCmdDrawIndexedIndirect`.
 
-The CPU still loops over main-pass draw items because material descriptors are not bindless yet and object/material scalar data still uses the existing BDA plus vertex-stage push constant path. Each draw still binds material descriptor set 0, pushes the selected object's object-data address, binds the mesh buffers as needed, and issues one indirect indexed draw. GPU culling simply makes culled commands do zero work.
+At Milestone 29, the CPU still looped over main-pass draw items because material descriptors were still bound per draw and object/material scalar data still used the existing BDA plus vertex-stage push constant path. Each draw still bound material descriptor set 0, pushed the selected object's object-data address, bound the mesh buffers as needed, and issued one indirect indexed draw. GPU culling simply made culled commands do zero work. Milestone 30 adds the bindless material texture path so per-material descriptor binding is no longer needed on devices that support descriptor indexing.
 
 CPU frustum culling remains the fallback if `useGpuCulling_` is false or GPU culling resource creation fails. In the GPU path, visible count readback is intentionally not implemented yet; the timing log reports total draw items and prints `GPU culling enabled; visible count not read back yet.` The shadow pass remains direct `vkCmdDrawIndexed` over all draw items for now.
 
@@ -646,7 +653,7 @@ Future GPU-driven rendering work can add multi-draw indirect count, GPU visible 
 
 ## Milestone 30: Bindless Material Descriptors
 
-Milestone 30 adds a simple fixed-size bindless texture heap for material sampling while keeping object and material scalar data on the existing Buffer Device Address path. `BindlessTextureHeap` owns one descriptor set layout, one descriptor pool, and one descriptor set with 256 slots per material texture class:
+Milestone 30 adds a simple fixed-size bindless texture heap for material sampling while keeping object and material scalar data on the existing Buffer Device Address path. `BindlessTextureHeap` owns one descriptor set layout, one descriptor pool, and one descriptor set. The bindless heap uses descriptor set 1 with 256 slots per material texture class:
 
 - set 1 binding 0 = base color combined image sampler runtime array
 - set 1 binding 1 = normal combined image sampler runtime array
@@ -656,17 +663,37 @@ Milestone 30 adds a simple fixed-size bindless texture heap for material samplin
 
 Each `Material` stores `baseColorTextureIndex`, `normalTextureIndex`, and `metallicRoughnessTextureIndex`. Materials receive those indices when their textures are registered into the bindless heap. The first registered entries are fallbacks: checker/base color, flat normal, and neutral metallic-roughness.
 
-`ObjectFrameData` now includes a `uvec4 textureIndices` field. The CPU still loops over `DrawItem`s and pushes a BDA address per draw, but the address points at draw-specific frame data so submesh material indices can feed the shader without moving to a full material buffer yet.
+`ObjectFrameData` now includes a `uvec4 textureIndices` field. Texture indices travel through the existing BDA object-data path. The CPU still loops over `DrawItem`s and pushes a BDA address per draw, but the address points at draw-specific frame data so submesh material indices can feed the shader without moving to a full material buffer yet.
 
-The bindless fragment shader samples material textures with descriptor indexing and `nonuniformEXT`:
+`simple_bindless.frag` samples material textures with descriptor indexing and `nonuniformEXT`:
 
-- `baseColorTextures[textureIndices.x]`
-- `normalTextures[textureIndices.y]`
-- `metallicRoughnessTextures[textureIndices.z]`
+- `uBaseColorTextures[nonuniformEXT(vTextureIndices.x)]`
+- `uNormalTextures[nonuniformEXT(vTextureIndices.y)]`
+- `uMetallicRoughnessTextures[nonuniformEXT(vTextureIndices.z)]`
 
 Global resources remain fixed in the transitional set 0 layout: shadow map at binding 1, diffuse irradiance at binding 4, prefiltered specular at binding 5, and BRDF LUT at binding 6. The main pass binds set 0 and set 1 once on the bindless path, then draws with indirect indexed commands without binding a unique material descriptor set per draw. The skybox descriptor set, shadow pass, compute culling pipeline, lighting math, normal mapping, IBL, BRDF LUT, Kulla-Conty-style compensation, and render graph pass order are unchanged.
 
 Future work can replace draw-specific frame material data with compact material buffers, make material indexing fully GPU-driven, add multi-draw indirect count, support bindless samplers or separate image/sampler descriptors, add texture streaming, resize descriptor heaps, and improve model loading.
+
+## Milestone 31: Multi-Draw Indirect and Object-Data Array Indexing
+
+Milestone 31 moves the bindless main-pass path closer to a GPU-driven renderer. Instead of pushing a different `ObjectFrameData` device address before each bindless draw, the renderer pushes the base address of the current frame's `ObjectFrameData` array. Indirect commands use `firstInstance` as the object-data index, and `simple.vert` uses `gl_InstanceIndex` to read `ObjectFrameData` from that array.
+
+Main-pass `DrawItem`s are ordered into mesh-compatible ranges and then grouped into mesh batches. Each batch stores the mesh, the first indirect command, and the command count. The renderer binds the mesh vertex and index buffers once per batch and submits the range with one `vkCmdDrawIndexedIndirect` call, so compatible batches can use `drawCount > 1`.
+
+Compute culling still writes one indirect command per draw item. Visible draw items receive their real index range, `instanceCount = 1`, and `firstInstance = objectFrameDataIndex`; culled draw items write zero-count commands. Milestone 31 intentionally keeps zero-count commands instead of compacting the visible list, so `vkCmdDrawIndexedIndirectCount` and per-batch count buffers are left for later.
+
+Material textures continue to be sampled through the bindless descriptor arrays:
+
+- set 1 binding 0 = base color texture array
+- set 1 binding 1 = normal texture array
+- set 1 binding 2 = metallic-roughness texture array
+
+The shadow pass remains the simpler direct path for now. It still draws all shadow-casting draw items directly and pushes the per-object BDA address, which keeps shadow rendering independent from the new main-pass batching work.
+
+The renderer checks and enables `multiDrawIndirect` and `drawIndirectFirstInstance` when the device supports them. If descriptor indexing or the required indirect features are unavailable, the main pass falls back to the Milestone 29 style: CPU loop over draw items, one indirect command per draw, per-draw BDA push constants, and per-material descriptor binding when bindless textures are unavailable.
+
+Milestone 31 is a bridge toward full GPU-driven rendering. Future work can add `vkCmdDrawIndexedIndirectCount`, compacted visible command buffers, GPU visible count readback, fully GPU-built draw batches, bindless object/material buffers, shadow pass indirect drawing, occlusion culling, BVH or other spatial partitioning, and LOD.
 
 ## Next Milestones
 

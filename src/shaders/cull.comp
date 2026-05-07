@@ -5,6 +5,8 @@ layout(local_size_x = 64) in;
 // std430 layout:
 // - boundsMin and boundsMax are 16-byte aligned vec4 values.
 // - The four scalar draw fields occupy the next 16 bytes.
+// - objectFrameDataIndex is copied to firstInstance when the renderer enables
+//   object-data array indexing; fallback recording keeps firstInstance at zero.
 // - Runtime array stride is therefore 48 bytes, matching the C++ struct.
 struct GpuCullDrawItem {
     vec4 boundsMin;
@@ -12,7 +14,7 @@ struct GpuCullDrawItem {
     uint indexCount;
     uint firstIndex;
     int vertexOffset;
-    uint objectIndex;
+    uint objectFrameDataIndex;
 };
 
 // Matches VkDrawIndexedIndirectCommand exactly. std430 keeps the runtime array
@@ -35,7 +37,7 @@ layout(set = 0, binding = 1, std430) writeonly buffer IndirectOutputBuffer {
 
 layout(push_constant) uniform CullPushConstants {
     vec4 frustumPlanes[6];
-    uvec4 params; // x = draw item count
+    uvec4 params; // x = draw item count, y = write objectFrameDataIndex to firstInstance
 } pc;
 
 bool testAabb(vec3 boundsMin, vec3 boundsMax)
@@ -70,7 +72,7 @@ void main()
     command.instanceCount = visible ? 1 : 0;
     command.firstIndex = drawItem.firstIndex;
     command.vertexOffset = drawItem.vertexOffset;
-    command.firstInstance = 0;
+    command.firstInstance = pc.params.y != 0 ? drawItem.objectFrameDataIndex : 0;
 
     indirectOutput.commands[drawIndex] = command;
 }

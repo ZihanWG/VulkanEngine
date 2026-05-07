@@ -43,6 +43,8 @@ public:
     [[nodiscard]] const QueueFamilyIndices& queueFamilies() const { return queueFamilies_; }
     [[nodiscard]] bool descriptorIndexingEnabled() const { return descriptorIndexingEnabled_; }
     [[nodiscard]] bool bufferDeviceAddressEnabled() const { return bufferDeviceAddressEnabled_; }
+    [[nodiscard]] bool multiDrawIndirectEnabled() const { return multiDrawIndirectEnabled_; }
+    [[nodiscard]] bool drawIndirectFirstInstanceEnabled() const { return drawIndirectFirstInstanceEnabled_; }
 
     [[nodiscard]] SwapchainSupportDetails querySwapchainSupport() const;
 
@@ -65,6 +67,8 @@ private:
     QueueFamilyIndices queueFamilies_{};
     bool descriptorIndexingEnabled_ = false;
     bool bufferDeviceAddressEnabled_ = false;
+    bool multiDrawIndirectEnabled_ = false;
+    bool drawIndirectFirstInstanceEnabled_ = false;
 };
 
 } // namespace ve::rhi

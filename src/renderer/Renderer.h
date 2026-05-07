@@ -68,11 +68,19 @@ private:
         uint32_t frameDataIndex = 0;
     };
 
+    struct MeshDrawBatch {
+        const renderer::Mesh* mesh = nullptr;
+        uint32_t firstCommand = 0;
+        uint32_t commandCount = 0;
+    };
+
     struct CullingStats {
         size_t totalObjects = 0;
         size_t visibleObjects = 0;
         size_t culledObjects = 0;
         size_t totalDrawItems = 0;
+        size_t batchCount = 0;
+        size_t commandCount = 0;
         bool gpuCulling = false;
     };
 
@@ -105,6 +113,7 @@ private:
     void updateFrameData(uint32_t frameIndex);
     void buildDrawItems();
     void buildVisibleDrawItems(const renderer::Frustum& frustum);
+    void buildMeshDrawBatches();
     bool appendDrawItemsForObject(uint32_t objectIndex, std::vector<DrawItem>& drawItems) const;
     void updateIndirectDrawBuffer(uint32_t frameIndex);
     [[nodiscard]] const renderer::Material* resolveMaterial(
@@ -115,6 +124,7 @@ private:
     void recordGpuCullingCommands(VkCommandBuffer commandBuffer);
     [[nodiscard]] bool isGpuCullingActive() const;
     [[nodiscard]] bool isBindlessMaterialTextureActive() const;
+    [[nodiscard]] bool isMainPassMultiDrawIndirectActive() const;
     [[nodiscard]] VkDescriptorSet globalMaterialDescriptorSet() const;
     void nameTextureResources(const rhi::VulkanTexture& texture, std::string_view name) const;
     void nameEnvironmentMapResources(const rhi::VulkanEnvironmentMap& environmentMap, std::string_view name) const;
@@ -162,6 +172,7 @@ private:
     std::vector<renderer::RenderObject> renderObjects_;
     std::vector<DrawItem> drawItems_;
     std::vector<DrawItem> visibleDrawItems_;
+    std::vector<MeshDrawBatch> meshDrawBatches_;
     std::vector<rhi::VulkanBuffer> frameObjectDataBuffers_;
     std::vector<rhi::VulkanBuffer> frameCullInputBuffers_;
     std::vector<rhi::VulkanBuffer> frameIndirectDrawBuffers_;

@@ -2,7 +2,7 @@
 
 #extension GL_EXT_buffer_reference : require
 
-layout(buffer_reference, std430) readonly buffer ObjectFrameDataBuffer {
+struct ObjectFrameData {
     mat4 mvp;
     mat4 model;
     mat4 lightMvp;
@@ -14,6 +14,10 @@ layout(buffer_reference, std430) readonly buffer ObjectFrameDataBuffer {
     vec4 materialParams;
     vec4 cameraPosition;
     uvec4 textureIndices;
+};
+
+layout(buffer_reference, std430) readonly buffer ObjectFrameDataBuffer {
+    ObjectFrameData objects[];
 };
 
 layout(push_constant) uniform PushConstants {
@@ -43,10 +47,12 @@ layout(location = 14) flat out uvec4 vTextureIndices;
 
 void main()
 {
-    vec4 worldPosition = pc.objectFrameData.model * vec4(inPosition, 1.0);
-    gl_Position = pc.objectFrameData.mvp * vec4(inPosition, 1.0);
-    mat3 normalMatrix = transpose(inverse(mat3(pc.objectFrameData.model)));
-    mat3 modelMatrix = mat3(pc.objectFrameData.model);
+    ObjectFrameData objectData = pc.objectFrameData.objects[gl_InstanceIndex];
+
+    vec4 worldPosition = objectData.model * vec4(inPosition, 1.0);
+    gl_Position = objectData.mvp * vec4(inPosition, 1.0);
+    mat3 normalMatrix = transpose(inverse(mat3(objectData.model)));
+    mat3 modelMatrix = mat3(objectData.model);
     vec3 normalWS = normalize(normalMatrix * inNormal);
     vec3 tangentWS = normalize(modelMatrix * inTangent.xyz);
     tangentWS = normalize(tangentWS - normalWS * dot(normalWS, tangentWS));
@@ -57,14 +63,14 @@ void main()
     vNormal = normalWS;
     vTangent = tangentWS;
     vBitangent = bitangentWS;
-    vLightDirection = pc.objectFrameData.lightDirection.xyz;
-    vLightColor = pc.objectFrameData.lightColor.xyz;
-    vAmbientColor = pc.objectFrameData.ambientColor.xyz;
-    vLightSpacePosition = pc.objectFrameData.lightMvp * vec4(inPosition, 1.0);
-    vShadowSettings = pc.objectFrameData.shadowSettings;
+    vLightDirection = objectData.lightDirection.xyz;
+    vLightColor = objectData.lightColor.xyz;
+    vAmbientColor = objectData.ambientColor.xyz;
+    vLightSpacePosition = objectData.lightMvp * vec4(inPosition, 1.0);
+    vShadowSettings = objectData.shadowSettings;
     vWorldPosition = worldPosition.xyz;
-    vCameraPosition = pc.objectFrameData.cameraPosition.xyz;
-    vBaseColorFactor = pc.objectFrameData.baseColorFactor;
-    vMaterialParams = pc.objectFrameData.materialParams;
-    vTextureIndices = pc.objectFrameData.textureIndices;
+    vCameraPosition = objectData.cameraPosition.xyz;
+    vBaseColorFactor = objectData.baseColorFactor;
+    vMaterialParams = objectData.materialParams;
+    vTextureIndices = objectData.textureIndices;
 }

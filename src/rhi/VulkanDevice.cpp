@@ -54,6 +54,8 @@ void VulkanDevice::cleanup()
     queueFamilies_ = {};
     descriptorIndexingEnabled_ = false;
     bufferDeviceAddressEnabled_ = false;
+    multiDrawIndirectEnabled_ = false;
+    drawIndirectFirstInstanceEnabled_ = false;
 }
 
 void VulkanDevice::pickPhysicalDevice()
@@ -180,6 +182,12 @@ void VulkanDevice::createLogicalDevice()
 
     descriptorIndexingEnabled_ = supportsDescriptorIndexing(supported12);
     bufferDeviceAddressEnabled_ = supported12.bufferDeviceAddress == VK_TRUE;
+    multiDrawIndirectEnabled_ = supportedFeatures.features.multiDrawIndirect == VK_TRUE;
+    drawIndirectFirstInstanceEnabled_ = supportedFeatures.features.drawIndirectFirstInstance == VK_TRUE;
+
+    VkPhysicalDeviceFeatures enabledCore{};
+    enabledCore.multiDrawIndirect = multiDrawIndirectEnabled_ ? VK_TRUE : VK_FALSE;
+    enabledCore.drawIndirectFirstInstance = drawIndirectFirstInstanceEnabled_ ? VK_TRUE : VK_FALSE;
 
     VkPhysicalDeviceVulkan13Features enabled13{};
     enabled13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
@@ -207,6 +215,7 @@ void VulkanDevice::createLogicalDevice()
     VkDeviceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     createInfo.pNext = &enabled12;
+    createInfo.pEnabledFeatures = &enabledCore;
     createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
     createInfo.pQueueCreateInfos = queueCreateInfos.data();
     createInfo.enabledExtensionCount = static_cast<uint32_t>(kRequiredDeviceExtensions.size());
@@ -223,6 +232,13 @@ void VulkanDevice::createLogicalDevice()
     } else {
         Logger::warn("Descriptor indexing features required for bindless material textures are not fully supported; "
                      "the renderer will use per-material descriptor sets.");
+    }
+
+    if (multiDrawIndirectEnabled_ && drawIndirectFirstInstanceEnabled_) {
+        Logger::info("Multi-draw indirect and drawIndirectFirstInstance are enabled.");
+    } else {
+        Logger::warn("Multi-draw indirect object-data array indexing is not fully supported; "
+                     "the main pass will use per-draw indirect fallback recording.");
     }
 }
 
