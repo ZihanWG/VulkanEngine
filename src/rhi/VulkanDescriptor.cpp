@@ -24,7 +24,10 @@ VulkanDescriptorSetLayout& VulkanDescriptorSetLayout::operator=(VulkanDescriptor
     return *this;
 }
 
-void VulkanDescriptorSetLayout::create(VkDevice device, std::span<const VkDescriptorSetLayoutBinding> bindings)
+void VulkanDescriptorSetLayout::create(VkDevice device,
+                                       std::span<const VkDescriptorSetLayoutBinding> bindings,
+                                       VkDescriptorSetLayoutCreateFlags flags,
+                                       const void* pNext)
 {
     reset();
 
@@ -32,6 +35,8 @@ void VulkanDescriptorSetLayout::create(VkDevice device, std::span<const VkDescri
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.pNext = pNext;
+    layoutInfo.flags = flags;
     layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
     layoutInfo.pBindings = bindings.data();
 

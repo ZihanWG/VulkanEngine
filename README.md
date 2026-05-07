@@ -2,7 +2,7 @@
 
 Modern C++20 Vulkan 1.3 renderer skeleton inspired by the educational flow of [Sascha Willems' HowToVulkan](https://github.com/SaschaWillems/HowToVulkan), but split into engine-style modules instead of a single tutorial file.
 
-The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube or imported glTF geometry with normals, tangents, submesh material ranges, and local-space bounds into GPU-local vertex and index buffers, loads small RGBA base color, normal, and metallic-roughness textures from disk with procedural fallbacks, loads basic glTF PBR material factors and base color/normal/metallic-roughness textures when available, traverses the default glTF scene hierarchy to instantiate static `RenderObject`s with accumulated node transforms, creates and renders a simple procedural environment cubemap as a skybox background, creates low-frequency diffuse irradiance and mipmapped prefiltered specular cubemaps from the same procedural environment colors, generates a 2D split-sum BRDF LUT, and first tries to draw a static glTF test scene with tangent-space normal mapping, direct-light Cook-Torrance GGX material response, diffuse and specular image-based lighting, compact Kulla-Conty-style multi-scattering compensation, directional lighting, compute-based main-pass frustum culling, GPU-written `VkDrawIndexedIndirectCommand` entries, a CPU culling fallback, and a PCF-filtered directional shadow map every frame using Dynamic Rendering and Synchronization2. If no supported glTF asset loads, the renderer falls back to the previous multi-cube demo scene. A minimal render graph now documents the shadow and main pass order, records manual resource usage, and centralizes the frame's image transitions.
+The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube or imported glTF geometry with normals, tangents, submesh material ranges, and local-space bounds into GPU-local vertex and index buffers, loads small RGBA base color, normal, and metallic-roughness textures from disk with procedural fallbacks, loads basic glTF PBR material factors and base color/normal/metallic-roughness textures when available, traverses the default glTF scene hierarchy to instantiate static `RenderObject`s with accumulated node transforms, creates and renders a simple procedural environment cubemap as a skybox background, creates low-frequency diffuse irradiance and mipmapped prefiltered specular cubemaps from the same procedural environment colors, generates a 2D split-sum BRDF LUT, and first tries to draw a static glTF test scene with tangent-space normal mapping, direct-light Cook-Torrance GGX material response, diffuse and specular image-based lighting, compact Kulla-Conty-style multi-scattering compensation, directional lighting, bindless material texture descriptors when descriptor indexing is available, compute-based main-pass frustum culling, GPU-written `VkDrawIndexedIndirectCommand` entries, a CPU culling fallback, and a PCF-filtered directional shadow map every frame using Dynamic Rendering and Synchronization2. If no supported glTF asset loads, the renderer falls back to the previous multi-cube demo scene. A minimal render graph now documents the shadow and main pass order, records manual resource usage, and centralizes the frame's image transitions.
 
 ## Dependencies
 
@@ -70,7 +70,7 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 
 ## Current Descriptor Contract
 
-Material descriptor set 0:
+Material/global descriptor set 0 remains the compatibility layout:
 
 - binding 0 = base color combined image sampler
 - binding 1 = shadow map combined image sampler
@@ -79,6 +79,12 @@ Material descriptor set 0:
 - binding 4 = diffuse irradiance cubemap combined image sampler
 - binding 5 = prefiltered specular cubemap combined image sampler
 - binding 6 = BRDF LUT combined image sampler
+
+When bindless material descriptors are active, the main shader still binds set 0 once but only uses the global resources at bindings 1, 4, 5, and 6. Material textures move to bindless descriptor set 1:
+
+- binding 0 = base color combined image sampler runtime array
+- binding 1 = normal map combined image sampler runtime array
+- binding 2 = metallic-roughness combined image sampler runtime array
 
 Skybox descriptor set:
 
@@ -89,7 +95,7 @@ GPU culling compute descriptor set:
 - binding 0 = per-frame culling input storage buffer
 - binding 1 = per-frame indirect command output storage buffer
 
-The material descriptor set above is still separate from the skybox descriptor set. The material shader samples the diffuse irradiance cubemap at binding 4 for environment diffuse lighting, the prefiltered specular cubemap at binding 5, and the BRDF LUT at binding 6; the skybox continues to sample the visible environment cubemap from its own set. Static glTF geometry and glTF-loaded materials use this same material descriptor contract; global shadow and IBL resources are shared across material descriptor sets, and there is still no bindless descriptor path.
+The material/global descriptor set above is still separate from the skybox descriptor set. The bindless material texture set is separate from both. Static glTF geometry and glTF-loaded materials use bindless material texture indices on devices with descriptor indexing support, while devices without the required features keep the older per-material descriptor set path.
 
 Object and material scalar data still use Buffer Device Address plus a vertex-stage push constant. MVP, model, light, camera, base-color factor, metallic factor, roughness factor, and multi-scatter strength data have not moved into descriptor UBOs.
 
@@ -129,7 +135,7 @@ Object and material scalar data still use Buffer Device Address plus a vertex-st
 20. Bind the skybox pipeline and skybox descriptor set 0.
 21. Push the skybox inverse view-projection matrix and draw a fullscreen triangle.
 22. Bind the main graphics pipeline.
-23. For each main-pass `DrawItem`, bind its material descriptor set 0. GPU culling loops over all draw items; CPU fallback loops over the CPU-visible list.
+23. On the bindless path, bind set 0 global resources and set 1 bindless material textures once. On the fallback path, bind each draw item's material descriptor set 0.
 24. Push that draw item's object-data buffer device address.
 25. Bind the draw item's device-local vertex and index buffers.
 26. Draw the item with `vkCmdDrawIndexedIndirect`.
@@ -636,7 +642,31 @@ The CPU still loops over main-pass draw items because material descriptors are n
 
 CPU frustum culling remains the fallback if `useGpuCulling_` is false or GPU culling resource creation fails. In the GPU path, visible count readback is intentionally not implemented yet; the timing log reports total draw items and prints `GPU culling enabled; visible count not read back yet.` The shadow pass remains direct `vkCmdDrawIndexed` over all draw items for now.
 
-Future GPU-driven rendering work can add multi-draw indirect count, GPU visible count readback, bindless material descriptors, compact object/material buffers, GPU-driven material indexing, occlusion culling, BVH / spatial partitioning, and LOD.
+Future GPU-driven rendering work can add multi-draw indirect count, GPU visible count readback, compact object/material buffers, GPU-driven material indexing, occlusion culling, BVH / spatial partitioning, and LOD. Milestone 30 adds the first bindless material descriptor path.
+
+## Milestone 30: Bindless Material Descriptors
+
+Milestone 30 adds a simple fixed-size bindless texture heap for material sampling while keeping object and material scalar data on the existing Buffer Device Address path. `BindlessTextureHeap` owns one descriptor set layout, one descriptor pool, and one descriptor set with 256 slots per material texture class:
+
+- set 1 binding 0 = base color combined image sampler runtime array
+- set 1 binding 1 = normal combined image sampler runtime array
+- set 1 binding 2 = metallic-roughness combined image sampler runtime array
+
+`VulkanDevice` enables the descriptor indexing features needed by this path when supported: runtime descriptor arrays, partially bound descriptor bindings, and non-uniform sampled image array indexing. The heap does not use variable descriptor count or update-after-bind. If the required descriptor indexing features are unavailable, the renderer logs a warning and keeps the Milestone 29 per-material descriptor set path.
+
+Each `Material` stores `baseColorTextureIndex`, `normalTextureIndex`, and `metallicRoughnessTextureIndex`. Materials receive those indices when their textures are registered into the bindless heap. The first registered entries are fallbacks: checker/base color, flat normal, and neutral metallic-roughness.
+
+`ObjectFrameData` now includes a `uvec4 textureIndices` field. The CPU still loops over `DrawItem`s and pushes a BDA address per draw, but the address points at draw-specific frame data so submesh material indices can feed the shader without moving to a full material buffer yet.
+
+The bindless fragment shader samples material textures with descriptor indexing and `nonuniformEXT`:
+
+- `baseColorTextures[textureIndices.x]`
+- `normalTextures[textureIndices.y]`
+- `metallicRoughnessTextures[textureIndices.z]`
+
+Global resources remain fixed in the transitional set 0 layout: shadow map at binding 1, diffuse irradiance at binding 4, prefiltered specular at binding 5, and BRDF LUT at binding 6. The main pass binds set 0 and set 1 once on the bindless path, then draws with indirect indexed commands without binding a unique material descriptor set per draw. The skybox descriptor set, shadow pass, compute culling pipeline, lighting math, normal mapping, IBL, BRDF LUT, Kulla-Conty-style compensation, and render graph pass order are unchanged.
+
+Future work can replace draw-specific frame material data with compact material buffers, make material indexing fully GPU-driven, add multi-draw indirect count, support bindless samplers or separate image/sampler descriptors, add texture streaming, resize descriptor heaps, and improve model loading.
 
 ## Next Milestones
 
@@ -656,7 +686,6 @@ Future milestones can build on this multi-object material foundation with:
 - BVH / octree
 - multi-draw indirect count
 - GPU visible count readback
-- bindless material descriptors
 - compact object/material buffers
 - GPU-driven material indexing
 - occlusion culling
@@ -664,7 +693,7 @@ Future milestones can build on this multi-object material foundation with:
 - alpha modes
 - occlusion and emissive textures
 - proper tangent generation for meshes without tangents
-- bindless descriptors
+- bindless sampler improvements
 - automatic render graph dependency inference
 - render graph scheduling improvements
 - transient resource allocation

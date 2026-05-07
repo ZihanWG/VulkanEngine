@@ -13,6 +13,7 @@ layout(buffer_reference, std430) readonly buffer ObjectFrameDataBuffer {
     vec4 baseColorFactor;
     vec4 materialParams;
     vec4 cameraPosition;
+    uvec4 textureIndices;
 };
 
 layout(push_constant) uniform PushConstants {
@@ -38,6 +39,7 @@ layout(location = 10) flat out vec4 vBaseColorFactor;
 layout(location = 11) flat out vec4 vMaterialParams;
 layout(location = 12) out vec3 vTangent;
 layout(location = 13) out vec3 vBitangent;
+layout(location = 14) flat out uvec4 vTextureIndices;
 
 void main()
 {
@@ -64,4 +66,5 @@ void main()
     vCameraPosition = pc.objectFrameData.cameraPosition.xyz;
     vBaseColorFactor = pc.objectFrameData.baseColorFactor;
     vMaterialParams = pc.objectFrameData.materialParams;
+    vTextureIndices = pc.objectFrameData.textureIndices;
 }

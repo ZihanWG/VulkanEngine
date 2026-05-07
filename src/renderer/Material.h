@@ -2,6 +2,7 @@
 
 #include "rhi/VulkanCommon.h"
 
+#include <cstdint>
 #include <glm/vec4.hpp>
 #include <string>
 
@@ -19,6 +20,9 @@ struct Material {
     const rhi::VulkanTexture* normalTexture = nullptr;
     const rhi::VulkanTexture* metallicRoughnessTexture = nullptr;
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    uint32_t baseColorTextureIndex = 0;
+    uint32_t normalTextureIndex = 0;
+    uint32_t metallicRoughnessTextureIndex = 0;
     glm::vec4 baseColorFactor = glm::vec4(1.0f);
     float metallic = 0.0f;
     float roughness = 0.5f;

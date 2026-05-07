@@ -13,6 +13,7 @@ layout(buffer_reference, std430) readonly buffer ObjectFrameDataBuffer {
     vec4 baseColorFactor;
     vec4 materialParams;
     vec4 cameraPosition;
+    uvec4 textureIndices;
 };
 
 layout(push_constant) uniform PushConstants {

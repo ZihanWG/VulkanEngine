@@ -16,7 +16,10 @@ public:
     VulkanDescriptorSetLayout(VulkanDescriptorSetLayout&& other) noexcept;
     VulkanDescriptorSetLayout& operator=(VulkanDescriptorSetLayout&& other) noexcept;
 
-    void create(VkDevice device, std::span<const VkDescriptorSetLayoutBinding> bindings);
+    void create(VkDevice device,
+                std::span<const VkDescriptorSetLayoutBinding> bindings,
+                VkDescriptorSetLayoutCreateFlags flags = 0,
+                const void* pNext = nullptr);
     void reset();
 
     [[nodiscard]] VkDescriptorSetLayout handle() const { return layout_; }

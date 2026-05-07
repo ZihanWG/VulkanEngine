@@ -1,5 +1,6 @@
 #pragma once
 
+#include "renderer/BindlessTextureHeap.h"
 #include "renderer/Camera.h"
 #include "renderer/FrameResources.h"
 #include "renderer/Material.h"
@@ -64,6 +65,7 @@ private:
         uint32_t firstIndex = 0;
         uint32_t indexCount = 0;
         int32_t vertexOffset = 0;
+        uint32_t frameDataIndex = 0;
     };
 
     struct CullingStats {
@@ -75,6 +77,7 @@ private:
     };
 
     void createMaterialDescriptorSetLayout();
+    void createBindlessMaterialTextureHeap();
     void createSkyboxDescriptorSetLayout();
     void createGpuCullingResources();
     void destroyGpuCullingResources();
@@ -91,6 +94,7 @@ private:
     void createPrefilteredEnvironmentMap();
     void createBrdfLutTexture();
     void createMaterial();
+    void assignBindlessTextureIndices(renderer::Material& material);
     void createMaterialDescriptorSet(renderer::Material& material);
     void createImportedGltfTextures(const std::vector<renderer::GltfTextureInfo>& textureInfos);
     void createImportedGltfMaterials(const std::vector<renderer::GltfMaterialInfo>& materialInfos);
@@ -110,6 +114,8 @@ private:
     void recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     void recordGpuCullingCommands(VkCommandBuffer commandBuffer);
     [[nodiscard]] bool isGpuCullingActive() const;
+    [[nodiscard]] bool isBindlessMaterialTextureActive() const;
+    [[nodiscard]] VkDescriptorSet globalMaterialDescriptorSet() const;
     void nameTextureResources(const rhi::VulkanTexture& texture, std::string_view name) const;
     void nameEnvironmentMapResources(const rhi::VulkanEnvironmentMap& environmentMap, std::string_view name) const;
     void nameBrdfLutResources(const rhi::VulkanBrdfLut& brdfLut, std::string_view name) const;
@@ -141,6 +147,7 @@ private:
     rhi::VulkanEnvironmentMap prefilteredEnvironmentMap_;
     rhi::VulkanBrdfLut brdfLutTexture_;
     std::vector<rhi::VulkanTexture> importedTextures_;
+    renderer::BindlessTextureHeap bindlessTextureHeap_;
     rhi::VulkanDescriptorPool materialDescriptorPool_;
     rhi::VulkanDescriptorPool skyboxDescriptorPool_;
     rhi::VulkanDescriptorPool gpuCullDescriptorPool_;
@@ -166,11 +173,16 @@ private:
     VkFormat skyboxPipelineDepthFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat shadowPipelineDepthFormat_ = VK_FORMAT_UNDEFINED;
     uint32_t currentFrame_ = 0;
+    uint32_t bindlessBaseColorFallbackIndex_ = 0;
+    uint32_t bindlessNormalFallbackIndex_ = 0;
+    uint32_t bindlessMetallicRoughnessFallbackIndex_ = 0;
     std::chrono::steady_clock::time_point startTime_ = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point lastGpuTimingPrint_ = std::chrono::steady_clock::now();
     std::array<glm::vec4, 6> frameFrustumPlanes_{};
     CullingStats cullingStats_{};
     bool initialized_ = false;
+    bool useBindlessMaterialTextures_ = true;
+    bool bindlessMaterialTexturesAvailable_ = false;
     bool useGpuCulling_ = true;
     bool gpuCullingAvailable_ = false;
     bool normalMapAssetLoaded_ = false;

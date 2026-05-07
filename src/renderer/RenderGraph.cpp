@@ -39,7 +39,7 @@ RenderGraph::RenderGraph()
                    "Clears and writes the main Dynamic Rendering depth image."},
                   {kMaterialTextures,
                    RenderResourceAccess::Read,
-                   "Samples material textures from descriptor set 0 bindings 0, 2, and 3."},
+                   "Samples material textures from bindless set 1 when available, otherwise descriptor set 0."},
                   {kIblResources,
                    RenderResourceAccess::Read,
                    "Samples diffuse IBL, prefiltered specular IBL, and the BRDF LUT."},

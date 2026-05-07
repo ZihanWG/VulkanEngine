@@ -22,7 +22,6 @@ bool supportsDescriptorIndexing(const VkPhysicalDeviceVulkan12Features& features
     return features.descriptorIndexing == VK_TRUE
         && features.runtimeDescriptorArray == VK_TRUE
         && features.descriptorBindingPartiallyBound == VK_TRUE
-        && features.descriptorBindingVariableDescriptorCount == VK_TRUE
         && features.shaderSampledImageArrayNonUniformIndexing == VK_TRUE;
 }
 
@@ -197,8 +196,12 @@ void VulkanDevice::createLogicalDevice()
         enabled12.descriptorIndexing = VK_TRUE;
         enabled12.runtimeDescriptorArray = VK_TRUE;
         enabled12.descriptorBindingPartiallyBound = VK_TRUE;
-        enabled12.descriptorBindingVariableDescriptorCount = VK_TRUE;
         enabled12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+        // The current bindless heap allocates a fixed-size descriptor array, so
+        // variable descriptor count is optional. Enable it when present for
+        // future experiments, but do not require it for Milestone 30.
+        enabled12.descriptorBindingVariableDescriptorCount =
+            supported12.descriptorBindingVariableDescriptorCount;
     }
 
     VkDeviceCreateInfo createInfo{};
@@ -216,9 +219,10 @@ void VulkanDevice::createLogicalDevice()
     vkGetDeviceQueue(device_, queueFamilies_.presentFamily.value(), 0, &presentQueue_);
 
     if (descriptorIndexingEnabled_) {
-        Logger::info("Descriptor indexing features are enabled.");
+        Logger::info("Descriptor indexing features for bindless material textures are enabled.");
     } else {
-        Logger::warn("Descriptor indexing features are not fully supported; bindless texture work will stay optional.");
+        Logger::warn("Descriptor indexing features required for bindless material textures are not fully supported; "
+                     "the renderer will use per-material descriptor sets.");
     }
 }
 

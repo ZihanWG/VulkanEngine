@@ -44,13 +44,15 @@ struct ObjectFrameData {
     glm::vec4 baseColorFactor{1.0f};
     glm::vec4 materialParams{0.0f, 0.5f, 1.0f, 0.0f};
     glm::vec4 cameraPosition{0.0f, 0.0f, 0.0f, 1.0f};
+    glm::uvec4 textureIndices{0, 0, 0, 0};
 };
 
 // Mirrors the shader's std430 buffer_reference block. std430 stores mat4 as
-// four 16-byte columns and vec4 as 16 bytes, so this 304-byte stride keeps each
-// field and each per-object BDA entry on a 16-byte boundary.
+// four 16-byte columns and vec4/uvec4 as 16 bytes, so this 320-byte stride keeps
+// each field and each per-draw BDA entry on a 16-byte boundary.
 // materialParams.x = metallic, y = roughness, z = multiScatterStrength,
 // and w is reserved for future scalar material data.
+// textureIndices.x = base color, y = normal, z = metallic-roughness, w = reserved.
 static_assert(offsetof(ObjectFrameData, mvp) == 0);
 static_assert(offsetof(ObjectFrameData, model) == 64);
 static_assert(offsetof(ObjectFrameData, lightMvp) == 128);
@@ -61,7 +63,8 @@ static_assert(offsetof(ObjectFrameData, shadowSettings) == 240);
 static_assert(offsetof(ObjectFrameData, baseColorFactor) == 256);
 static_assert(offsetof(ObjectFrameData, materialParams) == 272);
 static_assert(offsetof(ObjectFrameData, cameraPosition) == 288);
-static_assert(sizeof(ObjectFrameData) == 304);
+static_assert(offsetof(ObjectFrameData, textureIndices) == 304);
+static_assert(sizeof(ObjectFrameData) == 320);
 
 constexpr uint32_t kMaxFrameObjects = 1024;
 constexpr uint32_t kMaxDrawItems = 1024;
@@ -184,6 +187,7 @@ Renderer::Renderer(Window& window) : window_(window)
     timestampQuery_.initialize(context_, static_cast<uint32_t>(frames_.size()));
     swapchain_.initialize(context_, window_.framebufferExtent());
     createMaterialDescriptorSetLayout();
+    createBindlessMaterialTextureHeap();
     createSkyboxDescriptorSetLayout();
     createShadowMap();
     createPipeline();
@@ -352,6 +356,34 @@ void Renderer::createMaterialDescriptorSetLayout()
                               "MaterialDescriptorSetLayout");
 }
 
+void Renderer::createBindlessMaterialTextureHeap()
+{
+    bindlessMaterialTexturesAvailable_ = false;
+    bindlessTextureHeap_.reset();
+
+    if (!useBindlessMaterialTextures_) {
+        return;
+    }
+
+    if (!context_.device().descriptorIndexingEnabled()) {
+        Logger::warn("Bindless material descriptors unavailable; falling back to per-material descriptor binding.");
+        return;
+    }
+
+    try {
+        bindlessTextureHeap_.create(context_, renderer::BindlessTextureHeap::kDefaultMaxTextures);
+        bindlessMaterialTexturesAvailable_ = true;
+        Logger::info("Bindless material texture heap enabled with " +
+                     std::to_string(bindlessTextureHeap_.maxTextures()) +
+                     " descriptors per material texture class.");
+    } catch (const std::exception& error) {
+        Logger::warn(std::string("Bindless material descriptors unavailable; falling back to per-material "
+                                 "descriptor binding: ") +
+                     error.what());
+        bindlessTextureHeap_.reset();
+    }
+}
+
 void Renderer::createSkyboxDescriptorSetLayout()
 {
     VkDescriptorSetLayoutBinding binding{};
@@ -508,7 +540,11 @@ void Renderer::createPipeline()
 {
     const VkVertexInputBindingDescription binding = renderer::vertexBindingDescription();
     const std::array<VkVertexInputAttributeDescription, 5> attributes = renderer::vertexAttributeDescriptions();
-    const VkDescriptorSetLayout descriptorSetLayout = materialDescriptorSetLayout_.handle();
+    const bool bindlessMaterialTexturesActive = isBindlessMaterialTextureActive();
+    std::array<VkDescriptorSetLayout, 2> mainDescriptorSetLayouts{
+        materialDescriptorSetLayout_.handle(),
+        bindlessTextureHeap_.descriptorSetLayout(),
+    };
     const VkDescriptorSetLayout skyboxDescriptorSetLayout = skyboxDescriptorSetLayout_.handle();
     const VkPushConstantRange pushConstantRange{
         VK_SHADER_STAGE_VERTEX_BIT, 0, static_cast<uint32_t>(sizeof(PushConstants))};
@@ -517,13 +553,15 @@ void Renderer::createPipeline()
 
     rhi::VulkanPipelineCreateInfo pipelineInfo{};
     pipelineInfo.vertexShaderPath = shaderPath("simple.vert.spv");
-    pipelineInfo.fragmentShaderPath = shaderPath("simple.frag.spv");
+    pipelineInfo.fragmentShaderPath =
+        bindlessMaterialTexturesActive ? shaderPath("simple_bindless.frag.spv") : shaderPath("simple.frag.spv");
     pipelineInfo.colorFormat = swapchain_.colorFormat();
     pipelineInfo.depthFormat = swapchain_.depthFormat();
     pipelineInfo.vertexBindings = std::span<const VkVertexInputBindingDescription>(&binding, 1);
     pipelineInfo.vertexAttributes =
         std::span<const VkVertexInputAttributeDescription>(attributes.data(), attributes.size());
-    pipelineInfo.descriptorSetLayouts = std::span<const VkDescriptorSetLayout>(&descriptorSetLayout, 1);
+    pipelineInfo.descriptorSetLayouts =
+        std::span<const VkDescriptorSetLayout>(mainDescriptorSetLayouts.data(), bindlessMaterialTexturesActive ? 2 : 1);
     pipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&pushConstantRange, 1);
     pipelineInfo.enableDepth = true;
 
@@ -926,6 +964,15 @@ void Renderer::createMaterial()
     materialVariants_.clear();
     materialVariants_.reserve(4);
 
+    if (isBindlessMaterialTextureActive()) {
+        bindlessBaseColorFallbackIndex_ = bindlessTextureHeap_.registerTexture(
+            renderer::BindlessTextureHeap::TextureKind::BaseColor, checkerboardTexture_);
+        bindlessNormalFallbackIndex_ = bindlessTextureHeap_.registerTexture(
+            renderer::BindlessTextureHeap::TextureKind::Normal, flatNormalTexture_);
+        bindlessMetallicRoughnessFallbackIndex_ = bindlessTextureHeap_.registerTexture(
+            renderer::BindlessTextureHeap::TextureKind::MetallicRoughness, neutralMetallicRoughnessTexture_);
+    }
+
     const auto addMaterial = [this](std::string debugName,
                                     const glm::vec4& baseColorFactor,
                                     float metallic,
@@ -942,6 +989,7 @@ void Renderer::createMaterial()
         material.multiScatterStrength = multiScatterStrength;
         material.hasNormalMap = normalMapAssetLoaded_;
         material.hasMetallicRoughnessMap = metallicRoughnessMapAssetLoaded_;
+        assignBindlessTextureIndices(material);
         createMaterialDescriptorSet(material);
         materialVariants_.push_back(std::move(material));
     };
@@ -952,6 +1000,29 @@ void Renderer::createMaterial()
     addMaterial("Checkerboard Glossy Dielectric", {0.9f, 1.0f, 0.78f, 1.0f}, 0.0f, 0.18f, 0.25f);
 
     checkerboardMaterial_ = materialVariants_.front();
+}
+
+void Renderer::assignBindlessTextureIndices(renderer::Material& material)
+{
+    if (!isBindlessMaterialTextureActive()) {
+        return;
+    }
+
+    material.baseColorTextureIndex =
+        material.baseColorTexture && material.baseColorTexture->valid()
+            ? bindlessTextureHeap_.registerTexture(renderer::BindlessTextureHeap::TextureKind::BaseColor,
+                                                   *material.baseColorTexture)
+            : bindlessBaseColorFallbackIndex_;
+    material.normalTextureIndex =
+        material.normalTexture && material.normalTexture->valid()
+            ? bindlessTextureHeap_.registerTexture(renderer::BindlessTextureHeap::TextureKind::Normal,
+                                                   *material.normalTexture)
+            : bindlessNormalFallbackIndex_;
+    material.metallicRoughnessTextureIndex =
+        material.metallicRoughnessTexture && material.metallicRoughnessTexture->valid()
+            ? bindlessTextureHeap_.registerTexture(renderer::BindlessTextureHeap::TextureKind::MetallicRoughness,
+                                                   *material.metallicRoughnessTexture)
+            : bindlessMetallicRoughnessFallbackIndex_;
 }
 
 void Renderer::createMaterialDescriptorSet(renderer::Material& material)
@@ -1177,6 +1248,7 @@ void Renderer::createImportedGltfMaterials(const std::vector<renderer::GltfMater
         material.hasNormalMap = textureLoaded(materialInfo.normalTextureIndex);
         material.hasMetallicRoughnessMap = textureLoaded(materialInfo.metallicRoughnessTextureIndex);
 
+        assignBindlessTextureIndices(material);
         createMaterialDescriptorSet(material);
         importedMaterials_.push_back(std::move(material));
     }
@@ -1227,7 +1299,7 @@ void Renderer::createObjectFrameDataBuffers()
     for (size_t frameIndex = 0; frameIndex < frameObjectDataBuffers_.size(); ++frameIndex) {
         rhi::VulkanBuffer& frameObjectDataBuffer = frameObjectDataBuffers_[frameIndex];
         rhi::VulkanBufferCreateInfo bufferInfo{};
-        bufferInfo.size = static_cast<VkDeviceSize>(kMaxFrameObjects * sizeof(ObjectFrameData));
+        bufferInfo.size = static_cast<VkDeviceSize>(kMaxDrawItems * sizeof(ObjectFrameData));
         bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
         bufferInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
         bufferInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
@@ -1300,6 +1372,7 @@ bool Renderer::appendDrawItemsForObject(uint32_t objectIndex, std::vector<DrawIt
             drawItem.submeshIndex = static_cast<uint32_t>(primitiveIndex);
             drawItem.firstIndex = primitive.firstIndex;
             drawItem.indexCount = primitive.indexCount;
+            drawItem.frameDataIndex = static_cast<uint32_t>(drawItems.size());
             drawItems.push_back(drawItem);
         }
         return true;
@@ -1317,6 +1390,7 @@ bool Renderer::appendDrawItemsForObject(uint32_t objectIndex, std::vector<DrawIt
     drawItem.material = object.material;
     drawItem.objectIndex = objectIndex;
     drawItem.indexCount = mesh->indexCount();
+    drawItem.frameDataIndex = static_cast<uint32_t>(drawItems.size());
     drawItems.push_back(drawItem);
     return true;
 }
@@ -1342,6 +1416,7 @@ void Renderer::buildVisibleDrawItems(const renderer::Frustum& frustum)
     cullingStats_.totalDrawItems = drawItems_.size();
 
     const size_t objectCount = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
+    std::vector<bool> objectVisible(objectCount, false);
     for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
         const renderer::RenderObject& object = renderObjects_[objectIndex];
         if (!object.mesh || !object.mesh->valid()) {
@@ -1356,8 +1431,12 @@ void Renderer::buildVisibleDrawItems(const renderer::Frustum& frustum)
         }
 
         ++cullingStats_.visibleObjects;
-        if (!appendDrawItemsForObject(static_cast<uint32_t>(objectIndex), visibleDrawItems_)) {
-            return;
+        objectVisible[objectIndex] = true;
+    }
+
+    for (const DrawItem& drawItem : drawItems_) {
+        if (drawItem.objectIndex < objectVisible.size() && objectVisible[drawItem.objectIndex]) {
+            visibleDrawItems_.push_back(drawItem);
         }
     }
 }
@@ -1558,17 +1637,22 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         updateIndirectDrawBuffer(frameIndex);
     }
 
-    const size_t objectFrameCount = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
+    const size_t objectFrameCount = std::min(drawItems_.size(), static_cast<size_t>(kMaxDrawItems));
     std::vector<ObjectFrameData> objectFrameData(objectFrameCount);
 
-    for (size_t objectIndex = 0; objectIndex < objectFrameCount; ++objectIndex) {
-        const renderer::RenderObject& object = renderObjects_[objectIndex];
+    for (size_t drawIndex = 0; drawIndex < objectFrameCount; ++drawIndex) {
+        const DrawItem& drawItem = drawItems_[drawIndex];
+        if (drawItem.objectIndex >= renderObjects_.size()) {
+            continue;
+        }
+
+        const renderer::RenderObject& object = renderObjects_[drawItem.objectIndex];
         if (!object.mesh) {
             continue;
         }
 
         const glm::mat4 model = object.transform.modelMatrix();
-        ObjectFrameData& frameData = objectFrameData[objectIndex];
+        ObjectFrameData& frameData = objectFrameData[drawIndex];
         frameData.mvp = viewProjection * model;
         frameData.model = model;
         frameData.lightMvp = lightViewProjection * model;
@@ -1579,12 +1663,17 @@ void Renderer::updateFrameData(uint32_t frameIndex)
                                     shadowSettings_.slopeBias,
                                     shadowSettings_.enablePcf ? 1.0f : 0.0f,
                                     static_cast<float>(std::max(shadowSettings_.pcfRadius, 0))};
-        if (object.material) {
-            frameData.baseColorFactor = object.material->baseColorFactor;
-            frameData.materialParams = {object.material->metallic,
-                                        object.material->roughness,
-                                        object.material->multiScatterStrength,
+        const renderer::Material* material = drawItem.material ? drawItem.material : object.material;
+        if (material) {
+            frameData.baseColorFactor = material->baseColorFactor;
+            frameData.materialParams = {material->metallic,
+                                        material->roughness,
+                                        material->multiScatterStrength,
                                         0.0f};
+            frameData.textureIndices = {material->baseColorTextureIndex,
+                                        material->normalTextureIndex,
+                                        material->metallicRoughnessTextureIndex,
+                                        0};
         }
         frameData.cameraPosition = glm::vec4(camera_.position, 1.0f);
     }
@@ -1620,6 +1709,20 @@ bool Renderer::isGpuCullingActive() const
     return useGpuCulling_ && gpuCullingAvailable_ && gpuCullPipeline_.pipeline() != VK_NULL_HANDLE &&
            gpuCullPipeline_.layout() != VK_NULL_HANDLE && !gpuCullDescriptorSets_.empty() &&
            frameCullInputBuffers_.size() == frames_.size();
+}
+
+bool Renderer::isBindlessMaterialTextureActive() const
+{
+    return useBindlessMaterialTextures_ && bindlessMaterialTexturesAvailable_ && bindlessTextureHeap_.valid();
+}
+
+VkDescriptorSet Renderer::globalMaterialDescriptorSet() const
+{
+    if (!materialVariants_.empty()) {
+        return materialVariants_.front().descriptorSet;
+    }
+
+    return checkerboardMaterial_.descriptorSet;
 }
 
 void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
@@ -1715,12 +1818,12 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     const renderer::Mesh* boundShadowMesh = nullptr;
     for (size_t drawIndex = 0; drawIndex < shadowDrawItemCount; ++drawIndex) {
         const DrawItem& drawItem = drawItems_[drawIndex];
-        if (!drawItem.mesh || drawItem.objectIndex >= kMaxFrameObjects) {
+        if (!drawItem.mesh || drawItem.frameDataIndex >= kMaxDrawItems) {
             continue;
         }
 
         const PushConstants pushConstants{objectFrameDataBaseAddress +
-                                          static_cast<VkDeviceAddress>(drawItem.objectIndex * sizeof(ObjectFrameData))};
+                                          static_cast<VkDeviceAddress>(drawItem.frameDataIndex * sizeof(ObjectFrameData))};
 
         vkCmdPushConstants(commandBuffer,
                            shadowPipeline_.layout(),
@@ -1811,24 +1914,54 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     timestampQuery_.writeBegin(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::RenderObjects);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.pipeline());
 
+    const VkDescriptorSet globalDescriptorSet = globalMaterialDescriptorSet();
+    const bool bindlessMaterialTexturesActive = isBindlessMaterialTextureActive();
+    bool bindlessDescriptorSetsBound = false;
+    if (bindlessMaterialTexturesActive) {
+        if (globalDescriptorSet != VK_NULL_HANDLE) {
+            const std::array<VkDescriptorSet, 2> descriptorSets{
+                globalDescriptorSet,
+                bindlessTextureHeap_.descriptorSet(),
+            };
+            vkCmdBindDescriptorSets(commandBuffer,
+                                    VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    pipeline_.layout(),
+                                    0,
+                                    static_cast<uint32_t>(descriptorSets.size()),
+                                    descriptorSets.data(),
+                                    0,
+                                    nullptr);
+            bindlessDescriptorSetsBound = true;
+        }
+    }
+
     const renderer::Mesh* boundMesh = nullptr;
     const VkBuffer indirectDrawBuffer = frameIndirectDrawBuffers_.at(currentFrame_).buffer();
     for (size_t drawIndex = 0; drawIndex < mainDrawItemCount; ++drawIndex) {
         const DrawItem& drawItem = visibleDrawItems_[drawIndex];
-        if (!drawItem.mesh || !drawItem.material ||
-            drawItem.material->descriptorSet == VK_NULL_HANDLE) {
+        if (!drawItem.mesh || drawItem.frameDataIndex >= kMaxDrawItems) {
             continue;
         }
 
-        const VkDescriptorSet descriptorSet = drawItem.material->descriptorSet;
-        vkCmdBindDescriptorSets(
-            commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.layout(), 0, 1, &descriptorSet, 0, nullptr);
+        if (bindlessMaterialTexturesActive) {
+            if (!bindlessDescriptorSetsBound) {
+                continue;
+            }
+        } else {
+            if (!drawItem.material || drawItem.material->descriptorSet == VK_NULL_HANDLE) {
+                continue;
+            }
+
+            const VkDescriptorSet descriptorSet = drawItem.material->descriptorSet;
+            vkCmdBindDescriptorSets(
+                commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.layout(), 0, 1, &descriptorSet, 0, nullptr);
+        }
 
         const PushConstants pushConstants{objectFrameDataBaseAddress +
-                                          static_cast<VkDeviceAddress>(drawItem.objectIndex * sizeof(ObjectFrameData))};
+                                          static_cast<VkDeviceAddress>(drawItem.frameDataIndex * sizeof(ObjectFrameData))};
 
-        // The material descriptor binds the texture/sampler for the fragment shader.
-        // The pushed address points at this object's BDA frame data for the vertex shader.
+        // The pushed address points at this draw's BDA frame data. Bindless mode
+        // keeps material texture descriptors bound once and reads indices from that data.
         vkCmdPushConstants(commandBuffer,
                            pipeline_.layout(),
                            VK_SHADER_STAGE_VERTEX_BIT,
