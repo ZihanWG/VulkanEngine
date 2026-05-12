@@ -785,7 +785,7 @@ Shadow culling:
   shadow batches: B
 ```
 
-Future shadow and GPU-driven work can add GPU-built shadow batches, cascaded shadow maps, alpha-tested shadow casters, shadow LOD, tighter/stable shadow bounds, texel snapping, shadow caster culling acceleration structures, occlusion culling, and mesh/task shaders.
+Future shadow and GPU-driven work can add GPU-built shadow batches, cascaded shadow maps, alpha-tested shadow casters, shadow LOD, stable crop matrices, cascade blending, shadow caster culling acceleration structures, occlusion culling, and mesh/task shaders.
 
 ## Milestone 35: GPU Shadow Culling Preparation
 
@@ -838,16 +838,16 @@ The main vertex shader outputs light-space positions for the four cascades plus 
 Current limitations:
 
 - no alpha-tested shadow casters
-- no stable texel snapping yet
 - no GPU-built cascade batch system yet
 - no VSM or EVSM
-- no CSM debug visualization yet
+- stabilization and debug visualization are intentionally deferred to Milestone 37
 
 Future CSM and shadow work:
 
-- texel snapping
 - better cascade split tuning
-- cascade visualization
+- stable crop matrices
+- cascade blending
+- per-cascade resolution control
 - alpha-tested shadows
 - GPU-built cascade batches
 - shadow LOD
@@ -857,7 +857,7 @@ Future CSM and shadow work:
 
 ## Milestone 37: CSM Stabilization and Cascade Debug Visualization
 
-Milestone 37 keeps the Milestone 36 CSM resource model and adds basic stabilization/debug controls. `CsmSettings` now includes conservative hardcoded toggles for texel snapping, cascade debug colors, and cascade freezing. The shadow resource remains a 2D array depth image, and the main shader still samples it as `sampler2DArray` from descriptor binding 1.
+Milestone 37 keeps the Milestone 36 CSM resource model and adds basic stabilization/debug controls. `CsmSettings` now includes conservative hardcoded toggles for texel snapping and cascade debug colors. The shadow resource remains a 2D array depth image, and the main shader still samples it as `sampler2DArray` from descriptor binding 1.
 
 For each cascade, the renderer still computes practical split depths and fits light-space orthographic bounds around the camera frustum slice. When texel snapping is enabled, it derives:
 
@@ -869,7 +869,7 @@ The directional-light view center is then snapped to that increment in the light
 
 The main fragment shader can optionally tint shaded pixels by the selected cascade index: red, green, blue, and yellow for cascades 0 through 3. The tint is mixed subtly over the final lighting result so it can diagnose cascade selection without replacing material shading. The toggle is carried through the existing `ObjectFrameData` BDA path by using `cameraPosition.w`; no descriptor, UBO, material layout, bindless texture set, or push-constant contract was added.
 
-The optional `freezeCascades` setting preserves the previous cascade matrices and split depths after the first update, which is useful when inspecting cascade placement. The throttled timing/culling log now includes the active cascade count plus texel snapping, debug color, and freeze states.
+The throttled timing/culling log now includes the active cascade count plus texel snapping and debug color states.
 
 Main-pass GPU culling, bindless material descriptors, indirect-count drawing, GPU shadow culling, the shadow indirect path, IBL, the BRDF LUT, Kulla-Conty-style compensation, render graph pass order, and swapchain synchronization are unchanged.
 

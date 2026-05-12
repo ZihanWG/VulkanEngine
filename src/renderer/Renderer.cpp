@@ -1588,10 +1588,6 @@ void Renderer::updateCascades(float aspectRatio)
     const float shadowFarPlane = std::clamp(csmSettings_.shadowDistance, nearPlane + 0.001f, cameraFarPlane);
     const float lambda = std::clamp(csmSettings_.lambda, 0.0f, 1.0f);
 
-    if (csmSettings_.freezeCascades && cascadeDataInitialized_) {
-        return;
-    }
-
     const glm::vec3 cameraPosition = camera_.position;
     const glm::vec3 cameraForward = glm::normalize(camera_.target - camera_.position);
     const glm::vec3 cameraRight = glm::normalize(glm::cross(cameraForward, camera_.up));
@@ -1712,7 +1708,6 @@ void Renderer::updateCascades(float aspectRatio)
         frameShadowCascadeFrustumPlanes_[cascadeIndex] = frameShadowCascadeFrustumPlanes_[cascadeCount - 1];
     }
 
-    cascadeDataInitialized_ = true;
 }
 
 const renderer::Material* Renderer::resolveMaterial(const renderer::RenderObject& object,
@@ -2144,8 +2139,7 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
     message << "\nCSM:\n"
             << "  cascades: " << activeCascadeCount() << "\n"
             << "  texel snapping: " << (csmSettings_.enableTexelSnapping ? "enabled" : "disabled") << "\n"
-            << "  debug colors: " << (csmSettings_.enableCascadeDebugColors ? "enabled" : "disabled") << "\n"
-            << "  freeze cascades: " << (csmSettings_.freezeCascades ? "enabled" : "disabled") << "\n";
+            << "  debug colors: " << (csmSettings_.enableCascadeDebugColors ? "enabled" : "disabled") << "\n";
     message << "Shadow culling:\n";
     message << "  cascade count: " << shadowCullingStats_.cascadeCount << "\n"
             << "  total shadow draw items across cascades: " << shadowCullingStats_.totalDrawItems << "\n"
