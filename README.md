@@ -153,6 +153,7 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - Add alpha-tested shadow casters.
 - Add shadow LOD.
 - Improve CSM with stable crop matrices, cascade blending, split tuning, and per-cascade resolution control.
+- Evaluate VSM/EVSM shadow filtering.
 - Add shadow debug UI and ImGui controls.
 - Add shadow caster culling acceleration structures.
 - Add occlusion culling.
@@ -840,7 +841,7 @@ Current limitations:
 - no alpha-tested shadow casters
 - no GPU-built cascade batch system yet
 - no VSM or EVSM
-- basic stabilization and debug visualization are covered by Milestone 37
+- basic texel snapping and cascade debug tinting are covered by Milestone 37
 
 Future CSM and shadow work:
 
@@ -857,7 +858,7 @@ Future CSM and shadow work:
 
 ## Milestone 37: CSM Stabilization and Cascade Debug Visualization
 
-Milestone 37 keeps the Milestone 36 CSM resource model and adds basic stabilization/debug controls. `CsmSettings` now includes conservative hardcoded toggles for texel snapping and cascade debug colors. The shadow resource remains a 2D array depth image, and the main shader still samples it as `sampler2DArray` from descriptor binding 1.
+Milestone 37 keeps the Milestone 36 CSM resource model and adds basic CSM texel snapping plus optional cascade debug tinting. `CsmSettings` exposes the active cascade count, texel-snapping toggle, and debug-color toggle with conservative hardcoded defaults. The shadow resource remains a 2D array depth image, and the main shader still samples it as `sampler2DArray` from descriptor binding 1.
 
 For each cascade, the renderer still computes practical split depths and fits light-space orthographic bounds around the camera frustum slice. When texel snapping is enabled, it derives:
 
@@ -867,9 +868,9 @@ worldUnitsPerTexel = orthoExtent / shadowResolution
 
 The directional-light view center is then snapped to that increment in the light right/up axes, with a one-texel guard band on the fitted orthographic bounds. This reduces shadow shimmering caused by sub-texel camera motion. It is intentionally a basic CSM stabilization method, not a production-grade solution with stable crop matrices, cascade blending, or per-cascade resolution control.
 
-The main fragment shader can optionally tint shaded pixels by the selected cascade index: red, green, blue, and yellow for cascades 0 through 3. The tint is mixed subtly over the final lighting result so it can diagnose cascade selection without replacing material shading. The toggle is carried through the existing `ObjectFrameData` BDA path by using `cameraPosition.w`; no descriptor, UBO, material layout, bindless texture set, or push-constant contract was added.
+The main fragment shader can optionally tint shaded pixels by the selected cascade index: red, green, blue, and yellow for cascades 0 through 3. The tint is mixed subtly over the final lighting result so it can diagnose cascade selection without replacing material shading. The debug flag is carried through the existing `ObjectFrameData` BDA path by using `cameraPosition.w`; no descriptor set, UBO, material layout, bindless texture set, or push-constant contract was added.
 
-The throttled timing/culling log now includes the active cascade count plus texel snapping and debug color states.
+The throttled timing/culling log now reports the active cascade count plus texel snapping and debug color states.
 
 Main-pass GPU culling, bindless material descriptors, indirect-count drawing, GPU shadow culling, the shadow indirect path, IBL, the BRDF LUT, Kulla-Conty-style compensation, render graph pass order, and swapchain synchronization are unchanged.
 
