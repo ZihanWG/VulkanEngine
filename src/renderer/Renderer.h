@@ -91,6 +91,7 @@ private:
         size_t visibleDrawItems = 0;
         size_t culledDrawItems = 0;
         size_t batchCount = 0;
+        bool gpuCulling = false;
         bool indirectDrawing = false;
     };
 
@@ -99,6 +100,8 @@ private:
     void createSkyboxDescriptorSetLayout();
     void createGpuCullingResources();
     void destroyGpuCullingResources();
+    void createGpuShadowCullingResources();
+    void destroyGpuShadowCullingResources();
     void createShadowMap();
     void createPipeline();
     void createScene();
@@ -121,6 +124,7 @@ private:
     void createIndirectDrawBuffers();
     void createShadowIndirectDrawBuffers();
     void updateGpuCullInputBuffer(uint32_t frameIndex);
+    void updateGpuShadowCullInputBuffer(uint32_t frameIndex);
     void updateFrameData(uint32_t frameIndex);
     void buildDrawItems();
     void buildVisibleDrawItems(const renderer::Frustum& frustum);
@@ -139,12 +143,17 @@ private:
     void recreateSwapchain();
     void recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     void recordGpuCullingCommands(VkCommandBuffer commandBuffer);
+    void recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer);
     bool readGpuVisibleCount(uint32_t frameIndex, uint32_t& visibleCount);
+    bool readGpuShadowVisibleCount(uint32_t frameIndex, uint32_t& visibleCount);
     [[nodiscard]] bool isGpuCullingActive() const;
+    [[nodiscard]] bool isGpuShadowCullingActive() const;
     [[nodiscard]] bool isBindlessMaterialTextureActive() const;
     [[nodiscard]] bool isMainPassMultiDrawIndirectActive() const;
     [[nodiscard]] bool isMainPassIndirectCountSupported() const;
     [[nodiscard]] bool isFrameIndirectCountPathActive(uint32_t frameIndex) const;
+    [[nodiscard]] bool isShadowIndirectCountSupported() const;
+    [[nodiscard]] bool isShadowIndirectCountPathActive(uint32_t frameIndex) const;
     [[nodiscard]] bool isShadowIndirectActive() const;
     [[nodiscard]] VkDescriptorSet globalMaterialDescriptorSet() const;
     void nameTextureResources(const rhi::VulkanTexture& texture, std::string_view name) const;
@@ -182,8 +191,10 @@ private:
     rhi::VulkanDescriptorPool materialDescriptorPool_;
     rhi::VulkanDescriptorPool skyboxDescriptorPool_;
     rhi::VulkanDescriptorPool gpuCullDescriptorPool_;
+    rhi::VulkanDescriptorPool shadowCullDescriptorPool_;
     VkDescriptorSet skyboxDescriptorSet_ = VK_NULL_HANDLE;
     std::vector<VkDescriptorSet> gpuCullDescriptorSets_;
+    std::vector<VkDescriptorSet> shadowCullDescriptorSets_;
     renderer::Camera camera_;
     renderer::Mesh cubeMesh_;
     std::vector<renderer::Mesh> importedMeshes_;
@@ -196,16 +207,24 @@ private:
     std::vector<DrawItem> shadowDrawItems_;
     std::vector<MeshDrawBatch> meshDrawBatches_;
     std::vector<MeshDrawBatch> shadowMeshDrawBatches_;
+    std::vector<MeshDrawBatch> gpuShadowMeshDrawBatches_;
     std::vector<rhi::VulkanBuffer> frameObjectDataBuffers_;
     std::vector<rhi::VulkanBuffer> frameCullInputBuffers_;
+    std::vector<rhi::VulkanBuffer> frameShadowCullInputBuffers_;
     std::vector<rhi::VulkanBuffer> frameIndirectDrawBuffers_;
     std::vector<rhi::VulkanBuffer> frameShadowIndirectDrawBuffers_;
     std::vector<rhi::VulkanBuffer> frameBatchVisibleCountBuffers_;
     std::vector<rhi::VulkanBuffer> frameBatchVisibleCountReadbackBuffers_;
+    std::vector<rhi::VulkanBuffer> frameShadowBatchVisibleCountBuffers_;
+    std::vector<rhi::VulkanBuffer> frameShadowBatchVisibleCountReadbackBuffers_;
     std::vector<uint32_t> frameGpuCullTotalDrawItems_;
     std::vector<uint32_t> frameGpuCullBatchCounts_;
+    std::vector<uint32_t> frameGpuShadowCullTotalDrawItems_;
+    std::vector<uint32_t> frameGpuShadowCullBatchCounts_;
     std::vector<uint8_t> frameGpuCullReadbackReady_;
     std::vector<uint8_t> frameGpuCullIndirectCountPath_;
+    std::vector<uint8_t> frameGpuShadowCullReadbackReady_;
+    std::vector<uint8_t> frameGpuShadowCullIndirectCountPath_;
     std::vector<VkFence> imagesInFlight_;
     ShadowSettings shadowSettings_{};
     VkFormat pipelineColorFormat_ = VK_FORMAT_UNDEFINED;
@@ -220,6 +239,7 @@ private:
     std::chrono::steady_clock::time_point startTime_ = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point lastGpuTimingPrint_ = std::chrono::steady_clock::now();
     std::array<glm::vec4, 6> frameFrustumPlanes_{};
+    std::array<glm::vec4, 6> frameShadowFrustumPlanes_{};
     CullingStats cullingStats_{};
     ShadowCullingStats shadowCullingStats_{};
     bool initialized_ = false;
@@ -227,6 +247,8 @@ private:
     bool bindlessMaterialTexturesAvailable_ = false;
     bool useGpuCulling_ = true;
     bool gpuCullingAvailable_ = false;
+    bool useGpuShadowCulling_ = true;
+    bool gpuShadowCullingAvailable_ = false;
     bool shadowIndirectAvailable_ = false;
     bool normalMapAssetLoaded_ = false;
     bool metallicRoughnessMapAssetLoaded_ = false;

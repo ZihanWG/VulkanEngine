@@ -46,6 +46,8 @@ layout(set = 0, binding = 2, std430) buffer BatchVisibleCountBuffer {
     uint visibleCounts[];
 } batchVisibleCounts;
 
+// The renderer reuses this shader for camera-frustum main culling and
+// directional-light-frustum shadow culling by pushing the relevant planes.
 layout(push_constant) uniform CullPushConstants {
     vec4 frustumPlanes[6];
     uvec4 params; // x = draw item count, y = write objectFrameDataIndex to firstInstance, z = compact visible commands
