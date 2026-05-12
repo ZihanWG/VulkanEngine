@@ -1,8 +1,9 @@
-build/
-out/
-.vs/
-.vscode/
-.idea/
+/build/
+/cmake-build-*/
+/out/
+/.vs/
+/.vscode/
+/.idea/
 
 *.user
 *.suo
@@ -23,3 +24,6 @@ CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
 compile_commands.json
+
+# Generated shader binaries are produced by CMake under the build tree.
+**/shaders/*.spv

@@ -1,76 +1,57 @@
 # VulkanEngine
 
-Modern C++20 Vulkan 1.3 renderer skeleton inspired by the educational flow of [Sascha Willems' HowToVulkan](https://github.com/SaschaWillems/HowToVulkan), but split into engine-style modules instead of a single tutorial file.
+C++20 Vulkan 1.3 renderer prototype focused on modern explicit rendering, reproducible builds, and incremental GPU-driven rendering work.
 
-The current milestone opens an SDL3 window, creates a Vulkan 1.3 device through Volk, creates a swapchain, uploads cube or imported glTF geometry with normals, tangents, submesh material ranges, and local-space bounds into GPU-local vertex and index buffers, loads small RGBA base color, normal, and metallic-roughness textures from disk with procedural fallbacks, loads basic glTF PBR material factors and base color/normal/metallic-roughness textures when available, traverses the default glTF scene hierarchy to instantiate static `RenderObject`s with accumulated node transforms, creates and renders a simple procedural environment cubemap as a skybox background, creates low-frequency diffuse irradiance and mipmapped prefiltered specular cubemaps from the same procedural environment colors, generates a 2D split-sum BRDF LUT, and first tries to draw a static glTF test scene with tangent-space normal mapping, direct-light Cook-Torrance GGX material response, diffuse and specular image-based lighting, compact Kulla-Conty-style multi-scattering compensation, directional lighting, bindless material texture descriptors when descriptor indexing is available, compute-based main-pass frustum culling, GPU-written `VkDrawIndexedIndirectCommand` entries, GPU visible draw count readback, a CPU culling fallback, and a PCF-filtered directional shadow map every frame using Dynamic Rendering and Synchronization2. If no supported glTF asset loads, the renderer falls back to the previous multi-cube demo scene. A minimal render graph now documents the shadow and main pass order, records manual resource usage, and centralizes the frame's image transitions.
+The demo renders a static glTF test scene, or a built-in cube fallback, through SDL3, Volk, Vulkan Memory Allocator, Dynamic Rendering, and Synchronization2. This is intentionally a renderer portfolio project rather than a full game engine: the code favors readable Vulkan ownership, clear resource contracts, and small milestones over a large framework.
 
-## Dependencies
+## Feature List
 
-Required:
+- Vulkan 1.3 initialization with Volk, validation in Debug, Dynamic Rendering, and Synchronization2.
+- VMA-backed buffers and images, Buffer Device Address, CPU-visible uploads/readbacks, and GPU-local staging copies.
+- SDL3 window and surface integration with swapchain recreation support.
+- Static mesh path for built-in cube geometry and glTF triangle meshes.
+- glTF material factors plus base color, normal, and metallic-roughness texture loading.
+- Tangent-space normal mapping and Cook-Torrance GGX direct lighting.
+- Procedural skybox, diffuse irradiance cubemap, prefiltered specular cubemap, and split-sum BRDF LUT.
+- Compact Kulla-Conty-style multi-scattering compensation for PBR response.
+- PCF-filtered directional shadow map.
+- Descriptor indexing path for bindless material texture arrays, with a legacy descriptor-set fallback.
+- Minimal render graph that documents shadow/main pass order and centralizes image transitions.
+- GPU frustum culling compute pass that writes indirect draw commands and a visible draw count.
+- Multi-draw indirect batching by mesh-compatible ranges on the bindless path.
+- GPU timestamp queries and debug labels for capture/profiling orientation.
 
-- CMake 3.25+
-- C++20 compiler, MSVC recommended on Windows
-- Vulkan SDK with Vulkan 1.3 headers and `glslc` for shader compilation
-- SDL3
-- Volk
-- Vulkan Memory Allocator
-- GLM
-- stb_image, vendored as `external/stb_image.h`
-- tinygltf and nlohmann JSON, vendored as `external/tiny_gltf.h` and `external/json.hpp`
-
-The CMake project first looks for installed packages. If they are missing, `VULKAN_ENGINE_FETCH_DEPS=ON` downloads SDL3, Volk, VMA, and GLM with FetchContent.
-
-Milestone 2 and later require `glslc`. CMake compiles shaders into the build-directory shader folder, for example `build/shaders`, and embeds that absolute shader directory into the executable, so running from Visual Studio, CLion, or PowerShell does not depend on the current working directory.
-
-Milestone 9 embeds the source `assets` directory path into the executable. The demo tries to load `assets/textures/checker.png`, while later material milestones also load `assets/textures/checker_normal.png` and `assets/textures/checker_mr.png`; if any of those files are missing or cannot be decoded, the renderer falls back to procedural textures. Milestone 26 also tries `assets/models/test_mesh.gltf` and then `assets/models/test_mesh.glb`; if neither static glTF scene loads, the built-in cube scene remains the fallback. External glTF image URIs are resolved relative to the `.gltf` file.
-
-## Build
-
-```powershell
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64
-cmake --build build --config Debug
-.\build\Debug\VulkanEngine.exe
-```
-
-For CLion, open this folder as a CMake project and use a Debug profile. Validation layers are enabled only in Debug builds.
-
-The run paths for the demo textures are `assets/textures/checker.png`, `assets/textures/checker_normal.png`, and `assets/textures/checker_mr.png`. The run path for the imported geometry smoke test is `assets/models/test_mesh.gltf`. CMake embeds the source asset directory, and the renderer uses procedural texture fallbacks plus the built-in cube fallback scene if assets are missing.
-
-## Validated Environment
-
-Validated locally on:
-
-- Windows
-- Visual Studio 2022 MSVC x64
-- Vulkan SDK 1.4.328.1
-- NVIDIA GeForce RTX 3080 Ti Laptop GPU
-
-Galaxy overlay layer naming warnings may appear in Debug runs. They come from an external Vulkan layer and are unrelated to renderer validation.
-
-## Architecture
+## Architecture Overview
 
 - `Application` owns the `Window` and `Renderer`.
 - `Window` owns SDL initialization, the native window, Vulkan instance extensions, and surface creation.
-- `Renderer` owns the frame loop and orchestrates frame resources.
-- `VulkanContext` owns the Vulkan instance, debug messenger, surface, selected device, queues, and VMA allocator.
-- `VulkanDevice` selects a Vulkan 1.3 GPU, finds queue families, enables Synchronization2, Dynamic Rendering, Buffer Device Address, and descriptor indexing features when supported, and logs indirect-count draw support plus `maxDrawIndirectCount`.
-- `VulkanSwapchain` owns swapchain images, image views, color/depth image layout tracking, and the depth image used by Dynamic Rendering.
-- `VulkanCommandContext` owns the graphics command pool and per-frame command buffers.
-- `VulkanSync` owns per-frame image-available semaphores and fences, plus render-finished semaphores scoped per swapchain image.
-- `RenderGraph` owns the minimal ShadowPass/MainPass frame structure and the explicit Synchronization2 transitions for the shadow map, swapchain color image, and main depth image.
-- `VulkanPipeline` loads compiled SPIR-V shader modules and creates a Dynamic Rendering graphics pipeline.
-- `VulkanComputePipeline` loads a compiled compute SPIR-V module and creates the descriptor/push-constant pipeline layout plus compute pipeline used by GPU frustum culling.
-- `VulkanBuffer` owns `VkBuffer` plus VMA allocation, supports CPU-visible uploads/readbacks, staging copies, and optional Buffer Device Address lookup.
-- `VulkanImage` owns `VkImage` plus VMA allocation and image view lifetime.
-- `VulkanTexture` owns a sampled image, VMA allocation, image view, and sampler, and uploads RGBA8 texture data through a staging buffer. It can load image files through stb_image, generate mipmaps on the GPU when supported, or use a procedural checkerboard fallback.
-- `VulkanEnvironmentMap` owns a cube-compatible sampled image, cube image view, and clamp sampler. The renderer uses one generated cubemap for the visible skybox, a second low-frequency generated cubemap for diffuse irradiance, and a mipmapped generated cubemap for prefiltered specular IBL.
-- `VulkanBrdfLut` owns the generated 2D `VK_FORMAT_R8G8_UNORM` split-sum BRDF lookup texture used by specular IBL.
-- `VulkanShadowMap` owns the fixed-size sampled depth image, image view, sampler, and current layout used by the directional shadow pass.
-- `Mesh`, `Material`, `RenderObject`, `DrawItem`, `Transform`, and `Camera` provide the first renderer-side scene abstractions. `Mesh::createFromGltf()` can load static glTF triangle geometry, submesh material ranges, basic glTF material factors, glTF texture references, and static scene node instances without introducing ECS, animation, skinning, morph targets, or glTF cameras/lights.
+- `Renderer` owns the frame loop, scene data, frame resources, draw-item construction, and pass orchestration.
+- `VulkanContext` owns the instance, debug messenger, surface, selected physical/logical device, queues, and VMA allocator.
+- `VulkanDevice` selects a Vulkan 1.3 GPU, enables required/optional features, and logs descriptor indexing plus indirect-count capabilities.
+- `VulkanSwapchain`, `VulkanCommandContext`, and `VulkanSync` own frame presentation, command buffers, semaphores, and fences.
+- `VulkanPipeline` and `VulkanComputePipeline` load CMake-built SPIR-V and create graphics/compute pipeline layouts and pipelines.
+- `VulkanBuffer`, `VulkanImage`, `VulkanTexture`, `VulkanEnvironmentMap`, `VulkanBrdfLut`, and `VulkanShadowMap` wrap Vulkan resource lifetime.
+- `Mesh`, `Material`, `RenderObject`, `DrawItem`, `Transform`, and `Camera` provide renderer-side scene abstractions without ECS.
+- `RenderGraph` is a small manual frame graph for the current `ShadowPass` and `MainPass` resource transitions.
+
+## One-Frame Rendering Flow
+
+1. Wait for the current frame fence and acquire the next swapchain image.
+2. Reset the fence and command buffer, update transforms, and build `DrawItem` records from render objects and mesh primitives.
+3. Extract the camera frustum from `projection * view`.
+4. Upload culling input records for the GPU path, or build/upload a CPU-visible indirect command list for the fallback path.
+5. Upload per-object MVP/model/light/material data into the current frame's Buffer Device Address object-data buffer.
+6. Begin the minimal `RenderGraph` recording.
+7. Transition the shadow map, begin depth-only Dynamic Rendering, and draw shadow casters with the shadow pipeline.
+8. Reset the visible-count buffer, dispatch the compute culling pass, barrier shader writes for indirect/count reads, and copy the visible count for readback.
+9. Transition the swapchain color image and main depth image for the main pass.
+10. Begin main Dynamic Rendering, draw the skybox, bind global and bindless material descriptors when available, and issue indirect indexed draws.
+11. End Dynamic Rendering, transition the swapchain image to present, submit with `vkQueueSubmit2`, and present.
+12. Recreate the swapchain if presentation reports an out-of-date or resized surface.
 
 ## Current Descriptor Contract
 
-Bindless main-pass global/material resource descriptor set 0:
+Bindless main-pass global resource descriptor set 0:
 
 - binding 1 = shadow map combined image sampler
 - binding 4 = diffuse irradiance cubemap combined image sampler
@@ -103,54 +84,73 @@ GPU culling compute descriptor set:
 - binding 1 = per-frame indirect command output storage buffer
 - binding 2 = per-frame visible draw count storage buffer
 
-The bindless path uses a transitional set 0 layout that is compatible with the legacy material set, but `simple_bindless.frag` only reads the global resources from it. Material textures come from set 1 indices. Static glTF geometry and glTF-loaded materials use bindless material texture indices on devices with descriptor indexing support, while devices without the required features keep the older per-material descriptor set path.
+Object and material scalar data still use Buffer Device Address plus a vertex-stage push constant. On the bindless multi-draw path, the pushed address is the base of the current frame's `ObjectFrameData` array, and indirect `firstInstance` selects the object-data entry. The fallback path still pushes one per-draw object-data address with `firstInstance = 0`.
 
-Object and material scalar data still use Buffer Device Address plus a vertex-stage push constant. On the bindless multi-draw path, the pushed address is the base of the current frame's `ObjectFrameData` array, and indirect `firstInstance` selects the object-data entry. The fallback path still pushes one per-draw object-data address with `firstInstance = 0`. MVP, model, light, camera, base-color factor, metallic factor, roughness factor, and multi-scatter strength data have not moved into descriptor UBOs.
+## Build Instructions
 
-## Vulkan Initialization Flow
+Required tools:
 
-1. Initialize Volk global function loading.
-2. Create `VkInstance` with SDL3-required extensions and optional debug utils.
-3. Install the validation debug messenger in Debug builds.
-4. Create `VkSurfaceKHR` from the SDL3 window.
-5. Select a Vulkan 1.3 physical device with graphics and present support.
-6. Create a logical device with Vulkan 1.3 feature chains.
-7. Load device functions through Volk.
-8. Create a VMA allocator with Buffer Device Address support.
-9. Create swapchain images, image views, depth image, graphics pipeline, command buffers, and synchronization objects.
+- CMake 3.25+
+- C++20 compiler, with Visual Studio 2022 MSVC x64 recommended on Windows
+- Vulkan SDK with Vulkan headers and `glslc`
+- Git for FetchContent fallback dependencies
 
-## One-Frame Rendering Flow
+The CMake project first looks for installed packages. If they are missing, `VULKAN_ENGINE_FETCH_DEPS=ON` downloads SDL3, GLM, Volk, and Vulkan Memory Allocator from pinned release tags. `stb_image`, tinygltf, and nlohmann JSON are vendored under `external/`.
 
-1. Wait for the current frame fence.
-2. Acquire the next swapchain image with an image-available semaphore.
-3. Reset the fence and command buffer.
-4. Update all object transforms.
-5. Build all `DrawItem` records from `RenderObject`s and `MeshPrimitive` submesh ranges.
-6. Extract the camera frustum from `projection * view`.
-7. If GPU culling is active, upload all draw item bounds and draw parameters to the current frame's culling input buffer.
-8. If GPU culling is unavailable or disabled, build the CPU-visible main-pass `DrawItem` list and upload one indirect command per visible draw.
-9. Upload per-object MVP/model/light/light-MVP/material data into the current frame's object-data buffer.
-10. Record the command buffer through the minimal `RenderGraph`.
-11. `RenderGraph` begins `ShadowPass` and transitions the shadow map to `VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL`.
-12. Begin depth-only Dynamic Rendering for the shadow pass.
-13. Bind the shadow pipeline and draw each shadow `DrawItem` with direct `vkCmdDrawIndexed`.
-14. `RenderGraph` ends `ShadowPass` and transitions the shadow map to `VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL`.
-15. If GPU culling is active, reset the per-frame visible count buffer, bind the compute cull pipeline, bind the cull descriptor set, push the six frustum planes, dispatch one invocation per draw item, insert Synchronization2 buffer barriers from shader storage writes to indirect command/count reads, and copy the visible count to a small readback buffer.
-16. `RenderGraph` begins `MainPass` and transitions the swapchain image to `VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL`.
-17. `RenderGraph` transitions the main depth image to `VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL`.
-18. Begin main Dynamic Rendering with clear color and depth attachments.
-19. Set dynamic viewport and scissor from the current swapchain extent.
-20. Bind the skybox pipeline and skybox descriptor set 0.
-21. Push the skybox inverse view-projection matrix and draw a fullscreen triangle.
-22. Bind the main graphics pipeline.
-23. On the bindless path, bind set 0 global resources and set 1 bindless material textures once. On the fallback path, bind each draw item's material descriptor set 0.
-24. Push that draw item's object-data buffer device address.
-25. Bind the draw item's device-local vertex and index buffers.
-26. Draw the item with `vkCmdDrawIndexedIndirect`.
-27. End Dynamic Rendering.
-28. `RenderGraph` ends `MainPass` and transitions the swapchain image to `VK_IMAGE_LAYOUT_PRESENT_SRC_KHR`.
-29. Submit with `vkQueueSubmit2`.
-30. Present the image and recreate the swapchain if it is out of date.
+```powershell
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+cmake --build build --config Debug
+.\build\Debug\VulkanEngine.exe
+```
+
+CMake compiles GLSL shaders into the build-directory shader folder, for example `build/shaders`, and embeds that absolute shader directory into the executable. It also embeds the source `assets` directory path so Visual Studio, CLion, and PowerShell launches do not depend on the current working directory.
+
+The demo tries to load:
+
+- `assets/textures/checker.png`
+- `assets/textures/checker_normal.png`
+- `assets/textures/checker_mr.png`
+- `assets/models/test_mesh.gltf`, then `assets/models/test_mesh.glb`
+
+Texture failures use procedural fallbacks, and missing glTF geometry falls back to the built-in cube scene.
+
+## Validated Environment
+
+Validated locally on:
+
+- Windows
+- Visual Studio 2022 MSVC x64
+- Vulkan SDK 1.4.328.1
+- NVIDIA GeForce RTX 3080 Ti Laptop GPU
+
+CI builds on `windows-2022` with Visual Studio 2022 and Vulkan SDK 1.4.328.1. CI configures CMake, compiles the GLSL shader target through `glslc`, and builds the renderer; it does not run the executable because GPU/display availability is not guaranteed.
+
+Galaxy overlay layer naming warnings may appear in Debug runs. They come from an external Vulkan layer and are unrelated to renderer validation.
+
+## Known Limitations
+
+- GPU culling currently still uses a zero-count indirect command path instead of full compact indirect-count drawing.
+- `vkCmdDrawIndexedIndirectCount` support is queried/logged but not yet used as the primary draw path.
+- Shadow map bounds are fixed and demo-scene-oriented; they are not yet cascaded shadow maps or texel-snapped stable bounds.
+- Texture color space is not fully separated yet. Base color should eventually use sRGB while normal and metallic-roughness textures stay linear.
+- Upload paths still use simple one-time command buffers and queue idle waits, which is acceptable for initialization but not ideal for runtime streaming.
+- `RenderGraph` is still minimal/manual and not a fully automatic dependency graph.
+- glTF support is static and intentionally narrow: no animation, skinning, morph targets, cameras, lights, alpha modes, occlusion textures, or emissive textures yet.
+
+## Next Milestones
+
+- Replace zero-count indirect drawing with compacted visible command buffers and per-batch indirect-count drawing.
+- Promote `vkCmdDrawIndexedIndirectCount` to the primary GPU-driven path where supported.
+- Improve shadow stability with tighter scene bounds, cascades, and texel snapping.
+- Separate texture color-space handling and add HDR environment loading.
+- Move runtime streaming away from queue-idle one-time uploads.
+- Grow the render graph toward automatic dependency inference, scheduling, transient resources, and pass culling.
+- Expand glTF support with alpha modes, occlusion/emissive textures, tangent generation, animation, skinning, morph targets, cameras, and lights.
+- Add RenderDoc workflow documentation, detailed frame timeline visualization, and an in-engine profiler UI.
+
+## Milestone History
+
+The following notes preserve the incremental build history and design decisions behind the current renderer.
 
 ## Milestone 2: Triangle Rendering
 
@@ -722,42 +722,3 @@ GPU culling:
 Bindless material descriptors, the `ObjectFrameData` Buffer Device Address array, `firstInstance` object-data indexing, timestamp profiling, render graph pass order, shadow mapping, IBL, the BRDF LUT, and Kulla-Conty-style compensation are unchanged. The shadow pass remains direct draw over all draw items.
 
 Future GPU-driven work can add compacted visible command buffers, per-batch indirect count buffers, `vkCmdDrawIndexedIndirectCount` for each mesh batch, fully GPU-built mesh batches, shadow caster culling, occlusion culling, BVH or other spatial partitioning, and LOD.
-
-## Next Milestones
-
-Future milestones can build on this multi-object material foundation with:
-
-- dedicated Kulla-Conty LUT
-- energy validation
-- HDR environment loading
-- importance-sampled prefiltering
-- animation
-- skinning
-- morph targets
-- glTF cameras/lights
-- aggregate scene bounds
-- shadow caster culling
-- spatial partitioning
-- BVH / octree
-- compacted visible command buffers
-- per-batch indirect count buffers
-- multi-draw indirect count
-- compact object/material buffers
-- GPU-driven material indexing
-- occlusion culling
-- LOD
-- alpha modes
-- occlusion and emissive textures
-- proper tangent generation for meshes without tangents
-- bindless sampler improvements
-- automatic render graph dependency inference
-- render graph scheduling improvements
-- transient resource allocation
-- attachment aliasing
-- async compute
-- pass culling
-- render graph visualization
-- detailed GPU/CPU frame timeline visualization
-- RenderDoc capture workflow documentation
-- in-engine profiler UI
-- ImGui integration

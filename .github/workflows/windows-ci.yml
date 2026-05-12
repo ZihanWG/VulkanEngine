@@ -1,0 +1,35 @@
+name: Windows CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    name: MSVC Vulkan build
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Vulkan SDK
+        uses: humbletim/install-vulkan-sdk@v1.2
+        with:
+          version: 1.4.328.1
+          cache: true
+
+      - name: Verify toolchain
+        shell: pwsh
+        run: |
+          cmake --version
+          glslc --version
+
+      - name: Configure CMake
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Compile GLSL shaders
+        run: cmake --build build --config Debug --target VulkanEngineShaders --parallel
+
+      - name: Build renderer
+        run: cmake --build build --config Debug --target VulkanEngine --parallel

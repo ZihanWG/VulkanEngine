@@ -15,6 +15,13 @@ option(VULKAN_ENGINE_FETCH_DEPS "Fetch missing third-party dependencies with Fet
 
 include(FetchContent)
 
+# FetchContent fallbacks are pinned to stable tags so clean checkouts and CI
+# resolve reproducible dependency sources instead of moving default branches.
+set(VULKAN_ENGINE_SDL3_TAG "release-3.4.8")
+set(VULKAN_ENGINE_GLM_TAG "1.0.3")
+set(VULKAN_ENGINE_VOLK_TAG "vulkan-sdk-1.4.328.1")
+set(VULKAN_ENGINE_VMA_TAG "v3.3.0")
+
 find_package(Vulkan REQUIRED)
 
 find_package(SDL3 CONFIG QUIET)
@@ -28,7 +35,7 @@ if(NOT TARGET SDL3::SDL3 AND NOT TARGET SDL3::SDL3-shared AND NOT TARGET SDL3::S
     set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(SDL3
         GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
-        GIT_TAG main
+        GIT_TAG ${VULKAN_ENGINE_SDL3_TAG}
     )
     FetchContent_MakeAvailable(SDL3)
 endif()
@@ -41,7 +48,7 @@ if(NOT TARGET glm::glm)
 
     FetchContent_Declare(glm
         GIT_REPOSITORY https://github.com/g-truc/glm.git
-        GIT_TAG master
+        GIT_TAG ${VULKAN_ENGINE_GLM_TAG}
     )
     FetchContent_MakeAvailable(glm)
 endif()
@@ -55,7 +62,7 @@ if(NOT TARGET volk::volk AND NOT TARGET volk)
     set(VOLK_INSTALL OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(volk
         GIT_REPOSITORY https://github.com/zeux/volk.git
-        GIT_TAG master
+        GIT_TAG ${VULKAN_ENGINE_VOLK_TAG}
     )
     FetchContent_MakeAvailable(volk)
 endif()
@@ -68,7 +75,7 @@ if(NOT TARGET GPUOpen::VulkanMemoryAllocator AND NOT TARGET VulkanMemoryAllocato
 
     FetchContent_Declare(vma
         GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
-        GIT_TAG master
+        GIT_TAG ${VULKAN_ENGINE_VMA_TAG}
     )
     FetchContent_MakeAvailable(vma)
 endif()
