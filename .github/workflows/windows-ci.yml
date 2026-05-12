@@ -22,45 +22,58 @@ jobs:
       - name: Locate Vulkan SDK for CMake
         shell: pwsh
         run: |
-          $sdkRoot = $env:VULKAN_SDK
-          if (-not $sdkRoot -or -not (Test-Path (Join-Path $sdkRoot "Include\vulkan\vulkan.h"))) {
-            $glslcCommand = Get-Command glslc.exe -ErrorAction SilentlyContinue
-            if ($glslcCommand) {
-              $candidateRoot = Split-Path -Parent (Split-Path -Parent $glslcCommand.Source)
-              if (Test-Path (Join-Path $candidateRoot "Include\vulkan\vulkan.h")) {
-                $sdkRoot = $candidateRoot
-              }
+          $searchRoots = @(
+            $env:VULKAN_SDK,
+            (Join-Path $env:GITHUB_WORKSPACE "VULKAN_SDK"),
+            (Join-Path $env:RUNNER_TEMP "VULKAN_SDK"),
+            "C:\VulkanSDK"
+          ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
+
+          Write-Host "VULKAN_SDK=$env:VULKAN_SDK"
+          Write-Host "Search roots:"
+          $searchRoots | ForEach-Object { Write-Host "  $_" }
+
+          $header = $null
+          $library = $null
+          $glslc = (Get-Command glslc.exe -ErrorAction SilentlyContinue).Source
+
+          foreach ($root in $searchRoots) {
+            if (-not $header) {
+              $header = Get-ChildItem -Path $root -Recurse -Filter vulkan.h -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -match "[\\/]Include[\\/]vulkan[\\/]vulkan\.h$" } |
+                Select-Object -First 1 -ExpandProperty FullName
+            }
+            if (-not $library) {
+              $library = Get-ChildItem -Path $root -Recurse -Filter vulkan-1.lib -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -match "[\\/]Lib[\\/]vulkan-1\.lib$" } |
+                Select-Object -First 1 -ExpandProperty FullName
+            }
+            if (-not $glslc) {
+              $glslc = Get-ChildItem -Path $root -Recurse -Filter glslc.exe -File -ErrorAction SilentlyContinue |
+                Select-Object -First 1 -ExpandProperty FullName
             }
           }
 
-          if (-not $sdkRoot -or -not (Test-Path (Join-Path $sdkRoot "Include\vulkan\vulkan.h"))) {
-            $sdkRoot = Get-ChildItem -Path "C:\VulkanSDK" -Directory -ErrorAction SilentlyContinue |
-              Where-Object { Test-Path (Join-Path $_.FullName "Include\vulkan\vulkan.h") } |
-              Sort-Object -Property Name -Descending |
-              Select-Object -First 1 -ExpandProperty FullName
+          if (-not $header) {
+            throw "Vulkan SDK install did not produce Include\vulkan\vulkan.h under the searched roots."
+          }
+          if (-not $library) {
+            throw "Vulkan SDK install did not produce Lib\vulkan-1.lib under the searched roots."
+          }
+          if (-not $glslc) {
+            throw "Vulkan SDK install did not produce glslc.exe under the searched roots or PATH."
           }
 
-          if (-not $sdkRoot) {
-            throw "Vulkan SDK install did not produce an SDK directory with Include\vulkan\vulkan.h."
-          }
-
-          $includeDir = Join-Path $sdkRoot "Include"
-          $library = Join-Path $sdkRoot "Lib\vulkan-1.lib"
-          $glslc = Join-Path $sdkRoot "Bin\glslc.exe"
-
-          if (-not (Test-Path $library)) {
-            throw "Vulkan loader import library was not found: $library"
-          }
-          if (-not (Test-Path $glslc)) {
-            throw "glslc was not found: $glslc"
-          }
+          $includeDir = Split-Path -Parent (Split-Path -Parent $header)
+          $sdkRoot = Split-Path -Parent $includeDir
+          $binDir = Split-Path -Parent $glslc
 
           "VULKAN_SDK=$sdkRoot" >> $env:GITHUB_ENV
           "Vulkan_ROOT=$sdkRoot" >> $env:GITHUB_ENV
           "Vulkan_INCLUDE_DIR=$includeDir" >> $env:GITHUB_ENV
           "Vulkan_LIBRARY=$library" >> $env:GITHUB_ENV
           "Vulkan_GLSLC_EXECUTABLE=$glslc" >> $env:GITHUB_ENV
-          (Join-Path $sdkRoot "Bin") >> $env:GITHUB_PATH
+          $binDir >> $env:GITHUB_PATH
 
           Write-Host "VULKAN_SDK=$sdkRoot"
           Write-Host "Vulkan_INCLUDE_DIR=$includeDir"
