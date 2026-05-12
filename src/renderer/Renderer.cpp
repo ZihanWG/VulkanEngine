@@ -93,12 +93,15 @@ const glm::vec4 kAmbientLightColor{0.15f, 0.15f, 0.15f, 1.0f};
 struct PushConstants {
     VkDeviceAddress objectFrameDataAddress = 0;
     uint32_t cascadeIndex = 0;
-    uint32_t padding = 0;
+    uint32_t toneMappingOperator = 0;
+    float exposure = 1.0f;
 };
 
 static_assert(offsetof(PushConstants, objectFrameDataAddress) == 0);
 static_assert(offsetof(PushConstants, cascadeIndex) == 8);
-static_assert(sizeof(PushConstants) == 16);
+static_assert(offsetof(PushConstants, toneMappingOperator) == 12);
+static_assert(offsetof(PushConstants, exposure) == 16);
+static_assert(sizeof(PushConstants) == 24);
 
 // Mirrors src/shaders/cull.comp. Main and shadow GPU culling both use this
 // std430 input record: vec4 members are 16-byte aligned, then scalar draw and
@@ -140,9 +143,24 @@ static_assert(sizeof(GpuCullPushConstants) <= 128);
 
 struct SkyboxPushConstants {
     glm::mat4 inverseViewProjection{1.0f};
+    float exposure = 1.0f;
+    uint32_t toneMappingOperator = 0;
 };
 
-static_assert(sizeof(SkyboxPushConstants) == sizeof(glm::mat4));
+static_assert(offsetof(SkyboxPushConstants, inverseViewProjection) == 0);
+static_assert(offsetof(SkyboxPushConstants, exposure) == sizeof(glm::mat4));
+static_assert(offsetof(SkyboxPushConstants, toneMappingOperator) == sizeof(glm::mat4) + sizeof(float));
+static_assert(sizeof(SkyboxPushConstants) >= sizeof(glm::mat4) + sizeof(float) + sizeof(uint32_t));
+
+uint32_t toneMappingOperatorValue(int operatorType)
+{
+    return operatorType == 1 ? 1u : 0u;
+}
+
+float toneMappingExposureValue(float exposure)
+{
+    return std::max(exposure, 0.0f);
+}
 
 std::filesystem::path shaderPath(const char* filename)
 {
@@ -760,9 +778,11 @@ void Renderer::createPipeline()
     };
     const VkDescriptorSetLayout skyboxDescriptorSetLayout = skyboxDescriptorSetLayout_.handle();
     const VkPushConstantRange pushConstantRange{
-        VK_SHADER_STAGE_VERTEX_BIT, 0, static_cast<uint32_t>(sizeof(PushConstants))};
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(PushConstants))};
     const VkPushConstantRange skyboxPushConstantRange{
-        VK_SHADER_STAGE_VERTEX_BIT, 0, static_cast<uint32_t>(sizeof(SkyboxPushConstants))};
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+        0,
+        static_cast<uint32_t>(sizeof(SkyboxPushConstants))};
 
     rhi::VulkanPipelineCreateInfo pipelineInfo{};
     pipelineInfo.vertexShaderPath = shaderPath("simple.vert.spv");
@@ -811,7 +831,9 @@ void Renderer::createPipeline()
     shadowPipelineInfo.depthFormat = shadowMap_.format();
     shadowPipelineInfo.vertexBindings = std::span<const VkVertexInputBindingDescription>(&binding, 1);
     shadowPipelineInfo.vertexAttributes = std::span<const VkVertexInputAttributeDescription>(attributes.data(), 1);
-    shadowPipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&pushConstantRange, 1);
+    const VkPushConstantRange shadowPushConstantRange{
+        VK_SHADER_STAGE_VERTEX_BIT, 0, static_cast<uint32_t>(sizeof(PushConstants))};
+    shadowPipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&shadowPushConstantRange, 1);
     shadowPipelineInfo.enableColorAttachment = false;
     shadowPipelineInfo.enableDepth = true;
     shadowPipelineInfo.depthWriteEnable = true;
@@ -1119,14 +1141,54 @@ void Renderer::createEnvironmentMap()
     // The visible environment cubemap stays dedicated to the skybox. A separate
     // low-frequency cubemap feeds diffuse IBL, while a mipmapped cubemap and 2D
     // BRDF LUT feed split-sum specular IBL.
-    environmentMap_.createProcedural(context_, commandContext_, 32);
-    nameEnvironmentMapResources(environmentMap_, "EnvironmentCubemap");
-    createDiffuseIrradianceMap();
-    createPrefilteredEnvironmentMap();
+    const std::filesystem::path hdrEnvironmentPath = assetPath("environments/studio.hdr");
+    bool loadedHdrEnvironment = false;
+    if (std::filesystem::exists(hdrEnvironmentPath)) {
+        try {
+            constexpr uint32_t kHdrEnvironmentFaceSize = 128;
+            const rhi::HdrEnvironmentCubeData hdrCubeData =
+                rhi::VulkanEnvironmentMap::loadHdrEquirectangularFaces(hdrEnvironmentPath, kHdrEnvironmentFaceSize);
+            const std::span<const float> hdrCubePixels(hdrCubeData.rgba32fPixels.data(),
+                                                       hdrCubeData.rgba32fPixels.size());
+
+            environmentMap_.createFromRgba32fFaces(
+                context_, commandContext_, hdrCubeData.faceSize, hdrCubePixels);
+            nameEnvironmentMapResources(environmentMap_, "HdrEnvironmentCubemap");
+
+            diffuseIrradianceMap_.createDiffuseIrradianceFromRgba32fFaces(
+                context_, commandContext_, hdrCubeData.faceSize, hdrCubePixels, 32);
+            nameEnvironmentMapResources(diffuseIrradianceMap_, "HdrDiffuseIrradianceCubemap");
+
+            prefilteredEnvironmentMap_.createPrefilteredSpecularFromRgba32fFaces(
+                context_, commandContext_, hdrCubeData.faceSize, hdrCubePixels, 64);
+            nameEnvironmentMapResources(prefilteredEnvironmentMap_, "HdrPrefilteredSpecularCubemap");
+
+            loadedHdrEnvironment = true;
+            Logger::info(std::string("Loaded HDR environment from ") + hdrEnvironmentPath.string() +
+                         " with approximate CPU equirectangular-to-cubemap conversion.");
+        } catch (const std::exception& error) {
+            Logger::warn(std::string("Failed to load HDR environment '") + hdrEnvironmentPath.string() +
+                         "'; using procedural environment fallback: " + error.what());
+            environmentMap_.reset();
+            diffuseIrradianceMap_.reset();
+            prefilteredEnvironmentMap_.reset();
+        }
+    } else {
+        Logger::info(std::string("Optional HDR environment not found at ") + hdrEnvironmentPath.string() +
+                     "; using procedural environment fallback.");
+    }
+
+    if (!loadedHdrEnvironment) {
+        environmentMap_.createProcedural(context_, commandContext_, 32);
+        nameEnvironmentMapResources(environmentMap_, "EnvironmentCubemap");
+        createDiffuseIrradianceMap();
+        createPrefilteredEnvironmentMap();
+        Logger::info("Created procedural environment cubemaps for skybox, diffuse IBL, and specular IBL.");
+    }
+
     createBrdfLutTexture();
     createSkyboxDescriptorSet();
-    Logger::info("Created procedural environment cubemaps and BRDF LUT for skybox, diffuse IBL, "
-                 "and specular IBL.");
+    Logger::info("Created BRDF LUT for split-sum specular IBL.");
 }
 
 void Renderer::createDiffuseIrradianceMap()
@@ -3130,7 +3192,10 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         glm::mat4 skyboxView = camera_.viewMatrix();
         skyboxView[3] = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
         const glm::mat4 projection = camera_.projectionMatrix(aspect);
-        const SkyboxPushConstants skyboxPushConstants{glm::inverse(projection * skyboxView)};
+        const SkyboxPushConstants skyboxPushConstants{
+            glm::inverse(projection * skyboxView),
+            toneMappingExposureValue(toneMappingSettings_.exposure),
+            toneMappingOperatorValue(toneMappingSettings_.operatorType)};
 
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, skyboxPipeline_.pipeline());
         vkCmdBindDescriptorSets(commandBuffer,
@@ -3143,7 +3208,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                                 nullptr);
         vkCmdPushConstants(commandBuffer,
                            skyboxPipeline_.layout(),
-                           VK_SHADER_STAGE_VERTEX_BIT,
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0,
                            static_cast<uint32_t>(sizeof(SkyboxPushConstants)),
                            &skyboxPushConstants);
@@ -3190,12 +3255,14 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     const bool indirectCountPathActive = isFrameIndirectCountPathActive(currentFrame_);
     const VkBuffer batchVisibleCountBuffer =
         indirectCountPathActive ? frameBatchVisibleCountBuffers_.at(currentFrame_).buffer() : VK_NULL_HANDLE;
+    const uint32_t toneMappingOperator = toneMappingOperatorValue(toneMappingSettings_.operatorType);
+    const float exposure = toneMappingExposureValue(toneMappingSettings_.exposure);
     if (multiDrawIndirectActive) {
         if (bindlessDescriptorSetsBound) {
-            const PushConstants pushConstants{objectFrameDataBaseAddress};
+            const PushConstants pushConstants{objectFrameDataBaseAddress, 0, toneMappingOperator, exposure};
             vkCmdPushConstants(commandBuffer,
                                pipeline_.layout(),
-                               VK_SHADER_STAGE_VERTEX_BIT,
+                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                                0,
                                static_cast<uint32_t>(sizeof(PushConstants)),
                                &pushConstants);
@@ -3272,12 +3339,15 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
 
             const PushConstants pushConstants{
                 objectFrameDataBaseAddress +
-                static_cast<VkDeviceAddress>(drawItem.frameDataIndex * sizeof(ObjectFrameData))};
+                    static_cast<VkDeviceAddress>(drawItem.frameDataIndex * sizeof(ObjectFrameData)),
+                0,
+                toneMappingOperator,
+                exposure};
 
             // Fallback recording pushes the address of this draw's object data; firstInstance stays zero.
             vkCmdPushConstants(commandBuffer,
                                pipeline_.layout(),
-                               VK_SHADER_STAGE_VERTEX_BIT,
+                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                                0,
                                static_cast<uint32_t>(sizeof(PushConstants)),
                                &pushConstants);

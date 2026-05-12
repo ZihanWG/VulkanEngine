@@ -71,6 +71,11 @@ private:
         float rasterDepthBiasSlopeFactor = 1.75f;
     };
 
+    struct ToneMappingSettings {
+        float exposure = 1.0f;
+        int operatorType = 0; // 0 = Reinhard, 1 = ACES fitted approximation.
+    };
+
     struct CascadeFrameData {
         glm::mat4 lightViewProjection{1.0f};
         renderer::Frustum lightFrustum{};
@@ -278,6 +283,7 @@ private:
     std::array<uint32_t, kMaxShadowCascades> shadowBatchCountPerCascade_{};
     CullingStats cullingStats_{};
     ShadowCullingStats shadowCullingStats_{};
+    ToneMappingSettings toneMappingSettings_{};
     bool initialized_ = false;
     bool useBindlessMaterialTextures_ = true;
     bool bindlessMaterialTexturesAvailable_ = false;

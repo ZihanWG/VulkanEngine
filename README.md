@@ -12,7 +12,8 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - Static mesh path for built-in cube geometry and glTF triangle meshes.
 - glTF material factors plus base color, normal, and metallic-roughness texture loading.
 - Tangent-space normal mapping and Cook-Torrance GGX direct lighting.
-- Procedural skybox, diffuse irradiance cubemap, prefiltered specular cubemap, and split-sum BRDF LUT.
+- Optional HDR environment loading with a procedural fallback, cubemap-based skybox/IBL resources, and split-sum BRDF LUT.
+- Simple exposure control and tone mapping before writing skybox and mesh lighting to the swapchain.
 - Compact Kulla-Conty-style multi-scattering compensation for PBR response.
 - PCF-filtered cascaded directional shadow map with basic texel snapping, optional cascade debug tinting, per-cascade GPU shadow-caster culling, and an indirect shadow draw path.
 - Descriptor indexing path for bindless material texture arrays, with a legacy descriptor-set fallback.
@@ -117,9 +118,10 @@ The demo tries to load:
 - `assets/textures/checker.png`
 - `assets/textures/checker_normal.png`
 - `assets/textures/checker_mr.png`
+- optional `assets/environments/studio.hdr`
 - `assets/models/test_mesh.gltf`, then `assets/models/test_mesh.glb`
 
-Texture failures use procedural fallbacks, and missing glTF geometry falls back to the built-in cube scene.
+Texture and HDR environment failures use procedural fallbacks, and missing glTF geometry falls back to the built-in cube scene.
 
 ## Validated Environment
 
@@ -142,8 +144,10 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - CSM bounds use basic texel snapping, but they do not yet use stable crop matrices, cascade blending, or per-cascade resolution control.
 - Upload paths still use simple one-time command buffers and queue idle waits, which is acceptable for initialization but not ideal for runtime streaming.
 - `RenderGraph` is still minimal/manual and not a fully automatic dependency graph.
-- glTF support is static and intentionally narrow: no animation, skinning, morph targets, cameras, lights, alpha modes, occlusion textures, or emissive textures yet.
-- HDR environment loading, full color-management policy, and tone-mapping improvements remain future work.
+- glTF support is static and intentionally narrow: no animation, skinning, morph targets, cameras, lights, or alpha modes yet.
+- Texture semantic handling covers base color, normal, and metallic-roughness today; occlusion, emissive, and other glTF texture semantics remain future work.
+- HDR environment loading is basic and uses an approximate CPU equirectangular-to-cubemap conversion.
+- Tone mapping is simple; bloom, auto-exposure, HDR swapchain output, ImGui controls, and production-quality environment prefiltering remain future work.
 
 ## Next Milestones
 
@@ -160,8 +164,8 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - Add BVH or other spatial partitioning.
 - Add LOD.
 - Consider mesh/task shaders in a later renderer branch.
-- Add HDR environment loading.
-- Improve full color management and tone mapping.
+- Improve HDR environment prefiltering and color-management policy.
+- Add bloom, auto exposure, HDR skybox asset workflows, tone-mapping controls, and a render graph post-process pass.
 - Move runtime streaming away from queue-idle one-time uploads.
 - Grow the render graph toward automatic dependency inference, scheduling, transient resources, and pass culling.
 - Expand glTF support with alpha modes, occlusion/emissive textures, tangent generation, animation, skinning, morph targets, cameras, and lights.
@@ -898,4 +902,20 @@ Procedural fallbacks follow the same rule: checker/base-color fallback is sRGB, 
 
 Descriptor bindings, the bindless material texture set layout, shader resource layout, ObjectFrameData BDA path, main-pass GPU culling, indirect-count drawing, CSM, IBL bindings, BRDF LUT binding, Kulla-Conty-style compensation, render graph pass order, and swapchain synchronization are unchanged.
 
-Future color and environment work can add HDR environment loading, a broader color-management policy, exposure controls, and tone-mapping improvements.
+Future color and material work can add additional glTF texture semantics such as occlusion and emissive plus a broader color-management policy.
+
+## Milestone 39: HDR Environment Loading and Tone Mapping
+
+Milestone 39 adds an optional HDR environment path without changing material descriptors, bindless texture descriptors, ObjectFrameData, GPU culling, CSM, BRDF LUT, Kulla-Conty-style compensation, render graph pass order, or swapchain synchronization.
+
+At startup, the renderer attempts to load `assets/environments/studio.hdr`. Large HDR assets are intentionally not committed; place a local Radiance `.hdr` file at that path to exercise the HDR path. The image is decoded with `stb_image` float loading (`stbi_loadf`) and converted to RGBA float data when needed.
+
+Environment resources remain cubemap-based. The HDR equirectangular source is sampled on the CPU into a visible cubemap, then the existing educational approximate paths generate diffuse irradiance and prefiltered specular cubemaps from that HDR-derived source. The preferred upload format is `VK_FORMAT_R16G16B16A16_SFLOAT`, with `VK_FORMAT_R32G32B32A32_SFLOAT` as a fallback when needed. If the file is missing, decoding fails, or no supported sampled float cubemap format is available, the renderer keeps the procedural environment fallback.
+
+Skybox and material lighting now apply exposure and tone mapping before writing to the swapchain. The renderer has a simple `ToneMappingSettings` value with `exposure = 1.0f` and `operatorType = 0`; operator `0` is Reinhard, and operator `1` is a compact ACES fitted approximation. Tone-mapping data is passed through push constants. The shader does not add manual gamma correction; the current swapchain path still follows the selected surface format behavior.
+
+Base color sRGB handling from Milestone 38 remains unchanged: base color textures use sRGB image formats, while normal and metallic-roughness textures remain linear UNORM data textures.
+
+Limitations: equirectangular-to-cubemap conversion is approximate, there is no bloom, no auto-exposure, no HDR swapchain, no ImGui control, and no production-quality environment prefiltering yet.
+
+Future work: better environment prefiltering, bloom, auto exposure, HDR skybox asset curation, ImGui controls, and a render graph post-process pass.
