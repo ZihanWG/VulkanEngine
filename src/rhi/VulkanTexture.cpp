@@ -133,6 +133,18 @@ void recordImageBarrier(VkCommandBuffer commandBuffer, const VkImageMemoryBarrie
 
 } // namespace
 
+VkFormat rgba8FormatForColorSpace(TextureColorSpace colorSpace)
+{
+    switch (colorSpace) {
+    case TextureColorSpace::Linear:
+        return VK_FORMAT_R8G8B8A8_UNORM;
+    case TextureColorSpace::SRGB:
+        return VK_FORMAT_R8G8B8A8_SRGB;
+    }
+
+    throw std::runtime_error("Unsupported texture color space.");
+}
+
 VulkanTexture::~VulkanTexture()
 {
     reset();
@@ -156,7 +168,8 @@ VulkanTexture& VulkanTexture::operator=(VulkanTexture&& other) noexcept
 void VulkanTexture::createCheckerboard(VulkanContext& context,
                                        const VulkanCommandContext& commandContext,
                                        uint32_t width,
-                                       uint32_t height)
+                                       uint32_t height,
+                                       TextureColorSpace colorSpace)
 {
     const std::vector<uint8_t> pixels = makeCheckerboardPixels(width, height);
     createFromRgba8(context,
@@ -164,13 +177,23 @@ void VulkanTexture::createCheckerboard(VulkanContext& context,
                     width,
                     height,
                     std::span<const uint8_t>(pixels.data(), pixels.size()),
-                    VK_FORMAT_R8G8B8A8_UNORM,
+                    rgba8FormatForColorSpace(colorSpace),
                     true);
 }
 
 void VulkanTexture::createFromFile(VulkanContext& context,
                                    const VulkanCommandContext& commandContext,
                                    const std::filesystem::path& path,
+                                   TextureColorSpace colorSpace,
+                                   bool generateMipmaps)
+{
+    createFromFile(context, commandContext, path, rgba8FormatForColorSpace(colorSpace), generateMipmaps);
+}
+
+void VulkanTexture::createFromFile(VulkanContext& context,
+                                   const VulkanCommandContext& commandContext,
+                                   const std::filesystem::path& path,
+                                   VkFormat format,
                                    bool generateMipmaps)
 {
     int loadedWidth = 0;
@@ -195,13 +218,24 @@ void VulkanTexture::createFromFile(VulkanContext& context,
                     width,
                     height,
                     std::span<const uint8_t>(loadedPixels.get(), byteCount),
-                    VK_FORMAT_R8G8B8A8_UNORM,
+                    format,
                     generateMipmaps);
 }
 
 void VulkanTexture::createFromEncodedBytes(VulkanContext& context,
                                            const VulkanCommandContext& commandContext,
                                            std::span<const uint8_t> encodedBytes,
+                                           TextureColorSpace colorSpace,
+                                           bool generateMipmaps)
+{
+    createFromEncodedBytes(
+        context, commandContext, encodedBytes, rgba8FormatForColorSpace(colorSpace), generateMipmaps);
+}
+
+void VulkanTexture::createFromEncodedBytes(VulkanContext& context,
+                                           const VulkanCommandContext& commandContext,
+                                           std::span<const uint8_t> encodedBytes,
+                                           VkFormat format,
                                            bool generateMipmaps)
 {
     if (encodedBytes.empty()) {
@@ -237,7 +271,7 @@ void VulkanTexture::createFromEncodedBytes(VulkanContext& context,
                     width,
                     height,
                     std::span<const uint8_t>(loadedPixels.get(), byteCount),
-                    VK_FORMAT_R8G8B8A8_UNORM,
+                    format,
                     generateMipmaps);
 }
 

@@ -140,7 +140,9 @@ private:
     void createMaterial();
     void assignBindlessTextureIndices(renderer::Material& material);
     void createMaterialDescriptorSet(renderer::Material& material);
-    void createImportedGltfTextures(const std::vector<renderer::GltfTextureInfo>& textureInfos);
+    void createImportedGltfTextures(
+        const std::vector<renderer::GltfTextureInfo>& textureInfos,
+        const std::vector<renderer::GltfMaterialInfo>& materialInfos);
     void createImportedGltfMaterials(const std::vector<renderer::GltfMaterialInfo>& materialInfos);
     void createSkyboxDescriptorSet();
     void createObjectFrameDataBuffers();
@@ -211,7 +213,9 @@ private:
     rhi::VulkanEnvironmentMap diffuseIrradianceMap_;
     rhi::VulkanEnvironmentMap prefilteredEnvironmentMap_;
     rhi::VulkanBrdfLut brdfLutTexture_;
-    std::vector<rhi::VulkanTexture> importedTextures_;
+    std::vector<rhi::VulkanTexture> importedBaseColorTextures_;
+    std::vector<rhi::VulkanTexture> importedNormalTextures_;
+    std::vector<rhi::VulkanTexture> importedMetallicRoughnessTextures_;
     renderer::BindlessTextureHeap bindlessTextureHeap_;
     rhi::VulkanDescriptorPool materialDescriptorPool_;
     rhi::VulkanDescriptorPool skyboxDescriptorPool_;

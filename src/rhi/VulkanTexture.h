@@ -12,6 +12,13 @@ namespace ve::rhi {
 class VulkanCommandContext;
 class VulkanContext;
 
+enum class TextureColorSpace {
+    Linear,
+    SRGB
+};
+
+[[nodiscard]] VkFormat rgba8FormatForColorSpace(TextureColorSpace colorSpace);
+
 class VulkanTexture final {
 public:
     VulkanTexture() = default;
@@ -26,16 +33,31 @@ public:
         VulkanContext& context,
         const VulkanCommandContext& commandContext,
         uint32_t width = 256,
-        uint32_t height = 256);
+        uint32_t height = 256,
+        TextureColorSpace colorSpace = TextureColorSpace::SRGB);
     void createFromFile(
         VulkanContext& context,
         const VulkanCommandContext& commandContext,
         const std::filesystem::path& path,
+        TextureColorSpace colorSpace = TextureColorSpace::Linear,
+        bool generateMipmaps = true);
+    void createFromFile(
+        VulkanContext& context,
+        const VulkanCommandContext& commandContext,
+        const std::filesystem::path& path,
+        VkFormat format,
         bool generateMipmaps = true);
     void createFromEncodedBytes(
         VulkanContext& context,
         const VulkanCommandContext& commandContext,
         std::span<const uint8_t> encodedBytes,
+        TextureColorSpace colorSpace = TextureColorSpace::Linear,
+        bool generateMipmaps = true);
+    void createFromEncodedBytes(
+        VulkanContext& context,
+        const VulkanCommandContext& commandContext,
+        std::span<const uint8_t> encodedBytes,
+        VkFormat format,
         bool generateMipmaps = true);
     void createFromRgba8(
         VulkanContext& context,

@@ -140,10 +140,10 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - The cascaded shadow pass keeps a direct `vkCmdDrawIndexed` fallback when GPU shadow culling or shadow indirect drawing is unavailable.
 - The old zero-count indirect command path is still retained as a fallback when indirect-count drawing is unavailable.
 - CSM bounds use basic texel snapping, but they do not yet use stable crop matrices, cascade blending, or per-cascade resolution control.
-- Texture color space is not fully separated yet. Base color should eventually use sRGB while normal and metallic-roughness textures stay linear.
 - Upload paths still use simple one-time command buffers and queue idle waits, which is acceptable for initialization but not ideal for runtime streaming.
 - `RenderGraph` is still minimal/manual and not a fully automatic dependency graph.
 - glTF support is static and intentionally narrow: no animation, skinning, morph targets, cameras, lights, alpha modes, occlusion textures, or emissive textures yet.
+- HDR environment loading, full color-management policy, and tone-mapping improvements remain future work.
 
 ## Next Milestones
 
@@ -160,7 +160,8 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - Add BVH or other spatial partitioning.
 - Add LOD.
 - Consider mesh/task shaders in a later renderer branch.
-- Separate texture color-space handling and add HDR environment loading.
+- Add HDR environment loading.
+- Improve full color management and tone mapping.
 - Move runtime streaming away from queue-idle one-time uploads.
 - Grow the render graph toward automatic dependency inference, scheduling, transient resources, and pass culling.
 - Expand glTF support with alpha modes, occlusion/emissive textures, tangent generation, animation, skinning, morph targets, cameras, and lights.
@@ -884,3 +885,17 @@ Future CSM and shadow work:
 - VSM/EVSM
 - shadow debug UI
 - ImGui controls
+
+## Milestone 38: Texture Color Space and sRGB Correctness
+
+Milestone 38 separates texture color-space intent in the existing material texture pipeline. `VulkanTexture` now accepts an explicit `TextureColorSpace` for file and encoded-byte uploads, while `createFromRgba8()` still accepts an explicit `VkFormat` for procedural/data paths.
+
+Base color textures now use `VK_FORMAT_R8G8B8A8_SRGB`. Vulkan sampler hardware converts those sRGB texels to linear values during sampling, so the fragment shaders continue to treat sampled base color as linear and do not manually apply a `pow()` decode.
+
+Normal maps and metallic-roughness maps remain `VK_FORMAT_R8G8B8A8_UNORM` data textures. glTF `baseColorTexture` references are uploaded through the sRGB path, while `normalTexture` and `metallicRoughnessTexture` references are uploaded through the linear path for both external URI images and embedded/data-URI images. The renderer keeps separate internal glTF texture caches per material semantic so a reused image can be uploaded with the correct format for each slot.
+
+Procedural fallbacks follow the same rule: checker/base-color fallback is sRGB, flat normal fallback is linear UNORM, and neutral metallic-roughness fallback is linear UNORM. Procedural environment cubemaps and the split-sum BRDF LUT remain linear/data resources.
+
+Descriptor bindings, the bindless material texture set layout, shader resource layout, ObjectFrameData BDA path, main-pass GPU culling, indirect-count drawing, CSM, IBL bindings, BRDF LUT binding, Kulla-Conty-style compensation, render graph pass order, and swapchain synchronization are unchanged.
+
+Future color and environment work can add HDR environment loading, a broader color-management policy, exposure controls, and tone-mapping improvements.

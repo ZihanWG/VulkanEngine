@@ -407,14 +407,14 @@ bool copyEncodedImageData(tinygltf::Image* image,
         GltfTextureInfo& texture = textures[textureIndex];
         texture.debugName = textureDebugName(sourceTexture, sourceImage, textureIndex);
 
-        if (!sourceImage.uri.empty()) {
-            texture.path = resolveImagePath(gltfPath, sourceImage.uri);
-            continue;
-        }
-
         if (!sourceImage.image.empty()) {
             texture.encodedData = sourceImage.image;
             texture.embedded = true;
+            continue;
+        }
+
+        if (!sourceImage.uri.empty()) {
+            texture.path = resolveImagePath(gltfPath, sourceImage.uri);
             continue;
         }
 

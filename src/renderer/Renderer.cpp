@@ -162,6 +162,18 @@ std::filesystem::path assetPath(const char* relativePath)
 #endif
 }
 
+std::string_view colorSpaceName(rhi::TextureColorSpace colorSpace)
+{
+    switch (colorSpace) {
+    case rhi::TextureColorSpace::Linear:
+        return "linear";
+    case rhi::TextureColorSpace::SRGB:
+        return "sRGB";
+    }
+
+    return "unknown";
+}
+
 } // namespace
 
 Renderer::Renderer(Window& window) : window_(window)
@@ -838,7 +850,9 @@ void Renderer::createScene()
     shadowCullingStats_ = {};
     importedMeshes_.clear();
     importedMaterials_.clear();
-    importedTextures_.clear();
+    importedBaseColorTextures_.clear();
+    importedNormalTextures_.clear();
+    importedMetallicRoughnessTextures_.clear();
 
     cubeMesh_ = renderer::Mesh::createCube(context_, commandContext_);
     createCheckerboardTexture();
@@ -897,7 +911,7 @@ void Renderer::createScene()
         try {
             renderer::LoadedGltfAsset loadedAsset =
                 renderer::Mesh::createFromGltf(context_, commandContext_, modelPath);
-            createImportedGltfTextures(loadedAsset.textures);
+            createImportedGltfTextures(loadedAsset.textures, loadedAsset.materials);
             createImportedGltfMaterials(loadedAsset.materials);
             importedMeshes_ = std::move(loadedAsset.meshes);
 
@@ -946,9 +960,10 @@ void Renderer::createCheckerboardTexture()
     const std::filesystem::path texturePath = assetPath("textures/checker.png");
     if (std::filesystem::exists(texturePath)) {
         try {
-            checkerboardTexture_.createFromFile(context_, commandContext_, texturePath, true);
+            checkerboardTexture_.createFromFile(
+                context_, commandContext_, texturePath, rhi::TextureColorSpace::SRGB, true);
             nameTextureResources(checkerboardTexture_, "BaseColorTexture");
-            Logger::info("Loaded texture: " + texturePath.string());
+            Logger::info("Loaded base color texture as sRGB: " + texturePath.string());
             return;
         } catch (const std::exception& error) {
             Logger::warn("Failed to load texture '" + texturePath.string() + "': " + error.what());
@@ -957,8 +972,9 @@ void Renderer::createCheckerboardTexture()
         Logger::warn("Texture asset missing, using procedural checkerboard fallback: " + texturePath.string());
     }
 
-    checkerboardTexture_.createCheckerboard(context_, commandContext_, 256, 256);
+    checkerboardTexture_.createCheckerboard(context_, commandContext_, 256, 256, rhi::TextureColorSpace::SRGB);
     nameTextureResources(checkerboardTexture_, "BaseColorTexture");
+    Logger::info("Created procedural checkerboard base color texture as sRGB.");
 }
 
 void Renderer::createNormalTexture()
@@ -969,10 +985,11 @@ void Renderer::createNormalTexture()
     const std::filesystem::path texturePath = assetPath("textures/checker_normal.png");
     if (std::filesystem::exists(texturePath)) {
         try {
-            normalMapTexture_.createFromFile(context_, commandContext_, texturePath, true);
+            normalMapTexture_.createFromFile(
+                context_, commandContext_, texturePath, rhi::TextureColorSpace::Linear, true);
             normalMapAssetLoaded_ = true;
             nameTextureResources(normalMapTexture_, "NormalTexture");
-            Logger::info("Loaded normal texture: " + texturePath.string());
+            Logger::info("Loaded normal texture as linear UNORM: " + texturePath.string());
             loadedAsset = true;
         } catch (const std::exception& error) {
             Logger::warn("Failed to load normal texture '" + texturePath.string() + "': " + error.what());
@@ -1000,6 +1017,7 @@ void Renderer::createNormalTexture()
                                           VK_FORMAT_R8G8B8A8_UNORM,
                                           false);
         nameTextureResources(normalMapTexture_, "NormalTexture");
+        Logger::info("Created procedural flat normal texture as linear UNORM.");
     }
 
     createFlatNormalTexture();
@@ -1035,10 +1053,11 @@ void Renderer::createMetallicRoughnessTexture()
     const std::filesystem::path texturePath = assetPath("textures/checker_mr.png");
     if (std::filesystem::exists(texturePath)) {
         try {
-            metallicRoughnessTexture_.createFromFile(context_, commandContext_, texturePath, true);
+            metallicRoughnessTexture_.createFromFile(
+                context_, commandContext_, texturePath, rhi::TextureColorSpace::Linear, true);
             metallicRoughnessMapAssetLoaded_ = true;
             nameTextureResources(metallicRoughnessTexture_, "MetallicRoughnessTexture");
-            Logger::info("Loaded metallic-roughness texture: " + texturePath.string());
+            Logger::info("Loaded metallic-roughness texture as linear UNORM: " + texturePath.string());
             loadedAsset = true;
         } catch (const std::exception& error) {
             Logger::warn("Failed to load metallic-roughness texture '" + texturePath.string() + "': " + error.what());
@@ -1067,6 +1086,7 @@ void Renderer::createMetallicRoughnessTexture()
                                                   VK_FORMAT_R8G8B8A8_UNORM,
                                                   false);
         nameTextureResources(metallicRoughnessTexture_, "MetallicRoughnessTexture");
+        Logger::info("Created procedural neutral metallic-roughness texture as linear UNORM.");
     }
 
     createNeutralMetallicRoughnessTexture();
@@ -1379,42 +1399,95 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
-void Renderer::createImportedGltfTextures(const std::vector<renderer::GltfTextureInfo>& textureInfos)
+void Renderer::createImportedGltfTextures(
+    const std::vector<renderer::GltfTextureInfo>& textureInfos,
+    const std::vector<renderer::GltfMaterialInfo>& materialInfos)
 {
-    importedTextures_.clear();
-    importedTextures_.resize(textureInfos.size());
+    importedBaseColorTextures_.clear();
+    importedNormalTextures_.clear();
+    importedMetallicRoughnessTextures_.clear();
+    importedBaseColorTextures_.resize(textureInfos.size());
+    importedNormalTextures_.resize(textureInfos.size());
+    importedMetallicRoughnessTextures_.resize(textureInfos.size());
 
-    for (size_t textureIndex = 0; textureIndex < textureInfos.size(); ++textureIndex) {
+    std::vector<uint8_t> baseColorNeeded(textureInfos.size(), 0);
+    std::vector<uint8_t> normalNeeded(textureInfos.size(), 0);
+    std::vector<uint8_t> metallicRoughnessNeeded(textureInfos.size(), 0);
+
+    const auto markNeeded = [textureCount = textureInfos.size()](int textureIndex, std::vector<uint8_t>& needed) {
+        if (textureIndex >= 0 && static_cast<size_t>(textureIndex) < textureCount) {
+            needed[static_cast<size_t>(textureIndex)] = 1;
+        }
+    };
+
+    for (const renderer::GltfMaterialInfo& materialInfo : materialInfos) {
+        markNeeded(materialInfo.baseColorTextureIndex, baseColorNeeded);
+        markNeeded(materialInfo.normalTextureIndex, normalNeeded);
+        markNeeded(materialInfo.metallicRoughnessTextureIndex, metallicRoughnessNeeded);
+    }
+
+    const auto loadTexture = [this, &textureInfos](size_t textureIndex,
+                                                   rhi::TextureColorSpace colorSpace,
+                                                   std::string_view slotName,
+                                                   std::string_view debugPrefix,
+                                                   std::vector<rhi::VulkanTexture>& textures) {
         const renderer::GltfTextureInfo& textureInfo = textureInfos[textureIndex];
         if (textureInfo.path.empty() && textureInfo.encodedData.empty()) {
-            continue;
+            return;
         }
 
         try {
             if (!textureInfo.path.empty()) {
                 if (!std::filesystem::exists(textureInfo.path)) {
                     Logger::warn("glTF texture image is missing; material fallback will be used: " +
-                                 textureInfo.path.string());
-                    continue;
+                                     textureInfo.path.string());
+                    return;
                 }
 
-                importedTextures_[textureIndex].createFromFile(context_, commandContext_, textureInfo.path, true);
-                Logger::info("Loaded glTF texture: " + textureInfo.path.string());
+                textures[textureIndex].createFromFile(context_, commandContext_, textureInfo.path, colorSpace, true);
+                Logger::info("Loaded glTF " + std::string(slotName) + " texture as " +
+                             std::string(colorSpaceName(colorSpace)) + ": " + textureInfo.path.string());
             } else {
-                importedTextures_[textureIndex].createFromEncodedBytes(
+                textures[textureIndex].createFromEncodedBytes(
                     context_,
                     commandContext_,
                     std::span<const uint8_t>(textureInfo.encodedData.data(), textureInfo.encodedData.size()),
+                    colorSpace,
                     true);
-                Logger::info("Loaded embedded glTF texture: " + textureInfo.debugName);
+                Logger::info("Loaded embedded glTF " + std::string(slotName) + " texture as " +
+                             std::string(colorSpaceName(colorSpace)) + ": " + textureInfo.debugName);
             }
 
-            nameTextureResources(importedTextures_[textureIndex], "GltfTexture" + std::to_string(textureIndex));
+            nameTextureResources(textures[textureIndex], std::string(debugPrefix) + std::to_string(textureIndex));
         } catch (const std::exception& error) {
             const std::string textureName =
                 !textureInfo.path.empty() ? textureInfo.path.string() : textureInfo.debugName;
-            Logger::warn("Failed to load glTF texture '" + textureName +
+            Logger::warn("Failed to load glTF " + std::string(slotName) + " texture '" + textureName +
                          "'; material fallback will be used: " + error.what());
+        }
+    };
+
+    for (size_t textureIndex = 0; textureIndex < textureInfos.size(); ++textureIndex) {
+        if (baseColorNeeded[textureIndex] != 0) {
+            loadTexture(textureIndex,
+                        rhi::TextureColorSpace::SRGB,
+                        "base color",
+                        "GltfBaseColorTexture",
+                        importedBaseColorTextures_);
+        }
+        if (normalNeeded[textureIndex] != 0) {
+            loadTexture(textureIndex,
+                        rhi::TextureColorSpace::Linear,
+                        "normal",
+                        "GltfNormalTexture",
+                        importedNormalTextures_);
+        }
+        if (metallicRoughnessNeeded[textureIndex] != 0) {
+            loadTexture(textureIndex,
+                        rhi::TextureColorSpace::Linear,
+                        "metallic-roughness",
+                        "GltfMetallicRoughnessTexture",
+                        importedMetallicRoughnessTextures_);
         }
     }
 }
@@ -1433,33 +1506,39 @@ void Renderer::createImportedGltfMaterials(const std::vector<renderer::GltfMater
     importedMaterials_.clear();
     importedMaterials_.reserve(sourceMaterialInfos->size());
 
-    const auto textureOrFallback = [this](int textureIndex,
-                                          const rhi::VulkanTexture& fallbackTexture) -> const rhi::VulkanTexture* {
-        if (textureIndex >= 0 && static_cast<size_t>(textureIndex) < importedTextures_.size() &&
-            importedTextures_[static_cast<size_t>(textureIndex)].valid()) {
-            return &importedTextures_[static_cast<size_t>(textureIndex)];
+    const auto textureOrFallback = [](int textureIndex,
+                                      const std::vector<rhi::VulkanTexture>& textures,
+                                      const rhi::VulkanTexture& fallbackTexture) -> const rhi::VulkanTexture* {
+        if (textureIndex >= 0 && static_cast<size_t>(textureIndex) < textures.size() &&
+            textures[static_cast<size_t>(textureIndex)].valid()) {
+            return &textures[static_cast<size_t>(textureIndex)];
         }
         return &fallbackTexture;
     };
 
-    const auto textureLoaded = [this](int textureIndex) {
-        return textureIndex >= 0 && static_cast<size_t>(textureIndex) < importedTextures_.size() &&
-               importedTextures_[static_cast<size_t>(textureIndex)].valid();
+    const auto textureLoaded = [](int textureIndex, const std::vector<rhi::VulkanTexture>& textures) {
+        return textureIndex >= 0 && static_cast<size_t>(textureIndex) < textures.size() &&
+               textures[static_cast<size_t>(textureIndex)].valid();
     };
 
     for (const renderer::GltfMaterialInfo& materialInfo : *sourceMaterialInfos) {
         renderer::Material material{};
         material.debugName = materialInfo.debugName.empty() ? "glTF Material" : materialInfo.debugName;
-        material.baseColorTexture = textureOrFallback(materialInfo.baseColorTextureIndex, checkerboardTexture_);
-        material.normalTexture = textureOrFallback(materialInfo.normalTextureIndex, flatNormalTexture_);
+        material.baseColorTexture =
+            textureOrFallback(materialInfo.baseColorTextureIndex, importedBaseColorTextures_, checkerboardTexture_);
+        material.normalTexture =
+            textureOrFallback(materialInfo.normalTextureIndex, importedNormalTextures_, flatNormalTexture_);
         material.metallicRoughnessTexture =
-            textureOrFallback(materialInfo.metallicRoughnessTextureIndex, neutralMetallicRoughnessTexture_);
+            textureOrFallback(materialInfo.metallicRoughnessTextureIndex,
+                              importedMetallicRoughnessTextures_,
+                              neutralMetallicRoughnessTexture_);
         material.baseColorFactor = materialInfo.baseColorFactor;
         material.metallic = materialInfo.metallic;
         material.roughness = materialInfo.roughness;
         material.multiScatterStrength = 1.0f;
-        material.hasNormalMap = textureLoaded(materialInfo.normalTextureIndex);
-        material.hasMetallicRoughnessMap = textureLoaded(materialInfo.metallicRoughnessTextureIndex);
+        material.hasNormalMap = textureLoaded(materialInfo.normalTextureIndex, importedNormalTextures_);
+        material.hasMetallicRoughnessMap =
+            textureLoaded(materialInfo.metallicRoughnessTextureIndex, importedMetallicRoughnessTextures_);
 
         assignBindlessTextureIndices(material);
         createMaterialDescriptorSet(material);
