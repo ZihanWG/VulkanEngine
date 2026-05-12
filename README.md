@@ -304,7 +304,7 @@ The Milestone 11 shader/resource contract is:
 - shadow pass = depth-only Dynamic Rendering from the directional light
 - main pass = fragment shader samples the shadow map and applies a single depth comparison
 
-This is intentionally not a cascaded shadow implementation. PCF, cascaded shadow maps, better shadow filtering, stable texel snapping, broader scene fitting, PBR, normal maps, multiple lights, model loading, ECS, ImGui, and a render graph remain future work.
+This was intentionally not a cascaded shadow implementation. Later milestones add PCF, cascaded shadow maps, basic texel snapping, PBR, normal maps, model loading, and a render graph; multiple lights, ECS, and ImGui remain out of scope for now.
 
 ## Milestone 12: Shadow Quality Improvements
 
@@ -325,7 +325,7 @@ The Milestone 12 resource contract remains:
 - main pass = fragment shader shadow-map sampling with simple 3x3 manual PCF
 - no PBR, normal maps, bindless descriptors, model loading, ECS, ImGui, or render graph
 
-Future shadow and lighting work includes cascaded shadow maps, texel snapping for stable shadows, variance or EVSM shadows, PBR, IBL, and a render graph.
+Later shadow and lighting milestones add cascaded shadow maps, basic texel snapping, PBR, IBL, and a render graph. Variance or EVSM shadows remain unscheduled.
 
 ## Milestone 13: Basic PBR Material Parameters
 
@@ -840,7 +840,7 @@ Current limitations:
 - no alpha-tested shadow casters
 - no GPU-built cascade batch system yet
 - no VSM or EVSM
-- stabilization and debug visualization are intentionally deferred to Milestone 37
+- basic stabilization and debug visualization are covered by Milestone 37
 
 Future CSM and shadow work:
 
