@@ -8,24 +8,56 @@ jobs:
   build:
     name: MSVC Vulkan build
     runs-on: windows-2022
+    env:
+      VULKAN_SDK_VERSION: 1.4.328.1
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install Vulkan SDK
-        uses: humbletim/install-vulkan-sdk@v1.2
-        with:
-          version: 1.4.328.1
-          cache: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $sdkRoot = Join-Path $env:RUNNER_TEMP "VulkanSDK"
+          $installer = Join-Path $env:RUNNER_TEMP "vulkan-sdk-$env:VULKAN_SDK_VERSION.exe"
+          $downloadUrl = "https://sdk.lunarg.com/sdk/download/$env:VULKAN_SDK_VERSION/windows/vulkan_sdk.exe?Human=true"
+
+          if (Test-Path $sdkRoot) {
+            Remove-Item -LiteralPath $sdkRoot -Recurse -Force
+          }
+          New-Item -ItemType Directory -Force -Path $sdkRoot | Out-Null
+
+          if (-not (Test-Path $installer)) {
+            curl.exe --fail-with-body -L -o $installer $downloadUrl
+          }
+
+          Write-Host "Installing Vulkan SDK $env:VULKAN_SDK_VERSION to $sdkRoot"
+          $arguments = @(
+            "--root", $sdkRoot,
+            "--accept-licenses",
+            "--default-answer",
+            "--confirm-command",
+            "install",
+            "copy_only=1"
+          )
+          $process = Start-Process -FilePath $installer -ArgumentList $arguments -NoNewWindow -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "Vulkan SDK installer failed with exit code $($process.ExitCode)."
+          }
 
       - name: Locate Vulkan SDK for CMake
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+
+          $preferredRoot = Join-Path $env:RUNNER_TEMP "VulkanSDK"
           $searchRoots = @(
+            $preferredRoot,
             $env:VULKAN_SDK,
-            (Join-Path $env:GITHUB_WORKSPACE "VULKAN_SDK"),
-            (Join-Path $env:RUNNER_TEMP "VULKAN_SDK"),
+            (Join-Path $env:GITHUB_WORKSPACE ".deps\VulkanSDK"),
+            "C:\VulkanSDK\$env:VULKAN_SDK_VERSION",
             "C:\VulkanSDK"
           ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
 
@@ -33,47 +65,44 @@ jobs:
           Write-Host "Search roots:"
           $searchRoots | ForEach-Object { Write-Host "  $_" }
 
-          $header = $null
-          $library = $null
-          $glslc = (Get-Command glslc.exe -ErrorAction SilentlyContinue).Source
+          $sdkRoot = $null
+          $candidateRoots = foreach ($root in $searchRoots) {
+            $resolvedRoot = (Resolve-Path $root).Path
+            $resolvedRoot
+            Get-ChildItem -Path $resolvedRoot -Directory -Depth 2 -ErrorAction SilentlyContinue |
+              Select-Object -ExpandProperty FullName
+          }
 
-          foreach ($root in $searchRoots) {
-            if (-not $header) {
-              $header = Get-ChildItem -Path $root -Recurse -Filter vulkan.h -File -ErrorAction SilentlyContinue |
-                Where-Object { $_.FullName -match "[\\/]Include[\\/]vulkan[\\/]vulkan\.h$" } |
-                Select-Object -First 1 -ExpandProperty FullName
-            }
-            if (-not $library) {
-              $library = Get-ChildItem -Path $root -Recurse -Filter vulkan-1.lib -File -ErrorAction SilentlyContinue |
-                Where-Object { $_.FullName -match "[\\/]Lib[\\/]vulkan-1\.lib$" } |
-                Select-Object -First 1 -ExpandProperty FullName
-            }
-            if (-not $glslc) {
-              $glslc = Get-ChildItem -Path $root -Recurse -Filter glslc.exe -File -ErrorAction SilentlyContinue |
-                Select-Object -First 1 -ExpandProperty FullName
+          foreach ($root in ($candidateRoots | Select-Object -Unique)) {
+            if (
+              (Test-Path (Join-Path $root "Include\vulkan\vulkan.h")) -and
+              (Test-Path (Join-Path $root "Bin\glslc.exe")) -and
+              (Test-Path (Join-Path $root "Lib\vulkan-1.lib"))
+            ) {
+              $sdkRoot = $root
+              break
             }
           }
 
-          if (-not $header) {
-            throw "Vulkan SDK install did not produce Include\vulkan\vulkan.h under the searched roots."
-          }
-          if (-not $library) {
-            throw "Vulkan SDK install did not produce Lib\vulkan-1.lib under the searched roots."
-          }
-          if (-not $glslc) {
-            throw "Vulkan SDK install did not produce glslc.exe under the searched roots or PATH."
+          if (-not $sdkRoot) {
+            Write-Host "Vulkan SDK directory tree diagnostics:"
+            foreach ($root in $searchRoots) {
+              Write-Host "Tree for $root"
+              Get-ChildItem -Recurse -Depth 3 $root -ErrorAction SilentlyContinue | Select-Object FullName
+            }
+            throw "Vulkan SDK is installed or extracted incorrectly. Missing Include\vulkan\vulkan.h, Bin\glslc.exe, or Lib\vulkan-1.lib."
           }
 
-          $includeDir = Split-Path -Parent (Split-Path -Parent $header)
-          $sdkRoot = Split-Path -Parent $includeDir
-          $binDir = Split-Path -Parent $glslc
+          $includeDir = Join-Path $sdkRoot "Include"
+          $library = Join-Path $sdkRoot "Lib\vulkan-1.lib"
+          $glslc = Join-Path $sdkRoot "Bin\glslc.exe"
 
           "VULKAN_SDK=$sdkRoot" >> $env:GITHUB_ENV
           "Vulkan_ROOT=$sdkRoot" >> $env:GITHUB_ENV
           "Vulkan_INCLUDE_DIR=$includeDir" >> $env:GITHUB_ENV
           "Vulkan_LIBRARY=$library" >> $env:GITHUB_ENV
           "Vulkan_GLSLC_EXECUTABLE=$glslc" >> $env:GITHUB_ENV
-          $binDir >> $env:GITHUB_PATH
+          "$sdkRoot\Bin" >> $env:GITHUB_PATH
 
           Write-Host "VULKAN_SDK=$sdkRoot"
           Write-Host "Vulkan_INCLUDE_DIR=$includeDir"
@@ -83,19 +112,38 @@ jobs:
       - name: Verify toolchain
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+
           cmake --version
-          if (-not (Test-Path $env:Vulkan_INCLUDE_DIR)) { throw "Missing Vulkan include dir: $env:Vulkan_INCLUDE_DIR" }
-          if (-not (Test-Path $env:Vulkan_LIBRARY)) { throw "Missing Vulkan library: $env:Vulkan_LIBRARY" }
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsInstall = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $vsDevCmd = Join-Path $vsInstall "Common7\Tools\VsDevCmd.bat"
+          cmd /c "call `"$vsDevCmd`" -arch=x64 -host_arch=x64 && cl"
+          where.exe glslc
           glslc --version
+          Test-Path "$env:VULKAN_SDK\Include\vulkan\vulkan.h"
+          Test-Path "$env:VULKAN_SDK\Bin\glslc.exe"
+          Test-Path "$env:VULKAN_SDK\Lib\vulkan-1.lib"
+
+          if (
+            -not (Test-Path "$env:VULKAN_SDK\Include\vulkan\vulkan.h") -or
+            -not (Test-Path "$env:VULKAN_SDK\Bin\glslc.exe") -or
+            -not (Test-Path "$env:VULKAN_SDK\Lib\vulkan-1.lib")
+          ) {
+            Write-Host "VULKAN_SDK=$env:VULKAN_SDK"
+            Get-ChildItem -Recurse -Depth 3 $env:VULKAN_SDK | Select-Object FullName
+            throw "Vulkan SDK is installed or extracted incorrectly. Missing Include\vulkan\vulkan.h, Bin\glslc.exe, or Lib\vulkan-1.lib."
+          }
 
       - name: Configure CMake
         shell: pwsh
         run: >
           cmake -S . -B build
           -G "Visual Studio 17 2022" -A x64
-          -DVulkan_INCLUDE_DIR="$env:Vulkan_INCLUDE_DIR"
-          -DVulkan_LIBRARY="$env:Vulkan_LIBRARY"
-          -DVulkan_GLSLC_EXECUTABLE="$env:Vulkan_GLSLC_EXECUTABLE"
+          -DVULKAN_ENGINE_FETCH_DEPS=ON
+          -DVulkan_INCLUDE_DIR="$env:VULKAN_SDK\Include"
+          -DVulkan_LIBRARY="$env:VULKAN_SDK\Lib\vulkan-1.lib"
+          -DVulkan_GLSLC_EXECUTABLE="$env:VULKAN_SDK\Bin\glslc.exe"
 
       - name: Compile GLSL shaders
         run: cmake --build build --config Debug --target VulkanEngineShaders --parallel
