@@ -14,7 +14,7 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - Tangent-space normal mapping and Cook-Torrance GGX direct lighting.
 - Procedural skybox, diffuse irradiance cubemap, prefiltered specular cubemap, and split-sum BRDF LUT.
 - Compact Kulla-Conty-style multi-scattering compensation for PBR response.
-- PCF-filtered directional shadow map with optional GPU shadow-caster culling preparation, CPU fallback, and an indirect shadow draw path.
+- PCF-filtered cascaded directional shadow map with optional per-cascade GPU shadow-caster culling and an indirect shadow draw path.
 - Descriptor indexing path for bindless material texture arrays, with a legacy descriptor-set fallback.
 - Minimal render graph that documents shadow/main pass order and centralizes image transitions.
 - GPU frustum culling compute pass that compacts visible indirect draw commands and writes per-batch visible counts.
@@ -32,18 +32,18 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - `VulkanPipeline` and `VulkanComputePipeline` load CMake-built SPIR-V and create graphics/compute pipeline layouts and pipelines.
 - `VulkanBuffer`, `VulkanImage`, `VulkanTexture`, `VulkanEnvironmentMap`, `VulkanBrdfLut`, and `VulkanShadowMap` wrap Vulkan resource lifetime.
 - `Mesh`, `Material`, `RenderObject`, `DrawItem`, `Transform`, and `Camera` provide renderer-side scene abstractions without ECS.
-- `RenderGraph` is a small manual frame graph for the current `ShadowPass` and `MainPass` resource transitions.
+- `RenderGraph` is a small manual frame graph for the current `CSMShadowPass` and `MainPass` resource transitions.
 
 ## One-Frame Rendering Flow
 
 1. Wait for the current frame fence and acquire the next swapchain image.
 2. Reset the fence and command buffer, update transforms, and build all `DrawItem` records from render objects and mesh primitives.
-3. Extract the camera frustum from `projection * view` and the shadow frustum from the directional light view-projection.
-4. Build CPU fallback shadow draw items/batches from light-frustum-visible casters, and build main-pass mesh-compatible draw batches for GPU culling or the CPU fallback.
+3. Extract the camera frustum from `projection * view`, compute CSM split depths, and build one directional light view-projection matrix per cascade.
+4. Build CPU fallback shadow draw items/batches for each cascade, and build main-pass mesh-compatible draw batches for GPU culling or the CPU fallback.
 5. Upload per-object MVP/model/light/material data into the current frame's Buffer Device Address object-data buffer.
 6. Begin the minimal `RenderGraph` recording.
-7. When GPU shadow culling is active, reset shadow batch counts and shadow indirect commands, dispatch the light-frustum compute cull, barrier its writes for indirect/count reads, and copy shadow visible counts for readback.
-8. Transition the shadow map, begin depth-only Dynamic Rendering, and draw shadow casters with material-independent indirect draws when available.
+7. For each cascade, optionally reset shadow batch counts and shadow indirect commands, dispatch the GPU shadow cull with that cascade's light-frustum planes, and barrier its writes for indirect/count reads.
+8. Transition the cascaded shadow-map array, begin depth-only Dynamic Rendering against the current layer view, and draw shadow casters for that cascade.
 9. Reset the main-pass batch visible-count buffer, dispatch the camera-frustum compute culling pass, barrier shader writes for indirect/count reads, and copy visible counts for readback.
 10. Transition the swapchain color image and main depth image for the main pass.
 11. Begin main Dynamic Rendering, draw the skybox, bind global and bindless material descriptors when available, and issue indirect indexed draws.
@@ -54,7 +54,7 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 
 Bindless main-pass global resource descriptor set 0:
 
-- binding 1 = shadow map combined image sampler
+- binding 1 = cascaded shadow map combined image sampler, sampled in shaders as `sampler2DArray`
 - binding 4 = diffuse irradiance cubemap combined image sampler
 - binding 5 = prefiltered specular cubemap combined image sampler
 - binding 6 = BRDF LUT combined image sampler
@@ -72,7 +72,7 @@ Skybox descriptor set:
 Legacy fallback material descriptor set 0, used when descriptor indexing is unavailable:
 
 - binding 0 = base color combined image sampler
-- binding 1 = shadow map combined image sampler
+- binding 1 = cascaded shadow map combined image sampler, sampled in shaders as `sampler2DArray`
 - binding 2 = normal map combined image sampler
 - binding 3 = metallic-roughness combined image sampler
 - binding 4 = diffuse irradiance cubemap combined image sampler
@@ -91,7 +91,7 @@ Shadow GPU culling compute descriptor set:
 - binding 1 = per-frame shadow compacted indirect command output storage buffer
 - binding 2 = per-frame shadow batch visible draw count storage buffer
 
-Object and material scalar data still use Buffer Device Address plus a vertex-stage push constant. On the bindless main multi-draw path and the shadow indirect path, the pushed address is the base of the current frame's `ObjectFrameData` array, and indirect `firstInstance` selects the object-data entry. Fallback paths still push one per-draw object-data address with `firstInstance = 0`.
+Object and material scalar data still use Buffer Device Address plus a vertex-stage push constant. On the bindless main multi-draw path and the shadow indirect path, the pushed address is the base of the current frame's `ObjectFrameData` array, and indirect `firstInstance` selects the object-data entry. The shadow pass also pushes the current cascade index. Fallback paths still push one per-draw object-data address with `firstInstance = 0`.
 
 ## Build Instructions
 
@@ -136,10 +136,10 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 
 ## Known Limitations
 
-- Shadow GPU culling is optional and still uses CPU-built draw items/batches; it is not cascaded, alpha-tested, occlusion-driven, or BVH-backed yet.
-- The shadow pass keeps a direct `vkCmdDrawIndexed` fallback when shadow indirect drawing is unavailable.
+- Shadow GPU culling is optional and still uses CPU-built draw items/batches; it is not alpha-tested, occlusion-driven, or BVH-backed yet.
+- The cascaded shadow pass keeps a direct `vkCmdDrawIndexed` fallback when GPU shadow culling or shadow indirect drawing is unavailable.
 - The old zero-count indirect command path is still retained as a fallback when indirect-count drawing is unavailable.
-- Shadow map bounds are fixed and demo-scene-oriented; they are not yet cascaded shadow maps or texel-snapped stable bounds.
+- CSM bounds are fitted to camera frustum slices but are not texel-snapped stable bounds yet.
 - Texture color space is not fully separated yet. Base color should eventually use sRGB while normal and metallic-roughness textures stay linear.
 - Upload paths still use simple one-time command buffers and queue idle waits, which is acceptable for initialization but not ideal for runtime streaming.
 - `RenderGraph` is still minimal/manual and not a fully automatic dependency graph.
@@ -150,10 +150,10 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - Build mesh batches fully on the GPU.
 - Move material/object buffers toward a fully GPU-driven layout.
 - GPU-built shadow batches.
-- Add cascaded shadow maps.
 - Add alpha-tested shadow casters.
 - Add shadow LOD.
 - Improve shadow stability with tighter/stable shadow bounds and texel snapping.
+- Add CSM debug visualization and split tuning tools.
 - Add shadow caster culling acceleration structures.
 - Add occlusion culling.
 - Add BVH or other spatial partitioning.
@@ -814,3 +814,43 @@ Future work:
 - occlusion culling
 - LOD
 - mesh/task shaders
+
+## Milestone 36: Cascaded Shadow Maps
+
+Milestone 36 replaces the single directional shadow map with a minimal cascaded shadow map for the camera view. The renderer owns simple CSM settings for cascade count, practical-split lambda, near/far depth, shadow distance, and shader depth bias. The default path uses four cascades.
+
+The shadow resource is now one 2D array depth image. Array layers equal the active cascade count, the sampled descriptor remains set 0 binding 1, and shaders sample it as `sampler2DArray`. The array image has one sampling view for the main pass plus one 2D attachment view per layer so Dynamic Rendering can render each cascade separately without geometry-shader layered rendering.
+
+Each frame computes cascade split depths between the camera near plane and `shadowDistance` with the practical split scheme:
+
+```text
+uniformSplit = near + (shadowDistance - near) * cascadeRatio
+logSplit = near * pow(shadowDistance / near, cascadeRatio)
+split = mix(uniformSplit, logSplit, lambda)
+```
+
+For each cascade, the renderer builds the camera frustum-slice corners in world space, transforms them into a directional-light view, fits orthographic bounds around those corners, and stores the resulting light view-projection matrix. The per-draw `ObjectFrameData` now stores four `lightMvp` matrices, `cascadeSplits`, shadow settings, and camera-forward data. This keeps the existing BDA plus vertex-stage push-constant path and the indirect `firstInstance` object-data indexing model. The larger object-data stride is accepted for this educational milestone; future work can move scene/light data into a separate buffer.
+
+The shadow pass records a `CSMShadowPass` label and one `ShadowCascadeN` label per cascade. When GPU shadow culling is active, the existing compute culling path is reused per cascade by pushing that cascade's light-frustum planes, rebuilding the compacted shadow indirect commands, and drawing through the shadow indirect-count path when available. If GPU shadow culling or shadow indirect drawing is unavailable, the renderer uses CPU per-cascade shadow-caster culling and direct shadow draws.
+
+The main vertex shader outputs light-space positions for the four cascades plus the fragment view depth. The fragment shader selects the cascade by comparing view depth against `cascadeSplits`, samples the matching layer of the shadow-map array, and reuses the existing 3x3 PCF depth comparisons for that layer. Main-pass GPU culling, bindless material descriptors, indirect-count drawing, skybox rendering, IBL, the BRDF LUT, and Kulla-Conty-style compensation are unchanged.
+
+Current limitations:
+
+- no alpha-tested shadow casters
+- no stable texel snapping yet
+- no GPU-built cascade batch system yet
+- no VSM or EVSM
+- no CSM debug visualization yet
+
+Future CSM and shadow work:
+
+- texel snapping
+- better cascade split tuning
+- cascade visualization
+- alpha-tested shadows
+- GPU-built cascade batches
+- shadow LOD
+- VSM or EVSM
+- occlusion culling
+- BVH or spatial partitioning

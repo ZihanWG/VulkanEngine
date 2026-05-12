@@ -2,7 +2,7 @@
 
 #extension GL_EXT_nonuniform_qualifier : require
 
-layout(set = 0, binding = 1) uniform sampler2D uShadowMap;
+layout(set = 0, binding = 1) uniform sampler2DArray uShadowMap;
 layout(set = 0, binding = 4) uniform samplerCube uDiffuseIrradianceMap;
 layout(set = 0, binding = 5) uniform samplerCube uPrefilteredEnvMap;
 layout(set = 0, binding = 6) uniform sampler2D uBrdfLut;
@@ -11,21 +11,23 @@ layout(set = 1, binding = 0) uniform sampler2D uBaseColorTextures[];
 layout(set = 1, binding = 1) uniform sampler2D uNormalTextures[];
 layout(set = 1, binding = 2) uniform sampler2D uMetallicRoughnessTextures[];
 
-layout(location = 0) in vec3 vColor;
-layout(location = 1) in vec2 vUV;
-layout(location = 2) in vec3 vNormal;
-layout(location = 3) in vec3 vLightDirection;
-layout(location = 4) in vec3 vLightColor;
-layout(location = 5) in vec3 vAmbientColor;
-layout(location = 6) in vec4 vLightSpacePosition;
-layout(location = 7) flat in vec4 vShadowSettings;
-layout(location = 8) in vec3 vWorldPosition;
-layout(location = 9) flat in vec3 vCameraPosition;
-layout(location = 10) flat in vec4 vBaseColorFactor;
-layout(location = 11) flat in vec4 vMaterialParams;
-layout(location = 12) in vec3 vTangent;
-layout(location = 13) in vec3 vBitangent;
-layout(location = 14) flat in uvec4 vTextureIndices;
+layout(location = 0) in vec2 vUV;
+layout(location = 1) in vec3 vNormal;
+layout(location = 2) in vec3 vLightDirection;
+layout(location = 3) in vec3 vLightColor;
+layout(location = 4) in vec3 vAmbientColor;
+layout(location = 5) in vec4 vLightSpacePosition[4];
+layout(location = 9) flat in vec4 vShadowSettings;
+layout(location = 10) in vec3 vWorldPosition;
+layout(location = 11) flat in vec3 vCameraPosition;
+layout(location = 12) flat in vec4 vBaseColorFactor;
+layout(location = 13) flat in vec4 vMaterialParams;
+layout(location = 14) in vec3 vTangent;
+layout(location = 15) in vec3 vBitangent;
+layout(location = 16) flat in uvec4 vTextureIndices;
+layout(location = 17) in float vViewDepth;
+layout(location = 18) flat in vec4 vCascadeSplits;
+layout(location = 19) flat in uint vCascadeCount;
 layout(location = 0) out vec4 outColor;
 
 const float PI = 3.14159265359;
@@ -45,15 +47,40 @@ float shadowDepthBias(vec3 normal)
     return max(constantBias, slopeBias * (1.0 - normalLight));
 }
 
-float compareShadowDepth(vec2 shadowUV, float currentDepth, float bias)
+int selectShadowCascade()
 {
-    float closestDepth = texture(uShadowMap, shadowUV).r;
+    int cascadeCount = clamp(int(vCascadeCount), 1, 4);
+    if (vViewDepth <= 0.0 || vViewDepth > vCascadeSplits[cascadeCount - 1]) {
+        return -1;
+    }
+
+    for (int cascade = 0; cascade < 4; ++cascade) {
+        if (cascade >= cascadeCount) {
+            break;
+        }
+        if (vViewDepth <= vCascadeSplits[cascade]) {
+            return cascade;
+        }
+    }
+
+    return cascadeCount - 1;
+}
+
+float compareShadowDepth(vec2 shadowUV, float currentDepth, float bias, int cascadeIndex)
+{
+    float closestDepth = texture(uShadowMap, vec3(shadowUV, float(cascadeIndex))).r;
     return currentDepth - bias <= closestDepth ? 1.0 : 0.0;
 }
 
 float sampleShadowFactor(vec3 normal)
 {
-    vec3 shadowCoord = vLightSpacePosition.xyz / vLightSpacePosition.w;
+    int cascadeIndex = selectShadowCascade();
+    if (cascadeIndex < 0) {
+        return 1.0;
+    }
+
+    vec4 lightSpacePosition = vLightSpacePosition[cascadeIndex];
+    vec3 shadowCoord = lightSpacePosition.xyz / lightSpacePosition.w;
     vec2 shadowUV = shadowCoord.xy * 0.5 + 0.5;
 
     if (shadowCoord.z < 0.0 || shadowCoord.z > 1.0 || shadowUV.x < 0.0 || shadowUV.x > 1.0 ||
@@ -67,10 +94,10 @@ float sampleShadowFactor(vec3 normal)
     int pcfRadius = clamp(int(vShadowSettings.w + 0.5), 0, 4);
 
     if (!enablePcf || pcfRadius == 0) {
-        return compareShadowDepth(shadowUV, currentDepth, bias);
+        return compareShadowDepth(shadowUV, currentDepth, bias, cascadeIndex);
     }
 
-    vec2 texelSize = 1.0 / vec2(textureSize(uShadowMap, 0));
+    vec2 texelSize = 1.0 / vec2(textureSize(uShadowMap, 0).xy);
     float litSamples = 0.0;
     int sampleCount = 0;
 
@@ -80,7 +107,7 @@ float sampleShadowFactor(vec3 normal)
     for (int y = -pcfRadius; y <= pcfRadius; ++y) {
         for (int x = -pcfRadius; x <= pcfRadius; ++x) {
             vec2 offset = vec2(float(x), float(y)) * texelSize;
-            litSamples += compareShadowDepth(shadowUV + offset, currentDepth, bias);
+            litSamples += compareShadowDepth(shadowUV + offset, currentDepth, bias, cascadeIndex);
             sampleCount += 1;
         }
     }

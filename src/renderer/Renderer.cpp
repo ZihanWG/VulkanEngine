@@ -14,6 +14,7 @@
 #include <exception>
 #include <filesystem>
 #include <functional>
+#include <glm/common.hpp>
 #include <glm/ext/matrix_clip_space.hpp>
 #include <glm/ext/matrix_transform.hpp>
 #include <glm/geometric.hpp>
@@ -22,6 +23,7 @@
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 #include <iomanip>
+#include <limits>
 #include <span>
 #include <sstream>
 #include <stdexcept>
@@ -37,35 +39,42 @@ namespace {
 struct ObjectFrameData {
     glm::mat4 mvp{1.0f};
     glm::mat4 model{1.0f};
-    glm::mat4 lightMvp{1.0f};
+    glm::mat4 lightMvp[4]{{1.0f}, {1.0f}, {1.0f}, {1.0f}};
     glm::vec4 lightDirection{0.35f, -0.65f, -0.55f, 0.0f};
     glm::vec4 lightColor{0.85f, 0.85f, 0.85f, 1.0f};
     glm::vec4 ambientColor{0.15f, 0.15f, 0.15f, 1.0f};
+    glm::vec4 cascadeSplits{40.0f};
     glm::vec4 shadowSettings{0.002f, 0.005f, 1.0f, 1.0f};
     glm::vec4 baseColorFactor{1.0f};
     glm::vec4 materialParams{0.0f, 0.5f, 1.0f, 0.0f};
     glm::vec4 cameraPosition{0.0f, 0.0f, 0.0f, 1.0f};
+    glm::vec4 cameraForward{0.0f, 0.0f, -1.0f, 4.0f};
     glm::uvec4 textureIndices{0, 0, 0, 0};
 };
 
 // Mirrors the shader's std430 buffer_reference block. std430 stores mat4 as
-// four 16-byte columns and vec4/uvec4 as 16 bytes, so this 320-byte stride keeps
-// each field and each per-draw BDA entry on a 16-byte boundary.
+// four 16-byte columns and vec4/uvec4 as 16 bytes. The four lightMvp matrices
+// intentionally duplicate cascade data per draw for this educational milestone;
+// a later scene/light buffer can remove that per-object cost.
 // materialParams.x = metallic, y = roughness, z = multiScatterStrength,
 // and w is reserved for future scalar material data.
+// cascadeSplits stores positive camera-view depths for cascades 0..3.
+// cameraForward.xyz is the camera forward vector, and w stores cascade count.
 // textureIndices.x = base color, y = normal, z = metallic-roughness, w = reserved.
 static_assert(offsetof(ObjectFrameData, mvp) == 0);
 static_assert(offsetof(ObjectFrameData, model) == 64);
 static_assert(offsetof(ObjectFrameData, lightMvp) == 128);
-static_assert(offsetof(ObjectFrameData, lightDirection) == 192);
-static_assert(offsetof(ObjectFrameData, lightColor) == 208);
-static_assert(offsetof(ObjectFrameData, ambientColor) == 224);
-static_assert(offsetof(ObjectFrameData, shadowSettings) == 240);
-static_assert(offsetof(ObjectFrameData, baseColorFactor) == 256);
-static_assert(offsetof(ObjectFrameData, materialParams) == 272);
-static_assert(offsetof(ObjectFrameData, cameraPosition) == 288);
-static_assert(offsetof(ObjectFrameData, textureIndices) == 304);
-static_assert(sizeof(ObjectFrameData) == 320);
+static_assert(offsetof(ObjectFrameData, lightDirection) == 384);
+static_assert(offsetof(ObjectFrameData, lightColor) == 400);
+static_assert(offsetof(ObjectFrameData, ambientColor) == 416);
+static_assert(offsetof(ObjectFrameData, cascadeSplits) == 432);
+static_assert(offsetof(ObjectFrameData, shadowSettings) == 448);
+static_assert(offsetof(ObjectFrameData, baseColorFactor) == 464);
+static_assert(offsetof(ObjectFrameData, materialParams) == 480);
+static_assert(offsetof(ObjectFrameData, cameraPosition) == 496);
+static_assert(offsetof(ObjectFrameData, cameraForward) == 512);
+static_assert(offsetof(ObjectFrameData, textureIndices) == 528);
+static_assert(sizeof(ObjectFrameData) == 544);
 
 constexpr uint32_t kMaxFrameObjects = 1024;
 constexpr uint32_t kMaxDrawItems = 1024;
@@ -79,17 +88,15 @@ const glm::vec4 kDirectionalLightDirection{0.35f, -0.65f, -0.55f, 0.0f};
 const glm::vec4 kDirectionalLightColor{0.85f, 0.85f, 0.85f, 1.0f};
 const glm::vec4 kAmbientLightColor{0.15f, 0.15f, 0.15f, 1.0f};
 
-struct ShadowSceneBounds {
-    glm::vec3 center{0.0f};
-    float radius = 1.0f;
-    float lightDistance = 8.0f;
-    float nearPlane = 0.1f;
-    float farPlane = 12.0f;
-};
-
 struct PushConstants {
     VkDeviceAddress objectFrameDataAddress = 0;
+    uint32_t cascadeIndex = 0;
+    uint32_t padding = 0;
 };
+
+static_assert(offsetof(PushConstants, objectFrameDataAddress) == 0);
+static_assert(offsetof(PushConstants, cascadeIndex) == 8);
+static_assert(sizeof(PushConstants) == 16);
 
 // Mirrors src/shaders/cull.comp. Main and shadow GPU culling both use this
 // std430 input record: vec4 members are 16-byte aligned, then scalar draw and
@@ -151,41 +158,6 @@ std::filesystem::path assetPath(const char* relativePath)
 #else
     return std::filesystem::path("assets") / relativePath;
 #endif
-}
-
-ShadowSceneBounds fixedCubeSceneShadowBounds()
-{
-    // This fixed sphere covers the current four-cube demo through their rotations.
-    // It is stable because it does not chase the camera, but it is not a substitute
-    // for cascaded shadow maps or texel snapping once the scene grows.
-    const glm::vec3 sceneCenter{0.0f, 0.25f, -0.3f};
-    constexpr float sceneRadius = 3.4f;
-    constexpr float lightDistance = 8.4f;
-    constexpr float farPadding = 1.0f;
-
-    return {sceneCenter, sceneRadius, lightDistance, 0.1f, lightDistance + sceneRadius + farPadding};
-}
-
-glm::mat4 directionalLightViewProjection()
-{
-    const glm::vec3 lightDirection = glm::normalize(
-        glm::vec3{kDirectionalLightDirection.x, kDirectionalLightDirection.y, kDirectionalLightDirection.z});
-    const ShadowSceneBounds sceneBounds = fixedCubeSceneShadowBounds();
-    const glm::vec3 lightPosition = sceneBounds.center - lightDirection * sceneBounds.lightDistance;
-    const glm::vec3 up = std::abs(glm::dot(lightDirection, glm::vec3{0.0f, 1.0f, 0.0f})) > 0.95f
-                             ? glm::vec3{0.0f, 0.0f, 1.0f}
-                             : glm::vec3{0.0f, 1.0f, 0.0f};
-
-    // The orthographic extent and near/far planes come from a fixed demo-scene
-    // bound. A tighter bound gives the 2048 shadow map more useful texel density.
-    glm::mat4 lightProjection = glm::ortho(-sceneBounds.radius,
-                                           sceneBounds.radius,
-                                           -sceneBounds.radius,
-                                           sceneBounds.radius,
-                                           sceneBounds.nearPlane,
-                                           sceneBounds.farPlane);
-    lightProjection[1][1] *= -1.0f;
-    return lightProjection * glm::lookAt(lightPosition, sceneBounds.center, up);
 }
 
 } // namespace
@@ -355,8 +327,8 @@ void Renderer::createMaterialDescriptorSetLayout()
     bindings[6].descriptorCount = 1;
     bindings[6].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    // Set 0 binding 0 is the base color texture, binding 1 is the shadow map,
-    // binding 2 is the tangent-space normal map, and binding 3 is the
+    // Set 0 binding 0 is the base color texture, binding 1 is the cascaded
+    // shadow-map array, binding 2 is the tangent-space normal map, and binding 3 is the
     // metallic-roughness map. Binding 4 is diffuse irradiance, binding 5 is
     // prefiltered environment specular, and binding 6 is the split-sum BRDF LUT.
     // Object MVP/model/light/material data stays on the BDA + vertex push constant path.
@@ -758,9 +730,9 @@ void Renderer::destroyGpuShadowCullingResources()
 
 void Renderer::createShadowMap()
 {
-    // The directional shadow map is fixed-size for now and intentionally independent
+    // The CSM depth array is fixed-size for now and intentionally independent
     // of swapchain resize; only the main color/depth targets follow the window extent.
-    shadowMap_.create(context_, shadowSettings_.resolution, shadowSettings_.resolution);
+    shadowMap_.create(context_, shadowSettings_.resolution, shadowSettings_.resolution, activeCascadeCount());
 }
 
 void Renderer::createPipeline()
@@ -852,6 +824,14 @@ void Renderer::createScene()
     shadowDrawItems_.clear();
     shadowMeshDrawBatches_.clear();
     gpuShadowMeshDrawBatches_.clear();
+    for (std::vector<DrawItem>& cascadeDrawItems : shadowCascadeDrawItems_) {
+        cascadeDrawItems.clear();
+    }
+    for (std::vector<MeshDrawBatch>& cascadeBatches : shadowCascadeMeshDrawBatches_) {
+        cascadeBatches.clear();
+    }
+    shadowVisibleDrawItemsPerCascade_.fill(0);
+    shadowBatchCountPerCascade_.fill(0);
     cullingStats_ = {};
     shadowCullingStats_ = {};
     importedMeshes_.clear();
@@ -1391,7 +1371,7 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     writes[6].pImageInfo = &brdfLutInfo;
 
     // The material descriptor stores sampled images only: base color at binding 0,
-    // shadow map at binding 1, normal map at binding 2, and metallic-roughness
+    // cascaded shadow-map array at binding 1, normal map at binding 2, and metallic-roughness
     // map at binding 3. Bindings 4-6 are diffuse irradiance, prefiltered specular
     // environment, and the BRDF LUT. Object data remains outside descriptors.
     vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
@@ -1593,6 +1573,107 @@ void Renderer::createShadowIndirectDrawBuffers()
     }
 }
 
+uint32_t Renderer::activeCascadeCount() const
+{
+    return std::clamp(csmSettings_.cascadeCount, 1U, kMaxShadowCascades);
+}
+
+void Renderer::updateCascades(float aspectRatio)
+{
+    const uint32_t cascadeCount = activeCascadeCount();
+    const float nearPlane = std::max(0.001f, csmSettings_.nearPlane);
+    const float cameraFarPlane = std::max(nearPlane + 0.001f, csmSettings_.farPlane);
+    const float shadowFarPlane = std::clamp(csmSettings_.shadowDistance, nearPlane + 0.001f, cameraFarPlane);
+    const float lambda = std::clamp(csmSettings_.lambda, 0.0f, 1.0f);
+
+    const glm::vec3 cameraPosition = camera_.position;
+    const glm::vec3 cameraForward = glm::normalize(camera_.target - camera_.position);
+    const glm::vec3 cameraRight = glm::normalize(glm::cross(cameraForward, camera_.up));
+    const glm::vec3 cameraUp = glm::normalize(glm::cross(cameraRight, cameraForward));
+    const float tanHalfFov = std::tan(camera_.verticalFovRadians * 0.5f);
+
+    const glm::vec3 lightDirection = glm::normalize(
+        glm::vec3{kDirectionalLightDirection.x, kDirectionalLightDirection.y, kDirectionalLightDirection.z});
+    const glm::vec3 lightUp =
+        std::abs(glm::dot(lightDirection, glm::vec3{0.0f, 1.0f, 0.0f})) > 0.95f
+            ? glm::vec3{0.0f, 0.0f, 1.0f}
+            : glm::vec3{0.0f, 1.0f, 0.0f};
+
+    frameCascadeSplits_ = glm::vec4(shadowFarPlane);
+
+    float cascadeNear = nearPlane;
+    for (uint32_t cascadeIndex = 0; cascadeIndex < cascadeCount; ++cascadeIndex) {
+        const float splitRatio = static_cast<float>(cascadeIndex + 1) / static_cast<float>(cascadeCount);
+        const float uniformSplit = nearPlane + (shadowFarPlane - nearPlane) * splitRatio;
+        const float logSplit = nearPlane * std::pow(shadowFarPlane / nearPlane, splitRatio);
+        const float cascadeFar = glm::mix(uniformSplit, logSplit, lambda);
+        frameCascadeSplits_[cascadeIndex] = cascadeFar;
+
+        std::array<glm::vec3, 8> corners{};
+        const auto writeDepthCorners = [&](float depth, uint32_t baseIndex) {
+            const float halfHeight = tanHalfFov * depth;
+            const float halfWidth = halfHeight * aspectRatio;
+            const glm::vec3 center = cameraPosition + cameraForward * depth;
+
+            corners[baseIndex + 0] = center - cameraRight * halfWidth - cameraUp * halfHeight;
+            corners[baseIndex + 1] = center + cameraRight * halfWidth - cameraUp * halfHeight;
+            corners[baseIndex + 2] = center - cameraRight * halfWidth + cameraUp * halfHeight;
+            corners[baseIndex + 3] = center + cameraRight * halfWidth + cameraUp * halfHeight;
+        };
+
+        // Each cascade fits the camera-frustum slice between cascadeNear and
+        // cascadeFar. This is intentionally readable; texel snapping and caster
+        // expansion are left as follow-up stability work.
+        writeDepthCorners(cascadeNear, 0);
+        writeDepthCorners(cascadeFar, 4);
+
+        glm::vec3 cascadeCenter{0.0f};
+        for (const glm::vec3& corner : corners) {
+            cascadeCenter += corner;
+        }
+        cascadeCenter /= static_cast<float>(corners.size());
+
+        const glm::mat4 lightView = glm::lookAt(cascadeCenter - lightDirection, cascadeCenter, lightUp);
+        glm::vec3 minBounds{std::numeric_limits<float>::infinity()};
+        glm::vec3 maxBounds{-std::numeric_limits<float>::infinity()};
+        for (const glm::vec3& corner : corners) {
+            const glm::vec3 lightSpaceCorner = glm::vec3(lightView * glm::vec4(corner, 1.0f));
+            minBounds = glm::min(minBounds, lightSpaceCorner);
+            maxBounds = glm::max(maxBounds, lightSpaceCorner);
+        }
+
+        const float depthRange = std::max(cascadeFar - cascadeNear, 1.0f);
+        const float zPadding = std::max(depthRange * 2.0f, 10.0f);
+        const float orthoNear = std::max(0.001f, -maxBounds.z - zPadding);
+        const float orthoFar = std::max(orthoNear + 0.001f, -minBounds.z + zPadding);
+
+        glm::mat4 lightProjection =
+            glm::ortho(minBounds.x, maxBounds.x, minBounds.y, maxBounds.y, orthoNear, orthoFar);
+        lightProjection[1][1] *= -1.0f;
+
+        CascadeFrameData& cascade = frameCascades_[cascadeIndex];
+        cascade.lightViewProjection = lightProjection * lightView;
+        cascade.lightFrustum = renderer::Frustum::fromViewProjection(cascade.lightViewProjection);
+        cascade.splitDepth = cascadeFar;
+        cascade.nearDepth = cascadeNear;
+        cascade.farDepth = cascadeFar;
+
+        for (size_t planeIndex = 0; planeIndex < frameShadowCascadeFrustumPlanes_[cascadeIndex].size(); ++planeIndex) {
+            const renderer::FrustumPlane& lightPlane = cascade.lightFrustum.planes[planeIndex];
+            frameShadowCascadeFrustumPlanes_[cascadeIndex][planeIndex] =
+                glm::vec4(lightPlane.normal, lightPlane.distance);
+        }
+
+        cascadeNear = cascadeFar;
+    }
+
+    for (uint32_t cascadeIndex = cascadeCount; cascadeIndex < kMaxShadowCascades; ++cascadeIndex) {
+        frameCascades_[cascadeIndex] = frameCascades_[cascadeCount - 1];
+        frameCascadeSplits_[cascadeIndex] = shadowFarPlane;
+        frameShadowCascadeFrustumPlanes_[cascadeIndex] = frameShadowCascadeFrustumPlanes_[cascadeCount - 1];
+    }
+}
+
 const renderer::Material* Renderer::resolveMaterial(const renderer::RenderObject& object,
                                                     const renderer::MeshPrimitive* primitive) const
 {
@@ -1719,12 +1800,15 @@ void Renderer::buildMeshDrawBatches()
     cullingStats_.batchCount = meshDrawBatches_.size();
 }
 
-void Renderer::buildShadowDrawItems(const renderer::Frustum& lightFrustum)
+void Renderer::buildShadowDrawItems(uint32_t cascadeIndex, const renderer::Frustum& lightFrustum)
 {
-    shadowDrawItems_.clear();
-    shadowDrawItems_.reserve(allDrawItems_.size());
-    shadowCullingStats_ = {};
-    shadowCullingStats_.totalDrawItems = allDrawItems_.size();
+    if (cascadeIndex >= shadowCascadeDrawItems_.size()) {
+        return;
+    }
+
+    std::vector<DrawItem>& cascadeDrawItems = shadowCascadeDrawItems_[cascadeIndex];
+    cascadeDrawItems.clear();
+    cascadeDrawItems.reserve(allDrawItems_.size());
 
     const size_t objectCount = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
     std::vector<bool> objectVisible(objectCount, false);
@@ -1744,15 +1828,9 @@ void Renderer::buildShadowDrawItems(const renderer::Frustum& lightFrustum)
 
     for (const DrawItem& drawItem : allDrawItems_) {
         if (drawItem.objectIndex < objectVisible.size() && objectVisible[drawItem.objectIndex]) {
-            shadowDrawItems_.push_back(drawItem);
+            cascadeDrawItems.push_back(drawItem);
         }
     }
-
-    shadowCullingStats_.visibleDrawItems = shadowDrawItems_.size();
-    shadowCullingStats_.culledDrawItems =
-        shadowCullingStats_.totalDrawItems > shadowCullingStats_.visibleDrawItems
-            ? shadowCullingStats_.totalDrawItems - shadowCullingStats_.visibleDrawItems
-            : 0;
 }
 
 void Renderer::buildShadowMeshDrawBatches()
@@ -2023,36 +2101,25 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
                 << " commandCount=" << cullingStats_.commandCount;
     }
     message << "\nShadow culling:\n";
-    if (shadowCullingStats_.gpuCulling) {
-        const uint32_t totalShadowDrawItems = frameIndex < frameGpuShadowCullTotalDrawItems_.size()
-                                                  ? frameGpuShadowCullTotalDrawItems_[frameIndex]
-                                                  : static_cast<uint32_t>(shadowCullingStats_.totalDrawItems);
-        const uint32_t shadowBatchCount = frameIndex < frameGpuShadowCullBatchCounts_.size()
-                                              ? frameGpuShadowCullBatchCounts_[frameIndex]
-                                              : static_cast<uint32_t>(shadowCullingStats_.batchCount);
-        uint32_t visibleShadowDrawItems = 0;
-        message << "  total shadow draw items: " << totalShadowDrawItems << "\n";
-        if (readGpuShadowVisibleCount(frameIndex, visibleShadowDrawItems)) {
-            const uint32_t culledShadowDrawItems =
-                totalShadowDrawItems > visibleShadowDrawItems ? totalShadowDrawItems - visibleShadowDrawItems : 0;
-            message << "  visible shadow draw items: " << visibleShadowDrawItems << "\n"
-                    << "  culled shadow draw items: " << culledShadowDrawItems << "\n";
-        } else {
-            message << "  visible shadow draw items: readback deferred\n"
-                    << "  culled shadow draw items: readback deferred\n";
-        }
-        message << "  shadow batches: " << shadowBatchCount << "\n"
-                << "  GPU shadow culling: enabled\n"
-                << "  shadow indirect path: "
-                << (isShadowIndirectCountPathActive(frameIndex) ? "indirect count" : "indirect fallback");
-    } else {
-        message << "  total shadow draw items: " << shadowCullingStats_.totalDrawItems << "\n"
-                << "  visible shadow draw items: " << shadowCullingStats_.visibleDrawItems << "\n"
-                << "  culled shadow draw items: " << shadowCullingStats_.culledDrawItems << "\n"
-                << "  shadow batches: " << shadowCullingStats_.batchCount << "\n"
-                << "  GPU shadow culling: disabled\n"
-                << "  shadow indirect path: " << (shadowCullingStats_.indirectDrawing ? "enabled" : "direct fallback");
+    message << "  cascade count: " << shadowCullingStats_.cascadeCount << "\n"
+            << "  total shadow draw items across cascades: " << shadowCullingStats_.totalDrawItems << "\n"
+            << "  visible shadow draw items across cascades: " << shadowCullingStats_.visibleDrawItems << "\n"
+            << "  culled shadow draw items across cascades: " << shadowCullingStats_.culledDrawItems << "\n"
+            << "  shadow batches across cascades: " << shadowCullingStats_.batchCount << "\n";
+    for (size_t cascadeIndex = 0; cascadeIndex < shadowCullingStats_.cascadeCount &&
+                                  cascadeIndex < shadowVisibleDrawItemsPerCascade_.size();
+         ++cascadeIndex) {
+        message << "  cascade " << cascadeIndex << ": visible draw items "
+                << shadowVisibleDrawItemsPerCascade_[cascadeIndex]
+                << ", batches " << shadowBatchCountPerCascade_[cascadeIndex]
+                << ", split depth " << frameCascades_[cascadeIndex].splitDepth << "\n";
     }
+    message << "  GPU shadow culling: " << (shadowCullingStats_.gpuCulling ? "enabled" : "disabled") << "\n"
+            << "  shadow path: "
+            << (shadowCullingStats_.gpuCulling
+                    ? (isShadowIndirectCountPathActive(frameIndex) ? "per-cascade indirect count"
+                                                                   : "per-cascade indirect fallback")
+                    : "per-cascade direct fallback");
     Logger::info(message.str());
 }
 
@@ -2068,6 +2135,14 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         meshDrawBatches_.clear();
         shadowMeshDrawBatches_.clear();
         gpuShadowMeshDrawBatches_.clear();
+        for (std::vector<DrawItem>& cascadeDrawItems : shadowCascadeDrawItems_) {
+            cascadeDrawItems.clear();
+        }
+        for (std::vector<MeshDrawBatch>& cascadeBatches : shadowCascadeMeshDrawBatches_) {
+            cascadeBatches.clear();
+        }
+        shadowVisibleDrawItemsPerCascade_.fill(0);
+        shadowBatchCountPerCascade_.fill(0);
         cullingStats_ = {};
         shadowCullingStats_ = {};
         if (frameIndex < frameGpuCullTotalDrawItems_.size()) {
@@ -2103,7 +2178,7 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     const glm::mat4 view = camera_.viewMatrix();
     const glm::mat4 projection = camera_.projectionMatrix(aspect);
     const glm::mat4 viewProjection = projection * view;
-    const glm::mat4 lightViewProjection = directionalLightViewProjection();
+    updateCascades(aspect);
 
     for (size_t objectIndex = 0; objectIndex < renderObjects_.size(); ++objectIndex) {
         renderer::RenderObject& object = renderObjects_[objectIndex];
@@ -2160,17 +2235,43 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     }
 
     const renderer::Frustum cameraFrustum = renderer::Frustum::fromViewProjection(viewProjection);
-    const renderer::Frustum lightFrustum = renderer::Frustum::fromViewProjection(lightViewProjection);
     for (size_t planeIndex = 0; planeIndex < frameFrustumPlanes_.size(); ++planeIndex) {
         const renderer::FrustumPlane& cameraPlane = cameraFrustum.planes[planeIndex];
-        const renderer::FrustumPlane& lightPlane = lightFrustum.planes[planeIndex];
         frameFrustumPlanes_[planeIndex] = glm::vec4(cameraPlane.normal, cameraPlane.distance);
-        frameShadowFrustumPlanes_[planeIndex] = glm::vec4(lightPlane.normal, lightPlane.distance);
     }
 
-    buildShadowDrawItems(lightFrustum);
-    buildShadowMeshDrawBatches();
+    const uint32_t cascadeCount = activeCascadeCount();
+    shadowDrawItems_.clear();
+    shadowMeshDrawBatches_.clear();
     gpuShadowMeshDrawBatches_.clear();
+    shadowCullingStats_ = {};
+    shadowCullingStats_.cascadeCount = cascadeCount;
+    shadowCullingStats_.totalDrawItems = allDrawItems_.size() * cascadeCount;
+    shadowVisibleDrawItemsPerCascade_.fill(0);
+    shadowBatchCountPerCascade_.fill(0);
+    for (std::vector<DrawItem>& cascadeDrawItems : shadowCascadeDrawItems_) {
+        cascadeDrawItems.clear();
+    }
+    for (std::vector<MeshDrawBatch>& cascadeBatches : shadowCascadeMeshDrawBatches_) {
+        cascadeBatches.clear();
+    }
+
+    for (uint32_t cascadeIndex = 0; cascadeIndex < cascadeCount; ++cascadeIndex) {
+        buildShadowDrawItems(cascadeIndex, frameCascades_[cascadeIndex].lightFrustum);
+        buildMeshDrawBatchesForItems(shadowCascadeDrawItems_[cascadeIndex],
+                                     shadowCascadeMeshDrawBatches_[cascadeIndex]);
+        shadowVisibleDrawItemsPerCascade_[cascadeIndex] =
+            static_cast<uint32_t>(shadowCascadeDrawItems_[cascadeIndex].size());
+        shadowBatchCountPerCascade_[cascadeIndex] =
+            static_cast<uint32_t>(shadowCascadeMeshDrawBatches_[cascadeIndex].size());
+        shadowCullingStats_.visibleDrawItems += shadowCascadeDrawItems_[cascadeIndex].size();
+        shadowCullingStats_.batchCount += shadowCascadeMeshDrawBatches_[cascadeIndex].size();
+    }
+    shadowCullingStats_.culledDrawItems =
+        shadowCullingStats_.totalDrawItems > shadowCullingStats_.visibleDrawItems
+            ? shadowCullingStats_.totalDrawItems - shadowCullingStats_.visibleDrawItems
+            : 0;
+
     const bool gpuShadowCullingActive = isGpuShadowCullingActive();
     if (gpuShadowCullingActive) {
         buildMeshDrawBatchesForItems(allDrawItems_, gpuShadowMeshDrawBatches_);
@@ -2188,24 +2289,22 @@ void Renderer::updateFrameData(uint32_t frameIndex)
 
         if (frameIndex < frameGpuShadowCullTotalDrawItems_.size()) {
             frameGpuShadowCullTotalDrawItems_[frameIndex] =
-                static_cast<uint32_t>(std::min(allDrawItems_.size(), static_cast<size_t>(kMaxDrawItems)));
+                static_cast<uint32_t>(std::min(allDrawItems_.size() * cascadeCount,
+                                               static_cast<size_t>(kMaxDrawItems)));
         }
         if (frameIndex < frameGpuShadowCullBatchCounts_.size()) {
-            frameGpuShadowCullBatchCounts_[frameIndex] = static_cast<uint32_t>(gpuShadowMeshDrawBatches_.size());
+            frameGpuShadowCullBatchCounts_[frameIndex] =
+                static_cast<uint32_t>(gpuShadowMeshDrawBatches_.size() * cascadeCount);
         }
         if (frameIndex < frameGpuShadowCullIndirectCountPath_.size()) {
             frameGpuShadowCullIndirectCountPath_[frameIndex] = shadowIndirectCountPathActive ? 1 : 0;
         }
 
-        shadowCullingStats_ = {};
-        shadowCullingStats_.totalDrawItems = allDrawItems_.size();
-        shadowCullingStats_.batchCount = gpuShadowMeshDrawBatches_.size();
         shadowCullingStats_.gpuCulling = true;
         shadowCullingStats_.indirectDrawing = true;
         updateGpuShadowCullInputBuffer(frameIndex);
     } else {
-        shadowCullingStats_.indirectDrawing = isShadowIndirectActive();
-        updateShadowIndirectDrawBuffer(frameIndex);
+        shadowCullingStats_.indirectDrawing = false;
     }
 
     const bool gpuCullingActive = isGpuCullingActive();
@@ -2261,12 +2360,15 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         ObjectFrameData& frameData = objectFrameData[drawIndex];
         frameData.mvp = viewProjection * model;
         frameData.model = model;
-        frameData.lightMvp = lightViewProjection * model;
+        for (uint32_t cascadeIndex = 0; cascadeIndex < kMaxShadowCascades; ++cascadeIndex) {
+            frameData.lightMvp[cascadeIndex] = frameCascades_[cascadeIndex].lightViewProjection * model;
+        }
         frameData.lightDirection = kDirectionalLightDirection;
         frameData.lightColor = kDirectionalLightColor;
         frameData.ambientColor = kAmbientLightColor;
-        frameData.shadowSettings = {shadowSettings_.constantBias,
-                                    shadowSettings_.slopeBias,
+        frameData.cascadeSplits = frameCascadeSplits_;
+        frameData.shadowSettings = {csmSettings_.depthBiasConstant,
+                                    csmSettings_.depthBiasSlope,
                                     shadowSettings_.enablePcf ? 1.0f : 0.0f,
                                     static_cast<float>(std::max(shadowSettings_.pcfRadius, 0))};
         const renderer::Material* material = drawItem.material ? drawItem.material : object.material;
@@ -2282,6 +2384,8 @@ void Renderer::updateFrameData(uint32_t frameIndex)
                                         0};
         }
         frameData.cameraPosition = glm::vec4(camera_.position, 1.0f);
+        frameData.cameraForward =
+            glm::vec4(glm::normalize(camera_.target - camera_.position), static_cast<float>(cascadeCount));
     }
 
     frameObjectDataBuffers_.at(frameIndex)
@@ -2568,9 +2672,12 @@ void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
     rhi::debug::endLabel(commandBuffer);
 }
 
-void Renderer::recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer)
+void Renderer::recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer, uint32_t cascadeIndex)
 {
     if (!isGpuShadowCullingActive() || allDrawItems_.empty()) {
+        return;
+    }
+    if (cascadeIndex >= activeCascadeCount()) {
         return;
     }
     if (currentFrame_ >= shadowCullDescriptorSets_.size() ||
@@ -2596,7 +2703,7 @@ void Renderer::recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer)
         return;
     }
 
-    rhi::debug::beginLabel(commandBuffer, "GpuShadowCulling");
+    rhi::debug::beginLabel(commandBuffer, "GpuShadowCullingCascade" + std::to_string(cascadeIndex));
     vkCmdFillBuffer(commandBuffer, visibleCountBuffer, 0, kBatchVisibleCountBufferSize, 0);
     vkCmdFillBuffer(commandBuffer, shadowIndirectDrawBuffer, 0, shadowIndirectBufferSize, 0);
 
@@ -2642,7 +2749,7 @@ void Renderer::recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer)
                             nullptr);
 
     GpuCullPushConstants pushConstants{};
-    pushConstants.frustumPlanes = frameShadowFrustumPlanes_;
+    pushConstants.frustumPlanes = frameShadowCascadeFrustumPlanes_[cascadeIndex];
     pushConstants.params =
         glm::uvec4(static_cast<uint32_t>(allDrawItems_.size()), 1U, 1U, 0U);
     vkCmdPushConstants(commandBuffer,
@@ -2652,7 +2759,7 @@ void Renderer::recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer)
                        static_cast<uint32_t>(sizeof(GpuCullPushConstants)),
                        &pushConstants);
 
-    rhi::debug::beginLabel(commandBuffer, "ShadowCullDispatch");
+    rhi::debug::beginLabel(commandBuffer, "ShadowCullDispatchCascade" + std::to_string(cascadeIndex));
     const uint32_t groupCount =
         (static_cast<uint32_t>(allDrawItems_.size()) + kGpuCullLocalSize - 1) / kGpuCullLocalSize;
     vkCmdDispatch(commandBuffer, groupCount, 1, 1);
@@ -2722,19 +2829,11 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     rhi::debug::beginLabel(commandBuffer, "Frame");
     timestampQuery_.resetFrame(commandBuffer, currentFrame_);
 
-    recordGpuShadowCullingCommands(commandBuffer);
-
     const bool gpuShadowCullingActive = isGpuShadowCullingActive() && !allDrawItems_.empty();
-    const std::vector<DrawItem>& activeShadowDrawItems =
-        gpuShadowCullingActive ? allDrawItems_ : shadowDrawItems_;
-    const std::vector<MeshDrawBatch>& activeShadowMeshDrawBatches =
-        gpuShadowCullingActive ? gpuShadowMeshDrawBatches_ : shadowMeshDrawBatches_;
-    const size_t shadowDrawItemCount = activeShadowDrawItems.size();
+    const uint32_t cascadeCount = activeCascadeCount();
 
-    rhi::debug::beginLabel(commandBuffer, "ShadowPass");
+    rhi::debug::beginLabel(commandBuffer, "CSMShadowPass");
     timestampQuery_.writeBegin(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::ShadowPass);
-    renderGraph_.beginShadowPass();
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline_.pipeline());
 
     const VkExtent2D shadowExtent = shadowMap_.extent();
     VkViewport shadowViewport{};
@@ -2749,88 +2848,45 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     shadowScissor.offset = {0, 0};
     shadowScissor.extent = shadowExtent;
 
-    vkCmdSetViewport(commandBuffer, 0, 1, &shadowViewport);
-    vkCmdSetScissor(commandBuffer, 0, 1, &shadowScissor);
-
-    const renderer::Mesh* boundShadowMesh = nullptr;
-    const std::string shadowCullingLabel = gpuShadowCullingActive
-                                               ? "ShadowCasterCulling GPU max " +
-                                                     std::to_string(shadowDrawItemCount) + " light-frustum tested"
-                                               : "ShadowCasterCulling visible " +
-                                                     std::to_string(shadowDrawItemCount) + "/" +
-                                                     std::to_string(shadowCullingStats_.totalDrawItems);
-    rhi::debug::beginLabel(commandBuffer, shadowCullingLabel);
-    rhi::debug::endLabel(commandBuffer);
-
-    const bool shadowIndirectActive = gpuShadowCullingActive || isShadowIndirectActive();
-    const bool shadowIndirectCountPathActive =
-        gpuShadowCullingActive && isShadowIndirectCountPathActive(currentFrame_);
-    const std::string shadowDrawLabel =
-        "ShadowPass IndirectDrawItems " + std::to_string(shadowDrawItemCount) +
-        (gpuShadowCullingActive ? (shadowIndirectCountPathActive ? " GPU culling indirect-count"
-                                                                 : " GPU culling indirect fallback")
-                                : (shadowIndirectActive ? " CPU culling indirect" : " direct fallback"));
-    rhi::debug::beginLabel(commandBuffer, shadowDrawLabel);
-    if (shadowIndirectActive && !activeShadowDrawItems.empty()) {
-        const PushConstants pushConstants{objectFrameDataBaseAddress};
-        vkCmdPushConstants(commandBuffer,
-                           shadowPipeline_.layout(),
-                           VK_SHADER_STAGE_VERTEX_BIT,
-                           0,
-                           static_cast<uint32_t>(sizeof(PushConstants)),
-                           &pushConstants);
-
-        const VkBuffer shadowIndirectDrawBuffer = frameShadowIndirectDrawBuffers_.at(currentFrame_).buffer();
-        const VkBuffer shadowBatchVisibleCountBuffer =
-            shadowIndirectCountPathActive ? frameShadowBatchVisibleCountBuffers_.at(currentFrame_).buffer()
-                                          : VK_NULL_HANDLE;
-        const std::string shadowBatchesLabel =
-            "ShadowIndirectDrawBatches " + std::to_string(activeShadowMeshDrawBatches.size()) + " max commands " +
-            std::to_string(shadowDrawItemCount);
-        rhi::debug::beginLabel(commandBuffer, shadowBatchesLabel);
-        for (const MeshDrawBatch& batch : activeShadowMeshDrawBatches) {
-            if (!batch.mesh || batch.drawItemCount == 0) {
-                continue;
-            }
-
-            if (boundShadowMesh != batch.mesh) {
-                const VkBuffer vertexBuffers[] = {batch.mesh->vertexBuffer()};
-                const VkDeviceSize vertexOffsets[] = {0};
-                vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
-                vkCmdBindIndexBuffer(commandBuffer, batch.mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
-                boundShadowMesh = batch.mesh;
-            }
-
-            const VkDeviceSize indirectOffset =
-                static_cast<VkDeviceSize>(batch.compactedCommandOffset * sizeof(VkDrawIndexedIndirectCommand));
-            if (shadowIndirectCountPathActive && shadowBatchVisibleCountBuffer != VK_NULL_HANDLE) {
-                vkCmdDrawIndexedIndirectCount(commandBuffer,
-                                             shadowIndirectDrawBuffer,
-                                             indirectOffset,
-                                             shadowBatchVisibleCountBuffer,
-                                             batch.visibleCountOffset,
-                                             batch.drawItemCount,
-                                             sizeof(VkDrawIndexedIndirectCommand));
-            } else {
-                vkCmdDrawIndexedIndirect(commandBuffer,
-                                         shadowIndirectDrawBuffer,
-                                         indirectOffset,
-                                         batch.drawItemCount,
-                                         sizeof(VkDrawIndexedIndirectCommand));
-            }
+    for (uint32_t cascadeIndex = 0; cascadeIndex < cascadeCount; ++cascadeIndex) {
+        if (gpuShadowCullingActive) {
+            recordGpuShadowCullingCommands(commandBuffer, cascadeIndex);
         }
+
+        const std::vector<DrawItem>& activeShadowDrawItems =
+            gpuShadowCullingActive ? allDrawItems_ : shadowCascadeDrawItems_[cascadeIndex];
+        const std::vector<MeshDrawBatch>& activeShadowMeshDrawBatches =
+            gpuShadowCullingActive ? gpuShadowMeshDrawBatches_ : shadowCascadeMeshDrawBatches_[cascadeIndex];
+        const size_t shadowDrawItemCount = activeShadowDrawItems.size();
+        const bool shadowIndirectCountPathActive =
+            gpuShadowCullingActive && isShadowIndirectCountPathActive(currentFrame_);
+
+        rhi::debug::beginLabel(commandBuffer, "ShadowCascade" + std::to_string(cascadeIndex));
+        renderGraph_.beginShadowPass(cascadeIndex);
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline_.pipeline());
+        vkCmdSetViewport(commandBuffer, 0, 1, &shadowViewport);
+        vkCmdSetScissor(commandBuffer, 0, 1, &shadowScissor);
+
+        const std::string shadowCullingLabel =
+            gpuShadowCullingActive
+                ? "ShadowCasterCulling GPU cascade " + std::to_string(cascadeIndex) + " max " +
+                      std::to_string(shadowDrawItemCount)
+                : "ShadowCasterCulling cascade " + std::to_string(cascadeIndex) + " visible " +
+                      std::to_string(shadowDrawItemCount) + "/" + std::to_string(allDrawItems_.size());
+        rhi::debug::beginLabel(commandBuffer, shadowCullingLabel);
         rhi::debug::endLabel(commandBuffer);
-    } else {
-        for (size_t drawIndex = 0; drawIndex < shadowDrawItemCount; ++drawIndex) {
-            const DrawItem& drawItem = activeShadowDrawItems[drawIndex];
-            if (!drawItem.mesh || drawItem.frameDataIndex >= kMaxDrawItems) {
-                continue;
-            }
 
-            const PushConstants pushConstants{
-                objectFrameDataBaseAddress +
-                static_cast<VkDeviceAddress>(drawItem.frameDataIndex * sizeof(ObjectFrameData))};
+        const std::string shadowDrawLabel =
+            "ShadowCascade" + std::to_string(cascadeIndex) + " DrawItems " +
+            std::to_string(shadowDrawItemCount) +
+            (gpuShadowCullingActive ? (shadowIndirectCountPathActive ? " GPU culling indirect-count"
+                                                                     : " GPU culling indirect fallback")
+                                    : " CPU culling direct fallback");
+        rhi::debug::beginLabel(commandBuffer, shadowDrawLabel);
 
+        const renderer::Mesh* boundShadowMesh = nullptr;
+        if (gpuShadowCullingActive && !activeShadowDrawItems.empty()) {
+            const PushConstants pushConstants{objectFrameDataBaseAddress, cascadeIndex, 0};
             vkCmdPushConstants(commandBuffer,
                                shadowPipeline_.layout(),
                                VK_SHADER_STAGE_VERTEX_BIT,
@@ -2838,24 +2894,87 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                                static_cast<uint32_t>(sizeof(PushConstants)),
                                &pushConstants);
 
-            const renderer::Mesh* mesh = drawItem.mesh;
-            if (boundShadowMesh != mesh) {
-                const VkBuffer vertexBuffers[] = {mesh->vertexBuffer()};
-                const VkDeviceSize vertexOffsets[] = {0};
-                vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
-                vkCmdBindIndexBuffer(commandBuffer, mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
-                boundShadowMesh = mesh;
-            }
+            const VkBuffer shadowIndirectDrawBuffer = frameShadowIndirectDrawBuffers_.at(currentFrame_).buffer();
+            const VkBuffer shadowBatchVisibleCountBuffer =
+                shadowIndirectCountPathActive ? frameShadowBatchVisibleCountBuffers_.at(currentFrame_).buffer()
+                                              : VK_NULL_HANDLE;
+            const std::string shadowBatchesLabel =
+                "ShadowIndirectDrawBatches " + std::to_string(activeShadowMeshDrawBatches.size()) +
+                " max commands " + std::to_string(shadowDrawItemCount);
+            rhi::debug::beginLabel(commandBuffer, shadowBatchesLabel);
+            for (const MeshDrawBatch& batch : activeShadowMeshDrawBatches) {
+                if (!batch.mesh || batch.drawItemCount == 0) {
+                    continue;
+                }
 
-            if (drawItem.indexCount > 0) {
-                vkCmdDrawIndexed(
-                    commandBuffer, drawItem.indexCount, 1, drawItem.firstIndex, drawItem.vertexOffset, 0);
+                if (boundShadowMesh != batch.mesh) {
+                    const VkBuffer vertexBuffers[] = {batch.mesh->vertexBuffer()};
+                    const VkDeviceSize vertexOffsets[] = {0};
+                    vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
+                    vkCmdBindIndexBuffer(commandBuffer, batch.mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+                    boundShadowMesh = batch.mesh;
+                }
+
+                const VkDeviceSize indirectOffset =
+                    static_cast<VkDeviceSize>(batch.compactedCommandOffset * sizeof(VkDrawIndexedIndirectCommand));
+                if (shadowIndirectCountPathActive && shadowBatchVisibleCountBuffer != VK_NULL_HANDLE) {
+                    vkCmdDrawIndexedIndirectCount(commandBuffer,
+                                                 shadowIndirectDrawBuffer,
+                                                 indirectOffset,
+                                                 shadowBatchVisibleCountBuffer,
+                                                 batch.visibleCountOffset,
+                                                 batch.drawItemCount,
+                                                 sizeof(VkDrawIndexedIndirectCommand));
+                } else {
+                    vkCmdDrawIndexedIndirect(commandBuffer,
+                                             shadowIndirectDrawBuffer,
+                                             indirectOffset,
+                                             batch.drawItemCount,
+                                             sizeof(VkDrawIndexedIndirectCommand));
+                }
+            }
+            rhi::debug::endLabel(commandBuffer);
+        } else {
+            for (size_t drawIndex = 0; drawIndex < shadowDrawItemCount; ++drawIndex) {
+                const DrawItem& drawItem = activeShadowDrawItems[drawIndex];
+                if (!drawItem.mesh || drawItem.frameDataIndex >= kMaxDrawItems) {
+                    continue;
+                }
+
+                const PushConstants pushConstants{
+                    objectFrameDataBaseAddress +
+                        static_cast<VkDeviceAddress>(drawItem.frameDataIndex * sizeof(ObjectFrameData)),
+                    cascadeIndex,
+                    0};
+
+                vkCmdPushConstants(commandBuffer,
+                                   shadowPipeline_.layout(),
+                                   VK_SHADER_STAGE_VERTEX_BIT,
+                                   0,
+                                   static_cast<uint32_t>(sizeof(PushConstants)),
+                                   &pushConstants);
+
+                const renderer::Mesh* mesh = drawItem.mesh;
+                if (boundShadowMesh != mesh) {
+                    const VkBuffer vertexBuffers[] = {mesh->vertexBuffer()};
+                    const VkDeviceSize vertexOffsets[] = {0};
+                    vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
+                    vkCmdBindIndexBuffer(commandBuffer, mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+                    boundShadowMesh = mesh;
+                }
+
+                if (drawItem.indexCount > 0) {
+                    vkCmdDrawIndexed(
+                        commandBuffer, drawItem.indexCount, 1, drawItem.firstIndex, drawItem.vertexOffset, 0);
+                }
             }
         }
-    }
-    rhi::debug::endLabel(commandBuffer);
+        rhi::debug::endLabel(commandBuffer);
 
-    renderGraph_.endShadowPass();
+        renderGraph_.endShadowPass(cascadeIndex + 1 == cascadeCount);
+        rhi::debug::endLabel(commandBuffer);
+    }
+
     timestampQuery_.writeEnd(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::ShadowPass);
     rhi::debug::endLabel(commandBuffer);
 

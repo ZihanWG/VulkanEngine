@@ -53,8 +53,8 @@ public:
                     rhi::VulkanSwapchain& swapchain,
                     rhi::VulkanShadowMap& shadowMap,
                     uint32_t imageIndex);
-    void beginShadowPass();
-    void endShadowPass();
+    void beginShadowPass(uint32_t cascadeLayer);
+    void endShadowPass(bool finalCascade);
     void beginMainPass();
     void endMainPass();
     void endFrame();

@@ -11,9 +11,11 @@ class VulkanContext;
 struct VulkanImageCreateInfo {
     uint32_t width = 0;
     uint32_t height = 0;
+    uint32_t arrayLayers = 1;
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkImageUsageFlags usage = 0;
     VkImageAspectFlags aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    VkImageViewType viewType = VK_IMAGE_VIEW_TYPE_2D;
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
     VkImageTiling tiling = VK_IMAGE_TILING_OPTIMAL;
     std::string debugName;

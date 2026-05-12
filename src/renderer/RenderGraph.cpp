@@ -21,12 +21,12 @@ constexpr RenderResourceHandle kIblResources{"IBLResources"};
 RenderGraph::RenderGraph()
     : passes_{
           RenderPassNode{
-              "ShadowPass",
+              "CSMShadowPass",
               RenderPassType::Shadow,
               {
                   {kShadowMapDepth,
                    RenderResourceAccess::Write,
-                   "Writes the directional shadow map with material-independent shadow-caster draws."},
+                   "Writes every cascaded shadow-map array layer with material-independent shadow-caster draws."},
               }},
           RenderPassNode{
               "MainPass",
@@ -34,7 +34,7 @@ RenderGraph::RenderGraph()
               {
                   {kShadowMapDepth,
                    RenderResourceAccess::Read,
-                   "Samples the shadow map from global/material set 0 binding 1."},
+                   "Samples the cascaded shadow-map array from global/material set 0 binding 1."},
                   {kSwapchainColor, RenderResourceAccess::Write, "Writes the acquired swapchain color image."},
                   {kMainDepth,
                    RenderResourceAccess::Write,
@@ -75,15 +75,20 @@ void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
     frameActive_ = true;
 }
 
-void RenderGraph::beginShadowPass()
+void RenderGraph::beginShadowPass(uint32_t cascadeLayer)
 {
     requireFrameActive("RenderGraph::beginShadowPass");
     if (shadowPassActive_ || mainPassActive_) {
         throw std::logic_error("RenderGraph::beginShadowPass called while another pass is active.");
     }
+    if (cascadeLayer >= frame_.shadowMap->layerCount()) {
+        throw std::out_of_range("RenderGraph::beginShadowPass cascade layer is out of range.");
+    }
 
-    transitionShadowMapImage(frame_.shadowMap->layout(), VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
-    frame_.shadowMap->setLayout(VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
+    if (frame_.shadowMap->layout() != VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL) {
+        transitionShadowMapImage(frame_.shadowMap->layout(), VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
+        frame_.shadowMap->setLayout(VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
+    }
 
     VkClearValue shadowDepthClear{};
     shadowDepthClear.depthStencil.depth = 1.0f;
@@ -91,7 +96,7 @@ void RenderGraph::beginShadowPass()
 
     VkRenderingAttachmentInfo shadowDepthAttachment{};
     shadowDepthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    shadowDepthAttachment.imageView = frame_.shadowMap->imageView();
+    shadowDepthAttachment.imageView = frame_.shadowMap->layerImageView(cascadeLayer);
     shadowDepthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
     shadowDepthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     shadowDepthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -109,7 +114,7 @@ void RenderGraph::beginShadowPass()
     shadowPassActive_ = true;
 }
 
-void RenderGraph::endShadowPass()
+void RenderGraph::endShadowPass(bool finalCascade)
 {
     requireFrameActive("RenderGraph::endShadowPass");
     if (!shadowPassActive_) {
@@ -118,8 +123,10 @@ void RenderGraph::endShadowPass()
 
     vkCmdEndRendering(frame_.commandBuffer);
 
-    transitionShadowMapImage(VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL);
-    frame_.shadowMap->setLayout(VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL);
+    if (finalCascade) {
+        transitionShadowMapImage(VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL);
+        frame_.shadowMap->setLayout(VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL);
+    }
     shadowPassActive_ = false;
 }
 
@@ -249,7 +256,7 @@ void RenderGraph::transitionShadowMapImage(VkImageLayout oldLayout, VkImageLayou
     barrier.subresourceRange.baseMipLevel = 0;
     barrier.subresourceRange.levelCount = 1;
     barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
+    barrier.subresourceRange.layerCount = frame_.shadowMap->layerCount();
 
     VkDependencyInfo dependencyInfo{};
     dependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;

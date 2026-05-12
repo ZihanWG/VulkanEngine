@@ -42,7 +42,7 @@ void VulkanImage::create(VulkanContext& context, const VulkanImageCreateInfo& cr
     imageInfo.format = createInfo.format;
     imageInfo.extent = extent_;
     imageInfo.mipLevels = 1;
-    imageInfo.arrayLayers = 1;
+    imageInfo.arrayLayers = createInfo.arrayLayers;
     imageInfo.samples = createInfo.samples;
     imageInfo.tiling = createInfo.tiling;
     imageInfo.usage = createInfo.usage;
@@ -58,13 +58,13 @@ void VulkanImage::create(VulkanContext& context, const VulkanImageCreateInfo& cr
     VkImageViewCreateInfo viewInfo{};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     viewInfo.image = image_;
-    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.viewType = createInfo.viewType;
     viewInfo.format = createInfo.format;
     viewInfo.subresourceRange.aspectMask = createInfo.aspectMask;
     viewInfo.subresourceRange.baseMipLevel = 0;
     viewInfo.subresourceRange.levelCount = 1;
     viewInfo.subresourceRange.baseArrayLayer = 0;
-    viewInfo.subresourceRange.layerCount = 1;
+    viewInfo.subresourceRange.layerCount = createInfo.arrayLayers;
 
     VK_CHECK(vkCreateImageView(context.vkDevice(), &viewInfo, nullptr, &imageView_));
 

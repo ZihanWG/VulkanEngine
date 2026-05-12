@@ -1,6 +1,7 @@
 #pragma once
 
 #include "renderer/BindlessTextureHeap.h"
+#include "renderer/Bounds.h"
 #include "renderer/Camera.h"
 #include "renderer/FrameResources.h"
 #include "renderer/Material.h"
@@ -26,6 +27,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <glm/vec4.hpp>
+#include <glm/mat4x4.hpp>
 #include <string_view>
 #include <vector>
 
@@ -47,14 +49,32 @@ public:
     void waitIdle();
 
 private:
+    static constexpr uint32_t kMaxShadowCascades = 4;
+
+    struct CsmSettings {
+        uint32_t cascadeCount = kMaxShadowCascades;
+        float lambda = 0.5f;
+        float nearPlane = 0.1f;
+        float farPlane = 100.0f;
+        float shadowDistance = 40.0f;
+        float depthBiasConstant = 0.002f;
+        float depthBiasSlope = 0.005f;
+    };
+
     struct ShadowSettings {
         uint32_t resolution = 2048;
-        float constantBias = 0.002f;
-        float slopeBias = 0.005f;
         bool enablePcf = true;
         int pcfRadius = 1;
         float rasterDepthBiasConstantFactor = 1.25f;
         float rasterDepthBiasSlopeFactor = 1.75f;
+    };
+
+    struct CascadeFrameData {
+        glm::mat4 lightViewProjection{1.0f};
+        renderer::Frustum lightFrustum{};
+        float splitDepth = 0.0f;
+        float nearDepth = 0.0f;
+        float farDepth = 0.0f;
     };
 
     struct DrawItem {
@@ -87,6 +107,7 @@ private:
     };
 
     struct ShadowCullingStats {
+        size_t cascadeCount = 0;
         size_t totalDrawItems = 0;
         size_t visibleDrawItems = 0;
         size_t culledDrawItems = 0;
@@ -123,13 +144,14 @@ private:
     void createObjectFrameDataBuffers();
     void createIndirectDrawBuffers();
     void createShadowIndirectDrawBuffers();
+    void updateCascades(float aspectRatio);
     void updateGpuCullInputBuffer(uint32_t frameIndex);
     void updateGpuShadowCullInputBuffer(uint32_t frameIndex);
     void updateFrameData(uint32_t frameIndex);
     void buildDrawItems();
     void buildVisibleDrawItems(const renderer::Frustum& frustum);
     void buildMeshDrawBatches();
-    void buildShadowDrawItems(const renderer::Frustum& lightFrustum);
+    void buildShadowDrawItems(uint32_t cascadeIndex, const renderer::Frustum& lightFrustum);
     void buildShadowMeshDrawBatches();
     void buildMeshDrawBatchesForItems(
         const std::vector<DrawItem>& drawItems,
@@ -143,7 +165,7 @@ private:
     void recreateSwapchain();
     void recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     void recordGpuCullingCommands(VkCommandBuffer commandBuffer);
-    void recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer);
+    void recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer, uint32_t cascadeIndex);
     bool readGpuVisibleCount(uint32_t frameIndex, uint32_t& visibleCount);
     bool readGpuShadowVisibleCount(uint32_t frameIndex, uint32_t& visibleCount);
     [[nodiscard]] bool isGpuCullingActive() const;
@@ -155,6 +177,7 @@ private:
     [[nodiscard]] bool isShadowIndirectCountSupported() const;
     [[nodiscard]] bool isShadowIndirectCountPathActive(uint32_t frameIndex) const;
     [[nodiscard]] bool isShadowIndirectActive() const;
+    [[nodiscard]] uint32_t activeCascadeCount() const;
     [[nodiscard]] VkDescriptorSet globalMaterialDescriptorSet() const;
     void nameTextureResources(const rhi::VulkanTexture& texture, std::string_view name) const;
     void nameEnvironmentMapResources(const rhi::VulkanEnvironmentMap& environmentMap, std::string_view name) const;
@@ -205,8 +228,10 @@ private:
     std::vector<DrawItem> allDrawItems_;
     std::vector<DrawItem> visibleDrawItems_;
     std::vector<DrawItem> shadowDrawItems_;
+    std::array<std::vector<DrawItem>, kMaxShadowCascades> shadowCascadeDrawItems_;
     std::vector<MeshDrawBatch> meshDrawBatches_;
     std::vector<MeshDrawBatch> shadowMeshDrawBatches_;
+    std::array<std::vector<MeshDrawBatch>, kMaxShadowCascades> shadowCascadeMeshDrawBatches_;
     std::vector<MeshDrawBatch> gpuShadowMeshDrawBatches_;
     std::vector<rhi::VulkanBuffer> frameObjectDataBuffers_;
     std::vector<rhi::VulkanBuffer> frameCullInputBuffers_;
@@ -225,6 +250,7 @@ private:
     std::vector<uint8_t> frameGpuCullIndirectCountPath_;
     std::vector<uint8_t> frameGpuShadowCullReadbackReady_;
     std::vector<uint8_t> frameGpuShadowCullIndirectCountPath_;
+    CsmSettings csmSettings_{};
     std::vector<VkFence> imagesInFlight_;
     ShadowSettings shadowSettings_{};
     VkFormat pipelineColorFormat_ = VK_FORMAT_UNDEFINED;
@@ -239,7 +265,11 @@ private:
     std::chrono::steady_clock::time_point startTime_ = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point lastGpuTimingPrint_ = std::chrono::steady_clock::now();
     std::array<glm::vec4, 6> frameFrustumPlanes_{};
-    std::array<glm::vec4, 6> frameShadowFrustumPlanes_{};
+    std::array<CascadeFrameData, kMaxShadowCascades> frameCascades_{};
+    glm::vec4 frameCascadeSplits_{};
+    std::array<std::array<glm::vec4, 6>, kMaxShadowCascades> frameShadowCascadeFrustumPlanes_{};
+    std::array<uint32_t, kMaxShadowCascades> shadowVisibleDrawItemsPerCascade_{};
+    std::array<uint32_t, kMaxShadowCascades> shadowBatchCountPerCascade_{};
     CullingStats cullingStats_{};
     ShadowCullingStats shadowCullingStats_{};
     bool initialized_ = false;
