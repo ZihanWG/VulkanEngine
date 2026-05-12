@@ -12,9 +12,26 @@ namespace {
 
 constexpr RenderResourceHandle kShadowMapDepth{"ShadowMapDepth"};
 constexpr RenderResourceHandle kSwapchainColor{"SwapchainColor"};
+constexpr RenderResourceHandle kSceneColor{"SceneColor"};
+constexpr RenderResourceHandle kBloomExtract{"BloomExtract"};
+constexpr RenderResourceHandle kBloomPing{"BloomPing"};
+constexpr RenderResourceHandle kBloomPong{"BloomPong"};
 constexpr RenderResourceHandle kMainDepth{"MainDepth"};
 constexpr RenderResourceHandle kMaterialTextures{"MaterialTextures"};
 constexpr RenderResourceHandle kIblResources{"IBLResources"};
+
+bool validImageResource(const RenderGraphImageResource& resource)
+{
+    return resource.image != VK_NULL_HANDLE && resource.imageView != VK_NULL_HANDLE && resource.layout != nullptr &&
+           resource.extent.width > 0 && resource.extent.height > 0;
+}
+
+void requireImageResource(const RenderGraphImageResource& resource, const char* operation)
+{
+    if (!validImageResource(resource)) {
+        throw std::logic_error(std::string(operation) + " requires a valid " + resource.name + " image resource.");
+    }
+}
 
 } // namespace
 
@@ -29,13 +46,15 @@ RenderGraph::RenderGraph()
                    "Writes every cascaded shadow-map array layer with material-independent shadow-caster draws."},
               }},
           RenderPassNode{
-              "MainPass",
-              RenderPassType::Main,
+              "MainHDRPass",
+              RenderPassType::MainHdr,
               {
                   {kShadowMapDepth,
                    RenderResourceAccess::Read,
                    "Samples the cascaded shadow-map array from global/material set 0 binding 1."},
-                  {kSwapchainColor, RenderResourceAccess::Write, "Writes the acquired swapchain color image."},
+                  {kSceneColor,
+                   RenderResourceAccess::Write,
+                   "Writes linear HDR skybox and mesh lighting into an offscreen color target."},
                   {kMainDepth,
                    RenderResourceAccess::Write,
                    "Clears and writes the main Dynamic Rendering depth image."},
@@ -46,13 +65,39 @@ RenderGraph::RenderGraph()
                    RenderResourceAccess::Read,
                    "Samples diffuse IBL, prefiltered specular IBL, and the BRDF LUT."},
               }},
+          RenderPassNode{"BloomExtractPass",
+                         RenderPassType::BloomExtract,
+                         {
+                             {kSceneColor, RenderResourceAccess::Read, "Samples the HDR scene color target."},
+                             {kBloomExtract,
+                              RenderResourceAccess::Write,
+                              "Writes bright pixels above the bloom threshold into the bloom extraction target."},
+                         }},
+          RenderPassNode{"BloomBlurPass",
+                         RenderPassType::BloomBlur,
+                         {
+                             {kBloomExtract, RenderResourceAccess::Read, "Samples extracted bloom highlights."},
+                             {kBloomPing, RenderResourceAccess::Write, "Writes the horizontal blur result."},
+                             {kBloomPing, RenderResourceAccess::Read, "Samples the horizontal blur result."},
+                             {kBloomPong, RenderResourceAccess::Write, "Writes the vertical blur result."},
+                         }},
+          RenderPassNode{"CompositePass",
+                         RenderPassType::Composite,
+                         {
+                             {kSceneColor, RenderResourceAccess::Read, "Samples the HDR scene color target."},
+                             {kBloomPong, RenderResourceAccess::Read, "Samples the blurred bloom texture."},
+                             {kSwapchainColor,
+                              RenderResourceAccess::Write,
+                              "Writes the exposed, tone-mapped final color to the acquired swapchain image."},
+                         }},
       }
 {}
 
 void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
                              rhi::VulkanSwapchain& swapchain,
                              rhi::VulkanShadowMap& shadowMap,
-                             uint32_t imageIndex)
+                             uint32_t imageIndex,
+                             RenderGraphFrameResources frameResources)
 {
     if (frameActive_) {
         throw std::logic_error("RenderGraph::beginFrame called while a frame is already active.");
@@ -60,10 +105,15 @@ void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
     if (commandBuffer == VK_NULL_HANDLE) {
         throw std::logic_error("RenderGraph::beginFrame requires a valid command buffer.");
     }
+    requireImageResource(frameResources.sceneColor, "RenderGraph::beginFrame");
+    requireImageResource(frameResources.bloomExtract, "RenderGraph::beginFrame");
+    requireImageResource(frameResources.bloomPing, "RenderGraph::beginFrame");
+    requireImageResource(frameResources.bloomPong, "RenderGraph::beginFrame");
 
     frame_.commandBuffer = commandBuffer;
     frame_.swapchain = &swapchain;
     frame_.shadowMap = &shadowMap;
+    frame_.resources = frameResources;
     frame_.imageIndex = imageIndex;
     frame_.swapchainImage = swapchain.image(imageIndex);
 
@@ -73,12 +123,13 @@ void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
     VK_CHECK(vkBeginCommandBuffer(commandBuffer, &beginInfo));
 
     frameActive_ = true;
+    activePass_ = ActivePass::None;
 }
 
 void RenderGraph::beginShadowPass(uint32_t cascadeLayer)
 {
     requireFrameActive("RenderGraph::beginShadowPass");
-    if (shadowPassActive_ || mainPassActive_) {
+    if (activePass_ != ActivePass::None) {
         throw std::logic_error("RenderGraph::beginShadowPass called while another pass is active.");
     }
     if (cascadeLayer >= frame_.shadowMap->layerCount()) {
@@ -111,13 +162,13 @@ void RenderGraph::beginShadowPass(uint32_t cascadeLayer)
     shadowRenderingInfo.pDepthAttachment = &shadowDepthAttachment;
 
     vkCmdBeginRendering(frame_.commandBuffer, &shadowRenderingInfo);
-    shadowPassActive_ = true;
+    activePass_ = ActivePass::Shadow;
 }
 
 void RenderGraph::endShadowPass(bool finalCascade)
 {
     requireFrameActive("RenderGraph::endShadowPass");
-    if (!shadowPassActive_) {
+    if (activePass_ != ActivePass::Shadow) {
         throw std::logic_error("RenderGraph::endShadowPass called without an active shadow pass.");
     }
 
@@ -127,21 +178,17 @@ void RenderGraph::endShadowPass(bool finalCascade)
         transitionShadowMapImage(VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL);
         frame_.shadowMap->setLayout(VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL);
     }
-    shadowPassActive_ = false;
+    activePass_ = ActivePass::None;
 }
 
-void RenderGraph::beginMainPass()
+void RenderGraph::beginMainHdrPass()
 {
-    requireFrameActive("RenderGraph::beginMainPass");
-    if (shadowPassActive_ || mainPassActive_) {
-        throw std::logic_error("RenderGraph::beginMainPass called while another pass is active.");
+    requireFrameActive("RenderGraph::beginMainHdrPass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginMainHdrPass called while another pass is active.");
     }
 
-    transitionSwapchainImage(frame_.swapchainImage,
-                             frame_.swapchain->imageLayout(frame_.imageIndex),
-                             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-    frame_.swapchain->setImageLayout(frame_.imageIndex, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-
+    transitionColorImage(frame_.resources.sceneColor, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     transitionDepthImage();
 
     VkClearValue clearColor{};
@@ -152,7 +199,7 @@ void RenderGraph::beginMainPass()
 
     VkRenderingAttachmentInfo colorAttachment{};
     colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    colorAttachment.imageView = frame_.swapchain->imageView(frame_.imageIndex);
+    colorAttachment.imageView = frame_.resources.sceneColor.imageView;
     colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -173,35 +220,130 @@ void RenderGraph::beginMainPass()
     VkRenderingInfo renderingInfo{};
     renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
     renderingInfo.renderArea.offset = {0, 0};
-    renderingInfo.renderArea.extent = frame_.swapchain->extent();
+    renderingInfo.renderArea.extent = frame_.resources.sceneColor.extent;
     renderingInfo.layerCount = 1;
     renderingInfo.colorAttachmentCount = 1;
     renderingInfo.pColorAttachments = &colorAttachment;
     renderingInfo.pDepthAttachment = &depthAttachment;
 
     vkCmdBeginRendering(frame_.commandBuffer, &renderingInfo);
-    mainPassActive_ = true;
+    activePass_ = ActivePass::MainHdr;
 }
 
-void RenderGraph::endMainPass()
+void RenderGraph::endMainHdrPass()
 {
-    requireFrameActive("RenderGraph::endMainPass");
-    if (!mainPassActive_) {
-        throw std::logic_error("RenderGraph::endMainPass called without an active main pass.");
+    requireFrameActive("RenderGraph::endMainHdrPass");
+    if (activePass_ != ActivePass::MainHdr) {
+        throw std::logic_error("RenderGraph::endMainHdrPass called without an active main HDR pass.");
     }
 
     vkCmdEndRendering(frame_.commandBuffer);
+    activePass_ = ActivePass::None;
+}
 
+void RenderGraph::beginBloomExtractPass()
+{
+    requireFrameActive("RenderGraph::beginBloomExtractPass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginBloomExtractPass called while another pass is active.");
+    }
+
+    transitionColorImage(frame_.resources.sceneColor, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    transitionColorImage(frame_.resources.bloomExtract, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+    VkClearValue clearColor{};
+    clearColor.color.float32[0] = 0.0f;
+    clearColor.color.float32[1] = 0.0f;
+    clearColor.color.float32[2] = 0.0f;
+    clearColor.color.float32[3] = 1.0f;
+    beginColorRendering(frame_.resources.bloomExtract, clearColor);
+    activePass_ = ActivePass::BloomExtract;
+}
+
+void RenderGraph::endBloomExtractPass()
+{
+    requireFrameActive("RenderGraph::endBloomExtractPass");
+    if (activePass_ != ActivePass::BloomExtract) {
+        throw std::logic_error("RenderGraph::endBloomExtractPass called without an active bloom extract pass.");
+    }
+
+    vkCmdEndRendering(frame_.commandBuffer);
+    activePass_ = ActivePass::None;
+}
+
+void RenderGraph::beginBloomBlurPass(bool horizontal)
+{
+    requireFrameActive("RenderGraph::beginBloomBlurPass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginBloomBlurPass called while another pass is active.");
+    }
+
+    RenderGraphImageResource& input = horizontal ? frame_.resources.bloomExtract : frame_.resources.bloomPing;
+    RenderGraphImageResource& output = horizontal ? frame_.resources.bloomPing : frame_.resources.bloomPong;
+    transitionColorImage(input, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    transitionColorImage(output, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+    VkClearValue clearColor{};
+    clearColor.color.float32[0] = 0.0f;
+    clearColor.color.float32[1] = 0.0f;
+    clearColor.color.float32[2] = 0.0f;
+    clearColor.color.float32[3] = 1.0f;
+    beginColorRendering(output, clearColor);
+    activePass_ = ActivePass::BloomBlur;
+}
+
+void RenderGraph::endBloomBlurPass()
+{
+    requireFrameActive("RenderGraph::endBloomBlurPass");
+    if (activePass_ != ActivePass::BloomBlur) {
+        throw std::logic_error("RenderGraph::endBloomBlurPass called without an active bloom blur pass.");
+    }
+
+    vkCmdEndRendering(frame_.commandBuffer);
+    activePass_ = ActivePass::None;
+}
+
+void RenderGraph::beginCompositePass()
+{
+    requireFrameActive("RenderGraph::beginCompositePass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginCompositePass called while another pass is active.");
+    }
+
+    transitionColorImage(frame_.resources.sceneColor, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    transitionColorImage(frame_.resources.bloomPong, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    transitionSwapchainImage(frame_.swapchainImage,
+                             frame_.swapchain->imageLayout(frame_.imageIndex),
+                             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    frame_.swapchain->setImageLayout(frame_.imageIndex, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+    VkClearValue clearColor{};
+    clearColor.color.float32[0] = 0.0f;
+    clearColor.color.float32[1] = 0.0f;
+    clearColor.color.float32[2] = 0.0f;
+    clearColor.color.float32[3] = 1.0f;
+    beginSwapchainRendering(clearColor);
+    activePass_ = ActivePass::Composite;
+}
+
+void RenderGraph::endCompositePass()
+{
+    requireFrameActive("RenderGraph::endCompositePass");
+    if (activePass_ != ActivePass::Composite) {
+        throw std::logic_error("RenderGraph::endCompositePass called without an active composite pass.");
+    }
+
+    vkCmdEndRendering(frame_.commandBuffer);
     transitionSwapchainImage(
         frame_.swapchainImage, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     frame_.swapchain->setImageLayout(frame_.imageIndex, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
-    mainPassActive_ = false;
+    activePass_ = ActivePass::None;
 }
 
 void RenderGraph::endFrame()
 {
     requireFrameActive("RenderGraph::endFrame");
-    if (shadowPassActive_ || mainPassActive_) {
+    if (activePass_ != ActivePass::None) {
         throw std::logic_error("RenderGraph::endFrame called while a pass is still active.");
     }
 
@@ -308,6 +450,62 @@ void RenderGraph::transitionSwapchainImage(VkImage image, VkImageLayout oldLayou
     vkCmdPipelineBarrier2(frame_.commandBuffer, &dependencyInfo);
 }
 
+void RenderGraph::transitionColorImage(RenderGraphImageResource& resource, VkImageLayout newLayout)
+{
+    requireImageResource(resource, "RenderGraph::transitionColorImage");
+
+    const VkImageLayout oldLayout = *resource.layout;
+    if (oldLayout == newLayout) {
+        return;
+    }
+
+    VkPipelineStageFlags2 srcStage = VK_PIPELINE_STAGE_2_NONE;
+    VkAccessFlags2 srcAccess = VK_ACCESS_2_NONE;
+    VkPipelineStageFlags2 dstStage = VK_PIPELINE_STAGE_2_NONE;
+    VkAccessFlags2 dstAccess = VK_ACCESS_2_NONE;
+
+    if (oldLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+        srcStage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        srcAccess = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    } else if (oldLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+        srcStage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        srcAccess = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    }
+
+    if (newLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+        dstStage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dstAccess = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    } else if (newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+        dstStage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        dstAccess = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    }
+
+    VkImageMemoryBarrier2 barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    barrier.srcStageMask = srcStage;
+    barrier.srcAccessMask = srcAccess;
+    barrier.dstStageMask = dstStage;
+    barrier.dstAccessMask = dstAccess;
+    barrier.oldLayout = oldLayout;
+    barrier.newLayout = newLayout;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = resource.image;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+
+    VkDependencyInfo dependencyInfo{};
+    dependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dependencyInfo.imageMemoryBarrierCount = 1;
+    dependencyInfo.pImageMemoryBarriers = &barrier;
+
+    vkCmdPipelineBarrier2(frame_.commandBuffer, &dependencyInfo);
+    *resource.layout = newLayout;
+}
+
 void RenderGraph::transitionDepthImage()
 {
     const VkImageLayout oldLayout = frame_.swapchain->depthImageLayout();
@@ -346,6 +544,48 @@ void RenderGraph::transitionDepthImage()
 
     vkCmdPipelineBarrier2(frame_.commandBuffer, &dependencyInfo);
     frame_.swapchain->setDepthImageLayout(newLayout);
+}
+
+void RenderGraph::beginColorRendering(const RenderGraphImageResource& resource, VkClearValue clearValue)
+{
+    VkRenderingAttachmentInfo colorAttachment{};
+    colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAttachment.imageView = resource.imageView;
+    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAttachment.clearValue = clearValue;
+
+    VkRenderingInfo renderingInfo{};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea.offset = {0, 0};
+    renderingInfo.renderArea.extent = resource.extent;
+    renderingInfo.layerCount = 1;
+    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.pColorAttachments = &colorAttachment;
+
+    vkCmdBeginRendering(frame_.commandBuffer, &renderingInfo);
+}
+
+void RenderGraph::beginSwapchainRendering(VkClearValue clearValue)
+{
+    VkRenderingAttachmentInfo colorAttachment{};
+    colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAttachment.imageView = frame_.swapchain->imageView(frame_.imageIndex);
+    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAttachment.clearValue = clearValue;
+
+    VkRenderingInfo renderingInfo{};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea.offset = {0, 0};
+    renderingInfo.renderArea.extent = frame_.swapchain->extent();
+    renderingInfo.layerCount = 1;
+    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.pColorAttachments = &colorAttachment;
+
+    vkCmdBeginRendering(frame_.commandBuffer, &renderingInfo);
 }
 
 } // namespace ve::renderer

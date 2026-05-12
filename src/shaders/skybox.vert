@@ -2,8 +2,6 @@
 
 layout(push_constant) uniform SkyboxPushConstants {
     mat4 inverseViewProjection;
-    float exposure;
-    uint toneMappingOperator;
 } pc;
 
 layout(location = 0) out vec3 vDirection;

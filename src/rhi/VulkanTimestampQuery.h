@@ -16,6 +16,8 @@ public:
         MainPass,
         Skybox,
         RenderObjects,
+        Bloom,
+        Composite,
         Count
     };
 
@@ -25,6 +27,8 @@ public:
         double mainPassMs = 0.0;
         double skyboxMs = 0.0;
         double renderObjectsMs = 0.0;
+        double bloomMs = 0.0;
+        double compositeMs = 0.0;
     };
 
     VulkanTimestampQuery() = default;

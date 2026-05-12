@@ -175,6 +175,8 @@ bool VulkanTimestampQuery::readFrame(uint32_t frameIndex, Results& results)
     results.mainPassMs = elapsed(Timer::MainPass);
     results.skyboxMs = elapsed(Timer::Skybox);
     results.renderObjectsMs = elapsed(Timer::RenderObjects);
+    results.bloomMs = elapsed(Timer::Bloom);
+    results.compositeMs = elapsed(Timer::Composite);
     return true;
 }
 

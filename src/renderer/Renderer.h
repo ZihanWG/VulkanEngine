@@ -15,6 +15,7 @@
 #include "rhi/VulkanContext.h"
 #include "rhi/VulkanDescriptor.h"
 #include "rhi/VulkanEnvironmentMap.h"
+#include "rhi/VulkanImage.h"
 #include "rhi/VulkanPipeline.h"
 #include "rhi/VulkanShadowMap.h"
 #include "rhi/VulkanSwapchain.h"
@@ -76,6 +77,12 @@ private:
         int operatorType = 0; // 0 = Reinhard, 1 = ACES fitted approximation.
     };
 
+    struct BloomSettings {
+        bool enabled = true;
+        float threshold = 1.0f;
+        float intensity = 0.1f;
+    };
+
     struct CascadeFrameData {
         glm::mat4 lightViewProjection{1.0f};
         renderer::Frustum lightFrustum{};
@@ -126,6 +133,11 @@ private:
     void createMaterialDescriptorSetLayout();
     void createBindlessMaterialTextureHeap();
     void createSkyboxDescriptorSetLayout();
+    void createPostProcessDescriptorSetLayouts();
+    void createPostProcessSampler();
+    void destroyPostProcessSampler();
+    void createPostProcessResources();
+    void createPostProcessDescriptorSets();
     void createGpuCullingResources();
     void destroyGpuCullingResources();
     void createGpuShadowCullingResources();
@@ -145,9 +157,8 @@ private:
     void createMaterial();
     void assignBindlessTextureIndices(renderer::Material& material);
     void createMaterialDescriptorSet(renderer::Material& material);
-    void createImportedGltfTextures(
-        const std::vector<renderer::GltfTextureInfo>& textureInfos,
-        const std::vector<renderer::GltfMaterialInfo>& materialInfos);
+    void createImportedGltfTextures(const std::vector<renderer::GltfTextureInfo>& textureInfos,
+                                    const std::vector<renderer::GltfMaterialInfo>& materialInfos);
     void createImportedGltfMaterials(const std::vector<renderer::GltfMaterialInfo>& materialInfos);
     void createSkyboxDescriptorSet();
     void createObjectFrameDataBuffers();
@@ -162,19 +173,18 @@ private:
     void buildMeshDrawBatches();
     void buildShadowDrawItems(uint32_t cascadeIndex, const renderer::Frustum& lightFrustum);
     void buildShadowMeshDrawBatches();
-    void buildMeshDrawBatchesForItems(
-        const std::vector<DrawItem>& drawItems,
-        std::vector<MeshDrawBatch>& batches) const;
+    void buildMeshDrawBatchesForItems(const std::vector<DrawItem>& drawItems,
+                                      std::vector<MeshDrawBatch>& batches) const;
     bool appendDrawItemsForObject(uint32_t objectIndex, std::vector<DrawItem>& drawItems) const;
     void updateIndirectDrawBuffer(uint32_t frameIndex);
     void updateShadowIndirectDrawBuffer(uint32_t frameIndex);
-    [[nodiscard]] const renderer::Material* resolveMaterial(
-        const renderer::RenderObject& object,
-        const renderer::MeshPrimitive* primitive) const;
+    [[nodiscard]] const renderer::Material* resolveMaterial(const renderer::RenderObject& object,
+                                                            const renderer::MeshPrimitive* primitive) const;
     void recreateSwapchain();
     void recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     void recordGpuCullingCommands(VkCommandBuffer commandBuffer);
     void recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer, uint32_t cascadeIndex);
+    [[nodiscard]] renderer::RenderGraphFrameResources renderGraphFrameResources();
     bool readGpuVisibleCount(uint32_t frameIndex, uint32_t& visibleCount);
     bool readGpuShadowVisibleCount(uint32_t frameIndex, uint32_t& visibleCount);
     [[nodiscard]] bool isGpuCullingActive() const;
@@ -201,11 +211,20 @@ private:
     renderer::RenderGraph renderGraph_;
     rhi::VulkanDescriptorSetLayout materialDescriptorSetLayout_;
     rhi::VulkanDescriptorSetLayout skyboxDescriptorSetLayout_;
+    rhi::VulkanDescriptorSetLayout postProcessSingleImageDescriptorSetLayout_;
+    rhi::VulkanDescriptorSetLayout postProcessCompositeDescriptorSetLayout_;
     rhi::VulkanDescriptorSetLayout gpuCullDescriptorSetLayout_;
     rhi::VulkanShadowMap shadowMap_;
+    rhi::VulkanImage sceneColor_;
+    rhi::VulkanImage bloomExtract_;
+    rhi::VulkanImage bloomPing_;
+    rhi::VulkanImage bloomPong_;
     rhi::VulkanPipeline pipeline_;
     rhi::VulkanPipeline skyboxPipeline_;
     rhi::VulkanPipeline shadowPipeline_;
+    rhi::VulkanPipeline bloomExtractPipeline_;
+    rhi::VulkanPipeline bloomBlurPipeline_;
+    rhi::VulkanPipeline compositePipeline_;
     rhi::VulkanComputePipeline gpuCullPipeline_;
     rhi::VulkanCommandContext commandContext_;
     rhi::VulkanSync sync_;
@@ -224,9 +243,15 @@ private:
     renderer::BindlessTextureHeap bindlessTextureHeap_;
     rhi::VulkanDescriptorPool materialDescriptorPool_;
     rhi::VulkanDescriptorPool skyboxDescriptorPool_;
+    rhi::VulkanDescriptorPool postProcessDescriptorPool_;
     rhi::VulkanDescriptorPool gpuCullDescriptorPool_;
     rhi::VulkanDescriptorPool shadowCullDescriptorPool_;
+    VkSampler postProcessSampler_ = VK_NULL_HANDLE;
     VkDescriptorSet skyboxDescriptorSet_ = VK_NULL_HANDLE;
+    VkDescriptorSet bloomExtractDescriptorSet_ = VK_NULL_HANDLE;
+    VkDescriptorSet bloomBlurHorizontalDescriptorSet_ = VK_NULL_HANDLE;
+    VkDescriptorSet bloomBlurVerticalDescriptorSet_ = VK_NULL_HANDLE;
+    VkDescriptorSet compositeDescriptorSet_ = VK_NULL_HANDLE;
     std::vector<VkDescriptorSet> gpuCullDescriptorSets_;
     std::vector<VkDescriptorSet> shadowCullDescriptorSets_;
     renderer::Camera camera_;
@@ -269,6 +294,14 @@ private:
     VkFormat skyboxPipelineColorFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat skyboxPipelineDepthFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat shadowPipelineDepthFormat_ = VK_FORMAT_UNDEFINED;
+    VkFormat bloomExtractPipelineColorFormat_ = VK_FORMAT_UNDEFINED;
+    VkFormat bloomBlurPipelineColorFormat_ = VK_FORMAT_UNDEFINED;
+    VkFormat compositePipelineColorFormat_ = VK_FORMAT_UNDEFINED;
+    VkExtent2D bloomExtent_{};
+    VkImageLayout sceneColorLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImageLayout bloomExtractLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImageLayout bloomPingLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImageLayout bloomPongLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     uint32_t currentFrame_ = 0;
     uint32_t bindlessBaseColorFallbackIndex_ = 0;
     uint32_t bindlessNormalFallbackIndex_ = 0;
@@ -284,6 +317,7 @@ private:
     CullingStats cullingStats_{};
     ShadowCullingStats shadowCullingStats_{};
     ToneMappingSettings toneMappingSettings_{};
+    BloomSettings bloomSettings_{};
     bool initialized_ = false;
     bool useBindlessMaterialTextures_ = true;
     bool bindlessMaterialTexturesAvailable_ = false;

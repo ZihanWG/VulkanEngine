@@ -8,11 +8,6 @@ layout(set = 0, binding = 4) uniform samplerCube uDiffuseIrradianceMap;
 layout(set = 0, binding = 5) uniform samplerCube uPrefilteredEnvMap;
 layout(set = 0, binding = 6) uniform sampler2D uBrdfLut;
 
-layout(push_constant) uniform ToneMappingPushConstants {
-    layout(offset = 12) uint toneMappingOperator;
-    layout(offset = 16) float exposure;
-} pc;
-
 layout(location = 0) in vec2 vUV;
 layout(location = 1) in vec3 vNormal;
 layout(location = 2) in vec3 vLightDirection;
@@ -35,31 +30,6 @@ layout(location = 0) out vec4 outColor;
 const float PI = 3.14159265359;
 const float EPSILON = 0.0001;
 const float SCHLICK_FRESNEL_AVERAGE = 1.0 / 21.0;
-
-vec3 toneMapReinhard(vec3 color)
-{
-    return color / (color + vec3(1.0));
-}
-
-vec3 toneMapAces(vec3 color)
-{
-    const float a = 2.51;
-    const float b = 0.03;
-    const float c = 2.43;
-    const float d = 0.59;
-    const float e = 0.14;
-    return clamp((color * (a * color + b)) / (color * (c * color + d) + e), vec3(0.0), vec3(1.0));
-}
-
-vec3 applyToneMapping(vec3 hdrColor)
-{
-    vec3 exposedColor = max(hdrColor * max(pc.exposure, 0.0), vec3(0.0));
-    if (pc.toneMappingOperator == 1u) {
-        return toneMapAces(exposedColor);
-    }
-
-    return toneMapReinhard(exposedColor);
-}
 
 float shadowDepthBias(vec3 normal)
 {
@@ -274,5 +244,5 @@ void main()
         finalColor = mix(finalColor, cascadeDebugColor(cascadeIndex), 0.3);
     }
 
-    outColor = vec4(applyToneMapping(finalColor), alpha);
+    outColor = vec4(finalColor, alpha);
 }

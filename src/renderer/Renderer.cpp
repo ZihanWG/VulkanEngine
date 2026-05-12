@@ -20,6 +20,7 @@
 #include <glm/geometric.hpp>
 #include <glm/gtc/matrix_inverse.hpp>
 #include <glm/mat4x4.hpp>
+#include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 #include <iomanip>
@@ -85,6 +86,8 @@ constexpr uint32_t kGpuCullLocalSize = 64;
 constexpr uint32_t kMaxMeshDrawBatches = kMaxDrawItems;
 constexpr VkDeviceSize kBatchVisibleCountBufferSize = kMaxMeshDrawBatches * sizeof(uint32_t);
 constexpr float kUnboundedCullExtent = 100000000.0f;
+constexpr VkFormat kSceneColorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+constexpr VkFormat kBloomColorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 
 const glm::vec4 kDirectionalLightDirection{0.35f, -0.65f, -0.55f, 0.0f};
 const glm::vec4 kDirectionalLightColor{0.85f, 0.85f, 0.85f, 1.0f};
@@ -152,6 +155,35 @@ static_assert(offsetof(SkyboxPushConstants, exposure) == sizeof(glm::mat4));
 static_assert(offsetof(SkyboxPushConstants, toneMappingOperator) == sizeof(glm::mat4) + sizeof(float));
 static_assert(sizeof(SkyboxPushConstants) >= sizeof(glm::mat4) + sizeof(float) + sizeof(uint32_t));
 
+struct BloomExtractPushConstants {
+    float threshold = 1.0f;
+};
+
+static_assert(sizeof(BloomExtractPushConstants) == 4);
+
+struct BloomBlurPushConstants {
+    glm::vec2 texelSize{1.0f, 1.0f};
+    uint32_t horizontal = 0;
+    uint32_t padding = 0;
+};
+
+static_assert(offsetof(BloomBlurPushConstants, texelSize) == 0);
+static_assert(offsetof(BloomBlurPushConstants, horizontal) == 8);
+static_assert(sizeof(BloomBlurPushConstants) == 16);
+
+struct CompositePushConstants {
+    float exposure = 1.0f;
+    float bloomIntensity = 0.1f;
+    uint32_t toneMappingOperator = 0;
+    uint32_t bloomEnabled = 1;
+};
+
+static_assert(offsetof(CompositePushConstants, exposure) == 0);
+static_assert(offsetof(CompositePushConstants, bloomIntensity) == 4);
+static_assert(offsetof(CompositePushConstants, toneMappingOperator) == 8);
+static_assert(offsetof(CompositePushConstants, bloomEnabled) == 12);
+static_assert(sizeof(CompositePushConstants) == 16);
+
 uint32_t toneMappingOperatorValue(int operatorType)
 {
     return operatorType == 1 ? 1u : 0u;
@@ -160,6 +192,24 @@ uint32_t toneMappingOperatorValue(int operatorType)
 float toneMappingExposureValue(float exposure)
 {
     return std::max(exposure, 0.0f);
+}
+
+void setViewportAndScissor(VkCommandBuffer commandBuffer, VkExtent2D extent)
+{
+    VkViewport viewport{};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = static_cast<float>(extent.width);
+    viewport.height = static_cast<float>(extent.height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+
+    VkRect2D scissor{};
+    scissor.offset = {0, 0};
+    scissor.extent = extent;
+
+    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 }
 
 std::filesystem::path shaderPath(const char* filename)
@@ -204,7 +254,10 @@ Renderer::Renderer(Window& window) : window_(window)
     createMaterialDescriptorSetLayout();
     createBindlessMaterialTextureHeap();
     createSkyboxDescriptorSetLayout();
+    createPostProcessDescriptorSetLayouts();
+    createPostProcessSampler();
     createShadowMap();
+    createPostProcessResources();
     createPipeline();
     commandContext_.initialize(context_, frames_);
     createScene();
@@ -222,6 +275,8 @@ Renderer::~Renderer()
 {
     if (initialized_) {
         waitIdle();
+        postProcessDescriptorPool_.reset();
+        destroyPostProcessSampler();
     }
 }
 
@@ -390,8 +445,7 @@ void Renderer::createBindlessMaterialTextureHeap()
         bindlessTextureHeap_.create(context_, renderer::BindlessTextureHeap::kDefaultMaxTextures);
         bindlessMaterialTexturesAvailable_ = true;
         Logger::info("Bindless material texture heap enabled with " +
-                     std::to_string(bindlessTextureHeap_.maxTextures()) +
-                     " descriptors per material texture class.");
+                     std::to_string(bindlessTextureHeap_.maxTextures()) + " descriptors per material texture class.");
     } catch (const std::exception& error) {
         Logger::warn(std::string("Bindless material descriptors unavailable; falling back to per-material "
                                  "descriptor binding: ") +
@@ -413,6 +467,220 @@ void Renderer::createSkyboxDescriptorSetLayout()
                               skyboxDescriptorSetLayout_.handle(),
                               VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
                               "SkyboxDescriptorSetLayout");
+}
+
+void Renderer::createPostProcessDescriptorSetLayouts()
+{
+    VkDescriptorSetLayoutBinding singleImageBinding{};
+    singleImageBinding.binding = 0;
+    singleImageBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    singleImageBinding.descriptorCount = 1;
+    singleImageBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    postProcessSingleImageDescriptorSetLayout_.create(
+        context_.vkDevice(), std::span<const VkDescriptorSetLayoutBinding>(&singleImageBinding, 1));
+    rhi::debug::setObjectName(context_.vkDevice(),
+                              postProcessSingleImageDescriptorSetLayout_.handle(),
+                              VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
+                              "PostProcessSingleImageDescriptorSetLayout");
+
+    std::array<VkDescriptorSetLayoutBinding, 2> compositeBindings{};
+    compositeBindings[0] = singleImageBinding;
+    compositeBindings[1] = singleImageBinding;
+    compositeBindings[1].binding = 1;
+
+    postProcessCompositeDescriptorSetLayout_.create(
+        context_.vkDevice(),
+        std::span<const VkDescriptorSetLayoutBinding>(compositeBindings.data(), compositeBindings.size()));
+    rhi::debug::setObjectName(context_.vkDevice(),
+                              postProcessCompositeDescriptorSetLayout_.handle(),
+                              VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
+                              "PostProcessCompositeDescriptorSetLayout");
+}
+
+void Renderer::createPostProcessSampler()
+{
+    destroyPostProcessSampler();
+
+    VkSamplerCreateInfo samplerInfo{};
+    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    samplerInfo.magFilter = VK_FILTER_LINEAR;
+    samplerInfo.minFilter = VK_FILTER_LINEAR;
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.anisotropyEnable = VK_FALSE;
+    samplerInfo.maxAnisotropy = 1.0f;
+    samplerInfo.compareEnable = VK_FALSE;
+    samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+    samplerInfo.minLod = 0.0f;
+    samplerInfo.maxLod = 1.0f;
+    samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
+    samplerInfo.unnormalizedCoordinates = VK_FALSE;
+
+    VK_CHECK(vkCreateSampler(context_.vkDevice(), &samplerInfo, nullptr, &postProcessSampler_));
+    rhi::debug::setObjectName(
+        context_.vkDevice(), postProcessSampler_, VK_OBJECT_TYPE_SAMPLER, "PostProcessLinearClampSampler");
+}
+
+void Renderer::destroyPostProcessSampler()
+{
+    if (postProcessSampler_ != VK_NULL_HANDLE) {
+        vkDestroySampler(context_.vkDevice(), postProcessSampler_, nullptr);
+        postProcessSampler_ = VK_NULL_HANDLE;
+    }
+}
+
+void Renderer::createPostProcessResources()
+{
+    const VkExtent2D extent = swapchain_.extent();
+    if (extent.width == 0 || extent.height == 0) {
+        throw std::runtime_error("Cannot create post-process resources for a zero-sized swapchain extent.");
+    }
+
+    postProcessDescriptorPool_.reset();
+    bloomExtractDescriptorSet_ = VK_NULL_HANDLE;
+    bloomBlurHorizontalDescriptorSet_ = VK_NULL_HANDLE;
+    bloomBlurVerticalDescriptorSet_ = VK_NULL_HANDLE;
+    compositeDescriptorSet_ = VK_NULL_HANDLE;
+
+    rhi::VulkanImageCreateInfo sceneColorInfo{};
+    sceneColorInfo.width = extent.width;
+    sceneColorInfo.height = extent.height;
+    sceneColorInfo.format = kSceneColorFormat;
+    sceneColorInfo.usage =
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    sceneColorInfo.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    sceneColorInfo.debugName = "SceneColorHDR";
+    sceneColor_.create(context_, sceneColorInfo);
+    sceneColorLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    bloomExtent_.width = std::max(1u, extent.width / 2u);
+    bloomExtent_.height = std::max(1u, extent.height / 2u);
+
+    rhi::VulkanImageCreateInfo bloomInfo{};
+    bloomInfo.width = bloomExtent_.width;
+    bloomInfo.height = bloomExtent_.height;
+    bloomInfo.format = kBloomColorFormat;
+    bloomInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    bloomInfo.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+
+    bloomInfo.debugName = "BloomExtract";
+    bloomExtract_.create(context_, bloomInfo);
+    bloomExtractLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    bloomInfo.debugName = "BloomPing";
+    bloomPing_.create(context_, bloomInfo);
+    bloomPingLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    bloomInfo.debugName = "BloomPong";
+    bloomPong_.create(context_, bloomInfo);
+    bloomPongLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    createPostProcessDescriptorSets();
+}
+
+void Renderer::createPostProcessDescriptorSets()
+{
+    if (postProcessSampler_ == VK_NULL_HANDLE) {
+        throw std::runtime_error("Cannot create post-process descriptors without a sampler.");
+    }
+
+    VkDescriptorPoolSize poolSize{};
+    poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSize.descriptorCount = 5;
+
+    postProcessDescriptorPool_.create(context_.vkDevice(), std::span<const VkDescriptorPoolSize>(&poolSize, 1), 4);
+    rhi::debug::setObjectName(
+        context_.vkDevice(), postProcessDescriptorPool_.handle(), VK_OBJECT_TYPE_DESCRIPTOR_POOL, "PostProcessPool");
+
+    std::array<VkDescriptorSetLayout, 4> descriptorSetLayouts{
+        postProcessSingleImageDescriptorSetLayout_.handle(),
+        postProcessSingleImageDescriptorSetLayout_.handle(),
+        postProcessSingleImageDescriptorSetLayout_.handle(),
+        postProcessCompositeDescriptorSetLayout_.handle(),
+    };
+    std::array<VkDescriptorSet, 4> descriptorSets{};
+
+    VkDescriptorSetAllocateInfo allocateInfo{};
+    allocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocateInfo.descriptorPool = postProcessDescriptorPool_.handle();
+    allocateInfo.descriptorSetCount = static_cast<uint32_t>(descriptorSetLayouts.size());
+    allocateInfo.pSetLayouts = descriptorSetLayouts.data();
+    VK_CHECK(vkAllocateDescriptorSets(context_.vkDevice(), &allocateInfo, descriptorSets.data()));
+
+    bloomExtractDescriptorSet_ = descriptorSets[0];
+    bloomBlurHorizontalDescriptorSet_ = descriptorSets[1];
+    bloomBlurVerticalDescriptorSet_ = descriptorSets[2];
+    compositeDescriptorSet_ = descriptorSets[3];
+
+    rhi::debug::setObjectName(
+        context_.vkDevice(), bloomExtractDescriptorSet_, VK_OBJECT_TYPE_DESCRIPTOR_SET, "BloomExtractDescriptorSet");
+    rhi::debug::setObjectName(context_.vkDevice(),
+                              bloomBlurHorizontalDescriptorSet_,
+                              VK_OBJECT_TYPE_DESCRIPTOR_SET,
+                              "BloomBlurHorizontalDescriptorSet");
+    rhi::debug::setObjectName(context_.vkDevice(),
+                              bloomBlurVerticalDescriptorSet_,
+                              VK_OBJECT_TYPE_DESCRIPTOR_SET,
+                              "BloomBlurVerticalDescriptorSet");
+    rhi::debug::setObjectName(
+        context_.vkDevice(), compositeDescriptorSet_, VK_OBJECT_TYPE_DESCRIPTOR_SET, "CompositeDescriptorSet");
+
+    const auto imageInfo = [this](VkImageView imageView) {
+        VkDescriptorImageInfo info{};
+        info.sampler = postProcessSampler_;
+        info.imageView = imageView;
+        info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        return info;
+    };
+
+    std::array<VkDescriptorImageInfo, 5> imageInfos{
+        imageInfo(sceneColor_.imageView()),
+        imageInfo(bloomExtract_.imageView()),
+        imageInfo(bloomPing_.imageView()),
+        imageInfo(sceneColor_.imageView()),
+        imageInfo(bloomPong_.imageView()),
+    };
+
+    std::array<VkWriteDescriptorSet, 5> writes{};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = bloomExtractDescriptorSet_;
+    writes[0].dstBinding = 0;
+    writes[0].descriptorCount = 1;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[0].pImageInfo = &imageInfos[0];
+
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = bloomBlurHorizontalDescriptorSet_;
+    writes[1].dstBinding = 0;
+    writes[1].descriptorCount = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[1].pImageInfo = &imageInfos[1];
+
+    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet = bloomBlurVerticalDescriptorSet_;
+    writes[2].dstBinding = 0;
+    writes[2].descriptorCount = 1;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[2].pImageInfo = &imageInfos[2];
+
+    writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[3].dstSet = compositeDescriptorSet_;
+    writes[3].dstBinding = 0;
+    writes[3].descriptorCount = 1;
+    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[3].pImageInfo = &imageInfos[3];
+
+    writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[4].dstSet = compositeDescriptorSet_;
+    writes[4].dstBinding = 1;
+    writes[4].descriptorCount = 1;
+    writes[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[4].pImageInfo = &imageInfos[4];
+
+    vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
 void Renderer::createGpuCullingResources()
@@ -516,8 +784,9 @@ void Renderer::createGpuCullingResources()
         poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         poolSize.descriptorCount = static_cast<uint32_t>(frames_.size() * bindings.size());
 
-        gpuCullDescriptorPool_.create(
-            context_.vkDevice(), std::span<const VkDescriptorPoolSize>(&poolSize, 1), static_cast<uint32_t>(frames_.size()));
+        gpuCullDescriptorPool_.create(context_.vkDevice(),
+                                      std::span<const VkDescriptorPoolSize>(&poolSize, 1),
+                                      static_cast<uint32_t>(frames_.size()));
         rhi::debug::setObjectName(context_.vkDevice(),
                                   gpuCullDescriptorPool_.handle(),
                                   VK_OBJECT_TYPE_DESCRIPTOR_POOL,
@@ -570,7 +839,8 @@ void Renderer::createGpuCullingResources()
             writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             writes[2].pBufferInfo = &visibleCountBufferInfo;
 
-            vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+            vkUpdateDescriptorSets(
+                context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
             rhi::debug::setObjectName(context_.vkDevice(),
                                       gpuCullDescriptorSets_[frameIndex],
                                       VK_OBJECT_TYPE_DESCRIPTOR_SET,
@@ -675,8 +945,9 @@ void Renderer::createGpuShadowCullingResources()
         poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         poolSize.descriptorCount = static_cast<uint32_t>(frames_.size() * 3);
 
-        shadowCullDescriptorPool_.create(
-            context_.vkDevice(), std::span<const VkDescriptorPoolSize>(&poolSize, 1), static_cast<uint32_t>(frames_.size()));
+        shadowCullDescriptorPool_.create(context_.vkDevice(),
+                                         std::span<const VkDescriptorPoolSize>(&poolSize, 1),
+                                         static_cast<uint32_t>(frames_.size()));
         rhi::debug::setObjectName(context_.vkDevice(),
                                   shadowCullDescriptorPool_.handle(),
                                   VK_OBJECT_TYPE_DESCRIPTOR_POOL,
@@ -729,7 +1000,8 @@ void Renderer::createGpuShadowCullingResources()
             writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             writes[2].pBufferInfo = &visibleCountBufferInfo;
 
-            vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+            vkUpdateDescriptorSets(
+                context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
             rhi::debug::setObjectName(context_.vkDevice(),
                                       shadowCullDescriptorSets_[frameIndex],
                                       VK_OBJECT_TYPE_DESCRIPTOR_SET,
@@ -740,8 +1012,7 @@ void Renderer::createGpuShadowCullingResources()
         Logger::info("GPU shadow culling preparation enabled with per-frame shadow cull input, compacted indirect "
                      "output, and per-batch visible count buffers.");
     } catch (const std::exception& error) {
-        Logger::warn(std::string("GPU shadow culling unavailable; using CPU shadow culling fallback: ") +
-                     error.what());
+        Logger::warn(std::string("GPU shadow culling unavailable; using CPU shadow culling fallback: ") + error.what());
         destroyGpuShadowCullingResources();
     }
 }
@@ -777,18 +1048,27 @@ void Renderer::createPipeline()
         bindlessTextureHeap_.descriptorSetLayout(),
     };
     const VkDescriptorSetLayout skyboxDescriptorSetLayout = skyboxDescriptorSetLayout_.handle();
+    const VkDescriptorSetLayout postProcessSingleImageDescriptorSetLayout =
+        postProcessSingleImageDescriptorSetLayout_.handle();
+    const VkDescriptorSetLayout postProcessCompositeDescriptorSetLayout =
+        postProcessCompositeDescriptorSetLayout_.handle();
     const VkPushConstantRange pushConstantRange{
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(PushConstants))};
-    const VkPushConstantRange skyboxPushConstantRange{
-        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-        0,
-        static_cast<uint32_t>(sizeof(SkyboxPushConstants))};
+    const VkPushConstantRange skyboxPushConstantRange{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                                      0,
+                                                      static_cast<uint32_t>(sizeof(SkyboxPushConstants))};
+    const VkPushConstantRange bloomExtractPushConstantRange{
+        VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(BloomExtractPushConstants))};
+    const VkPushConstantRange bloomBlurPushConstantRange{
+        VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(BloomBlurPushConstants))};
+    const VkPushConstantRange compositePushConstantRange{
+        VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(CompositePushConstants))};
 
     rhi::VulkanPipelineCreateInfo pipelineInfo{};
     pipelineInfo.vertexShaderPath = shaderPath("simple.vert.spv");
     pipelineInfo.fragmentShaderPath =
         bindlessMaterialTexturesActive ? shaderPath("simple_bindless.frag.spv") : shaderPath("simple.frag.spv");
-    pipelineInfo.colorFormat = swapchain_.colorFormat();
+    pipelineInfo.colorFormat = kSceneColorFormat;
     pipelineInfo.depthFormat = swapchain_.depthFormat();
     pipelineInfo.vertexBindings = std::span<const VkVertexInputBindingDescription>(&binding, 1);
     pipelineInfo.vertexAttributes =
@@ -809,7 +1089,7 @@ void Renderer::createPipeline()
     rhi::VulkanPipelineCreateInfo skyboxPipelineInfo{};
     skyboxPipelineInfo.vertexShaderPath = shaderPath("skybox.vert.spv");
     skyboxPipelineInfo.fragmentShaderPath = shaderPath("skybox.frag.spv");
-    skyboxPipelineInfo.colorFormat = swapchain_.colorFormat();
+    skyboxPipelineInfo.colorFormat = kSceneColorFormat;
     skyboxPipelineInfo.depthFormat = swapchain_.depthFormat();
     skyboxPipelineInfo.descriptorSetLayouts = std::span<const VkDescriptorSetLayout>(&skyboxDescriptorSetLayout, 1);
     skyboxPipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&skyboxPushConstantRange, 1);
@@ -850,6 +1130,54 @@ void Renderer::createPipeline()
     rhi::debug::setObjectName(
         context_.vkDevice(), shadowPipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "ShadowPipelineLayout");
     shadowPipelineDepthFormat_ = shadowPipelineInfo.depthFormat;
+
+    rhi::VulkanPipelineCreateInfo bloomExtractPipelineInfo{};
+    bloomExtractPipelineInfo.vertexShaderPath = shaderPath("fullscreen.vert.spv");
+    bloomExtractPipelineInfo.fragmentShaderPath = shaderPath("bloom_extract.frag.spv");
+    bloomExtractPipelineInfo.colorFormat = kBloomColorFormat;
+    bloomExtractPipelineInfo.descriptorSetLayouts =
+        std::span<const VkDescriptorSetLayout>(&postProcessSingleImageDescriptorSetLayout, 1);
+    bloomExtractPipelineInfo.pushConstantRanges =
+        std::span<const VkPushConstantRange>(&bloomExtractPushConstantRange, 1);
+
+    bloomExtractPipeline_.create(context_.vkDevice(), bloomExtractPipelineInfo);
+    rhi::debug::setObjectName(
+        context_.vkDevice(), bloomExtractPipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "BloomExtractPipeline");
+    rhi::debug::setObjectName(context_.vkDevice(),
+                              bloomExtractPipeline_.layout(),
+                              VK_OBJECT_TYPE_PIPELINE_LAYOUT,
+                              "BloomExtractPipelineLayout");
+    bloomExtractPipelineColorFormat_ = bloomExtractPipelineInfo.colorFormat;
+
+    rhi::VulkanPipelineCreateInfo bloomBlurPipelineInfo{};
+    bloomBlurPipelineInfo.vertexShaderPath = shaderPath("fullscreen.vert.spv");
+    bloomBlurPipelineInfo.fragmentShaderPath = shaderPath("bloom_blur.frag.spv");
+    bloomBlurPipelineInfo.colorFormat = kBloomColorFormat;
+    bloomBlurPipelineInfo.descriptorSetLayouts =
+        std::span<const VkDescriptorSetLayout>(&postProcessSingleImageDescriptorSetLayout, 1);
+    bloomBlurPipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&bloomBlurPushConstantRange, 1);
+
+    bloomBlurPipeline_.create(context_.vkDevice(), bloomBlurPipelineInfo);
+    rhi::debug::setObjectName(
+        context_.vkDevice(), bloomBlurPipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "BloomBlurPipeline");
+    rhi::debug::setObjectName(
+        context_.vkDevice(), bloomBlurPipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "BloomBlurPipelineLayout");
+    bloomBlurPipelineColorFormat_ = bloomBlurPipelineInfo.colorFormat;
+
+    rhi::VulkanPipelineCreateInfo compositePipelineInfo{};
+    compositePipelineInfo.vertexShaderPath = shaderPath("fullscreen.vert.spv");
+    compositePipelineInfo.fragmentShaderPath = shaderPath("composite.frag.spv");
+    compositePipelineInfo.colorFormat = swapchain_.colorFormat();
+    compositePipelineInfo.descriptorSetLayouts =
+        std::span<const VkDescriptorSetLayout>(&postProcessCompositeDescriptorSetLayout, 1);
+    compositePipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&compositePushConstantRange, 1);
+
+    compositePipeline_.create(context_.vkDevice(), compositePipelineInfo);
+    rhi::debug::setObjectName(
+        context_.vkDevice(), compositePipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "CompositePipeline");
+    rhi::debug::setObjectName(
+        context_.vkDevice(), compositePipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "CompositePipelineLayout");
+    compositePipelineColorFormat_ = compositePipelineInfo.colorFormat;
 }
 
 void Renderer::createScene()
@@ -904,8 +1232,7 @@ void Renderer::createScene()
 
     const auto addCubeFallbackScene = [&addCube, this]() {
         renderObjects_.reserve(4);
-        addCube(
-            "Center Cube", &materialVariants_.at(0), {0.0f, -0.1f, 0.0f}, {0.2f, 0.0f, 0.0f}, {0.7f, 0.7f, 0.7f});
+        addCube("Center Cube", &materialVariants_.at(0), {0.0f, -0.1f, 0.0f}, {0.2f, 0.0f, 0.0f}, {0.7f, 0.7f, 0.7f});
         addCube(
             "Left Cube", &materialVariants_.at(1), {-1.35f, -0.15f, -0.35f}, {0.0f, 0.35f, 0.2f}, {0.5f, 0.5f, 0.5f});
         addCube("Right Cube",
@@ -953,8 +1280,7 @@ void Renderer::createScene()
                     importedObject.materialTable = importedMaterials_.data();
                     importedObject.materialCount = importedMaterials_.size();
                 }
-                importedObject.debugName =
-                    instance.debugName.empty() ? "Imported glTF Node" : instance.debugName;
+                importedObject.debugName = instance.debugName.empty() ? "Imported glTF Node" : instance.debugName;
                 importedObject.transform = renderer::Transform::fromMatrix(instance.transform);
                 renderObjects_.push_back(std::move(importedObject));
             }
@@ -1151,8 +1477,7 @@ void Renderer::createEnvironmentMap()
             const std::span<const float> hdrCubePixels(hdrCubeData.rgba32fPixels.data(),
                                                        hdrCubeData.rgba32fPixels.size());
 
-            environmentMap_.createFromRgba32fFaces(
-                context_, commandContext_, hdrCubeData.faceSize, hdrCubePixels);
+            environmentMap_.createFromRgba32fFaces(context_, commandContext_, hdrCubeData.faceSize, hdrCubePixels);
             nameEnvironmentMapResources(environmentMap_, "HdrEnvironmentCubemap");
 
             diffuseIrradianceMap_.createDiffuseIrradianceFromRgba32fFaces(
@@ -1308,11 +1633,10 @@ void Renderer::assignBindlessTextureIndices(renderer::Material& material)
             ? bindlessTextureHeap_.registerTexture(renderer::BindlessTextureHeap::TextureKind::BaseColor,
                                                    *material.baseColorTexture)
             : bindlessBaseColorFallbackIndex_;
-    material.normalTextureIndex =
-        material.normalTexture && material.normalTexture->valid()
-            ? bindlessTextureHeap_.registerTexture(renderer::BindlessTextureHeap::TextureKind::Normal,
-                                                   *material.normalTexture)
-            : bindlessNormalFallbackIndex_;
+    material.normalTextureIndex = material.normalTexture && material.normalTexture->valid()
+                                      ? bindlessTextureHeap_.registerTexture(
+                                            renderer::BindlessTextureHeap::TextureKind::Normal, *material.normalTexture)
+                                      : bindlessNormalFallbackIndex_;
     material.metallicRoughnessTextureIndex =
         material.metallicRoughnessTexture && material.metallicRoughnessTexture->valid()
             ? bindlessTextureHeap_.registerTexture(renderer::BindlessTextureHeap::TextureKind::MetallicRoughness,
@@ -1461,9 +1785,8 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
-void Renderer::createImportedGltfTextures(
-    const std::vector<renderer::GltfTextureInfo>& textureInfos,
-    const std::vector<renderer::GltfMaterialInfo>& materialInfos)
+void Renderer::createImportedGltfTextures(const std::vector<renderer::GltfTextureInfo>& textureInfos,
+                                          const std::vector<renderer::GltfMaterialInfo>& materialInfos)
 {
     importedBaseColorTextures_.clear();
     importedNormalTextures_.clear();
@@ -1502,7 +1825,7 @@ void Renderer::createImportedGltfTextures(
             if (!textureInfo.path.empty()) {
                 if (!std::filesystem::exists(textureInfo.path)) {
                     Logger::warn("glTF texture image is missing; material fallback will be used: " +
-                                     textureInfo.path.string());
+                                 textureInfo.path.string());
                     return;
                 }
 
@@ -1538,11 +1861,8 @@ void Renderer::createImportedGltfTextures(
                         importedBaseColorTextures_);
         }
         if (normalNeeded[textureIndex] != 0) {
-            loadTexture(textureIndex,
-                        rhi::TextureColorSpace::Linear,
-                        "normal",
-                        "GltfNormalTexture",
-                        importedNormalTextures_);
+            loadTexture(
+                textureIndex, rhi::TextureColorSpace::Linear, "normal", "GltfNormalTexture", importedNormalTextures_);
         }
         if (metallicRoughnessNeeded[textureIndex] != 0) {
             loadTexture(textureIndex,
@@ -1590,10 +1910,9 @@ void Renderer::createImportedGltfMaterials(const std::vector<renderer::GltfMater
             textureOrFallback(materialInfo.baseColorTextureIndex, importedBaseColorTextures_, checkerboardTexture_);
         material.normalTexture =
             textureOrFallback(materialInfo.normalTextureIndex, importedNormalTextures_, flatNormalTexture_);
-        material.metallicRoughnessTexture =
-            textureOrFallback(materialInfo.metallicRoughnessTextureIndex,
-                              importedMetallicRoughnessTextures_,
-                              neutralMetallicRoughnessTexture_);
+        material.metallicRoughnessTexture = textureOrFallback(materialInfo.metallicRoughnessTextureIndex,
+                                                              importedMetallicRoughnessTextures_,
+                                                              neutralMetallicRoughnessTexture_);
         material.baseColorFactor = materialInfo.baseColorFactor;
         material.metallic = materialInfo.metallic;
         material.roughness = materialInfo.roughness;
@@ -1737,10 +2056,9 @@ void Renderer::updateCascades(float aspectRatio)
 
     const glm::vec3 lightDirection = glm::normalize(
         glm::vec3{kDirectionalLightDirection.x, kDirectionalLightDirection.y, kDirectionalLightDirection.z});
-    const glm::vec3 lightUp =
-        std::abs(glm::dot(lightDirection, glm::vec3{0.0f, 1.0f, 0.0f})) > 0.95f
-            ? glm::vec3{0.0f, 0.0f, 1.0f}
-            : glm::vec3{0.0f, 1.0f, 0.0f};
+    const glm::vec3 lightUp = std::abs(glm::dot(lightDirection, glm::vec3{0.0f, 1.0f, 0.0f})) > 0.95f
+                                  ? glm::vec3{0.0f, 0.0f, 1.0f}
+                                  : glm::vec3{0.0f, 1.0f, 0.0f};
     const glm::vec3 lightRight = glm::normalize(glm::cross(lightDirection, lightUp));
     const glm::vec3 lightBasisUp = glm::normalize(glm::cross(lightRight, lightDirection));
 
@@ -1805,8 +2123,7 @@ void Renderer::updateCascades(float aspectRatio)
             const float centerY = glm::dot(lightViewCenter, lightBasisUp);
             const float snappedCenterX = std::round(centerX / worldUnitsPerTexel) * worldUnitsPerTexel;
             const float snappedCenterY = std::round(centerY / worldUnitsPerTexel) * worldUnitsPerTexel;
-            lightViewCenter += lightRight * (snappedCenterX - centerX) +
-                               lightBasisUp * (snappedCenterY - centerY);
+            lightViewCenter += lightRight * (snappedCenterX - centerX) + lightBasisUp * (snappedCenterY - centerY);
 
             // The orthographic bounds were fitted before moving the light view
             // by less than one shadow texel, so add a one-texel guard band to
@@ -1823,8 +2140,7 @@ void Renderer::updateCascades(float aspectRatio)
         const float orthoNear = std::max(0.001f, -maxBounds.z - zPadding);
         const float orthoFar = std::max(orthoNear + 0.001f, -minBounds.z + zPadding);
 
-        glm::mat4 lightProjection =
-            glm::ortho(minBounds.x, maxBounds.x, minBounds.y, maxBounds.y, orthoNear, orthoFar);
+        glm::mat4 lightProjection = glm::ortho(minBounds.x, maxBounds.x, minBounds.y, maxBounds.y, orthoNear, orthoFar);
         lightProjection[1][1] *= -1.0f;
 
         CascadeFrameData& cascade = frameCascades_[cascadeIndex];
@@ -1848,7 +2164,6 @@ void Renderer::updateCascades(float aspectRatio)
         frameCascadeSplits_[cascadeIndex] = shadowFarPlane;
         frameShadowCascadeFrustumPlanes_[cascadeIndex] = frameShadowCascadeFrustumPlanes_[cascadeCount - 1];
     }
-
 }
 
 const renderer::Material* Renderer::resolveMaterial(const renderer::RenderObject& object,
@@ -2017,9 +2332,8 @@ void Renderer::buildShadowMeshDrawBatches()
     shadowCullingStats_.batchCount = shadowMeshDrawBatches_.size();
 }
 
-void Renderer::buildMeshDrawBatchesForItems(
-    const std::vector<DrawItem>& drawItems,
-    std::vector<MeshDrawBatch>& batches) const
+void Renderer::buildMeshDrawBatchesForItems(const std::vector<DrawItem>& drawItems,
+                                            std::vector<MeshDrawBatch>& batches) const
 {
     const renderer::Mesh* currentMesh = nullptr;
     MeshDrawBatch* currentBatch = nullptr;
@@ -2069,7 +2383,8 @@ void Renderer::updateGpuCullInputBuffer(uint32_t frameIndex)
             gpuDrawItem.boundsMin = glm::vec4(worldBounds.min, 0.0f);
             gpuDrawItem.boundsMax = glm::vec4(worldBounds.max, 0.0f);
         } else {
-            gpuDrawItem.boundsMin = glm::vec4(-kUnboundedCullExtent, -kUnboundedCullExtent, -kUnboundedCullExtent, 0.0f);
+            gpuDrawItem.boundsMin =
+                glm::vec4(-kUnboundedCullExtent, -kUnboundedCullExtent, -kUnboundedCullExtent, 0.0f);
             gpuDrawItem.boundsMax = glm::vec4(kUnboundedCullExtent, kUnboundedCullExtent, kUnboundedCullExtent, 0.0f);
         }
 
@@ -2081,8 +2396,8 @@ void Renderer::updateGpuCullInputBuffer(uint32_t frameIndex)
 
     for (size_t batchIndex = 0; batchIndex < meshDrawBatches_.size(); ++batchIndex) {
         const MeshDrawBatch& batch = meshDrawBatches_[batchIndex];
-        const uint32_t endDrawItem = std::min<uint32_t>(
-            batch.beginDrawItem + batch.drawItemCount, static_cast<uint32_t>(cullDrawItems.size()));
+        const uint32_t endDrawItem =
+            std::min<uint32_t>(batch.beginDrawItem + batch.drawItemCount, static_cast<uint32_t>(cullDrawItems.size()));
         for (uint32_t drawItemIndex = batch.beginDrawItem; drawItemIndex < endDrawItem; ++drawItemIndex) {
             cullDrawItems[drawItemIndex].batchIndex = static_cast<uint32_t>(batchIndex);
             cullDrawItems[drawItemIndex].batchOutputBase = batch.compactedCommandOffset;
@@ -2116,7 +2431,8 @@ void Renderer::updateGpuShadowCullInputBuffer(uint32_t frameIndex)
             gpuDrawItem.boundsMin = glm::vec4(worldBounds.min, 0.0f);
             gpuDrawItem.boundsMax = glm::vec4(worldBounds.max, 0.0f);
         } else {
-            gpuDrawItem.boundsMin = glm::vec4(-kUnboundedCullExtent, -kUnboundedCullExtent, -kUnboundedCullExtent, 0.0f);
+            gpuDrawItem.boundsMin =
+                glm::vec4(-kUnboundedCullExtent, -kUnboundedCullExtent, -kUnboundedCullExtent, 0.0f);
             gpuDrawItem.boundsMax = glm::vec4(kUnboundedCullExtent, kUnboundedCullExtent, kUnboundedCullExtent, 0.0f);
         }
 
@@ -2128,8 +2444,8 @@ void Renderer::updateGpuShadowCullInputBuffer(uint32_t frameIndex)
 
     for (size_t batchIndex = 0; batchIndex < gpuShadowMeshDrawBatches_.size(); ++batchIndex) {
         const MeshDrawBatch& batch = gpuShadowMeshDrawBatches_[batchIndex];
-        const uint32_t endDrawItem = std::min<uint32_t>(
-            batch.beginDrawItem + batch.drawItemCount, static_cast<uint32_t>(cullDrawItems.size()));
+        const uint32_t endDrawItem =
+            std::min<uint32_t>(batch.beginDrawItem + batch.drawItemCount, static_cast<uint32_t>(cullDrawItems.size()));
         for (uint32_t drawItemIndex = batch.beginDrawItem; drawItemIndex < endDrawItem; ++drawItemIndex) {
             cullDrawItems[drawItemIndex].batchIndex = static_cast<uint32_t>(batchIndex);
             cullDrawItems[drawItemIndex].batchOutputBase = batch.compactedCommandOffset;
@@ -2159,8 +2475,8 @@ void Renderer::updateIndirectDrawBuffer(uint32_t frameIndex)
     }
 
     frameIndirectDrawBuffers_.at(frameIndex)
-        .upload(std::as_bytes(std::span<const VkDrawIndexedIndirectCommand>(indirectCommands.data(),
-                                                                            indirectCommands.size())));
+        .upload(std::as_bytes(
+            std::span<const VkDrawIndexedIndirectCommand>(indirectCommands.data(), indirectCommands.size())));
 }
 
 void Renderer::updateShadowIndirectDrawBuffer(uint32_t frameIndex)
@@ -2181,8 +2497,8 @@ void Renderer::updateShadowIndirectDrawBuffer(uint32_t frameIndex)
     }
 
     frameShadowIndirectDrawBuffers_.at(frameIndex)
-        .upload(std::as_bytes(std::span<const VkDrawIndexedIndirectCommand>(indirectCommands.data(),
-                                                                            indirectCommands.size())));
+        .upload(std::as_bytes(
+            std::span<const VkDrawIndexedIndirectCommand>(indirectCommands.data(), indirectCommands.size())));
 }
 
 void Renderer::nameTextureResources(const rhi::VulkanTexture& texture, std::string_view name) const
@@ -2242,7 +2558,9 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
             << "  ShadowPass: " << results.shadowPassMs << " ms\n"
             << "  MainPass: " << results.mainPassMs << " ms\n"
             << "  Skybox: " << results.skyboxMs << " ms\n"
-            << "  RenderObjects: " << results.renderObjectsMs << " ms\n";
+            << "  RenderObjects: " << results.renderObjectsMs << " ms\n"
+            << "  Bloom: " << results.bloomMs << " ms\n"
+            << "  Composite: " << results.compositeMs << " ms\n";
     if (cullingStats_.gpuCulling) {
         const uint32_t totalDrawItems = frameIndex < frameGpuCullTotalDrawItems_.size()
                                             ? frameGpuCullTotalDrawItems_[frameIndex]
@@ -2252,8 +2570,7 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
                                         : static_cast<uint32_t>(cullingStats_.batchCount);
         uint32_t visibleDrawItems = 0;
         if (readGpuVisibleCount(frameIndex, visibleDrawItems)) {
-            const uint32_t culledDrawItems =
-                totalDrawItems > visibleDrawItems ? totalDrawItems - visibleDrawItems : 0;
+            const uint32_t culledDrawItems = totalDrawItems > visibleDrawItems ? totalDrawItems - visibleDrawItems : 0;
             message << "GPU culling:\n"
                     << "  total draw items: " << totalDrawItems << "\n"
                     << "  visible draw items: " << visibleDrawItems << "\n"
@@ -2270,12 +2587,9 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
                     << (isFrameIndirectCountPathActive(frameIndex) ? "enabled" : "disabled");
         }
     } else {
-        message << "Culling: total=" << cullingStats_.totalObjects
-                << " visible=" << cullingStats_.visibleObjects
-                << " culled=" << cullingStats_.culledObjects
-                << " drawItems=" << cullingStats_.totalDrawItems
-                << " meshBatches=" << cullingStats_.batchCount
-                << " commandCount=" << cullingStats_.commandCount;
+        message << "Culling: total=" << cullingStats_.totalObjects << " visible=" << cullingStats_.visibleObjects
+                << " culled=" << cullingStats_.culledObjects << " drawItems=" << cullingStats_.totalDrawItems
+                << " meshBatches=" << cullingStats_.batchCount << " commandCount=" << cullingStats_.commandCount;
     }
     message << "\nCSM:\n"
             << "  cascades: " << activeCascadeCount() << "\n"
@@ -2287,13 +2601,13 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
             << "  visible shadow draw items across cascades: " << shadowCullingStats_.visibleDrawItems << "\n"
             << "  culled shadow draw items across cascades: " << shadowCullingStats_.culledDrawItems << "\n"
             << "  shadow batches across cascades: " << shadowCullingStats_.batchCount << "\n";
-    for (size_t cascadeIndex = 0; cascadeIndex < shadowCullingStats_.cascadeCount &&
-                                  cascadeIndex < shadowVisibleDrawItemsPerCascade_.size();
+    for (size_t cascadeIndex = 0;
+         cascadeIndex < shadowCullingStats_.cascadeCount && cascadeIndex < shadowVisibleDrawItemsPerCascade_.size();
          ++cascadeIndex) {
         message << "  cascade " << cascadeIndex << ": visible draw items "
-                << shadowVisibleDrawItemsPerCascade_[cascadeIndex]
-                << ", batches " << shadowBatchCountPerCascade_[cascadeIndex]
-                << ", split depth " << frameCascades_[cascadeIndex].splitDepth << "\n";
+                << shadowVisibleDrawItemsPerCascade_[cascadeIndex] << ", batches "
+                << shadowBatchCountPerCascade_[cascadeIndex] << ", split depth "
+                << frameCascades_[cascadeIndex].splitDepth << "\n";
     }
     message << "  GPU shadow culling: " << (shadowCullingStats_.gpuCulling ? "enabled" : "disabled") << "\n"
             << "  shadow path: "
@@ -2390,8 +2704,8 @@ void Renderer::updateFrameData(uint32_t frameIndex)
 
     buildDrawItems();
     if (frameIndex < frameGpuCullTotalDrawItems_.size()) {
-        frameGpuCullTotalDrawItems_[frameIndex] = static_cast<uint32_t>(std::min(allDrawItems_.size(),
-                                                                                 static_cast<size_t>(kMaxDrawItems)));
+        frameGpuCullTotalDrawItems_[frameIndex] =
+            static_cast<uint32_t>(std::min(allDrawItems_.size(), static_cast<size_t>(kMaxDrawItems)));
     }
     if (frameIndex < frameGpuCullReadbackReady_.size()) {
         frameGpuCullReadbackReady_[frameIndex] = 0;
@@ -2469,9 +2783,8 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         }
 
         if (frameIndex < frameGpuShadowCullTotalDrawItems_.size()) {
-            frameGpuShadowCullTotalDrawItems_[frameIndex] =
-                static_cast<uint32_t>(std::min(allDrawItems_.size() * cascadeCount,
-                                               static_cast<size_t>(kMaxDrawItems)));
+            frameGpuShadowCullTotalDrawItems_[frameIndex] = static_cast<uint32_t>(
+                std::min(allDrawItems_.size() * cascadeCount, static_cast<size_t>(kMaxDrawItems)));
         }
         if (frameIndex < frameGpuShadowCullBatchCounts_.size()) {
             frameGpuShadowCullBatchCounts_[frameIndex] =
@@ -2555,17 +2868,13 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         const renderer::Material* material = drawItem.material ? drawItem.material : object.material;
         if (material) {
             frameData.baseColorFactor = material->baseColorFactor;
-            frameData.materialParams = {material->metallic,
-                                        material->roughness,
-                                        material->multiScatterStrength,
-                                        0.0f};
+            frameData.materialParams = {material->metallic, material->roughness, material->multiScatterStrength, 0.0f};
             frameData.textureIndices = {material->baseColorTextureIndex,
                                         material->normalTextureIndex,
                                         material->metallicRoughnessTextureIndex,
                                         0};
         }
-        frameData.cameraPosition =
-            glm::vec4(camera_.position, csmSettings_.enableCascadeDebugColors ? 1.0f : 0.0f);
+        frameData.cameraPosition = glm::vec4(camera_.position, csmSettings_.enableCascadeDebugColors ? 1.0f : 0.0f);
         frameData.cameraForward =
             glm::vec4(glm::normalize(camera_.target - camera_.position), static_cast<float>(cascadeCount));
     }
@@ -2583,17 +2892,56 @@ void Renderer::recreateSwapchain()
     context_.waitIdle();
     swapchain_.recreate(context_, window_.framebufferExtent());
     sync_.recreateRenderFinishedSemaphores(swapchain_.imageCount());
+    createPostProcessResources();
 
     const bool pipelineNeedsRecreate =
-        pipeline_.pipeline() == VK_NULL_HANDLE || pipelineColorFormat_ != swapchain_.colorFormat() ||
+        pipeline_.pipeline() == VK_NULL_HANDLE || pipelineColorFormat_ != kSceneColorFormat ||
         pipelineDepthFormat_ != swapchain_.depthFormat() || skyboxPipeline_.pipeline() == VK_NULL_HANDLE ||
-        skyboxPipelineColorFormat_ != swapchain_.colorFormat() ||
-        skyboxPipelineDepthFormat_ != swapchain_.depthFormat() || shadowPipelineDepthFormat_ != shadowMap_.format();
+        skyboxPipelineColorFormat_ != kSceneColorFormat || skyboxPipelineDepthFormat_ != swapchain_.depthFormat() ||
+        shadowPipelineDepthFormat_ != shadowMap_.format() || bloomExtractPipeline_.pipeline() == VK_NULL_HANDLE ||
+        bloomExtractPipelineColorFormat_ != kBloomColorFormat || bloomBlurPipeline_.pipeline() == VK_NULL_HANDLE ||
+        bloomBlurPipelineColorFormat_ != kBloomColorFormat || compositePipeline_.pipeline() == VK_NULL_HANDLE ||
+        compositePipelineColorFormat_ != swapchain_.colorFormat();
     if (pipelineNeedsRecreate) {
         createPipeline();
     }
 
     imagesInFlight_.assign(swapchain_.imageCount(), VK_NULL_HANDLE);
+}
+
+renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
+{
+    const VkExtent3D sceneExtent = sceneColor_.extent();
+    return renderer::RenderGraphFrameResources{
+        renderer::RenderGraphImageResource{
+            "SceneColor",
+            sceneColor_.image(),
+            sceneColor_.imageView(),
+            VkExtent2D{sceneExtent.width, sceneExtent.height},
+            &sceneColorLayout_,
+        },
+        renderer::RenderGraphImageResource{
+            "BloomExtract",
+            bloomExtract_.image(),
+            bloomExtract_.imageView(),
+            bloomExtent_,
+            &bloomExtractLayout_,
+        },
+        renderer::RenderGraphImageResource{
+            "BloomPing",
+            bloomPing_.image(),
+            bloomPing_.imageView(),
+            bloomExtent_,
+            &bloomPingLayout_,
+        },
+        renderer::RenderGraphImageResource{
+            "BloomPong",
+            bloomPong_.image(),
+            bloomPong_.imageView(),
+            bloomExtent_,
+            &bloomPongLayout_,
+        },
+    };
 }
 
 bool Renderer::readGpuVisibleCount(uint32_t frameIndex, uint32_t& visibleCount)
@@ -2632,8 +2980,7 @@ bool Renderer::readGpuShadowVisibleCount(uint32_t frameIndex, uint32_t& visibleC
 {
     visibleCount = 0;
     if (!isGpuShadowCullingActive() || frameIndex >= frameShadowBatchVisibleCountReadbackBuffers_.size() ||
-        frameIndex >= frameGpuShadowCullReadbackReady_.size() ||
-        frameGpuShadowCullReadbackReady_[frameIndex] == 0) {
+        frameIndex >= frameGpuShadowCullReadbackReady_.size() || frameGpuShadowCullReadbackReady_[frameIndex] == 0) {
         return false;
     }
 
@@ -2664,8 +3011,7 @@ bool Renderer::isGpuCullingActive() const
 {
     return useGpuCulling_ && gpuCullingAvailable_ && gpuCullPipeline_.pipeline() != VK_NULL_HANDLE &&
            gpuCullPipeline_.layout() != VK_NULL_HANDLE && !gpuCullDescriptorSets_.empty() &&
-           frameCullInputBuffers_.size() == frames_.size() &&
-           frameBatchVisibleCountBuffers_.size() == frames_.size() &&
+           frameCullInputBuffers_.size() == frames_.size() && frameBatchVisibleCountBuffers_.size() == frames_.size() &&
            frameBatchVisibleCountReadbackBuffers_.size() == frames_.size();
 }
 
@@ -2770,14 +3116,8 @@ void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, gpuCullPipeline_.pipeline());
 
     const VkDescriptorSet descriptorSet = gpuCullDescriptorSets_[currentFrame_];
-    vkCmdBindDescriptorSets(commandBuffer,
-                            VK_PIPELINE_BIND_POINT_COMPUTE,
-                            gpuCullPipeline_.layout(),
-                            0,
-                            1,
-                            &descriptorSet,
-                            0,
-                            nullptr);
+    vkCmdBindDescriptorSets(
+        commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, gpuCullPipeline_.layout(), 0, 1, &descriptorSet, 0, nullptr);
 
     GpuCullPushConstants pushConstants{};
     pushConstants.frustumPlanes = frameFrustumPlanes_;
@@ -2808,8 +3148,7 @@ void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
     computeBarriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     computeBarriers[0].buffer = frameIndirectDrawBuffers_.at(currentFrame_).buffer();
     computeBarriers[0].offset = 0;
-    computeBarriers[0].size =
-        static_cast<VkDeviceSize>(allDrawItems_.size() * sizeof(VkDrawIndexedIndirectCommand));
+    computeBarriers[0].size = static_cast<VkDeviceSize>(allDrawItems_.size() * sizeof(VkDrawIndexedIndirectCommand));
 
     computeBarriers[1].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
     computeBarriers[1].srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
@@ -2878,9 +3217,9 @@ void Renderer::recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer, uin
         return;
     }
 
-    const VkDeviceSize shadowIndirectBufferSize = std::min<VkDeviceSize>(
-        frameShadowIndirectDrawBuffers_.at(currentFrame_).size(),
-        static_cast<VkDeviceSize>(allDrawItems_.size() * sizeof(VkDrawIndexedIndirectCommand)));
+    const VkDeviceSize shadowIndirectBufferSize =
+        std::min<VkDeviceSize>(frameShadowIndirectDrawBuffers_.at(currentFrame_).size(),
+                               static_cast<VkDeviceSize>(allDrawItems_.size() * sizeof(VkDrawIndexedIndirectCommand)));
     if (shadowIndirectBufferSize == 0) {
         return;
     }
@@ -2921,19 +3260,12 @@ void Renderer::recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer, uin
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, gpuCullPipeline_.pipeline());
 
     const VkDescriptorSet descriptorSet = shadowCullDescriptorSets_[currentFrame_];
-    vkCmdBindDescriptorSets(commandBuffer,
-                            VK_PIPELINE_BIND_POINT_COMPUTE,
-                            gpuCullPipeline_.layout(),
-                            0,
-                            1,
-                            &descriptorSet,
-                            0,
-                            nullptr);
+    vkCmdBindDescriptorSets(
+        commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, gpuCullPipeline_.layout(), 0, 1, &descriptorSet, 0, nullptr);
 
     GpuCullPushConstants pushConstants{};
     pushConstants.frustumPlanes = frameShadowCascadeFrustumPlanes_[cascadeIndex];
-    pushConstants.params =
-        glm::uvec4(static_cast<uint32_t>(allDrawItems_.size()), 1U, 1U, 0U);
+    pushConstants.params = glm::uvec4(static_cast<uint32_t>(allDrawItems_.size()), 1U, 1U, 0U);
     vkCmdPushConstants(commandBuffer,
                        gpuCullPipeline_.layout(),
                        VK_SHADER_STAGE_COMPUTE_BIT,
@@ -3007,7 +3339,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     const VkDeviceAddress objectFrameDataBaseAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
     const size_t mainDrawItemCount = visibleDrawItems_.size();
 
-    renderGraph_.beginFrame(commandBuffer, swapchain_, shadowMap_, imageIndex);
+    renderGraph_.beginFrame(commandBuffer, swapchain_, shadowMap_, imageIndex, renderGraphFrameResources());
     rhi::debug::beginLabel(commandBuffer, "Frame");
     timestampQuery_.resetFrame(commandBuffer, currentFrame_);
 
@@ -3049,21 +3381,20 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         vkCmdSetViewport(commandBuffer, 0, 1, &shadowViewport);
         vkCmdSetScissor(commandBuffer, 0, 1, &shadowScissor);
 
-        const std::string shadowCullingLabel =
-            gpuShadowCullingActive
-                ? "ShadowCasterCulling GPU cascade " + std::to_string(cascadeIndex) + " max " +
-                      std::to_string(shadowDrawItemCount)
-                : "ShadowCasterCulling cascade " + std::to_string(cascadeIndex) + " visible " +
-                      std::to_string(shadowDrawItemCount) + "/" + std::to_string(allDrawItems_.size());
+        const std::string shadowCullingLabel = gpuShadowCullingActive
+                                                   ? "ShadowCasterCulling GPU cascade " + std::to_string(cascadeIndex) +
+                                                         " max " + std::to_string(shadowDrawItemCount)
+                                                   : "ShadowCasterCulling cascade " + std::to_string(cascadeIndex) +
+                                                         " visible " + std::to_string(shadowDrawItemCount) + "/" +
+                                                         std::to_string(allDrawItems_.size());
         rhi::debug::beginLabel(commandBuffer, shadowCullingLabel);
         rhi::debug::endLabel(commandBuffer);
 
         const std::string shadowDrawLabel =
-            "ShadowCascade" + std::to_string(cascadeIndex) + " DrawItems " +
-            std::to_string(shadowDrawItemCount) +
-            (gpuShadowCullingActive ? (shadowIndirectCountPathActive ? " GPU culling indirect-count"
-                                                                     : " GPU culling indirect fallback")
-                                    : " CPU culling direct fallback");
+            "ShadowCascade" + std::to_string(cascadeIndex) + " DrawItems " + std::to_string(shadowDrawItemCount) +
+            (gpuShadowCullingActive
+                 ? (shadowIndirectCountPathActive ? " GPU culling indirect-count" : " GPU culling indirect fallback")
+                 : " CPU culling direct fallback");
         rhi::debug::beginLabel(commandBuffer, shadowDrawLabel);
 
         const renderer::Mesh* boundShadowMesh = nullptr;
@@ -3080,9 +3411,9 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
             const VkBuffer shadowBatchVisibleCountBuffer =
                 shadowIndirectCountPathActive ? frameShadowBatchVisibleCountBuffers_.at(currentFrame_).buffer()
                                               : VK_NULL_HANDLE;
-            const std::string shadowBatchesLabel =
-                "ShadowIndirectDrawBatches " + std::to_string(activeShadowMeshDrawBatches.size()) +
-                " max commands " + std::to_string(shadowDrawItemCount);
+            const std::string shadowBatchesLabel = "ShadowIndirectDrawBatches " +
+                                                   std::to_string(activeShadowMeshDrawBatches.size()) +
+                                                   " max commands " + std::to_string(shadowDrawItemCount);
             rhi::debug::beginLabel(commandBuffer, shadowBatchesLabel);
             for (const MeshDrawBatch& batch : activeShadowMeshDrawBatches) {
                 if (!batch.mesh || batch.drawItemCount == 0) {
@@ -3101,12 +3432,12 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                     static_cast<VkDeviceSize>(batch.compactedCommandOffset * sizeof(VkDrawIndexedIndirectCommand));
                 if (shadowIndirectCountPathActive && shadowBatchVisibleCountBuffer != VK_NULL_HANDLE) {
                     vkCmdDrawIndexedIndirectCount(commandBuffer,
-                                                 shadowIndirectDrawBuffer,
-                                                 indirectOffset,
-                                                 shadowBatchVisibleCountBuffer,
-                                                 batch.visibleCountOffset,
-                                                 batch.drawItemCount,
-                                                 sizeof(VkDrawIndexedIndirectCommand));
+                                                  shadowIndirectDrawBuffer,
+                                                  indirectOffset,
+                                                  shadowBatchVisibleCountBuffer,
+                                                  batch.visibleCountOffset,
+                                                  batch.drawItemCount,
+                                                  sizeof(VkDrawIndexedIndirectCommand));
                 } else {
                     vkCmdDrawIndexedIndirect(commandBuffer,
                                              shadowIndirectDrawBuffer,
@@ -3162,9 +3493,9 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
 
     recordGpuCullingCommands(commandBuffer);
 
-    rhi::debug::beginLabel(commandBuffer, "MainPass");
+    rhi::debug::beginLabel(commandBuffer, "MainHDRPass");
     timestampQuery_.writeBegin(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::MainPass);
-    renderGraph_.beginMainPass();
+    renderGraph_.beginMainHdrPass();
 
     const VkExtent2D extent = swapchain_.extent();
     VkViewport viewport{};
@@ -3192,10 +3523,9 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         glm::mat4 skyboxView = camera_.viewMatrix();
         skyboxView[3] = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
         const glm::mat4 projection = camera_.projectionMatrix(aspect);
-        const SkyboxPushConstants skyboxPushConstants{
-            glm::inverse(projection * skyboxView),
-            toneMappingExposureValue(toneMappingSettings_.exposure),
-            toneMappingOperatorValue(toneMappingSettings_.operatorType)};
+        const SkyboxPushConstants skyboxPushConstants{glm::inverse(projection * skyboxView),
+                                                      toneMappingExposureValue(toneMappingSettings_.exposure),
+                                                      toneMappingOperatorValue(toneMappingSettings_.operatorType)};
 
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, skyboxPipeline_.pipeline());
         vkCmdBindDescriptorSets(commandBuffer,
@@ -3217,13 +3547,13 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     timestampQuery_.writeEnd(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::Skybox);
     rhi::debug::endLabel(commandBuffer);
 
-    const std::string objectDrawLabel =
-        cullingStats_.gpuCulling
-            ? "MainPass IndirectDrawItems " + std::to_string(mainDrawItemCount) + " GPU culling batches " +
-                  std::to_string(meshDrawBatches_.size())
-            : "MainPass IndirectDrawItems " + std::to_string(mainDrawItemCount) + " visible objects " +
-                  std::to_string(cullingStats_.visibleObjects) + "/" + std::to_string(cullingStats_.totalObjects) +
-                  " batches " + std::to_string(meshDrawBatches_.size());
+    const std::string objectDrawLabel = cullingStats_.gpuCulling
+                                            ? "MainHDRPass IndirectDrawItems " + std::to_string(mainDrawItemCount) +
+                                                  " GPU culling batches " + std::to_string(meshDrawBatches_.size())
+                                            : "MainHDRPass IndirectDrawItems " + std::to_string(mainDrawItemCount) +
+                                                  " visible objects " + std::to_string(cullingStats_.visibleObjects) +
+                                                  "/" + std::to_string(cullingStats_.totalObjects) + " batches " +
+                                                  std::to_string(meshDrawBatches_.size());
     rhi::debug::beginLabel(commandBuffer, objectDrawLabel);
     timestampQuery_.writeBegin(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::RenderObjects);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.pipeline());
@@ -3293,12 +3623,12 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                     static_cast<VkDeviceSize>(batch.compactedCommandOffset * sizeof(VkDrawIndexedIndirectCommand));
                 if (indirectCountPathActive && batchVisibleCountBuffer != VK_NULL_HANDLE) {
                     vkCmdDrawIndexedIndirectCount(commandBuffer,
-                                                 indirectDrawBuffer,
-                                                 indirectOffset,
-                                                 batchVisibleCountBuffer,
-                                                 batch.visibleCountOffset,
-                                                 batch.drawItemCount,
-                                                 sizeof(VkDrawIndexedIndirectCommand));
+                                                  indirectDrawBuffer,
+                                                  indirectOffset,
+                                                  batchVisibleCountBuffer,
+                                                  batch.visibleCountOffset,
+                                                  batch.drawItemCount,
+                                                  sizeof(VkDrawIndexedIndirectCommand));
                 } else {
                     vkCmdDrawIndexedIndirect(commandBuffer,
                                              indirectDrawBuffer,
@@ -3372,9 +3702,118 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     timestampQuery_.writeEnd(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::RenderObjects);
     rhi::debug::endLabel(commandBuffer);
 
-    renderGraph_.endMainPass();
+    renderGraph_.endMainHdrPass();
     timestampQuery_.writeEnd(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::MainPass);
     rhi::debug::endLabel(commandBuffer);
+
+    timestampQuery_.writeBegin(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::Bloom);
+
+    rhi::debug::beginLabel(commandBuffer, "BloomExtractPass");
+    renderGraph_.beginBloomExtractPass();
+    setViewportAndScissor(commandBuffer, bloomExtent_);
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomExtractPipeline_.pipeline());
+    vkCmdBindDescriptorSets(commandBuffer,
+                            VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            bloomExtractPipeline_.layout(),
+                            0,
+                            1,
+                            &bloomExtractDescriptorSet_,
+                            0,
+                            nullptr);
+    const BloomExtractPushConstants bloomExtractPushConstants{bloomSettings_.threshold};
+    vkCmdPushConstants(commandBuffer,
+                       bloomExtractPipeline_.layout(),
+                       VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0,
+                       static_cast<uint32_t>(sizeof(BloomExtractPushConstants)),
+                       &bloomExtractPushConstants);
+    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+    renderGraph_.endBloomExtractPass();
+    rhi::debug::endLabel(commandBuffer);
+
+    const BloomBlurPushConstants horizontalBlurPushConstants{
+        glm::vec2{1.0f / static_cast<float>(bloomExtent_.width), 1.0f / static_cast<float>(bloomExtent_.height)},
+        1u,
+        0u};
+    rhi::debug::beginLabel(commandBuffer, "BloomBlurHorizontal");
+    renderGraph_.beginBloomBlurPass(true);
+    setViewportAndScissor(commandBuffer, bloomExtent_);
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomBlurPipeline_.pipeline());
+    vkCmdBindDescriptorSets(commandBuffer,
+                            VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            bloomBlurPipeline_.layout(),
+                            0,
+                            1,
+                            &bloomBlurHorizontalDescriptorSet_,
+                            0,
+                            nullptr);
+    vkCmdPushConstants(commandBuffer,
+                       bloomBlurPipeline_.layout(),
+                       VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0,
+                       static_cast<uint32_t>(sizeof(BloomBlurPushConstants)),
+                       &horizontalBlurPushConstants);
+    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+    renderGraph_.endBloomBlurPass();
+    rhi::debug::endLabel(commandBuffer);
+
+    const BloomBlurPushConstants verticalBlurPushConstants{
+        glm::vec2{1.0f / static_cast<float>(bloomExtent_.width), 1.0f / static_cast<float>(bloomExtent_.height)},
+        0u,
+        0u};
+    rhi::debug::beginLabel(commandBuffer, "BloomBlurVertical");
+    renderGraph_.beginBloomBlurPass(false);
+    setViewportAndScissor(commandBuffer, bloomExtent_);
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomBlurPipeline_.pipeline());
+    vkCmdBindDescriptorSets(commandBuffer,
+                            VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            bloomBlurPipeline_.layout(),
+                            0,
+                            1,
+                            &bloomBlurVerticalDescriptorSet_,
+                            0,
+                            nullptr);
+    vkCmdPushConstants(commandBuffer,
+                       bloomBlurPipeline_.layout(),
+                       VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0,
+                       static_cast<uint32_t>(sizeof(BloomBlurPushConstants)),
+                       &verticalBlurPushConstants);
+    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+    renderGraph_.endBloomBlurPass();
+    rhi::debug::endLabel(commandBuffer);
+
+    timestampQuery_.writeEnd(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::Bloom);
+
+    rhi::debug::beginLabel(commandBuffer, "CompositePass");
+    timestampQuery_.writeBegin(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::Composite);
+    renderGraph_.beginCompositePass();
+    setViewportAndScissor(commandBuffer, swapchain_.extent());
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, compositePipeline_.pipeline());
+    vkCmdBindDescriptorSets(commandBuffer,
+                            VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            compositePipeline_.layout(),
+                            0,
+                            1,
+                            &compositeDescriptorSet_,
+                            0,
+                            nullptr);
+    const CompositePushConstants compositePushConstants{
+        toneMappingExposureValue(toneMappingSettings_.exposure),
+        bloomSettings_.enabled ? std::max(bloomSettings_.intensity, 0.0f) : 0.0f,
+        toneMappingOperatorValue(toneMappingSettings_.operatorType),
+        bloomSettings_.enabled ? 1u : 0u};
+    vkCmdPushConstants(commandBuffer,
+                       compositePipeline_.layout(),
+                       VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0,
+                       static_cast<uint32_t>(sizeof(CompositePushConstants)),
+                       &compositePushConstants);
+    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+    renderGraph_.endCompositePass();
+    timestampQuery_.writeEnd(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::Composite);
+    rhi::debug::endLabel(commandBuffer);
+
     rhi::debug::endLabel(commandBuffer);
     renderGraph_.endFrame();
 }
