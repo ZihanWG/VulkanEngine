@@ -19,14 +19,70 @@ jobs:
           version: 1.4.328.1
           cache: true
 
+      - name: Locate Vulkan SDK for CMake
+        shell: pwsh
+        run: |
+          $sdkRoot = $env:VULKAN_SDK
+          if (-not $sdkRoot -or -not (Test-Path (Join-Path $sdkRoot "Include\vulkan\vulkan.h"))) {
+            $glslcCommand = Get-Command glslc.exe -ErrorAction SilentlyContinue
+            if ($glslcCommand) {
+              $candidateRoot = Split-Path -Parent (Split-Path -Parent $glslcCommand.Source)
+              if (Test-Path (Join-Path $candidateRoot "Include\vulkan\vulkan.h")) {
+                $sdkRoot = $candidateRoot
+              }
+            }
+          }
+
+          if (-not $sdkRoot -or -not (Test-Path (Join-Path $sdkRoot "Include\vulkan\vulkan.h"))) {
+            $sdkRoot = Get-ChildItem -Path "C:\VulkanSDK" -Directory -ErrorAction SilentlyContinue |
+              Where-Object { Test-Path (Join-Path $_.FullName "Include\vulkan\vulkan.h") } |
+              Sort-Object -Property Name -Descending |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+
+          if (-not $sdkRoot) {
+            throw "Vulkan SDK install did not produce an SDK directory with Include\vulkan\vulkan.h."
+          }
+
+          $includeDir = Join-Path $sdkRoot "Include"
+          $library = Join-Path $sdkRoot "Lib\vulkan-1.lib"
+          $glslc = Join-Path $sdkRoot "Bin\glslc.exe"
+
+          if (-not (Test-Path $library)) {
+            throw "Vulkan loader import library was not found: $library"
+          }
+          if (-not (Test-Path $glslc)) {
+            throw "glslc was not found: $glslc"
+          }
+
+          "VULKAN_SDK=$sdkRoot" >> $env:GITHUB_ENV
+          "Vulkan_ROOT=$sdkRoot" >> $env:GITHUB_ENV
+          "Vulkan_INCLUDE_DIR=$includeDir" >> $env:GITHUB_ENV
+          "Vulkan_LIBRARY=$library" >> $env:GITHUB_ENV
+          "Vulkan_GLSLC_EXECUTABLE=$glslc" >> $env:GITHUB_ENV
+          (Join-Path $sdkRoot "Bin") >> $env:GITHUB_PATH
+
+          Write-Host "VULKAN_SDK=$sdkRoot"
+          Write-Host "Vulkan_INCLUDE_DIR=$includeDir"
+          Write-Host "Vulkan_LIBRARY=$library"
+          Write-Host "Vulkan_GLSLC_EXECUTABLE=$glslc"
+
       - name: Verify toolchain
         shell: pwsh
         run: |
           cmake --version
+          if (-not (Test-Path $env:Vulkan_INCLUDE_DIR)) { throw "Missing Vulkan include dir: $env:Vulkan_INCLUDE_DIR" }
+          if (-not (Test-Path $env:Vulkan_LIBRARY)) { throw "Missing Vulkan library: $env:Vulkan_LIBRARY" }
           glslc --version
 
       - name: Configure CMake
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+        shell: pwsh
+        run: >
+          cmake -S . -B build
+          -G "Visual Studio 17 2022" -A x64
+          -DVulkan_INCLUDE_DIR="$env:Vulkan_INCLUDE_DIR"
+          -DVulkan_LIBRARY="$env:Vulkan_LIBRARY"
+          -DVulkan_GLSLC_EXECUTABLE="$env:Vulkan_GLSLC_EXECUTABLE"
 
       - name: Compile GLSL shaders
         run: cmake --build build --config Debug --target VulkanEngineShaders --parallel
