@@ -2,7 +2,7 @@
 
 #extension GL_EXT_buffer_reference : require
 
-layout(buffer_reference, std430) readonly buffer ObjectFrameDataBuffer {
+struct ObjectFrameData {
     mat4 mvp;
     mat4 model;
     mat4 lightMvp;
@@ -16,6 +16,10 @@ layout(buffer_reference, std430) readonly buffer ObjectFrameDataBuffer {
     uvec4 textureIndices;
 };
 
+layout(buffer_reference, std430) readonly buffer ObjectFrameDataBuffer {
+    ObjectFrameData objects[];
+};
+
 layout(push_constant) uniform PushConstants {
     ObjectFrameDataBuffer objectFrameData;
 } pc;
@@ -24,5 +28,6 @@ layout(location = 0) in vec3 inPosition;
 
 void main()
 {
-    gl_Position = pc.objectFrameData.lightMvp * vec4(inPosition, 1.0);
+    ObjectFrameData objectData = pc.objectFrameData.objects[gl_InstanceIndex];
+    gl_Position = objectData.lightMvp * vec4(inPosition, 1.0);
 }

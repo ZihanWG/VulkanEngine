@@ -14,11 +14,11 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - Tangent-space normal mapping and Cook-Torrance GGX direct lighting.
 - Procedural skybox, diffuse irradiance cubemap, prefiltered specular cubemap, and split-sum BRDF LUT.
 - Compact Kulla-Conty-style multi-scattering compensation for PBR response.
-- PCF-filtered directional shadow map.
+- PCF-filtered directional shadow map with CPU shadow-caster culling and an indirect shadow draw path.
 - Descriptor indexing path for bindless material texture arrays, with a legacy descriptor-set fallback.
 - Minimal render graph that documents shadow/main pass order and centralizes image transitions.
 - GPU frustum culling compute pass that compacts visible indirect draw commands and writes per-batch visible counts.
-- Multi-draw indirect batching by mesh-compatible ranges on the bindless path.
+- Multi-draw indirect batching by mesh-compatible ranges on the bindless main path and shadow path.
 - GPU timestamp queries and debug labels for capture/profiling orientation.
 
 ## Architecture Overview
@@ -37,12 +37,12 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 ## One-Frame Rendering Flow
 
 1. Wait for the current frame fence and acquire the next swapchain image.
-2. Reset the fence and command buffer, update transforms, and build `DrawItem` records from render objects and mesh primitives.
-3. Extract the camera frustum from `projection * view`.
-4. Build mesh-compatible draw batches and upload culling input records for the GPU path, or build/upload a CPU-visible indirect command list for the fallback path.
+2. Reset the fence and command buffer, update transforms, and build all `DrawItem` records from render objects and mesh primitives.
+3. Extract the camera frustum from `projection * view` and the shadow frustum from the directional light view-projection.
+4. Build shadow draw items/batches from light-frustum-visible casters, and build main-pass mesh-compatible draw batches for GPU culling or the CPU fallback.
 5. Upload per-object MVP/model/light/material data into the current frame's Buffer Device Address object-data buffer.
 6. Begin the minimal `RenderGraph` recording.
-7. Transition the shadow map, begin depth-only Dynamic Rendering, and draw shadow casters with the shadow pipeline.
+7. Transition the shadow map, begin depth-only Dynamic Rendering, and draw culled shadow casters with material-independent indirect draws when available.
 8. Reset the batch visible-count buffer, dispatch the compute culling pass, barrier shader writes for indirect/count reads, and copy visible counts for readback.
 9. Transition the swapchain color image and main depth image for the main pass.
 10. Begin main Dynamic Rendering, draw the skybox, bind global and bindless material descriptors when available, and issue indirect indexed draws.
@@ -84,7 +84,7 @@ GPU culling compute descriptor set:
 - binding 1 = per-frame indirect command output storage buffer
 - binding 2 = per-frame batch visible draw count storage buffer
 
-Object and material scalar data still use Buffer Device Address plus a vertex-stage push constant. On the bindless multi-draw path, the pushed address is the base of the current frame's `ObjectFrameData` array, and indirect `firstInstance` selects the object-data entry. The fallback path still pushes one per-draw object-data address with `firstInstance = 0`.
+Object and material scalar data still use Buffer Device Address plus a vertex-stage push constant. On the bindless main multi-draw path and the shadow indirect path, the pushed address is the base of the current frame's `ObjectFrameData` array, and indirect `firstInstance` selects the object-data entry. Fallback paths still push one per-draw object-data address with `firstInstance = 0`.
 
 ## Build Instructions
 
@@ -129,7 +129,8 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 
 ## Known Limitations
 
-- The shadow pass is still direct draw and does not use GPU culling or indirect command buffers.
+- Shadow caster culling is CPU-side and uses the current fixed directional light frustum; it is not GPU-driven or cascaded yet.
+- The shadow pass keeps a direct `vkCmdDrawIndexed` fallback when shadow indirect drawing is unavailable.
 - The old zero-count indirect command path is still retained as a fallback when indirect-count drawing is unavailable.
 - Shadow map bounds are fixed and demo-scene-oriented; they are not yet cascaded shadow maps or texel-snapped stable bounds.
 - Texture color space is not fully separated yet. Base color should eventually use sRGB while normal and metallic-roughness textures stay linear.
@@ -141,7 +142,7 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 
 - Build mesh batches fully on the GPU.
 - Move material/object buffers toward a fully GPU-driven layout.
-- Add shadow caster culling.
+- Move shadow caster culling to GPU.
 - Add occlusion culling.
 - Add BVH or other spatial partitioning.
 - Add LOD.
@@ -750,3 +751,27 @@ On the bindless multi-draw path, the main pass binds global set 0 and bindless m
 The throttled log now reports total draw items, visible draw items, culled draw items, batch count, and whether the indirect-count path was enabled.
 
 Future GPU-driven work can add fully GPU-built mesh batches, GPU-driven material/object buffers, shadow caster culling, occlusion culling, BVH or other spatial partitioning, LOD, and mesh/task shaders in a later renderer branch.
+
+## Milestone 34: Shadow Pass Indirect Drawing and Shadow Caster Culling
+
+Milestone 34 moves the shadow pass off the old direct all-draw loop. The renderer now keeps an explicit all-submesh draw item list, builds a separate shadow draw item list from `RenderObject`s and `MeshPrimitive` submeshes, and treats every opaque renderable as a shadow caster. Alpha-tested shadows are still out of scope.
+
+Shadow casters are culled on the CPU against the directional light frustum from the existing light view-projection. Each render object computes its world-space AABB from mesh-local bounds and its model matrix; if the AABB intersects the light frustum, all of that object's submesh draw items are included in the shadow draw list.
+
+Visible shadow draw items are grouped into mesh-compatible batches using the same mesh pointer and vertex/index buffers. Each frame owns a shadow indirect command buffer with `VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT` and `VK_BUFFER_USAGE_STORAGE_BUFFER_BIT`. For each visible shadow draw item, the renderer writes one `VkDrawIndexedIndirectCommand` with the draw item's index range, `instanceCount = 1`, and `firstInstance = objectFrameDataIndex`.
+
+The shadow vertex shader now matches the main-pass object-data array model. The shadow indirect path pushes the current frame's `ObjectFrameData` base address once, and indirect `firstInstance` selects the object-data entry through `gl_InstanceIndex`. If shadow indirect drawing is unavailable, the renderer falls back to direct `vkCmdDrawIndexed` calls and pushes the per-draw object-data address.
+
+The shadow pass remains material-independent. It does not bind material descriptor sets, does not sample material textures, and does not change material or global descriptor layouts. Main-pass GPU culling, bindless material descriptors, per-batch indirect-count drawing, skybox rendering, IBL, the BRDF LUT, Kulla-Conty-style compensation, synchronization, and render graph pass order are unchanged.
+
+The throttled timing log now also reports:
+
+```text
+Shadow culling:
+  total shadow draw items: N
+  visible shadow draw items: M
+  culled shadow draw items: N - M
+  shadow batches: B
+```
+
+Future shadow and GPU-driven work can add GPU shadow caster culling, cascaded shadow maps, alpha-tested shadow casters, shadow LOD, spatial partitioning / BVH, occlusion culling, and mesh/task shaders.

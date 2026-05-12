@@ -201,6 +201,7 @@ void VulkanDevice::createLogicalDevice()
     enabled12.pNext = &enabled13;
     enabled12.bufferDeviceAddress = VK_TRUE;
     enabled12.separateDepthStencilLayouts = VK_TRUE;
+    enabled12.drawIndirectCount = supported12.drawIndirectCount;
 
     if (descriptorIndexingEnabled_) {
         enabled12.descriptorIndexing = VK_TRUE;
@@ -232,7 +233,9 @@ void VulkanDevice::createLogicalDevice()
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
     maxDrawIndirectCount_ = properties.limits.maxDrawIndirectCount;
-    drawIndexedIndirectCountAvailable_ = vkCmdDrawIndexedIndirectCount != nullptr && maxDrawIndirectCount_ > 0;
+    drawIndexedIndirectCountAvailable_ = supported12.drawIndirectCount == VK_TRUE &&
+                                         vkCmdDrawIndexedIndirectCount != nullptr &&
+                                         maxDrawIndirectCount_ > 0;
 
     if (descriptorIndexingEnabled_) {
         Logger::info("Descriptor indexing features for bindless material textures are enabled.");

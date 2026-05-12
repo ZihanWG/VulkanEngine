@@ -205,6 +205,7 @@ Renderer::Renderer(Window& window) : window_(window)
     createScene();
     createObjectFrameDataBuffers();
     createIndirectDrawBuffers();
+    createShadowIndirectDrawBuffers();
     createGpuCullingResources();
     sync_.initialize(context_, frames_, swapchain_.imageCount());
     imagesInFlight_.assign(swapchain_.imageCount(), VK_NULL_HANDLE);
@@ -688,9 +689,12 @@ void Renderer::createPipeline()
 void Renderer::createScene()
 {
     renderObjects_.clear();
-    drawItems_.clear();
+    allDrawItems_.clear();
     visibleDrawItems_.clear();
+    shadowDrawItems_.clear();
+    shadowMeshDrawBatches_.clear();
     cullingStats_ = {};
+    shadowCullingStats_ = {};
     importedMeshes_.clear();
     importedMaterials_.clear();
     importedTextures_.clear();
@@ -1399,6 +1403,36 @@ void Renderer::createIndirectDrawBuffers()
     }
 }
 
+void Renderer::createShadowIndirectDrawBuffers()
+{
+    shadowIndirectAvailable_ = false;
+    frameShadowIndirectDrawBuffers_.clear();
+
+    try {
+        frameShadowIndirectDrawBuffers_.resize(frames_.size());
+
+        for (size_t frameIndex = 0; frameIndex < frameShadowIndirectDrawBuffers_.size(); ++frameIndex) {
+            rhi::VulkanBuffer& indirectDrawBuffer = frameShadowIndirectDrawBuffers_[frameIndex];
+            rhi::VulkanBufferCreateInfo bufferInfo{};
+            bufferInfo.size = static_cast<VkDeviceSize>(kMaxDrawItems * sizeof(VkDrawIndexedIndirectCommand));
+            bufferInfo.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+            bufferInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
+            bufferInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+            indirectDrawBuffer.createBuffer(context_, bufferInfo);
+            rhi::debug::setObjectName(context_.vkDevice(),
+                                      indirectDrawBuffer.buffer(),
+                                      VK_OBJECT_TYPE_BUFFER,
+                                      "ShadowIndirectDrawCommandBuffer" + std::to_string(frameIndex));
+        }
+
+        shadowIndirectAvailable_ = true;
+    } catch (const std::exception& error) {
+        Logger::warn(std::string("Shadow indirect command buffers unavailable; falling back to direct shadow draws: ") +
+                     error.what());
+        frameShadowIndirectDrawBuffers_.clear();
+    }
+}
+
 const renderer::Material* Renderer::resolveMaterial(const renderer::RenderObject& object,
                                                     const renderer::MeshPrimitive* primitive) const
 {
@@ -1465,31 +1499,31 @@ bool Renderer::appendDrawItemsForObject(uint32_t objectIndex, std::vector<DrawIt
 
 void Renderer::buildDrawItems()
 {
-    drawItems_.clear();
-    drawItems_.reserve(renderObjects_.size());
+    allDrawItems_.clear();
+    allDrawItems_.reserve(renderObjects_.size());
 
     const size_t objectCount = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
     for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
-        if (!appendDrawItemsForObject(static_cast<uint32_t>(objectIndex), drawItems_)) {
+        if (!appendDrawItemsForObject(static_cast<uint32_t>(objectIndex), allDrawItems_)) {
             break;
         }
     }
 
-    std::stable_sort(drawItems_.begin(), drawItems_.end(), [](const DrawItem& lhs, const DrawItem& rhs) {
+    std::stable_sort(allDrawItems_.begin(), allDrawItems_.end(), [](const DrawItem& lhs, const DrawItem& rhs) {
         return std::less<const renderer::Mesh*>{}(lhs.mesh, rhs.mesh);
     });
 
-    for (size_t drawIndex = 0; drawIndex < drawItems_.size(); ++drawIndex) {
-        drawItems_[drawIndex].frameDataIndex = static_cast<uint32_t>(drawIndex);
+    for (size_t drawIndex = 0; drawIndex < allDrawItems_.size(); ++drawIndex) {
+        allDrawItems_[drawIndex].frameDataIndex = static_cast<uint32_t>(drawIndex);
     }
 }
 
 void Renderer::buildVisibleDrawItems(const renderer::Frustum& frustum)
 {
     visibleDrawItems_.clear();
-    visibleDrawItems_.reserve(drawItems_.size());
+    visibleDrawItems_.reserve(allDrawItems_.size());
     cullingStats_ = {};
-    cullingStats_.totalDrawItems = drawItems_.size();
+    cullingStats_.totalDrawItems = allDrawItems_.size();
 
     const size_t objectCount = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
     std::vector<bool> objectVisible(objectCount, false);
@@ -1510,7 +1544,7 @@ void Renderer::buildVisibleDrawItems(const renderer::Frustum& frustum)
         objectVisible[objectIndex] = true;
     }
 
-    for (const DrawItem& drawItem : drawItems_) {
+    for (const DrawItem& drawItem : allDrawItems_) {
         if (drawItem.objectIndex < objectVisible.size() && objectVisible[drawItem.objectIndex]) {
             visibleDrawItems_.push_back(drawItem);
         }
@@ -1521,11 +1555,61 @@ void Renderer::buildMeshDrawBatches()
 {
     meshDrawBatches_.clear();
     cullingStats_.commandCount = visibleDrawItems_.size();
+    buildMeshDrawBatchesForItems(visibleDrawItems_, meshDrawBatches_);
+    cullingStats_.batchCount = meshDrawBatches_.size();
+}
 
+void Renderer::buildShadowDrawItems(const renderer::Frustum& lightFrustum)
+{
+    shadowDrawItems_.clear();
+    shadowDrawItems_.reserve(allDrawItems_.size());
+    shadowCullingStats_ = {};
+    shadowCullingStats_.totalDrawItems = allDrawItems_.size();
+
+    const size_t objectCount = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
+    std::vector<bool> objectVisible(objectCount, false);
+    for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+        const renderer::RenderObject& object = renderObjects_[objectIndex];
+        if (!object.mesh || !object.mesh->valid()) {
+            continue;
+        }
+
+        const renderer::Aabb worldBounds = object.worldBounds();
+        if (worldBounds.valid() && !lightFrustum.testAabb(worldBounds)) {
+            continue;
+        }
+
+        objectVisible[objectIndex] = true;
+    }
+
+    for (const DrawItem& drawItem : allDrawItems_) {
+        if (drawItem.objectIndex < objectVisible.size() && objectVisible[drawItem.objectIndex]) {
+            shadowDrawItems_.push_back(drawItem);
+        }
+    }
+
+    shadowCullingStats_.visibleDrawItems = shadowDrawItems_.size();
+    shadowCullingStats_.culledDrawItems =
+        shadowCullingStats_.totalDrawItems > shadowCullingStats_.visibleDrawItems
+            ? shadowCullingStats_.totalDrawItems - shadowCullingStats_.visibleDrawItems
+            : 0;
+}
+
+void Renderer::buildShadowMeshDrawBatches()
+{
+    shadowMeshDrawBatches_.clear();
+    buildMeshDrawBatchesForItems(shadowDrawItems_, shadowMeshDrawBatches_);
+    shadowCullingStats_.batchCount = shadowMeshDrawBatches_.size();
+}
+
+void Renderer::buildMeshDrawBatchesForItems(
+    const std::vector<DrawItem>& drawItems,
+    std::vector<MeshDrawBatch>& batches) const
+{
     const renderer::Mesh* currentMesh = nullptr;
     MeshDrawBatch* currentBatch = nullptr;
-    for (size_t drawItemIndex = 0; drawItemIndex < visibleDrawItems_.size(); ++drawItemIndex) {
-        const DrawItem& drawItem = visibleDrawItems_[drawItemIndex];
+    for (size_t drawItemIndex = 0; drawItemIndex < drawItems.size(); ++drawItemIndex) {
+        const DrawItem& drawItem = drawItems[drawItemIndex];
         if (!drawItem.mesh || drawItem.frameDataIndex >= kMaxDrawItems) {
             currentMesh = nullptr;
             currentBatch = nullptr;
@@ -1537,30 +1621,28 @@ void Renderer::buildMeshDrawBatches()
             batch.mesh = drawItem.mesh;
             batch.beginDrawItem = static_cast<uint32_t>(drawItemIndex);
             batch.compactedCommandOffset = static_cast<uint32_t>(drawItemIndex);
-            batch.visibleCountOffset = static_cast<uint32_t>(meshDrawBatches_.size() * sizeof(uint32_t));
-            meshDrawBatches_.push_back(batch);
-            currentBatch = &meshDrawBatches_.back();
+            batch.visibleCountOffset = static_cast<uint32_t>(batches.size() * sizeof(uint32_t));
+            batches.push_back(batch);
+            currentBatch = &batches.back();
             currentMesh = drawItem.mesh;
         }
 
         ++currentBatch->drawItemCount;
     }
-
-    cullingStats_.batchCount = meshDrawBatches_.size();
 }
 
 void Renderer::updateGpuCullInputBuffer(uint32_t frameIndex)
 {
-    if (drawItems_.empty()) {
+    if (allDrawItems_.empty()) {
         return;
     }
     if (frameIndex >= frameCullInputBuffers_.size()) {
         throw std::runtime_error("GPU cull input buffer frame index is out of range.");
     }
 
-    std::vector<GpuCullDrawItem> cullDrawItems(drawItems_.size());
-    for (size_t drawIndex = 0; drawIndex < drawItems_.size(); ++drawIndex) {
-        const DrawItem& drawItem = drawItems_[drawIndex];
+    std::vector<GpuCullDrawItem> cullDrawItems(allDrawItems_.size());
+    for (size_t drawIndex = 0; drawIndex < allDrawItems_.size(); ++drawIndex) {
+        const DrawItem& drawItem = allDrawItems_[drawIndex];
         GpuCullDrawItem& gpuDrawItem = cullDrawItems[drawIndex];
 
         renderer::Aabb worldBounds{};
@@ -1615,6 +1697,28 @@ void Renderer::updateIndirectDrawBuffer(uint32_t frameIndex)
     }
 
     frameIndirectDrawBuffers_.at(frameIndex)
+        .upload(std::as_bytes(std::span<const VkDrawIndexedIndirectCommand>(indirectCommands.data(),
+                                                                            indirectCommands.size())));
+}
+
+void Renderer::updateShadowIndirectDrawBuffer(uint32_t frameIndex)
+{
+    if (!isShadowIndirectActive() || shadowDrawItems_.empty()) {
+        return;
+    }
+
+    std::vector<VkDrawIndexedIndirectCommand> indirectCommands(shadowDrawItems_.size());
+    for (size_t drawIndex = 0; drawIndex < shadowDrawItems_.size(); ++drawIndex) {
+        const DrawItem& drawItem = shadowDrawItems_[drawIndex];
+        VkDrawIndexedIndirectCommand& command = indirectCommands[drawIndex];
+        command.indexCount = drawItem.indexCount;
+        command.instanceCount = 1;
+        command.firstIndex = drawItem.firstIndex;
+        command.vertexOffset = drawItem.vertexOffset;
+        command.firstInstance = drawItem.frameDataIndex;
+    }
+
+    frameShadowIndirectDrawBuffers_.at(frameIndex)
         .upload(std::as_bytes(std::span<const VkDrawIndexedIndirectCommand>(indirectCommands.data(),
                                                                             indirectCommands.size())));
 }
@@ -1711,6 +1815,12 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
                 << " meshBatches=" << cullingStats_.batchCount
                 << " commandCount=" << cullingStats_.commandCount;
     }
+    message << "\nShadow culling:\n"
+            << "  total shadow draw items: " << shadowCullingStats_.totalDrawItems << "\n"
+            << "  visible shadow draw items: " << shadowCullingStats_.visibleDrawItems << "\n"
+            << "  culled shadow draw items: " << shadowCullingStats_.culledDrawItems << "\n"
+            << "  shadow batches: " << shadowCullingStats_.batchCount << "\n"
+            << "  shadow indirect path: " << (shadowCullingStats_.indirectDrawing ? "enabled" : "direct fallback");
     Logger::info(message.str());
 }
 
@@ -1720,10 +1830,13 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
 
     if (renderObjects_.empty()) {
-        drawItems_.clear();
+        allDrawItems_.clear();
         visibleDrawItems_.clear();
+        shadowDrawItems_.clear();
         meshDrawBatches_.clear();
+        shadowMeshDrawBatches_.clear();
         cullingStats_ = {};
+        shadowCullingStats_ = {};
         if (frameIndex < frameGpuCullTotalDrawItems_.size()) {
             frameGpuCullTotalDrawItems_[frameIndex] = 0;
         }
@@ -1776,7 +1889,7 @@ void Renderer::updateFrameData(uint32_t frameIndex)
 
     buildDrawItems();
     if (frameIndex < frameGpuCullTotalDrawItems_.size()) {
-        frameGpuCullTotalDrawItems_[frameIndex] = static_cast<uint32_t>(std::min(drawItems_.size(),
+        frameGpuCullTotalDrawItems_[frameIndex] = static_cast<uint32_t>(std::min(allDrawItems_.size(),
                                                                                  static_cast<size_t>(kMaxDrawItems)));
     }
     if (frameIndex < frameGpuCullReadbackReady_.size()) {
@@ -1790,18 +1903,24 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     }
 
     const renderer::Frustum cameraFrustum = renderer::Frustum::fromViewProjection(viewProjection);
+    const renderer::Frustum lightFrustum = renderer::Frustum::fromViewProjection(lightViewProjection);
     for (size_t planeIndex = 0; planeIndex < frameFrustumPlanes_.size(); ++planeIndex) {
         const renderer::FrustumPlane& plane = cameraFrustum.planes[planeIndex];
         frameFrustumPlanes_[planeIndex] = glm::vec4(plane.normal, plane.distance);
     }
 
+    buildShadowDrawItems(lightFrustum);
+    buildShadowMeshDrawBatches();
+    shadowCullingStats_.indirectDrawing = isShadowIndirectActive();
+    updateShadowIndirectDrawBuffer(frameIndex);
+
     const bool gpuCullingActive = isGpuCullingActive();
     if (gpuCullingActive) {
-        visibleDrawItems_ = drawItems_;
+        visibleDrawItems_ = allDrawItems_;
         cullingStats_ = {};
         cullingStats_.gpuCulling = true;
         cullingStats_.totalObjects = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
-        cullingStats_.totalDrawItems = drawItems_.size();
+        cullingStats_.totalDrawItems = allDrawItems_.size();
     } else {
         buildVisibleDrawItems(cameraFrustum);
     }
@@ -1830,11 +1949,11 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         updateIndirectDrawBuffer(frameIndex);
     }
 
-    const size_t objectFrameCount = std::min(drawItems_.size(), static_cast<size_t>(kMaxDrawItems));
+    const size_t objectFrameCount = std::min(allDrawItems_.size(), static_cast<size_t>(kMaxDrawItems));
     std::vector<ObjectFrameData> objectFrameData(objectFrameCount);
 
     for (size_t drawIndex = 0; drawIndex < objectFrameCount; ++drawIndex) {
-        const DrawItem& drawItem = drawItems_[drawIndex];
+        const DrawItem& drawItem = allDrawItems_[drawIndex];
         if (drawItem.objectIndex >= renderObjects_.size()) {
             continue;
         }
@@ -1960,6 +2079,13 @@ bool Renderer::isFrameIndirectCountPathActive(uint32_t frameIndex) const
     return frameIndex < frameGpuCullIndirectCountPath_.size() && frameGpuCullIndirectCountPath_[frameIndex] != 0;
 }
 
+bool Renderer::isShadowIndirectActive() const
+{
+    return shadowIndirectAvailable_ && context_.device().multiDrawIndirectEnabled() &&
+           context_.device().drawIndirectFirstInstanceEnabled() &&
+           frameShadowIndirectDrawBuffers_.size() == frames_.size();
+}
+
 VkDescriptorSet Renderer::globalMaterialDescriptorSet() const
 {
     if (!materialVariants_.empty()) {
@@ -1971,7 +2097,7 @@ VkDescriptorSet Renderer::globalMaterialDescriptorSet() const
 
 void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
 {
-    if (!isGpuCullingActive() || drawItems_.empty()) {
+    if (!isGpuCullingActive() || allDrawItems_.empty()) {
         return;
     }
     if (currentFrame_ >= gpuCullDescriptorSets_.size() || currentFrame_ >= frameBatchVisibleCountBuffers_.size() ||
@@ -2023,7 +2149,7 @@ void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
 
     GpuCullPushConstants pushConstants{};
     pushConstants.frustumPlanes = frameFrustumPlanes_;
-    pushConstants.params = glm::uvec4(static_cast<uint32_t>(drawItems_.size()),
+    pushConstants.params = glm::uvec4(static_cast<uint32_t>(allDrawItems_.size()),
                                       isMainPassMultiDrawIndirectActive() ? 1U : 0U,
                                       indirectCountPathActive ? 1U : 0U,
                                       0);
@@ -2036,7 +2162,7 @@ void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
 
     rhi::debug::beginLabel(commandBuffer, "ComputeCullDispatch");
     const uint32_t groupCount =
-        (static_cast<uint32_t>(drawItems_.size()) + kGpuCullLocalSize - 1) / kGpuCullLocalSize;
+        (static_cast<uint32_t>(allDrawItems_.size()) + kGpuCullLocalSize - 1) / kGpuCullLocalSize;
     vkCmdDispatch(commandBuffer, groupCount, 1, 1);
     rhi::debug::endLabel(commandBuffer);
 
@@ -2050,7 +2176,8 @@ void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
     computeBarriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     computeBarriers[0].buffer = frameIndirectDrawBuffers_.at(currentFrame_).buffer();
     computeBarriers[0].offset = 0;
-    computeBarriers[0].size = static_cast<VkDeviceSize>(drawItems_.size() * sizeof(VkDrawIndexedIndirectCommand));
+    computeBarriers[0].size =
+        static_cast<VkDeviceSize>(allDrawItems_.size() * sizeof(VkDrawIndexedIndirectCommand));
 
     computeBarriers[1].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
     computeBarriers[1].srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
@@ -2098,7 +2225,7 @@ void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
 void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex)
 {
     const VkDeviceAddress objectFrameDataBaseAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
-    const size_t shadowDrawItemCount = drawItems_.size();
+    const size_t shadowDrawItemCount = shadowDrawItems_.size();
     const size_t mainDrawItemCount = visibleDrawItems_.size();
 
     renderGraph_.beginFrame(commandBuffer, swapchain_, shadowMap_, imageIndex);
@@ -2127,15 +2254,19 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     vkCmdSetScissor(commandBuffer, 0, 1, &shadowScissor);
 
     const renderer::Mesh* boundShadowMesh = nullptr;
-    for (size_t drawIndex = 0; drawIndex < shadowDrawItemCount; ++drawIndex) {
-        const DrawItem& drawItem = drawItems_[drawIndex];
-        if (!drawItem.mesh || drawItem.frameDataIndex >= kMaxDrawItems) {
-            continue;
-        }
+    const std::string shadowCullingLabel =
+        "ShadowCasterCulling visible " + std::to_string(shadowDrawItemCount) + "/" +
+        std::to_string(shadowCullingStats_.totalDrawItems);
+    rhi::debug::beginLabel(commandBuffer, shadowCullingLabel);
+    rhi::debug::endLabel(commandBuffer);
 
-        const PushConstants pushConstants{objectFrameDataBaseAddress +
-                                          static_cast<VkDeviceAddress>(drawItem.frameDataIndex * sizeof(ObjectFrameData))};
-
+    const bool shadowIndirectActive = isShadowIndirectActive();
+    const std::string shadowDrawLabel =
+        "ShadowPass IndirectDrawItems " + std::to_string(shadowDrawItemCount) +
+        (shadowIndirectActive ? " indirect" : " direct fallback");
+    rhi::debug::beginLabel(commandBuffer, shadowDrawLabel);
+    if (shadowIndirectActive && !shadowDrawItems_.empty()) {
+        const PushConstants pushConstants{objectFrameDataBaseAddress};
         vkCmdPushConstants(commandBuffer,
                            shadowPipeline_.layout(),
                            VK_SHADER_STAGE_VERTEX_BIT,
@@ -2143,20 +2274,67 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                            static_cast<uint32_t>(sizeof(PushConstants)),
                            &pushConstants);
 
-        const renderer::Mesh* mesh = drawItem.mesh;
-        if (boundShadowMesh != mesh) {
-            const VkBuffer vertexBuffers[] = {mesh->vertexBuffer()};
-            const VkDeviceSize vertexOffsets[] = {0};
-            vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
-            vkCmdBindIndexBuffer(commandBuffer, mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
-            boundShadowMesh = mesh;
-        }
+        const VkBuffer shadowIndirectDrawBuffer = frameShadowIndirectDrawBuffers_.at(currentFrame_).buffer();
+        const std::string shadowBatchesLabel =
+            "ShadowMeshBatches " + std::to_string(shadowMeshDrawBatches_.size()) + " commands " +
+            std::to_string(shadowDrawItemCount);
+        rhi::debug::beginLabel(commandBuffer, shadowBatchesLabel);
+        for (const MeshDrawBatch& batch : shadowMeshDrawBatches_) {
+            if (!batch.mesh || batch.drawItemCount == 0) {
+                continue;
+            }
 
-        if (drawItem.indexCount > 0) {
-            vkCmdDrawIndexed(
-                commandBuffer, drawItem.indexCount, 1, drawItem.firstIndex, drawItem.vertexOffset, 0);
+            if (boundShadowMesh != batch.mesh) {
+                const VkBuffer vertexBuffers[] = {batch.mesh->vertexBuffer()};
+                const VkDeviceSize vertexOffsets[] = {0};
+                vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
+                vkCmdBindIndexBuffer(commandBuffer, batch.mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+                boundShadowMesh = batch.mesh;
+            }
+
+            const VkDeviceSize indirectOffset =
+                static_cast<VkDeviceSize>(batch.beginDrawItem * sizeof(VkDrawIndexedIndirectCommand));
+            vkCmdDrawIndexedIndirect(commandBuffer,
+                                     shadowIndirectDrawBuffer,
+                                     indirectOffset,
+                                     batch.drawItemCount,
+                                     sizeof(VkDrawIndexedIndirectCommand));
+        }
+        rhi::debug::endLabel(commandBuffer);
+    } else {
+        for (size_t drawIndex = 0; drawIndex < shadowDrawItemCount; ++drawIndex) {
+            const DrawItem& drawItem = shadowDrawItems_[drawIndex];
+            if (!drawItem.mesh || drawItem.frameDataIndex >= kMaxDrawItems) {
+                continue;
+            }
+
+            const PushConstants pushConstants{
+                objectFrameDataBaseAddress +
+                static_cast<VkDeviceAddress>(drawItem.frameDataIndex * sizeof(ObjectFrameData))};
+
+            vkCmdPushConstants(commandBuffer,
+                               shadowPipeline_.layout(),
+                               VK_SHADER_STAGE_VERTEX_BIT,
+                               0,
+                               static_cast<uint32_t>(sizeof(PushConstants)),
+                               &pushConstants);
+
+            const renderer::Mesh* mesh = drawItem.mesh;
+            if (boundShadowMesh != mesh) {
+                const VkBuffer vertexBuffers[] = {mesh->vertexBuffer()};
+                const VkDeviceSize vertexOffsets[] = {0};
+                vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
+                vkCmdBindIndexBuffer(commandBuffer, mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+                boundShadowMesh = mesh;
+            }
+
+            if (drawItem.indexCount > 0) {
+                vkCmdDrawIndexed(
+                    commandBuffer, drawItem.indexCount, 1, drawItem.firstIndex, drawItem.vertexOffset, 0);
+            }
         }
     }
+    rhi::debug::endLabel(commandBuffer);
 
     renderGraph_.endShadowPass();
     timestampQuery_.writeEnd(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::ShadowPass);

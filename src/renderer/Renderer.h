@@ -86,6 +86,14 @@ private:
         bool gpuCulling = false;
     };
 
+    struct ShadowCullingStats {
+        size_t totalDrawItems = 0;
+        size_t visibleDrawItems = 0;
+        size_t culledDrawItems = 0;
+        size_t batchCount = 0;
+        bool indirectDrawing = false;
+    };
+
     void createMaterialDescriptorSetLayout();
     void createBindlessMaterialTextureHeap();
     void createSkyboxDescriptorSetLayout();
@@ -111,13 +119,20 @@ private:
     void createSkyboxDescriptorSet();
     void createObjectFrameDataBuffers();
     void createIndirectDrawBuffers();
+    void createShadowIndirectDrawBuffers();
     void updateGpuCullInputBuffer(uint32_t frameIndex);
     void updateFrameData(uint32_t frameIndex);
     void buildDrawItems();
     void buildVisibleDrawItems(const renderer::Frustum& frustum);
     void buildMeshDrawBatches();
+    void buildShadowDrawItems(const renderer::Frustum& lightFrustum);
+    void buildShadowMeshDrawBatches();
+    void buildMeshDrawBatchesForItems(
+        const std::vector<DrawItem>& drawItems,
+        std::vector<MeshDrawBatch>& batches) const;
     bool appendDrawItemsForObject(uint32_t objectIndex, std::vector<DrawItem>& drawItems) const;
     void updateIndirectDrawBuffer(uint32_t frameIndex);
+    void updateShadowIndirectDrawBuffer(uint32_t frameIndex);
     [[nodiscard]] const renderer::Material* resolveMaterial(
         const renderer::RenderObject& object,
         const renderer::MeshPrimitive* primitive) const;
@@ -130,6 +145,7 @@ private:
     [[nodiscard]] bool isMainPassMultiDrawIndirectActive() const;
     [[nodiscard]] bool isMainPassIndirectCountSupported() const;
     [[nodiscard]] bool isFrameIndirectCountPathActive(uint32_t frameIndex) const;
+    [[nodiscard]] bool isShadowIndirectActive() const;
     [[nodiscard]] VkDescriptorSet globalMaterialDescriptorSet() const;
     void nameTextureResources(const rhi::VulkanTexture& texture, std::string_view name) const;
     void nameEnvironmentMapResources(const rhi::VulkanEnvironmentMap& environmentMap, std::string_view name) const;
@@ -175,12 +191,15 @@ private:
     std::vector<renderer::Material> materialVariants_;
     std::vector<renderer::Material> importedMaterials_;
     std::vector<renderer::RenderObject> renderObjects_;
-    std::vector<DrawItem> drawItems_;
+    std::vector<DrawItem> allDrawItems_;
     std::vector<DrawItem> visibleDrawItems_;
+    std::vector<DrawItem> shadowDrawItems_;
     std::vector<MeshDrawBatch> meshDrawBatches_;
+    std::vector<MeshDrawBatch> shadowMeshDrawBatches_;
     std::vector<rhi::VulkanBuffer> frameObjectDataBuffers_;
     std::vector<rhi::VulkanBuffer> frameCullInputBuffers_;
     std::vector<rhi::VulkanBuffer> frameIndirectDrawBuffers_;
+    std::vector<rhi::VulkanBuffer> frameShadowIndirectDrawBuffers_;
     std::vector<rhi::VulkanBuffer> frameBatchVisibleCountBuffers_;
     std::vector<rhi::VulkanBuffer> frameBatchVisibleCountReadbackBuffers_;
     std::vector<uint32_t> frameGpuCullTotalDrawItems_;
@@ -202,11 +221,13 @@ private:
     std::chrono::steady_clock::time_point lastGpuTimingPrint_ = std::chrono::steady_clock::now();
     std::array<glm::vec4, 6> frameFrustumPlanes_{};
     CullingStats cullingStats_{};
+    ShadowCullingStats shadowCullingStats_{};
     bool initialized_ = false;
     bool useBindlessMaterialTextures_ = true;
     bool bindlessMaterialTexturesAvailable_ = false;
     bool useGpuCulling_ = true;
     bool gpuCullingAvailable_ = false;
+    bool shadowIndirectAvailable_ = false;
     bool normalMapAssetLoaded_ = false;
     bool metallicRoughnessMapAssetLoaded_ = false;
 };

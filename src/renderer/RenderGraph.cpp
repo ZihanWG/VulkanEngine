@@ -24,7 +24,9 @@ RenderGraph::RenderGraph()
               "ShadowPass",
               RenderPassType::Shadow,
               {
-                  {kShadowMapDepth, RenderResourceAccess::Write, "Writes the directional shadow map depth image."},
+                  {kShadowMapDepth,
+                   RenderResourceAccess::Write,
+                   "Writes the directional shadow map with material-independent shadow-caster draws."},
               }},
           RenderPassNode{
               "MainPass",
@@ -32,7 +34,7 @@ RenderGraph::RenderGraph()
               {
                   {kShadowMapDepth,
                    RenderResourceAccess::Read,
-                   "Samples the shadow map from material set 0 binding 1."},
+                   "Samples the shadow map from global/material set 0 binding 1."},
                   {kSwapchainColor, RenderResourceAccess::Write, "Writes the acquired swapchain color image."},
                   {kMainDepth,
                    RenderResourceAccess::Write,
