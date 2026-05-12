@@ -57,6 +57,9 @@ private:
         float nearPlane = 0.1f;
         float farPlane = 100.0f;
         float shadowDistance = 40.0f;
+        bool enableTexelSnapping = true;
+        bool enableCascadeDebugColors = false;
+        bool freezeCascades = false;
         float depthBiasConstant = 0.002f;
         float depthBiasSlope = 0.005f;
     };
@@ -280,6 +283,7 @@ private:
     bool useGpuShadowCulling_ = true;
     bool gpuShadowCullingAvailable_ = false;
     bool shadowIndirectAvailable_ = false;
+    bool cascadeDataInitialized_ = false;
     bool normalMapAssetLoaded_ = false;
     bool metallicRoughnessMapAssetLoaded_ = false;
 };

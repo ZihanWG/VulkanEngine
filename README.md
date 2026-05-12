@@ -14,7 +14,7 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - Tangent-space normal mapping and Cook-Torrance GGX direct lighting.
 - Procedural skybox, diffuse irradiance cubemap, prefiltered specular cubemap, and split-sum BRDF LUT.
 - Compact Kulla-Conty-style multi-scattering compensation for PBR response.
-- PCF-filtered cascaded directional shadow map with optional per-cascade GPU shadow-caster culling and an indirect shadow draw path.
+- PCF-filtered cascaded directional shadow map with basic texel snapping, optional cascade debug tinting, per-cascade GPU shadow-caster culling, and an indirect shadow draw path.
 - Descriptor indexing path for bindless material texture arrays, with a legacy descriptor-set fallback.
 - Minimal render graph that documents shadow/main pass order and centralizes image transitions.
 - GPU frustum culling compute pass that compacts visible indirect draw commands and writes per-batch visible counts.
@@ -38,7 +38,7 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 
 1. Wait for the current frame fence and acquire the next swapchain image.
 2. Reset the fence and command buffer, update transforms, and build all `DrawItem` records from render objects and mesh primitives.
-3. Extract the camera frustum from `projection * view`, compute CSM split depths, and build one directional light view-projection matrix per cascade.
+3. Extract the camera frustum from `projection * view`, compute CSM split depths, and build one texel-snapped directional light view-projection matrix per cascade.
 4. Build CPU fallback shadow draw items/batches for each cascade, and build main-pass mesh-compatible draw batches for GPU culling or the CPU fallback.
 5. Upload per-object MVP/model/light/material data into the current frame's Buffer Device Address object-data buffer.
 6. Begin the minimal `RenderGraph` recording.
@@ -139,7 +139,7 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - Shadow GPU culling is optional and still uses CPU-built draw items/batches; it is not alpha-tested, occlusion-driven, or BVH-backed yet.
 - The cascaded shadow pass keeps a direct `vkCmdDrawIndexed` fallback when GPU shadow culling or shadow indirect drawing is unavailable.
 - The old zero-count indirect command path is still retained as a fallback when indirect-count drawing is unavailable.
-- CSM bounds are fitted to camera frustum slices but are not texel-snapped stable bounds yet.
+- CSM bounds use basic texel snapping, but they do not yet use stable crop matrices, cascade blending, or per-cascade resolution control.
 - Texture color space is not fully separated yet. Base color should eventually use sRGB while normal and metallic-roughness textures stay linear.
 - Upload paths still use simple one-time command buffers and queue idle waits, which is acceptable for initialization but not ideal for runtime streaming.
 - `RenderGraph` is still minimal/manual and not a fully automatic dependency graph.
@@ -152,8 +152,8 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - GPU-built shadow batches.
 - Add alpha-tested shadow casters.
 - Add shadow LOD.
-- Improve shadow stability with tighter/stable shadow bounds and texel snapping.
-- Add CSM debug visualization and split tuning tools.
+- Improve CSM with stable crop matrices, cascade blending, split tuning, and per-cascade resolution control.
+- Add shadow debug UI and ImGui controls.
 - Add shadow caster culling acceleration structures.
 - Add occlusion culling.
 - Add BVH or other spatial partitioning.
@@ -854,3 +854,32 @@ Future CSM and shadow work:
 - VSM or EVSM
 - occlusion culling
 - BVH or spatial partitioning
+
+## Milestone 37: CSM Stabilization and Cascade Debug Visualization
+
+Milestone 37 keeps the Milestone 36 CSM resource model and adds basic stabilization/debug controls. `CsmSettings` now includes conservative hardcoded toggles for texel snapping, cascade debug colors, and cascade freezing. The shadow resource remains a 2D array depth image, and the main shader still samples it as `sampler2DArray` from descriptor binding 1.
+
+For each cascade, the renderer still computes practical split depths and fits light-space orthographic bounds around the camera frustum slice. When texel snapping is enabled, it derives:
+
+```text
+worldUnitsPerTexel = orthoExtent / shadowResolution
+```
+
+The directional-light view center is then snapped to that increment in the light right/up axes, with a one-texel guard band on the fitted orthographic bounds. This reduces shadow shimmering caused by sub-texel camera motion. It is intentionally a basic CSM stabilization method, not a production-grade solution with stable crop matrices, cascade blending, or per-cascade resolution control.
+
+The main fragment shader can optionally tint shaded pixels by the selected cascade index: red, green, blue, and yellow for cascades 0 through 3. The tint is mixed subtly over the final lighting result so it can diagnose cascade selection without replacing material shading. The toggle is carried through the existing `ObjectFrameData` BDA path by using `cameraPosition.w`; no descriptor, UBO, material layout, bindless texture set, or push-constant contract was added.
+
+The optional `freezeCascades` setting preserves the previous cascade matrices and split depths after the first update, which is useful when inspecting cascade placement. The throttled timing/culling log now includes the active cascade count plus texel snapping, debug color, and freeze states.
+
+Main-pass GPU culling, bindless material descriptors, indirect-count drawing, GPU shadow culling, the shadow indirect path, IBL, the BRDF LUT, Kulla-Conty-style compensation, render graph pass order, and swapchain synchronization are unchanged.
+
+Future CSM and shadow work:
+
+- better cascade split tuning
+- stable crop matrices
+- cascade blending
+- per-cascade resolution control
+- alpha-tested shadow casters
+- VSM/EVSM
+- shadow debug UI
+- ImGui controls

@@ -49,6 +49,7 @@ layout(location = 16) flat out uvec4 vTextureIndices;
 layout(location = 17) out float vViewDepth;
 layout(location = 18) flat out vec4 vCascadeSplits;
 layout(location = 19) flat out uint vCascadeCount;
+layout(location = 20) flat out float vCascadeDebugEnabled;
 
 void main()
 {
@@ -82,4 +83,5 @@ void main()
     vViewDepth = dot(objectData.cameraForward.xyz, worldPosition.xyz - objectData.cameraPosition.xyz);
     vCascadeSplits = objectData.cascadeSplits;
     vCascadeCount = uint(max(objectData.cameraForward.w, 1.0) + 0.5);
+    vCascadeDebugEnabled = objectData.cameraPosition.w;
 }

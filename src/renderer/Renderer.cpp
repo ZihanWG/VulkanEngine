@@ -47,7 +47,7 @@ struct ObjectFrameData {
     glm::vec4 shadowSettings{0.002f, 0.005f, 1.0f, 1.0f};
     glm::vec4 baseColorFactor{1.0f};
     glm::vec4 materialParams{0.0f, 0.5f, 1.0f, 0.0f};
-    glm::vec4 cameraPosition{0.0f, 0.0f, 0.0f, 1.0f};
+    glm::vec4 cameraPosition{0.0f, 0.0f, 0.0f, 0.0f};
     glm::vec4 cameraForward{0.0f, 0.0f, -1.0f, 4.0f};
     glm::uvec4 textureIndices{0, 0, 0, 0};
 };
@@ -59,6 +59,8 @@ struct ObjectFrameData {
 // materialParams.x = metallic, y = roughness, z = multiScatterStrength,
 // and w is reserved for future scalar material data.
 // cascadeSplits stores positive camera-view depths for cascades 0..3.
+// cameraPosition.xyz is the world-space camera position, and w stores the
+// cascade debug-color toggle as 0.0 or 1.0.
 // cameraForward.xyz is the camera forward vector, and w stores cascade count.
 // textureIndices.x = base color, y = normal, z = metallic-roughness, w = reserved.
 static_assert(offsetof(ObjectFrameData, mvp) == 0);
@@ -1586,6 +1588,10 @@ void Renderer::updateCascades(float aspectRatio)
     const float shadowFarPlane = std::clamp(csmSettings_.shadowDistance, nearPlane + 0.001f, cameraFarPlane);
     const float lambda = std::clamp(csmSettings_.lambda, 0.0f, 1.0f);
 
+    if (csmSettings_.freezeCascades && cascadeDataInitialized_) {
+        return;
+    }
+
     const glm::vec3 cameraPosition = camera_.position;
     const glm::vec3 cameraForward = glm::normalize(camera_.target - camera_.position);
     const glm::vec3 cameraRight = glm::normalize(glm::cross(cameraForward, camera_.up));
@@ -1598,6 +1604,8 @@ void Renderer::updateCascades(float aspectRatio)
         std::abs(glm::dot(lightDirection, glm::vec3{0.0f, 1.0f, 0.0f})) > 0.95f
             ? glm::vec3{0.0f, 0.0f, 1.0f}
             : glm::vec3{0.0f, 1.0f, 0.0f};
+    const glm::vec3 lightRight = glm::normalize(glm::cross(lightDirection, lightUp));
+    const glm::vec3 lightBasisUp = glm::normalize(glm::cross(lightRight, lightDirection));
 
     frameCascadeSplits_ = glm::vec4(shadowFarPlane);
 
@@ -1621,9 +1629,8 @@ void Renderer::updateCascades(float aspectRatio)
             corners[baseIndex + 3] = center + cameraRight * halfWidth + cameraUp * halfHeight;
         };
 
-        // Each cascade fits the camera-frustum slice between cascadeNear and
-        // cascadeFar. This is intentionally readable; texel snapping and caster
-        // expansion are left as follow-up stability work.
+        // Each cascade still starts from the readable fitted bounds of the
+        // camera-frustum slice between cascadeNear and cascadeFar.
         writeDepthCorners(cascadeNear, 0);
         writeDepthCorners(cascadeFar, 4);
 
@@ -1633,15 +1640,47 @@ void Renderer::updateCascades(float aspectRatio)
         }
         cascadeCenter /= static_cast<float>(corners.size());
 
-        const glm::mat4 lightView = glm::lookAt(cascadeCenter - lightDirection, cascadeCenter, lightUp);
+        const glm::mat4 fitLightView = glm::lookAt(cascadeCenter - lightDirection, cascadeCenter, lightUp);
         glm::vec3 minBounds{std::numeric_limits<float>::infinity()};
         glm::vec3 maxBounds{-std::numeric_limits<float>::infinity()};
         for (const glm::vec3& corner : corners) {
-            const glm::vec3 lightSpaceCorner = glm::vec3(lightView * glm::vec4(corner, 1.0f));
+            const glm::vec3 lightSpaceCorner = glm::vec3(fitLightView * glm::vec4(corner, 1.0f));
             minBounds = glm::min(minBounds, lightSpaceCorner);
             maxBounds = glm::max(maxBounds, lightSpaceCorner);
         }
 
+        const float orthoWidth = std::max(maxBounds.x - minBounds.x, 0.001f);
+        const float orthoHeight = std::max(maxBounds.y - minBounds.y, 0.001f);
+        const float orthoExtent = std::max(orthoWidth, orthoHeight);
+        const float shadowResolution = static_cast<float>(std::max(shadowSettings_.resolution, 1U));
+        const float worldUnitsPerTexel = orthoExtent / shadowResolution;
+
+        glm::vec3 lightViewCenter = cascadeCenter;
+        if (csmSettings_.enableTexelSnapping && worldUnitsPerTexel > std::numeric_limits<float>::epsilon()) {
+            // CSM shimmering happens when the camera moves by a sub-texel amount
+            // in the light projection: static receivers then sample a slightly
+            // different part of the shadow map every frame. Snapping the
+            // light-view center to worldUnitsPerTexel increments keeps the
+            // shadow texel grid from sliding continuously with the camera. This
+            // is a basic stabilization step, not a full production CSM solution
+            // with stable crop matrices, cascade blending, or per-cascade tuning.
+            const float centerX = glm::dot(lightViewCenter, lightRight);
+            const float centerY = glm::dot(lightViewCenter, lightBasisUp);
+            const float snappedCenterX = std::round(centerX / worldUnitsPerTexel) * worldUnitsPerTexel;
+            const float snappedCenterY = std::round(centerY / worldUnitsPerTexel) * worldUnitsPerTexel;
+            lightViewCenter += lightRight * (snappedCenterX - centerX) +
+                               lightBasisUp * (snappedCenterY - centerY);
+
+            // The orthographic bounds were fitted before moving the light view
+            // by less than one shadow texel, so add a one-texel guard band to
+            // preserve coverage after the quantized center shift.
+            minBounds.x -= worldUnitsPerTexel;
+            minBounds.y -= worldUnitsPerTexel;
+            maxBounds.x += worldUnitsPerTexel;
+            maxBounds.y += worldUnitsPerTexel;
+        }
+
+        const glm::mat4 lightView = glm::lookAt(lightViewCenter - lightDirection, lightViewCenter, lightUp);
         const float depthRange = std::max(cascadeFar - cascadeNear, 1.0f);
         const float zPadding = std::max(depthRange * 2.0f, 10.0f);
         const float orthoNear = std::max(0.001f, -maxBounds.z - zPadding);
@@ -1672,6 +1711,8 @@ void Renderer::updateCascades(float aspectRatio)
         frameCascadeSplits_[cascadeIndex] = shadowFarPlane;
         frameShadowCascadeFrustumPlanes_[cascadeIndex] = frameShadowCascadeFrustumPlanes_[cascadeCount - 1];
     }
+
+    cascadeDataInitialized_ = true;
 }
 
 const renderer::Material* Renderer::resolveMaterial(const renderer::RenderObject& object,
@@ -2100,7 +2141,12 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
                 << " meshBatches=" << cullingStats_.batchCount
                 << " commandCount=" << cullingStats_.commandCount;
     }
-    message << "\nShadow culling:\n";
+    message << "\nCSM:\n"
+            << "  cascades: " << activeCascadeCount() << "\n"
+            << "  texel snapping: " << (csmSettings_.enableTexelSnapping ? "enabled" : "disabled") << "\n"
+            << "  debug colors: " << (csmSettings_.enableCascadeDebugColors ? "enabled" : "disabled") << "\n"
+            << "  freeze cascades: " << (csmSettings_.freezeCascades ? "enabled" : "disabled") << "\n";
+    message << "Shadow culling:\n";
     message << "  cascade count: " << shadowCullingStats_.cascadeCount << "\n"
             << "  total shadow draw items across cascades: " << shadowCullingStats_.totalDrawItems << "\n"
             << "  visible shadow draw items across cascades: " << shadowCullingStats_.visibleDrawItems << "\n"
@@ -2383,7 +2429,8 @@ void Renderer::updateFrameData(uint32_t frameIndex)
                                         material->metallicRoughnessTextureIndex,
                                         0};
         }
-        frameData.cameraPosition = glm::vec4(camera_.position, 1.0f);
+        frameData.cameraPosition =
+            glm::vec4(camera_.position, csmSettings_.enableCascadeDebugColors ? 1.0f : 0.0f);
         frameData.cameraForward =
             glm::vec4(glm::normalize(camera_.target - camera_.position), static_cast<float>(cascadeCount));
     }

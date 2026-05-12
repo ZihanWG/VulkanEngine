@@ -24,6 +24,7 @@ layout(location = 15) in vec3 vBitangent;
 layout(location = 17) in float vViewDepth;
 layout(location = 18) flat in vec4 vCascadeSplits;
 layout(location = 19) flat in uint vCascadeCount;
+layout(location = 20) flat in float vCascadeDebugEnabled;
 layout(location = 0) out vec4 outColor;
 
 const float PI = 3.14159265359;
@@ -62,15 +63,28 @@ int selectShadowCascade()
     return cascadeCount - 1;
 }
 
+vec3 cascadeDebugColor(int cascadeIndex)
+{
+    if (cascadeIndex == 0) {
+        return vec3(1.0, 0.0, 0.0);
+    }
+    if (cascadeIndex == 1) {
+        return vec3(0.0, 1.0, 0.0);
+    }
+    if (cascadeIndex == 2) {
+        return vec3(0.0, 0.25, 1.0);
+    }
+    return vec3(1.0, 1.0, 0.0);
+}
+
 float compareShadowDepth(vec2 shadowUV, float currentDepth, float bias, int cascadeIndex)
 {
     float closestDepth = texture(uShadowMap, vec3(shadowUV, float(cascadeIndex))).r;
     return currentDepth - bias <= closestDepth ? 1.0 : 0.0;
 }
 
-float sampleShadowFactor(vec3 normal)
+float sampleShadowFactor(vec3 normal, int cascadeIndex)
 {
-    int cascadeIndex = selectShadowCascade();
     if (cascadeIndex < 0) {
         return 1.0;
     }
@@ -201,7 +215,8 @@ void main()
     vec3 specular =
         distribution * geometry * fresnel / max(4.0 * normalView * normalLight, EPSILON);
 
-    float shadowFactor = sampleShadowFactor(normal);
+    int cascadeIndex = selectShadowCascade();
+    float shadowFactor = sampleShadowFactor(normal, cascadeIndex);
     vec3 irradiance = texture(uDiffuseIrradianceMap, normal).rgb;
     vec3 kD = (1.0 - metallic) * baseColor;
     vec3 diffuseIbl = irradiance * kD;
@@ -223,6 +238,11 @@ void main()
 
     vec3 ambient = diffuseIbl + specularIbl + vAmbientColor * baseColor * 0.05;
     vec3 direct = (diffuse + specular) * vLightColor * normalLight * shadowFactor;
+    vec3 finalColor = ambient + direct;
 
-    outColor = vec4(ambient + direct, alpha);
+    if (vCascadeDebugEnabled > 0.5 && cascadeIndex >= 0) {
+        finalColor = mix(finalColor, cascadeDebugColor(cascadeIndex), 0.3);
+    }
+
+    outColor = vec4(finalColor, alpha);
 }
