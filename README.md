@@ -17,7 +17,7 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - PCF-filtered directional shadow map.
 - Descriptor indexing path for bindless material texture arrays, with a legacy descriptor-set fallback.
 - Minimal render graph that documents shadow/main pass order and centralizes image transitions.
-- GPU frustum culling compute pass that writes indirect draw commands and a visible draw count.
+- GPU frustum culling compute pass that compacts visible indirect draw commands and writes per-batch visible counts.
 - Multi-draw indirect batching by mesh-compatible ranges on the bindless path.
 - GPU timestamp queries and debug labels for capture/profiling orientation.
 
@@ -39,11 +39,11 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 1. Wait for the current frame fence and acquire the next swapchain image.
 2. Reset the fence and command buffer, update transforms, and build `DrawItem` records from render objects and mesh primitives.
 3. Extract the camera frustum from `projection * view`.
-4. Upload culling input records for the GPU path, or build/upload a CPU-visible indirect command list for the fallback path.
+4. Build mesh-compatible draw batches and upload culling input records for the GPU path, or build/upload a CPU-visible indirect command list for the fallback path.
 5. Upload per-object MVP/model/light/material data into the current frame's Buffer Device Address object-data buffer.
 6. Begin the minimal `RenderGraph` recording.
 7. Transition the shadow map, begin depth-only Dynamic Rendering, and draw shadow casters with the shadow pipeline.
-8. Reset the visible-count buffer, dispatch the compute culling pass, barrier shader writes for indirect/count reads, and copy the visible count for readback.
+8. Reset the batch visible-count buffer, dispatch the compute culling pass, barrier shader writes for indirect/count reads, and copy visible counts for readback.
 9. Transition the swapchain color image and main depth image for the main pass.
 10. Begin main Dynamic Rendering, draw the skybox, bind global and bindless material descriptors when available, and issue indirect indexed draws.
 11. End Dynamic Rendering, transition the swapchain image to present, submit with `vkQueueSubmit2`, and present.
@@ -82,7 +82,7 @@ GPU culling compute descriptor set:
 
 - binding 0 = per-frame culling input storage buffer
 - binding 1 = per-frame indirect command output storage buffer
-- binding 2 = per-frame visible draw count storage buffer
+- binding 2 = per-frame batch visible draw count storage buffer
 
 Object and material scalar data still use Buffer Device Address plus a vertex-stage push constant. On the bindless multi-draw path, the pushed address is the base of the current frame's `ObjectFrameData` array, and indirect `firstInstance` selects the object-data entry. The fallback path still pushes one per-draw object-data address with `firstInstance = 0`.
 
@@ -129,8 +129,8 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 
 ## Known Limitations
 
-- GPU culling currently still uses a zero-count indirect command path instead of full compact indirect-count drawing.
-- `vkCmdDrawIndexedIndirectCount` support is queried/logged but not yet used as the primary draw path.
+- The shadow pass is still direct draw and does not use GPU culling or indirect command buffers.
+- The old zero-count indirect command path is still retained as a fallback when indirect-count drawing is unavailable.
 - Shadow map bounds are fixed and demo-scene-oriented; they are not yet cascaded shadow maps or texel-snapped stable bounds.
 - Texture color space is not fully separated yet. Base color should eventually use sRGB while normal and metallic-roughness textures stay linear.
 - Upload paths still use simple one-time command buffers and queue idle waits, which is acceptable for initialization but not ideal for runtime streaming.
@@ -139,8 +139,13 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 
 ## Next Milestones
 
-- Replace zero-count indirect drawing with compacted visible command buffers and per-batch indirect-count drawing.
-- Promote `vkCmdDrawIndexedIndirectCount` to the primary GPU-driven path where supported.
+- Build mesh batches fully on the GPU.
+- Move material/object buffers toward a fully GPU-driven layout.
+- Add shadow caster culling.
+- Add occlusion culling.
+- Add BVH or other spatial partitioning.
+- Add LOD.
+- Consider mesh/task shaders in a later renderer branch.
 - Improve shadow stability with tighter scene bounds, cascades, and texel snapping.
 - Separate texture color-space handling and add HDR environment loading.
 - Move runtime streaming away from queue-idle one-time uploads.
@@ -721,4 +726,27 @@ GPU culling:
 
 Bindless material descriptors, the `ObjectFrameData` Buffer Device Address array, `firstInstance` object-data indexing, timestamp profiling, render graph pass order, shadow mapping, IBL, the BRDF LUT, and Kulla-Conty-style compensation are unchanged. The shadow pass remains direct draw over all draw items.
 
-Future GPU-driven work can add compacted visible command buffers, per-batch indirect count buffers, `vkCmdDrawIndexedIndirectCount` for each mesh batch, fully GPU-built mesh batches, shadow caster culling, occlusion culling, BVH or other spatial partitioning, and LOD.
+Milestone 33 follows by adding compacted visible command buffers, per-batch indirect count buffers, and `vkCmdDrawIndexedIndirectCount` for each mesh batch.
+
+## Milestone 33: Per-Batch Indirect Count and Command Compaction
+
+Milestone 33 replaces the active GPU culling draw path's zero-count command stream with compacted visible commands per mesh-compatible batch when the device supports `vkCmdDrawIndexedIndirectCount`.
+
+The renderer still builds mesh-compatible batches on the CPU. Each batch stores its mesh pointer, begin draw-item index, draw-item count, compacted indirect command offset, and offset into a per-frame batch visible-count buffer. The count buffer is one GPU buffer per frame with one `uint` entry per batch, using storage, indirect, transfer-source, and transfer-destination usage.
+
+The per-frame indirect command buffer is now also the compacted output buffer. Each batch owns a fixed region sized to that batch's draw-item count. During compute culling, visible draw items atomically append to `batchVisibleCounts[batchIndex]`, write into `batchOutputBase + localVisibleIndex`, and emit a `VkDrawIndexedIndirectCommand` with `instanceCount = 1` and `firstInstance = objectFrameDataIndex`. Culled draw items do not write compacted commands.
+
+Before dispatch, the renderer clears the batch count buffer with `vkCmdFillBuffer` and uses Synchronization2 so the compute shader sees zeroed counts. After dispatch, Synchronization2 barriers make the compacted command buffer and batch count buffer visible to indirect drawing, and the count buffer is copied to a CPU-visible readback buffer for throttled logging.
+
+On the bindless multi-draw path, the main pass binds global set 0 and bindless material texture set 1, pushes the current frame's `ObjectFrameData` base address, binds each batch's mesh buffers, and calls `vkCmdDrawIndexedIndirectCount` with:
+
+- indirect buffer offset = `batch.compactedCommandOffset * sizeof(VkDrawIndexedIndirectCommand)`
+- count buffer offset = `batch.visibleCountOffset`
+- max draw count = `batch.drawItemCount`
+- stride = `sizeof(VkDrawIndexedIndirectCommand)`
+
+`firstInstance` still selects the `ObjectFrameData` entry. Bindless material textures remain unchanged. The shadow pass remains direct `vkCmdDrawIndexed`. If GPU culling, bindless multi-draw indirect, indirect-count support, or the compacted count resources are unavailable, the renderer keeps the old zero-count indirect path or CPU-visible draw-list fallback.
+
+The throttled log now reports total draw items, visible draw items, culled draw items, batch count, and whether the indirect-count path was enabled.
+
+Future GPU-driven work can add fully GPU-built mesh batches, GPU-driven material/object buffers, shadow caster culling, occlusion culling, BVH or other spatial partitioning, LOD, and mesh/task shaders in a later renderer branch.

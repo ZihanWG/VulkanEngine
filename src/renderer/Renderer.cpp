@@ -71,8 +71,8 @@ constexpr uint32_t kMaxFrameObjects = 1024;
 constexpr uint32_t kMaxDrawItems = 1024;
 constexpr uint32_t kMaxMaterialDescriptorSets = 256;
 constexpr uint32_t kGpuCullLocalSize = 64;
-constexpr VkDeviceSize kVisibleCountBufferSize = sizeof(uint32_t);
-constexpr uint32_t kGpuCullCompactCommands = 0;
+constexpr uint32_t kMaxMeshDrawBatches = kMaxDrawItems;
+constexpr VkDeviceSize kBatchVisibleCountBufferSize = kMaxMeshDrawBatches * sizeof(uint32_t);
 constexpr float kUnboundedCullExtent = 100000000.0f;
 
 const glm::vec4 kDirectionalLightDirection{0.35f, -0.65f, -0.55f, 0.0f};
@@ -92,9 +92,9 @@ struct PushConstants {
 };
 
 // Mirrors src/shaders/cull.comp. std430 keeps vec4 members 16-byte aligned,
-// then packs the four scalar draw fields into the next 16 bytes, for a 48-byte
-// runtime-array stride. objectFrameDataIndex becomes VkDrawIndexedIndirectCommand::firstInstance
-// on the Milestone 31 bindless multi-draw path.
+// then packs scalar draw and batch fields into the next 32 bytes for a 64-byte
+// runtime-array stride. objectFrameDataIndex becomes
+// VkDrawIndexedIndirectCommand::firstInstance on the bindless indirect paths.
 struct GpuCullDrawItem {
     glm::vec4 boundsMin{0.0f};
     glm::vec4 boundsMax{0.0f};
@@ -102,6 +102,10 @@ struct GpuCullDrawItem {
     uint32_t firstIndex = 0;
     int32_t vertexOffset = 0;
     uint32_t objectFrameDataIndex = 0;
+    uint32_t batchIndex = 0;
+    uint32_t batchOutputBase = 0;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
 };
 
 static_assert(offsetof(GpuCullDrawItem, boundsMin) == 0);
@@ -110,7 +114,9 @@ static_assert(offsetof(GpuCullDrawItem, indexCount) == 32);
 static_assert(offsetof(GpuCullDrawItem, firstIndex) == 36);
 static_assert(offsetof(GpuCullDrawItem, vertexOffset) == 40);
 static_assert(offsetof(GpuCullDrawItem, objectFrameDataIndex) == 44);
-static_assert(sizeof(GpuCullDrawItem) == 48);
+static_assert(offsetof(GpuCullDrawItem, batchIndex) == 48);
+static_assert(offsetof(GpuCullDrawItem, batchOutputBase) == 52);
+static_assert(sizeof(GpuCullDrawItem) == 64);
 
 struct GpuCullPushConstants {
     std::array<glm::vec4, 6> frustumPlanes{};
@@ -467,32 +473,34 @@ void Renderer::createGpuCullingResources()
                                       "GpuCullInputBuffer" + std::to_string(frameIndex));
         }
 
-        frameVisibleCountBuffers_.resize(frames_.size());
-        frameVisibleCountReadbackBuffers_.resize(frames_.size());
+        frameBatchVisibleCountBuffers_.resize(frames_.size());
+        frameBatchVisibleCountReadbackBuffers_.resize(frames_.size());
         frameGpuCullTotalDrawItems_.assign(frames_.size(), 0);
+        frameGpuCullBatchCounts_.assign(frames_.size(), 0);
         frameGpuCullReadbackReady_.assign(frames_.size(), 0);
+        frameGpuCullIndirectCountPath_.assign(frames_.size(), 0);
         for (size_t frameIndex = 0; frameIndex < frames_.size(); ++frameIndex) {
             rhi::VulkanBufferCreateInfo gpuCountInfo{};
-            gpuCountInfo.size = kVisibleCountBufferSize;
+            gpuCountInfo.size = kBatchVisibleCountBufferSize;
             gpuCountInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
                                  VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
             gpuCountInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-            frameVisibleCountBuffers_[frameIndex].createBuffer(context_, gpuCountInfo);
+            frameBatchVisibleCountBuffers_[frameIndex].createBuffer(context_, gpuCountInfo);
             rhi::debug::setObjectName(context_.vkDevice(),
-                                      frameVisibleCountBuffers_[frameIndex].buffer(),
+                                      frameBatchVisibleCountBuffers_[frameIndex].buffer(),
                                       VK_OBJECT_TYPE_BUFFER,
-                                      "GpuVisibleCountBuffer" + std::to_string(frameIndex));
+                                      "GpuBatchVisibleCountBuffer" + std::to_string(frameIndex));
 
             rhi::VulkanBufferCreateInfo readbackCountInfo{};
-            readbackCountInfo.size = kVisibleCountBufferSize;
+            readbackCountInfo.size = kBatchVisibleCountBufferSize;
             readbackCountInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
             readbackCountInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
             readbackCountInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
-            frameVisibleCountReadbackBuffers_[frameIndex].createBuffer(context_, readbackCountInfo);
+            frameBatchVisibleCountReadbackBuffers_[frameIndex].createBuffer(context_, readbackCountInfo);
             rhi::debug::setObjectName(context_.vkDevice(),
-                                      frameVisibleCountReadbackBuffers_[frameIndex].buffer(),
+                                      frameBatchVisibleCountReadbackBuffers_[frameIndex].buffer(),
                                       VK_OBJECT_TYPE_BUFFER,
-                                      "GpuVisibleCountReadbackBuffer" + std::to_string(frameIndex));
+                                      "GpuBatchVisibleCountReadbackBuffer" + std::to_string(frameIndex));
         }
 
         VkDescriptorPoolSize poolSize{};
@@ -527,9 +535,9 @@ void Renderer::createGpuCullingResources()
             outputBufferInfo.range = frameIndirectDrawBuffers_[frameIndex].size();
 
             VkDescriptorBufferInfo visibleCountBufferInfo{};
-            visibleCountBufferInfo.buffer = frameVisibleCountBuffers_[frameIndex].buffer();
+            visibleCountBufferInfo.buffer = frameBatchVisibleCountBuffers_[frameIndex].buffer();
             visibleCountBufferInfo.offset = 0;
-            visibleCountBufferInfo.range = kVisibleCountBufferSize;
+            visibleCountBufferInfo.range = kBatchVisibleCountBufferSize;
 
             std::array<VkWriteDescriptorSet, 3> writes{};
             writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -561,10 +569,11 @@ void Renderer::createGpuCullingResources()
         }
 
         gpuCullingAvailable_ = true;
-        Logger::info("GPU frustum culling enabled for main-pass indirect command generation and visible count readback.");
+        Logger::info("GPU frustum culling enabled for main-pass indirect command generation and per-batch visible "
+                     "count readback.");
         if (context_.device().drawIndexedIndirectCountAvailable()) {
-            Logger::info("vkCmdDrawIndexedIndirectCount support detected, but Milestone 32 keeps the mesh-batched "
-                         "zero-count indirect path until per-batch compact command buffers are added.");
+            Logger::info("vkCmdDrawIndexedIndirectCount support detected; compacted per-batch indirect-count drawing "
+                         "will be used when the main pass can use bindless multi-draw indirect.");
         }
     } catch (const std::exception& error) {
         Logger::warn(std::string("GPU frustum culling unavailable; falling back to CPU culling: ") + error.what());
@@ -577,10 +586,12 @@ void Renderer::destroyGpuCullingResources()
     gpuCullingAvailable_ = false;
     gpuCullDescriptorSets_.clear();
     gpuCullDescriptorPool_.reset();
+    frameGpuCullIndirectCountPath_.clear();
     frameGpuCullReadbackReady_.clear();
+    frameGpuCullBatchCounts_.clear();
     frameGpuCullTotalDrawItems_.clear();
-    frameVisibleCountReadbackBuffers_.clear();
-    frameVisibleCountBuffers_.clear();
+    frameBatchVisibleCountReadbackBuffers_.clear();
+    frameBatchVisibleCountBuffers_.clear();
     frameCullInputBuffers_.clear();
     gpuCullPipeline_.reset();
     gpuCullDescriptorSetLayout_.reset();
@@ -1513,8 +1524,8 @@ void Renderer::buildMeshDrawBatches()
 
     const renderer::Mesh* currentMesh = nullptr;
     MeshDrawBatch* currentBatch = nullptr;
-    for (size_t commandIndex = 0; commandIndex < visibleDrawItems_.size(); ++commandIndex) {
-        const DrawItem& drawItem = visibleDrawItems_[commandIndex];
+    for (size_t drawItemIndex = 0; drawItemIndex < visibleDrawItems_.size(); ++drawItemIndex) {
+        const DrawItem& drawItem = visibleDrawItems_[drawItemIndex];
         if (!drawItem.mesh || drawItem.frameDataIndex >= kMaxDrawItems) {
             currentMesh = nullptr;
             currentBatch = nullptr;
@@ -1524,13 +1535,15 @@ void Renderer::buildMeshDrawBatches()
         if (!currentBatch || currentMesh != drawItem.mesh) {
             MeshDrawBatch batch{};
             batch.mesh = drawItem.mesh;
-            batch.firstCommand = static_cast<uint32_t>(commandIndex);
+            batch.beginDrawItem = static_cast<uint32_t>(drawItemIndex);
+            batch.compactedCommandOffset = static_cast<uint32_t>(drawItemIndex);
+            batch.visibleCountOffset = static_cast<uint32_t>(meshDrawBatches_.size() * sizeof(uint32_t));
             meshDrawBatches_.push_back(batch);
             currentBatch = &meshDrawBatches_.back();
             currentMesh = drawItem.mesh;
         }
 
-        ++currentBatch->commandCount;
+        ++currentBatch->drawItemCount;
     }
 
     cullingStats_.batchCount = meshDrawBatches_.size();
@@ -1567,6 +1580,16 @@ void Renderer::updateGpuCullInputBuffer(uint32_t frameIndex)
         gpuDrawItem.firstIndex = drawItem.firstIndex;
         gpuDrawItem.vertexOffset = drawItem.vertexOffset;
         gpuDrawItem.objectFrameDataIndex = drawItem.frameDataIndex;
+    }
+
+    for (size_t batchIndex = 0; batchIndex < meshDrawBatches_.size(); ++batchIndex) {
+        const MeshDrawBatch& batch = meshDrawBatches_[batchIndex];
+        const uint32_t endDrawItem = std::min<uint32_t>(
+            batch.beginDrawItem + batch.drawItemCount, static_cast<uint32_t>(cullDrawItems.size()));
+        for (uint32_t drawItemIndex = batch.beginDrawItem; drawItemIndex < endDrawItem; ++drawItemIndex) {
+            cullDrawItems[drawItemIndex].batchIndex = static_cast<uint32_t>(batchIndex);
+            cullDrawItems[drawItemIndex].batchOutputBase = batch.compactedCommandOffset;
+        }
     }
 
     frameCullInputBuffers_.at(frameIndex)
@@ -1658,6 +1681,9 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
         const uint32_t totalDrawItems = frameIndex < frameGpuCullTotalDrawItems_.size()
                                             ? frameGpuCullTotalDrawItems_[frameIndex]
                                             : static_cast<uint32_t>(cullingStats_.totalDrawItems);
+        const uint32_t batchCount = frameIndex < frameGpuCullBatchCounts_.size()
+                                        ? frameGpuCullBatchCounts_[frameIndex]
+                                        : static_cast<uint32_t>(cullingStats_.batchCount);
         uint32_t visibleDrawItems = 0;
         if (readGpuVisibleCount(frameIndex, visibleDrawItems)) {
             const uint32_t culledDrawItems =
@@ -1666,14 +1692,16 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
                     << "  total draw items: " << totalDrawItems << "\n"
                     << "  visible draw items: " << visibleDrawItems << "\n"
                     << "  culled draw items: " << culledDrawItems << "\n"
-                    << "  mesh batches: " << cullingStats_.batchCount << "\n"
-                    << "  submitted indirect commands: " << cullingStats_.commandCount;
+                    << "  batches: " << batchCount << "\n"
+                    << "  indirect count path: "
+                    << (isFrameIndirectCountPathActive(frameIndex) ? "enabled" : "disabled");
         } else {
             message << "GPU culling:\n"
                     << "  total draw items: " << totalDrawItems << "\n"
                     << "  visible draw items: unavailable\n"
-                    << "  mesh batches: " << cullingStats_.batchCount << "\n"
-                    << "  submitted indirect commands: " << cullingStats_.commandCount;
+                    << "  batches: " << batchCount << "\n"
+                    << "  indirect count path: "
+                    << (isFrameIndirectCountPathActive(frameIndex) ? "enabled" : "disabled");
         }
     } else {
         message << "Culling: total=" << cullingStats_.totalObjects
@@ -1699,8 +1727,14 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         if (frameIndex < frameGpuCullTotalDrawItems_.size()) {
             frameGpuCullTotalDrawItems_[frameIndex] = 0;
         }
+        if (frameIndex < frameGpuCullBatchCounts_.size()) {
+            frameGpuCullBatchCounts_[frameIndex] = 0;
+        }
         if (frameIndex < frameGpuCullReadbackReady_.size()) {
             frameGpuCullReadbackReady_[frameIndex] = 0;
+        }
+        if (frameIndex < frameGpuCullIndirectCountPath_.size()) {
+            frameGpuCullIndirectCountPath_[frameIndex] = 0;
         }
         return;
     }
@@ -1748,6 +1782,12 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     if (frameIndex < frameGpuCullReadbackReady_.size()) {
         frameGpuCullReadbackReady_[frameIndex] = 0;
     }
+    if (frameIndex < frameGpuCullBatchCounts_.size()) {
+        frameGpuCullBatchCounts_[frameIndex] = 0;
+    }
+    if (frameIndex < frameGpuCullIndirectCountPath_.size()) {
+        frameGpuCullIndirectCountPath_[frameIndex] = 0;
+    }
 
     const renderer::Frustum cameraFrustum = renderer::Frustum::fromViewProjection(viewProjection);
     for (size_t planeIndex = 0; planeIndex < frameFrustumPlanes_.size(); ++planeIndex) {
@@ -1755,18 +1795,40 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         frameFrustumPlanes_[planeIndex] = glm::vec4(plane.normal, plane.distance);
     }
 
-    if (isGpuCullingActive()) {
+    const bool gpuCullingActive = isGpuCullingActive();
+    if (gpuCullingActive) {
         visibleDrawItems_ = drawItems_;
         cullingStats_ = {};
         cullingStats_.gpuCulling = true;
         cullingStats_.totalObjects = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
         cullingStats_.totalDrawItems = drawItems_.size();
-        updateGpuCullInputBuffer(frameIndex);
     } else {
         buildVisibleDrawItems(cameraFrustum);
-        updateIndirectDrawBuffer(frameIndex);
     }
     buildMeshDrawBatches();
+
+    if (gpuCullingActive) {
+        bool indirectCountPathActive = isMainPassIndirectCountSupported();
+        if (indirectCountPathActive) {
+            const uint32_t maxDrawIndirectCount = context_.device().maxDrawIndirectCount();
+            for (const MeshDrawBatch& batch : meshDrawBatches_) {
+                if (batch.drawItemCount > maxDrawIndirectCount) {
+                    indirectCountPathActive = false;
+                    break;
+                }
+            }
+        }
+
+        if (frameIndex < frameGpuCullBatchCounts_.size()) {
+            frameGpuCullBatchCounts_[frameIndex] = static_cast<uint32_t>(meshDrawBatches_.size());
+        }
+        if (frameIndex < frameGpuCullIndirectCountPath_.size()) {
+            frameGpuCullIndirectCountPath_[frameIndex] = indirectCountPathActive ? 1 : 0;
+        }
+        updateGpuCullInputBuffer(frameIndex);
+    } else {
+        updateIndirectDrawBuffer(frameIndex);
+    }
 
     const size_t objectFrameCount = std::min(drawItems_.size(), static_cast<size_t>(kMaxDrawItems));
     std::vector<ObjectFrameData> objectFrameData(objectFrameCount);
@@ -1838,17 +1900,29 @@ void Renderer::recreateSwapchain()
 bool Renderer::readGpuVisibleCount(uint32_t frameIndex, uint32_t& visibleCount)
 {
     visibleCount = 0;
-    if (!isGpuCullingActive() || frameIndex >= frameVisibleCountReadbackBuffers_.size() ||
+    if (!isGpuCullingActive() || frameIndex >= frameBatchVisibleCountReadbackBuffers_.size() ||
         frameIndex >= frameGpuCullReadbackReady_.size() || frameGpuCullReadbackReady_[frameIndex] == 0) {
         return false;
     }
 
-    rhi::VulkanBuffer& readbackBuffer = frameVisibleCountReadbackBuffers_[frameIndex];
+    rhi::VulkanBuffer& readbackBuffer = frameBatchVisibleCountReadbackBuffers_[frameIndex];
     if (!readbackBuffer.valid()) {
         return false;
     }
 
-    readbackBuffer.download(std::as_writable_bytes(std::span<uint32_t>(&visibleCount, 1)));
+    const bool indirectCountPathActive = isFrameIndirectCountPathActive(frameIndex);
+    const uint32_t countEntryCount = indirectCountPathActive && frameIndex < frameGpuCullBatchCounts_.size()
+                                         ? std::max(frameGpuCullBatchCounts_[frameIndex], 1U)
+                                         : 1U;
+    std::vector<uint32_t> visibleCounts(countEntryCount, 0);
+    readbackBuffer.download(std::as_writable_bytes(std::span<uint32_t>(visibleCounts.data(), visibleCounts.size())));
+
+    uint64_t totalVisibleCount = 0;
+    for (uint32_t count : visibleCounts) {
+        totalVisibleCount += count;
+    }
+
+    visibleCount = static_cast<uint32_t>(std::min<uint64_t>(totalVisibleCount, kMaxDrawItems));
     if (frameIndex < frameGpuCullTotalDrawItems_.size()) {
         visibleCount = std::min(visibleCount, frameGpuCullTotalDrawItems_[frameIndex]);
     }
@@ -1859,8 +1933,9 @@ bool Renderer::isGpuCullingActive() const
 {
     return useGpuCulling_ && gpuCullingAvailable_ && gpuCullPipeline_.pipeline() != VK_NULL_HANDLE &&
            gpuCullPipeline_.layout() != VK_NULL_HANDLE && !gpuCullDescriptorSets_.empty() &&
-           frameCullInputBuffers_.size() == frames_.size() && frameVisibleCountBuffers_.size() == frames_.size() &&
-           frameVisibleCountReadbackBuffers_.size() == frames_.size();
+           frameCullInputBuffers_.size() == frames_.size() &&
+           frameBatchVisibleCountBuffers_.size() == frames_.size() &&
+           frameBatchVisibleCountReadbackBuffers_.size() == frames_.size();
 }
 
 bool Renderer::isBindlessMaterialTextureActive() const
@@ -1872,6 +1947,17 @@ bool Renderer::isMainPassMultiDrawIndirectActive() const
 {
     return isBindlessMaterialTextureActive() && context_.device().multiDrawIndirectEnabled() &&
            context_.device().drawIndirectFirstInstanceEnabled();
+}
+
+bool Renderer::isMainPassIndirectCountSupported() const
+{
+    return isGpuCullingActive() && isMainPassMultiDrawIndirectActive() &&
+           context_.device().drawIndexedIndirectCountAvailable();
+}
+
+bool Renderer::isFrameIndirectCountPathActive(uint32_t frameIndex) const
+{
+    return frameIndex < frameGpuCullIndirectCountPath_.size() && frameGpuCullIndirectCountPath_[frameIndex] != 0;
 }
 
 VkDescriptorSet Renderer::globalMaterialDescriptorSet() const
@@ -1888,19 +1974,22 @@ void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
     if (!isGpuCullingActive() || drawItems_.empty()) {
         return;
     }
-    if (currentFrame_ >= gpuCullDescriptorSets_.size() || currentFrame_ >= frameVisibleCountBuffers_.size() ||
-        currentFrame_ >= frameVisibleCountReadbackBuffers_.size() || currentFrame_ >= frameGpuCullReadbackReady_.size()) {
+    if (currentFrame_ >= gpuCullDescriptorSets_.size() || currentFrame_ >= frameBatchVisibleCountBuffers_.size() ||
+        currentFrame_ >= frameBatchVisibleCountReadbackBuffers_.size() ||
+        currentFrame_ >= frameGpuCullReadbackReady_.size()) {
         return;
     }
 
-    VkBuffer visibleCountBuffer = frameVisibleCountBuffers_.at(currentFrame_).buffer();
-    VkBuffer visibleCountReadbackBuffer = frameVisibleCountReadbackBuffers_.at(currentFrame_).buffer();
+    VkBuffer visibleCountBuffer = frameBatchVisibleCountBuffers_.at(currentFrame_).buffer();
+    VkBuffer visibleCountReadbackBuffer = frameBatchVisibleCountReadbackBuffers_.at(currentFrame_).buffer();
     if (visibleCountBuffer == VK_NULL_HANDLE || visibleCountReadbackBuffer == VK_NULL_HANDLE) {
         return;
     }
 
+    const bool indirectCountPathActive = isFrameIndirectCountPathActive(currentFrame_);
+
     rhi::debug::beginLabel(commandBuffer, "GpuCulling");
-    vkCmdFillBuffer(commandBuffer, visibleCountBuffer, 0, kVisibleCountBufferSize, 0);
+    vkCmdFillBuffer(commandBuffer, visibleCountBuffer, 0, kBatchVisibleCountBufferSize, 0);
 
     VkBufferMemoryBarrier2 resetCountBarrier{};
     resetCountBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
@@ -1912,7 +2001,7 @@ void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
     resetCountBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     resetCountBarrier.buffer = visibleCountBuffer;
     resetCountBarrier.offset = 0;
-    resetCountBarrier.size = kVisibleCountBufferSize;
+    resetCountBarrier.size = kBatchVisibleCountBufferSize;
 
     VkDependencyInfo resetDependencyInfo{};
     resetDependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
@@ -1936,7 +2025,7 @@ void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
     pushConstants.frustumPlanes = frameFrustumPlanes_;
     pushConstants.params = glm::uvec4(static_cast<uint32_t>(drawItems_.size()),
                                       isMainPassMultiDrawIndirectActive() ? 1U : 0U,
-                                      kGpuCullCompactCommands,
+                                      indirectCountPathActive ? 1U : 0U,
                                       0);
     vkCmdPushConstants(commandBuffer,
                        gpuCullPipeline_.layout(),
@@ -1972,7 +2061,7 @@ void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
     computeBarriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     computeBarriers[1].buffer = visibleCountBuffer;
     computeBarriers[1].offset = 0;
-    computeBarriers[1].size = kVisibleCountBufferSize;
+    computeBarriers[1].size = kBatchVisibleCountBufferSize;
 
     VkDependencyInfo dependencyInfo{};
     dependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
@@ -1981,7 +2070,7 @@ void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
     vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
 
     VkBufferCopy visibleCountCopy{};
-    visibleCountCopy.size = kVisibleCountBufferSize;
+    visibleCountCopy.size = kBatchVisibleCountBufferSize;
     vkCmdCopyBuffer(commandBuffer, visibleCountBuffer, visibleCountReadbackBuffer, 1, &visibleCountCopy);
 
     VkBufferMemoryBarrier2 readbackBarrier{};
@@ -1994,7 +2083,7 @@ void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
     readbackBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     readbackBarrier.buffer = visibleCountReadbackBuffer;
     readbackBarrier.offset = 0;
-    readbackBarrier.size = kVisibleCountBufferSize;
+    readbackBarrier.size = kBatchVisibleCountBufferSize;
 
     VkDependencyInfo readbackDependencyInfo{};
     readbackDependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
@@ -2162,6 +2251,9 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
 
     const renderer::Mesh* boundMesh = nullptr;
     const VkBuffer indirectDrawBuffer = frameIndirectDrawBuffers_.at(currentFrame_).buffer();
+    const bool indirectCountPathActive = isFrameIndirectCountPathActive(currentFrame_);
+    const VkBuffer batchVisibleCountBuffer =
+        indirectCountPathActive ? frameBatchVisibleCountBuffers_.at(currentFrame_).buffer() : VK_NULL_HANDLE;
     if (multiDrawIndirectActive) {
         if (bindlessDescriptorSetsBound) {
             const PushConstants pushConstants{objectFrameDataBaseAddress};
@@ -2173,11 +2265,11 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                                &pushConstants);
 
             const std::string batchesLabel =
-                "MultiDrawIndirectBatches " + std::to_string(meshDrawBatches_.size()) + " commands " +
-                std::to_string(mainDrawItemCount);
+                std::string(indirectCountPathActive ? "IndirectCountBatches " : "MultiDrawIndirectBatches ") +
+                std::to_string(meshDrawBatches_.size()) + " max commands " + std::to_string(mainDrawItemCount);
             rhi::debug::beginLabel(commandBuffer, batchesLabel);
             for (const MeshDrawBatch& batch : meshDrawBatches_) {
-                if (!batch.mesh || batch.commandCount == 0) {
+                if (!batch.mesh || batch.drawItemCount == 0) {
                     continue;
                 }
 
@@ -2189,15 +2281,28 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                     boundMesh = batch.mesh;
                 }
 
-                const std::string batchLabel = "MeshBatchDraw commands " + std::to_string(batch.commandCount);
+                const std::string batchLabel =
+                    std::string(indirectCountPathActive ? "MeshBatchIndirectCount max commands "
+                                                        : "MeshBatchDraw commands ") +
+                    std::to_string(batch.drawItemCount);
                 rhi::debug::beginLabel(commandBuffer, batchLabel);
                 const VkDeviceSize indirectOffset =
-                    static_cast<VkDeviceSize>(batch.firstCommand * sizeof(VkDrawIndexedIndirectCommand));
-                vkCmdDrawIndexedIndirect(commandBuffer,
-                                         indirectDrawBuffer,
-                                         indirectOffset,
-                                         batch.commandCount,
-                                         sizeof(VkDrawIndexedIndirectCommand));
+                    static_cast<VkDeviceSize>(batch.compactedCommandOffset * sizeof(VkDrawIndexedIndirectCommand));
+                if (indirectCountPathActive && batchVisibleCountBuffer != VK_NULL_HANDLE) {
+                    vkCmdDrawIndexedIndirectCount(commandBuffer,
+                                                 indirectDrawBuffer,
+                                                 indirectOffset,
+                                                 batchVisibleCountBuffer,
+                                                 batch.visibleCountOffset,
+                                                 batch.drawItemCount,
+                                                 sizeof(VkDrawIndexedIndirectCommand));
+                } else {
+                    vkCmdDrawIndexedIndirect(commandBuffer,
+                                             indirectDrawBuffer,
+                                             indirectOffset,
+                                             batch.drawItemCount,
+                                             sizeof(VkDrawIndexedIndirectCommand));
+                }
                 rhi::debug::endLabel(commandBuffer);
             }
             rhi::debug::endLabel(commandBuffer);

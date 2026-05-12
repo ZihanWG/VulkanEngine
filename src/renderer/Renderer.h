@@ -70,8 +70,10 @@ private:
 
     struct MeshDrawBatch {
         const renderer::Mesh* mesh = nullptr;
-        uint32_t firstCommand = 0;
-        uint32_t commandCount = 0;
+        uint32_t beginDrawItem = 0;
+        uint32_t drawItemCount = 0;
+        uint32_t compactedCommandOffset = 0;
+        uint32_t visibleCountOffset = 0;
     };
 
     struct CullingStats {
@@ -126,6 +128,8 @@ private:
     [[nodiscard]] bool isGpuCullingActive() const;
     [[nodiscard]] bool isBindlessMaterialTextureActive() const;
     [[nodiscard]] bool isMainPassMultiDrawIndirectActive() const;
+    [[nodiscard]] bool isMainPassIndirectCountSupported() const;
+    [[nodiscard]] bool isFrameIndirectCountPathActive(uint32_t frameIndex) const;
     [[nodiscard]] VkDescriptorSet globalMaterialDescriptorSet() const;
     void nameTextureResources(const rhi::VulkanTexture& texture, std::string_view name) const;
     void nameEnvironmentMapResources(const rhi::VulkanEnvironmentMap& environmentMap, std::string_view name) const;
@@ -177,10 +181,12 @@ private:
     std::vector<rhi::VulkanBuffer> frameObjectDataBuffers_;
     std::vector<rhi::VulkanBuffer> frameCullInputBuffers_;
     std::vector<rhi::VulkanBuffer> frameIndirectDrawBuffers_;
-    std::vector<rhi::VulkanBuffer> frameVisibleCountBuffers_;
-    std::vector<rhi::VulkanBuffer> frameVisibleCountReadbackBuffers_;
+    std::vector<rhi::VulkanBuffer> frameBatchVisibleCountBuffers_;
+    std::vector<rhi::VulkanBuffer> frameBatchVisibleCountReadbackBuffers_;
     std::vector<uint32_t> frameGpuCullTotalDrawItems_;
+    std::vector<uint32_t> frameGpuCullBatchCounts_;
     std::vector<uint8_t> frameGpuCullReadbackReady_;
+    std::vector<uint8_t> frameGpuCullIndirectCountPath_;
     std::vector<VkFence> imagesInFlight_;
     ShadowSettings shadowSettings_{};
     VkFormat pipelineColorFormat_ = VK_FORMAT_UNDEFINED;

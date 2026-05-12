@@ -4,10 +4,13 @@ layout(local_size_x = 64) in;
 
 // std430 layout:
 // - boundsMin and boundsMax are 16-byte aligned vec4 values.
-// - The four scalar draw fields occupy the next 16 bytes.
+// - The scalar draw fields occupy the next 16 bytes.
+// - The batch fields plus padding occupy the final 16 bytes.
 // - objectFrameDataIndex is copied to firstInstance when the renderer enables
 //   object-data array indexing; fallback recording keeps firstInstance at zero.
-// - Runtime array stride is therefore 48 bytes, matching the C++ struct.
+// - batchIndex selects the per-batch visible-count entry.
+// - batchOutputBase is the first command slot in that batch's compacted region.
+// - Runtime array stride is therefore 64 bytes, matching the C++ struct.
 struct GpuCullDrawItem {
     vec4 boundsMin;
     vec4 boundsMax;
@@ -15,6 +18,10 @@ struct GpuCullDrawItem {
     uint firstIndex;
     int vertexOffset;
     uint objectFrameDataIndex;
+    uint batchIndex;
+    uint batchOutputBase;
+    uint padding0;
+    uint padding1;
 };
 
 // Matches VkDrawIndexedIndirectCommand exactly. std430 keeps the runtime array
@@ -35,9 +42,9 @@ layout(set = 0, binding = 1, std430) writeonly buffer IndirectOutputBuffer {
     DrawIndexedIndirectCommand commands[];
 } indirectOutput;
 
-layout(set = 0, binding = 2, std430) buffer VisibleCountBuffer {
-    uint visibleCount;
-} visibleCountOutput;
+layout(set = 0, binding = 2, std430) buffer BatchVisibleCountBuffer {
+    uint visibleCounts[];
+} batchVisibleCounts;
 
 layout(push_constant) uniform CullPushConstants {
     vec4 frustumPlanes[6];
@@ -77,17 +84,23 @@ void main()
         if (!visible) {
             return;
         }
-        outputIndex = atomicAdd(visibleCountOutput.visibleCount, 1);
+        uint localVisibleIndex = atomicAdd(batchVisibleCounts.visibleCounts[drawItem.batchIndex], 1);
+        outputIndex = drawItem.batchOutputBase + localVisibleIndex;
     } else if (visible) {
-        atomicAdd(visibleCountOutput.visibleCount, 1);
+        atomicAdd(batchVisibleCounts.visibleCounts[0], 1);
     }
 
     DrawIndexedIndirectCommand command;
-    command.indexCount = visible ? drawItem.indexCount : 0;
-    command.instanceCount = visible ? 1 : 0;
+    command.indexCount = drawItem.indexCount;
+    command.instanceCount = 1;
     command.firstIndex = drawItem.firstIndex;
     command.vertexOffset = drawItem.vertexOffset;
     command.firstInstance = pc.params.y != 0 ? drawItem.objectFrameDataIndex : 0;
+
+    if (!visible) {
+        command.indexCount = 0;
+        command.instanceCount = 0;
+    }
 
     indirectOutput.commands[outputIndex] = command;
 }
