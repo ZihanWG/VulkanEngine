@@ -18,6 +18,7 @@ public:
         RenderObjects,
         Bloom,
         AutoExposure,
+        HistogramExposure,
         Composite,
         Count
     };
@@ -30,6 +31,7 @@ public:
         double renderObjectsMs = 0.0;
         double bloomMs = 0.0;
         double autoExposureMs = 0.0;
+        double histogramExposureMs = 0.0;
         double compositeMs = 0.0;
     };
 

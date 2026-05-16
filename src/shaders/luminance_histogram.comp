@@ -1,0 +1,34 @@
+#version 460
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D uSceneColor;
+layout(std430, set = 0, binding = 1) buffer LuminanceHistogram {
+    uint bins[];
+} uHistogram;
+
+layout(push_constant) uniform HistogramPushConstants {
+    uvec4 params; // x = width, y = height, z = bin count
+    vec4 logLuminanceRange; // x = min log2 luminance, y = max log2 luminance, z = epsilon
+} pc;
+
+void main()
+{
+    const uvec2 pixel = gl_GlobalInvocationID.xy;
+    const uvec2 extent = pc.params.xy;
+    if (pixel.x >= extent.x || pixel.y >= extent.y) {
+        return;
+    }
+
+    vec3 color = texelFetch(uSceneColor, ivec2(pixel), 0).rgb;
+    float luminance = dot(max(color, vec3(0.0)), vec3(0.2126, 0.7152, 0.0722));
+    float logLuminance = log2(max(luminance, max(pc.logLuminanceRange.z, 0.000001)));
+
+    float minLogLuminance = pc.logLuminanceRange.x;
+    float maxLogLuminance = max(pc.logLuminanceRange.y, minLogLuminance + 0.001);
+    float normalized = clamp((logLuminance - minLogLuminance) / (maxLogLuminance - minLogLuminance), 0.0, 0.999999);
+
+    uint binCount = max(pc.params.z, 1u);
+    uint binIndex = min(uint(normalized * float(binCount)), binCount - 1u);
+    atomicAdd(uHistogram.bins[binIndex], 1u);
+}

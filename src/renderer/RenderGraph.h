@@ -20,6 +20,7 @@ enum class RenderPassType {
     BloomExtract,
     BloomBlur,
     Luminance,
+    HistogramExposure,
     Composite
 };
 
@@ -83,6 +84,8 @@ public:
     void endBloomBlurPass();
     void beginLuminancePass();
     void endLuminancePass();
+    void beginHistogramExposurePass();
+    void endHistogramExposurePass();
     void beginCompositePass();
     void endCompositePass();
     void endFrame();
@@ -100,6 +103,7 @@ private:
         BloomExtract,
         BloomBlur,
         Luminance,
+        HistogramExposure,
         Composite
     };
 

@@ -75,11 +75,16 @@ private:
     struct ToneMappingSettings {
         float manualExposure = 1.0f;
         bool enableAutoExposure = true;
+        int exposureMode = 2; // 0 = manual, 1 = log-average luminance, 2 = histogram percentile.
         float targetLuminance = 0.18f;
         float minExposure = 0.1f;
         float maxExposure = 8.0f;
         float adaptationRate = 1.5f;
-        int operatorType = 0; // 0 = Reinhard, 1 = ACES fitted approximation.
+        float histogramMinLogLuminance = -10.0f;
+        float histogramMaxLogLuminance = 4.0f;
+        float lowPercentile = 0.05f;
+        float highPercentile = 0.95f;
+        int toneMapper = 0; // 0 = Reinhard, 1 = ACES fitted approximation.
     };
 
     struct BloomSettings {
@@ -145,9 +150,14 @@ private:
     void createPostProcessDescriptorSets();
     void createLuminanceResources();
     void destroyLuminanceResources();
+    void createHistogramResources();
+    void destroyHistogramResources();
     void disableAutoExposureFallback(std::string_view reason);
+    void disableLogAverageExposureFallback(std::string_view reason);
+    void disableHistogramExposureFallback(std::string_view reason);
     void updateAutoExposureFromReadback(uint32_t frameIndex);
     void recordLuminanceCommands(VkCommandBuffer commandBuffer);
+    void recordHistogramCommands(VkCommandBuffer commandBuffer);
     void createGpuCullingResources();
     void destroyGpuCullingResources();
     void createGpuShadowCullingResources();
@@ -200,6 +210,8 @@ private:
     [[nodiscard]] bool isGpuCullingActive() const;
     [[nodiscard]] bool isGpuShadowCullingActive() const;
     [[nodiscard]] bool isAutoExposureActive() const;
+    [[nodiscard]] bool isLogAverageExposureActive() const;
+    [[nodiscard]] bool isHistogramExposureActive() const;
     [[nodiscard]] bool isBindlessMaterialTextureActive() const;
     [[nodiscard]] bool isMainPassMultiDrawIndirectActive() const;
     [[nodiscard]] bool isMainPassIndirectCountSupported() const;
@@ -213,6 +225,7 @@ private:
     void nameTextureResources(const rhi::VulkanTexture& texture, std::string_view name) const;
     void nameEnvironmentMapResources(const rhi::VulkanEnvironmentMap& environmentMap, std::string_view name) const;
     void nameBrdfLutResources(const rhi::VulkanBrdfLut& brdfLut, std::string_view name) const;
+    void tryPrintExposureStats();
     void tryPrintGpuTimings(uint32_t frameIndex);
 
     Window& window_;
@@ -239,6 +252,7 @@ private:
     rhi::VulkanPipeline bloomBlurPipeline_;
     rhi::VulkanPipeline compositePipeline_;
     rhi::VulkanComputePipeline luminancePipeline_;
+    rhi::VulkanComputePipeline histogramPipeline_;
     rhi::VulkanComputePipeline gpuCullPipeline_;
     rhi::VulkanCommandContext commandContext_;
     rhi::VulkanSync sync_;
@@ -267,6 +281,7 @@ private:
     VkDescriptorSet bloomBlurVerticalDescriptorSet_ = VK_NULL_HANDLE;
     VkDescriptorSet compositeDescriptorSet_ = VK_NULL_HANDLE;
     std::vector<VkDescriptorSet> luminanceDescriptorSets_;
+    std::vector<VkDescriptorSet> histogramDescriptorSets_;
     std::vector<VkDescriptorSet> gpuCullDescriptorSets_;
     std::vector<VkDescriptorSet> shadowCullDescriptorSets_;
     renderer::Camera camera_;
@@ -295,6 +310,8 @@ private:
     std::vector<rhi::VulkanBuffer> frameShadowBatchVisibleCountReadbackBuffers_;
     std::vector<rhi::VulkanBuffer> frameLuminanceBuffers_;
     std::vector<rhi::VulkanBuffer> frameLuminanceReadbackBuffers_;
+    std::vector<rhi::VulkanBuffer> frameHistogramBuffers_;
+    std::vector<rhi::VulkanBuffer> frameHistogramReadbackBuffers_;
     std::vector<uint32_t> frameGpuCullTotalDrawItems_;
     std::vector<uint32_t> frameGpuCullBatchCounts_;
     std::vector<uint32_t> frameGpuShadowCullTotalDrawItems_;
@@ -304,6 +321,7 @@ private:
     std::vector<uint8_t> frameGpuShadowCullReadbackReady_;
     std::vector<uint8_t> frameGpuShadowCullIndirectCountPath_;
     std::vector<uint8_t> frameLuminanceReadbackReady_;
+    std::vector<uint8_t> frameHistogramReadbackReady_;
     CsmSettings csmSettings_{};
     std::vector<VkFence> imagesInFlight_;
     ShadowSettings shadowSettings_{};
@@ -329,6 +347,7 @@ private:
     uint32_t bindlessMetallicRoughnessFallbackIndex_ = 0;
     std::chrono::steady_clock::time_point startTime_ = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point lastGpuTimingPrint_ = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point lastExposureLogPrint_ = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point lastAutoExposureUpdate_ = std::chrono::steady_clock::now();
     std::array<glm::vec4, 6> frameFrustumPlanes_{};
     std::array<CascadeFrameData, kMaxShadowCascades> frameCascades_{};
@@ -342,6 +361,7 @@ private:
     BloomSettings bloomSettings_{};
     float currentExposure_ = 1.0f;
     float averageLuminance_ = 0.18f;
+    float histogramClippedLuminance_ = 0.18f;
     bool initialized_ = false;
     bool useBindlessMaterialTextures_ = true;
     bool bindlessMaterialTexturesAvailable_ = false;
@@ -350,7 +370,10 @@ private:
     bool useGpuShadowCulling_ = true;
     bool gpuShadowCullingAvailable_ = false;
     bool autoExposureAvailable_ = false;
+    bool histogramExposureAvailable_ = false;
     bool autoExposureWarningLogged_ = false;
+    bool logAverageExposureWarningLogged_ = false;
+    bool histogramExposureWarningLogged_ = false;
     bool shadowIndirectAvailable_ = false;
     bool normalMapAssetLoaded_ = false;
     bool metallicRoughnessMapAssetLoaded_ = false;

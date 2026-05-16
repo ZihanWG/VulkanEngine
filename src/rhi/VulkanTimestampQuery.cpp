@@ -177,6 +177,7 @@ bool VulkanTimestampQuery::readFrame(uint32_t frameIndex, Results& results)
     results.renderObjectsMs = elapsed(Timer::RenderObjects);
     results.bloomMs = elapsed(Timer::Bloom);
     results.autoExposureMs = elapsed(Timer::AutoExposure);
+    results.histogramExposureMs = elapsed(Timer::HistogramExposure);
     results.compositeMs = elapsed(Timer::Composite);
     return true;
 }

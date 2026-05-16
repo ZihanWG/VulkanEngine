@@ -17,6 +17,7 @@ constexpr RenderResourceHandle kBloomExtract{"BloomExtract"};
 constexpr RenderResourceHandle kBloomPing{"BloomPing"};
 constexpr RenderResourceHandle kBloomPong{"BloomPong"};
 constexpr RenderResourceHandle kLuminancePartials{"LuminancePartials"};
+constexpr RenderResourceHandle kLuminanceHistogram{"LuminanceHistogram"};
 constexpr RenderResourceHandle kMainDepth{"MainDepth"};
 constexpr RenderResourceHandle kMaterialTextures{"MaterialTextures"};
 constexpr RenderResourceHandle kIblResources{"IBLResources"};
@@ -91,6 +92,16 @@ RenderGraph::RenderGraph()
                              {kLuminancePartials,
                               RenderResourceAccess::Write,
                               "Writes per-workgroup log-luminance partial sums for CPU readback."},
+                         }},
+          RenderPassNode{"HistogramExposurePass",
+                         RenderPassType::HistogramExposure,
+                         {
+                             {kSceneColor,
+                              RenderResourceAccess::Read,
+                              "Samples the HDR scene color target for log2 luminance histogram binning."},
+                             {kLuminanceHistogram,
+                              RenderResourceAccess::Write,
+                              "Writes 256 luminance histogram bin counts for CPU percentile readback."},
                          }},
           RenderPassNode{"CompositePass",
                          RenderPassType::Composite,
@@ -330,6 +341,28 @@ void RenderGraph::endLuminancePass()
     requireFrameActive("RenderGraph::endLuminancePass");
     if (activePass_ != ActivePass::Luminance) {
         throw std::logic_error("RenderGraph::endLuminancePass called without an active luminance pass.");
+    }
+
+    activePass_ = ActivePass::None;
+}
+
+void RenderGraph::beginHistogramExposurePass()
+{
+    requireFrameActive("RenderGraph::beginHistogramExposurePass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginHistogramExposurePass called while another pass is active.");
+    }
+
+    transitionColorImage(frame_.resources.sceneColor, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    activePass_ = ActivePass::HistogramExposure;
+}
+
+void RenderGraph::endHistogramExposurePass()
+{
+    requireFrameActive("RenderGraph::endHistogramExposurePass");
+    if (activePass_ != ActivePass::HistogramExposure) {
+        throw std::logic_error(
+            "RenderGraph::endHistogramExposurePass called without an active histogram exposure pass.");
     }
 
     activePass_ = ActivePass::None;

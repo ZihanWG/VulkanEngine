@@ -90,7 +90,12 @@ constexpr VkFormat kSceneColorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 constexpr VkFormat kBloomColorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 constexpr uint32_t kLuminanceLocalSizeX = 16;
 constexpr uint32_t kLuminanceLocalSizeY = 16;
+constexpr uint32_t kHistogramBinCount = 256;
+constexpr uint32_t kHistogramLocalSizeX = 16;
+constexpr uint32_t kHistogramLocalSizeY = 16;
 constexpr float kMinAverageLuminance = 0.0001f;
+constexpr float kDefaultHistogramMinLogLuminance = -10.0f;
+constexpr float kDefaultHistogramMaxLogLuminance = 4.0f;
 
 const glm::vec4 kDirectionalLightDirection{0.35f, -0.65f, -0.55f, 0.0f};
 const glm::vec4 kDirectionalLightColor{0.85f, 0.85f, 0.85f, 1.0f};
@@ -202,6 +207,21 @@ struct LuminancePartial {
 
 static_assert(sizeof(LuminancePartial) == 16);
 
+struct HistogramPushConstants {
+    glm::uvec4 params{0, 0, 0, 0};
+    glm::vec4 logLuminanceRange{kDefaultHistogramMinLogLuminance, kDefaultHistogramMaxLogLuminance, 0.0001f, 0.0f};
+};
+
+static_assert(offsetof(HistogramPushConstants, params) == 0);
+static_assert(offsetof(HistogramPushConstants, logLuminanceRange) == 16);
+static_assert(sizeof(HistogramPushConstants) == 32);
+
+enum class ExposureMode : int {
+    Manual = 0,
+    LogAverage = 1,
+    Histogram = 2,
+};
+
 uint32_t toneMappingOperatorValue(int operatorType)
 {
     return operatorType == 1 ? 1u : 0u;
@@ -210,6 +230,54 @@ uint32_t toneMappingOperatorValue(int operatorType)
 float toneMappingExposureValue(float exposure)
 {
     return std::max(exposure, 0.0f);
+}
+
+ExposureMode exposureModeValue(int exposureMode)
+{
+    if (exposureMode == static_cast<int>(ExposureMode::Manual)) {
+        return ExposureMode::Manual;
+    }
+    if (exposureMode == static_cast<int>(ExposureMode::LogAverage)) {
+        return ExposureMode::LogAverage;
+    }
+
+    return ExposureMode::Histogram;
+}
+
+std::string_view exposureModeName(ExposureMode exposureMode)
+{
+    switch (exposureMode) {
+    case ExposureMode::Manual:
+        return "manual";
+    case ExposureMode::LogAverage:
+        return "log-average";
+    case ExposureMode::Histogram:
+        return "histogram";
+    }
+
+    return "histogram";
+}
+
+std::pair<float, float> sanitizedHistogramLogRange(float minLogLuminance, float maxLogLuminance)
+{
+    if (!std::isfinite(minLogLuminance) || !std::isfinite(maxLogLuminance) ||
+        maxLogLuminance <= minLogLuminance + 0.001f) {
+        return {kDefaultHistogramMinLogLuminance, kDefaultHistogramMaxLogLuminance};
+    }
+
+    return {minLogLuminance, maxLogLuminance};
+}
+
+std::pair<float, float> sanitizedPercentileRange(float lowPercentile, float highPercentile)
+{
+    float low = std::clamp(lowPercentile, 0.0f, 1.0f);
+    float high = std::clamp(highPercentile, 0.0f, 1.0f);
+    if (high <= low) {
+        low = 0.05f;
+        high = 0.95f;
+    }
+
+    return {low, high};
 }
 
 void setViewportAndScissor(VkCommandBuffer commandBuffer, VkExtent2D extent)
@@ -287,6 +355,8 @@ Renderer::Renderer(Window& window) : window_(window)
     imagesInFlight_.assign(swapchain_.imageCount(), VK_NULL_HANDLE);
     currentExposure_ = toneMappingExposureValue(toneMappingSettings_.manualExposure);
     averageLuminance_ = toneMappingSettings_.targetLuminance;
+    histogramClippedLuminance_ = toneMappingSettings_.targetLuminance;
+    lastExposureLogPrint_ = std::chrono::steady_clock::now();
     lastAutoExposureUpdate_ = std::chrono::steady_clock::now();
 
     initialized_ = true;
@@ -315,6 +385,7 @@ void Renderer::drawFrame()
     renderer::FrameResources& frame = frames_[currentFrame_];
     VK_CHECK(vkWaitForFences(context_.vkDevice(), 1, &frame.inFlightFence, VK_TRUE, UINT64_MAX));
     updateAutoExposureFromReadback(currentFrame_);
+    tryPrintExposureStats();
     tryPrintGpuTimings(currentFrame_);
 
     uint32_t imageIndex = 0;
@@ -590,7 +661,9 @@ void Renderer::createPostProcessResources()
     bloomBlurVerticalDescriptorSet_ = VK_NULL_HANDLE;
     compositeDescriptorSet_ = VK_NULL_HANDLE;
     luminanceDescriptorSets_.clear();
+    histogramDescriptorSets_.clear();
     destroyLuminanceResources();
+    destroyHistogramResources();
 
     rhi::VulkanImageCreateInfo sceneColorInfo{};
     sceneColorInfo.width = extent.width;
@@ -628,7 +701,15 @@ void Renderer::createPostProcessResources()
     try {
         createLuminanceResources();
     } catch (const std::exception& error) {
-        disableAutoExposureFallback(std::string("Auto exposure luminance resources unavailable: ") + error.what());
+        disableLogAverageExposureFallback(
+            std::string("Log-average exposure luminance resources unavailable: ") + error.what());
+    }
+
+    try {
+        createHistogramResources();
+    } catch (const std::exception& error) {
+        disableHistogramExposureFallback(
+            std::string("Histogram exposure resources unavailable: ") + error.what());
     }
 
     createPostProcessDescriptorSets();
@@ -644,17 +725,24 @@ void Renderer::createPostProcessDescriptorSets()
         autoExposureAvailable_ && !frameLuminanceBuffers_.empty() &&
         frameLuminanceBuffers_.size() == frames_.size() &&
         postProcessLuminanceDescriptorSetLayout_.handle() != VK_NULL_HANDLE;
+    const bool createHistogramDescriptors =
+        histogramExposureAvailable_ && !frameHistogramBuffers_.empty() &&
+        frameHistogramBuffers_.size() == frames_.size() &&
+        postProcessLuminanceDescriptorSetLayout_.handle() != VK_NULL_HANDLE;
+    const uint32_t exposureDescriptorSetCount =
+        (createLuminanceDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u) +
+        (createHistogramDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u);
 
     std::array<VkDescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[0].descriptorCount = 5 + (createLuminanceDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u);
+    poolSizes[0].descriptorCount = 5 + exposureDescriptorSetCount;
     uint32_t poolSizeCount = 1;
     uint32_t maxSets = 4;
-    if (createLuminanceDescriptors) {
+    if (exposureDescriptorSetCount > 0) {
         poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        poolSizes[1].descriptorCount = static_cast<uint32_t>(frames_.size());
+        poolSizes[1].descriptorCount = exposureDescriptorSetCount;
         poolSizeCount = 2;
-        maxSets += static_cast<uint32_t>(frames_.size());
+        maxSets += exposureDescriptorSetCount;
     }
 
     postProcessDescriptorPool_.create(
@@ -749,61 +837,111 @@ void Renderer::createPostProcessDescriptorSets()
 
     vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 
-    if (!createLuminanceDescriptors) {
-        return;
+    VkDescriptorImageInfo sceneColorInfo{};
+    sceneColorInfo.sampler = postProcessSampler_;
+    sceneColorInfo.imageView = sceneColor_.imageView();
+    sceneColorInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    if (createLuminanceDescriptors) {
+        try {
+            luminanceDescriptorSets_.assign(frames_.size(), VK_NULL_HANDLE);
+            std::vector<VkDescriptorSetLayout> luminanceLayouts(frames_.size(),
+                                                                postProcessLuminanceDescriptorSetLayout_.handle());
+            VkDescriptorSetAllocateInfo luminanceAllocateInfo{};
+            luminanceAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            luminanceAllocateInfo.descriptorPool = postProcessDescriptorPool_.handle();
+            luminanceAllocateInfo.descriptorSetCount = static_cast<uint32_t>(luminanceDescriptorSets_.size());
+            luminanceAllocateInfo.pSetLayouts = luminanceLayouts.data();
+            VK_CHECK(vkAllocateDescriptorSets(
+                context_.vkDevice(), &luminanceAllocateInfo, luminanceDescriptorSets_.data()));
+
+            for (size_t frameIndex = 0; frameIndex < luminanceDescriptorSets_.size(); ++frameIndex) {
+                VkDescriptorBufferInfo luminanceBufferInfo{};
+                luminanceBufferInfo.buffer = frameLuminanceBuffers_[frameIndex].buffer();
+                luminanceBufferInfo.offset = 0;
+                luminanceBufferInfo.range = frameLuminanceBuffers_[frameIndex].size();
+
+                std::array<VkWriteDescriptorSet, 2> luminanceWrites{};
+                luminanceWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                luminanceWrites[0].dstSet = luminanceDescriptorSets_[frameIndex];
+                luminanceWrites[0].dstBinding = 0;
+                luminanceWrites[0].descriptorCount = 1;
+                luminanceWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                luminanceWrites[0].pImageInfo = &sceneColorInfo;
+
+                luminanceWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                luminanceWrites[1].dstSet = luminanceDescriptorSets_[frameIndex];
+                luminanceWrites[1].dstBinding = 1;
+                luminanceWrites[1].descriptorCount = 1;
+                luminanceWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                luminanceWrites[1].pBufferInfo = &luminanceBufferInfo;
+
+                vkUpdateDescriptorSets(context_.vkDevice(),
+                                       static_cast<uint32_t>(luminanceWrites.size()),
+                                       luminanceWrites.data(),
+                                       0,
+                                       nullptr);
+                rhi::debug::setObjectName(context_.vkDevice(),
+                                          luminanceDescriptorSets_[frameIndex],
+                                          VK_OBJECT_TYPE_DESCRIPTOR_SET,
+                                          "LuminanceDescriptorSet" + std::to_string(frameIndex));
+            }
+        } catch (const std::exception& error) {
+            luminanceDescriptorSets_.clear();
+            disableLogAverageExposureFallback(
+                std::string("Log-average exposure descriptor allocation failed: ") + error.what());
+        }
     }
 
-    try {
-        luminanceDescriptorSets_.assign(frames_.size(), VK_NULL_HANDLE);
-        std::vector<VkDescriptorSetLayout> luminanceLayouts(frames_.size(),
-                                                            postProcessLuminanceDescriptorSetLayout_.handle());
-        VkDescriptorSetAllocateInfo luminanceAllocateInfo{};
-        luminanceAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        luminanceAllocateInfo.descriptorPool = postProcessDescriptorPool_.handle();
-        luminanceAllocateInfo.descriptorSetCount = static_cast<uint32_t>(luminanceDescriptorSets_.size());
-        luminanceAllocateInfo.pSetLayouts = luminanceLayouts.data();
-        VK_CHECK(vkAllocateDescriptorSets(
-            context_.vkDevice(), &luminanceAllocateInfo, luminanceDescriptorSets_.data()));
+    if (createHistogramDescriptors) {
+        try {
+            histogramDescriptorSets_.assign(frames_.size(), VK_NULL_HANDLE);
+            std::vector<VkDescriptorSetLayout> histogramLayouts(frames_.size(),
+                                                                postProcessLuminanceDescriptorSetLayout_.handle());
+            VkDescriptorSetAllocateInfo histogramAllocateInfo{};
+            histogramAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            histogramAllocateInfo.descriptorPool = postProcessDescriptorPool_.handle();
+            histogramAllocateInfo.descriptorSetCount = static_cast<uint32_t>(histogramDescriptorSets_.size());
+            histogramAllocateInfo.pSetLayouts = histogramLayouts.data();
+            VK_CHECK(vkAllocateDescriptorSets(
+                context_.vkDevice(), &histogramAllocateInfo, histogramDescriptorSets_.data()));
 
-        VkDescriptorImageInfo sceneColorInfo{};
-        sceneColorInfo.sampler = postProcessSampler_;
-        sceneColorInfo.imageView = sceneColor_.imageView();
-        sceneColorInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            for (size_t frameIndex = 0; frameIndex < histogramDescriptorSets_.size(); ++frameIndex) {
+                VkDescriptorBufferInfo histogramBufferInfo{};
+                histogramBufferInfo.buffer = frameHistogramBuffers_[frameIndex].buffer();
+                histogramBufferInfo.offset = 0;
+                histogramBufferInfo.range = frameHistogramBuffers_[frameIndex].size();
 
-        for (size_t frameIndex = 0; frameIndex < luminanceDescriptorSets_.size(); ++frameIndex) {
-            VkDescriptorBufferInfo luminanceBufferInfo{};
-            luminanceBufferInfo.buffer = frameLuminanceBuffers_[frameIndex].buffer();
-            luminanceBufferInfo.offset = 0;
-            luminanceBufferInfo.range = frameLuminanceBuffers_[frameIndex].size();
+                std::array<VkWriteDescriptorSet, 2> histogramWrites{};
+                histogramWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                histogramWrites[0].dstSet = histogramDescriptorSets_[frameIndex];
+                histogramWrites[0].dstBinding = 0;
+                histogramWrites[0].descriptorCount = 1;
+                histogramWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                histogramWrites[0].pImageInfo = &sceneColorInfo;
 
-            std::array<VkWriteDescriptorSet, 2> luminanceWrites{};
-            luminanceWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            luminanceWrites[0].dstSet = luminanceDescriptorSets_[frameIndex];
-            luminanceWrites[0].dstBinding = 0;
-            luminanceWrites[0].descriptorCount = 1;
-            luminanceWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            luminanceWrites[0].pImageInfo = &sceneColorInfo;
+                histogramWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                histogramWrites[1].dstSet = histogramDescriptorSets_[frameIndex];
+                histogramWrites[1].dstBinding = 1;
+                histogramWrites[1].descriptorCount = 1;
+                histogramWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                histogramWrites[1].pBufferInfo = &histogramBufferInfo;
 
-            luminanceWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            luminanceWrites[1].dstSet = luminanceDescriptorSets_[frameIndex];
-            luminanceWrites[1].dstBinding = 1;
-            luminanceWrites[1].descriptorCount = 1;
-            luminanceWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            luminanceWrites[1].pBufferInfo = &luminanceBufferInfo;
-
-            vkUpdateDescriptorSets(context_.vkDevice(),
-                                   static_cast<uint32_t>(luminanceWrites.size()),
-                                   luminanceWrites.data(),
-                                   0,
-                                   nullptr);
-            rhi::debug::setObjectName(context_.vkDevice(),
-                                      luminanceDescriptorSets_[frameIndex],
-                                      VK_OBJECT_TYPE_DESCRIPTOR_SET,
-                                      "LuminanceDescriptorSet" + std::to_string(frameIndex));
+                vkUpdateDescriptorSets(context_.vkDevice(),
+                                       static_cast<uint32_t>(histogramWrites.size()),
+                                       histogramWrites.data(),
+                                       0,
+                                       nullptr);
+                rhi::debug::setObjectName(context_.vkDevice(),
+                                          histogramDescriptorSets_[frameIndex],
+                                          VK_OBJECT_TYPE_DESCRIPTOR_SET,
+                                          "HistogramDescriptorSet" + std::to_string(frameIndex));
+            }
+        } catch (const std::exception& error) {
+            histogramDescriptorSets_.clear();
+            disableHistogramExposureFallback(
+                std::string("Histogram exposure descriptor allocation failed: ") + error.what());
         }
-    } catch (const std::exception& error) {
-        luminanceDescriptorSets_.clear();
-        disableAutoExposureFallback(std::string("Auto exposure descriptor allocation failed: ") + error.what());
     }
 }
 
@@ -877,6 +1015,66 @@ void Renderer::destroyLuminanceResources()
     luminanceGroupCountY_ = 0;
 }
 
+void Renderer::createHistogramResources()
+{
+    destroyHistogramResources();
+
+    if (!toneMappingSettings_.enableAutoExposure) {
+        currentExposure_ = toneMappingExposureValue(toneMappingSettings_.manualExposure);
+        return;
+    }
+    if (postProcessLuminanceDescriptorSetLayout_.handle() == VK_NULL_HANDLE) {
+        throw std::runtime_error("missing exposure descriptor set layout");
+    }
+
+    const VkExtent3D sceneExtent = sceneColor_.extent();
+    if (sceneExtent.width == 0 || sceneExtent.height == 0) {
+        throw std::runtime_error("scene color extent is zero");
+    }
+
+    const VkDeviceSize histogramBufferSize = static_cast<VkDeviceSize>(kHistogramBinCount * sizeof(uint32_t));
+
+    frameHistogramBuffers_.resize(frames_.size());
+    frameHistogramReadbackBuffers_.resize(frames_.size());
+    frameHistogramReadbackReady_.assign(frames_.size(), 0);
+
+    for (size_t frameIndex = 0; frameIndex < frames_.size(); ++frameIndex) {
+        rhi::VulkanBufferCreateInfo histogramInfo{};
+        histogramInfo.size = histogramBufferSize;
+        histogramInfo.usage =
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        histogramInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+        frameHistogramBuffers_[frameIndex].createBuffer(context_, histogramInfo);
+        rhi::debug::setObjectName(context_.vkDevice(),
+                                  frameHistogramBuffers_[frameIndex].buffer(),
+                                  VK_OBJECT_TYPE_BUFFER,
+                                  "LuminanceHistogramBuffer" + std::to_string(frameIndex));
+
+        rhi::VulkanBufferCreateInfo readbackInfo{};
+        readbackInfo.size = histogramBufferSize;
+        readbackInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        readbackInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
+        readbackInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+        frameHistogramReadbackBuffers_[frameIndex].createBuffer(context_, readbackInfo);
+        rhi::debug::setObjectName(context_.vkDevice(),
+                                  frameHistogramReadbackBuffers_[frameIndex].buffer(),
+                                  VK_OBJECT_TYPE_BUFFER,
+                                  "LuminanceHistogramReadbackBuffer" + std::to_string(frameIndex));
+    }
+
+    histogramExposureAvailable_ = true;
+    lastAutoExposureUpdate_ = std::chrono::steady_clock::now();
+}
+
+void Renderer::destroyHistogramResources()
+{
+    histogramExposureAvailable_ = false;
+    histogramDescriptorSets_.clear();
+    frameHistogramReadbackReady_.clear();
+    frameHistogramReadbackBuffers_.clear();
+    frameHistogramBuffers_.clear();
+}
+
 void Renderer::disableAutoExposureFallback(std::string_view reason)
 {
     if (!autoExposureWarningLogged_) {
@@ -887,7 +1085,37 @@ void Renderer::disableAutoExposureFallback(std::string_view reason)
     toneMappingSettings_.enableAutoExposure = false;
     currentExposure_ = toneMappingExposureValue(toneMappingSettings_.manualExposure);
     destroyLuminanceResources();
+    destroyHistogramResources();
     luminancePipeline_.reset();
+    histogramPipeline_.reset();
+}
+
+void Renderer::disableLogAverageExposureFallback(std::string_view reason)
+{
+    if (!logAverageExposureWarningLogged_) {
+        Logger::warn(std::string(reason) + "; log-average exposure fallback unavailable.");
+        logAverageExposureWarningLogged_ = true;
+    }
+
+    destroyLuminanceResources();
+    luminancePipeline_.reset();
+    if (!isHistogramExposureActive()) {
+        currentExposure_ = toneMappingExposureValue(toneMappingSettings_.manualExposure);
+    }
+}
+
+void Renderer::disableHistogramExposureFallback(std::string_view reason)
+{
+    if (!histogramExposureWarningLogged_) {
+        Logger::warn(std::string(reason) + "; falling back to log-average exposure when available.");
+        histogramExposureWarningLogged_ = true;
+    }
+
+    destroyHistogramResources();
+    histogramPipeline_.reset();
+    if (!isLogAverageExposureActive()) {
+        currentExposure_ = toneMappingExposureValue(toneMappingSettings_.manualExposure);
+    }
 }
 
 void Renderer::createGpuCullingResources()
@@ -1387,18 +1615,18 @@ void Renderer::createPipeline()
     compositePipelineColorFormat_ = compositePipelineInfo.colorFormat;
 
     luminancePipeline_.reset();
+    histogramPipeline_.reset();
     if (toneMappingSettings_.enableAutoExposure &&
         postProcessLuminanceDescriptorSetLayout_.handle() != VK_NULL_HANDLE) {
+        const VkDescriptorSetLayout exposureDescriptorSetLayout = postProcessLuminanceDescriptorSetLayout_.handle();
         try {
-            const VkDescriptorSetLayout luminanceDescriptorSetLayout =
-                postProcessLuminanceDescriptorSetLayout_.handle();
             const VkPushConstantRange luminancePushConstantRange{
                 VK_SHADER_STAGE_COMPUTE_BIT, 0, static_cast<uint32_t>(sizeof(LuminancePushConstants))};
 
             rhi::VulkanComputePipelineCreateInfo luminancePipelineInfo{};
             luminancePipelineInfo.shaderPath = shaderPath("luminance.comp.spv");
             luminancePipelineInfo.descriptorSetLayouts =
-                std::span<const VkDescriptorSetLayout>(&luminanceDescriptorSetLayout, 1);
+                std::span<const VkDescriptorSetLayout>(&exposureDescriptorSetLayout, 1);
             luminancePipelineInfo.pushConstantRanges =
                 std::span<const VkPushConstantRange>(&luminancePushConstantRange, 1);
             luminancePipeline_.create(context_.vkDevice(), luminancePipelineInfo);
@@ -1411,7 +1639,32 @@ void Renderer::createPipeline()
                                       VK_OBJECT_TYPE_PIPELINE_LAYOUT,
                                       "AutoExposurePipelineLayout");
         } catch (const std::exception& error) {
-            disableAutoExposureFallback(std::string("Auto exposure compute pipeline creation failed: ") + error.what());
+            disableLogAverageExposureFallback(
+                std::string("Log-average exposure compute pipeline creation failed: ") + error.what());
+        }
+
+        try {
+            const VkPushConstantRange histogramPushConstantRange{
+                VK_SHADER_STAGE_COMPUTE_BIT, 0, static_cast<uint32_t>(sizeof(HistogramPushConstants))};
+
+            rhi::VulkanComputePipelineCreateInfo histogramPipelineInfo{};
+            histogramPipelineInfo.shaderPath = shaderPath("luminance_histogram.comp.spv");
+            histogramPipelineInfo.descriptorSetLayouts =
+                std::span<const VkDescriptorSetLayout>(&exposureDescriptorSetLayout, 1);
+            histogramPipelineInfo.pushConstantRanges =
+                std::span<const VkPushConstantRange>(&histogramPushConstantRange, 1);
+            histogramPipeline_.create(context_.vkDevice(), histogramPipelineInfo);
+            rhi::debug::setObjectName(context_.vkDevice(),
+                                      histogramPipeline_.pipeline(),
+                                      VK_OBJECT_TYPE_PIPELINE,
+                                      "HistogramExposureComputePipeline");
+            rhi::debug::setObjectName(context_.vkDevice(),
+                                      histogramPipeline_.layout(),
+                                      VK_OBJECT_TYPE_PIPELINE_LAYOUT,
+                                      "HistogramExposurePipelineLayout");
+        } catch (const std::exception& error) {
+            disableHistogramExposureFallback(
+                std::string("Histogram exposure compute pipeline creation failed: ") + error.what());
         }
     }
 }
@@ -2775,6 +3028,29 @@ void Renderer::nameBrdfLutResources(const rhi::VulkanBrdfLut& brdfLut, std::stri
     rhi::debug::setObjectName(context_.vkDevice(), brdfLut.sampler(), VK_OBJECT_TYPE_SAMPLER, prefix + "Sampler");
 }
 
+void Renderer::tryPrintExposureStats()
+{
+    const auto now = std::chrono::steady_clock::now();
+    if (now - lastExposureLogPrint_ < std::chrono::seconds(1)) {
+        return;
+    }
+
+    lastExposureLogPrint_ = now;
+    const ExposureMode mode = exposureModeValue(toneMappingSettings_.exposureMode);
+    const auto [lowPercentile, highPercentile] =
+        sanitizedPercentileRange(toneMappingSettings_.lowPercentile, toneMappingSettings_.highPercentile);
+
+    std::ostringstream message;
+    message << std::fixed << std::setprecision(4) << "Exposure:\n"
+            << "  mode: " << exposureModeName(mode) << "\n"
+            << "  average luminance: " << averageLuminance_ << "\n"
+            << "  histogram clipped luminance: " << histogramClippedLuminance_ << "\n"
+            << "  exposure: " << currentToneMappingExposure() << "\n"
+            << "  low percentile: " << lowPercentile << "\n"
+            << "  high percentile: " << highPercentile;
+    Logger::info(message.str());
+}
+
 void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
 {
     rhi::VulkanTimestampQuery::Results results{};
@@ -2797,6 +3073,7 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
             << "  RenderObjects: " << results.renderObjectsMs << " ms\n"
             << "  Bloom: " << results.bloomMs << " ms\n"
             << "  AutoExposure: " << results.autoExposureMs << " ms\n"
+            << "  HistogramExposure: " << results.histogramExposureMs << " ms\n"
             << "  Composite: " << results.compositeMs << " ms\n";
     if (cullingStats_.gpuCulling) {
         const uint32_t totalDrawItems = frameIndex < frameGpuCullTotalDrawItems_.size()
@@ -2852,11 +3129,6 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
                     ? (isShadowIndirectCountPathActive(frameIndex) ? "per-cascade indirect count"
                                                                    : "per-cascade indirect fallback")
                     : "per-cascade direct fallback");
-    message << "\nAuto Exposure:\n"
-            << "  enabled: " << (isAutoExposureActive() ? "true" : "false") << "\n"
-            << "  average luminance: " << averageLuminance_ << "\n"
-            << "  exposure: " << currentToneMappingExposure() << "\n"
-            << "  target luminance: " << toneMappingSettings_.targetLuminance;
     Logger::info(message.str());
 }
 
@@ -3136,6 +3408,10 @@ void Renderer::recreateSwapchain()
     sync_.recreateRenderFinishedSemaphores(swapchain_.imageCount());
     createPostProcessResources();
 
+    const bool exposurePipelineMissing =
+        toneMappingSettings_.enableAutoExposure && postProcessLuminanceDescriptorSetLayout_.handle() != VK_NULL_HANDLE &&
+        ((autoExposureAvailable_ && luminancePipeline_.pipeline() == VK_NULL_HANDLE) ||
+         (histogramExposureAvailable_ && histogramPipeline_.pipeline() == VK_NULL_HANDLE));
     const bool pipelineNeedsRecreate =
         pipeline_.pipeline() == VK_NULL_HANDLE || pipelineColorFormat_ != kSceneColorFormat ||
         pipelineDepthFormat_ != swapchain_.depthFormat() || skyboxPipeline_.pipeline() == VK_NULL_HANDLE ||
@@ -3143,10 +3419,7 @@ void Renderer::recreateSwapchain()
         shadowPipelineDepthFormat_ != shadowMap_.format() || bloomExtractPipeline_.pipeline() == VK_NULL_HANDLE ||
         bloomExtractPipelineColorFormat_ != kBloomColorFormat || bloomBlurPipeline_.pipeline() == VK_NULL_HANDLE ||
         bloomBlurPipelineColorFormat_ != kBloomColorFormat || compositePipeline_.pipeline() == VK_NULL_HANDLE ||
-        compositePipelineColorFormat_ != swapchain_.colorFormat() ||
-        (toneMappingSettings_.enableAutoExposure &&
-         postProcessLuminanceDescriptorSetLayout_.handle() != VK_NULL_HANDLE &&
-         luminancePipeline_.pipeline() == VK_NULL_HANDLE);
+        compositePipelineColorFormat_ != swapchain_.colorFormat() || exposurePipelineMissing;
     if (pipelineNeedsRecreate) {
         createPipeline();
     }
@@ -3191,52 +3464,170 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
 
 void Renderer::updateAutoExposureFromReadback(uint32_t frameIndex)
 {
-    if (!toneMappingSettings_.enableAutoExposure) {
+    const ExposureMode mode = exposureModeValue(toneMappingSettings_.exposureMode);
+    if (!toneMappingSettings_.enableAutoExposure || mode == ExposureMode::Manual) {
         currentExposure_ = toneMappingExposureValue(toneMappingSettings_.manualExposure);
         return;
     }
-    if (!autoExposureAvailable_ || frameIndex >= frameLuminanceReadbackReady_.size() ||
-        frameLuminanceReadbackReady_[frameIndex] == 0 || frameIndex >= frameLuminanceReadbackBuffers_.size() ||
-        luminancePartialCount_ == 0) {
-        return;
-    }
 
-    rhi::VulkanBuffer& readbackBuffer = frameLuminanceReadbackBuffers_[frameIndex];
-    if (!readbackBuffer.valid()) {
-        return;
-    }
-
-    std::vector<LuminancePartial> partials(luminancePartialCount_);
-    readbackBuffer.download(
-        std::as_writable_bytes(std::span<LuminancePartial>(partials.data(), partials.size())));
-
-    double sumLogLuminance = 0.0;
-    double sampleCount = 0.0;
-    for (const LuminancePartial& partial : partials) {
-        if (partial.sampleCount <= 0.0f || !std::isfinite(partial.sumLogLuminance) ||
-            !std::isfinite(partial.sampleCount)) {
-            continue;
+    const auto readLogAverageLuminance = [this, frameIndex](float& luminance) {
+        if (!isLogAverageExposureActive() || frameIndex >= frameLuminanceReadbackReady_.size() ||
+            frameLuminanceReadbackReady_[frameIndex] == 0 || frameIndex >= frameLuminanceReadbackBuffers_.size() ||
+            luminancePartialCount_ == 0) {
+            return false;
         }
-        sumLogLuminance += static_cast<double>(partial.sumLogLuminance);
-        sampleCount += static_cast<double>(partial.sampleCount);
+
+        rhi::VulkanBuffer& readbackBuffer = frameLuminanceReadbackBuffers_[frameIndex];
+        if (!readbackBuffer.valid()) {
+            return false;
+        }
+
+        std::vector<LuminancePartial> partials(luminancePartialCount_);
+        readbackBuffer.download(
+            std::as_writable_bytes(std::span<LuminancePartial>(partials.data(), partials.size())));
+
+        double sumLogLuminance = 0.0;
+        double sampleCount = 0.0;
+        for (const LuminancePartial& partial : partials) {
+            if (partial.sampleCount <= 0.0f || !std::isfinite(partial.sumLogLuminance) ||
+                !std::isfinite(partial.sampleCount)) {
+                continue;
+            }
+            sumLogLuminance += static_cast<double>(partial.sumLogLuminance);
+            sampleCount += static_cast<double>(partial.sampleCount);
+        }
+
+        if (sampleCount <= 0.0) {
+            return false;
+        }
+
+        const double averageLogLuminance = sumLogLuminance / sampleCount;
+        const double averageLuminance = std::exp(averageLogLuminance);
+        if (!std::isfinite(averageLuminance) || averageLuminance <= 0.0) {
+            return false;
+        }
+
+        luminance = static_cast<float>(std::max(averageLuminance, static_cast<double>(kMinAverageLuminance)));
+        return true;
+    };
+
+    const auto readHistogramLuminance = [this, frameIndex](float& luminance) {
+        if (!isHistogramExposureActive() || frameIndex >= frameHistogramReadbackReady_.size() ||
+            frameHistogramReadbackReady_[frameIndex] == 0 || frameIndex >= frameHistogramReadbackBuffers_.size()) {
+            return false;
+        }
+
+        rhi::VulkanBuffer& readbackBuffer = frameHistogramReadbackBuffers_[frameIndex];
+        if (!readbackBuffer.valid()) {
+            return false;
+        }
+
+        std::array<uint32_t, kHistogramBinCount> bins{};
+        readbackBuffer.download(std::as_writable_bytes(std::span<uint32_t>(bins.data(), bins.size())));
+
+        uint64_t totalSamples = 0;
+        for (uint32_t count : bins) {
+            totalSamples += count;
+        }
+        if (totalSamples == 0) {
+            return false;
+        }
+
+        const auto [lowPercentile, highPercentile] =
+            sanitizedPercentileRange(toneMappingSettings_.lowPercentile, toneMappingSettings_.highPercentile);
+        const uint64_t lowCut =
+            std::min<uint64_t>(totalSamples,
+                               static_cast<uint64_t>(std::floor(static_cast<double>(totalSamples) *
+                                                                static_cast<double>(lowPercentile))));
+        uint64_t highCut =
+            std::min<uint64_t>(totalSamples,
+                               static_cast<uint64_t>(std::ceil(static_cast<double>(totalSamples) *
+                                                               static_cast<double>(highPercentile))));
+        if (highCut <= lowCut) {
+            highCut = std::min<uint64_t>(totalSamples, lowCut + 1);
+        }
+        if (highCut <= lowCut) {
+            return false;
+        }
+
+        const auto [minLogLuminance, maxLogLuminance] = sanitizedHistogramLogRange(
+            toneMappingSettings_.histogramMinLogLuminance, toneMappingSettings_.histogramMaxLogLuminance);
+        const double binWidth =
+            static_cast<double>(maxLogLuminance - minLogLuminance) / static_cast<double>(kHistogramBinCount);
+
+        uint64_t cumulative = 0;
+        uint64_t weightedSampleCount = 0;
+        double weightedLuminanceSum = 0.0;
+        for (size_t binIndex = 0; binIndex < bins.size(); ++binIndex) {
+            const uint64_t count = bins[binIndex];
+            const uint64_t binStart = cumulative;
+            const uint64_t binEnd = cumulative + count;
+            cumulative = binEnd;
+
+            const uint64_t clippedStart = std::max(binStart, lowCut);
+            const uint64_t clippedEnd = std::min(binEnd, highCut);
+            if (clippedEnd <= clippedStart) {
+                continue;
+            }
+
+            const uint64_t includedCount = clippedEnd - clippedStart;
+            const double logLuminance =
+                static_cast<double>(minLogLuminance) + (static_cast<double>(binIndex) + 0.5) * binWidth;
+            const double binLuminance = std::exp2(logLuminance);
+            weightedLuminanceSum += binLuminance * static_cast<double>(includedCount);
+            weightedSampleCount += includedCount;
+        }
+
+        if (weightedSampleCount == 0) {
+            return false;
+        }
+
+        const double averageClippedLuminance =
+            weightedLuminanceSum / static_cast<double>(weightedSampleCount);
+        if (!std::isfinite(averageClippedLuminance) || averageClippedLuminance <= 0.0) {
+            return false;
+        }
+
+        luminance =
+            static_cast<float>(std::max(averageClippedLuminance, static_cast<double>(kMinAverageLuminance)));
+        return true;
+    };
+
+    float logAverageLuminance = averageLuminance_;
+    const bool logAverageRead = readLogAverageLuminance(logAverageLuminance);
+    if (logAverageRead) {
+        averageLuminance_ = logAverageLuminance;
     }
 
-    if (sampleCount <= 0.0) {
+    float histogramLuminance = histogramClippedLuminance_;
+    const bool histogramRead = readHistogramLuminance(histogramLuminance);
+    if (histogramRead) {
+        histogramClippedLuminance_ = histogramLuminance;
+    }
+
+    float exposureLuminance = 0.0f;
+    bool hasExposureLuminance = false;
+    if (mode == ExposureMode::LogAverage) {
+        exposureLuminance = logAverageLuminance;
+        hasExposureLuminance = logAverageRead;
+    } else if (mode == ExposureMode::Histogram) {
+        if (histogramRead) {
+            exposureLuminance = histogramLuminance;
+            hasExposureLuminance = true;
+        } else if (logAverageRead) {
+            exposureLuminance = logAverageLuminance;
+            hasExposureLuminance = true;
+        }
+    }
+
+    if (!hasExposureLuminance) {
         return;
     }
-
-    const double averageLogLuminance = sumLogLuminance / sampleCount;
-    const double averageLuminance = std::exp(averageLogLuminance);
-    if (!std::isfinite(averageLuminance) || averageLuminance <= 0.0) {
-        return;
-    }
-
-    averageLuminance_ = static_cast<float>(std::max(averageLuminance, static_cast<double>(kMinAverageLuminance)));
 
     const float minExposure = std::max(toneMappingSettings_.minExposure, 0.0f);
     const float maxExposure = std::max(toneMappingSettings_.maxExposure, minExposure);
     const float unclampedTarget =
-        toneMappingSettings_.targetLuminance / std::max(averageLuminance_, kMinAverageLuminance);
+        toneMappingSettings_.targetLuminance / std::max(exposureLuminance, kMinAverageLuminance);
     const float targetExposure = std::clamp(unclampedTarget, minExposure, maxExposure);
 
     const auto now = std::chrono::steady_clock::now();
@@ -3336,12 +3727,38 @@ bool Renderer::isGpuShadowCullingActive() const
 
 bool Renderer::isAutoExposureActive() const
 {
+    if (!toneMappingSettings_.enableAutoExposure) {
+        return false;
+    }
+
+    const ExposureMode mode = exposureModeValue(toneMappingSettings_.exposureMode);
+    if (mode == ExposureMode::Manual) {
+        return false;
+    }
+    if (mode == ExposureMode::LogAverage) {
+        return isLogAverageExposureActive();
+    }
+
+    return isHistogramExposureActive() || isLogAverageExposureActive();
+}
+
+bool Renderer::isLogAverageExposureActive() const
+{
     return toneMappingSettings_.enableAutoExposure && autoExposureAvailable_ &&
            luminancePipeline_.pipeline() != VK_NULL_HANDLE && luminancePipeline_.layout() != VK_NULL_HANDLE &&
            luminanceDescriptorSets_.size() == frames_.size() && frameLuminanceBuffers_.size() == frames_.size() &&
            frameLuminanceReadbackBuffers_.size() == frames_.size() &&
            frameLuminanceReadbackReady_.size() == frames_.size() && luminancePartialCount_ > 0 &&
            luminanceGroupCountX_ > 0 && luminanceGroupCountY_ > 0;
+}
+
+bool Renderer::isHistogramExposureActive() const
+{
+    return toneMappingSettings_.enableAutoExposure && histogramExposureAvailable_ &&
+           histogramPipeline_.pipeline() != VK_NULL_HANDLE && histogramPipeline_.layout() != VK_NULL_HANDLE &&
+           histogramDescriptorSets_.size() == frames_.size() && frameHistogramBuffers_.size() == frames_.size() &&
+           frameHistogramReadbackBuffers_.size() == frames_.size() &&
+           frameHistogramReadbackReady_.size() == frames_.size();
 }
 
 bool Renderer::isBindlessMaterialTextureActive() const
@@ -3395,7 +3812,15 @@ VkDescriptorSet Renderer::globalMaterialDescriptorSet() const
 
 float Renderer::currentToneMappingExposure() const
 {
-    if (toneMappingSettings_.enableAutoExposure && autoExposureAvailable_) {
+    if (!toneMappingSettings_.enableAutoExposure) {
+        return toneMappingExposureValue(toneMappingSettings_.manualExposure);
+    }
+
+    const ExposureMode mode = exposureModeValue(toneMappingSettings_.exposureMode);
+    if (mode == ExposureMode::LogAverage && isLogAverageExposureActive()) {
+        return toneMappingExposureValue(currentExposure_);
+    }
+    if (mode == ExposureMode::Histogram && (isHistogramExposureActive() || isLogAverageExposureActive())) {
         return toneMappingExposureValue(currentExposure_);
     }
 
@@ -3665,7 +4090,8 @@ void Renderer::recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer, uin
 
 void Renderer::recordLuminanceCommands(VkCommandBuffer commandBuffer)
 {
-    if (!isAutoExposureActive() || currentFrame_ >= luminanceDescriptorSets_.size() ||
+    if (!isLogAverageExposureActive() || exposureModeValue(toneMappingSettings_.exposureMode) == ExposureMode::Manual ||
+        currentFrame_ >= luminanceDescriptorSets_.size() ||
         currentFrame_ >= frameLuminanceBuffers_.size() || currentFrame_ >= frameLuminanceReadbackBuffers_.size() ||
         currentFrame_ >= frameLuminanceReadbackReady_.size()) {
         return;
@@ -3750,6 +4176,125 @@ void Renderer::recordLuminanceCommands(VkCommandBuffer commandBuffer)
     rhi::debug::endLabel(commandBuffer);
 
     renderGraph_.endLuminancePass();
+}
+
+void Renderer::recordHistogramCommands(VkCommandBuffer commandBuffer)
+{
+    if (!isHistogramExposureActive() || exposureModeValue(toneMappingSettings_.exposureMode) == ExposureMode::Manual ||
+        currentFrame_ >= histogramDescriptorSets_.size() || currentFrame_ >= frameHistogramBuffers_.size() ||
+        currentFrame_ >= frameHistogramReadbackBuffers_.size() || currentFrame_ >= frameHistogramReadbackReady_.size()) {
+        return;
+    }
+
+    VkBuffer histogramBuffer = frameHistogramBuffers_[currentFrame_].buffer();
+    VkBuffer readbackBuffer = frameHistogramReadbackBuffers_[currentFrame_].buffer();
+    if (histogramBuffer == VK_NULL_HANDLE || readbackBuffer == VK_NULL_HANDLE) {
+        return;
+    }
+
+    const VkExtent3D sceneExtent = sceneColor_.extent();
+    const uint32_t groupCountX = (sceneExtent.width + kHistogramLocalSizeX - 1) / kHistogramLocalSizeX;
+    const uint32_t groupCountY = (sceneExtent.height + kHistogramLocalSizeY - 1) / kHistogramLocalSizeY;
+    if (groupCountX == 0 || groupCountY == 0) {
+        return;
+    }
+
+    renderGraph_.beginHistogramExposurePass();
+
+    rhi::debug::beginLabel(commandBuffer, "HistogramExposurePass");
+    const VkDeviceSize histogramBufferSize = frameHistogramBuffers_[currentFrame_].size();
+    vkCmdFillBuffer(commandBuffer, histogramBuffer, 0, histogramBufferSize, 0);
+
+    VkBufferMemoryBarrier2 resetBarrier{};
+    resetBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+    resetBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    resetBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    resetBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    resetBarrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    resetBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    resetBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    resetBarrier.buffer = histogramBuffer;
+    resetBarrier.offset = 0;
+    resetBarrier.size = histogramBufferSize;
+
+    VkDependencyInfo resetDependencyInfo{};
+    resetDependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    resetDependencyInfo.bufferMemoryBarrierCount = 1;
+    resetDependencyInfo.pBufferMemoryBarriers = &resetBarrier;
+    vkCmdPipelineBarrier2(commandBuffer, &resetDependencyInfo);
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, histogramPipeline_.pipeline());
+
+    const VkDescriptorSet descriptorSet = histogramDescriptorSets_[currentFrame_];
+    vkCmdBindDescriptorSets(commandBuffer,
+                            VK_PIPELINE_BIND_POINT_COMPUTE,
+                            histogramPipeline_.layout(),
+                            0,
+                            1,
+                            &descriptorSet,
+                            0,
+                            nullptr);
+
+    const auto [minLogLuminance, maxLogLuminance] = sanitizedHistogramLogRange(
+        toneMappingSettings_.histogramMinLogLuminance, toneMappingSettings_.histogramMaxLogLuminance);
+    const HistogramPushConstants pushConstants{
+        glm::uvec4(sceneExtent.width, sceneExtent.height, kHistogramBinCount, 0),
+        glm::vec4(minLogLuminance, maxLogLuminance, kMinAverageLuminance, 0.0f)};
+    vkCmdPushConstants(commandBuffer,
+                       histogramPipeline_.layout(),
+                       VK_SHADER_STAGE_COMPUTE_BIT,
+                       0,
+                       static_cast<uint32_t>(sizeof(HistogramPushConstants)),
+                       &pushConstants);
+
+    rhi::debug::beginLabel(commandBuffer, "HistogramCompute");
+    vkCmdDispatch(commandBuffer, groupCountX, groupCountY, 1);
+    rhi::debug::endLabel(commandBuffer);
+
+    VkBufferMemoryBarrier2 computeBarrier{};
+    computeBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+    computeBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    computeBarrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    computeBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    computeBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    computeBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    computeBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    computeBarrier.buffer = histogramBuffer;
+    computeBarrier.offset = 0;
+    computeBarrier.size = histogramBufferSize;
+
+    VkDependencyInfo computeDependencyInfo{};
+    computeDependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    computeDependencyInfo.bufferMemoryBarrierCount = 1;
+    computeDependencyInfo.pBufferMemoryBarriers = &computeBarrier;
+    vkCmdPipelineBarrier2(commandBuffer, &computeDependencyInfo);
+
+    VkBufferCopy histogramCopy{};
+    histogramCopy.size = histogramBufferSize;
+    vkCmdCopyBuffer(commandBuffer, histogramBuffer, readbackBuffer, 1, &histogramCopy);
+
+    VkBufferMemoryBarrier2 readbackBarrier{};
+    readbackBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+    readbackBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    readbackBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    readbackBarrier.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+    readbackBarrier.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+    readbackBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    readbackBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    readbackBarrier.buffer = readbackBuffer;
+    readbackBarrier.offset = 0;
+    readbackBarrier.size = frameHistogramReadbackBuffers_[currentFrame_].size();
+
+    VkDependencyInfo readbackDependencyInfo{};
+    readbackDependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    readbackDependencyInfo.bufferMemoryBarrierCount = 1;
+    readbackDependencyInfo.pBufferMemoryBarriers = &readbackBarrier;
+    vkCmdPipelineBarrier2(commandBuffer, &readbackDependencyInfo);
+
+    frameHistogramReadbackReady_[currentFrame_] = 1;
+    rhi::debug::endLabel(commandBuffer);
+
+    renderGraph_.endHistogramExposurePass();
 }
 
 void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex)
@@ -3943,7 +4488,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         const glm::mat4 projection = camera_.projectionMatrix(aspect);
         const SkyboxPushConstants skyboxPushConstants{glm::inverse(projection * skyboxView),
                                                       currentToneMappingExposure(),
-                                                      toneMappingOperatorValue(toneMappingSettings_.operatorType)};
+                                                      toneMappingOperatorValue(toneMappingSettings_.toneMapper)};
 
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, skyboxPipeline_.pipeline());
         vkCmdBindDescriptorSets(commandBuffer,
@@ -4003,7 +4548,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     const bool indirectCountPathActive = isFrameIndirectCountPathActive(currentFrame_);
     const VkBuffer batchVisibleCountBuffer =
         indirectCountPathActive ? frameBatchVisibleCountBuffers_.at(currentFrame_).buffer() : VK_NULL_HANDLE;
-    const uint32_t toneMappingOperator = toneMappingOperatorValue(toneMappingSettings_.operatorType);
+    const uint32_t toneMappingOperator = toneMappingOperatorValue(toneMappingSettings_.toneMapper);
     const float exposure = currentToneMappingExposure();
     if (multiDrawIndirectActive) {
         if (bindlessDescriptorSetsBound) {
@@ -4207,6 +4752,10 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     recordLuminanceCommands(commandBuffer);
     timestampQuery_.writeEnd(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::AutoExposure);
 
+    timestampQuery_.writeBegin(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::HistogramExposure);
+    recordHistogramCommands(commandBuffer);
+    timestampQuery_.writeEnd(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::HistogramExposure);
+
     rhi::debug::beginLabel(commandBuffer, "CompositePass");
     timestampQuery_.writeBegin(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::Composite);
     renderGraph_.beginCompositePass();
@@ -4223,7 +4772,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     const CompositePushConstants compositePushConstants{
         currentToneMappingExposure(),
         bloomSettings_.enabled ? std::max(bloomSettings_.intensity, 0.0f) : 0.0f,
-        toneMappingOperatorValue(toneMappingSettings_.operatorType),
+        toneMappingOperatorValue(toneMappingSettings_.toneMapper),
         bloomSettings_.enabled ? 1u : 0u};
     vkCmdPushConstants(commandBuffer,
                        compositePipeline_.layout(),

@@ -15,7 +15,7 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - Optional HDR environment loading with a procedural fallback, cubemap-based skybox/IBL resources, and split-sum BRDF LUT.
 - Skybox and mesh shaders output HDR linear color into an offscreen scene color target before post-processing.
 - Bloom extraction, separable blur, and final composite passes are implemented.
-- Auto exposure from HDR scene luminance computes log-average luminance readback data and adapts exposure before final tone mapping.
+- Auto exposure from HDR scene luminance builds log-average and histogram readback data; histogram percentile clipping is the preferred mode, with log-average/manual fallback.
 - Manual exposure remains available as the fallback path.
 - Reinhard/ACES tone mapping is applied in the final composite pass before swapchain output.
 - Compact Kulla-Conty-style multi-scattering compensation for PBR response.
@@ -37,11 +37,11 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - `VulkanPipeline` and `VulkanComputePipeline` load CMake-built SPIR-V and create graphics/compute pipeline layouts and pipelines.
 - `VulkanBuffer`, `VulkanImage`, `VulkanTexture`, `VulkanEnvironmentMap`, `VulkanBrdfLut`, and `VulkanShadowMap` wrap Vulkan resource lifetime.
 - `Mesh`, `Material`, `RenderObject`, `DrawItem`, `Transform`, and `Camera` provide renderer-side scene abstractions without ECS.
-- `RenderGraph` is a small manual frame graph for the current `CSMShadowPass`, `MainHDRPass`, bloom, `LuminancePass`, and `CompositePass` resource transitions.
+- `RenderGraph` is a small manual frame graph for the current `CSMShadowPass`, `MainHDRPass`, bloom, `LuminancePass`, `HistogramExposurePass`, and `CompositePass` resource transitions.
 
 ## One-Frame Rendering Flow
 
-1. Wait for the current frame fence, read the previous completed luminance result when available, update smoothed exposure for following frames without a same-frame GPU/CPU stall, and acquire the next swapchain image.
+1. Wait for the current frame fence, read previous completed luminance and histogram results when available, update smoothed exposure for following frames without a same-frame GPU/CPU stall, and acquire the next swapchain image.
 2. Reset the fence and command buffer, update transforms, and build all `DrawItem` records from render objects and mesh primitives.
 3. Extract the camera frustum from `projection * view`, compute CSM split depths, and build one texel-snapped directional light view-projection matrix per cascade.
 4. Build CPU fallback shadow draw items/batches for each cascade, and build main-pass mesh-compatible draw batches for GPU culling or the CPU fallback.
@@ -55,9 +55,10 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 12. Run `BloomExtractPass` to sample `sceneColor_`, compute luminance, and keep bright pixels above the bloom threshold.
 13. Run `BloomBlurPass` as a horizontal blur into `bloomPing_`, then a vertical blur into `bloomPong_`.
 14. Run `LuminancePass` to reduce log luminance from `sceneColor_` into per-frame readback data for a later frame.
-15. Run `CompositePass` to combine `sceneColor + bloom * intensity`, apply the current manual or auto exposure, apply Reinhard or ACES tone mapping, and write the final color to the swapchain.
-16. Transition the swapchain image to present, submit with `vkQueueSubmit2`, and present.
-17. Recreate the swapchain and post-process images if presentation reports an out-of-date or resized surface.
+15. Run `HistogramExposurePass` to bin HDR scene luminance into a 256-bin log2 histogram and copy it to per-frame readback data for a later frame.
+16. Run `CompositePass` to combine `sceneColor + bloom * intensity`, apply the current manual or auto exposure, apply Reinhard or ACES tone mapping, and write the final color to the swapchain.
+17. Transition the swapchain image to present, submit with `vkQueueSubmit2`, and present.
+18. Recreate the swapchain and post-process images if presentation reports an out-of-date or resized surface.
 
 ## Current Descriptor Contract
 
@@ -976,6 +977,38 @@ The implementation intentionally uses the previous completed frame's luminance r
 
 The minimal `RenderGraph` now tracks `CSMShadowPass`, `MainHDRPass`, `BloomExtractPass`, `BloomBlurPass`, `LuminancePass`, and `CompositePass`. `LuminancePass` reads `sceneColor_` and writes luminance partial data; it is still part of the manual graph rather than a production scheduler with aliasing or automatic dependency inference.
 
-Known limitations after this milestone: there is no histogram-based exposure, no percentile clipping, no local exposure, no eye adaptation curve UI, no ImGui controls, no exposure debug visualization, no HDR swapchain output, no temporal AA, and bloom is still a simple half-resolution extract plus separable blur.
+Known limitations after this milestone: there is no local exposure, no eye adaptation curve UI, no ImGui controls, no exposure debug visualization, no HDR swapchain output, no temporal AA, and bloom is still a simple half-resolution extract plus separable blur. Milestone 42 adds histogram-based exposure and percentile luminance clipping.
 
-Future work: histogram-based auto exposure, percentile luminance clipping, local exposure, ImGui controls, exposure debug visualization, HDR swapchain output, better bloom quality, and temporal effects.
+Future work after Milestone 41 included histogram-based auto exposure, percentile luminance clipping, local exposure, ImGui controls, exposure debug visualization, HDR swapchain output, better bloom quality, and temporal effects. The histogram and percentile pieces are covered by Milestone 42.
+
+## Milestone 42: Histogram-Based Auto Exposure
+
+Milestone 42 upgrades automatic exposure while keeping the existing HDR `sceneColor_`, post-process composite, and Milestone 41 log-average path. A new compute shader, `src/shaders/luminance_histogram.comp`, samples the HDR scene color target, computes Rec. 709 luminance, maps `log2(max(luminance, epsilon))` into 256 histogram bins between the configured minimum and maximum log luminance, and atomically increments a storage-buffer bin count.
+
+The renderer allocates one device-local histogram buffer and one CPU-visible readback buffer per frame in flight. Each histogram buffer is a 256-entry `uint32_t` storage buffer with transfer source and destination usage. Before dispatch, the frame's histogram buffer is reset with `vkCmdFillBuffer`, then a Synchronization2 buffer barrier makes the transfer write visible to compute shader storage reads/writes. After `HistogramCompute`, another barrier makes compute shader writes visible to transfer, the histogram is copied into the frame's readback buffer, and a final barrier makes the copy visible to the host. The CPU reads only a previous completed frame after the existing fence wait, so the current frame is not stalled for exposure.
+
+CPU exposure now supports three modes: manual, log-average luminance, and histogram percentile. Histogram mode is the default preferred mode. The CPU sums the readback histogram, finds the configured low/high percentile cut points, and computes a weighted average luminance from bin centers inside that clipped percentile range. Bin centers are converted back from log2 luminance with `exp2`. Percentile clipping keeps extreme dark or bright pixels from dominating exposure.
+
+Exposure still targets `targetLuminance / max(luminance, epsilon)`, clamps between `minExposure` and `maxExposure`, and smooths with `currentExposure += (targetExposure - currentExposure) * (1 - exp(-adaptationRate * deltaTime))`. The composite pass remains the only tone-mapping location: it samples scene color and bloom, applies `currentToneMappingExposure()`, then applies Reinhard or ACES tone mapping.
+
+The minimal render graph now documents `CSMShadowPass`, `MainHDRPass`, `BloomExtractPass`, `BloomBlurPass`, `LuminancePass`, `HistogramExposurePass`, and `CompositePass`. The implementation intentionally keeps `LuminancePass` active alongside `HistogramExposurePass` while auto exposure is enabled so log-average fallback data and once-per-second exposure logging remain available; only the selected exposure mode's result drives `currentToneMappingExposure()`.
+
+Fallback behavior is conservative. Manual mode always returns `manualExposure`. Log-average mode uses the Milestone 41 luminance path when available and falls back to manual exposure otherwise. Histogram mode uses histogram percentile exposure when the histogram resources and pipeline are available, falls back to log-average exposure if needed, and falls back to manual exposure if no automatic path is available. If histogram resource, descriptor, or pipeline creation fails, the renderer logs a warning and keeps the log-average path when possible.
+
+Runtime logging now prints once per second:
+
+```text
+Exposure:
+  mode: manual / log-average / histogram
+  average luminance: X
+  histogram clipped luminance: Y
+  exposure: Z
+  low percentile: A
+  high percentile: B
+```
+
+Timestamp/debug capture labels now include `HistogramExposurePass` and `HistogramCompute`, and timestamp results include a separate `HistogramExposure` range while keeping the existing `AutoExposure` / `Luminance` timing.
+
+Limitations after Milestone 42: histogram reduction still reads back to the CPU, there is no GPU-only exposure chain yet, no local exposure, no eye adaptation curve UI, no ImGui controls, no HDR swapchain output, no temporal AA, and bloom remains the existing simple half-resolution extract plus separable blur.
+
+Future work: GPU-side histogram reduction, exposure debug visualization, ImGui runtime controls, local exposure, HDR swapchain output, improved bloom, and temporal effects.

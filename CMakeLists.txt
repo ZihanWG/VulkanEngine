@@ -191,6 +191,7 @@ set(SHADER_SOURCES
     "${SHADER_SOURCE_DIR}/shadow.vert"
     "${SHADER_SOURCE_DIR}/cull.comp"
     "${SHADER_SOURCE_DIR}/luminance.comp"
+    "${SHADER_SOURCE_DIR}/luminance_histogram.comp"
     "${SHADER_SOURCE_DIR}/fullscreen.vert"
     "${SHADER_SOURCE_DIR}/bloom_extract.frag"
     "${SHADER_SOURCE_DIR}/bloom_blur.frag"
