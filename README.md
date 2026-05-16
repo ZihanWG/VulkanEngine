@@ -165,7 +165,7 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - Texture semantic handling covers base color, normal, and metallic-roughness today; occlusion, emissive, and other glTF texture semantics remain future work.
 - HDR environment loading is basic and uses an approximate CPU equirectangular-to-cubemap conversion.
 - Bloom is a simple half-resolution extract plus separable blur and is not mip-chain based yet.
-- Auto-exposure is average/log-average based only; there is no histogram exposure, percentile clipping, local exposure, eye adaptation curve UI, or exposure debug visualization yet.
+- Histogram auto-exposure still uses CPU-side readback; there is no GPU-only exposure chain, local exposure, eye adaptation curve UI, or exposure debug visualization yet.
 - HDR swapchain output is not implemented yet.
 - ImGui controls are not implemented yet.
 - Temporal effects are not implemented yet.
@@ -187,8 +187,8 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - Add LOD.
 - Consider mesh/task shaders in a later renderer branch.
 - Improve HDR environment prefiltering and color-management policy.
-- Add histogram-based auto exposure.
-- Add percentile luminance clipping and local exposure.
+- Move histogram exposure reduction fully onto the GPU.
+- Add local exposure.
 - Add exposure debug visualization.
 - Add mip-chain bloom and bloom quality controls.
 - Add HDR swapchain output.
@@ -979,7 +979,7 @@ The minimal `RenderGraph` now tracks `CSMShadowPass`, `MainHDRPass`, `BloomExtra
 
 Known limitations after this milestone: there is no local exposure, no eye adaptation curve UI, no ImGui controls, no exposure debug visualization, no HDR swapchain output, no temporal AA, and bloom is still a simple half-resolution extract plus separable blur. Milestone 42 adds histogram-based exposure and percentile luminance clipping.
 
-Future work after Milestone 41 included histogram-based auto exposure, percentile luminance clipping, local exposure, ImGui controls, exposure debug visualization, HDR swapchain output, better bloom quality, and temporal effects. The histogram and percentile pieces are covered by Milestone 42.
+Milestone 42 later covers histogram-based auto exposure and percentile luminance clipping. Remaining future work after Milestone 41 includes local exposure, ImGui controls, exposure debug visualization, HDR swapchain output, better bloom quality, and temporal effects.
 
 ## Milestone 42: Histogram-Based Auto Exposure
 

@@ -4488,7 +4488,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         const glm::mat4 projection = camera_.projectionMatrix(aspect);
         const SkyboxPushConstants skyboxPushConstants{glm::inverse(projection * skyboxView),
                                                       currentToneMappingExposure(),
-                                                      toneMappingOperatorValue(toneMappingSettings_.toneMapper)};
+                                                      toneMappingOperatorValue(toneMappingSettings_.operatorType)};
 
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, skyboxPipeline_.pipeline());
         vkCmdBindDescriptorSets(commandBuffer,
@@ -4548,7 +4548,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     const bool indirectCountPathActive = isFrameIndirectCountPathActive(currentFrame_);
     const VkBuffer batchVisibleCountBuffer =
         indirectCountPathActive ? frameBatchVisibleCountBuffers_.at(currentFrame_).buffer() : VK_NULL_HANDLE;
-    const uint32_t toneMappingOperator = toneMappingOperatorValue(toneMappingSettings_.toneMapper);
+    const uint32_t toneMappingOperator = toneMappingOperatorValue(toneMappingSettings_.operatorType);
     const float exposure = currentToneMappingExposure();
     if (multiDrawIndirectActive) {
         if (bindlessDescriptorSetsBound) {
@@ -4772,7 +4772,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     const CompositePushConstants compositePushConstants{
         currentToneMappingExposure(),
         bloomSettings_.enabled ? std::max(bloomSettings_.intensity, 0.0f) : 0.0f,
-        toneMappingOperatorValue(toneMappingSettings_.toneMapper),
+        toneMappingOperatorValue(toneMappingSettings_.operatorType),
         bloomSettings_.enabled ? 1u : 0u};
     vkCmdPushConstants(commandBuffer,
                        compositePipeline_.layout(),

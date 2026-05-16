@@ -75,16 +75,25 @@ private:
     struct ToneMappingSettings {
         float manualExposure = 1.0f;
         bool enableAutoExposure = true;
-        int exposureMode = 2; // 0 = manual, 1 = log-average luminance, 2 = histogram percentile.
+
+        int exposureMode = 2;
+        // 0 = manual
+        // 1 = log-average luminance
+        // 2 = histogram percentile
+
         float targetLuminance = 0.18f;
         float minExposure = 0.1f;
         float maxExposure = 8.0f;
         float adaptationRate = 1.5f;
+
         float histogramMinLogLuminance = -10.0f;
         float histogramMaxLogLuminance = 4.0f;
         float lowPercentile = 0.05f;
         float highPercentile = 0.95f;
-        int toneMapper = 0; // 0 = Reinhard, 1 = ACES fitted approximation.
+
+        int operatorType = 0;
+        // 0 = Reinhard
+        // 1 = ACES fitted approximation
     };
 
     struct BloomSettings {
