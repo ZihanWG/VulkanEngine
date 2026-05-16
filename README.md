@@ -15,7 +15,9 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - Optional HDR environment loading with a procedural fallback, cubemap-based skybox/IBL resources, and split-sum BRDF LUT.
 - Skybox and mesh shaders output HDR linear color into an offscreen scene color target before post-processing.
 - Bloom extraction, separable blur, and final composite passes are implemented.
-- Manual or automatic exposure and Reinhard/ACES tone mapping are applied in the final composite pass before swapchain output.
+- Auto exposure from HDR scene luminance computes log-average luminance readback data and adapts exposure before final tone mapping.
+- Manual exposure remains available as the fallback path.
+- Reinhard/ACES tone mapping is applied in the final composite pass before swapchain output.
 - Compact Kulla-Conty-style multi-scattering compensation for PBR response.
 - PCF-filtered cascaded directional shadow map with basic texel snapping, optional cascade debug tinting, per-cascade GPU shadow-caster culling, and an indirect shadow draw path.
 - Descriptor indexing path for bindless material texture arrays, with a legacy descriptor-set fallback.
@@ -35,11 +37,11 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - `VulkanPipeline` and `VulkanComputePipeline` load CMake-built SPIR-V and create graphics/compute pipeline layouts and pipelines.
 - `VulkanBuffer`, `VulkanImage`, `VulkanTexture`, `VulkanEnvironmentMap`, `VulkanBrdfLut`, and `VulkanShadowMap` wrap Vulkan resource lifetime.
 - `Mesh`, `Material`, `RenderObject`, `DrawItem`, `Transform`, and `Camera` provide renderer-side scene abstractions without ECS.
-- `RenderGraph` is a small manual frame graph for the current `CSMShadowPass`, `MainHDRPass`, bloom, and `CompositePass` resource transitions.
+- `RenderGraph` is a small manual frame graph for the current `CSMShadowPass`, `MainHDRPass`, bloom, `LuminancePass`, and `CompositePass` resource transitions.
 
 ## One-Frame Rendering Flow
 
-1. Wait for the current frame fence, read the previous completed luminance result when available, update smoothed exposure, and acquire the next swapchain image.
+1. Wait for the current frame fence, read the previous completed luminance result when available, update smoothed exposure for following frames without a same-frame GPU/CPU stall, and acquire the next swapchain image.
 2. Reset the fence and command buffer, update transforms, and build all `DrawItem` records from render objects and mesh primitives.
 3. Extract the camera frustum from `projection * view`, compute CSM split depths, and build one texel-snapped directional light view-projection matrix per cascade.
 4. Build CPU fallback shadow draw items/batches for each cascade, and build main-pass mesh-compatible draw batches for GPU culling or the CPU fallback.
@@ -944,7 +946,7 @@ Base color sRGB handling from Milestone 38 remains unchanged: base color texture
 
 Limitations at the end of Milestone 39: equirectangular-to-cubemap conversion was approximate, there was no auto-exposure, no HDR swapchain, no ImGui control, and no production-quality environment prefiltering yet. Milestone 40 later added the basic bloom and post-process composite path.
 
-Future work after Milestone 39 included better environment prefiltering, auto exposure, HDR skybox asset curation, ImGui controls, and a post-process path; the basic post-process path is now covered by Milestone 40.
+Future work after Milestone 39 included better environment prefiltering, HDR skybox asset curation, ImGui controls, and a post-process path. The basic post-process path is now covered by Milestone 40, and basic auto exposure is covered by Milestone 41.
 
 ## Milestone 40: Post-Process Pass and Bloom
 
@@ -960,7 +962,7 @@ The minimal `RenderGraph` now manually tracks `CSMShadowPass`, `MainHDRPass`, `B
 
 Swapchain resize recreates scene color and bloom images, resets their tracked layouts, and rebuilds the post-process descriptor sets that point at the resized image views. Shadow maps, environment resources, material descriptors, bindless texture sets, ObjectFrameData BDA data, GPU culling, indirect drawing, CSM, IBL, BRDF LUT, and Kulla-Conty-style compensation are unchanged.
 
-Known limitations after this milestone: bloom is simple and not mip-chain based yet, auto-exposure is not implemented yet, HDR swapchain output is not implemented yet, ImGui controls are not implemented yet, temporal effects are not implemented yet, and render graph scheduling/aliasing remains manual rather than production grade.
+Known limitations at the end of Milestone 40: bloom was simple and not mip-chain based yet, HDR swapchain output was not implemented, ImGui controls were not implemented, temporal effects were not implemented, and render graph scheduling/aliasing remained manual rather than production grade. Milestone 41 later adds the minimal average/log-average auto-exposure path.
 
 ## Milestone 41: Auto Exposure and Average Luminance
 
@@ -976,4 +978,4 @@ The minimal `RenderGraph` now tracks `CSMShadowPass`, `MainHDRPass`, `BloomExtra
 
 Known limitations after this milestone: there is no histogram-based exposure, no percentile clipping, no local exposure, no eye adaptation curve UI, no ImGui controls, no exposure debug visualization, no HDR swapchain output, no temporal AA, and bloom is still a simple half-resolution extract plus separable blur.
 
-Future work: histogram-based auto exposure, percentile luminance clipping, local exposure, ImGui controls, exposure debug visualization, HDR swapchain output, and better bloom quality.
+Future work: histogram-based auto exposure, percentile luminance clipping, local exposure, ImGui controls, exposure debug visualization, HDR swapchain output, better bloom quality, and temporal effects.
