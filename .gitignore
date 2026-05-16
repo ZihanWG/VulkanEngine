@@ -27,3 +27,6 @@ compile_commands.json
 
 # Generated shader binaries are produced by CMake under the build tree.
 **/shaders/*.spv
+
+# User-local runtime renderer settings are generated from the ImGui debug UI.
+config/runtime_settings.json

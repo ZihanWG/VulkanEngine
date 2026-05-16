@@ -8,6 +8,7 @@
 #include "renderer/Mesh.h"
 #include "renderer/RenderGraph.h"
 #include "renderer/RenderObject.h"
+#include "renderer/RuntimeSettings.h"
 #include "rhi/VulkanBuffer.h"
 #include "rhi/VulkanBrdfLut.h"
 #include "rhi/VulkanCommandContext.h"
@@ -28,8 +29,10 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <glm/vec4.hpp>
 #include <glm/mat4x4.hpp>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -57,54 +60,12 @@ private:
     static constexpr uint32_t kMaxShadowCascades = 4;
     static constexpr size_t kDebugHistoryCapacity = 240;
 
-    struct CsmSettings {
-        uint32_t cascadeCount = kMaxShadowCascades;
-        float lambda = 0.5f;
-        float nearPlane = 0.1f;
-        float farPlane = 100.0f;
-        float shadowDistance = 40.0f;
-        bool enableTexelSnapping = true;
-        bool enableCascadeDebugColors = false;
-        float depthBiasConstant = 0.002f;
-        float depthBiasSlope = 0.005f;
-    };
-
     struct ShadowSettings {
         uint32_t resolution = 2048;
         bool enablePcf = true;
         int pcfRadius = 1;
         float rasterDepthBiasConstantFactor = 1.25f;
         float rasterDepthBiasSlopeFactor = 1.75f;
-    };
-
-    struct ToneMappingSettings {
-        float manualExposure = 1.0f;
-        bool enableAutoExposure = true;
-
-        int exposureMode = 2;
-        // 0 = manual
-        // 1 = log-average luminance
-        // 2 = histogram percentile
-
-        float targetLuminance = 0.18f;
-        float minExposure = 0.1f;
-        float maxExposure = 8.0f;
-        float adaptationRate = 1.5f;
-
-        float histogramMinLogLuminance = -10.0f;
-        float histogramMaxLogLuminance = 4.0f;
-        float lowPercentile = 0.05f;
-        float highPercentile = 0.95f;
-
-        int operatorType = 0;
-        // 0 = Reinhard
-        // 1 = ACES fitted approximation
-    };
-
-    struct BloomSettings {
-        bool enabled = true;
-        float threshold = 1.0f;
-        float intensity = 0.1f;
     };
 
     struct CascadeFrameData {
@@ -179,11 +140,9 @@ private:
         DebugHistory knownFrameTotal;
     };
 
-    struct DebugUiSettings {
-        bool showRenderGraphPanel = true;
-        bool showGpuTimingGraphs = true;
-        bool showCullingStats = true;
-        bool showExposureGraphs = true;
+    enum class RuntimeSettingsApplyMode {
+        Startup,
+        Runtime
     };
 
     struct CullingDebugSnapshot {
@@ -285,7 +244,14 @@ private:
     void nameBrdfLutResources(const rhi::VulkanBrdfLut& brdfLut, std::string_view name) const;
     void tryPrintExposureStats();
     void tryPrintGpuTimings(uint32_t frameIndex);
+    void loadRuntimeSettingsAtStartup();
+    void applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSettingsApplyMode mode);
+    [[nodiscard]] RuntimeSettings captureRuntimeSettings() const;
+    void saveRuntimeSettingsFromUi();
+    void reloadRuntimeSettingsFromUi();
+    void resetRuntimeSettingsToDefaults();
     void buildDebugUi();
+    void drawRuntimeSettingsDebugUi();
     void drawRenderGraphDebugUi();
     void drawGpuTimingDebugUi();
     void drawCullingDebugUi();
@@ -443,6 +409,10 @@ private:
     DebugHistory averageLuminanceHistory_{};
     DebugHistory histogramClippedLuminanceHistory_{};
     rhi::VulkanTimestampQuery::Results latestGpuTimings_{};
+    std::filesystem::path runtimeSettingsPath_;
+    std::string lastRuntimeSettingsLoadStatus_ = "Not loaded yet.";
+    std::string lastRuntimeSettingsSaveStatus_ = "Not saved this session.";
+    std::string runtimeSettingsWarning_;
     float cpuFrameDeltaMs_ = 0.0f;
     float cpuFps_ = 0.0f;
     float currentExposure_ = 1.0f;

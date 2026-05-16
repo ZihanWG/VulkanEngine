@@ -318,6 +318,15 @@ std::filesystem::path assetPath(const char* relativePath)
 #endif
 }
 
+std::filesystem::path defaultRuntimeSettingsPath()
+{
+#if defined(VULKAN_ENGINE_CONFIG_DIR)
+    return std::filesystem::path(VULKAN_ENGINE_CONFIG_DIR) / "runtime_settings.json";
+#else
+    return std::filesystem::path("config") / "runtime_settings.json";
+#endif
+}
+
 std::string_view colorSpaceName(rhi::TextureColorSpace colorSpace)
 {
     switch (colorSpace) {
@@ -430,6 +439,9 @@ size_t Renderer::DebugHistory::copyChronological(std::array<float, kDebugHistory
 
 Renderer::Renderer(Window& window) : window_(window)
 {
+    runtimeSettingsPath_ = defaultRuntimeSettingsPath();
+    loadRuntimeSettingsAtStartup();
+
     context_.initialize(window_);
 
     frames_.resize(rhi::kMaxFramesInFlight);
@@ -3328,6 +3340,93 @@ void Renderer::pushExposureHistorySample()
     histogramClippedLuminanceHistory_.push(histogramClippedLuminance_);
 }
 
+void Renderer::loadRuntimeSettingsAtStartup()
+{
+    RuntimeSettings settings{};
+    const RuntimeSettingsLoadResult result = loadRuntimeSettingsDetailed(runtimeSettingsPath_, settings);
+    applyRuntimeSettings(settings, RuntimeSettingsApplyMode::Startup);
+
+    lastRuntimeSettingsLoadStatus_ = result.message;
+    runtimeSettingsWarning_ =
+        result.status == RuntimeSettingsLoadStatus::Loaded ? std::string{} : result.message;
+}
+
+void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSettingsApplyMode mode)
+{
+    toneMappingSettings_ = settings.toneMapping;
+    bloomSettings_ = settings.bloom;
+    debugUiSettings_ = settings.debugUi;
+
+    csmSettings_.lambda = settings.csm.lambda;
+    csmSettings_.shadowDistance = settings.csm.shadowDistance;
+    csmSettings_.enableTexelSnapping = settings.csm.enableTexelSnapping;
+    csmSettings_.enableCascadeDebugColors = settings.csm.enableCascadeDebugColors;
+
+    if (mode == RuntimeSettingsApplyMode::Startup) {
+        csmSettings_.cascadeCount = settings.csm.cascadeCount;
+        useGpuCulling_ = settings.useGpuCulling;
+        useGpuShadowCulling_ = settings.useGpuShadowCulling;
+        useBindlessMaterialTextures_ = settings.enableBindlessMaterialTextures;
+    } else {
+        if (!settings.useGpuCulling || gpuCullingAvailable_) {
+            useGpuCulling_ = settings.useGpuCulling;
+        }
+        if (!settings.useGpuShadowCulling || gpuShadowCullingAvailable_) {
+            useGpuShadowCulling_ = settings.useGpuShadowCulling;
+        }
+    }
+
+    clampRuntimeSettings();
+    if (!toneMappingSettings_.enableAutoExposure ||
+        exposureModeValue(toneMappingSettings_.exposureMode) == ExposureMode::Manual) {
+        currentExposure_ = toneMappingExposureValue(toneMappingSettings_.manualExposure);
+    }
+    lastAutoExposureUpdate_ = std::chrono::steady_clock::now();
+}
+
+RuntimeSettings Renderer::captureRuntimeSettings() const
+{
+    RuntimeSettings settings{};
+    settings.toneMapping = toneMappingSettings_;
+    settings.bloom = bloomSettings_;
+    settings.csm = csmSettings_;
+    settings.debugUi = debugUiSettings_;
+    settings.useGpuCulling = useGpuCulling_;
+    settings.useGpuShadowCulling = useGpuShadowCulling_;
+    settings.enableBindlessMaterialTextures = useBindlessMaterialTextures_;
+    return settings;
+}
+
+void Renderer::saveRuntimeSettingsFromUi()
+{
+    const RuntimeSettingsSaveResult result = saveRuntimeSettingsDetailed(runtimeSettingsPath_, captureRuntimeSettings());
+    lastRuntimeSettingsSaveStatus_ = result.message;
+    if (result.saved) {
+        runtimeSettingsWarning_.clear();
+    } else {
+        runtimeSettingsWarning_ = result.message;
+    }
+}
+
+void Renderer::reloadRuntimeSettingsFromUi()
+{
+    RuntimeSettings settings{};
+    const RuntimeSettingsLoadResult result = loadRuntimeSettingsDetailed(runtimeSettingsPath_, settings);
+    applyRuntimeSettings(settings, RuntimeSettingsApplyMode::Runtime);
+
+    lastRuntimeSettingsLoadStatus_ =
+        result.message + " Runtime-safe values applied; startup-applied values require restart.";
+    runtimeSettingsWarning_ =
+        result.status == RuntimeSettingsLoadStatus::Loaded ? std::string{} : result.message;
+}
+
+void Renderer::resetRuntimeSettingsToDefaults()
+{
+    applyRuntimeSettings(RuntimeSettings{}, RuntimeSettingsApplyMode::Runtime);
+    lastRuntimeSettingsLoadStatus_ = "Defaults restored in memory. Save Settings will write them to disk.";
+    runtimeSettingsWarning_.clear();
+}
+
 void Renderer::buildDebugUi()
 {
     if (!imguiLayer_.initialized()) {
@@ -3335,6 +3434,8 @@ void Renderer::buildDebugUi()
     }
 
     ImGui::Begin("VulkanEngine Debug");
+
+    drawRuntimeSettingsDebugUi();
 
     if (ImGui::CollapsingHeader("Debug Views", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Checkbox("Show Render Graph panel", &debugUiSettings_.showRenderGraphPanel);
@@ -3372,7 +3473,10 @@ void Renderer::buildDebugUi()
     }
 
     if (ImGui::CollapsingHeader("CSM", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Text("Cascade count: %u", activeCascadeCount());
+        int cascadeCount = static_cast<int>(activeCascadeCount());
+        ImGui::BeginDisabled();
+        ImGui::SliderInt("Cascade count (startup)", &cascadeCount, 1, static_cast<int>(kMaxShadowCascades));
+        ImGui::EndDisabled();
         ImGui::SliderFloat("Lambda", &csmSettings_.lambda, 0.0f, 1.0f, "%.3f");
         ImGui::DragFloat("Shadow distance", &csmSettings_.shadowDistance, 0.1f, 1.0f, csmSettings_.farPlane, "%.2f");
         ImGui::Checkbox("Texel snapping enabled", &csmSettings_.enableTexelSnapping);
@@ -3397,6 +3501,10 @@ void Renderer::buildDebugUi()
         }
 
         ImGui::Text("Bindless material textures: %s", isBindlessMaterialTextureActive() ? "active" : "fallback");
+        bool bindlessEnabled = useBindlessMaterialTextures_;
+        ImGui::BeginDisabled();
+        ImGui::Checkbox("Bindless material textures enabled (startup)", &bindlessEnabled);
+        ImGui::EndDisabled();
         ImGui::Text("Main indirect count path: %s",
                     isFrameIndirectCountPathActive(currentFrame_) ? "active" : "fallback");
         ImGui::Text("Shadow indirect count path: %s",
@@ -3430,6 +3538,38 @@ void Renderer::buildDebugUi()
 
     ImGui::End();
     clampRuntimeSettings();
+}
+
+void Renderer::drawRuntimeSettingsDebugUi()
+{
+    if (!ImGui::CollapsingHeader("Runtime Settings", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+
+    const std::string settingsPath = runtimeSettingsPath_.string();
+    ImGui::TextWrapped("File: %s", settingsPath.c_str());
+
+    if (ImGui::Button("Save Settings")) {
+        saveRuntimeSettingsFromUi();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reload Settings")) {
+        reloadRuntimeSettingsFromUi();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reset to Defaults")) {
+        resetRuntimeSettingsToDefaults();
+    }
+
+    ImGui::TextWrapped("Last load: %s", lastRuntimeSettingsLoadStatus_.c_str());
+    ImGui::TextWrapped("Last save: %s", lastRuntimeSettingsSaveStatus_.c_str());
+    if (!runtimeSettingsWarning_.empty()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.25f, 1.0f), "Warning: %s", runtimeSettingsWarning_.c_str());
+    }
+    ImGui::TextDisabled("Runtime-safe: tone mapping, exposure, bloom, CSM lambda/distance/stability/debug, "
+                        "available GPU culling toggles, and panel visibility.");
+    ImGui::TextDisabled("Startup-applied: CSM cascade count, bindless material texture heap, and culling resources "
+                        "that were disabled before initialization.");
 }
 
 void Renderer::drawRenderGraphDebugUi()

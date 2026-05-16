@@ -18,7 +18,7 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - Auto exposure from HDR scene luminance builds log-average and histogram readback data; histogram percentile clipping is the preferred mode, with log-average/manual fallback.
 - Manual exposure remains available as the fallback path.
 - Reinhard/ACES tone mapping is applied in the final composite pass before swapchain output.
-- Dear ImGui debug overlay exposes runtime render settings, render graph visualization, GPU timing history graphs, culling history plots, and exposure/luminance history plots.
+- Dear ImGui debug overlay exposes runtime render settings, persistent JSON settings save/load/reset controls, render graph visualization, GPU timing history graphs, culling history plots, and exposure/luminance history plots.
 - Compact Kulla-Conty-style multi-scattering compensation for PBR response.
 - PCF-filtered cascaded directional shadow map with basic texel snapping, optional cascade debug tinting, per-cascade GPU shadow-caster culling, and an indirect shadow draw path.
 - Descriptor indexing path for bindless material texture arrays, with a legacy descriptor-set fallback.
@@ -38,6 +38,7 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - `VulkanPipeline` and `VulkanComputePipeline` load CMake-built SPIR-V and create graphics/compute pipeline layouts and pipelines.
 - `VulkanBuffer`, `VulkanImage`, `VulkanTexture`, `VulkanEnvironmentMap`, `VulkanBrdfLut`, and `VulkanShadowMap` wrap Vulkan resource lifetime.
 - `Mesh`, `Material`, `RenderObject`, `DrawItem`, `Transform`, and `Camera` provide renderer-side scene abstractions without ECS.
+- `RuntimeSettings` stores the debug UI's persistent render settings and serializes them as local JSON under `config/`.
 - `ImGuiLayer` owns the Dear ImGui context, SDL3 backend, Vulkan backend, and ImGui descriptor pool.
 - `RenderGraph` is a small manual frame graph for the current `CSMShadowPass`, `MainHDRPass`, bloom, `LuminancePass`, `HistogramExposurePass`, `CompositePass`, and `ImGuiPass` resource transitions and debug pass metadata.
 
@@ -135,6 +136,8 @@ cmake --build build --config Debug
 
 CMake compiles GLSL shaders into the build-directory shader folder, for example `build/shaders`, and embeds that absolute shader directory into the executable. It also embeds the source `assets` directory path so Visual Studio, CLion, and PowerShell launches do not depend on the current working directory.
 
+Runtime settings are loaded from `config/runtime_settings.json` when present. The file is user-local and git-ignored; use the ImGui `Save Settings` button to generate it from the current renderer state. `config/runtime_settings.example.json` documents the JSON format.
+
 The demo tries to load:
 
 - `assets/textures/checker.png`
@@ -174,10 +177,13 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - Histogram auto-exposure still uses CPU-side readback; there is no GPU-only exposure chain or local exposure yet.
 - HDR swapchain output is not implemented yet.
 - ImGui is a debug UI only; there is no docking/editor layout yet.
+- Runtime settings persistence is intentionally narrow and is not a full editor settings system.
+- There is no per-project or per-profile runtime settings management yet.
+- Settings that require GPU resource recreation are startup-applied; there is no hot-reload for them yet.
+- Runtime settings are global, not scene-specific.
 - There is no scene hierarchy panel.
 - There is no asset browser.
 - There is no material inspector.
-- Runtime settings are not serialized to a persistent settings file.
 - There is no GPU capture automation.
 - Temporal effects are not implemented yet.
 - Environment prefiltering is still approximate and not production quality.
@@ -201,7 +207,8 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - Add local exposure.
 - Add mip-chain bloom and bloom quality controls.
 - Add HDR swapchain output.
-- Add persistent settings serialization.
+- Add runtime settings profile presets.
+- Add per-scene runtime settings.
 - Add scene hierarchy viewer.
 - Add material inspector.
 - Add texture and debug views.
@@ -1045,7 +1052,7 @@ Resize handling keeps the ImGui context and SDL3 backend alive. When the swapcha
 
 Known limitations after Milestone 43: there is no docking/editor layout yet, no scene hierarchy panel, no asset browser, no material inspector, no persistent settings file, and no GPU capture automation.
 
-Milestone 44 later adds the render graph visualization and GPU timing history graphs. Remaining future work includes persistent settings serialization, scene hierarchy viewer, material inspector, texture/debug views, CSM cascade visualization panel, and GPU capture workflow improvements.
+Milestone 44 later adds the render graph visualization and GPU timing history graphs, and Milestone 45 adds persistent settings serialization. Remaining future work includes scene hierarchy viewer, material inspector, texture/debug views, CSM cascade visualization panel, and GPU capture workflow improvements.
 
 ## Milestone 44: Render Graph Visualization and GPU Timing Graphs
 
@@ -1059,4 +1066,18 @@ This milestone is a debug visualization layer only. It does not add a render gra
 
 Known limitations after Milestone 44: there is no docking/editor layout yet, no persistent settings serialization yet, no scene hierarchy panel yet, no material inspector yet, no asset browser yet, no render graph node editor yet, the render graph is still manual and not automatically scheduled, and there is no production dependency inference, aliasing, or transient resource allocation yet.
 
-Future work: persistent settings serialization, render graph node view, GPU capture workflow panel, material inspector, scene hierarchy viewer, texture/debug views, CSM cascade visualization panel, in-engine profiler UI improvements, and render graph scheduling, aliasing, and transient resources.
+Milestone 45 later covers persistent settings serialization. Remaining future work: render graph node view, GPU capture workflow panel, material inspector, scene hierarchy viewer, texture/debug views, CSM cascade visualization panel, in-engine profiler UI improvements, and render graph scheduling, aliasing, and transient resources.
+
+## Milestone 45: Persistent Runtime Settings Serialization
+
+Milestone 45 adds a small persistent runtime settings layer for the existing ImGui-edited render settings. `RuntimeSettings` groups tone mapping and exposure, bloom, CSM stability/debug options, renderer toggles, and debug panel visibility, then saves and loads them as human-readable JSON.
+
+The renderer loads `config/runtime_settings.json` during startup. Missing files are not errors and fall back to defaults. Malformed files log a warning and also fall back to defaults. The ImGui debug UI now includes `Save Settings`, `Reload Settings`, and `Reset to Defaults` buttons plus the settings file path, last load/save status, and simple warning text for missing or malformed files.
+
+`Save Settings` writes the current in-memory settings to `config/runtime_settings.json`, creating `config/` if necessary. `Reload Settings` reads the JSON again and applies runtime-safe fields. `Reset to Defaults` restores runtime-safe defaults in memory and does not overwrite the file unless `Save Settings` is pressed afterward. `config/runtime_settings.json` is git-ignored, while `config/runtime_settings.example.json` is tracked as the format reference.
+
+Runtime-safe settings include exposure values, exposure mode, tone mapper, bloom enable/threshold/intensity, CSM lambda, shadow distance, texel snapping, cascade debug colors, GPU culling toggles when their resources were created at startup, and ImGui panel visibility. Startup-applied settings include CSM cascade count, bindless material texture heap enablement, and culling resources that were disabled before initialization; these are loaded before Vulkan resource creation and are shown as read-only or resource-dependent in the UI.
+
+This milestone does not add a full editor, docking layout, scene hierarchy editing, asset browser, material inspector, per-project profiles, scene-specific settings, or hot-reload for settings requiring GPU resource recreation. It does not change descriptor layouts, ObjectFrameData BDA usage, GPU culling algorithms, indirect-count drawing, CSM resource layout, shadow bindings, IBL/BRDF LUT bindings, glTF loading, bloom extraction/blur, histogram exposure, render graph behavior, or swapchain synchronization.
+
+Future work: profile presets, per-scene settings, material inspector, scene hierarchy panel, render graph node view, GPU capture workflow panel, texture/debug views, CSM cascade visualization, and broader editor settings management.
