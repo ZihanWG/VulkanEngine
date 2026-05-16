@@ -16,6 +16,7 @@ constexpr RenderResourceHandle kSceneColor{"SceneColor"};
 constexpr RenderResourceHandle kBloomExtract{"BloomExtract"};
 constexpr RenderResourceHandle kBloomPing{"BloomPing"};
 constexpr RenderResourceHandle kBloomPong{"BloomPong"};
+constexpr RenderResourceHandle kLuminancePartials{"LuminancePartials"};
 constexpr RenderResourceHandle kMainDepth{"MainDepth"};
 constexpr RenderResourceHandle kMaterialTextures{"MaterialTextures"};
 constexpr RenderResourceHandle kIblResources{"IBLResources"};
@@ -80,6 +81,16 @@ RenderGraph::RenderGraph()
                              {kBloomPing, RenderResourceAccess::Write, "Writes the horizontal blur result."},
                              {kBloomPing, RenderResourceAccess::Read, "Samples the horizontal blur result."},
                              {kBloomPong, RenderResourceAccess::Write, "Writes the vertical blur result."},
+                         }},
+          RenderPassNode{"LuminancePass",
+                         RenderPassType::Luminance,
+                         {
+                             {kSceneColor,
+                              RenderResourceAccess::Read,
+                              "Samples the HDR scene color target for log-average luminance reduction."},
+                             {kLuminancePartials,
+                              RenderResourceAccess::Write,
+                              "Writes per-workgroup log-luminance partial sums for CPU readback."},
                          }},
           RenderPassNode{"CompositePass",
                          RenderPassType::Composite,
@@ -303,6 +314,27 @@ void RenderGraph::endBloomBlurPass()
     activePass_ = ActivePass::None;
 }
 
+void RenderGraph::beginLuminancePass()
+{
+    requireFrameActive("RenderGraph::beginLuminancePass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginLuminancePass called while another pass is active.");
+    }
+
+    transitionColorImage(frame_.resources.sceneColor, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    activePass_ = ActivePass::Luminance;
+}
+
+void RenderGraph::endLuminancePass()
+{
+    requireFrameActive("RenderGraph::endLuminancePass");
+    if (activePass_ != ActivePass::Luminance) {
+        throw std::logic_error("RenderGraph::endLuminancePass called without an active luminance pass.");
+    }
+
+    activePass_ = ActivePass::None;
+}
+
 void RenderGraph::beginCompositePass()
 {
     requireFrameActive("RenderGraph::beginCompositePass");
@@ -468,7 +500,7 @@ void RenderGraph::transitionColorImage(RenderGraphImageResource& resource, VkIma
         srcStage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
         srcAccess = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
     } else if (oldLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-        srcStage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        srcStage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         srcAccess = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
     }
 
@@ -476,7 +508,7 @@ void RenderGraph::transitionColorImage(RenderGraphImageResource& resource, VkIma
         dstStage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
         dstAccess = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
     } else if (newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-        dstStage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        dstStage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         dstAccess = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
     }
 

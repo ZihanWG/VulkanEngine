@@ -17,6 +17,7 @@ public:
         Skybox,
         RenderObjects,
         Bloom,
+        AutoExposure,
         Composite,
         Count
     };
@@ -28,6 +29,7 @@ public:
         double skyboxMs = 0.0;
         double renderObjectsMs = 0.0;
         double bloomMs = 0.0;
+        double autoExposureMs = 0.0;
         double compositeMs = 0.0;
     };
 

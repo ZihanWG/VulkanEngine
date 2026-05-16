@@ -1,0 +1,49 @@
+#version 460
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D uSceneColor;
+layout(std430, set = 0, binding = 1) buffer LuminanceOutput {
+    vec4 partials[];
+} uLuminance;
+
+layout(push_constant) uniform LuminancePushConstants {
+    uvec4 params; // x = width, y = height, z = groupCountX
+} pc;
+
+shared float sLogLuminance[256];
+shared float sSampleCount[256];
+
+void main()
+{
+    const uint localIndex = gl_LocalInvocationIndex;
+    const uvec2 pixel = gl_GlobalInvocationID.xy;
+    const uvec2 extent = pc.params.xy;
+    const bool inBounds = pixel.x < extent.x && pixel.y < extent.y;
+
+    float logLuminance = 0.0;
+    float sampleCount = 0.0;
+    if (inBounds) {
+        vec3 color = texelFetch(uSceneColor, ivec2(pixel), 0).rgb;
+        float luminance = dot(max(color, vec3(0.0)), vec3(0.2126, 0.7152, 0.0722));
+        logLuminance = log(max(luminance, 0.0001));
+        sampleCount = 1.0;
+    }
+
+    sLogLuminance[localIndex] = logLuminance;
+    sSampleCount[localIndex] = sampleCount;
+    barrier();
+
+    for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+        if (localIndex < stride) {
+            sLogLuminance[localIndex] += sLogLuminance[localIndex + stride];
+            sSampleCount[localIndex] += sSampleCount[localIndex + stride];
+        }
+        barrier();
+    }
+
+    if (localIndex == 0u) {
+        uint partialIndex = gl_WorkGroupID.y * pc.params.z + gl_WorkGroupID.x;
+        uLuminance.partials[partialIndex] = vec4(sLogLuminance[0], sSampleCount[0], 0.0, 0.0);
+    }
+}

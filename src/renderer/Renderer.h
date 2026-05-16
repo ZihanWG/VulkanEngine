@@ -73,7 +73,12 @@ private:
     };
 
     struct ToneMappingSettings {
-        float exposure = 1.0f;
+        float manualExposure = 1.0f;
+        bool enableAutoExposure = true;
+        float targetLuminance = 0.18f;
+        float minExposure = 0.1f;
+        float maxExposure = 8.0f;
+        float adaptationRate = 1.5f;
         int operatorType = 0; // 0 = Reinhard, 1 = ACES fitted approximation.
     };
 
@@ -138,6 +143,11 @@ private:
     void destroyPostProcessSampler();
     void createPostProcessResources();
     void createPostProcessDescriptorSets();
+    void createLuminanceResources();
+    void destroyLuminanceResources();
+    void disableAutoExposureFallback(std::string_view reason);
+    void updateAutoExposureFromReadback(uint32_t frameIndex);
+    void recordLuminanceCommands(VkCommandBuffer commandBuffer);
     void createGpuCullingResources();
     void destroyGpuCullingResources();
     void createGpuShadowCullingResources();
@@ -189,6 +199,7 @@ private:
     bool readGpuShadowVisibleCount(uint32_t frameIndex, uint32_t& visibleCount);
     [[nodiscard]] bool isGpuCullingActive() const;
     [[nodiscard]] bool isGpuShadowCullingActive() const;
+    [[nodiscard]] bool isAutoExposureActive() const;
     [[nodiscard]] bool isBindlessMaterialTextureActive() const;
     [[nodiscard]] bool isMainPassMultiDrawIndirectActive() const;
     [[nodiscard]] bool isMainPassIndirectCountSupported() const;
@@ -198,6 +209,7 @@ private:
     [[nodiscard]] bool isShadowIndirectActive() const;
     [[nodiscard]] uint32_t activeCascadeCount() const;
     [[nodiscard]] VkDescriptorSet globalMaterialDescriptorSet() const;
+    [[nodiscard]] float currentToneMappingExposure() const;
     void nameTextureResources(const rhi::VulkanTexture& texture, std::string_view name) const;
     void nameEnvironmentMapResources(const rhi::VulkanEnvironmentMap& environmentMap, std::string_view name) const;
     void nameBrdfLutResources(const rhi::VulkanBrdfLut& brdfLut, std::string_view name) const;
@@ -213,6 +225,7 @@ private:
     rhi::VulkanDescriptorSetLayout skyboxDescriptorSetLayout_;
     rhi::VulkanDescriptorSetLayout postProcessSingleImageDescriptorSetLayout_;
     rhi::VulkanDescriptorSetLayout postProcessCompositeDescriptorSetLayout_;
+    rhi::VulkanDescriptorSetLayout postProcessLuminanceDescriptorSetLayout_;
     rhi::VulkanDescriptorSetLayout gpuCullDescriptorSetLayout_;
     rhi::VulkanShadowMap shadowMap_;
     rhi::VulkanImage sceneColor_;
@@ -225,6 +238,7 @@ private:
     rhi::VulkanPipeline bloomExtractPipeline_;
     rhi::VulkanPipeline bloomBlurPipeline_;
     rhi::VulkanPipeline compositePipeline_;
+    rhi::VulkanComputePipeline luminancePipeline_;
     rhi::VulkanComputePipeline gpuCullPipeline_;
     rhi::VulkanCommandContext commandContext_;
     rhi::VulkanSync sync_;
@@ -252,6 +266,7 @@ private:
     VkDescriptorSet bloomBlurHorizontalDescriptorSet_ = VK_NULL_HANDLE;
     VkDescriptorSet bloomBlurVerticalDescriptorSet_ = VK_NULL_HANDLE;
     VkDescriptorSet compositeDescriptorSet_ = VK_NULL_HANDLE;
+    std::vector<VkDescriptorSet> luminanceDescriptorSets_;
     std::vector<VkDescriptorSet> gpuCullDescriptorSets_;
     std::vector<VkDescriptorSet> shadowCullDescriptorSets_;
     renderer::Camera camera_;
@@ -278,6 +293,8 @@ private:
     std::vector<rhi::VulkanBuffer> frameBatchVisibleCountReadbackBuffers_;
     std::vector<rhi::VulkanBuffer> frameShadowBatchVisibleCountBuffers_;
     std::vector<rhi::VulkanBuffer> frameShadowBatchVisibleCountReadbackBuffers_;
+    std::vector<rhi::VulkanBuffer> frameLuminanceBuffers_;
+    std::vector<rhi::VulkanBuffer> frameLuminanceReadbackBuffers_;
     std::vector<uint32_t> frameGpuCullTotalDrawItems_;
     std::vector<uint32_t> frameGpuCullBatchCounts_;
     std::vector<uint32_t> frameGpuShadowCullTotalDrawItems_;
@@ -286,6 +303,7 @@ private:
     std::vector<uint8_t> frameGpuCullIndirectCountPath_;
     std::vector<uint8_t> frameGpuShadowCullReadbackReady_;
     std::vector<uint8_t> frameGpuShadowCullIndirectCountPath_;
+    std::vector<uint8_t> frameLuminanceReadbackReady_;
     CsmSettings csmSettings_{};
     std::vector<VkFence> imagesInFlight_;
     ShadowSettings shadowSettings_{};
@@ -302,12 +320,16 @@ private:
     VkImageLayout bloomExtractLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     VkImageLayout bloomPingLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     VkImageLayout bloomPongLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+    uint32_t luminanceGroupCountX_ = 0;
+    uint32_t luminanceGroupCountY_ = 0;
+    uint32_t luminancePartialCount_ = 0;
     uint32_t currentFrame_ = 0;
     uint32_t bindlessBaseColorFallbackIndex_ = 0;
     uint32_t bindlessNormalFallbackIndex_ = 0;
     uint32_t bindlessMetallicRoughnessFallbackIndex_ = 0;
     std::chrono::steady_clock::time_point startTime_ = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point lastGpuTimingPrint_ = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point lastAutoExposureUpdate_ = std::chrono::steady_clock::now();
     std::array<glm::vec4, 6> frameFrustumPlanes_{};
     std::array<CascadeFrameData, kMaxShadowCascades> frameCascades_{};
     glm::vec4 frameCascadeSplits_{};
@@ -318,6 +340,8 @@ private:
     ShadowCullingStats shadowCullingStats_{};
     ToneMappingSettings toneMappingSettings_{};
     BloomSettings bloomSettings_{};
+    float currentExposure_ = 1.0f;
+    float averageLuminance_ = 0.18f;
     bool initialized_ = false;
     bool useBindlessMaterialTextures_ = true;
     bool bindlessMaterialTexturesAvailable_ = false;
@@ -325,6 +349,8 @@ private:
     bool gpuCullingAvailable_ = false;
     bool useGpuShadowCulling_ = true;
     bool gpuShadowCullingAvailable_ = false;
+    bool autoExposureAvailable_ = false;
+    bool autoExposureWarningLogged_ = false;
     bool shadowIndirectAvailable_ = false;
     bool normalMapAssetLoaded_ = false;
     bool metallicRoughnessMapAssetLoaded_ = false;

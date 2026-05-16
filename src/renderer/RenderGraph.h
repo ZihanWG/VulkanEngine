@@ -19,6 +19,7 @@ enum class RenderPassType {
     MainHdr,
     BloomExtract,
     BloomBlur,
+    Luminance,
     Composite
 };
 
@@ -80,6 +81,8 @@ public:
     void endBloomExtractPass();
     void beginBloomBlurPass(bool horizontal);
     void endBloomBlurPass();
+    void beginLuminancePass();
+    void endLuminancePass();
     void beginCompositePass();
     void endCompositePass();
     void endFrame();
@@ -96,6 +99,7 @@ private:
         MainHdr,
         BloomExtract,
         BloomBlur,
+        Luminance,
         Composite
     };
 

@@ -88,6 +88,9 @@ constexpr VkDeviceSize kBatchVisibleCountBufferSize = kMaxMeshDrawBatches * size
 constexpr float kUnboundedCullExtent = 100000000.0f;
 constexpr VkFormat kSceneColorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 constexpr VkFormat kBloomColorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+constexpr uint32_t kLuminanceLocalSizeX = 16;
+constexpr uint32_t kLuminanceLocalSizeY = 16;
+constexpr float kMinAverageLuminance = 0.0001f;
 
 const glm::vec4 kDirectionalLightDirection{0.35f, -0.65f, -0.55f, 0.0f};
 const glm::vec4 kDirectionalLightColor{0.85f, 0.85f, 0.85f, 1.0f};
@@ -184,6 +187,21 @@ static_assert(offsetof(CompositePushConstants, toneMappingOperator) == 8);
 static_assert(offsetof(CompositePushConstants, bloomEnabled) == 12);
 static_assert(sizeof(CompositePushConstants) == 16);
 
+struct LuminancePushConstants {
+    glm::uvec4 params{0, 0, 0, 0};
+};
+
+static_assert(sizeof(LuminancePushConstants) == 16);
+
+struct LuminancePartial {
+    float sumLogLuminance = 0.0f;
+    float sampleCount = 0.0f;
+    float padding0 = 0.0f;
+    float padding1 = 0.0f;
+};
+
+static_assert(sizeof(LuminancePartial) == 16);
+
 uint32_t toneMappingOperatorValue(int operatorType)
 {
     return operatorType == 1 ? 1u : 0u;
@@ -267,6 +285,9 @@ Renderer::Renderer(Window& window) : window_(window)
     createGpuCullingResources();
     sync_.initialize(context_, frames_, swapchain_.imageCount());
     imagesInFlight_.assign(swapchain_.imageCount(), VK_NULL_HANDLE);
+    currentExposure_ = toneMappingExposureValue(toneMappingSettings_.manualExposure);
+    averageLuminance_ = toneMappingSettings_.targetLuminance;
+    lastAutoExposureUpdate_ = std::chrono::steady_clock::now();
 
     initialized_ = true;
 }
@@ -293,6 +314,7 @@ void Renderer::drawFrame()
 
     renderer::FrameResources& frame = frames_[currentFrame_];
     VK_CHECK(vkWaitForFences(context_.vkDevice(), 1, &frame.inFlightFence, VK_TRUE, UINT64_MAX));
+    updateAutoExposureFromReadback(currentFrame_);
     tryPrintGpuTimings(currentFrame_);
 
     uint32_t imageIndex = 0;
@@ -331,7 +353,7 @@ void Renderer::drawFrame()
     VkSemaphoreSubmitInfo signalSemaphore{};
     signalSemaphore.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
     signalSemaphore.semaphore = renderFinished;
-    signalSemaphore.stageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT;
+    signalSemaphore.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 
     VkSubmitInfo2 submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
@@ -496,6 +518,29 @@ void Renderer::createPostProcessDescriptorSetLayouts()
                               postProcessCompositeDescriptorSetLayout_.handle(),
                               VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
                               "PostProcessCompositeDescriptorSetLayout");
+
+    std::array<VkDescriptorSetLayoutBinding, 2> luminanceBindings{};
+    luminanceBindings[0].binding = 0;
+    luminanceBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    luminanceBindings[0].descriptorCount = 1;
+    luminanceBindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    luminanceBindings[1].binding = 1;
+    luminanceBindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    luminanceBindings[1].descriptorCount = 1;
+    luminanceBindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    try {
+        postProcessLuminanceDescriptorSetLayout_.create(
+            context_.vkDevice(),
+            std::span<const VkDescriptorSetLayoutBinding>(luminanceBindings.data(), luminanceBindings.size()));
+        rhi::debug::setObjectName(context_.vkDevice(),
+                                  postProcessLuminanceDescriptorSetLayout_.handle(),
+                                  VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
+                                  "PostProcessLuminanceDescriptorSetLayout");
+    } catch (const std::exception& error) {
+        disableAutoExposureFallback(std::string("Auto exposure descriptor layout creation failed: ") + error.what());
+    }
 }
 
 void Renderer::createPostProcessSampler()
@@ -544,6 +589,8 @@ void Renderer::createPostProcessResources()
     bloomBlurHorizontalDescriptorSet_ = VK_NULL_HANDLE;
     bloomBlurVerticalDescriptorSet_ = VK_NULL_HANDLE;
     compositeDescriptorSet_ = VK_NULL_HANDLE;
+    luminanceDescriptorSets_.clear();
+    destroyLuminanceResources();
 
     rhi::VulkanImageCreateInfo sceneColorInfo{};
     sceneColorInfo.width = extent.width;
@@ -578,6 +625,12 @@ void Renderer::createPostProcessResources()
     bloomPong_.create(context_, bloomInfo);
     bloomPongLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 
+    try {
+        createLuminanceResources();
+    } catch (const std::exception& error) {
+        disableAutoExposureFallback(std::string("Auto exposure luminance resources unavailable: ") + error.what());
+    }
+
     createPostProcessDescriptorSets();
 }
 
@@ -587,11 +640,25 @@ void Renderer::createPostProcessDescriptorSets()
         throw std::runtime_error("Cannot create post-process descriptors without a sampler.");
     }
 
-    VkDescriptorPoolSize poolSize{};
-    poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = 5;
+    const bool createLuminanceDescriptors =
+        autoExposureAvailable_ && !frameLuminanceBuffers_.empty() &&
+        frameLuminanceBuffers_.size() == frames_.size() &&
+        postProcessLuminanceDescriptorSetLayout_.handle() != VK_NULL_HANDLE;
 
-    postProcessDescriptorPool_.create(context_.vkDevice(), std::span<const VkDescriptorPoolSize>(&poolSize, 1), 4);
+    std::array<VkDescriptorPoolSize, 2> poolSizes{};
+    poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSizes[0].descriptorCount = 5 + (createLuminanceDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u);
+    uint32_t poolSizeCount = 1;
+    uint32_t maxSets = 4;
+    if (createLuminanceDescriptors) {
+        poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        poolSizes[1].descriptorCount = static_cast<uint32_t>(frames_.size());
+        poolSizeCount = 2;
+        maxSets += static_cast<uint32_t>(frames_.size());
+    }
+
+    postProcessDescriptorPool_.create(
+        context_.vkDevice(), std::span<const VkDescriptorPoolSize>(poolSizes.data(), poolSizeCount), maxSets);
     rhi::debug::setObjectName(
         context_.vkDevice(), postProcessDescriptorPool_.handle(), VK_OBJECT_TYPE_DESCRIPTOR_POOL, "PostProcessPool");
 
@@ -681,6 +748,146 @@ void Renderer::createPostProcessDescriptorSets()
     writes[4].pImageInfo = &imageInfos[4];
 
     vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+
+    if (!createLuminanceDescriptors) {
+        return;
+    }
+
+    try {
+        luminanceDescriptorSets_.assign(frames_.size(), VK_NULL_HANDLE);
+        std::vector<VkDescriptorSetLayout> luminanceLayouts(frames_.size(),
+                                                            postProcessLuminanceDescriptorSetLayout_.handle());
+        VkDescriptorSetAllocateInfo luminanceAllocateInfo{};
+        luminanceAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        luminanceAllocateInfo.descriptorPool = postProcessDescriptorPool_.handle();
+        luminanceAllocateInfo.descriptorSetCount = static_cast<uint32_t>(luminanceDescriptorSets_.size());
+        luminanceAllocateInfo.pSetLayouts = luminanceLayouts.data();
+        VK_CHECK(vkAllocateDescriptorSets(
+            context_.vkDevice(), &luminanceAllocateInfo, luminanceDescriptorSets_.data()));
+
+        VkDescriptorImageInfo sceneColorInfo{};
+        sceneColorInfo.sampler = postProcessSampler_;
+        sceneColorInfo.imageView = sceneColor_.imageView();
+        sceneColorInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        for (size_t frameIndex = 0; frameIndex < luminanceDescriptorSets_.size(); ++frameIndex) {
+            VkDescriptorBufferInfo luminanceBufferInfo{};
+            luminanceBufferInfo.buffer = frameLuminanceBuffers_[frameIndex].buffer();
+            luminanceBufferInfo.offset = 0;
+            luminanceBufferInfo.range = frameLuminanceBuffers_[frameIndex].size();
+
+            std::array<VkWriteDescriptorSet, 2> luminanceWrites{};
+            luminanceWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            luminanceWrites[0].dstSet = luminanceDescriptorSets_[frameIndex];
+            luminanceWrites[0].dstBinding = 0;
+            luminanceWrites[0].descriptorCount = 1;
+            luminanceWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            luminanceWrites[0].pImageInfo = &sceneColorInfo;
+
+            luminanceWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            luminanceWrites[1].dstSet = luminanceDescriptorSets_[frameIndex];
+            luminanceWrites[1].dstBinding = 1;
+            luminanceWrites[1].descriptorCount = 1;
+            luminanceWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            luminanceWrites[1].pBufferInfo = &luminanceBufferInfo;
+
+            vkUpdateDescriptorSets(context_.vkDevice(),
+                                   static_cast<uint32_t>(luminanceWrites.size()),
+                                   luminanceWrites.data(),
+                                   0,
+                                   nullptr);
+            rhi::debug::setObjectName(context_.vkDevice(),
+                                      luminanceDescriptorSets_[frameIndex],
+                                      VK_OBJECT_TYPE_DESCRIPTOR_SET,
+                                      "LuminanceDescriptorSet" + std::to_string(frameIndex));
+        }
+    } catch (const std::exception& error) {
+        luminanceDescriptorSets_.clear();
+        disableAutoExposureFallback(std::string("Auto exposure descriptor allocation failed: ") + error.what());
+    }
+}
+
+void Renderer::createLuminanceResources()
+{
+    destroyLuminanceResources();
+
+    if (!toneMappingSettings_.enableAutoExposure) {
+        currentExposure_ = toneMappingExposureValue(toneMappingSettings_.manualExposure);
+        return;
+    }
+    if (postProcessLuminanceDescriptorSetLayout_.handle() == VK_NULL_HANDLE) {
+        throw std::runtime_error("missing luminance descriptor set layout");
+    }
+
+    const VkExtent3D sceneExtent = sceneColor_.extent();
+    if (sceneExtent.width == 0 || sceneExtent.height == 0) {
+        throw std::runtime_error("scene color extent is zero");
+    }
+
+    luminanceGroupCountX_ = (sceneExtent.width + kLuminanceLocalSizeX - 1) / kLuminanceLocalSizeX;
+    luminanceGroupCountY_ = (sceneExtent.height + kLuminanceLocalSizeY - 1) / kLuminanceLocalSizeY;
+    luminancePartialCount_ = luminanceGroupCountX_ * luminanceGroupCountY_;
+    if (luminancePartialCount_ == 0) {
+        throw std::runtime_error("luminance reduction produced zero workgroups");
+    }
+
+    const VkDeviceSize luminanceBufferSize =
+        static_cast<VkDeviceSize>(luminancePartialCount_) * sizeof(LuminancePartial);
+
+    frameLuminanceBuffers_.resize(frames_.size());
+    frameLuminanceReadbackBuffers_.resize(frames_.size());
+    frameLuminanceReadbackReady_.assign(frames_.size(), 0);
+
+    for (size_t frameIndex = 0; frameIndex < frames_.size(); ++frameIndex) {
+        rhi::VulkanBufferCreateInfo luminanceInfo{};
+        luminanceInfo.size = luminanceBufferSize;
+        luminanceInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        luminanceInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+        frameLuminanceBuffers_[frameIndex].createBuffer(context_, luminanceInfo);
+        rhi::debug::setObjectName(context_.vkDevice(),
+                                  frameLuminanceBuffers_[frameIndex].buffer(),
+                                  VK_OBJECT_TYPE_BUFFER,
+                                  "LuminancePartialBuffer" + std::to_string(frameIndex));
+
+        rhi::VulkanBufferCreateInfo readbackInfo{};
+        readbackInfo.size = luminanceBufferSize;
+        readbackInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        readbackInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
+        readbackInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+        frameLuminanceReadbackBuffers_[frameIndex].createBuffer(context_, readbackInfo);
+        rhi::debug::setObjectName(context_.vkDevice(),
+                                  frameLuminanceReadbackBuffers_[frameIndex].buffer(),
+                                  VK_OBJECT_TYPE_BUFFER,
+                                  "LuminanceReadbackBuffer" + std::to_string(frameIndex));
+    }
+
+    autoExposureAvailable_ = true;
+    lastAutoExposureUpdate_ = std::chrono::steady_clock::now();
+}
+
+void Renderer::destroyLuminanceResources()
+{
+    autoExposureAvailable_ = false;
+    luminanceDescriptorSets_.clear();
+    frameLuminanceReadbackReady_.clear();
+    frameLuminanceReadbackBuffers_.clear();
+    frameLuminanceBuffers_.clear();
+    luminancePartialCount_ = 0;
+    luminanceGroupCountX_ = 0;
+    luminanceGroupCountY_ = 0;
+}
+
+void Renderer::disableAutoExposureFallback(std::string_view reason)
+{
+    if (!autoExposureWarningLogged_) {
+        Logger::warn(std::string(reason) + "; disabling auto exposure and using manual exposure.");
+        autoExposureWarningLogged_ = true;
+    }
+
+    toneMappingSettings_.enableAutoExposure = false;
+    currentExposure_ = toneMappingExposureValue(toneMappingSettings_.manualExposure);
+    destroyLuminanceResources();
+    luminancePipeline_.reset();
 }
 
 void Renderer::createGpuCullingResources()
@@ -1178,6 +1385,35 @@ void Renderer::createPipeline()
     rhi::debug::setObjectName(
         context_.vkDevice(), compositePipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "CompositePipelineLayout");
     compositePipelineColorFormat_ = compositePipelineInfo.colorFormat;
+
+    luminancePipeline_.reset();
+    if (toneMappingSettings_.enableAutoExposure &&
+        postProcessLuminanceDescriptorSetLayout_.handle() != VK_NULL_HANDLE) {
+        try {
+            const VkDescriptorSetLayout luminanceDescriptorSetLayout =
+                postProcessLuminanceDescriptorSetLayout_.handle();
+            const VkPushConstantRange luminancePushConstantRange{
+                VK_SHADER_STAGE_COMPUTE_BIT, 0, static_cast<uint32_t>(sizeof(LuminancePushConstants))};
+
+            rhi::VulkanComputePipelineCreateInfo luminancePipelineInfo{};
+            luminancePipelineInfo.shaderPath = shaderPath("luminance.comp.spv");
+            luminancePipelineInfo.descriptorSetLayouts =
+                std::span<const VkDescriptorSetLayout>(&luminanceDescriptorSetLayout, 1);
+            luminancePipelineInfo.pushConstantRanges =
+                std::span<const VkPushConstantRange>(&luminancePushConstantRange, 1);
+            luminancePipeline_.create(context_.vkDevice(), luminancePipelineInfo);
+            rhi::debug::setObjectName(context_.vkDevice(),
+                                      luminancePipeline_.pipeline(),
+                                      VK_OBJECT_TYPE_PIPELINE,
+                                      "AutoExposureComputePipeline");
+            rhi::debug::setObjectName(context_.vkDevice(),
+                                      luminancePipeline_.layout(),
+                                      VK_OBJECT_TYPE_PIPELINE_LAYOUT,
+                                      "AutoExposurePipelineLayout");
+        } catch (const std::exception& error) {
+            disableAutoExposureFallback(std::string("Auto exposure compute pipeline creation failed: ") + error.what());
+        }
+    }
 }
 
 void Renderer::createScene()
@@ -2560,6 +2796,7 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
             << "  Skybox: " << results.skyboxMs << " ms\n"
             << "  RenderObjects: " << results.renderObjectsMs << " ms\n"
             << "  Bloom: " << results.bloomMs << " ms\n"
+            << "  AutoExposure: " << results.autoExposureMs << " ms\n"
             << "  Composite: " << results.compositeMs << " ms\n";
     if (cullingStats_.gpuCulling) {
         const uint32_t totalDrawItems = frameIndex < frameGpuCullTotalDrawItems_.size()
@@ -2615,6 +2852,11 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
                     ? (isShadowIndirectCountPathActive(frameIndex) ? "per-cascade indirect count"
                                                                    : "per-cascade indirect fallback")
                     : "per-cascade direct fallback");
+    message << "\nAuto Exposure:\n"
+            << "  enabled: " << (isAutoExposureActive() ? "true" : "false") << "\n"
+            << "  average luminance: " << averageLuminance_ << "\n"
+            << "  exposure: " << currentToneMappingExposure() << "\n"
+            << "  target luminance: " << toneMappingSettings_.targetLuminance;
     Logger::info(message.str());
 }
 
@@ -2901,7 +3143,10 @@ void Renderer::recreateSwapchain()
         shadowPipelineDepthFormat_ != shadowMap_.format() || bloomExtractPipeline_.pipeline() == VK_NULL_HANDLE ||
         bloomExtractPipelineColorFormat_ != kBloomColorFormat || bloomBlurPipeline_.pipeline() == VK_NULL_HANDLE ||
         bloomBlurPipelineColorFormat_ != kBloomColorFormat || compositePipeline_.pipeline() == VK_NULL_HANDLE ||
-        compositePipelineColorFormat_ != swapchain_.colorFormat();
+        compositePipelineColorFormat_ != swapchain_.colorFormat() ||
+        (toneMappingSettings_.enableAutoExposure &&
+         postProcessLuminanceDescriptorSetLayout_.handle() != VK_NULL_HANDLE &&
+         luminancePipeline_.pipeline() == VK_NULL_HANDLE);
     if (pipelineNeedsRecreate) {
         createPipeline();
     }
@@ -2942,6 +3187,71 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             &bloomPongLayout_,
         },
     };
+}
+
+void Renderer::updateAutoExposureFromReadback(uint32_t frameIndex)
+{
+    if (!toneMappingSettings_.enableAutoExposure) {
+        currentExposure_ = toneMappingExposureValue(toneMappingSettings_.manualExposure);
+        return;
+    }
+    if (!autoExposureAvailable_ || frameIndex >= frameLuminanceReadbackReady_.size() ||
+        frameLuminanceReadbackReady_[frameIndex] == 0 || frameIndex >= frameLuminanceReadbackBuffers_.size() ||
+        luminancePartialCount_ == 0) {
+        return;
+    }
+
+    rhi::VulkanBuffer& readbackBuffer = frameLuminanceReadbackBuffers_[frameIndex];
+    if (!readbackBuffer.valid()) {
+        return;
+    }
+
+    std::vector<LuminancePartial> partials(luminancePartialCount_);
+    readbackBuffer.download(
+        std::as_writable_bytes(std::span<LuminancePartial>(partials.data(), partials.size())));
+
+    double sumLogLuminance = 0.0;
+    double sampleCount = 0.0;
+    for (const LuminancePartial& partial : partials) {
+        if (partial.sampleCount <= 0.0f || !std::isfinite(partial.sumLogLuminance) ||
+            !std::isfinite(partial.sampleCount)) {
+            continue;
+        }
+        sumLogLuminance += static_cast<double>(partial.sumLogLuminance);
+        sampleCount += static_cast<double>(partial.sampleCount);
+    }
+
+    if (sampleCount <= 0.0) {
+        return;
+    }
+
+    const double averageLogLuminance = sumLogLuminance / sampleCount;
+    const double averageLuminance = std::exp(averageLogLuminance);
+    if (!std::isfinite(averageLuminance) || averageLuminance <= 0.0) {
+        return;
+    }
+
+    averageLuminance_ = static_cast<float>(std::max(averageLuminance, static_cast<double>(kMinAverageLuminance)));
+
+    const float minExposure = std::max(toneMappingSettings_.minExposure, 0.0f);
+    const float maxExposure = std::max(toneMappingSettings_.maxExposure, minExposure);
+    const float unclampedTarget =
+        toneMappingSettings_.targetLuminance / std::max(averageLuminance_, kMinAverageLuminance);
+    const float targetExposure = std::clamp(unclampedTarget, minExposure, maxExposure);
+
+    const auto now = std::chrono::steady_clock::now();
+    const float deltaTime = std::max(0.0f, std::chrono::duration<float>(now - lastAutoExposureUpdate_).count());
+    lastAutoExposureUpdate_ = now;
+
+    if (!std::isfinite(currentExposure_) || currentExposure_ <= 0.0f) {
+        currentExposure_ = toneMappingExposureValue(toneMappingSettings_.manualExposure);
+    }
+
+    const float adaptationRate = std::max(toneMappingSettings_.adaptationRate, 0.0f);
+    const float adaptationAlpha = 1.0f - std::exp(-adaptationRate * deltaTime);
+    currentExposure_ = std::clamp(currentExposure_ + (targetExposure - currentExposure_) * adaptationAlpha,
+                                  minExposure,
+                                  maxExposure);
 }
 
 bool Renderer::readGpuVisibleCount(uint32_t frameIndex, uint32_t& visibleCount)
@@ -3024,6 +3334,16 @@ bool Renderer::isGpuShadowCullingActive() const
            frameShadowBatchVisibleCountReadbackBuffers_.size() == frames_.size();
 }
 
+bool Renderer::isAutoExposureActive() const
+{
+    return toneMappingSettings_.enableAutoExposure && autoExposureAvailable_ &&
+           luminancePipeline_.pipeline() != VK_NULL_HANDLE && luminancePipeline_.layout() != VK_NULL_HANDLE &&
+           luminanceDescriptorSets_.size() == frames_.size() && frameLuminanceBuffers_.size() == frames_.size() &&
+           frameLuminanceReadbackBuffers_.size() == frames_.size() &&
+           frameLuminanceReadbackReady_.size() == frames_.size() && luminancePartialCount_ > 0 &&
+           luminanceGroupCountX_ > 0 && luminanceGroupCountY_ > 0;
+}
+
 bool Renderer::isBindlessMaterialTextureActive() const
 {
     return useBindlessMaterialTextures_ && bindlessMaterialTexturesAvailable_ && bindlessTextureHeap_.valid();
@@ -3071,6 +3391,15 @@ VkDescriptorSet Renderer::globalMaterialDescriptorSet() const
     }
 
     return checkerboardMaterial_.descriptorSet;
+}
+
+float Renderer::currentToneMappingExposure() const
+{
+    if (toneMappingSettings_.enableAutoExposure && autoExposureAvailable_) {
+        return toneMappingExposureValue(currentExposure_);
+    }
+
+    return toneMappingExposureValue(toneMappingSettings_.manualExposure);
 }
 
 void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
@@ -3334,6 +3663,95 @@ void Renderer::recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer, uin
     rhi::debug::endLabel(commandBuffer);
 }
 
+void Renderer::recordLuminanceCommands(VkCommandBuffer commandBuffer)
+{
+    if (!isAutoExposureActive() || currentFrame_ >= luminanceDescriptorSets_.size() ||
+        currentFrame_ >= frameLuminanceBuffers_.size() || currentFrame_ >= frameLuminanceReadbackBuffers_.size() ||
+        currentFrame_ >= frameLuminanceReadbackReady_.size()) {
+        return;
+    }
+
+    VkBuffer luminanceBuffer = frameLuminanceBuffers_[currentFrame_].buffer();
+    VkBuffer readbackBuffer = frameLuminanceReadbackBuffers_[currentFrame_].buffer();
+    if (luminanceBuffer == VK_NULL_HANDLE || readbackBuffer == VK_NULL_HANDLE) {
+        return;
+    }
+
+    renderGraph_.beginLuminancePass();
+
+    rhi::debug::beginLabel(commandBuffer, "LuminancePass");
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, luminancePipeline_.pipeline());
+
+    const VkDescriptorSet descriptorSet = luminanceDescriptorSets_[currentFrame_];
+    vkCmdBindDescriptorSets(commandBuffer,
+                            VK_PIPELINE_BIND_POINT_COMPUTE,
+                            luminancePipeline_.layout(),
+                            0,
+                            1,
+                            &descriptorSet,
+                            0,
+                            nullptr);
+
+    const VkExtent3D sceneExtent = sceneColor_.extent();
+    const LuminancePushConstants pushConstants{
+        glm::uvec4(sceneExtent.width, sceneExtent.height, luminanceGroupCountX_, 0)};
+    vkCmdPushConstants(commandBuffer,
+                       luminancePipeline_.layout(),
+                       VK_SHADER_STAGE_COMPUTE_BIT,
+                       0,
+                       static_cast<uint32_t>(sizeof(LuminancePushConstants)),
+                       &pushConstants);
+
+    rhi::debug::beginLabel(commandBuffer, "AutoExposureCompute");
+    vkCmdDispatch(commandBuffer, luminanceGroupCountX_, luminanceGroupCountY_, 1);
+    rhi::debug::endLabel(commandBuffer);
+
+    VkBufferMemoryBarrier2 computeBarrier{};
+    computeBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+    computeBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    computeBarrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    computeBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    computeBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    computeBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    computeBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    computeBarrier.buffer = luminanceBuffer;
+    computeBarrier.offset = 0;
+    computeBarrier.size = frameLuminanceBuffers_[currentFrame_].size();
+
+    VkDependencyInfo computeDependencyInfo{};
+    computeDependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    computeDependencyInfo.bufferMemoryBarrierCount = 1;
+    computeDependencyInfo.pBufferMemoryBarriers = &computeBarrier;
+    vkCmdPipelineBarrier2(commandBuffer, &computeDependencyInfo);
+
+    VkBufferCopy luminanceCopy{};
+    luminanceCopy.size = frameLuminanceBuffers_[currentFrame_].size();
+    vkCmdCopyBuffer(commandBuffer, luminanceBuffer, readbackBuffer, 1, &luminanceCopy);
+
+    VkBufferMemoryBarrier2 readbackBarrier{};
+    readbackBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+    readbackBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    readbackBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    readbackBarrier.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+    readbackBarrier.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+    readbackBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    readbackBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    readbackBarrier.buffer = readbackBuffer;
+    readbackBarrier.offset = 0;
+    readbackBarrier.size = frameLuminanceReadbackBuffers_[currentFrame_].size();
+
+    VkDependencyInfo readbackDependencyInfo{};
+    readbackDependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    readbackDependencyInfo.bufferMemoryBarrierCount = 1;
+    readbackDependencyInfo.pBufferMemoryBarriers = &readbackBarrier;
+    vkCmdPipelineBarrier2(commandBuffer, &readbackDependencyInfo);
+
+    frameLuminanceReadbackReady_[currentFrame_] = 1;
+    rhi::debug::endLabel(commandBuffer);
+
+    renderGraph_.endLuminancePass();
+}
+
 void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex)
 {
     const VkDeviceAddress objectFrameDataBaseAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
@@ -3524,7 +3942,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         skyboxView[3] = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
         const glm::mat4 projection = camera_.projectionMatrix(aspect);
         const SkyboxPushConstants skyboxPushConstants{glm::inverse(projection * skyboxView),
-                                                      toneMappingExposureValue(toneMappingSettings_.exposure),
+                                                      currentToneMappingExposure(),
                                                       toneMappingOperatorValue(toneMappingSettings_.operatorType)};
 
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, skyboxPipeline_.pipeline());
@@ -3586,7 +4004,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     const VkBuffer batchVisibleCountBuffer =
         indirectCountPathActive ? frameBatchVisibleCountBuffers_.at(currentFrame_).buffer() : VK_NULL_HANDLE;
     const uint32_t toneMappingOperator = toneMappingOperatorValue(toneMappingSettings_.operatorType);
-    const float exposure = toneMappingExposureValue(toneMappingSettings_.exposure);
+    const float exposure = currentToneMappingExposure();
     if (multiDrawIndirectActive) {
         if (bindlessDescriptorSetsBound) {
             const PushConstants pushConstants{objectFrameDataBaseAddress, 0, toneMappingOperator, exposure};
@@ -3785,6 +4203,10 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
 
     timestampQuery_.writeEnd(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::Bloom);
 
+    timestampQuery_.writeBegin(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::AutoExposure);
+    recordLuminanceCommands(commandBuffer);
+    timestampQuery_.writeEnd(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::AutoExposure);
+
     rhi::debug::beginLabel(commandBuffer, "CompositePass");
     timestampQuery_.writeBegin(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::Composite);
     renderGraph_.beginCompositePass();
@@ -3799,7 +4221,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                             0,
                             nullptr);
     const CompositePushConstants compositePushConstants{
-        toneMappingExposureValue(toneMappingSettings_.exposure),
+        currentToneMappingExposure(),
         bloomSettings_.enabled ? std::max(bloomSettings_.intensity, 0.0f) : 0.0f,
         toneMappingOperatorValue(toneMappingSettings_.operatorType),
         bloomSettings_.enabled ? 1u : 0u};
