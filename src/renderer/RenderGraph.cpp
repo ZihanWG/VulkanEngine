@@ -112,6 +112,13 @@ RenderGraph::RenderGraph()
                               RenderResourceAccess::Write,
                               "Writes the exposed, tone-mapped final color to the acquired swapchain image."},
                          }},
+          RenderPassNode{"ImGuiPass",
+                         RenderPassType::ImGui,
+                         {
+                             {kSwapchainColor,
+                              RenderResourceAccess::Write,
+                              "Loads the composited swapchain color attachment and draws the debug UI overlay."},
+                         }},
       }
 {}
 
@@ -387,7 +394,7 @@ void RenderGraph::beginCompositePass()
     clearColor.color.float32[1] = 0.0f;
     clearColor.color.float32[2] = 0.0f;
     clearColor.color.float32[3] = 1.0f;
-    beginSwapchainRendering(clearColor);
+    beginSwapchainRendering(clearColor, VK_ATTACHMENT_LOAD_OP_CLEAR);
     activePass_ = ActivePass::Composite;
 }
 
@@ -396,6 +403,38 @@ void RenderGraph::endCompositePass()
     requireFrameActive("RenderGraph::endCompositePass");
     if (activePass_ != ActivePass::Composite) {
         throw std::logic_error("RenderGraph::endCompositePass called without an active composite pass.");
+    }
+
+    vkCmdEndRendering(frame_.commandBuffer);
+    activePass_ = ActivePass::None;
+}
+
+void RenderGraph::beginImGuiPass()
+{
+    requireFrameActive("RenderGraph::beginImGuiPass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginImGuiPass called while another pass is active.");
+    }
+
+    if (frame_.swapchain->imageLayout(frame_.imageIndex) != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+        transitionSwapchainImage(frame_.swapchainImage,
+                                 frame_.swapchain->imageLayout(frame_.imageIndex),
+                                 VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        frame_.swapchain->setImageLayout(frame_.imageIndex, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    } else {
+        barrierSwapchainColorAttachment();
+    }
+
+    VkClearValue clearColor{};
+    beginSwapchainRendering(clearColor, VK_ATTACHMENT_LOAD_OP_LOAD);
+    activePass_ = ActivePass::ImGui;
+}
+
+void RenderGraph::endImGuiPass()
+{
+    requireFrameActive("RenderGraph::endImGuiPass");
+    if (activePass_ != ActivePass::ImGui) {
+        throw std::logic_error("RenderGraph::endImGuiPass called without an active ImGui pass.");
     }
 
     vkCmdEndRendering(frame_.commandBuffer);
@@ -475,6 +514,10 @@ void RenderGraph::transitionShadowMapImage(VkImageLayout oldLayout, VkImageLayou
 
 void RenderGraph::transitionSwapchainImage(VkImage image, VkImageLayout oldLayout, VkImageLayout newLayout)
 {
+    if (oldLayout == newLayout) {
+        return;
+    }
+
     VkPipelineStageFlags2 srcStage = VK_PIPELINE_STAGE_2_NONE;
     VkAccessFlags2 srcAccess = VK_ACCESS_2_NONE;
     VkPipelineStageFlags2 dstStage = VK_PIPELINE_STAGE_2_NONE;
@@ -501,6 +544,33 @@ void RenderGraph::transitionSwapchainImage(VkImage image, VkImageLayout oldLayou
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = image;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+
+    VkDependencyInfo dependencyInfo{};
+    dependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dependencyInfo.imageMemoryBarrierCount = 1;
+    dependencyInfo.pImageMemoryBarriers = &barrier;
+
+    vkCmdPipelineBarrier2(frame_.commandBuffer, &dependencyInfo);
+}
+
+void RenderGraph::barrierSwapchainColorAttachment()
+{
+    VkImageMemoryBarrier2 barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = frame_.swapchainImage;
     barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     barrier.subresourceRange.baseMipLevel = 0;
     barrier.subresourceRange.levelCount = 1;
@@ -632,13 +702,13 @@ void RenderGraph::beginColorRendering(const RenderGraphImageResource& resource, 
     vkCmdBeginRendering(frame_.commandBuffer, &renderingInfo);
 }
 
-void RenderGraph::beginSwapchainRendering(VkClearValue clearValue)
+void RenderGraph::beginSwapchainRendering(VkClearValue clearValue, VkAttachmentLoadOp loadOp)
 {
     VkRenderingAttachmentInfo colorAttachment{};
     colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     colorAttachment.imageView = frame_.swapchain->imageView(frame_.imageIndex);
     colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAttachment.loadOp = loadOp;
     colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     colorAttachment.clearValue = clearValue;
 

@@ -22,6 +22,7 @@
 #include "rhi/VulkanSync.h"
 #include "rhi/VulkanTimestampQuery.h"
 #include "rhi/VulkanTexture.h"
+#include "ui/ImGuiLayer.h"
 
 #include <array>
 #include <chrono>
@@ -31,6 +32,8 @@
 #include <glm/mat4x4.hpp>
 #include <string_view>
 #include <vector>
+
+typedef union SDL_Event SDL_Event;
 
 namespace ve {
 
@@ -47,6 +50,7 @@ public:
     Renderer& operator=(Renderer&&) = delete;
 
     void drawFrame();
+    void handleEvent(const SDL_Event& event);
     void waitIdle();
 
 private:
@@ -236,6 +240,8 @@ private:
     void nameBrdfLutResources(const rhi::VulkanBrdfLut& brdfLut, std::string_view name) const;
     void tryPrintExposureStats();
     void tryPrintGpuTimings(uint32_t frameIndex);
+    void buildDebugUi();
+    void clampRuntimeSettings();
 
     Window& window_;
     rhi::VulkanContext context_;
@@ -243,6 +249,7 @@ private:
     rhi::VulkanTimestampQuery timestampQuery_;
     rhi::VulkanSwapchain swapchain_;
     renderer::RenderGraph renderGraph_;
+    ui::ImGuiLayer imguiLayer_;
     rhi::VulkanDescriptorSetLayout materialDescriptorSetLayout_;
     rhi::VulkanDescriptorSetLayout skyboxDescriptorSetLayout_;
     rhi::VulkanDescriptorSetLayout postProcessSingleImageDescriptorSetLayout_;
@@ -368,6 +375,7 @@ private:
     ShadowCullingStats shadowCullingStats_{};
     ToneMappingSettings toneMappingSettings_{};
     BloomSettings bloomSettings_{};
+    rhi::VulkanTimestampQuery::Results latestGpuTimings_{};
     float currentExposure_ = 1.0f;
     float averageLuminance_ = 0.18f;
     float histogramClippedLuminance_ = 0.18f;
@@ -386,6 +394,7 @@ private:
     bool shadowIndirectAvailable_ = false;
     bool normalMapAssetLoaded_ = false;
     bool metallicRoughnessMapAssetLoaded_ = false;
+    bool hdrEnvironmentLoaded_ = false;
 };
 
 } // namespace ve

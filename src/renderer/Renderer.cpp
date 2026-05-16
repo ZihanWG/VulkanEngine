@@ -5,6 +5,8 @@
 #include "renderer/Bounds.h"
 #include "rhi/VulkanDebugUtils.h"
 
+#include <imgui.h>
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -337,6 +339,7 @@ Renderer::Renderer(Window& window) : window_(window)
     frames_.resize(rhi::kMaxFramesInFlight);
     timestampQuery_.initialize(context_, static_cast<uint32_t>(frames_.size()));
     swapchain_.initialize(context_, window_.framebufferExtent());
+    imguiLayer_.initialize(window_, context_, swapchain_.colorFormat(), swapchain_.imageCount());
     createMaterialDescriptorSetLayout();
     createBindlessMaterialTextureHeap();
     createSkyboxDescriptorSetLayout();
@@ -366,6 +369,7 @@ Renderer::~Renderer()
 {
     if (initialized_) {
         waitIdle();
+        imguiLayer_.shutdown();
         postProcessDescriptorPool_.reset();
         destroyPostProcessSampler();
     }
@@ -408,6 +412,9 @@ void Renderer::drawFrame()
     VK_CHECK(vkResetFences(context_.vkDevice(), 1, &frame.inFlightFence));
     VK_CHECK(vkResetCommandBuffer(frame.commandBuffer, 0));
 
+    imguiLayer_.beginFrame();
+    buildDebugUi();
+    imguiLayer_.endFrame();
     updateFrameData(currentFrame_);
     recordRenderCommands(frame.commandBuffer, imageIndex);
     const VkSemaphore renderFinished = sync_.renderFinishedSemaphore(imageIndex);
@@ -462,6 +469,11 @@ void Renderer::drawFrame()
     }
 
     currentFrame_ = (currentFrame_ + 1) % static_cast<uint32_t>(frames_.size());
+}
+
+void Renderer::handleEvent(const SDL_Event& event)
+{
+    imguiLayer_.handleEvent(event);
 }
 
 void Renderer::waitIdle()
@@ -1999,6 +2011,7 @@ void Renderer::createEnvironmentMap()
         createPrefilteredEnvironmentMap();
         Logger::info("Created procedural environment cubemaps for skybox, diffuse IBL, and specular IBL.");
     }
+    hdrEnvironmentLoaded_ = loadedHdrEnvironment;
 
     createBrdfLutTexture();
     createSkyboxDescriptorSet();
@@ -3057,6 +3070,7 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
     if (!timestampQuery_.readFrame(frameIndex, results) || !results.valid) {
         return;
     }
+    latestGpuTimings_ = results;
 
     const auto now = std::chrono::steady_clock::now();
     if (now - lastGpuTimingPrint_ < std::chrono::seconds(1)) {
@@ -3130,6 +3144,177 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
                                                                    : "per-cascade indirect fallback")
                     : "per-cascade direct fallback");
     Logger::info(message.str());
+}
+
+void Renderer::buildDebugUi()
+{
+    if (!imguiLayer_.initialized()) {
+        return;
+    }
+
+    ImGui::Begin("VulkanEngine Debug");
+
+    if (ImGui::CollapsingHeader("Tone Mapping", ImGuiTreeNodeFlags_DefaultOpen)) {
+        const char* toneMappers[] = {"Reinhard", "ACES"};
+        ImGui::Combo("Tone mapper", &toneMappingSettings_.operatorType, toneMappers, IM_ARRAYSIZE(toneMappers));
+        ImGui::DragFloat("Manual exposure", &toneMappingSettings_.manualExposure, 0.01f, 0.0f, 64.0f, "%.3f");
+
+        const char* exposureModes[] = {"Manual", "Log-average", "Histogram"};
+        int exposureMode =
+            toneMappingSettings_.enableAutoExposure ? toneMappingSettings_.exposureMode : 0;
+        exposureMode = static_cast<int>(exposureModeValue(exposureMode));
+        if (ImGui::Combo("Exposure mode", &exposureMode, exposureModes, IM_ARRAYSIZE(exposureModes))) {
+            toneMappingSettings_.exposureMode = exposureMode;
+            toneMappingSettings_.enableAutoExposure = exposureMode != 0;
+        }
+
+        ImGui::DragFloat("Target luminance", &toneMappingSettings_.targetLuminance, 0.001f, 0.001f, 8.0f, "%.3f");
+        ImGui::DragFloat("Min exposure", &toneMappingSettings_.minExposure, 0.01f, 0.0f, 64.0f, "%.3f");
+        ImGui::DragFloat("Max exposure", &toneMappingSettings_.maxExposure, 0.01f, 0.0f, 64.0f, "%.3f");
+        ImGui::DragFloat("Adaptation rate", &toneMappingSettings_.adaptationRate, 0.01f, 0.0f, 16.0f, "%.3f");
+        ImGui::SliderFloat("Histogram low percentile", &toneMappingSettings_.lowPercentile, 0.0f, 1.0f, "%.3f");
+        ImGui::SliderFloat("Histogram high percentile", &toneMappingSettings_.highPercentile, 0.0f, 1.0f, "%.3f");
+    }
+
+    if (ImGui::CollapsingHeader("Bloom", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Checkbox("Enabled", &bloomSettings_.enabled);
+        ImGui::DragFloat("Threshold", &bloomSettings_.threshold, 0.01f, 0.0f, 32.0f, "%.3f");
+        ImGui::DragFloat("Intensity", &bloomSettings_.intensity, 0.01f, 0.0f, 8.0f, "%.3f");
+    }
+
+    if (ImGui::CollapsingHeader("CSM", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Text("Cascade count: %u", activeCascadeCount());
+        ImGui::SliderFloat("Lambda", &csmSettings_.lambda, 0.0f, 1.0f, "%.3f");
+        ImGui::DragFloat("Shadow distance", &csmSettings_.shadowDistance, 0.1f, 1.0f, csmSettings_.farPlane, "%.2f");
+        ImGui::Checkbox("Texel snapping enabled", &csmSettings_.enableTexelSnapping);
+        ImGui::Checkbox("Cascade debug colors enabled", &csmSettings_.enableCascadeDebugColors);
+    }
+
+    if (ImGui::CollapsingHeader("GPU Culling", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (!gpuCullingAvailable_) {
+            ImGui::BeginDisabled();
+        }
+        ImGui::Checkbox("Main GPU culling enabled", &useGpuCulling_);
+        if (!gpuCullingAvailable_) {
+            ImGui::EndDisabled();
+        }
+
+        if (!gpuShadowCullingAvailable_) {
+            ImGui::BeginDisabled();
+        }
+        ImGui::Checkbox("Shadow GPU culling enabled", &useGpuShadowCulling_);
+        if (!gpuShadowCullingAvailable_) {
+            ImGui::EndDisabled();
+        }
+
+        ImGui::Text("Bindless material textures: %s", isBindlessMaterialTextureActive() ? "active" : "fallback");
+        ImGui::Text("Main indirect count path: %s",
+                    isFrameIndirectCountPathActive(currentFrame_) ? "active" : "fallback");
+        ImGui::Text("Shadow indirect count path: %s",
+                    isShadowIndirectCountPathActive(currentFrame_) ? "active" : "fallback");
+    }
+
+    if (ImGui::CollapsingHeader("Environment", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Text("Environment source: %s", hdrEnvironmentLoaded_ ? "HDR environment loaded" : "procedural fallback");
+        ImGui::Text("Tone mapping exposure: %.4f", currentToneMappingExposure());
+    }
+
+    if (ImGui::CollapsingHeader("GPU Timings", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (latestGpuTimings_.valid) {
+            ImGui::Text("Shadow / CSM: %.3f ms", latestGpuTimings_.shadowPassMs);
+            ImGui::Text("Main: %.3f ms", latestGpuTimings_.mainPassMs);
+            ImGui::Text("Bloom: %.3f ms", latestGpuTimings_.bloomMs);
+            ImGui::Text("Composite: %.3f ms", latestGpuTimings_.compositeMs);
+            ImGui::Text("AutoExposure: %.3f ms", latestGpuTimings_.autoExposureMs);
+            ImGui::Text("HistogramExposure: %.3f ms", latestGpuTimings_.histogramExposureMs);
+            ImGui::Text("Skybox: %.3f ms", latestGpuTimings_.skyboxMs);
+            ImGui::Text("RenderObjects: %.3f ms", latestGpuTimings_.renderObjectsMs);
+        } else {
+            ImGui::TextDisabled("GPU timings are waiting for the first completed frame.");
+        }
+    }
+
+    if (ImGui::CollapsingHeader("Culling", ImGuiTreeNodeFlags_DefaultOpen)) {
+        uint32_t totalDrawItems = static_cast<uint32_t>(
+            std::min<size_t>(cullingStats_.totalDrawItems, std::numeric_limits<uint32_t>::max()));
+        if (cullingStats_.gpuCulling && currentFrame_ < frameGpuCullTotalDrawItems_.size()) {
+            totalDrawItems = frameGpuCullTotalDrawItems_[currentFrame_];
+        }
+
+        uint32_t visibleDrawItems = static_cast<uint32_t>(std::min<size_t>(visibleDrawItems_.size(), totalDrawItems));
+        uint32_t gpuVisibleDrawItems = 0;
+        if (readGpuVisibleCount(currentFrame_, gpuVisibleDrawItems)) {
+            visibleDrawItems = std::min(gpuVisibleDrawItems, totalDrawItems);
+        }
+        const uint32_t culledDrawItems =
+            totalDrawItems > visibleDrawItems ? totalDrawItems - visibleDrawItems : 0;
+
+        uint32_t shadowDrawItems = static_cast<uint32_t>(
+            std::min<size_t>(shadowCullingStats_.totalDrawItems, std::numeric_limits<uint32_t>::max()));
+        if (shadowCullingStats_.gpuCulling && currentFrame_ < frameGpuShadowCullTotalDrawItems_.size()) {
+            shadowDrawItems = frameGpuShadowCullTotalDrawItems_[currentFrame_];
+        }
+
+        uint32_t visibleShadowDrawItems = static_cast<uint32_t>(
+            std::min<size_t>(shadowCullingStats_.visibleDrawItems, shadowDrawItems));
+        uint32_t gpuVisibleShadowDrawItems = 0;
+        if (readGpuShadowVisibleCount(currentFrame_, gpuVisibleShadowDrawItems)) {
+            visibleShadowDrawItems = std::min(gpuVisibleShadowDrawItems, shadowDrawItems);
+        }
+
+        ImGui::Text("Total draw items: %u", totalDrawItems);
+        ImGui::Text("Visible draw items: %u", visibleDrawItems);
+        ImGui::Text("Culled draw items: %u", culledDrawItems);
+        ImGui::Text("Shadow draw items: %u", shadowDrawItems);
+        ImGui::Text("Visible shadow draw items: %u", visibleShadowDrawItems);
+        ImGui::Text("Shadow batches: %zu", shadowCullingStats_.batchCount);
+        ImGui::Text("GPU culling: %s", isGpuCullingActive() ? "enabled" : "disabled");
+        ImGui::Text("GPU shadow culling: %s", isGpuShadowCullingActive() ? "enabled" : "disabled");
+    }
+
+    if (ImGui::CollapsingHeader("Exposure", ImGuiTreeNodeFlags_DefaultOpen)) {
+        const ExposureMode mode = exposureModeValue(
+            toneMappingSettings_.enableAutoExposure ? toneMappingSettings_.exposureMode : 0);
+        ImGui::Text("Current exposure: %.4f", currentToneMappingExposure());
+        ImGui::Text("Log-average luminance: %.4f", averageLuminance_);
+        ImGui::Text("Histogram clipped luminance: %.4f", histogramClippedLuminance_);
+        ImGui::Text("Exposure mode: %s", exposureModeName(mode).data());
+    }
+
+    ImGui::End();
+    clampRuntimeSettings();
+}
+
+void Renderer::clampRuntimeSettings()
+{
+    toneMappingSettings_.operatorType = std::clamp(toneMappingSettings_.operatorType, 0, 1);
+    if (!toneMappingSettings_.enableAutoExposure) {
+        toneMappingSettings_.exposureMode = static_cast<int>(ExposureMode::Manual);
+    } else {
+        toneMappingSettings_.exposureMode = static_cast<int>(exposureModeValue(toneMappingSettings_.exposureMode));
+    }
+    toneMappingSettings_.manualExposure = std::max(toneMappingSettings_.manualExposure, 0.0f);
+    toneMappingSettings_.targetLuminance = std::max(toneMappingSettings_.targetLuminance, kMinAverageLuminance);
+    toneMappingSettings_.minExposure = std::max(toneMappingSettings_.minExposure, 0.0f);
+    toneMappingSettings_.maxExposure = std::max(toneMappingSettings_.maxExposure, toneMappingSettings_.minExposure);
+    toneMappingSettings_.adaptationRate = std::max(toneMappingSettings_.adaptationRate, 0.0f);
+
+    toneMappingSettings_.lowPercentile = std::clamp(toneMappingSettings_.lowPercentile, 0.0f, 1.0f);
+    toneMappingSettings_.highPercentile = std::clamp(toneMappingSettings_.highPercentile, 0.0f, 1.0f);
+    if (toneMappingSettings_.highPercentile <= toneMappingSettings_.lowPercentile) {
+        toneMappingSettings_.highPercentile = std::min(1.0f, toneMappingSettings_.lowPercentile + 0.01f);
+        toneMappingSettings_.lowPercentile = std::min(toneMappingSettings_.lowPercentile,
+                                                      toneMappingSettings_.highPercentile - 0.01f);
+    }
+
+    bloomSettings_.threshold = std::max(bloomSettings_.threshold, 0.0f);
+    bloomSettings_.intensity = std::max(bloomSettings_.intensity, 0.0f);
+
+    csmSettings_.cascadeCount = std::clamp(csmSettings_.cascadeCount, 1U, kMaxShadowCascades);
+    csmSettings_.lambda = std::clamp(csmSettings_.lambda, 0.0f, 1.0f);
+    csmSettings_.shadowDistance = std::clamp(csmSettings_.shadowDistance,
+                                             csmSettings_.nearPlane + 0.001f,
+                                             csmSettings_.farPlane);
 }
 
 void Renderer::updateFrameData(uint32_t frameIndex)
@@ -3406,6 +3591,7 @@ void Renderer::recreateSwapchain()
     context_.waitIdle();
     swapchain_.recreate(context_, window_.framebufferExtent());
     sync_.recreateRenderFinishedSemaphores(swapchain_.imageCount());
+    imguiLayer_.onSwapchainRecreated(swapchain_.colorFormat(), swapchain_.imageCount());
     createPostProcessResources();
 
     const bool exposurePipelineMissing =
@@ -4783,6 +4969,12 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     vkCmdDraw(commandBuffer, 3, 1, 0, 0);
     renderGraph_.endCompositePass();
     timestampQuery_.writeEnd(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::Composite);
+    rhi::debug::endLabel(commandBuffer);
+
+    rhi::debug::beginLabel(commandBuffer, "ImGuiPass");
+    renderGraph_.beginImGuiPass();
+    imguiLayer_.render(commandBuffer);
+    renderGraph_.endImGuiPass();
     rhi::debug::endLabel(commandBuffer);
 
     rhi::debug::endLabel(commandBuffer);

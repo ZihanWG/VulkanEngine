@@ -3,10 +3,13 @@
 #include "rhi/VulkanCommon.h"
 
 #include <cstdint>
+#include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 struct SDL_Window;
+typedef union SDL_Event SDL_Event;
 
 namespace ve {
 
@@ -26,6 +29,8 @@ public:
     Window& operator=(Window&&) = delete;
 
     void pollEvents();
+    using EventCallback = std::function<void(const SDL_Event&)>;
+    void setEventCallback(EventCallback callback) { eventCallback_ = std::move(callback); }
 
     [[nodiscard]] bool shouldClose() const { return shouldClose_; }
     [[nodiscard]] bool wasResized() const { return resized_; }
@@ -42,6 +47,7 @@ public:
 private:
     SDL_Window* window_ = nullptr;
     std::string title_;
+    EventCallback eventCallback_;
     bool shouldClose_ = false;
     bool resized_ = false;
 };

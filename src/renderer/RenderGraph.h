@@ -21,7 +21,8 @@ enum class RenderPassType {
     BloomBlur,
     Luminance,
     HistogramExposure,
-    Composite
+    Composite,
+    ImGui
 };
 
 enum class RenderResourceAccess {
@@ -88,6 +89,8 @@ public:
     void endHistogramExposurePass();
     void beginCompositePass();
     void endCompositePass();
+    void beginImGuiPass();
+    void endImGuiPass();
     void endFrame();
 
     [[nodiscard]] const std::vector<RenderPassNode>& passes() const
@@ -104,7 +107,8 @@ private:
         BloomBlur,
         Luminance,
         HistogramExposure,
-        Composite
+        Composite,
+        ImGui
     };
 
     struct FrameState {
@@ -119,10 +123,11 @@ private:
     void requireFrameActive(const char* operation) const;
     void transitionShadowMapImage(VkImageLayout oldLayout, VkImageLayout newLayout);
     void transitionSwapchainImage(VkImage image, VkImageLayout oldLayout, VkImageLayout newLayout);
+    void barrierSwapchainColorAttachment();
     void transitionColorImage(RenderGraphImageResource& resource, VkImageLayout newLayout);
     void transitionDepthImage();
     void beginColorRendering(const RenderGraphImageResource& resource, VkClearValue clearValue);
-    void beginSwapchainRendering(VkClearValue clearValue);
+    void beginSwapchainRendering(VkClearValue clearValue, VkAttachmentLoadOp loadOp);
 
     FrameState frame_{};
     std::vector<RenderPassNode> passes_;

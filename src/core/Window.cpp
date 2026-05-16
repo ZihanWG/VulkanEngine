@@ -52,6 +52,10 @@ void Window::pollEvents()
     const SDL_WindowID windowId = SDL_GetWindowID(window_);
 
     while (SDL_PollEvent(&event)) {
+        if (eventCallback_) {
+            eventCallback_(event);
+        }
+
         if (event.type == SDL_EVENT_QUIT) {
             shouldClose_ = true;
             continue;

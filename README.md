@@ -18,10 +18,11 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - Auto exposure from HDR scene luminance builds log-average and histogram readback data; histogram percentile clipping is the preferred mode, with log-average/manual fallback.
 - Manual exposure remains available as the fallback path.
 - Reinhard/ACES tone mapping is applied in the final composite pass before swapchain output.
+- Dear ImGui debug overlay exposes runtime render settings, profiling data, exposure values, and culling stats.
 - Compact Kulla-Conty-style multi-scattering compensation for PBR response.
 - PCF-filtered cascaded directional shadow map with basic texel snapping, optional cascade debug tinting, per-cascade GPU shadow-caster culling, and an indirect shadow draw path.
 - Descriptor indexing path for bindless material texture arrays, with a legacy descriptor-set fallback.
-- Minimal render graph that documents shadow, main HDR, bloom, luminance, and composite pass order and centralizes image transitions.
+- Minimal render graph that documents shadow, main HDR, bloom, luminance, composite, and ImGui overlay pass order and centralizes image transitions.
 - GPU frustum culling compute pass that compacts visible indirect draw commands and writes per-batch visible counts.
 - Multi-draw indirect batching by mesh-compatible ranges on the bindless main path and shadow path.
 - GPU timestamp queries and debug labels for capture/profiling orientation.
@@ -37,7 +38,8 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - `VulkanPipeline` and `VulkanComputePipeline` load CMake-built SPIR-V and create graphics/compute pipeline layouts and pipelines.
 - `VulkanBuffer`, `VulkanImage`, `VulkanTexture`, `VulkanEnvironmentMap`, `VulkanBrdfLut`, and `VulkanShadowMap` wrap Vulkan resource lifetime.
 - `Mesh`, `Material`, `RenderObject`, `DrawItem`, `Transform`, and `Camera` provide renderer-side scene abstractions without ECS.
-- `RenderGraph` is a small manual frame graph for the current `CSMShadowPass`, `MainHDRPass`, bloom, `LuminancePass`, `HistogramExposurePass`, and `CompositePass` resource transitions.
+- `ImGuiLayer` owns the Dear ImGui context, SDL3 backend, Vulkan backend, and ImGui descriptor pool.
+- `RenderGraph` is a small manual frame graph for the current `CSMShadowPass`, `MainHDRPass`, bloom, `LuminancePass`, `HistogramExposurePass`, `CompositePass`, and `ImGuiPass` resource transitions.
 
 ## One-Frame Rendering Flow
 
@@ -57,8 +59,9 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 14. Run `LuminancePass` to reduce log luminance from `sceneColor_` into per-frame readback data for a later frame.
 15. Run `HistogramExposurePass` to bin HDR scene luminance into a 256-bin log2 histogram and copy it to per-frame readback data for a later frame.
 16. Run `CompositePass` to combine `sceneColor + bloom * intensity`, apply the current manual or auto exposure, apply Reinhard or ACES tone mapping, and write the final color to the swapchain.
-17. Transition the swapchain image to present, submit with `vkQueueSubmit2`, and present.
-18. Recreate the swapchain and post-process images if presentation reports an out-of-date or resized surface.
+17. Run `ImGuiPass` to load the composited swapchain image as a color attachment and draw the debug UI overlay.
+18. Transition the swapchain image to present, submit with `vkQueueSubmit2`, and present.
+19. Recreate the swapchain, post-process images, and ImGui swapchain-dependent backend state if presentation reports an out-of-date or resized surface.
 
 ## Current Descriptor Contract
 
@@ -111,6 +114,8 @@ Shadow GPU culling compute descriptor set:
 
 Object and material scalar data still use Buffer Device Address plus a vertex-stage push constant. On the bindless main multi-draw path and the shadow indirect path, the pushed address is the base of the current frame's `ObjectFrameData` array, and indirect `firstInstance` selects the object-data entry. The shadow pass also pushes the current cascade index. Fallback paths still push one per-draw object-data address with `firstInstance = 0`.
 
+ImGui uses its own descriptor pool and backend-owned descriptor layouts. It does not change the material, bindless texture, post-process, shadow, IBL, BRDF LUT, or ObjectFrameData descriptor contracts above.
+
 ## Build Instructions
 
 Required tools:
@@ -120,7 +125,7 @@ Required tools:
 - Vulkan SDK with Vulkan headers and `glslc`
 - Git for FetchContent fallback dependencies
 
-The CMake project first looks for installed packages. If they are missing, `VULKAN_ENGINE_FETCH_DEPS=ON` downloads SDL3, GLM, Volk, and Vulkan Memory Allocator from pinned release tags. `stb_image`, tinygltf, and nlohmann JSON are vendored under `external/`.
+The CMake project first looks for installed packages. If they are missing, `VULKAN_ENGINE_FETCH_DEPS=ON` downloads SDL3, GLM, Volk, and Vulkan Memory Allocator from pinned release tags. Dear ImGui, `stb_image`, tinygltf, and nlohmann JSON are vendored under `external/`.
 
 ```powershell
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
@@ -165,9 +170,14 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - Texture semantic handling covers base color, normal, and metallic-roughness today; occlusion, emissive, and other glTF texture semantics remain future work.
 - HDR environment loading is basic and uses an approximate CPU equirectangular-to-cubemap conversion.
 - Bloom is a simple half-resolution extract plus separable blur and is not mip-chain based yet.
-- Histogram auto-exposure still uses CPU-side readback; there is no GPU-only exposure chain, local exposure, eye adaptation curve UI, or exposure debug visualization yet.
+- Histogram auto-exposure still uses CPU-side readback; there is no GPU-only exposure chain, local exposure, or exposure debug visualization yet.
 - HDR swapchain output is not implemented yet.
-- ImGui controls are not implemented yet.
+- ImGui is a debug UI only; there is no docking/editor layout yet.
+- There is no scene hierarchy panel.
+- There is no asset browser.
+- There is no material inspector.
+- Runtime settings are not serialized to a persistent settings file.
+- There is no GPU capture automation.
 - Temporal effects are not implemented yet.
 - Environment prefiltering is still approximate and not production quality.
 
@@ -180,7 +190,6 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - Add shadow LOD.
 - Improve CSM with stable crop matrices, cascade blending, split tuning, and per-cascade resolution control.
 - Evaluate VSM/EVSM shadow filtering.
-- Add shadow debug UI and ImGui controls.
 - Add shadow caster culling acceleration structures.
 - Add occlusion culling.
 - Add BVH or other spatial partitioning.
@@ -192,8 +201,13 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - Add exposure debug visualization.
 - Add mip-chain bloom and bloom quality controls.
 - Add HDR swapchain output.
-- Add tone-mapping controls.
-- Add ImGui controls.
+- Add persistent settings serialization.
+- Add scene hierarchy viewer.
+- Add material inspector.
+- Add texture and debug views.
+- Add CSM cascade visualization panel.
+- Add render graph visualization.
+- Add GPU timing graphs.
 - Add temporal AA.
 - Move runtime streaming away from queue-idle one-time uploads.
 - Grow the render graph toward automatic dependency inference, production-grade scheduling, aliasing, transient resources, and pass culling.
@@ -1012,3 +1026,23 @@ Timestamp/debug capture labels now include `HistogramExposurePass` and `Histogra
 Limitations after Milestone 42: histogram reduction still reads back to the CPU, there is no GPU-only exposure chain yet, no local exposure, no eye adaptation curve UI, no ImGui controls, no HDR swapchain output, no temporal AA, and bloom remains the existing simple half-resolution extract plus separable blur.
 
 Future work: GPU-side histogram reduction, exposure debug visualization, ImGui runtime controls, local exposure, HDR swapchain output, improved bloom, and temporal effects.
+
+## Milestone 43: ImGui Debug UI and Runtime Render Settings
+
+Milestone 43 integrates standard Dear ImGui with the SDL3 platform backend and Vulkan renderer backend. The engine owns this through `src/ui/ImGuiLayer`, which creates the ImGui context, initializes the SDL3/Vulkan backends, owns a dedicated ImGui descriptor pool, starts and ends ImGui frames, renders draw data, and shuts the backend down without changing existing renderer descriptor layouts.
+
+The Vulkan backend uses the Dynamic Rendering path. `ImGuiLayer` initializes `ImGui_ImplVulkan_InitInfo` with `UseDynamicRendering = true` and a `VkPipelineRenderingCreateInfoKHR` matching the swapchain color format, so no compatibility render pass is needed for the overlay.
+
+`RenderGraph` now includes `ImGuiPass` after `CompositePass`. The composite pass writes the exposed and tone-mapped image to the swapchain, then `ImGuiPass` loads that same swapchain color attachment and draws the overlay before the graph transitions the image to `VK_IMAGE_LAYOUT_PRESENT_SRC_KHR`. Existing HDR scene color, bloom, luminance, histogram exposure, CSM, IBL, BRDF LUT, bindless material textures, GPU culling, and indirect drawing paths remain unchanged.
+
+The `VulkanEngine Debug` panel exposes runtime controls for tone mapping, manual/log-average/histogram exposure, target luminance, exposure clamps, adaptation rate, histogram percentile clipping, bloom enable/threshold/intensity, CSM lambda and shadow distance, texel snapping, cascade debug colors, and main/shadow GPU culling toggles. It also displays bindless material texture state, indirect-count fallback state, HDR environment versus procedural fallback state, and the current tone-mapping exposure value.
+
+Profiling and runtime stats are visible in the same debug panel. GPU timing readouts include Shadow/CSM, Main, Bloom, Composite, AutoExposure, HistogramExposure, Skybox, and RenderObjects. Culling stats include total/visible/culled draw items, shadow draw items, visible shadow draw items, shadow batches, and main/shadow GPU culling state. Exposure stats include current exposure, log-average luminance, histogram clipped luminance, and the active exposure mode.
+
+Console logging remains available and unchanged. The ImGui display is additive and intended only as a debug UI, not a full editor.
+
+Resize handling keeps the ImGui context and SDL3 backend alive. When the swapchain image count or color format changes, the renderer recreates the ImGui Vulkan backend state and descriptor pool after the device is idle, then lets the backend rebuild font texture state as needed.
+
+Known limitations after Milestone 43: there is no docking/editor layout yet, no scene hierarchy panel, no asset browser, no material inspector, no persistent settings file, and no GPU capture automation.
+
+Future work: persistent settings serialization, scene hierarchy viewer, material inspector, texture/debug views, CSM cascade visualization panel, render graph visualization, and GPU timing graphs.

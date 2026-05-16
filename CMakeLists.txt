@@ -117,6 +117,30 @@ if(NOT VMA_TARGET)
     message(FATAL_ERROR "VMA target was not found after dependency setup.")
 endif()
 
+add_library(imgui STATIC
+    external/imgui/imgui.cpp
+    external/imgui/imgui_draw.cpp
+    external/imgui/imgui_tables.cpp
+    external/imgui/imgui_widgets.cpp
+    external/imgui/backends/imgui_impl_sdl3.cpp
+    external/imgui/backends/imgui_impl_vulkan.cpp
+)
+
+target_include_directories(imgui PUBLIC
+    external/imgui
+    external/imgui/backends
+)
+
+target_compile_definitions(imgui PUBLIC
+    VK_NO_PROTOTYPES
+    IMGUI_IMPL_VULKAN_USE_VOLK
+)
+
+target_link_libraries(imgui PUBLIC
+    ${SDL3_TARGET}
+    ${VOLK_TARGET}
+)
+
 add_executable(VulkanEngine
     src/main.cpp
     src/core/Application.cpp
@@ -126,6 +150,7 @@ add_executable(VulkanEngine
     src/renderer/Mesh.cpp
     src/renderer/RenderGraph.cpp
     src/renderer/Renderer.cpp
+    src/ui/ImGuiLayer.cpp
     src/rhi/VulkanBuffer.cpp
     src/rhi/VulkanBrdfLut.cpp
     src/rhi/VulkanCommandContext.cpp
@@ -153,6 +178,7 @@ target_link_libraries(VulkanEngine PRIVATE
     ${VOLK_TARGET}
     ${VMA_TARGET}
     glm::glm
+    imgui
 )
 
 if(TARGET Vulkan::Headers)

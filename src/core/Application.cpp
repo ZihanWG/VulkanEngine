@@ -37,6 +37,11 @@ void Application::initialize()
 {
     window_ = std::make_unique<Window>(config_.title, config_.width, config_.height);
     renderer_ = std::make_unique<Renderer>(*window_);
+    window_->setEventCallback([this](const SDL_Event& event) {
+        if (renderer_) {
+            renderer_->handleEvent(event);
+        }
+    });
 }
 
 void Application::mainLoop()
