@@ -25,6 +25,12 @@ enum class RenderPassType {
     ImGui
 };
 
+enum class RenderPassExecutionType {
+    Graphics,
+    Compute,
+    Transfer
+};
+
 enum class RenderResourceAccess {
     Read,
     Write
@@ -44,6 +50,8 @@ struct RenderPassNode {
     const char* name = "";
     RenderPassType type = RenderPassType::MainHdr;
     std::vector<RenderResourceUsage> resourceUsages;
+    RenderPassExecutionType executionType = RenderPassExecutionType::Graphics;
+    const char* transitionSummary = "";
 };
 
 struct RenderGraphImageResource {
@@ -65,7 +73,7 @@ struct RenderGraphFrameResources {
 // order and resource usage, then centralizes the explicit Synchronization2
 // transitions those passes need. It does not infer dependencies, allocate
 // transient resources, alias attachments, cull passes, schedule async compute,
-// or generate visualization yet.
+// or act as a production graph scheduler.
 class RenderGraph final {
 public:
     RenderGraph();
@@ -94,6 +102,11 @@ public:
     void endFrame();
 
     [[nodiscard]] const std::vector<RenderPassNode>& passes() const
+    {
+        return passes_;
+    }
+
+    [[nodiscard]] const std::vector<RenderPassNode>& debugPasses() const
     {
         return passes_;
     }
@@ -134,5 +147,9 @@ private:
     bool frameActive_ = false;
     ActivePass activePass_ = ActivePass::None;
 };
+
+[[nodiscard]] const char* renderPassTypeName(RenderPassType type);
+[[nodiscard]] const char* renderPassExecutionTypeName(RenderPassExecutionType executionType);
+[[nodiscard]] const char* renderResourceAccessName(RenderResourceAccess access);
 
 } // namespace ve::renderer

@@ -55,6 +55,7 @@ public:
 
 private:
     static constexpr uint32_t kMaxShadowCascades = 4;
+    static constexpr size_t kDebugHistoryCapacity = 240;
 
     struct CsmSettings {
         uint32_t cascadeCount = kMaxShadowCascades;
@@ -153,6 +154,50 @@ private:
         bool indirectDrawing = false;
     };
 
+    struct DebugHistory {
+        std::array<float, kDebugHistoryCapacity> samples{};
+        size_t cursor = 0;
+        size_t count = 0;
+
+        void push(float value);
+        [[nodiscard]] float latest() const;
+        [[nodiscard]] float average() const;
+        [[nodiscard]] float max() const;
+        [[nodiscard]] size_t copyChronological(std::array<float, kDebugHistoryCapacity>& output) const;
+        [[nodiscard]] bool empty() const { return count == 0; }
+    };
+
+    struct GpuTimingHistory {
+        DebugHistory shadowPass;
+        DebugHistory mainPass;
+        DebugHistory bloom;
+        DebugHistory composite;
+        DebugHistory autoExposure;
+        DebugHistory histogramExposure;
+        DebugHistory skybox;
+        DebugHistory renderObjects;
+        DebugHistory knownFrameTotal;
+    };
+
+    struct DebugUiSettings {
+        bool showRenderGraphPanel = true;
+        bool showGpuTimingGraphs = true;
+        bool showCullingStats = true;
+        bool showExposureGraphs = true;
+    };
+
+    struct CullingDebugSnapshot {
+        uint32_t totalDrawItems = 0;
+        uint32_t visibleDrawItems = 0;
+        uint32_t culledDrawItems = 0;
+        uint32_t shadowDrawItems = 0;
+        uint32_t visibleShadowDrawItems = 0;
+        uint32_t culledShadowDrawItems = 0;
+        size_t shadowBatchCount = 0;
+        bool gpuCulling = false;
+        bool gpuShadowCulling = false;
+    };
+
     void createMaterialDescriptorSetLayout();
     void createBindlessMaterialTextureHeap();
     void createSkyboxDescriptorSetLayout();
@@ -241,7 +286,19 @@ private:
     void tryPrintExposureStats();
     void tryPrintGpuTimings(uint32_t frameIndex);
     void buildDebugUi();
+    void drawRenderGraphDebugUi();
+    void drawGpuTimingDebugUi();
+    void drawCullingDebugUi();
+    void drawExposureDebugUi();
+    void drawTimingHistoryRow(const char* label, const DebugHistory& history) const;
+    void drawScalarHistoryRow(const char* label, const DebugHistory& history, const char* valueFormat) const;
+    void drawHistoryPlot(const DebugHistory& history, float height) const;
     void clampRuntimeSettings();
+    void updateCpuFrameTime();
+    void pushGpuTimingSample(const rhi::VulkanTimestampQuery::Results& results);
+    void pushCullingHistorySample(uint32_t frameIndex);
+    void pushExposureHistorySample();
+    [[nodiscard]] CullingDebugSnapshot cullingDebugSnapshot(uint32_t frameIndex);
 
     Window& window_;
     rhi::VulkanContext context_;
@@ -365,6 +422,7 @@ private:
     std::chrono::steady_clock::time_point lastGpuTimingPrint_ = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point lastExposureLogPrint_ = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point lastAutoExposureUpdate_ = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point lastFrameStartTime_ = std::chrono::steady_clock::now();
     std::array<glm::vec4, 6> frameFrustumPlanes_{};
     std::array<CascadeFrameData, kMaxShadowCascades> frameCascades_{};
     glm::vec4 frameCascadeSplits_{};
@@ -375,7 +433,18 @@ private:
     ShadowCullingStats shadowCullingStats_{};
     ToneMappingSettings toneMappingSettings_{};
     BloomSettings bloomSettings_{};
+    DebugUiSettings debugUiSettings_{};
+    GpuTimingHistory gpuTimingHistory_{};
+    DebugHistory visibleMainDrawItemsHistory_{};
+    DebugHistory culledMainDrawItemsHistory_{};
+    DebugHistory visibleShadowDrawItemsHistory_{};
+    DebugHistory culledShadowDrawItemsHistory_{};
+    DebugHistory exposureHistory_{};
+    DebugHistory averageLuminanceHistory_{};
+    DebugHistory histogramClippedLuminanceHistory_{};
     rhi::VulkanTimestampQuery::Results latestGpuTimings_{};
+    float cpuFrameDeltaMs_ = 0.0f;
+    float cpuFps_ = 0.0f;
     float currentExposure_ = 1.0f;
     float averageLuminance_ = 0.18f;
     float histogramClippedLuminance_ = 0.18f;

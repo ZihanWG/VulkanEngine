@@ -46,7 +46,9 @@ RenderGraph::RenderGraph()
                   {kShadowMapDepth,
                    RenderResourceAccess::Write,
                    "Writes every cascaded shadow-map array layer with material-independent shadow-caster draws."},
-              }},
+              },
+              RenderPassExecutionType::Graphics,
+              "ShadowMapDepth transitions to depth attachment for cascades, then to depth read-only for lighting."},
           RenderPassNode{
               "MainHDRPass",
               RenderPassType::MainHdr,
@@ -66,7 +68,9 @@ RenderGraph::RenderGraph()
                   {kIblResources,
                    RenderResourceAccess::Read,
                    "Samples diffuse IBL, prefiltered specular IBL, and the BRDF LUT."},
-              }},
+              },
+              RenderPassExecutionType::Graphics,
+              "SceneColor transitions to color attachment; MainDepth transitions to depth attachment."},
           RenderPassNode{"BloomExtractPass",
                          RenderPassType::BloomExtract,
                          {
@@ -74,7 +78,9 @@ RenderGraph::RenderGraph()
                              {kBloomExtract,
                               RenderResourceAccess::Write,
                               "Writes bright pixels above the bloom threshold into the bloom extraction target."},
-                         }},
+                         },
+                         RenderPassExecutionType::Graphics,
+                         "SceneColor transitions to shader read; BloomExtract transitions to color attachment."},
           RenderPassNode{"BloomBlurPass",
                          RenderPassType::BloomBlur,
                          {
@@ -82,7 +88,9 @@ RenderGraph::RenderGraph()
                              {kBloomPing, RenderResourceAccess::Write, "Writes the horizontal blur result."},
                              {kBloomPing, RenderResourceAccess::Read, "Samples the horizontal blur result."},
                              {kBloomPong, RenderResourceAccess::Write, "Writes the vertical blur result."},
-                         }},
+                         },
+                         RenderPassExecutionType::Graphics,
+                         "BloomExtract/BloomPing transition to shader read; BloomPing/BloomPong transition to color attachment."},
           RenderPassNode{"LuminancePass",
                          RenderPassType::Luminance,
                          {
@@ -92,7 +100,9 @@ RenderGraph::RenderGraph()
                              {kLuminancePartials,
                               RenderResourceAccess::Write,
                               "Writes per-workgroup log-luminance partial sums for CPU readback."},
-                         }},
+                         },
+                         RenderPassExecutionType::Compute,
+                         "SceneColor is shader read; luminance partial buffer barriers compute write to copy/readback."},
           RenderPassNode{"HistogramExposurePass",
                          RenderPassType::HistogramExposure,
                          {
@@ -102,7 +112,9 @@ RenderGraph::RenderGraph()
                              {kLuminanceHistogram,
                               RenderResourceAccess::Write,
                               "Writes 256 luminance histogram bin counts for CPU percentile readback."},
-                         }},
+                         },
+                         RenderPassExecutionType::Compute,
+                         "SceneColor is shader read; histogram buffer is cleared, compute-written, then copied for readback."},
           RenderPassNode{"CompositePass",
                          RenderPassType::Composite,
                          {
@@ -111,16 +123,70 @@ RenderGraph::RenderGraph()
                              {kSwapchainColor,
                               RenderResourceAccess::Write,
                               "Writes the exposed, tone-mapped final color to the acquired swapchain image."},
-                         }},
+                         },
+                         RenderPassExecutionType::Graphics,
+                         "SceneColor/BloomPong transition to shader read; SwapchainColor transitions to color attachment."},
           RenderPassNode{"ImGuiPass",
                          RenderPassType::ImGui,
                          {
                              {kSwapchainColor,
                               RenderResourceAccess::Write,
                               "Loads the composited swapchain color attachment and draws the debug UI overlay."},
-                         }},
+                         },
+                         RenderPassExecutionType::Graphics,
+                         "SwapchainColor is loaded as a color attachment, then transitions to present."},
       }
 {}
+
+const char* renderPassTypeName(RenderPassType type)
+{
+    switch (type) {
+    case RenderPassType::Shadow:
+        return "Shadow";
+    case RenderPassType::MainHdr:
+        return "Main HDR";
+    case RenderPassType::BloomExtract:
+        return "Bloom Extract";
+    case RenderPassType::BloomBlur:
+        return "Bloom Blur";
+    case RenderPassType::Luminance:
+        return "Luminance";
+    case RenderPassType::HistogramExposure:
+        return "Histogram Exposure";
+    case RenderPassType::Composite:
+        return "Composite";
+    case RenderPassType::ImGui:
+        return "ImGui";
+    }
+
+    return "Unknown";
+}
+
+const char* renderPassExecutionTypeName(RenderPassExecutionType executionType)
+{
+    switch (executionType) {
+    case RenderPassExecutionType::Graphics:
+        return "Graphics";
+    case RenderPassExecutionType::Compute:
+        return "Compute";
+    case RenderPassExecutionType::Transfer:
+        return "Transfer";
+    }
+
+    return "Unknown";
+}
+
+const char* renderResourceAccessName(RenderResourceAccess access)
+{
+    switch (access) {
+    case RenderResourceAccess::Read:
+        return "Read";
+    case RenderResourceAccess::Write:
+        return "Write";
+    }
+
+    return "Unknown";
+}
 
 void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
                              rhi::VulkanSwapchain& swapchain,

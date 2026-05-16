@@ -330,7 +330,103 @@ std::string_view colorSpaceName(rhi::TextureColorSpace colorSpace)
     return "unknown";
 }
 
+float historyValue(double value)
+{
+    if (!std::isfinite(value) || value < 0.0) {
+        return 0.0f;
+    }
+
+    return static_cast<float>(value);
+}
+
+float knownGpuFrameTotalMs(const rhi::VulkanTimestampQuery::Results& results)
+{
+    return historyValue(results.shadowPassMs + results.mainPassMs + results.bloomMs + results.autoExposureMs +
+                        results.histogramExposureMs + results.compositeMs);
+}
+
+std::string resourceUsageList(const renderer::RenderPassNode& pass, renderer::RenderResourceAccess access)
+{
+    std::ostringstream names;
+    bool first = true;
+    for (const renderer::RenderResourceUsage& usage : pass.resourceUsages) {
+        if (usage.access != access) {
+            continue;
+        }
+
+        if (!first) {
+            names << ", ";
+        }
+        names << usage.resource.name;
+        first = false;
+    }
+
+    return first ? "-" : names.str();
+}
+
 } // namespace
+
+void Renderer::DebugHistory::push(float value)
+{
+    samples[cursor] = std::isfinite(value) && value >= 0.0f ? value : 0.0f;
+    cursor = (cursor + 1) % samples.size();
+    count = std::min(count + 1, samples.size());
+}
+
+float Renderer::DebugHistory::latest() const
+{
+    if (empty()) {
+        return 0.0f;
+    }
+
+    const size_t index = (cursor + samples.size() - 1) % samples.size();
+    return samples[index];
+}
+
+float Renderer::DebugHistory::average() const
+{
+    if (empty()) {
+        return 0.0f;
+    }
+
+    float total = 0.0f;
+    const size_t sampleCount = count == samples.size() ? samples.size() : count;
+    for (size_t index = 0; index < sampleCount; ++index) {
+        total += samples[index];
+    }
+
+    return total / static_cast<float>(sampleCount);
+}
+
+float Renderer::DebugHistory::max() const
+{
+    if (empty()) {
+        return 0.0f;
+    }
+
+    float maximum = 0.0f;
+    const size_t sampleCount = count == samples.size() ? samples.size() : count;
+    for (size_t index = 0; index < sampleCount; ++index) {
+        maximum = std::max(maximum, samples[index]);
+    }
+
+    return maximum;
+}
+
+size_t Renderer::DebugHistory::copyChronological(std::array<float, kDebugHistoryCapacity>& output) const
+{
+    const size_t sampleCount = count == samples.size() ? samples.size() : count;
+    if (sampleCount == 0) {
+        return 0;
+    }
+
+    const size_t start = count == samples.size() ? cursor : 0;
+    for (size_t index = 0; index < sampleCount; ++index) {
+        output[index] = samples[(start + index) % samples.size()];
+    }
+
+    return sampleCount;
+}
 
 Renderer::Renderer(Window& window) : window_(window)
 {
@@ -381,6 +477,8 @@ void Renderer::drawFrame()
         return;
     }
 
+    updateCpuFrameTime();
+
     if (window_.wasResized()) {
         recreateSwapchain();
         window_.clearResizedFlag();
@@ -391,6 +489,8 @@ void Renderer::drawFrame()
     updateAutoExposureFromReadback(currentFrame_);
     tryPrintExposureStats();
     tryPrintGpuTimings(currentFrame_);
+    pushCullingHistorySample(currentFrame_);
+    pushExposureHistorySample();
 
     uint32_t imageIndex = 0;
     const VkResult acquireResult = vkAcquireNextImageKHR(
@@ -3071,6 +3171,7 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
         return;
     }
     latestGpuTimings_ = results;
+    pushGpuTimingSample(results);
 
     const auto now = std::chrono::steady_clock::now();
     if (now - lastGpuTimingPrint_ < std::chrono::seconds(1)) {
@@ -3146,6 +3247,87 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
     Logger::info(message.str());
 }
 
+void Renderer::updateCpuFrameTime()
+{
+    const auto now = std::chrono::steady_clock::now();
+    cpuFrameDeltaMs_ = std::chrono::duration<float, std::milli>(now - lastFrameStartTime_).count();
+    lastFrameStartTime_ = now;
+    cpuFps_ = cpuFrameDeltaMs_ > 0.0f ? 1000.0f / cpuFrameDeltaMs_ : 0.0f;
+}
+
+void Renderer::pushGpuTimingSample(const rhi::VulkanTimestampQuery::Results& results)
+{
+    if (!results.valid) {
+        return;
+    }
+
+    gpuTimingHistory_.shadowPass.push(historyValue(results.shadowPassMs));
+    gpuTimingHistory_.mainPass.push(historyValue(results.mainPassMs));
+    gpuTimingHistory_.bloom.push(historyValue(results.bloomMs));
+    gpuTimingHistory_.composite.push(historyValue(results.compositeMs));
+    gpuTimingHistory_.autoExposure.push(historyValue(results.autoExposureMs));
+    gpuTimingHistory_.histogramExposure.push(historyValue(results.histogramExposureMs));
+    gpuTimingHistory_.skybox.push(historyValue(results.skyboxMs));
+    gpuTimingHistory_.renderObjects.push(historyValue(results.renderObjectsMs));
+    gpuTimingHistory_.knownFrameTotal.push(knownGpuFrameTotalMs(results));
+}
+
+Renderer::CullingDebugSnapshot Renderer::cullingDebugSnapshot(uint32_t frameIndex)
+{
+    CullingDebugSnapshot snapshot{};
+    snapshot.totalDrawItems = static_cast<uint32_t>(
+        std::min<size_t>(cullingStats_.totalDrawItems, std::numeric_limits<uint32_t>::max()));
+    if (cullingStats_.gpuCulling && frameIndex < frameGpuCullTotalDrawItems_.size()) {
+        snapshot.totalDrawItems = frameGpuCullTotalDrawItems_[frameIndex];
+    }
+
+    snapshot.visibleDrawItems =
+        static_cast<uint32_t>(std::min<size_t>(visibleDrawItems_.size(), snapshot.totalDrawItems));
+    uint32_t gpuVisibleDrawItems = 0;
+    if (readGpuVisibleCount(frameIndex, gpuVisibleDrawItems)) {
+        snapshot.visibleDrawItems = std::min(gpuVisibleDrawItems, snapshot.totalDrawItems);
+    }
+    snapshot.culledDrawItems = snapshot.totalDrawItems > snapshot.visibleDrawItems
+                                   ? snapshot.totalDrawItems - snapshot.visibleDrawItems
+                                   : 0;
+
+    snapshot.shadowDrawItems = static_cast<uint32_t>(
+        std::min<size_t>(shadowCullingStats_.totalDrawItems, std::numeric_limits<uint32_t>::max()));
+    if (shadowCullingStats_.gpuCulling && frameIndex < frameGpuShadowCullTotalDrawItems_.size()) {
+        snapshot.shadowDrawItems = frameGpuShadowCullTotalDrawItems_[frameIndex];
+    }
+
+    snapshot.visibleShadowDrawItems = static_cast<uint32_t>(
+        std::min<size_t>(shadowCullingStats_.visibleDrawItems, snapshot.shadowDrawItems));
+    uint32_t gpuVisibleShadowDrawItems = 0;
+    if (readGpuShadowVisibleCount(frameIndex, gpuVisibleShadowDrawItems)) {
+        snapshot.visibleShadowDrawItems = std::min(gpuVisibleShadowDrawItems, snapshot.shadowDrawItems);
+    }
+    snapshot.culledShadowDrawItems = snapshot.shadowDrawItems > snapshot.visibleShadowDrawItems
+                                         ? snapshot.shadowDrawItems - snapshot.visibleShadowDrawItems
+                                         : 0;
+    snapshot.shadowBatchCount = shadowCullingStats_.batchCount;
+    snapshot.gpuCulling = isGpuCullingActive();
+    snapshot.gpuShadowCulling = isGpuShadowCullingActive();
+    return snapshot;
+}
+
+void Renderer::pushCullingHistorySample(uint32_t frameIndex)
+{
+    const CullingDebugSnapshot snapshot = cullingDebugSnapshot(frameIndex);
+    visibleMainDrawItemsHistory_.push(static_cast<float>(snapshot.visibleDrawItems));
+    culledMainDrawItemsHistory_.push(static_cast<float>(snapshot.culledDrawItems));
+    visibleShadowDrawItemsHistory_.push(static_cast<float>(snapshot.visibleShadowDrawItems));
+    culledShadowDrawItemsHistory_.push(static_cast<float>(snapshot.culledShadowDrawItems));
+}
+
+void Renderer::pushExposureHistorySample()
+{
+    exposureHistory_.push(currentToneMappingExposure());
+    averageLuminanceHistory_.push(averageLuminance_);
+    histogramClippedLuminanceHistory_.push(histogramClippedLuminance_);
+}
+
 void Renderer::buildDebugUi()
 {
     if (!imguiLayer_.initialized()) {
@@ -3153,6 +3335,13 @@ void Renderer::buildDebugUi()
     }
 
     ImGui::Begin("VulkanEngine Debug");
+
+    if (ImGui::CollapsingHeader("Debug Views", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Checkbox("Show Render Graph panel", &debugUiSettings_.showRenderGraphPanel);
+        ImGui::Checkbox("Show GPU Timing graphs", &debugUiSettings_.showGpuTimingGraphs);
+        ImGui::Checkbox("Show Culling stats", &debugUiSettings_.showCullingStats);
+        ImGui::Checkbox("Show Exposure graphs", &debugUiSettings_.showExposureGraphs);
+    }
 
     if (ImGui::CollapsingHeader("Tone Mapping", ImGuiTreeNodeFlags_DefaultOpen)) {
         const char* toneMappers[] = {"Reinhard", "ACES"};
@@ -3219,70 +3408,227 @@ void Renderer::buildDebugUi()
         ImGui::Text("Tone mapping exposure: %.4f", currentToneMappingExposure());
     }
 
-    if (ImGui::CollapsingHeader("GPU Timings", ImGuiTreeNodeFlags_DefaultOpen)) {
-        if (latestGpuTimings_.valid) {
-            ImGui::Text("Shadow / CSM: %.3f ms", latestGpuTimings_.shadowPassMs);
-            ImGui::Text("Main: %.3f ms", latestGpuTimings_.mainPassMs);
-            ImGui::Text("Bloom: %.3f ms", latestGpuTimings_.bloomMs);
-            ImGui::Text("Composite: %.3f ms", latestGpuTimings_.compositeMs);
-            ImGui::Text("AutoExposure: %.3f ms", latestGpuTimings_.autoExposureMs);
-            ImGui::Text("HistogramExposure: %.3f ms", latestGpuTimings_.histogramExposureMs);
-            ImGui::Text("Skybox: %.3f ms", latestGpuTimings_.skyboxMs);
-            ImGui::Text("RenderObjects: %.3f ms", latestGpuTimings_.renderObjectsMs);
-        } else {
-            ImGui::TextDisabled("GPU timings are waiting for the first completed frame.");
-        }
+    if (debugUiSettings_.showRenderGraphPanel &&
+        ImGui::CollapsingHeader("Render Graph", ImGuiTreeNodeFlags_DefaultOpen)) {
+        drawRenderGraphDebugUi();
     }
 
-    if (ImGui::CollapsingHeader("Culling", ImGuiTreeNodeFlags_DefaultOpen)) {
-        uint32_t totalDrawItems = static_cast<uint32_t>(
-            std::min<size_t>(cullingStats_.totalDrawItems, std::numeric_limits<uint32_t>::max()));
-        if (cullingStats_.gpuCulling && currentFrame_ < frameGpuCullTotalDrawItems_.size()) {
-            totalDrawItems = frameGpuCullTotalDrawItems_[currentFrame_];
-        }
-
-        uint32_t visibleDrawItems = static_cast<uint32_t>(std::min<size_t>(visibleDrawItems_.size(), totalDrawItems));
-        uint32_t gpuVisibleDrawItems = 0;
-        if (readGpuVisibleCount(currentFrame_, gpuVisibleDrawItems)) {
-            visibleDrawItems = std::min(gpuVisibleDrawItems, totalDrawItems);
-        }
-        const uint32_t culledDrawItems =
-            totalDrawItems > visibleDrawItems ? totalDrawItems - visibleDrawItems : 0;
-
-        uint32_t shadowDrawItems = static_cast<uint32_t>(
-            std::min<size_t>(shadowCullingStats_.totalDrawItems, std::numeric_limits<uint32_t>::max()));
-        if (shadowCullingStats_.gpuCulling && currentFrame_ < frameGpuShadowCullTotalDrawItems_.size()) {
-            shadowDrawItems = frameGpuShadowCullTotalDrawItems_[currentFrame_];
-        }
-
-        uint32_t visibleShadowDrawItems = static_cast<uint32_t>(
-            std::min<size_t>(shadowCullingStats_.visibleDrawItems, shadowDrawItems));
-        uint32_t gpuVisibleShadowDrawItems = 0;
-        if (readGpuShadowVisibleCount(currentFrame_, gpuVisibleShadowDrawItems)) {
-            visibleShadowDrawItems = std::min(gpuVisibleShadowDrawItems, shadowDrawItems);
-        }
-
-        ImGui::Text("Total draw items: %u", totalDrawItems);
-        ImGui::Text("Visible draw items: %u", visibleDrawItems);
-        ImGui::Text("Culled draw items: %u", culledDrawItems);
-        ImGui::Text("Shadow draw items: %u", shadowDrawItems);
-        ImGui::Text("Visible shadow draw items: %u", visibleShadowDrawItems);
-        ImGui::Text("Shadow batches: %zu", shadowCullingStats_.batchCount);
-        ImGui::Text("GPU culling: %s", isGpuCullingActive() ? "enabled" : "disabled");
-        ImGui::Text("GPU shadow culling: %s", isGpuShadowCullingActive() ? "enabled" : "disabled");
+    if (debugUiSettings_.showGpuTimingGraphs &&
+        ImGui::CollapsingHeader("GPU Timings", ImGuiTreeNodeFlags_DefaultOpen)) {
+        drawGpuTimingDebugUi();
     }
 
-    if (ImGui::CollapsingHeader("Exposure", ImGuiTreeNodeFlags_DefaultOpen)) {
-        const ExposureMode mode = exposureModeValue(
-            toneMappingSettings_.enableAutoExposure ? toneMappingSettings_.exposureMode : 0);
-        ImGui::Text("Current exposure: %.4f", currentToneMappingExposure());
-        ImGui::Text("Log-average luminance: %.4f", averageLuminance_);
-        ImGui::Text("Histogram clipped luminance: %.4f", histogramClippedLuminance_);
-        ImGui::Text("Exposure mode: %s", exposureModeName(mode).data());
+    if (debugUiSettings_.showCullingStats &&
+        ImGui::CollapsingHeader("Culling", ImGuiTreeNodeFlags_DefaultOpen)) {
+        drawCullingDebugUi();
+    }
+
+    if (debugUiSettings_.showExposureGraphs &&
+        ImGui::CollapsingHeader("Exposure", ImGuiTreeNodeFlags_DefaultOpen)) {
+        drawExposureDebugUi();
     }
 
     ImGui::End();
     clampRuntimeSettings();
+}
+
+void Renderer::drawRenderGraphDebugUi()
+{
+    const auto& passes = renderGraph_.debugPasses();
+    ImGui::Text("Manual pass order: %zu passes", passes.size());
+
+    constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                      ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp;
+    if (!ImGui::BeginTable("RenderGraphPassTable", 6, flags)) {
+        return;
+    }
+
+    ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("Pass");
+    ImGui::TableSetupColumn("Type");
+    ImGui::TableSetupColumn("Reads");
+    ImGui::TableSetupColumn("Writes");
+    ImGui::TableSetupColumn("Notes");
+    ImGui::TableHeadersRow();
+
+    for (size_t index = 0; index < passes.size(); ++index) {
+        const renderer::RenderPassNode& pass = passes[index];
+        const std::string reads = resourceUsageList(pass, renderer::RenderResourceAccess::Read);
+        const std::string writes = resourceUsageList(pass, renderer::RenderResourceAccess::Write);
+
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::Text("%zu", index);
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(pass.name);
+        ImGui::TableNextColumn();
+        ImGui::Text("%s / %s",
+                    renderer::renderPassExecutionTypeName(pass.executionType),
+                    renderer::renderPassTypeName(pass.type));
+        ImGui::TableNextColumn();
+        ImGui::TextWrapped("%s", reads.c_str());
+        ImGui::TableNextColumn();
+        ImGui::TextWrapped("%s", writes.c_str());
+        ImGui::TableNextColumn();
+        ImGui::TextWrapped("%s", pass.transitionSummary);
+    }
+
+    ImGui::EndTable();
+}
+
+void Renderer::drawGpuTimingDebugUi()
+{
+    if (!latestGpuTimings_.valid) {
+        ImGui::TextDisabled("GPU timings are waiting for the first completed frame.");
+        ImGui::Text("CPU frame delta: %.3f ms (%.1f FPS)", cpuFrameDeltaMs_, cpuFps_);
+        return;
+    }
+
+    ImGui::Text("Approx GPU total from known passes: %.3f ms", gpuTimingHistory_.knownFrameTotal.latest());
+    ImGui::Text("CPU frame delta: %.3f ms (%.1f FPS)", cpuFrameDeltaMs_, cpuFps_);
+    ImGui::TextDisabled("Skybox and RenderObjects are nested ranges inside Main; ImGui is not timestamped.");
+
+    constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                      ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp;
+    if (!ImGui::BeginTable("GpuTimingHistoryTable", 5, flags)) {
+        return;
+    }
+
+    ImGui::TableSetupColumn("Range");
+    ImGui::TableSetupColumn("Current ms", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("Avg ms", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("Max ms", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("History");
+    ImGui::TableHeadersRow();
+
+    drawTimingHistoryRow("Known GPU total", gpuTimingHistory_.knownFrameTotal);
+    drawTimingHistoryRow("Shadow / CSM", gpuTimingHistory_.shadowPass);
+    drawTimingHistoryRow("Main", gpuTimingHistory_.mainPass);
+    drawTimingHistoryRow("Bloom", gpuTimingHistory_.bloom);
+    drawTimingHistoryRow("Composite", gpuTimingHistory_.composite);
+    drawTimingHistoryRow("AutoExposure / Luminance", gpuTimingHistory_.autoExposure);
+    drawTimingHistoryRow("HistogramExposure", gpuTimingHistory_.histogramExposure);
+    drawTimingHistoryRow("Skybox", gpuTimingHistory_.skybox);
+    drawTimingHistoryRow("RenderObjects", gpuTimingHistory_.renderObjects);
+
+    ImGui::EndTable();
+}
+
+void Renderer::drawCullingDebugUi()
+{
+    const CullingDebugSnapshot snapshot = cullingDebugSnapshot(currentFrame_);
+    ImGui::Text("Total draw items: %u", snapshot.totalDrawItems);
+    ImGui::Text("Visible draw items: %u", snapshot.visibleDrawItems);
+    ImGui::Text("Culled draw items: %u", snapshot.culledDrawItems);
+    ImGui::Text("Shadow draw items: %u", snapshot.shadowDrawItems);
+    ImGui::Text("Visible shadow draw items: %u", snapshot.visibleShadowDrawItems);
+    ImGui::Text("Culled shadow draw items: %u", snapshot.culledShadowDrawItems);
+    ImGui::Text("Shadow batches: %zu", snapshot.shadowBatchCount);
+    ImGui::Text("GPU culling: %s", snapshot.gpuCulling ? "enabled" : "disabled");
+    ImGui::Text("GPU shadow culling: %s", snapshot.gpuShadowCulling ? "enabled" : "disabled");
+
+    constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                      ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp;
+    if (!ImGui::BeginTable("CullingHistoryTable", 5, flags)) {
+        return;
+    }
+
+    ImGui::TableSetupColumn("Metric");
+    ImGui::TableSetupColumn("Current", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("Avg", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("Max", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("History");
+    ImGui::TableHeadersRow();
+
+    drawScalarHistoryRow("Visible main draw items", visibleMainDrawItemsHistory_, "%.0f");
+    drawScalarHistoryRow("Culled main draw items", culledMainDrawItemsHistory_, "%.0f");
+    drawScalarHistoryRow("Visible shadow draw items", visibleShadowDrawItemsHistory_, "%.0f");
+    drawScalarHistoryRow("Culled shadow draw items", culledShadowDrawItemsHistory_, "%.0f");
+
+    ImGui::EndTable();
+}
+
+void Renderer::drawExposureDebugUi()
+{
+    const ExposureMode mode = exposureModeValue(toneMappingSettings_.enableAutoExposure ? toneMappingSettings_.exposureMode
+                                                                                        : 0);
+    ImGui::Text("Current exposure: %.4f", currentToneMappingExposure());
+    ImGui::Text("Log-average luminance: %.4f", averageLuminance_);
+    ImGui::Text("Histogram clipped luminance: %.4f", histogramClippedLuminance_);
+    ImGui::Text("Exposure mode: %s", exposureModeName(mode).data());
+
+    constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                      ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp;
+    if (!ImGui::BeginTable("ExposureHistoryTable", 5, flags)) {
+        return;
+    }
+
+    ImGui::TableSetupColumn("Metric");
+    ImGui::TableSetupColumn("Current", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("Avg", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("Max", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("History");
+    ImGui::TableHeadersRow();
+
+    drawScalarHistoryRow("Exposure", exposureHistory_, "%.4f");
+    drawScalarHistoryRow("Log-average luminance", averageLuminanceHistory_, "%.4f");
+    drawScalarHistoryRow("Histogram clipped luminance", histogramClippedLuminanceHistory_, "%.4f");
+
+    ImGui::EndTable();
+}
+
+void Renderer::drawTimingHistoryRow(const char* label, const DebugHistory& history) const
+{
+    ImGui::PushID(label);
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(label);
+    ImGui::TableNextColumn();
+    ImGui::Text("%.3f", history.latest());
+    ImGui::TableNextColumn();
+    ImGui::Text("%.3f", history.average());
+    ImGui::TableNextColumn();
+    ImGui::Text("%.3f", history.max());
+    ImGui::TableNextColumn();
+    drawHistoryPlot(history, 42.0f);
+    ImGui::PopID();
+}
+
+void Renderer::drawScalarHistoryRow(const char* label, const DebugHistory& history, const char* valueFormat) const
+{
+    ImGui::PushID(label);
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(label);
+    ImGui::TableNextColumn();
+    ImGui::Text(valueFormat, history.latest());
+    ImGui::TableNextColumn();
+    ImGui::Text(valueFormat, history.average());
+    ImGui::TableNextColumn();
+    ImGui::Text(valueFormat, history.max());
+    ImGui::TableNextColumn();
+    drawHistoryPlot(history, 42.0f);
+    ImGui::PopID();
+}
+
+void Renderer::drawHistoryPlot(const DebugHistory& history, float height) const
+{
+    if (history.empty()) {
+        ImGui::TextDisabled("waiting");
+        return;
+    }
+
+    std::array<float, kDebugHistoryCapacity> values{};
+    const size_t sampleCount = history.copyChronological(values);
+    const float scaleMax = std::max(history.max(), 0.001f);
+    ImGui::PlotLines("##history",
+                     values.data(),
+                     static_cast<int>(sampleCount),
+                     0,
+                     nullptr,
+                     0.0f,
+                     scaleMax,
+                     ImVec2(180.0f, height));
 }
 
 void Renderer::clampRuntimeSettings()

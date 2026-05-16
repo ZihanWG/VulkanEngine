@@ -18,11 +18,11 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - Auto exposure from HDR scene luminance builds log-average and histogram readback data; histogram percentile clipping is the preferred mode, with log-average/manual fallback.
 - Manual exposure remains available as the fallback path.
 - Reinhard/ACES tone mapping is applied in the final composite pass before swapchain output.
-- Dear ImGui debug overlay exposes runtime render settings, profiling data, exposure values, and culling stats.
+- Dear ImGui debug overlay exposes runtime render settings, render graph pass metadata, profiling history plots, exposure values, and culling stats.
 - Compact Kulla-Conty-style multi-scattering compensation for PBR response.
 - PCF-filtered cascaded directional shadow map with basic texel snapping, optional cascade debug tinting, per-cascade GPU shadow-caster culling, and an indirect shadow draw path.
 - Descriptor indexing path for bindless material texture arrays, with a legacy descriptor-set fallback.
-- Minimal render graph that documents shadow, main HDR, bloom, luminance, composite, and ImGui overlay pass order and centralizes image transitions.
+- Minimal render graph that documents shadow, main HDR, bloom, luminance, histogram exposure, composite, and ImGui overlay pass order, centralizes image transitions, and exposes debug visualization metadata.
 - GPU frustum culling compute pass that compacts visible indirect draw commands and writes per-batch visible counts.
 - Multi-draw indirect batching by mesh-compatible ranges on the bindless main path and shadow path.
 - GPU timestamp queries and debug labels for capture/profiling orientation.
@@ -39,7 +39,7 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - `VulkanBuffer`, `VulkanImage`, `VulkanTexture`, `VulkanEnvironmentMap`, `VulkanBrdfLut`, and `VulkanShadowMap` wrap Vulkan resource lifetime.
 - `Mesh`, `Material`, `RenderObject`, `DrawItem`, `Transform`, and `Camera` provide renderer-side scene abstractions without ECS.
 - `ImGuiLayer` owns the Dear ImGui context, SDL3 backend, Vulkan backend, and ImGui descriptor pool.
-- `RenderGraph` is a small manual frame graph for the current `CSMShadowPass`, `MainHDRPass`, bloom, `LuminancePass`, `HistogramExposurePass`, `CompositePass`, and `ImGuiPass` resource transitions.
+- `RenderGraph` is a small manual frame graph for the current `CSMShadowPass`, `MainHDRPass`, bloom, `LuminancePass`, `HistogramExposurePass`, `CompositePass`, and `ImGuiPass` resource transitions and debug pass metadata.
 
 ## One-Frame Rendering Flow
 
@@ -166,11 +166,12 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - CSM bounds use basic texel snapping, but they do not yet use stable crop matrices, cascade blending, or per-cascade resolution control.
 - Upload paths still use simple one-time command buffers and queue idle waits, which is acceptable for initialization but not ideal for runtime streaming.
 - `RenderGraph` is still minimal/manual and not a fully automatic dependency graph, production scheduler, or aliasing system.
+- There is no render graph node editor yet.
 - glTF support is static and intentionally narrow: no animation, skinning, morph targets, cameras, lights, or alpha modes yet.
 - Texture semantic handling covers base color, normal, and metallic-roughness today; occlusion, emissive, and other glTF texture semantics remain future work.
 - HDR environment loading is basic and uses an approximate CPU equirectangular-to-cubemap conversion.
 - Bloom is a simple half-resolution extract plus separable blur and is not mip-chain based yet.
-- Histogram auto-exposure still uses CPU-side readback; there is no GPU-only exposure chain, local exposure, or exposure debug visualization yet.
+- Histogram auto-exposure still uses CPU-side readback; there is no GPU-only exposure chain or local exposure yet.
 - HDR swapchain output is not implemented yet.
 - ImGui is a debug UI only; there is no docking/editor layout yet.
 - There is no scene hierarchy panel.
@@ -198,7 +199,6 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - Improve HDR environment prefiltering and color-management policy.
 - Move histogram exposure reduction fully onto the GPU.
 - Add local exposure.
-- Add exposure debug visualization.
 - Add mip-chain bloom and bloom quality controls.
 - Add HDR swapchain output.
 - Add persistent settings serialization.
@@ -206,8 +206,8 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - Add material inspector.
 - Add texture and debug views.
 - Add CSM cascade visualization panel.
-- Add render graph visualization.
-- Add GPU timing graphs.
+- Add render graph node view.
+- Add GPU capture workflow panel.
 - Add temporal AA.
 - Move runtime streaming away from queue-idle one-time uploads.
 - Grow the render graph toward automatic dependency inference, production-grade scheduling, aliasing, transient resources, and pass culling.
@@ -1046,3 +1046,17 @@ Resize handling keeps the ImGui context and SDL3 backend alive. When the swapcha
 Known limitations after Milestone 43: there is no docking/editor layout yet, no scene hierarchy panel, no asset browser, no material inspector, no persistent settings file, and no GPU capture automation.
 
 Future work: persistent settings serialization, scene hierarchy viewer, material inspector, texture/debug views, CSM cascade visualization panel, render graph visualization, and GPU timing graphs.
+
+## Milestone 44: Render Graph Visualization and GPU Timing Graphs
+
+The ImGui debug UI now visualizes the manual render graph pass order. The `Render Graph` section lists `CSMShadowPass`, `MainHDRPass`, `BloomExtractPass`, `BloomBlurPass`, `LuminancePass`, `HistogramExposurePass`, `CompositePass`, and `ImGuiPass` in order, with each pass's graphics/compute type, major resource reads/writes, and transition notes.
+
+GPU timestamp results are stored in short CPU-side history buffers. The `GPU Timings` section shows current, recent average, and recent max timings for Shadow/CSM, Main, Bloom, Composite, AutoExposure/Luminance, HistogramExposure, Skybox, RenderObjects, and an approximate known GPU frame total. Each timing range gets a compact ImGui line plot using the existing timestamp query results; the ImGui pass is listed as not timestamped.
+
+Culling and exposure stats remain visible in the debug UI. Main and shadow visible/culled draw item counts have short history plots, and exposure, log-average luminance, and histogram clipped luminance have small trend plots. The UI also has simple checkboxes for showing the render graph panel, GPU timing graphs, culling stats, and exposure graphs. These toggles are runtime-only and are not serialized.
+
+This milestone is a debug visualization layer only. It does not add a node editor, docking/editor layout, production render graph scheduler, automatic pass scheduling, resource aliasing, or persistent settings serialization, and it does not change descriptor layouts, render pass order, culling, indirect drawing, CSM, IBL, bloom, histogram exposure, or swapchain synchronization.
+
+Known limitations after Milestone 44: there is no docking/editor layout yet, no persistent settings serialization yet, no scene hierarchy panel yet, no material inspector yet, no asset browser yet, the render graph is still manual and not automatically scheduled, and there is no graph node editor yet.
+
+Future work: persistent settings serialization, render graph node view, GPU capture workflow panel, material inspector, scene hierarchy viewer, texture/debug views, and CSM cascade visualization panel.
