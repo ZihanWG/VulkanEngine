@@ -18,7 +18,7 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - Auto exposure from HDR scene luminance builds log-average and histogram readback data; histogram percentile clipping is the preferred mode, with log-average/manual fallback.
 - Manual exposure remains available as the fallback path.
 - Reinhard/ACES tone mapping is applied in the final composite pass before swapchain output.
-- Dear ImGui debug overlay exposes runtime render settings, persistent JSON settings save/load/reset controls, render graph visualization, GPU timing history graphs, culling/exposure history plots, and a read-only scene hierarchy with selected-object inspector.
+- Dear ImGui debug overlay exposes runtime render settings, persistent JSON settings save/load/reset controls, render graph visualization, GPU timing history graphs, culling/exposure history plots, read-only scene/material inspection, and render-target/CSM cascade debug views.
 - Compact Kulla-Conty-style multi-scattering compensation for PBR response.
 - PCF-filtered cascaded directional shadow map with basic texel snapping, optional cascade debug tinting, per-cascade GPU shadow-caster culling, and an indirect shadow draw path.
 - Descriptor indexing path for bindless material texture arrays, with a legacy descriptor-set fallback.
@@ -169,6 +169,8 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - CSM bounds use basic texel snapping, but they do not yet use stable crop matrices, cascade blending, or per-cascade resolution control.
 - Upload paths still use simple one-time command buffers and queue idle waits, which is acceptable for initialization but not ideal for runtime streaming.
 - `RenderGraph` is still minimal/manual and not a fully automatic dependency graph, production scheduler, production dependency-inference system, aliasing system, or transient resource allocator.
+- Render-target debug views are basic; there is no advanced channel remapping yet.
+- There is no full texture viewer/editor yet.
 - There is no render graph node editor yet.
 - glTF support is static and intentionally narrow: no animation, skinning, morph targets, cameras, lights, or alpha modes yet.
 - Texture semantic handling covers base color, normal, and metallic-roughness today; occlusion, emissive, and other glTF texture semantics remain future work.
@@ -182,7 +184,6 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - No material editing yet.
 - No texture import UI.
 - No material graph.
-- No advanced render-target debug views yet.
 - No transform editing yet.
 - No gizmos yet.
 - No object picking or mouse selection yet.
@@ -193,7 +194,7 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - Runtime settings are global, not scene-specific.
 - There is no asset browser.
 - There is no ECS/editor architecture yet.
-- There is no GPU capture automation.
+- There is no GPU capture automation yet.
 - Temporal effects are not implemented yet.
 - Environment prefiltering is still approximate and not production quality.
 
@@ -222,15 +223,16 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - Add transform editing.
 - Add object visibility toggles.
 - Add object picking / mouse selection.
+- Add texture channel remapping.
+- Add mip/slice selectors for all debug images.
+- Add cubemap face preview.
+- Add advanced CSM visualization.
 - Add editable material inspector.
 - Add texture import/reload UI.
-- Add render-target debug views.
-- Add BRDF LUT/debug texture views.
 - Add asset browser.
 - Add material graph.
 - Add scene serialization.
 - Add editor docking layout.
-- Add CSM cascade visualization panel.
 - Add render graph node view.
 - Add GPU capture workflow panel.
 - Add temporal AA.
@@ -242,6 +244,16 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 ## Milestone History
 
 The following notes preserve the incremental build history and design decisions behind the current renderer.
+
+## Milestone 48: Render Target Debug Views and CSM Cascade Visualization
+
+The ImGui debug UI now includes read-only `Render Target Debug Views`. HDR scene color, bloom extract/ping/pong targets, the BRDF LUT, the cascaded shadow map array, swapchain composite metadata, and major global cubemap resources expose debug name, dimensions, format, mip count, layer count, intended usage, previewability, and sampled-image type.
+
+Preview descriptors are cached separately from material texture previews through the ImGui Vulkan backend. They reuse existing renderer image views/samplers, including the existing CSM per-layer 2D image views, and are invalidated when post-process, swapchain-dependent, or shadow debug resources are recreated.
+
+CSM cascades can be inspected by selected cascade index, split depth/range, shadow-map layer, resolution, texel snapping state, estimated coverage, visible shadow draw count, and shadow batch count. Cascade depth layers can be visualized as raw sampled depth grayscale/debug previews through the per-layer views.
+
+The BRDF LUT is previewable as a 2D linear data texture for split-sum IBL validation. This milestone is debug visualization only; it does not add render-target editing, asset browsing, material editing, or a full texture viewer/editor.
 
 ## Milestone 47: Material Inspector and Texture Debug Views
 

@@ -4040,7 +4040,7 @@ void Renderer::drawRuntimeSettingsDebugUi()
         ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.25f, 1.0f), "Warning: %s", runtimeSettingsWarning_.c_str());
     }
     ImGui::TextDisabled("Runtime-safe: tone mapping, exposure, bloom, CSM lambda/distance/stability/debug, "
-                        "available GPU culling toggles, and panel visibility.");
+                        "available GPU culling toggles, panel visibility, and render-target preview UI state.");
     ImGui::TextDisabled("Startup-applied: CSM cascade count, bindless material texture heap, and culling resources "
                         "that were disabled before initialization.");
 }
@@ -4443,7 +4443,8 @@ void Renderer::drawRenderTargetPreview(VkImageView imageView,
                  imageSize,
                  ImVec2(0.0f, 0.0f),
                  ImVec2(1.0f, 1.0f),
-                 ImVec4(tintScale, tintScale, tintScale, 1.0f));
+                 ImVec4(tintScale, tintScale, tintScale, 1.0f),
+                 ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
 }
 
 void Renderer::drawRenderTargetDebugUi()
@@ -5130,6 +5131,13 @@ void Renderer::clampRuntimeSettings()
     csmSettings_.shadowDistance = std::clamp(csmSettings_.shadowDistance,
                                              csmSettings_.nearPlane + 0.001f,
                                              csmSettings_.farPlane);
+
+    debugUiSettings_.renderTargetPreviewExposure =
+        std::clamp(debugUiSettings_.renderTargetPreviewExposure, 0.05f, 8.0f);
+    debugUiSettings_.renderTargetPreviewScale =
+        std::clamp(debugUiSettings_.renderTargetPreviewScale, 0.25f, 2.0f);
+    debugUiSettings_.selectedCsmCascade =
+        std::min(debugUiSettings_.selectedCsmCascade, activeCascadeCount() - 1);
 }
 
 void Renderer::updateFrameData(uint32_t frameIndex)
