@@ -83,6 +83,7 @@ public:
     [[nodiscard]] std::span<const MeshPrimitive> primitives() const { return subMeshes_; }
     [[nodiscard]] bool hasSubMeshes() const { return !subMeshes_.empty(); }
     [[nodiscard]] const Aabb& localBounds() const { return localBounds_; }
+    [[nodiscard]] const std::string& debugName() const { return debugName_; }
     [[nodiscard]] bool valid() const { return vertexBuffer_.buffer() != VK_NULL_HANDLE && indexCount_ > 0; }
 
 private:
@@ -92,6 +93,7 @@ private:
     uint32_t indexCount_ = 0;
     std::vector<MeshPrimitive> subMeshes_;
     Aabb localBounds_{};
+    std::string debugName_;
 };
 
 struct LoadedGltfAsset {

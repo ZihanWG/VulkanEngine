@@ -32,6 +32,7 @@
 #include <filesystem>
 #include <glm/vec4.hpp>
 #include <glm/mat4x4.hpp>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -59,6 +60,7 @@ public:
 private:
     static constexpr uint32_t kMaxShadowCascades = 4;
     static constexpr size_t kDebugHistoryCapacity = 240;
+    static constexpr size_t kInvalidRenderObjectIndex = std::numeric_limits<size_t>::max();
 
     struct ShadowSettings {
         uint32_t resolution = 2048;
@@ -157,6 +159,15 @@ private:
         bool gpuShadowCulling = false;
     };
 
+    struct ObjectDrawDebugInfo {
+        size_t drawItemCount = 0;
+        size_t visibleMainDrawItemCount = 0;
+        size_t visibleShadowDrawItemCount = 0;
+        size_t shadowVisibleCascadeCount = 0;
+        uint32_t firstObjectDataIndex = 0;
+        bool hasObjectDataIndex = false;
+    };
+
     void createMaterialDescriptorSetLayout();
     void createBindlessMaterialTextureHeap();
     void createSkyboxDescriptorSetLayout();
@@ -182,6 +193,7 @@ private:
     void createShadowMap();
     void createPipeline();
     void createScene();
+    [[nodiscard]] uint32_t allocateRenderObjectDebugId();
     void createCheckerboardTexture();
     void createNormalTexture();
     void createFlatNormalTexture();
@@ -253,6 +265,8 @@ private:
     void buildDebugUi();
     void drawRuntimeSettingsDebugUi();
     void drawRenderGraphDebugUi();
+    void drawSceneHierarchyDebugUi();
+    void drawSelectedRenderObjectInspector(uint32_t objectIndex);
     void drawGpuTimingDebugUi();
     void drawCullingDebugUi();
     void drawExposureDebugUi();
@@ -265,6 +279,10 @@ private:
     void pushCullingHistorySample(uint32_t frameIndex);
     void pushExposureHistorySample();
     [[nodiscard]] CullingDebugSnapshot cullingDebugSnapshot(uint32_t frameIndex);
+    [[nodiscard]] ObjectDrawDebugInfo objectDrawDebugInfo(uint32_t objectIndex) const;
+    [[nodiscard]] std::string materialDebugLabel(const renderer::RenderObject& object) const;
+    [[nodiscard]] std::string mainCullingDebugLabel(const ObjectDrawDebugInfo& debugInfo) const;
+    [[nodiscard]] std::string shadowCullingDebugLabel(const ObjectDrawDebugInfo& debugInfo) const;
 
     Window& window_;
     rhi::VulkanContext context_;
@@ -418,6 +436,8 @@ private:
     float currentExposure_ = 1.0f;
     float averageLuminance_ = 0.18f;
     float histogramClippedLuminance_ = 0.18f;
+    size_t selectedRenderObjectIndex_ = kInvalidRenderObjectIndex;
+    uint32_t nextRenderObjectDebugId_ = 1;
     bool initialized_ = false;
     bool useBindlessMaterialTextures_ = true;
     bool bindlessMaterialTexturesAvailable_ = false;

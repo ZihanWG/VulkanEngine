@@ -18,7 +18,7 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - Auto exposure from HDR scene luminance builds log-average and histogram readback data; histogram percentile clipping is the preferred mode, with log-average/manual fallback.
 - Manual exposure remains available as the fallback path.
 - Reinhard/ACES tone mapping is applied in the final composite pass before swapchain output.
-- Dear ImGui debug overlay exposes runtime render settings, persistent JSON settings save/load/reset controls, render graph visualization, GPU timing history graphs, culling history plots, and exposure/luminance history plots.
+- Dear ImGui debug overlay exposes runtime render settings, persistent JSON settings save/load/reset controls, a read-only scene hierarchy viewer, render graph visualization, GPU timing history graphs, culling history plots, and exposure/luminance history plots.
 - Compact Kulla-Conty-style multi-scattering compensation for PBR response.
 - PCF-filtered cascaded directional shadow map with basic texel snapping, optional cascade debug tinting, per-cascade GPU shadow-caster culling, and an indirect shadow draw path.
 - Descriptor indexing path for bindless material texture arrays, with a legacy descriptor-set fallback.
@@ -177,13 +177,16 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - Histogram auto-exposure still uses CPU-side readback; there is no GPU-only exposure chain or local exposure yet.
 - HDR swapchain output is not implemented yet.
 - ImGui is a debug UI only; there is no docking/editor layout yet.
+- The scene hierarchy panel is inspection-only; there is no transform editing yet.
+- There are no transform gizmos yet.
+- There is no scene serialization yet.
 - Runtime settings persistence is intentionally narrow and is not a full editor settings system.
 - There is no per-project or per-profile runtime settings management yet.
 - Settings that require GPU resource recreation are startup-applied; there is no hot-reload for them yet.
 - Runtime settings are global, not scene-specific.
-- There is no scene hierarchy panel.
 - There is no asset browser.
 - There is no material inspector.
+- There is no ECS/editor architecture yet.
 - There is no GPU capture automation.
 - Temporal effects are not implemented yet.
 - Environment prefiltering is still approximate and not production quality.
@@ -209,9 +212,14 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - Add HDR swapchain output.
 - Add runtime settings profile presets.
 - Add per-scene runtime settings.
-- Add scene hierarchy viewer.
+- Add transform editing.
+- Add object visibility toggles.
 - Add material inspector.
 - Add texture and debug views.
+- Add asset browser.
+- Add scene serialization.
+- Add editor docking layout.
+- Add picking / mouse selection.
 - Add CSM cascade visualization panel.
 - Add render graph node view.
 - Add GPU capture workflow panel.
@@ -224,6 +232,14 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 ## Milestone History
 
 The following notes preserve the incremental build history and design decisions behind the current renderer.
+
+## Milestone 46: ImGui Scene Hierarchy Viewer
+
+The ImGui debug UI now includes a read-only `Scene Hierarchy` panel. It lists the active renderer `RenderObject` entries from the CPU-side scene data, including stable debug IDs, source type, mesh/material labels, submesh count, bounds, draw-item counts, and available culling/debug status.
+
+Objects can be selected in the hierarchy without changing rendering behavior. The selected-object inspector shows the object name, mesh pointer/name, material summary, transform summary or world matrix, local/world bounds, object-data index, draw-item count, and main/shadow culling metadata when that data is available.
+
+The panel is for inspection only. It does not add transform editing, gizmos, scene serialization, ECS, an asset browser, object picking, or material editing.
 
 ## Milestone 2: Triangle Rendering
 

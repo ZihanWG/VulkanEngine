@@ -260,6 +260,88 @@ std::string_view exposureModeName(ExposureMode exposureMode)
     return "histogram";
 }
 
+const char* renderObjectSourceTypeName(renderer::RenderObjectSourceType sourceType)
+{
+    switch (sourceType) {
+    case renderer::RenderObjectSourceType::BuiltInFallbackCube:
+        return "built-in fallback cube";
+    case renderer::RenderObjectSourceType::ImportedGltf:
+        return "imported glTF";
+    }
+
+    return "unknown";
+}
+
+std::string formatVec3(const glm::vec3& value)
+{
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(3) << "(" << value.x << ", " << value.y << ", " << value.z << ")";
+    return stream.str();
+}
+
+std::string formatAabb(const renderer::Aabb& bounds)
+{
+    if (!bounds.valid()) {
+        return "invalid";
+    }
+
+    return "min " + formatVec3(bounds.min) + ", max " + formatVec3(bounds.max);
+}
+
+std::string formatMatrixRow(const glm::mat4& matrix, int row)
+{
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(3) << "[" << matrix[0][row] << ", " << matrix[1][row] << ", "
+           << matrix[2][row] << ", " << matrix[3][row] << "]";
+    return stream.str();
+}
+
+std::string transformDebugSummary(const renderer::Transform& transform)
+{
+    if (transform.useMatrixOverride) {
+        return "matrix override, translation " + formatVec3(glm::vec3(transform.matrixOverride[3]));
+    }
+
+    return "T " + formatVec3(transform.position) + ", R " + formatVec3(transform.rotationRadians) + ", S " +
+           formatVec3(transform.scale);
+}
+
+uint32_t meshSubmeshCount(const renderer::Mesh* mesh)
+{
+    if (!mesh || !mesh->valid()) {
+        return 0;
+    }
+    if (mesh->hasSubMeshes()) {
+        return static_cast<uint32_t>(mesh->primitives().size());
+    }
+    return mesh->indexCount() > 0 ? 1U : 0U;
+}
+
+const char* materialNameOrFallback(const renderer::Material* material)
+{
+    if (!material) {
+        return "(none)";
+    }
+    if (material->debugName.empty()) {
+        return "(unnamed material)";
+    }
+    return material->debugName.c_str();
+}
+
+std::string meshDebugLabel(const renderer::Mesh* mesh)
+{
+    if (!mesh) {
+        return "(none)";
+    }
+    if (!mesh->debugName().empty()) {
+        return mesh->debugName();
+    }
+
+    std::ostringstream stream;
+    stream << "unnamed mesh " << static_cast<const void*>(mesh);
+    return stream.str();
+}
+
 std::pair<float, float> sanitizedHistogramLogRange(float minLogLuminance, float maxLogLuminance)
 {
     if (!std::isfinite(minLogLuminance) || !std::isfinite(maxLogLuminance) ||
@@ -1793,9 +1875,21 @@ void Renderer::createPipeline()
     }
 }
 
+uint32_t Renderer::allocateRenderObjectDebugId()
+{
+    const uint32_t debugId = nextRenderObjectDebugId_;
+    ++nextRenderObjectDebugId_;
+    if (nextRenderObjectDebugId_ == 0) {
+        nextRenderObjectDebugId_ = 1;
+    }
+    return debugId;
+}
+
 void Renderer::createScene()
 {
     renderObjects_.clear();
+    selectedRenderObjectIndex_ = kInvalidRenderObjectIndex;
+    nextRenderObjectDebugId_ = 1;
     allDrawItems_.clear();
     visibleDrawItems_.clear();
     shadowDrawItems_.clear();
@@ -1833,9 +1927,11 @@ void Renderer::createScene()
                                 const glm::vec3& rotationRadians,
                                 const glm::vec3& scale) {
         renderer::RenderObject cube{};
+        cube.debugId = allocateRenderObjectDebugId();
         cube.mesh = &cubeMesh_;
         cube.material = material;
         cube.debugName = std::move(debugName);
+        cube.sourceType = renderer::RenderObjectSourceType::BuiltInFallbackCube;
         cube.transform.position = position;
         cube.transform.rotationRadians = rotationRadians;
         cube.transform.scale = scale;
@@ -1886,6 +1982,7 @@ void Renderer::createScene()
                 }
 
                 renderer::RenderObject importedObject{};
+                importedObject.debugId = allocateRenderObjectDebugId();
                 importedObject.mesh = &importedMeshes_[instance.meshIndex];
                 importedObject.material =
                     importedMaterials_.empty() ? &materialVariants_.at(0) : &importedMaterials_.front();
@@ -1894,6 +1991,7 @@ void Renderer::createScene()
                     importedObject.materialCount = importedMaterials_.size();
                 }
                 importedObject.debugName = instance.debugName.empty() ? "Imported glTF Node" : instance.debugName;
+                importedObject.sourceType = renderer::RenderObjectSourceType::ImportedGltf;
                 importedObject.transform = renderer::Transform::fromMatrix(instance.transform);
                 renderObjects_.push_back(std::move(importedObject));
             }
@@ -3324,6 +3422,113 @@ Renderer::CullingDebugSnapshot Renderer::cullingDebugSnapshot(uint32_t frameInde
     return snapshot;
 }
 
+Renderer::ObjectDrawDebugInfo Renderer::objectDrawDebugInfo(uint32_t objectIndex) const
+{
+    ObjectDrawDebugInfo debugInfo{};
+
+    for (const DrawItem& drawItem : allDrawItems_) {
+        if (drawItem.objectIndex != objectIndex) {
+            continue;
+        }
+
+        ++debugInfo.drawItemCount;
+        if (!debugInfo.hasObjectDataIndex) {
+            debugInfo.firstObjectDataIndex = drawItem.frameDataIndex;
+            debugInfo.hasObjectDataIndex = true;
+        }
+    }
+
+    for (const DrawItem& drawItem : visibleDrawItems_) {
+        if (drawItem.objectIndex == objectIndex) {
+            ++debugInfo.visibleMainDrawItemCount;
+        }
+    }
+
+    const uint32_t cascadeCount = activeCascadeCount();
+    for (uint32_t cascadeIndex = 0; cascadeIndex < cascadeCount && cascadeIndex < shadowCascadeDrawItems_.size();
+         ++cascadeIndex) {
+        bool visibleInCascade = false;
+        for (const DrawItem& drawItem : shadowCascadeDrawItems_[cascadeIndex]) {
+            if (drawItem.objectIndex == objectIndex) {
+                ++debugInfo.visibleShadowDrawItemCount;
+                visibleInCascade = true;
+            }
+        }
+        if (visibleInCascade) {
+            ++debugInfo.shadowVisibleCascadeCount;
+        }
+    }
+
+    return debugInfo;
+}
+
+std::string Renderer::materialDebugLabel(const renderer::RenderObject& object) const
+{
+    if (!object.mesh) {
+        return "(none)";
+    }
+
+    const std::span<const renderer::MeshPrimitive> primitives = object.mesh->primitives();
+    if (!primitives.empty()) {
+        std::vector<const renderer::Material*> uniqueMaterials;
+        uniqueMaterials.reserve(primitives.size());
+        for (const renderer::MeshPrimitive& primitive : primitives) {
+            const renderer::Material* material = resolveMaterial(object, &primitive);
+            if (!material) {
+                continue;
+            }
+            if (std::find(uniqueMaterials.begin(), uniqueMaterials.end(), material) == uniqueMaterials.end()) {
+                uniqueMaterials.push_back(material);
+            }
+        }
+
+        if (uniqueMaterials.empty()) {
+            return "(none)";
+        }
+        if (uniqueMaterials.size() == 1) {
+            return materialNameOrFallback(uniqueMaterials.front());
+        }
+
+        return std::string(materialNameOrFallback(uniqueMaterials.front())) + " +" +
+               std::to_string(uniqueMaterials.size() - 1) + " more";
+    }
+
+    return materialNameOrFallback(object.material);
+}
+
+std::string Renderer::mainCullingDebugLabel(const ObjectDrawDebugInfo& debugInfo) const
+{
+    if (allDrawItems_.empty()) {
+        return "draw data pending";
+    }
+    if (debugInfo.drawItemCount == 0) {
+        return "no draw items";
+    }
+    if (isGpuCullingActive()) {
+        return "GPU culling active; per-object readback unavailable";
+    }
+    return debugInfo.visibleMainDrawItemCount > 0 ? "visible" : "culled";
+}
+
+std::string Renderer::shadowCullingDebugLabel(const ObjectDrawDebugInfo& debugInfo) const
+{
+    if (allDrawItems_.empty() || shadowCullingStats_.cascadeCount == 0) {
+        return "draw data pending";
+    }
+    if (debugInfo.drawItemCount == 0) {
+        return "no draw items";
+    }
+    if (isGpuShadowCullingActive()) {
+        return "GPU shadow culling active; per-object readback unavailable";
+    }
+    if (debugInfo.shadowVisibleCascadeCount == 0) {
+        return "culled from shadow cascades";
+    }
+
+    return "visible in " + std::to_string(debugInfo.shadowVisibleCascadeCount) + "/" +
+           std::to_string(shadowCullingStats_.cascadeCount) + " cascades";
+}
+
 void Renderer::pushCullingHistorySample(uint32_t frameIndex)
 {
     const CullingDebugSnapshot snapshot = cullingDebugSnapshot(frameIndex);
@@ -3439,6 +3644,7 @@ void Renderer::buildDebugUi()
 
     if (ImGui::CollapsingHeader("Debug Views", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Checkbox("Show Render Graph panel", &debugUiSettings_.showRenderGraphPanel);
+        ImGui::Checkbox("Show Scene Hierarchy panel", &debugUiSettings_.showSceneHierarchyPanel);
         ImGui::Checkbox("Show GPU Timing graphs", &debugUiSettings_.showGpuTimingGraphs);
         ImGui::Checkbox("Show Culling stats", &debugUiSettings_.showCullingStats);
         ImGui::Checkbox("Show Exposure graphs", &debugUiSettings_.showExposureGraphs);
@@ -3537,6 +3743,14 @@ void Renderer::buildDebugUi()
     }
 
     ImGui::End();
+
+    if (debugUiSettings_.showSceneHierarchyPanel) {
+        if (ImGui::Begin("Scene Hierarchy", &debugUiSettings_.showSceneHierarchyPanel)) {
+            drawSceneHierarchyDebugUi();
+        }
+        ImGui::End();
+    }
+
     clampRuntimeSettings();
 }
 
@@ -3614,6 +3828,124 @@ void Renderer::drawRenderGraphDebugUi()
     }
 
     ImGui::EndTable();
+}
+
+void Renderer::drawSceneHierarchyDebugUi()
+{
+    if (selectedRenderObjectIndex_ >= renderObjects_.size()) {
+        selectedRenderObjectIndex_ = kInvalidRenderObjectIndex;
+    }
+
+    ImGui::Text("RenderObjects: %zu", renderObjects_.size());
+    ImGui::SameLine();
+    ImGui::Text("DrawItems: %zu", allDrawItems_.size());
+    ImGui::SameLine();
+    ImGui::Text("Main batches: %zu", meshDrawBatches_.size());
+
+    ImGui::BeginChild("SceneHierarchyList", ImVec2(0.0f, 280.0f), true);
+    const ImGuiTreeNodeFlags sceneFlags = ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth;
+    if (ImGui::TreeNodeEx("Scene", sceneFlags)) {
+        for (size_t objectIndex = 0; objectIndex < renderObjects_.size(); ++objectIndex) {
+            const renderer::RenderObject& object = renderObjects_[objectIndex];
+            const ObjectDrawDebugInfo debugInfo =
+                objectDrawDebugInfo(static_cast<uint32_t>(objectIndex));
+            const bool selected = selectedRenderObjectIndex_ == objectIndex;
+            ImGuiTreeNodeFlags objectFlags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
+            if (selected) {
+                objectFlags |= ImGuiTreeNodeFlags_Selected;
+            }
+
+            const std::string objectName = object.debugName.empty() ? "(unnamed)" : object.debugName;
+            const std::string label = "RenderObject " + std::to_string(objectIndex) + ": " + objectName + "##" +
+                                      std::to_string(object.debugId);
+            const bool open = ImGui::TreeNodeEx(label.c_str(), objectFlags);
+            if (ImGui::IsItemClicked()) {
+                selectedRenderObjectIndex_ = objectIndex;
+            }
+
+            if (open) {
+                const std::string materialLabel = materialDebugLabel(object);
+                const std::string mainCullingLabel = mainCullingDebugLabel(debugInfo);
+                const std::string shadowCullingLabel = shadowCullingDebugLabel(debugInfo);
+                ImGui::Text("Debug ID: %u", object.debugId);
+                ImGui::Text("Source: %s", renderObjectSourceTypeName(object.sourceType));
+                ImGui::Text("Mesh: %s", meshDebugLabel(object.mesh).c_str());
+                ImGui::Text("Material: %s", materialLabel.c_str());
+                ImGui::Text("Submeshes: %u", meshSubmeshCount(object.mesh));
+                ImGui::Text("Draw items: %zu", debugInfo.drawItemCount);
+                ImGui::Text("Main: %s", mainCullingLabel.c_str());
+                ImGui::Text("Shadow: %s", shadowCullingLabel.c_str());
+                if (object.mesh) {
+                    ImGui::TextWrapped("Local bounds: %s", formatAabb(object.mesh->localBounds()).c_str());
+                }
+                ImGui::TextWrapped("World bounds: %s", formatAabb(object.worldBounds()).c_str());
+                ImGui::TreePop();
+            }
+        }
+        ImGui::TreePop();
+    }
+    ImGui::EndChild();
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Inspector");
+    if (selectedRenderObjectIndex_ == kInvalidRenderObjectIndex) {
+        ImGui::TextDisabled("No RenderObject selected.");
+        return;
+    }
+
+    drawSelectedRenderObjectInspector(static_cast<uint32_t>(selectedRenderObjectIndex_));
+}
+
+void Renderer::drawSelectedRenderObjectInspector(uint32_t objectIndex)
+{
+    if (objectIndex >= renderObjects_.size()) {
+        ImGui::TextDisabled("Selected RenderObject is no longer available.");
+        return;
+    }
+
+    const renderer::RenderObject& object = renderObjects_[objectIndex];
+    const ObjectDrawDebugInfo debugInfo = objectDrawDebugInfo(objectIndex);
+    const std::string materialLabel = materialDebugLabel(object);
+    const std::string mainCullingLabel = mainCullingDebugLabel(debugInfo);
+    const std::string shadowCullingLabel = shadowCullingDebugLabel(debugInfo);
+    const glm::mat4 model = object.transform.modelMatrix();
+
+    ImGui::Text("Name: %s", object.debugName.empty() ? "(unnamed)" : object.debugName.c_str());
+    ImGui::Text("Object index: %u", objectIndex);
+    ImGui::Text("Debug ID: %u", object.debugId);
+    ImGui::Text("Source: %s", renderObjectSourceTypeName(object.sourceType));
+    ImGui::Text("Mesh: %s", meshDebugLabel(object.mesh).c_str());
+    ImGui::Text("Mesh pointer: %p", static_cast<const void*>(object.mesh));
+    if (object.mesh) {
+        ImGui::Text("Mesh indices: %u", object.mesh->indexCount());
+    }
+    ImGui::Text("Material: %s", materialLabel.c_str());
+    ImGui::Text("Material slots: %zu", object.materialCount);
+    ImGui::Text("Submeshes: %u", meshSubmeshCount(object.mesh));
+    ImGui::Text("Draw items: %zu", debugInfo.drawItemCount);
+    if (debugInfo.hasObjectDataIndex) {
+        ImGui::Text("First object-data index: %u", debugInfo.firstObjectDataIndex);
+    } else {
+        ImGui::TextDisabled("First object-data index: unavailable until draw data is built");
+    }
+    ImGui::Text("Main culling: %s", mainCullingLabel.c_str());
+    ImGui::Text("Shadow culling: %s", shadowCullingLabel.c_str());
+    ImGui::Text("Shadow draw items visible: %zu", debugInfo.visibleShadowDrawItemCount);
+    ImGui::TextWrapped("Transform: %s", transformDebugSummary(object.transform).c_str());
+    if (object.mesh) {
+        ImGui::TextWrapped("Local bounds: %s", formatAabb(object.mesh->localBounds()).c_str());
+    } else {
+        ImGui::TextDisabled("Local bounds: unavailable");
+    }
+    ImGui::TextWrapped("World bounds: %s", formatAabb(object.worldBounds()).c_str());
+
+    if (ImGui::TreeNode("World transform matrix")) {
+        for (int row = 0; row < 4; ++row) {
+            const std::string matrixRow = formatMatrixRow(model, row);
+            ImGui::TextUnformatted(matrixRow.c_str());
+        }
+        ImGui::TreePop();
+    }
 }
 
 void Renderer::drawGpuTimingDebugUi()

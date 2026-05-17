@@ -33,6 +33,7 @@
     },
     "debugUi": {
         "showRenderGraphPanel": true,
+        "showSceneHierarchyPanel": true,
         "showGpuTimingGraphs": true,
         "showCullingStats": true,
         "showExposureGraphs": true

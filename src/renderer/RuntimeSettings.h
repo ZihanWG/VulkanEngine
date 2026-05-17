@@ -50,6 +50,7 @@ struct BloomSettings {
 
 struct DebugUiSettings {
     bool showRenderGraphPanel = true;
+    bool showSceneHierarchyPanel = true;
     bool showGpuTimingGraphs = true;
     bool showCullingStats = true;
     bool showExposureGraphs = true;

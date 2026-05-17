@@ -627,6 +627,7 @@ std::array<VkVertexInputAttributeDescription, 5> vertexAttributeDescriptions()
 Mesh Mesh::createCube(rhi::VulkanContext& context, const rhi::VulkanCommandContext& commandContext)
 {
     Mesh mesh;
+    mesh.debugName_ = "Built-in Cube Mesh";
     for (const Vertex& vertex : kCubeVertices) {
         mesh.localBounds_.expand(vertex.position);
     }
@@ -828,6 +829,7 @@ LoadedGltfAsset Mesh::createFromGltf(
         mesh.indexCount_ = static_cast<uint32_t>(indices.size());
         mesh.subMeshes_ = std::move(subMeshes);
         mesh.localBounds_ = localBounds;
+        mesh.debugName_ = meshDebugName(sourceMesh, meshIndex);
 
         const std::string debugName = path.stem().string() + "Mesh" + std::to_string(meshIndex);
         rhi::debug::setObjectName(
