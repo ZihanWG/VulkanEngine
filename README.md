@@ -18,7 +18,7 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - Auto exposure from HDR scene luminance builds log-average and histogram readback data; histogram percentile clipping is the preferred mode, with log-average/manual fallback.
 - Manual exposure remains available as the fallback path.
 - Reinhard/ACES tone mapping is applied in the final composite pass before swapchain output.
-- Dear ImGui debug overlay exposes runtime render settings, persistent JSON settings save/load/reset controls, a read-only scene hierarchy viewer, render graph visualization, GPU timing history graphs, culling history plots, and exposure/luminance history plots.
+- Dear ImGui debug overlay exposes runtime render settings, persistent JSON settings save/load/reset controls, render graph visualization, GPU timing history graphs, culling/exposure history plots, and a read-only scene hierarchy with selected-object inspector.
 - Compact Kulla-Conty-style multi-scattering compensation for PBR response.
 - PCF-filtered cascaded directional shadow map with basic texel snapping, optional cascade debug tinting, per-cascade GPU shadow-caster culling, and an indirect shadow draw path.
 - Descriptor indexing path for bindless material texture arrays, with a legacy descriptor-set fallback.
@@ -177,9 +177,11 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - Histogram auto-exposure still uses CPU-side readback; there is no GPU-only exposure chain or local exposure yet.
 - HDR swapchain output is not implemented yet.
 - ImGui is a debug UI only; there is no docking/editor layout yet.
-- The scene hierarchy panel is inspection-only; there is no transform editing yet.
-- There are no transform gizmos yet.
-- There is no scene serialization yet.
+- Scene hierarchy panel is read-only.
+- No transform editing yet.
+- No gizmos yet.
+- No object picking or mouse selection yet.
+- No scene serialization yet.
 - Runtime settings persistence is intentionally narrow and is not a full editor settings system.
 - There is no per-project or per-profile runtime settings management yet.
 - Settings that require GPU resource recreation are startup-applied; there is no hot-reload for them yet.
@@ -212,14 +214,15 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - Add HDR swapchain output.
 - Add runtime settings profile presets.
 - Add per-scene runtime settings.
+- Add persistent scene/editor settings.
 - Add transform editing.
 - Add object visibility toggles.
+- Add object picking / mouse selection.
 - Add material inspector.
 - Add texture and debug views.
 - Add asset browser.
 - Add scene serialization.
 - Add editor docking layout.
-- Add picking / mouse selection.
 - Add CSM cascade visualization panel.
 - Add render graph node view.
 - Add GPU capture workflow panel.
@@ -237,9 +240,9 @@ The following notes preserve the incremental build history and design decisions 
 
 The ImGui debug UI now includes a read-only `Scene Hierarchy` panel. It lists the active renderer `RenderObject` entries from the CPU-side scene data, including stable debug IDs, source type, mesh/material labels, submesh count, bounds, draw-item counts, and available culling/debug status.
 
-Objects can be selected in the hierarchy without changing rendering behavior. The selected-object inspector shows the object name, mesh pointer/name, material summary, transform summary or world matrix, local/world bounds, object-data index, draw-item count, and main/shadow culling metadata when that data is available.
+Objects can be selected in the hierarchy without changing rendering behavior. The selected-object inspector shows the object name, object index, debug ID, source type, mesh pointer/name, material summary, submesh count, draw-item count, object-data index when available, transform summary or world matrix, local/world bounds, and main/shadow culling metadata when that data is reliable.
 
-The panel is for inspection only. It does not add transform editing, gizmos, scene serialization, ECS, an asset browser, object picking, or material editing.
+When GPU culling is active, the UI does not pretend to know per-object GPU visibility unless that data is actually available; it reports that only aggregate/per-object-readback-unavailable culling data exists. The panel is for inspection only. It does not add transform editing, gizmos, object picking, scene serialization, asset browser, material editing, ECS, or editor architecture.
 
 ## Milestone 2: Triangle Rendering
 
@@ -1066,9 +1069,9 @@ Console logging remains available and unchanged. The ImGui display is additive a
 
 Resize handling keeps the ImGui context and SDL3 backend alive. When the swapchain image count or color format changes, the renderer recreates the ImGui Vulkan backend state and descriptor pool after the device is idle, then lets the backend rebuild font texture state as needed.
 
-Known limitations after Milestone 43: there is no docking/editor layout yet, no scene hierarchy panel, no asset browser, no material inspector, no persistent settings file, and no GPU capture automation.
+Known limitations after Milestone 43: docking/editor layout, asset browser, material inspector, persistent settings files, scene inspection UI, and GPU capture automation were still future work.
 
-Milestone 44 later adds the render graph visualization and GPU timing history graphs, and Milestone 45 adds persistent settings serialization. Remaining future work includes scene hierarchy viewer, material inspector, texture/debug views, CSM cascade visualization panel, and GPU capture workflow improvements.
+Milestone 44 later adds the render graph visualization and GPU timing history graphs, Milestone 45 adds persistent settings serialization, and Milestone 46 adds scene hierarchy inspection. Remaining future work includes material inspector, texture/debug views, CSM cascade visualization panel, and GPU capture workflow improvements.
 
 ## Milestone 44: Render Graph Visualization and GPU Timing Graphs
 
@@ -1080,9 +1083,9 @@ Culling and exposure stats remain visible in the debug UI. Main and shadow visib
 
 This milestone is a debug visualization layer only. It does not add a render graph node editor, docking/editor layout, production render graph scheduler, automatic pass scheduling, resource aliasing, transient resource allocation, or persistent settings serialization, and it does not change descriptor layouts, render pass order, culling, indirect drawing, CSM, IBL, bloom, histogram exposure, or swapchain synchronization.
 
-Known limitations after Milestone 44: there is no docking/editor layout yet, no persistent settings serialization yet, no scene hierarchy panel yet, no material inspector yet, no asset browser yet, no render graph node editor yet, the render graph is still manual and not automatically scheduled, and there is no production dependency inference, aliasing, or transient resource allocation yet.
+Known limitations after Milestone 44: docking/editor layout, persistent settings serialization, scene inspection UI, material inspector, asset browser, and render graph node editing were still future work. The render graph was still manual and not automatically scheduled, with no production dependency inference, aliasing, or transient resource allocation.
 
-Milestone 45 later covers persistent settings serialization. Remaining future work: render graph node view, GPU capture workflow panel, material inspector, scene hierarchy viewer, texture/debug views, CSM cascade visualization panel, in-engine profiler UI improvements, and render graph scheduling, aliasing, and transient resources.
+Milestone 45 later covers persistent settings serialization, and Milestone 46 adds scene hierarchy inspection. Remaining future work: render graph node view, GPU capture workflow panel, material inspector, texture/debug views, CSM cascade visualization panel, in-engine profiler UI improvements, and render graph scheduling, aliasing, and transient resources.
 
 ## Milestone 45: Persistent Runtime Settings Serialization
 
@@ -1096,4 +1099,4 @@ Runtime-safe settings include exposure values, exposure mode, tone mapper, bloom
 
 This milestone does not add a full editor, docking layout, scene hierarchy editing, asset browser, material inspector, per-project profiles, scene-specific settings, or hot-reload for settings requiring GPU resource recreation. It does not change descriptor layouts, ObjectFrameData BDA usage, GPU culling algorithms, indirect-count drawing, CSM resource layout, shadow bindings, IBL/BRDF LUT bindings, glTF loading, bloom extraction/blur, histogram exposure, render graph behavior, or swapchain synchronization.
 
-Future work: profile presets, per-scene settings, material inspector, scene hierarchy panel, render graph node view, GPU capture workflow panel, texture/debug views, CSM cascade visualization, and broader editor settings management.
+Future work: profile presets, per-scene settings, material inspector, transform editing, object visibility toggles, render graph node view, GPU capture workflow panel, texture/debug views, CSM cascade visualization, and broader editor settings management.
