@@ -63,6 +63,7 @@ void ImGuiLayer::shutdown()
     if (device_ != VK_NULL_HANDLE && rendererInitialized_) {
         VK_CHECK(vkDeviceWaitIdle(device_));
         clearTexturePreviewDescriptors();
+        clearRenderTargetPreviewDescriptors();
         ImGui_ImplVulkan_Shutdown();
         rendererInitialized_ = false;
     }
@@ -136,6 +137,7 @@ void ImGuiLayer::onSwapchainRecreated(VkFormat colorFormat, uint32_t imageCount)
 
     VK_CHECK(vkDeviceWaitIdle(device_));
     clearTexturePreviewDescriptors();
+    clearRenderTargetPreviewDescriptors();
     ImGui_ImplVulkan_Shutdown();
     rendererInitialized_ = false;
 
@@ -165,17 +167,33 @@ VkDescriptorSet ImGuiLayer::texturePreviewDescriptor(VkImageView imageView, VkSa
     return descriptorSet;
 }
 
-void ImGuiLayer::clearTexturePreviewDescriptors()
+VkDescriptorSet ImGuiLayer::renderTargetPreviewDescriptor(VkImageView imageView,
+                                                          VkSampler sampler,
+                                                          VkImageLayout imageLayout)
 {
-    if (rendererInitialized_) {
-        for (const auto& entry : texturePreviewDescriptors_) {
-            if (entry.second != VK_NULL_HANDLE) {
-                ImGui_ImplVulkan_RemoveTexture(entry.second);
-            }
-        }
+    if (!rendererInitialized_ || imageView == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) {
+        return VK_NULL_HANDLE;
     }
 
-    texturePreviewDescriptors_.clear();
+    const TexturePreviewKey key{imageView, sampler, imageLayout};
+    if (const auto existing = renderTargetPreviewDescriptors_.find(key);
+        existing != renderTargetPreviewDescriptors_.end()) {
+        return existing->second;
+    }
+
+    const VkDescriptorSet descriptorSet = ImGui_ImplVulkan_AddTexture(sampler, imageView, imageLayout);
+    renderTargetPreviewDescriptors_.emplace(key, descriptorSet);
+    return descriptorSet;
+}
+
+void ImGuiLayer::clearTexturePreviewDescriptors()
+{
+    clearDescriptorCache(texturePreviewDescriptors_);
+}
+
+void ImGuiLayer::clearRenderTargetPreviewDescriptors()
+{
+    clearDescriptorCache(renderTargetPreviewDescriptors_);
 }
 
 bool ImGuiLayer::wantsKeyboardCapture() const
@@ -218,6 +236,20 @@ void ImGuiLayer::destroyDescriptorPool()
         vkDestroyDescriptorPool(device_, descriptorPool_, nullptr);
         descriptorPool_ = VK_NULL_HANDLE;
     }
+}
+
+void ImGuiLayer::clearDescriptorCache(
+    std::unordered_map<TexturePreviewKey, VkDescriptorSet, TexturePreviewKeyHash>& cache)
+{
+    if (rendererInitialized_) {
+        for (const auto& entry : cache) {
+            if (entry.second != VK_NULL_HANDLE) {
+                ImGui_ImplVulkan_RemoveTexture(entry.second);
+            }
+        }
+    }
+
+    cache.clear();
 }
 
 void ImGuiLayer::initializeVulkanBackend(VkFormat colorFormat, uint32_t imageCount)

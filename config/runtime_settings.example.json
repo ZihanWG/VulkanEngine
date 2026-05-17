@@ -36,8 +36,12 @@
         "showSceneHierarchyPanel": true,
         "showMaterialInspectorPanel": true,
         "showTextureDebugPanel": true,
+        "showRenderTargetDebugPanel": true,
         "showGpuTimingGraphs": true,
         "showCullingStats": true,
-        "showExposureGraphs": true
+        "showExposureGraphs": true,
+        "selectedCsmCascade": 0,
+        "renderTargetPreviewExposure": 1.0,
+        "renderTargetPreviewScale": 1.0
     }
 }

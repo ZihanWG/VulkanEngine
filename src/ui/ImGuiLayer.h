@@ -41,7 +41,12 @@ public:
         VkImageView imageView,
         VkSampler sampler,
         VkImageLayout imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    [[nodiscard]] VkDescriptorSet renderTargetPreviewDescriptor(
+        VkImageView imageView,
+        VkSampler sampler,
+        VkImageLayout imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     void clearTexturePreviewDescriptors();
+    void clearRenderTargetPreviewDescriptors();
 
     [[nodiscard]] bool wantsMouseCapture() const;
     [[nodiscard]] bool wantsKeyboardCapture() const;
@@ -74,6 +79,7 @@ private:
     void createDescriptorPool();
     void destroyDescriptorPool();
     void initializeVulkanBackend(VkFormat colorFormat, uint32_t imageCount);
+    void clearDescriptorCache(std::unordered_map<TexturePreviewKey, VkDescriptorSet, TexturePreviewKeyHash>& cache);
     [[nodiscard]] uint32_t minImageCount(uint32_t imageCount) const;
 
     rhi::VulkanContext* context_ = nullptr;
@@ -82,6 +88,7 @@ private:
     VkFormat colorFormat_ = VK_FORMAT_UNDEFINED;
     uint32_t imageCount_ = 0;
     std::unordered_map<TexturePreviewKey, VkDescriptorSet, TexturePreviewKeyHash> texturePreviewDescriptors_;
+    std::unordered_map<TexturePreviewKey, VkDescriptorSet, TexturePreviewKeyHash> renderTargetPreviewDescriptors_;
     bool contextInitialized_ = false;
     bool platformInitialized_ = false;
     bool rendererInitialized_ = false;

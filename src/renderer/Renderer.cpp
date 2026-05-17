@@ -225,6 +225,17 @@ enum class ExposureMode : int {
     Histogram = 2,
 };
 
+struct RenderTargetDebugMetadata {
+    const char* debugName = "";
+    std::string dimensions;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    uint32_t mipLevels = 1;
+    uint32_t arrayLayers = 1;
+    std::string usage;
+    bool previewable = false;
+    std::string sampledAs;
+};
+
 uint32_t toneMappingOperatorValue(int operatorType)
 {
     return operatorType == 1 ? 1u : 0u;
@@ -477,6 +488,10 @@ const char* vkFormatName(VkFormat format)
         return "VK_FORMAT_D16_UNORM";
     case VK_FORMAT_D32_SFLOAT:
         return "VK_FORMAT_D32_SFLOAT";
+    case VK_FORMAT_D32_SFLOAT_S8_UINT:
+        return "VK_FORMAT_D32_SFLOAT_S8_UINT";
+    case VK_FORMAT_D24_UNORM_S8_UINT:
+        return "VK_FORMAT_D24_UNORM_S8_UINT";
     default:
         return "VkFormat(other)";
     }
@@ -973,6 +988,7 @@ void Renderer::createPostProcessResources()
         throw std::runtime_error("Cannot create post-process resources for a zero-sized swapchain extent.");
     }
 
+    imguiLayer_.clearRenderTargetPreviewDescriptors();
     postProcessDescriptorPool_.reset();
     bloomExtractDescriptorSet_ = VK_NULL_HANDLE;
     bloomBlurHorizontalDescriptorSet_ = VK_NULL_HANDLE;
@@ -1788,6 +1804,7 @@ void Renderer::createShadowMap()
 {
     // The CSM depth array is fixed-size for now and intentionally independent
     // of swapchain resize; only the main color/depth targets follow the window extent.
+    imguiLayer_.clearRenderTargetPreviewDescriptors();
     shadowMap_.create(context_, shadowSettings_.resolution, shadowSettings_.resolution, activeCascadeCount());
 }
 
@@ -3865,6 +3882,7 @@ void Renderer::buildDebugUi()
         ImGui::Checkbox("Show Scene Hierarchy panel", &debugUiSettings_.showSceneHierarchyPanel);
         ImGui::Checkbox("Show Material Inspector", &debugUiSettings_.showMaterialInspectorPanel);
         ImGui::Checkbox("Show Texture Debug Views", &debugUiSettings_.showTextureDebugPanel);
+        ImGui::Checkbox("Show Render Target Debug Views", &debugUiSettings_.showRenderTargetDebugPanel);
         ImGui::Checkbox("Show GPU Timing graphs", &debugUiSettings_.showGpuTimingGraphs);
         ImGui::Checkbox("Show Culling stats", &debugUiSettings_.showCullingStats);
         ImGui::Checkbox("Show Exposure graphs", &debugUiSettings_.showExposureGraphs);
@@ -3981,6 +3999,13 @@ void Renderer::buildDebugUi()
     if (debugUiSettings_.showTextureDebugPanel) {
         if (ImGui::Begin("Texture Debug Views", &debugUiSettings_.showTextureDebugPanel)) {
             drawTextureDebugUi();
+        }
+        ImGui::End();
+    }
+
+    if (debugUiSettings_.showRenderTargetDebugPanel) {
+        if (ImGui::Begin("Render Target Debug Views", &debugUiSettings_.showRenderTargetDebugPanel)) {
+            drawRenderTargetDebugUi();
         }
         ImGui::End();
     }
@@ -4387,6 +4412,425 @@ void Renderer::drawTexturePreview(const rhi::VulkanTexture& texture, float size)
     }
 
     ImGui::Image((ImTextureID)descriptorSet, imageSize);
+}
+
+void Renderer::drawRenderTargetPreview(VkImageView imageView,
+                                       VkSampler sampler,
+                                       VkImageLayout imageLayout,
+                                       uint32_t width,
+                                       uint32_t height,
+                                       float size,
+                                       float exposureScale)
+{
+    const VkDescriptorSet descriptorSet =
+        imguiLayer_.renderTargetPreviewDescriptor(imageView, sampler, imageLayout);
+    if (descriptorSet == VK_NULL_HANDLE) {
+        ImGui::TextDisabled("Preview unavailable.");
+        return;
+    }
+
+    const float imageWidth = static_cast<float>(std::max(width, 1U));
+    const float imageHeight = static_cast<float>(std::max(height, 1U));
+    ImVec2 imageSize{size, size};
+    if (imageWidth > imageHeight) {
+        imageSize.y = size * (imageHeight / imageWidth);
+    } else if (imageHeight > imageWidth) {
+        imageSize.x = size * (imageWidth / imageHeight);
+    }
+
+    const float tintScale = std::clamp(exposureScale, 0.0f, 16.0f);
+    ImGui::Image((ImTextureID)descriptorSet,
+                 imageSize,
+                 ImVec2(0.0f, 0.0f),
+                 ImVec2(1.0f, 1.0f),
+                 ImVec4(tintScale, tintScale, tintScale, 1.0f));
+}
+
+void Renderer::drawRenderTargetDebugUi()
+{
+    ImGui::SliderFloat("Preview scale", &debugUiSettings_.renderTargetPreviewScale, 0.25f, 2.0f, "%.2f");
+    ImGui::SliderFloat("Preview exposure", &debugUiSettings_.renderTargetPreviewExposure, 0.05f, 8.0f, "%.2f");
+    ImGui::TextDisabled("HDR previews are raw ImGui samples multiplied by preview exposure; no channel remap.");
+
+    if (ImGui::CollapsingHeader("Preview Toggles", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Checkbox("Show scene color", &showRenderTargetSceneColor_);
+        ImGui::Checkbox("Show bloom extract", &showRenderTargetBloomExtract_);
+        ImGui::Checkbox("Show blurred bloom", &showRenderTargetBlurredBloom_);
+        ImGui::Checkbox("Show final composite metadata", &showRenderTargetFinalCompositeMetadata_);
+        ImGui::Checkbox("Show BRDF LUT", &showRenderTargetBrdfLut_);
+        ImGui::Checkbox("Show CSM cascades", &showRenderTargetCsmCascades_);
+    }
+
+    const auto extentString = [](uint32_t width, uint32_t height) {
+        return std::to_string(width) + " x " + std::to_string(height);
+    };
+    const auto cubeExtentString = [](uint32_t faceSize) {
+        return std::to_string(faceSize) + " x " + std::to_string(faceSize) + " x 6";
+    };
+    const auto layoutUsage = [](const char* usage, VkImageLayout layout) {
+        return std::string(usage) + "; current layout " + imageLayoutName(layout);
+    };
+
+    if (ImGui::CollapsingHeader("Resource Metadata", ImGuiTreeNodeFlags_DefaultOpen)) {
+        constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                          ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp |
+                                          ImGuiTableFlags_ScrollX;
+        if (ImGui::BeginTable("RenderTargetDebugMetadata", 8, flags)) {
+            ImGui::TableSetupColumn("Debug name");
+            ImGui::TableSetupColumn("Dimensions");
+            ImGui::TableSetupColumn("Format");
+            ImGui::TableSetupColumn("Mips", ImGuiTableColumnFlags_WidthFixed);
+            ImGui::TableSetupColumn("Layers", ImGuiTableColumnFlags_WidthFixed);
+            ImGui::TableSetupColumn("Usage");
+            ImGui::TableSetupColumn("Preview", ImGuiTableColumnFlags_WidthFixed);
+            ImGui::TableSetupColumn("Sampled as");
+            ImGui::TableHeadersRow();
+
+            const auto addMetadataRow = [](const RenderTargetDebugMetadata& metadata) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(metadata.debugName);
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(metadata.dimensions.c_str());
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(vkFormatName(metadata.format));
+                ImGui::TableNextColumn();
+                ImGui::Text("%u", metadata.mipLevels);
+                ImGui::TableNextColumn();
+                ImGui::Text("%u", metadata.arrayLayers);
+                ImGui::TableNextColumn();
+                ImGui::TextWrapped("%s", metadata.usage.c_str());
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(metadata.previewable ? "yes" : "no");
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(metadata.sampledAs.c_str());
+            };
+
+            if (sceneColor_.image() != VK_NULL_HANDLE) {
+                const VkExtent3D extent = sceneColor_.extent();
+                addMetadataRow(RenderTargetDebugMetadata{
+                    "SceneColorHDR",
+                    extentString(extent.width, extent.height),
+                    sceneColor_.format(),
+                    1,
+                    1,
+                    layoutUsage("HDR scene color attachment sampled by bloom, exposure, composite, and preview",
+                                sceneColorLayout_),
+                    true,
+                    "2D HDR"});
+            }
+            if (bloomExtract_.image() != VK_NULL_HANDLE) {
+                const VkExtent3D extent = bloomExtract_.extent();
+                addMetadataRow(RenderTargetDebugMetadata{
+                    "BloomExtract",
+                    extentString(extent.width, extent.height),
+                    bloomExtract_.format(),
+                    1,
+                    1,
+                    layoutUsage("Bloom bright-pass output sampled by horizontal blur and preview", bloomExtractLayout_),
+                    true,
+                    "2D HDR"});
+            }
+            if (bloomPing_.image() != VK_NULL_HANDLE) {
+                const VkExtent3D extent = bloomPing_.extent();
+                addMetadataRow(RenderTargetDebugMetadata{
+                    "BloomPing",
+                    extentString(extent.width, extent.height),
+                    bloomPing_.format(),
+                    1,
+                    1,
+                    layoutUsage("Horizontal blur output sampled by vertical blur and preview", bloomPingLayout_),
+                    true,
+                    "2D HDR"});
+            }
+            if (bloomPong_.image() != VK_NULL_HANDLE) {
+                const VkExtent3D extent = bloomPong_.extent();
+                addMetadataRow(RenderTargetDebugMetadata{
+                    "BloomPong",
+                    extentString(extent.width, extent.height),
+                    bloomPong_.format(),
+                    1,
+                    1,
+                    layoutUsage("Final blurred bloom sampled by composite and preview", bloomPongLayout_),
+                    true,
+                    "2D HDR"});
+            }
+            if (showRenderTargetFinalCompositeMetadata_) {
+                const VkExtent2D extent = swapchain_.extent();
+                addMetadataRow(RenderTargetDebugMetadata{
+                    "FinalCompositeSwapchain",
+                    extentString(extent.width, extent.height) + ", " + std::to_string(swapchain_.imageCount()) +
+                        " images",
+                    swapchain_.colorFormat(),
+                    1,
+                    1,
+                    "CompositePass color attachment, then ImGui overlay and present",
+                    false,
+                    "swapchain"});
+            }
+            if (brdfLutTexture_.valid()) {
+                addMetadataRow(RenderTargetDebugMetadata{
+                    "BrdfLut",
+                    extentString(brdfLutTexture_.width(), brdfLutTexture_.height()),
+                    brdfLutTexture_.format(),
+                    1,
+                    1,
+                    layoutUsage("Split-sum IBL data texture sampled by PBR shading; linear, not sRGB",
+                                brdfLutTexture_.layout()),
+                    true,
+                    "2D LUT"});
+            }
+            if (shadowMap_.valid()) {
+                const VkExtent2D extent = shadowMap_.extent();
+                addMetadataRow(RenderTargetDebugMetadata{
+                    "CascadedShadowMapArray",
+                    extentString(extent.width, extent.height),
+                    shadowMap_.format(),
+                    1,
+                    shadowMap_.layerCount(),
+                    layoutUsage("CSM depth attachment array sampled by lighting and per-layer debug previews",
+                                shadowMap_.layout()),
+                    true,
+                    "2D array / per-layer 2D"});
+            }
+            if (diffuseIrradianceMap_.valid()) {
+                addMetadataRow(RenderTargetDebugMetadata{
+                    "DiffuseIrradianceCubemap",
+                    cubeExtentString(diffuseIrradianceMap_.faceSize()),
+                    diffuseIrradianceMap_.format(),
+                    diffuseIrradianceMap_.mipLevels(),
+                    6,
+                    hdrEnvironmentLoaded_ ? "HDR-derived diffuse IBL cubemap" : "Procedural diffuse IBL cubemap",
+                    false,
+                    "cube"});
+            }
+            if (prefilteredEnvironmentMap_.valid()) {
+                addMetadataRow(RenderTargetDebugMetadata{
+                    "PrefilteredSpecularCubemap",
+                    cubeExtentString(prefilteredEnvironmentMap_.faceSize()),
+                    prefilteredEnvironmentMap_.format(),
+                    prefilteredEnvironmentMap_.mipLevels(),
+                    6,
+                    hdrEnvironmentLoaded_ ? "HDR-derived specular IBL mip chain"
+                                          : "Procedural specular IBL mip chain",
+                    false,
+                    "cube"});
+            }
+            if (environmentMap_.valid()) {
+                addMetadataRow(RenderTargetDebugMetadata{
+                    "VisibleEnvironmentCubemap",
+                    cubeExtentString(environmentMap_.faceSize()),
+                    environmentMap_.format(),
+                    environmentMap_.mipLevels(),
+                    6,
+                    hdrEnvironmentLoaded_ ? "HDR environment skybox source" : "Procedural skybox source",
+                    false,
+                    "cube"});
+            }
+
+            ImGui::EndTable();
+        }
+    }
+
+    const float previewSize = 160.0f * std::clamp(debugUiSettings_.renderTargetPreviewScale, 0.25f, 2.0f);
+    const float hdrPreviewExposure = std::clamp(debugUiSettings_.renderTargetPreviewExposure, 0.05f, 8.0f);
+
+    if (showRenderTargetSceneColor_ && sceneColor_.imageView() != VK_NULL_HANDLE &&
+        ImGui::CollapsingHeader("HDR Scene Color", ImGuiTreeNodeFlags_DefaultOpen)) {
+        const VkExtent3D extent = sceneColor_.extent();
+        ImGui::Text("Dimensions: %u x %u", extent.width, extent.height);
+        ImGui::Text("Format: %s", vkFormatName(sceneColor_.format()));
+        ImGui::Text("Layout: %s", imageLayoutName(sceneColorLayout_));
+        drawRenderTargetPreview(sceneColor_.imageView(),
+                                postProcessSampler_,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                extent.width,
+                                extent.height,
+                                previewSize,
+                                hdrPreviewExposure);
+    }
+
+    if ((showRenderTargetBloomExtract_ || showRenderTargetBlurredBloom_) &&
+        ImGui::CollapsingHeader("Bloom Targets", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (showRenderTargetBloomExtract_ && bloomExtract_.imageView() != VK_NULL_HANDLE) {
+            const VkExtent3D extent = bloomExtract_.extent();
+            ImGui::Text("Bloom extract: %u x %u, %s", extent.width, extent.height,
+                        vkFormatName(bloomExtract_.format()));
+            drawRenderTargetPreview(bloomExtract_.imageView(),
+                                    postProcessSampler_,
+                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                    extent.width,
+                                    extent.height,
+                                    previewSize,
+                                    hdrPreviewExposure);
+        }
+        if (showRenderTargetBlurredBloom_) {
+            if (bloomPing_.imageView() != VK_NULL_HANDLE) {
+                const VkExtent3D extent = bloomPing_.extent();
+                ImGui::Text("Bloom ping: %u x %u, %s", extent.width, extent.height, vkFormatName(bloomPing_.format()));
+                drawRenderTargetPreview(bloomPing_.imageView(),
+                                        postProcessSampler_,
+                                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                        extent.width,
+                                        extent.height,
+                                        previewSize,
+                                        hdrPreviewExposure);
+            }
+            if (bloomPong_.imageView() != VK_NULL_HANDLE) {
+                const VkExtent3D extent = bloomPong_.extent();
+                ImGui::Text("Bloom pong: %u x %u, %s", extent.width, extent.height, vkFormatName(bloomPong_.format()));
+                drawRenderTargetPreview(bloomPong_.imageView(),
+                                        postProcessSampler_,
+                                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                        extent.width,
+                                        extent.height,
+                                        previewSize,
+                                        hdrPreviewExposure);
+            }
+        }
+    }
+
+    if (showRenderTargetBrdfLut_ && brdfLutTexture_.valid() &&
+        ImGui::CollapsingHeader("BRDF LUT", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Text("Dimensions: %u x %u", brdfLutTexture_.width(), brdfLutTexture_.height());
+        ImGui::Text("Format: %s", vkFormatName(brdfLutTexture_.format()));
+        ImGui::TextDisabled("Data texture for split-sum IBL; linear UNORM, not sRGB.");
+        drawRenderTargetPreview(brdfLutTexture_.imageView(),
+                                brdfLutTexture_.sampler(),
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                brdfLutTexture_.width(),
+                                brdfLutTexture_.height(),
+                                previewSize,
+                                1.0f);
+    }
+
+    if (showRenderTargetCsmCascades_ && ImGui::CollapsingHeader("CSM Cascades", ImGuiTreeNodeFlags_DefaultOpen)) {
+        drawCsmCascadeDebugUi(previewSize);
+    }
+}
+
+void Renderer::drawCsmCascadeDebugUi(float previewSize)
+{
+    if (!shadowMap_.valid()) {
+        ImGui::TextDisabled("CSM shadow map is unavailable.");
+        return;
+    }
+
+    const uint32_t cascadeCount = std::min(activeCascadeCount(), shadowMap_.layerCount());
+    if (cascadeCount == 0) {
+        ImGui::TextDisabled("No active CSM cascades.");
+        return;
+    }
+
+    int selectedCascade = static_cast<int>(std::min(debugUiSettings_.selectedCsmCascade, cascadeCount - 1));
+    if (ImGui::SliderInt("Selected cascade", &selectedCascade, 0, static_cast<int>(cascadeCount - 1))) {
+        debugUiSettings_.selectedCsmCascade = static_cast<uint32_t>(std::max(selectedCascade, 0));
+    }
+    debugUiSettings_.selectedCsmCascade = std::min(debugUiSettings_.selectedCsmCascade, cascadeCount - 1);
+
+    const VkExtent2D shadowExtent = shadowMap_.extent();
+    ImGui::Text("Shadow resolution: %u x %u", shadowExtent.width, shadowExtent.height);
+    ImGui::Text("Texel snapping: %s", csmSettings_.enableTexelSnapping ? "enabled" : "disabled");
+    ImGui::Text("GPU shadow culling: %s", isGpuShadowCullingActive() ? "active" : "inactive");
+    if (isGpuShadowCullingActive()) {
+        uint32_t gpuVisibleShadowDraws = 0;
+        if (readGpuShadowVisibleCount(currentFrame_, gpuVisibleShadowDraws)) {
+            ImGui::Text("Latest aggregate GPU visible shadow draws: %u", gpuVisibleShadowDraws);
+        } else {
+            ImGui::TextDisabled("Aggregate GPU shadow readback pending.");
+        }
+        ImGui::TextDisabled("Per-cascade draw and batch counts below are CPU frustum estimates.");
+    }
+
+    constexpr ImGuiTableFlags tableFlags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                           ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp;
+    if (ImGui::BeginTable("CsmCascadeMetadata", 7, tableFlags)) {
+        ImGui::TableSetupColumn("Cascade", ImGuiTableColumnFlags_WidthFixed);
+        ImGui::TableSetupColumn("Split range");
+        ImGui::TableSetupColumn("Layer", ImGuiTableColumnFlags_WidthFixed);
+        ImGui::TableSetupColumn("Resolution");
+        ImGui::TableSetupColumn("Coverage");
+        ImGui::TableSetupColumn("Visible draws");
+        ImGui::TableSetupColumn("Batches");
+        ImGui::TableHeadersRow();
+
+        for (uint32_t cascadeIndex = 0; cascadeIndex < cascadeCount; ++cascadeIndex) {
+            const CascadeFrameData& cascade = frameCascades_[cascadeIndex];
+            const float range = std::max(cascade.farDepth - cascade.nearDepth, 0.0f);
+            const float coverage = csmSettings_.shadowDistance > 0.0f
+                                       ? (range / csmSettings_.shadowDistance) * 100.0f
+                                       : 0.0f;
+
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::Text("%u", cascadeIndex);
+            ImGui::TableNextColumn();
+            ImGui::Text("%.3f - %.3f", cascade.nearDepth, cascade.farDepth);
+            ImGui::TableNextColumn();
+            ImGui::Text("%u", cascadeIndex);
+            ImGui::TableNextColumn();
+            ImGui::Text("%u x %u", shadowExtent.width, shadowExtent.height);
+            ImGui::TableNextColumn();
+            ImGui::Text("%.1f%%", coverage);
+            ImGui::TableNextColumn();
+            ImGui::Text("%u", shadowVisibleDrawItemsPerCascade_[cascadeIndex]);
+            ImGui::TableNextColumn();
+            ImGui::Text("%u", shadowBatchCountPerCascade_[cascadeIndex]);
+        }
+
+        ImGui::EndTable();
+    }
+
+    const uint32_t selected = debugUiSettings_.selectedCsmCascade;
+    const CascadeFrameData& cascade = frameCascades_[selected];
+    ImGui::Separator();
+    ImGui::Text("Selected cascade %u", selected);
+    ImGui::Text("Split depth: %.3f", cascade.splitDepth);
+    ImGui::Text("Split range: %.3f - %.3f", cascade.nearDepth, cascade.farDepth);
+    ImGui::Text("Layer index: %u", selected);
+    ImGui::Text("Visible shadow draw count: %u", shadowVisibleDrawItemsPerCascade_[selected]);
+    ImGui::Text("Shadow batch count: %u", shadowBatchCountPerCascade_[selected]);
+    if (ImGui::TreeNode("Light view-projection matrix")) {
+        for (int row = 0; row < 4; ++row) {
+            const std::string matrixRow = formatMatrixRow(cascade.lightViewProjection, row);
+            ImGui::TextUnformatted(matrixRow.c_str());
+        }
+        ImGui::TreePop();
+    }
+
+    ImGui::TextDisabled("Depth preview uses the existing per-layer 2D shadow image view sampled as raw depth.");
+    drawRenderTargetPreview(shadowMap_.layerImageView(selected),
+                            shadowMap_.sampler(),
+                            VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                            shadowExtent.width,
+                            shadowExtent.height,
+                            previewSize,
+                            1.0f);
+
+    if (ImGui::TreeNodeEx("Cascade thumbnails", ImGuiTreeNodeFlags_DefaultOpen)) {
+        const float thumbnailSize = std::max(64.0f, previewSize * 0.45f);
+        for (uint32_t cascadeIndex = 0; cascadeIndex < cascadeCount; ++cascadeIndex) {
+            ImGui::PushID(static_cast<int>(cascadeIndex));
+            ImGui::BeginGroup();
+            ImGui::Text("Cascade %u", cascadeIndex);
+            drawRenderTargetPreview(shadowMap_.layerImageView(cascadeIndex),
+                                    shadowMap_.sampler(),
+                                    VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                                    shadowExtent.width,
+                                    shadowExtent.height,
+                                    thumbnailSize,
+                                    1.0f);
+            if (ImGui::IsItemClicked()) {
+                debugUiSettings_.selectedCsmCascade = cascadeIndex;
+            }
+            ImGui::EndGroup();
+            ImGui::PopID();
+            if (cascadeIndex + 1 < cascadeCount) {
+                ImGui::SameLine();
+            }
+        }
+        ImGui::TreePop();
+    }
 }
 
 void Renderer::drawGlobalTextureMetadata()

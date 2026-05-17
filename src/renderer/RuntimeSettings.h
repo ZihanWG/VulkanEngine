@@ -53,9 +53,13 @@ struct DebugUiSettings {
     bool showSceneHierarchyPanel = true;
     bool showMaterialInspectorPanel = true;
     bool showTextureDebugPanel = true;
+    bool showRenderTargetDebugPanel = true;
     bool showGpuTimingGraphs = true;
     bool showCullingStats = true;
     bool showExposureGraphs = true;
+    uint32_t selectedCsmCascade = 0;
+    float renderTargetPreviewExposure = 1.0f;
+    float renderTargetPreviewScale = 1.0f;
 };
 
 struct RuntimeSettings {

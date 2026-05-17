@@ -269,6 +269,7 @@ private:
     void drawSelectedRenderObjectInspector(uint32_t objectIndex);
     void drawMaterialInspectorDebugUi();
     void drawTextureDebugUi();
+    void drawRenderTargetDebugUi();
     void drawMaterialDebugSection(const renderer::Material* material, bool includeTextureSummary);
     void drawMaterialTextureSlotDebugUi(const char* slotName,
                                         const char* semantic,
@@ -277,7 +278,15 @@ private:
                                         bool fallbackUsed,
                                         bool showPreview);
     void drawTexturePreview(const rhi::VulkanTexture& texture, float size);
+    void drawRenderTargetPreview(VkImageView imageView,
+                                 VkSampler sampler,
+                                 VkImageLayout imageLayout,
+                                 uint32_t width,
+                                 uint32_t height,
+                                 float size,
+                                 float exposureScale);
     void drawGlobalTextureMetadata();
+    void drawCsmCascadeDebugUi(float previewSize);
     void drawGpuTimingDebugUi();
     void drawCullingDebugUi();
     void drawExposureDebugUi();
@@ -469,6 +478,12 @@ private:
     bool normalMapAssetLoaded_ = false;
     bool metallicRoughnessMapAssetLoaded_ = false;
     bool hdrEnvironmentLoaded_ = false;
+    bool showRenderTargetSceneColor_ = true;
+    bool showRenderTargetBloomExtract_ = true;
+    bool showRenderTargetBlurredBloom_ = true;
+    bool showRenderTargetFinalCompositeMetadata_ = true;
+    bool showRenderTargetBrdfLut_ = true;
+    bool showRenderTargetCsmCascades_ = true;
 };
 
 } // namespace ve
