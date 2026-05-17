@@ -18,7 +18,7 @@ namespace ve::ui {
 
 namespace {
 
-constexpr uint32_t kSampledImageDescriptorCount = 64;
+constexpr uint32_t kSampledImageDescriptorCount = 256;
 constexpr uint32_t kSamplerDescriptorCount = 16;
 
 } // namespace
@@ -62,6 +62,7 @@ void ImGuiLayer::shutdown()
 {
     if (device_ != VK_NULL_HANDLE && rendererInitialized_) {
         VK_CHECK(vkDeviceWaitIdle(device_));
+        clearTexturePreviewDescriptors();
         ImGui_ImplVulkan_Shutdown();
         rendererInitialized_ = false;
     }
@@ -134,6 +135,7 @@ void ImGuiLayer::onSwapchainRecreated(VkFormat colorFormat, uint32_t imageCount)
     }
 
     VK_CHECK(vkDeviceWaitIdle(device_));
+    clearTexturePreviewDescriptors();
     ImGui_ImplVulkan_Shutdown();
     rendererInitialized_ = false;
 
@@ -145,6 +147,35 @@ void ImGuiLayer::onSwapchainRecreated(VkFormat colorFormat, uint32_t imageCount)
 bool ImGuiLayer::wantsMouseCapture() const
 {
     return contextInitialized_ && ImGui::GetIO().WantCaptureMouse;
+}
+
+VkDescriptorSet ImGuiLayer::texturePreviewDescriptor(VkImageView imageView, VkSampler sampler, VkImageLayout imageLayout)
+{
+    if (!rendererInitialized_ || imageView == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) {
+        return VK_NULL_HANDLE;
+    }
+
+    const TexturePreviewKey key{imageView, sampler, imageLayout};
+    if (const auto existing = texturePreviewDescriptors_.find(key); existing != texturePreviewDescriptors_.end()) {
+        return existing->second;
+    }
+
+    const VkDescriptorSet descriptorSet = ImGui_ImplVulkan_AddTexture(sampler, imageView, imageLayout);
+    texturePreviewDescriptors_.emplace(key, descriptorSet);
+    return descriptorSet;
+}
+
+void ImGuiLayer::clearTexturePreviewDescriptors()
+{
+    if (rendererInitialized_) {
+        for (const auto& entry : texturePreviewDescriptors_) {
+            if (entry.second != VK_NULL_HANDLE) {
+                ImGui_ImplVulkan_RemoveTexture(entry.second);
+            }
+        }
+    }
+
+    texturePreviewDescriptors_.clear();
 }
 
 bool ImGuiLayer::wantsKeyboardCapture() const

@@ -34,6 +34,8 @@
     "debugUi": {
         "showRenderGraphPanel": true,
         "showSceneHierarchyPanel": true,
+        "showMaterialInspectorPanel": true,
+        "showTextureDebugPanel": true,
         "showGpuTimingGraphs": true,
         "showCullingStats": true,
         "showExposureGraphs": true

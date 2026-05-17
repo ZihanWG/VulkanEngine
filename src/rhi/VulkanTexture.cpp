@@ -93,6 +93,11 @@ bool supportsLinearBlit(VkPhysicalDevice physicalDevice, VkFormat format)
     return (properties.optimalTilingFeatures & requiredFeatures) == requiredFeatures;
 }
 
+TextureColorSpace colorSpaceForFormat(VkFormat format)
+{
+    return format == VK_FORMAT_R8G8B8A8_SRGB ? TextureColorSpace::SRGB : TextureColorSpace::Linear;
+}
+
 VkImageMemoryBarrier2 textureBarrier(VkImage image,
                                      VkImageLayout oldLayout,
                                      VkImageLayout newLayout,
@@ -179,6 +184,13 @@ void VulkanTexture::createCheckerboard(VulkanContext& context,
                     std::span<const uint8_t>(pixels.data(), pixels.size()),
                     rgba8FormatForColorSpace(colorSpace),
                     true);
+    debugMetadata_ = TextureDebugMetadata{
+        "Procedural checkerboard",
+        {},
+        colorSpace,
+        TextureDebugSource::ProceduralFallback,
+        true,
+    };
 }
 
 void VulkanTexture::createFromFile(VulkanContext& context,
@@ -188,6 +200,7 @@ void VulkanTexture::createFromFile(VulkanContext& context,
                                    bool generateMipmaps)
 {
     createFromFile(context, commandContext, path, rgba8FormatForColorSpace(colorSpace), generateMipmaps);
+    debugMetadata_.colorSpace = colorSpace;
 }
 
 void VulkanTexture::createFromFile(VulkanContext& context,
@@ -220,6 +233,13 @@ void VulkanTexture::createFromFile(VulkanContext& context,
                     std::span<const uint8_t>(loadedPixels.get(), byteCount),
                     format,
                     generateMipmaps);
+    debugMetadata_ = TextureDebugMetadata{
+        path.filename().string(),
+        filename,
+        colorSpaceForFormat(format),
+        TextureDebugSource::LoadedFromDisk,
+        false,
+    };
 }
 
 void VulkanTexture::createFromEncodedBytes(VulkanContext& context,
@@ -230,6 +250,7 @@ void VulkanTexture::createFromEncodedBytes(VulkanContext& context,
 {
     createFromEncodedBytes(
         context, commandContext, encodedBytes, rgba8FormatForColorSpace(colorSpace), generateMipmaps);
+    debugMetadata_.colorSpace = colorSpace;
 }
 
 void VulkanTexture::createFromEncodedBytes(VulkanContext& context,
@@ -273,6 +294,13 @@ void VulkanTexture::createFromEncodedBytes(VulkanContext& context,
                     std::span<const uint8_t>(loadedPixels.get(), byteCount),
                     format,
                     generateMipmaps);
+    debugMetadata_ = TextureDebugMetadata{
+        "Embedded texture",
+        {},
+        colorSpaceForFormat(format),
+        TextureDebugSource::GltfEmbeddedData,
+        false,
+    };
 }
 
 void VulkanTexture::createFromRgba8(VulkanContext& context,
@@ -335,6 +363,13 @@ void VulkanTexture::createFromRgba8(VulkanContext& context,
     uploadPixels(context, commandContext, std::as_bytes(pixels));
     createImageView();
     createSampler();
+    debugMetadata_ = TextureDebugMetadata{
+        "RGBA8 texture",
+        {},
+        colorSpaceForFormat(format_),
+        TextureDebugSource::ProceduralFallback,
+        false,
+    };
 }
 
 void VulkanTexture::reset()
@@ -364,6 +399,7 @@ void VulkanTexture::reset()
     height_ = 0;
     mipLevels_ = 0;
     format_ = VK_FORMAT_UNDEFINED;
+    debugMetadata_ = {};
 }
 
 void VulkanTexture::uploadPixels(VulkanContext& context,
@@ -575,6 +611,7 @@ void VulkanTexture::moveFrom(VulkanTexture& other) noexcept
     height_ = std::exchange(other.height_, 0);
     mipLevels_ = std::exchange(other.mipLevels_, 0);
     format_ = std::exchange(other.format_, VK_FORMAT_UNDEFINED);
+    debugMetadata_ = std::exchange(other.debugMetadata_, {});
 }
 
 } // namespace ve::rhi

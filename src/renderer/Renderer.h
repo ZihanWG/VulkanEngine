@@ -267,6 +267,17 @@ private:
     void drawRenderGraphDebugUi();
     void drawSceneHierarchyDebugUi();
     void drawSelectedRenderObjectInspector(uint32_t objectIndex);
+    void drawMaterialInspectorDebugUi();
+    void drawTextureDebugUi();
+    void drawMaterialDebugSection(const renderer::Material* material, bool includeTextureSummary);
+    void drawMaterialTextureSlotDebugUi(const char* slotName,
+                                        const char* semantic,
+                                        const rhi::VulkanTexture* texture,
+                                        uint32_t bindlessIndex,
+                                        bool fallbackUsed,
+                                        bool showPreview);
+    void drawTexturePreview(const rhi::VulkanTexture& texture, float size);
+    void drawGlobalTextureMetadata();
     void drawGpuTimingDebugUi();
     void drawCullingDebugUi();
     void drawExposureDebugUi();
@@ -280,6 +291,10 @@ private:
     void pushExposureHistorySample();
     [[nodiscard]] CullingDebugSnapshot cullingDebugSnapshot(uint32_t frameIndex);
     [[nodiscard]] ObjectDrawDebugInfo objectDrawDebugInfo(uint32_t objectIndex) const;
+    [[nodiscard]] std::vector<const renderer::Material*> materialsForObject(
+        const renderer::RenderObject& object) const;
+    [[nodiscard]] const renderer::Material* primaryMaterialForObject(
+        const renderer::RenderObject& object) const;
     [[nodiscard]] std::string materialDebugLabel(const renderer::RenderObject& object) const;
     [[nodiscard]] std::string mainCullingDebugLabel(const ObjectDrawDebugInfo& debugInfo) const;
     [[nodiscard]] std::string shadowCullingDebugLabel(const ObjectDrawDebugInfo& debugInfo) const;

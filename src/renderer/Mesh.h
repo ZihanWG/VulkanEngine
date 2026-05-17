@@ -45,6 +45,7 @@ struct GltfMaterialInfo {
     int baseColorTextureIndex = -1;
     int normalTextureIndex = -1;
     int metallicRoughnessTextureIndex = -1;
+    bool fallback = false;
 };
 
 struct GltfNodeMeshInstance {

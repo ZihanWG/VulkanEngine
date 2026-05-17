@@ -14,6 +14,12 @@ class VulkanTexture;
 
 namespace ve::renderer {
 
+enum class MaterialSource {
+    BuiltIn,
+    Gltf,
+    Fallback
+};
+
 struct Material {
     std::string debugName;
     const rhi::VulkanTexture* baseColorTexture = nullptr;
@@ -27,8 +33,12 @@ struct Material {
     float metallic = 0.0f;
     float roughness = 0.5f;
     float multiScatterStrength = 1.0f;
+    MaterialSource source = MaterialSource::BuiltIn;
     bool hasNormalMap = false;
     bool hasMetallicRoughnessMap = false;
+    bool baseColorTextureFallback = false;
+    bool normalTextureFallback = false;
+    bool metallicRoughnessTextureFallback = false;
 };
 
 } // namespace ve::renderer

@@ -32,6 +32,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -419,6 +420,117 @@ std::string_view colorSpaceName(rhi::TextureColorSpace colorSpace)
     }
 
     return "unknown";
+}
+
+const char* materialSourceName(renderer::MaterialSource source)
+{
+    switch (source) {
+    case renderer::MaterialSource::BuiltIn:
+        return "built-in material";
+    case renderer::MaterialSource::Gltf:
+        return "glTF material";
+    case renderer::MaterialSource::Fallback:
+        return "fallback material";
+    }
+
+    return "unknown";
+}
+
+const char* textureDebugSourceName(rhi::TextureDebugSource source)
+{
+    switch (source) {
+    case rhi::TextureDebugSource::Unknown:
+        return "unknown";
+    case rhi::TextureDebugSource::LoadedFromDisk:
+        return "loaded from disk";
+    case rhi::TextureDebugSource::GltfExternalFile:
+        return "imported from glTF external file";
+    case rhi::TextureDebugSource::GltfEmbeddedData:
+        return "imported from glTF embedded/data URI";
+    case rhi::TextureDebugSource::ProceduralFallback:
+        return "procedural fallback";
+    }
+
+    return "unknown";
+}
+
+const char* vkFormatName(VkFormat format)
+{
+    switch (format) {
+    case VK_FORMAT_UNDEFINED:
+        return "VK_FORMAT_UNDEFINED";
+    case VK_FORMAT_R8G8_UNORM:
+        return "VK_FORMAT_R8G8_UNORM";
+    case VK_FORMAT_R8G8B8A8_UNORM:
+        return "VK_FORMAT_R8G8B8A8_UNORM";
+    case VK_FORMAT_R8G8B8A8_SRGB:
+        return "VK_FORMAT_R8G8B8A8_SRGB";
+    case VK_FORMAT_B8G8R8A8_UNORM:
+        return "VK_FORMAT_B8G8R8A8_UNORM";
+    case VK_FORMAT_B8G8R8A8_SRGB:
+        return "VK_FORMAT_B8G8R8A8_SRGB";
+    case VK_FORMAT_R16G16B16A16_SFLOAT:
+        return "VK_FORMAT_R16G16B16A16_SFLOAT";
+    case VK_FORMAT_R32G32B32A32_SFLOAT:
+        return "VK_FORMAT_R32G32B32A32_SFLOAT";
+    case VK_FORMAT_D16_UNORM:
+        return "VK_FORMAT_D16_UNORM";
+    case VK_FORMAT_D32_SFLOAT:
+        return "VK_FORMAT_D32_SFLOAT";
+    default:
+        return "VkFormat(other)";
+    }
+}
+
+const char* imageLayoutName(VkImageLayout layout)
+{
+    switch (layout) {
+    case VK_IMAGE_LAYOUT_UNDEFINED:
+        return "VK_IMAGE_LAYOUT_UNDEFINED";
+    case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
+        return "VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL";
+    case VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL:
+        return "VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL";
+    case VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL:
+        return "VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL";
+    case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+        return "VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL";
+    case VK_IMAGE_LAYOUT_GENERAL:
+        return "VK_IMAGE_LAYOUT_GENERAL";
+    case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR:
+        return "VK_IMAGE_LAYOUT_PRESENT_SRC_KHR";
+    default:
+        return "VkImageLayout(other)";
+    }
+}
+
+std::string formatVec4(const glm::vec4& value)
+{
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(3) << "(" << value.x << ", " << value.y << ", " << value.z << ", "
+           << value.w << ")";
+    return stream.str();
+}
+
+template <typename Handle>
+uint64_t vulkanHandleValue(Handle handle)
+{
+    if constexpr (std::is_pointer_v<Handle>) {
+        return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(handle));
+    } else {
+        return static_cast<uint64_t>(handle);
+    }
+}
+
+std::string descriptorSetDebugString(VkDescriptorSet descriptorSet)
+{
+    if (descriptorSet == VK_NULL_HANDLE) {
+        return "(null)";
+    }
+
+    std::ostringstream stream;
+    stream << "0x" << std::hex << vulkanHandleValue(descriptorSet);
+    return stream.str();
 }
 
 float historyValue(double value)
@@ -1887,6 +1999,7 @@ uint32_t Renderer::allocateRenderObjectDebugId()
 
 void Renderer::createScene()
 {
+    imguiLayer_.clearTexturePreviewDescriptors();
     renderObjects_.clear();
     selectedRenderObjectIndex_ = kInvalidRenderObjectIndex;
     nextRenderObjectDebugId_ = 1;
@@ -2021,6 +2134,13 @@ void Renderer::createCheckerboardTexture()
         try {
             checkerboardTexture_.createFromFile(
                 context_, commandContext_, texturePath, rhi::TextureColorSpace::SRGB, true);
+            checkerboardTexture_.setDebugMetadata(rhi::TextureDebugMetadata{
+                "Checkerboard base color",
+                texturePath.string(),
+                rhi::TextureColorSpace::SRGB,
+                rhi::TextureDebugSource::LoadedFromDisk,
+                false,
+            });
             nameTextureResources(checkerboardTexture_, "BaseColorTexture");
             Logger::info("Loaded base color texture as sRGB: " + texturePath.string());
             return;
@@ -2032,6 +2152,13 @@ void Renderer::createCheckerboardTexture()
     }
 
     checkerboardTexture_.createCheckerboard(context_, commandContext_, 256, 256, rhi::TextureColorSpace::SRGB);
+    checkerboardTexture_.setDebugMetadata(rhi::TextureDebugMetadata{
+        "Procedural checkerboard base color",
+        {},
+        rhi::TextureColorSpace::SRGB,
+        rhi::TextureDebugSource::ProceduralFallback,
+        true,
+    });
     nameTextureResources(checkerboardTexture_, "BaseColorTexture");
     Logger::info("Created procedural checkerboard base color texture as sRGB.");
 }
@@ -2046,6 +2173,13 @@ void Renderer::createNormalTexture()
         try {
             normalMapTexture_.createFromFile(
                 context_, commandContext_, texturePath, rhi::TextureColorSpace::Linear, true);
+            normalMapTexture_.setDebugMetadata(rhi::TextureDebugMetadata{
+                "Checker normal map",
+                texturePath.string(),
+                rhi::TextureColorSpace::Linear,
+                rhi::TextureDebugSource::LoadedFromDisk,
+                false,
+            });
             normalMapAssetLoaded_ = true;
             nameTextureResources(normalMapTexture_, "NormalTexture");
             Logger::info("Loaded normal texture as linear UNORM: " + texturePath.string());
@@ -2075,6 +2209,13 @@ void Renderer::createNormalTexture()
                                           std::span<const uint8_t>(pixels.data(), pixels.size()),
                                           VK_FORMAT_R8G8B8A8_UNORM,
                                           false);
+        normalMapTexture_.setDebugMetadata(rhi::TextureDebugMetadata{
+            "Procedural flat normal map",
+            {},
+            rhi::TextureColorSpace::Linear,
+            rhi::TextureDebugSource::ProceduralFallback,
+            true,
+        });
         nameTextureResources(normalMapTexture_, "NormalTexture");
         Logger::info("Created procedural flat normal texture as linear UNORM.");
     }
@@ -2101,6 +2242,13 @@ void Renderer::createFlatNormalTexture()
                                        std::span<const uint8_t>(pixels.data(), pixels.size()),
                                        VK_FORMAT_R8G8B8A8_UNORM,
                                        false);
+    flatNormalTexture_.setDebugMetadata(rhi::TextureDebugMetadata{
+        "Flat normal fallback",
+        {},
+        rhi::TextureColorSpace::Linear,
+        rhi::TextureDebugSource::ProceduralFallback,
+        true,
+    });
     nameTextureResources(flatNormalTexture_, "FlatNormalTexture");
 }
 
@@ -2114,6 +2262,13 @@ void Renderer::createMetallicRoughnessTexture()
         try {
             metallicRoughnessTexture_.createFromFile(
                 context_, commandContext_, texturePath, rhi::TextureColorSpace::Linear, true);
+            metallicRoughnessTexture_.setDebugMetadata(rhi::TextureDebugMetadata{
+                "Checker metallic-roughness map",
+                texturePath.string(),
+                rhi::TextureColorSpace::Linear,
+                rhi::TextureDebugSource::LoadedFromDisk,
+                false,
+            });
             metallicRoughnessMapAssetLoaded_ = true;
             nameTextureResources(metallicRoughnessTexture_, "MetallicRoughnessTexture");
             Logger::info("Loaded metallic-roughness texture as linear UNORM: " + texturePath.string());
@@ -2144,6 +2299,13 @@ void Renderer::createMetallicRoughnessTexture()
                                                   std::span<const uint8_t>(pixels.data(), pixels.size()),
                                                   VK_FORMAT_R8G8B8A8_UNORM,
                                                   false);
+        metallicRoughnessTexture_.setDebugMetadata(rhi::TextureDebugMetadata{
+            "Procedural neutral metallic-roughness map",
+            {},
+            rhi::TextureColorSpace::Linear,
+            rhi::TextureDebugSource::ProceduralFallback,
+            true,
+        });
         nameTextureResources(metallicRoughnessTexture_, "MetallicRoughnessTexture");
         Logger::info("Created procedural neutral metallic-roughness texture as linear UNORM.");
     }
@@ -2170,6 +2332,13 @@ void Renderer::createNeutralMetallicRoughnessTexture()
                                                      std::span<const uint8_t>(pixels.data(), pixels.size()),
                                                      VK_FORMAT_R8G8B8A8_UNORM,
                                                      false);
+    neutralMetallicRoughnessTexture_.setDebugMetadata(rhi::TextureDebugMetadata{
+        "Neutral metallic-roughness fallback",
+        {},
+        rhi::TextureColorSpace::Linear,
+        rhi::TextureDebugSource::ProceduralFallback,
+        true,
+    });
     nameTextureResources(neutralMetallicRoughnessTexture_, "NeutralMetallicRoughnessTexture");
 }
 
@@ -2319,8 +2488,12 @@ void Renderer::createMaterial()
         material.metallic = metallic;
         material.roughness = roughness;
         material.multiScatterStrength = multiScatterStrength;
+        material.source = renderer::MaterialSource::BuiltIn;
         material.hasNormalMap = normalMapAssetLoaded_;
         material.hasMetallicRoughnessMap = metallicRoughnessMapAssetLoaded_;
+        material.baseColorTextureFallback = checkerboardTexture_.debugMetadata().fallback;
+        material.normalTextureFallback = !normalMapAssetLoaded_;
+        material.metallicRoughnessTextureFallback = !metallicRoughnessMapAssetLoaded_;
         assignBindlessTextureIndices(material);
         createMaterialDescriptorSet(material);
         materialVariants_.push_back(std::move(material));
@@ -2555,6 +2728,15 @@ void Renderer::createImportedGltfTextures(const std::vector<renderer::GltfTextur
                              std::string(colorSpaceName(colorSpace)) + ": " + textureInfo.debugName);
             }
 
+            textures[textureIndex].setDebugMetadata(rhi::TextureDebugMetadata{
+                textureInfo.debugName.empty() ? std::string(debugPrefix) + std::to_string(textureIndex)
+                                              : textureInfo.debugName,
+                textureInfo.path.empty() ? std::string{} : textureInfo.path.string(),
+                colorSpace,
+                textureInfo.embedded ? rhi::TextureDebugSource::GltfEmbeddedData
+                                     : rhi::TextureDebugSource::GltfExternalFile,
+                false,
+            });
             nameTextureResources(textures[textureIndex], std::string(debugPrefix) + std::to_string(textureIndex));
         } catch (const std::exception& error) {
             const std::string textureName =
@@ -2593,6 +2775,7 @@ void Renderer::createImportedGltfMaterials(const std::vector<renderer::GltfMater
     if (materialInfos.empty()) {
         renderer::GltfMaterialInfo defaultMaterial{};
         defaultMaterial.debugName = "Default glTF Material";
+        defaultMaterial.fallback = true;
         defaultMaterialInfos.push_back(std::move(defaultMaterial));
         sourceMaterialInfos = &defaultMaterialInfos;
     }
@@ -2629,9 +2812,14 @@ void Renderer::createImportedGltfMaterials(const std::vector<renderer::GltfMater
         material.metallic = materialInfo.metallic;
         material.roughness = materialInfo.roughness;
         material.multiScatterStrength = 1.0f;
+        material.source =
+            materialInfo.fallback ? renderer::MaterialSource::Fallback : renderer::MaterialSource::Gltf;
         material.hasNormalMap = textureLoaded(materialInfo.normalTextureIndex, importedNormalTextures_);
         material.hasMetallicRoughnessMap =
             textureLoaded(materialInfo.metallicRoughnessTextureIndex, importedMetallicRoughnessTextures_);
+        material.baseColorTextureFallback = !textureLoaded(materialInfo.baseColorTextureIndex, importedBaseColorTextures_);
+        material.normalTextureFallback = !material.hasNormalMap;
+        material.metallicRoughnessTextureFallback = !material.hasMetallicRoughnessMap;
 
         assignBindlessTextureIndices(material);
         createMaterialDescriptorSet(material);
@@ -3462,6 +3650,36 @@ Renderer::ObjectDrawDebugInfo Renderer::objectDrawDebugInfo(uint32_t objectIndex
     return debugInfo;
 }
 
+std::vector<const renderer::Material*> Renderer::materialsForObject(const renderer::RenderObject& object) const
+{
+    std::vector<const renderer::Material*> materials;
+    if (object.mesh && object.mesh->hasSubMeshes()) {
+        const std::span<const renderer::MeshPrimitive> primitives = object.mesh->primitives();
+        materials.reserve(primitives.size());
+        for (const renderer::MeshPrimitive& primitive : primitives) {
+            const renderer::Material* material = resolveMaterial(object, &primitive);
+            if (!material) {
+                continue;
+            }
+            if (std::find(materials.begin(), materials.end(), material) == materials.end()) {
+                materials.push_back(material);
+            }
+        }
+    }
+
+    if (materials.empty() && object.material) {
+        materials.push_back(object.material);
+    }
+
+    return materials;
+}
+
+const renderer::Material* Renderer::primaryMaterialForObject(const renderer::RenderObject& object) const
+{
+    const std::vector<const renderer::Material*> materials = materialsForObject(object);
+    return materials.empty() ? nullptr : materials.front();
+}
+
 std::string Renderer::materialDebugLabel(const renderer::RenderObject& object) const
 {
     if (!object.mesh) {
@@ -3645,6 +3863,8 @@ void Renderer::buildDebugUi()
     if (ImGui::CollapsingHeader("Debug Views", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Checkbox("Show Render Graph panel", &debugUiSettings_.showRenderGraphPanel);
         ImGui::Checkbox("Show Scene Hierarchy panel", &debugUiSettings_.showSceneHierarchyPanel);
+        ImGui::Checkbox("Show Material Inspector", &debugUiSettings_.showMaterialInspectorPanel);
+        ImGui::Checkbox("Show Texture Debug Views", &debugUiSettings_.showTextureDebugPanel);
         ImGui::Checkbox("Show GPU Timing graphs", &debugUiSettings_.showGpuTimingGraphs);
         ImGui::Checkbox("Show Culling stats", &debugUiSettings_.showCullingStats);
         ImGui::Checkbox("Show Exposure graphs", &debugUiSettings_.showExposureGraphs);
@@ -3747,6 +3967,20 @@ void Renderer::buildDebugUi()
     if (debugUiSettings_.showSceneHierarchyPanel) {
         if (ImGui::Begin("Scene Hierarchy", &debugUiSettings_.showSceneHierarchyPanel)) {
             drawSceneHierarchyDebugUi();
+        }
+        ImGui::End();
+    }
+
+    if (debugUiSettings_.showMaterialInspectorPanel) {
+        if (ImGui::Begin("Material Inspector", &debugUiSettings_.showMaterialInspectorPanel)) {
+            drawMaterialInspectorDebugUi();
+        }
+        ImGui::End();
+    }
+
+    if (debugUiSettings_.showTextureDebugPanel) {
+        if (ImGui::Begin("Texture Debug Views", &debugUiSettings_.showTextureDebugPanel)) {
+            drawTextureDebugUi();
         }
         ImGui::End();
     }
@@ -3939,6 +4173,19 @@ void Renderer::drawSelectedRenderObjectInspector(uint32_t objectIndex)
     }
     ImGui::TextWrapped("World bounds: %s", formatAabb(object.worldBounds()).c_str());
 
+    if (ImGui::TreeNodeEx("Material", ImGuiTreeNodeFlags_DefaultOpen)) {
+        const std::vector<const renderer::Material*> materials = materialsForObject(object);
+        if (materials.empty()) {
+            ImGui::TextDisabled("Selected RenderObject has no material.");
+        } else {
+            if (materials.size() > 1) {
+                ImGui::Text("Material count: %zu (showing first resolved material)", materials.size());
+            }
+            drawMaterialDebugSection(materials.front(), true);
+        }
+        ImGui::TreePop();
+    }
+
     if (ImGui::TreeNode("World transform matrix")) {
         for (int row = 0; row < 4; ++row) {
             const std::string matrixRow = formatMatrixRow(model, row);
@@ -3946,6 +4193,312 @@ void Renderer::drawSelectedRenderObjectInspector(uint32_t objectIndex)
         }
         ImGui::TreePop();
     }
+}
+
+void Renderer::drawMaterialInspectorDebugUi()
+{
+    if (selectedRenderObjectIndex_ == kInvalidRenderObjectIndex || selectedRenderObjectIndex_ >= renderObjects_.size()) {
+        ImGui::TextDisabled("No RenderObject selected.");
+        return;
+    }
+
+    const renderer::RenderObject& object = renderObjects_[selectedRenderObjectIndex_];
+    ImGui::Text("RenderObject: %s", object.debugName.empty() ? "(unnamed)" : object.debugName.c_str());
+    ImGui::Text("Object index: %zu", selectedRenderObjectIndex_);
+
+    const std::vector<const renderer::Material*> materials = materialsForObject(object);
+    if (materials.empty()) {
+        ImGui::TextDisabled("Selected RenderObject has no material.");
+        return;
+    }
+
+    if (materials.size() > 1) {
+        ImGui::Text("Resolved materials: %zu (showing first material)", materials.size());
+        constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                          ImGuiTableFlags_SizingStretchProp;
+        if (ImGui::BeginTable("MaterialInspectorMaterialList", 3, flags)) {
+            ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed);
+            ImGui::TableSetupColumn("Material");
+            ImGui::TableSetupColumn("Source");
+            ImGui::TableHeadersRow();
+            for (size_t materialIndex = 0; materialIndex < materials.size(); ++materialIndex) {
+                const renderer::Material* material = materials[materialIndex];
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::Text("%zu", materialIndex);
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(materialNameOrFallback(material));
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(material ? materialSourceName(material->source) : "unknown");
+            }
+            ImGui::EndTable();
+        }
+    }
+
+    drawMaterialDebugSection(materials.front(), true);
+}
+
+void Renderer::drawTextureDebugUi()
+{
+    if (ImGui::CollapsingHeader("Texture Debug Views", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (selectedRenderObjectIndex_ == kInvalidRenderObjectIndex ||
+            selectedRenderObjectIndex_ >= renderObjects_.size()) {
+            ImGui::TextDisabled("No RenderObject selected.");
+        } else {
+            const renderer::RenderObject& object = renderObjects_[selectedRenderObjectIndex_];
+            const renderer::Material* material = primaryMaterialForObject(object);
+            if (!material) {
+                ImGui::TextDisabled("Selected RenderObject has no material textures to inspect.");
+            } else {
+                ImGui::Text("RenderObject: %s", object.debugName.empty() ? "(unnamed)" : object.debugName.c_str());
+                ImGui::Text("Material: %s", materialNameOrFallback(material));
+                drawMaterialTextureSlotDebugUi("Base color",
+                                               "sRGB base color",
+                                               material->baseColorTexture,
+                                               material->baseColorTextureIndex,
+                                               material->baseColorTextureFallback,
+                                               true);
+                drawMaterialTextureSlotDebugUi("Normal",
+                                               "linear normal",
+                                               material->normalTexture,
+                                               material->normalTextureIndex,
+                                               material->normalTextureFallback,
+                                               true);
+                drawMaterialTextureSlotDebugUi("Metallic-roughness",
+                                               "linear metallic-roughness",
+                                               material->metallicRoughnessTexture,
+                                               material->metallicRoughnessTextureIndex,
+                                               material->metallicRoughnessTextureFallback,
+                                               true);
+            }
+        }
+    }
+
+    if (ImGui::CollapsingHeader("Global/Post-process Texture Metadata", ImGuiTreeNodeFlags_DefaultOpen)) {
+        drawGlobalTextureMetadata();
+    }
+}
+
+void Renderer::drawMaterialDebugSection(const renderer::Material* material, bool includeTextureSummary)
+{
+    if (!material) {
+        ImGui::TextDisabled("Material: unavailable");
+        return;
+    }
+
+    const std::string descriptorSetLabel = descriptorSetDebugString(material->descriptorSet);
+    ImGui::Text("Material debug name: %s", materialNameOrFallback(material));
+    ImGui::Text("Source: %s", materialSourceName(material->source));
+    ImGui::Text("baseColorFactor: %s", formatVec4(material->baseColorFactor).c_str());
+    ImGui::Text("metallic: %.3f", material->metallic);
+    ImGui::Text("roughness: %.3f", material->roughness);
+    ImGui::Text("multiScatterStrength: %.3f", material->multiScatterStrength);
+    ImGui::Text("baseColorTextureIndex: %u", material->baseColorTextureIndex);
+    ImGui::Text("normalTextureIndex: %u", material->normalTextureIndex);
+    ImGui::Text("metallicRoughnessTextureIndex: %u", material->metallicRoughnessTextureIndex);
+    ImGui::Text("Bindless material textures: %s", isBindlessMaterialTextureActive() ? "active" : "inactive");
+    ImGui::Text("Legacy material descriptor fallback: %s",
+                isBindlessMaterialTextureActive() ? "inactive" : "active");
+    ImGui::Text("Material descriptor set: %s", descriptorSetLabel.c_str());
+
+    if (!includeTextureSummary) {
+        return;
+    }
+
+    if (ImGui::TreeNode("Material texture slots")) {
+        drawMaterialTextureSlotDebugUi("Base color",
+                                       "sRGB base color",
+                                       material->baseColorTexture,
+                                       material->baseColorTextureIndex,
+                                       material->baseColorTextureFallback,
+                                       false);
+        drawMaterialTextureSlotDebugUi("Normal",
+                                       "linear normal",
+                                       material->normalTexture,
+                                       material->normalTextureIndex,
+                                       material->normalTextureFallback,
+                                       false);
+        drawMaterialTextureSlotDebugUi("Metallic-roughness",
+                                       "linear metallic-roughness",
+                                       material->metallicRoughnessTexture,
+                                       material->metallicRoughnessTextureIndex,
+                                       material->metallicRoughnessTextureFallback,
+                                       false);
+        ImGui::TreePop();
+    }
+}
+
+void Renderer::drawMaterialTextureSlotDebugUi(const char* slotName,
+                                              const char* semantic,
+                                              const rhi::VulkanTexture* texture,
+                                              uint32_t bindlessIndex,
+                                              bool fallbackUsed,
+                                              bool showPreview)
+{
+    if (!ImGui::TreeNode(slotName)) {
+        return;
+    }
+
+    if (!texture || !texture->valid()) {
+        ImGui::TextDisabled("Texture: unavailable");
+        ImGui::TreePop();
+        return;
+    }
+
+    const rhi::TextureDebugMetadata& metadata = texture->debugMetadata();
+    const std::string debugName = metadata.debugName.empty() ? "(unnamed texture)" : metadata.debugName;
+    const bool effectiveFallback = fallbackUsed || metadata.fallback;
+
+    if (showPreview) {
+        drawTexturePreview(*texture, 112.0f);
+    }
+
+    ImGui::Text("Texture debug name: %s", debugName.c_str());
+    ImGui::Text("Bindless index: %u", bindlessIndex);
+    ImGui::Text("Dimensions: %u x %u", texture->width(), texture->height());
+    ImGui::Text("Mip levels: %u", texture->mipLevels());
+    ImGui::Text("Vulkan format: %s", vkFormatName(texture->format()));
+    ImGui::Text("Color space / semantic: %s", semantic);
+    ImGui::Text("Tracked color space: %s", std::string(colorSpaceName(metadata.colorSpace)).c_str());
+    ImGui::Text("Source: %s", textureDebugSourceName(metadata.source));
+    if (!metadata.sourcePath.empty()) {
+        ImGui::TextWrapped("Path: %s", metadata.sourcePath.c_str());
+    }
+    ImGui::Text("Fallback texture used: %s", effectiveFallback ? "yes" : "no");
+    ImGui::TreePop();
+}
+
+void Renderer::drawTexturePreview(const rhi::VulkanTexture& texture, float size)
+{
+    const VkDescriptorSet descriptorSet =
+        imguiLayer_.texturePreviewDescriptor(texture.imageView(), texture.sampler(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    if (descriptorSet == VK_NULL_HANDLE) {
+        ImGui::TextDisabled("Preview unavailable.");
+        return;
+    }
+
+    const float width = static_cast<float>(std::max(texture.width(), 1U));
+    const float height = static_cast<float>(std::max(texture.height(), 1U));
+    ImVec2 imageSize{size, size};
+    if (width > height) {
+        imageSize.y = size * (height / width);
+    } else if (height > width) {
+        imageSize.x = size * (width / height);
+    }
+
+    ImGui::Image((ImTextureID)descriptorSet, imageSize);
+}
+
+void Renderer::drawGlobalTextureMetadata()
+{
+    constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                      ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp;
+    if (!ImGui::BeginTable("GlobalTextureMetadata", 6, flags)) {
+        return;
+    }
+
+    ImGui::TableSetupColumn("Resource");
+    ImGui::TableSetupColumn("Type");
+    ImGui::TableSetupColumn("Dimensions");
+    ImGui::TableSetupColumn("Mip/layers");
+    ImGui::TableSetupColumn("Format");
+    ImGui::TableSetupColumn("Layout / source");
+    ImGui::TableHeadersRow();
+
+    const auto addRow = [](const char* name,
+                           const char* type,
+                           const std::string& dimensions,
+                           const std::string& mipLayers,
+                           VkFormat format,
+                           const std::string& layoutOrSource) {
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(name);
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(type);
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(dimensions.c_str());
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(mipLayers.c_str());
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(vkFormatName(format));
+        ImGui::TableNextColumn();
+        ImGui::TextWrapped("%s", layoutOrSource.c_str());
+    };
+
+    if (shadowMap_.valid()) {
+        const VkExtent2D extent = shadowMap_.extent();
+        addRow("Cascaded shadow map array",
+               "depth 2D array",
+               std::to_string(extent.width) + " x " + std::to_string(extent.height),
+               std::to_string(shadowMap_.layerCount()) + " layers",
+               shadowMap_.format(),
+               imageLayoutName(shadowMap_.layout()));
+    }
+    if (diffuseIrradianceMap_.valid()) {
+        addRow("Diffuse irradiance cubemap",
+               "cubemap",
+               std::to_string(diffuseIrradianceMap_.faceSize()) + " x " +
+                   std::to_string(diffuseIrradianceMap_.faceSize()) + " x 6",
+               std::to_string(diffuseIrradianceMap_.mipLevels()) + " mips",
+               diffuseIrradianceMap_.format(),
+               hdrEnvironmentLoaded_ ? "HDR-derived" : "procedural fallback");
+    }
+    if (prefilteredEnvironmentMap_.valid()) {
+        addRow("Prefiltered specular cubemap",
+               "cubemap",
+               std::to_string(prefilteredEnvironmentMap_.faceSize()) + " x " +
+                   std::to_string(prefilteredEnvironmentMap_.faceSize()) + " x 6",
+               std::to_string(prefilteredEnvironmentMap_.mipLevels()) + " mips",
+               prefilteredEnvironmentMap_.format(),
+               hdrEnvironmentLoaded_ ? "HDR-derived" : "procedural fallback");
+    }
+    if (brdfLutTexture_.valid()) {
+        addRow("BRDF LUT",
+               "2D LUT",
+               std::to_string(brdfLutTexture_.width()) + " x " + std::to_string(brdfLutTexture_.height()),
+               "1 mip",
+               brdfLutTexture_.format(),
+               imageLayoutName(brdfLutTexture_.layout()));
+    }
+    if (sceneColor_.image() != VK_NULL_HANDLE) {
+        const VkExtent3D extent = sceneColor_.extent();
+        addRow("SceneColor",
+               "HDR render target",
+               std::to_string(extent.width) + " x " + std::to_string(extent.height),
+               "1 mip",
+               sceneColor_.format(),
+               imageLayoutName(sceneColorLayout_));
+    }
+    if (bloomExtract_.image() != VK_NULL_HANDLE) {
+        const VkExtent3D extent = bloomExtract_.extent();
+        addRow("BloomExtract",
+               "post-process render target",
+               std::to_string(extent.width) + " x " + std::to_string(extent.height),
+               "1 mip",
+               bloomExtract_.format(),
+               imageLayoutName(bloomExtractLayout_));
+    }
+    if (bloomPing_.image() != VK_NULL_HANDLE) {
+        const VkExtent3D extent = bloomPing_.extent();
+        addRow("BloomPing",
+               "post-process render target",
+               std::to_string(extent.width) + " x " + std::to_string(extent.height),
+               "1 mip",
+               bloomPing_.format(),
+               imageLayoutName(bloomPingLayout_));
+    }
+    if (bloomPong_.image() != VK_NULL_HANDLE) {
+        const VkExtent3D extent = bloomPong_.extent();
+        addRow("BloomPong",
+               "post-process render target",
+               std::to_string(extent.width) + " x " + std::to_string(extent.height),
+               "1 mip",
+               bloomPong_.format(),
+               imageLayoutName(bloomPongLayout_));
+    }
+
+    ImGui::EndTable();
 }
 
 void Renderer::drawGpuTimingDebugUi()

@@ -224,6 +224,8 @@ void fromJson(const Json& json, RuntimeSettings& settings)
     if (const Json* debugUi = objectMember(json, "debugUi")) {
         readBool(*debugUi, "showRenderGraphPanel", settings.debugUi.showRenderGraphPanel);
         readBool(*debugUi, "showSceneHierarchyPanel", settings.debugUi.showSceneHierarchyPanel);
+        readBool(*debugUi, "showMaterialInspectorPanel", settings.debugUi.showMaterialInspectorPanel);
+        readBool(*debugUi, "showTextureDebugPanel", settings.debugUi.showTextureDebugPanel);
         readBool(*debugUi, "showGpuTimingGraphs", settings.debugUi.showGpuTimingGraphs);
         readBool(*debugUi, "showCullingStats", settings.debugUi.showCullingStats);
         readBool(*debugUi, "showExposureGraphs", settings.debugUi.showExposureGraphs);
@@ -266,6 +268,8 @@ Json toJson(const RuntimeSettings& settings)
         {"debugUi",
          Json{{"showRenderGraphPanel", settings.debugUi.showRenderGraphPanel},
               {"showSceneHierarchyPanel", settings.debugUi.showSceneHierarchyPanel},
+              {"showMaterialInspectorPanel", settings.debugUi.showMaterialInspectorPanel},
+              {"showTextureDebugPanel", settings.debugUi.showTextureDebugPanel},
               {"showGpuTimingGraphs", settings.debugUi.showGpuTimingGraphs},
               {"showCullingStats", settings.debugUi.showCullingStats},
               {"showExposureGraphs", settings.debugUi.showExposureGraphs}}}};

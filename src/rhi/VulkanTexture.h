@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <filesystem>
 #include <span>
+#include <string>
+#include <utility>
 
 namespace ve::rhi {
 
@@ -15,6 +17,22 @@ class VulkanContext;
 enum class TextureColorSpace {
     Linear,
     SRGB
+};
+
+enum class TextureDebugSource {
+    Unknown,
+    LoadedFromDisk,
+    GltfExternalFile,
+    GltfEmbeddedData,
+    ProceduralFallback
+};
+
+struct TextureDebugMetadata {
+    std::string debugName;
+    std::string sourcePath;
+    TextureColorSpace colorSpace = TextureColorSpace::Linear;
+    TextureDebugSource source = TextureDebugSource::Unknown;
+    bool fallback = false;
 };
 
 [[nodiscard]] VkFormat rgba8FormatForColorSpace(TextureColorSpace colorSpace);
@@ -77,7 +95,10 @@ public:
     [[nodiscard]] uint32_t height() const { return height_; }
     [[nodiscard]] uint32_t mipLevels() const { return mipLevels_; }
     [[nodiscard]] VkFormat format() const { return format_; }
+    [[nodiscard]] const TextureDebugMetadata& debugMetadata() const { return debugMetadata_; }
     [[nodiscard]] bool valid() const { return image_ != VK_NULL_HANDLE; }
+
+    void setDebugMetadata(TextureDebugMetadata metadata) { debugMetadata_ = std::move(metadata); }
 
 private:
     void uploadPixels(
@@ -103,6 +124,7 @@ private:
     uint32_t height_ = 0;
     uint32_t mipLevels_ = 0;
     VkFormat format_ = VK_FORMAT_UNDEFINED;
+    TextureDebugMetadata debugMetadata_{};
 };
 
 } // namespace ve::rhi

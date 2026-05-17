@@ -453,6 +453,7 @@ bool copyEncodedImageData(tinygltf::Image* image,
 {
     GltfMaterialInfo material{};
     material.debugName = std::move(debugName);
+    material.fallback = true;
     return material;
 }
 
