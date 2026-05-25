@@ -42,6 +42,10 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - `ImGuiLayer` owns the Dear ImGui context, SDL3 backend, Vulkan backend, and ImGui descriptor pool.
 - `RenderGraph` is a small manual frame graph for the current `CSMShadowPass`, `MainHDRPass`, bloom, `LuminancePass`, `HistogramExposurePass`, `CompositePass`, and `ImGuiPass` resource transitions and debug pass metadata.
 
+## Engine Upgrade Audit
+
+Phase 0 of the renderer-to-engine upgrade is documented in `docs/engine_upgrade_audit.md`. It records the current architecture, frame flow, render graph, scene/material/glTF paths, debug UI, culling, post-processing, CSM shadows, profiling foundation, and risk areas before feature work continues.
+
 ## One-Frame Rendering Flow
 
 1. Wait for the current frame fence, read previous completed luminance and histogram results when available, update smoothed exposure for following frames without a same-frame GPU/CPU stall, and acquire the next swapchain image.
