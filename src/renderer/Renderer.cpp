@@ -911,8 +911,14 @@ void Renderer::requestPortfolioScreenshot()
         return;
     }
 
+    if (!portfolioCaptureMode_) {
+        setPortfolioCaptureMode(true);
+    } else {
+        applyPortfolioCaptureSettings();
+    }
+
     portfolioScreenshotRequested_ = true;
-    portfolioScreenshotStatus_ = "Screenshot capture queued for the next rendered frame.";
+    portfolioScreenshotStatus_ = "Portfolio showcase screenshot queued for the next rendered frame.";
 }
 
 bool Renderer::hasPendingPortfolioScreenshotReadback() const
@@ -1119,10 +1125,10 @@ void Renderer::setPortfolioCaptureMode(bool enabled)
 
 void Renderer::applyPortfolioCaptureSettings()
 {
-    camera_.position = {1.62f, 0.78f, 2.58f};
-    camera_.target = {0.02f, -0.03f, 0.12f};
+    camera_.position = {1.75f, 0.76f, 2.78f};
+    camera_.target = {0.00f, -0.08f, 0.16f};
     camera_.up = {0.0f, 1.0f, 0.0f};
-    camera_.verticalFovRadians = glm::radians(42.0f);
+    camera_.verticalFovRadians = glm::radians(44.0f);
     camera_.nearPlane = 0.1f;
     camera_.farPlane = 100.0f;
 
@@ -2518,10 +2524,10 @@ void Renderer::createScene()
                 true,
                 false,
                 renderer::RenderObjectSourceType::PortfolioShowcase);
-        addPortfolioSphere("Portfolio Hero Reflective",
+        addPortfolioSphere("Portfolio Hero Rough Ceramic",
                            &materialVariants_.at(9),
-                           {0.0f, 0.09f, 0.06f},
-                           {1.22f, 1.22f, 1.22f});
+                           {0.0f, -0.02f, 0.08f},
+                           {0.92f, 0.92f, 0.92f});
         addPortfolioSphere("Portfolio Matte Gray",
                            &materialVariants_.at(5),
                            {-1.05f, -0.20f, 0.16f},
@@ -2534,7 +2540,7 @@ void Renderer::createScene()
                            &materialVariants_.at(7),
                            {1.22f, -0.28f, 0.34f},
                            {0.48f, 0.48f, 0.48f});
-        addPortfolioSphere("Portfolio Polished Metal",
+        addPortfolioSphere("Portfolio Medium Metal",
                            &materialVariants_.at(8),
                            {1.02f, 0.02f, -0.18f},
                            {0.60f, 0.60f, 0.60f});
@@ -3075,17 +3081,17 @@ void Renderer::createMaterial()
     addPortfolioMaterial(
         "Portfolio_MatteGray", &portfolioBaseColorTexture_, {0.66f, 0.66f, 0.62f, 1.0f}, 0.0f, 0.92f, 0.0f);
     addPortfolioMaterial(
-        "Portfolio_GlossyBlue", &portfolioBaseColorTexture_, {0.18f, 0.43f, 0.88f, 1.0f}, 0.0f, 0.22f, 0.2f);
+        "Portfolio_GlossyBlue", &portfolioBaseColorTexture_, {0.18f, 0.43f, 0.88f, 1.0f}, 0.0f, 0.30f, 0.2f);
     addPortfolioMaterial(
-        "Portfolio_RoughMetal", &portfolioBaseColorTexture_, {0.76f, 0.72f, 0.65f, 1.0f}, 1.0f, 0.58f, 0.85f);
+        "Portfolio_RoughMetal", &portfolioBaseColorTexture_, {0.76f, 0.72f, 0.65f, 1.0f}, 1.0f, 0.62f, 0.75f);
     addPortfolioMaterial(
-        "Portfolio_PolishedMetal", &portfolioBaseColorTexture_, {0.82f, 0.84f, 0.84f, 1.0f}, 1.0f, 0.13f, 0.55f);
-    addPortfolioMaterial("Portfolio_HeroReflective",
+        "Portfolio_MediumMetal", &portfolioBaseColorTexture_, {0.82f, 0.84f, 0.84f, 1.0f}, 1.0f, 0.36f, 0.45f);
+    addPortfolioMaterial("Portfolio_HeroCeramic",
                          &portfolioBaseColorTexture_,
-                         {0.86f, 0.90f, 0.88f, 1.0f},
-                         1.0f,
-                         0.18f,
-                         0.65f);
+                         {0.66f, 0.72f, 0.76f, 1.0f},
+                         0.0f,
+                         0.58f,
+                         0.05f);
     addPortfolioMaterial(
         "Portfolio_Backdrop", &portfolioBackdropTexture_, {1.0f, 1.0f, 1.0f, 1.0f}, 0.0f, 0.94f, 0.0f);
 

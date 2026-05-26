@@ -5,7 +5,7 @@ This workflow exports a clean PNG suitable for a portfolio page without adding a
 ## Controls
 
 - `F11`: toggles Portfolio Capture Mode.
-- `F12`: captures the next rendered frame.
+- `F12`: enables the portfolio showcase if needed, then captures the next rendered frame.
 - ImGui: `VulkanEngine Debug` -> `Portfolio Capture` -> `Load Portfolio Showcase Scene`, `Portfolio Capture Mode`, and `Capture Portfolio Screenshot`.
 
 Screenshots are written to:
@@ -20,17 +20,17 @@ The directory is created automatically.
 While enabled, the renderer applies a stable showcase setup:
 
 - three-quarter camera angle
-- 42 degree vertical FOV
+- 44 degree vertical FOV
 - ACES tone mapping
 - manual exposure
 - subtle bloom enabled
 - CSM texel snapping enabled
 - cascade debug colors disabled
 - a portfolio-only neutral studio floor and subtle gradient backdrop
-- a large hero reflective sphere with smaller material samples arranged around it
-- procedural UV-sphere material samples for matte gray, glossy blue dielectric, rough metal, and polished metal looks
+- a smaller opaque rough ceramic hero sphere with smaller material samples arranged around it
+- procedural UV-sphere material samples for matte gray, glossy blue dielectric, rough metal, and medium metal looks
 
-The portfolio-only scene objects are skipped by draw-item construction while the mode is disabled, so normal rendering remains unchanged. The checkerboard cube/glTF test objects stay in the regular debug scene and are hidden only while Portfolio Capture Mode is active.
+The portfolio-only scene objects are skipped by draw-item construction while the mode is disabled, so normal rendering remains unchanged. The checkerboard cube/glTF test objects stay in the regular debug scene and are hidden only while Portfolio Capture Mode is active. A screenshot request automatically enables Portfolio Capture Mode before queuing the readback so `F12` cannot accidentally export the debug fallback pyramid.
 
 ## Capture Point
 
@@ -52,7 +52,7 @@ The PNG excludes:
 
 ## Reflection Scope
 
-Current reflective materials use environment-based specular IBL. Smooth metallic objects sample the prefiltered environment cubemap through the split-sum BRDF path; they do not reflect nearby scene objects because the renderer does not currently implement screen-space reflections, planar reflections, ray traced reflections, or local reflection probes.
+Current reflective materials use environment-based specular IBL. Smooth metallic objects sample the prefiltered environment cubemap through the split-sum BRDF path; they do not reflect nearby scene objects because the renderer does not currently implement screen-space reflections, planar reflections, ray traced reflections, or local reflection probes. The portfolio showcase uses opaque PBR materials only; it does not implement true glass transmission or screen-space refraction.
 
 ## Readback Design
 

@@ -55,12 +55,12 @@ struct StbiFloatDeleter {
 using StbiFloatPixels = std::unique_ptr<float, StbiFloatDeleter>;
 
 constexpr std::array<FaceGradient, kCubeFaceCount> kProceduralFaceGradients = {{
-    {{{82, 110, 142}}, {{150, 191, 226}}},
-    {{{72, 105, 126}}, {{128, 168, 203}}},
-    {{{106, 153, 211}}, {{190, 223, 247}}},
-    {{{58, 53, 48}}, {{137, 119, 91}}},
-    {{{76, 108, 150}}, {{154, 198, 235}}},
-    {{{48, 61, 89}}, {{111, 138, 181}}},
+    {{{76, 92, 108}}, {{126, 150, 172}}},
+    {{{72, 88, 102}}, {{116, 138, 158}}},
+    {{{112, 136, 160}}, {{168, 190, 210}}},
+    {{{54, 62, 70}}, {{84, 94, 104}}},
+    {{{78, 94, 112}}, {{132, 156, 178}}},
+    {{{58, 70, 86}}, {{104, 124, 148}}},
 }};
 
 constexpr std::array<Vec3, kCubeFaceCount> kCubeFaceDirections = {{
