@@ -18,7 +18,7 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - Auto exposure from HDR scene luminance builds log-average and histogram readback data; histogram percentile clipping is the preferred mode, with log-average/manual fallback.
 - Manual exposure remains available as the fallback path.
 - Reinhard/ACES tone mapping is applied in the final composite pass before swapchain output.
-- Dear ImGui debug overlay exposes runtime render settings, persistent JSON settings save/load/reset controls, render graph visualization, GPU profiler/frame timeline history, culling/exposure history plots, read-only scene/material inspection, and render-target/CSM cascade debug views.
+- Dear ImGui debug overlay exposes runtime render settings, persistent JSON settings save/load/reset controls, render graph visualization, GPU profiler/frame timeline history, culling/exposure history plots, editable scene hierarchy/transform controls, material inspection, and render-target/CSM cascade debug views.
 - Compact Kulla-Conty-style multi-scattering compensation for PBR response.
 - PCF-filtered cascaded directional shadow map with basic texel snapping, optional cascade debug tinting, per-cascade GPU shadow-caster culling, and an indirect shadow draw path.
 - Descriptor indexing path for bindless material texture arrays, with a legacy descriptor-set fallback.
@@ -40,6 +40,7 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - `VulkanBuffer`, `VulkanImage`, `VulkanTexture`, `VulkanEnvironmentMap`, `VulkanBrdfLut`, and `VulkanShadowMap` wrap Vulkan resource lifetime.
 - `Mesh`, `Material`, `RenderObject`, `DrawItem`, `Transform`, and `Camera` provide renderer-side scene abstractions without ECS.
 - `RuntimeSettings` stores the debug UI's persistent render settings and serializes them as local JSON under `config/`.
+- The editable scene workflow stores runtime object IDs, names, visibility, transforms, camera settings, and directional-light settings as JSON under `assets/scenes/`.
 - `ImGuiLayer` owns the Dear ImGui context, SDL3 backend, Vulkan backend, and ImGui descriptor pool.
 - `RenderGraph` is a small manual frame graph for the current `CSMShadowPass`, `MainHDRPass`, bloom, `LuminancePass`, `HistogramExposurePass`, `CompositePass`, and `ImGuiPass` resource transitions and debug pass metadata.
 - `GpuProfiler` owns one timestamp query pool per frame-in-flight slot, records named GPU scopes, and exposes completed frame results to the ImGui profiler panel without adding a new frame-loop wait.
@@ -78,6 +79,16 @@ Reflection note: current reflections are environment-based specular IBL only. Th
 ![Portfolio screenshot](screenshots/vulkan_engine_portfolio_latest.png)
 
 More details are in `docs/portfolio_capture.md`.
+
+## Editable Scene Workflow
+
+The Scene Hierarchy panel now supports a minimal editor-like workflow. It lists runtime `RenderObject` entries by stable object ID and name, lets the selected object edit position, Euler rotation, scale, and visibility, and shows mesh/material/draw-item debug metadata beside the editable fields.
+
+Camera controls expose position, target, up vector, FOV, near plane, far plane, and reset buttons for the default and portfolio camera presets. Directional-light controls expose direction, color, intensity, and reset-to-default. Portfolio capture mode keeps its own camera and lighting presets; F12 and the portfolio showcase button reapply those presets.
+
+Use `Save Scene` and `Load Scene` in the Scene Hierarchy panel to write/read `assets/scenes/default.scene.json`. Save/load restores camera, directional-light settings, object names, visibility, and transforms for the current runtime object list. Mesh and material references are serialized as debug metadata only and are not rebound on load yet. ImGuizmo is deferred because it is not currently vendored in the project.
+
+More details are in `docs/scene_editing.md`.
 
 ## One-Frame Rendering Flow
 

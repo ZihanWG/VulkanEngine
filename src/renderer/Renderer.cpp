@@ -8,6 +8,7 @@
 
 #include <SDL3/SDL.h>
 #include <imgui.h>
+#include <json.hpp>
 
 #include <algorithm>
 #include <array>
@@ -18,12 +19,16 @@
 #include <ctime>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <glm/common.hpp>
 #include <glm/ext/matrix_clip_space.hpp>
 #include <glm/ext/matrix_transform.hpp>
 #include <glm/geometric.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/matrix_inverse.hpp>
+#define GLM_ENABLE_EXPERIMENTAL
+#include <glm/gtx/matrix_decompose.hpp>
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
@@ -35,6 +40,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -42,6 +48,8 @@
 namespace ve {
 
 namespace {
+
+using Json = nlohmann::json;
 
 struct ObjectFrameData {
     glm::mat4 mvp{1.0f};
@@ -550,6 +558,278 @@ std::filesystem::path portfolioScreenshotDirectory()
     return projectRootPath() / "screenshots";
 }
 
+std::filesystem::path defaultSceneDocumentPath()
+{
+    return assetPath("scenes/default.scene.json");
+}
+
+renderer::Camera defaultCameraPreset()
+{
+    renderer::Camera camera{};
+    camera.position = {0.0f, 0.35f, 5.5f};
+    camera.target = {0.0f, 0.1f, 0.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.verticalFovRadians = glm::radians(60.0f);
+    camera.nearPlane = 0.1f;
+    camera.farPlane = 100.0f;
+    return camera;
+}
+
+renderer::Camera portfolioCameraPreset()
+{
+    renderer::Camera camera{};
+    camera.position = {1.82f, 0.78f, 2.92f};
+    camera.target = {0.00f, -0.08f, 0.18f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.verticalFovRadians = glm::radians(45.0f);
+    camera.nearPlane = 0.1f;
+    camera.farPlane = 100.0f;
+    return camera;
+}
+
+uint32_t renderObjectEditorId(const renderer::RenderObject& object)
+{
+    return object.sceneObjectId != 0 ? object.sceneObjectId : object.debugId;
+}
+
+bool isFiniteVec3(const glm::vec3& value)
+{
+    return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+}
+
+glm::vec3 normalizedOrFallback(const glm::vec3& value, const glm::vec3& fallback)
+{
+    if (!isFiniteVec3(value)) {
+        return fallback;
+    }
+
+    const float length = glm::length(value);
+    if (length <= 0.0001f) {
+        return fallback;
+    }
+
+    return value / length;
+}
+
+Json vec3ToJson(const glm::vec3& value)
+{
+    return Json::array({value.x, value.y, value.z});
+}
+
+Json mat4ToJson(const glm::mat4& matrix)
+{
+    Json values = Json::array();
+    for (int column = 0; column < 4; ++column) {
+        for (int row = 0; row < 4; ++row) {
+            values.push_back(matrix[column][row]);
+        }
+    }
+    return values;
+}
+
+const Json* jsonObjectMember(const Json& object, const char* name)
+{
+    const auto it = object.find(name);
+    if (it == object.end()) {
+        return nullptr;
+    }
+    if (!it->is_object()) {
+        throw std::runtime_error(std::string("Expected object member '") + name + "'.");
+    }
+    return &(*it);
+}
+
+bool readJsonBool(const Json& object, const char* name, bool& value)
+{
+    const auto it = object.find(name);
+    if (it == object.end()) {
+        return false;
+    }
+    if (!it->is_boolean()) {
+        throw std::runtime_error(std::string("Expected boolean member '") + name + "'.");
+    }
+    value = it->get<bool>();
+    return true;
+}
+
+bool readJsonFloat(const Json& object, const char* name, float& value)
+{
+    const auto it = object.find(name);
+    if (it == object.end()) {
+        return false;
+    }
+    if (!it->is_number()) {
+        throw std::runtime_error(std::string("Expected numeric member '") + name + "'.");
+    }
+    value = it->get<float>();
+    return true;
+}
+
+bool readJsonString(const Json& object, const char* name, std::string& value)
+{
+    const auto it = object.find(name);
+    if (it == object.end()) {
+        return false;
+    }
+    if (!it->is_string()) {
+        throw std::runtime_error(std::string("Expected string member '") + name + "'.");
+    }
+    value = it->get<std::string>();
+    return true;
+}
+
+bool readJsonUint32(const Json& object, const char* name, uint32_t& value)
+{
+    const auto it = object.find(name);
+    if (it == object.end()) {
+        return false;
+    }
+    if (!it->is_number_integer() && !it->is_number_unsigned()) {
+        throw std::runtime_error(std::string("Expected integer member '") + name + "'.");
+    }
+
+    uint64_t parsed = 0;
+    if (it->is_number_unsigned()) {
+        parsed = it->get<uint64_t>();
+    } else {
+        const int64_t signedParsed = it->get<int64_t>();
+        if (signedParsed < 0) {
+            throw std::runtime_error(std::string("Expected non-negative integer member '") + name + "'.");
+        }
+        parsed = static_cast<uint64_t>(signedParsed);
+    }
+    if (parsed > std::numeric_limits<uint32_t>::max()) {
+        throw std::runtime_error(std::string("Integer member '") + name + "' exceeds uint32 range.");
+    }
+    value = static_cast<uint32_t>(parsed);
+    return true;
+}
+
+bool readJsonVec3Value(const Json& value, const char* name, glm::vec3& out)
+{
+    if (!value.is_array() || value.size() != 3) {
+        throw std::runtime_error(std::string("Expected vec3 array member '") + name + "'.");
+    }
+    for (const Json& component : value) {
+        if (!component.is_number()) {
+            throw std::runtime_error(std::string("Expected numeric vec3 member '") + name + "'.");
+        }
+    }
+
+    out = {value[0].get<float>(), value[1].get<float>(), value[2].get<float>()};
+    return true;
+}
+
+bool readJsonVec3(const Json& object, const char* name, glm::vec3& value)
+{
+    const auto it = object.find(name);
+    if (it == object.end()) {
+        return false;
+    }
+    return readJsonVec3Value(*it, name, value);
+}
+
+bool readJsonMat4(const Json& object, const char* name, glm::mat4& matrix)
+{
+    const auto it = object.find(name);
+    if (it == object.end()) {
+        return false;
+    }
+    if (!it->is_array() || it->size() != 16) {
+        throw std::runtime_error(std::string("Expected mat4 array member '") + name + "'.");
+    }
+
+    glm::mat4 parsed{1.0f};
+    size_t valueIndex = 0;
+    for (int column = 0; column < 4; ++column) {
+        for (int row = 0; row < 4; ++row) {
+            const Json& component = (*it)[valueIndex++];
+            if (!component.is_number()) {
+                throw std::runtime_error(std::string("Expected numeric mat4 member '") + name + "'.");
+            }
+            parsed[column][row] = component.get<float>();
+        }
+    }
+
+    matrix = parsed;
+    return true;
+}
+
+struct TransformComponents {
+    glm::vec3 position{0.0f};
+    glm::vec3 rotationRadians{0.0f};
+    glm::vec3 scale{1.0f};
+    bool valid = false;
+};
+
+TransformComponents editableTransformComponents(const renderer::Transform& transform)
+{
+    if (!transform.useMatrixOverride) {
+        return {transform.position, transform.rotationRadians, transform.scale, true};
+    }
+
+    glm::vec3 scale{1.0f};
+    glm::quat orientation{1.0f, 0.0f, 0.0f, 0.0f};
+    glm::vec3 translation{0.0f};
+    glm::vec3 skew{0.0f};
+    glm::vec4 perspective{0.0f};
+    const bool decomposed = glm::decompose(transform.matrixOverride, scale, orientation, translation, skew, perspective);
+    if (!decomposed || !isFiniteVec3(translation) || !isFiniteVec3(scale)) {
+        return {};
+    }
+
+    orientation = glm::normalize(orientation);
+    const glm::vec3 rotationRadians = glm::eulerAngles(orientation);
+    if (!isFiniteVec3(rotationRadians)) {
+        return {};
+    }
+
+    return {translation, rotationRadians, scale, true};
+}
+
+bool convertMatrixOverrideToEditableTrs(renderer::Transform& transform)
+{
+    if (!transform.useMatrixOverride) {
+        return true;
+    }
+
+    const TransformComponents components = editableTransformComponents(transform);
+    if (!components.valid) {
+        return false;
+    }
+
+    transform.position = components.position;
+    transform.rotationRadians = components.rotationRadians;
+    transform.scale = components.scale;
+    transform.matrixOverride = glm::mat4{1.0f};
+    transform.useMatrixOverride = false;
+    return true;
+}
+
+Json transformToJson(const renderer::Transform& transform)
+{
+    const TransformComponents components = editableTransformComponents(transform);
+    Json json = Json{{"mode", transform.useMatrixOverride ? "matrix" : "trs"}};
+
+    if (components.valid) {
+        json["position"] = vec3ToJson(components.position);
+        json["rotationDegrees"] = vec3ToJson(glm::degrees(components.rotationRadians));
+        json["scale"] = vec3ToJson(components.scale);
+    }
+    if (transform.useMatrixOverride) {
+        json["matrix"] = mat4ToJson(transform.matrixOverride);
+    }
+
+    return json;
+}
+
+std::string pointerString(const void* pointer)
+{
+    std::ostringstream stream;
+    stream << pointer;
+    return stream.str();
+}
+
 std::string portfolioTimestamp()
 {
     const std::time_t now = std::time(nullptr);
@@ -739,6 +1019,7 @@ size_t Renderer::DebugHistory::copyChronological(std::array<float, kDebugHistory
 Renderer::Renderer(Window& window) : window_(window)
 {
     runtimeSettingsPath_ = defaultRuntimeSettingsPath();
+    sceneDocumentPath_ = defaultSceneDocumentPath();
     loadRuntimeSettingsAtStartup();
 
     context_.initialize(window_);
@@ -1168,12 +1449,9 @@ void Renderer::setPortfolioCaptureMode(bool enabled)
 
 void Renderer::applyPortfolioCaptureSettings()
 {
-    camera_.position = {1.82f, 0.78f, 2.92f};
-    camera_.target = {0.00f, -0.08f, 0.18f};
-    camera_.up = {0.0f, 1.0f, 0.0f};
-    camera_.verticalFovRadians = glm::radians(45.0f);
-    camera_.nearPlane = 0.1f;
-    camera_.farPlane = 100.0f;
+    camera_ = portfolioCameraPreset();
+    csmSettings_.nearPlane = camera_.nearPlane;
+    csmSettings_.farPlane = camera_.farPlane;
 
     toneMappingSettings_.operatorType = 1;
     toneMappingSettings_.enableAutoExposure = false;
@@ -2456,8 +2734,9 @@ void Renderer::createScene()
     createEnvironmentMap();
     createMaterial();
 
-    camera_.position = {0.0f, 0.35f, 5.5f};
-    camera_.target = {0.0f, 0.1f, 0.0f};
+    camera_ = defaultCameraPreset();
+    csmSettings_.nearPlane = camera_.nearPlane;
+    csmSettings_.farPlane = camera_.farPlane;
 
     const auto addCube = [this](std::string debugName,
                                 const renderer::Material* material,
@@ -2471,6 +2750,7 @@ void Renderer::createScene()
                                     renderer::RenderObjectSourceType::BuiltInFallbackCube) {
         renderer::RenderObject cube{};
         cube.debugId = allocateRenderObjectDebugId();
+        cube.sceneObjectId = cube.debugId;
         cube.mesh = &cubeMesh_;
         cube.material = material;
         cube.debugName = std::move(debugName);
@@ -2548,6 +2828,7 @@ void Renderer::createScene()
 
                 renderer::RenderObject importedObject{};
                 importedObject.debugId = allocateRenderObjectDebugId();
+                importedObject.sceneObjectId = importedObject.debugId;
                 importedObject.mesh = &importedMeshes_[instance.meshIndex];
                 importedObject.material =
                     importedMaterials_.empty() ? &materialVariants_.at(0) : &importedMaterials_.front();
@@ -2599,6 +2880,7 @@ void Renderer::addPortfolioShowcaseObjects()
                                          const glm::vec3& scale) {
         renderer::RenderObject cube{};
         cube.debugId = allocateRenderObjectDebugId();
+        cube.sceneObjectId = cube.debugId;
         cube.mesh = &cubeMesh_;
         cube.material = material;
         cube.debugName = std::move(debugName);
@@ -2617,6 +2899,7 @@ void Renderer::addPortfolioShowcaseObjects()
                                            const glm::vec3& scale) {
         renderer::RenderObject sphere{};
         sphere.debugId = allocateRenderObjectDebugId();
+        sphere.sceneObjectId = sphere.debugId;
         sphere.mesh = &portfolioSphereMesh_;
         sphere.material = material;
         sphere.debugName = std::move(debugName);
@@ -3672,6 +3955,30 @@ uint32_t Renderer::activeCascadeCount() const
     return std::clamp(csmSettings_.cascadeCount, 1U, kMaxShadowCascades);
 }
 
+glm::vec4 Renderer::activeDirectionalLightDirection() const
+{
+    if (portfolioCaptureMode_) {
+        return kPortfolioLightDirection;
+    }
+
+    const glm::vec3 direction =
+        normalizedOrFallback(directionalLightSettings_.direction,
+                             glm::normalize(glm::vec3{kDirectionalLightDirection.x,
+                                                      kDirectionalLightDirection.y,
+                                                      kDirectionalLightDirection.z}));
+    return glm::vec4(direction, 0.0f);
+}
+
+glm::vec4 Renderer::activeDirectionalLightColor() const
+{
+    if (portfolioCaptureMode_) {
+        return kPortfolioLightColor;
+    }
+
+    const float intensity = std::max(directionalLightSettings_.intensity, 0.0f);
+    return glm::vec4(glm::max(directionalLightSettings_.color, glm::vec3{0.0f}) * intensity, 1.0f);
+}
+
 void Renderer::updateCascades(float aspectRatio)
 {
     const uint32_t cascadeCount = activeCascadeCount();
@@ -3686,7 +3993,7 @@ void Renderer::updateCascades(float aspectRatio)
     const glm::vec3 cameraUp = glm::normalize(glm::cross(cameraRight, cameraForward));
     const float tanHalfFov = std::tan(camera_.verticalFovRadians * 0.5f);
 
-    const glm::vec4 activeLightDirection = portfolioCaptureMode_ ? kPortfolioLightDirection : kDirectionalLightDirection;
+    const glm::vec4 activeLightDirection = activeDirectionalLightDirection();
     const glm::vec3 lightDirection =
         glm::normalize(glm::vec3{activeLightDirection.x, activeLightDirection.y, activeLightDirection.z});
     const glm::vec3 lightUp = std::abs(glm::dot(lightDirection, glm::vec3{0.0f, 1.0f, 0.0f})) > 0.95f
@@ -3811,6 +4118,9 @@ const renderer::Material* Renderer::resolveMaterial(const renderer::RenderObject
 
 bool Renderer::isRenderObjectActive(const renderer::RenderObject& object) const
 {
+    if (!object.visible) {
+        return false;
+    }
     if (portfolioCaptureMode_ && object.hideInPortfolio) {
         return false;
     }
@@ -4629,6 +4939,294 @@ void Renderer::resetRuntimeSettingsToDefaults()
     runtimeSettingsWarning_.clear();
 }
 
+void Renderer::resetCameraToDefault()
+{
+    camera_ = defaultCameraPreset();
+    csmSettings_.nearPlane = camera_.nearPlane;
+    csmSettings_.farPlane = camera_.farPlane;
+    clampRuntimeSettings();
+}
+
+void Renderer::resetCameraToPortfolioPreset()
+{
+    camera_ = portfolioCameraPreset();
+    csmSettings_.nearPlane = camera_.nearPlane;
+    csmSettings_.farPlane = camera_.farPlane;
+    clampRuntimeSettings();
+}
+
+void Renderer::resetDirectionalLightToDefault()
+{
+    directionalLightSettings_.direction = {kDirectionalLightDirection.x,
+                                           kDirectionalLightDirection.y,
+                                           kDirectionalLightDirection.z};
+    directionalLightSettings_.color = {kDirectionalLightColor.x, kDirectionalLightColor.y, kDirectionalLightColor.z};
+    directionalLightSettings_.intensity = 1.0f;
+}
+
+void Renderer::saveSceneFromUi()
+{
+    try {
+        const std::filesystem::path parentPath = sceneDocumentPath_.parent_path();
+        if (!parentPath.empty()) {
+            std::error_code createError;
+            std::filesystem::create_directories(parentPath, createError);
+            if (createError) {
+                throw std::runtime_error("could not create scene directory '" + parentPath.string() +
+                                         "': " + createError.message());
+            }
+        }
+
+        Json cameraJson = Json{{"position", vec3ToJson(camera_.position)},
+                               {"target", vec3ToJson(camera_.target)},
+                               {"up", vec3ToJson(camera_.up)},
+                               {"verticalFovDegrees", glm::degrees(camera_.verticalFovRadians)},
+                               {"nearPlane", camera_.nearPlane},
+                               {"farPlane", camera_.farPlane}};
+
+        Json lightJson = Json{{"direction", vec3ToJson(directionalLightSettings_.direction)},
+                              {"color", vec3ToJson(directionalLightSettings_.color)},
+                              {"intensity", directionalLightSettings_.intensity},
+                              {"portfolioPresetActive", portfolioCaptureMode_}};
+
+        Json objectsJson = Json::array();
+        for (size_t objectIndex = 0; objectIndex < renderObjects_.size(); ++objectIndex) {
+            const renderer::RenderObject& object = renderObjects_[objectIndex];
+            const uint32_t objectId = renderObjectEditorId(object);
+            const renderer::Material* material = primaryMaterialForObject(object);
+            const ObjectDrawDebugInfo debugInfo = objectDrawDebugInfo(static_cast<uint32_t>(objectIndex));
+
+            Json objectJson = Json{{"id", objectId},
+                                   {"debugId", object.debugId},
+                                   {"name", object.debugName},
+                                   {"visible", object.visible},
+                                   {"source", renderObjectSourceTypeName(object.sourceType)},
+                                   {"portfolioOnly", object.portfolioOnly},
+                                   {"hideInPortfolio", object.hideInPortfolio},
+                                   {"transform", transformToJson(object.transform)},
+                                   {"drawItemCount", debugInfo.drawItemCount}};
+
+            objectJson["mesh"] = Json{{"name", object.mesh ? object.mesh->debugName() : std::string{}},
+                                      {"pointer", pointerString(object.mesh)},
+                                      {"submeshCount", meshSubmeshCount(object.mesh)}};
+            objectJson["material"] =
+                Json{{"name", material ? material->debugName : std::string{}},
+                     {"primaryLabel", materialDebugLabel(object)},
+                     {"pointer", pointerString(material)},
+                     {"slotCount", object.materialCount},
+                     {"source", material ? std::string(materialSourceName(material->source)) : std::string{"none"}}};
+
+            objectsJson.push_back(std::move(objectJson));
+        }
+
+        const Json sceneJson = Json{{"schemaVersion", 1},
+                                    {"sceneName", portfolioCaptureMode_ ? "Portfolio Runtime Scene"
+                                                                         : "Default Runtime Scene"},
+                                    {"camera", std::move(cameraJson)},
+                                    {"directionalLight", std::move(lightJson)},
+                                    {"objects", std::move(objectsJson)},
+                                    {"limitations",
+                                     Json::array({"Mesh and material references are saved as debug metadata only.",
+                                                  "Load preserves current runtime mesh/material pointers and restores "
+                                                  "matching object transforms, names, visibility, camera, and light."})}};
+
+        std::ofstream output(sceneDocumentPath_);
+        if (!output) {
+            throw std::runtime_error("could not open scene file for writing");
+        }
+        output << sceneJson.dump(4) << '\n';
+        if (!output) {
+            throw std::runtime_error("failed while writing scene file");
+        }
+
+        lastSceneSaveStatus_ = "Saved scene to " + sceneDocumentPath_.string() + ".";
+        Logger::info(lastSceneSaveStatus_);
+    } catch (const std::exception& error) {
+        lastSceneSaveStatus_ = "Scene save failed: " + std::string(error.what());
+        Logger::warn(lastSceneSaveStatus_);
+    }
+}
+
+void Renderer::loadSceneFromUi()
+{
+    try {
+        std::error_code existsError;
+        if (!std::filesystem::exists(sceneDocumentPath_, existsError)) {
+            if (existsError) {
+                throw std::runtime_error("could not check scene file: " + existsError.message());
+            }
+            throw std::runtime_error("scene file does not exist at " + sceneDocumentPath_.string());
+        }
+
+        std::ifstream input(sceneDocumentPath_);
+        if (!input) {
+            throw std::runtime_error("could not open scene file for reading");
+        }
+
+        const Json sceneJson = Json::parse(input);
+        if (!sceneJson.is_object()) {
+            throw std::runtime_error("scene root must be a JSON object");
+        }
+
+        if (const Json* cameraJson = jsonObjectMember(sceneJson, "camera")) {
+            readJsonVec3(*cameraJson, "position", camera_.position);
+            readJsonVec3(*cameraJson, "target", camera_.target);
+            readJsonVec3(*cameraJson, "up", camera_.up);
+
+            float fovDegrees = glm::degrees(camera_.verticalFovRadians);
+            if (readJsonFloat(*cameraJson, "verticalFovDegrees", fovDegrees)) {
+                camera_.verticalFovRadians = glm::radians(std::clamp(fovDegrees, 1.0f, 160.0f));
+            } else {
+                readJsonFloat(*cameraJson, "verticalFovRadians", camera_.verticalFovRadians);
+                camera_.verticalFovRadians = std::clamp(camera_.verticalFovRadians,
+                                                        glm::radians(1.0f),
+                                                        glm::radians(160.0f));
+            }
+
+            readJsonFloat(*cameraJson, "nearPlane", camera_.nearPlane);
+            readJsonFloat(*cameraJson, "farPlane", camera_.farPlane);
+            camera_.nearPlane = std::max(camera_.nearPlane, 0.001f);
+            camera_.farPlane = std::max(camera_.farPlane, camera_.nearPlane + 0.001f);
+            camera_.up = normalizedOrFallback(camera_.up, {0.0f, 1.0f, 0.0f});
+            if (glm::length(camera_.target - camera_.position) <= 0.001f) {
+                camera_.target = camera_.position + glm::vec3{0.0f, 0.0f, -1.0f};
+            }
+            csmSettings_.nearPlane = camera_.nearPlane;
+            csmSettings_.farPlane = camera_.farPlane;
+        }
+
+        if (const Json* lightJson = jsonObjectMember(sceneJson, "directionalLight")) {
+            readJsonVec3(*lightJson, "direction", directionalLightSettings_.direction);
+            readJsonVec3(*lightJson, "color", directionalLightSettings_.color);
+            readJsonFloat(*lightJson, "intensity", directionalLightSettings_.intensity);
+            directionalLightSettings_.direction =
+                normalizedOrFallback(directionalLightSettings_.direction,
+                                     {kDirectionalLightDirection.x,
+                                      kDirectionalLightDirection.y,
+                                      kDirectionalLightDirection.z});
+            directionalLightSettings_.color = glm::max(directionalLightSettings_.color, glm::vec3{0.0f});
+            directionalLightSettings_.intensity = std::max(directionalLightSettings_.intensity, 0.0f);
+        }
+
+        size_t matchedObjects = 0;
+        size_t skippedObjects = 0;
+        std::vector<uint8_t> objectUsed(renderObjects_.size(), 0);
+        if (const auto objectsIt = sceneJson.find("objects"); objectsIt != sceneJson.end()) {
+            if (!objectsIt->is_array()) {
+                throw std::runtime_error("Expected array member 'objects'.");
+            }
+
+            for (const Json& objectJson : *objectsIt) {
+                if (!objectJson.is_object()) {
+                    ++skippedObjects;
+                    continue;
+                }
+
+                uint32_t objectId = 0;
+                readJsonUint32(objectJson, "id", objectId);
+                if (objectId == 0) {
+                    readJsonUint32(objectJson, "sceneObjectId", objectId);
+                }
+
+                std::string objectName;
+                readJsonString(objectJson, "name", objectName);
+
+                size_t objectIndex = kInvalidRenderObjectIndex;
+                if (objectId != 0) {
+                    for (size_t candidateIndex = 0; candidateIndex < renderObjects_.size(); ++candidateIndex) {
+                        if (objectUsed[candidateIndex]) {
+                            continue;
+                        }
+                        const renderer::RenderObject& candidate = renderObjects_[candidateIndex];
+                        if (renderObjectEditorId(candidate) == objectId || candidate.debugId == objectId) {
+                            objectIndex = candidateIndex;
+                            break;
+                        }
+                    }
+                }
+
+                if (objectIndex == kInvalidRenderObjectIndex && !objectName.empty()) {
+                    for (size_t candidateIndex = 0; candidateIndex < renderObjects_.size(); ++candidateIndex) {
+                        if (!objectUsed[candidateIndex] && renderObjects_[candidateIndex].debugName == objectName) {
+                            objectIndex = candidateIndex;
+                            break;
+                        }
+                    }
+                }
+
+                if (objectIndex == kInvalidRenderObjectIndex) {
+                    ++skippedObjects;
+                    continue;
+                }
+
+                objectUsed[objectIndex] = 1;
+                renderer::RenderObject& object = renderObjects_[objectIndex];
+                if (objectId != 0) {
+                    object.sceneObjectId = objectId;
+                    object.debugId = objectId;
+                } else if (object.sceneObjectId == 0) {
+                    object.sceneObjectId = object.debugId;
+                }
+                if (!objectName.empty()) {
+                    object.debugName = objectName;
+                }
+                readJsonBool(objectJson, "visible", object.visible);
+
+                if (const Json* transformJson = jsonObjectMember(objectJson, "transform")) {
+                    std::string mode = "trs";
+                    readJsonString(*transformJson, "mode", mode);
+
+                    glm::mat4 matrix{1.0f};
+                    const bool hasMatrix = readJsonMat4(*transformJson, "matrix", matrix);
+                    if (mode == "matrix" && hasMatrix) {
+                        object.transform = renderer::Transform::fromMatrix(matrix);
+                    } else {
+                        renderer::Transform editableTransform = object.transform;
+                        convertMatrixOverrideToEditableTrs(editableTransform);
+                        editableTransform.useMatrixOverride = false;
+                        editableTransform.matrixOverride = glm::mat4{1.0f};
+
+                        readJsonVec3(*transformJson, "position", editableTransform.position);
+
+                        glm::vec3 rotationDegrees = glm::degrees(editableTransform.rotationRadians);
+                        if (readJsonVec3(*transformJson, "rotationDegrees", rotationDegrees)) {
+                            editableTransform.rotationRadians = glm::radians(rotationDegrees);
+                        } else {
+                            readJsonVec3(*transformJson, "rotationRadians", editableTransform.rotationRadians);
+                        }
+
+                        readJsonVec3(*transformJson, "scale", editableTransform.scale);
+                        object.transform = editableTransform;
+                    }
+                }
+
+                object.animateTransform = false;
+                ++matchedObjects;
+            }
+        }
+
+        uint32_t maxObjectId = 0;
+        for (renderer::RenderObject& object : renderObjects_) {
+            if (object.sceneObjectId == 0) {
+                object.sceneObjectId = object.debugId;
+            }
+            maxObjectId = std::max(maxObjectId, renderObjectEditorId(object));
+        }
+        if (maxObjectId < std::numeric_limits<uint32_t>::max()) {
+            nextRenderObjectDebugId_ = std::max(nextRenderObjectDebugId_, maxObjectId + 1);
+        }
+
+        clampRuntimeSettings();
+        lastSceneLoadStatus_ = "Loaded scene from " + sceneDocumentPath_.string() + ". Matched " +
+                               std::to_string(matchedObjects) + " object(s), skipped " +
+                               std::to_string(skippedObjects) + ".";
+        Logger::info(lastSceneLoadStatus_);
+    } catch (const std::exception& error) {
+        lastSceneLoadStatus_ = "Scene load failed: " + std::string(error.what());
+        Logger::warn(lastSceneLoadStatus_);
+    }
+}
+
 void Renderer::buildDebugUi()
 {
     if (!imguiLayer_.initialized()) {
@@ -4891,11 +5489,110 @@ void Renderer::drawRenderGraphDebugUi()
     ImGui::EndTable();
 }
 
+void Renderer::drawSceneEditingDebugUi()
+{
+    const std::string scenePath = sceneDocumentPath_.string();
+    ImGui::TextWrapped("Scene JSON: %s", scenePath.c_str());
+
+    if (ImGui::Button("Save Scene")) {
+        saveSceneFromUi();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Load Scene")) {
+        loadSceneFromUi();
+    }
+
+    ImGui::TextWrapped("Last save: %s", lastSceneSaveStatus_.c_str());
+    ImGui::TextWrapped("Last load: %s", lastSceneLoadStatus_.c_str());
+
+    if (ImGui::CollapsingHeader("Camera and Light", ImGuiTreeNodeFlags_DefaultOpen)) {
+        drawCameraLightEditorDebugUi();
+    }
+
+    ImGui::Separator();
+}
+
+void Renderer::drawCameraLightEditorDebugUi()
+{
+    if (portfolioCaptureMode_) {
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.25f, 1.0f),
+                           "Portfolio mode is active. F12 and Load Portfolio Showcase reapply portfolio camera and "
+                           "lighting presets.");
+    }
+
+    if (ImGui::TreeNodeEx("Camera", ImGuiTreeNodeFlags_DefaultOpen)) {
+        bool cameraChanged = false;
+        cameraChanged |= ImGui::DragFloat3("Position", &camera_.position.x, 0.02f, -1000.0f, 1000.0f, "%.3f");
+        cameraChanged |= ImGui::DragFloat3("Target", &camera_.target.x, 0.02f, -1000.0f, 1000.0f, "%.3f");
+        cameraChanged |= ImGui::DragFloat3("Up", &camera_.up.x, 0.01f, -1.0f, 1.0f, "%.3f");
+
+        float fovDegrees = glm::degrees(camera_.verticalFovRadians);
+        if (ImGui::DragFloat("FOV", &fovDegrees, 0.25f, 1.0f, 160.0f, "%.2f deg")) {
+            camera_.verticalFovRadians = glm::radians(std::clamp(fovDegrees, 1.0f, 160.0f));
+            cameraChanged = true;
+        }
+
+        if (ImGui::DragFloat("Near plane", &camera_.nearPlane, 0.005f, 0.001f, 1000.0f, "%.3f")) {
+            cameraChanged = true;
+        }
+        if (ImGui::DragFloat("Far plane", &camera_.farPlane, 0.1f, 0.01f, 10000.0f, "%.2f")) {
+            cameraChanged = true;
+        }
+
+        if (cameraChanged) {
+            camera_.nearPlane = std::max(camera_.nearPlane, 0.001f);
+            camera_.farPlane = std::max(camera_.farPlane, camera_.nearPlane + 0.001f);
+            camera_.up = normalizedOrFallback(camera_.up, {0.0f, 1.0f, 0.0f});
+            if (glm::length(camera_.target - camera_.position) <= 0.001f) {
+                camera_.target = camera_.position + glm::vec3{0.0f, 0.0f, -1.0f};
+            }
+            csmSettings_.nearPlane = camera_.nearPlane;
+            csmSettings_.farPlane = camera_.farPlane;
+            clampRuntimeSettings();
+        }
+
+        if (ImGui::Button("Reset Default Camera")) {
+            resetCameraToDefault();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Reset Portfolio Camera")) {
+            resetCameraToPortfolioPreset();
+        }
+
+        ImGui::TextDisabled("Camera movement speed: not available; there is no free-camera controller yet.");
+        ImGui::TreePop();
+    }
+
+    if (ImGui::TreeNodeEx("Directional Light", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::DragFloat3("Direction", &directionalLightSettings_.direction.x, 0.01f, -1.0f, 1.0f, "%.3f");
+        directionalLightSettings_.direction =
+            normalizedOrFallback(directionalLightSettings_.direction,
+                                 {kDirectionalLightDirection.x,
+                                  kDirectionalLightDirection.y,
+                                  kDirectionalLightDirection.z});
+
+        ImGui::ColorEdit3("Color", &directionalLightSettings_.color.x);
+        directionalLightSettings_.color = glm::max(directionalLightSettings_.color, glm::vec3{0.0f});
+        ImGui::DragFloat("Intensity", &directionalLightSettings_.intensity, 0.01f, 0.0f, 16.0f, "%.3f");
+        directionalLightSettings_.intensity = std::max(directionalLightSettings_.intensity, 0.0f);
+
+        if (portfolioCaptureMode_) {
+            ImGui::TextDisabled("The editable directional light is used when portfolio mode is disabled.");
+        }
+        if (ImGui::Button("Reset Default Light")) {
+            resetDirectionalLightToDefault();
+        }
+        ImGui::TreePop();
+    }
+}
+
 void Renderer::drawSceneHierarchyDebugUi()
 {
     if (selectedRenderObjectIndex_ >= renderObjects_.size()) {
         selectedRenderObjectIndex_ = kInvalidRenderObjectIndex;
     }
+
+    drawSceneEditingDebugUi();
 
     ImGui::Text("RenderObjects: %zu", renderObjects_.size());
     ImGui::SameLine();
@@ -4916,9 +5613,10 @@ void Renderer::drawSceneHierarchyDebugUi()
                 objectFlags |= ImGuiTreeNodeFlags_Selected;
             }
 
+            const uint32_t objectId = renderObjectEditorId(object);
             const std::string objectName = object.debugName.empty() ? "(unnamed)" : object.debugName;
-            const std::string label = "RenderObject " + std::to_string(objectIndex) + ": " + objectName + "##" +
-                                      std::to_string(object.debugId);
+            const std::string label = std::string(object.visible ? "" : "[hidden] ") + objectName + "##" +
+                                      std::to_string(objectId);
             const bool open = ImGui::TreeNodeEx(label.c_str(), objectFlags);
             if (ImGui::IsItemClicked()) {
                 selectedRenderObjectIndex_ = objectIndex;
@@ -4928,7 +5626,9 @@ void Renderer::drawSceneHierarchyDebugUi()
                 const std::string materialLabel = materialDebugLabel(object);
                 const std::string mainCullingLabel = mainCullingDebugLabel(debugInfo);
                 const std::string shadowCullingLabel = shadowCullingDebugLabel(debugInfo);
+                ImGui::Text("Object ID: %u", objectId);
                 ImGui::Text("Debug ID: %u", object.debugId);
+                ImGui::Text("Visible: %s", object.visible ? "yes" : "no");
                 ImGui::Text("Source: %s", renderObjectSourceTypeName(object.sourceType));
                 ImGui::Text("Mesh: %s", meshDebugLabel(object.mesh).c_str());
                 ImGui::Text("Material: %s", materialLabel.c_str());
@@ -4964,15 +5664,16 @@ void Renderer::drawSelectedRenderObjectInspector(uint32_t objectIndex)
         return;
     }
 
-    const renderer::RenderObject& object = renderObjects_[objectIndex];
+    renderer::RenderObject& object = renderObjects_[objectIndex];
     const ObjectDrawDebugInfo debugInfo = objectDrawDebugInfo(objectIndex);
     const std::string materialLabel = materialDebugLabel(object);
     const std::string mainCullingLabel = mainCullingDebugLabel(debugInfo);
     const std::string shadowCullingLabel = shadowCullingDebugLabel(debugInfo);
-    const glm::mat4 model = object.transform.modelMatrix();
+    const uint32_t objectId = renderObjectEditorId(object);
 
     ImGui::Text("Name: %s", object.debugName.empty() ? "(unnamed)" : object.debugName.c_str());
     ImGui::Text("Object index: %u", objectIndex);
+    ImGui::Text("Object ID: %u", objectId);
     ImGui::Text("Debug ID: %u", object.debugId);
     ImGui::Text("Source: %s", renderObjectSourceTypeName(object.sourceType));
     ImGui::Text("Mesh: %s", meshDebugLabel(object.mesh).c_str());
@@ -4992,7 +5693,54 @@ void Renderer::drawSelectedRenderObjectInspector(uint32_t objectIndex)
     ImGui::Text("Main culling: %s", mainCullingLabel.c_str());
     ImGui::Text("Shadow culling: %s", shadowCullingLabel.c_str());
     ImGui::Text("Shadow draw items visible: %zu", debugInfo.visibleShadowDrawItemCount);
-    ImGui::TextWrapped("Transform: %s", transformDebugSummary(object.transform).c_str());
+
+    bool visible = object.visible;
+    if (ImGui::Checkbox("Visible", &visible)) {
+        object.visible = visible;
+    }
+
+    ImGui::SeparatorText("Transform");
+    if (object.transform.useMatrixOverride) {
+        ImGui::TextDisabled("Matrix override transform; editing TRS converts it to position/rotation/scale.");
+        if (ImGui::Button("Convert to Editable TRS")) {
+            if (convertMatrixOverrideToEditableTrs(object.transform)) {
+                object.animateTransform = false;
+            }
+        }
+    }
+
+    const TransformComponents transformComponents = editableTransformComponents(object.transform);
+    if (!transformComponents.valid) {
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.25f, 1.0f),
+                           "Transform cannot be decomposed for editing.");
+    } else {
+        glm::vec3 position = transformComponents.position;
+        if (ImGui::DragFloat3("Position", &position.x, 0.01f, -1000.0f, 1000.0f, "%.3f")) {
+            if (convertMatrixOverrideToEditableTrs(object.transform)) {
+                object.transform.position = position;
+                object.animateTransform = false;
+            }
+        }
+
+        glm::vec3 rotationDegrees = glm::degrees(transformComponents.rotationRadians);
+        if (ImGui::DragFloat3("Rotation", &rotationDegrees.x, 0.25f, -3600.0f, 3600.0f, "%.2f deg")) {
+            if (convertMatrixOverrideToEditableTrs(object.transform)) {
+                object.transform.rotationRadians = glm::radians(rotationDegrees);
+                object.animateTransform = false;
+            }
+        }
+
+        glm::vec3 scale = transformComponents.scale;
+        if (ImGui::DragFloat3("Scale", &scale.x, 0.01f, -1000.0f, 1000.0f, "%.3f")) {
+            if (convertMatrixOverrideToEditableTrs(object.transform)) {
+                object.transform.scale = scale;
+                object.animateTransform = false;
+            }
+        }
+    }
+
+    ImGui::Text("Demo animation: %s", object.animateTransform ? "enabled" : "disabled");
+    ImGui::TextWrapped("Transform summary: %s", transformDebugSummary(object.transform).c_str());
     if (object.mesh) {
         ImGui::TextWrapped("Local bounds: %s", formatAabb(object.mesh->localBounds()).c_str());
     } else {
@@ -5014,6 +5762,7 @@ void Renderer::drawSelectedRenderObjectInspector(uint32_t objectIndex)
     }
 
     if (ImGui::TreeNode("World transform matrix")) {
+        const glm::mat4 model = object.transform.modelMatrix();
         for (int row = 0; row < 4; ++row) {
             const std::string matrixRow = formatMatrixRow(model, row);
             ImGui::TextUnformatted(matrixRow.c_str());
@@ -6201,8 +6950,8 @@ void Renderer::updateFrameData(uint32_t frameIndex)
 
     const size_t objectFrameCount = std::min(allDrawItems_.size(), static_cast<size_t>(kMaxDrawItems));
     std::vector<ObjectFrameData> objectFrameData(objectFrameCount);
-    const glm::vec4 activeLightDirection = portfolioCaptureMode_ ? kPortfolioLightDirection : kDirectionalLightDirection;
-    const glm::vec4 activeLightColor = portfolioCaptureMode_ ? kPortfolioLightColor : kDirectionalLightColor;
+    const glm::vec4 activeLightDirection = activeDirectionalLightDirection();
+    const glm::vec4 activeLightColor = activeDirectionalLightColor();
     const glm::vec4 activeAmbientLightColor =
         portfolioCaptureMode_ ? kPortfolioAmbientLightColor : kAmbientLightColor;
 

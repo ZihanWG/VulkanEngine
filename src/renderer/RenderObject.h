@@ -18,6 +18,7 @@ enum class RenderObjectSourceType {
 
 struct RenderObject {
     uint32_t debugId = 0;
+    uint32_t sceneObjectId = 0;
     const Mesh* mesh = nullptr;
     const Material* material = nullptr;
     const Material* materialTable = nullptr;
@@ -25,6 +26,7 @@ struct RenderObject {
     Transform transform{};
     std::string debugName;
     RenderObjectSourceType sourceType = RenderObjectSourceType::BuiltInFallbackCube;
+    bool visible = true;
     bool animateTransform = false;
     bool portfolioOnly = false;
     bool hideInPortfolio = false;

@@ -32,6 +32,7 @@
 #include <filesystem>
 #include <glm/vec4.hpp>
 #include <glm/mat4x4.hpp>
+#include <glm/vec3.hpp>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -161,6 +162,12 @@ private:
         bool hasObjectDataIndex = false;
     };
 
+    struct DirectionalLightSettings {
+        glm::vec3 direction{0.35f, -0.65f, -0.55f};
+        glm::vec3 color{0.85f, 0.85f, 0.85f};
+        float intensity = 1.0f;
+    };
+
     struct PortfolioCaptureSavedState {
         renderer::Camera camera;
         ToneMappingSettings toneMapping;
@@ -280,10 +287,19 @@ private:
     void saveRuntimeSettingsFromUi();
     void reloadRuntimeSettingsFromUi();
     void resetRuntimeSettingsToDefaults();
+    void saveSceneFromUi();
+    void loadSceneFromUi();
+    void resetCameraToDefault();
+    void resetCameraToPortfolioPreset();
+    void resetDirectionalLightToDefault();
+    [[nodiscard]] glm::vec4 activeDirectionalLightDirection() const;
+    [[nodiscard]] glm::vec4 activeDirectionalLightColor() const;
     void buildDebugUi();
     void drawPortfolioCaptureDebugUi();
     void drawRuntimeSettingsDebugUi();
     void drawRenderGraphDebugUi();
+    void drawSceneEditingDebugUi();
+    void drawCameraLightEditorDebugUi();
     void drawSceneHierarchyDebugUi();
     void drawSelectedRenderObjectInspector(uint32_t objectIndex);
     void drawMaterialInspectorDebugUi();
@@ -397,6 +413,7 @@ private:
     std::vector<VkDescriptorSet> gpuCullDescriptorSets_;
     std::vector<VkDescriptorSet> shadowCullDescriptorSets_;
     renderer::Camera camera_;
+    DirectionalLightSettings directionalLightSettings_{};
     renderer::Mesh cubeMesh_;
     renderer::Mesh portfolioSphereMesh_;
     std::vector<renderer::Mesh> importedMeshes_;
@@ -486,9 +503,12 @@ private:
     DebugHistory histogramClippedLuminanceHistory_{};
     renderer::GpuProfiler::FrameResults latestGpuProfilerResults_{};
     std::filesystem::path runtimeSettingsPath_;
+    std::filesystem::path sceneDocumentPath_;
     std::string lastRuntimeSettingsLoadStatus_ = "Not loaded yet.";
     std::string lastRuntimeSettingsSaveStatus_ = "Not saved this session.";
     std::string runtimeSettingsWarning_;
+    std::string lastSceneLoadStatus_ = "Not loaded yet.";
+    std::string lastSceneSaveStatus_ = "Not saved this session.";
     std::string portfolioScreenshotStatus_ = "No capture requested.";
     std::filesystem::path lastPortfolioScreenshotPath_;
     PortfolioCaptureSavedState portfolioCaptureSavedState_{};
