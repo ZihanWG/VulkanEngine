@@ -109,6 +109,13 @@ const glm::vec4 kAmbientLightColor{0.15f, 0.15f, 0.15f, 1.0f};
 const glm::vec4 kPortfolioLightDirection{-0.38f, -0.78f, -0.48f, 0.0f};
 const glm::vec4 kPortfolioLightColor{1.08f, 1.03f, 0.94f, 1.0f};
 const glm::vec4 kPortfolioAmbientLightColor{0.20f, 0.22f, 0.24f, 1.0f};
+constexpr size_t kPortfolioGroundMaterialIndex = 4;
+constexpr size_t kPortfolioMatteGrayMaterialIndex = 5;
+constexpr size_t kPortfolioGlossyBlueMaterialIndex = 6;
+constexpr size_t kPortfolioRoughMetalMaterialIndex = 7;
+constexpr size_t kPortfolioPolishedMetalSmallMaterialIndex = 8;
+constexpr size_t kPortfolioHeroCeramicMaterialIndex = 9;
+constexpr size_t kPortfolioBackdropMaterialIndex = 10;
 
 struct PushConstants {
     VkDeviceAddress objectFrameDataAddress = 0;
@@ -911,10 +918,20 @@ void Renderer::requestPortfolioScreenshot()
         return;
     }
 
+    if (!ensurePortfolioShowcaseSceneReady()) {
+        return;
+    }
+
     if (!portfolioCaptureMode_) {
         setPortfolioCaptureMode(true);
     } else {
         applyPortfolioCaptureSettings();
+    }
+
+    if (!portfolioCaptureMode_) {
+        portfolioScreenshotStatus_ = "Screenshot unavailable: portfolio showcase scene could not be activated.";
+        Logger::warn(portfolioScreenshotStatus_);
+        return;
     }
 
     portfolioScreenshotRequested_ = true;
@@ -935,6 +952,25 @@ bool Renderer::hasPendingPortfolioScreenshotReadback() const
 void Renderer::recordPortfolioScreenshotCopy(VkCommandBuffer commandBuffer, uint32_t imageIndex)
 {
     if (!portfolioScreenshotRequested_) {
+        return;
+    }
+
+    if (!ensurePortfolioShowcaseSceneReady()) {
+        portfolioScreenshotRequested_ = false;
+        return;
+    }
+    if (!portfolioCaptureMode_) {
+        setPortfolioCaptureMode(true);
+        portfolioScreenshotStatus_ =
+            "Screenshot deferred: portfolio capture mode was not active for the frame being copied.";
+        Logger::warn(portfolioScreenshotStatus_);
+        return;
+    }
+    if (!currentFrameHasPortfolioShowcaseDrawItems()) {
+        applyPortfolioCaptureSettings();
+        portfolioScreenshotStatus_ =
+            "Screenshot deferred: portfolio showcase draw items were not active for the frame being copied.";
+        Logger::warn(portfolioScreenshotStatus_);
         return;
     }
 
@@ -1105,10 +1141,17 @@ void Renderer::processPortfolioScreenshotReadback(uint32_t frameIndex)
 void Renderer::setPortfolioCaptureMode(bool enabled)
 {
     if (portfolioCaptureMode_ == enabled) {
+        if (enabled && ensurePortfolioShowcaseSceneReady()) {
+            applyPortfolioCaptureSettings();
+        }
         return;
     }
 
     if (enabled) {
+        if (!ensurePortfolioShowcaseSceneReady()) {
+            portfolioCaptureMode_ = false;
+            return;
+        }
         portfolioCaptureSavedState_.camera = camera_;
         portfolioCaptureSavedState_.toneMapping = toneMappingSettings_;
         portfolioCaptureSavedState_.bloom = bloomSettings_;
@@ -1125,10 +1168,10 @@ void Renderer::setPortfolioCaptureMode(bool enabled)
 
 void Renderer::applyPortfolioCaptureSettings()
 {
-    camera_.position = {1.75f, 0.76f, 2.78f};
-    camera_.target = {0.00f, -0.08f, 0.16f};
+    camera_.position = {1.82f, 0.78f, 2.92f};
+    camera_.target = {0.00f, -0.08f, 0.18f};
     camera_.up = {0.0f, 1.0f, 0.0f};
-    camera_.verticalFovRadians = glm::radians(44.0f);
+    camera_.verticalFovRadians = glm::radians(45.0f);
     camera_.nearPlane = 0.1f;
     camera_.farPlane = 100.0f;
 
@@ -2478,74 +2521,6 @@ void Renderer::createScene()
                 true);
     };
 
-    const auto addPortfolioSphere = [this](std::string debugName,
-                                           const renderer::Material* material,
-                                           const glm::vec3& position,
-                                           const glm::vec3& scale) {
-        renderer::RenderObject sphere{};
-        sphere.debugId = allocateRenderObjectDebugId();
-        sphere.mesh = &portfolioSphereMesh_;
-        sphere.material = material;
-        sphere.debugName = std::move(debugName);
-        sphere.sourceType = renderer::RenderObjectSourceType::PortfolioShowcase;
-        sphere.transform.position = position;
-        sphere.transform.scale = scale;
-        sphere.animateTransform = false;
-        sphere.portfolioOnly = true;
-        renderObjects_.push_back(std::move(sphere));
-    };
-
-    const auto addPortfolioShowcaseObjects = [&addCube, &addPortfolioSphere, this]() {
-        renderObjects_.reserve(renderObjects_.size() + 8);
-        addCube("Portfolio Studio Floor",
-                &materialVariants_.at(4),
-                {0.0f, -0.56f, 0.28f},
-                {0.0f, 0.0f, 0.0f},
-                {14.0f, 0.08f, 8.0f},
-                false,
-                true,
-                false,
-                renderer::RenderObjectSourceType::PortfolioShowcase);
-        addCube("Portfolio Studio Backdrop",
-                &materialVariants_.at(10),
-                {0.0f, 1.05f, -2.35f},
-                {0.0f, 0.0f, 0.0f},
-                {24.0f, 7.0f, 0.08f},
-                false,
-                true,
-                false,
-                renderer::RenderObjectSourceType::PortfolioShowcase);
-        addCube("Portfolio Side Plinth",
-                &materialVariants_.at(4),
-                {1.02f, -0.42f, -0.18f},
-                {0.0f, -0.18f, 0.0f},
-                {1.08f, 0.28f, 0.78f},
-                false,
-                true,
-                false,
-                renderer::RenderObjectSourceType::PortfolioShowcase);
-        addPortfolioSphere("Portfolio Hero Rough Ceramic",
-                           &materialVariants_.at(9),
-                           {0.0f, -0.02f, 0.08f},
-                           {0.92f, 0.92f, 0.92f});
-        addPortfolioSphere("Portfolio Matte Gray",
-                           &materialVariants_.at(5),
-                           {-1.05f, -0.20f, 0.16f},
-                           {0.64f, 0.64f, 0.64f});
-        addPortfolioSphere("Portfolio Glossy Blue",
-                           &materialVariants_.at(6),
-                           {-0.62f, -0.31f, 0.74f},
-                           {0.42f, 0.42f, 0.42f});
-        addPortfolioSphere("Portfolio Rough Metal",
-                           &materialVariants_.at(7),
-                           {1.22f, -0.28f, 0.34f},
-                           {0.48f, 0.48f, 0.48f});
-        addPortfolioSphere("Portfolio Medium Metal",
-                           &materialVariants_.at(8),
-                           {1.02f, 0.02f, -0.18f},
-                           {0.60f, 0.60f, 0.60f});
-    };
-
     const std::array<std::filesystem::path, 2> modelCandidates = {
         assetPath("models/test_mesh.gltf"),
         assetPath("models/test_mesh.glb"),
@@ -2605,6 +2580,168 @@ void Renderer::createScene()
     Logger::warn("No supported glTF mesh asset loaded; using built-in cube fallback scene.");
     addCubeFallbackScene();
     addPortfolioShowcaseObjects();
+}
+
+void Renderer::addPortfolioShowcaseObjects()
+{
+    if (hasPortfolioShowcaseScene()) {
+        return;
+    }
+    if (materialVariants_.size() <= kPortfolioBackdropMaterialIndex) {
+        Logger::warn("Portfolio showcase scene was not added because portfolio materials are unavailable.");
+        return;
+    }
+
+    const auto addPortfolioCube = [this](std::string debugName,
+                                         const renderer::Material* material,
+                                         const glm::vec3& position,
+                                         const glm::vec3& rotationRadians,
+                                         const glm::vec3& scale) {
+        renderer::RenderObject cube{};
+        cube.debugId = allocateRenderObjectDebugId();
+        cube.mesh = &cubeMesh_;
+        cube.material = material;
+        cube.debugName = std::move(debugName);
+        cube.sourceType = renderer::RenderObjectSourceType::PortfolioShowcase;
+        cube.transform.position = position;
+        cube.transform.rotationRadians = rotationRadians;
+        cube.transform.scale = scale;
+        cube.animateTransform = false;
+        cube.portfolioOnly = true;
+        renderObjects_.push_back(std::move(cube));
+    };
+
+    const auto addPortfolioSphere = [this](std::string debugName,
+                                           const renderer::Material* material,
+                                           const glm::vec3& position,
+                                           const glm::vec3& scale) {
+        renderer::RenderObject sphere{};
+        sphere.debugId = allocateRenderObjectDebugId();
+        sphere.mesh = &portfolioSphereMesh_;
+        sphere.material = material;
+        sphere.debugName = std::move(debugName);
+        sphere.sourceType = renderer::RenderObjectSourceType::PortfolioShowcase;
+        sphere.transform.position = position;
+        sphere.transform.scale = scale;
+        sphere.animateTransform = false;
+        sphere.portfolioOnly = true;
+        renderObjects_.push_back(std::move(sphere));
+    };
+
+    renderObjects_.reserve(renderObjects_.size() + 8);
+    addPortfolioCube("Portfolio Studio Floor",
+                     &materialVariants_.at(kPortfolioGroundMaterialIndex),
+                     {0.0f, -0.56f, 0.24f},
+                     {0.0f, 0.0f, 0.0f},
+                     {11.0f, 0.08f, 6.4f});
+    addPortfolioCube("Portfolio Studio Backdrop",
+                     &materialVariants_.at(kPortfolioBackdropMaterialIndex),
+                     {0.0f, 2.08f, -2.82f},
+                     {0.0f, 0.0f, 0.0f},
+                     {60.0f, 9.0f, 0.08f});
+    addPortfolioCube("Portfolio Side Plinth",
+                     &materialVariants_.at(kPortfolioGroundMaterialIndex),
+                     {1.02f, -0.42f, -0.18f},
+                     {0.0f, -0.16f, 0.0f},
+                     {0.96f, 0.28f, 0.70f});
+    addPortfolioSphere("Portfolio Hero Ceramic",
+                       &materialVariants_.at(kPortfolioHeroCeramicMaterialIndex),
+                       {0.0f, -0.11f, 0.08f},
+                       {0.82f, 0.82f, 0.82f});
+    addPortfolioSphere("Portfolio Matte Gray",
+                       &materialVariants_.at(kPortfolioMatteGrayMaterialIndex),
+                       {-0.92f, -0.24f, 0.06f},
+                       {0.56f, 0.56f, 0.56f});
+    addPortfolioSphere("Portfolio Glossy Blue",
+                       &materialVariants_.at(kPortfolioGlossyBlueMaterialIndex),
+                       {-0.62f, -0.33f, 0.66f},
+                       {0.38f, 0.38f, 0.38f});
+    addPortfolioSphere("Portfolio Rough Metal",
+                       &materialVariants_.at(kPortfolioRoughMetalMaterialIndex),
+                       {0.96f, -0.29f, 0.42f},
+                       {0.46f, 0.46f, 0.46f});
+    addPortfolioSphere("Portfolio Polished Metal Small",
+                       &materialVariants_.at(kPortfolioPolishedMetalSmallMaterialIndex),
+                       {1.04f, -0.09f, -0.18f},
+                       {0.38f, 0.38f, 0.38f});
+}
+
+bool Renderer::hasPortfolioShowcaseScene() const
+{
+    bool hasFloor = false;
+    bool hasBackdrop = false;
+    bool hasHero = false;
+    size_t materialSampleCount = 0;
+
+    for (const renderer::RenderObject& object : renderObjects_) {
+        if (object.sourceType != renderer::RenderObjectSourceType::PortfolioShowcase || !object.mesh ||
+            !object.mesh->valid() || !object.material) {
+            continue;
+        }
+
+        if (object.debugName == "Portfolio Studio Floor") {
+            hasFloor = true;
+            continue;
+        }
+        if (object.debugName == "Portfolio Studio Backdrop") {
+            hasBackdrop = true;
+            continue;
+        }
+        if (object.material->debugName == "Portfolio_HeroCeramic") {
+            hasHero = true;
+            continue;
+        }
+        if (object.material->debugName == "Portfolio_MatteGray" ||
+            object.material->debugName == "Portfolio_GlossyBlue" ||
+            object.material->debugName == "Portfolio_RoughMetal" ||
+            object.material->debugName == "Portfolio_PolishedMetalSmall") {
+            ++materialSampleCount;
+        }
+    }
+
+    return hasFloor && hasBackdrop && hasHero && materialSampleCount >= 4;
+}
+
+bool Renderer::currentFrameHasPortfolioShowcaseDrawItems() const
+{
+    for (const DrawItem& drawItem : allDrawItems_) {
+        if (drawItem.objectIndex >= renderObjects_.size()) {
+            continue;
+        }
+
+        const renderer::RenderObject& object = renderObjects_[drawItem.objectIndex];
+        if (object.sourceType == renderer::RenderObjectSourceType::PortfolioShowcase && object.portfolioOnly &&
+            !object.hideInPortfolio) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool Renderer::ensurePortfolioShowcaseSceneReady()
+{
+    if (hasPortfolioShowcaseScene()) {
+        return true;
+    }
+
+    if (!cubeMesh_.valid() || !portfolioSphereMesh_.valid() ||
+        materialVariants_.size() <= kPortfolioBackdropMaterialIndex) {
+        portfolioScreenshotStatus_ =
+            "Portfolio showcase scene is unavailable: required meshes or materials are not initialized.";
+        Logger::warn(portfolioScreenshotStatus_);
+        return false;
+    }
+
+    Logger::warn("Portfolio showcase scene was missing; rebuilding portfolio-only showcase objects.");
+    addPortfolioShowcaseObjects();
+    if (hasPortfolioShowcaseScene()) {
+        return true;
+    }
+
+    portfolioScreenshotStatus_ = "Portfolio showcase scene is unavailable after rebuild.";
+    Logger::warn(portfolioScreenshotStatus_);
+    return false;
 }
 
 void Renderer::createCheckerboardTexture()
@@ -2677,8 +2814,8 @@ void Renderer::createPortfolioBackdropTexture()
     constexpr uint32_t width = 16;
     constexpr uint32_t height = 64;
     std::array<uint8_t, width * height * 4> pixels{};
-    const glm::vec3 bottom{84.0f, 96.0f, 106.0f};
-    const glm::vec3 top{48.0f, 60.0f, 74.0f};
+    const glm::vec3 bottom{132.0f, 144.0f, 154.0f};
+    const glm::vec3 top{78.0f, 94.0f, 112.0f};
 
     for (uint32_t y = 0; y < height; ++y) {
         const float t = static_cast<float>(y) / static_cast<float>(height - 1);
@@ -3079,18 +3216,22 @@ void Renderer::createMaterial()
     addPortfolioMaterial(
         "Portfolio_Ground", &portfolioBaseColorTexture_, {0.30f, 0.32f, 0.32f, 1.0f}, 0.0f, 0.86f, 0.0f);
     addPortfolioMaterial(
-        "Portfolio_MatteGray", &portfolioBaseColorTexture_, {0.66f, 0.66f, 0.62f, 1.0f}, 0.0f, 0.92f, 0.0f);
+        "Portfolio_MatteGray", &portfolioBaseColorTexture_, {0.66f, 0.66f, 0.62f, 1.0f}, 0.0f, 0.85f, 0.0f);
     addPortfolioMaterial(
         "Portfolio_GlossyBlue", &portfolioBaseColorTexture_, {0.18f, 0.43f, 0.88f, 1.0f}, 0.0f, 0.30f, 0.2f);
     addPortfolioMaterial(
-        "Portfolio_RoughMetal", &portfolioBaseColorTexture_, {0.76f, 0.72f, 0.65f, 1.0f}, 1.0f, 0.62f, 0.75f);
-    addPortfolioMaterial(
-        "Portfolio_MediumMetal", &portfolioBaseColorTexture_, {0.82f, 0.84f, 0.84f, 1.0f}, 1.0f, 0.36f, 0.45f);
+        "Portfolio_RoughMetal", &portfolioBaseColorTexture_, {0.76f, 0.74f, 0.70f, 1.0f}, 1.0f, 0.60f, 0.70f);
+    addPortfolioMaterial("Portfolio_PolishedMetalSmall",
+                         &portfolioBaseColorTexture_,
+                         {0.82f, 0.85f, 0.88f, 1.0f},
+                         1.0f,
+                         0.23f,
+                         0.40f);
     addPortfolioMaterial("Portfolio_HeroCeramic",
                          &portfolioBaseColorTexture_,
                          {0.66f, 0.72f, 0.76f, 1.0f},
                          0.0f,
-                         0.58f,
+                         0.55f,
                          0.05f);
     addPortfolioMaterial(
         "Portfolio_Backdrop", &portfolioBackdropTexture_, {1.0f, 1.0f, 1.0f, 1.0f}, 0.0f, 0.94f, 0.0f);

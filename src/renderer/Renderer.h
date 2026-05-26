@@ -204,6 +204,10 @@ private:
     void createShadowMap();
     void createPipeline();
     void createScene();
+    void addPortfolioShowcaseObjects();
+    [[nodiscard]] bool hasPortfolioShowcaseScene() const;
+    [[nodiscard]] bool currentFrameHasPortfolioShowcaseDrawItems() const;
+    [[nodiscard]] bool ensurePortfolioShowcaseSceneReady();
     [[nodiscard]] uint32_t allocateRenderObjectDebugId();
     void createCheckerboardTexture();
     void createPortfolioBaseColorTexture();

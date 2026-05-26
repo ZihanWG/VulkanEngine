@@ -71,9 +71,9 @@ The renderer can export a clean portfolio PNG from the final post-tonemapped fra
 4. Press `F12` or click `Capture Portfolio Screenshot`. Screenshot requests enable the portfolio showcase first if it is not already active.
 5. Use `screenshots/vulkan_engine_portfolio_latest.png`, or the timestamped file beside it, in the portfolio website assets folder.
 
-Portfolio Capture Mode applies a close three-quarter camera, ACES tone mapping, stable manual exposure, subtle bloom, CSM settings, and a portfolio-only studio setup with a neutral floor, gradient backdrop, a smaller opaque rough ceramic hero sphere, and PBR material samples for matte gray, glossy blue dielectric, rough metal, and medium metal looks. The normal checker/glTF debug scene remains available while the mode is disabled. The capture is copied from the swapchain after `CompositePass` and before `ImGuiPass`, so the exported PNG includes tone mapping and bloom but excludes the debug UI.
+Portfolio Capture Mode applies a balanced three-quarter camera, ACES tone mapping, stable manual exposure, subtle bloom, CSM settings, and a portfolio-only studio setup with a neutral floor, gradient backdrop, an opaque ceramic hero material, and PBR material samples for matte gray, glossy blue dielectric, rough metal, and small polished metal variation. The normal checker/glTF debug scene remains available while the mode is disabled. Screenshot requests enable and verify the portfolio showcase draw items before readback so `F12` does not export the debug scene. The capture is copied from the swapchain after `CompositePass` and before `ImGuiPass`, so the exported PNG includes tone mapping and bloom but excludes the debug UI.
 
-Reflection note: current metallic reflections are environment-based specular IBL only. They sample the prefiltered environment cubemap and do not include local scene-object reflections because SSR, planar reflections, ray traced reflections, and local reflection probes are not implemented yet. The showcase does not implement true glass transmission or refraction.
+Reflection note: current reflections are environment-based specular IBL only. The renderer does not currently implement SSR, planar reflections, ray-traced reflections, local reflection probes, or real glass transmission/refraction.
 
 ![Portfolio screenshot](screenshots/vulkan_engine_portfolio_latest.png)
 

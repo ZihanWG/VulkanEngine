@@ -27,10 +27,10 @@ While enabled, the renderer applies a stable showcase setup:
 - CSM texel snapping enabled
 - cascade debug colors disabled
 - a portfolio-only neutral studio floor and subtle gradient backdrop
-- a smaller opaque rough ceramic hero sphere with smaller material samples arranged around it
-- procedural UV-sphere material samples for matte gray, glossy blue dielectric, rough metal, and medium metal looks
+- an opaque ceramic hero material with smaller material samples arranged around it
+- procedural UV-sphere material samples for matte gray, glossy blue dielectric, rough metal, and small polished metal looks
 
-The portfolio-only scene objects are skipped by draw-item construction while the mode is disabled, so normal rendering remains unchanged. The checkerboard cube/glTF test objects stay in the regular debug scene and are hidden only while Portfolio Capture Mode is active. A screenshot request automatically enables Portfolio Capture Mode before queuing the readback so `F12` cannot accidentally export the debug fallback pyramid.
+The portfolio-only scene objects are skipped by draw-item construction while the mode is disabled, so normal rendering remains unchanged. The checkerboard cube/glTF test objects stay in the regular debug scene and are hidden only while Portfolio Capture Mode is active. A screenshot request automatically enables Portfolio Capture Mode and verifies that portfolio showcase draw items are active before readback, so `F12` cannot accidentally export the debug fallback scene.
 
 ## Capture Point
 
@@ -52,7 +52,7 @@ The PNG excludes:
 
 ## Reflection Scope
 
-Current reflective materials use environment-based specular IBL. Smooth metallic objects sample the prefiltered environment cubemap through the split-sum BRDF path; they do not reflect nearby scene objects because the renderer does not currently implement screen-space reflections, planar reflections, ray traced reflections, or local reflection probes. The portfolio showcase uses opaque PBR materials only; it does not implement true glass transmission or screen-space refraction.
+Current reflections are environment-based specular IBL only. The renderer does not currently implement SSR, planar reflections, ray-traced reflections, local reflection probes, or real glass transmission/refraction. Smooth metallic objects sample the prefiltered environment cubemap through the split-sum BRDF path, so polished materials are kept small and secondary in the portfolio PBR material showcase.
 
 ## Readback Design
 
