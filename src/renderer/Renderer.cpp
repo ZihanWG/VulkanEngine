@@ -1,10 +1,12 @@
 #include "renderer/Renderer.h"
 
 #include "core/Logger.h"
+#include "core/PngWriter.h"
 #include "core/Window.h"
 #include "renderer/Bounds.h"
 #include "rhi/VulkanDebugUtils.h"
 
+#include <SDL3/SDL.h>
 #include <imgui.h>
 
 #include <algorithm>
@@ -13,6 +15,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <ctime>
 #include <exception>
 #include <filesystem>
 #include <functional>
@@ -103,6 +106,9 @@ constexpr float kDefaultHistogramMaxLogLuminance = 4.0f;
 const glm::vec4 kDirectionalLightDirection{0.35f, -0.65f, -0.55f, 0.0f};
 const glm::vec4 kDirectionalLightColor{0.85f, 0.85f, 0.85f, 1.0f};
 const glm::vec4 kAmbientLightColor{0.15f, 0.15f, 0.15f, 1.0f};
+const glm::vec4 kPortfolioLightDirection{-0.38f, -0.78f, -0.48f, 0.0f};
+const glm::vec4 kPortfolioLightColor{1.08f, 1.03f, 0.94f, 1.0f};
+const glm::vec4 kPortfolioAmbientLightColor{0.20f, 0.22f, 0.24f, 1.0f};
 
 struct PushConstants {
     VkDeviceAddress objectFrameDataAddress = 0;
@@ -279,6 +285,8 @@ const char* renderObjectSourceTypeName(renderer::RenderObjectSourceType sourceTy
         return "built-in fallback cube";
     case renderer::RenderObjectSourceType::ImportedGltf:
         return "imported glTF";
+    case renderer::RenderObjectSourceType::PortfolioShowcase:
+        return "portfolio showcase";
     }
 
     return "unknown";
@@ -510,6 +518,8 @@ const char* imageLayoutName(VkImageLayout layout)
         return "VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL";
     case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
         return "VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL";
+    case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
+        return "VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL";
     case VK_IMAGE_LAYOUT_GENERAL:
         return "VK_IMAGE_LAYOUT_GENERAL";
     case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR:
@@ -517,6 +527,85 @@ const char* imageLayoutName(VkImageLayout layout)
     default:
         return "VkImageLayout(other)";
     }
+}
+
+std::filesystem::path projectRootPath()
+{
+#if defined(VULKAN_ENGINE_ASSET_DIR)
+    return std::filesystem::path(VULKAN_ENGINE_ASSET_DIR).parent_path();
+#else
+    return std::filesystem::current_path();
+#endif
+}
+
+std::filesystem::path portfolioScreenshotDirectory()
+{
+    return projectRootPath() / "screenshots";
+}
+
+std::string portfolioTimestamp()
+{
+    const std::time_t now = std::time(nullptr);
+    std::tm localTime{};
+#if defined(_WIN32)
+    localtime_s(&localTime, &now);
+#else
+    localtime_r(&now, &localTime);
+#endif
+
+    std::ostringstream stream;
+    stream << std::put_time(&localTime, "%Y%m%d_%H%M%S");
+    return stream.str();
+}
+
+bool supportedScreenshotFormat(VkFormat format)
+{
+    switch (format) {
+    case VK_FORMAT_R8G8B8A8_UNORM:
+    case VK_FORMAT_R8G8B8A8_SRGB:
+    case VK_FORMAT_B8G8R8A8_UNORM:
+    case VK_FORMAT_B8G8R8A8_SRGB:
+        return true;
+    default:
+        return false;
+    }
+}
+
+std::vector<uint8_t> convertScreenshotToRgba8(std::span<const std::byte> source,
+                                              VkExtent2D extent,
+                                              VkFormat format)
+{
+    const size_t pixelCount = static_cast<size_t>(extent.width) * extent.height;
+    const size_t byteCount = pixelCount * 4U;
+    if (source.size_bytes() < byteCount) {
+        throw std::runtime_error("Screenshot readback buffer is smaller than the captured image.");
+    }
+
+    std::vector<uint8_t> rgba(byteCount);
+    const auto* input = reinterpret_cast<const uint8_t*>(source.data());
+    for (size_t pixel = 0; pixel < pixelCount; ++pixel) {
+        const size_t offset = pixel * 4U;
+        switch (format) {
+        case VK_FORMAT_B8G8R8A8_UNORM:
+        case VK_FORMAT_B8G8R8A8_SRGB:
+            rgba[offset + 0] = input[offset + 2];
+            rgba[offset + 1] = input[offset + 1];
+            rgba[offset + 2] = input[offset + 0];
+            rgba[offset + 3] = input[offset + 3];
+            break;
+        case VK_FORMAT_R8G8B8A8_UNORM:
+        case VK_FORMAT_R8G8B8A8_SRGB:
+            rgba[offset + 0] = input[offset + 0];
+            rgba[offset + 1] = input[offset + 1];
+            rgba[offset + 2] = input[offset + 2];
+            rgba[offset + 3] = input[offset + 3];
+            break;
+        default:
+            throw std::runtime_error(std::string("Unsupported screenshot swapchain format: ") + vkFormatName(format));
+        }
+    }
+
+    return rgba;
 }
 
 std::string formatVec4(const glm::vec4& value)
@@ -555,12 +644,6 @@ float historyValue(double value)
     }
 
     return static_cast<float>(value);
-}
-
-float knownGpuFrameTotalMs(const rhi::VulkanTimestampQuery::Results& results)
-{
-    return historyValue(results.shadowPassMs + results.mainPassMs + results.bloomMs + results.autoExposureMs +
-                        results.histogramExposureMs + results.compositeMs);
 }
 
 std::string resourceUsageList(const renderer::RenderPassNode& pass, renderer::RenderResourceAccess access)
@@ -654,7 +737,8 @@ Renderer::Renderer(Window& window) : window_(window)
     context_.initialize(window_);
 
     frames_.resize(rhi::kMaxFramesInFlight);
-    timestampQuery_.initialize(context_, static_cast<uint32_t>(frames_.size()));
+    portfolioScreenshotReadbacks_.resize(frames_.size());
+    gpuProfiler_.initialize(context_, static_cast<uint32_t>(frames_.size()));
     swapchain_.initialize(context_, window_.framebufferExtent());
     imguiLayer_.initialize(window_, context_, swapchain_.colorFormat(), swapchain_.imageCount());
     createMaterialDescriptorSetLayout();
@@ -707,6 +791,7 @@ void Renderer::drawFrame()
 
     renderer::FrameResources& frame = frames_[currentFrame_];
     VK_CHECK(vkWaitForFences(context_.vkDevice(), 1, &frame.inFlightFence, VK_TRUE, UINT64_MAX));
+    processPortfolioScreenshotReadback(currentFrame_);
     updateAutoExposureFromReadback(currentFrame_);
     tryPrintExposureStats();
     tryPrintGpuTimings(currentFrame_);
@@ -764,7 +849,7 @@ void Renderer::drawFrame()
     submitInfo.pSignalSemaphoreInfos = &signalSemaphore;
 
     VK_CHECK(vkQueueSubmit2(context_.graphicsQueue(), 1, &submitInfo, frame.inFlightFence));
-    timestampQuery_.markFrameSubmitted(currentFrame_);
+    gpuProfiler_.markFrameSubmitted(currentFrame_);
 
     VkPresentInfoKHR presentInfo{};
     presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -795,11 +880,282 @@ void Renderer::drawFrame()
 void Renderer::handleEvent(const SDL_Event& event)
 {
     imguiLayer_.handleEvent(event);
+    if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat && event.key.key == SDLK_F11) {
+        setPortfolioCaptureMode(!portfolioCaptureMode_);
+    }
+    if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat && event.key.key == SDLK_F12) {
+        requestPortfolioScreenshot();
+    }
 }
 
 void Renderer::waitIdle()
 {
     context_.waitIdle();
+}
+
+void Renderer::requestPortfolioScreenshot()
+{
+    if (portfolioScreenshotRequested_ || hasPendingPortfolioScreenshotReadback()) {
+        portfolioScreenshotStatus_ = "Screenshot capture is already queued.";
+        return;
+    }
+    if (!swapchain_.supportsTransferSrc()) {
+        portfolioScreenshotStatus_ = "Screenshot unavailable: swapchain transfer-source usage is unsupported.";
+        Logger::warn(portfolioScreenshotStatus_);
+        return;
+    }
+    if (!supportedScreenshotFormat(swapchain_.colorFormat())) {
+        portfolioScreenshotStatus_ =
+            std::string("Screenshot unavailable: unsupported swapchain format ") + vkFormatName(swapchain_.colorFormat()) + ".";
+        Logger::warn(portfolioScreenshotStatus_);
+        return;
+    }
+
+    portfolioScreenshotRequested_ = true;
+    portfolioScreenshotStatus_ = "Screenshot capture queued for the next rendered frame.";
+}
+
+bool Renderer::hasPendingPortfolioScreenshotReadback() const
+{
+    for (const PortfolioScreenshotReadback& readback : portfolioScreenshotReadbacks_) {
+        if (readback.pending) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void Renderer::recordPortfolioScreenshotCopy(VkCommandBuffer commandBuffer, uint32_t imageIndex)
+{
+    if (!portfolioScreenshotRequested_) {
+        return;
+    }
+
+    portfolioScreenshotRequested_ = false;
+    if (currentFrame_ >= portfolioScreenshotReadbacks_.size()) {
+        portfolioScreenshotStatus_ = "Screenshot failed: frame readback slots are not initialized.";
+        Logger::warn(portfolioScreenshotStatus_);
+        return;
+    }
+    if (!swapchain_.supportsTransferSrc()) {
+        portfolioScreenshotStatus_ = "Screenshot failed: swapchain transfer-source usage is unsupported.";
+        Logger::warn(portfolioScreenshotStatus_);
+        return;
+    }
+
+    const VkExtent2D extent = swapchain_.extent();
+    const VkFormat format = swapchain_.colorFormat();
+    if (extent.width == 0 || extent.height == 0 || !supportedScreenshotFormat(format)) {
+        portfolioScreenshotStatus_ =
+            std::string("Screenshot failed: unsupported extent or format ") + vkFormatName(format) + ".";
+        Logger::warn(portfolioScreenshotStatus_);
+        return;
+    }
+
+    PortfolioScreenshotReadback& readback = portfolioScreenshotReadbacks_[currentFrame_];
+    if (readback.pending) {
+        portfolioScreenshotStatus_ = "Screenshot capture skipped: previous readback is still pending.";
+        Logger::warn(portfolioScreenshotStatus_);
+        return;
+    }
+
+    const VkDeviceSize byteSize = static_cast<VkDeviceSize>(extent.width) * extent.height * 4U;
+    if (!readback.buffer.valid() || readback.buffer.size() != byteSize) {
+        rhi::VulkanBufferCreateInfo bufferInfo{};
+        bufferInfo.size = byteSize;
+        bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        bufferInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
+        bufferInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+        readback.buffer.createBuffer(context_, bufferInfo);
+        rhi::debug::setObjectName(context_.vkDevice(),
+                                  readback.buffer.buffer(),
+                                  VK_OBJECT_TYPE_BUFFER,
+                                  "PortfolioScreenshotReadbackBuffer" + std::to_string(currentFrame_));
+    }
+
+    // Screenshot capture sits between CompositePass and ImGuiPass. The swapchain
+    // image is copied as a transfer source, then returned to color attachment
+    // layout so the normal overlay/present path can continue unchanged.
+    const VkImageLayout oldLayout = swapchain_.imageLayout(imageIndex);
+    VkImageMemoryBarrier2 toTransferBarrier{};
+    toTransferBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    toTransferBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    toTransferBarrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    toTransferBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    toTransferBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    toTransferBarrier.oldLayout = oldLayout;
+    toTransferBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    toTransferBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toTransferBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toTransferBarrier.image = swapchain_.image(imageIndex);
+    toTransferBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    toTransferBarrier.subresourceRange.baseMipLevel = 0;
+    toTransferBarrier.subresourceRange.levelCount = 1;
+    toTransferBarrier.subresourceRange.baseArrayLayer = 0;
+    toTransferBarrier.subresourceRange.layerCount = 1;
+
+    VkDependencyInfo toTransferDependency{};
+    toTransferDependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    toTransferDependency.imageMemoryBarrierCount = 1;
+    toTransferDependency.pImageMemoryBarriers = &toTransferBarrier;
+    vkCmdPipelineBarrier2(commandBuffer, &toTransferDependency);
+    swapchain_.setImageLayout(imageIndex, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+    VkBufferImageCopy copyRegion{};
+    copyRegion.bufferOffset = 0;
+    copyRegion.bufferRowLength = 0;
+    copyRegion.bufferImageHeight = 0;
+    copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copyRegion.imageSubresource.mipLevel = 0;
+    copyRegion.imageSubresource.baseArrayLayer = 0;
+    copyRegion.imageSubresource.layerCount = 1;
+    copyRegion.imageOffset = {0, 0, 0};
+    copyRegion.imageExtent = {extent.width, extent.height, 1};
+    vkCmdCopyImageToBuffer(commandBuffer,
+                           swapchain_.image(imageIndex),
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           readback.buffer.buffer(),
+                           1,
+                           &copyRegion);
+
+    VkBufferMemoryBarrier2 hostReadBarrier{};
+    hostReadBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+    hostReadBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    hostReadBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    hostReadBarrier.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+    hostReadBarrier.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+    hostReadBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    hostReadBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    hostReadBarrier.buffer = readback.buffer.buffer();
+    hostReadBarrier.offset = 0;
+    hostReadBarrier.size = byteSize;
+
+    VkImageMemoryBarrier2 toColorBarrier{};
+    toColorBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    toColorBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    toColorBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    toColorBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    toColorBarrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    toColorBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    toColorBarrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    toColorBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toColorBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toColorBarrier.image = swapchain_.image(imageIndex);
+    toColorBarrier.subresourceRange = toTransferBarrier.subresourceRange;
+
+    std::array<VkImageMemoryBarrier2, 1> imageBarriers{toColorBarrier};
+    VkDependencyInfo afterCopyDependency{};
+    afterCopyDependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    afterCopyDependency.bufferMemoryBarrierCount = 1;
+    afterCopyDependency.pBufferMemoryBarriers = &hostReadBarrier;
+    afterCopyDependency.imageMemoryBarrierCount = static_cast<uint32_t>(imageBarriers.size());
+    afterCopyDependency.pImageMemoryBarriers = imageBarriers.data();
+    vkCmdPipelineBarrier2(commandBuffer, &afterCopyDependency);
+    swapchain_.setImageLayout(imageIndex, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+    const std::filesystem::path outputDirectory = portfolioScreenshotDirectory();
+    readback.extent = extent;
+    readback.format = format;
+    readback.timestampedPath =
+        outputDirectory / ("vulkan_engine_portfolio_" + portfolioTimestamp() + ".png");
+    readback.latestPath = outputDirectory / "vulkan_engine_portfolio_latest.png";
+    readback.pending = true;
+    portfolioScreenshotStatus_ =
+        "Screenshot readback queued from final composite before ImGui overlay.";
+}
+
+void Renderer::processPortfolioScreenshotReadback(uint32_t frameIndex)
+{
+    if (frameIndex >= portfolioScreenshotReadbacks_.size()) {
+        return;
+    }
+
+    PortfolioScreenshotReadback& readback = portfolioScreenshotReadbacks_[frameIndex];
+    if (!readback.pending || !readback.buffer.valid()) {
+        return;
+    }
+
+    try {
+        std::vector<std::byte> pixels(static_cast<size_t>(readback.buffer.size()));
+        readback.buffer.download(std::span<std::byte>(pixels.data(), pixels.size()));
+
+        const std::vector<uint8_t> rgba = convertScreenshotToRgba8(pixels, readback.extent, readback.format);
+        const uint32_t rowStride = readback.extent.width * 4U;
+        writePngRgba8(readback.timestampedPath, readback.extent.width, readback.extent.height, rgba, rowStride);
+        writePngRgba8(readback.latestPath, readback.extent.width, readback.extent.height, rgba, rowStride);
+
+        lastPortfolioScreenshotPath_ = readback.timestampedPath;
+        portfolioScreenshotStatus_ = "Saved portfolio screenshot: " + readback.timestampedPath.string();
+        Logger::info(portfolioScreenshotStatus_);
+    } catch (const std::exception& error) {
+        portfolioScreenshotStatus_ = std::string("Screenshot save failed: ") + error.what();
+        Logger::warn(portfolioScreenshotStatus_);
+    }
+
+    readback.pending = false;
+}
+
+void Renderer::setPortfolioCaptureMode(bool enabled)
+{
+    if (portfolioCaptureMode_ == enabled) {
+        return;
+    }
+
+    if (enabled) {
+        portfolioCaptureSavedState_.camera = camera_;
+        portfolioCaptureSavedState_.toneMapping = toneMappingSettings_;
+        portfolioCaptureSavedState_.bloom = bloomSettings_;
+        portfolioCaptureSavedState_.csm = csmSettings_;
+        portfolioCaptureSavedState_.currentExposure = currentExposure_;
+        portfolioCaptureSavedState_.valid = true;
+        portfolioCaptureMode_ = true;
+        applyPortfolioCaptureSettings();
+    } else {
+        portfolioCaptureMode_ = false;
+        restorePortfolioCaptureSettings();
+    }
+}
+
+void Renderer::applyPortfolioCaptureSettings()
+{
+    camera_.position = {1.62f, 0.78f, 2.58f};
+    camera_.target = {0.02f, -0.03f, 0.12f};
+    camera_.up = {0.0f, 1.0f, 0.0f};
+    camera_.verticalFovRadians = glm::radians(42.0f);
+    camera_.nearPlane = 0.1f;
+    camera_.farPlane = 100.0f;
+
+    toneMappingSettings_.operatorType = 1;
+    toneMappingSettings_.enableAutoExposure = false;
+    toneMappingSettings_.exposureMode = static_cast<int>(ExposureMode::Manual);
+    toneMappingSettings_.manualExposure = 1.0f;
+    currentExposure_ = toneMappingExposureValue(toneMappingSettings_.manualExposure);
+
+    bloomSettings_.enabled = true;
+    bloomSettings_.threshold = 1.05f;
+    bloomSettings_.intensity = 0.12f;
+
+    csmSettings_.enableTexelSnapping = true;
+    csmSettings_.enableCascadeDebugColors = false;
+    csmSettings_.lambda = 0.58f;
+    csmSettings_.shadowDistance = std::min(csmSettings_.farPlane, 40.0f);
+    clampRuntimeSettings();
+}
+
+void Renderer::restorePortfolioCaptureSettings()
+{
+    if (!portfolioCaptureSavedState_.valid) {
+        return;
+    }
+
+    camera_ = portfolioCaptureSavedState_.camera;
+    toneMappingSettings_ = portfolioCaptureSavedState_.toneMapping;
+    bloomSettings_ = portfolioCaptureSavedState_.bloom;
+    csmSettings_ = portfolioCaptureSavedState_.csm;
+    currentExposure_ = portfolioCaptureSavedState_.currentExposure;
+    portfolioCaptureSavedState_ = {};
+    clampRuntimeSettings();
 }
 
 void Renderer::createMaterialDescriptorSetLayout()
@@ -2042,7 +2398,10 @@ void Renderer::createScene()
     importedMetallicRoughnessTextures_.clear();
 
     cubeMesh_ = renderer::Mesh::createCube(context_, commandContext_);
+    portfolioSphereMesh_ = renderer::Mesh::createUvSphere(context_, commandContext_);
     createCheckerboardTexture();
+    createPortfolioBaseColorTexture();
+    createPortfolioBackdropTexture();
     createNormalTexture();
     createMetallicRoughnessTexture();
     createEnvironmentMap();
@@ -2055,35 +2414,130 @@ void Renderer::createScene()
                                 const renderer::Material* material,
                                 const glm::vec3& position,
                                 const glm::vec3& rotationRadians,
-                                const glm::vec3& scale) {
+                                const glm::vec3& scale,
+                                bool animateTransform = true,
+                                bool portfolioOnly = false,
+                                bool hideInPortfolio = false,
+                                renderer::RenderObjectSourceType sourceType =
+                                    renderer::RenderObjectSourceType::BuiltInFallbackCube) {
         renderer::RenderObject cube{};
         cube.debugId = allocateRenderObjectDebugId();
         cube.mesh = &cubeMesh_;
         cube.material = material;
         cube.debugName = std::move(debugName);
-        cube.sourceType = renderer::RenderObjectSourceType::BuiltInFallbackCube;
+        cube.sourceType = sourceType;
         cube.transform.position = position;
         cube.transform.rotationRadians = rotationRadians;
         cube.transform.scale = scale;
-        cube.animateTransform = true;
+        cube.animateTransform = animateTransform;
+        cube.portfolioOnly = portfolioOnly;
+        cube.hideInPortfolio = hideInPortfolio;
         renderObjects_.push_back(std::move(cube));
     };
 
     const auto addCubeFallbackScene = [&addCube, this]() {
         renderObjects_.reserve(4);
-        addCube("Center Cube", &materialVariants_.at(0), {0.0f, -0.1f, 0.0f}, {0.2f, 0.0f, 0.0f}, {0.7f, 0.7f, 0.7f});
+        addCube("Center Cube",
+                &materialVariants_.at(0),
+                {0.0f, -0.1f, 0.0f},
+                {0.2f, 0.0f, 0.0f},
+                {0.7f, 0.7f, 0.7f},
+                true,
+                false,
+                true);
         addCube(
-            "Left Cube", &materialVariants_.at(1), {-1.35f, -0.15f, -0.35f}, {0.0f, 0.35f, 0.2f}, {0.5f, 0.5f, 0.5f});
+            "Left Cube",
+            &materialVariants_.at(1),
+            {-1.35f, -0.15f, -0.35f},
+            {0.0f, 0.35f, 0.2f},
+            {0.5f, 0.5f, 0.5f},
+            true,
+            false,
+            true);
         addCube("Right Cube",
                 &materialVariants_.at(2),
                 {1.35f, -0.05f, -0.25f},
                 {0.25f, -0.35f, 0.0f},
-                {0.55f, 0.8f, 0.55f});
+                {0.55f, 0.8f, 0.55f},
+                true,
+                false,
+                true);
         addCube("Elevated Cube",
                 &materialVariants_.at(3),
                 {0.0f, 1.0f, -0.7f},
                 {-0.3f, 0.2f, 0.45f},
-                {0.45f, 0.45f, 0.45f});
+                {0.45f, 0.45f, 0.45f},
+                true,
+                false,
+                true);
+    };
+
+    const auto addPortfolioSphere = [this](std::string debugName,
+                                           const renderer::Material* material,
+                                           const glm::vec3& position,
+                                           const glm::vec3& scale) {
+        renderer::RenderObject sphere{};
+        sphere.debugId = allocateRenderObjectDebugId();
+        sphere.mesh = &portfolioSphereMesh_;
+        sphere.material = material;
+        sphere.debugName = std::move(debugName);
+        sphere.sourceType = renderer::RenderObjectSourceType::PortfolioShowcase;
+        sphere.transform.position = position;
+        sphere.transform.scale = scale;
+        sphere.animateTransform = false;
+        sphere.portfolioOnly = true;
+        renderObjects_.push_back(std::move(sphere));
+    };
+
+    const auto addPortfolioShowcaseObjects = [&addCube, &addPortfolioSphere, this]() {
+        renderObjects_.reserve(renderObjects_.size() + 8);
+        addCube("Portfolio Studio Floor",
+                &materialVariants_.at(4),
+                {0.0f, -0.56f, 0.28f},
+                {0.0f, 0.0f, 0.0f},
+                {14.0f, 0.08f, 8.0f},
+                false,
+                true,
+                false,
+                renderer::RenderObjectSourceType::PortfolioShowcase);
+        addCube("Portfolio Studio Backdrop",
+                &materialVariants_.at(10),
+                {0.0f, 1.05f, -2.35f},
+                {0.0f, 0.0f, 0.0f},
+                {24.0f, 7.0f, 0.08f},
+                false,
+                true,
+                false,
+                renderer::RenderObjectSourceType::PortfolioShowcase);
+        addCube("Portfolio Side Plinth",
+                &materialVariants_.at(4),
+                {1.02f, -0.42f, -0.18f},
+                {0.0f, -0.18f, 0.0f},
+                {1.08f, 0.28f, 0.78f},
+                false,
+                true,
+                false,
+                renderer::RenderObjectSourceType::PortfolioShowcase);
+        addPortfolioSphere("Portfolio Hero Reflective",
+                           &materialVariants_.at(9),
+                           {0.0f, 0.09f, 0.06f},
+                           {1.22f, 1.22f, 1.22f});
+        addPortfolioSphere("Portfolio Matte Gray",
+                           &materialVariants_.at(5),
+                           {-1.05f, -0.20f, 0.16f},
+                           {0.64f, 0.64f, 0.64f});
+        addPortfolioSphere("Portfolio Glossy Blue",
+                           &materialVariants_.at(6),
+                           {-0.62f, -0.31f, 0.74f},
+                           {0.42f, 0.42f, 0.42f});
+        addPortfolioSphere("Portfolio Rough Metal",
+                           &materialVariants_.at(7),
+                           {1.22f, -0.28f, 0.34f},
+                           {0.48f, 0.48f, 0.48f});
+        addPortfolioSphere("Portfolio Polished Metal",
+                           &materialVariants_.at(8),
+                           {1.02f, 0.02f, -0.18f},
+                           {0.60f, 0.60f, 0.60f});
     };
 
     const std::array<std::filesystem::path, 2> modelCandidates = {
@@ -2103,7 +2557,7 @@ void Renderer::createScene()
             createImportedGltfMaterials(loadedAsset.materials);
             importedMeshes_ = std::move(loadedAsset.meshes);
 
-            renderObjects_.reserve(loadedAsset.nodeMeshInstances.size());
+            renderObjects_.reserve(loadedAsset.nodeMeshInstances.size() + 8);
             for (const renderer::GltfNodeMeshInstance& instance : loadedAsset.nodeMeshInstances) {
                 if (instance.meshIndex >= importedMeshes_.size() || !importedMeshes_[instance.meshIndex].valid()) {
                     Logger::warn("Skipping imported glTF RenderObject with invalid mesh index " +
@@ -2123,6 +2577,7 @@ void Renderer::createScene()
                 importedObject.debugName = instance.debugName.empty() ? "Imported glTF Node" : instance.debugName;
                 importedObject.sourceType = renderer::RenderObjectSourceType::ImportedGltf;
                 importedObject.transform = renderer::Transform::fromMatrix(instance.transform);
+                importedObject.hideInPortfolio = true;
                 renderObjects_.push_back(std::move(importedObject));
             }
 
@@ -2134,6 +2589,7 @@ void Renderer::createScene()
                          std::to_string(importedMeshes_.size()) + " mesh slot(s), " +
                          std::to_string(renderObjects_.size()) + " render object(s), and " +
                          std::to_string(importedMaterials_.size()) + " material(s).");
+            addPortfolioShowcaseObjects();
             return;
         } catch (const std::exception& error) {
             Logger::warn("Failed to load glTF mesh '" + modelPath.string() + "': " + error.what());
@@ -2142,6 +2598,7 @@ void Renderer::createScene()
 
     Logger::warn("No supported glTF mesh asset loaded; using built-in cube fallback scene.");
     addCubeFallbackScene();
+    addPortfolioShowcaseObjects();
 }
 
 void Renderer::createCheckerboardTexture()
@@ -2178,6 +2635,72 @@ void Renderer::createCheckerboardTexture()
     });
     nameTextureResources(checkerboardTexture_, "BaseColorTexture");
     Logger::info("Created procedural checkerboard base color texture as sRGB.");
+}
+
+void Renderer::createPortfolioBaseColorTexture()
+{
+    constexpr uint32_t width = 4;
+    constexpr uint32_t height = 4;
+    std::array<uint8_t, width * height * 4> pixels{};
+    for (size_t offset = 0; offset < pixels.size(); offset += 4) {
+        pixels[offset + 0] = 255;
+        pixels[offset + 1] = 255;
+        pixels[offset + 2] = 255;
+        pixels[offset + 3] = 255;
+    }
+
+    portfolioBaseColorTexture_.createFromRgba8(context_,
+                                               commandContext_,
+                                               width,
+                                               height,
+                                               std::span<const uint8_t>(pixels.data(), pixels.size()),
+                                               VK_FORMAT_R8G8B8A8_SRGB,
+                                               false);
+    portfolioBaseColorTexture_.setDebugMetadata(rhi::TextureDebugMetadata{
+        "Portfolio solid base color",
+        {},
+        rhi::TextureColorSpace::SRGB,
+        rhi::TextureDebugSource::ProceduralFallback,
+        false,
+    });
+    nameTextureResources(portfolioBaseColorTexture_, "PortfolioBaseColorTexture");
+}
+
+void Renderer::createPortfolioBackdropTexture()
+{
+    constexpr uint32_t width = 16;
+    constexpr uint32_t height = 64;
+    std::array<uint8_t, width * height * 4> pixels{};
+    const glm::vec3 bottom{84.0f, 96.0f, 106.0f};
+    const glm::vec3 top{48.0f, 60.0f, 74.0f};
+
+    for (uint32_t y = 0; y < height; ++y) {
+        const float t = static_cast<float>(y) / static_cast<float>(height - 1);
+        const glm::vec3 color = glm::mix(bottom, top, t);
+        for (uint32_t x = 0; x < width; ++x) {
+            const size_t offset = (static_cast<size_t>(y) * width + x) * 4U;
+            pixels[offset + 0] = static_cast<uint8_t>(std::clamp(color.r, 0.0f, 255.0f));
+            pixels[offset + 1] = static_cast<uint8_t>(std::clamp(color.g, 0.0f, 255.0f));
+            pixels[offset + 2] = static_cast<uint8_t>(std::clamp(color.b, 0.0f, 255.0f));
+            pixels[offset + 3] = 255;
+        }
+    }
+
+    portfolioBackdropTexture_.createFromRgba8(context_,
+                                              commandContext_,
+                                              width,
+                                              height,
+                                              std::span<const uint8_t>(pixels.data(), pixels.size()),
+                                              VK_FORMAT_R8G8B8A8_SRGB,
+                                              false);
+    portfolioBackdropTexture_.setDebugMetadata(rhi::TextureDebugMetadata{
+        "Portfolio studio backdrop gradient",
+        {},
+        rhi::TextureColorSpace::SRGB,
+        rhi::TextureDebugSource::ProceduralFallback,
+        false,
+    });
+    nameTextureResources(portfolioBackdropTexture_, "PortfolioBackdropTexture");
 }
 
 void Renderer::createNormalTexture()
@@ -2480,7 +3003,7 @@ void Renderer::createBrdfLutTexture()
 void Renderer::createMaterial()
 {
     materialVariants_.clear();
-    materialVariants_.reserve(4);
+    materialVariants_.reserve(11);
 
     if (isBindlessMaterialTextureActive()) {
         bindlessBaseColorFallbackIndex_ = bindlessTextureHeap_.registerTexture(
@@ -2520,6 +3043,51 @@ void Renderer::createMaterial()
     addMaterial("Checkerboard Warm Semi-Metal", {1.0f, 0.82f, 0.65f, 1.0f}, 0.35f, 0.38f, 0.5f);
     addMaterial("Checkerboard Cool Rough Metal", {0.72f, 0.84f, 1.0f, 1.0f}, 0.85f, 0.62f, 1.0f);
     addMaterial("Checkerboard Glossy Dielectric", {0.9f, 1.0f, 0.78f, 1.0f}, 0.0f, 0.18f, 0.25f);
+
+    const auto addPortfolioMaterial = [this](std::string debugName,
+                                             const rhi::VulkanTexture* baseColorTexture,
+                                             const glm::vec4& baseColorFactor,
+                                             float metallic,
+                                             float roughness,
+                                             float multiScatterStrength) {
+        renderer::Material material{};
+        material.debugName = std::move(debugName);
+        material.baseColorTexture = baseColorTexture;
+        material.normalTexture = &flatNormalTexture_;
+        material.metallicRoughnessTexture = &neutralMetallicRoughnessTexture_;
+        material.baseColorFactor = baseColorFactor;
+        material.metallic = metallic;
+        material.roughness = roughness;
+        material.multiScatterStrength = multiScatterStrength;
+        material.source = renderer::MaterialSource::BuiltIn;
+        material.hasNormalMap = false;
+        material.hasMetallicRoughnessMap = false;
+        material.baseColorTextureFallback = false;
+        material.normalTextureFallback = true;
+        material.metallicRoughnessTextureFallback = true;
+        assignBindlessTextureIndices(material);
+        createMaterialDescriptorSet(material);
+        materialVariants_.push_back(std::move(material));
+    };
+
+    addPortfolioMaterial(
+        "Portfolio_Ground", &portfolioBaseColorTexture_, {0.30f, 0.32f, 0.32f, 1.0f}, 0.0f, 0.86f, 0.0f);
+    addPortfolioMaterial(
+        "Portfolio_MatteGray", &portfolioBaseColorTexture_, {0.66f, 0.66f, 0.62f, 1.0f}, 0.0f, 0.92f, 0.0f);
+    addPortfolioMaterial(
+        "Portfolio_GlossyBlue", &portfolioBaseColorTexture_, {0.18f, 0.43f, 0.88f, 1.0f}, 0.0f, 0.22f, 0.2f);
+    addPortfolioMaterial(
+        "Portfolio_RoughMetal", &portfolioBaseColorTexture_, {0.76f, 0.72f, 0.65f, 1.0f}, 1.0f, 0.58f, 0.85f);
+    addPortfolioMaterial(
+        "Portfolio_PolishedMetal", &portfolioBaseColorTexture_, {0.82f, 0.84f, 0.84f, 1.0f}, 1.0f, 0.13f, 0.55f);
+    addPortfolioMaterial("Portfolio_HeroReflective",
+                         &portfolioBaseColorTexture_,
+                         {0.86f, 0.90f, 0.88f, 1.0f},
+                         1.0f,
+                         0.18f,
+                         0.65f);
+    addPortfolioMaterial(
+        "Portfolio_Backdrop", &portfolioBackdropTexture_, {1.0f, 1.0f, 1.0f, 1.0f}, 0.0f, 0.94f, 0.0f);
 
     checkerboardMaterial_ = materialVariants_.front();
 }
@@ -2971,8 +3539,9 @@ void Renderer::updateCascades(float aspectRatio)
     const glm::vec3 cameraUp = glm::normalize(glm::cross(cameraRight, cameraForward));
     const float tanHalfFov = std::tan(camera_.verticalFovRadians * 0.5f);
 
-    const glm::vec3 lightDirection = glm::normalize(
-        glm::vec3{kDirectionalLightDirection.x, kDirectionalLightDirection.y, kDirectionalLightDirection.z});
+    const glm::vec4 activeLightDirection = portfolioCaptureMode_ ? kPortfolioLightDirection : kDirectionalLightDirection;
+    const glm::vec3 lightDirection =
+        glm::normalize(glm::vec3{activeLightDirection.x, activeLightDirection.y, activeLightDirection.z});
     const glm::vec3 lightUp = std::abs(glm::dot(lightDirection, glm::vec3{0.0f, 1.0f, 0.0f})) > 0.95f
                                   ? glm::vec3{0.0f, 0.0f, 1.0f}
                                   : glm::vec3{0.0f, 1.0f, 0.0f};
@@ -3093,6 +3662,14 @@ const renderer::Material* Renderer::resolveMaterial(const renderer::RenderObject
     return object.material;
 }
 
+bool Renderer::isRenderObjectActive(const renderer::RenderObject& object) const
+{
+    if (portfolioCaptureMode_ && object.hideInPortfolio) {
+        return false;
+    }
+    return !object.portfolioOnly || portfolioCaptureMode_;
+}
+
 bool Renderer::appendDrawItemsForObject(uint32_t objectIndex, std::vector<DrawItem>& drawItems) const
 {
     if (objectIndex >= renderObjects_.size()) {
@@ -3100,6 +3677,10 @@ bool Renderer::appendDrawItemsForObject(uint32_t objectIndex, std::vector<DrawIt
     }
 
     const renderer::RenderObject& object = renderObjects_[objectIndex];
+    if (!isRenderObjectActive(object)) {
+        return true;
+    }
+
     const renderer::Mesh* mesh = object.mesh;
     if (!mesh || !mesh->valid()) {
         return true;
@@ -3179,6 +3760,9 @@ void Renderer::buildVisibleDrawItems(const renderer::Frustum& frustum)
     std::vector<bool> objectVisible(objectCount, false);
     for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
         const renderer::RenderObject& object = renderObjects_[objectIndex];
+        if (!isRenderObjectActive(object)) {
+            continue;
+        }
         if (!object.mesh || !object.mesh->valid()) {
             continue;
         }
@@ -3223,6 +3807,9 @@ void Renderer::buildShadowDrawItems(uint32_t cascadeIndex, const renderer::Frust
     std::vector<bool> objectVisible(objectCount, false);
     for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
         const renderer::RenderObject& object = renderObjects_[objectIndex];
+        if (!isRenderObjectActive(object)) {
+            continue;
+        }
         if (!object.mesh || !object.mesh->valid()) {
             continue;
         }
@@ -3481,11 +4068,11 @@ void Renderer::tryPrintExposureStats()
 
 void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
 {
-    rhi::VulkanTimestampQuery::Results results{};
-    if (!timestampQuery_.readFrame(frameIndex, results) || !results.valid) {
+    renderer::GpuProfiler::FrameResults results{};
+    if (!gpuProfiler_.readFrame(frameIndex, results) || !results.valid) {
         return;
     }
-    latestGpuTimings_ = results;
+    latestGpuProfilerResults_ = results;
     pushGpuTimingSample(results);
 
     const auto now = std::chrono::steady_clock::now();
@@ -3497,14 +4084,14 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
 
     std::ostringstream message;
     message << std::fixed << std::setprecision(3) << "GPU timings:\n"
-            << "  ShadowPass: " << results.shadowPassMs << " ms\n"
-            << "  MainPass: " << results.mainPassMs << " ms\n"
-            << "  Skybox: " << results.skyboxMs << " ms\n"
-            << "  RenderObjects: " << results.renderObjectsMs << " ms\n"
-            << "  Bloom: " << results.bloomMs << " ms\n"
-            << "  AutoExposure: " << results.autoExposureMs << " ms\n"
-            << "  HistogramExposure: " << results.histogramExposureMs << " ms\n"
-            << "  Composite: " << results.compositeMs << " ms\n";
+            << "  Frame total: " << results.totalGpuTimeMs << " ms\n"
+            << "  timestamp queries: " << results.queryCount << "/" << results.maxQueryCount << "\n";
+    if (results.queryLimitExceeded) {
+        message << "  warning: timestamp query capacity was exceeded\n";
+    }
+    for (const renderer::GpuProfiler::ScopeResult& scope : results.scopes) {
+        message << "  " << scope.name << ": " << scope.elapsedMs << " ms\n";
+    }
     if (cullingStats_.gpuCulling) {
         const uint32_t totalDrawItems = frameIndex < frameGpuCullTotalDrawItems_.size()
                                             ? frameGpuCullTotalDrawItems_[frameIndex]
@@ -3570,21 +4157,49 @@ void Renderer::updateCpuFrameTime()
     cpuFps_ = cpuFrameDeltaMs_ > 0.0f ? 1000.0f / cpuFrameDeltaMs_ : 0.0f;
 }
 
-void Renderer::pushGpuTimingSample(const rhi::VulkanTimestampQuery::Results& results)
+void Renderer::pushGpuTimingSample(const renderer::GpuProfiler::FrameResults& results)
 {
     if (!results.valid) {
         return;
     }
 
-    gpuTimingHistory_.shadowPass.push(historyValue(results.shadowPassMs));
-    gpuTimingHistory_.mainPass.push(historyValue(results.mainPassMs));
-    gpuTimingHistory_.bloom.push(historyValue(results.bloomMs));
-    gpuTimingHistory_.composite.push(historyValue(results.compositeMs));
-    gpuTimingHistory_.autoExposure.push(historyValue(results.autoExposureMs));
-    gpuTimingHistory_.histogramExposure.push(historyValue(results.histogramExposureMs));
-    gpuTimingHistory_.skybox.push(historyValue(results.skyboxMs));
-    gpuTimingHistory_.renderObjects.push(historyValue(results.renderObjectsMs));
-    gpuTimingHistory_.knownFrameTotal.push(knownGpuFrameTotalMs(results));
+    gpuFrameTimeHistory_.push(historyValue(results.totalGpuTimeMs));
+    for (const renderer::GpuProfiler::ScopeResult& scope : results.scopes) {
+        if (DebugHistory* history = gpuTimingHistoryForPass(scope.name)) {
+            history->push(historyValue(scope.elapsedMs));
+        }
+    }
+}
+
+void Renderer::resetGpuProfilerHistory()
+{
+    gpuFrameTimeHistory_ = {};
+    gpuTimingHistories_.clear();
+}
+
+Renderer::DebugHistory* Renderer::gpuTimingHistoryForPass(std::string_view name)
+{
+    for (GpuTimingHistory& entry : gpuTimingHistories_) {
+        if (entry.name == name) {
+            return &entry.history;
+        }
+    }
+
+    GpuTimingHistory entry{};
+    entry.name = std::string(name);
+    gpuTimingHistories_.push_back(std::move(entry));
+    return &gpuTimingHistories_.back().history;
+}
+
+const Renderer::DebugHistory* Renderer::gpuTimingHistoryForPass(std::string_view name) const
+{
+    for (const GpuTimingHistory& entry : gpuTimingHistories_) {
+        if (entry.name == name) {
+            return &entry.history;
+        }
+    }
+
+    return nullptr;
 }
 
 Renderer::CullingDebugSnapshot Renderer::cullingDebugSnapshot(uint32_t frameIndex)
@@ -3876,6 +4491,7 @@ void Renderer::buildDebugUi()
     ImGui::Begin("VulkanEngine Debug");
 
     drawRuntimeSettingsDebugUi();
+    drawPortfolioCaptureDebugUi();
 
     if (ImGui::CollapsingHeader("Debug Views", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Checkbox("Show Render Graph panel", &debugUiSettings_.showRenderGraphPanel);
@@ -3883,7 +4499,7 @@ void Renderer::buildDebugUi()
         ImGui::Checkbox("Show Material Inspector", &debugUiSettings_.showMaterialInspectorPanel);
         ImGui::Checkbox("Show Texture Debug Views", &debugUiSettings_.showTextureDebugPanel);
         ImGui::Checkbox("Show Render Target Debug Views", &debugUiSettings_.showRenderTargetDebugPanel);
-        ImGui::Checkbox("Show GPU Timing graphs", &debugUiSettings_.showGpuTimingGraphs);
+        ImGui::Checkbox("Show GPU Profiler panel", &debugUiSettings_.showGpuTimingGraphs);
         ImGui::Checkbox("Show Culling stats", &debugUiSettings_.showCullingStats);
         ImGui::Checkbox("Show Exposure graphs", &debugUiSettings_.showExposureGraphs);
     }
@@ -3966,7 +4582,7 @@ void Renderer::buildDebugUi()
     }
 
     if (debugUiSettings_.showGpuTimingGraphs &&
-        ImGui::CollapsingHeader("GPU Timings", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::CollapsingHeader("GPU Profiler", ImGuiTreeNodeFlags_DefaultOpen)) {
         drawGpuTimingDebugUi();
     }
 
@@ -4011,6 +4627,45 @@ void Renderer::buildDebugUi()
     }
 
     clampRuntimeSettings();
+}
+
+void Renderer::drawPortfolioCaptureDebugUi()
+{
+    if (!ImGui::CollapsingHeader("Portfolio Capture", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+
+    bool portfolioMode = portfolioCaptureMode_;
+    if (ImGui::Checkbox("Portfolio Capture Mode", &portfolioMode)) {
+        setPortfolioCaptureMode(portfolioMode);
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("F11");
+
+    if (ImGui::Button("Load Portfolio Showcase Scene")) {
+        setPortfolioCaptureMode(true);
+        applyPortfolioCaptureSettings();
+        portfolioScreenshotStatus_ = "Portfolio showcase scene preset is active.";
+    }
+
+    if (ImGui::Button("Capture Portfolio Screenshot")) {
+        requestPortfolioScreenshot();
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("F12");
+
+    const std::filesystem::path outputDirectory = portfolioScreenshotDirectory();
+    ImGui::TextWrapped("Output: %s", (outputDirectory / "vulkan_engine_portfolio_latest.png").string().c_str());
+    if (!lastPortfolioScreenshotPath_.empty()) {
+        ImGui::TextWrapped("Last timestamped: %s", lastPortfolioScreenshotPath_.string().c_str());
+    }
+    ImGui::TextWrapped("Status: %s", portfolioScreenshotStatus_.c_str());
+    ImGui::TextDisabled("Captures the final composite before ImGui, so debug UI is excluded from the PNG.");
+
+    if (!swapchain_.supportsTransferSrc()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.25f, 1.0f),
+                           "Current swapchain does not support transfer-source screenshot capture.");
+    }
 }
 
 void Renderer::drawRuntimeSettingsDebugUi()
@@ -4948,15 +5603,51 @@ void Renderer::drawGlobalTextureMetadata()
 
 void Renderer::drawGpuTimingDebugUi()
 {
-    if (!latestGpuTimings_.valid) {
-        ImGui::TextDisabled("GPU timings are waiting for the first completed frame.");
+    bool profilerEnabled = gpuProfilerEnabled_ && gpuProfiler_.available();
+    if (ImGui::Checkbox("GPU profiler enabled", &profilerEnabled)) {
+        gpuProfilerEnabled_ = profilerEnabled;
+        gpuProfiler_.setEnabled(gpuProfilerEnabled_);
+        if (!gpuProfilerEnabled_) {
+            latestGpuProfilerResults_ = {};
+        }
+    }
+
+    if (!gpuProfiler_.available()) {
+        ImGui::TextDisabled("GPU profiler unavailable.");
+        if (!gpuProfiler_.unavailableReason().empty()) {
+            ImGui::TextWrapped("Reason: %s", gpuProfiler_.unavailableReason().c_str());
+        }
         ImGui::Text("CPU frame delta: %.3f ms (%.1f FPS)", cpuFrameDeltaMs_, cpuFps_);
         return;
     }
 
-    ImGui::Text("Approx GPU total from known passes: %.3f ms", gpuTimingHistory_.knownFrameTotal.latest());
+    ImGui::SameLine();
+    if (ImGui::Button("Reset averages")) {
+        resetGpuProfilerHistory();
+        latestGpuProfilerResults_ = {};
+    }
+
+    if (!gpuProfilerEnabled_) {
+        ImGui::TextDisabled("GPU profiler disabled.");
+        ImGui::Text("CPU frame delta: %.3f ms (%.1f FPS)", cpuFrameDeltaMs_, cpuFps_);
+        return;
+    }
+
+    if (!latestGpuProfilerResults_.valid) {
+        ImGui::TextDisabled("GPU profiler is waiting for the first completed frame.");
+        ImGui::Text("CPU frame delta: %.3f ms (%.1f FPS)", cpuFrameDeltaMs_, cpuFps_);
+        return;
+    }
+
+    ImGui::Text("GPU frame total: %.3f ms", gpuFrameTimeHistory_.latest());
     ImGui::Text("CPU frame delta: %.3f ms (%.1f FPS)", cpuFrameDeltaMs_, cpuFps_);
-    ImGui::TextDisabled("Skybox and RenderObjects are nested ranges inside Main; ImGui is not timestamped.");
+    ImGui::Text("Timestamp queries: %u / %u",
+                latestGpuProfilerResults_.queryCount,
+                latestGpuProfilerResults_.maxQueryCount);
+    if (latestGpuProfilerResults_.queryLimitExceeded) {
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.25f, 1.0f), "Warning: profiler query capacity exceeded.");
+    }
+    ImGui::TextDisabled("Timings are read back after frame-fence completion. Nested scopes are shown in execution order.");
 
     constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                                       ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp;
@@ -4971,15 +5662,12 @@ void Renderer::drawGpuTimingDebugUi()
     ImGui::TableSetupColumn("History");
     ImGui::TableHeadersRow();
 
-    drawTimingHistoryRow("Known GPU total", gpuTimingHistory_.knownFrameTotal);
-    drawTimingHistoryRow("Shadow / CSM", gpuTimingHistory_.shadowPass);
-    drawTimingHistoryRow("Main", gpuTimingHistory_.mainPass);
-    drawTimingHistoryRow("Bloom", gpuTimingHistory_.bloom);
-    drawTimingHistoryRow("Composite", gpuTimingHistory_.composite);
-    drawTimingHistoryRow("AutoExposure / Luminance", gpuTimingHistory_.autoExposure);
-    drawTimingHistoryRow("HistogramExposure", gpuTimingHistory_.histogramExposure);
-    drawTimingHistoryRow("Skybox", gpuTimingHistory_.skybox);
-    drawTimingHistoryRow("RenderObjects", gpuTimingHistory_.renderObjects);
+    drawTimingHistoryRow("GPU frame total", gpuFrameTimeHistory_);
+    for (const renderer::GpuProfiler::ScopeResult& scope : latestGpuProfilerResults_.scopes) {
+        if (const DebugHistory* history = gpuTimingHistoryForPass(scope.name)) {
+            drawTimingHistoryRow(scope.name.c_str(), *history);
+        }
+    }
 
     ImGui::EndTable();
 }
@@ -5328,7 +6016,13 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         visibleDrawItems_ = allDrawItems_;
         cullingStats_ = {};
         cullingStats_.gpuCulling = true;
-        cullingStats_.totalObjects = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
+        const size_t objectCount = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
+        for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+            const renderer::RenderObject& object = renderObjects_[objectIndex];
+            if (isRenderObjectActive(object) && object.mesh && object.mesh->valid()) {
+                ++cullingStats_.totalObjects;
+            }
+        }
         cullingStats_.totalDrawItems = allDrawItems_.size();
     } else {
         buildVisibleDrawItems(cameraFrustum);
@@ -5360,6 +6054,10 @@ void Renderer::updateFrameData(uint32_t frameIndex)
 
     const size_t objectFrameCount = std::min(allDrawItems_.size(), static_cast<size_t>(kMaxDrawItems));
     std::vector<ObjectFrameData> objectFrameData(objectFrameCount);
+    const glm::vec4 activeLightDirection = portfolioCaptureMode_ ? kPortfolioLightDirection : kDirectionalLightDirection;
+    const glm::vec4 activeLightColor = portfolioCaptureMode_ ? kPortfolioLightColor : kDirectionalLightColor;
+    const glm::vec4 activeAmbientLightColor =
+        portfolioCaptureMode_ ? kPortfolioAmbientLightColor : kAmbientLightColor;
 
     for (size_t drawIndex = 0; drawIndex < objectFrameCount; ++drawIndex) {
         const DrawItem& drawItem = allDrawItems_[drawIndex];
@@ -5379,9 +6077,9 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         for (uint32_t cascadeIndex = 0; cascadeIndex < kMaxShadowCascades; ++cascadeIndex) {
             frameData.lightMvp[cascadeIndex] = frameCascades_[cascadeIndex].lightViewProjection * model;
         }
-        frameData.lightDirection = kDirectionalLightDirection;
-        frameData.lightColor = kDirectionalLightColor;
-        frameData.ambientColor = kAmbientLightColor;
+        frameData.lightDirection = activeLightDirection;
+        frameData.lightColor = activeLightColor;
+        frameData.ambientColor = activeAmbientLightColor;
         frameData.cascadeSplits = frameCascadeSplits_;
         frameData.shadowSettings = {csmSettings_.depthBiasConstant,
                                     csmSettings_.depthBiasSlope,
@@ -5855,6 +6553,7 @@ void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
 
     const bool indirectCountPathActive = isFrameIndirectCountPathActive(currentFrame_);
 
+    const renderer::GpuProfileScope profileScope(gpuProfiler_, currentFrame_, commandBuffer, "MainGpuCullingPass");
     rhi::debug::beginLabel(commandBuffer, "GpuCulling");
     vkCmdFillBuffer(commandBuffer, visibleCountBuffer, 0, kBatchVisibleCountBufferSize, 0);
 
@@ -5987,6 +6686,8 @@ void Renderer::recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer, uin
         return;
     }
 
+    const std::string profileName = "ShadowGpuCullingCascade" + std::to_string(cascadeIndex);
+    const renderer::GpuProfileScope profileScope(gpuProfiler_, currentFrame_, commandBuffer, profileName);
     rhi::debug::beginLabel(commandBuffer, "GpuShadowCullingCascade" + std::to_string(cascadeIndex));
     vkCmdFillBuffer(commandBuffer, visibleCountBuffer, 0, kBatchVisibleCountBufferSize, 0);
     vkCmdFillBuffer(commandBuffer, shadowIndirectDrawBuffer, 0, shadowIndirectBufferSize, 0);
@@ -6112,6 +6813,7 @@ void Renderer::recordLuminanceCommands(VkCommandBuffer commandBuffer)
         return;
     }
 
+    const renderer::GpuProfileScope profileScope(gpuProfiler_, currentFrame_, commandBuffer, "LuminancePass");
     renderGraph_.beginLuminancePass();
 
     rhi::debug::beginLabel(commandBuffer, "LuminancePass");
@@ -6208,6 +6910,7 @@ void Renderer::recordHistogramCommands(VkCommandBuffer commandBuffer)
         return;
     }
 
+    const renderer::GpuProfileScope profileScope(gpuProfiler_, currentFrame_, commandBuffer, "HistogramExposurePass");
     renderGraph_.beginHistogramExposurePass();
 
     rhi::debug::beginLabel(commandBuffer, "HistogramExposurePass");
@@ -6313,13 +7016,13 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
 
     renderGraph_.beginFrame(commandBuffer, swapchain_, shadowMap_, imageIndex, renderGraphFrameResources());
     rhi::debug::beginLabel(commandBuffer, "Frame");
-    timestampQuery_.resetFrame(commandBuffer, currentFrame_);
+    gpuProfiler_.beginFrame(currentFrame_, commandBuffer);
 
     const bool gpuShadowCullingActive = isGpuShadowCullingActive() && !allDrawItems_.empty();
     const uint32_t cascadeCount = activeCascadeCount();
 
+    const bool csmProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "CSMShadowPass");
     rhi::debug::beginLabel(commandBuffer, "CSMShadowPass");
-    timestampQuery_.writeBegin(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::ShadowPass);
 
     const VkExtent2D shadowExtent = shadowMap_.extent();
     VkViewport shadowViewport{};
@@ -6460,13 +7163,15 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         rhi::debug::endLabel(commandBuffer);
     }
 
-    timestampQuery_.writeEnd(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::ShadowPass);
     rhi::debug::endLabel(commandBuffer);
+    if (csmProfileScope) {
+        gpuProfiler_.endScope(currentFrame_, commandBuffer);
+    }
 
     recordGpuCullingCommands(commandBuffer);
 
+    const bool mainHdrProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "MainHDRPass");
     rhi::debug::beginLabel(commandBuffer, "MainHDRPass");
-    timestampQuery_.writeBegin(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::MainPass);
     renderGraph_.beginMainHdrPass();
 
     const VkExtent2D extent = swapchain_.extent();
@@ -6487,9 +7192,9 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
     vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-    rhi::debug::beginLabel(commandBuffer, "Skybox");
-    timestampQuery_.writeBegin(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::Skybox);
     if (skyboxDescriptorSet_ != VK_NULL_HANDLE) {
+        const renderer::GpuProfileScope skyboxScope(gpuProfiler_, currentFrame_, commandBuffer, "Skybox");
+        rhi::debug::beginLabel(commandBuffer, "Skybox");
         const float aspect =
             extent.height == 0 ? 1.0f : static_cast<float>(extent.width) / static_cast<float>(extent.height);
         glm::mat4 skyboxView = camera_.viewMatrix();
@@ -6515,9 +7220,8 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                            static_cast<uint32_t>(sizeof(SkyboxPushConstants)),
                            &skyboxPushConstants);
         vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+        rhi::debug::endLabel(commandBuffer);
     }
-    timestampQuery_.writeEnd(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::Skybox);
-    rhi::debug::endLabel(commandBuffer);
 
     const std::string objectDrawLabel = cullingStats_.gpuCulling
                                             ? "MainHDRPass IndirectDrawItems " + std::to_string(mainDrawItemCount) +
@@ -6526,8 +7230,8 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                                                   " visible objects " + std::to_string(cullingStats_.visibleObjects) +
                                                   "/" + std::to_string(cullingStats_.totalObjects) + " batches " +
                                                   std::to_string(meshDrawBatches_.size());
+    const bool renderObjectsProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "RenderObjects");
     rhi::debug::beginLabel(commandBuffer, objectDrawLabel);
-    timestampQuery_.writeBegin(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::RenderObjects);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.pipeline());
 
     const VkDescriptorSet globalDescriptorSet = globalMaterialDescriptorSet();
@@ -6671,16 +7375,19 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
             }
         }
     }
-    timestampQuery_.writeEnd(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::RenderObjects);
     rhi::debug::endLabel(commandBuffer);
+    if (renderObjectsProfileScope) {
+        gpuProfiler_.endScope(currentFrame_, commandBuffer);
+    }
 
     renderGraph_.endMainHdrPass();
-    timestampQuery_.writeEnd(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::MainPass);
     rhi::debug::endLabel(commandBuffer);
-
-    timestampQuery_.writeBegin(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::Bloom);
+    if (mainHdrProfileScope) {
+        gpuProfiler_.endScope(currentFrame_, commandBuffer);
+    }
 
     rhi::debug::beginLabel(commandBuffer, "BloomExtractPass");
+    const bool bloomExtractProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "BloomExtractPass");
     renderGraph_.beginBloomExtractPass();
     setViewportAndScissor(commandBuffer, bloomExtent_);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomExtractPipeline_.pipeline());
@@ -6701,6 +7408,9 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                        &bloomExtractPushConstants);
     vkCmdDraw(commandBuffer, 3, 1, 0, 0);
     renderGraph_.endBloomExtractPass();
+    if (bloomExtractProfileScope) {
+        gpuProfiler_.endScope(currentFrame_, commandBuffer);
+    }
     rhi::debug::endLabel(commandBuffer);
 
     const BloomBlurPushConstants horizontalBlurPushConstants{
@@ -6708,6 +7418,8 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         1u,
         0u};
     rhi::debug::beginLabel(commandBuffer, "BloomBlurHorizontal");
+    const bool bloomBlurHorizontalProfileScope =
+        gpuProfiler_.beginScope(currentFrame_, commandBuffer, "BloomBlurHorizontal");
     renderGraph_.beginBloomBlurPass(true);
     setViewportAndScissor(commandBuffer, bloomExtent_);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomBlurPipeline_.pipeline());
@@ -6727,6 +7439,9 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                        &horizontalBlurPushConstants);
     vkCmdDraw(commandBuffer, 3, 1, 0, 0);
     renderGraph_.endBloomBlurPass();
+    if (bloomBlurHorizontalProfileScope) {
+        gpuProfiler_.endScope(currentFrame_, commandBuffer);
+    }
     rhi::debug::endLabel(commandBuffer);
 
     const BloomBlurPushConstants verticalBlurPushConstants{
@@ -6734,6 +7449,8 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         0u,
         0u};
     rhi::debug::beginLabel(commandBuffer, "BloomBlurVertical");
+    const bool bloomBlurVerticalProfileScope =
+        gpuProfiler_.beginScope(currentFrame_, commandBuffer, "BloomBlurVertical");
     renderGraph_.beginBloomBlurPass(false);
     setViewportAndScissor(commandBuffer, bloomExtent_);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomBlurPipeline_.pipeline());
@@ -6753,20 +7470,16 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                        &verticalBlurPushConstants);
     vkCmdDraw(commandBuffer, 3, 1, 0, 0);
     renderGraph_.endBloomBlurPass();
+    if (bloomBlurVerticalProfileScope) {
+        gpuProfiler_.endScope(currentFrame_, commandBuffer);
+    }
     rhi::debug::endLabel(commandBuffer);
 
-    timestampQuery_.writeEnd(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::Bloom);
-
-    timestampQuery_.writeBegin(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::AutoExposure);
     recordLuminanceCommands(commandBuffer);
-    timestampQuery_.writeEnd(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::AutoExposure);
-
-    timestampQuery_.writeBegin(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::HistogramExposure);
     recordHistogramCommands(commandBuffer);
-    timestampQuery_.writeEnd(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::HistogramExposure);
 
     rhi::debug::beginLabel(commandBuffer, "CompositePass");
-    timestampQuery_.writeBegin(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::Composite);
+    const bool compositeProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "CompositePass");
     renderGraph_.beginCompositePass();
     setViewportAndScissor(commandBuffer, swapchain_.extent());
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, compositePipeline_.pipeline());
@@ -6791,15 +7504,24 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                        &compositePushConstants);
     vkCmdDraw(commandBuffer, 3, 1, 0, 0);
     renderGraph_.endCompositePass();
-    timestampQuery_.writeEnd(commandBuffer, currentFrame_, rhi::VulkanTimestampQuery::Timer::Composite);
+    if (compositeProfileScope) {
+        gpuProfiler_.endScope(currentFrame_, commandBuffer);
+    }
     rhi::debug::endLabel(commandBuffer);
 
+    recordPortfolioScreenshotCopy(commandBuffer, imageIndex);
+
     rhi::debug::beginLabel(commandBuffer, "ImGuiPass");
+    const bool imguiProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "ImGuiPass");
     renderGraph_.beginImGuiPass();
     imguiLayer_.render(commandBuffer);
     renderGraph_.endImGuiPass();
+    if (imguiProfileScope) {
+        gpuProfiler_.endScope(currentFrame_, commandBuffer);
+    }
     rhi::debug::endLabel(commandBuffer);
 
+    gpuProfiler_.endFrame(currentFrame_, commandBuffer);
     rhi::debug::endLabel(commandBuffer);
     renderGraph_.endFrame();
 }

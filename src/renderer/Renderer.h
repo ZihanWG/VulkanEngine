@@ -4,6 +4,7 @@
 #include "renderer/Bounds.h"
 #include "renderer/Camera.h"
 #include "renderer/FrameResources.h"
+#include "renderer/GpuProfiler.h"
 #include "renderer/Material.h"
 #include "renderer/Mesh.h"
 #include "renderer/RenderGraph.h"
@@ -21,7 +22,6 @@
 #include "rhi/VulkanShadowMap.h"
 #include "rhi/VulkanSwapchain.h"
 #include "rhi/VulkanSync.h"
-#include "rhi/VulkanTimestampQuery.h"
 #include "rhi/VulkanTexture.h"
 #include "ui/ImGuiLayer.h"
 
@@ -131,15 +131,8 @@ private:
     };
 
     struct GpuTimingHistory {
-        DebugHistory shadowPass;
-        DebugHistory mainPass;
-        DebugHistory bloom;
-        DebugHistory composite;
-        DebugHistory autoExposure;
-        DebugHistory histogramExposure;
-        DebugHistory skybox;
-        DebugHistory renderObjects;
-        DebugHistory knownFrameTotal;
+        std::string name;
+        DebugHistory history;
     };
 
     enum class RuntimeSettingsApplyMode {
@@ -166,6 +159,24 @@ private:
         size_t shadowVisibleCascadeCount = 0;
         uint32_t firstObjectDataIndex = 0;
         bool hasObjectDataIndex = false;
+    };
+
+    struct PortfolioCaptureSavedState {
+        renderer::Camera camera;
+        ToneMappingSettings toneMapping;
+        BloomSettings bloom;
+        CsmSettings csm;
+        float currentExposure = 1.0f;
+        bool valid = false;
+    };
+
+    struct PortfolioScreenshotReadback {
+        rhi::VulkanBuffer buffer;
+        VkExtent2D extent{};
+        VkFormat format = VK_FORMAT_UNDEFINED;
+        std::filesystem::path timestampedPath;
+        std::filesystem::path latestPath;
+        bool pending = false;
     };
 
     void createMaterialDescriptorSetLayout();
@@ -195,6 +206,8 @@ private:
     void createScene();
     [[nodiscard]] uint32_t allocateRenderObjectDebugId();
     void createCheckerboardTexture();
+    void createPortfolioBaseColorTexture();
+    void createPortfolioBackdropTexture();
     void createNormalTexture();
     void createFlatNormalTexture();
     void createMetallicRoughnessTexture();
@@ -225,6 +238,7 @@ private:
     void buildMeshDrawBatchesForItems(const std::vector<DrawItem>& drawItems,
                                       std::vector<MeshDrawBatch>& batches) const;
     bool appendDrawItemsForObject(uint32_t objectIndex, std::vector<DrawItem>& drawItems) const;
+    [[nodiscard]] bool isRenderObjectActive(const renderer::RenderObject& object) const;
     void updateIndirectDrawBuffer(uint32_t frameIndex);
     void updateShadowIndirectDrawBuffer(uint32_t frameIndex);
     [[nodiscard]] const renderer::Material* resolveMaterial(const renderer::RenderObject& object,
@@ -263,6 +277,7 @@ private:
     void reloadRuntimeSettingsFromUi();
     void resetRuntimeSettingsToDefaults();
     void buildDebugUi();
+    void drawPortfolioCaptureDebugUi();
     void drawRuntimeSettingsDebugUi();
     void drawRenderGraphDebugUi();
     void drawSceneHierarchyDebugUi();
@@ -295,7 +310,10 @@ private:
     void drawHistoryPlot(const DebugHistory& history, float height) const;
     void clampRuntimeSettings();
     void updateCpuFrameTime();
-    void pushGpuTimingSample(const rhi::VulkanTimestampQuery::Results& results);
+    void pushGpuTimingSample(const renderer::GpuProfiler::FrameResults& results);
+    void resetGpuProfilerHistory();
+    [[nodiscard]] DebugHistory* gpuTimingHistoryForPass(std::string_view name);
+    [[nodiscard]] const DebugHistory* gpuTimingHistoryForPass(std::string_view name) const;
     void pushCullingHistorySample(uint32_t frameIndex);
     void pushExposureHistorySample();
     [[nodiscard]] CullingDebugSnapshot cullingDebugSnapshot(uint32_t frameIndex);
@@ -307,11 +325,18 @@ private:
     [[nodiscard]] std::string materialDebugLabel(const renderer::RenderObject& object) const;
     [[nodiscard]] std::string mainCullingDebugLabel(const ObjectDrawDebugInfo& debugInfo) const;
     [[nodiscard]] std::string shadowCullingDebugLabel(const ObjectDrawDebugInfo& debugInfo) const;
+    void requestPortfolioScreenshot();
+    void recordPortfolioScreenshotCopy(VkCommandBuffer commandBuffer, uint32_t imageIndex);
+    void processPortfolioScreenshotReadback(uint32_t frameIndex);
+    void setPortfolioCaptureMode(bool enabled);
+    void applyPortfolioCaptureSettings();
+    void restorePortfolioCaptureSettings();
+    [[nodiscard]] bool hasPendingPortfolioScreenshotReadback() const;
 
     Window& window_;
     rhi::VulkanContext context_;
     std::vector<renderer::FrameResources> frames_;
-    rhi::VulkanTimestampQuery timestampQuery_;
+    renderer::GpuProfiler gpuProfiler_;
     rhi::VulkanSwapchain swapchain_;
     renderer::RenderGraph renderGraph_;
     ui::ImGuiLayer imguiLayer_;
@@ -338,6 +363,8 @@ private:
     rhi::VulkanCommandContext commandContext_;
     rhi::VulkanSync sync_;
     rhi::VulkanTexture checkerboardTexture_;
+    rhi::VulkanTexture portfolioBaseColorTexture_;
+    rhi::VulkanTexture portfolioBackdropTexture_;
     rhi::VulkanTexture normalMapTexture_;
     rhi::VulkanTexture flatNormalTexture_;
     rhi::VulkanTexture metallicRoughnessTexture_;
@@ -367,6 +394,7 @@ private:
     std::vector<VkDescriptorSet> shadowCullDescriptorSets_;
     renderer::Camera camera_;
     renderer::Mesh cubeMesh_;
+    renderer::Mesh portfolioSphereMesh_;
     std::vector<renderer::Mesh> importedMeshes_;
     renderer::Material checkerboardMaterial_;
     std::vector<renderer::Material> materialVariants_;
@@ -393,6 +421,7 @@ private:
     std::vector<rhi::VulkanBuffer> frameLuminanceReadbackBuffers_;
     std::vector<rhi::VulkanBuffer> frameHistogramBuffers_;
     std::vector<rhi::VulkanBuffer> frameHistogramReadbackBuffers_;
+    std::vector<PortfolioScreenshotReadback> portfolioScreenshotReadbacks_;
     std::vector<uint32_t> frameGpuCullTotalDrawItems_;
     std::vector<uint32_t> frameGpuCullBatchCounts_;
     std::vector<uint32_t> frameGpuShadowCullTotalDrawItems_;
@@ -442,7 +471,8 @@ private:
     ToneMappingSettings toneMappingSettings_{};
     BloomSettings bloomSettings_{};
     DebugUiSettings debugUiSettings_{};
-    GpuTimingHistory gpuTimingHistory_{};
+    DebugHistory gpuFrameTimeHistory_{};
+    std::vector<GpuTimingHistory> gpuTimingHistories_;
     DebugHistory visibleMainDrawItemsHistory_{};
     DebugHistory culledMainDrawItemsHistory_{};
     DebugHistory visibleShadowDrawItemsHistory_{};
@@ -450,11 +480,14 @@ private:
     DebugHistory exposureHistory_{};
     DebugHistory averageLuminanceHistory_{};
     DebugHistory histogramClippedLuminanceHistory_{};
-    rhi::VulkanTimestampQuery::Results latestGpuTimings_{};
+    renderer::GpuProfiler::FrameResults latestGpuProfilerResults_{};
     std::filesystem::path runtimeSettingsPath_;
     std::string lastRuntimeSettingsLoadStatus_ = "Not loaded yet.";
     std::string lastRuntimeSettingsSaveStatus_ = "Not saved this session.";
     std::string runtimeSettingsWarning_;
+    std::string portfolioScreenshotStatus_ = "No capture requested.";
+    std::filesystem::path lastPortfolioScreenshotPath_;
+    PortfolioCaptureSavedState portfolioCaptureSavedState_{};
     float cpuFrameDeltaMs_ = 0.0f;
     float cpuFps_ = 0.0f;
     float currentExposure_ = 1.0f;
@@ -475,6 +508,9 @@ private:
     bool logAverageExposureWarningLogged_ = false;
     bool histogramExposureWarningLogged_ = false;
     bool shadowIndirectAvailable_ = false;
+    bool gpuProfilerEnabled_ = true;
+    bool portfolioCaptureMode_ = false;
+    bool portfolioScreenshotRequested_ = false;
     bool normalMapAssetLoaded_ = false;
     bool metallicRoughnessMapAssetLoaded_ = false;
     bool hdrEnvironmentLoaded_ = false;

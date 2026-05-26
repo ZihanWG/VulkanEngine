@@ -27,6 +27,7 @@ public:
     [[nodiscard]] VkSwapchainKHR handle() const { return swapchain_; }
     [[nodiscard]] VkFormat colorFormat() const { return colorFormat_; }
     [[nodiscard]] VkExtent2D extent() const { return extent_; }
+    [[nodiscard]] bool supportsTransferSrc() const { return (imageUsage_ & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0; }
     [[nodiscard]] uint32_t imageCount() const { return static_cast<uint32_t>(images_.size()); }
     [[nodiscard]] VkImage image(uint32_t index) const { return images_.at(index); }
     [[nodiscard]] VkImageView imageView(uint32_t index) const { return imageViews_.at(index); }
@@ -56,6 +57,7 @@ private:
     VkFormat colorFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat depthFormat_ = VK_FORMAT_UNDEFINED;
     VkExtent2D extent_{};
+    VkImageUsageFlags imageUsage_ = 0;
     std::vector<VkImage> images_;
 
     // Image views are the attachment handles used by Dynamic Rendering.

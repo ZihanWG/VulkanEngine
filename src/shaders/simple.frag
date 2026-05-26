@@ -221,7 +221,7 @@ void main()
     vec3 kD = (1.0 - metallic) * baseColor;
     vec3 diffuseIbl = irradiance * kD;
 
-    vec3 reflectionDirection = reflect(-viewDirection, normal);
+    vec3 reflectionDirection = normalize(reflect(-viewDirection, normal));
     float maxPrefilterMip = max(float(textureQueryLevels(uPrefilteredEnvMap) - 1), 0.0);
     vec3 prefilteredColor =
         textureLod(uPrefilteredEnvMap, reflectionDirection, roughness * maxPrefilterMip).rgb;

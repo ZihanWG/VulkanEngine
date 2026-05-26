@@ -1,5 +1,6 @@
 #include "rhi/VulkanSwapchain.h"
 
+#include "core/Logger.h"
 #include "rhi/VulkanContext.h"
 #include "rhi/VulkanDebugUtils.h"
 
@@ -51,6 +52,7 @@ void VulkanSwapchain::cleanup()
 
     colorFormat_ = VK_FORMAT_UNDEFINED;
     depthFormat_ = VK_FORMAT_UNDEFINED;
+    imageUsage_ = 0;
     depthImageLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     extent_ = {};
 }
@@ -71,6 +73,13 @@ void VulkanSwapchain::create(WindowExtent desiredExtent)
     std::array<uint32_t, 2> queueFamilyIndices = {indices.graphicsFamily.value(), indices.presentFamily.value()};
     const bool usesSeparateQueues = indices.graphicsFamily.value() != indices.presentFamily.value();
 
+    imageUsage_ = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    if ((support.capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0) {
+        imageUsage_ |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    } else {
+        Logger::warn("Swapchain images do not support VK_IMAGE_USAGE_TRANSFER_SRC_BIT; screenshots are unavailable.");
+    }
+
     VkSwapchainCreateInfoKHR createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
     createInfo.surface = context_->surface();
@@ -79,7 +88,7 @@ void VulkanSwapchain::create(WindowExtent desiredExtent)
     createInfo.imageColorSpace = surfaceFormat.colorSpace;
     createInfo.imageExtent = selectedExtent;
     createInfo.imageArrayLayers = 1;
-    createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    createInfo.imageUsage = imageUsage_;
     createInfo.imageSharingMode = usesSeparateQueues ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE;
     createInfo.queueFamilyIndexCount = usesSeparateQueues ? static_cast<uint32_t>(queueFamilyIndices.size()) : 0;
     createInfo.pQueueFamilyIndices = usesSeparateQueues ? queueFamilyIndices.data() : nullptr;

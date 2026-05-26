@@ -18,14 +18,15 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - Auto exposure from HDR scene luminance builds log-average and histogram readback data; histogram percentile clipping is the preferred mode, with log-average/manual fallback.
 - Manual exposure remains available as the fallback path.
 - Reinhard/ACES tone mapping is applied in the final composite pass before swapchain output.
-- Dear ImGui debug overlay exposes runtime render settings, persistent JSON settings save/load/reset controls, render graph visualization, GPU timing history graphs, culling/exposure history plots, read-only scene/material inspection, and render-target/CSM cascade debug views.
+- Dear ImGui debug overlay exposes runtime render settings, persistent JSON settings save/load/reset controls, render graph visualization, GPU profiler/frame timeline history, culling/exposure history plots, read-only scene/material inspection, and render-target/CSM cascade debug views.
 - Compact Kulla-Conty-style multi-scattering compensation for PBR response.
 - PCF-filtered cascaded directional shadow map with basic texel snapping, optional cascade debug tinting, per-cascade GPU shadow-caster culling, and an indirect shadow draw path.
 - Descriptor indexing path for bindless material texture arrays, with a legacy descriptor-set fallback.
 - Minimal render graph that documents shadow, main HDR, bloom, luminance, histogram exposure, composite, and ImGui overlay pass order, centralizes image transitions, and exposes lightweight debug metadata for pass/resource visualization.
 - GPU frustum culling compute pass that compacts visible indirect draw commands and writes per-batch visible counts.
 - Multi-draw indirect batching by mesh-compatible ranges on the bindless main path and shadow path.
-- GPU timestamp queries and debug labels for capture/profiling orientation.
+- GPU timestamp profiler with per-pass timings, frame-latency readback, moving-average ImGui history, and debug labels for capture/profiling orientation.
+- Portfolio screenshot capture mode with F12 PNG export from the final tonemapped swapchain image before the ImGui overlay.
 
 ## Architecture Overview
 
@@ -41,14 +42,46 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - `RuntimeSettings` stores the debug UI's persistent render settings and serializes them as local JSON under `config/`.
 - `ImGuiLayer` owns the Dear ImGui context, SDL3 backend, Vulkan backend, and ImGui descriptor pool.
 - `RenderGraph` is a small manual frame graph for the current `CSMShadowPass`, `MainHDRPass`, bloom, `LuminancePass`, `HistogramExposurePass`, `CompositePass`, and `ImGuiPass` resource transitions and debug pass metadata.
+- `GpuProfiler` owns one timestamp query pool per frame-in-flight slot, records named GPU scopes, and exposes completed frame results to the ImGui profiler panel without adding a new frame-loop wait.
 
 ## Engine Upgrade Audit
 
-Phase 0 of the renderer-to-engine upgrade is documented in `docs/engine_upgrade_audit.md`. It records the current architecture, frame flow, render graph, scene/material/glTF paths, debug UI, culling, post-processing, CSM shadows, profiling foundation, and risk areas before feature work continues.
+Phase 0 of the renderer-to-engine upgrade is documented in `docs/engine_upgrade_audit.md`. It records the current architecture, frame flow, render graph, scene/material/glTF paths, debug UI, culling, post-processing, CSM shadows, profiling foundation, and risk areas before feature work continues. Phase 1 GPU timestamp profiling is documented in `docs/profiling.md`.
+
+## GPU Profiler
+
+Open the profiler from the ImGui debug overlay:
+
+1. Open `VulkanEngine Debug`.
+2. Expand `Debug Views`.
+3. Enable `Show GPU Profiler panel`.
+4. Expand `GPU Profiler`.
+
+The panel reports GPU profiler availability, total GPU frame time, CPU frame delta, timestamp query usage, and a timing table with current, recent average, max, and history plot values. Results are read back from a completed frame slot after the existing frame fence is signaled, so the profiler does not block the current frame waiting for query results. Timings are GPU timestamp deltas converted with the physical device timestamp period.
+
+Currently profiled ranges include `CSMShadowPass`, per-cascade shadow GPU culling, `MainGpuCullingPass`, `MainHDRPass`, `Skybox`, `RenderObjects`, `BloomExtractPass`, horizontal and vertical bloom blur, `LuminancePass`, `HistogramExposurePass`, `CompositePass`, and `ImGuiPass`. Nested scopes are shown in execution order; parent scopes include the cost of their children.
+
+## Portfolio Screenshot Capture
+
+The renderer can export a clean portfolio PNG from the final post-tonemapped frame.
+
+1. Build the engine and shaders.
+2. Run `VulkanEngine`.
+3. Press `F11`, or click `Load Portfolio Showcase Scene` / enable `Portfolio Capture Mode` in `VulkanEngine Debug` -> `Portfolio Capture`.
+4. Press `F12` or click `Capture Portfolio Screenshot`.
+5. Use `screenshots/vulkan_engine_portfolio_latest.png`, or the timestamped file beside it, in the portfolio website assets folder.
+
+Portfolio Capture Mode applies a close three-quarter camera, ACES tone mapping, stable manual exposure, subtle bloom, CSM settings, and a portfolio-only studio setup with a neutral floor, gradient backdrop, a hero reflective sphere, and PBR material samples for matte gray, glossy blue dielectric, rough metal, and polished metal looks. The normal checker/glTF debug scene remains available while the mode is disabled. The capture is copied from the swapchain after `CompositePass` and before `ImGuiPass`, so the exported PNG includes tone mapping and bloom but excludes the debug UI.
+
+Reflection note: current metallic reflections are environment-based specular IBL only. They sample the prefiltered environment cubemap and do not include local scene-object reflections because SSR, planar reflections, ray traced reflections, and local reflection probes are not implemented yet.
+
+![Portfolio screenshot](screenshots/vulkan_engine_portfolio_latest.png)
+
+More details are in `docs/portfolio_capture.md`.
 
 ## One-Frame Rendering Flow
 
-1. Wait for the current frame fence, read previous completed luminance and histogram results when available, update smoothed exposure for following frames without a same-frame GPU/CPU stall, and acquire the next swapchain image.
+1. Wait for the current frame fence, read previous completed luminance, histogram, and GPU timestamp results when available, update smoothed exposure for following frames without a same-frame GPU/CPU stall, and acquire the next swapchain image.
 2. Reset the fence and command buffer, update transforms, and build all `DrawItem` records from render objects and mesh primitives.
 3. Extract the camera frustum from `projection * view`, compute CSM split depths, and build one texel-snapped directional light view-projection matrix per cascade.
 4. Build CPU fallback shadow draw items/batches for each cascade, and build main-pass mesh-compatible draw batches for GPU culling or the CPU fallback.
@@ -64,9 +97,10 @@ Phase 0 of the renderer-to-engine upgrade is documented in `docs/engine_upgrade_
 14. Run `LuminancePass` to reduce log luminance from `sceneColor_` into per-frame readback data for a later frame.
 15. Run `HistogramExposurePass` to bin HDR scene luminance into a 256-bin log2 histogram and copy it to per-frame readback data for a later frame.
 16. Run `CompositePass` to combine `sceneColor + bloom * intensity`, apply the current manual or auto exposure, apply Reinhard or ACES tone mapping, and write the final color to the swapchain.
-17. Run `ImGuiPass` to load the composited swapchain image as a color attachment and draw the debug UI overlay.
-18. Transition the swapchain image to present, submit with `vkQueueSubmit2`, and present.
-19. Recreate the swapchain, post-process images, and ImGui swapchain-dependent backend state if presentation reports an out-of-date or resized surface.
+17. If a portfolio screenshot was requested, transition the composited swapchain image to transfer source, copy it into a per-frame readback buffer, then return it to color-attachment layout.
+18. Run `ImGuiPass` to load the composited swapchain image as a color attachment and draw the debug UI overlay.
+19. Transition the swapchain image to present, submit with `vkQueueSubmit2`, and present.
+20. Recreate the swapchain, post-process images, and ImGui swapchain-dependent backend state if presentation reports an out-of-date or resized surface.
 
 ## Current Descriptor Contract
 
@@ -181,6 +215,8 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - HDR environment loading is basic and uses an approximate CPU equirectangular-to-cubemap conversion.
 - Bloom is a simple half-resolution extract plus separable blur and is not mip-chain based yet.
 - Histogram auto-exposure still uses CPU-side readback; there is no GPU-only exposure chain or local exposure yet.
+- GPU profiler timestamps are pass-duration estimates from top-of-pipe to bottom-of-pipe markers. They are useful for relative pass cost and captures, but they are not CPU/GPU calibrated timeline events and nested scopes are inclusive.
+- Portfolio screenshots use the current swapchain resolution rather than a separate high-resolution offline render path.
 - HDR swapchain output is not implemented yet.
 - ImGui is a debug UI only; there is no docking/editor layout yet.
 - Scene hierarchy panel is read-only.
@@ -243,7 +279,7 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - Move runtime streaming away from queue-idle one-time uploads.
 - Grow the render graph toward automatic dependency inference, production-grade scheduling, aliasing, transient resources, and pass culling.
 - Expand glTF support with alpha modes, occlusion/emissive textures, tangent generation, animation, skinning, morph targets, cameras, and lights.
-- Add RenderDoc workflow documentation, detailed frame timeline visualization, and in-engine profiler UI improvements.
+- Add RenderDoc workflow documentation, CPU/GPU timeline correlation, and in-engine profiler UI improvements.
 
 ## Milestone History
 
@@ -636,28 +672,30 @@ Frame command recording now emits debug labels around:
 
 These labels are intended to show up in RenderDoc and NSight captures.
 
-`VulkanTimestampQuery` owns a timestamp query pool split by frame-in-flight slot.
-Each frame resets its slot, writes begin/end timestamps for `ShadowPass`,
-`MainPass`, `Skybox`, and `RenderObjects`, then reads the previous use of that
-frame slot after the existing fence wait. Elapsed GPU time is computed from the
-device timestamp period as `(end - begin) * timestampPeriod / 1e6`.
+The Phase 1 engine-upgrade work supersedes the original fixed
+`VulkanTimestampQuery` ranges with `GpuProfiler`. It owns one timestamp query
+pool per frame-in-flight slot, records named scopes dynamically, and reads the
+completed frame slot after the existing fence wait. Elapsed GPU time is
+computed from the device timestamp period as `(end - begin) * timestampPeriod /
+1e6`.
 
 Timing output is throttled to about once per second to avoid console spam:
 
 ```text
 GPU timings:
-  ShadowPass: X ms
-  MainPass: Y ms
-  Skybox: Z ms
-  RenderObjects: W ms
+  Frame total: X ms
+  timestamp queries: N/256
+  CSMShadowPass: A ms
+  MainHDRPass: B ms
+  CompositePass: C ms
 ```
 
 If timestamp queries are not supported, the engine prints one warning and leaves
 profiling disabled.
 
 Future profiling/debugging work can add more detailed per-material or per-draw
-profiling, GPU/CPU frame timeline visualization, a documented RenderDoc capture
-workflow, an in-engine profiler UI, and ImGui integration.
+profiling, CPU/GPU timestamp calibration, and a documented RenderDoc capture
+workflow.
 
 ## Milestone 24: Static glTF Mesh Loading
 
@@ -1110,7 +1148,7 @@ Milestone 44 later adds the render graph visualization and GPU timing history gr
 
 `RenderGraph` now exposes read-only debug pass metadata through `debugPasses()`. The ImGui debug UI uses that data to visualize the manual render graph pass order in a `Render Graph` table. The table lists `CSMShadowPass`, `MainHDRPass`, `BloomExtractPass`, `BloomBlurPass`, `LuminancePass`, `HistogramExposurePass`, `CompositePass`, and `ImGuiPass` in order, and each row includes the pass type, graphics/compute execution class, major resource reads/writes, and transition notes.
 
-GPU timestamp results are stored in short CPU-side history buffers. The `GPU Timings` section shows current, recent average, and recent max timings for Shadow/CSM, Main, Bloom, Composite, AutoExposure/Luminance, HistogramExposure, Skybox, RenderObjects, and an approximate known GPU frame total. Each timing range gets a compact ImGui line plot using the existing timestamp query results; the ImGui pass is listed as not timestamped.
+GPU timestamp results are stored in short CPU-side history buffers. The Phase 1 `GPU Profiler` section shows current, recent average, and recent max timings for the total GPU frame, CSM shadows, shadow GPU culling cascades, main GPU culling, main HDR, bloom extract/blur, luminance, histogram exposure, composite, ImGui, skybox, and object drawing scopes. Each timing range gets a compact ImGui line plot using the completed frame slot's timestamp query results.
 
 Culling and exposure stats remain visible in the debug UI. Main and shadow visible/culled draw item counts have short history plots, and exposure, log-average luminance, and histogram clipped luminance have small trend plots. The UI also has simple checkboxes for showing the render graph panel, GPU timing graphs, culling stats, and exposure graphs. These toggles are runtime-only and are not serialized.
 

@@ -73,6 +73,12 @@ public:
         rhi::VulkanContext& context,
         const rhi::VulkanCommandContext& commandContext);
 
+    [[nodiscard]] static Mesh createUvSphere(
+        rhi::VulkanContext& context,
+        const rhi::VulkanCommandContext& commandContext,
+        uint32_t segments = 48,
+        uint32_t rings = 24);
+
     [[nodiscard]] static LoadedGltfAsset createFromGltf(
         rhi::VulkanContext& context,
         const rhi::VulkanCommandContext& commandContext,

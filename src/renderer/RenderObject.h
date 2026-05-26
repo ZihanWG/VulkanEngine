@@ -12,7 +12,8 @@ namespace ve::renderer {
 
 enum class RenderObjectSourceType {
     BuiltInFallbackCube,
-    ImportedGltf
+    ImportedGltf,
+    PortfolioShowcase
 };
 
 struct RenderObject {
@@ -25,6 +26,8 @@ struct RenderObject {
     std::string debugName;
     RenderObjectSourceType sourceType = RenderObjectSourceType::BuiltInFallbackCube;
     bool animateTransform = false;
+    bool portfolioOnly = false;
+    bool hideInPortfolio = false;
 
     [[nodiscard]] Aabb worldBounds() const
     {

@@ -32,6 +32,8 @@ namespace ve::renderer {
 
 namespace {
 
+constexpr float kPi = 3.14159265358979323846f;
+
 const std::array<Vertex, 24> kCubeVertices = {{
     // Front (+Z)
     {{-0.5f, -0.5f, 0.5f}, {1.0f, 0.95f, 0.95f}, {0.0f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 0.0f, 0.0f, 1.0f}},
@@ -646,6 +648,93 @@ Mesh Mesh::createCube(rhi::VulkanContext& context, const rhi::VulkanCommandConte
         VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
 
     mesh.indexCount_ = static_cast<uint32_t>(kCubeIndices.size());
+    return mesh;
+}
+
+Mesh Mesh::createUvSphere(
+    rhi::VulkanContext& context,
+    const rhi::VulkanCommandContext& commandContext,
+    uint32_t segments,
+    uint32_t rings)
+{
+    segments = std::max(segments, 8U);
+    rings = std::max(rings, 4U);
+
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+    vertices.reserve(static_cast<size_t>(segments + 1U) * static_cast<size_t>(rings + 1U));
+    indices.reserve(static_cast<size_t>(segments) * static_cast<size_t>(rings - 1U) * 6U);
+
+    for (uint32_t ring = 0; ring <= rings; ++ring) {
+        const float v = static_cast<float>(ring) / static_cast<float>(rings);
+        const float phi = v * kPi;
+        const float y = std::cos(phi) * 0.5f;
+        const float radius = std::sin(phi) * 0.5f;
+
+        for (uint32_t segment = 0; segment <= segments; ++segment) {
+            const float u = static_cast<float>(segment) / static_cast<float>(segments);
+            const float theta = u * kPi * 2.0f;
+            const glm::vec3 normal = glm::normalize(glm::vec3{
+                std::cos(theta) * radius,
+                y,
+                std::sin(theta) * radius,
+            });
+            const glm::vec3 tangent = glm::normalize(glm::vec3{-std::sin(theta), 0.0f, std::cos(theta)});
+
+            Vertex vertex{};
+            vertex.position = normal * 0.5f;
+            vertex.color = glm::vec3(1.0f);
+            vertex.uv = {u, 1.0f - v};
+            vertex.normal = normal;
+            vertex.tangent = {tangent, 1.0f};
+            vertices.push_back(vertex);
+        }
+    }
+
+    const uint32_t rowStride = segments + 1U;
+    for (uint32_t ring = 0; ring < rings; ++ring) {
+        for (uint32_t segment = 0; segment < segments; ++segment) {
+            const uint32_t a = ring * rowStride + segment;
+            const uint32_t b = (ring + 1U) * rowStride + segment;
+            const uint32_t c = b + 1U;
+            const uint32_t d = a + 1U;
+
+            if (ring > 0) {
+                indices.push_back(a);
+                indices.push_back(b);
+                indices.push_back(d);
+            }
+            if (ring + 1U < rings) {
+                indices.push_back(d);
+                indices.push_back(b);
+                indices.push_back(c);
+            }
+        }
+    }
+
+    Mesh mesh;
+    mesh.debugName_ = "Built-in UV Sphere Mesh";
+    for (const Vertex& vertex : vertices) {
+        mesh.localBounds_.expand(vertex.position);
+    }
+
+    mesh.vertexBuffer_.createDeviceLocal(
+        context,
+        commandContext,
+        std::as_bytes(std::span<const Vertex>(vertices.data(), vertices.size())),
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+
+    mesh.indexBuffer_.createDeviceLocal(
+        context,
+        commandContext,
+        std::as_bytes(std::span<const uint32_t>(indices.data(), indices.size())),
+        VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+
+    mesh.indexCount_ = static_cast<uint32_t>(indices.size());
+    rhi::debug::setObjectName(
+        context.vkDevice(), mesh.vertexBuffer_.buffer(), VK_OBJECT_TYPE_BUFFER, "PortfolioSphereVertexBuffer");
+    rhi::debug::setObjectName(
+        context.vkDevice(), mesh.indexBuffer_.buffer(), VK_OBJECT_TYPE_BUFFER, "PortfolioSphereIndexBuffer");
     return mesh;
 }
 

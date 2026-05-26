@@ -29,6 +29,7 @@ constexpr uint32_t kRgbaChannels = 4;
 constexpr uint32_t kRgba8TexelBytes = 4;
 constexpr uint32_t kRgba16fTexelBytes = 8;
 constexpr uint32_t kRgba32fTexelBytes = 16;
+constexpr uint32_t kSpecularPrefilterSampleCount = 96;
 constexpr float kByteScale = 1.0f / 255.0f;
 constexpr float kIrradianceScale = 0.55f;
 constexpr float kPi = 3.14159265358979323846f;
@@ -188,6 +189,11 @@ Vec3 operator+(Vec3 lhs, Vec3 rhs)
     return {lhs.x + rhs.x, lhs.y + rhs.y, lhs.z + rhs.z};
 }
 
+Vec3 operator-(Vec3 lhs, Vec3 rhs)
+{
+    return {lhs.x - rhs.x, lhs.y - rhs.y, lhs.z - rhs.z};
+}
+
 Vec3 operator*(Vec3 value, float scale)
 {
     return {value.x * scale, value.y * scale, value.z * scale};
@@ -203,6 +209,15 @@ float dot(Vec3 lhs, Vec3 rhs)
     return lhs.x * rhs.x + lhs.y * rhs.y + lhs.z * rhs.z;
 }
 
+Vec3 cross(Vec3 lhs, Vec3 rhs)
+{
+    return {
+        lhs.y * rhs.z - lhs.z * rhs.y,
+        lhs.z * rhs.x - lhs.x * rhs.z,
+        lhs.x * rhs.y - lhs.y * rhs.x,
+    };
+}
+
 Vec3 normalize(Vec3 value)
 {
     const float length = std::sqrt(dot(value, value));
@@ -212,6 +227,44 @@ Vec3 normalize(Vec3 value)
 
     const float inverseLength = 1.0f / length;
     return value * inverseLength;
+}
+
+float radicalInverseVdc(uint32_t bits)
+{
+    bits = (bits << 16u) | (bits >> 16u);
+    bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
+    bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);
+    bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);
+    bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);
+    return static_cast<float>(bits) * 2.3283064365386963e-10f;
+}
+
+std::array<float, 2> hammersley(uint32_t index, uint32_t sampleCount)
+{
+    return {
+        static_cast<float>(index) / static_cast<float>(sampleCount),
+        radicalInverseVdc(index),
+    };
+}
+
+Vec3 importanceSampleGgx(const std::array<float, 2>& xi, Vec3 normal, float roughness)
+{
+    const float alpha = roughness * roughness;
+    const float phi = 2.0f * kPi * xi[0];
+    const float cosTheta =
+        std::sqrt((1.0f - xi[1]) / std::max(1.0f + (alpha * alpha - 1.0f) * xi[1], 0.0001f));
+    const float sinTheta = std::sqrt(std::max(1.0f - cosTheta * cosTheta, 0.0f));
+
+    const Vec3 halfwayTangent{
+        std::cos(phi) * sinTheta,
+        std::sin(phi) * sinTheta,
+        cosTheta,
+    };
+
+    const Vec3 up = std::abs(normal.y) < 0.999f ? Vec3{0.0f, 1.0f, 0.0f} : Vec3{1.0f, 0.0f, 0.0f};
+    const Vec3 tangent = normalize(cross(up, normal));
+    const Vec3 bitangent = cross(normal, tangent);
+    return normalize(tangent * halfwayTangent.x + bitangent * halfwayTangent.y + normal * halfwayTangent.z);
 }
 
 Vec3 cubemapTexelDirection(uint32_t face, float u, float v)
@@ -235,6 +288,61 @@ Vec3 cubemapTexelDirection(uint32_t face, float u, float v)
     default:
         return {0.0f, 1.0f, 0.0f};
     }
+}
+
+struct CubemapSampleCoordinate {
+    uint32_t face = 0;
+    float u = 0.5f;
+    float v = 0.5f;
+};
+
+CubemapSampleCoordinate cubemapSampleCoordinate(Vec3 direction)
+{
+    direction = normalize(direction);
+    const float absX = std::abs(direction.x);
+    const float absY = std::abs(direction.y);
+    const float absZ = std::abs(direction.z);
+
+    float sc = 0.0f;
+    float tc = 0.0f;
+    uint32_t face = 0;
+    if (absX >= absY && absX >= absZ) {
+        if (direction.x >= 0.0f) {
+            face = 0;
+            sc = -direction.z / absX;
+            tc = -direction.y / absX;
+        } else {
+            face = 1;
+            sc = direction.z / absX;
+            tc = -direction.y / absX;
+        }
+    } else if (absY >= absZ) {
+        if (direction.y >= 0.0f) {
+            face = 2;
+            sc = direction.x / absY;
+            tc = direction.z / absY;
+        } else {
+            face = 3;
+            sc = direction.x / absY;
+            tc = -direction.z / absY;
+        }
+    } else {
+        if (direction.z >= 0.0f) {
+            face = 4;
+            sc = direction.x / absZ;
+            tc = -direction.y / absZ;
+        } else {
+            face = 5;
+            sc = -direction.x / absZ;
+            tc = -direction.y / absZ;
+        }
+    }
+
+    return {
+        face,
+        std::clamp(sc * 0.5f + 0.5f, 0.0f, 1.0f),
+        std::clamp(tc * 0.5f + 0.5f, 0.0f, 1.0f),
+    };
 }
 
 Vec3 proceduralFaceColor(uint32_t face, float u, float v)
@@ -266,6 +374,12 @@ Vec3 averageProceduralFaceColor(uint32_t face)
     }
 
     return color * (1.0f / static_cast<float>(kSampleCount * kSampleCount));
+}
+
+Vec3 sampleProceduralEnvironment(Vec3 direction)
+{
+    const CubemapSampleCoordinate coordinate = cubemapSampleCoordinate(direction);
+    return proceduralFaceColor(coordinate.face, coordinate.u, coordinate.v);
 }
 
 void writeRgba(std::vector<uint8_t>& pixels, size_t offset, Vec3 color)
@@ -327,6 +441,12 @@ Vec3 sampleRgba32fFace(std::span<const float> pixels, uint32_t faceSize, uint32_
     const Vec3 c11 = readRgba32fTexel(pixels, faceSize, face, x1, y1);
 
     return lerp(lerp(c00, c10, tx), lerp(c01, c11, tx), ty);
+}
+
+Vec3 sampleRgba32fCubemap(std::span<const float> pixels, uint32_t faceSize, Vec3 direction)
+{
+    const CubemapSampleCoordinate coordinate = cubemapSampleCoordinate(direction);
+    return sampleRgba32fFace(pixels, faceSize, coordinate.face, coordinate.u, coordinate.v);
 }
 
 Vec3 readEquirectangularTexel(std::span<const float> pixels,
@@ -478,6 +598,37 @@ std::vector<uint8_t> makeProceduralDiffuseIrradianceFaces(uint32_t faceSize)
     return pixels;
 }
 
+template <typename SampleEnvironment>
+Vec3 prefilterSpecularDirection(Vec3 reflectionDirection, float roughness, SampleEnvironment sampleEnvironment)
+{
+    const Vec3 normal = normalize(reflectionDirection);
+    if (roughness <= 0.001f) {
+        return sampleEnvironment(normal);
+    }
+
+    const Vec3 viewDirection = normal;
+    Vec3 prefilteredColor{};
+    float totalWeight = 0.0f;
+
+    for (uint32_t sampleIndex = 0; sampleIndex < kSpecularPrefilterSampleCount; ++sampleIndex) {
+        const std::array<float, 2> xi = hammersley(sampleIndex, kSpecularPrefilterSampleCount);
+        const Vec3 halfway = importanceSampleGgx(xi, normal, roughness);
+        const Vec3 lightDirection = normalize(halfway * (2.0f * dot(viewDirection, halfway)) - viewDirection);
+        const float normalLight = std::max(dot(normal, lightDirection), 0.0f);
+
+        if (normalLight > 0.0f) {
+            prefilteredColor = prefilteredColor + sampleEnvironment(lightDirection) * normalLight;
+            totalWeight += normalLight;
+        }
+    }
+
+    if (totalWeight > 0.0f) {
+        return prefilteredColor * (1.0f / totalWeight);
+    }
+
+    return sampleEnvironment(normal);
+}
+
 std::vector<uint8_t> makeProceduralPrefilteredSpecularFaces(uint32_t faceSize)
 {
     if (faceSize == 0) {
@@ -486,37 +637,24 @@ std::vector<uint8_t> makeProceduralPrefilteredSpecularFaces(uint32_t faceSize)
 
     const uint32_t mipLevels = calculateMipLevels(faceSize);
 
-    std::array<Vec3, kCubeFaceCount> faceColors{};
-    Vec3 globalColor{};
-    for (uint32_t face = 0; face < kCubeFaceCount; ++face) {
-        faceColors.at(face) = averageProceduralFaceColor(face);
-        globalColor = globalColor + faceColors.at(face);
-    }
-    globalColor = globalColor * (1.0f / static_cast<float>(kCubeFaceCount));
-
     std::vector<uint8_t> pixels(mipChainByteCount(faceSize, mipLevels, kRgba8TexelBytes));
     size_t mipOffset = 0;
 
-    // This is intentionally a cheap CPU approximation: higher roughness mips
-    // blend each texel toward a per-face average and then toward the global sky
-    // color instead of doing importance-sampled convolution.
     for (uint32_t mipLevel = 0; mipLevel < mipLevels; ++mipLevel) {
         const uint32_t size = mipFaceSize(faceSize, mipLevel);
         const float roughness =
             mipLevels == 1 ? 0.0f : static_cast<float>(mipLevel) / static_cast<float>(mipLevels - 1);
-        const float blurBlend = std::clamp(std::pow(roughness, 0.75f), 0.0f, 1.0f);
-        const float globalBlend = roughness * roughness * 0.6f;
-        const float roughnessEnergy = lerpFloat(1.08f, 0.78f, roughness);
 
         for (uint32_t face = 0; face < kCubeFaceCount; ++face) {
-            const Vec3 lowFrequency = faceColors.at(face) * (1.0f - globalBlend) + globalColor * globalBlend;
-
             for (uint32_t y = 0; y < size; ++y) {
                 const float v = size == 1 ? 0.5f : static_cast<float>(y) / static_cast<float>(size - 1);
                 for (uint32_t x = 0; x < size; ++x) {
                     const float u = size == 1 ? 0.5f : static_cast<float>(x) / static_cast<float>(size - 1);
-                    const Vec3 baseColor = proceduralFaceColor(face, u, v);
-                    const Vec3 color = (baseColor * (1.0f - blurBlend) + lowFrequency * blurBlend) * roughnessEnergy;
+                    const Vec3 direction = cubemapTexelDirection(face, u, v);
+                    const Vec3 color = prefilterSpecularDirection(
+                        direction,
+                        roughness,
+                        [](Vec3 sampleDirection) { return sampleProceduralEnvironment(sampleDirection); });
                     const size_t offset =
                         mipOffset + ((static_cast<size_t>(face) * size * size) + (static_cast<size_t>(y) * size + x)) *
                                         kRgbaChannels;
@@ -602,14 +740,6 @@ std::vector<float> makeHdrPrefilteredSpecularFaces(uint32_t sourceFaceSize,
 
     const uint32_t mipLevels = calculateMipLevels(faceSize);
 
-    std::array<Vec3, kCubeFaceCount> faceColors{};
-    Vec3 globalColor{};
-    for (uint32_t face = 0; face < kCubeFaceCount; ++face) {
-        faceColors.at(face) = averageRgba32fFaceColor(face, sourceFaceSize, sourcePixels);
-        globalColor = globalColor + faceColors.at(face);
-    }
-    globalColor = globalColor * (1.0f / static_cast<float>(kCubeFaceCount));
-
     std::vector<float> pixels(mipChainFloatCount(faceSize, mipLevels));
     size_t mipOffset = 0;
 
@@ -617,19 +747,19 @@ std::vector<float> makeHdrPrefilteredSpecularFaces(uint32_t sourceFaceSize,
         const uint32_t size = mipFaceSize(faceSize, mipLevel);
         const float roughness =
             mipLevels == 1 ? 0.0f : static_cast<float>(mipLevel) / static_cast<float>(mipLevels - 1);
-        const float blurBlend = std::clamp(std::pow(roughness, 0.75f), 0.0f, 1.0f);
-        const float globalBlend = roughness * roughness * 0.6f;
-        const float roughnessEnergy = lerpFloat(1.08f, 0.78f, roughness);
 
         for (uint32_t face = 0; face < kCubeFaceCount; ++face) {
-            const Vec3 lowFrequency = faceColors.at(face) * (1.0f - globalBlend) + globalColor * globalBlend;
-
             for (uint32_t y = 0; y < size; ++y) {
                 const float v = size == 1 ? 0.5f : static_cast<float>(y) / static_cast<float>(size - 1);
                 for (uint32_t x = 0; x < size; ++x) {
                     const float u = size == 1 ? 0.5f : static_cast<float>(x) / static_cast<float>(size - 1);
-                    const Vec3 baseColor = sampleRgba32fFace(sourcePixels, sourceFaceSize, face, u, v);
-                    const Vec3 color = (baseColor * (1.0f - blurBlend) + lowFrequency * blurBlend) * roughnessEnergy;
+                    const Vec3 direction = cubemapTexelDirection(face, u, v);
+                    const Vec3 color = prefilterSpecularDirection(
+                        direction,
+                        roughness,
+                        [sourcePixels, sourceFaceSize](Vec3 sampleDirection) {
+                            return sampleRgba32fCubemap(sourcePixels, sourceFaceSize, sampleDirection);
+                        });
                     const size_t offset =
                         mipOffset + ((static_cast<size_t>(face) * size * size) + (static_cast<size_t>(y) * size + x)) *
                                         kRgbaChannels;
