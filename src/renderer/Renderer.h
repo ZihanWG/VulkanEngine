@@ -1,5 +1,6 @@
 #pragma once
 
+#include "assets/AssetManager.h"
 #include "renderer/BindlessTextureHeap.h"
 #include "renderer/Bounds.h"
 #include "renderer/Camera.h"
@@ -34,6 +35,7 @@
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
 #include <limits>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -229,8 +231,24 @@ private:
     void createPrefilteredEnvironmentMap();
     void createBrdfLutTexture();
     void createMaterial();
+    [[nodiscard]] renderer::Material createMaterialFromAsset(const assets::MaterialAsset& materialAsset,
+                                                             const rhi::VulkanTexture& baseColorFallback,
+                                                             const rhi::VulkanTexture& normalFallback,
+                                                             const rhi::VulkanTexture& metallicRoughnessFallback,
+                                                             float multiScatterStrength,
+                                                             renderer::MaterialSource fallbackSource);
     void assignBindlessTextureIndices(renderer::Material& material);
     void createMaterialDescriptorSet(renderer::Material& material);
+    [[nodiscard]] const rhi::VulkanTexture* loadMaterialAssetTextureOrFallback(
+        const std::filesystem::path& materialPath,
+        const std::filesystem::path& texturePath,
+        rhi::TextureColorSpace colorSpace,
+        std::string_view slotName,
+        const rhi::VulkanTexture& fallbackTexture,
+        bool& fallbackUsed);
+    [[nodiscard]] assets::MaterialAsset runtimeMaterialToAsset(const renderer::Material& material) const;
+    bool saveMaterialAssetFromUi(renderer::Material& material);
+    bool reloadMaterialAssetFromUi(renderer::Material& material);
     void createImportedGltfTextures(const std::vector<renderer::GltfTextureInfo>& textureInfos,
                                     const std::vector<renderer::GltfMaterialInfo>& materialInfos);
     void createImportedGltfMaterials(const std::vector<renderer::GltfMaterialInfo>& materialInfos);
@@ -306,7 +324,9 @@ private:
     void drawMaterialInspectorDebugUi();
     void drawTextureDebugUi();
     void drawRenderTargetDebugUi();
-    void drawMaterialDebugSection(const renderer::Material* material, bool includeTextureSummary);
+    void drawMaterialDebugSection(const renderer::Material* material,
+                                  bool includeTextureSummary,
+                                  renderer::Material* editableMaterial = nullptr);
     void drawMaterialTextureSlotDebugUi(const char* slotName,
                                         const char* semantic,
                                         const rhi::VulkanTexture* texture,
@@ -343,6 +363,9 @@ private:
         const renderer::RenderObject& object) const;
     [[nodiscard]] const renderer::Material* primaryMaterialForObject(
         const renderer::RenderObject& object) const;
+    [[nodiscard]] renderer::Material* mutableMaterialFromPointer(const renderer::Material* material);
+    [[nodiscard]] renderer::Material* primaryMutableMaterialForObject(renderer::RenderObject& object);
+    [[nodiscard]] renderer::Material* findRuntimeMaterialByAssetPath(const std::filesystem::path& path);
     [[nodiscard]] std::string materialDebugLabel(const renderer::RenderObject& object) const;
     [[nodiscard]] std::string mainCullingDebugLabel(const ObjectDrawDebugInfo& debugInfo) const;
     [[nodiscard]] std::string shadowCullingDebugLabel(const ObjectDrawDebugInfo& debugInfo) const;
@@ -360,6 +383,7 @@ private:
     renderer::GpuProfiler gpuProfiler_;
     rhi::VulkanSwapchain swapchain_;
     renderer::RenderGraph renderGraph_;
+    assets::AssetManager assetManager_;
     ui::ImGuiLayer imguiLayer_;
     rhi::VulkanDescriptorSetLayout materialDescriptorSetLayout_;
     rhi::VulkanDescriptorSetLayout skyboxDescriptorSetLayout_;
@@ -397,6 +421,7 @@ private:
     std::vector<rhi::VulkanTexture> importedBaseColorTextures_;
     std::vector<rhi::VulkanTexture> importedNormalTextures_;
     std::vector<rhi::VulkanTexture> importedMetallicRoughnessTextures_;
+    std::vector<std::unique_ptr<rhi::VulkanTexture>> materialAssetTextures_;
     renderer::BindlessTextureHeap bindlessTextureHeap_;
     rhi::VulkanDescriptorPool materialDescriptorPool_;
     rhi::VulkanDescriptorPool skyboxDescriptorPool_;
@@ -510,6 +535,7 @@ private:
     std::string runtimeSettingsWarning_;
     std::string lastSceneLoadStatus_ = "Not loaded yet.";
     std::string lastSceneSaveStatus_ = "Not saved this session.";
+    std::string lastMaterialAssetStatus_ = "No material asset saved or reloaded this session.";
     std::string portfolioScreenshotStatus_ = "No capture requested.";
     std::filesystem::path lastPortfolioScreenshotPath_;
     PortfolioCaptureSavedState portfolioCaptureSavedState_{};

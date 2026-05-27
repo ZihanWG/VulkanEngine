@@ -1,0 +1,20 @@
+{
+    "name": "Portfolio_GlossyBlue",
+    "shader": "pbr_opaque",
+    "baseColorFactor": [
+        0.18,
+        0.43,
+        0.88,
+        1.0
+    ],
+    "metallicFactor": 0.0,
+    "roughnessFactor": 0.3,
+    "textures": {
+        "baseColor": "",
+        "normal": "",
+        "metallicRoughness": ""
+    },
+    "alphaMode": "OPAQUE",
+    "alphaCutoff": 0.5,
+    "doubleSided": false
+}

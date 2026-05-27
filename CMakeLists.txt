@@ -143,6 +143,7 @@ target_link_libraries(imgui PUBLIC
 
 add_executable(VulkanEngine
     src/main.cpp
+    src/assets/AssetManager.cpp
     src/core/Application.cpp
     src/core/Logger.cpp
     src/core/PngWriter.cpp

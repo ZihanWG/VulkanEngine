@@ -35,6 +35,7 @@
 #include <glm/vec4.hpp>
 #include <iomanip>
 #include <limits>
+#include <memory>
 #include <span>
 #include <sstream>
 #include <stdexcept>
@@ -435,6 +436,11 @@ std::filesystem::path assetPath(const char* relativePath)
 #endif
 }
 
+std::filesystem::path materialAssetPath(std::string_view filename)
+{
+    return assetPath("materials") / std::string(filename);
+}
+
 std::filesystem::path defaultRuntimeSettingsPath()
 {
 #if defined(VULKAN_ENGINE_CONFIG_DIR)
@@ -460,9 +466,11 @@ const char* materialSourceName(renderer::MaterialSource source)
 {
     switch (source) {
     case renderer::MaterialSource::BuiltIn:
-        return "built-in material";
+        return "built-in/procedural material";
     case renderer::MaterialSource::Gltf:
         return "glTF material";
+    case renderer::MaterialSource::MaterialAsset:
+        return "JSON material asset";
     case renderer::MaterialSource::Fallback:
         return "fallback material";
     }
@@ -551,6 +559,71 @@ std::filesystem::path projectRootPath()
 #else
     return std::filesystem::current_path();
 #endif
+}
+
+std::filesystem::path resolveProjectPath(const std::string& pathString)
+{
+    if (pathString.empty()) {
+        return {};
+    }
+
+    std::filesystem::path path(pathString);
+    if (path.is_absolute()) {
+        return path.lexically_normal();
+    }
+    return (projectRootPath() / path).lexically_normal();
+}
+
+std::string stableProjectPathString(const std::filesystem::path& path)
+{
+    if (path.empty()) {
+        return {};
+    }
+
+    std::error_code absolutePathError;
+    const std::filesystem::path absolutePath = std::filesystem::absolute(path, absolutePathError);
+    std::error_code absoluteRootError;
+    const std::filesystem::path absoluteRoot = std::filesystem::absolute(projectRootPath(), absoluteRootError);
+    if (!absolutePathError && !absoluteRootError) {
+        std::error_code relativeError;
+        const std::filesystem::path relativePath = std::filesystem::relative(absolutePath, absoluteRoot, relativeError);
+        const std::string relativeString = relativePath.generic_string();
+        if (!relativeError && !relativeString.empty() && relativeString.rfind("../", 0) != 0 &&
+            relativeString != "..") {
+            return relativeString;
+        }
+    }
+
+    return path.lexically_normal().generic_string();
+}
+
+std::filesystem::path resolveMaterialTexturePath(const std::filesystem::path& materialPath,
+                                                 const std::filesystem::path& texturePath)
+{
+    if (texturePath.empty()) {
+        return {};
+    }
+    if (texturePath.is_absolute()) {
+        return texturePath.lexically_normal();
+    }
+
+    const std::filesystem::path materialRelativePath =
+        materialPath.empty() ? std::filesystem::path{} : (materialPath.parent_path() / texturePath).lexically_normal();
+    if (!materialRelativePath.empty() && std::filesystem::exists(materialRelativePath)) {
+        return materialRelativePath;
+    }
+
+    const std::filesystem::path projectRelativePath = (projectRootPath() / texturePath).lexically_normal();
+    if (std::filesystem::exists(projectRelativePath)) {
+        return projectRelativePath;
+    }
+
+    const std::filesystem::path assetRelativePath = (assetPath("") / texturePath).lexically_normal();
+    if (std::filesystem::exists(assetRelativePath)) {
+        return assetRelativePath;
+    }
+
+    return materialRelativePath.empty() ? projectRelativePath : materialRelativePath;
 }
 
 std::filesystem::path portfolioScreenshotDirectory()
@@ -2725,6 +2798,7 @@ void Renderer::createScene()
     importedBaseColorTextures_.clear();
     importedNormalTextures_.clear();
     importedMetallicRoughnessTextures_.clear();
+    materialAssetTextures_.clear();
 
     cubeMesh_ = renderer::Mesh::createCube(context_, commandContext_);
     portfolioSphereMesh_ = renderer::Mesh::createUvSphere(context_, commandContext_);
@@ -3463,6 +3537,202 @@ void Renderer::createBrdfLutTexture()
     nameBrdfLutResources(brdfLutTexture_, "BrdfLut");
 }
 
+const rhi::VulkanTexture* Renderer::loadMaterialAssetTextureOrFallback(
+    const std::filesystem::path& materialPath,
+    const std::filesystem::path& texturePath,
+    rhi::TextureColorSpace colorSpace,
+    std::string_view slotName,
+    const rhi::VulkanTexture& fallbackTexture,
+    bool& fallbackUsed)
+{
+    fallbackUsed = false;
+    if (texturePath.empty()) {
+        return &fallbackTexture;
+    }
+
+    const std::filesystem::path resolvedTexturePath = resolveMaterialTexturePath(materialPath, texturePath);
+    if (!std::filesystem::exists(resolvedTexturePath)) {
+        fallbackUsed = true;
+        Logger::warn("Material asset texture is missing for " + std::string(slotName) +
+                     "; using fallback texture: " + resolvedTexturePath.string());
+        return &fallbackTexture;
+    }
+
+    auto texture = std::make_unique<rhi::VulkanTexture>();
+    try {
+        texture->createFromFile(context_, commandContext_, resolvedTexturePath, colorSpace, true);
+        texture->setDebugMetadata(rhi::TextureDebugMetadata{
+            "Material asset " + std::string(slotName) + " texture",
+            resolvedTexturePath.string(),
+            colorSpace,
+            rhi::TextureDebugSource::LoadedFromDisk,
+            false,
+        });
+        nameTextureResources(*texture, "MaterialAssetTexture_" + std::string(slotName));
+        (void)assetManager_.registerTextureAsset(resolvedTexturePath, std::string(slotName));
+        const rhi::VulkanTexture* texturePointer = texture.get();
+        materialAssetTextures_.push_back(std::move(texture));
+        Logger::info("Loaded material asset " + std::string(slotName) + " texture as " +
+                     std::string(colorSpaceName(colorSpace)) + ": " + resolvedTexturePath.string());
+        return texturePointer;
+    } catch (const std::exception& error) {
+        fallbackUsed = true;
+        Logger::warn("Failed to load material asset " + std::string(slotName) + " texture '" +
+                     resolvedTexturePath.string() + "'; using fallback texture: " + error.what());
+        return &fallbackTexture;
+    }
+}
+
+renderer::Material Renderer::createMaterialFromAsset(const assets::MaterialAsset& materialAsset,
+                                                     const rhi::VulkanTexture& baseColorFallback,
+                                                     const rhi::VulkanTexture& normalFallback,
+                                                     const rhi::VulkanTexture& metallicRoughnessFallback,
+                                                     float multiScatterStrength,
+                                                     renderer::MaterialSource fallbackSource)
+{
+    bool baseColorLoadFallback = false;
+    bool normalLoadFallback = false;
+    bool metallicRoughnessLoadFallback = false;
+
+    renderer::Material material{};
+    material.debugName = materialAsset.name.empty() ? "Material Asset" : materialAsset.name;
+    material.assetName = materialAsset.name;
+    material.sourceAssetPath = materialAsset.sourcePath;
+    material.shader = materialAsset.shader.empty() ? "pbr_opaque" : materialAsset.shader;
+    material.baseColorTexturePath = materialAsset.textures.baseColor;
+    material.normalTexturePath = materialAsset.textures.normal;
+    material.metallicRoughnessTexturePath = materialAsset.textures.metallicRoughness;
+    material.alphaMode = materialAsset.alphaMode.empty() ? "OPAQUE" : materialAsset.alphaMode;
+    material.baseColorTexture = loadMaterialAssetTextureOrFallback(materialAsset.sourcePath,
+                                                                   materialAsset.textures.baseColor,
+                                                                   rhi::TextureColorSpace::SRGB,
+                                                                   "base color",
+                                                                   baseColorFallback,
+                                                                   baseColorLoadFallback);
+    material.normalTexture = loadMaterialAssetTextureOrFallback(materialAsset.sourcePath,
+                                                                materialAsset.textures.normal,
+                                                                rhi::TextureColorSpace::Linear,
+                                                                "normal",
+                                                                normalFallback,
+                                                                normalLoadFallback);
+    material.metallicRoughnessTexture =
+        loadMaterialAssetTextureOrFallback(materialAsset.sourcePath,
+                                           materialAsset.textures.metallicRoughness,
+                                           rhi::TextureColorSpace::Linear,
+                                           "metallic-roughness",
+                                           metallicRoughnessFallback,
+                                           metallicRoughnessLoadFallback);
+    material.baseColorFactor = materialAsset.baseColorFactor;
+    material.metallic = std::clamp(materialAsset.metallicFactor, 0.0f, 1.0f);
+    material.roughness = std::clamp(materialAsset.roughnessFactor, 0.0f, 1.0f);
+    material.multiScatterStrength = multiScatterStrength;
+    material.alphaCutoff = std::max(materialAsset.alphaCutoff, 0.0f);
+    material.doubleSided = materialAsset.doubleSided;
+    material.source = materialAsset.fallback ? fallbackSource : renderer::MaterialSource::MaterialAsset;
+    material.baseColorTextureFallback =
+        baseColorLoadFallback || (material.baseColorTexture && material.baseColorTexture->debugMetadata().fallback);
+    material.normalTextureFallback =
+        normalLoadFallback || (material.normalTexture && material.normalTexture->debugMetadata().fallback);
+    material.metallicRoughnessTextureFallback =
+        metallicRoughnessLoadFallback ||
+        (material.metallicRoughnessTexture && material.metallicRoughnessTexture->debugMetadata().fallback);
+    material.hasNormalMap = !material.normalTextureFallback;
+    material.hasMetallicRoughnessMap = !material.metallicRoughnessTextureFallback;
+
+    assignBindlessTextureIndices(material);
+    createMaterialDescriptorSet(material);
+    return material;
+}
+
+assets::MaterialAsset Renderer::runtimeMaterialToAsset(const renderer::Material& material) const
+{
+    assets::MaterialAsset materialAsset{};
+    materialAsset.sourcePath = material.sourceAssetPath;
+    materialAsset.name = !material.assetName.empty() ? material.assetName : material.debugName;
+    if (materialAsset.name.empty()) {
+        materialAsset.name = "Material";
+    }
+    materialAsset.shader = material.shader.empty() ? "pbr_opaque" : material.shader;
+    materialAsset.baseColorFactor = material.baseColorFactor;
+    materialAsset.metallicFactor = material.metallic;
+    materialAsset.roughnessFactor = material.roughness;
+    materialAsset.textures.baseColor = material.baseColorTexturePath;
+    materialAsset.textures.normal = material.normalTexturePath;
+    materialAsset.textures.metallicRoughness = material.metallicRoughnessTexturePath;
+    materialAsset.alphaMode = material.alphaMode.empty() ? "OPAQUE" : material.alphaMode;
+    materialAsset.alphaCutoff = material.alphaCutoff;
+    materialAsset.doubleSided = material.doubleSided;
+    materialAsset.fallback = false;
+    return materialAsset;
+}
+
+bool Renderer::saveMaterialAssetFromUi(renderer::Material& material)
+{
+    if (material.sourceAssetPath.empty()) {
+        lastMaterialAssetStatus_ = "Save Material skipped: selected material has no source asset path. Save As is TODO.";
+        Logger::warn(lastMaterialAssetStatus_);
+        return false;
+    }
+
+    std::string errorMessage;
+    assets::MaterialAsset materialAsset = runtimeMaterialToAsset(material);
+    if (!assetManager_.saveMaterialAsset(material.sourceAssetPath, materialAsset, &errorMessage)) {
+        lastMaterialAssetStatus_ = errorMessage;
+        Logger::warn(lastMaterialAssetStatus_);
+        return false;
+    }
+
+    material.source = renderer::MaterialSource::MaterialAsset;
+    material.assetName = materialAsset.name;
+    lastMaterialAssetStatus_ = "Saved material asset: " + material.sourceAssetPath.string();
+    Logger::info(lastMaterialAssetStatus_);
+    return true;
+}
+
+bool Renderer::reloadMaterialAssetFromUi(renderer::Material& material)
+{
+    if (material.sourceAssetPath.empty()) {
+        lastMaterialAssetStatus_ = "Reload Material skipped: selected material has no source asset path.";
+        Logger::warn(lastMaterialAssetStatus_);
+        return false;
+    }
+
+    std::string errorMessage;
+    const assets::MaterialAssetHandle handle = assetManager_.loadMaterialAsset(material.sourceAssetPath, &errorMessage);
+    if (!handle) {
+        lastMaterialAssetStatus_ = errorMessage;
+        Logger::warn(lastMaterialAssetStatus_);
+        return false;
+    }
+
+    const assets::MaterialAsset* materialAsset = assetManager_.materialAsset(handle);
+    if (!materialAsset) {
+        lastMaterialAssetStatus_ = "Reload Material failed: loaded material asset was not registered.";
+        Logger::warn(lastMaterialAssetStatus_);
+        return false;
+    }
+
+    material.debugName = materialAsset->name.empty() ? material.debugName : materialAsset->name;
+    material.assetName = materialAsset->name;
+    material.shader = materialAsset->shader.empty() ? "pbr_opaque" : materialAsset->shader;
+    material.baseColorFactor = materialAsset->baseColorFactor;
+    material.metallic = std::clamp(materialAsset->metallicFactor, 0.0f, 1.0f);
+    material.roughness = std::clamp(materialAsset->roughnessFactor, 0.0f, 1.0f);
+    material.baseColorTexturePath = materialAsset->textures.baseColor;
+    material.normalTexturePath = materialAsset->textures.normal;
+    material.metallicRoughnessTexturePath = materialAsset->textures.metallicRoughness;
+    material.alphaMode = materialAsset->alphaMode.empty() ? "OPAQUE" : materialAsset->alphaMode;
+    material.alphaCutoff = std::max(materialAsset->alphaCutoff, 0.0f);
+    material.doubleSided = materialAsset->doubleSided;
+    material.source = renderer::MaterialSource::MaterialAsset;
+
+    lastMaterialAssetStatus_ =
+        "Reloaded material scalar/metadata fields from " + material.sourceAssetPath.string() +
+        ". Texture rebinding is not hot-reloaded in Phase 3.";
+    Logger::info(lastMaterialAssetStatus_);
+    return true;
+}
+
 void Renderer::createMaterial()
 {
     materialVariants_.clear();
@@ -3515,6 +3785,9 @@ void Renderer::createMaterial()
                                              float multiScatterStrength) {
         renderer::Material material{};
         material.debugName = std::move(debugName);
+        material.assetName = material.debugName;
+        material.shader = "pbr_opaque";
+        material.alphaMode = "OPAQUE";
         material.baseColorTexture = baseColorTexture;
         material.normalTexture = &flatNormalTexture_;
         material.metallicRoughnessTexture = &neutralMetallicRoughnessTexture_;
@@ -3522,9 +3795,11 @@ void Renderer::createMaterial()
         material.metallic = metallic;
         material.roughness = roughness;
         material.multiScatterStrength = multiScatterStrength;
+        material.alphaCutoff = 0.5f;
         material.source = renderer::MaterialSource::BuiltIn;
         material.hasNormalMap = false;
         material.hasMetallicRoughnessMap = false;
+        material.doubleSided = false;
         material.baseColorTextureFallback = false;
         material.normalTextureFallback = true;
         material.metallicRoughnessTextureFallback = true;
@@ -3533,26 +3808,84 @@ void Renderer::createMaterial()
         materialVariants_.push_back(std::move(material));
     };
 
+    const auto portfolioMaterialAssetOrFallback =
+        [this](std::string_view filename,
+               std::string debugName,
+               const glm::vec4& baseColorFactor,
+               float metallic,
+               float roughness) {
+            const std::filesystem::path path = materialAssetPath(filename);
+            std::string errorMessage;
+            const assets::MaterialAssetHandle handle = assetManager_.loadMaterialAsset(path, &errorMessage);
+            if (handle) {
+                const assets::MaterialAsset* materialAsset = assetManager_.materialAsset(handle);
+                if (materialAsset) {
+                    Logger::info("Loaded portfolio material asset: " + path.string());
+                    return *materialAsset;
+                }
+            }
+
+            Logger::warn(errorMessage.empty() ? "Portfolio material asset failed to load; using fallback values: " +
+                                                    path.string()
+                                              : errorMessage + "; using fallback values.");
+            assets::MaterialAsset fallback = assets::AssetManager::fallbackMaterialAsset(std::move(debugName));
+            fallback.sourcePath = path;
+            fallback.baseColorFactor = baseColorFactor;
+            fallback.metallicFactor = metallic;
+            fallback.roughnessFactor = roughness;
+            return fallback;
+        };
+
+    const auto addPortfolioMaterialAsset =
+        [this, &portfolioMaterialAssetOrFallback](std::string_view filename,
+                                                  std::string debugName,
+                                                  const glm::vec4& baseColorFactor,
+                                                  float metallic,
+                                                  float roughness,
+                                                  float multiScatterStrength) {
+            const assets::MaterialAsset materialAsset =
+                portfolioMaterialAssetOrFallback(filename, debugName, baseColorFactor, metallic, roughness);
+            renderer::Material material = createMaterialFromAsset(materialAsset,
+                                                                  portfolioBaseColorTexture_,
+                                                                  flatNormalTexture_,
+                                                                  neutralMetallicRoughnessTexture_,
+                                                                  multiScatterStrength,
+                                                                  renderer::MaterialSource::Fallback);
+            materialVariants_.push_back(std::move(material));
+        };
+
     addPortfolioMaterial(
         "Portfolio_Ground", &portfolioBaseColorTexture_, {0.30f, 0.32f, 0.32f, 1.0f}, 0.0f, 0.86f, 0.0f);
-    addPortfolioMaterial(
-        "Portfolio_MatteGray", &portfolioBaseColorTexture_, {0.66f, 0.66f, 0.62f, 1.0f}, 0.0f, 0.85f, 0.0f);
-    addPortfolioMaterial(
-        "Portfolio_GlossyBlue", &portfolioBaseColorTexture_, {0.18f, 0.43f, 0.88f, 1.0f}, 0.0f, 0.30f, 0.2f);
-    addPortfolioMaterial(
-        "Portfolio_RoughMetal", &portfolioBaseColorTexture_, {0.76f, 0.74f, 0.70f, 1.0f}, 1.0f, 0.60f, 0.70f);
-    addPortfolioMaterial("Portfolio_PolishedMetalSmall",
-                         &portfolioBaseColorTexture_,
-                         {0.82f, 0.85f, 0.88f, 1.0f},
-                         1.0f,
-                         0.23f,
-                         0.40f);
-    addPortfolioMaterial("Portfolio_HeroCeramic",
-                         &portfolioBaseColorTexture_,
-                         {0.66f, 0.72f, 0.76f, 1.0f},
-                         0.0f,
-                         0.55f,
-                         0.05f);
+    addPortfolioMaterialAsset("portfolio_matte_gray.material.json",
+                              "Portfolio_MatteGray",
+                              {0.66f, 0.66f, 0.62f, 1.0f},
+                              0.0f,
+                              0.85f,
+                              0.0f);
+    addPortfolioMaterialAsset("portfolio_glossy_blue.material.json",
+                              "Portfolio_GlossyBlue",
+                              {0.18f, 0.43f, 0.88f, 1.0f},
+                              0.0f,
+                              0.30f,
+                              0.2f);
+    addPortfolioMaterialAsset("portfolio_rough_metal.material.json",
+                              "Portfolio_RoughMetal",
+                              {0.76f, 0.74f, 0.70f, 1.0f},
+                              1.0f,
+                              0.60f,
+                              0.70f);
+    addPortfolioMaterialAsset("portfolio_polished_metal_small.material.json",
+                              "Portfolio_PolishedMetalSmall",
+                              {0.82f, 0.85f, 0.88f, 1.0f},
+                              1.0f,
+                              0.23f,
+                              0.40f);
+    addPortfolioMaterialAsset("portfolio_hero_ceramic.material.json",
+                              "Portfolio_HeroCeramic",
+                              {0.66f, 0.72f, 0.76f, 1.0f},
+                              0.0f,
+                              0.55f,
+                              0.05f);
     addPortfolioMaterial(
         "Portfolio_Backdrop", &portfolioBackdropTexture_, {1.0f, 1.0f, 1.0f, 1.0f}, 0.0f, 0.94f, 0.0f);
 
@@ -4806,6 +5139,62 @@ const renderer::Material* Renderer::primaryMaterialForObject(const renderer::Ren
     return materials.empty() ? nullptr : materials.front();
 }
 
+renderer::Material* Renderer::mutableMaterialFromPointer(const renderer::Material* material)
+{
+    if (!material) {
+        return nullptr;
+    }
+
+    for (renderer::Material& candidate : materialVariants_) {
+        if (&candidate == material) {
+            return &candidate;
+        }
+    }
+    for (renderer::Material& candidate : importedMaterials_) {
+        if (&candidate == material) {
+            return &candidate;
+        }
+    }
+    if (&checkerboardMaterial_ == material) {
+        return &checkerboardMaterial_;
+    }
+
+    return nullptr;
+}
+
+renderer::Material* Renderer::primaryMutableMaterialForObject(renderer::RenderObject& object)
+{
+    return mutableMaterialFromPointer(primaryMaterialForObject(object));
+}
+
+renderer::Material* Renderer::findRuntimeMaterialByAssetPath(const std::filesystem::path& path)
+{
+    if (path.empty()) {
+        return nullptr;
+    }
+
+    const std::string key = path.lexically_normal().generic_string();
+    const auto matchesPath = [&key](const renderer::Material& material) {
+        return !material.sourceAssetPath.empty() && material.sourceAssetPath.lexically_normal().generic_string() == key;
+    };
+
+    for (renderer::Material& material : materialVariants_) {
+        if (matchesPath(material)) {
+            return &material;
+        }
+    }
+    for (renderer::Material& material : importedMaterials_) {
+        if (matchesPath(material)) {
+            return &material;
+        }
+    }
+    if (matchesPath(checkerboardMaterial_)) {
+        return &checkerboardMaterial_;
+    }
+
+    return nullptr;
+}
+
 std::string Renderer::materialDebugLabel(const renderer::RenderObject& object) const
 {
     if (!object.mesh) {
@@ -5048,10 +5437,15 @@ void Renderer::saveSceneFromUi()
                                       {"submeshCount", meshSubmeshCount(object.mesh)}};
             objectJson["material"] =
                 Json{{"name", material ? material->debugName : std::string{}},
+                     {"assetName", material ? material->assetName : std::string{}},
+                     {"assetPath", material ? stableProjectPathString(material->sourceAssetPath) : std::string{}},
+                     {"shader", material ? material->shader : std::string{}},
                      {"primaryLabel", materialDebugLabel(object)},
                      {"pointer", pointerString(material)},
                      {"slotCount", object.materialCount},
-                     {"source", material ? std::string(materialSourceName(material->source)) : std::string{"none"}}};
+                     {"source", material ? std::string(materialSourceName(material->source)) : std::string{"none"}},
+                     {"materialAssetRebinding", object.materialTable ? "metadata-only for material tables"
+                                                                      : "restored by assetPath when available"}};
 
             objectsJson.push_back(std::move(objectJson));
         }
@@ -5062,8 +5456,13 @@ void Renderer::saveSceneFromUi()
                                     {"camera", std::move(cameraJson)},
                                     {"directionalLight", std::move(lightJson)},
                                     {"objects", std::move(objectsJson)},
-                                    {"limitations",
-                                     Json::array({"Mesh and material references are saved as debug metadata only.",
+                                     {"limitations",
+                                     Json::array({"Mesh references and glTF material-table references are saved as "
+                                                  "debug metadata only.",
+                                                  "Simple object material asset paths are restored when they match a "
+                                                  "loaded runtime material.",
+                                                  "glTF material-table assignments remain runtime data and are not "
+                                                  "rebuilt from scene JSON.",
                                                   "Load preserves current runtime mesh/material pointers and restores "
                                                   "matching object transforms, names, visibility, camera, and light."})}};
 
@@ -5147,6 +5546,8 @@ void Renderer::loadSceneFromUi()
 
         size_t matchedObjects = 0;
         size_t skippedObjects = 0;
+        size_t restoredMaterialAssets = 0;
+        size_t skippedMaterialAssets = 0;
         std::vector<uint8_t> objectUsed(renderObjects_.size(), 0);
         if (const auto objectsIt = sceneJson.find("objects"); objectsIt != sceneJson.end()) {
             if (!objectsIt->is_array()) {
@@ -5209,6 +5610,26 @@ void Renderer::loadSceneFromUi()
                 }
                 readJsonBool(objectJson, "visible", object.visible);
 
+                if (const Json* materialJson = jsonObjectMember(objectJson, "material")) {
+                    std::string materialAssetPathString;
+                    readJsonString(*materialJson, "assetPath", materialAssetPathString);
+                    if (!materialAssetPathString.empty()) {
+                        const std::filesystem::path materialPath = resolveProjectPath(materialAssetPathString);
+                        if (renderer::Material* material = findRuntimeMaterialByAssetPath(materialPath)) {
+                            if (!object.materialTable) {
+                                object.material = material;
+                                ++restoredMaterialAssets;
+                            } else {
+                                ++skippedMaterialAssets;
+                            }
+                        } else {
+                            ++skippedMaterialAssets;
+                            Logger::warn("Scene material asset path did not match a runtime material: " +
+                                         materialAssetPathString);
+                        }
+                    }
+                }
+
                 if (const Json* transformJson = jsonObjectMember(objectJson, "transform")) {
                     std::string mode = "trs";
                     readJsonString(*transformJson, "mode", mode);
@@ -5256,7 +5677,9 @@ void Renderer::loadSceneFromUi()
         clampRuntimeSettings();
         lastSceneLoadStatus_ = "Loaded scene from " + sceneDocumentPath_.string() + ". Matched " +
                                std::to_string(matchedObjects) + " object(s), skipped " +
-                               std::to_string(skippedObjects) + ".";
+                               std::to_string(skippedObjects) + ", restored " +
+                               std::to_string(restoredMaterialAssets) + " material asset assignment(s), skipped " +
+                               std::to_string(skippedMaterialAssets) + ".";
         Logger::info(lastSceneLoadStatus_);
     } catch (const std::exception& error) {
         lastSceneLoadStatus_ = "Scene load failed: " + std::string(error.what());
@@ -5793,7 +6216,7 @@ void Renderer::drawSelectedRenderObjectInspector(uint32_t objectIndex)
             if (materials.size() > 1) {
                 ImGui::Text("Material count: %zu (showing first resolved material)", materials.size());
             }
-            drawMaterialDebugSection(materials.front(), true);
+            drawMaterialDebugSection(materials.front(), true, mutableMaterialFromPointer(materials.front()));
         }
         ImGui::TreePop();
     }
@@ -5848,7 +6271,7 @@ void Renderer::drawMaterialInspectorDebugUi()
         }
     }
 
-    drawMaterialDebugSection(materials.front(), true);
+    drawMaterialDebugSection(materials.front(), true, mutableMaterialFromPointer(materials.front()));
 }
 
 void Renderer::drawTextureDebugUi()
@@ -5892,29 +6315,110 @@ void Renderer::drawTextureDebugUi()
     }
 }
 
-void Renderer::drawMaterialDebugSection(const renderer::Material* material, bool includeTextureSummary)
+void Renderer::drawMaterialDebugSection(const renderer::Material* material,
+                                        bool includeTextureSummary,
+                                        renderer::Material* editableMaterial)
 {
     if (!material) {
         ImGui::TextDisabled("Material: unavailable");
         return;
     }
 
+    ImGui::PushID(static_cast<const void*>(material));
+
+    const auto runtimeMaterialIndexLabel = [this, material]() {
+        for (size_t materialIndex = 0; materialIndex < materialVariants_.size(); ++materialIndex) {
+            if (&materialVariants_[materialIndex] == material) {
+                return "materialVariants[" + std::to_string(materialIndex) + "]";
+            }
+        }
+        for (size_t materialIndex = 0; materialIndex < importedMaterials_.size(); ++materialIndex) {
+            if (&importedMaterials_[materialIndex] == material) {
+                return "importedMaterials[" + std::to_string(materialIndex) + "]";
+            }
+        }
+        if (&checkerboardMaterial_ == material) {
+            return std::string("checkerboardMaterial");
+        }
+        return std::string("untracked");
+    };
+
     const std::string descriptorSetLabel = descriptorSetDebugString(material->descriptorSet);
     ImGui::Text("Material debug name: %s", materialNameOrFallback(material));
     ImGui::Text("Source: %s", materialSourceName(material->source));
-    ImGui::Text("baseColorFactor: %s", formatVec4(material->baseColorFactor).c_str());
-    ImGui::Text("metallic: %.3f", material->metallic);
-    ImGui::Text("roughness: %.3f", material->roughness);
+    ImGui::Text("Runtime material index: %s", runtimeMaterialIndexLabel().c_str());
+    ImGui::Text("Asset name: %s", material->assetName.empty() ? "(none)" : material->assetName.c_str());
+    ImGui::Text("Shader: %s", material->shader.empty() ? "(default)" : material->shader.c_str());
+    ImGui::Text("Alpha mode: %s", material->alphaMode.empty() ? "OPAQUE" : material->alphaMode.c_str());
+    if (!material->sourceAssetPath.empty()) {
+        ImGui::TextWrapped("Source asset path: %s", stableProjectPathString(material->sourceAssetPath).c_str());
+    } else {
+        ImGui::TextDisabled("Source asset path: none");
+    }
+
+    if (editableMaterial) {
+        glm::vec4 baseColor = editableMaterial->baseColorFactor;
+        if (ImGui::ColorEdit4("baseColorFactor", &baseColor.x, ImGuiColorEditFlags_Float)) {
+            editableMaterial->baseColorFactor = glm::clamp(baseColor, glm::vec4(0.0f), glm::vec4(16.0f));
+        }
+
+        float metallic = editableMaterial->metallic;
+        if (ImGui::DragFloat("metallic", &metallic, 0.01f, 0.0f, 1.0f, "%.3f")) {
+            editableMaterial->metallic = std::clamp(metallic, 0.0f, 1.0f);
+        }
+
+        float roughness = editableMaterial->roughness;
+        if (ImGui::DragFloat("roughness", &roughness, 0.01f, 0.0f, 1.0f, "%.3f")) {
+            editableMaterial->roughness = std::clamp(roughness, 0.0f, 1.0f);
+        }
+
+        float alphaCutoff = editableMaterial->alphaCutoff;
+        if (ImGui::DragFloat("alphaCutoff", &alphaCutoff, 0.01f, 0.0f, 1.0f, "%.3f")) {
+            editableMaterial->alphaCutoff = std::clamp(alphaCutoff, 0.0f, 1.0f);
+        }
+
+        bool doubleSided = editableMaterial->doubleSided;
+        if (ImGui::Checkbox("doubleSided metadata", &doubleSided)) {
+            editableMaterial->doubleSided = doubleSided;
+        }
+
+        if (ImGui::Button("Save Material")) {
+            saveMaterialAssetFromUi(*editableMaterial);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Reload Material")) {
+            reloadMaterialAssetFromUi(*editableMaterial);
+        }
+        ImGui::TextWrapped("Material asset status: %s", lastMaterialAssetStatus_.c_str());
+    } else {
+        ImGui::Text("baseColorFactor: %s", formatVec4(material->baseColorFactor).c_str());
+        ImGui::Text("metallic: %.3f", material->metallic);
+        ImGui::Text("roughness: %.3f", material->roughness);
+        ImGui::Text("alphaCutoff: %.3f", material->alphaCutoff);
+        ImGui::Text("doubleSided metadata: %s", material->doubleSided ? "true" : "false");
+    }
+
     ImGui::Text("multiScatterStrength: %.3f", material->multiScatterStrength);
     ImGui::Text("baseColorTextureIndex: %u", material->baseColorTextureIndex);
     ImGui::Text("normalTextureIndex: %u", material->normalTextureIndex);
     ImGui::Text("metallicRoughnessTextureIndex: %u", material->metallicRoughnessTextureIndex);
+    ImGui::TextWrapped("Base color texture path: %s",
+                       material->baseColorTexturePath.empty()
+                           ? "(none)"
+                           : material->baseColorTexturePath.generic_string().c_str());
+    ImGui::TextWrapped("Normal texture path: %s",
+                       material->normalTexturePath.empty() ? "(none)" : material->normalTexturePath.generic_string().c_str());
+    ImGui::TextWrapped("Metallic-roughness texture path: %s",
+                       material->metallicRoughnessTexturePath.empty()
+                           ? "(none)"
+                           : material->metallicRoughnessTexturePath.generic_string().c_str());
     ImGui::Text("Bindless material textures: %s", isBindlessMaterialTextureActive() ? "active" : "inactive");
     ImGui::Text("Legacy material descriptor fallback: %s",
                 isBindlessMaterialTextureActive() ? "inactive" : "active");
     ImGui::Text("Material descriptor set: %s", descriptorSetLabel.c_str());
 
     if (!includeTextureSummary) {
+        ImGui::PopID();
         return;
     }
 
@@ -5939,6 +6443,7 @@ void Renderer::drawMaterialDebugSection(const renderer::Material* material, bool
                                        false);
         ImGui::TreePop();
     }
+    ImGui::PopID();
 }
 
 void Renderer::drawMaterialTextureSlotDebugUi(const char* slotName,

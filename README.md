@@ -11,6 +11,8 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - SDL3 window and surface integration with swapchain recreation support.
 - Static mesh path for built-in cube geometry and glTF triangle meshes.
 - glTF material factors plus base color, normal, and metallic-roughness texture loading.
+- Minimal path-based `AssetManager` for material JSON assets and texture path metadata.
+- Material asset JSON load/save for PBR scalar fields, texture path metadata, alpha metadata, and portfolio materials.
 - Tangent-space normal mapping and Cook-Torrance GGX direct lighting.
 - Optional HDR environment loading with a procedural fallback, cubemap-based skybox/IBL resources, and split-sum BRDF LUT.
 - Skybox and mesh shaders output HDR linear color into an offscreen scene color target before post-processing.
@@ -18,7 +20,7 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - Auto exposure from HDR scene luminance builds log-average and histogram readback data; histogram percentile clipping is the preferred mode, with log-average/manual fallback.
 - Manual exposure remains available as the fallback path.
 - Reinhard/ACES tone mapping is applied in the final composite pass before swapchain output.
-- Dear ImGui debug overlay exposes runtime render settings, persistent JSON settings save/load/reset controls, render graph visualization, GPU profiler/frame timeline history, culling/exposure history plots, editable scene hierarchy/transform controls, material inspection, and render-target/CSM cascade debug views.
+- Dear ImGui debug overlay exposes runtime render settings, persistent JSON settings save/load/reset controls, render graph visualization, GPU profiler/frame timeline history, culling/exposure history plots, editable scene hierarchy/transform controls, editable material scalar controls, and render-target/CSM cascade debug views.
 - Compact Kulla-Conty-style multi-scattering compensation for PBR response.
 - PCF-filtered cascaded directional shadow map with basic texel snapping, optional cascade debug tinting, per-cascade GPU shadow-caster culling, and an indirect shadow draw path.
 - Descriptor indexing path for bindless material texture arrays, with a legacy descriptor-set fallback.
@@ -40,6 +42,7 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - `VulkanBuffer`, `VulkanImage`, `VulkanTexture`, `VulkanEnvironmentMap`, `VulkanBrdfLut`, and `VulkanShadowMap` wrap Vulkan resource lifetime.
 - `Mesh`, `Material`, `RenderObject`, `DrawItem`, `Transform`, and `Camera` provide renderer-side scene abstractions without ECS.
 - `RuntimeSettings` stores the debug UI's persistent render settings and serializes them as local JSON under `config/`.
+- `AssetManager` stores stable path-based material/texture metadata, loads/saves material JSON files, and leaves Vulkan texture ownership in `Renderer`/`VulkanTexture`.
 - The editable scene workflow stores runtime object IDs, names, visibility, transforms, camera settings, and directional-light settings as JSON under `assets/scenes/`.
 - `ImGuiLayer` owns the Dear ImGui context, SDL3 backend, Vulkan backend, and ImGui descriptor pool.
 - `RenderGraph` is a small manual frame graph for the current `CSMShadowPass`, `MainHDRPass`, bloom, `LuminancePass`, `HistogramExposurePass`, `CompositePass`, and `ImGuiPass` resource transitions and debug pass metadata.
@@ -86,9 +89,19 @@ The Scene Hierarchy panel now supports a minimal editor-like workflow. It lists 
 
 Camera controls expose position, target, up vector, FOV, near plane, far plane, and reset buttons for the default and portfolio camera presets. Directional-light controls expose direction, color, intensity, and reset-to-default. Portfolio capture mode keeps its own showcase object transforms/visibility, camera, and lighting presets; F12 and the portfolio showcase button reapply those presets.
 
-Use `Save Scene` and `Load Scene` in the Scene Hierarchy panel to write/read `assets/scenes/default.scene.json`. Save/load restores camera, directional-light settings, object names, visibility, and transforms for the current runtime object list. Mesh and material references are serialized as debug metadata only and are not rebound on load yet. ImGuizmo is deferred because it is not currently vendored in the project.
+Use `Save Scene` and `Load Scene` in the Scene Hierarchy panel to write/read `assets/scenes/default.scene.json`. Save/load restores camera, directional-light settings, object names, visibility, and transforms for the current runtime object list. Simple object material asset paths are restored when they match an already loaded runtime material; mesh references and glTF material-table assignments remain metadata-only. ImGuizmo is deferred because it is not currently vendored in the project.
 
 More details are in `docs/scene_editing.md`.
+
+## Asset Manager and Material Assets
+
+Phase 3 adds a minimal `AssetManager` in `src/assets/`. It uses stable path-derived handles for material assets and texture path metadata, but it does not own Vulkan images, views, samplers, or descriptors.
+
+Material assets live under `assets/materials/` as `.material.json` files. The schema stores `name`, `shader`, `baseColorFactor`, `metallicFactor`, `roughnessFactor`, base-color/normal/metallic-roughness texture paths, `alphaMode`, `alphaCutoff`, and `doubleSided`. The renderer maps those fields into the existing runtime `Material` struct and keeps glTF material loading compatible with the existing `GltfMaterialInfo` path.
+
+Missing material files or malformed JSON log warnings and fall back to built-in material values. Missing material texture paths use the appropriate fallback texture before descriptor sets and bindless texture indices are assigned. The ImGui Material Inspector can edit scalar fields, save JSON material assets, and reload scalar/metadata fields; full texture hot reload, an asset browser, an asset cooker, texture compression, shader permutations, and a material graph are not implemented.
+
+More details are in `docs/asset_system.md`.
 
 ## One-Frame Rendering Flow
 
@@ -230,15 +243,13 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - Portfolio screenshots use the current swapchain resolution rather than a separate high-resolution offline render path.
 - HDR swapchain output is not implemented yet.
 - ImGui is a debug UI only; there is no docking/editor layout yet.
-- Scene hierarchy panel is read-only.
-- Material inspector is read-only.
-- No material editing yet.
+- Scene hierarchy editing is limited to existing runtime objects; there is no object creation/deletion or hierarchy editing yet.
+- Material inspector editing is limited to scalar fields and material asset save/reload metadata.
 - No texture import UI.
 - No material graph.
-- No transform editing yet.
 - No gizmos yet.
 - No object picking or mouse selection yet.
-- No scene serialization/editor architecture yet.
+- Scene serialization is intentionally narrow runtime metadata, not a full editor scene format yet.
 - Runtime settings persistence is intentionally narrow and is not a full editor settings system.
 - There is no per-project or per-profile runtime settings management yet.
 - Settings that require GPU resource recreation are startup-applied; there is no hot-reload for them yet.
@@ -271,18 +282,17 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - Add runtime settings profile presets.
 - Add per-scene runtime settings.
 - Add persistent scene/editor settings.
-- Add transform editing.
+- Add object creation/deletion and hierarchy editing.
 - Add object visibility toggles.
 - Add object picking / mouse selection.
 - Add texture channel remapping.
 - Add mip/slice selectors for all debug images.
 - Add cubemap face preview.
 - Add advanced CSM visualization.
-- Add editable material inspector.
 - Add texture import/reload UI.
 - Add asset browser.
 - Add material graph.
-- Add scene serialization.
+- Expand scene serialization beyond runtime metadata.
 - Add editor docking layout.
 - Add render graph node view.
 - Add GPU capture workflow panel.

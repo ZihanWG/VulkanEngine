@@ -21,9 +21,12 @@ Each object now carries:
 - `material`: runtime primary material pointer.
 - `materialTable/materialCount`: optional glTF primitive material table.
 
-The mesh and material references are still runtime pointers. Scene JSON saves
-their debug names and pointer strings for inspection, but load does not rebind
-or recreate assets yet.
+The mesh references are still runtime pointers. Scene JSON saves mesh debug
+names and pointer strings for inspection, but load does not recreate mesh
+assets. Material asset paths are saved when available; load can restore simple
+`object.material` assignments when the path matches a material that is already
+loaded by the current runtime scene. glTF `materialTable` assignments remain
+runtime data and are not rebuilt from scene JSON.
 
 ## Transform Updates
 
@@ -58,8 +61,9 @@ Use the Scene Hierarchy panel:
 The save path creates `assets/scenes/` if it does not exist.
 
 Load matches objects by `id` first, then by `name` as a fallback. It restores
-matching runtime objects in place and preserves their current mesh/material
-pointers.
+matching runtime objects in place, preserves current mesh pointers, and only
+rebinds simple material pointers when a saved material asset path matches an
+already loaded runtime material.
 
 ## Serialized Data
 
@@ -105,10 +109,14 @@ The JSON schema is intentionally small:
       },
       "material": {
         "name": "Checkerboard",
+        "assetName": "",
+        "assetPath": "",
+        "shader": "pbr_opaque",
         "primaryLabel": "Checkerboard",
         "pointer": "0000000000000000",
         "slotCount": 0,
-        "source": "built-in material"
+        "source": "built-in/procedural material",
+        "materialAssetRebinding": "restored by assetPath when available"
       },
       "drawItemCount": 1
     }
@@ -125,7 +133,7 @@ best-effort decomposed TRS summary.
 Scene JSON does not currently serialize or restore:
 
 - mesh asset paths or mesh GPU buffers
-- material assets, descriptors, texture bindings, or PBR edits
+- glTF material-table rebinding, descriptors, or texture bindings
 - glTF source asset paths
 - object creation/deletion
 - hierarchy parenting

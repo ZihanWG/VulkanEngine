@@ -3,6 +3,7 @@
 #include "rhi/VulkanCommon.h"
 
 #include <cstdint>
+#include <filesystem>
 #include <glm/vec4.hpp>
 #include <string>
 
@@ -17,11 +18,19 @@ namespace ve::renderer {
 enum class MaterialSource {
     BuiltIn,
     Gltf,
+    MaterialAsset,
     Fallback
 };
 
 struct Material {
     std::string debugName;
+    std::string assetName;
+    std::filesystem::path sourceAssetPath;
+    std::string shader = "pbr_opaque";
+    std::filesystem::path baseColorTexturePath;
+    std::filesystem::path normalTexturePath;
+    std::filesystem::path metallicRoughnessTexturePath;
+    std::string alphaMode = "OPAQUE";
     const rhi::VulkanTexture* baseColorTexture = nullptr;
     const rhi::VulkanTexture* normalTexture = nullptr;
     const rhi::VulkanTexture* metallicRoughnessTexture = nullptr;
@@ -33,9 +42,11 @@ struct Material {
     float metallic = 0.0f;
     float roughness = 0.5f;
     float multiScatterStrength = 1.0f;
+    float alphaCutoff = 0.5f;
     MaterialSource source = MaterialSource::BuiltIn;
     bool hasNormalMap = false;
     bool hasMetallicRoughnessMap = false;
+    bool doubleSided = false;
     bool baseColorTextureFallback = false;
     bool normalTextureFallback = false;
     bool metallicRoughnessTextureFallback = false;

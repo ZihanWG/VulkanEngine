@@ -1,0 +1,20 @@
+{
+    "name": "Portfolio_MatteGray",
+    "shader": "pbr_opaque",
+    "baseColorFactor": [
+        0.66,
+        0.66,
+        0.62,
+        1.0
+    ],
+    "metallicFactor": 0.0,
+    "roughnessFactor": 0.85,
+    "textures": {
+        "baseColor": "",
+        "normal": "",
+        "metallicRoughness": ""
+    },
+    "alphaMode": "OPAQUE",
+    "alphaCutoff": 0.5,
+    "doubleSided": false
+}

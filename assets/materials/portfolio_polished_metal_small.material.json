@@ -1,0 +1,20 @@
+{
+    "name": "Portfolio_PolishedMetalSmall",
+    "shader": "pbr_opaque",
+    "baseColorFactor": [
+        0.82,
+        0.85,
+        0.88,
+        1.0
+    ],
+    "metallicFactor": 1.0,
+    "roughnessFactor": 0.23,
+    "textures": {
+        "baseColor": "",
+        "normal": "",
+        "metallicRoughness": ""
+    },
+    "alphaMode": "OPAQUE",
+    "alphaCutoff": 0.5,
+    "doubleSided": false
+}
