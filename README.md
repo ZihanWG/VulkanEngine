@@ -24,7 +24,7 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - Compact Kulla-Conty-style multi-scattering compensation for PBR response.
 - PCF-filtered cascaded directional shadow map with basic texel snapping, optional cascade debug tinting, per-cascade GPU shadow-caster culling, and an indirect shadow draw path.
 - Descriptor indexing path for bindless material texture arrays, with a legacy descriptor-set fallback.
-- Minimal render graph that documents shadow, main HDR, bloom, luminance, histogram exposure, composite, and ImGui overlay pass order, centralizes image transitions, and exposes lightweight debug metadata for pass/resource visualization.
+- Render Graph 2.0 with logical texture/buffer handles, pass read/write declarations, conservative automatic image transitions, transient render-target descriptions, basic pass liveness/culling metadata, and ImGui pass/resource visualization.
 - GPU frustum culling compute pass that compacts visible indirect draw commands and writes per-batch visible counts.
 - Multi-draw indirect batching by mesh-compatible ranges on the bindless main path and shadow path.
 - GPU timestamp profiler with per-pass timings, frame-latency readback, moving-average ImGui history, and debug labels for capture/profiling orientation.
@@ -45,12 +45,20 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - `AssetManager` stores stable path-based material/texture metadata, loads/saves material JSON files, and leaves Vulkan texture ownership in `Renderer`/`VulkanTexture`.
 - The editable scene workflow stores runtime object IDs, names, visibility, transforms, camera settings, and directional-light settings as JSON under `assets/scenes/`.
 - `ImGuiLayer` owns the Dear ImGui context, SDL3 backend, Vulkan backend, and ImGui descriptor pool.
-- `RenderGraph` is a small manual frame graph for the current `CSMShadowPass`, `MainHDRPass`, bloom, `LuminancePass`, `HistogramExposurePass`, `CompositePass`, and `ImGuiPass` resource transitions and debug pass metadata.
+- `RenderGraph` tracks logical texture/buffer resources for `CSMShadowPass`, `MainHDRPass`, bloom, `LuminancePass`, `HistogramExposurePass`, `CompositePass`, and `ImGuiPass`, infers conservative image transitions, and exposes debug pass/resource metadata.
 - `GpuProfiler` owns one timestamp query pool per frame-in-flight slot, records named GPU scopes, and exposes completed frame results to the ImGui profiler panel without adding a new frame-loop wait.
 
 ## Engine Upgrade Audit
 
 Phase 0 of the renderer-to-engine upgrade is documented in `docs/engine_upgrade_audit.md`. It records the current architecture, frame flow, render graph, scene/material/glTF paths, debug UI, culling, post-processing, CSM shadows, profiling foundation, and risk areas before feature work continues. Phase 1 GPU timestamp profiling is documented in `docs/profiling.md`.
+
+## Render Graph 2.0
+
+Phase 4 upgrades the previous manual graph into a more engine-like render graph while preserving the renderer's pass order and visual output. The graph now uses `RGTextureHandle` and `RGBufferHandle` declarations, pass-builder read/write declarations, conservative Synchronization2 image transition inference for graph-managed texture resources, transient descriptions for scene color and bloom targets, imported resources for swapchain/depth/shadow/readback resources, basic pass liveness/culling metadata, and an ImGui panel that lists passes and resources.
+
+Migrated graph-declared passes are `CSMShadowPass`, `MainHDRPass`, `BloomExtractPass`, `BloomBlurHorizontal`, `BloomBlurVertical`, `LuminancePass`, `HistogramExposurePass`, `CompositePass`, and `ImGuiPass`. GPU culling buffer barriers, luminance/histogram copy/readback barriers, and portfolio screenshot copy barriers remain manual in `Renderer.cpp` because they are buffer/readback or external swapchain dependencies that need a broader scheduler before moving safely.
+
+More details are in `docs/render_graph.md`.
 
 ## GPU Profiler
 
@@ -110,11 +118,11 @@ More details are in `docs/asset_system.md`.
 3. Extract the camera frustum from `projection * view`, compute CSM split depths, and build one texel-snapped directional light view-projection matrix per cascade.
 4. Build CPU fallback shadow draw items/batches for each cascade, and build main-pass mesh-compatible draw batches for GPU culling or the CPU fallback.
 5. Upload per-object MVP/model/light/material data into the current frame's Buffer Device Address object-data buffer.
-6. Begin the minimal `RenderGraph` recording.
+6. Begin `RenderGraph` recording, import swapchain/depth/shadow resources, register transient scene/bloom targets, and declare pass read/write usage.
 7. For each cascade, optionally reset shadow batch counts and shadow indirect commands, dispatch the GPU shadow cull with that cascade's light-frustum planes, and barrier its writes for indirect/count reads.
-8. Transition the cascaded shadow-map array, begin depth-only Dynamic Rendering against the current layer view, and draw shadow casters for that cascade.
+8. Let the graph transition the cascaded shadow-map array, begin depth-only Dynamic Rendering against the current layer view, and draw shadow casters for that cascade.
 9. Reset the main-pass batch visible-count buffer, dispatch the camera-frustum compute culling pass, barrier shader writes for indirect/count reads, and copy visible counts for readback.
-10. Transition the HDR scene color image and main depth image for `MainHDRPass`.
+10. Let the graph transition the HDR scene color image, shadow map, and main depth image for `MainHDRPass`.
 11. Begin `MainHDRPass`, draw the skybox, bind global and bindless material descriptors when available, and issue indirect indexed mesh draws into `sceneColor_`.
 12. Run `BloomExtractPass` to sample `sceneColor_`, compute luminance, and keep bright pixels above the bloom threshold.
 13. Run `BloomBlurPass` as a horizontal blur into `bloomPing_`, then a vertical blur into `bloomPong_`.
@@ -123,7 +131,7 @@ More details are in `docs/asset_system.md`.
 16. Run `CompositePass` to combine `sceneColor + bloom * intensity`, apply the current manual or auto exposure, apply Reinhard or ACES tone mapping, and write the final color to the swapchain.
 17. If a portfolio screenshot was requested, transition the composited swapchain image to transfer source, copy it into a per-frame readback buffer, then return it to color-attachment layout.
 18. Run `ImGuiPass` to load the composited swapchain image as a color attachment and draw the debug UI overlay.
-19. Transition the swapchain image to present, submit with `vkQueueSubmit2`, and present.
+19. Let the graph transition the swapchain image to present, submit with `vkQueueSubmit2`, and present.
 20. Recreate the swapchain, post-process images, and ImGui swapchain-dependent backend state if presentation reports an out-of-date or resized surface.
 
 ## Current Descriptor Contract
@@ -230,7 +238,7 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - The old zero-count indirect command path is still retained as a fallback when indirect-count drawing is unavailable.
 - CSM bounds use basic texel snapping, but they do not yet use stable crop matrices, cascade blending, or per-cascade resolution control.
 - Upload paths still use simple one-time command buffers and queue idle waits, which is acceptable for initialization but not ideal for runtime streaming.
-- `RenderGraph` is still minimal/manual and not a fully automatic dependency graph, production scheduler, production dependency-inference system, aliasing system, or transient resource allocator.
+- `RenderGraph` now has logical handles, declarations, conservative image transition inference, and pass liveness metadata, but it is not a production scheduler, async compute scheduler, memory aliasing system, or full transient allocator.
 - Render-target debug views are basic; there is no advanced channel remapping yet.
 - There is no full texture viewer/editor yet.
 - There is no render graph node editor yet.
@@ -298,7 +306,7 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - Add GPU capture workflow panel.
 - Add temporal AA.
 - Move runtime streaming away from queue-idle one-time uploads.
-- Grow the render graph toward automatic dependency inference, production-grade scheduling, aliasing, transient resources, and pass culling.
+- Continue growing the render graph toward broader pass migration, production scheduling, aliasing, pooled transient allocation, and richer visualization.
 - Expand glTF support with alpha modes, occlusion/emissive textures, tangent generation, animation, skinning, morph targets, cameras, and lights.
 - Add RenderDoc workflow documentation, CPU/GPU timeline correlation, and in-engine profiler UI improvements.
 

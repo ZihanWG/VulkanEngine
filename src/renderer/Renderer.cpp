@@ -1011,14 +1011,20 @@ std::string resourceUsageList(const renderer::RenderPassNode& pass, renderer::Re
     std::ostringstream names;
     bool first = true;
     for (const renderer::RenderResourceUsage& usage : pass.resourceUsages) {
-        if (usage.access != access) {
+        const bool matchesRead = access == renderer::RenderResourceAccess::Read &&
+                                 (usage.access == renderer::RenderResourceAccess::Read ||
+                                  usage.access == renderer::RenderResourceAccess::ReadWrite);
+        const bool matchesWrite = access == renderer::RenderResourceAccess::Write &&
+                                  (usage.access == renderer::RenderResourceAccess::Write ||
+                                   usage.access == renderer::RenderResourceAccess::ReadWrite);
+        if (!matchesRead && !matchesWrite) {
             continue;
         }
 
         if (!first) {
             names << ", ";
         }
-        names << usage.resource.name;
+        names << usage.resource.name << " [" << renderer::rgAccessName(usage.declaredAccess) << "]";
         first = false;
     }
 
@@ -5908,45 +5914,98 @@ void Renderer::drawRuntimeSettingsDebugUi()
 void Renderer::drawRenderGraphDebugUi()
 {
     const auto& passes = renderGraph_.debugPasses();
-    ImGui::Text("Manual pass order: %zu passes", passes.size());
+    const auto& resources = renderGraph_.debugResources();
+    ImGui::Text("Declared pass order: %zu passes, %zu resources", passes.size(), resources.size());
 
     constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-                                      ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp;
-    if (!ImGui::BeginTable("RenderGraphPassTable", 6, flags)) {
-        return;
+                                      ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp |
+                                      ImGuiTableFlags_ScrollX;
+    if (ImGui::BeginTable("RenderGraphPassTable", 8, flags)) {
+        ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed);
+        ImGui::TableSetupColumn("Pass");
+        ImGui::TableSetupColumn("Type");
+        ImGui::TableSetupColumn("Status");
+        ImGui::TableSetupColumn("Side effect", ImGuiTableColumnFlags_WidthFixed);
+        ImGui::TableSetupColumn("Reads");
+        ImGui::TableSetupColumn("Writes");
+        ImGui::TableSetupColumn("Barriers / notes");
+        ImGui::TableHeadersRow();
+
+        for (size_t index = 0; index < passes.size(); ++index) {
+            const renderer::RenderPassNode& pass = passes[index];
+            const std::string reads = resourceUsageList(pass, renderer::RenderResourceAccess::Read);
+            const std::string writes = resourceUsageList(pass, renderer::RenderResourceAccess::Write);
+            const char* status = pass.executed ? "executed" : (pass.culled ? "culled" : "not executed");
+
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::Text("%zu", index);
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(pass.name.c_str());
+            ImGui::TableNextColumn();
+            ImGui::Text("%s / %s",
+                        renderer::renderPassExecutionTypeName(pass.executionType),
+                        renderer::renderPassTypeName(pass.type));
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(status);
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(pass.sideEffect ? "yes" : "no");
+            ImGui::TableNextColumn();
+            ImGui::TextWrapped("%s", reads.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextWrapped("%s", writes.c_str());
+            ImGui::TableNextColumn();
+            if (pass.culled && !pass.cullReason.empty()) {
+                ImGui::TextWrapped("%s", pass.cullReason.c_str());
+            } else {
+                ImGui::TextWrapped("%s", pass.transitionSummary.c_str());
+            }
+        }
+
+        ImGui::EndTable();
     }
 
-    ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed);
-    ImGui::TableSetupColumn("Pass");
-    ImGui::TableSetupColumn("Type");
-    ImGui::TableSetupColumn("Reads");
-    ImGui::TableSetupColumn("Writes");
-    ImGui::TableSetupColumn("Notes");
-    ImGui::TableHeadersRow();
+    if (ImGui::BeginTable("RenderGraphResourceTable", 8, flags)) {
+        ImGui::TableSetupColumn("Resource");
+        ImGui::TableSetupColumn("Kind", ImGuiTableColumnFlags_WidthFixed);
+        ImGui::TableSetupColumn("Lifetime", ImGuiTableColumnFlags_WidthFixed);
+        ImGui::TableSetupColumn("Extent / size");
+        ImGui::TableSetupColumn("Format");
+        ImGui::TableSetupColumn("Mips/layers");
+        ImGui::TableSetupColumn("Initial layout");
+        ImGui::TableSetupColumn("Final layout");
+        ImGui::TableHeadersRow();
 
-    for (size_t index = 0; index < passes.size(); ++index) {
-        const renderer::RenderPassNode& pass = passes[index];
-        const std::string reads = resourceUsageList(pass, renderer::RenderResourceAccess::Read);
-        const std::string writes = resourceUsageList(pass, renderer::RenderResourceAccess::Write);
+        for (const renderer::RenderGraphResourceDebugInfo& resource : resources) {
+            const bool isTexture = resource.kind == renderer::RGResourceKind::Texture;
+            std::string dimensions;
+            if (isTexture) {
+                dimensions = std::to_string(resource.extent.width) + " x " + std::to_string(resource.extent.height);
+            } else {
+                dimensions = std::to_string(resource.size) + " bytes";
+            }
 
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::Text("%zu", index);
-        ImGui::TableNextColumn();
-        ImGui::TextUnformatted(pass.name);
-        ImGui::TableNextColumn();
-        ImGui::Text("%s / %s",
-                    renderer::renderPassExecutionTypeName(pass.executionType),
-                    renderer::renderPassTypeName(pass.type));
-        ImGui::TableNextColumn();
-        ImGui::TextWrapped("%s", reads.c_str());
-        ImGui::TableNextColumn();
-        ImGui::TextWrapped("%s", writes.c_str());
-        ImGui::TableNextColumn();
-        ImGui::TextWrapped("%s", pass.transitionSummary);
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(resource.name.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(renderer::renderGraphResourceKindName(resource.kind));
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(resource.imported ? "imported" : "transient");
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(dimensions.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(isTexture ? vkFormatName(resource.format) : "-");
+            ImGui::TableNextColumn();
+            ImGui::Text("%u / %u", resource.mipLevels, resource.arrayLayers);
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(isTexture ? imageLayoutName(resource.initialLayout) : "-");
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(isTexture ? imageLayoutName(resource.finalLayout) : "-");
+        }
+
+        ImGui::EndTable();
     }
-
-    ImGui::EndTable();
 }
 
 void Renderer::drawSceneEditingDebugUi()
@@ -7575,6 +7634,35 @@ void Renderer::recreateSwapchain()
 renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
 {
     const VkExtent3D sceneExtent = sceneColor_.extent();
+    VkClearValue sceneClear{};
+    sceneClear.color.float32[0] = 0.03f;
+    sceneClear.color.float32[1] = 0.04f;
+    sceneClear.color.float32[2] = 0.07f;
+    sceneClear.color.float32[3] = 1.0f;
+
+    VkClearValue bloomClear{};
+    bloomClear.color.float32[0] = 0.0f;
+    bloomClear.color.float32[1] = 0.0f;
+    bloomClear.color.float32[2] = 0.0f;
+    bloomClear.color.float32[3] = 1.0f;
+
+    const auto bufferResource = [](const char* name,
+                                   const std::vector<rhi::VulkanBuffer>& buffers,
+                                   uint32_t frameIndex,
+                                   VkBufferUsageFlags usage) {
+        if (frameIndex >= buffers.size() || !buffers[frameIndex].valid()) {
+            return renderer::RenderGraphBufferResource{};
+        }
+
+        return renderer::RenderGraphBufferResource{
+            name,
+            buffers[frameIndex].buffer(),
+            buffers[frameIndex].size(),
+            usage,
+            true,
+        };
+    };
+
     return renderer::RenderGraphFrameResources{
         renderer::RenderGraphImageResource{
             "SceneColor",
@@ -7582,6 +7670,14 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             sceneColor_.imageView(),
             VkExtent2D{sceneExtent.width, sceneExtent.height},
             &sceneColorLayout_,
+            sceneColor_.format(),
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            1,
+            1,
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            sceneClear,
+            true,
+            false,
         },
         renderer::RenderGraphImageResource{
             "BloomExtract",
@@ -7589,6 +7685,14 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             bloomExtract_.imageView(),
             bloomExtent_,
             &bloomExtractLayout_,
+            bloomExtract_.format(),
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            1,
+            1,
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            bloomClear,
+            true,
+            false,
         },
         renderer::RenderGraphImageResource{
             "BloomPing",
@@ -7596,6 +7700,14 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             bloomPing_.imageView(),
             bloomExtent_,
             &bloomPingLayout_,
+            bloomPing_.format(),
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            1,
+            1,
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            bloomClear,
+            true,
+            false,
         },
         renderer::RenderGraphImageResource{
             "BloomPong",
@@ -7603,7 +7715,32 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             bloomPong_.imageView(),
             bloomExtent_,
             &bloomPongLayout_,
+            bloomPong_.format(),
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            1,
+            1,
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            bloomClear,
+            true,
+            false,
         },
+        bufferResource("LuminancePartials",
+                       frameLuminanceBuffers_,
+                       currentFrame_,
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT),
+        bufferResource("LuminanceReadback",
+                       frameLuminanceReadbackBuffers_,
+                       currentFrame_,
+                       VK_BUFFER_USAGE_TRANSFER_DST_BIT),
+        bufferResource("LuminanceHistogram",
+                       frameHistogramBuffers_,
+                       currentFrame_,
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                           VK_BUFFER_USAGE_TRANSFER_SRC_BIT),
+        bufferResource("HistogramReadback",
+                       frameHistogramReadbackBuffers_,
+                       currentFrame_,
+                       VK_BUFFER_USAGE_TRANSFER_DST_BIT),
     };
 }
 
