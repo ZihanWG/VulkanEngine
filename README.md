@@ -318,7 +318,7 @@ The BRDF LUT is previewable as a 2D linear data texture for split-sum IBL valida
 
 ## Milestone 47: Material Inspector and Texture Debug Views
 
-The ImGui debug UI now includes a read-only `Material Inspector` for the selected `RenderObject`. It shows PBR factors, multi-scatter strength, bindless texture indices, material source, and whether the renderer is currently using bindless material textures or the legacy descriptor fallback path.
+Milestone 47 added a read-only `Material Inspector` for the selected `RenderObject`. Phase 3 later extends that inspector with material asset scalar editing, save, and reload for JSON material assets. The inspector shows PBR factors, multi-scatter strength, bindless texture indices, material source, and whether the renderer is currently using bindless material textures or the legacy descriptor fallback path.
 
 Selected material texture metadata is visible for base color, normal, and metallic-roughness slots, including debug name, bindless index, dimensions, mip levels, Vulkan format, source, color-space/semantic intent, and whether a fallback texture is used.
 

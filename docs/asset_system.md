@@ -16,6 +16,13 @@ The asset manager does not own Vulkan images, image views, samplers,
 descriptors, mesh buffers, or shader permutations. `Renderer` and
 `VulkanTexture` still own runtime GPU resources.
 
+Asset path keys are normalized lexically and stored with generic separators.
+The renderer feeds project-resolved paths for material assets and resolved
+texture paths for loaded texture metadata. The current `AssetManager` does not
+canonicalize symlinks, case-fold Windows paths, or merge arbitrary
+relative-vs-absolute spellings of the same file, so callers should pass
+project-resolved paths consistently when handle identity matters.
+
 ## Material JSON Schema
 
 Material assets live under `assets/materials/` and use the
