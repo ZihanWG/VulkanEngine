@@ -1096,7 +1096,8 @@ uint32_t RenderGraph::transitionTexture(RGTextureHandle handle, RGAccess access)
 
     const bool layoutChange = oldLayout != desired.layout;
     const bool sameLayoutOrdering =
-        !layoutChange && resource.usedThisFrame &&
+        !layoutChange && oldLayout != VK_IMAGE_LAYOUT_UNDEFINED &&
+        (resource.usedThisFrame || previous.declaredAccess != RGAccess::Unknown) &&
         (accessMaskWrites(previous.access) || accessMaskWrites(desired.access));
     if (!layoutChange && !sameLayoutOrdering) {
         resource.lastAccess = desired;
