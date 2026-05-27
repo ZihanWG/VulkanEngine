@@ -84,7 +84,7 @@ More details are in `docs/portfolio_capture.md`.
 
 The Scene Hierarchy panel now supports a minimal editor-like workflow. It lists runtime `RenderObject` entries by stable object ID and name, lets the selected object edit position, Euler rotation, scale, and visibility, and shows mesh/material/draw-item debug metadata beside the editable fields.
 
-Camera controls expose position, target, up vector, FOV, near plane, far plane, and reset buttons for the default and portfolio camera presets. Directional-light controls expose direction, color, intensity, and reset-to-default. Portfolio capture mode keeps its own camera and lighting presets; F12 and the portfolio showcase button reapply those presets.
+Camera controls expose position, target, up vector, FOV, near plane, far plane, and reset buttons for the default and portfolio camera presets. Directional-light controls expose direction, color, intensity, and reset-to-default. Portfolio capture mode keeps its own showcase object transforms/visibility, camera, and lighting presets; F12 and the portfolio showcase button reapply those presets.
 
 Use `Save Scene` and `Load Scene` in the Scene Hierarchy panel to write/read `assets/scenes/default.scene.json`. Save/load restores camera, directional-light settings, object names, visibility, and transforms for the current runtime object list. Mesh and material references are serialized as debug metadata only and are not rebound on load yet. ImGuizmo is deferred because it is not currently vendored in the project.
 

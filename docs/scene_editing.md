@@ -145,11 +145,11 @@ Portfolio showcase objects are still appended by
 runtime objects if they exist, but the portfolio screenshot scene is not moved
 to a separate asset system in this phase.
 
-Portfolio capture mode uses portfolio camera and light presets. Camera edits
-are possible while the mode is active, but pressing F12 or clicking the
-portfolio showcase button reapplies the portfolio preset before capture. The
-directional-light editor controls the non-portfolio directional light; portfolio
-lighting remains preset-driven.
+Portfolio capture mode uses portfolio showcase object, camera, and light
+presets. Object and camera edits are possible while the mode is active, but
+pressing F12 or clicking the portfolio showcase button reapplies the portfolio
+preset before capture. The directional-light editor controls the non-portfolio
+directional light; portfolio lighting remains preset-driven.
 
 ## ImGuizmo
 

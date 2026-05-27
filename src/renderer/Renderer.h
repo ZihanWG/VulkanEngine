@@ -212,6 +212,7 @@ private:
     void createPipeline();
     void createScene();
     void addPortfolioShowcaseObjects();
+    void resetPortfolioShowcaseObjectsToPreset();
     [[nodiscard]] bool hasPortfolioShowcaseScene() const;
     [[nodiscard]] bool currentFrameHasPortfolioShowcaseDrawItems() const;
     [[nodiscard]] bool ensurePortfolioShowcaseSceneReady();

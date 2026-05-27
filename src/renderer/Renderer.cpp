@@ -1449,6 +1449,8 @@ void Renderer::setPortfolioCaptureMode(bool enabled)
 
 void Renderer::applyPortfolioCaptureSettings()
 {
+    resetPortfolioShowcaseObjectsToPreset();
+
     camera_ = portfolioCameraPreset();
     csmSettings_.nearPlane = camera_.nearPlane;
     csmSettings_.farPlane = camera_.farPlane;
@@ -2947,6 +2949,41 @@ void Renderer::addPortfolioShowcaseObjects()
                        &materialVariants_.at(kPortfolioPolishedMetalSmallMaterialIndex),
                        {1.04f, -0.09f, -0.18f},
                        {0.38f, 0.38f, 0.38f});
+}
+
+void Renderer::resetPortfolioShowcaseObjectsToPreset()
+{
+    const auto resetObject = [this](std::string_view debugName,
+                                    const glm::vec3& position,
+                                    const glm::vec3& rotationRadians,
+                                    const glm::vec3& scale) {
+        for (renderer::RenderObject& object : renderObjects_) {
+            if (object.sourceType != renderer::RenderObjectSourceType::PortfolioShowcase ||
+                object.debugName != debugName) {
+                continue;
+            }
+
+            object.transform.position = position;
+            object.transform.rotationRadians = rotationRadians;
+            object.transform.scale = scale;
+            object.transform.matrixOverride = glm::mat4{1.0f};
+            object.transform.useMatrixOverride = false;
+            object.visible = true;
+            object.animateTransform = false;
+            object.portfolioOnly = true;
+            object.hideInPortfolio = false;
+            return;
+        }
+    };
+
+    resetObject("Portfolio Studio Floor", {0.0f, -0.56f, 0.24f}, {0.0f, 0.0f, 0.0f}, {11.0f, 0.08f, 6.4f});
+    resetObject("Portfolio Studio Backdrop", {0.0f, 2.08f, -2.82f}, {0.0f, 0.0f, 0.0f}, {60.0f, 9.0f, 0.08f});
+    resetObject("Portfolio Side Plinth", {1.02f, -0.42f, -0.18f}, {0.0f, -0.16f, 0.0f}, {0.96f, 0.28f, 0.70f});
+    resetObject("Portfolio Hero Ceramic", {0.0f, -0.11f, 0.08f}, {0.0f, 0.0f, 0.0f}, {0.82f, 0.82f, 0.82f});
+    resetObject("Portfolio Matte Gray", {-0.92f, -0.24f, 0.06f}, {0.0f, 0.0f, 0.0f}, {0.56f, 0.56f, 0.56f});
+    resetObject("Portfolio Glossy Blue", {-0.62f, -0.33f, 0.66f}, {0.0f, 0.0f, 0.0f}, {0.38f, 0.38f, 0.38f});
+    resetObject("Portfolio Rough Metal", {0.96f, -0.29f, 0.42f}, {0.0f, 0.0f, 0.0f}, {0.46f, 0.46f, 0.46f});
+    resetObject("Portfolio Polished Metal Small", {1.04f, -0.09f, -0.18f}, {0.0f, 0.0f, 0.0f}, {0.38f, 0.38f, 0.38f});
 }
 
 bool Renderer::hasPortfolioShowcaseScene() const
