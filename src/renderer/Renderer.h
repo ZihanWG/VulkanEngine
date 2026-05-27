@@ -110,6 +110,13 @@ private:
         bool gpuCulling = false;
     };
 
+    struct GpuCullCounters {
+        uint32_t totalDrawItems = 0;
+        uint32_t visibleDrawItems = 0;
+        uint32_t frustumCulledDrawItems = 0;
+        uint32_t occlusionCulledDrawItems = 0;
+    };
+
     struct ShadowCullingStats {
         size_t cascadeCount = 0;
         size_t totalDrawItems = 0;
@@ -147,12 +154,17 @@ private:
         uint32_t totalDrawItems = 0;
         uint32_t visibleDrawItems = 0;
         uint32_t culledDrawItems = 0;
+        uint32_t frustumCulledDrawItems = 0;
+        uint32_t occlusionCulledDrawItems = 0;
         uint32_t shadowDrawItems = 0;
         uint32_t visibleShadowDrawItems = 0;
         uint32_t culledShadowDrawItems = 0;
         size_t shadowBatchCount = 0;
         bool gpuCulling = false;
+        bool gpuOcclusionCulling = false;
         bool gpuShadowCulling = false;
+        bool depthPyramidValid = false;
+        uint32_t depthPyramidMipCount = 0;
     };
 
     struct ObjectDrawDebugInfo {
@@ -196,6 +208,10 @@ private:
     void destroyPostProcessSampler();
     void createPostProcessResources();
     void createPostProcessDescriptorSets();
+    void createDepthPyramidDescriptorSetLayout();
+    void createDepthPyramidResources();
+    void destroyDepthPyramidResources();
+    void updateGpuCullingDepthPyramidDescriptors();
     void createLuminanceResources();
     void destroyLuminanceResources();
     void createHistogramResources();
@@ -277,10 +293,13 @@ private:
     void recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     void recordGpuCullingCommands(VkCommandBuffer commandBuffer);
     void recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer, uint32_t cascadeIndex);
+    void recordDepthPyramidCommands(VkCommandBuffer commandBuffer);
     [[nodiscard]] renderer::RenderGraphFrameResources renderGraphFrameResources();
     bool readGpuVisibleCount(uint32_t frameIndex, uint32_t& visibleCount);
+    bool readGpuCullCounters(uint32_t frameIndex, GpuCullCounters& counters);
     bool readGpuShadowVisibleCount(uint32_t frameIndex, uint32_t& visibleCount);
     [[nodiscard]] bool isGpuCullingActive() const;
+    [[nodiscard]] bool isGpuOcclusionCullingActive() const;
     [[nodiscard]] bool isGpuShadowCullingActive() const;
     [[nodiscard]] bool isAutoExposureActive() const;
     [[nodiscard]] bool isLogAverageExposureActive() const;
@@ -391,11 +410,13 @@ private:
     rhi::VulkanDescriptorSetLayout postProcessCompositeDescriptorSetLayout_;
     rhi::VulkanDescriptorSetLayout postProcessLuminanceDescriptorSetLayout_;
     rhi::VulkanDescriptorSetLayout gpuCullDescriptorSetLayout_;
+    rhi::VulkanDescriptorSetLayout depthPyramidDescriptorSetLayout_;
     rhi::VulkanShadowMap shadowMap_;
     rhi::VulkanImage sceneColor_;
     rhi::VulkanImage bloomExtract_;
     rhi::VulkanImage bloomPing_;
     rhi::VulkanImage bloomPong_;
+    rhi::VulkanImage depthPyramid_;
     rhi::VulkanPipeline pipeline_;
     rhi::VulkanPipeline skyboxPipeline_;
     rhi::VulkanPipeline shadowPipeline_;
@@ -405,6 +426,7 @@ private:
     rhi::VulkanComputePipeline luminancePipeline_;
     rhi::VulkanComputePipeline histogramPipeline_;
     rhi::VulkanComputePipeline gpuCullPipeline_;
+    rhi::VulkanComputePipeline depthPyramidPipeline_;
     rhi::VulkanCommandContext commandContext_;
     rhi::VulkanSync sync_;
     rhi::VulkanTexture checkerboardTexture_;
@@ -428,7 +450,9 @@ private:
     rhi::VulkanDescriptorPool postProcessDescriptorPool_;
     rhi::VulkanDescriptorPool gpuCullDescriptorPool_;
     rhi::VulkanDescriptorPool shadowCullDescriptorPool_;
+    rhi::VulkanDescriptorPool depthPyramidDescriptorPool_;
     VkSampler postProcessSampler_ = VK_NULL_HANDLE;
+    VkSampler depthPyramidSampler_ = VK_NULL_HANDLE;
     VkDescriptorSet skyboxDescriptorSet_ = VK_NULL_HANDLE;
     VkDescriptorSet bloomExtractDescriptorSet_ = VK_NULL_HANDLE;
     VkDescriptorSet bloomBlurHorizontalDescriptorSet_ = VK_NULL_HANDLE;
@@ -438,6 +462,8 @@ private:
     std::vector<VkDescriptorSet> histogramDescriptorSets_;
     std::vector<VkDescriptorSet> gpuCullDescriptorSets_;
     std::vector<VkDescriptorSet> shadowCullDescriptorSets_;
+    std::vector<VkDescriptorSet> depthPyramidDescriptorSets_;
+    std::vector<VkImageView> depthPyramidMipImageViews_;
     renderer::Camera camera_;
     DirectionalLightSettings directionalLightSettings_{};
     renderer::Mesh cubeMesh_;
@@ -458,6 +484,7 @@ private:
     std::vector<rhi::VulkanBuffer> frameObjectDataBuffers_;
     std::vector<rhi::VulkanBuffer> frameCullInputBuffers_;
     std::vector<rhi::VulkanBuffer> frameShadowCullInputBuffers_;
+    std::vector<rhi::VulkanBuffer> frameGpuCullParamBuffers_;
     std::vector<rhi::VulkanBuffer> frameIndirectDrawBuffers_;
     std::vector<rhi::VulkanBuffer> frameShadowIndirectDrawBuffers_;
     std::vector<rhi::VulkanBuffer> frameBatchVisibleCountBuffers_;
@@ -495,9 +522,12 @@ private:
     VkImageLayout bloomExtractLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     VkImageLayout bloomPingLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     VkImageLayout bloomPongLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImageLayout depthPyramidLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     uint32_t luminanceGroupCountX_ = 0;
     uint32_t luminanceGroupCountY_ = 0;
     uint32_t luminancePartialCount_ = 0;
+    uint32_t depthPyramidMipLevels_ = 0;
+    uint32_t selectedDepthPyramidDebugMip_ = 0;
     uint32_t currentFrame_ = 0;
     uint32_t bindlessBaseColorFallbackIndex_ = 0;
     uint32_t bindlessNormalFallbackIndex_ = 0;
@@ -508,6 +538,10 @@ private:
     std::chrono::steady_clock::time_point lastAutoExposureUpdate_ = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point lastFrameStartTime_ = std::chrono::steady_clock::now();
     std::array<glm::vec4, 6> frameFrustumPlanes_{};
+    glm::mat4 frameViewProjection_{1.0f};
+    glm::mat4 depthPyramidViewProjection_{1.0f};
+    glm::vec3 frameCameraPosition_{0.0f};
+    glm::vec3 depthPyramidCameraPosition_{0.0f};
     std::array<CascadeFrameData, kMaxShadowCascades> frameCascades_{};
     glm::vec4 frameCascadeSplits_{};
     std::array<std::array<glm::vec4, 6>, kMaxShadowCascades> frameShadowCascadeFrustumPlanes_{};
@@ -551,6 +585,8 @@ private:
     bool bindlessMaterialTexturesAvailable_ = false;
     bool useGpuCulling_ = true;
     bool gpuCullingAvailable_ = false;
+    bool useGpuOcclusionCulling_ = false;
+    bool depthPyramidValid_ = false;
     bool useGpuShadowCulling_ = true;
     bool gpuShadowCullingAvailable_ = false;
     bool autoExposureAvailable_ = false;
@@ -571,6 +607,10 @@ private:
     bool showRenderTargetFinalCompositeMetadata_ = true;
     bool showRenderTargetBrdfLut_ = true;
     bool showRenderTargetCsmCascades_ = true;
+    float gpuOcclusionDepthBias_ = 0.002f;
+    float gpuOcclusionNearDisableDistance_ = 1.0f;
+    float gpuOcclusionMaxScreenCoverage_ = 0.35f;
+    float gpuOcclusionMinScreenPixels_ = 4.0f;
 };
 
 } // namespace ve

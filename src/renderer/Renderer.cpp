@@ -99,10 +99,17 @@ constexpr uint32_t kMaxDrawItems = 1024;
 constexpr uint32_t kMaxMaterialDescriptorSets = 256;
 constexpr uint32_t kGpuCullLocalSize = 64;
 constexpr uint32_t kMaxMeshDrawBatches = kMaxDrawItems;
+constexpr uint32_t kGpuCullStatsCounterCount = 4;
+constexpr uint32_t kGpuCullStatsCounterOffset = kMaxMeshDrawBatches;
 constexpr VkDeviceSize kBatchVisibleCountBufferSize = kMaxMeshDrawBatches * sizeof(uint32_t);
+constexpr VkDeviceSize kGpuCullCountBufferSize =
+    (kMaxMeshDrawBatches + kGpuCullStatsCounterCount) * sizeof(uint32_t);
 constexpr float kUnboundedCullExtent = 100000000.0f;
 constexpr VkFormat kSceneColorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 constexpr VkFormat kBloomColorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+constexpr VkFormat kDepthPyramidFormat = VK_FORMAT_R32_SFLOAT;
+constexpr uint32_t kDepthPyramidLocalSizeX = 8;
+constexpr uint32_t kDepthPyramidLocalSizeY = 8;
 constexpr uint32_t kLuminanceLocalSizeX = 16;
 constexpr uint32_t kLuminanceLocalSizeY = 16;
 constexpr uint32_t kHistogramBinCount = 256;
@@ -176,6 +183,27 @@ static_assert(offsetof(GpuCullPushConstants, frustumPlanes) == 0);
 static_assert(offsetof(GpuCullPushConstants, params) == 96);
 static_assert(sizeof(GpuCullPushConstants) == 112);
 static_assert(sizeof(GpuCullPushConstants) <= 128);
+
+struct GpuCullFrameParams {
+    glm::mat4 occlusionViewProjection{1.0f};
+    glm::vec4 cameraPosition{0.0f};
+    glm::vec4 viewportAndMipCount{0.0f};
+    glm::vec4 occlusionSettings{0.0f};
+    glm::uvec4 counterAndFlags{0, 0, 0, 0};
+};
+
+static_assert(offsetof(GpuCullFrameParams, occlusionViewProjection) == 0);
+static_assert(offsetof(GpuCullFrameParams, cameraPosition) == 64);
+static_assert(offsetof(GpuCullFrameParams, viewportAndMipCount) == 80);
+static_assert(offsetof(GpuCullFrameParams, occlusionSettings) == 96);
+static_assert(offsetof(GpuCullFrameParams, counterAndFlags) == 112);
+static_assert(sizeof(GpuCullFrameParams) == 128);
+
+struct DepthPyramidPushConstants {
+    glm::uvec4 sizes{0, 0, 0, 0};
+};
+
+static_assert(sizeof(DepthPyramidPushConstants) == 16);
 
 struct SkyboxPushConstants {
     glm::mat4 inverseViewProjection{1.0f};
@@ -351,6 +379,89 @@ uint32_t meshSubmeshCount(const renderer::Mesh* mesh)
         return static_cast<uint32_t>(mesh->primitives().size());
     }
     return mesh->indexCount() > 0 ? 1U : 0U;
+}
+
+uint32_t calculateDepthPyramidMipLevels(VkExtent2D extent)
+{
+    uint32_t maxDimension = std::max(extent.width, extent.height);
+    uint32_t mipLevels = 1;
+    while (maxDimension > 1) {
+        maxDimension = (maxDimension + 1) / 2;
+        ++mipLevels;
+    }
+    return mipLevels;
+}
+
+VkExtent2D mipExtent(VkExtent2D baseExtent, uint32_t mipLevel)
+{
+    VkExtent2D extent = baseExtent;
+    for (uint32_t level = 0; level < mipLevel; ++level) {
+        extent.width = std::max(1u, (extent.width + 1u) / 2u);
+        extent.height = std::max(1u, (extent.height + 1u) / 2u);
+    }
+    return extent;
+}
+
+void validateDepthPyramidFormatSupport(VkPhysicalDevice physicalDevice)
+{
+    VkFormatProperties properties{};
+    vkGetPhysicalDeviceFormatProperties(physicalDevice, kDepthPyramidFormat, &properties);
+
+    constexpr VkFormatFeatureFlags requiredFeatures =
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
+    if ((properties.optimalTilingFeatures & requiredFeatures) != requiredFeatures) {
+        throw std::runtime_error("Depth pyramid format does not support sampled storage image usage.");
+    }
+}
+
+VkImageMemoryBarrier2 imageBarrier(VkImage image,
+                                   VkImageAspectFlags aspectMask,
+                                   VkImageLayout oldLayout,
+                                   VkImageLayout newLayout,
+                                   VkPipelineStageFlags2 srcStageMask,
+                                   VkAccessFlags2 srcAccessMask,
+                                   VkPipelineStageFlags2 dstStageMask,
+                                   VkAccessFlags2 dstAccessMask,
+                                   uint32_t baseMipLevel,
+                                   uint32_t levelCount)
+{
+    VkImageMemoryBarrier2 barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    barrier.srcStageMask = srcStageMask;
+    barrier.srcAccessMask = srcAccessMask;
+    barrier.dstStageMask = dstStageMask;
+    barrier.dstAccessMask = dstAccessMask;
+    barrier.oldLayout = oldLayout;
+    barrier.newLayout = newLayout;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image;
+    barrier.subresourceRange.aspectMask = aspectMask;
+    barrier.subresourceRange.baseMipLevel = baseMipLevel;
+    barrier.subresourceRange.levelCount = levelCount;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    return barrier;
+}
+
+void recordImageBarrier(VkCommandBuffer commandBuffer, const VkImageMemoryBarrier2& barrier)
+{
+    VkDependencyInfo dependencyInfo{};
+    dependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dependencyInfo.imageMemoryBarrierCount = 1;
+    dependencyInfo.pImageMemoryBarriers = &barrier;
+    vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
+}
+
+float maxMatrixDifference(const glm::mat4& lhs, const glm::mat4& rhs)
+{
+    float maxDifference = 0.0f;
+    for (int column = 0; column < 4; ++column) {
+        for (int row = 0; row < 4; ++row) {
+            maxDifference = std::max(maxDifference, std::abs(lhs[column][row] - rhs[column][row]));
+        }
+    }
+    return maxDifference;
 }
 
 const char* materialNameOrFallback(const renderer::Material* material)
@@ -1112,6 +1223,7 @@ Renderer::Renderer(Window& window) : window_(window)
     createBindlessMaterialTextureHeap();
     createSkyboxDescriptorSetLayout();
     createPostProcessDescriptorSetLayouts();
+    createDepthPyramidDescriptorSetLayout();
     createPostProcessSampler();
     createShadowMap();
     createPostProcessResources();
@@ -1138,6 +1250,7 @@ Renderer::~Renderer()
     if (initialized_) {
         waitIdle();
         imguiLayer_.shutdown();
+        destroyDepthPyramidResources();
         postProcessDescriptorPool_.reset();
         destroyPostProcessSampler();
     }
@@ -1711,6 +1824,27 @@ void Renderer::createPostProcessDescriptorSetLayouts()
     }
 }
 
+void Renderer::createDepthPyramidDescriptorSetLayout()
+{
+    std::array<VkDescriptorSetLayoutBinding, 2> bindings{};
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    depthPyramidDescriptorSetLayout_.create(
+        context_.vkDevice(), std::span<const VkDescriptorSetLayoutBinding>(bindings.data(), bindings.size()));
+    rhi::debug::setObjectName(context_.vkDevice(),
+                              depthPyramidDescriptorSetLayout_.handle(),
+                              VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
+                              "DepthPyramidDescriptorSetLayout");
+}
+
 void Renderer::createPostProcessSampler()
 {
     destroyPostProcessSampler();
@@ -1745,6 +1879,185 @@ void Renderer::destroyPostProcessSampler()
     }
 }
 
+void Renderer::destroyDepthPyramidResources()
+{
+    depthPyramidValid_ = false;
+    depthPyramidDescriptorSets_.clear();
+    depthPyramidDescriptorPool_.reset();
+
+    for (VkImageView imageView : depthPyramidMipImageViews_) {
+        if (imageView != VK_NULL_HANDLE) {
+            vkDestroyImageView(context_.vkDevice(), imageView, nullptr);
+        }
+    }
+    depthPyramidMipImageViews_.clear();
+
+    if (depthPyramidSampler_ != VK_NULL_HANDLE) {
+        vkDestroySampler(context_.vkDevice(), depthPyramidSampler_, nullptr);
+        depthPyramidSampler_ = VK_NULL_HANDLE;
+    }
+
+    depthPyramid_.reset();
+    depthPyramidLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+    depthPyramidMipLevels_ = 0;
+    selectedDepthPyramidDebugMip_ = 0;
+    depthPyramidViewProjection_ = glm::mat4{1.0f};
+    depthPyramidCameraPosition_ = glm::vec3{0.0f};
+}
+
+void Renderer::createDepthPyramidResources()
+{
+    destroyDepthPyramidResources();
+
+    if (depthPyramidDescriptorSetLayout_.handle() == VK_NULL_HANDLE) {
+        throw std::runtime_error("Cannot create depth pyramid resources without a descriptor set layout.");
+    }
+
+    validateDepthPyramidFormatSupport(context_.physicalDevice());
+
+    const VkExtent2D extent = swapchain_.extent();
+    depthPyramidMipLevels_ = calculateDepthPyramidMipLevels(extent);
+
+    rhi::VulkanImageCreateInfo imageInfo{};
+    imageInfo.width = extent.width;
+    imageInfo.height = extent.height;
+    imageInfo.format = kDepthPyramidFormat;
+    imageInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+    imageInfo.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    imageInfo.mipLevels = depthPyramidMipLevels_;
+    imageInfo.debugName = "DepthPyramidHiZ";
+    depthPyramid_.create(context_, imageInfo);
+    depthPyramidLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    depthPyramidMipImageViews_.resize(depthPyramidMipLevels_, VK_NULL_HANDLE);
+    for (uint32_t mipLevel = 0; mipLevel < depthPyramidMipLevels_; ++mipLevel) {
+        VkImageViewCreateInfo viewInfo{};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = depthPyramid_.image();
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = kDepthPyramidFormat;
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        viewInfo.subresourceRange.baseMipLevel = mipLevel;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.baseArrayLayer = 0;
+        viewInfo.subresourceRange.layerCount = 1;
+
+        VK_CHECK(vkCreateImageView(context_.vkDevice(), &viewInfo, nullptr, &depthPyramidMipImageViews_[mipLevel]));
+        rhi::debug::setObjectName(context_.vkDevice(),
+                                  depthPyramidMipImageViews_[mipLevel],
+                                  VK_OBJECT_TYPE_IMAGE_VIEW,
+                                  "DepthPyramidHiZMip" + std::to_string(mipLevel) + "View");
+    }
+
+    VkSamplerCreateInfo samplerInfo{};
+    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    samplerInfo.magFilter = VK_FILTER_NEAREST;
+    samplerInfo.minFilter = VK_FILTER_NEAREST;
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.anisotropyEnable = VK_FALSE;
+    samplerInfo.maxAnisotropy = 1.0f;
+    samplerInfo.compareEnable = VK_FALSE;
+    samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+    samplerInfo.minLod = 0.0f;
+    samplerInfo.maxLod = static_cast<float>(std::max(depthPyramidMipLevels_, 1u) - 1u);
+    samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+    samplerInfo.unnormalizedCoordinates = VK_FALSE;
+    VK_CHECK(vkCreateSampler(context_.vkDevice(), &samplerInfo, nullptr, &depthPyramidSampler_));
+    rhi::debug::setObjectName(
+        context_.vkDevice(), depthPyramidSampler_, VK_OBJECT_TYPE_SAMPLER, "DepthPyramidNearestClampSampler");
+
+    std::array<VkDescriptorPoolSize, 2> poolSizes{};
+    poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSizes[0].descriptorCount = depthPyramidMipLevels_;
+    poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    poolSizes[1].descriptorCount = depthPyramidMipLevels_;
+    depthPyramidDescriptorPool_.create(
+        context_.vkDevice(), std::span<const VkDescriptorPoolSize>(poolSizes.data(), poolSizes.size()), depthPyramidMipLevels_);
+    rhi::debug::setObjectName(context_.vkDevice(),
+                              depthPyramidDescriptorPool_.handle(),
+                              VK_OBJECT_TYPE_DESCRIPTOR_POOL,
+                              "DepthPyramidDescriptorPool");
+
+    depthPyramidDescriptorSets_.resize(depthPyramidMipLevels_, VK_NULL_HANDLE);
+    std::vector<VkDescriptorSetLayout> layouts(depthPyramidMipLevels_, depthPyramidDescriptorSetLayout_.handle());
+    VkDescriptorSetAllocateInfo allocateInfo{};
+    allocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocateInfo.descriptorPool = depthPyramidDescriptorPool_.handle();
+    allocateInfo.descriptorSetCount = static_cast<uint32_t>(depthPyramidDescriptorSets_.size());
+    allocateInfo.pSetLayouts = layouts.data();
+    VK_CHECK(vkAllocateDescriptorSets(context_.vkDevice(), &allocateInfo, depthPyramidDescriptorSets_.data()));
+
+    for (uint32_t mipLevel = 0; mipLevel < depthPyramidMipLevels_; ++mipLevel) {
+        VkDescriptorImageInfo sourceInfo{};
+        sourceInfo.sampler = depthPyramidSampler_;
+        sourceInfo.imageView = mipLevel == 0 ? swapchain_.depthImageView() : depthPyramidMipImageViews_[mipLevel - 1];
+        sourceInfo.imageLayout =
+            mipLevel == 0 ? VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL;
+
+        VkDescriptorImageInfo outputInfo{};
+        outputInfo.imageView = depthPyramidMipImageViews_[mipLevel];
+        outputInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+        std::array<VkWriteDescriptorSet, 2> writes{};
+        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[0].dstSet = depthPyramidDescriptorSets_[mipLevel];
+        writes[0].dstBinding = 0;
+        writes[0].descriptorCount = 1;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[0].pImageInfo = &sourceInfo;
+
+        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[1].dstSet = depthPyramidDescriptorSets_[mipLevel];
+        writes[1].dstBinding = 1;
+        writes[1].descriptorCount = 1;
+        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        writes[1].pImageInfo = &outputInfo;
+
+        vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        rhi::debug::setObjectName(context_.vkDevice(),
+                                  depthPyramidDescriptorSets_[mipLevel],
+                                  VK_OBJECT_TYPE_DESCRIPTOR_SET,
+                                  "DepthPyramidDescriptorSetMip" + std::to_string(mipLevel));
+    }
+
+    updateGpuCullingDepthPyramidDescriptors();
+}
+
+void Renderer::updateGpuCullingDepthPyramidDescriptors()
+{
+    if (depthPyramid_.imageView() == VK_NULL_HANDLE || depthPyramidSampler_ == VK_NULL_HANDLE) {
+        return;
+    }
+
+    VkDescriptorImageInfo depthPyramidInfo{};
+    depthPyramidInfo.sampler = depthPyramidSampler_;
+    depthPyramidInfo.imageView = depthPyramid_.imageView();
+    depthPyramidInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    const auto updateSets = [this, &depthPyramidInfo](const std::vector<VkDescriptorSet>& descriptorSets) {
+        for (VkDescriptorSet descriptorSet : descriptorSets) {
+            if (descriptorSet == VK_NULL_HANDLE) {
+                continue;
+            }
+
+            VkWriteDescriptorSet write{};
+            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet = descriptorSet;
+            write.dstBinding = 3;
+            write.descriptorCount = 1;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            write.pImageInfo = &depthPyramidInfo;
+            vkUpdateDescriptorSets(context_.vkDevice(), 1, &write, 0, nullptr);
+        }
+    };
+
+    updateSets(gpuCullDescriptorSets_);
+    updateSets(shadowCullDescriptorSets_);
+}
+
 void Renderer::createPostProcessResources()
 {
     const VkExtent2D extent = swapchain_.extent();
@@ -1760,6 +2073,7 @@ void Renderer::createPostProcessResources()
     compositeDescriptorSet_ = VK_NULL_HANDLE;
     luminanceDescriptorSets_.clear();
     histogramDescriptorSets_.clear();
+    destroyDepthPyramidResources();
     destroyLuminanceResources();
     destroyHistogramResources();
 
@@ -1795,6 +2109,8 @@ void Renderer::createPostProcessResources()
     bloomInfo.debugName = "BloomPong";
     bloomPong_.create(context_, bloomInfo);
     bloomPongLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    createDepthPyramidResources();
 
     try {
         createLuminanceResources();
@@ -2232,7 +2548,11 @@ void Renderer::createGpuCullingResources()
             throw std::runtime_error("GPU culling requires one indirect output buffer per frame.");
         }
 
-        std::array<VkDescriptorSetLayoutBinding, 3> bindings{};
+        if (depthPyramid_.image() == VK_NULL_HANDLE || depthPyramidSampler_ == VK_NULL_HANDLE) {
+            throw std::runtime_error("GPU culling requires a valid depth pyramid descriptor resource.");
+        }
+
+        std::array<VkDescriptorSetLayoutBinding, 5> bindings{};
         bindings[0].binding = 0;
         bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         bindings[0].descriptorCount = 1;
@@ -2247,6 +2567,16 @@ void Renderer::createGpuCullingResources()
         bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         bindings[2].descriptorCount = 1;
         bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+        bindings[3].binding = 3;
+        bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bindings[3].descriptorCount = 1;
+        bindings[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+        bindings[4].binding = 4;
+        bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[4].descriptorCount = 1;
+        bindings[4].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
         gpuCullDescriptorSetLayout_.create(
             context_.vkDevice(), std::span<const VkDescriptorSetLayoutBinding>(bindings.data(), bindings.size()));
@@ -2283,6 +2613,20 @@ void Renderer::createGpuCullingResources()
                                       "GpuCullInputBuffer" + std::to_string(frameIndex));
         }
 
+        frameGpuCullParamBuffers_.resize(frames_.size());
+        for (size_t frameIndex = 0; frameIndex < frameGpuCullParamBuffers_.size(); ++frameIndex) {
+            rhi::VulkanBufferCreateInfo bufferInfo{};
+            bufferInfo.size = static_cast<VkDeviceSize>(sizeof(GpuCullFrameParams));
+            bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+            bufferInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
+            bufferInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+            frameGpuCullParamBuffers_[frameIndex].createBuffer(context_, bufferInfo);
+            rhi::debug::setObjectName(context_.vkDevice(),
+                                      frameGpuCullParamBuffers_[frameIndex].buffer(),
+                                      VK_OBJECT_TYPE_BUFFER,
+                                      "GpuCullFrameParamsBuffer" + std::to_string(frameIndex));
+        }
+
         frameBatchVisibleCountBuffers_.resize(frames_.size());
         frameBatchVisibleCountReadbackBuffers_.resize(frames_.size());
         frameGpuCullTotalDrawItems_.assign(frames_.size(), 0);
@@ -2291,7 +2635,7 @@ void Renderer::createGpuCullingResources()
         frameGpuCullIndirectCountPath_.assign(frames_.size(), 0);
         for (size_t frameIndex = 0; frameIndex < frames_.size(); ++frameIndex) {
             rhi::VulkanBufferCreateInfo gpuCountInfo{};
-            gpuCountInfo.size = kBatchVisibleCountBufferSize;
+            gpuCountInfo.size = kGpuCullCountBufferSize;
             gpuCountInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
                                  VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
             gpuCountInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
@@ -2302,7 +2646,7 @@ void Renderer::createGpuCullingResources()
                                       "GpuBatchVisibleCountBuffer" + std::to_string(frameIndex));
 
             rhi::VulkanBufferCreateInfo readbackCountInfo{};
-            readbackCountInfo.size = kBatchVisibleCountBufferSize;
+            readbackCountInfo.size = kGpuCullCountBufferSize;
             readbackCountInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
             readbackCountInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
             readbackCountInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
@@ -2313,12 +2657,14 @@ void Renderer::createGpuCullingResources()
                                       "GpuBatchVisibleCountReadbackBuffer" + std::to_string(frameIndex));
         }
 
-        VkDescriptorPoolSize poolSize{};
-        poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        poolSize.descriptorCount = static_cast<uint32_t>(frames_.size() * bindings.size());
+        std::array<VkDescriptorPoolSize, 2> poolSizes{};
+        poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        poolSizes[0].descriptorCount = static_cast<uint32_t>(frames_.size() * 4);
+        poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        poolSizes[1].descriptorCount = static_cast<uint32_t>(frames_.size());
 
         gpuCullDescriptorPool_.create(context_.vkDevice(),
-                                      std::span<const VkDescriptorPoolSize>(&poolSize, 1),
+                                      std::span<const VkDescriptorPoolSize>(poolSizes.data(), poolSizes.size()),
                                       static_cast<uint32_t>(frames_.size()));
         rhi::debug::setObjectName(context_.vkDevice(),
                                   gpuCullDescriptorPool_.handle(),
@@ -2348,9 +2694,19 @@ void Renderer::createGpuCullingResources()
             VkDescriptorBufferInfo visibleCountBufferInfo{};
             visibleCountBufferInfo.buffer = frameBatchVisibleCountBuffers_[frameIndex].buffer();
             visibleCountBufferInfo.offset = 0;
-            visibleCountBufferInfo.range = kBatchVisibleCountBufferSize;
+            visibleCountBufferInfo.range = kGpuCullCountBufferSize;
 
-            std::array<VkWriteDescriptorSet, 3> writes{};
+            VkDescriptorImageInfo depthPyramidInfo{};
+            depthPyramidInfo.sampler = depthPyramidSampler_;
+            depthPyramidInfo.imageView = depthPyramid_.imageView();
+            depthPyramidInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+            VkDescriptorBufferInfo frameParamsBufferInfo{};
+            frameParamsBufferInfo.buffer = frameGpuCullParamBuffers_[frameIndex].buffer();
+            frameParamsBufferInfo.offset = 0;
+            frameParamsBufferInfo.range = frameGpuCullParamBuffers_[frameIndex].size();
+
+            std::array<VkWriteDescriptorSet, 5> writes{};
             writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writes[0].dstSet = gpuCullDescriptorSets_[frameIndex];
             writes[0].dstBinding = 0;
@@ -2371,6 +2727,20 @@ void Renderer::createGpuCullingResources()
             writes[2].descriptorCount = 1;
             writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             writes[2].pBufferInfo = &visibleCountBufferInfo;
+
+            writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[3].dstSet = gpuCullDescriptorSets_[frameIndex];
+            writes[3].dstBinding = 3;
+            writes[3].descriptorCount = 1;
+            writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[3].pImageInfo = &depthPyramidInfo;
+
+            writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[4].dstSet = gpuCullDescriptorSets_[frameIndex];
+            writes[4].dstBinding = 4;
+            writes[4].descriptorCount = 1;
+            writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[4].pBufferInfo = &frameParamsBufferInfo;
 
             vkUpdateDescriptorSets(
                 context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
@@ -2408,6 +2778,7 @@ void Renderer::destroyGpuCullingResources()
     frameGpuCullTotalDrawItems_.clear();
     frameBatchVisibleCountReadbackBuffers_.clear();
     frameBatchVisibleCountBuffers_.clear();
+    frameGpuCullParamBuffers_.clear();
     frameCullInputBuffers_.clear();
     gpuCullPipeline_.reset();
     gpuCullDescriptorSetLayout_.reset();
@@ -2452,7 +2823,7 @@ void Renderer::createGpuShadowCullingResources()
         frameGpuShadowCullIndirectCountPath_.assign(frames_.size(), 0);
         for (size_t frameIndex = 0; frameIndex < frames_.size(); ++frameIndex) {
             rhi::VulkanBufferCreateInfo gpuCountInfo{};
-            gpuCountInfo.size = kBatchVisibleCountBufferSize;
+            gpuCountInfo.size = kGpuCullCountBufferSize;
             gpuCountInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
                                  VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
             gpuCountInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
@@ -2463,7 +2834,7 @@ void Renderer::createGpuShadowCullingResources()
                                       "GpuShadowBatchVisibleCountBuffer" + std::to_string(frameIndex));
 
             rhi::VulkanBufferCreateInfo readbackCountInfo{};
-            readbackCountInfo.size = kBatchVisibleCountBufferSize;
+            readbackCountInfo.size = kGpuCullCountBufferSize;
             readbackCountInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
             readbackCountInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
             readbackCountInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
@@ -2474,12 +2845,14 @@ void Renderer::createGpuShadowCullingResources()
                                       "GpuShadowBatchVisibleCountReadbackBuffer" + std::to_string(frameIndex));
         }
 
-        VkDescriptorPoolSize poolSize{};
-        poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        poolSize.descriptorCount = static_cast<uint32_t>(frames_.size() * 3);
+        std::array<VkDescriptorPoolSize, 2> poolSizes{};
+        poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        poolSizes[0].descriptorCount = static_cast<uint32_t>(frames_.size() * 4);
+        poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        poolSizes[1].descriptorCount = static_cast<uint32_t>(frames_.size());
 
         shadowCullDescriptorPool_.create(context_.vkDevice(),
-                                         std::span<const VkDescriptorPoolSize>(&poolSize, 1),
+                                         std::span<const VkDescriptorPoolSize>(poolSizes.data(), poolSizes.size()),
                                          static_cast<uint32_t>(frames_.size()));
         rhi::debug::setObjectName(context_.vkDevice(),
                                   shadowCullDescriptorPool_.handle(),
@@ -2509,9 +2882,19 @@ void Renderer::createGpuShadowCullingResources()
             VkDescriptorBufferInfo visibleCountBufferInfo{};
             visibleCountBufferInfo.buffer = frameShadowBatchVisibleCountBuffers_[frameIndex].buffer();
             visibleCountBufferInfo.offset = 0;
-            visibleCountBufferInfo.range = kBatchVisibleCountBufferSize;
+            visibleCountBufferInfo.range = kGpuCullCountBufferSize;
 
-            std::array<VkWriteDescriptorSet, 3> writes{};
+            VkDescriptorImageInfo depthPyramidInfo{};
+            depthPyramidInfo.sampler = depthPyramidSampler_;
+            depthPyramidInfo.imageView = depthPyramid_.imageView();
+            depthPyramidInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+            VkDescriptorBufferInfo frameParamsBufferInfo{};
+            frameParamsBufferInfo.buffer = frameGpuCullParamBuffers_[frameIndex].buffer();
+            frameParamsBufferInfo.offset = 0;
+            frameParamsBufferInfo.range = frameGpuCullParamBuffers_[frameIndex].size();
+
+            std::array<VkWriteDescriptorSet, 5> writes{};
             writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writes[0].dstSet = shadowCullDescriptorSets_[frameIndex];
             writes[0].dstBinding = 0;
@@ -2532,6 +2915,20 @@ void Renderer::createGpuShadowCullingResources()
             writes[2].descriptorCount = 1;
             writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             writes[2].pBufferInfo = &visibleCountBufferInfo;
+
+            writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[3].dstSet = shadowCullDescriptorSets_[frameIndex];
+            writes[3].dstBinding = 3;
+            writes[3].descriptorCount = 1;
+            writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[3].pImageInfo = &depthPyramidInfo;
+
+            writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[4].dstSet = shadowCullDescriptorSets_[frameIndex];
+            writes[4].dstBinding = 4;
+            writes[4].descriptorCount = 1;
+            writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[4].pBufferInfo = &frameParamsBufferInfo;
 
             vkUpdateDescriptorSets(
                 context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
@@ -2715,6 +3112,28 @@ void Renderer::createPipeline()
 
     luminancePipeline_.reset();
     histogramPipeline_.reset();
+    depthPyramidPipeline_.reset();
+    if (depthPyramidDescriptorSetLayout_.handle() != VK_NULL_HANDLE) {
+        const VkDescriptorSetLayout depthPyramidDescriptorSetLayout = depthPyramidDescriptorSetLayout_.handle();
+        const VkPushConstantRange depthPyramidPushConstantRange{
+            VK_SHADER_STAGE_COMPUTE_BIT, 0, static_cast<uint32_t>(sizeof(DepthPyramidPushConstants))};
+
+        rhi::VulkanComputePipelineCreateInfo depthPyramidPipelineInfo{};
+        depthPyramidPipelineInfo.shaderPath = shaderPath("depth_pyramid.comp.spv");
+        depthPyramidPipelineInfo.descriptorSetLayouts =
+            std::span<const VkDescriptorSetLayout>(&depthPyramidDescriptorSetLayout, 1);
+        depthPyramidPipelineInfo.pushConstantRanges =
+            std::span<const VkPushConstantRange>(&depthPyramidPushConstantRange, 1);
+        depthPyramidPipeline_.create(context_.vkDevice(), depthPyramidPipelineInfo);
+        rhi::debug::setObjectName(context_.vkDevice(),
+                                  depthPyramidPipeline_.pipeline(),
+                                  VK_OBJECT_TYPE_PIPELINE,
+                                  "DepthPyramidComputePipeline");
+        rhi::debug::setObjectName(context_.vkDevice(),
+                                  depthPyramidPipeline_.layout(),
+                                  VK_OBJECT_TYPE_PIPELINE_LAYOUT,
+                                  "DepthPyramidPipelineLayout");
+    }
     if (toneMappingSettings_.enableAutoExposure &&
         postProcessLuminanceDescriptorSetLayout_.handle() != VK_NULL_HANDLE) {
         const VkDescriptorSetLayout exposureDescriptorSetLayout = postProcessLuminanceDescriptorSetLayout_.handle();
@@ -4702,9 +5121,30 @@ void Renderer::updateGpuCullInputBuffer(uint32_t frameIndex)
     if (allDrawItems_.empty()) {
         return;
     }
-    if (frameIndex >= frameCullInputBuffers_.size()) {
+    if (frameIndex >= frameCullInputBuffers_.size() || frameIndex >= frameGpuCullParamBuffers_.size()) {
         throw std::runtime_error("GPU cull input buffer frame index is out of range.");
     }
+
+    const bool occlusionCameraStable =
+        depthPyramidValid_ && maxMatrixDifference(frameViewProjection_, depthPyramidViewProjection_) <= 0.0005f &&
+        glm::distance(frameCameraPosition_, depthPyramidCameraPosition_) <= 0.01f;
+    const bool occlusionEnabledThisFrame = isGpuOcclusionCullingActive() && occlusionCameraStable;
+    const VkExtent2D extent = swapchain_.extent();
+
+    GpuCullFrameParams frameParams{};
+    frameParams.occlusionViewProjection = depthPyramidViewProjection_;
+    frameParams.cameraPosition = glm::vec4(frameCameraPosition_, 0.0f);
+    frameParams.viewportAndMipCount = glm::vec4(static_cast<float>(extent.width),
+                                                static_cast<float>(extent.height),
+                                                static_cast<float>(depthPyramidMipLevels_),
+                                                0.0f);
+    frameParams.occlusionSettings = glm::vec4(gpuOcclusionDepthBias_,
+                                              gpuOcclusionNearDisableDistance_,
+                                              gpuOcclusionMaxScreenCoverage_,
+                                              gpuOcclusionMinScreenPixels_);
+    frameParams.counterAndFlags = glm::uvec4(kGpuCullStatsCounterOffset, occlusionEnabledThisFrame ? 1u : 0u, 0u, 0u);
+    frameGpuCullParamBuffers_.at(frameIndex)
+        .upload(std::as_bytes(std::span<const GpuCullFrameParams>(&frameParams, 1)));
 
     std::vector<GpuCullDrawItem> cullDrawItems(allDrawItems_.size());
     for (size_t drawIndex = 0; drawIndex < allDrawItems_.size(); ++drawIndex) {
@@ -4750,9 +5190,14 @@ void Renderer::updateGpuShadowCullInputBuffer(uint32_t frameIndex)
     if (allDrawItems_.empty()) {
         return;
     }
-    if (frameIndex >= frameShadowCullInputBuffers_.size()) {
+    if (frameIndex >= frameShadowCullInputBuffers_.size() || frameIndex >= frameGpuCullParamBuffers_.size()) {
         throw std::runtime_error("GPU shadow cull input buffer frame index is out of range.");
     }
+
+    GpuCullFrameParams frameParams{};
+    frameParams.counterAndFlags = glm::uvec4(kGpuCullStatsCounterOffset, 0u, 0u, 0u);
+    frameGpuCullParamBuffers_.at(frameIndex)
+        .upload(std::as_bytes(std::span<const GpuCullFrameParams>(&frameParams, 1)));
 
     std::vector<GpuCullDrawItem> cullDrawItems(allDrawItems_.size());
     for (size_t drawIndex = 0; drawIndex < allDrawItems_.size(); ++drawIndex) {
@@ -4933,12 +5378,30 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
                                         ? frameGpuCullBatchCounts_[frameIndex]
                                         : static_cast<uint32_t>(cullingStats_.batchCount);
         uint32_t visibleDrawItems = 0;
-        if (readGpuVisibleCount(frameIndex, visibleDrawItems)) {
+        GpuCullCounters counters{};
+        if (readGpuCullCounters(frameIndex, counters)) {
+            const uint32_t culledDrawItems =
+                counters.totalDrawItems > counters.visibleDrawItems
+                    ? counters.totalDrawItems - counters.visibleDrawItems
+                    : 0;
+            message << "GPU culling:\n"
+                    << "  total draw items: " << counters.totalDrawItems << "\n"
+                    << "  visible draw items: " << counters.visibleDrawItems << "\n"
+                    << "  frustum culled draw items: " << counters.frustumCulledDrawItems << "\n"
+                    << "  occlusion culled draw items: " << counters.occlusionCulledDrawItems << "\n"
+                    << "  total culled draw items: " << culledDrawItems << "\n"
+                    << "  depth pyramid mips: " << depthPyramidMipLevels_ << "\n"
+                    << "  occlusion culling: " << (isGpuOcclusionCullingActive() ? "enabled" : "disabled") << "\n"
+                    << "  batches: " << batchCount << "\n"
+                    << "  indirect count path: "
+                    << (isFrameIndirectCountPathActive(frameIndex) ? "enabled" : "disabled");
+        } else if (readGpuVisibleCount(frameIndex, visibleDrawItems)) {
             const uint32_t culledDrawItems = totalDrawItems > visibleDrawItems ? totalDrawItems - visibleDrawItems : 0;
             message << "GPU culling:\n"
                     << "  total draw items: " << totalDrawItems << "\n"
                     << "  visible draw items: " << visibleDrawItems << "\n"
                     << "  culled draw items: " << culledDrawItems << "\n"
+                    << "  occlusion culling: " << (isGpuOcclusionCullingActive() ? "enabled" : "disabled") << "\n"
                     << "  batches: " << batchCount << "\n"
                     << "  indirect count path: "
                     << (isFrameIndirectCountPathActive(frameIndex) ? "enabled" : "disabled");
@@ -4946,6 +5409,7 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
             message << "GPU culling:\n"
                     << "  total draw items: " << totalDrawItems << "\n"
                     << "  visible draw items: unavailable\n"
+                    << "  occlusion culling: " << (isGpuOcclusionCullingActive() ? "enabled" : "disabled") << "\n"
                     << "  batches: " << batchCount << "\n"
                     << "  indirect count path: "
                     << (isFrameIndirectCountPathActive(frameIndex) ? "enabled" : "disabled");
@@ -5038,6 +5502,11 @@ const Renderer::DebugHistory* Renderer::gpuTimingHistoryForPass(std::string_view
 Renderer::CullingDebugSnapshot Renderer::cullingDebugSnapshot(uint32_t frameIndex)
 {
     CullingDebugSnapshot snapshot{};
+    snapshot.gpuCulling = isGpuCullingActive();
+    snapshot.gpuOcclusionCulling = isGpuOcclusionCullingActive();
+    snapshot.gpuShadowCulling = isGpuShadowCullingActive();
+    snapshot.depthPyramidValid = depthPyramidValid_;
+    snapshot.depthPyramidMipCount = depthPyramidMipLevels_;
     snapshot.totalDrawItems = static_cast<uint32_t>(
         std::min<size_t>(cullingStats_.totalDrawItems, std::numeric_limits<uint32_t>::max()));
     if (cullingStats_.gpuCulling && frameIndex < frameGpuCullTotalDrawItems_.size()) {
@@ -5046,13 +5515,29 @@ Renderer::CullingDebugSnapshot Renderer::cullingDebugSnapshot(uint32_t frameInde
 
     snapshot.visibleDrawItems =
         static_cast<uint32_t>(std::min<size_t>(visibleDrawItems_.size(), snapshot.totalDrawItems));
+    snapshot.frustumCulledDrawItems = snapshot.totalDrawItems > snapshot.visibleDrawItems
+                                          ? snapshot.totalDrawItems - snapshot.visibleDrawItems
+                                          : 0;
     uint32_t gpuVisibleDrawItems = 0;
-    if (readGpuVisibleCount(frameIndex, gpuVisibleDrawItems)) {
+    GpuCullCounters gpuCounters{};
+    if (readGpuCullCounters(frameIndex, gpuCounters)) {
+        snapshot.totalDrawItems = std::min(gpuCounters.totalDrawItems, snapshot.totalDrawItems);
+        snapshot.visibleDrawItems = std::min(gpuCounters.visibleDrawItems, snapshot.totalDrawItems);
+        snapshot.frustumCulledDrawItems = std::min(gpuCounters.frustumCulledDrawItems, snapshot.totalDrawItems);
+        snapshot.occlusionCulledDrawItems = std::min(gpuCounters.occlusionCulledDrawItems, snapshot.totalDrawItems);
+    } else if (readGpuVisibleCount(frameIndex, gpuVisibleDrawItems)) {
         snapshot.visibleDrawItems = std::min(gpuVisibleDrawItems, snapshot.totalDrawItems);
+        snapshot.frustumCulledDrawItems = snapshot.totalDrawItems > snapshot.visibleDrawItems
+                                              ? snapshot.totalDrawItems - snapshot.visibleDrawItems
+                                              : 0;
     }
     snapshot.culledDrawItems = snapshot.totalDrawItems > snapshot.visibleDrawItems
                                    ? snapshot.totalDrawItems - snapshot.visibleDrawItems
                                    : 0;
+    if (!snapshot.gpuCulling) {
+        snapshot.frustumCulledDrawItems = snapshot.culledDrawItems;
+        snapshot.occlusionCulledDrawItems = 0;
+    }
 
     snapshot.shadowDrawItems = static_cast<uint32_t>(
         std::min<size_t>(shadowCullingStats_.totalDrawItems, std::numeric_limits<uint32_t>::max()));
@@ -5070,8 +5555,6 @@ Renderer::CullingDebugSnapshot Renderer::cullingDebugSnapshot(uint32_t frameInde
                                          ? snapshot.shadowDrawItems - snapshot.visibleShadowDrawItems
                                          : 0;
     snapshot.shadowBatchCount = shadowCullingStats_.batchCount;
-    snapshot.gpuCulling = isGpuCullingActive();
-    snapshot.gpuShadowCulling = isGpuShadowCullingActive();
     return snapshot;
 }
 
@@ -5780,6 +6263,22 @@ void Renderer::buildDebugUi()
                     isFrameIndirectCountPathActive(currentFrame_) ? "active" : "fallback");
         ImGui::Text("Shadow indirect count path: %s",
                     isShadowIndirectCountPathActive(currentFrame_) ? "active" : "fallback");
+        const bool occlusionControlsAvailable = isGpuCullingActive() && depthPyramid_.image() != VK_NULL_HANDLE;
+        if (!occlusionControlsAvailable) {
+            ImGui::BeginDisabled();
+        }
+        ImGui::Checkbox("GPU occlusion culling enabled", &useGpuOcclusionCulling_);
+        ImGui::SliderFloat("Occlusion depth bias", &gpuOcclusionDepthBias_, 0.0f, 0.05f, "%.4f");
+        ImGui::SliderFloat(
+            "Near-object skip distance", &gpuOcclusionNearDisableDistance_, 0.0f, 10.0f, "%.2f");
+        ImGui::SliderFloat("Max occlusion screen coverage", &gpuOcclusionMaxScreenCoverage_, 0.01f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Min occlusion size pixels", &gpuOcclusionMinScreenPixels_, 1.0f, 64.0f, "%.1f");
+        if (!occlusionControlsAvailable) {
+            ImGui::EndDisabled();
+        }
+        ImGui::Text("Depth pyramid: %s, %u mip(s)",
+                    depthPyramidValid_ ? "valid" : "warming up",
+                    depthPyramidMipLevels_);
     }
 
     if (ImGui::CollapsingHeader("Environment", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -6746,6 +7245,19 @@ void Renderer::drawRenderTargetDebugUi()
                     true,
                     "2D array / per-layer 2D"});
             }
+            if (depthPyramid_.image() != VK_NULL_HANDLE) {
+                const VkExtent3D extent = depthPyramid_.extent();
+                addMetadataRow(RenderTargetDebugMetadata{
+                    "DepthPyramidHiZ",
+                    extentString(extent.width, extent.height),
+                    depthPyramid_.format(),
+                    depthPyramidMipLevels_,
+                    1,
+                    layoutUsage("Normal-Z max-depth Hi-Z pyramid written by compute and sampled by GPU culling",
+                                depthPyramidLayout_),
+                    true,
+                    "2D mip chain"});
+            }
             if (diffuseIrradianceMap_.valid()) {
                 addMetadataRow(RenderTargetDebugMetadata{
                     "DiffuseIrradianceCubemap",
@@ -6841,6 +7353,27 @@ void Renderer::drawRenderTargetDebugUi()
                                         hdrPreviewExposure);
             }
         }
+    }
+
+    if (depthPyramid_.image() != VK_NULL_HANDLE && !depthPyramidMipImageViews_.empty() &&
+        ImGui::CollapsingHeader("Depth Pyramid", ImGuiTreeNodeFlags_DefaultOpen)) {
+        selectedDepthPyramidDebugMip_ =
+            std::min(selectedDepthPyramidDebugMip_, static_cast<uint32_t>(depthPyramidMipImageViews_.size() - 1));
+        int selectedMip = static_cast<int>(selectedDepthPyramidDebugMip_);
+        ImGui::SliderInt("Selected mip", &selectedMip, 0, static_cast<int>(depthPyramidMipImageViews_.size() - 1));
+        selectedDepthPyramidDebugMip_ = static_cast<uint32_t>(std::max(selectedMip, 0));
+        const VkExtent2D extent = mipExtent(swapchain_.extent(), selectedDepthPyramidDebugMip_);
+        ImGui::Text("Dimensions: %u x %u", extent.width, extent.height);
+        ImGui::Text("Format: %s", vkFormatName(depthPyramid_.format()));
+        ImGui::Text("Layout: %s", imageLayoutName(depthPyramidLayout_));
+        ImGui::TextDisabled("Normal-Z max-depth reduction; white/far regions are intentionally hard to cull through.");
+        drawRenderTargetPreview(depthPyramidMipImageViews_[selectedDepthPyramidDebugMip_],
+                                depthPyramidSampler_,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                extent.width,
+                                extent.height,
+                                previewSize,
+                                1.0f);
     }
 
     if (showRenderTargetBrdfLut_ && brdfLutTexture_.valid() &&
@@ -7175,11 +7708,15 @@ void Renderer::drawCullingDebugUi()
     ImGui::Text("Total draw items: %u", snapshot.totalDrawItems);
     ImGui::Text("Visible draw items: %u", snapshot.visibleDrawItems);
     ImGui::Text("Culled draw items: %u", snapshot.culledDrawItems);
+    ImGui::Text("Frustum-culled draw items: %u", snapshot.frustumCulledDrawItems);
+    ImGui::Text("Occlusion-culled draw items: %u", snapshot.occlusionCulledDrawItems);
     ImGui::Text("Shadow draw items: %u", snapshot.shadowDrawItems);
     ImGui::Text("Visible shadow draw items: %u", snapshot.visibleShadowDrawItems);
     ImGui::Text("Culled shadow draw items: %u", snapshot.culledShadowDrawItems);
     ImGui::Text("Shadow batches: %zu", snapshot.shadowBatchCount);
     ImGui::Text("GPU culling: %s", snapshot.gpuCulling ? "enabled" : "disabled");
+    ImGui::Text("GPU occlusion culling: %s", snapshot.gpuOcclusionCulling ? "enabled" : "disabled");
+    ImGui::Text("Depth pyramid: %s, %u mip(s)", snapshot.depthPyramidValid ? "valid" : "warming up", snapshot.depthPyramidMipCount);
     ImGui::Text("GPU shadow culling: %s", snapshot.gpuShadowCulling ? "enabled" : "disabled");
 
     constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
@@ -7323,6 +7860,13 @@ void Renderer::clampRuntimeSettings()
         std::clamp(debugUiSettings_.renderTargetPreviewScale, 0.25f, 2.0f);
     debugUiSettings_.selectedCsmCascade =
         std::min(debugUiSettings_.selectedCsmCascade, activeCascadeCount() - 1);
+    gpuOcclusionDepthBias_ = std::clamp(gpuOcclusionDepthBias_, 0.0f, 0.05f);
+    gpuOcclusionNearDisableDistance_ = std::clamp(gpuOcclusionNearDisableDistance_, 0.0f, 10.0f);
+    gpuOcclusionMaxScreenCoverage_ = std::clamp(gpuOcclusionMaxScreenCoverage_, 0.01f, 1.0f);
+    gpuOcclusionMinScreenPixels_ = std::clamp(gpuOcclusionMinScreenPixels_, 1.0f, 64.0f);
+    if (!isGpuCullingActive()) {
+        useGpuOcclusionCulling_ = false;
+    }
 }
 
 void Renderer::updateFrameData(uint32_t frameIndex)
@@ -7380,6 +7924,8 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     const glm::mat4 view = camera_.viewMatrix();
     const glm::mat4 projection = camera_.projectionMatrix(aspect);
     const glm::mat4 viewProjection = projection * view;
+    frameViewProjection_ = viewProjection;
+    frameCameraPosition_ = camera_.position;
     updateCascades(aspect);
 
     for (size_t objectIndex = 0; objectIndex < renderObjects_.size(); ++objectIndex) {
@@ -7634,6 +8180,7 @@ void Renderer::recreateSwapchain()
 renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
 {
     const VkExtent3D sceneExtent = sceneColor_.extent();
+    const VkExtent3D depthPyramidExtent = depthPyramid_.extent();
     VkClearValue sceneClear{};
     sceneClear.color.float32[0] = 0.03f;
     sceneClear.color.float32[1] = 0.04f;
@@ -7724,6 +8271,38 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             true,
             false,
         },
+        renderer::RenderGraphImageResource{
+            "DepthPyramidHiZ",
+            depthPyramid_.image(),
+            depthPyramid_.imageView(),
+            VkExtent2D{depthPyramidExtent.width, depthPyramidExtent.height},
+            &depthPyramidLayout_,
+            depthPyramid_.format(),
+            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+            depthPyramidMipLevels_,
+            1,
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            {},
+            false,
+            true,
+        },
+        bufferResource("MainCullInput",
+                       frameCullInputBuffers_,
+                       currentFrame_,
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
+        bufferResource("MainCullIndirectOutput",
+                       frameIndirectDrawBuffers_,
+                       currentFrame_,
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT),
+        bufferResource("MainCullVisibleCounts",
+                       frameBatchVisibleCountBuffers_,
+                       currentFrame_,
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                           VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT),
+        bufferResource("MainCullReadback",
+                       frameBatchVisibleCountReadbackBuffers_,
+                       currentFrame_,
+                       VK_BUFFER_USAGE_TRANSFER_DST_BIT),
         bufferResource("LuminancePartials",
                        frameLuminanceBuffers_,
                        currentFrame_,
@@ -7959,6 +8538,36 @@ bool Renderer::readGpuVisibleCount(uint32_t frameIndex, uint32_t& visibleCount)
     return true;
 }
 
+bool Renderer::readGpuCullCounters(uint32_t frameIndex, GpuCullCounters& counters)
+{
+    counters = {};
+    if (!isGpuCullingActive() || frameIndex >= frameBatchVisibleCountReadbackBuffers_.size() ||
+        frameIndex >= frameGpuCullReadbackReady_.size() || frameGpuCullReadbackReady_[frameIndex] == 0) {
+        return false;
+    }
+
+    rhi::VulkanBuffer& readbackBuffer = frameBatchVisibleCountReadbackBuffers_[frameIndex];
+    if (!readbackBuffer.valid()) {
+        return false;
+    }
+
+    std::array<uint32_t, kGpuCullStatsCounterCount> values{};
+    readbackBuffer.download(std::as_writable_bytes(std::span<uint32_t>(values.data(), values.size())),
+                            static_cast<VkDeviceSize>(kGpuCullStatsCounterOffset * sizeof(uint32_t)));
+
+    counters.totalDrawItems = values[0];
+    counters.visibleDrawItems = values[1];
+    counters.frustumCulledDrawItems = values[2];
+    counters.occlusionCulledDrawItems = values[3];
+    if (frameIndex < frameGpuCullTotalDrawItems_.size()) {
+        counters.totalDrawItems = std::min(counters.totalDrawItems, frameGpuCullTotalDrawItems_[frameIndex]);
+        counters.visibleDrawItems = std::min(counters.visibleDrawItems, counters.totalDrawItems);
+        counters.frustumCulledDrawItems = std::min(counters.frustumCulledDrawItems, counters.totalDrawItems);
+        counters.occlusionCulledDrawItems = std::min(counters.occlusionCulledDrawItems, counters.totalDrawItems);
+    }
+    return true;
+}
+
 bool Renderer::readGpuShadowVisibleCount(uint32_t frameIndex, uint32_t& visibleCount)
 {
     visibleCount = 0;
@@ -7995,7 +8604,15 @@ bool Renderer::isGpuCullingActive() const
     return useGpuCulling_ && gpuCullingAvailable_ && gpuCullPipeline_.pipeline() != VK_NULL_HANDLE &&
            gpuCullPipeline_.layout() != VK_NULL_HANDLE && !gpuCullDescriptorSets_.empty() &&
            frameCullInputBuffers_.size() == frames_.size() && frameBatchVisibleCountBuffers_.size() == frames_.size() &&
-           frameBatchVisibleCountReadbackBuffers_.size() == frames_.size();
+           frameBatchVisibleCountReadbackBuffers_.size() == frames_.size() &&
+           frameGpuCullParamBuffers_.size() == frames_.size();
+}
+
+bool Renderer::isGpuOcclusionCullingActive() const
+{
+    return useGpuOcclusionCulling_ && isGpuCullingActive() && depthPyramidValid_ &&
+           depthPyramid_.image() != VK_NULL_HANDLE && depthPyramidSampler_ != VK_NULL_HANDLE &&
+           depthPyramidMipLevels_ > 0;
 }
 
 bool Renderer::isGpuShadowCullingActive() const
@@ -8004,7 +8621,8 @@ bool Renderer::isGpuShadowCullingActive() const
            gpuCullPipeline_.pipeline() != VK_NULL_HANDLE && gpuCullPipeline_.layout() != VK_NULL_HANDLE &&
            !shadowCullDescriptorSets_.empty() && frameShadowCullInputBuffers_.size() == frames_.size() &&
            frameShadowBatchVisibleCountBuffers_.size() == frames_.size() &&
-           frameShadowBatchVisibleCountReadbackBuffers_.size() == frames_.size();
+           frameShadowBatchVisibleCountReadbackBuffers_.size() == frames_.size() &&
+           frameGpuCullParamBuffers_.size() == frames_.size();
 }
 
 bool Renderer::isAutoExposureActive() const
@@ -8129,8 +8747,9 @@ void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
     const bool indirectCountPathActive = isFrameIndirectCountPathActive(currentFrame_);
 
     const renderer::GpuProfileScope profileScope(gpuProfiler_, currentFrame_, commandBuffer, "MainGpuCullingPass");
+    renderGraph_.beginMainGpuCullingPass();
     rhi::debug::beginLabel(commandBuffer, "GpuCulling");
-    vkCmdFillBuffer(commandBuffer, visibleCountBuffer, 0, kBatchVisibleCountBufferSize, 0);
+    vkCmdFillBuffer(commandBuffer, visibleCountBuffer, 0, kGpuCullCountBufferSize, 0);
 
     VkBufferMemoryBarrier2 resetCountBarrier{};
     resetCountBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
@@ -8142,7 +8761,7 @@ void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
     resetCountBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     resetCountBarrier.buffer = visibleCountBuffer;
     resetCountBarrier.offset = 0;
-    resetCountBarrier.size = kBatchVisibleCountBufferSize;
+    resetCountBarrier.size = kGpuCullCountBufferSize;
 
     VkDependencyInfo resetDependencyInfo{};
     resetDependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
@@ -8161,7 +8780,7 @@ void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
     pushConstants.params = glm::uvec4(static_cast<uint32_t>(allDrawItems_.size()),
                                       isMainPassMultiDrawIndirectActive() ? 1U : 0U,
                                       indirectCountPathActive ? 1U : 0U,
-                                      0);
+                                      1U);
     vkCmdPushConstants(commandBuffer,
                        gpuCullPipeline_.layout(),
                        VK_SHADER_STAGE_COMPUTE_BIT,
@@ -8196,7 +8815,7 @@ void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
     computeBarriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     computeBarriers[1].buffer = visibleCountBuffer;
     computeBarriers[1].offset = 0;
-    computeBarriers[1].size = kBatchVisibleCountBufferSize;
+    computeBarriers[1].size = kGpuCullCountBufferSize;
 
     VkDependencyInfo dependencyInfo{};
     dependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
@@ -8205,7 +8824,7 @@ void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
     vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
 
     VkBufferCopy visibleCountCopy{};
-    visibleCountCopy.size = kBatchVisibleCountBufferSize;
+    visibleCountCopy.size = kGpuCullCountBufferSize;
     vkCmdCopyBuffer(commandBuffer, visibleCountBuffer, visibleCountReadbackBuffer, 1, &visibleCountCopy);
 
     VkBufferMemoryBarrier2 readbackBarrier{};
@@ -8218,7 +8837,7 @@ void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
     readbackBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     readbackBarrier.buffer = visibleCountReadbackBuffer;
     readbackBarrier.offset = 0;
-    readbackBarrier.size = kBatchVisibleCountBufferSize;
+    readbackBarrier.size = kGpuCullCountBufferSize;
 
     VkDependencyInfo readbackDependencyInfo{};
     readbackDependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
@@ -8228,6 +8847,7 @@ void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
 
     frameGpuCullReadbackReady_[currentFrame_] = 1;
     rhi::debug::endLabel(commandBuffer);
+    renderGraph_.endMainGpuCullingPass();
 }
 
 void Renderer::recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer, uint32_t cascadeIndex)
@@ -8264,7 +8884,7 @@ void Renderer::recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer, uin
     const std::string profileName = "ShadowGpuCullingCascade" + std::to_string(cascadeIndex);
     const renderer::GpuProfileScope profileScope(gpuProfiler_, currentFrame_, commandBuffer, profileName);
     rhi::debug::beginLabel(commandBuffer, "GpuShadowCullingCascade" + std::to_string(cascadeIndex));
-    vkCmdFillBuffer(commandBuffer, visibleCountBuffer, 0, kBatchVisibleCountBufferSize, 0);
+    vkCmdFillBuffer(commandBuffer, visibleCountBuffer, 0, kGpuCullCountBufferSize, 0);
     vkCmdFillBuffer(commandBuffer, shadowIndirectDrawBuffer, 0, shadowIndirectBufferSize, 0);
 
     std::array<VkBufferMemoryBarrier2, 2> resetBarriers{};
@@ -8277,7 +8897,7 @@ void Renderer::recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer, uin
     resetBarriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     resetBarriers[0].buffer = visibleCountBuffer;
     resetBarriers[0].offset = 0;
-    resetBarriers[0].size = kBatchVisibleCountBufferSize;
+    resetBarriers[0].size = kGpuCullCountBufferSize;
 
     resetBarriers[1].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
     resetBarriers[1].srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
@@ -8339,7 +8959,7 @@ void Renderer::recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer, uin
     computeBarriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     computeBarriers[1].buffer = visibleCountBuffer;
     computeBarriers[1].offset = 0;
-    computeBarriers[1].size = kBatchVisibleCountBufferSize;
+    computeBarriers[1].size = kGpuCullCountBufferSize;
 
     VkDependencyInfo dependencyInfo{};
     dependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
@@ -8348,7 +8968,7 @@ void Renderer::recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer, uin
     vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
 
     VkBufferCopy visibleCountCopy{};
-    visibleCountCopy.size = kBatchVisibleCountBufferSize;
+    visibleCountCopy.size = kGpuCullCountBufferSize;
     vkCmdCopyBuffer(commandBuffer, visibleCountBuffer, visibleCountReadbackBuffer, 1, &visibleCountCopy);
 
     VkBufferMemoryBarrier2 readbackBarrier{};
@@ -8361,7 +8981,7 @@ void Renderer::recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer, uin
     readbackBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     readbackBarrier.buffer = visibleCountReadbackBuffer;
     readbackBarrier.offset = 0;
-    readbackBarrier.size = kBatchVisibleCountBufferSize;
+    readbackBarrier.size = kGpuCullCountBufferSize;
 
     VkDependencyInfo readbackDependencyInfo{};
     readbackDependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
@@ -8371,6 +8991,83 @@ void Renderer::recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer, uin
 
     frameGpuShadowCullReadbackReady_[currentFrame_] = 1;
     rhi::debug::endLabel(commandBuffer);
+}
+
+void Renderer::recordDepthPyramidCommands(VkCommandBuffer commandBuffer)
+{
+    if (depthPyramid_.image() == VK_NULL_HANDLE || depthPyramidPipeline_.pipeline() == VK_NULL_HANDLE ||
+        depthPyramidPipeline_.layout() == VK_NULL_HANDLE || depthPyramidDescriptorSets_.empty() ||
+        depthPyramidMipImageViews_.empty() || depthPyramidMipLevels_ == 0) {
+        depthPyramidValid_ = false;
+        return;
+    }
+
+    const renderer::GpuProfileScope profileScope(gpuProfiler_, currentFrame_, commandBuffer, "DepthPyramid");
+    renderGraph_.beginDepthPyramidPass();
+    rhi::debug::beginLabel(commandBuffer, "DepthPyramid");
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, depthPyramidPipeline_.pipeline());
+
+    const VkExtent2D baseExtent = swapchain_.extent();
+    for (uint32_t mipLevel = 0; mipLevel < depthPyramidMipLevels_; ++mipLevel) {
+        const VkExtent2D sourceExtent = mipLevel == 0 ? baseExtent : mipExtent(baseExtent, mipLevel - 1);
+        const VkExtent2D destinationExtent = mipExtent(baseExtent, mipLevel);
+        const VkDescriptorSet descriptorSet = depthPyramidDescriptorSets_[mipLevel];
+        vkCmdBindDescriptorSets(commandBuffer,
+                                VK_PIPELINE_BIND_POINT_COMPUTE,
+                                depthPyramidPipeline_.layout(),
+                                0,
+                                1,
+                                &descriptorSet,
+                                0,
+                                nullptr);
+
+        const DepthPyramidPushConstants pushConstants{
+            glm::uvec4(sourceExtent.width, sourceExtent.height, destinationExtent.width, destinationExtent.height)};
+        vkCmdPushConstants(commandBuffer,
+                           depthPyramidPipeline_.layout(),
+                           VK_SHADER_STAGE_COMPUTE_BIT,
+                           0,
+                           static_cast<uint32_t>(sizeof(DepthPyramidPushConstants)),
+                           &pushConstants);
+
+        const uint32_t groupCountX = (destinationExtent.width + kDepthPyramidLocalSizeX - 1) / kDepthPyramidLocalSizeX;
+        const uint32_t groupCountY =
+            (destinationExtent.height + kDepthPyramidLocalSizeY - 1) / kDepthPyramidLocalSizeY;
+        vkCmdDispatch(commandBuffer, groupCountX, groupCountY, 1);
+
+        const VkImageMemoryBarrier2 mipWriteToRead = imageBarrier(depthPyramid_.image(),
+                                                                  VK_IMAGE_ASPECT_COLOR_BIT,
+                                                                  VK_IMAGE_LAYOUT_GENERAL,
+                                                                  VK_IMAGE_LAYOUT_GENERAL,
+                                                                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                                                  VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                                                                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                                                  VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                                                                  mipLevel,
+                                                                  1);
+        recordImageBarrier(commandBuffer, mipWriteToRead);
+    }
+
+    const VkImageMemoryBarrier2 pyramidToShaderRead =
+        imageBarrier(depthPyramid_.image(),
+                     VK_IMAGE_ASPECT_COLOR_BIT,
+                     VK_IMAGE_LAYOUT_GENERAL,
+                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                     VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                     VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                     0,
+                     depthPyramidMipLevels_);
+    recordImageBarrier(commandBuffer, pyramidToShaderRead);
+    depthPyramidLayout_ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    depthPyramidValid_ = true;
+    depthPyramidViewProjection_ = frameViewProjection_;
+    depthPyramidCameraPosition_ = frameCameraPosition_;
+
+    rhi::debug::endLabel(commandBuffer);
+    renderGraph_.endDepthPyramidPass();
 }
 
 void Renderer::recordLuminanceCommands(VkCommandBuffer commandBuffer)
@@ -8960,6 +9657,8 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     if (mainHdrProfileScope) {
         gpuProfiler_.endScope(currentFrame_, commandBuffer);
     }
+
+    recordDepthPyramidCommands(commandBuffer);
 
     rhi::debug::beginLabel(commandBuffer, "BloomExtractPass");
     const bool bloomExtractProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "BloomExtractPass");

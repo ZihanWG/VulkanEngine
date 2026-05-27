@@ -58,6 +58,7 @@ enum class RenderPassType {
     Shadow,
     ShadowGpuCulling,
     MainGpuCulling,
+    DepthPyramid,
     MainHdr,
     BloomExtract,
     BloomBlur,
@@ -154,6 +155,11 @@ struct RenderGraphFrameResources {
     RenderGraphImageResource bloomExtract;
     RenderGraphImageResource bloomPing;
     RenderGraphImageResource bloomPong;
+    RenderGraphImageResource depthPyramid;
+    RenderGraphBufferResource mainCullInput;
+    RenderGraphBufferResource mainCullIndirectOutput;
+    RenderGraphBufferResource mainCullVisibleCounts;
+    RenderGraphBufferResource mainCullReadback;
     RenderGraphBufferResource luminancePartials;
     RenderGraphBufferResource luminanceReadback;
     RenderGraphBufferResource luminanceHistogram;
@@ -231,8 +237,12 @@ public:
                     RenderGraphFrameResources frameResources);
     void beginShadowPass(uint32_t cascadeLayer);
     void endShadowPass(bool finalCascade);
+    void beginMainGpuCullingPass();
+    void endMainGpuCullingPass();
     void beginMainHdrPass();
     void endMainHdrPass();
+    void beginDepthPyramidPass();
+    void endDepthPyramidPass();
     void beginBloomExtractPass();
     void endBloomExtractPass();
     void beginBloomBlurPass(bool horizontal);
@@ -289,7 +299,9 @@ private:
     enum class ActivePass {
         None,
         Shadow,
+        MainGpuCulling,
         MainHdr,
+        DepthPyramid,
         BloomExtract,
         BloomBlur,
         Luminance,
@@ -325,7 +337,9 @@ private:
 
     struct BuiltinPassIndices {
         uint32_t shadow = kInvalidRenderGraphHandle;
+        uint32_t mainGpuCulling = kInvalidRenderGraphHandle;
         uint32_t mainHdr = kInvalidRenderGraphHandle;
+        uint32_t depthPyramid = kInvalidRenderGraphHandle;
         uint32_t bloomExtract = kInvalidRenderGraphHandle;
         uint32_t bloomBlurHorizontal = kInvalidRenderGraphHandle;
         uint32_t bloomBlurVertical = kInvalidRenderGraphHandle;
@@ -350,6 +364,11 @@ private:
         RGTextureHandle bloomExtract{};
         RGTextureHandle bloomPing{};
         RGTextureHandle bloomPong{};
+        RGTextureHandle depthPyramid{};
+        RGBufferHandle mainCullInput{};
+        RGBufferHandle mainCullIndirectOutput{};
+        RGBufferHandle mainCullVisibleCounts{};
+        RGBufferHandle mainCullReadback{};
         RGBufferHandle luminancePartials{};
         RGBufferHandle luminanceReadback{};
         RGBufferHandle luminanceHistogram{};

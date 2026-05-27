@@ -92,9 +92,7 @@ RenderGraph::TextureAccessState accessStateFromLayout(VkImageLayout layout, VkIm
     case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
     case VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL:
     case VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL:
-        state.stage = isDepthAspect(aspectMask) ? VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
-                                                : (VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-                                                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+        state.stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         state.access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
         state.declaredAccess = RGAccess::ShaderRead;
         break;
@@ -219,6 +217,8 @@ const char* renderPassTypeName(RenderPassType type)
         return "Shadow GPU Culling";
     case RenderPassType::MainGpuCulling:
         return "Main GPU Culling";
+    case RenderPassType::DepthPyramid:
+        return "Depth Pyramid";
     case RenderPassType::MainHdr:
         return "Main HDR";
     case RenderPassType::BloomExtract:
@@ -368,7 +368,7 @@ void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
     mainDepth.imageView = swapchain.depthImageView();
     mainDepth.extent = swapchain.extent();
     mainDepth.format = swapchain.depthFormat();
-    mainDepth.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    mainDepth.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     mainDepth.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
     mainDepth.imported = true;
     frame_.mainDepth = importTexture(mainDepth);
@@ -413,7 +413,12 @@ void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
         createTransientTexture(makeTransientDesc(frame_.resources.bloomExtract), frame_.resources.bloomExtract);
     frame_.bloomPing = createTransientTexture(makeTransientDesc(frame_.resources.bloomPing), frame_.resources.bloomPing);
     frame_.bloomPong = createTransientTexture(makeTransientDesc(frame_.resources.bloomPong), frame_.resources.bloomPong);
+    frame_.depthPyramid = importTexture(frame_.resources.depthPyramid);
 
+    frame_.mainCullInput = importBuffer(frame_.resources.mainCullInput);
+    frame_.mainCullIndirectOutput = importBuffer(frame_.resources.mainCullIndirectOutput);
+    frame_.mainCullVisibleCounts = importBuffer(frame_.resources.mainCullVisibleCounts);
+    frame_.mainCullReadback = importBuffer(frame_.resources.mainCullReadback);
     frame_.luminancePartials = importBuffer(frame_.resources.luminancePartials);
     frame_.luminanceReadback = importBuffer(frame_.resources.luminanceReadback);
     frame_.luminanceHistogram = importBuffer(frame_.resources.luminanceHistogram);
@@ -481,6 +486,31 @@ void RenderGraph::endShadowPass(bool /*finalCascade*/)
     activePass_ = ActivePass::None;
 }
 
+void RenderGraph::beginMainGpuCullingPass()
+{
+    requireFrameActive("RenderGraph::beginMainGpuCullingPass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginMainGpuCullingPass called while another pass is active.");
+    }
+    if (!beginDeclaredPass(frame_.passIndices.mainGpuCulling)) {
+        throw std::logic_error(
+            "RenderGraph::beginMainGpuCullingPass was culled but the renderer attempted to record it.");
+    }
+
+    activePass_ = ActivePass::MainGpuCulling;
+}
+
+void RenderGraph::endMainGpuCullingPass()
+{
+    requireFrameActive("RenderGraph::endMainGpuCullingPass");
+    if (activePass_ != ActivePass::MainGpuCulling) {
+        throw std::logic_error(
+            "RenderGraph::endMainGpuCullingPass called without an active main GPU culling pass.");
+    }
+
+    activePass_ = ActivePass::None;
+}
+
 void RenderGraph::beginMainHdrPass()
 {
     requireFrameActive("RenderGraph::beginMainHdrPass");
@@ -516,7 +546,7 @@ void RenderGraph::beginMainHdrPass()
     depthAttachment.imageView = frame_.swapchain->depthImageView();
     depthAttachment.imageLayout = depthAttachmentLayout(VK_IMAGE_ASPECT_DEPTH_BIT);
     depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     depthAttachment.clearValue = depthClear;
 
     VkRenderingInfo renderingInfo{};
@@ -540,6 +570,30 @@ void RenderGraph::endMainHdrPass()
     }
 
     vkCmdEndRendering(frame_.commandBuffer);
+    activePass_ = ActivePass::None;
+}
+
+void RenderGraph::beginDepthPyramidPass()
+{
+    requireFrameActive("RenderGraph::beginDepthPyramidPass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginDepthPyramidPass called while another pass is active.");
+    }
+    if (!beginDeclaredPass(frame_.passIndices.depthPyramid)) {
+        throw std::logic_error(
+            "RenderGraph::beginDepthPyramidPass was culled but the renderer attempted to record it.");
+    }
+
+    activePass_ = ActivePass::DepthPyramid;
+}
+
+void RenderGraph::endDepthPyramidPass()
+{
+    requireFrameActive("RenderGraph::endDepthPyramidPass");
+    if (activePass_ != ActivePass::DepthPyramid) {
+        throw std::logic_error("RenderGraph::endDepthPyramidPass called without an active depth pyramid pass.");
+    }
+
     activePass_ = ActivePass::None;
 }
 
@@ -880,6 +934,29 @@ void RenderGraph::buildFrameGraphDeclarations()
                                  "Writes cascaded shadow-map depth array layers.");
         });
 
+    frame_.passIndices.mainGpuCulling = addPass(
+        "MainGpuCullingPass",
+        RenderPassType::MainGpuCulling,
+        RenderPassExecutionType::Compute,
+        true,
+        [this](RenderGraphBuilder& builder) {
+            builder.readBuffer(frame_.mainCullInput,
+                               RGAccess::StorageBufferRead,
+                               "Reads per-draw AABB, draw-command, and batch metadata.");
+            builder.readTexture(frame_.depthPyramid,
+                                RGAccess::ShaderRead,
+                                "Optionally samples the previous-frame Hi-Z depth pyramid for occlusion tests.");
+            builder.writeBuffer(frame_.mainCullIndirectOutput,
+                                RGAccess::StorageBufferWrite,
+                                "Writes indirect draw commands for the main pass.");
+            builder.writeBuffer(frame_.mainCullVisibleCounts,
+                                RGAccess::StorageBufferReadWrite,
+                                "Clears and writes visible counts plus culling debug counters.");
+            builder.writeBuffer(frame_.mainCullReadback,
+                                RGAccess::TransferDst,
+                                "Receives copied culling counters for frame-latency CPU readback.");
+        });
+
     frame_.passIndices.mainHdr = addPass(
         "MainHDRPass",
         RenderPassType::MainHdr,
@@ -895,6 +972,26 @@ void RenderGraph::buildFrameGraphDeclarations()
             builder.writeTexture(frame_.mainDepth,
                                  RGAccess::DepthStencilAttachmentWrite,
                                  "Clears and writes the main depth attachment.");
+            builder.readBuffer(frame_.mainCullIndirectOutput,
+                               RGAccess::IndirectRead,
+                               "Reads CPU- or GPU-generated indirect draw commands.");
+            builder.readBuffer(frame_.mainCullVisibleCounts,
+                               RGAccess::IndirectRead,
+                               "Reads per-batch visible counts when indirect-count drawing is active.");
+        });
+
+    frame_.passIndices.depthPyramid = addPass(
+        "DepthPyramidPass",
+        RenderPassType::DepthPyramid,
+        RenderPassExecutionType::Compute,
+        true,
+        [this](RenderGraphBuilder& builder) {
+            builder.readTexture(frame_.mainDepth,
+                                RGAccess::ShaderRead,
+                                "Samples the completed normal-Z main depth buffer.");
+            builder.writeTexture(frame_.depthPyramid,
+                                 RGAccess::StorageImageWrite,
+                                 "Writes the max-depth Hi-Z pyramid for later-frame occlusion culling.");
         });
 
     frame_.passIndices.bloomExtract = addPass(
@@ -1143,9 +1240,7 @@ RenderGraph::TextureAccessState RenderGraph::accessStateForTexture(const Texture
     case RGAccess::ShaderRead:
         state.layout = isDepthAspect(resource.desc.aspectMask) ? depthReadOnlyLayout(resource.desc.aspectMask)
                                                                : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        state.stage = isDepthAspect(resource.desc.aspectMask) ? VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
-                                                              : (VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-                                                                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+        state.stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         state.access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
         break;
     case RGAccess::ColorAttachmentWrite:

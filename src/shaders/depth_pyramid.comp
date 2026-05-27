@@ -1,0 +1,32 @@
+#version 460
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D sourceDepth;
+layout(set = 0, binding = 1, r32f) uniform writeonly image2D outputMip;
+
+layout(push_constant) uniform DepthPyramidPushConstants {
+    uvec4 sizes; // xy = source size, zw = destination mip size
+} pc;
+
+// The renderer uses normal-Z depth: 0 is near and 1 is far. Each pyramid level
+// stores the maximum depth in its source footprint, so an object is culled only
+// when every covered source texel is closer than the object's nearest depth.
+void main()
+{
+    uvec2 dst = gl_GlobalInvocationID.xy;
+    if (dst.x >= pc.sizes.z || dst.y >= pc.sizes.w) {
+        return;
+    }
+
+    uvec2 srcBase = dst * 2u;
+    float maxDepth = 0.0;
+    for (uint y = 0; y < 2u; ++y) {
+        for (uint x = 0; x < 2u; ++x) {
+            uvec2 src = min(srcBase + uvec2(x, y), pc.sizes.xy - uvec2(1u));
+            maxDepth = max(maxDepth, texelFetch(sourceDepth, ivec2(src), 0).r);
+        }
+    }
+
+    imageStore(outputMip, ivec2(dst), vec4(maxDepth, 0.0, 0.0, 1.0));
+}

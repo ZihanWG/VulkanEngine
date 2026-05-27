@@ -16,6 +16,7 @@ struct VulkanImageCreateInfo {
     VkImageUsageFlags usage = 0;
     VkImageAspectFlags aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     VkImageViewType viewType = VK_IMAGE_VIEW_TYPE_2D;
+    uint32_t mipLevels = 1;
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
     VkImageTiling tiling = VK_IMAGE_TILING_OPTIMAL;
     std::string debugName;
@@ -38,6 +39,7 @@ public:
     [[nodiscard]] VkImageView imageView() const { return imageView_; }
     [[nodiscard]] VkFormat format() const { return format_; }
     [[nodiscard]] VkExtent3D extent() const { return extent_; }
+    [[nodiscard]] uint32_t mipLevels() const { return mipLevels_; }
 
 private:
     void moveFrom(VulkanImage& other) noexcept;
@@ -50,6 +52,7 @@ private:
     VkImageView imageView_ = VK_NULL_HANDLE;
     VkFormat format_ = VK_FORMAT_UNDEFINED;
     VkExtent3D extent_{};
+    uint32_t mipLevels_ = 0;
 };
 
 } // namespace ve::rhi

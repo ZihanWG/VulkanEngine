@@ -46,11 +46,21 @@ layout(set = 0, binding = 2, std430) buffer BatchVisibleCountBuffer {
     uint visibleCounts[];
 } batchVisibleCounts;
 
+layout(set = 0, binding = 3) uniform sampler2D depthPyramid;
+
+layout(set = 0, binding = 4, std430) readonly buffer CullFrameParamsBuffer {
+    mat4 occlusionViewProjection;
+    vec4 cameraPosition;
+    vec4 viewportAndMipCount; // x = width, y = height, z = mip count
+    vec4 occlusionSettings; // x = normal-Z depth bias, y = near disable distance, z = max coverage, w = min pixels
+    uvec4 counterAndFlags; // x = stats counter base, y bit 0 = occlusion enabled for this frame
+} cullFrame;
+
 // The renderer reuses this shader for camera-frustum main culling and
 // directional-light-frustum shadow culling by pushing the relevant planes.
 layout(push_constant) uniform CullPushConstants {
     vec4 frustumPlanes[6];
-    uvec4 params; // x = draw item count, y = write objectFrameDataIndex to firstInstance, z = compact visible commands
+    uvec4 params; // x = draw item count, y = write objectFrameDataIndex, z = compact commands, w bit 0 = allow occlusion
 } pc;
 
 bool testAabb(vec3 boundsMin, vec3 boundsMax)
@@ -70,6 +80,103 @@ bool testAabb(vec3 boundsMin, vec3 boundsMax)
     return true;
 }
 
+bool validBounds(vec3 boundsMin, vec3 boundsMax)
+{
+    if (any(isnan(boundsMin)) || any(isnan(boundsMax)) || any(isinf(boundsMin)) || any(isinf(boundsMax))) {
+        return false;
+    }
+
+    vec3 extent = boundsMax - boundsMin;
+    return all(greaterThanEqual(extent, vec3(0.0001)));
+}
+
+bool testOcclusion(vec3 boundsMin, vec3 boundsMax)
+{
+    if (!validBounds(boundsMin, boundsMax)) {
+        return false;
+    }
+
+    vec3 center = (boundsMin + boundsMax) * 0.5;
+    float radius = length(boundsMax - center);
+    if (radius <= 0.0001 || isnan(radius) || isinf(radius)) {
+        return false;
+    }
+
+    float nearDisableDistance = max(cullFrame.occlusionSettings.y, 0.0);
+    float distanceFromCamera = length(center - cullFrame.cameraPosition.xyz) - radius;
+    if (distanceFromCamera < nearDisableDistance) {
+        return false;
+    }
+
+    vec2 viewport = max(cullFrame.viewportAndMipCount.xy, vec2(1.0));
+    uint mipCount = uint(max(cullFrame.viewportAndMipCount.z, 1.0));
+    if (mipCount == 0u) {
+        return false;
+    }
+
+    vec2 minUv = vec2(1.0);
+    vec2 maxUv = vec2(0.0);
+    float objectNearestDepth = 1.0;
+
+    for (uint cornerIndex = 0; cornerIndex < 8u; ++cornerIndex) {
+        vec3 corner = vec3(
+            (cornerIndex & 1u) != 0u ? boundsMax.x : boundsMin.x,
+            (cornerIndex & 2u) != 0u ? boundsMax.y : boundsMin.y,
+            (cornerIndex & 4u) != 0u ? boundsMax.z : boundsMin.z);
+
+        vec4 clip = cullFrame.occlusionViewProjection * vec4(corner, 1.0);
+        if (clip.w <= 0.0001 || clip.z <= 0.0) {
+            return false;
+        }
+
+        vec3 ndc = clip.xyz / clip.w;
+        if (any(isnan(ndc)) || any(isinf(ndc))) {
+            return false;
+        }
+        if (ndc.z <= 0.0 || ndc.z >= 1.0) {
+            return false;
+        }
+
+        vec2 uv = ndc.xy * 0.5 + vec2(0.5);
+        minUv = min(minUv, uv);
+        maxUv = max(maxUv, uv);
+        objectNearestDepth = min(objectNearestDepth, ndc.z);
+    }
+
+    if (minUv.x < 0.0 || minUv.y < 0.0 || maxUv.x > 1.0 || maxUv.y > 1.0) {
+        return false;
+    }
+
+    vec2 rectSize = maxUv - minUv;
+    vec2 pixelSize = rectSize * viewport;
+    float maxDimensionPixels = max(pixelSize.x, pixelSize.y);
+    if (maxDimensionPixels < max(cullFrame.occlusionSettings.w, 1.0)) {
+        return false;
+    }
+
+    float coverage = rectSize.x * rectSize.y;
+    if (coverage <= 0.0 || coverage > clamp(cullFrame.occlusionSettings.z, 0.01, 1.0)) {
+        return false;
+    }
+
+    float mipFloat = ceil(log2(max(maxDimensionPixels, 1.0)));
+    float mipLevel = clamp(mipFloat, 0.0, float(mipCount - 1u));
+    vec2 inset = vec2(0.5) / max(viewport / exp2(mipLevel), vec2(1.0));
+    vec2 uv0 = clamp(minUv + inset, vec2(0.0), vec2(1.0));
+    vec2 uv1 = clamp(maxUv - inset, vec2(0.0), vec2(1.0));
+    vec2 uvCenter = clamp((minUv + maxUv) * 0.5, vec2(0.0), vec2(1.0));
+
+    float hizDepth = 0.0;
+    hizDepth = max(hizDepth, textureLod(depthPyramid, uv0, mipLevel).r);
+    hizDepth = max(hizDepth, textureLod(depthPyramid, vec2(uv1.x, uv0.y), mipLevel).r);
+    hizDepth = max(hizDepth, textureLod(depthPyramid, vec2(uv0.x, uv1.y), mipLevel).r);
+    hizDepth = max(hizDepth, textureLod(depthPyramid, uv1, mipLevel).r);
+    hizDepth = max(hizDepth, textureLod(depthPyramid, uvCenter, mipLevel).r);
+
+    float depthBias = max(cullFrame.occlusionSettings.x, 0.0);
+    return hizDepth + depthBias < objectNearestDepth;
+}
+
 void main()
 {
     uint drawIndex = gl_GlobalInvocationID.x;
@@ -78,8 +185,21 @@ void main()
     }
 
     GpuCullDrawItem drawItem = cullInput.drawItems[drawIndex];
-    bool visible = testAabb(drawItem.boundsMin.xyz, drawItem.boundsMax.xyz);
+    bool frustumVisible = testAabb(drawItem.boundsMin.xyz, drawItem.boundsMax.xyz);
+    bool occlusionEnabled = (pc.params.w & 1u) != 0u && (cullFrame.counterAndFlags.y & 1u) != 0u;
+    bool occluded = frustumVisible && occlusionEnabled && testOcclusion(drawItem.boundsMin.xyz, drawItem.boundsMax.xyz);
+    bool visible = frustumVisible && !occluded;
     bool compactCommands = pc.params.z != 0;
+
+    uint statsBase = cullFrame.counterAndFlags.x;
+    atomicAdd(batchVisibleCounts.visibleCounts[statsBase + 0u], 1u);
+    if (visible) {
+        atomicAdd(batchVisibleCounts.visibleCounts[statsBase + 1u], 1u);
+    } else if (!frustumVisible) {
+        atomicAdd(batchVisibleCounts.visibleCounts[statsBase + 2u], 1u);
+    } else if (occluded) {
+        atomicAdd(batchVisibleCounts.visibleCounts[statsBase + 3u], 1u);
+    }
 
     uint outputIndex = drawIndex;
     if (compactCommands) {

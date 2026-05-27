@@ -149,7 +149,7 @@ void VulkanSwapchain::createDepthImage()
     depthInfo.width = extent_.width;
     depthInfo.height = extent_.height;
     depthInfo.format = depthFormat_;
-    depthInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    depthInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     depthInfo.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
     depthInfo.debugName = "MainDepth";
 
@@ -208,7 +208,9 @@ VkFormat VulkanSwapchain::findDepthFormat() const
     for (VkFormat format : candidates) {
         VkFormatProperties properties{};
         vkGetPhysicalDeviceFormatProperties(context_->physicalDevice(), format, &properties);
-        if ((properties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0) {
+        constexpr VkFormatFeatureFlags requiredFeatures =
+            VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+        if ((properties.optimalTilingFeatures & requiredFeatures) == requiredFeatures) {
             return format;
         }
     }

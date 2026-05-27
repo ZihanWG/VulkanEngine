@@ -3,6 +3,7 @@
 #include "rhi/VulkanContext.h"
 #include "rhi/VulkanDebugUtils.h"
 
+#include <algorithm>
 #include <string>
 #include <utility>
 
@@ -35,13 +36,14 @@ void VulkanImage::create(VulkanContext& context, const VulkanImageCreateInfo& cr
     context_ = &context;
     format_ = createInfo.format;
     extent_ = {createInfo.width, createInfo.height, 1};
+    mipLevels_ = std::max(createInfo.mipLevels, 1u);
 
     VkImageCreateInfo imageInfo{};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
     imageInfo.format = createInfo.format;
     imageInfo.extent = extent_;
-    imageInfo.mipLevels = 1;
+    imageInfo.mipLevels = mipLevels_;
     imageInfo.arrayLayers = createInfo.arrayLayers;
     imageInfo.samples = createInfo.samples;
     imageInfo.tiling = createInfo.tiling;
@@ -62,7 +64,7 @@ void VulkanImage::create(VulkanContext& context, const VulkanImageCreateInfo& cr
     viewInfo.format = createInfo.format;
     viewInfo.subresourceRange.aspectMask = createInfo.aspectMask;
     viewInfo.subresourceRange.baseMipLevel = 0;
-    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.levelCount = mipLevels_;
     viewInfo.subresourceRange.baseArrayLayer = 0;
     viewInfo.subresourceRange.layerCount = createInfo.arrayLayers;
 
@@ -94,6 +96,7 @@ void VulkanImage::reset()
     context_ = nullptr;
     format_ = VK_FORMAT_UNDEFINED;
     extent_ = {};
+    mipLevels_ = 0;
 }
 
 void VulkanImage::moveFrom(VulkanImage& other) noexcept
@@ -104,6 +107,7 @@ void VulkanImage::moveFrom(VulkanImage& other) noexcept
     imageView_ = std::exchange(other.imageView_, VK_NULL_HANDLE);
     format_ = std::exchange(other.format_, VK_FORMAT_UNDEFINED);
     extent_ = std::exchange(other.extent_, VkExtent3D{});
+    mipLevels_ = std::exchange(other.mipLevels_, 0);
 }
 
 } // namespace ve::rhi
