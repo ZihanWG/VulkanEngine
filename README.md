@@ -79,7 +79,7 @@ Open the profiler from the ImGui debug overlay:
 
 The panel reports GPU profiler availability, total GPU frame time, CPU frame delta, timestamp query usage, and a timing table with current, recent average, max, and history plot values. Results are read back from a completed frame slot after the existing frame fence is signaled, so the profiler does not block the current frame waiting for query results. Timings are GPU timestamp deltas converted with the physical device timestamp period.
 
-Currently profiled ranges include `CSMShadowPass`, per-cascade shadow GPU culling, `MainGpuCullingPass`, `MainHDRPass`, `Skybox`, `RenderObjects`, `BloomExtractPass`, horizontal and vertical bloom blur, `LuminancePass`, `HistogramExposurePass`, `CompositePass`, and `ImGuiPass`. Nested scopes are shown in execution order; parent scopes include the cost of their children.
+Currently profiled ranges include `CSMShadowPass`, per-cascade shadow GPU culling, `MainGpuCullingPass`, `MainHDRPass`, `Skybox`, `RenderObjects`, `DepthPyramid`, `BloomExtractPass`, horizontal and vertical bloom blur, `LuminancePass`, `HistogramExposurePass`, `CompositePass`, and `ImGuiPass`. Nested scopes are shown in execution order; parent scopes include the cost of their children.
 
 ## Portfolio Screenshot Capture
 
