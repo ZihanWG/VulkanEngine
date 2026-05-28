@@ -25,7 +25,7 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - PCF-filtered cascaded directional shadow map with basic texel snapping, optional cascade debug tinting, per-cascade GPU shadow-caster culling, and an indirect shadow draw path.
 - Descriptor indexing path for bindless material texture arrays, with a legacy descriptor-set fallback.
 - Render Graph 2.0 with logical texture/buffer handles, pass read/write declarations, conservative automatic image transitions, transient render-target descriptions, basic pass liveness/culling metadata, and ImGui pass/resource visualization.
-- GPU frustum culling compute pass that compacts visible indirect draw commands and writes per-batch visible counts.
+- GPU frustum culling compute pass that compacts visible indirect draw commands, writes per-batch visible counts, and can optionally run conservative Hi-Z occlusion tests.
 - Multi-draw indirect batching by mesh-compatible ranges on the bindless main path and shadow path.
 - GPU timestamp profiler with per-pass timings, frame-latency readback, moving-average ImGui history, and debug labels for capture/profiling orientation.
 - Portfolio screenshot capture mode with F12 PNG export from the final tonemapped swapchain image before the ImGui overlay.
@@ -56,9 +56,17 @@ Phase 0 of the renderer-to-engine upgrade is documented in `docs/engine_upgrade_
 
 Phase 4 upgrades the previous manual graph into a more engine-like render graph while preserving the renderer's pass order and visual output. The graph now uses `RGTextureHandle` and `RGBufferHandle` declarations, pass-builder read/write declarations, conservative Synchronization2 image transition inference for graph-managed texture resources, transient descriptions for scene color and bloom targets, imported resources for swapchain/depth/shadow/readback resources, basic pass liveness/culling metadata, and an ImGui panel that lists passes and resources.
 
-Migrated graph-declared passes are `CSMShadowPass`, `MainHDRPass`, `BloomExtractPass`, `BloomBlurHorizontal`, `BloomBlurVertical`, `LuminancePass`, `HistogramExposurePass`, `CompositePass`, and `ImGuiPass`. GPU culling buffer barriers, luminance/histogram copy/readback barriers, and portfolio screenshot copy barriers remain manual in `Renderer.cpp` because they are buffer/readback or external swapchain dependencies that need a broader scheduler before moving safely.
+Current graph-declared passes are `CSMShadowPass`, `MainGpuCullingPass`, `MainHDRPass`, `DepthPyramidPass`, `BloomExtractPass`, `BloomBlurHorizontal`, `BloomBlurVertical`, `LuminancePass`, `HistogramExposurePass`, `CompositePass`, and `ImGuiPass`. GPU culling buffer barriers, luminance/histogram copy/readback barriers, and portfolio screenshot copy barriers remain manual in `Renderer.cpp` because they are buffer/readback or external swapchain dependencies that need a broader scheduler before moving safely.
 
 More details are in `docs/render_graph.md`.
+
+## Depth Pyramid and GPU Occlusion Culling
+
+Phase 5 adds an optional conservative occlusion layer on top of the existing GPU frustum culling and indirect draw workflow. After `MainHDRPass`, the renderer stores the normal-Z main depth attachment, samples it in `DepthPyramidPass`, and writes an `R32_SFLOAT` max-depth Hi-Z pyramid. The following frame's main GPU culling pass can sample that previous completed pyramid to reject only clearly hidden draw items.
+
+Occlusion is off by default and remains runtime-toggleable in ImGui. The debug UI shows total, visible, frustum-culled, and occlusion-culled draw counts, plus depth pyramid validity and mip count. Conservative fallbacks keep objects visible for invalid/tiny bounds, near-camera objects, near-plane intersections, oversized screen coverage, stale camera/scene state, unavailable sampled depth formats, or missing pyramid resources.
+
+This is not a full GPU-built draw-list rewrite, meshlet path, mesh shader path, HLOD system, software rasterizer, or ray tracing feature. Details are in `docs/gpu_culling.md`.
 
 ## GPU Profiler
 
@@ -121,18 +129,19 @@ More details are in `docs/asset_system.md`.
 6. Begin `RenderGraph` recording, import swapchain/depth/shadow resources, register transient scene/bloom targets, and declare pass read/write usage.
 7. For each cascade, optionally reset shadow batch counts and shadow indirect commands, dispatch the GPU shadow cull with that cascade's light-frustum planes, and barrier its writes for indirect/count reads.
 8. Let the graph transition the cascaded shadow-map array, begin depth-only Dynamic Rendering against the current layer view, and draw shadow casters for that cascade.
-9. Reset the main-pass batch visible-count buffer, dispatch the camera-frustum compute culling pass, barrier shader writes for indirect/count reads, and copy visible counts for readback.
+9. Reset the main-pass batch visible-count buffer, dispatch the camera-frustum compute culling pass, optionally sample the previous completed Hi-Z depth pyramid for conservative occlusion, barrier shader writes for indirect/count reads, and copy visible counts for readback.
 10. Let the graph transition the HDR scene color image, shadow map, and main depth image for `MainHDRPass`.
 11. Begin `MainHDRPass`, draw the skybox, bind global and bindless material descriptors when available, and issue indirect indexed mesh draws into `sceneColor_`.
-12. Run `BloomExtractPass` to sample `sceneColor_`, compute luminance, and keep bright pixels above the bloom threshold.
-13. Run `BloomBlurPass` as a horizontal blur into `bloomPing_`, then a vertical blur into `bloomPong_`.
-14. Run `LuminancePass` to reduce log luminance from `sceneColor_` into per-frame readback data for a later frame.
-15. Run `HistogramExposurePass` to bin HDR scene luminance into a 256-bin log2 histogram and copy it to per-frame readback data for a later frame.
-16. Run `CompositePass` to combine `sceneColor + bloom * intensity`, apply the current manual or auto exposure, apply Reinhard or ACES tone mapping, and write the final color to the swapchain.
-17. If a portfolio screenshot was requested, transition the composited swapchain image to transfer source, copy it into a per-frame readback buffer, then return it to color-attachment layout.
-18. Run `ImGuiPass` to load the composited swapchain image as a color attachment and draw the debug UI overlay.
-19. Let the graph transition the swapchain image to present, submit with `vkQueueSubmit2`, and present.
-20. Recreate the swapchain, post-process images, and ImGui swapchain-dependent backend state if presentation reports an out-of-date or resized surface.
+12. Run `DepthPyramidPass` to sample the stored normal-Z main depth image and write the max-depth Hi-Z pyramid for later-frame culling.
+13. Run `BloomExtractPass` to sample `sceneColor_`, compute luminance, and keep bright pixels above the bloom threshold.
+14. Run `BloomBlurPass` as a horizontal blur into `bloomPing_`, then a vertical blur into `bloomPong_`.
+15. Run `LuminancePass` to reduce log luminance from `sceneColor_` into per-frame readback data for a later frame.
+16. Run `HistogramExposurePass` to bin HDR scene luminance into a 256-bin log2 histogram and copy it to per-frame readback data for a later frame.
+17. Run `CompositePass` to combine `sceneColor + bloom * intensity`, apply the current manual or auto exposure, apply Reinhard or ACES tone mapping, and write the final color to the swapchain.
+18. If a portfolio screenshot was requested, transition the composited swapchain image to transfer source, copy it into a per-frame readback buffer, then return it to color-attachment layout.
+19. Run `ImGuiPass` to load the composited swapchain image as a color attachment and draw the debug UI overlay.
+20. Let the graph transition the swapchain image to present, submit with `vkQueueSubmit2`, and present.
+21. Recreate the swapchain, post-process images, depth pyramid resources, and ImGui swapchain-dependent backend state if presentation reports an out-of-date or resized surface.
 
 ## Current Descriptor Contract
 

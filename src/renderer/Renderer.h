@@ -163,6 +163,7 @@ private:
         bool gpuCulling = false;
         bool gpuOcclusionCulling = false;
         bool gpuShadowCulling = false;
+        bool depthPyramidBuildAvailable = false;
         bool depthPyramidValid = false;
         uint32_t depthPyramidMipCount = 0;
     };
@@ -212,6 +213,7 @@ private:
     void createDepthPyramidResources();
     void destroyDepthPyramidResources();
     void updateGpuCullingDepthPyramidDescriptors();
+    void invalidateDepthPyramid();
     void createLuminanceResources();
     void destroyLuminanceResources();
     void createHistogramResources();
@@ -293,6 +295,7 @@ private:
     void recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     void recordGpuCullingCommands(VkCommandBuffer commandBuffer);
     void recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer, uint32_t cascadeIndex);
+    void ensureDepthPyramidShaderReadLayout(VkCommandBuffer commandBuffer);
     void recordDepthPyramidCommands(VkCommandBuffer commandBuffer);
     [[nodiscard]] renderer::RenderGraphFrameResources renderGraphFrameResources();
     bool readGpuVisibleCount(uint32_t frameIndex, uint32_t& visibleCount);
@@ -587,6 +590,7 @@ private:
     bool gpuCullingAvailable_ = false;
     bool useGpuOcclusionCulling_ = false;
     bool depthPyramidValid_ = false;
+    bool depthPyramidBuildAvailable_ = false;
     bool useGpuShadowCulling_ = true;
     bool gpuShadowCullingAvailable_ = false;
     bool autoExposureAvailable_ = false;

@@ -19,12 +19,14 @@ void main()
         return;
     }
 
-    uvec2 srcBase = dst * 2u;
+    uvec2 srcMin = (dst * pc.sizes.xy) / pc.sizes.zw;
+    uvec2 srcMax = ((dst + uvec2(1u)) * pc.sizes.xy + pc.sizes.zw - uvec2(1u)) / pc.sizes.zw;
+    srcMax = clamp(srcMax, srcMin + uvec2(1u), pc.sizes.xy);
+
     float maxDepth = 0.0;
-    for (uint y = 0; y < 2u; ++y) {
-        for (uint x = 0; x < 2u; ++x) {
-            uvec2 src = min(srcBase + uvec2(x, y), pc.sizes.xy - uvec2(1u));
-            maxDepth = max(maxDepth, texelFetch(sourceDepth, ivec2(src), 0).r);
+    for (uint y = srcMin.y; y < srcMax.y; ++y) {
+        for (uint x = srcMin.x; x < srcMax.x; ++x) {
+            maxDepth = max(maxDepth, texelFetch(sourceDepth, ivec2(x, y), 0).r);
         }
     }
 

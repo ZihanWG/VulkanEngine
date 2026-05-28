@@ -12,6 +12,24 @@
 
 namespace ve::rhi {
 
+namespace {
+
+const char* depthFormatName(VkFormat format)
+{
+    switch (format) {
+    case VK_FORMAT_D32_SFLOAT:
+        return "VK_FORMAT_D32_SFLOAT";
+    case VK_FORMAT_D32_SFLOAT_S8_UINT:
+        return "VK_FORMAT_D32_SFLOAT_S8_UINT";
+    case VK_FORMAT_D24_UNORM_S8_UINT:
+        return "VK_FORMAT_D24_UNORM_S8_UINT";
+    default:
+        return "VK_FORMAT_UNKNOWN";
+    }
+}
+
+} // namespace
+
 VulkanSwapchain::~VulkanSwapchain()
 {
     cleanup();
@@ -144,12 +162,20 @@ void VulkanSwapchain::createImageViews()
 void VulkanSwapchain::createDepthImage()
 {
     depthFormat_ = findDepthFormat();
+    VkFormatProperties depthProperties{};
+    vkGetPhysicalDeviceFormatProperties(context_->physicalDevice(), depthFormat_, &depthProperties);
+    depthSupportsSampling_ =
+        (depthProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
+
+    Logger::info(std::string("Selected main depth format: ") + depthFormatName(depthFormat_) +
+                 (depthSupportsSampling_ ? " (sampled for Hi-Z)" : " (attachment-only; Hi-Z disabled)"));
 
     VulkanImageCreateInfo depthInfo{};
     depthInfo.width = extent_.width;
     depthInfo.height = extent_.height;
     depthInfo.format = depthFormat_;
-    depthInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    depthInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                      (depthSupportsSampling_ ? VK_IMAGE_USAGE_SAMPLED_BIT : 0);
     depthInfo.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
     depthInfo.debugName = "MainDepth";
 
@@ -205,12 +231,22 @@ VkFormat VulkanSwapchain::findDepthFormat() const
     const std::array<VkFormat, 3> candidates = {
         VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT};
 
+    constexpr VkFormatFeatureFlags sampledDepthFeatures =
+        VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
     for (VkFormat format : candidates) {
         VkFormatProperties properties{};
         vkGetPhysicalDeviceFormatProperties(context_->physicalDevice(), format, &properties);
-        constexpr VkFormatFeatureFlags requiredFeatures =
-            VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
-        if ((properties.optimalTilingFeatures & requiredFeatures) == requiredFeatures) {
+        if ((properties.optimalTilingFeatures & sampledDepthFeatures) == sampledDepthFeatures) {
+            return format;
+        }
+    }
+
+    for (VkFormat format : candidates) {
+        VkFormatProperties properties{};
+        vkGetPhysicalDeviceFormatProperties(context_->physicalDevice(), format, &properties);
+        if ((properties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0) {
+            Logger::warn(std::string("No sampleable main depth format found; falling back to attachment-only ") +
+                         depthFormatName(format) + ". GPU occlusion culling will stay disabled.");
             return format;
         }
     }

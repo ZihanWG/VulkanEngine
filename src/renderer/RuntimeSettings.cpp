@@ -218,6 +218,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
     if (const Json* renderer = objectMember(json, "renderer")) {
         readBool(*renderer, "useGpuCulling", settings.useGpuCulling);
         readBool(*renderer, "useGpuShadowCulling", settings.useGpuShadowCulling);
+        readBool(*renderer, "enableGpuOcclusionCulling", settings.enableGpuOcclusionCulling);
         readBool(*renderer, "enableBindlessMaterialTextures", settings.enableBindlessMaterialTextures);
     }
 
@@ -268,6 +269,7 @@ Json toJson(const RuntimeSettings& settings)
         {"renderer",
          Json{{"useGpuCulling", settings.useGpuCulling},
               {"useGpuShadowCulling", settings.useGpuShadowCulling},
+              {"enableGpuOcclusionCulling", settings.enableGpuOcclusionCulling},
               {"enableBindlessMaterialTextures", settings.enableBindlessMaterialTextures}}},
         {"debugUi",
          Json{{"showRenderGraphPanel", settings.debugUi.showRenderGraphPanel},

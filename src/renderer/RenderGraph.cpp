@@ -69,6 +69,8 @@ bool accessMaskWrites(VkAccessFlags2 access)
 
 RenderGraph::TextureAccessState accessStateFromLayout(VkImageLayout layout, VkImageAspectFlags aspectMask)
 {
+    (void)aspectMask;
+
     RenderGraph::TextureAccessState state{};
     state.layout = layout;
 
@@ -368,7 +370,8 @@ void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
     mainDepth.imageView = swapchain.depthImageView();
     mainDepth.extent = swapchain.extent();
     mainDepth.format = swapchain.depthFormat();
-    mainDepth.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    mainDepth.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                      (swapchain.depthSupportsSampling() ? VK_IMAGE_USAGE_SAMPLED_BIT : 0);
     mainDepth.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
     mainDepth.imported = true;
     frame_.mainDepth = importTexture(mainDepth);

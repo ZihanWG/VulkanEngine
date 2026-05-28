@@ -35,6 +35,7 @@ public:
     void setImageLayout(uint32_t index, VkImageLayout layout) { imageLayouts_.at(index) = layout; }
 
     [[nodiscard]] VkFormat depthFormat() const { return depthFormat_; }
+    [[nodiscard]] bool depthSupportsSampling() const { return depthSupportsSampling_; }
     [[nodiscard]] VkImage depthImage() const { return depthImage_.image(); }
     [[nodiscard]] VkImageView depthImageView() const { return depthImage_.imageView(); }
     [[nodiscard]] VkImageLayout depthImageLayout() const { return depthImageLayout_; }
@@ -56,6 +57,7 @@ private:
     VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
     VkFormat colorFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat depthFormat_ = VK_FORMAT_UNDEFINED;
+    bool depthSupportsSampling_ = false;
     VkExtent2D extent_{};
     VkImageUsageFlags imageUsage_ = 0;
     std::vector<VkImage> images_;

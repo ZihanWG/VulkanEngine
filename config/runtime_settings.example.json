@@ -29,6 +29,7 @@
     "renderer": {
         "useGpuCulling": true,
         "useGpuShadowCulling": true,
+        "enableGpuOcclusionCulling": false,
         "enableBindlessMaterialTextures": true
     },
     "debugUi": {

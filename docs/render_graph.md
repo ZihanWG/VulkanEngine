@@ -31,6 +31,7 @@ Imported resources are owned outside the graph:
 - swapchain color image
 - main depth image
 - cascaded shadow map array
+- depth pyramid image
 - per-frame luminance/histogram readback buffers
 
 Transient graph resources are logical frame/render-target resources:
@@ -57,7 +58,9 @@ Pass declarations are recorded with `RenderGraphBuilder`:
 The currently declared passes are:
 
 - `CSMShadowPass`
+- `MainGpuCullingPass`
 - `MainHDRPass`
+- `DepthPyramidPass`
 - `BloomExtractPass`
 - `BloomBlurHorizontal`
 - `BloomBlurVertical`
@@ -66,7 +69,7 @@ The currently declared passes are:
 - `CompositePass`
 - `ImGuiPass`
 
-Shadow GPU culling, main GPU culling, luminance buffer copy/readback, histogram buffer copy/readback, and portfolio screenshot copy are still manually synchronized in `Renderer.cpp`.
+Shadow GPU culling buffer barriers, main GPU culling buffer barriers, luminance buffer copy/readback, histogram buffer copy/readback, and portfolio screenshot copy are still manually synchronized in `Renderer.cpp`.
 
 ## Transition Inference
 
@@ -88,6 +91,8 @@ The implementation favors correctness and debug readability over barrier minimiz
 
 Passes can be marked as side-effecting. Side-effect passes are never culled. Current side-effect passes include:
 
+- `MainGpuCullingPass`
+- `DepthPyramidPass`
 - `LuminancePass`
 - `HistogramExposurePass`
 - `CompositePass`

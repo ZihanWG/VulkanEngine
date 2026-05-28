@@ -69,6 +69,7 @@ struct RuntimeSettings {
     DebugUiSettings debugUi;
     bool useGpuCulling = true;
     bool useGpuShadowCulling = true;
+    bool enableGpuOcclusionCulling = false;
     bool enableBindlessMaterialTextures = true;
 };
 
