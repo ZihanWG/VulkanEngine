@@ -13,7 +13,8 @@ namespace ve::renderer {
 enum class RenderObjectSourceType {
     BuiltInFallbackCube,
     ImportedGltf,
-    PortfolioShowcase
+    PortfolioShowcase,
+    OcclusionTest
 };
 
 struct RenderObject {

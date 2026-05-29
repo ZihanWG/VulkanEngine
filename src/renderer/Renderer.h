@@ -151,6 +151,7 @@ private:
     };
 
     struct CullingDebugSnapshot {
+        uint32_t totalObjects = 0;
         uint32_t totalDrawItems = 0;
         uint32_t visibleDrawItems = 0;
         uint32_t culledDrawItems = 0;
@@ -163,8 +164,10 @@ private:
         bool gpuCulling = false;
         bool gpuOcclusionCulling = false;
         bool gpuShadowCulling = false;
+        bool occlusionTestSceneActive = false;
         bool depthPyramidBuildAvailable = false;
         bool depthPyramidValid = false;
+        bool previousFrameDepthValid = false;
         uint32_t depthPyramidMipCount = 0;
     };
 
@@ -236,6 +239,9 @@ private:
     [[nodiscard]] bool hasPortfolioShowcaseScene() const;
     [[nodiscard]] bool currentFrameHasPortfolioShowcaseDrawItems() const;
     [[nodiscard]] bool ensurePortfolioShowcaseSceneReady();
+    void addOcclusionTestSceneObjects();
+    void resetOcclusionTestSceneToPreset();
+    [[nodiscard]] bool hasOcclusionTestScene() const;
     [[nodiscard]] uint32_t allocateRenderObjectDebugId();
     void createCheckerboardTexture();
     void createPortfolioBaseColorTexture();
@@ -332,10 +338,15 @@ private:
     void loadSceneFromUi();
     void resetCameraToDefault();
     void resetCameraToPortfolioPreset();
+    void resetCameraToOcclusionTestPreset();
     void resetDirectionalLightToDefault();
     [[nodiscard]] glm::vec4 activeDirectionalLightDirection() const;
     [[nodiscard]] glm::vec4 activeDirectionalLightColor() const;
+    void loadOcclusionTestScene();
+    void enableOcclusionTestSettings();
+    [[nodiscard]] bool previousFrameDepthValidForOcclusion() const;
     void buildDebugUi();
+    void drawScenePresetDebugUi();
     void drawPortfolioCaptureDebugUi();
     void drawRuntimeSettingsDebugUi();
     void drawRenderGraphDebugUi();
@@ -573,6 +584,7 @@ private:
     std::string lastSceneLoadStatus_ = "Not loaded yet.";
     std::string lastSceneSaveStatus_ = "Not saved this session.";
     std::string lastMaterialAssetStatus_ = "No material asset saved or reloaded this session.";
+    std::string occlusionTestSceneStatus_ = "Occlusion test scene not loaded.";
     std::string portfolioScreenshotStatus_ = "No capture requested.";
     std::filesystem::path lastPortfolioScreenshotPath_;
     PortfolioCaptureSavedState portfolioCaptureSavedState_{};
@@ -601,6 +613,7 @@ private:
     bool shadowIndirectAvailable_ = false;
     bool gpuProfilerEnabled_ = true;
     bool portfolioCaptureMode_ = false;
+    bool occlusionTestSceneActive_ = false;
     bool portfolioScreenshotRequested_ = false;
     bool normalMapAssetLoaded_ = false;
     bool metallicRoughnessMapAssetLoaded_ = false;

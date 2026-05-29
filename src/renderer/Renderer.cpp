@@ -132,6 +132,11 @@ constexpr size_t kPortfolioRoughMetalMaterialIndex = 7;
 constexpr size_t kPortfolioPolishedMetalSmallMaterialIndex = 8;
 constexpr size_t kPortfolioHeroCeramicMaterialIndex = 9;
 constexpr size_t kPortfolioBackdropMaterialIndex = 10;
+constexpr int kOcclusionTestGridColumns = 12;
+constexpr int kOcclusionTestGridRows = 10;
+constexpr int kOcclusionTestOccluderCount = 5;
+constexpr int kOcclusionTestObjectCount =
+    1 + kOcclusionTestOccluderCount + (kOcclusionTestGridColumns * kOcclusionTestGridRows);
 
 struct PushConstants {
     VkDeviceAddress objectFrameDataAddress = 0;
@@ -331,6 +336,8 @@ const char* renderObjectSourceTypeName(renderer::RenderObjectSourceType sourceTy
         return "imported glTF";
     case renderer::RenderObjectSourceType::PortfolioShowcase:
         return "portfolio showcase";
+    case renderer::RenderObjectSourceType::OcclusionTest:
+        return "occlusion test";
     }
 
     return "unknown";
@@ -764,6 +771,18 @@ renderer::Camera portfolioCameraPreset()
     camera.verticalFovRadians = glm::radians(45.0f);
     camera.nearPlane = 0.1f;
     camera.farPlane = 100.0f;
+    return camera;
+}
+
+renderer::Camera occlusionTestCameraPreset()
+{
+    renderer::Camera camera{};
+    camera.position = {0.0f, 1.45f, 7.2f};
+    camera.target = {0.0f, 1.05f, -6.5f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.verticalFovRadians = glm::radians(55.0f);
+    camera.nearPlane = 0.1f;
+    camera.farPlane = 70.0f;
     return camera;
 }
 
@@ -3230,6 +3249,8 @@ void Renderer::createScene()
     renderObjects_.clear();
     selectedRenderObjectIndex_ = kInvalidRenderObjectIndex;
     nextRenderObjectDebugId_ = 1;
+    occlusionTestSceneActive_ = false;
+    occlusionTestSceneStatus_ = "Occlusion test scene not loaded.";
     allDrawItems_.clear();
     visibleDrawItems_.clear();
     shadowDrawItems_.clear();
@@ -3589,6 +3610,132 @@ bool Renderer::ensurePortfolioShowcaseSceneReady()
     portfolioScreenshotStatus_ = "Portfolio showcase scene is unavailable after rebuild.";
     Logger::warn(portfolioScreenshotStatus_);
     return false;
+}
+
+void Renderer::addOcclusionTestSceneObjects()
+{
+    if (!cubeMesh_.valid() || materialVariants_.empty()) {
+        occlusionTestSceneStatus_ =
+            "Occlusion test scene is unavailable: cube mesh or runtime materials are not initialized.";
+        Logger::warn(occlusionTestSceneStatus_);
+        return;
+    }
+
+    const auto materialAt = [this](size_t materialIndex) -> const renderer::Material* {
+        return &materialVariants_.at(materialIndex % materialVariants_.size());
+    };
+
+    const auto addCube = [this](std::string debugName,
+                                const renderer::Material* material,
+                                const glm::vec3& position,
+                                const glm::vec3& rotationRadians,
+                                const glm::vec3& scale) {
+        renderer::RenderObject cube{};
+        cube.debugId = allocateRenderObjectDebugId();
+        cube.sceneObjectId = cube.debugId;
+        cube.mesh = &cubeMesh_;
+        cube.material = material;
+        cube.debugName = std::move(debugName);
+        cube.sourceType = renderer::RenderObjectSourceType::OcclusionTest;
+        cube.transform.position = position;
+        cube.transform.rotationRadians = rotationRadians;
+        cube.transform.scale = scale;
+        cube.animateTransform = false;
+        cube.portfolioOnly = false;
+        cube.hideInPortfolio = true;
+        renderObjects_.push_back(std::move(cube));
+    };
+
+    renderObjects_.reserve(renderObjects_.size() + static_cast<size_t>(kOcclusionTestObjectCount));
+
+    const size_t groundMaterial = materialVariants_.size() > kPortfolioGroundMaterialIndex
+                                      ? kPortfolioGroundMaterialIndex
+                                      : 0;
+    addCube("Occlusion Test Ground",
+            materialAt(groundMaterial),
+            {0.0f, -0.10f, -4.0f},
+            {0.0f, 0.0f, 0.0f},
+            {13.0f, 0.12f, 22.0f});
+
+    const std::array<float, kOcclusionTestOccluderCount> occluderX = {-2.6f, -1.3f, 0.0f, 1.3f, 2.6f};
+    for (size_t occluderIndex = 0; occluderIndex < occluderX.size(); ++occluderIndex) {
+        std::ostringstream name;
+        name << "Occlusion Test Wall " << (occluderIndex + 1);
+        const float zOffset = (occluderIndex % 2 == 0) ? 0.15f : -0.08f;
+        addCube(name.str(),
+                materialAt(occluderIndex),
+                {occluderX[occluderIndex], 1.35f, 0.35f + zOffset},
+                {0.0f, 0.0f, 0.0f},
+                {0.98f, 3.10f, 0.55f});
+    }
+
+    for (int row = 0; row < kOcclusionTestGridRows; ++row) {
+        for (int column = 0; column < kOcclusionTestGridColumns; ++column) {
+            const float x = -5.5f + static_cast<float>(column) * 1.0f;
+            const float z = -2.4f - static_cast<float>(row) * 1.05f;
+            const bool topWitnessRow = row == kOcclusionTestGridRows - 1;
+            const bool sideWitnessColumn = column == 0 || column == kOcclusionTestGridColumns - 1;
+            const float y = topWitnessRow ? 3.05f : 0.22f + 0.34f * static_cast<float>((row + column) % 3);
+            const float uniformScale = sideWitnessColumn ? 0.40f : 0.32f + 0.035f * static_cast<float>((row + column) % 4);
+
+            std::ostringstream name;
+            name << "Occlusion Test Hidden Cube r" << row << " c" << column;
+            if (topWitnessRow || sideWitnessColumn) {
+                name << " visible-edge";
+            }
+
+            addCube(name.str(),
+                    materialAt(static_cast<size_t>((row + column) % 4)),
+                    {x, y, z},
+                    {0.0f, 0.15f * static_cast<float>((row + column) % 5), 0.0f},
+                    {uniformScale, uniformScale, uniformScale});
+        }
+    }
+}
+
+void Renderer::resetOcclusionTestSceneToPreset()
+{
+    const auto firstRemoved = std::remove_if(renderObjects_.begin(), renderObjects_.end(), [](const auto& object) {
+        return object.sourceType == renderer::RenderObjectSourceType::OcclusionTest;
+    });
+
+    if (firstRemoved != renderObjects_.end()) {
+        const size_t firstRemovedIndex = static_cast<size_t>(firstRemoved - renderObjects_.begin());
+        if (selectedRenderObjectIndex_ >= firstRemovedIndex) {
+            selectedRenderObjectIndex_ = kInvalidRenderObjectIndex;
+        }
+        renderObjects_.erase(firstRemoved, renderObjects_.end());
+    }
+
+    addOcclusionTestSceneObjects();
+    invalidateDepthPyramid();
+}
+
+bool Renderer::hasOcclusionTestScene() const
+{
+    size_t occlusionObjectCount = 0;
+    bool hasGround = false;
+    bool hasWall = false;
+    bool hasHiddenObject = false;
+
+    for (const renderer::RenderObject& object : renderObjects_) {
+        if (object.sourceType != renderer::RenderObjectSourceType::OcclusionTest || !object.mesh ||
+            !object.mesh->valid() || !object.material) {
+            continue;
+        }
+
+        ++occlusionObjectCount;
+        if (object.debugName == "Occlusion Test Ground") {
+            hasGround = true;
+        } else if (object.debugName.find("Occlusion Test Wall") == 0) {
+            hasWall = true;
+        } else if (object.debugName.find("Occlusion Test Hidden Cube") == 0) {
+            hasHiddenObject = true;
+        }
+    }
+
+    return hasGround && hasWall && hasHiddenObject &&
+           occlusionObjectCount >= static_cast<size_t>(kOcclusionTestObjectCount);
 }
 
 void Renderer::createCheckerboardTexture()
@@ -4944,6 +5091,12 @@ bool Renderer::isRenderObjectActive(const renderer::RenderObject& object) const
     if (!object.visible) {
         return false;
     }
+    if (object.sourceType == renderer::RenderObjectSourceType::OcclusionTest) {
+        return occlusionTestSceneActive_ && !portfolioCaptureMode_;
+    }
+    if (occlusionTestSceneActive_ && !portfolioCaptureMode_) {
+        return false;
+    }
     if (portfolioCaptureMode_ && object.hideInPortfolio) {
         return false;
     }
@@ -5153,10 +5306,7 @@ void Renderer::updateGpuCullInputBuffer(uint32_t frameIndex)
         throw std::runtime_error("GPU cull input buffer frame index is out of range.");
     }
 
-    const bool occlusionCameraStable =
-        depthPyramidValid_ && maxMatrixDifference(frameViewProjection_, depthPyramidViewProjection_) <= 0.0005f &&
-        glm::distance(frameCameraPosition_, depthPyramidCameraPosition_) <= 0.01f;
-    const bool occlusionEnabledThisFrame = isGpuOcclusionCullingActive() && occlusionCameraStable;
+    const bool occlusionEnabledThisFrame = isGpuOcclusionCullingActive() && previousFrameDepthValidForOcclusion();
     const VkExtent2D extent = swapchain_.extent();
 
     GpuCullFrameParams frameParams{};
@@ -5530,11 +5680,15 @@ const Renderer::DebugHistory* Renderer::gpuTimingHistoryForPass(std::string_view
 Renderer::CullingDebugSnapshot Renderer::cullingDebugSnapshot(uint32_t frameIndex)
 {
     CullingDebugSnapshot snapshot{};
+    snapshot.totalObjects =
+        static_cast<uint32_t>(std::min<size_t>(cullingStats_.totalObjects, std::numeric_limits<uint32_t>::max()));
     snapshot.gpuCulling = isGpuCullingActive();
     snapshot.gpuOcclusionCulling = isGpuOcclusionCullingActive();
     snapshot.gpuShadowCulling = isGpuShadowCullingActive();
+    snapshot.occlusionTestSceneActive = occlusionTestSceneActive_ && !portfolioCaptureMode_;
     snapshot.depthPyramidBuildAvailable = depthPyramidBuildAvailable_;
     snapshot.depthPyramidValid = depthPyramidValid_;
+    snapshot.previousFrameDepthValid = previousFrameDepthValidForOcclusion();
     snapshot.depthPyramidMipCount = depthPyramidMipLevels_;
     snapshot.totalDrawItems = static_cast<uint32_t>(
         std::min<size_t>(cullingStats_.totalDrawItems, std::numeric_limits<uint32_t>::max()));
@@ -5907,6 +6061,15 @@ void Renderer::resetCameraToPortfolioPreset()
     invalidateDepthPyramid();
 }
 
+void Renderer::resetCameraToOcclusionTestPreset()
+{
+    camera_ = occlusionTestCameraPreset();
+    csmSettings_.nearPlane = camera_.nearPlane;
+    csmSettings_.farPlane = camera_.farPlane;
+    clampRuntimeSettings();
+    invalidateDepthPyramid();
+}
+
 void Renderer::resetDirectionalLightToDefault()
 {
     directionalLightSettings_.direction = {kDirectionalLightDirection.x,
@@ -5914,6 +6077,55 @@ void Renderer::resetDirectionalLightToDefault()
                                            kDirectionalLightDirection.z};
     directionalLightSettings_.color = {kDirectionalLightColor.x, kDirectionalLightColor.y, kDirectionalLightColor.z};
     directionalLightSettings_.intensity = 1.0f;
+}
+
+void Renderer::loadOcclusionTestScene()
+{
+    if (portfolioCaptureMode_) {
+        setPortfolioCaptureMode(false);
+    }
+
+    resetOcclusionTestSceneToPreset();
+    if (!hasOcclusionTestScene()) {
+        occlusionTestSceneActive_ = false;
+        return;
+    }
+
+    occlusionTestSceneActive_ = true;
+    resetCameraToOcclusionTestPreset();
+    resetDirectionalLightToDefault();
+    debugUiSettings_.showCullingStats = true;
+    debugUiSettings_.showGpuTimingGraphs = true;
+    debugUiSettings_.showRenderGraphPanel = true;
+    occlusionTestSceneStatus_ = "Occlusion test scene active: " +
+                                std::to_string(kOcclusionTestObjectCount) +
+                                " procedural cube objects, including 5 occluder walls and 120 hidden/edge cubes.";
+    Logger::info(occlusionTestSceneStatus_);
+}
+
+void Renderer::enableOcclusionTestSettings()
+{
+    useGpuCulling_ = true;
+    useGpuOcclusionCulling_ = true;
+    gpuOcclusionDepthBias_ = 0.003f;
+    gpuOcclusionNearDisableDistance_ = 1.25f;
+    gpuOcclusionMaxScreenCoverage_ = 0.60f;
+    gpuOcclusionMinScreenPixels_ = 4.0f;
+    debugUiSettings_.showCullingStats = true;
+    debugUiSettings_.showGpuTimingGraphs = true;
+    debugUiSettings_.showRenderGraphPanel = true;
+    clampRuntimeSettings();
+    occlusionTestSceneStatus_ =
+        useGpuOcclusionCulling_
+            ? "Occlusion test settings enabled. Let one or two frames pass for previous-frame depth."
+            : "Occlusion test settings requested, but GPU culling or depth pyramid resources are unavailable.";
+}
+
+bool Renderer::previousFrameDepthValidForOcclusion() const
+{
+    return depthPyramidValid_ &&
+           maxMatrixDifference(frameViewProjection_, depthPyramidViewProjection_) <= 0.0005f &&
+           glm::distance(frameCameraPosition_, depthPyramidCameraPosition_) <= 0.01f;
 }
 
 void Renderer::saveSceneFromUi()
@@ -5978,7 +6190,8 @@ void Renderer::saveSceneFromUi()
 
         const Json sceneJson = Json{{"schemaVersion", 1},
                                     {"sceneName", portfolioCaptureMode_ ? "Portfolio Runtime Scene"
-                                                                         : "Default Runtime Scene"},
+                                                  : (occlusionTestSceneActive_ ? "Occlusion Test Runtime Scene"
+                                                                               : "Default Runtime Scene")},
                                     {"camera", std::move(cameraJson)},
                                     {"directionalLight", std::move(lightJson)},
                                     {"objects", std::move(objectsJson)},
@@ -6223,6 +6436,7 @@ void Renderer::buildDebugUi()
     ImGui::Begin("VulkanEngine Debug");
 
     drawRuntimeSettingsDebugUi();
+    drawScenePresetDebugUi();
     drawPortfolioCaptureDebugUi();
 
     if (ImGui::CollapsingHeader("Debug Views", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -6301,6 +6515,9 @@ void Renderer::buildDebugUi()
                     isFrameIndirectCountPathActive(currentFrame_) ? "active" : "fallback");
         ImGui::Text("Shadow indirect count path: %s",
                     isShadowIndirectCountPathActive(currentFrame_) ? "active" : "fallback");
+        if (ImGui::Button("Enable Occlusion Test Settings")) {
+            enableOcclusionTestSettings();
+        }
         const bool occlusionControlsAvailable =
             isGpuCullingActive() && depthPyramidBuildAvailable_ && depthPyramid_.image() != VK_NULL_HANDLE;
         if (!occlusionControlsAvailable) {
@@ -6376,6 +6593,44 @@ void Renderer::buildDebugUi()
     }
 
     clampRuntimeSettings();
+}
+
+void Renderer::drawScenePresetDebugUi()
+{
+    if (!ImGui::CollapsingHeader("Scene Presets", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+
+    size_t occlusionObjectCount = 0;
+    for (const renderer::RenderObject& object : renderObjects_) {
+        if (object.sourceType == renderer::RenderObjectSourceType::OcclusionTest) {
+            ++occlusionObjectCount;
+        }
+    }
+
+    const bool occlusionTestVisible = occlusionTestSceneActive_ && !portfolioCaptureMode_;
+    ImGui::Text("Occlusion test scene: %s", occlusionTestVisible ? "active" : "inactive");
+    ImGui::Text("Occlusion test objects: %zu", occlusionObjectCount);
+
+    if (ImGui::Button("Load Occlusion Test Scene")) {
+        loadOcclusionTestScene();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Return to Default Scene")) {
+        if (portfolioCaptureMode_) {
+            setPortfolioCaptureMode(false);
+        }
+        occlusionTestSceneActive_ = false;
+        resetCameraToDefault();
+        occlusionTestSceneStatus_ = "Default scene active; occlusion test objects are hidden.";
+    }
+
+    if (ImGui::Button("Reset Occlusion Test Camera")) {
+        resetCameraToOcclusionTestPreset();
+        occlusionTestSceneStatus_ = "Occlusion test camera preset reapplied.";
+    }
+
+    ImGui::TextWrapped("Status: %s", occlusionTestSceneStatus_.c_str());
 }
 
 void Renderer::drawPortfolioCaptureDebugUi()
@@ -6614,6 +6869,10 @@ void Renderer::drawCameraLightEditorDebugUi()
         ImGui::SameLine();
         if (ImGui::Button("Reset Portfolio Camera")) {
             resetCameraToPortfolioPreset();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Reset Occlusion Test Camera")) {
+            resetCameraToOcclusionTestPreset();
         }
 
         ImGui::TextDisabled("Camera movement speed: not available; there is no free-camera controller yet.");
@@ -7749,11 +8008,19 @@ void Renderer::drawGpuTimingDebugUi()
 void Renderer::drawCullingDebugUi()
 {
     const CullingDebugSnapshot snapshot = cullingDebugSnapshot(currentFrame_);
+    const float occlusionRejectionPercent =
+        snapshot.totalDrawItems > 0
+            ? (100.0f * static_cast<float>(snapshot.occlusionCulledDrawItems) /
+               static_cast<float>(snapshot.totalDrawItems))
+            : 0.0f;
+    ImGui::Text("Occlusion test scene: %s", snapshot.occlusionTestSceneActive ? "active" : "inactive");
+    ImGui::Text("Total objects: %u", snapshot.totalObjects);
     ImGui::Text("Total draw items: %u", snapshot.totalDrawItems);
-    ImGui::Text("Visible draw items: %u", snapshot.visibleDrawItems);
+    ImGui::Text("Visible after culling: %u", snapshot.visibleDrawItems);
     ImGui::Text("Culled draw items: %u", snapshot.culledDrawItems);
-    ImGui::Text("Frustum-culled draw items: %u", snapshot.frustumCulledDrawItems);
-    ImGui::Text("Occlusion-culled draw items: %u", snapshot.occlusionCulledDrawItems);
+    ImGui::Text("Frustum culled: %u", snapshot.frustumCulledDrawItems);
+    ImGui::Text("Occlusion culled: %u", snapshot.occlusionCulledDrawItems);
+    ImGui::Text("Occlusion rejection: %.1f%%", occlusionRejectionPercent);
     ImGui::Text("Shadow draw items: %u", snapshot.shadowDrawItems);
     ImGui::Text("Visible shadow draw items: %u", snapshot.visibleShadowDrawItems);
     ImGui::Text("Culled shadow draw items: %u", snapshot.culledShadowDrawItems);
@@ -7764,6 +8031,13 @@ void Renderer::drawCullingDebugUi()
                                          ? (snapshot.depthPyramidValid ? "valid" : "invalid/warming up")
                                          : "unavailable";
     ImGui::Text("Depth pyramid: %s, %u mip(s)", depthPyramidStatus, snapshot.depthPyramidMipCount);
+    ImGui::Text("Previous-frame depth: %s", snapshot.previousFrameDepthValid ? "valid" : "invalid/warming up");
+    ImGui::Text("Occlusion settings: enabled=%s bias=%.4f near-skip=%.2f max-coverage=%.2f min-pixels=%.1f",
+                useGpuOcclusionCulling_ ? "true" : "false",
+                gpuOcclusionDepthBias_,
+                gpuOcclusionNearDisableDistance_,
+                gpuOcclusionMaxScreenCoverage_,
+                gpuOcclusionMinScreenPixels_);
     ImGui::Text("GPU shadow culling: %s", snapshot.gpuShadowCulling ? "enabled" : "disabled");
 
     constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |

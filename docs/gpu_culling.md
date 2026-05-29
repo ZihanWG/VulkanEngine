@@ -41,6 +41,29 @@ The main GPU culling shader keeps frustum culling active and optionally adds occ
 
 The cull shader still writes the same indirect draw command and visible-count outputs. Occlusion only adds another rejection path and a separate counter.
 
+## Occlusion Test Scene
+
+`VulkanEngine Debug` -> `Scene Presets` includes `Load Occlusion Test Scene`. The preset is procedural and uses the existing cube mesh and runtime materials, so it does not add large assets or replace the default glTF/fallback scene or portfolio showcase scene.
+
+The layout is intentionally static:
+
+- 1 ground plane for orientation
+- 5 large opaque foreground occluder walls
+- 120 smaller cube objects behind the occluders, arranged in rows and columns
+- side and top "visible-edge" cubes left outside the main occluder coverage so the view is not fully hidden
+
+The preset also applies an occlusion-test camera that looks through the wall group toward the dense cube grid. Static transforms are important because the implementation uses previous-frame depth; animated objects would repeatedly invalidate the pyramid and make rejection hard to measure.
+
+To exercise the path:
+
+1. Run the engine with the normal default scene first if you want a baseline with occlusion disabled.
+2. Click `Load Occlusion Test Scene`.
+3. Click `Enable Occlusion Test Settings` in the `GPU Culling` panel.
+4. Let one or two frames pass so the previous-frame depth pyramid is valid.
+5. Read the `Culling` panel counters and the `GPU Profiler` / `Render Graph` panels.
+
+This scene is a validation and visual-debug preset, not a benchmark. It is designed to make non-zero occlusion rejection easy to inspect; it should not be used as a representative scene-performance number.
+
 ## Conservative Fallbacks
 
 The shader and renderer keep objects visible when the test is uncertain. Occlusion is skipped for:
@@ -69,13 +92,20 @@ The renderer copies this buffer to the existing per-frame readback buffer and re
 
 ImGui exposes:
 
+- `Load Occlusion Test Scene`
+- `Reset Occlusion Test Camera`
+- `Enable Occlusion Test Settings`
 - `GPU occlusion culling enabled`
 - depth bias
 - near-object skip distance
 - maximum screen coverage
 - minimum projected size
-- total, visible, frustum-culled, and occlusion-culled draw counts
+- occlusion test scene active/inactive state
+- total object and draw-item counts
+- visible-after-culling, frustum-culled, and occlusion-culled draw counts
+- occlusion rejection percentage
 - depth pyramid valid/unavailable state
+- previous-frame depth valid/invalid state
 - depth pyramid mip count
 - depth pyramid mip preview in the render-target debug panel
 
@@ -88,5 +118,6 @@ The GPU profiler adds a `DepthPyramid` timestamp scope. Main GPU culling timing 
 - Animated transforms invalidate the pyramid, so moving scenes may get few or no occlusion rejections.
 - There is no HLOD, meshlet culling, mesh shader path, software occlusion rasterizer, ray tracing, or full GPU-built draw-list rewrite.
 - The test is AABB based and intentionally biased toward false negatives.
+- The default glTF/fallback scene may not show high occlusion rejection because it has too few draw items and little deliberate occluder coverage.
 - Main depth must be stored after `MainHDRPass`, which costs bandwidth compared with the previous discardable depth attachment.
 - Shadow caster culling does not use Hi-Z occlusion.
