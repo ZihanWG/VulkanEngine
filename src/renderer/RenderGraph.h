@@ -62,6 +62,8 @@ enum class RenderPassType {
     MainHdr,
     BloomExtract,
     BloomBlur,
+    BloomDownsample,
+    BloomUpsample,
     Luminance,
     HistogramExposure,
     Composite,
@@ -155,6 +157,8 @@ struct RenderGraphFrameResources {
     RenderGraphImageResource bloomExtract;
     RenderGraphImageResource bloomPing;
     RenderGraphImageResource bloomPong;
+    std::vector<RenderGraphImageResource> bloomDownsampleChain;
+    std::vector<RenderGraphImageResource> bloomUpsampleChain;
     RenderGraphImageResource depthPyramid;
     RenderGraphBufferResource mainCullInput;
     RenderGraphBufferResource mainCullIndirectOutput;
@@ -164,6 +168,7 @@ struct RenderGraphFrameResources {
     RenderGraphBufferResource luminanceReadback;
     RenderGraphBufferResource luminanceHistogram;
     RenderGraphBufferResource histogramReadback;
+    RenderGraphBufferResource exposureState;
 };
 
 struct RenderGraphResourceDebugInfo {
@@ -247,6 +252,10 @@ public:
     void endBloomExtractPass();
     void beginBloomBlurPass(bool horizontal);
     void endBloomBlurPass();
+    void beginBloomDownsamplePass(uint32_t level);
+    void endBloomDownsamplePass();
+    void beginBloomUpsamplePass(uint32_t level);
+    void endBloomUpsamplePass();
     void beginLuminancePass();
     void endLuminancePass();
     void beginHistogramExposurePass();
@@ -304,6 +313,8 @@ private:
         DepthPyramid,
         BloomExtract,
         BloomBlur,
+        BloomDownsample,
+        BloomUpsample,
         Luminance,
         HistogramExposure,
         Composite,
@@ -343,6 +354,8 @@ private:
         uint32_t bloomExtract = kInvalidRenderGraphHandle;
         uint32_t bloomBlurHorizontal = kInvalidRenderGraphHandle;
         uint32_t bloomBlurVertical = kInvalidRenderGraphHandle;
+        std::vector<uint32_t> bloomDownsampleChain;
+        std::vector<uint32_t> bloomUpsampleChain;
         uint32_t luminance = kInvalidRenderGraphHandle;
         uint32_t histogramExposure = kInvalidRenderGraphHandle;
         uint32_t composite = kInvalidRenderGraphHandle;
@@ -364,6 +377,8 @@ private:
         RGTextureHandle bloomExtract{};
         RGTextureHandle bloomPing{};
         RGTextureHandle bloomPong{};
+        std::vector<RGTextureHandle> bloomDownsampleChain;
+        std::vector<RGTextureHandle> bloomUpsampleChain;
         RGTextureHandle depthPyramid{};
         RGBufferHandle mainCullInput{};
         RGBufferHandle mainCullIndirectOutput{};
@@ -373,6 +388,7 @@ private:
         RGBufferHandle luminanceReadback{};
         RGBufferHandle luminanceHistogram{};
         RGBufferHandle histogramReadback{};
+        RGBufferHandle exposureState{};
     };
 
     void requireFrameActive(const char* operation) const;

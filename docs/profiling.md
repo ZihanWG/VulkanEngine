@@ -55,8 +55,10 @@ The current frame records timestamp scopes for:
 - `BloomExtractPass`
 - `BloomBlurHorizontal`
 - `BloomBlurVertical`
+- `Bloom Downsample Chain`
+- `Bloom Upsample Chain`
 - `LuminancePass` when log-average exposure is active
-- `HistogramExposurePass` when histogram exposure is active
+- `Histogram Exposure` when histogram exposure is active
 - `CompositePass`
 - `ImGuiPass`
 

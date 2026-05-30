@@ -32,7 +32,7 @@ Imported resources are owned outside the graph:
 - main depth image
 - cascaded shadow map array
 - depth pyramid image
-- per-frame luminance/histogram readback buffers
+- per-frame luminance, histogram, exposure, and culling buffers
 
 Transient graph resources are logical frame/render-target resources:
 
@@ -40,6 +40,8 @@ Transient graph resources are logical frame/render-target resources:
 - `BloomExtract`
 - `BloomPing`
 - `BloomPong`
+- `BloomMipDownsampleN`
+- `BloomMipUpsampleN`
 
 In Phase 4, these transient resources are described and transitioned by the graph, but their physical `VulkanImage` allocation still lives in `Renderer` and is recreated with the swapchain/post-process resize path. This avoids a resource ownership rewrite while preparing for a future graph allocator or pool.
 
@@ -64,12 +66,14 @@ The currently declared passes are:
 - `BloomExtractPass`
 - `BloomBlurHorizontal`
 - `BloomBlurVertical`
+- `BloomDownsampleMipN`
+- `BloomUpsampleMipN`
 - `LuminancePass`
 - `HistogramExposurePass`
 - `CompositePass`
 - `ImGuiPass`
 
-Shadow GPU culling buffer barriers, main GPU culling buffer barriers, luminance buffer copy/readback, histogram buffer copy/readback, and portfolio screenshot copy are still manually synchronized in `Renderer.cpp`.
+Shadow GPU culling buffer barriers, main GPU culling buffer barriers, histogram reset, exposure reduce buffer visibility, exposure debug readback visibility, and portfolio screenshot copy are still manually synchronized in `Renderer.cpp`.
 
 ## Transition Inference
 
@@ -119,7 +123,7 @@ The ImGui Render Graph panel shows:
 - No memory aliasing.
 - No resource pooling overhaul.
 - Transient scene/bloom resources are graph-described but still physically allocated by `Renderer`.
-- GPU culling and readback buffer barriers remain manual.
+- GPU culling, exposure, and readback buffer barriers remain manual.
 - Portfolio screenshot copy remains manual because it temporarily transitions the swapchain between `CompositePass` and `ImGuiPass`.
 - Barriers are conservative and not heavily optimized.
 - Not all descriptor-driven sampled resources are graph-owned yet, including material textures, IBL cubemaps, BRDF LUT, and render-target preview descriptors.

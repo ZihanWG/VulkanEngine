@@ -227,6 +227,10 @@ const char* renderPassTypeName(RenderPassType type)
         return "Bloom Extract";
     case RenderPassType::BloomBlur:
         return "Bloom Blur";
+    case RenderPassType::BloomDownsample:
+        return "Bloom Downsample";
+    case RenderPassType::BloomUpsample:
+        return "Bloom Upsample";
     case RenderPassType::Luminance:
         return "Luminance";
     case RenderPassType::HistogramExposure:
@@ -416,6 +420,18 @@ void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
         createTransientTexture(makeTransientDesc(frame_.resources.bloomExtract), frame_.resources.bloomExtract);
     frame_.bloomPing = createTransientTexture(makeTransientDesc(frame_.resources.bloomPing), frame_.resources.bloomPing);
     frame_.bloomPong = createTransientTexture(makeTransientDesc(frame_.resources.bloomPong), frame_.resources.bloomPong);
+    frame_.bloomDownsampleChain.reserve(frame_.resources.bloomDownsampleChain.size());
+    for (const RenderGraphImageResource& resource : frame_.resources.bloomDownsampleChain) {
+        if (validImageResource(resource)) {
+            frame_.bloomDownsampleChain.push_back(createTransientTexture(makeTransientDesc(resource), resource));
+        }
+    }
+    frame_.bloomUpsampleChain.reserve(frame_.resources.bloomUpsampleChain.size());
+    for (const RenderGraphImageResource& resource : frame_.resources.bloomUpsampleChain) {
+        if (validImageResource(resource)) {
+            frame_.bloomUpsampleChain.push_back(createTransientTexture(makeTransientDesc(resource), resource));
+        }
+    }
     frame_.depthPyramid = importTexture(frame_.resources.depthPyramid);
 
     frame_.mainCullInput = importBuffer(frame_.resources.mainCullInput);
@@ -426,6 +442,7 @@ void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
     frame_.luminanceReadback = importBuffer(frame_.resources.luminanceReadback);
     frame_.luminanceHistogram = importBuffer(frame_.resources.luminanceHistogram);
     frame_.histogramReadback = importBuffer(frame_.resources.histogramReadback);
+    frame_.exposureState = importBuffer(frame_.resources.exposureState);
 
     buildFrameGraphDeclarations();
     compilePassCulling();
@@ -656,6 +673,76 @@ void RenderGraph::endBloomBlurPass()
     requireFrameActive("RenderGraph::endBloomBlurPass");
     if (activePass_ != ActivePass::BloomBlur) {
         throw std::logic_error("RenderGraph::endBloomBlurPass called without an active bloom blur pass.");
+    }
+
+    vkCmdEndRendering(frame_.commandBuffer);
+    activePass_ = ActivePass::None;
+}
+
+void RenderGraph::beginBloomDownsamplePass(uint32_t level)
+{
+    requireFrameActive("RenderGraph::beginBloomDownsamplePass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginBloomDownsamplePass called while another pass is active.");
+    }
+    if (level >= frame_.passIndices.bloomDownsampleChain.size() ||
+        level >= frame_.bloomDownsampleChain.size()) {
+        throw std::out_of_range("RenderGraph::beginBloomDownsamplePass level is out of range.");
+    }
+    if (!beginDeclaredPass(frame_.passIndices.bloomDownsampleChain[level])) {
+        throw std::logic_error(
+            "RenderGraph::beginBloomDownsamplePass was culled but the renderer attempted to record it.");
+    }
+
+    VkClearValue clearColor{};
+    clearColor.color.float32[0] = 0.0f;
+    clearColor.color.float32[1] = 0.0f;
+    clearColor.color.float32[2] = 0.0f;
+    clearColor.color.float32[3] = 1.0f;
+    beginColorRendering(textures_.at(frame_.bloomDownsampleChain[level].index), clearColor);
+    activePass_ = ActivePass::BloomDownsample;
+}
+
+void RenderGraph::endBloomDownsamplePass()
+{
+    requireFrameActive("RenderGraph::endBloomDownsamplePass");
+    if (activePass_ != ActivePass::BloomDownsample) {
+        throw std::logic_error(
+            "RenderGraph::endBloomDownsamplePass called without an active bloom downsample pass.");
+    }
+
+    vkCmdEndRendering(frame_.commandBuffer);
+    activePass_ = ActivePass::None;
+}
+
+void RenderGraph::beginBloomUpsamplePass(uint32_t level)
+{
+    requireFrameActive("RenderGraph::beginBloomUpsamplePass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginBloomUpsamplePass called while another pass is active.");
+    }
+    if (level >= frame_.passIndices.bloomUpsampleChain.size() || level >= frame_.bloomUpsampleChain.size()) {
+        throw std::out_of_range("RenderGraph::beginBloomUpsamplePass level is out of range.");
+    }
+    if (!beginDeclaredPass(frame_.passIndices.bloomUpsampleChain[level])) {
+        throw std::logic_error(
+            "RenderGraph::beginBloomUpsamplePass was culled but the renderer attempted to record it.");
+    }
+
+    VkClearValue clearColor{};
+    clearColor.color.float32[0] = 0.0f;
+    clearColor.color.float32[1] = 0.0f;
+    clearColor.color.float32[2] = 0.0f;
+    clearColor.color.float32[3] = 1.0f;
+    beginColorRendering(textures_.at(frame_.bloomUpsampleChain[level].index), clearColor);
+    activePass_ = ActivePass::BloomUpsample;
+}
+
+void RenderGraph::endBloomUpsamplePass()
+{
+    requireFrameActive("RenderGraph::endBloomUpsamplePass");
+    if (activePass_ != ActivePass::BloomUpsample) {
+        throw std::logic_error("RenderGraph::endBloomUpsamplePass called without an active bloom upsample pass.");
     }
 
     vkCmdEndRendering(frame_.commandBuffer);
@@ -1033,6 +1120,49 @@ void RenderGraph::buildFrameGraphDeclarations()
                                  "Writes the final vertical blur result.");
         });
 
+    frame_.passIndices.bloomDownsampleChain.reserve(frame_.bloomDownsampleChain.size());
+    for (uint32_t level = 0; level < frame_.bloomDownsampleChain.size(); ++level) {
+        const RGTextureHandle source = level == 0 ? frame_.sceneColor : frame_.bloomDownsampleChain[level - 1];
+        const RGTextureHandle output = frame_.bloomDownsampleChain[level];
+        frame_.passIndices.bloomDownsampleChain.push_back(addPass(
+            "BloomDownsampleMip" + std::to_string(level),
+            RenderPassType::BloomDownsample,
+            RenderPassExecutionType::Graphics,
+            false,
+            [source, output, level](RenderGraphBuilder& builder) {
+                builder.readTexture(source,
+                                    RGAccess::ShaderRead,
+                                    level == 0 ? "Samples HDR scene color and extracts conservative bright bloom."
+                                               : "Samples the previous bloom mip.");
+                builder.writeTexture(output,
+                                     RGAccess::ColorAttachmentWrite,
+                                     "Writes a downsampled bloom mip-chain level.");
+            }));
+    }
+
+    frame_.passIndices.bloomUpsampleChain.assign(frame_.bloomUpsampleChain.size(), kInvalidRenderGraphHandle);
+    for (uint32_t reverseIndex = 0; reverseIndex < frame_.bloomUpsampleChain.size(); ++reverseIndex) {
+        const uint32_t level =
+            static_cast<uint32_t>(frame_.bloomUpsampleChain.size() - 1u - reverseIndex);
+        const RGTextureHandle currentMip = frame_.bloomDownsampleChain[level];
+        const RGTextureHandle lowerMip =
+            level + 1u == frame_.bloomDownsampleChain.size() - 1u ? frame_.bloomDownsampleChain[level + 1u]
+                                                                  : frame_.bloomUpsampleChain[level + 1u];
+        const RGTextureHandle output = frame_.bloomUpsampleChain[level];
+        frame_.passIndices.bloomUpsampleChain[level] = addPass(
+            "BloomUpsampleMip" + std::to_string(level),
+            RenderPassType::BloomUpsample,
+            RenderPassExecutionType::Graphics,
+            false,
+            [currentMip, lowerMip, output](RenderGraphBuilder& builder) {
+                builder.readTexture(currentMip, RGAccess::ShaderRead, "Samples this bloom mip's local highlights.");
+                builder.readTexture(lowerMip, RGAccess::ShaderRead, "Samples the accumulated lower-resolution bloom.");
+                builder.writeTexture(output,
+                                     RGAccess::ColorAttachmentWrite,
+                                     "Writes the progressively upsampled bloom chain.");
+            });
+    }
+
     frame_.passIndices.luminance = addPass(
         "LuminancePass",
         RenderPassType::Luminance,
@@ -1045,9 +1175,6 @@ void RenderGraph::buildFrameGraphDeclarations()
             builder.writeBuffer(frame_.luminancePartials,
                                 RGAccess::StorageBufferWrite,
                                 "Writes per-workgroup luminance partials.");
-            builder.writeBuffer(frame_.luminanceReadback,
-                                RGAccess::TransferDst,
-                                "Receives copied luminance data for CPU readback.");
         });
 
     frame_.passIndices.histogramExposure = addPass(
@@ -1062,9 +1189,12 @@ void RenderGraph::buildFrameGraphDeclarations()
             builder.writeBuffer(frame_.luminanceHistogram,
                                 RGAccess::StorageBufferReadWrite,
                                 "Clears and writes 256 luminance histogram bins.");
-            builder.writeBuffer(frame_.histogramReadback,
-                                RGAccess::TransferDst,
-                                "Receives copied histogram data for CPU readback.");
+            builder.readBuffer(frame_.luminancePartials,
+                               RGAccess::StorageBufferRead,
+                               "Reads log-average luminance partials for GPU exposure fallback.");
+            builder.readWriteBuffer(frame_.exposureState,
+                                    RGAccess::StorageBufferReadWrite,
+                                    "Reads previous exposure and writes GPU exposure/luminance state.");
         });
 
     frame_.passIndices.composite = addPass(
@@ -1074,7 +1204,19 @@ void RenderGraph::buildFrameGraphDeclarations()
         true,
         [this](RenderGraphBuilder& builder) {
             builder.readTexture(frame_.sceneColor, RGAccess::ShaderRead, "Samples the HDR scene color target.");
-            builder.readTexture(frame_.bloomPong, RGAccess::ShaderRead, "Samples the blurred bloom texture.");
+            builder.readTexture(frame_.bloomPong, RGAccess::ShaderRead, "Samples the legacy blurred bloom texture.");
+            if (!frame_.bloomUpsampleChain.empty()) {
+                builder.readTexture(frame_.bloomUpsampleChain.front(),
+                                    RGAccess::ShaderRead,
+                                    "Samples the final mip-chain bloom texture.");
+            } else if (!frame_.bloomDownsampleChain.empty()) {
+                builder.readTexture(frame_.bloomDownsampleChain.front(),
+                                    RGAccess::ShaderRead,
+                                    "Samples the single-level mip-chain bloom texture.");
+            }
+            builder.readBuffer(frame_.exposureState,
+                               RGAccess::StorageBufferRead,
+                               "Reads GPU exposure state for auto exposure modes.");
             builder.writeTexture(frame_.swapchainColor,
                                  RGAccess::ColorAttachmentWrite,
                                  "Writes the exposed and tone-mapped final color.");

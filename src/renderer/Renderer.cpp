@@ -115,6 +115,7 @@ constexpr uint32_t kLuminanceLocalSizeY = 16;
 constexpr uint32_t kHistogramBinCount = 256;
 constexpr uint32_t kHistogramLocalSizeX = 16;
 constexpr uint32_t kHistogramLocalSizeY = 16;
+constexpr uint32_t kMaxBloomMipChainLevels = 4;
 constexpr float kMinAverageLuminance = 0.0001f;
 constexpr float kDefaultHistogramMinLogLuminance = -10.0f;
 constexpr float kDefaultHistogramMaxLogLuminance = 4.0f;
@@ -237,18 +238,43 @@ static_assert(offsetof(BloomBlurPushConstants, texelSize) == 0);
 static_assert(offsetof(BloomBlurPushConstants, horizontal) == 8);
 static_assert(sizeof(BloomBlurPushConstants) == 16);
 
+struct BloomDownsamplePushConstants {
+    glm::vec2 texelSize{1.0f, 1.0f};
+    float threshold = 1.0f;
+    uint32_t applyThreshold = 0;
+};
+
+static_assert(offsetof(BloomDownsamplePushConstants, texelSize) == 0);
+static_assert(offsetof(BloomDownsamplePushConstants, threshold) == 8);
+static_assert(offsetof(BloomDownsamplePushConstants, applyThreshold) == 12);
+static_assert(sizeof(BloomDownsamplePushConstants) == 16);
+
+struct BloomUpsamplePushConstants {
+    glm::vec2 texelSize{1.0f, 1.0f};
+    float radius = 1.0f;
+    float padding = 0.0f;
+};
+
+static_assert(offsetof(BloomUpsamplePushConstants, texelSize) == 0);
+static_assert(offsetof(BloomUpsamplePushConstants, radius) == 8);
+static_assert(sizeof(BloomUpsamplePushConstants) == 16);
+
 struct CompositePushConstants {
     float exposure = 1.0f;
     float bloomIntensity = 0.1f;
     uint32_t toneMappingOperator = 0;
     uint32_t bloomEnabled = 1;
+    uint32_t bloomMethod = 1;
+    uint32_t useGpuExposure = 0;
 };
 
 static_assert(offsetof(CompositePushConstants, exposure) == 0);
 static_assert(offsetof(CompositePushConstants, bloomIntensity) == 4);
 static_assert(offsetof(CompositePushConstants, toneMappingOperator) == 8);
 static_assert(offsetof(CompositePushConstants, bloomEnabled) == 12);
-static_assert(sizeof(CompositePushConstants) == 16);
+static_assert(offsetof(CompositePushConstants, bloomMethod) == 16);
+static_assert(offsetof(CompositePushConstants, useGpuExposure) == 20);
+static_assert(sizeof(CompositePushConstants) == 24);
 
 struct LuminancePushConstants {
     glm::uvec4 params{0, 0, 0, 0};
@@ -273,6 +299,32 @@ struct HistogramPushConstants {
 static_assert(offsetof(HistogramPushConstants, params) == 0);
 static_assert(offsetof(HistogramPushConstants, logLuminanceRange) == 16);
 static_assert(sizeof(HistogramPushConstants) == 32);
+
+struct ExposureState {
+    float exposure = 1.0f;
+    float averageLuminance = 0.18f;
+    float histogramLuminance = 0.18f;
+    uint32_t mode = 0;
+};
+
+static_assert(offsetof(ExposureState, exposure) == 0);
+static_assert(offsetof(ExposureState, averageLuminance) == 4);
+static_assert(offsetof(ExposureState, histogramLuminance) == 8);
+static_assert(offsetof(ExposureState, mode) == 12);
+static_assert(sizeof(ExposureState) == 16);
+
+struct ExposureReducePushConstants {
+    glm::uvec4 params{0, 0, 0, 0};
+    glm::vec4 exposureParams{1.0f, 0.18f, 0.1f, 8.0f};
+    glm::vec4 adaptationParams{0.0f, 1.5f, 0.05f, 0.95f};
+    glm::vec4 histogramRange{kDefaultHistogramMinLogLuminance, kDefaultHistogramMaxLogLuminance, 0.0001f, 0.0f};
+};
+
+static_assert(offsetof(ExposureReducePushConstants, params) == 0);
+static_assert(offsetof(ExposureReducePushConstants, exposureParams) == 16);
+static_assert(offsetof(ExposureReducePushConstants, adaptationParams) == 32);
+static_assert(offsetof(ExposureReducePushConstants, histogramRange) == 48);
+static_assert(sizeof(ExposureReducePushConstants) == 64);
 
 enum class ExposureMode : int {
     Manual = 0,
@@ -399,6 +451,18 @@ uint32_t calculateDepthPyramidMipLevels(VkExtent2D extent)
     return mipLevels;
 }
 
+uint32_t calculateBloomMipChainLevels(VkExtent2D extent)
+{
+    VkExtent2D mipExtent{std::max(1u, extent.width / 2u), std::max(1u, extent.height / 2u)};
+    uint32_t mipLevels = 1;
+    while (mipLevels < kMaxBloomMipChainLevels && (mipExtent.width > 1u || mipExtent.height > 1u)) {
+        mipExtent.width = std::max(1u, mipExtent.width / 2u);
+        mipExtent.height = std::max(1u, mipExtent.height / 2u);
+        ++mipLevels;
+    }
+    return mipLevels;
+}
+
 VkExtent2D mipExtent(VkExtent2D baseExtent, uint32_t mipLevel)
 {
     VkExtent2D extent = baseExtent;
@@ -407,6 +471,13 @@ VkExtent2D mipExtent(VkExtent2D baseExtent, uint32_t mipLevel)
         extent.height = std::max(1u, extent.height / 2u);
     }
     return extent;
+}
+
+VkExtent2D bloomMipExtent(VkExtent2D swapchainExtent, uint32_t mipLevel)
+{
+    const VkExtent2D baseExtent{std::max(1u, swapchainExtent.width / 2u),
+                                std::max(1u, swapchainExtent.height / 2u)};
+    return mipExtent(baseExtent, mipLevel);
 }
 
 bool depthPyramidFormatSupports(VkPhysicalDevice physicalDevice, VkFormatFeatureFlags requiredFeatures)
@@ -1669,8 +1740,10 @@ void Renderer::applyPortfolioCaptureSettings()
     currentExposure_ = toneMappingExposureValue(toneMappingSettings_.manualExposure);
 
     bloomSettings_.enabled = true;
+    bloomSettings_.useMipChain = true;
     bloomSettings_.threshold = 1.05f;
     bloomSettings_.intensity = 0.12f;
+    bloomSettings_.radius = 0.9f;
 
     csmSettings_.enableTexelSnapping = true;
     csmSettings_.enableCascadeDebugColors = false;
@@ -1804,10 +1877,29 @@ void Renderer::createPostProcessDescriptorSetLayouts()
                               VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
                               "PostProcessSingleImageDescriptorSetLayout");
 
-    std::array<VkDescriptorSetLayoutBinding, 2> compositeBindings{};
+    std::array<VkDescriptorSetLayoutBinding, 2> dualImageBindings{};
+    dualImageBindings[0] = singleImageBinding;
+    dualImageBindings[1] = singleImageBinding;
+    dualImageBindings[1].binding = 1;
+
+    postProcessDualImageDescriptorSetLayout_.create(
+        context_.vkDevice(),
+        std::span<const VkDescriptorSetLayoutBinding>(dualImageBindings.data(), dualImageBindings.size()));
+    rhi::debug::setObjectName(context_.vkDevice(),
+                              postProcessDualImageDescriptorSetLayout_.handle(),
+                              VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
+                              "PostProcessDualImageDescriptorSetLayout");
+
+    std::array<VkDescriptorSetLayoutBinding, 4> compositeBindings{};
     compositeBindings[0] = singleImageBinding;
     compositeBindings[1] = singleImageBinding;
     compositeBindings[1].binding = 1;
+    compositeBindings[2] = singleImageBinding;
+    compositeBindings[2].binding = 2;
+    compositeBindings[3].binding = 3;
+    compositeBindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    compositeBindings[3].descriptorCount = 1;
+    compositeBindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     postProcessCompositeDescriptorSetLayout_.create(
         context_.vkDevice(),
@@ -1838,6 +1930,27 @@ void Renderer::createPostProcessDescriptorSetLayouts()
                                   "PostProcessLuminanceDescriptorSetLayout");
     } catch (const std::exception& error) {
         disableAutoExposureFallback(std::string("Auto exposure descriptor layout creation failed: ") + error.what());
+    }
+
+    std::array<VkDescriptorSetLayoutBinding, 3> exposureReduceBindings{};
+    for (uint32_t bindingIndex = 0; bindingIndex < exposureReduceBindings.size(); ++bindingIndex) {
+        exposureReduceBindings[bindingIndex].binding = bindingIndex;
+        exposureReduceBindings[bindingIndex].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        exposureReduceBindings[bindingIndex].descriptorCount = 1;
+        exposureReduceBindings[bindingIndex].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    }
+
+    try {
+        postProcessExposureReduceDescriptorSetLayout_.create(
+            context_.vkDevice(),
+            std::span<const VkDescriptorSetLayoutBinding>(exposureReduceBindings.data(),
+                                                          exposureReduceBindings.size()));
+        rhi::debug::setObjectName(context_.vkDevice(),
+                                  postProcessExposureReduceDescriptorSetLayout_.handle(),
+                                  VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
+                                  "PostProcessExposureReduceDescriptorSetLayout");
+    } catch (const std::exception& error) {
+        disableAutoExposureFallback(std::string("Exposure reduce descriptor layout creation failed: ") + error.what());
     }
 }
 
@@ -2117,11 +2230,21 @@ void Renderer::createPostProcessResources()
     bloomBlurHorizontalDescriptorSet_ = VK_NULL_HANDLE;
     bloomBlurVerticalDescriptorSet_ = VK_NULL_HANDLE;
     compositeDescriptorSet_ = VK_NULL_HANDLE;
+    bloomMipDownsampleDescriptorSets_.clear();
+    bloomMipUpsampleDescriptorSets_.clear();
+    compositeDescriptorSets_.clear();
     luminanceDescriptorSets_.clear();
     histogramDescriptorSets_.clear();
+    exposureReduceDescriptorSets_.clear();
+    bloomMipDownsampleImages_.clear();
+    bloomMipUpsampleImages_.clear();
+    bloomMipDownsampleLayouts_.clear();
+    bloomMipUpsampleLayouts_.clear();
+    selectedBloomMipDebugLevel_ = 0;
     destroyDepthPyramidResources();
     destroyLuminanceResources();
     destroyHistogramResources();
+    destroyExposureResources();
 
     rhi::VulkanImageCreateInfo sceneColorInfo{};
     sceneColorInfo.width = extent.width;
@@ -2156,6 +2279,28 @@ void Renderer::createPostProcessResources()
     bloomPong_.create(context_, bloomInfo);
     bloomPongLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 
+    const uint32_t bloomMipCount = calculateBloomMipChainLevels(extent);
+    bloomMipDownsampleImages_.resize(bloomMipCount);
+    bloomMipDownsampleLayouts_.assign(bloomMipCount, VK_IMAGE_LAYOUT_UNDEFINED);
+    for (uint32_t level = 0; level < bloomMipCount; ++level) {
+        const VkExtent2D mipSize = bloomMipExtent(extent, level);
+        bloomInfo.width = mipSize.width;
+        bloomInfo.height = mipSize.height;
+        bloomInfo.debugName = "BloomMipDownsample" + std::to_string(level);
+        bloomMipDownsampleImages_[level].create(context_, bloomInfo);
+    }
+
+    const uint32_t bloomUpsampleCount = bloomMipCount > 1u ? bloomMipCount - 1u : 0u;
+    bloomMipUpsampleImages_.resize(bloomUpsampleCount);
+    bloomMipUpsampleLayouts_.assign(bloomUpsampleCount, VK_IMAGE_LAYOUT_UNDEFINED);
+    for (uint32_t level = 0; level < bloomUpsampleCount; ++level) {
+        const VkExtent2D mipSize = bloomMipExtent(extent, level);
+        bloomInfo.width = mipSize.width;
+        bloomInfo.height = mipSize.height;
+        bloomInfo.debugName = "BloomMipUpsample" + std::to_string(level);
+        bloomMipUpsampleImages_[level].create(context_, bloomInfo);
+    }
+
     createDepthPyramidResources();
 
     try {
@@ -2172,6 +2317,7 @@ void Renderer::createPostProcessResources()
             std::string("Histogram exposure resources unavailable: ") + error.what());
     }
 
+    createExposureResources();
     createPostProcessDescriptorSets();
 }
 
@@ -2189,46 +2335,62 @@ void Renderer::createPostProcessDescriptorSets()
         histogramExposureAvailable_ && !frameHistogramBuffers_.empty() &&
         frameHistogramBuffers_.size() == frames_.size() &&
         postProcessLuminanceDescriptorSetLayout_.handle() != VK_NULL_HANDLE;
+    const bool createExposureReduceDescriptors =
+        createLuminanceDescriptors && createHistogramDescriptors && exposureReduceAvailable_ &&
+        frameExposureBuffers_.size() == frames_.size() &&
+        postProcessExposureReduceDescriptorSetLayout_.handle() != VK_NULL_HANDLE;
+    const bool createCompositeDescriptors =
+        !frameExposureBuffers_.empty() && frameExposureBuffers_.size() == frames_.size() &&
+        postProcessCompositeDescriptorSetLayout_.handle() != VK_NULL_HANDLE;
     const uint32_t exposureDescriptorSetCount =
         (createLuminanceDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u) +
-        (createHistogramDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u);
+        (createHistogramDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u) +
+        (createExposureReduceDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u);
+    const uint32_t compositeDescriptorSetCount =
+        createCompositeDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u;
+    const uint32_t legacyBloomSetCount = 3u;
+    const uint32_t bloomDownsampleSetCount = static_cast<uint32_t>(bloomMipDownsampleImages_.size());
+    const uint32_t bloomUpsampleSetCount = static_cast<uint32_t>(bloomMipUpsampleImages_.size());
 
     std::array<VkDescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[0].descriptorCount = 5 + exposureDescriptorSetCount;
-    uint32_t poolSizeCount = 1;
-    uint32_t maxSets = 4;
-    if (exposureDescriptorSetCount > 0) {
-        poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        poolSizes[1].descriptorCount = exposureDescriptorSetCount;
-        poolSizeCount = 2;
-        maxSets += exposureDescriptorSetCount;
-    }
+    poolSizes[0].descriptorCount =
+        legacyBloomSetCount + bloomDownsampleSetCount + (2u * bloomUpsampleSetCount) +
+        (3u * compositeDescriptorSetCount) +
+        (createLuminanceDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u) +
+        (createHistogramDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u);
+    poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    poolSizes[1].descriptorCount =
+        (createLuminanceDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u) +
+        (createHistogramDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u) +
+        (3u * (createExposureReduceDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u)) +
+        compositeDescriptorSetCount;
+    const uint32_t poolSizeCount = poolSizes[1].descriptorCount > 0 ? 2u : 1u;
+    const uint32_t maxSets = legacyBloomSetCount + bloomDownsampleSetCount + bloomUpsampleSetCount +
+                             compositeDescriptorSetCount + exposureDescriptorSetCount;
 
     postProcessDescriptorPool_.create(
         context_.vkDevice(), std::span<const VkDescriptorPoolSize>(poolSizes.data(), poolSizeCount), maxSets);
     rhi::debug::setObjectName(
         context_.vkDevice(), postProcessDescriptorPool_.handle(), VK_OBJECT_TYPE_DESCRIPTOR_POOL, "PostProcessPool");
 
-    std::array<VkDescriptorSetLayout, 4> descriptorSetLayouts{
+    std::array<VkDescriptorSetLayout, 3> legacyDescriptorSetLayouts{
         postProcessSingleImageDescriptorSetLayout_.handle(),
         postProcessSingleImageDescriptorSetLayout_.handle(),
         postProcessSingleImageDescriptorSetLayout_.handle(),
-        postProcessCompositeDescriptorSetLayout_.handle(),
     };
-    std::array<VkDescriptorSet, 4> descriptorSets{};
+    std::array<VkDescriptorSet, 3> legacyDescriptorSets{};
 
     VkDescriptorSetAllocateInfo allocateInfo{};
     allocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocateInfo.descriptorPool = postProcessDescriptorPool_.handle();
-    allocateInfo.descriptorSetCount = static_cast<uint32_t>(descriptorSetLayouts.size());
-    allocateInfo.pSetLayouts = descriptorSetLayouts.data();
-    VK_CHECK(vkAllocateDescriptorSets(context_.vkDevice(), &allocateInfo, descriptorSets.data()));
+    allocateInfo.descriptorSetCount = static_cast<uint32_t>(legacyDescriptorSetLayouts.size());
+    allocateInfo.pSetLayouts = legacyDescriptorSetLayouts.data();
+    VK_CHECK(vkAllocateDescriptorSets(context_.vkDevice(), &allocateInfo, legacyDescriptorSets.data()));
 
-    bloomExtractDescriptorSet_ = descriptorSets[0];
-    bloomBlurHorizontalDescriptorSet_ = descriptorSets[1];
-    bloomBlurVerticalDescriptorSet_ = descriptorSets[2];
-    compositeDescriptorSet_ = descriptorSets[3];
+    bloomExtractDescriptorSet_ = legacyDescriptorSets[0];
+    bloomBlurHorizontalDescriptorSet_ = legacyDescriptorSets[1];
+    bloomBlurVerticalDescriptorSet_ = legacyDescriptorSets[2];
 
     rhi::debug::setObjectName(
         context_.vkDevice(), bloomExtractDescriptorSet_, VK_OBJECT_TYPE_DESCRIPTOR_SET, "BloomExtractDescriptorSet");
@@ -2240,8 +2402,6 @@ void Renderer::createPostProcessDescriptorSets()
                               bloomBlurVerticalDescriptorSet_,
                               VK_OBJECT_TYPE_DESCRIPTOR_SET,
                               "BloomBlurVerticalDescriptorSet");
-    rhi::debug::setObjectName(
-        context_.vkDevice(), compositeDescriptorSet_, VK_OBJECT_TYPE_DESCRIPTOR_SET, "CompositeDescriptorSet");
 
     const auto imageInfo = [this](VkImageView imageView) {
         VkDescriptorImageInfo info{};
@@ -2251,51 +2411,181 @@ void Renderer::createPostProcessDescriptorSets()
         return info;
     };
 
-    std::array<VkDescriptorImageInfo, 5> imageInfos{
+    std::array<VkDescriptorImageInfo, 3> legacyImageInfos{
         imageInfo(sceneColor_.imageView()),
         imageInfo(bloomExtract_.imageView()),
         imageInfo(bloomPing_.imageView()),
-        imageInfo(sceneColor_.imageView()),
-        imageInfo(bloomPong_.imageView()),
     };
 
-    std::array<VkWriteDescriptorSet, 5> writes{};
+    std::array<VkWriteDescriptorSet, 3> writes{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = bloomExtractDescriptorSet_;
     writes[0].dstBinding = 0;
     writes[0].descriptorCount = 1;
     writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[0].pImageInfo = &imageInfos[0];
+    writes[0].pImageInfo = &legacyImageInfos[0];
 
     writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[1].dstSet = bloomBlurHorizontalDescriptorSet_;
     writes[1].dstBinding = 0;
     writes[1].descriptorCount = 1;
     writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[1].pImageInfo = &imageInfos[1];
+    writes[1].pImageInfo = &legacyImageInfos[1];
 
     writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[2].dstSet = bloomBlurVerticalDescriptorSet_;
     writes[2].dstBinding = 0;
     writes[2].descriptorCount = 1;
     writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[2].pImageInfo = &imageInfos[2];
-
-    writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[3].dstSet = compositeDescriptorSet_;
-    writes[3].dstBinding = 0;
-    writes[3].descriptorCount = 1;
-    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[3].pImageInfo = &imageInfos[3];
-
-    writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[4].dstSet = compositeDescriptorSet_;
-    writes[4].dstBinding = 1;
-    writes[4].descriptorCount = 1;
-    writes[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[4].pImageInfo = &imageInfos[4];
+    writes[2].pImageInfo = &legacyImageInfos[2];
 
     vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+
+    if (!bloomMipDownsampleImages_.empty()) {
+        bloomMipDownsampleDescriptorSets_.assign(bloomMipDownsampleImages_.size(), VK_NULL_HANDLE);
+        std::vector<VkDescriptorSetLayout> downsampleLayouts(bloomMipDownsampleImages_.size(),
+                                                             postProcessSingleImageDescriptorSetLayout_.handle());
+        VkDescriptorSetAllocateInfo downsampleAllocateInfo{};
+        downsampleAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        downsampleAllocateInfo.descriptorPool = postProcessDescriptorPool_.handle();
+        downsampleAllocateInfo.descriptorSetCount = static_cast<uint32_t>(downsampleLayouts.size());
+        downsampleAllocateInfo.pSetLayouts = downsampleLayouts.data();
+        VK_CHECK(vkAllocateDescriptorSets(
+            context_.vkDevice(), &downsampleAllocateInfo, bloomMipDownsampleDescriptorSets_.data()));
+
+        std::vector<VkDescriptorImageInfo> downsampleImageInfos(bloomMipDownsampleImages_.size());
+        std::vector<VkWriteDescriptorSet> downsampleWrites(bloomMipDownsampleImages_.size());
+        for (size_t level = 0; level < bloomMipDownsampleImages_.size(); ++level) {
+            const VkImageView sourceView =
+                level == 0 ? sceneColor_.imageView() : bloomMipDownsampleImages_[level - 1].imageView();
+            downsampleImageInfos[level] = imageInfo(sourceView);
+            downsampleWrites[level].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            downsampleWrites[level].dstSet = bloomMipDownsampleDescriptorSets_[level];
+            downsampleWrites[level].dstBinding = 0;
+            downsampleWrites[level].descriptorCount = 1;
+            downsampleWrites[level].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            downsampleWrites[level].pImageInfo = &downsampleImageInfos[level];
+            rhi::debug::setObjectName(context_.vkDevice(),
+                                      bloomMipDownsampleDescriptorSets_[level],
+                                      VK_OBJECT_TYPE_DESCRIPTOR_SET,
+                                      "BloomMipDownsampleDescriptorSet" + std::to_string(level));
+        }
+        vkUpdateDescriptorSets(context_.vkDevice(),
+                               static_cast<uint32_t>(downsampleWrites.size()),
+                               downsampleWrites.data(),
+                               0,
+                               nullptr);
+    }
+
+    if (!bloomMipUpsampleImages_.empty()) {
+        bloomMipUpsampleDescriptorSets_.assign(bloomMipUpsampleImages_.size(), VK_NULL_HANDLE);
+        std::vector<VkDescriptorSetLayout> upsampleLayouts(bloomMipUpsampleImages_.size(),
+                                                           postProcessDualImageDescriptorSetLayout_.handle());
+        VkDescriptorSetAllocateInfo upsampleAllocateInfo{};
+        upsampleAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        upsampleAllocateInfo.descriptorPool = postProcessDescriptorPool_.handle();
+        upsampleAllocateInfo.descriptorSetCount = static_cast<uint32_t>(upsampleLayouts.size());
+        upsampleAllocateInfo.pSetLayouts = upsampleLayouts.data();
+        VK_CHECK(vkAllocateDescriptorSets(
+            context_.vkDevice(), &upsampleAllocateInfo, bloomMipUpsampleDescriptorSets_.data()));
+
+        std::vector<std::array<VkDescriptorImageInfo, 2>> upsampleImageInfos(bloomMipUpsampleImages_.size());
+        std::vector<VkWriteDescriptorSet> upsampleWrites(bloomMipUpsampleImages_.size() * 2u);
+        for (size_t level = 0; level < bloomMipUpsampleImages_.size(); ++level) {
+            const VkImageView lowerView =
+                level + 1 == bloomMipDownsampleImages_.size() - 1
+                    ? bloomMipDownsampleImages_[level + 1].imageView()
+                    : bloomMipUpsampleImages_[level + 1].imageView();
+            upsampleImageInfos[level][0] = imageInfo(bloomMipDownsampleImages_[level].imageView());
+            upsampleImageInfos[level][1] = imageInfo(lowerView);
+
+            const size_t writeBase = level * 2u;
+            upsampleWrites[writeBase].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            upsampleWrites[writeBase].dstSet = bloomMipUpsampleDescriptorSets_[level];
+            upsampleWrites[writeBase].dstBinding = 0;
+            upsampleWrites[writeBase].descriptorCount = 1;
+            upsampleWrites[writeBase].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            upsampleWrites[writeBase].pImageInfo = &upsampleImageInfos[level][0];
+
+            upsampleWrites[writeBase + 1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            upsampleWrites[writeBase + 1].dstSet = bloomMipUpsampleDescriptorSets_[level];
+            upsampleWrites[writeBase + 1].dstBinding = 1;
+            upsampleWrites[writeBase + 1].descriptorCount = 1;
+            upsampleWrites[writeBase + 1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            upsampleWrites[writeBase + 1].pImageInfo = &upsampleImageInfos[level][1];
+
+            rhi::debug::setObjectName(context_.vkDevice(),
+                                      bloomMipUpsampleDescriptorSets_[level],
+                                      VK_OBJECT_TYPE_DESCRIPTOR_SET,
+                                      "BloomMipUpsampleDescriptorSet" + std::to_string(level));
+        }
+        vkUpdateDescriptorSets(context_.vkDevice(),
+                               static_cast<uint32_t>(upsampleWrites.size()),
+                               upsampleWrites.data(),
+                               0,
+                               nullptr);
+    }
+
+    if (createCompositeDescriptors) {
+        compositeDescriptorSets_.assign(frames_.size(), VK_NULL_HANDLE);
+        std::vector<VkDescriptorSetLayout> compositeLayouts(frames_.size(),
+                                                            postProcessCompositeDescriptorSetLayout_.handle());
+        VkDescriptorSetAllocateInfo compositeAllocateInfo{};
+        compositeAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        compositeAllocateInfo.descriptorPool = postProcessDescriptorPool_.handle();
+        compositeAllocateInfo.descriptorSetCount = static_cast<uint32_t>(compositeDescriptorSets_.size());
+        compositeAllocateInfo.pSetLayouts = compositeLayouts.data();
+        VK_CHECK(vkAllocateDescriptorSets(
+            context_.vkDevice(), &compositeAllocateInfo, compositeDescriptorSets_.data()));
+        compositeDescriptorSet_ = compositeDescriptorSets_.empty() ? VK_NULL_HANDLE : compositeDescriptorSets_.front();
+
+        std::vector<std::array<VkDescriptorImageInfo, 3>> compositeImageInfos(frames_.size());
+        std::vector<VkDescriptorBufferInfo> compositeExposureInfos(frames_.size());
+        std::vector<VkWriteDescriptorSet> compositeWrites(frames_.size() * 4u);
+        VkImageView mipBloomView = bloomPong_.imageView();
+        if (!bloomMipUpsampleImages_.empty()) {
+            mipBloomView = bloomMipUpsampleImages_.front().imageView();
+        } else if (!bloomMipDownsampleImages_.empty()) {
+            mipBloomView = bloomMipDownsampleImages_.front().imageView();
+        }
+        for (size_t frameIndex = 0; frameIndex < frames_.size(); ++frameIndex) {
+            compositeImageInfos[frameIndex][0] = imageInfo(sceneColor_.imageView());
+            compositeImageInfos[frameIndex][1] = imageInfo(bloomPong_.imageView());
+            compositeImageInfos[frameIndex][2] = imageInfo(mipBloomView);
+
+            compositeExposureInfos[frameIndex].buffer = frameExposureBuffers_[frameIndex].buffer();
+            compositeExposureInfos[frameIndex].offset = 0;
+            compositeExposureInfos[frameIndex].range = sizeof(ExposureState);
+
+            const size_t writeBase = frameIndex * 4u;
+            for (uint32_t binding = 0; binding < 3; ++binding) {
+                compositeWrites[writeBase + binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                compositeWrites[writeBase + binding].dstSet = compositeDescriptorSets_[frameIndex];
+                compositeWrites[writeBase + binding].dstBinding = binding;
+                compositeWrites[writeBase + binding].descriptorCount = 1;
+                compositeWrites[writeBase + binding].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                compositeWrites[writeBase + binding].pImageInfo = &compositeImageInfos[frameIndex][binding];
+            }
+
+            compositeWrites[writeBase + 3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            compositeWrites[writeBase + 3].dstSet = compositeDescriptorSets_[frameIndex];
+            compositeWrites[writeBase + 3].dstBinding = 3;
+            compositeWrites[writeBase + 3].descriptorCount = 1;
+            compositeWrites[writeBase + 3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            compositeWrites[writeBase + 3].pBufferInfo = &compositeExposureInfos[frameIndex];
+
+            rhi::debug::setObjectName(context_.vkDevice(),
+                                      compositeDescriptorSets_[frameIndex],
+                                      VK_OBJECT_TYPE_DESCRIPTOR_SET,
+                                      "CompositeDescriptorSet" + std::to_string(frameIndex));
+        }
+
+        vkUpdateDescriptorSets(context_.vkDevice(),
+                               static_cast<uint32_t>(compositeWrites.size()),
+                               compositeWrites.data(),
+                               0,
+                               nullptr);
+    }
 
     VkDescriptorImageInfo sceneColorInfo{};
     sceneColorInfo.sampler = postProcessSampler_;
@@ -2403,6 +2693,55 @@ void Renderer::createPostProcessDescriptorSets()
                 std::string("Histogram exposure descriptor allocation failed: ") + error.what());
         }
     }
+
+    if (createExposureReduceDescriptors) {
+        try {
+            exposureReduceDescriptorSets_.assign(frames_.size(), VK_NULL_HANDLE);
+            std::vector<VkDescriptorSetLayout> exposureLayouts(
+                frames_.size(), postProcessExposureReduceDescriptorSetLayout_.handle());
+            VkDescriptorSetAllocateInfo exposureAllocateInfo{};
+            exposureAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            exposureAllocateInfo.descriptorPool = postProcessDescriptorPool_.handle();
+            exposureAllocateInfo.descriptorSetCount = static_cast<uint32_t>(exposureReduceDescriptorSets_.size());
+            exposureAllocateInfo.pSetLayouts = exposureLayouts.data();
+            VK_CHECK(vkAllocateDescriptorSets(
+                context_.vkDevice(), &exposureAllocateInfo, exposureReduceDescriptorSets_.data()));
+
+            for (size_t frameIndex = 0; frameIndex < exposureReduceDescriptorSets_.size(); ++frameIndex) {
+                std::array<VkDescriptorBufferInfo, 3> bufferInfos{};
+                bufferInfos[0].buffer = frameLuminanceBuffers_[frameIndex].buffer();
+                bufferInfos[0].range = frameLuminanceBuffers_[frameIndex].size();
+                bufferInfos[1].buffer = frameHistogramBuffers_[frameIndex].buffer();
+                bufferInfos[1].range = frameHistogramBuffers_[frameIndex].size();
+                bufferInfos[2].buffer = frameExposureBuffers_[frameIndex].buffer();
+                bufferInfos[2].range = sizeof(ExposureState);
+
+                std::array<VkWriteDescriptorSet, 3> exposureWrites{};
+                for (uint32_t binding = 0; binding < exposureWrites.size(); ++binding) {
+                    exposureWrites[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                    exposureWrites[binding].dstSet = exposureReduceDescriptorSets_[frameIndex];
+                    exposureWrites[binding].dstBinding = binding;
+                    exposureWrites[binding].descriptorCount = 1;
+                    exposureWrites[binding].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                    exposureWrites[binding].pBufferInfo = &bufferInfos[binding];
+                }
+
+                vkUpdateDescriptorSets(context_.vkDevice(),
+                                       static_cast<uint32_t>(exposureWrites.size()),
+                                       exposureWrites.data(),
+                                       0,
+                                       nullptr);
+                rhi::debug::setObjectName(context_.vkDevice(),
+                                          exposureReduceDescriptorSets_[frameIndex],
+                                          VK_OBJECT_TYPE_DESCRIPTOR_SET,
+                                          "ExposureReduceDescriptorSet" + std::to_string(frameIndex));
+            }
+        } catch (const std::exception& error) {
+            exposureReduceDescriptorSets_.clear();
+            disableAutoExposureFallback(std::string("GPU exposure reduce descriptor allocation failed: ") +
+                                        error.what());
+        }
+    }
 }
 
 void Renderer::createLuminanceResources()
@@ -2433,30 +2772,19 @@ void Renderer::createLuminanceResources()
         static_cast<VkDeviceSize>(luminancePartialCount_) * sizeof(LuminancePartial);
 
     frameLuminanceBuffers_.resize(frames_.size());
-    frameLuminanceReadbackBuffers_.resize(frames_.size());
-    frameLuminanceReadbackReady_.assign(frames_.size(), 0);
+    frameLuminanceReadbackBuffers_.clear();
+    frameLuminanceReadbackReady_.clear();
 
     for (size_t frameIndex = 0; frameIndex < frames_.size(); ++frameIndex) {
         rhi::VulkanBufferCreateInfo luminanceInfo{};
         luminanceInfo.size = luminanceBufferSize;
-        luminanceInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        luminanceInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         luminanceInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
         frameLuminanceBuffers_[frameIndex].createBuffer(context_, luminanceInfo);
         rhi::debug::setObjectName(context_.vkDevice(),
                                   frameLuminanceBuffers_[frameIndex].buffer(),
                                   VK_OBJECT_TYPE_BUFFER,
                                   "LuminancePartialBuffer" + std::to_string(frameIndex));
-
-        rhi::VulkanBufferCreateInfo readbackInfo{};
-        readbackInfo.size = luminanceBufferSize;
-        readbackInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        readbackInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
-        readbackInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
-        frameLuminanceReadbackBuffers_[frameIndex].createBuffer(context_, readbackInfo);
-        rhi::debug::setObjectName(context_.vkDevice(),
-                                  frameLuminanceReadbackBuffers_[frameIndex].buffer(),
-                                  VK_OBJECT_TYPE_BUFFER,
-                                  "LuminanceReadbackBuffer" + std::to_string(frameIndex));
     }
 
     autoExposureAvailable_ = true;
@@ -2495,31 +2823,19 @@ void Renderer::createHistogramResources()
     const VkDeviceSize histogramBufferSize = static_cast<VkDeviceSize>(kHistogramBinCount * sizeof(uint32_t));
 
     frameHistogramBuffers_.resize(frames_.size());
-    frameHistogramReadbackBuffers_.resize(frames_.size());
-    frameHistogramReadbackReady_.assign(frames_.size(), 0);
+    frameHistogramReadbackBuffers_.clear();
+    frameHistogramReadbackReady_.clear();
 
     for (size_t frameIndex = 0; frameIndex < frames_.size(); ++frameIndex) {
         rhi::VulkanBufferCreateInfo histogramInfo{};
         histogramInfo.size = histogramBufferSize;
-        histogramInfo.usage =
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        histogramInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         histogramInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
         frameHistogramBuffers_[frameIndex].createBuffer(context_, histogramInfo);
         rhi::debug::setObjectName(context_.vkDevice(),
                                   frameHistogramBuffers_[frameIndex].buffer(),
                                   VK_OBJECT_TYPE_BUFFER,
                                   "LuminanceHistogramBuffer" + std::to_string(frameIndex));
-
-        rhi::VulkanBufferCreateInfo readbackInfo{};
-        readbackInfo.size = histogramBufferSize;
-        readbackInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        readbackInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
-        readbackInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
-        frameHistogramReadbackBuffers_[frameIndex].createBuffer(context_, readbackInfo);
-        rhi::debug::setObjectName(context_.vkDevice(),
-                                  frameHistogramReadbackBuffers_[frameIndex].buffer(),
-                                  VK_OBJECT_TYPE_BUFFER,
-                                  "LuminanceHistogramReadbackBuffer" + std::to_string(frameIndex));
     }
 
     histogramExposureAvailable_ = true;
@@ -2535,6 +2851,54 @@ void Renderer::destroyHistogramResources()
     frameHistogramBuffers_.clear();
 }
 
+void Renderer::createExposureResources()
+{
+    destroyExposureResources();
+
+    if (frames_.empty()) {
+        return;
+    }
+
+    frameExposureBuffers_.resize(frames_.size());
+    frameExposureReadbackReady_.assign(frames_.size(), 0);
+
+    const ExposureMode mode =
+        exposureModeValue(toneMappingSettings_.enableAutoExposure ? toneMappingSettings_.exposureMode
+                                                                  : static_cast<int>(ExposureMode::Manual));
+    const ExposureState initialState{
+        toneMappingExposureValue(toneMappingSettings_.enableAutoExposure ? currentExposure_
+                                                                         : toneMappingSettings_.manualExposure),
+        averageLuminance_,
+        histogramClippedLuminance_,
+        static_cast<uint32_t>(mode),
+    };
+
+    for (size_t frameIndex = 0; frameIndex < frames_.size(); ++frameIndex) {
+        rhi::VulkanBufferCreateInfo exposureInfo{};
+        exposureInfo.size = sizeof(ExposureState);
+        exposureInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        exposureInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
+        exposureInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+        frameExposureBuffers_[frameIndex].createBuffer(context_, exposureInfo);
+        frameExposureBuffers_[frameIndex].upload(
+            std::as_bytes(std::span<const ExposureState>(&initialState, 1)));
+        rhi::debug::setObjectName(context_.vkDevice(),
+                                  frameExposureBuffers_[frameIndex].buffer(),
+                                  VK_OBJECT_TYPE_BUFFER,
+                                  "ExposureStateBuffer" + std::to_string(frameIndex));
+    }
+
+    exposureReduceAvailable_ = true;
+}
+
+void Renderer::destroyExposureResources()
+{
+    exposureReduceAvailable_ = false;
+    exposureReduceDescriptorSets_.clear();
+    frameExposureReadbackReady_.clear();
+    frameExposureBuffers_.clear();
+}
+
 void Renderer::disableAutoExposureFallback(std::string_view reason)
 {
     if (!autoExposureWarningLogged_) {
@@ -2548,6 +2912,8 @@ void Renderer::disableAutoExposureFallback(std::string_view reason)
     destroyHistogramResources();
     luminancePipeline_.reset();
     histogramPipeline_.reset();
+    exposureReducePipeline_.reset();
+    exposureReduceAvailable_ = false;
 }
 
 void Renderer::disableLogAverageExposureFallback(std::string_view reason)
@@ -2559,6 +2925,8 @@ void Renderer::disableLogAverageExposureFallback(std::string_view reason)
 
     destroyLuminanceResources();
     luminancePipeline_.reset();
+    exposureReducePipeline_.reset();
+    exposureReduceAvailable_ = false;
     if (!isHistogramExposureActive()) {
         currentExposure_ = toneMappingExposureValue(toneMappingSettings_.manualExposure);
     }
@@ -2573,6 +2941,8 @@ void Renderer::disableHistogramExposureFallback(std::string_view reason)
 
     destroyHistogramResources();
     histogramPipeline_.reset();
+    exposureReducePipeline_.reset();
+    exposureReduceAvailable_ = false;
     if (!isLogAverageExposureActive()) {
         currentExposure_ = toneMappingExposureValue(toneMappingSettings_.manualExposure);
     }
@@ -3027,8 +3397,12 @@ void Renderer::createPipeline()
     const VkDescriptorSetLayout skyboxDescriptorSetLayout = skyboxDescriptorSetLayout_.handle();
     const VkDescriptorSetLayout postProcessSingleImageDescriptorSetLayout =
         postProcessSingleImageDescriptorSetLayout_.handle();
+    const VkDescriptorSetLayout postProcessDualImageDescriptorSetLayout =
+        postProcessDualImageDescriptorSetLayout_.handle();
     const VkDescriptorSetLayout postProcessCompositeDescriptorSetLayout =
         postProcessCompositeDescriptorSetLayout_.handle();
+    const VkDescriptorSetLayout postProcessExposureReduceDescriptorSetLayout =
+        postProcessExposureReduceDescriptorSetLayout_.handle();
     const VkPushConstantRange pushConstantRange{
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(PushConstants))};
     const VkPushConstantRange skyboxPushConstantRange{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -3038,6 +3412,10 @@ void Renderer::createPipeline()
         VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(BloomExtractPushConstants))};
     const VkPushConstantRange bloomBlurPushConstantRange{
         VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(BloomBlurPushConstants))};
+    const VkPushConstantRange bloomDownsamplePushConstantRange{
+        VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(BloomDownsamplePushConstants))};
+    const VkPushConstantRange bloomUpsamplePushConstantRange{
+        VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(BloomUpsamplePushConstants))};
     const VkPushConstantRange compositePushConstantRange{
         VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(CompositePushConstants))};
 
@@ -3141,6 +3519,46 @@ void Renderer::createPipeline()
         context_.vkDevice(), bloomBlurPipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "BloomBlurPipelineLayout");
     bloomBlurPipelineColorFormat_ = bloomBlurPipelineInfo.colorFormat;
 
+    rhi::VulkanPipelineCreateInfo bloomDownsamplePipelineInfo{};
+    bloomDownsamplePipelineInfo.vertexShaderPath = shaderPath("fullscreen.vert.spv");
+    bloomDownsamplePipelineInfo.fragmentShaderPath = shaderPath("bloom_downsample.frag.spv");
+    bloomDownsamplePipelineInfo.colorFormat = kBloomColorFormat;
+    bloomDownsamplePipelineInfo.descriptorSetLayouts =
+        std::span<const VkDescriptorSetLayout>(&postProcessSingleImageDescriptorSetLayout, 1);
+    bloomDownsamplePipelineInfo.pushConstantRanges =
+        std::span<const VkPushConstantRange>(&bloomDownsamplePushConstantRange, 1);
+
+    bloomDownsamplePipeline_.create(context_.vkDevice(), bloomDownsamplePipelineInfo);
+    rhi::debug::setObjectName(context_.vkDevice(),
+                              bloomDownsamplePipeline_.pipeline(),
+                              VK_OBJECT_TYPE_PIPELINE,
+                              "BloomDownsamplePipeline");
+    rhi::debug::setObjectName(context_.vkDevice(),
+                              bloomDownsamplePipeline_.layout(),
+                              VK_OBJECT_TYPE_PIPELINE_LAYOUT,
+                              "BloomDownsamplePipelineLayout");
+    bloomDownsamplePipelineColorFormat_ = bloomDownsamplePipelineInfo.colorFormat;
+
+    rhi::VulkanPipelineCreateInfo bloomUpsamplePipelineInfo{};
+    bloomUpsamplePipelineInfo.vertexShaderPath = shaderPath("fullscreen.vert.spv");
+    bloomUpsamplePipelineInfo.fragmentShaderPath = shaderPath("bloom_upsample.frag.spv");
+    bloomUpsamplePipelineInfo.colorFormat = kBloomColorFormat;
+    bloomUpsamplePipelineInfo.descriptorSetLayouts =
+        std::span<const VkDescriptorSetLayout>(&postProcessDualImageDescriptorSetLayout, 1);
+    bloomUpsamplePipelineInfo.pushConstantRanges =
+        std::span<const VkPushConstantRange>(&bloomUpsamplePushConstantRange, 1);
+
+    bloomUpsamplePipeline_.create(context_.vkDevice(), bloomUpsamplePipelineInfo);
+    rhi::debug::setObjectName(context_.vkDevice(),
+                              bloomUpsamplePipeline_.pipeline(),
+                              VK_OBJECT_TYPE_PIPELINE,
+                              "BloomUpsamplePipeline");
+    rhi::debug::setObjectName(context_.vkDevice(),
+                              bloomUpsamplePipeline_.layout(),
+                              VK_OBJECT_TYPE_PIPELINE_LAYOUT,
+                              "BloomUpsamplePipelineLayout");
+    bloomUpsamplePipelineColorFormat_ = bloomUpsamplePipelineInfo.colorFormat;
+
     rhi::VulkanPipelineCreateInfo compositePipelineInfo{};
     compositePipelineInfo.vertexShaderPath = shaderPath("fullscreen.vert.spv");
     compositePipelineInfo.fragmentShaderPath = shaderPath("composite.frag.spv");
@@ -3158,6 +3576,7 @@ void Renderer::createPipeline()
 
     luminancePipeline_.reset();
     histogramPipeline_.reset();
+    exposureReducePipeline_.reset();
     depthPyramidPipeline_.reset();
     if (depthPyramidDescriptorSetLayout_.handle() != VK_NULL_HANDLE) {
         const VkDescriptorSetLayout depthPyramidDescriptorSetLayout = depthPyramidDescriptorSetLayout_.handle();
@@ -3229,6 +3648,32 @@ void Renderer::createPipeline()
         } catch (const std::exception& error) {
             disableHistogramExposureFallback(
                 std::string("Histogram exposure compute pipeline creation failed: ") + error.what());
+        }
+
+        if (postProcessExposureReduceDescriptorSetLayout != VK_NULL_HANDLE) {
+            try {
+                const VkPushConstantRange exposureReducePushConstantRange{
+                    VK_SHADER_STAGE_COMPUTE_BIT, 0, static_cast<uint32_t>(sizeof(ExposureReducePushConstants))};
+
+                rhi::VulkanComputePipelineCreateInfo exposureReducePipelineInfo{};
+                exposureReducePipelineInfo.shaderPath = shaderPath("exposure_reduce.comp.spv");
+                exposureReducePipelineInfo.descriptorSetLayouts =
+                    std::span<const VkDescriptorSetLayout>(&postProcessExposureReduceDescriptorSetLayout, 1);
+                exposureReducePipelineInfo.pushConstantRanges =
+                    std::span<const VkPushConstantRange>(&exposureReducePushConstantRange, 1);
+                exposureReducePipeline_.create(context_.vkDevice(), exposureReducePipelineInfo);
+                rhi::debug::setObjectName(context_.vkDevice(),
+                                          exposureReducePipeline_.pipeline(),
+                                          VK_OBJECT_TYPE_PIPELINE,
+                                          "ExposureReduceComputePipeline");
+                rhi::debug::setObjectName(context_.vkDevice(),
+                                          exposureReducePipeline_.layout(),
+                                          VK_OBJECT_TYPE_PIPELINE_LAYOUT,
+                                          "ExposureReducePipelineLayout");
+            } catch (const std::exception& error) {
+                disableAutoExposureFallback(std::string("GPU exposure reduce compute pipeline creation failed: ") +
+                                            error.what());
+            }
         }
     }
 }
@@ -6474,8 +6919,12 @@ void Renderer::buildDebugUi()
 
     if (ImGui::CollapsingHeader("Bloom", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Checkbox("Enabled", &bloomSettings_.enabled);
+        ImGui::Checkbox("Use mip-chain bloom", &bloomSettings_.useMipChain);
+        ImGui::Text("Method: %s", bloomSettings_.useMipChain ? "Mip-chain" : "Legacy separable blur");
+        ImGui::Text("Mip count: %zu", bloomMipDownsampleImages_.size());
         ImGui::DragFloat("Threshold", &bloomSettings_.threshold, 0.01f, 0.0f, 32.0f, "%.3f");
         ImGui::DragFloat("Intensity", &bloomSettings_.intensity, 0.01f, 0.0f, 8.0f, "%.3f");
+        ImGui::DragFloat("Radius", &bloomSettings_.radius, 0.01f, 0.25f, 4.0f, "%.2f");
     }
 
     if (ImGui::CollapsingHeader("CSM", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -7411,6 +7860,7 @@ void Renderer::drawRenderTargetDebugUi()
         ImGui::Checkbox("Show scene color", &showRenderTargetSceneColor_);
         ImGui::Checkbox("Show bloom extract", &showRenderTargetBloomExtract_);
         ImGui::Checkbox("Show blurred bloom", &showRenderTargetBlurredBloom_);
+        ImGui::Checkbox("Show bloom mip-chain", &showRenderTargetBloomMipChain_);
         ImGui::Checkbox("Show final composite metadata", &showRenderTargetFinalCompositeMetadata_);
         ImGui::Checkbox("Show BRDF LUT", &showRenderTargetBrdfLut_);
         ImGui::Checkbox("Show CSM cascades", &showRenderTargetCsmCascades_);
@@ -7507,6 +7957,36 @@ void Renderer::drawRenderTargetDebugUi()
                     1,
                     1,
                     layoutUsage("Final blurred bloom sampled by composite and preview", bloomPongLayout_),
+                    true,
+                    "2D HDR"});
+            }
+            for (size_t level = 0; level < bloomMipDownsampleImages_.size(); ++level) {
+                const VkExtent3D extent = bloomMipDownsampleImages_[level].extent();
+                const std::string debugName = "BloomMipDownsample" + std::to_string(level);
+                addMetadataRow(RenderTargetDebugMetadata{
+                    debugName.c_str(),
+                    extentString(extent.width, extent.height),
+                    bloomMipDownsampleImages_[level].format(),
+                    1,
+                    1,
+                    layoutUsage("Mip-chain bloom downsample level",
+                                level < bloomMipDownsampleLayouts_.size() ? bloomMipDownsampleLayouts_[level]
+                                                                          : VK_IMAGE_LAYOUT_UNDEFINED),
+                    true,
+                    "2D HDR"});
+            }
+            for (size_t level = 0; level < bloomMipUpsampleImages_.size(); ++level) {
+                const VkExtent3D extent = bloomMipUpsampleImages_[level].extent();
+                const std::string debugName = "BloomMipUpsample" + std::to_string(level);
+                addMetadataRow(RenderTargetDebugMetadata{
+                    debugName.c_str(),
+                    extentString(extent.width, extent.height),
+                    bloomMipUpsampleImages_[level].format(),
+                    1,
+                    1,
+                    layoutUsage("Mip-chain bloom upsample accumulation level",
+                                level < bloomMipUpsampleLayouts_.size() ? bloomMipUpsampleLayouts_[level]
+                                                                        : VK_IMAGE_LAYOUT_UNDEFINED),
                     true,
                     "2D HDR"});
             }
@@ -7655,6 +8135,47 @@ void Renderer::drawRenderTargetDebugUi()
                                         previewSize,
                                         hdrPreviewExposure);
             }
+        }
+    }
+
+    if (showRenderTargetBloomMipChain_ && !bloomMipDownsampleImages_.empty() &&
+        ImGui::CollapsingHeader("Bloom Mip Chain", ImGuiTreeNodeFlags_DefaultOpen)) {
+        const int maxMip = static_cast<int>(bloomMipDownsampleImages_.size() - 1u);
+        int selectedMip = static_cast<int>(std::min(selectedBloomMipDebugLevel_,
+                                                    static_cast<uint32_t>(bloomMipDownsampleImages_.size() - 1u)));
+        ImGui::SliderInt("Selected bloom mip", &selectedMip, 0, maxMip);
+        selectedBloomMipDebugLevel_ = static_cast<uint32_t>(std::max(selectedMip, 0));
+
+        const rhi::VulkanImage& downsampleImage = bloomMipDownsampleImages_[selectedBloomMipDebugLevel_];
+        const VkExtent3D downsampleExtent = downsampleImage.extent();
+        ImGui::Text("Downsample %u: %u x %u, %s",
+                    selectedBloomMipDebugLevel_,
+                    downsampleExtent.width,
+                    downsampleExtent.height,
+                    vkFormatName(downsampleImage.format()));
+        drawRenderTargetPreview(downsampleImage.imageView(),
+                                postProcessSampler_,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                downsampleExtent.width,
+                                downsampleExtent.height,
+                                previewSize,
+                                hdrPreviewExposure);
+
+        if (selectedBloomMipDebugLevel_ < bloomMipUpsampleImages_.size()) {
+            const rhi::VulkanImage& upsampleImage = bloomMipUpsampleImages_[selectedBloomMipDebugLevel_];
+            const VkExtent3D upsampleExtent = upsampleImage.extent();
+            ImGui::Text("Upsample %u: %u x %u, %s",
+                        selectedBloomMipDebugLevel_,
+                        upsampleExtent.width,
+                        upsampleExtent.height,
+                        vkFormatName(upsampleImage.format()));
+            drawRenderTargetPreview(upsampleImage.imageView(),
+                                    postProcessSampler_,
+                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                    upsampleExtent.width,
+                                    upsampleExtent.height,
+                                    previewSize,
+                                    hdrPreviewExposure);
         }
     }
 
@@ -8069,6 +8590,7 @@ void Renderer::drawExposureDebugUi()
     ImGui::Text("Log-average luminance: %.4f", averageLuminance_);
     ImGui::Text("Histogram clipped luminance: %.4f", histogramClippedLuminance_);
     ImGui::Text("Exposure mode: %s", exposureModeName(mode).data());
+    ImGui::Text("Composite exposure source: %s", isGpuExposureActive() ? "GPU exposure buffer" : "push constant");
 
     constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                                       ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp;
@@ -8168,6 +8690,7 @@ void Renderer::clampRuntimeSettings()
 
     bloomSettings_.threshold = std::max(bloomSettings_.threshold, 0.0f);
     bloomSettings_.intensity = std::max(bloomSettings_.intensity, 0.0f);
+    bloomSettings_.radius = std::clamp(bloomSettings_.radius, 0.25f, 4.0f);
 
     csmSettings_.cascadeCount = std::clamp(csmSettings_.cascadeCount, 1U, kMaxShadowCascades);
     csmSettings_.lambda = std::clamp(csmSettings_.lambda, 0.0f, 1.0f);
@@ -8487,14 +9010,19 @@ void Renderer::recreateSwapchain()
     const bool exposurePipelineMissing =
         toneMappingSettings_.enableAutoExposure && postProcessLuminanceDescriptorSetLayout_.handle() != VK_NULL_HANDLE &&
         ((autoExposureAvailable_ && luminancePipeline_.pipeline() == VK_NULL_HANDLE) ||
-         (histogramExposureAvailable_ && histogramPipeline_.pipeline() == VK_NULL_HANDLE));
+         (histogramExposureAvailable_ && histogramPipeline_.pipeline() == VK_NULL_HANDLE) ||
+         (exposureReduceAvailable_ && exposureReducePipeline_.pipeline() == VK_NULL_HANDLE));
     const bool pipelineNeedsRecreate =
         pipeline_.pipeline() == VK_NULL_HANDLE || pipelineColorFormat_ != kSceneColorFormat ||
         pipelineDepthFormat_ != swapchain_.depthFormat() || skyboxPipeline_.pipeline() == VK_NULL_HANDLE ||
         skyboxPipelineColorFormat_ != kSceneColorFormat || skyboxPipelineDepthFormat_ != swapchain_.depthFormat() ||
         shadowPipelineDepthFormat_ != shadowMap_.format() || bloomExtractPipeline_.pipeline() == VK_NULL_HANDLE ||
         bloomExtractPipelineColorFormat_ != kBloomColorFormat || bloomBlurPipeline_.pipeline() == VK_NULL_HANDLE ||
-        bloomBlurPipelineColorFormat_ != kBloomColorFormat || compositePipeline_.pipeline() == VK_NULL_HANDLE ||
+        bloomBlurPipelineColorFormat_ != kBloomColorFormat ||
+        bloomDownsamplePipeline_.pipeline() == VK_NULL_HANDLE ||
+        bloomDownsamplePipelineColorFormat_ != kBloomColorFormat ||
+        bloomUpsamplePipeline_.pipeline() == VK_NULL_HANDLE ||
+        bloomUpsamplePipelineColorFormat_ != kBloomColorFormat || compositePipeline_.pipeline() == VK_NULL_HANDLE ||
         compositePipelineColorFormat_ != swapchain_.colorFormat() || exposurePipelineMissing;
     if (pipelineNeedsRecreate) {
         createPipeline();
@@ -8535,6 +9063,44 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             true,
         };
     };
+
+    const auto bloomResource = [&bloomClear](const char* name,
+                                             rhi::VulkanImage& image,
+                                             VkImageLayout& layout) {
+        const VkExtent3D extent = image.extent();
+        return renderer::RenderGraphImageResource{
+            name,
+            image.image(),
+            image.imageView(),
+            VkExtent2D{extent.width, extent.height},
+            &layout,
+            image.format(),
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            1,
+            1,
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            bloomClear,
+            true,
+            false,
+        };
+    };
+
+    std::vector<renderer::RenderGraphImageResource> bloomDownsampleResources;
+    bloomDownsampleResources.reserve(bloomMipDownsampleImages_.size());
+    for (size_t level = 0; level < bloomMipDownsampleImages_.size() && level < bloomMipDownsampleLayouts_.size();
+         ++level) {
+        const std::string name = "BloomMipDownsample" + std::to_string(level);
+        bloomDownsampleResources.push_back(
+            bloomResource(name.c_str(), bloomMipDownsampleImages_[level], bloomMipDownsampleLayouts_[level]));
+    }
+
+    std::vector<renderer::RenderGraphImageResource> bloomUpsampleResources;
+    bloomUpsampleResources.reserve(bloomMipUpsampleImages_.size());
+    for (size_t level = 0; level < bloomMipUpsampleImages_.size() && level < bloomMipUpsampleLayouts_.size(); ++level) {
+        const std::string name = "BloomMipUpsample" + std::to_string(level);
+        bloomUpsampleResources.push_back(
+            bloomResource(name.c_str(), bloomMipUpsampleImages_[level], bloomMipUpsampleLayouts_[level]));
+    }
 
     return renderer::RenderGraphFrameResources{
         renderer::RenderGraphImageResource{
@@ -8597,6 +9163,8 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             true,
             false,
         },
+        std::move(bloomDownsampleResources),
+        std::move(bloomUpsampleResources),
         renderer::RenderGraphImageResource{
             "DepthPyramidHiZ",
             depthPyramid_.image(),
@@ -8632,7 +9200,7 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         bufferResource("LuminancePartials",
                        frameLuminanceBuffers_,
                        currentFrame_,
-                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT),
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
         bufferResource("LuminanceReadback",
                        frameLuminanceReadbackBuffers_,
                        currentFrame_,
@@ -8640,12 +9208,15 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         bufferResource("LuminanceHistogram",
                        frameHistogramBuffers_,
                        currentFrame_,
-                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                           VK_BUFFER_USAGE_TRANSFER_SRC_BIT),
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT),
         bufferResource("HistogramReadback",
                        frameHistogramReadbackBuffers_,
                        currentFrame_,
                        VK_BUFFER_USAGE_TRANSFER_DST_BIT),
+        bufferResource("ExposureState",
+                       frameExposureBuffers_,
+                       currentFrame_,
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
     };
 }
 
@@ -8654,182 +9225,37 @@ void Renderer::updateAutoExposureFromReadback(uint32_t frameIndex)
     const ExposureMode mode = exposureModeValue(toneMappingSettings_.exposureMode);
     if (!toneMappingSettings_.enableAutoExposure || mode == ExposureMode::Manual) {
         currentExposure_ = toneMappingExposureValue(toneMappingSettings_.manualExposure);
+        if (frameIndex < frameExposureBuffers_.size() && frameExposureBuffers_[frameIndex].valid()) {
+            const ExposureState manualState{
+                currentExposure_,
+                averageLuminance_,
+                histogramClippedLuminance_,
+                static_cast<uint32_t>(ExposureMode::Manual),
+            };
+            frameExposureBuffers_[frameIndex].upload(std::as_bytes(std::span<const ExposureState>(&manualState, 1)));
+            if (frameIndex < frameExposureReadbackReady_.size()) {
+                frameExposureReadbackReady_[frameIndex] = 1;
+            }
+        }
         return;
     }
 
-    const auto readLogAverageLuminance = [this, frameIndex](float& luminance) {
-        if (!isLogAverageExposureActive() || frameIndex >= frameLuminanceReadbackReady_.size() ||
-            frameLuminanceReadbackReady_[frameIndex] == 0 || frameIndex >= frameLuminanceReadbackBuffers_.size() ||
-            luminancePartialCount_ == 0) {
-            return false;
-        }
-
-        rhi::VulkanBuffer& readbackBuffer = frameLuminanceReadbackBuffers_[frameIndex];
-        if (!readbackBuffer.valid()) {
-            return false;
-        }
-
-        std::vector<LuminancePartial> partials(luminancePartialCount_);
-        readbackBuffer.download(
-            std::as_writable_bytes(std::span<LuminancePartial>(partials.data(), partials.size())));
-
-        double sumLogLuminance = 0.0;
-        double sampleCount = 0.0;
-        for (const LuminancePartial& partial : partials) {
-            if (partial.sampleCount <= 0.0f || !std::isfinite(partial.sumLogLuminance) ||
-                !std::isfinite(partial.sampleCount)) {
-                continue;
-            }
-            sumLogLuminance += static_cast<double>(partial.sumLogLuminance);
-            sampleCount += static_cast<double>(partial.sampleCount);
-        }
-
-        if (sampleCount <= 0.0) {
-            return false;
-        }
-
-        const double averageLogLuminance = sumLogLuminance / sampleCount;
-        const double averageLuminance = std::exp(averageLogLuminance);
-        if (!std::isfinite(averageLuminance) || averageLuminance <= 0.0) {
-            return false;
-        }
-
-        luminance = static_cast<float>(std::max(averageLuminance, static_cast<double>(kMinAverageLuminance)));
-        return true;
-    };
-
-    const auto readHistogramLuminance = [this, frameIndex](float& luminance) {
-        if (!isHistogramExposureActive() || frameIndex >= frameHistogramReadbackReady_.size() ||
-            frameHistogramReadbackReady_[frameIndex] == 0 || frameIndex >= frameHistogramReadbackBuffers_.size()) {
-            return false;
-        }
-
-        rhi::VulkanBuffer& readbackBuffer = frameHistogramReadbackBuffers_[frameIndex];
-        if (!readbackBuffer.valid()) {
-            return false;
-        }
-
-        std::array<uint32_t, kHistogramBinCount> bins{};
-        readbackBuffer.download(std::as_writable_bytes(std::span<uint32_t>(bins.data(), bins.size())));
-
-        uint64_t totalSamples = 0;
-        for (uint32_t count : bins) {
-            totalSamples += count;
-        }
-        if (totalSamples == 0) {
-            return false;
-        }
-
-        const auto [lowPercentile, highPercentile] =
-            sanitizedPercentileRange(toneMappingSettings_.lowPercentile, toneMappingSettings_.highPercentile);
-        const uint64_t lowCut =
-            std::min<uint64_t>(totalSamples,
-                               static_cast<uint64_t>(std::floor(static_cast<double>(totalSamples) *
-                                                                static_cast<double>(lowPercentile))));
-        uint64_t highCut =
-            std::min<uint64_t>(totalSamples,
-                               static_cast<uint64_t>(std::ceil(static_cast<double>(totalSamples) *
-                                                               static_cast<double>(highPercentile))));
-        if (highCut <= lowCut) {
-            highCut = std::min<uint64_t>(totalSamples, lowCut + 1);
-        }
-        if (highCut <= lowCut) {
-            return false;
-        }
-
-        const auto [minLogLuminance, maxLogLuminance] = sanitizedHistogramLogRange(
-            toneMappingSettings_.histogramMinLogLuminance, toneMappingSettings_.histogramMaxLogLuminance);
-        const double binWidth =
-            static_cast<double>(maxLogLuminance - minLogLuminance) / static_cast<double>(kHistogramBinCount);
-
-        uint64_t cumulative = 0;
-        uint64_t weightedSampleCount = 0;
-        double weightedLuminanceSum = 0.0;
-        for (size_t binIndex = 0; binIndex < bins.size(); ++binIndex) {
-            const uint64_t count = bins[binIndex];
-            const uint64_t binStart = cumulative;
-            const uint64_t binEnd = cumulative + count;
-            cumulative = binEnd;
-
-            const uint64_t clippedStart = std::max(binStart, lowCut);
-            const uint64_t clippedEnd = std::min(binEnd, highCut);
-            if (clippedEnd <= clippedStart) {
-                continue;
-            }
-
-            const uint64_t includedCount = clippedEnd - clippedStart;
-            const double logLuminance =
-                static_cast<double>(minLogLuminance) + (static_cast<double>(binIndex) + 0.5) * binWidth;
-            const double binLuminance = std::exp2(logLuminance);
-            weightedLuminanceSum += binLuminance * static_cast<double>(includedCount);
-            weightedSampleCount += includedCount;
-        }
-
-        if (weightedSampleCount == 0) {
-            return false;
-        }
-
-        const double averageClippedLuminance =
-            weightedLuminanceSum / static_cast<double>(weightedSampleCount);
-        if (!std::isfinite(averageClippedLuminance) || averageClippedLuminance <= 0.0) {
-            return false;
-        }
-
-        luminance =
-            static_cast<float>(std::max(averageClippedLuminance, static_cast<double>(kMinAverageLuminance)));
-        return true;
-    };
-
-    float logAverageLuminance = averageLuminance_;
-    const bool logAverageRead = readLogAverageLuminance(logAverageLuminance);
-    if (logAverageRead) {
-        averageLuminance_ = logAverageLuminance;
-    }
-
-    float histogramLuminance = histogramClippedLuminance_;
-    const bool histogramRead = readHistogramLuminance(histogramLuminance);
-    if (histogramRead) {
-        histogramClippedLuminance_ = histogramLuminance;
-    }
-
-    float exposureLuminance = 0.0f;
-    bool hasExposureLuminance = false;
-    if (mode == ExposureMode::LogAverage) {
-        exposureLuminance = logAverageLuminance;
-        hasExposureLuminance = logAverageRead;
-    } else if (mode == ExposureMode::Histogram) {
-        if (histogramRead) {
-            exposureLuminance = histogramLuminance;
-            hasExposureLuminance = true;
-        } else if (logAverageRead) {
-            exposureLuminance = logAverageLuminance;
-            hasExposureLuminance = true;
-        }
-    }
-
-    if (!hasExposureLuminance) {
+    if (frameIndex >= frameExposureReadbackReady_.size() || frameExposureReadbackReady_[frameIndex] == 0 ||
+        frameIndex >= frameExposureBuffers_.size() || !frameExposureBuffers_[frameIndex].valid()) {
         return;
     }
 
-    const float minExposure = std::max(toneMappingSettings_.minExposure, 0.0f);
-    const float maxExposure = std::max(toneMappingSettings_.maxExposure, minExposure);
-    const float unclampedTarget =
-        toneMappingSettings_.targetLuminance / std::max(exposureLuminance, kMinAverageLuminance);
-    const float targetExposure = std::clamp(unclampedTarget, minExposure, maxExposure);
-
-    const auto now = std::chrono::steady_clock::now();
-    const float deltaTime = std::max(0.0f, std::chrono::duration<float>(now - lastAutoExposureUpdate_).count());
-    lastAutoExposureUpdate_ = now;
-
-    if (!std::isfinite(currentExposure_) || currentExposure_ <= 0.0f) {
-        currentExposure_ = toneMappingExposureValue(toneMappingSettings_.manualExposure);
+    ExposureState state{};
+    frameExposureBuffers_[frameIndex].download(std::as_writable_bytes(std::span<ExposureState>(&state, 1)));
+    if (std::isfinite(state.exposure) && state.exposure > 0.0f) {
+        currentExposure_ = toneMappingExposureValue(state.exposure);
     }
-
-    const float adaptationRate = std::max(toneMappingSettings_.adaptationRate, 0.0f);
-    const float adaptationAlpha = 1.0f - std::exp(-adaptationRate * deltaTime);
-    currentExposure_ = std::clamp(currentExposure_ + (targetExposure - currentExposure_) * adaptationAlpha,
-                                  minExposure,
-                                  maxExposure);
+    if (std::isfinite(state.averageLuminance) && state.averageLuminance > 0.0f) {
+        averageLuminance_ = std::max(state.averageLuminance, kMinAverageLuminance);
+    }
+    if (std::isfinite(state.histogramLuminance) && state.histogramLuminance > 0.0f) {
+        histogramClippedLuminance_ = std::max(state.histogramLuminance, kMinAverageLuminance);
+    }
 }
 
 bool Renderer::readGpuVisibleCount(uint32_t frameIndex, uint32_t& visibleCount)
@@ -8973,9 +9399,7 @@ bool Renderer::isLogAverageExposureActive() const
     return toneMappingSettings_.enableAutoExposure && autoExposureAvailable_ &&
            luminancePipeline_.pipeline() != VK_NULL_HANDLE && luminancePipeline_.layout() != VK_NULL_HANDLE &&
            luminanceDescriptorSets_.size() == frames_.size() && frameLuminanceBuffers_.size() == frames_.size() &&
-           frameLuminanceReadbackBuffers_.size() == frames_.size() &&
-           frameLuminanceReadbackReady_.size() == frames_.size() && luminancePartialCount_ > 0 &&
-           luminanceGroupCountX_ > 0 && luminanceGroupCountY_ > 0;
+           luminancePartialCount_ > 0 && luminanceGroupCountX_ > 0 && luminanceGroupCountY_ > 0;
 }
 
 bool Renderer::isHistogramExposureActive() const
@@ -8983,8 +9407,14 @@ bool Renderer::isHistogramExposureActive() const
     return toneMappingSettings_.enableAutoExposure && histogramExposureAvailable_ &&
            histogramPipeline_.pipeline() != VK_NULL_HANDLE && histogramPipeline_.layout() != VK_NULL_HANDLE &&
            histogramDescriptorSets_.size() == frames_.size() && frameHistogramBuffers_.size() == frames_.size() &&
-           frameHistogramReadbackBuffers_.size() == frames_.size() &&
-           frameHistogramReadbackReady_.size() == frames_.size();
+           isLogAverageExposureActive();
+}
+
+bool Renderer::isGpuExposureActive() const
+{
+    return toneMappingSettings_.enableAutoExposure && exposureReduceAvailable_ &&
+           exposureReducePipeline_.pipeline() != VK_NULL_HANDLE && exposureReducePipeline_.layout() != VK_NULL_HANDLE &&
+           exposureReduceDescriptorSets_.size() == frames_.size() && frameExposureBuffers_.size() == frames_.size();
 }
 
 bool Renderer::isBindlessMaterialTextureActive() const
@@ -9427,14 +9857,12 @@ void Renderer::recordLuminanceCommands(VkCommandBuffer commandBuffer)
 {
     if (!isLogAverageExposureActive() || exposureModeValue(toneMappingSettings_.exposureMode) == ExposureMode::Manual ||
         currentFrame_ >= luminanceDescriptorSets_.size() ||
-        currentFrame_ >= frameLuminanceBuffers_.size() || currentFrame_ >= frameLuminanceReadbackBuffers_.size() ||
-        currentFrame_ >= frameLuminanceReadbackReady_.size()) {
+        currentFrame_ >= frameLuminanceBuffers_.size()) {
         return;
     }
 
     VkBuffer luminanceBuffer = frameLuminanceBuffers_[currentFrame_].buffer();
-    VkBuffer readbackBuffer = frameLuminanceReadbackBuffers_[currentFrame_].buffer();
-    if (luminanceBuffer == VK_NULL_HANDLE || readbackBuffer == VK_NULL_HANDLE) {
+    if (luminanceBuffer == VK_NULL_HANDLE) {
         return;
     }
 
@@ -9472,8 +9900,8 @@ void Renderer::recordLuminanceCommands(VkCommandBuffer commandBuffer)
     computeBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
     computeBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     computeBarrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-    computeBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-    computeBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    computeBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    computeBarrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
     computeBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     computeBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     computeBarrier.buffer = luminanceBuffer;
@@ -9486,29 +9914,6 @@ void Renderer::recordLuminanceCommands(VkCommandBuffer commandBuffer)
     computeDependencyInfo.pBufferMemoryBarriers = &computeBarrier;
     vkCmdPipelineBarrier2(commandBuffer, &computeDependencyInfo);
 
-    VkBufferCopy luminanceCopy{};
-    luminanceCopy.size = frameLuminanceBuffers_[currentFrame_].size();
-    vkCmdCopyBuffer(commandBuffer, luminanceBuffer, readbackBuffer, 1, &luminanceCopy);
-
-    VkBufferMemoryBarrier2 readbackBarrier{};
-    readbackBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-    readbackBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-    readbackBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    readbackBarrier.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
-    readbackBarrier.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
-    readbackBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    readbackBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    readbackBarrier.buffer = readbackBuffer;
-    readbackBarrier.offset = 0;
-    readbackBarrier.size = frameLuminanceReadbackBuffers_[currentFrame_].size();
-
-    VkDependencyInfo readbackDependencyInfo{};
-    readbackDependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    readbackDependencyInfo.bufferMemoryBarrierCount = 1;
-    readbackDependencyInfo.pBufferMemoryBarriers = &readbackBarrier;
-    vkCmdPipelineBarrier2(commandBuffer, &readbackDependencyInfo);
-
-    frameLuminanceReadbackReady_[currentFrame_] = 1;
     rhi::debug::endLabel(commandBuffer);
 
     renderGraph_.endLuminancePass();
@@ -9518,13 +9923,12 @@ void Renderer::recordHistogramCommands(VkCommandBuffer commandBuffer)
 {
     if (!isHistogramExposureActive() || exposureModeValue(toneMappingSettings_.exposureMode) == ExposureMode::Manual ||
         currentFrame_ >= histogramDescriptorSets_.size() || currentFrame_ >= frameHistogramBuffers_.size() ||
-        currentFrame_ >= frameHistogramReadbackBuffers_.size() || currentFrame_ >= frameHistogramReadbackReady_.size()) {
+        currentFrame_ >= frameExposureReadbackReady_.size()) {
         return;
     }
 
     VkBuffer histogramBuffer = frameHistogramBuffers_[currentFrame_].buffer();
-    VkBuffer readbackBuffer = frameHistogramReadbackBuffers_[currentFrame_].buffer();
-    if (histogramBuffer == VK_NULL_HANDLE || readbackBuffer == VK_NULL_HANDLE) {
+    if (histogramBuffer == VK_NULL_HANDLE) {
         return;
     }
 
@@ -9535,7 +9939,7 @@ void Renderer::recordHistogramCommands(VkCommandBuffer commandBuffer)
         return;
     }
 
-    const renderer::GpuProfileScope profileScope(gpuProfiler_, currentFrame_, commandBuffer, "HistogramExposurePass");
+    const renderer::GpuProfileScope profileScope(gpuProfiler_, currentFrame_, commandBuffer, "Histogram Exposure");
     renderGraph_.beginHistogramExposurePass();
 
     rhi::debug::beginLabel(commandBuffer, "HistogramExposurePass");
@@ -9592,8 +9996,8 @@ void Renderer::recordHistogramCommands(VkCommandBuffer commandBuffer)
     computeBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
     computeBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     computeBarrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-    computeBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-    computeBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    computeBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    computeBarrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
     computeBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     computeBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     computeBarrier.buffer = histogramBuffer;
@@ -9606,32 +10010,275 @@ void Renderer::recordHistogramCommands(VkCommandBuffer commandBuffer)
     computeDependencyInfo.pBufferMemoryBarriers = &computeBarrier;
     vkCmdPipelineBarrier2(commandBuffer, &computeDependencyInfo);
 
-    VkBufferCopy histogramCopy{};
-    histogramCopy.size = histogramBufferSize;
-    vkCmdCopyBuffer(commandBuffer, histogramBuffer, readbackBuffer, 1, &histogramCopy);
+    if (isGpuExposureActive() && currentFrame_ < exposureReduceDescriptorSets_.size() &&
+        currentFrame_ < frameExposureBuffers_.size()) {
+        VkBuffer exposureBuffer = frameExposureBuffers_[currentFrame_].buffer();
+        if (exposureBuffer != VK_NULL_HANDLE) {
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, exposureReducePipeline_.pipeline());
 
-    VkBufferMemoryBarrier2 readbackBarrier{};
-    readbackBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-    readbackBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-    readbackBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    readbackBarrier.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
-    readbackBarrier.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
-    readbackBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    readbackBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    readbackBarrier.buffer = readbackBuffer;
-    readbackBarrier.offset = 0;
-    readbackBarrier.size = frameHistogramReadbackBuffers_[currentFrame_].size();
+            const VkDescriptorSet exposureDescriptorSet = exposureReduceDescriptorSets_[currentFrame_];
+            vkCmdBindDescriptorSets(commandBuffer,
+                                    VK_PIPELINE_BIND_POINT_COMPUTE,
+                                    exposureReducePipeline_.layout(),
+                                    0,
+                                    1,
+                                    &exposureDescriptorSet,
+                                    0,
+                                    nullptr);
 
-    VkDependencyInfo readbackDependencyInfo{};
-    readbackDependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    readbackDependencyInfo.bufferMemoryBarrierCount = 1;
-    readbackDependencyInfo.pBufferMemoryBarriers = &readbackBarrier;
-    vkCmdPipelineBarrier2(commandBuffer, &readbackDependencyInfo);
+            const auto now = std::chrono::steady_clock::now();
+            const float deltaTime =
+                std::max(0.0f, std::chrono::duration<float>(now - lastAutoExposureUpdate_).count());
+            lastAutoExposureUpdate_ = now;
+            const auto [lowPercentile, highPercentile] =
+                sanitizedPercentileRange(toneMappingSettings_.lowPercentile, toneMappingSettings_.highPercentile);
+            const auto [reduceMinLogLuminance, reduceMaxLogLuminance] = sanitizedHistogramLogRange(
+                toneMappingSettings_.histogramMinLogLuminance, toneMappingSettings_.histogramMaxLogLuminance);
+            const float minExposure = std::max(toneMappingSettings_.minExposure, 0.0f);
+            const float maxExposure = std::max(toneMappingSettings_.maxExposure, minExposure);
+            const ExposureMode mode = exposureModeValue(toneMappingSettings_.exposureMode);
+            const ExposureReducePushConstants exposurePushConstants{
+                glm::uvec4(static_cast<uint32_t>(mode), luminancePartialCount_, kHistogramBinCount, 0),
+                glm::vec4(toneMappingExposureValue(toneMappingSettings_.manualExposure),
+                          std::max(toneMappingSettings_.targetLuminance, kMinAverageLuminance),
+                          minExposure,
+                          maxExposure),
+                glm::vec4(deltaTime, std::max(toneMappingSettings_.adaptationRate, 0.0f), lowPercentile, highPercentile),
+                glm::vec4(reduceMinLogLuminance, reduceMaxLogLuminance, kMinAverageLuminance, 0.0f)};
+            vkCmdPushConstants(commandBuffer,
+                               exposureReducePipeline_.layout(),
+                               VK_SHADER_STAGE_COMPUTE_BIT,
+                               0,
+                               static_cast<uint32_t>(sizeof(ExposureReducePushConstants)),
+                               &exposurePushConstants);
 
-    frameHistogramReadbackReady_[currentFrame_] = 1;
+            rhi::debug::beginLabel(commandBuffer, "ExposureReduce");
+            vkCmdDispatch(commandBuffer, 1, 1, 1);
+            rhi::debug::endLabel(commandBuffer);
+
+            VkBufferMemoryBarrier2 exposureBarrier{};
+            exposureBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+            exposureBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            exposureBarrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+            exposureBarrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_HOST_BIT;
+            exposureBarrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_HOST_READ_BIT;
+            exposureBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            exposureBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            exposureBarrier.buffer = exposureBuffer;
+            exposureBarrier.offset = 0;
+            exposureBarrier.size = sizeof(ExposureState);
+
+            VkDependencyInfo exposureDependencyInfo{};
+            exposureDependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            exposureDependencyInfo.bufferMemoryBarrierCount = 1;
+            exposureDependencyInfo.pBufferMemoryBarriers = &exposureBarrier;
+            vkCmdPipelineBarrier2(commandBuffer, &exposureDependencyInfo);
+
+            frameExposureReadbackReady_[currentFrame_] = 1;
+        }
+    }
     rhi::debug::endLabel(commandBuffer);
 
     renderGraph_.endHistogramExposurePass();
+}
+
+void Renderer::recordLegacyBloomCommands(VkCommandBuffer commandBuffer)
+{
+    rhi::debug::beginLabel(commandBuffer, "BloomExtractPass");
+    const bool bloomExtractProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "BloomExtractPass");
+    renderGraph_.beginBloomExtractPass();
+    setViewportAndScissor(commandBuffer, bloomExtent_);
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomExtractPipeline_.pipeline());
+    vkCmdBindDescriptorSets(commandBuffer,
+                            VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            bloomExtractPipeline_.layout(),
+                            0,
+                            1,
+                            &bloomExtractDescriptorSet_,
+                            0,
+                            nullptr);
+    const BloomExtractPushConstants bloomExtractPushConstants{bloomSettings_.threshold};
+    vkCmdPushConstants(commandBuffer,
+                       bloomExtractPipeline_.layout(),
+                       VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0,
+                       static_cast<uint32_t>(sizeof(BloomExtractPushConstants)),
+                       &bloomExtractPushConstants);
+    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+    renderGraph_.endBloomExtractPass();
+    if (bloomExtractProfileScope) {
+        gpuProfiler_.endScope(currentFrame_, commandBuffer);
+    }
+    rhi::debug::endLabel(commandBuffer);
+
+    const BloomBlurPushConstants horizontalBlurPushConstants{
+        glm::vec2{1.0f / static_cast<float>(bloomExtent_.width), 1.0f / static_cast<float>(bloomExtent_.height)},
+        1u,
+        0u};
+    rhi::debug::beginLabel(commandBuffer, "BloomBlurHorizontal");
+    const bool bloomBlurHorizontalProfileScope =
+        gpuProfiler_.beginScope(currentFrame_, commandBuffer, "BloomBlurHorizontal");
+    renderGraph_.beginBloomBlurPass(true);
+    setViewportAndScissor(commandBuffer, bloomExtent_);
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomBlurPipeline_.pipeline());
+    vkCmdBindDescriptorSets(commandBuffer,
+                            VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            bloomBlurPipeline_.layout(),
+                            0,
+                            1,
+                            &bloomBlurHorizontalDescriptorSet_,
+                            0,
+                            nullptr);
+    vkCmdPushConstants(commandBuffer,
+                       bloomBlurPipeline_.layout(),
+                       VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0,
+                       static_cast<uint32_t>(sizeof(BloomBlurPushConstants)),
+                       &horizontalBlurPushConstants);
+    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+    renderGraph_.endBloomBlurPass();
+    if (bloomBlurHorizontalProfileScope) {
+        gpuProfiler_.endScope(currentFrame_, commandBuffer);
+    }
+    rhi::debug::endLabel(commandBuffer);
+
+    const BloomBlurPushConstants verticalBlurPushConstants{
+        glm::vec2{1.0f / static_cast<float>(bloomExtent_.width), 1.0f / static_cast<float>(bloomExtent_.height)},
+        0u,
+        0u};
+    rhi::debug::beginLabel(commandBuffer, "BloomBlurVertical");
+    const bool bloomBlurVerticalProfileScope =
+        gpuProfiler_.beginScope(currentFrame_, commandBuffer, "BloomBlurVertical");
+    renderGraph_.beginBloomBlurPass(false);
+    setViewportAndScissor(commandBuffer, bloomExtent_);
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomBlurPipeline_.pipeline());
+    vkCmdBindDescriptorSets(commandBuffer,
+                            VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            bloomBlurPipeline_.layout(),
+                            0,
+                            1,
+                            &bloomBlurVerticalDescriptorSet_,
+                            0,
+                            nullptr);
+    vkCmdPushConstants(commandBuffer,
+                       bloomBlurPipeline_.layout(),
+                       VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0,
+                       static_cast<uint32_t>(sizeof(BloomBlurPushConstants)),
+                       &verticalBlurPushConstants);
+    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+    renderGraph_.endBloomBlurPass();
+    if (bloomBlurVerticalProfileScope) {
+        gpuProfiler_.endScope(currentFrame_, commandBuffer);
+    }
+    rhi::debug::endLabel(commandBuffer);
+}
+
+void Renderer::recordMipChainBloomCommands(VkCommandBuffer commandBuffer)
+{
+    if (bloomMipDownsampleImages_.empty() ||
+        bloomMipDownsampleDescriptorSets_.size() != bloomMipDownsampleImages_.size() ||
+        bloomDownsamplePipeline_.pipeline() == VK_NULL_HANDLE ||
+        bloomDownsamplePipeline_.layout() == VK_NULL_HANDLE) {
+        return;
+    }
+
+    rhi::debug::beginLabel(commandBuffer, "BloomMipChain");
+
+    const bool downsampleProfileScope =
+        gpuProfiler_.beginScope(currentFrame_, commandBuffer, "Bloom Downsample Chain");
+    rhi::debug::beginLabel(commandBuffer, "Bloom Downsample Chain");
+    for (uint32_t level = 0; level < bloomMipDownsampleImages_.size(); ++level) {
+        const VkExtent2D sourceExtent =
+            level == 0 ? swapchain_.extent() : VkExtent2D{bloomMipDownsampleImages_[level - 1].extent().width,
+                                                          bloomMipDownsampleImages_[level - 1].extent().height};
+        const VkExtent3D outputExtent = bloomMipDownsampleImages_[level].extent();
+        const VkExtent2D outputSize{outputExtent.width, outputExtent.height};
+
+        rhi::debug::beginLabel(commandBuffer, "BloomDownsampleMip" + std::to_string(level));
+        renderGraph_.beginBloomDownsamplePass(level);
+        setViewportAndScissor(commandBuffer, outputSize);
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomDownsamplePipeline_.pipeline());
+        const VkDescriptorSet descriptorSet = bloomMipDownsampleDescriptorSets_[level];
+        vkCmdBindDescriptorSets(commandBuffer,
+                                VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                bloomDownsamplePipeline_.layout(),
+                                0,
+                                1,
+                                &descriptorSet,
+                                0,
+                                nullptr);
+        const BloomDownsamplePushConstants pushConstants{
+            glm::vec2{1.0f / static_cast<float>(sourceExtent.width),
+                      1.0f / static_cast<float>(sourceExtent.height)},
+            bloomSettings_.threshold,
+            level == 0 ? 1u : 0u};
+        vkCmdPushConstants(commandBuffer,
+                           bloomDownsamplePipeline_.layout(),
+                           VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0,
+                           static_cast<uint32_t>(sizeof(BloomDownsamplePushConstants)),
+                           &pushConstants);
+        vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+        renderGraph_.endBloomDownsamplePass();
+        rhi::debug::endLabel(commandBuffer);
+    }
+    rhi::debug::endLabel(commandBuffer);
+    if (downsampleProfileScope) {
+        gpuProfiler_.endScope(currentFrame_, commandBuffer);
+    }
+
+    if (!bloomMipUpsampleImages_.empty() &&
+        bloomMipUpsampleDescriptorSets_.size() == bloomMipUpsampleImages_.size() &&
+        bloomUpsamplePipeline_.pipeline() != VK_NULL_HANDLE && bloomUpsamplePipeline_.layout() != VK_NULL_HANDLE) {
+        const bool upsampleProfileScope =
+            gpuProfiler_.beginScope(currentFrame_, commandBuffer, "Bloom Upsample Chain");
+        rhi::debug::beginLabel(commandBuffer, "Bloom Upsample Chain");
+        for (uint32_t reverseIndex = 0; reverseIndex < bloomMipUpsampleImages_.size(); ++reverseIndex) {
+            const uint32_t level =
+                static_cast<uint32_t>(bloomMipUpsampleImages_.size() - 1u - reverseIndex);
+            const VkExtent3D outputExtent = bloomMipUpsampleImages_[level].extent();
+            const VkExtent2D outputSize{outputExtent.width, outputExtent.height};
+            const VkExtent3D lowerExtent =
+                level + 1u == bloomMipDownsampleImages_.size() - 1u
+                    ? bloomMipDownsampleImages_[level + 1u].extent()
+                    : bloomMipUpsampleImages_[level + 1u].extent();
+
+            rhi::debug::beginLabel(commandBuffer, "BloomUpsampleMip" + std::to_string(level));
+            renderGraph_.beginBloomUpsamplePass(level);
+            setViewportAndScissor(commandBuffer, outputSize);
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomUpsamplePipeline_.pipeline());
+            const VkDescriptorSet descriptorSet = bloomMipUpsampleDescriptorSets_[level];
+            vkCmdBindDescriptorSets(commandBuffer,
+                                    VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    bloomUpsamplePipeline_.layout(),
+                                    0,
+                                    1,
+                                    &descriptorSet,
+                                    0,
+                                    nullptr);
+            const BloomUpsamplePushConstants pushConstants{
+                glm::vec2{1.0f / static_cast<float>(lowerExtent.width),
+                          1.0f / static_cast<float>(lowerExtent.height)},
+                bloomSettings_.radius,
+                0.0f};
+            vkCmdPushConstants(commandBuffer,
+                               bloomUpsamplePipeline_.layout(),
+                               VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0,
+                               static_cast<uint32_t>(sizeof(BloomUpsamplePushConstants)),
+                               &pushConstants);
+            vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+            renderGraph_.endBloomUpsamplePass();
+            rhi::debug::endLabel(commandBuffer);
+        }
+        rhi::debug::endLabel(commandBuffer);
+        if (upsampleProfileScope) {
+            gpuProfiler_.endScope(currentFrame_, commandBuffer);
+        }
+    }
+
+    rhi::debug::endLabel(commandBuffer);
 }
 
 void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex)
@@ -10013,94 +10660,8 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
 
     recordDepthPyramidCommands(commandBuffer);
 
-    rhi::debug::beginLabel(commandBuffer, "BloomExtractPass");
-    const bool bloomExtractProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "BloomExtractPass");
-    renderGraph_.beginBloomExtractPass();
-    setViewportAndScissor(commandBuffer, bloomExtent_);
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomExtractPipeline_.pipeline());
-    vkCmdBindDescriptorSets(commandBuffer,
-                            VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            bloomExtractPipeline_.layout(),
-                            0,
-                            1,
-                            &bloomExtractDescriptorSet_,
-                            0,
-                            nullptr);
-    const BloomExtractPushConstants bloomExtractPushConstants{bloomSettings_.threshold};
-    vkCmdPushConstants(commandBuffer,
-                       bloomExtractPipeline_.layout(),
-                       VK_SHADER_STAGE_FRAGMENT_BIT,
-                       0,
-                       static_cast<uint32_t>(sizeof(BloomExtractPushConstants)),
-                       &bloomExtractPushConstants);
-    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
-    renderGraph_.endBloomExtractPass();
-    if (bloomExtractProfileScope) {
-        gpuProfiler_.endScope(currentFrame_, commandBuffer);
-    }
-    rhi::debug::endLabel(commandBuffer);
-
-    const BloomBlurPushConstants horizontalBlurPushConstants{
-        glm::vec2{1.0f / static_cast<float>(bloomExtent_.width), 1.0f / static_cast<float>(bloomExtent_.height)},
-        1u,
-        0u};
-    rhi::debug::beginLabel(commandBuffer, "BloomBlurHorizontal");
-    const bool bloomBlurHorizontalProfileScope =
-        gpuProfiler_.beginScope(currentFrame_, commandBuffer, "BloomBlurHorizontal");
-    renderGraph_.beginBloomBlurPass(true);
-    setViewportAndScissor(commandBuffer, bloomExtent_);
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomBlurPipeline_.pipeline());
-    vkCmdBindDescriptorSets(commandBuffer,
-                            VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            bloomBlurPipeline_.layout(),
-                            0,
-                            1,
-                            &bloomBlurHorizontalDescriptorSet_,
-                            0,
-                            nullptr);
-    vkCmdPushConstants(commandBuffer,
-                       bloomBlurPipeline_.layout(),
-                       VK_SHADER_STAGE_FRAGMENT_BIT,
-                       0,
-                       static_cast<uint32_t>(sizeof(BloomBlurPushConstants)),
-                       &horizontalBlurPushConstants);
-    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
-    renderGraph_.endBloomBlurPass();
-    if (bloomBlurHorizontalProfileScope) {
-        gpuProfiler_.endScope(currentFrame_, commandBuffer);
-    }
-    rhi::debug::endLabel(commandBuffer);
-
-    const BloomBlurPushConstants verticalBlurPushConstants{
-        glm::vec2{1.0f / static_cast<float>(bloomExtent_.width), 1.0f / static_cast<float>(bloomExtent_.height)},
-        0u,
-        0u};
-    rhi::debug::beginLabel(commandBuffer, "BloomBlurVertical");
-    const bool bloomBlurVerticalProfileScope =
-        gpuProfiler_.beginScope(currentFrame_, commandBuffer, "BloomBlurVertical");
-    renderGraph_.beginBloomBlurPass(false);
-    setViewportAndScissor(commandBuffer, bloomExtent_);
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomBlurPipeline_.pipeline());
-    vkCmdBindDescriptorSets(commandBuffer,
-                            VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            bloomBlurPipeline_.layout(),
-                            0,
-                            1,
-                            &bloomBlurVerticalDescriptorSet_,
-                            0,
-                            nullptr);
-    vkCmdPushConstants(commandBuffer,
-                       bloomBlurPipeline_.layout(),
-                       VK_SHADER_STAGE_FRAGMENT_BIT,
-                       0,
-                       static_cast<uint32_t>(sizeof(BloomBlurPushConstants)),
-                       &verticalBlurPushConstants);
-    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
-    renderGraph_.endBloomBlurPass();
-    if (bloomBlurVerticalProfileScope) {
-        gpuProfiler_.endScope(currentFrame_, commandBuffer);
-    }
-    rhi::debug::endLabel(commandBuffer);
+    recordLegacyBloomCommands(commandBuffer);
+    recordMipChainBloomCommands(commandBuffer);
 
     recordLuminanceCommands(commandBuffer);
     recordHistogramCommands(commandBuffer);
@@ -10110,19 +10671,24 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     renderGraph_.beginCompositePass();
     setViewportAndScissor(commandBuffer, swapchain_.extent());
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, compositePipeline_.pipeline());
+    const VkDescriptorSet compositeDescriptorSet =
+        currentFrame_ < compositeDescriptorSets_.size() ? compositeDescriptorSets_[currentFrame_] : compositeDescriptorSet_;
     vkCmdBindDescriptorSets(commandBuffer,
                             VK_PIPELINE_BIND_POINT_GRAPHICS,
                             compositePipeline_.layout(),
                             0,
                             1,
-                            &compositeDescriptorSet_,
+                            &compositeDescriptorSet,
                             0,
                             nullptr);
     const CompositePushConstants compositePushConstants{
         currentToneMappingExposure(),
         bloomSettings_.enabled ? std::max(bloomSettings_.intensity, 0.0f) : 0.0f,
         toneMappingOperatorValue(toneMappingSettings_.operatorType),
-        bloomSettings_.enabled ? 1u : 0u};
+        bloomSettings_.enabled ? 1u : 0u,
+        bloomSettings_.useMipChain && (!bloomMipUpsampleImages_.empty() || !bloomMipDownsampleImages_.empty()) ? 1u
+                                                                                                               : 0u,
+        isGpuExposureActive() ? 1u : 0u};
     vkCmdPushConstants(commandBuffer,
                        compositePipeline_.layout(),
                        VK_SHADER_STAGE_FRAGMENT_BIT,

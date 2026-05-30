@@ -228,6 +228,9 @@ set(SHADER_SOURCES
     "${SHADER_SOURCE_DIR}/fullscreen.vert"
     "${SHADER_SOURCE_DIR}/bloom_extract.frag"
     "${SHADER_SOURCE_DIR}/bloom_blur.frag"
+    "${SHADER_SOURCE_DIR}/bloom_downsample.frag"
+    "${SHADER_SOURCE_DIR}/bloom_upsample.frag"
+    "${SHADER_SOURCE_DIR}/exposure_reduce.comp"
     "${SHADER_SOURCE_DIR}/composite.frag"
 )
 

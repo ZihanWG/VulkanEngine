@@ -203,8 +203,10 @@ void fromJson(const Json& json, RuntimeSettings& settings)
 
     if (const Json* bloom = objectMember(json, "bloom")) {
         readBool(*bloom, "enabled", settings.bloom.enabled);
+        readBool(*bloom, "useMipChain", settings.bloom.useMipChain);
         readFloat(*bloom, "threshold", settings.bloom.threshold);
         readFloat(*bloom, "intensity", settings.bloom.intensity);
+        readFloat(*bloom, "radius", settings.bloom.radius);
     }
 
     if (const Json* csm = objectMember(json, "csm")) {
@@ -258,8 +260,10 @@ Json toJson(const RuntimeSettings& settings)
               {"toneMapper", toneMapperName(settings.toneMapping.operatorType)}}},
         {"bloom",
          Json{{"enabled", settings.bloom.enabled},
+              {"useMipChain", settings.bloom.useMipChain},
               {"threshold", settings.bloom.threshold},
-              {"intensity", settings.bloom.intensity}}},
+              {"intensity", settings.bloom.intensity},
+              {"radius", settings.bloom.radius}}},
         {"csm",
          Json{{"cascadeCount", settings.csm.cascadeCount},
               {"lambda", settings.csm.lambda},

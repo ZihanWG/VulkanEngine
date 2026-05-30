@@ -1,0 +1,131 @@
+#version 460
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer LuminancePartials {
+    vec4 partials[];
+} uLuminance;
+
+layout(std430, set = 0, binding = 1) readonly buffer LuminanceHistogram {
+    uint bins[];
+} uHistogram;
+
+layout(std430, set = 0, binding = 2) buffer ExposureState {
+    float exposure;
+    float averageLuminance;
+    float histogramLuminance;
+    uint mode;
+} uExposure;
+
+layout(push_constant) uniform ExposureReducePushConstants {
+    uvec4 params; // x = exposure mode, y = luminance partial count, z = histogram bin count
+    vec4 exposureParams; // x = manual exposure, y = target luminance, z = min exposure, w = max exposure
+    vec4 adaptationParams; // x = delta time, y = adaptation rate, z = low percentile, w = high percentile
+    vec4 histogramRange; // x = min log2 luminance, y = max log2 luminance, z = min luminance
+} pc;
+
+float readLogAverageLuminance()
+{
+    uint partialCount = pc.params.y;
+    float sumLogLuminance = 0.0;
+    float sampleCount = 0.0;
+
+    for (uint i = 0u; i < partialCount; ++i) {
+        vec4 partial = uLuminance.partials[i];
+        if (partial.y > 0.0 && !isnan(partial.x) && !isinf(partial.x) &&
+            !isnan(partial.y) && !isinf(partial.y)) {
+            sumLogLuminance += partial.x;
+            sampleCount += partial.y;
+        }
+    }
+
+    if (sampleCount <= 0.0) {
+        return max(uExposure.averageLuminance, pc.histogramRange.z);
+    }
+
+    return max(float(exp(sumLogLuminance / sampleCount)), pc.histogramRange.z);
+}
+
+float readHistogramLuminance(float fallbackLuminance)
+{
+    uint binCount = max(pc.params.z, 1u);
+    uint totalSamples = 0u;
+    for (uint i = 0u; i < binCount; ++i) {
+        totalSamples += uHistogram.bins[i];
+    }
+    if (totalSamples == 0u) {
+        return fallbackLuminance;
+    }
+
+    float lowPercentile = clamp(pc.adaptationParams.z, 0.0, 1.0);
+    float highPercentile = clamp(pc.adaptationParams.w, lowPercentile + 0.0001, 1.0);
+    uint lowCut = min(totalSamples, uint(floor(float(totalSamples) * lowPercentile)));
+    uint highCut = min(totalSamples, uint(ceil(float(totalSamples) * highPercentile)));
+    if (highCut <= lowCut) {
+        highCut = min(totalSamples, lowCut + 1u);
+    }
+
+    float minLogLuminance = pc.histogramRange.x;
+    float maxLogLuminance = max(pc.histogramRange.y, minLogLuminance + 0.001);
+    float binWidth = (maxLogLuminance - minLogLuminance) / float(binCount);
+
+    uint cumulative = 0u;
+    uint weightedSamples = 0u;
+    float weightedLuminanceSum = 0.0;
+    for (uint binIndex = 0u; binIndex < binCount; ++binIndex) {
+        uint count = uHistogram.bins[binIndex];
+        uint binStart = cumulative;
+        uint binEnd = cumulative + count;
+        cumulative = binEnd;
+
+        uint clippedStart = max(binStart, lowCut);
+        uint clippedEnd = min(binEnd, highCut);
+        if (clippedEnd <= clippedStart) {
+            continue;
+        }
+
+        uint includedCount = clippedEnd - clippedStart;
+        float logLuminance = minLogLuminance + (float(binIndex) + 0.5) * binWidth;
+        float binLuminance = exp2(logLuminance);
+        weightedLuminanceSum += binLuminance * float(includedCount);
+        weightedSamples += includedCount;
+    }
+
+    if (weightedSamples == 0u) {
+        return fallbackLuminance;
+    }
+
+    return max(weightedLuminanceSum / float(weightedSamples), pc.histogramRange.z);
+}
+
+void main()
+{
+    uint mode = pc.params.x;
+    float manualExposure = max(pc.exposureParams.x, 0.0);
+    float minExposure = max(pc.exposureParams.z, 0.0);
+    float maxExposure = max(pc.exposureParams.w, minExposure);
+
+    if (mode == 0u) {
+        uExposure.exposure = manualExposure;
+        uExposure.mode = mode;
+        return;
+    }
+
+    float averageLuminance = readLogAverageLuminance();
+    float histogramLuminance = readHistogramLuminance(averageLuminance);
+    float exposureLuminance = mode == 2u ? histogramLuminance : averageLuminance;
+    float targetExposure =
+        clamp(pc.exposureParams.y / max(exposureLuminance, pc.histogramRange.z), minExposure, maxExposure);
+
+    float previousExposure = uExposure.exposure;
+    if (isnan(previousExposure) || isinf(previousExposure) || previousExposure <= 0.0) {
+        previousExposure = manualExposure;
+    }
+
+    float adaptationRate = max(pc.adaptationParams.y, 0.0);
+    float adaptationAlpha = 1.0 - exp(-adaptationRate * max(pc.adaptationParams.x, 0.0));
+    uExposure.exposure = clamp(mix(previousExposure, targetExposure, adaptationAlpha), minExposure, maxExposure);
+    uExposure.averageLuminance = averageLuminance;
+    uExposure.histogramLuminance = histogramLuminance;
+    uExposure.mode = mode;
+}

@@ -16,8 +16,10 @@
     },
     "bloom": {
         "enabled": true,
+        "useMipChain": true,
         "threshold": 1.0,
-        "intensity": 0.1
+        "intensity": 0.1,
+        "radius": 1.0
     },
     "csm": {
         "cascadeCount": 4,

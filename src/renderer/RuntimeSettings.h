@@ -44,8 +44,10 @@ struct ToneMappingSettings {
 
 struct BloomSettings {
     bool enabled = true;
+    bool useMipChain = true;
     float threshold = 1.0f;
     float intensity = 0.1f;
+    float radius = 1.0f;
 };
 
 struct DebugUiSettings {
