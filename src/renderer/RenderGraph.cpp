@@ -223,6 +223,8 @@ const char* renderPassTypeName(RenderPassType type)
         return "Depth Pyramid";
     case RenderPassType::MainHdr:
         return "Main HDR";
+    case RenderPassType::TaaResolve:
+        return "TAA Resolve";
     case RenderPassType::BloomExtract:
         return "Bloom Extract";
     case RenderPassType::BloomBlur:
@@ -416,6 +418,15 @@ void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
     };
 
     frame_.sceneColor = createTransientTexture(makeTransientDesc(frame_.resources.sceneColor), frame_.resources.sceneColor);
+    frame_.postProcessSceneColor = frame_.sceneColor;
+    if (frame_.resources.taaEnabled && validImageResource(frame_.resources.taaHistoryRead) &&
+        validImageResource(frame_.resources.taaHistoryWrite)) {
+        frame_.taaHistoryRead = importTexture(frame_.resources.taaHistoryRead);
+        frame_.taaHistoryWrite = importTexture(frame_.resources.taaHistoryWrite);
+        if (frame_.taaHistoryWrite.valid()) {
+            frame_.postProcessSceneColor = frame_.taaHistoryWrite;
+        }
+    }
     frame_.bloomExtract =
         createTransientTexture(makeTransientDesc(frame_.resources.bloomExtract), frame_.resources.bloomExtract);
     frame_.bloomPing = createTransientTexture(makeTransientDesc(frame_.resources.bloomPing), frame_.resources.bloomPing);
@@ -614,6 +625,39 @@ void RenderGraph::endDepthPyramidPass()
         throw std::logic_error("RenderGraph::endDepthPyramidPass called without an active depth pyramid pass.");
     }
 
+    activePass_ = ActivePass::None;
+}
+
+void RenderGraph::beginTaaResolvePass()
+{
+    requireFrameActive("RenderGraph::beginTaaResolvePass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginTaaResolvePass called while another pass is active.");
+    }
+    if (!frame_.taaHistoryWrite.valid()) {
+        throw std::logic_error("RenderGraph::beginTaaResolvePass requires a valid TAA history write target.");
+    }
+    if (!beginDeclaredPass(frame_.passIndices.taaResolve)) {
+        throw std::logic_error("RenderGraph::beginTaaResolvePass was culled but the renderer attempted to record it.");
+    }
+
+    VkClearValue clearColor{};
+    clearColor.color.float32[0] = 0.0f;
+    clearColor.color.float32[1] = 0.0f;
+    clearColor.color.float32[2] = 0.0f;
+    clearColor.color.float32[3] = 1.0f;
+    beginColorRendering(textures_.at(frame_.taaHistoryWrite.index), clearColor);
+    activePass_ = ActivePass::TaaResolve;
+}
+
+void RenderGraph::endTaaResolvePass()
+{
+    requireFrameActive("RenderGraph::endTaaResolvePass");
+    if (activePass_ != ActivePass::TaaResolve) {
+        throw std::logic_error("RenderGraph::endTaaResolvePass called without an active TAA resolve pass.");
+    }
+
+    vkCmdEndRendering(frame_.commandBuffer);
     activePass_ = ActivePass::None;
 }
 
@@ -1084,13 +1128,34 @@ void RenderGraph::buildFrameGraphDeclarations()
                                  "Writes the max-depth Hi-Z pyramid for later-frame occlusion culling.");
         });
 
+    if (frame_.taaHistoryRead.valid() && frame_.taaHistoryWrite.valid()) {
+        frame_.passIndices.taaResolve = addPass(
+            "TAAResolvePass",
+            RenderPassType::TaaResolve,
+            RenderPassExecutionType::Graphics,
+            false,
+            [this](RenderGraphBuilder& builder) {
+                builder.readTexture(frame_.sceneColor,
+                                    RGAccess::ShaderRead,
+                                    "Samples the current jittered HDR scene color.");
+                builder.readTexture(frame_.taaHistoryRead,
+                                    RGAccess::ShaderRead,
+                                    "Samples the previous HDR TAA history image.");
+                builder.writeTexture(frame_.taaHistoryWrite,
+                                     RGAccess::ColorAttachmentWrite,
+                                     "Writes the resolved HDR TAA history image.");
+            });
+    }
+
     frame_.passIndices.bloomExtract = addPass(
         "BloomExtractPass",
         RenderPassType::BloomExtract,
         RenderPassExecutionType::Graphics,
         false,
         [this](RenderGraphBuilder& builder) {
-            builder.readTexture(frame_.sceneColor, RGAccess::ShaderRead, "Samples the HDR scene color target.");
+            builder.readTexture(frame_.postProcessSceneColor,
+                                RGAccess::ShaderRead,
+                                "Samples the active HDR scene color target.");
             builder.writeTexture(frame_.bloomExtract,
                                  RGAccess::ColorAttachmentWrite,
                                  "Writes bright pixels above the bloom threshold.");
@@ -1122,7 +1187,8 @@ void RenderGraph::buildFrameGraphDeclarations()
 
     frame_.passIndices.bloomDownsampleChain.reserve(frame_.bloomDownsampleChain.size());
     for (uint32_t level = 0; level < frame_.bloomDownsampleChain.size(); ++level) {
-        const RGTextureHandle source = level == 0 ? frame_.sceneColor : frame_.bloomDownsampleChain[level - 1];
+        const RGTextureHandle source =
+            level == 0 ? frame_.postProcessSceneColor : frame_.bloomDownsampleChain[level - 1];
         const RGTextureHandle output = frame_.bloomDownsampleChain[level];
         frame_.passIndices.bloomDownsampleChain.push_back(addPass(
             "BloomDownsampleMip" + std::to_string(level),
@@ -1169,9 +1235,9 @@ void RenderGraph::buildFrameGraphDeclarations()
         RenderPassExecutionType::Compute,
         true,
         [this](RenderGraphBuilder& builder) {
-            builder.readTexture(frame_.sceneColor,
+            builder.readTexture(frame_.postProcessSceneColor,
                                 RGAccess::ShaderRead,
-                                "Samples scene color for log-average luminance reduction.");
+                                "Samples active scene color for log-average luminance reduction.");
             builder.writeBuffer(frame_.luminancePartials,
                                 RGAccess::StorageBufferWrite,
                                 "Writes per-workgroup luminance partials.");
@@ -1183,9 +1249,9 @@ void RenderGraph::buildFrameGraphDeclarations()
         RenderPassExecutionType::Compute,
         true,
         [this](RenderGraphBuilder& builder) {
-            builder.readTexture(frame_.sceneColor,
+            builder.readTexture(frame_.postProcessSceneColor,
                                 RGAccess::ShaderRead,
-                                "Samples scene color for log2 luminance histogram binning.");
+                                "Samples active scene color for log2 luminance histogram binning.");
             builder.writeBuffer(frame_.luminanceHistogram,
                                 RGAccess::StorageBufferReadWrite,
                                 "Clears and writes 256 luminance histogram bins.");
@@ -1203,7 +1269,9 @@ void RenderGraph::buildFrameGraphDeclarations()
         RenderPassExecutionType::Graphics,
         true,
         [this](RenderGraphBuilder& builder) {
-            builder.readTexture(frame_.sceneColor, RGAccess::ShaderRead, "Samples the HDR scene color target.");
+            builder.readTexture(frame_.postProcessSceneColor,
+                                RGAccess::ShaderRead,
+                                "Samples the active HDR scene color target.");
             builder.readTexture(frame_.bloomPong, RGAccess::ShaderRead, "Samples the legacy blurred bloom texture.");
             if (!frame_.bloomUpsampleChain.empty()) {
                 builder.readTexture(frame_.bloomUpsampleChain.front(),

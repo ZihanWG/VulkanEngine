@@ -17,6 +17,7 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - Optional HDR environment loading with a procedural fallback, cubemap-based skybox/IBL resources, and split-sum BRDF LUT.
 - Skybox and mesh shaders output HDR linear color into an offscreen scene color target before post-processing.
 - Bloom extraction, legacy separable blur fallback, mip-chain bloom, and final composite passes are implemented.
+- Optional Temporal AA foundation with Halton subpixel jitter, ping-pong HDR history, conservative neighborhood clamping, and explicit history reset/debug controls.
 - Auto exposure from HDR scene luminance builds log-average and histogram data, reduces exposure on GPU for composite, and keeps frame-latency CPU exposure readback only for debug display.
 - Manual exposure remains available as the fallback path.
 - Reinhard/ACES tone mapping is applied in the final composite pass before swapchain output.
@@ -45,7 +46,7 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - `AssetManager` stores stable path-based material/texture metadata, loads/saves material JSON files, and leaves Vulkan texture ownership in `Renderer`/`VulkanTexture`.
 - The editable scene workflow stores runtime object IDs, names, visibility, transforms, camera settings, and directional-light settings as JSON under `assets/scenes/`.
 - `ImGuiLayer` owns the Dear ImGui context, SDL3 backend, Vulkan backend, and ImGui descriptor pool.
-- `RenderGraph` tracks logical texture/buffer resources for `CSMShadowPass`, `MainHDRPass`, bloom, `LuminancePass`, `HistogramExposurePass`, `CompositePass`, and `ImGuiPass`, infers conservative image transitions, and exposes debug pass/resource metadata.
+- `RenderGraph` tracks logical texture/buffer resources for `CSMShadowPass`, `MainHDRPass`, optional `TAAResolvePass`, bloom, `LuminancePass`, `HistogramExposurePass`, `CompositePass`, and `ImGuiPass`, infers conservative image transitions, and exposes debug pass/resource metadata.
 - `GpuProfiler` owns one timestamp query pool per frame-in-flight slot, records named GPU scopes, and exposes completed frame results to the ImGui profiler panel without adding a new frame-loop wait.
 
 ## Engine Upgrade Audit
@@ -56,7 +57,7 @@ Phase 0 of the renderer-to-engine upgrade is documented in `docs/engine_upgrade_
 
 Phase 4 upgrades the previous manual graph into a more engine-like render graph while preserving the renderer's pass order and visual output. The graph now uses `RGTextureHandle` and `RGBufferHandle` declarations, pass-builder read/write declarations, conservative Synchronization2 image transition inference for graph-managed texture resources, transient descriptions for scene color and bloom targets, imported resources for swapchain/depth/shadow/readback resources, basic pass liveness/culling metadata, and an ImGui panel that lists passes and resources.
 
-Current graph-declared passes are `CSMShadowPass`, `MainGpuCullingPass`, `MainHDRPass`, `DepthPyramidPass`, legacy bloom extract/blur passes, bloom mip-chain downsample/upsample passes, `LuminancePass`, `HistogramExposurePass`, `CompositePass`, and `ImGuiPass`. GPU culling buffer barriers, histogram/exposure buffer barriers, and portfolio screenshot copy barriers remain manual in `Renderer.cpp` because they are buffer/readback or external swapchain dependencies that need a broader scheduler before moving safely.
+Current graph-declared passes are `CSMShadowPass`, `MainGpuCullingPass`, `MainHDRPass`, `DepthPyramidPass`, optional `TAAResolvePass`, legacy bloom extract/blur passes, bloom mip-chain downsample/upsample passes, `LuminancePass`, `HistogramExposurePass`, `CompositePass`, and `ImGuiPass`. GPU culling buffer barriers, histogram/exposure buffer barriers, and portfolio screenshot copy barriers remain manual in `Renderer.cpp` because they are buffer/readback or external swapchain dependencies that need a broader scheduler before moving safely.
 
 More details are in `docs/render_graph.md`.
 
@@ -64,13 +65,15 @@ More details are in `docs/render_graph.md`.
 
 The main scene renders to `SceneColorHDR`, an `R16G16B16A16_SFLOAT` full-resolution HDR target. Post-processing samples that target for bloom, exposure, and final composite before the swapchain image is handed to ImGui.
 
+Temporal AA is available as a conservative opt-in pass. When enabled, the renderer jitters the main skybox/mesh projection with an 8-sample Halton sequence, resolves jittered `SceneColorHDR` into one of two full-resolution `R16G16B16A16_SFLOAT` history images, clamps previous history against the current 3x3 neighborhood, and routes bloom, exposure, and composite through the resolved HDR history. TAA is disabled by default and can be reset or tuned from the ImGui `Temporal AA` panel.
+
 Bloom now has a mip-chain path enabled by default. The chain writes persistent half, quarter, eighth, and sixteenth-resolution `R16G16B16A16_SFLOAT` bloom images when the viewport is large enough. The first downsample conservatively thresholds bright HDR samples, lower levels continue filtering the previous level, and the upsample chain progressively combines lower accumulated bloom with each higher local level. The previous half-resolution extract plus separable blur path remains available as a runtime fallback.
 
 Automatic exposure keeps the existing log-average luminance and histogram binning inputs, but `exposure_reduce.comp` now writes exposure, log-average luminance, and histogram-clipped luminance to a GPU-readable exposure state buffer. `CompositePass` reads that buffer directly for auto exposure modes. The CPU reads the small exposure state from a completed frame only for debug UI/history, while manual exposure and portfolio capture still use stable manual exposure.
 
-The composite shader samples scene color, the legacy bloom result, the mip-chain bloom result, and exposure state. It chooses the selected bloom method, applies bloom strength, applies manual or GPU exposure, and then runs Reinhard or ACES tone mapping. ImGui exposes bloom enabled/method/mip count/strength/threshold/radius, exposure mode/current debug exposure, and tone mapper selection. Render Graph and GPU profiler panels show bloom, histogram exposure, and composite metadata/timings.
+The composite shader samples the active HDR scene source, the legacy bloom result, the mip-chain bloom result, and exposure state. It chooses the selected bloom method, applies bloom strength, applies manual or GPU exposure, and then runs Reinhard or ACES tone mapping. ImGui exposes bloom enabled/method/mip count/strength/threshold/radius, TAA enable/jitter/clamp/feedback/history state, exposure mode/current debug exposure, and tone mapper selection. Render Graph and GPU profiler panels show TAA, bloom, histogram exposure, and composite metadata/timings.
 
-Current limitations: there is no TAA, motion-vector buffer, temporal upscaling, local exposure, FSR/DLSS, ray tracing, or automatic camera-cut handling. Details are in `docs/post_processing.md`.
+Current limitations: TAA does not include motion vectors, depth reprojection, disocclusion classification, temporal upscaling, FSR/DLSS, local exposure, ray tracing, or automatic camera-cut detection. Details are in `docs/post_processing.md` and `docs/taa.md`.
 
 ## Depth Pyramid and GPU Occlusion Culling
 
@@ -93,7 +96,7 @@ Open the profiler from the ImGui debug overlay:
 
 The panel reports GPU profiler availability, total GPU frame time, CPU frame delta, timestamp query usage, and a timing table with current, recent average, max, and history plot values. Results are read back from a completed frame slot after the existing frame fence is signaled, so the profiler does not block the current frame waiting for query results. Timings are GPU timestamp deltas converted with the physical device timestamp period.
 
-Currently profiled ranges include `CSMShadowPass`, per-cascade shadow GPU culling, `MainGpuCullingPass`, `MainHDRPass`, `Skybox`, `RenderObjects`, `DepthPyramid`, legacy bloom extract/blur, `Bloom Downsample Chain`, `Bloom Upsample Chain`, `LuminancePass`, `Histogram Exposure`, `CompositePass`, and `ImGuiPass`. Nested scopes are shown in execution order; parent scopes include the cost of their children.
+Currently profiled ranges include `CSMShadowPass`, per-cascade shadow GPU culling, `MainGpuCullingPass`, `MainHDRPass`, `Skybox`, `RenderObjects`, `DepthPyramid`, optional `TAAResolvePass`, legacy bloom extract/blur, `Bloom Downsample Chain`, `Bloom Upsample Chain`, `LuminancePass`, `Histogram Exposure`, `CompositePass`, and `ImGuiPass`. Nested scopes are shown in execution order; parent scopes include the cost of their children.
 
 ## Portfolio Screenshot Capture
 
@@ -147,15 +150,16 @@ More details are in `docs/asset_system.md`.
 10. Let the graph transition the HDR scene color image, shadow map, and main depth image for `MainHDRPass`.
 11. Begin `MainHDRPass`, draw the skybox, bind global and bindless material descriptors when available, and issue indirect indexed mesh draws into `sceneColor_`.
 12. Run `DepthPyramidPass` to sample the stored normal-Z main depth image and write the max-depth Hi-Z pyramid for later-frame culling.
-13. Run the legacy bloom extract/blur fallback into `BloomPong`.
-14. Run the mip-chain bloom downsample passes at 1/2, 1/4, 1/8, and 1/16 resolution when practical, then progressively upsample into the final mip-chain bloom target.
-15. Run `LuminancePass` to reduce log luminance from `sceneColor_` into per-frame GPU storage.
-16. Run `HistogramExposurePass` to bin HDR scene luminance, reduce the selected exposure mode into the GPU exposure state buffer, and make that buffer visible to composite and later debug readback.
-17. Run `CompositePass` to combine `sceneColor + selected bloom * intensity`, apply manual or GPU exposure, apply Reinhard or ACES tone mapping, and write the final color to the swapchain.
-18. If a portfolio screenshot was requested, transition the composited swapchain image to transfer source, copy it into a per-frame readback buffer, then return it to color-attachment layout.
-19. Run `ImGuiPass` to load the composited swapchain image as a color attachment and draw the debug UI overlay.
-20. Let the graph transition the swapchain image to present, submit with `vkQueueSubmit2`, and present.
-21. Recreate the swapchain, post-process images, depth pyramid resources, and ImGui swapchain-dependent backend state if presentation reports an out-of-date or resized surface.
+13. If TAA is enabled, run `TAAResolvePass` to resolve jittered `sceneColor_` into the current HDR history target; otherwise keep `sceneColor_` as the active post-process source.
+14. Run the legacy bloom extract/blur fallback into `BloomPong`.
+15. Run the mip-chain bloom downsample passes at 1/2, 1/4, 1/8, and 1/16 resolution when practical, then progressively upsample into the final mip-chain bloom target.
+16. Run `LuminancePass` to reduce log luminance from the active HDR scene source into per-frame GPU storage.
+17. Run `HistogramExposurePass` to bin HDR scene luminance, reduce the selected exposure mode into the GPU exposure state buffer, and make that buffer visible to composite and later debug readback.
+18. Run `CompositePass` to combine active HDR scene color + selected bloom * intensity, apply manual or GPU exposure, apply Reinhard or ACES tone mapping, and write the final color to the swapchain.
+19. If a portfolio screenshot was requested, transition the composited swapchain image to transfer source, copy it into a per-frame readback buffer, then return it to color-attachment layout.
+20. Run `ImGuiPass` to load the composited swapchain image as a color attachment and draw the debug UI overlay.
+21. Let the graph transition the swapchain image to present, submit with `vkQueueSubmit2`, and present.
+22. Recreate the swapchain, post-process images, TAA history, depth pyramid resources, and ImGui swapchain-dependent backend state if presentation reports an out-of-date or resized surface.
 
 ## Current Descriptor Contract
 
@@ -178,10 +182,12 @@ Skybox descriptor set:
 
 Post-process descriptor sets, separate from material/bindless descriptors:
 
+- TAA resolve set binding 0 = current jittered HDR scene color combined image sampler
+- TAA resolve set binding 1 = previous HDR history combined image sampler
 - bloom extract/blur set binding 0 = one combined image sampler for the current post-process input
 - bloom upsample set binding 0 = current bloom mip combined image sampler
 - bloom upsample set binding 1 = lower accumulated bloom combined image sampler
-- composite set binding 0 = HDR scene color combined image sampler
+- composite set binding 0 = active HDR scene color combined image sampler, either `SceneColorHDR` or resolved TAA history
 - composite set binding 1 = legacy blurred bloom combined image sampler
 - composite set binding 2 = mip-chain bloom combined image sampler
 - composite set binding 3 = per-frame exposure state storage buffer
@@ -297,7 +303,7 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - There is no asset browser.
 - There is no ECS/editor architecture yet.
 - There is no GPU capture automation yet.
-- Temporal effects are not implemented yet.
+- TAA is a foundation pass only; there are no motion vectors, depth reprojection, temporal upscaling, FSR/DLSS integration, or automatic camera-cut detection yet.
 - Environment prefiltering is still approximate and not production quality.
 
 ## Next Milestones

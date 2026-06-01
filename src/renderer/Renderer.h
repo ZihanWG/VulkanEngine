@@ -33,6 +33,7 @@
 #include <filesystem>
 #include <glm/vec4.hpp>
 #include <glm/mat4x4.hpp>
+#include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 #include <limits>
 #include <memory>
@@ -212,6 +213,9 @@ private:
     void destroyPostProcessSampler();
     void createPostProcessResources();
     void createPostProcessDescriptorSets();
+    void createTaaResources();
+    void destroyTaaResources();
+    void invalidateTaaHistory();
     void createExposureResources();
     void destroyExposureResources();
     void createDepthPyramidDescriptorSetLayout();
@@ -229,6 +233,7 @@ private:
     void updateAutoExposureFromReadback(uint32_t frameIndex);
     void recordLuminanceCommands(VkCommandBuffer commandBuffer);
     void recordHistogramCommands(VkCommandBuffer commandBuffer);
+    void recordTaaResolveCommands(VkCommandBuffer commandBuffer);
     void recordLegacyBloomCommands(VkCommandBuffer commandBuffer);
     void recordMipChainBloomCommands(VkCommandBuffer commandBuffer);
     void createGpuCullingResources();
@@ -318,6 +323,15 @@ private:
     [[nodiscard]] bool isLogAverageExposureActive() const;
     [[nodiscard]] bool isHistogramExposureActive() const;
     [[nodiscard]] bool isGpuExposureActive() const;
+    [[nodiscard]] bool isTaaActive() const;
+    [[nodiscard]] bool isTaaJitterActive() const;
+    [[nodiscard]] uint32_t taaHistoryReadIndex() const;
+    [[nodiscard]] uint32_t taaHistoryWriteIndex() const;
+    [[nodiscard]] VkDescriptorSet activeBloomExtractDescriptorSet() const;
+    [[nodiscard]] VkDescriptorSet activeBloomMipDownsampleDescriptorSet(uint32_t level) const;
+    [[nodiscard]] VkDescriptorSet activeCompositeDescriptorSet() const;
+    [[nodiscard]] VkDescriptorSet activeLuminanceDescriptorSet() const;
+    [[nodiscard]] VkDescriptorSet activeHistogramDescriptorSet() const;
     [[nodiscard]] bool isBindlessMaterialTextureActive() const;
     [[nodiscard]] bool isMainPassMultiDrawIndirectActive() const;
     [[nodiscard]] bool isMainPassIndirectCountSupported() const;
@@ -384,6 +398,7 @@ private:
     void drawGpuTimingDebugUi();
     void drawCullingDebugUi();
     void drawExposureDebugUi();
+    void drawTaaDebugUi();
     void drawTimingHistoryRow(const char* label, const DebugHistory& history) const;
     void drawScalarHistoryRow(const char* label, const DebugHistory& history, const char* valueFormat) const;
     void drawHistoryPlot(const DebugHistory& history, float height) const;
@@ -437,6 +452,7 @@ private:
     rhi::VulkanImage bloomExtract_;
     rhi::VulkanImage bloomPing_;
     rhi::VulkanImage bloomPong_;
+    std::array<rhi::VulkanImage, 2> taaHistoryImages_;
     std::vector<rhi::VulkanImage> bloomMipDownsampleImages_;
     std::vector<rhi::VulkanImage> bloomMipUpsampleImages_;
     rhi::VulkanImage depthPyramid_;
@@ -447,6 +463,7 @@ private:
     rhi::VulkanPipeline bloomBlurPipeline_;
     rhi::VulkanPipeline bloomDownsamplePipeline_;
     rhi::VulkanPipeline bloomUpsamplePipeline_;
+    rhi::VulkanPipeline taaResolvePipeline_;
     rhi::VulkanPipeline compositePipeline_;
     rhi::VulkanComputePipeline luminancePipeline_;
     rhi::VulkanComputePipeline histogramPipeline_;
@@ -484,11 +501,17 @@ private:
     VkDescriptorSet bloomBlurHorizontalDescriptorSet_ = VK_NULL_HANDLE;
     VkDescriptorSet bloomBlurVerticalDescriptorSet_ = VK_NULL_HANDLE;
     VkDescriptorSet compositeDescriptorSet_ = VK_NULL_HANDLE;
+    std::array<VkDescriptorSet, 2> taaResolveDescriptorSets_{VK_NULL_HANDLE, VK_NULL_HANDLE};
+    std::array<VkDescriptorSet, 2> taaBloomExtractDescriptorSets_{VK_NULL_HANDLE, VK_NULL_HANDLE};
+    std::array<VkDescriptorSet, 2> taaBloomMipDownsampleDescriptorSets_{VK_NULL_HANDLE, VK_NULL_HANDLE};
     std::vector<VkDescriptorSet> bloomMipDownsampleDescriptorSets_;
     std::vector<VkDescriptorSet> bloomMipUpsampleDescriptorSets_;
     std::vector<VkDescriptorSet> compositeDescriptorSets_;
     std::vector<VkDescriptorSet> luminanceDescriptorSets_;
     std::vector<VkDescriptorSet> histogramDescriptorSets_;
+    std::array<std::vector<VkDescriptorSet>, 2> taaCompositeDescriptorSets_;
+    std::array<std::vector<VkDescriptorSet>, 2> taaLuminanceDescriptorSets_;
+    std::array<std::vector<VkDescriptorSet>, 2> taaHistogramDescriptorSets_;
     std::vector<VkDescriptorSet> exposureReduceDescriptorSets_;
     std::vector<VkDescriptorSet> gpuCullDescriptorSets_;
     std::vector<VkDescriptorSet> shadowCullDescriptorSets_;
@@ -550,12 +573,14 @@ private:
     VkFormat bloomBlurPipelineColorFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat bloomDownsamplePipelineColorFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat bloomUpsamplePipelineColorFormat_ = VK_FORMAT_UNDEFINED;
+    VkFormat taaResolvePipelineColorFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat compositePipelineColorFormat_ = VK_FORMAT_UNDEFINED;
     VkExtent2D bloomExtent_{};
     VkImageLayout sceneColorLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     VkImageLayout bloomExtractLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     VkImageLayout bloomPingLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     VkImageLayout bloomPongLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+    std::array<VkImageLayout, 2> taaHistoryLayouts_{VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED};
     std::vector<VkImageLayout> bloomMipDownsampleLayouts_;
     std::vector<VkImageLayout> bloomMipUpsampleLayouts_;
     VkImageLayout depthPyramidLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -576,6 +601,9 @@ private:
     std::chrono::steady_clock::time_point lastFrameStartTime_ = std::chrono::steady_clock::now();
     std::array<glm::vec4, 6> frameFrustumPlanes_{};
     glm::mat4 frameViewProjection_{1.0f};
+    glm::mat4 frameJitteredProjection_{1.0f};
+    glm::mat4 frameJitteredViewProjection_{1.0f};
+    glm::mat4 previousFrameViewProjection_{1.0f};
     glm::mat4 depthPyramidViewProjection_{1.0f};
     glm::vec3 frameCameraPosition_{0.0f};
     glm::vec3 depthPyramidCameraPosition_{0.0f};
@@ -588,6 +616,7 @@ private:
     ShadowCullingStats shadowCullingStats_{};
     ToneMappingSettings toneMappingSettings_{};
     BloomSettings bloomSettings_{};
+    TaaSettings taaSettings_{};
     DebugUiSettings debugUiSettings_{};
     DebugHistory gpuFrameTimeHistory_{};
     std::vector<GpuTimingHistory> gpuTimingHistories_;
@@ -635,6 +664,7 @@ private:
     bool logAverageExposureWarningLogged_ = false;
     bool histogramExposureWarningLogged_ = false;
     bool shadowIndirectAvailable_ = false;
+    bool taaHistoryValid_ = false;
     bool gpuProfilerEnabled_ = true;
     bool portfolioCaptureMode_ = false;
     bool occlusionTestSceneActive_ = false;
@@ -646,6 +676,7 @@ private:
     bool showRenderTargetBloomExtract_ = true;
     bool showRenderTargetBlurredBloom_ = true;
     bool showRenderTargetBloomMipChain_ = true;
+    bool showRenderTargetTaaHistory_ = true;
     bool showRenderTargetFinalCompositeMetadata_ = true;
     bool showRenderTargetBrdfLut_ = true;
     bool showRenderTargetCsmCascades_ = true;
@@ -653,6 +684,13 @@ private:
     float gpuOcclusionNearDisableDistance_ = 1.0f;
     float gpuOcclusionMaxScreenCoverage_ = 0.35f;
     float gpuOcclusionMinScreenPixels_ = 4.0f;
+    glm::vec2 taaCurrentJitterPixels_{0.0f, 0.0f};
+    glm::vec2 taaPreviousJitterPixels_{0.0f, 0.0f};
+    glm::vec2 taaCurrentJitterNdc_{0.0f, 0.0f};
+    glm::vec2 taaPreviousJitterNdc_{0.0f, 0.0f};
+    uint32_t taaJitterIndex_ = 0;
+    uint32_t taaHistoryWriteIndex_ = 0;
+    uint32_t taaPostProcessHistoryIndex_ = 0;
 };
 
 } // namespace ve

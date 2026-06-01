@@ -60,6 +60,7 @@ enum class RenderPassType {
     MainGpuCulling,
     DepthPyramid,
     MainHdr,
+    TaaResolve,
     BloomExtract,
     BloomBlur,
     BloomDownsample,
@@ -154,6 +155,8 @@ struct RenderGraphBufferResource {
 
 struct RenderGraphFrameResources {
     RenderGraphImageResource sceneColor;
+    RenderGraphImageResource taaHistoryRead;
+    RenderGraphImageResource taaHistoryWrite;
     RenderGraphImageResource bloomExtract;
     RenderGraphImageResource bloomPing;
     RenderGraphImageResource bloomPong;
@@ -169,6 +172,7 @@ struct RenderGraphFrameResources {
     RenderGraphBufferResource luminanceHistogram;
     RenderGraphBufferResource histogramReadback;
     RenderGraphBufferResource exposureState;
+    bool taaEnabled = false;
 };
 
 struct RenderGraphResourceDebugInfo {
@@ -248,6 +252,8 @@ public:
     void endMainHdrPass();
     void beginDepthPyramidPass();
     void endDepthPyramidPass();
+    void beginTaaResolvePass();
+    void endTaaResolvePass();
     void beginBloomExtractPass();
     void endBloomExtractPass();
     void beginBloomBlurPass(bool horizontal);
@@ -311,6 +317,7 @@ private:
         MainGpuCulling,
         MainHdr,
         DepthPyramid,
+        TaaResolve,
         BloomExtract,
         BloomBlur,
         BloomDownsample,
@@ -351,6 +358,7 @@ private:
         uint32_t mainGpuCulling = kInvalidRenderGraphHandle;
         uint32_t mainHdr = kInvalidRenderGraphHandle;
         uint32_t depthPyramid = kInvalidRenderGraphHandle;
+        uint32_t taaResolve = kInvalidRenderGraphHandle;
         uint32_t bloomExtract = kInvalidRenderGraphHandle;
         uint32_t bloomBlurHorizontal = kInvalidRenderGraphHandle;
         uint32_t bloomBlurVertical = kInvalidRenderGraphHandle;
@@ -374,6 +382,9 @@ private:
         RGTextureHandle mainDepth{};
         RGTextureHandle shadowMapDepth{};
         RGTextureHandle sceneColor{};
+        RGTextureHandle taaHistoryRead{};
+        RGTextureHandle taaHistoryWrite{};
+        RGTextureHandle postProcessSceneColor{};
         RGTextureHandle bloomExtract{};
         RGTextureHandle bloomPing{};
         RGTextureHandle bloomPong{};

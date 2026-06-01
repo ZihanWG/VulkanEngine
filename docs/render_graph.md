@@ -31,6 +31,7 @@ Imported resources are owned outside the graph:
 - swapchain color image
 - main depth image
 - cascaded shadow map array
+- TAA history read/write images
 - depth pyramid image
 - per-frame luminance, histogram, exposure, and culling buffers
 
@@ -63,6 +64,7 @@ The currently declared passes are:
 - `MainGpuCullingPass`
 - `MainHDRPass`
 - `DepthPyramidPass`
+- `TAAResolvePass` when TAA is enabled
 - `BloomExtractPass`
 - `BloomBlurHorizontal`
 - `BloomBlurVertical`
@@ -102,7 +104,7 @@ Passes can be marked as side-effecting. Side-effect passes are never culled. Cur
 - `CompositePass`
 - `ImGuiPass`
 
-The graph computes basic pass liveness from declared reads/writes. A pass with no side effects and unused outputs is marked culled. Current renderer-visible passes remain live because their outputs feed later passes or external readback/present behavior.
+The graph computes basic pass liveness from declared reads/writes. A pass with no side effects and unused outputs is marked culled. Current renderer-visible passes remain live because their outputs feed later passes or external readback/present behavior. `TAAResolvePass` is not side-effecting, but it stays live when enabled because bloom, exposure, and composite read the resolved history image as the active HDR source.
 
 ## Debug UI
 
@@ -122,7 +124,7 @@ The ImGui Render Graph panel shows:
 - No multi-queue scheduling.
 - No memory aliasing.
 - No resource pooling overhaul.
-- Transient scene/bloom resources are graph-described but still physically allocated by `Renderer`.
+- Transient scene/bloom resources and persistent TAA history resources are graph-described but still physically allocated by `Renderer`.
 - GPU culling, exposure, and readback buffer barriers remain manual.
 - Portfolio screenshot copy remains manual because it temporarily transitions the swapchain between `CompositePass` and `ImGuiPass`.
 - Barriers are conservative and not heavily optimized.

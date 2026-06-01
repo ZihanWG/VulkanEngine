@@ -1,22 +1,35 @@
 # Post-Processing
 
-Phase 6A keeps the renderer on a stable, non-temporal post-processing path. It adds mip-chain bloom and moves automatic exposure use into a GPU-readable exposure state buffer without adding TAA, motion vectors, temporal upscaling, or ray tracing.
+Phase 6A added mip-chain bloom and moved automatic exposure use into a GPU-readable exposure state buffer. Phase 6B adds an optional Temporal AA foundation without adding motion vectors, temporal upscaling, FSR/DLSS, or ray tracing.
 
 ## HDR Scene Color
 
-`MainHDRPass` writes linear HDR skybox and mesh lighting to `SceneColorHDR`, a full-resolution `VK_FORMAT_R16G16B16A16_SFLOAT` image. The image is recreated with the swapchain and is sampled by bloom, luminance, histogram exposure, composite, and render-target debug previews.
+`MainHDRPass` writes linear HDR skybox and mesh lighting to `SceneColorHDR`, a full-resolution `VK_FORMAT_R16G16B16A16_SFLOAT` image. The image is recreated with the swapchain and is sampled directly by post-processing when TAA is disabled.
+
+When TAA is enabled, `TAAResolvePass` samples `SceneColorHDR` and the previous HDR history image, writes the resolved result to the current history image, and routes bloom, luminance, histogram exposure, composite, and render-target debug previews through that resolved history image.
+
+## Temporal AA Foundation
+
+TAA is disabled by default and is controlled from the `Temporal AA` ImGui panel or the `taa` object in runtime settings.
+
+- Main skybox and mesh rendering use an 8-sample Halton jitter applied to the projection matrix.
+- CPU frustum culling, CSM setup, and depth-pyramid validity continue to use the unjittered view-projection matrix.
+- Two full-resolution `VK_FORMAT_R16G16B16A16_SFLOAT` history images ping-pong across frames.
+- The first valid frame, resize, camera reset/edit, scene load, portfolio mode transition, material save/reload, and explicit UI reset invalidate history.
+- The resolve shader clamps previous history to the current frame's 3x3 color neighborhood before feedback blending.
+- Bloom, exposure, and composite descriptor variants select either `SceneColorHDR` or resolved TAA history as the active HDR source.
 
 ## Bloom Pipeline
 
 The legacy fallback path still exists:
 
-- `BloomExtractPass` samples `SceneColorHDR` and writes thresholded highlights to `BloomExtract`.
+- `BloomExtractPass` samples the active HDR source and writes thresholded highlights to `BloomExtract`.
 - `BloomBlurHorizontal` samples `BloomExtract` and writes `BloomPing`.
 - `BloomBlurVertical` samples `BloomPing` and writes `BloomPong`.
 
 The default path is mip-chain bloom:
 
-- `BloomDownsampleMip0` samples HDR scene color, applies the bloom threshold per sample, and writes the 1/2-resolution bloom level.
+- `BloomDownsampleMip0` samples the active HDR source, applies the bloom threshold per sample, and writes the 1/2-resolution bloom level.
 - Lower downsample passes write 1/4, 1/8, and 1/16-resolution levels when the viewport is large enough.
 - Upsample passes run from the smallest useful level back toward 1/2 resolution.
 - Each upsample pass combines the local current mip with the accumulated lower-resolution bloom.
@@ -26,7 +39,7 @@ Bloom resources are persistent renderer-owned images and are recreated on swapch
 
 ## Exposure Path
 
-Automatic exposure uses the existing scene luminance inputs:
+Automatic exposure uses the active HDR source:
 
 - `LuminancePass` writes per-workgroup log-average luminance partials to a GPU storage buffer.
 - `HistogramExposurePass` clears and fills a 256-bin log2 luminance histogram.
@@ -38,7 +51,7 @@ Automatic exposure uses the existing scene luminance inputs:
 
 `composite.frag` samples:
 
-- HDR scene color
+- active HDR scene color, either `SceneColorHDR` or TAA-resolved history
 - legacy bloom
 - mip-chain bloom
 - GPU exposure state
@@ -52,11 +65,12 @@ Render Graph metadata now includes:
 - Legacy bloom extract and blur passes
 - Bloom downsample mip passes
 - Bloom upsample mip passes
+- Optional `TAAResolvePass` and imported TAA history resources
 - Luminance and histogram exposure buffers
 - GPU exposure state buffer
 - Composite reads of scene color, bloom, and exposure state
 
-GPU profiler scopes include `Bloom Downsample Chain`, `Bloom Upsample Chain`, `Histogram Exposure`, and `CompositePass`. Buffer barriers for histogram reset, exposure reduce, and debug readback remain manual in `Renderer.cpp`.
+GPU profiler scopes include optional `TAAResolvePass`, `Bloom Downsample Chain`, `Bloom Upsample Chain`, `Histogram Exposure`, and `CompositePass`. Buffer barriers for histogram reset, exposure reduce, and debug readback remain manual in `Renderer.cpp`.
 
 ## Debug UI
 
@@ -68,15 +82,20 @@ The ImGui debug UI exposes:
 - Bloom strength
 - Bloom threshold
 - Bloom radius
+- TAA enabled/disabled
+- TAA jitter enabled/disabled
+- TAA neighborhood clamp enabled/disabled
+- TAA history feedback
+- TAA history validity and read/write indices
 - Exposure mode
 - Current debug exposure value
 - Tone mapper selection
-- Render target previews for scene color, legacy bloom, and selected bloom mip-chain levels
+- Render target previews for scene color, TAA history, legacy bloom, and selected bloom mip-chain levels
 
 ## Known Limitations
 
-- No TAA.
 - No motion vectors or velocity buffer.
+- No TAA depth reprojection or disocclusion classification.
 - No temporal upscaling.
 - No FSR/DLSS.
 - No ray tracing.

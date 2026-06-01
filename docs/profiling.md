@@ -52,6 +52,7 @@ The current frame records timestamp scopes for:
 - `MainHDRPass`
 - `Skybox`
 - `RenderObjects`
+- `TAAResolvePass` when TAA is enabled
 - `BloomExtractPass`
 - `BloomBlurHorizontal`
 - `BloomBlurVertical`

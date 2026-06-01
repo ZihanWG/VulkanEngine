@@ -209,6 +209,13 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readFloat(*bloom, "radius", settings.bloom.radius);
     }
 
+    if (const Json* taa = objectMember(json, "taa")) {
+        readBool(*taa, "enabled", settings.taa.enabled);
+        readBool(*taa, "jitterEnabled", settings.taa.jitterEnabled);
+        readBool(*taa, "neighborhoodClampEnabled", settings.taa.neighborhoodClampEnabled);
+        readFloat(*taa, "feedback", settings.taa.feedback);
+    }
+
     if (const Json* csm = objectMember(json, "csm")) {
         readUint32(*csm, "cascadeCount", settings.csm.cascadeCount);
         readFloat(*csm, "lambda", settings.csm.lambda);
@@ -264,6 +271,11 @@ Json toJson(const RuntimeSettings& settings)
               {"threshold", settings.bloom.threshold},
               {"intensity", settings.bloom.intensity},
               {"radius", settings.bloom.radius}}},
+        {"taa",
+         Json{{"enabled", settings.taa.enabled},
+              {"jitterEnabled", settings.taa.jitterEnabled},
+              {"neighborhoodClampEnabled", settings.taa.neighborhoodClampEnabled},
+              {"feedback", settings.taa.feedback}}},
         {"csm",
          Json{{"cascadeCount", settings.csm.cascadeCount},
               {"lambda", settings.csm.lambda},

@@ -116,6 +116,8 @@ constexpr uint32_t kHistogramBinCount = 256;
 constexpr uint32_t kHistogramLocalSizeX = 16;
 constexpr uint32_t kHistogramLocalSizeY = 16;
 constexpr uint32_t kMaxBloomMipChainLevels = 4;
+constexpr uint32_t kTaaHistoryCount = 2;
+constexpr uint32_t kTaaJitterSampleCount = 8;
 constexpr float kMinAverageLuminance = 0.0001f;
 constexpr float kDefaultHistogramMinLogLuminance = -10.0f;
 constexpr float kDefaultHistogramMaxLogLuminance = 4.0f;
@@ -275,6 +277,20 @@ static_assert(offsetof(CompositePushConstants, bloomEnabled) == 12);
 static_assert(offsetof(CompositePushConstants, bloomMethod) == 16);
 static_assert(offsetof(CompositePushConstants, useGpuExposure) == 20);
 static_assert(sizeof(CompositePushConstants) == 24);
+
+struct TaaResolvePushConstants {
+    glm::vec2 texelSize{1.0f, 1.0f};
+    float feedback = 0.88f;
+    uint32_t historyValid = 0;
+    uint32_t neighborhoodClampEnabled = 1;
+    uint32_t padding[3]{};
+};
+
+static_assert(offsetof(TaaResolvePushConstants, texelSize) == 0);
+static_assert(offsetof(TaaResolvePushConstants, feedback) == 8);
+static_assert(offsetof(TaaResolvePushConstants, historyValid) == 12);
+static_assert(offsetof(TaaResolvePushConstants, neighborhoodClampEnabled) == 16);
+static_assert(sizeof(TaaResolvePushConstants) == 32);
 
 struct LuminancePushConstants {
     glm::uvec4 params{0, 0, 0, 0};
@@ -1203,6 +1219,18 @@ float historyValue(double value)
     return static_cast<float>(value);
 }
 
+float halton(uint32_t index, uint32_t base)
+{
+    float result = 0.0f;
+    float fraction = 1.0f / static_cast<float>(base);
+    while (index > 0) {
+        result += fraction * static_cast<float>(index % base);
+        index /= base;
+        fraction /= static_cast<float>(base);
+    }
+    return result;
+}
+
 std::string resourceUsageList(const renderer::RenderPassNode& pass, renderer::RenderResourceAccess access)
 {
     std::ostringstream names;
@@ -1338,6 +1366,7 @@ Renderer::~Renderer()
         imguiLayer_.shutdown();
         destroyDepthPyramidResources();
         postProcessDescriptorPool_.reset();
+        destroyTaaResources();
         destroyPostProcessSampler();
     }
 }
@@ -1751,6 +1780,7 @@ void Renderer::applyPortfolioCaptureSettings()
     csmSettings_.shadowDistance = std::min(csmSettings_.farPlane, 40.0f);
     clampRuntimeSettings();
     invalidateDepthPyramid();
+    invalidateTaaHistory();
 }
 
 void Renderer::restorePortfolioCaptureSettings()
@@ -1767,6 +1797,7 @@ void Renderer::restorePortfolioCaptureSettings()
     portfolioCaptureSavedState_ = {};
     clampRuntimeSettings();
     invalidateDepthPyramid();
+    invalidateTaaHistory();
 }
 
 void Renderer::createMaterialDescriptorSetLayout()
@@ -2009,6 +2040,68 @@ void Renderer::destroyPostProcessSampler()
     }
 }
 
+void Renderer::createTaaResources()
+{
+    destroyTaaResources();
+
+    const VkExtent2D extent = swapchain_.extent();
+    if (extent.width == 0 || extent.height == 0) {
+        throw std::runtime_error("Cannot create TAA history resources for a zero-sized swapchain extent.");
+    }
+
+    rhi::VulkanImageCreateInfo historyInfo{};
+    historyInfo.width = extent.width;
+    historyInfo.height = extent.height;
+    historyInfo.format = kSceneColorFormat;
+    historyInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    historyInfo.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+
+    for (uint32_t index = 0; index < kTaaHistoryCount; ++index) {
+        historyInfo.debugName = "TAAHistory" + std::to_string(index);
+        taaHistoryImages_[index].create(context_, historyInfo);
+        taaHistoryLayouts_[index] = VK_IMAGE_LAYOUT_UNDEFINED;
+    }
+
+    invalidateTaaHistory();
+}
+
+void Renderer::destroyTaaResources()
+{
+    taaResolveDescriptorSets_.fill(VK_NULL_HANDLE);
+    taaBloomExtractDescriptorSets_.fill(VK_NULL_HANDLE);
+    taaBloomMipDownsampleDescriptorSets_.fill(VK_NULL_HANDLE);
+    for (auto& descriptorSets : taaCompositeDescriptorSets_) {
+        descriptorSets.clear();
+    }
+    for (auto& descriptorSets : taaLuminanceDescriptorSets_) {
+        descriptorSets.clear();
+    }
+    for (auto& descriptorSets : taaHistogramDescriptorSets_) {
+        descriptorSets.clear();
+    }
+
+    for (rhi::VulkanImage& image : taaHistoryImages_) {
+        image.reset();
+    }
+    taaHistoryLayouts_.fill(VK_IMAGE_LAYOUT_UNDEFINED);
+    invalidateTaaHistory();
+}
+
+void Renderer::invalidateTaaHistory()
+{
+    taaHistoryValid_ = false;
+    taaHistoryWriteIndex_ = 0;
+    taaPostProcessHistoryIndex_ = 0;
+    taaJitterIndex_ = 0;
+    taaCurrentJitterPixels_ = {0.0f, 0.0f};
+    taaPreviousJitterPixels_ = {0.0f, 0.0f};
+    taaCurrentJitterNdc_ = {0.0f, 0.0f};
+    taaPreviousJitterNdc_ = {0.0f, 0.0f};
+    frameJitteredProjection_ = glm::mat4{1.0f};
+    frameJitteredViewProjection_ = glm::mat4{1.0f};
+    previousFrameViewProjection_ = glm::mat4{1.0f};
+}
+
 void Renderer::destroyDepthPyramidResources()
 {
     depthPyramidValid_ = false;
@@ -2236,6 +2329,7 @@ void Renderer::createPostProcessResources()
     luminanceDescriptorSets_.clear();
     histogramDescriptorSets_.clear();
     exposureReduceDescriptorSets_.clear();
+    destroyTaaResources();
     bloomMipDownsampleImages_.clear();
     bloomMipUpsampleImages_.clear();
     bloomMipDownsampleLayouts_.clear();
@@ -2256,6 +2350,8 @@ void Renderer::createPostProcessResources()
     sceneColorInfo.debugName = "SceneColorHDR";
     sceneColor_.create(context_, sceneColorInfo);
     sceneColorLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    createTaaResources();
 
     bloomExtent_.width = std::max(1u, extent.width / 2u);
     bloomExtent_.height = std::max(1u, extent.height / 2u);
@@ -2351,6 +2447,18 @@ void Renderer::createPostProcessDescriptorSets()
     const uint32_t legacyBloomSetCount = 3u;
     const uint32_t bloomDownsampleSetCount = static_cast<uint32_t>(bloomMipDownsampleImages_.size());
     const uint32_t bloomUpsampleSetCount = static_cast<uint32_t>(bloomMipUpsampleImages_.size());
+    const uint32_t taaResolveSetCount = kTaaHistoryCount;
+    const uint32_t taaBloomExtractSetCount = kTaaHistoryCount;
+    const uint32_t taaBloomDownsampleSetCount = bloomMipDownsampleImages_.empty() ? 0u : kTaaHistoryCount;
+    const uint32_t taaCompositeDescriptorSetCount = createCompositeDescriptors
+                                                       ? kTaaHistoryCount * static_cast<uint32_t>(frames_.size())
+                                                       : 0u;
+    const uint32_t taaLuminanceDescriptorSetCount = createLuminanceDescriptors
+                                                       ? kTaaHistoryCount * static_cast<uint32_t>(frames_.size())
+                                                       : 0u;
+    const uint32_t taaHistogramDescriptorSetCount = createHistogramDescriptors
+                                                       ? kTaaHistoryCount * static_cast<uint32_t>(frames_.size())
+                                                       : 0u;
 
     std::array<VkDescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -2358,16 +2466,23 @@ void Renderer::createPostProcessDescriptorSets()
         legacyBloomSetCount + bloomDownsampleSetCount + (2u * bloomUpsampleSetCount) +
         (3u * compositeDescriptorSetCount) +
         (createLuminanceDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u) +
-        (createHistogramDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u);
+        (createHistogramDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u) +
+        (2u * taaResolveSetCount) + taaBloomExtractSetCount + taaBloomDownsampleSetCount +
+        (3u * taaCompositeDescriptorSetCount) + taaLuminanceDescriptorSetCount +
+        taaHistogramDescriptorSetCount;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     poolSizes[1].descriptorCount =
         (createLuminanceDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u) +
         (createHistogramDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u) +
         (3u * (createExposureReduceDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u)) +
-        compositeDescriptorSetCount;
+        compositeDescriptorSetCount + taaCompositeDescriptorSetCount + taaLuminanceDescriptorSetCount +
+        taaHistogramDescriptorSetCount;
     const uint32_t poolSizeCount = poolSizes[1].descriptorCount > 0 ? 2u : 1u;
     const uint32_t maxSets = legacyBloomSetCount + bloomDownsampleSetCount + bloomUpsampleSetCount +
-                             compositeDescriptorSetCount + exposureDescriptorSetCount;
+                             compositeDescriptorSetCount + exposureDescriptorSetCount + taaResolveSetCount +
+                             taaBloomExtractSetCount + taaBloomDownsampleSetCount +
+                             taaCompositeDescriptorSetCount + taaLuminanceDescriptorSetCount +
+                             taaHistogramDescriptorSetCount;
 
     postProcessDescriptorPool_.create(
         context_.vkDevice(), std::span<const VkDescriptorPoolSize>(poolSizes.data(), poolSizeCount), maxSets);
@@ -2440,6 +2555,105 @@ void Renderer::createPostProcessDescriptorSets()
     writes[2].pImageInfo = &legacyImageInfos[2];
 
     vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+
+    if (taaHistoryImages_[0].imageView() != VK_NULL_HANDLE && taaHistoryImages_[1].imageView() != VK_NULL_HANDLE) {
+        std::array<VkDescriptorSetLayout, kTaaHistoryCount> taaResolveLayouts{
+            postProcessDualImageDescriptorSetLayout_.handle(),
+            postProcessDualImageDescriptorSetLayout_.handle(),
+        };
+        VkDescriptorSetAllocateInfo taaResolveAllocateInfo{};
+        taaResolveAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        taaResolveAllocateInfo.descriptorPool = postProcessDescriptorPool_.handle();
+        taaResolveAllocateInfo.descriptorSetCount = static_cast<uint32_t>(taaResolveLayouts.size());
+        taaResolveAllocateInfo.pSetLayouts = taaResolveLayouts.data();
+        VK_CHECK(vkAllocateDescriptorSets(
+            context_.vkDevice(), &taaResolveAllocateInfo, taaResolveDescriptorSets_.data()));
+
+        std::array<VkDescriptorSetLayout, kTaaHistoryCount> taaSingleImageLayouts{
+            postProcessSingleImageDescriptorSetLayout_.handle(),
+            postProcessSingleImageDescriptorSetLayout_.handle(),
+        };
+        VkDescriptorSetAllocateInfo taaBloomAllocateInfo{};
+        taaBloomAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        taaBloomAllocateInfo.descriptorPool = postProcessDescriptorPool_.handle();
+        taaBloomAllocateInfo.descriptorSetCount = static_cast<uint32_t>(taaSingleImageLayouts.size());
+        taaBloomAllocateInfo.pSetLayouts = taaSingleImageLayouts.data();
+        VK_CHECK(vkAllocateDescriptorSets(
+            context_.vkDevice(), &taaBloomAllocateInfo, taaBloomExtractDescriptorSets_.data()));
+
+        std::array<std::array<VkDescriptorImageInfo, 2>, kTaaHistoryCount> taaResolveImageInfos{};
+        std::array<VkDescriptorImageInfo, kTaaHistoryCount> taaBloomImageInfos{};
+        std::array<VkWriteDescriptorSet, kTaaHistoryCount * 3u> taaWrites{};
+        for (uint32_t historyIndex = 0; historyIndex < kTaaHistoryCount; ++historyIndex) {
+            taaResolveImageInfos[historyIndex][0] = imageInfo(sceneColor_.imageView());
+            taaResolveImageInfos[historyIndex][1] = imageInfo(taaHistoryImages_[historyIndex].imageView());
+            taaBloomImageInfos[historyIndex] = imageInfo(taaHistoryImages_[historyIndex].imageView());
+
+            const uint32_t writeBase = historyIndex * 3u;
+            taaWrites[writeBase].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            taaWrites[writeBase].dstSet = taaResolveDescriptorSets_[historyIndex];
+            taaWrites[writeBase].dstBinding = 0;
+            taaWrites[writeBase].descriptorCount = 1;
+            taaWrites[writeBase].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            taaWrites[writeBase].pImageInfo = &taaResolveImageInfos[historyIndex][0];
+
+            taaWrites[writeBase + 1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            taaWrites[writeBase + 1].dstSet = taaResolveDescriptorSets_[historyIndex];
+            taaWrites[writeBase + 1].dstBinding = 1;
+            taaWrites[writeBase + 1].descriptorCount = 1;
+            taaWrites[writeBase + 1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            taaWrites[writeBase + 1].pImageInfo = &taaResolveImageInfos[historyIndex][1];
+
+            taaWrites[writeBase + 2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            taaWrites[writeBase + 2].dstSet = taaBloomExtractDescriptorSets_[historyIndex];
+            taaWrites[writeBase + 2].dstBinding = 0;
+            taaWrites[writeBase + 2].descriptorCount = 1;
+            taaWrites[writeBase + 2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            taaWrites[writeBase + 2].pImageInfo = &taaBloomImageInfos[historyIndex];
+
+            rhi::debug::setObjectName(context_.vkDevice(),
+                                      taaResolveDescriptorSets_[historyIndex],
+                                      VK_OBJECT_TYPE_DESCRIPTOR_SET,
+                                      "TAAResolveDescriptorSet" + std::to_string(historyIndex));
+            rhi::debug::setObjectName(context_.vkDevice(),
+                                      taaBloomExtractDescriptorSets_[historyIndex],
+                                      VK_OBJECT_TYPE_DESCRIPTOR_SET,
+                                      "TAABloomExtractDescriptorSet" + std::to_string(historyIndex));
+        }
+        vkUpdateDescriptorSets(
+            context_.vkDevice(), static_cast<uint32_t>(taaWrites.size()), taaWrites.data(), 0, nullptr);
+
+        if (!bloomMipDownsampleImages_.empty()) {
+            VkDescriptorSetAllocateInfo taaDownsampleAllocateInfo{};
+            taaDownsampleAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            taaDownsampleAllocateInfo.descriptorPool = postProcessDescriptorPool_.handle();
+            taaDownsampleAllocateInfo.descriptorSetCount = static_cast<uint32_t>(taaSingleImageLayouts.size());
+            taaDownsampleAllocateInfo.pSetLayouts = taaSingleImageLayouts.data();
+            VK_CHECK(vkAllocateDescriptorSets(
+                context_.vkDevice(), &taaDownsampleAllocateInfo, taaBloomMipDownsampleDescriptorSets_.data()));
+
+            std::array<VkDescriptorImageInfo, kTaaHistoryCount> taaDownsampleImageInfos{};
+            std::array<VkWriteDescriptorSet, kTaaHistoryCount> taaDownsampleWrites{};
+            for (uint32_t historyIndex = 0; historyIndex < kTaaHistoryCount; ++historyIndex) {
+                taaDownsampleImageInfos[historyIndex] = imageInfo(taaHistoryImages_[historyIndex].imageView());
+                taaDownsampleWrites[historyIndex].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                taaDownsampleWrites[historyIndex].dstSet = taaBloomMipDownsampleDescriptorSets_[historyIndex];
+                taaDownsampleWrites[historyIndex].dstBinding = 0;
+                taaDownsampleWrites[historyIndex].descriptorCount = 1;
+                taaDownsampleWrites[historyIndex].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                taaDownsampleWrites[historyIndex].pImageInfo = &taaDownsampleImageInfos[historyIndex];
+                rhi::debug::setObjectName(context_.vkDevice(),
+                                          taaBloomMipDownsampleDescriptorSets_[historyIndex],
+                                          VK_OBJECT_TYPE_DESCRIPTOR_SET,
+                                          "TAABloomMipDownsampleDescriptorSet" + std::to_string(historyIndex));
+            }
+            vkUpdateDescriptorSets(context_.vkDevice(),
+                                   static_cast<uint32_t>(taaDownsampleWrites.size()),
+                                   taaDownsampleWrites.data(),
+                                   0,
+                                   nullptr);
+        }
+    }
 
     if (!bloomMipDownsampleImages_.empty()) {
         bloomMipDownsampleDescriptorSets_.assign(bloomMipDownsampleImages_.size(), VK_NULL_HANDLE);
@@ -2585,6 +2799,67 @@ void Renderer::createPostProcessDescriptorSets()
                                compositeWrites.data(),
                                0,
                                nullptr);
+
+        if (taaHistoryImages_[0].imageView() != VK_NULL_HANDLE && taaHistoryImages_[1].imageView() != VK_NULL_HANDLE) {
+            for (uint32_t historyIndex = 0; historyIndex < kTaaHistoryCount; ++historyIndex) {
+                auto& taaDescriptorSets = taaCompositeDescriptorSets_[historyIndex];
+                taaDescriptorSets.assign(frames_.size(), VK_NULL_HANDLE);
+                std::vector<VkDescriptorSetLayout> taaCompositeLayouts(
+                    frames_.size(), postProcessCompositeDescriptorSetLayout_.handle());
+                VkDescriptorSetAllocateInfo taaCompositeAllocateInfo{};
+                taaCompositeAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+                taaCompositeAllocateInfo.descriptorPool = postProcessDescriptorPool_.handle();
+                taaCompositeAllocateInfo.descriptorSetCount = static_cast<uint32_t>(taaDescriptorSets.size());
+                taaCompositeAllocateInfo.pSetLayouts = taaCompositeLayouts.data();
+                VK_CHECK(vkAllocateDescriptorSets(
+                    context_.vkDevice(), &taaCompositeAllocateInfo, taaDescriptorSets.data()));
+
+                std::vector<std::array<VkDescriptorImageInfo, 3>> taaCompositeImageInfos(frames_.size());
+                std::vector<VkDescriptorBufferInfo> taaCompositeExposureInfos(frames_.size());
+                std::vector<VkWriteDescriptorSet> taaCompositeWrites(frames_.size() * 4u);
+                for (size_t frameIndex = 0; frameIndex < frames_.size(); ++frameIndex) {
+                    taaCompositeImageInfos[frameIndex][0] =
+                        imageInfo(taaHistoryImages_[historyIndex].imageView());
+                    taaCompositeImageInfos[frameIndex][1] = imageInfo(bloomPong_.imageView());
+                    taaCompositeImageInfos[frameIndex][2] = imageInfo(mipBloomView);
+
+                    taaCompositeExposureInfos[frameIndex].buffer = frameExposureBuffers_[frameIndex].buffer();
+                    taaCompositeExposureInfos[frameIndex].offset = 0;
+                    taaCompositeExposureInfos[frameIndex].range = sizeof(ExposureState);
+
+                    const size_t writeBase = frameIndex * 4u;
+                    for (uint32_t binding = 0; binding < 3; ++binding) {
+                        taaCompositeWrites[writeBase + binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                        taaCompositeWrites[writeBase + binding].dstSet = taaDescriptorSets[frameIndex];
+                        taaCompositeWrites[writeBase + binding].dstBinding = binding;
+                        taaCompositeWrites[writeBase + binding].descriptorCount = 1;
+                        taaCompositeWrites[writeBase + binding].descriptorType =
+                            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                        taaCompositeWrites[writeBase + binding].pImageInfo =
+                            &taaCompositeImageInfos[frameIndex][binding];
+                    }
+
+                    taaCompositeWrites[writeBase + 3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                    taaCompositeWrites[writeBase + 3].dstSet = taaDescriptorSets[frameIndex];
+                    taaCompositeWrites[writeBase + 3].dstBinding = 3;
+                    taaCompositeWrites[writeBase + 3].descriptorCount = 1;
+                    taaCompositeWrites[writeBase + 3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                    taaCompositeWrites[writeBase + 3].pBufferInfo = &taaCompositeExposureInfos[frameIndex];
+
+                    rhi::debug::setObjectName(context_.vkDevice(),
+                                              taaDescriptorSets[frameIndex],
+                                              VK_OBJECT_TYPE_DESCRIPTOR_SET,
+                                              "TAACompositeDescriptorSet" + std::to_string(historyIndex) + "_" +
+                                                  std::to_string(frameIndex));
+                }
+
+                vkUpdateDescriptorSets(context_.vkDevice(),
+                                       static_cast<uint32_t>(taaCompositeWrites.size()),
+                                       taaCompositeWrites.data(),
+                                       0,
+                                       nullptr);
+            }
+        }
     }
 
     VkDescriptorImageInfo sceneColorInfo{};
@@ -2636,6 +2911,58 @@ void Renderer::createPostProcessDescriptorSets()
                                           VK_OBJECT_TYPE_DESCRIPTOR_SET,
                                           "LuminanceDescriptorSet" + std::to_string(frameIndex));
             }
+
+            if (taaHistoryImages_[0].imageView() != VK_NULL_HANDLE &&
+                taaHistoryImages_[1].imageView() != VK_NULL_HANDLE) {
+                for (uint32_t historyIndex = 0; historyIndex < kTaaHistoryCount; ++historyIndex) {
+                    auto& taaDescriptorSets = taaLuminanceDescriptorSets_[historyIndex];
+                    taaDescriptorSets.assign(frames_.size(), VK_NULL_HANDLE);
+                    std::vector<VkDescriptorSetLayout> taaLuminanceLayouts(
+                        frames_.size(), postProcessLuminanceDescriptorSetLayout_.handle());
+                    VkDescriptorSetAllocateInfo taaLuminanceAllocateInfo{};
+                    taaLuminanceAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+                    taaLuminanceAllocateInfo.descriptorPool = postProcessDescriptorPool_.handle();
+                    taaLuminanceAllocateInfo.descriptorSetCount = static_cast<uint32_t>(taaDescriptorSets.size());
+                    taaLuminanceAllocateInfo.pSetLayouts = taaLuminanceLayouts.data();
+                    VK_CHECK(vkAllocateDescriptorSets(
+                        context_.vkDevice(), &taaLuminanceAllocateInfo, taaDescriptorSets.data()));
+
+                    for (size_t frameIndex = 0; frameIndex < taaDescriptorSets.size(); ++frameIndex) {
+                        VkDescriptorImageInfo taaSceneColorInfo =
+                            imageInfo(taaHistoryImages_[historyIndex].imageView());
+                        VkDescriptorBufferInfo luminanceBufferInfo{};
+                        luminanceBufferInfo.buffer = frameLuminanceBuffers_[frameIndex].buffer();
+                        luminanceBufferInfo.offset = 0;
+                        luminanceBufferInfo.range = frameLuminanceBuffers_[frameIndex].size();
+
+                        std::array<VkWriteDescriptorSet, 2> taaLuminanceWrites{};
+                        taaLuminanceWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                        taaLuminanceWrites[0].dstSet = taaDescriptorSets[frameIndex];
+                        taaLuminanceWrites[0].dstBinding = 0;
+                        taaLuminanceWrites[0].descriptorCount = 1;
+                        taaLuminanceWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                        taaLuminanceWrites[0].pImageInfo = &taaSceneColorInfo;
+
+                        taaLuminanceWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                        taaLuminanceWrites[1].dstSet = taaDescriptorSets[frameIndex];
+                        taaLuminanceWrites[1].dstBinding = 1;
+                        taaLuminanceWrites[1].descriptorCount = 1;
+                        taaLuminanceWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                        taaLuminanceWrites[1].pBufferInfo = &luminanceBufferInfo;
+
+                        vkUpdateDescriptorSets(context_.vkDevice(),
+                                               static_cast<uint32_t>(taaLuminanceWrites.size()),
+                                               taaLuminanceWrites.data(),
+                                               0,
+                                               nullptr);
+                        rhi::debug::setObjectName(context_.vkDevice(),
+                                                  taaDescriptorSets[frameIndex],
+                                                  VK_OBJECT_TYPE_DESCRIPTOR_SET,
+                                                  "TAALuminanceDescriptorSet" + std::to_string(historyIndex) + "_" +
+                                                      std::to_string(frameIndex));
+                    }
+                }
+            }
         } catch (const std::exception& error) {
             luminanceDescriptorSets_.clear();
             disableLogAverageExposureFallback(
@@ -2686,6 +3013,58 @@ void Renderer::createPostProcessDescriptorSets()
                                           histogramDescriptorSets_[frameIndex],
                                           VK_OBJECT_TYPE_DESCRIPTOR_SET,
                                           "HistogramDescriptorSet" + std::to_string(frameIndex));
+            }
+
+            if (taaHistoryImages_[0].imageView() != VK_NULL_HANDLE &&
+                taaHistoryImages_[1].imageView() != VK_NULL_HANDLE) {
+                for (uint32_t historyIndex = 0; historyIndex < kTaaHistoryCount; ++historyIndex) {
+                    auto& taaDescriptorSets = taaHistogramDescriptorSets_[historyIndex];
+                    taaDescriptorSets.assign(frames_.size(), VK_NULL_HANDLE);
+                    std::vector<VkDescriptorSetLayout> taaHistogramLayouts(
+                        frames_.size(), postProcessLuminanceDescriptorSetLayout_.handle());
+                    VkDescriptorSetAllocateInfo taaHistogramAllocateInfo{};
+                    taaHistogramAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+                    taaHistogramAllocateInfo.descriptorPool = postProcessDescriptorPool_.handle();
+                    taaHistogramAllocateInfo.descriptorSetCount = static_cast<uint32_t>(taaDescriptorSets.size());
+                    taaHistogramAllocateInfo.pSetLayouts = taaHistogramLayouts.data();
+                    VK_CHECK(vkAllocateDescriptorSets(
+                        context_.vkDevice(), &taaHistogramAllocateInfo, taaDescriptorSets.data()));
+
+                    for (size_t frameIndex = 0; frameIndex < taaDescriptorSets.size(); ++frameIndex) {
+                        VkDescriptorImageInfo taaSceneColorInfo =
+                            imageInfo(taaHistoryImages_[historyIndex].imageView());
+                        VkDescriptorBufferInfo histogramBufferInfo{};
+                        histogramBufferInfo.buffer = frameHistogramBuffers_[frameIndex].buffer();
+                        histogramBufferInfo.offset = 0;
+                        histogramBufferInfo.range = frameHistogramBuffers_[frameIndex].size();
+
+                        std::array<VkWriteDescriptorSet, 2> taaHistogramWrites{};
+                        taaHistogramWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                        taaHistogramWrites[0].dstSet = taaDescriptorSets[frameIndex];
+                        taaHistogramWrites[0].dstBinding = 0;
+                        taaHistogramWrites[0].descriptorCount = 1;
+                        taaHistogramWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                        taaHistogramWrites[0].pImageInfo = &taaSceneColorInfo;
+
+                        taaHistogramWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                        taaHistogramWrites[1].dstSet = taaDescriptorSets[frameIndex];
+                        taaHistogramWrites[1].dstBinding = 1;
+                        taaHistogramWrites[1].descriptorCount = 1;
+                        taaHistogramWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                        taaHistogramWrites[1].pBufferInfo = &histogramBufferInfo;
+
+                        vkUpdateDescriptorSets(context_.vkDevice(),
+                                               static_cast<uint32_t>(taaHistogramWrites.size()),
+                                               taaHistogramWrites.data(),
+                                               0,
+                                               nullptr);
+                        rhi::debug::setObjectName(context_.vkDevice(),
+                                                  taaDescriptorSets[frameIndex],
+                                                  VK_OBJECT_TYPE_DESCRIPTOR_SET,
+                                                  "TAAHistogramDescriptorSet" + std::to_string(historyIndex) + "_" +
+                                                      std::to_string(frameIndex));
+                    }
+                }
             }
         } catch (const std::exception& error) {
             histogramDescriptorSets_.clear();
@@ -3416,6 +3795,8 @@ void Renderer::createPipeline()
         VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(BloomDownsamplePushConstants))};
     const VkPushConstantRange bloomUpsamplePushConstantRange{
         VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(BloomUpsamplePushConstants))};
+    const VkPushConstantRange taaResolvePushConstantRange{
+        VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(TaaResolvePushConstants))};
     const VkPushConstantRange compositePushConstantRange{
         VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(CompositePushConstants))};
 
@@ -3558,6 +3939,24 @@ void Renderer::createPipeline()
                               VK_OBJECT_TYPE_PIPELINE_LAYOUT,
                               "BloomUpsamplePipelineLayout");
     bloomUpsamplePipelineColorFormat_ = bloomUpsamplePipelineInfo.colorFormat;
+
+    rhi::VulkanPipelineCreateInfo taaResolvePipelineInfo{};
+    taaResolvePipelineInfo.vertexShaderPath = shaderPath("fullscreen.vert.spv");
+    taaResolvePipelineInfo.fragmentShaderPath = shaderPath("taa_resolve.frag.spv");
+    taaResolvePipelineInfo.colorFormat = kSceneColorFormat;
+    taaResolvePipelineInfo.descriptorSetLayouts =
+        std::span<const VkDescriptorSetLayout>(&postProcessDualImageDescriptorSetLayout, 1);
+    taaResolvePipelineInfo.pushConstantRanges =
+        std::span<const VkPushConstantRange>(&taaResolvePushConstantRange, 1);
+
+    taaResolvePipeline_.create(context_.vkDevice(), taaResolvePipelineInfo);
+    rhi::debug::setObjectName(
+        context_.vkDevice(), taaResolvePipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "TAAResolvePipeline");
+    rhi::debug::setObjectName(context_.vkDevice(),
+                              taaResolvePipeline_.layout(),
+                              VK_OBJECT_TYPE_PIPELINE_LAYOUT,
+                              "TAAResolvePipelineLayout");
+    taaResolvePipelineColorFormat_ = taaResolvePipelineInfo.colorFormat;
 
     rhi::VulkanPipelineCreateInfo compositePipelineInfo{};
     compositePipelineInfo.vertexShaderPath = shaderPath("fullscreen.vert.spv");
@@ -3977,6 +4376,7 @@ void Renderer::resetPortfolioShowcaseObjectsToPreset()
     resetObject("Portfolio Rough Metal", {0.96f, -0.29f, 0.42f}, {0.0f, 0.0f, 0.0f}, {0.46f, 0.46f, 0.46f});
     resetObject("Portfolio Polished Metal Small", {1.04f, -0.09f, -0.18f}, {0.0f, 0.0f, 0.0f}, {0.38f, 0.38f, 0.38f});
     invalidateDepthPyramid();
+    invalidateTaaHistory();
 }
 
 bool Renderer::hasPortfolioShowcaseScene() const
@@ -4154,6 +4554,7 @@ void Renderer::resetOcclusionTestSceneToPreset()
 
     addOcclusionTestSceneObjects();
     invalidateDepthPyramid();
+    invalidateTaaHistory();
 }
 
 bool Renderer::hasOcclusionTestScene() const
@@ -4731,6 +5132,7 @@ bool Renderer::saveMaterialAssetFromUi(renderer::Material& material)
     material.assetName = materialAsset.name;
     lastMaterialAssetStatus_ = "Saved material asset: " + material.sourceAssetPath.string();
     Logger::info(lastMaterialAssetStatus_);
+    invalidateTaaHistory();
     return true;
 }
 
@@ -4775,6 +5177,7 @@ bool Renderer::reloadMaterialAssetFromUi(renderer::Material& material)
         "Reloaded material scalar/metadata fields from " + material.sourceAssetPath.string() +
         ". Texture rebinding is not hot-reloaded in Phase 3.";
     Logger::info(lastMaterialAssetStatus_);
+    invalidateTaaHistory();
     return true;
 }
 
@@ -6408,8 +6811,10 @@ void Renderer::loadRuntimeSettingsAtStartup()
 
 void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSettingsApplyMode mode)
 {
+    const TaaSettings previousTaaSettings = taaSettings_;
     toneMappingSettings_ = settings.toneMapping;
     bloomSettings_ = settings.bloom;
+    taaSettings_ = settings.taa;
     debugUiSettings_ = settings.debugUi;
 
     csmSettings_.lambda = settings.csm.lambda;
@@ -6441,6 +6846,13 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
         exposureModeValue(toneMappingSettings_.exposureMode) == ExposureMode::Manual) {
         currentExposure_ = toneMappingExposureValue(toneMappingSettings_.manualExposure);
     }
+    if (mode == RuntimeSettingsApplyMode::Runtime &&
+        (previousTaaSettings.enabled != taaSettings_.enabled ||
+         previousTaaSettings.jitterEnabled != taaSettings_.jitterEnabled ||
+         previousTaaSettings.neighborhoodClampEnabled != taaSettings_.neighborhoodClampEnabled ||
+         previousTaaSettings.feedback != taaSettings_.feedback)) {
+        invalidateTaaHistory();
+    }
     lastAutoExposureUpdate_ = std::chrono::steady_clock::now();
 }
 
@@ -6449,6 +6861,7 @@ RuntimeSettings Renderer::captureRuntimeSettings() const
     RuntimeSettings settings{};
     settings.toneMapping = toneMappingSettings_;
     settings.bloom = bloomSettings_;
+    settings.taa = taaSettings_;
     settings.csm = csmSettings_;
     settings.debugUi = debugUiSettings_;
     settings.useGpuCulling = useGpuCulling_;
@@ -6495,6 +6908,7 @@ void Renderer::resetCameraToDefault()
     csmSettings_.farPlane = camera_.farPlane;
     clampRuntimeSettings();
     invalidateDepthPyramid();
+    invalidateTaaHistory();
 }
 
 void Renderer::resetCameraToPortfolioPreset()
@@ -6504,6 +6918,7 @@ void Renderer::resetCameraToPortfolioPreset()
     csmSettings_.farPlane = camera_.farPlane;
     clampRuntimeSettings();
     invalidateDepthPyramid();
+    invalidateTaaHistory();
 }
 
 void Renderer::resetCameraToOcclusionTestPreset()
@@ -6513,6 +6928,7 @@ void Renderer::resetCameraToOcclusionTestPreset()
     csmSettings_.farPlane = camera_.farPlane;
     clampRuntimeSettings();
     invalidateDepthPyramid();
+    invalidateTaaHistory();
 }
 
 void Renderer::resetDirectionalLightToDefault()
@@ -6860,6 +7276,7 @@ void Renderer::loadSceneFromUi()
 
         clampRuntimeSettings();
         invalidateDepthPyramid();
+        invalidateTaaHistory();
         lastSceneLoadStatus_ = "Loaded scene from " + sceneDocumentPath_.string() + ". Matched " +
                                std::to_string(matchedObjects) + " object(s), skipped " +
                                std::to_string(skippedObjects) + ", restored " +
@@ -6926,6 +7343,8 @@ void Renderer::buildDebugUi()
         ImGui::DragFloat("Intensity", &bloomSettings_.intensity, 0.01f, 0.0f, 8.0f, "%.3f");
         ImGui::DragFloat("Radius", &bloomSettings_.radius, 0.01f, 0.25f, 4.0f, "%.2f");
     }
+
+    drawTaaDebugUi();
 
     if (ImGui::CollapsingHeader("CSM", ImGuiTreeNodeFlags_DefaultOpen)) {
         int cascadeCount = static_cast<int>(activeCascadeCount());
@@ -7147,10 +7566,38 @@ void Renderer::drawRuntimeSettingsDebugUi()
     if (!runtimeSettingsWarning_.empty()) {
         ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.25f, 1.0f), "Warning: %s", runtimeSettingsWarning_.c_str());
     }
-    ImGui::TextDisabled("Runtime-safe: tone mapping, exposure, bloom, CSM lambda/distance/stability/debug, "
+    ImGui::TextDisabled("Runtime-safe: tone mapping, exposure, bloom, TAA, CSM lambda/distance/stability/debug, "
                         "available GPU culling toggles, panel visibility, and render-target preview UI state.");
     ImGui::TextDisabled("Startup-applied: CSM cascade count, bindless material texture heap, and culling resources "
                         "that were disabled before initialization.");
+}
+
+void Renderer::drawTaaDebugUi()
+{
+    if (!ImGui::CollapsingHeader("Temporal AA", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+
+    bool changed = false;
+    changed |= ImGui::Checkbox("Enabled", &taaSettings_.enabled);
+    changed |= ImGui::Checkbox("Jitter enabled", &taaSettings_.jitterEnabled);
+    changed |= ImGui::Checkbox("Neighborhood clamp", &taaSettings_.neighborhoodClampEnabled);
+    changed |= ImGui::SliderFloat("History feedback", &taaSettings_.feedback, 0.0f, 0.98f, "%.3f");
+    if (changed) {
+        clampRuntimeSettings();
+        invalidateTaaHistory();
+    }
+
+    if (ImGui::Button("Reset TAA History")) {
+        invalidateTaaHistory();
+    }
+
+    ImGui::Text("Active: %s", isTaaActive() ? "yes" : "no");
+    ImGui::Text("History valid: %s", taaHistoryValid_ ? "yes" : "no");
+    ImGui::Text("Read/Write: %u / %u", taaHistoryReadIndex(), taaHistoryWriteIndex());
+    ImGui::Text("Jitter index: %u", taaJitterIndex_);
+    ImGui::Text("Current jitter pixels: %.3f, %.3f", taaCurrentJitterPixels_.x, taaCurrentJitterPixels_.y);
+    ImGui::Text("Current jitter NDC: %.6f, %.6f", taaCurrentJitterNdc_.x, taaCurrentJitterNdc_.y);
 }
 
 void Renderer::drawRenderGraphDebugUi()
@@ -7310,6 +7757,7 @@ void Renderer::drawCameraLightEditorDebugUi()
             csmSettings_.nearPlane = camera_.nearPlane;
             csmSettings_.farPlane = camera_.farPlane;
             clampRuntimeSettings();
+            invalidateTaaHistory();
         }
 
         if (ImGui::Button("Reset Default Camera")) {
@@ -7858,6 +8306,7 @@ void Renderer::drawRenderTargetDebugUi()
 
     if (ImGui::CollapsingHeader("Preview Toggles", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Checkbox("Show scene color", &showRenderTargetSceneColor_);
+        ImGui::Checkbox("Show TAA history", &showRenderTargetTaaHistory_);
         ImGui::Checkbox("Show bloom extract", &showRenderTargetBloomExtract_);
         ImGui::Checkbox("Show blurred bloom", &showRenderTargetBlurredBloom_);
         ImGui::Checkbox("Show bloom mip-chain", &showRenderTargetBloomMipChain_);
@@ -7923,6 +8372,22 @@ void Renderer::drawRenderTargetDebugUi()
                                 sceneColorLayout_),
                     true,
                     "2D HDR"});
+            }
+            for (uint32_t historyIndex = 0; historyIndex < kTaaHistoryCount; ++historyIndex) {
+                if (taaHistoryImages_[historyIndex].image() != VK_NULL_HANDLE) {
+                    const VkExtent3D extent = taaHistoryImages_[historyIndex].extent();
+                    const std::string debugName = "TAAHistory" + std::to_string(historyIndex);
+                    addMetadataRow(RenderTargetDebugMetadata{
+                        debugName.c_str(),
+                        extentString(extent.width, extent.height),
+                        taaHistoryImages_[historyIndex].format(),
+                        1,
+                        1,
+                        layoutUsage("Persistent HDR TAA history sampled by resolve and post-process",
+                                    taaHistoryLayouts_[historyIndex]),
+                        true,
+                        "2D HDR"});
+                }
             }
             if (bloomExtract_.image() != VK_NULL_HANDLE) {
                 const VkExtent3D extent = bloomExtract_.extent();
@@ -8096,6 +8561,32 @@ void Renderer::drawRenderTargetDebugUi()
                                 extent.height,
                                 previewSize,
                                 hdrPreviewExposure);
+    }
+
+    if (showRenderTargetTaaHistory_ && ImGui::CollapsingHeader("TAA History", ImGuiTreeNodeFlags_DefaultOpen)) {
+        for (uint32_t historyIndex = 0; historyIndex < kTaaHistoryCount; ++historyIndex) {
+            if (taaHistoryImages_[historyIndex].imageView() == VK_NULL_HANDLE) {
+                continue;
+            }
+            const VkExtent3D extent = taaHistoryImages_[historyIndex].extent();
+            ImGui::Text("History %u: %u x %u, %s, %s",
+                        historyIndex,
+                        extent.width,
+                        extent.height,
+                        vkFormatName(taaHistoryImages_[historyIndex].format()),
+                        imageLayoutName(taaHistoryLayouts_[historyIndex]));
+            if (taaHistoryLayouts_[historyIndex] == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+                drawRenderTargetPreview(taaHistoryImages_[historyIndex].imageView(),
+                                        postProcessSampler_,
+                                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                        extent.width,
+                                        extent.height,
+                                        previewSize,
+                                        hdrPreviewExposure);
+            } else {
+                ImGui::TextDisabled("Preview available after the history image reaches shader-read layout.");
+            }
+        }
     }
 
     if ((showRenderTargetBloomExtract_ || showRenderTargetBlurredBloom_) &&
@@ -8424,6 +8915,18 @@ void Renderer::drawGlobalTextureMetadata()
                sceneColor_.format(),
                imageLayoutName(sceneColorLayout_));
     }
+    for (uint32_t historyIndex = 0; historyIndex < kTaaHistoryCount; ++historyIndex) {
+        if (taaHistoryImages_[historyIndex].image() != VK_NULL_HANDLE) {
+            const VkExtent3D extent = taaHistoryImages_[historyIndex].extent();
+            const std::string name = "TAAHistory" + std::to_string(historyIndex);
+            addRow(name.c_str(),
+                   "persistent HDR history",
+                   std::to_string(extent.width) + " x " + std::to_string(extent.height),
+                   "1 mip",
+                   taaHistoryImages_[historyIndex].format(),
+                   imageLayoutName(taaHistoryLayouts_[historyIndex]));
+        }
+    }
     if (bloomExtract_.image() != VK_NULL_HANDLE) {
         const VkExtent3D extent = bloomExtract_.extent();
         addRow("BloomExtract",
@@ -8692,6 +9195,8 @@ void Renderer::clampRuntimeSettings()
     bloomSettings_.intensity = std::max(bloomSettings_.intensity, 0.0f);
     bloomSettings_.radius = std::clamp(bloomSettings_.radius, 0.25f, 4.0f);
 
+    taaSettings_.feedback = std::clamp(taaSettings_.feedback, 0.0f, 0.98f);
+
     csmSettings_.cascadeCount = std::clamp(csmSettings_.cascadeCount, 1U, kMaxShadowCascades);
     csmSettings_.lambda = std::clamp(csmSettings_.lambda, 0.0f, 1.0f);
     csmSettings_.shadowDistance = std::clamp(csmSettings_.shadowDistance,
@@ -8717,6 +9222,37 @@ void Renderer::updateFrameData(uint32_t frameIndex)
 {
     const auto now = std::chrono::steady_clock::now();
     const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
+
+    const VkExtent2D extent = swapchain_.extent();
+    const float aspect =
+        extent.height == 0 ? 1.0f : static_cast<float>(extent.width) / static_cast<float>(extent.height);
+    const glm::mat4 view = camera_.viewMatrix();
+    const glm::mat4 projection = camera_.projectionMatrix(aspect);
+    const glm::mat4 viewProjection = projection * view;
+    glm::mat4 jitteredProjection = projection;
+    taaPreviousJitterPixels_ = taaCurrentJitterPixels_;
+    taaPreviousJitterNdc_ = taaCurrentJitterNdc_;
+    taaCurrentJitterPixels_ = {0.0f, 0.0f};
+    taaCurrentJitterNdc_ = {0.0f, 0.0f};
+    if (isTaaJitterActive() && extent.width > 0 && extent.height > 0) {
+        const uint32_t sampleIndex = (taaJitterIndex_ % kTaaJitterSampleCount) + 1u;
+        taaCurrentJitterPixels_ = {
+            halton(sampleIndex, 2u) - 0.5f,
+            halton(sampleIndex, 3u) - 0.5f,
+        };
+        taaCurrentJitterNdc_ = {
+            2.0f * taaCurrentJitterPixels_.x / static_cast<float>(extent.width),
+            2.0f * taaCurrentJitterPixels_.y / static_cast<float>(extent.height),
+        };
+        jitteredProjection[2][0] += taaCurrentJitterNdc_.x;
+        jitteredProjection[2][1] += taaCurrentJitterNdc_.y;
+        ++taaJitterIndex_;
+    }
+    previousFrameViewProjection_ = frameJitteredViewProjection_;
+    frameJitteredProjection_ = jitteredProjection;
+    frameJitteredViewProjection_ = jitteredProjection * view;
+    frameViewProjection_ = viewProjection;
+    frameCameraPosition_ = camera_.position;
 
     if (renderObjects_.empty()) {
         allDrawItems_.clear();
@@ -8762,14 +9298,6 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         return;
     }
 
-    const VkExtent2D extent = swapchain_.extent();
-    const float aspect =
-        extent.height == 0 ? 1.0f : static_cast<float>(extent.width) / static_cast<float>(extent.height);
-    const glm::mat4 view = camera_.viewMatrix();
-    const glm::mat4 projection = camera_.projectionMatrix(aspect);
-    const glm::mat4 viewProjection = projection * view;
-    frameViewProjection_ = viewProjection;
-    frameCameraPosition_ = camera_.position;
     updateCascades(aspect);
 
     bool animatedTransformUpdated = false;
@@ -8964,7 +9492,7 @@ void Renderer::updateFrameData(uint32_t frameIndex)
 
         const glm::mat4 model = object.transform.modelMatrix();
         ObjectFrameData& frameData = objectFrameData[drawIndex];
-        frameData.mvp = viewProjection * model;
+        frameData.mvp = frameJitteredViewProjection_ * model;
         frameData.model = model;
         for (uint32_t cascadeIndex = 0; cascadeIndex < kMaxShadowCascades; ++cascadeIndex) {
             frameData.lightMvp[cascadeIndex] = frameCascades_[cascadeIndex].lightViewProjection * model;
@@ -9022,7 +9550,8 @@ void Renderer::recreateSwapchain()
         bloomDownsamplePipeline_.pipeline() == VK_NULL_HANDLE ||
         bloomDownsamplePipelineColorFormat_ != kBloomColorFormat ||
         bloomUpsamplePipeline_.pipeline() == VK_NULL_HANDLE ||
-        bloomUpsamplePipelineColorFormat_ != kBloomColorFormat || compositePipeline_.pipeline() == VK_NULL_HANDLE ||
+        bloomUpsamplePipelineColorFormat_ != kBloomColorFormat || taaResolvePipeline_.pipeline() == VK_NULL_HANDLE ||
+        taaResolvePipelineColorFormat_ != kSceneColorFormat || compositePipeline_.pipeline() == VK_NULL_HANDLE ||
         compositePipelineColorFormat_ != swapchain_.colorFormat() || exposurePipelineMissing;
     if (pipelineNeedsRecreate) {
         createPipeline();
@@ -9085,6 +9614,27 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         };
     };
 
+    const auto taaHistoryResource = [&bloomClear](const char* name,
+                                                  rhi::VulkanImage& image,
+                                                  VkImageLayout& layout) {
+        const VkExtent3D extent = image.extent();
+        return renderer::RenderGraphImageResource{
+            name,
+            image.image(),
+            image.imageView(),
+            VkExtent2D{extent.width, extent.height},
+            &layout,
+            image.format(),
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            1,
+            1,
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            bloomClear,
+            true,
+            true,
+        };
+    };
+
     std::vector<renderer::RenderGraphImageResource> bloomDownsampleResources;
     bloomDownsampleResources.reserve(bloomMipDownsampleImages_.size());
     for (size_t level = 0; level < bloomMipDownsampleImages_.size() && level < bloomMipDownsampleLayouts_.size();
@@ -9118,6 +9668,12 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             true,
             false,
         },
+        taaHistoryResource("TAAHistoryRead",
+                           taaHistoryImages_[taaHistoryReadIndex()],
+                           taaHistoryLayouts_[taaHistoryReadIndex()]),
+        taaHistoryResource("TAAHistoryWrite",
+                           taaHistoryImages_[taaHistoryWriteIndex()],
+                           taaHistoryLayouts_[taaHistoryWriteIndex()]),
         renderer::RenderGraphImageResource{
             "BloomExtract",
             bloomExtract_.image(),
@@ -9217,6 +9773,7 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
                        frameExposureBuffers_,
                        currentFrame_,
                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
+        isTaaActive(),
     };
 }
 
@@ -9415,6 +9972,90 @@ bool Renderer::isGpuExposureActive() const
     return toneMappingSettings_.enableAutoExposure && exposureReduceAvailable_ &&
            exposureReducePipeline_.pipeline() != VK_NULL_HANDLE && exposureReducePipeline_.layout() != VK_NULL_HANDLE &&
            exposureReduceDescriptorSets_.size() == frames_.size() && frameExposureBuffers_.size() == frames_.size();
+}
+
+bool Renderer::isTaaActive() const
+{
+    return taaSettings_.enabled && taaResolvePipeline_.pipeline() != VK_NULL_HANDLE &&
+           taaResolvePipeline_.layout() != VK_NULL_HANDLE &&
+           taaHistoryImages_[0].imageView() != VK_NULL_HANDLE && taaHistoryImages_[1].imageView() != VK_NULL_HANDLE &&
+           taaResolveDescriptorSets_[0] != VK_NULL_HANDLE && taaResolveDescriptorSets_[1] != VK_NULL_HANDLE;
+}
+
+bool Renderer::isTaaJitterActive() const
+{
+    return isTaaActive() && taaSettings_.jitterEnabled;
+}
+
+uint32_t Renderer::taaHistoryReadIndex() const
+{
+    return (taaHistoryWriteIndex_ + 1u) % kTaaHistoryCount;
+}
+
+uint32_t Renderer::taaHistoryWriteIndex() const
+{
+    return taaHistoryWriteIndex_ % kTaaHistoryCount;
+}
+
+VkDescriptorSet Renderer::activeBloomExtractDescriptorSet() const
+{
+    if (isTaaActive()) {
+        const VkDescriptorSet descriptorSet =
+            taaBloomExtractDescriptorSets_[taaPostProcessHistoryIndex_ % kTaaHistoryCount];
+        if (descriptorSet != VK_NULL_HANDLE) {
+            return descriptorSet;
+        }
+    }
+    return bloomExtractDescriptorSet_;
+}
+
+VkDescriptorSet Renderer::activeBloomMipDownsampleDescriptorSet(uint32_t level) const
+{
+    if (level == 0 && isTaaActive()) {
+        const VkDescriptorSet descriptorSet =
+            taaBloomMipDownsampleDescriptorSets_[taaPostProcessHistoryIndex_ % kTaaHistoryCount];
+        if (descriptorSet != VK_NULL_HANDLE) {
+            return descriptorSet;
+        }
+    }
+    return level < bloomMipDownsampleDescriptorSets_.size() ? bloomMipDownsampleDescriptorSets_[level]
+                                                           : VK_NULL_HANDLE;
+}
+
+VkDescriptorSet Renderer::activeCompositeDescriptorSet() const
+{
+    if (isTaaActive()) {
+        const auto& descriptorSets = taaCompositeDescriptorSets_[taaPostProcessHistoryIndex_ % kTaaHistoryCount];
+        if (currentFrame_ < descriptorSets.size() && descriptorSets[currentFrame_] != VK_NULL_HANDLE) {
+            return descriptorSets[currentFrame_];
+        }
+    }
+    return currentFrame_ < compositeDescriptorSets_.size() ? compositeDescriptorSets_[currentFrame_]
+                                                          : compositeDescriptorSet_;
+}
+
+VkDescriptorSet Renderer::activeLuminanceDescriptorSet() const
+{
+    if (isTaaActive()) {
+        const auto& descriptorSets = taaLuminanceDescriptorSets_[taaPostProcessHistoryIndex_ % kTaaHistoryCount];
+        if (currentFrame_ < descriptorSets.size() && descriptorSets[currentFrame_] != VK_NULL_HANDLE) {
+            return descriptorSets[currentFrame_];
+        }
+    }
+    return currentFrame_ < luminanceDescriptorSets_.size() ? luminanceDescriptorSets_[currentFrame_]
+                                                          : VK_NULL_HANDLE;
+}
+
+VkDescriptorSet Renderer::activeHistogramDescriptorSet() const
+{
+    if (isTaaActive()) {
+        const auto& descriptorSets = taaHistogramDescriptorSets_[taaPostProcessHistoryIndex_ % kTaaHistoryCount];
+        if (currentFrame_ < descriptorSets.size() && descriptorSets[currentFrame_] != VK_NULL_HANDLE) {
+            return descriptorSets[currentFrame_];
+        }
+    }
+    return currentFrame_ < histogramDescriptorSets_.size() ? histogramDescriptorSets_[currentFrame_]
+                                                          : VK_NULL_HANDLE;
 }
 
 bool Renderer::isBindlessMaterialTextureActive() const
@@ -9856,7 +10497,6 @@ void Renderer::recordDepthPyramidCommands(VkCommandBuffer commandBuffer)
 void Renderer::recordLuminanceCommands(VkCommandBuffer commandBuffer)
 {
     if (!isLogAverageExposureActive() || exposureModeValue(toneMappingSettings_.exposureMode) == ExposureMode::Manual ||
-        currentFrame_ >= luminanceDescriptorSets_.size() ||
         currentFrame_ >= frameLuminanceBuffers_.size()) {
         return;
     }
@@ -9872,7 +10512,12 @@ void Renderer::recordLuminanceCommands(VkCommandBuffer commandBuffer)
     rhi::debug::beginLabel(commandBuffer, "LuminancePass");
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, luminancePipeline_.pipeline());
 
-    const VkDescriptorSet descriptorSet = luminanceDescriptorSets_[currentFrame_];
+    const VkDescriptorSet descriptorSet = activeLuminanceDescriptorSet();
+    if (descriptorSet == VK_NULL_HANDLE) {
+        renderGraph_.endLuminancePass();
+        rhi::debug::endLabel(commandBuffer);
+        return;
+    }
     vkCmdBindDescriptorSets(commandBuffer,
                             VK_PIPELINE_BIND_POINT_COMPUTE,
                             luminancePipeline_.layout(),
@@ -9922,7 +10567,7 @@ void Renderer::recordLuminanceCommands(VkCommandBuffer commandBuffer)
 void Renderer::recordHistogramCommands(VkCommandBuffer commandBuffer)
 {
     if (!isHistogramExposureActive() || exposureModeValue(toneMappingSettings_.exposureMode) == ExposureMode::Manual ||
-        currentFrame_ >= histogramDescriptorSets_.size() || currentFrame_ >= frameHistogramBuffers_.size() ||
+        currentFrame_ >= frameHistogramBuffers_.size() ||
         currentFrame_ >= frameExposureReadbackReady_.size()) {
         return;
     }
@@ -9966,7 +10611,12 @@ void Renderer::recordHistogramCommands(VkCommandBuffer commandBuffer)
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, histogramPipeline_.pipeline());
 
-    const VkDescriptorSet descriptorSet = histogramDescriptorSets_[currentFrame_];
+    const VkDescriptorSet descriptorSet = activeHistogramDescriptorSet();
+    if (descriptorSet == VK_NULL_HANDLE) {
+        renderGraph_.endHistogramExposurePass();
+        rhi::debug::endLabel(commandBuffer);
+        return;
+    }
     vkCmdBindDescriptorSets(commandBuffer,
                             VK_PIPELINE_BIND_POINT_COMPUTE,
                             histogramPipeline_.layout(),
@@ -10082,6 +10732,57 @@ void Renderer::recordHistogramCommands(VkCommandBuffer commandBuffer)
     renderGraph_.endHistogramExposurePass();
 }
 
+void Renderer::recordTaaResolveCommands(VkCommandBuffer commandBuffer)
+{
+    if (!isTaaActive()) {
+        return;
+    }
+
+    const uint32_t readIndex = taaHistoryReadIndex();
+    const VkDescriptorSet descriptorSet = taaResolveDescriptorSets_[readIndex];
+    if (descriptorSet == VK_NULL_HANDLE) {
+        return;
+    }
+
+    const VkExtent3D sceneExtent = sceneColor_.extent();
+    if (sceneExtent.width == 0 || sceneExtent.height == 0) {
+        return;
+    }
+
+    rhi::debug::beginLabel(commandBuffer, "TAAResolvePass");
+    const bool taaProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "TAAResolvePass");
+    renderGraph_.beginTaaResolvePass();
+    setViewportAndScissor(commandBuffer, VkExtent2D{sceneExtent.width, sceneExtent.height});
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, taaResolvePipeline_.pipeline());
+    vkCmdBindDescriptorSets(commandBuffer,
+                            VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            taaResolvePipeline_.layout(),
+                            0,
+                            1,
+                            &descriptorSet,
+                            0,
+                            nullptr);
+
+    const TaaResolvePushConstants pushConstants{
+        glm::vec2{1.0f / static_cast<float>(sceneExtent.width), 1.0f / static_cast<float>(sceneExtent.height)},
+        taaSettings_.feedback,
+        taaHistoryValid_ ? 1u : 0u,
+        taaSettings_.neighborhoodClampEnabled ? 1u : 0u,
+        {0u, 0u, 0u}};
+    vkCmdPushConstants(commandBuffer,
+                       taaResolvePipeline_.layout(),
+                       VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0,
+                       static_cast<uint32_t>(sizeof(TaaResolvePushConstants)),
+                       &pushConstants);
+    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+    renderGraph_.endTaaResolvePass();
+    if (taaProfileScope) {
+        gpuProfiler_.endScope(currentFrame_, commandBuffer);
+    }
+    rhi::debug::endLabel(commandBuffer);
+}
+
 void Renderer::recordLegacyBloomCommands(VkCommandBuffer commandBuffer)
 {
     rhi::debug::beginLabel(commandBuffer, "BloomExtractPass");
@@ -10089,12 +10790,13 @@ void Renderer::recordLegacyBloomCommands(VkCommandBuffer commandBuffer)
     renderGraph_.beginBloomExtractPass();
     setViewportAndScissor(commandBuffer, bloomExtent_);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomExtractPipeline_.pipeline());
+    const VkDescriptorSet bloomExtractDescriptorSet = activeBloomExtractDescriptorSet();
     vkCmdBindDescriptorSets(commandBuffer,
                             VK_PIPELINE_BIND_POINT_GRAPHICS,
                             bloomExtractPipeline_.layout(),
                             0,
                             1,
-                            &bloomExtractDescriptorSet_,
+                            &bloomExtractDescriptorSet,
                             0,
                             nullptr);
     const BloomExtractPushConstants bloomExtractPushConstants{bloomSettings_.threshold};
@@ -10199,7 +10901,12 @@ void Renderer::recordMipChainBloomCommands(VkCommandBuffer commandBuffer)
         renderGraph_.beginBloomDownsamplePass(level);
         setViewportAndScissor(commandBuffer, outputSize);
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomDownsamplePipeline_.pipeline());
-        const VkDescriptorSet descriptorSet = bloomMipDownsampleDescriptorSets_[level];
+        const VkDescriptorSet descriptorSet = activeBloomMipDownsampleDescriptorSet(level);
+        if (descriptorSet == VK_NULL_HANDLE) {
+            renderGraph_.endBloomDownsamplePass();
+            rhi::debug::endLabel(commandBuffer);
+            continue;
+        }
         vkCmdBindDescriptorSets(commandBuffer,
                                 VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 bloomDownsamplePipeline_.layout(),
@@ -10285,6 +10992,8 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
 {
     const VkDeviceAddress objectFrameDataBaseAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
     const size_t mainDrawItemCount = visibleDrawItems_.size();
+    const bool taaActiveThisFrame = isTaaActive();
+    taaPostProcessHistoryIndex_ = taaActiveThisFrame ? taaHistoryWriteIndex() : 0u;
 
     renderGraph_.beginFrame(commandBuffer, swapchain_, shadowMap_, imageIndex, renderGraphFrameResources());
     rhi::debug::beginLabel(commandBuffer, "Frame");
@@ -10467,11 +11176,9 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     if (skyboxDescriptorSet_ != VK_NULL_HANDLE) {
         const renderer::GpuProfileScope skyboxScope(gpuProfiler_, currentFrame_, commandBuffer, "Skybox");
         rhi::debug::beginLabel(commandBuffer, "Skybox");
-        const float aspect =
-            extent.height == 0 ? 1.0f : static_cast<float>(extent.width) / static_cast<float>(extent.height);
         glm::mat4 skyboxView = camera_.viewMatrix();
         skyboxView[3] = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
-        const glm::mat4 projection = camera_.projectionMatrix(aspect);
+        const glm::mat4 projection = frameJitteredProjection_;
         const SkyboxPushConstants skyboxPushConstants{glm::inverse(projection * skyboxView),
                                                       currentToneMappingExposure(),
                                                       toneMappingOperatorValue(toneMappingSettings_.operatorType)};
@@ -10660,6 +11367,10 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
 
     recordDepthPyramidCommands(commandBuffer);
 
+    if (taaActiveThisFrame) {
+        recordTaaResolveCommands(commandBuffer);
+    }
+
     recordLegacyBloomCommands(commandBuffer);
     recordMipChainBloomCommands(commandBuffer);
 
@@ -10671,8 +11382,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     renderGraph_.beginCompositePass();
     setViewportAndScissor(commandBuffer, swapchain_.extent());
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, compositePipeline_.pipeline());
-    const VkDescriptorSet compositeDescriptorSet =
-        currentFrame_ < compositeDescriptorSets_.size() ? compositeDescriptorSets_[currentFrame_] : compositeDescriptorSet_;
+    const VkDescriptorSet compositeDescriptorSet = activeCompositeDescriptorSet();
     vkCmdBindDescriptorSets(commandBuffer,
                             VK_PIPELINE_BIND_POINT_GRAPHICS,
                             compositePipeline_.layout(),
@@ -10713,6 +11423,11 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         gpuProfiler_.endScope(currentFrame_, commandBuffer);
     }
     rhi::debug::endLabel(commandBuffer);
+
+    if (taaActiveThisFrame) {
+        taaHistoryValid_ = true;
+        taaHistoryWriteIndex_ = (taaHistoryWriteIndex_ + 1u) % kTaaHistoryCount;
+    }
 
     gpuProfiler_.endFrame(currentFrame_, commandBuffer);
     rhi::debug::endLabel(commandBuffer);

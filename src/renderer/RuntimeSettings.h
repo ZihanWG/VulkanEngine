@@ -50,6 +50,13 @@ struct BloomSettings {
     float radius = 1.0f;
 };
 
+struct TaaSettings {
+    bool enabled = false;
+    bool jitterEnabled = true;
+    bool neighborhoodClampEnabled = true;
+    float feedback = 0.88f;
+};
+
 struct DebugUiSettings {
     bool showRenderGraphPanel = true;
     bool showSceneHierarchyPanel = true;
@@ -67,6 +74,7 @@ struct DebugUiSettings {
 struct RuntimeSettings {
     ToneMappingSettings toneMapping;
     BloomSettings bloom;
+    TaaSettings taa;
     CsmSettings csm;
     DebugUiSettings debugUi;
     bool useGpuCulling = true;

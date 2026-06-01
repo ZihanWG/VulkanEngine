@@ -21,6 +21,12 @@
         "intensity": 0.1,
         "radius": 1.0
     },
+    "taa": {
+        "enabled": false,
+        "jitterEnabled": true,
+        "neighborhoodClampEnabled": true,
+        "feedback": 0.88
+    },
     "csm": {
         "cascadeCount": 4,
         "lambda": 0.5,
