@@ -1,6 +1,6 @@
 # VulkanEngine
 
-C++20 Vulkan 1.3 real-time renderer prototype focused on modern explicit rendering, reproducible builds, and incremental GPU-driven rendering work.
+VulkanEngine is a C++20 Vulkan 1.3 real-time renderer prototype focused on explicit GPU resource management, modern rendering architecture, GPU-driven visibility, profiling, post-processing, and lightweight editor/data workflows. It is a renderer portfolio project, not a full game engine.
 
 The demo renders a static glTF test scene, or a built-in cube fallback, through SDL3, Volk, Vulkan Memory Allocator, Dynamic Rendering, and Synchronization2. This is intentionally an engine-style renderer portfolio project rather than a full game engine: the code favors readable Vulkan ownership, clear resource contracts, and small milestones over a large framework.
 
@@ -347,7 +347,7 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 
 One-line summary:
 
-C++20 Vulkan 1.3 real-time renderer with PBR/IBL, Render Graph metadata, GPU profiling, GPU culling, Hi-Z occlusion, mip-chain bloom, TAA foundation, editable scene workflow, and JSON material assets.
+C++20 Vulkan 1.3 real-time renderer featuring PBR/IBL, cascaded shadows, HDR post-processing, mip-chain bloom, GPU exposure, Render Graph metadata, GPU timestamp profiling, GPU culling, optional Hi-Z occlusion, TAA foundation, editable scene tools, JSON material assets, and overlay-free portfolio capture.
 
 Resume bullets:
 

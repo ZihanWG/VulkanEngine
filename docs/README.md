@@ -22,6 +22,7 @@ overview; these documents describe implementation details and limitations.
 
 ## Portfolio Summary Text
 
-C++20 Vulkan 1.3 real-time renderer with PBR/IBL, Render Graph metadata, GPU
-profiling, GPU culling, Hi-Z occlusion, mip-chain bloom, TAA foundation,
-editable scene workflow, and JSON material assets.
+C++20 Vulkan 1.3 real-time renderer featuring PBR/IBL, cascaded shadows, HDR
+post-processing, mip-chain bloom, GPU exposure, Render Graph metadata, GPU
+timestamp profiling, GPU culling, optional Hi-Z occlusion, TAA foundation,
+editable scene tools, JSON material assets, and overlay-free portfolio capture.
