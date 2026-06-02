@@ -118,6 +118,7 @@ constexpr uint32_t kHistogramLocalSizeY = 16;
 constexpr uint32_t kMaxBloomMipChainLevels = 4;
 constexpr uint32_t kTaaHistoryCount = 2;
 constexpr uint32_t kTaaJitterSampleCount = 8;
+constexpr std::string_view kNoSavedSceneFoundMessage = "No saved scene found. Use Save Scene first.";
 constexpr float kMinAverageLuminance = 0.0001f;
 constexpr float kDefaultHistogramMinLogLuminance = -10.0f;
 constexpr float kDefaultHistogramMaxLogLuminance = 4.0f;
@@ -7091,7 +7092,10 @@ void Renderer::loadSceneFromUi()
             if (existsError) {
                 throw std::runtime_error("could not check scene file: " + existsError.message());
             }
-            throw std::runtime_error("scene file does not exist at " + sceneDocumentPath_.string());
+            lastSceneLoadStatus_ =
+                std::string(kNoSavedSceneFoundMessage) + " Scene path: " + sceneDocumentPath_.string() + ".";
+            Logger::warn(lastSceneLoadStatus_);
+            return;
         }
 
         std::ifstream input(sceneDocumentPath_);
@@ -7711,7 +7715,11 @@ void Renderer::drawSceneEditingDebugUi()
     }
 
     ImGui::TextWrapped("Last save: %s", lastSceneSaveStatus_.c_str());
-    ImGui::TextWrapped("Last load: %s", lastSceneLoadStatus_.c_str());
+    if (lastSceneLoadStatus_.starts_with(kNoSavedSceneFoundMessage)) {
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.25f, 1.0f), "Last load: %s", lastSceneLoadStatus_.c_str());
+    } else {
+        ImGui::TextWrapped("Last load: %s", lastSceneLoadStatus_.c_str());
+    }
 
     if (ImGui::CollapsingHeader("Camera and Light", ImGuiTreeNodeFlags_DefaultOpen)) {
         drawCameraLightEditorDebugUi();

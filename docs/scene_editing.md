@@ -58,7 +58,11 @@ Use the Scene Hierarchy panel:
 1. Click `Save Scene` to write `assets/scenes/default.scene.json`.
 2. Click `Load Scene` to read that file back into the current runtime scene.
 
-The save path creates `assets/scenes/` if it does not exist.
+The save path creates `assets/scenes/` and `default.scene.json` if they do not
+already exist. A fresh checkout does not track a default scene file by design.
+If `Load Scene` is clicked before any scene has been saved, the UI reports
+`No saved scene found. Use Save Scene first.` and logs a friendly warning
+instead of treating the missing file as a renderer failure.
 
 Load matches objects by `id` first, then by `name` as a fallback. It restores
 matching runtime objects in place, preserves current mesh pointers, and only

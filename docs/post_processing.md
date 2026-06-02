@@ -1,6 +1,6 @@
 # Post-Processing
 
-Phase 6A added mip-chain bloom and moved automatic exposure use into a GPU-readable exposure state buffer. Phase 6B adds an optional Temporal AA foundation without adding motion vectors, temporal upscaling, FSR/DLSS, or ray tracing.
+Phase 6A added mip-chain bloom and moved automatic exposure use into a GPU-readable exposure state buffer. Phase 6B adds an optional Temporal AA foundation without adding motion vectors, temporal upscaling, reactive masks, FSR/DLSS/XeSS, or ray tracing.
 
 ## HDR Scene Color
 
@@ -97,7 +97,8 @@ The ImGui debug UI exposes:
 - No motion vectors or velocity buffer.
 - No TAA depth reprojection or disocclusion classification.
 - No temporal upscaling.
-- No FSR/DLSS.
+- No FSR/DLSS/XeSS.
+- No per-material reactive masks.
 - No ray tracing.
 - No local exposure.
 - No automatic camera-cut handling.

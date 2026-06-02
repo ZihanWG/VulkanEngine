@@ -1,35 +1,44 @@
 # VulkanEngine
 
-C++20 Vulkan 1.3 renderer prototype focused on modern explicit rendering, reproducible builds, and incremental GPU-driven rendering work.
+C++20 Vulkan 1.3 real-time renderer prototype focused on modern explicit rendering, reproducible builds, and incremental GPU-driven rendering work.
 
-The demo renders a static glTF test scene, or a built-in cube fallback, through SDL3, Volk, Vulkan Memory Allocator, Dynamic Rendering, and Synchronization2. This is intentionally a renderer portfolio project rather than a full game engine: the code favors readable Vulkan ownership, clear resource contracts, and small milestones over a large framework.
+The demo renders a static glTF test scene, or a built-in cube fallback, through SDL3, Volk, Vulkan Memory Allocator, Dynamic Rendering, and Synchronization2. This is intentionally an engine-style renderer portfolio project rather than a full game engine: the code favors readable Vulkan ownership, clear resource contracts, and small milestones over a large framework.
 
 ## Feature List
 
 - Vulkan 1.3 initialization with Volk, validation in Debug, Dynamic Rendering, and Synchronization2.
 - VMA-backed buffers and images, Buffer Device Address, CPU-visible uploads/readbacks, and GPU-local staging copies.
 - SDL3 window and surface integration with swapchain recreation support.
-- Static mesh path for built-in cube geometry and glTF triangle meshes.
+- Static mesh path for built-in cube geometry and static glTF triangle meshes.
 - glTF material factors plus base color, normal, and metallic-roughness texture loading.
 - Minimal path-based `AssetManager` for material JSON assets and texture path metadata.
 - Material asset JSON load/save for PBR scalar fields, texture path metadata, alpha metadata, and portfolio materials.
 - Tangent-space normal mapping and Cook-Torrance GGX direct lighting.
-- Optional HDR environment loading with a procedural fallback, cubemap-based skybox/IBL resources, and split-sum BRDF LUT.
+- Optional HDR environment loading with a procedural fallback, cubemap-based skybox/IBL resources, diffuse irradiance, GGX prefiltered specular IBL, and split-sum BRDF LUT.
 - Skybox and mesh shaders output HDR linear color into an offscreen scene color target before post-processing.
 - Bloom extraction, legacy separable blur fallback, mip-chain bloom, and final composite passes are implemented.
-- Optional Temporal AA foundation with Halton subpixel jitter, ping-pong HDR history, conservative neighborhood clamping, and explicit history reset/debug controls.
-- Auto exposure from HDR scene luminance builds log-average and histogram data, reduces exposure on GPU for composite, and keeps frame-latency CPU exposure readback only for debug display.
+- Optional Temporal AA foundation, disabled by default, with Halton subpixel jitter, ping-pong HDR history, conservative neighborhood clamping, and explicit history reset/debug controls.
+- Auto exposure from HDR scene luminance builds log-average and histogram data, reduces exposure into GPU exposure state for composite, and keeps frame-latency CPU exposure readback only for debug display.
 - Manual exposure remains available as the fallback path.
 - Reinhard/ACES tone mapping is applied in the final composite pass before swapchain output.
 - Dear ImGui debug overlay exposes runtime render settings, persistent JSON settings save/load/reset controls, render graph visualization, GPU profiler/frame timeline history, culling/exposure history plots, editable scene hierarchy/transform controls, editable material scalar controls, and render-target/CSM cascade debug views.
 - Compact Kulla-Conty-style multi-scattering compensation for PBR response.
-- PCF-filtered cascaded directional shadow map with basic texel snapping, optional cascade debug tinting, per-cascade GPU shadow-caster culling, and an indirect shadow draw path.
+- PCF-filtered cascaded shadow maps (CSM) with basic texel snapping, optional cascade debug tinting, per-cascade GPU shadow-caster culling, and an indirect shadow draw path.
 - Descriptor indexing path for bindless material texture arrays, with a legacy descriptor-set fallback.
 - Render Graph 2.0 with logical texture/buffer handles, pass read/write declarations, conservative automatic image transitions, transient render-target descriptions, basic pass liveness/culling metadata, and ImGui pass/resource visualization.
-- GPU frustum culling compute pass that compacts visible indirect draw commands, writes per-batch visible counts, and can optionally run conservative Hi-Z occlusion tests.
+- GPU frustum culling compute pass that compacts visible indirect draw commands, writes per-batch visible counts, and can optionally run conservative previous-frame Hi-Z occlusion tests. Occlusion culling is disabled by default.
 - Multi-draw indirect batching by mesh-compatible ranges on the bindless main path and shadow path.
 - GPU timestamp profiler with per-pass timings, frame-latency readback, moving-average ImGui history, and debug labels for capture/profiling orientation.
+- Editable scene workflow for runtime object transforms, visibility, camera/light settings, and JSON scene save/load.
 - Portfolio screenshot capture mode with F12 PNG export from the final tonemapped swapchain image before the ImGui overlay.
+
+## Engineering Focus
+
+- Explicit graphics API design: Vulkan 1.3 object ownership, Dynamic Rendering, Synchronization2, descriptor contracts, and swapchain recreation.
+- GPU-driven rendering steps: indirect draws, bindless material textures, GPU frustum culling, optional conservative Hi-Z occlusion, and per-pass GPU timing.
+- Synchronization and resource lifetime: graph-managed image transitions, explicit buffer barriers, frame-latency readbacks, and RAII Vulkan wrappers.
+- Debugging/profiling infrastructure: ImGui panels for render graph resources, timestamp scopes, render targets, culling, exposure, materials, and scene metadata.
+- Data-driven material workflow: JSON material assets mapped into runtime PBR state without claiming a full editor or asset pipeline.
 
 ## Architecture Overview
 
@@ -51,7 +60,22 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 
 ## Engine Upgrade Audit
 
-Phase 0 of the renderer-to-engine upgrade is documented in `docs/engine_upgrade_audit.md`. It records the current architecture, frame flow, render graph, scene/material/glTF paths, debug UI, culling, post-processing, CSM shadows, profiling foundation, and risk areas before feature work continues. Phase 1 GPU timestamp profiling is documented in `docs/profiling.md`.
+The current repository status is documented in `docs/engine_upgrade_audit.md`. It records the architecture, frame flow, render graph, scene/material/glTF paths, debug UI, culling, post-processing, CSM shadows, profiling infrastructure, and current limitations after the Phase 7 polish pass.
+
+## Documentation
+
+Start with [docs/README.md](docs/README.md) for a short index of the focused technical documents.
+
+## How to Demo
+
+1. Build shaders with `cmake --build build --config Debug --target VulkanEngineShaders`.
+2. Build the renderer with `cmake --build build --config Debug --target VulkanEngine`.
+3. Run `.\build\Debug\VulkanEngine.exe`.
+4. In `VulkanEngine Debug`, open `Debug Views`, then show the `GPU Profiler`, `Render Graph`, `Scene Hierarchy`, and `Material Inspector` panels.
+5. Use `Scene Presets` -> `Load Occlusion Test Scene`, then `GPU Culling` -> `Enable Occlusion Test Settings` to inspect conservative Hi-Z culling. Occlusion remains optional and off by default.
+6. Toggle `Temporal AA` off and on from its panel. TAA is a foundation pass and is disabled by default.
+7. Press `F11` to enable portfolio mode when reviewing the portfolio scene.
+8. Press `F12` only when intentionally updating the committed portfolio screenshots.
 
 ## Render Graph 2.0
 
@@ -73,7 +97,7 @@ Automatic exposure keeps the existing log-average luminance and histogram binnin
 
 The composite shader samples the active HDR scene source, the legacy bloom result, the mip-chain bloom result, and exposure state. It chooses the selected bloom method, applies bloom strength, applies manual or GPU exposure, and then runs Reinhard or ACES tone mapping. ImGui exposes bloom enabled/method/mip count/strength/threshold/radius, TAA enable/jitter/clamp/feedback/history state, exposure mode/current debug exposure, and tone mapper selection. Render Graph and GPU profiler panels show TAA, bloom, histogram exposure, and composite metadata/timings.
 
-Current limitations: TAA does not include motion vectors, depth reprojection, disocclusion classification, temporal upscaling, FSR/DLSS, local exposure, ray tracing, or automatic camera-cut detection. Details are in `docs/post_processing.md` and `docs/taa.md`.
+Current limitations: TAA does not include motion vectors, depth reprojection, disocclusion classification, temporal upscaling, FSR/DLSS/XeSS, reactive masks, local exposure, ray tracing, or automatic camera-cut detection. Details are in `docs/post_processing.md` and `docs/taa.md`.
 
 ## Depth Pyramid and GPU Occlusion Culling
 
@@ -271,12 +295,14 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 
 ## Known Limitations
 
+- This is not a full game engine: there is no physics system, gameplay scripting, full ECS, or production-grade editor.
 - Shadow GPU culling is optional and still uses CPU-built draw items/batches; it is not alpha-tested, occlusion-driven, or BVH-backed yet.
 - The cascaded shadow pass keeps a direct `vkCmdDrawIndexed` fallback when GPU shadow culling or shadow indirect drawing is unavailable.
 - The old zero-count indirect command path is still retained as a fallback when indirect-count drawing is unavailable.
 - CSM bounds use basic texel snapping, but they do not yet use stable crop matrices, cascade blending, or per-cascade resolution control.
 - Upload paths still use simple one-time command buffers and queue idle waits, which is acceptable for initialization but not ideal for runtime streaming.
 - `RenderGraph` now has logical handles, declarations, conservative image transition inference, and pass liveness metadata, but it is not a production scheduler, async compute scheduler, memory aliasing system, or full transient allocator.
+- Hi-Z occlusion is conservative and previous-frame based. It is biased toward false negatives to avoid visible popping and is disabled by default.
 - Render-target debug views are basic; there is no advanced channel remapping yet.
 - There is no full texture viewer/editor yet.
 - There is no render graph node editor yet.
@@ -303,48 +329,32 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - There is no asset browser.
 - There is no ECS/editor architecture yet.
 - There is no GPU capture automation yet.
-- TAA is a foundation pass only; there are no motion vectors, depth reprojection, temporal upscaling, FSR/DLSS integration, or automatic camera-cut detection yet.
+- TAA is a foundation pass only; there are no motion vectors, depth reprojection, temporal upscaling, FSR/DLSS/XeSS integration, reactive masks, or automatic camera-cut detection yet.
+- Reflections are environment-based IBL only; there is no SSR, ray tracing, planar reflection, local reflection probe, or glass transmission/refraction path.
 - Environment prefiltering is still approximate and not production quality.
 
-## Next Milestones
+## Future Work, Out of Scope for Phase 7
 
-- Build mesh batches fully on the GPU.
-- Move material/object buffers toward a fully GPU-driven layout.
-- GPU-built shadow batches.
-- Add alpha-tested shadow casters.
-- Add shadow LOD.
-- Improve CSM with stable crop matrices, cascade blending, split tuning, and per-cascade resolution control.
-- Evaluate VSM/EVSM shadow filtering.
-- Add shadow caster culling acceleration structures.
-- Add occlusion culling.
-- Add BVH or other spatial partitioning.
-- Add LOD.
-- Consider mesh/task shaders in a later renderer branch.
-- Improve HDR environment prefiltering and color-management policy.
-- Add local exposure.
-- Add HDR swapchain output.
-- Add runtime settings profile presets.
-- Add per-scene runtime settings.
-- Add persistent scene/editor settings.
-- Add object creation/deletion and hierarchy editing.
-- Add object visibility toggles.
-- Add object picking / mouse selection.
-- Add texture channel remapping.
-- Add mip/slice selectors for all debug images.
-- Add cubemap face preview.
-- Add advanced CSM visualization.
-- Add texture import/reload UI.
-- Add asset browser.
-- Add material graph.
-- Expand scene serialization beyond runtime metadata.
-- Add editor docking layout.
-- Add render graph node view.
-- Add GPU capture workflow panel.
-- Add temporal AA.
-- Move runtime streaming away from queue-idle one-time uploads.
-- Continue growing the render graph toward broader pass migration, production scheduling, aliasing, pooled transient allocation, and richer visualization.
+- Build mesh batches fully on the GPU and move material/object data toward a broader GPU-driven layout.
+- Add GPU-built shadow batches, alpha-tested shadow casters, shadow LOD, and stronger CSM stabilization.
+- Add BVH/spatial partitioning, LOD, and possible mesh/task shader experiments in a later renderer branch.
+- Improve HDR environment prefiltering, color-management policy, local exposure, and HDR swapchain output.
+- Expand scene editing beyond runtime metadata with object creation/deletion, hierarchy editing, picking, and persistent per-scene settings.
+- Add texture import/reload UI, asset browser, material graph, render graph node view, editor docking layout, and GPU capture workflow panel.
 - Expand glTF support with alpha modes, occlusion/emissive textures, tangent generation, animation, skinning, morph targets, cameras, and lights.
-- Add RenderDoc workflow documentation, CPU/GPU timeline correlation, and in-engine profiler UI improvements.
+
+## Portfolio And Resume Copy
+
+One-line summary:
+
+C++20 Vulkan 1.3 real-time renderer with PBR/IBL, Render Graph metadata, GPU profiling, GPU culling, Hi-Z occlusion, mip-chain bloom, TAA foundation, editable scene workflow, and JSON material assets.
+
+Resume bullets:
+
+- Built a C++20 Vulkan 1.3 real-time renderer using Dynamic Rendering, Synchronization2, VMA, and Volk.
+- Implemented PBR/IBL shading, cascaded shadows, HDR post-processing, mip-chain bloom, GPU exposure, and a conservative TAA foundation.
+- Added GPU frustum culling, optional Hi-Z occlusion culling, indirect drawing, per-pass GPU timestamp profiling, and Render Graph metadata/transition tracking.
+- Built editor-style tooling for scene transform editing, JSON scene save/load, material asset editing, and overlay-free portfolio capture.
 
 ## Milestone History
 
@@ -1185,9 +1195,9 @@ Exposure:
 
 Timestamp/debug capture labels now include `HistogramExposurePass` and `HistogramCompute`, and timestamp results include a separate `HistogramExposure` range while keeping the existing `AutoExposure` / `Luminance` timing.
 
-Limitations after Milestone 42: histogram reduction still reads back to the CPU, there is no GPU-only exposure chain yet, no local exposure, no eye adaptation curve UI, no ImGui controls, no HDR swapchain output, no temporal AA, and bloom remains the existing simple half-resolution extract plus separable blur.
+At the end of Milestone 42, histogram reduction still read back to the CPU, there was no GPU-only exposure chain yet, no local exposure, no eye adaptation curve UI, no ImGui controls, no HDR swapchain output, no temporal AA, and bloom remained the existing simple half-resolution extract plus separable blur. Later phases changed several of those items; the current status is summarized at the top of this README.
 
-Future work: GPU-side histogram reduction, exposure debug visualization, ImGui runtime controls, local exposure, HDR swapchain output, improved bloom, and temporal effects.
+At that point, planned work included GPU-side histogram reduction, exposure debug visualization, ImGui runtime controls, local exposure, HDR swapchain output, improved bloom, and temporal effects.
 
 ## Milestone 43: ImGui Debug UI and Runtime Render Settings
 
@@ -1235,4 +1245,4 @@ Runtime-safe settings include exposure values, exposure mode, tone mapper, bloom
 
 This milestone does not add a full editor, docking layout, scene hierarchy editing, asset browser, material inspector, per-project profiles, scene-specific settings, or hot-reload for settings requiring GPU resource recreation. It does not change descriptor layouts, ObjectFrameData BDA usage, GPU culling algorithms, indirect-count drawing, CSM resource layout, shadow bindings, IBL/BRDF LUT bindings, glTF loading, bloom extraction/blur, histogram exposure, render graph behavior, or swapchain synchronization.
 
-Future work: profile presets, per-scene settings, editable material inspector, transform editing, object visibility toggles, render graph node view, GPU capture workflow panel, render-target debug views, CSM cascade visualization, and broader editor settings management.
+At that point, planned work included profile presets, per-scene settings, editable material inspector, transform editing, object visibility toggles, render graph node view, GPU capture workflow panel, render-target debug views, CSM cascade visualization, and broader editor settings management.
