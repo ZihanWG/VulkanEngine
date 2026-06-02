@@ -8,7 +8,8 @@ overview; these documents describe implementation details and limitations.
 - [GPU Profiling](profiling.md): Timestamp query profiler design, frame-latency
   readback model, profiled ranges, and known timing limitations.
 - [Render Graph 2.0](render_graph.md): Logical resource handles, pass
-  declarations, conservative image transitions, liveness metadata, and graph UI.
+  declarations, conservative image transitions, selected buffer barriers,
+  liveness metadata, and graph UI.
 - [GPU Culling](gpu_culling.md): GPU frustum culling, optional conservative
   previous-frame Hi-Z occlusion, occlusion test scene, counters, and fallbacks.
 - [Post-Processing](post_processing.md): HDR scene color, mip-chain bloom, GPU

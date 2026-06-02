@@ -62,7 +62,8 @@ not a full game engine. Implemented systems include:
 - GPU frustum culling, optional conservative previous-frame Hi-Z occlusion
   culling, indirect drawing, and culling debug counters.
 - Render Graph 2.0 metadata with logical handles, pass read/write declarations,
-  conservative image transitions, liveness metadata, and ImGui visualization.
+  conservative image transitions, selected declared buffer barriers, liveness
+  metadata, and ImGui visualization.
 - Per-pass GPU timestamp profiling with frame-latency readback and ImGui timing
   history.
 - Editable runtime scene workflow for object names, visibility, transforms,
@@ -113,9 +114,11 @@ production scheduler. It currently declares:
 - `ImGuiPass`
 
 It tracks logical texture and buffer handles, imported/transient resource
-metadata, declared access, conservative image transitions, side effects, pass
-liveness, and debug UI rows. Physical resource allocation remains in `Renderer`,
-and several buffer/readback barriers remain manual in `Renderer.cpp`.
+metadata, declared access, conservative image transitions, selected declared
+buffer pass-to-pass barriers, side effects, pass liveness, and debug UI rows.
+Physical resource allocation remains in `Renderer`, and shadow-culling,
+intra-pass reset/copy, host-readback, and screenshot-copy barriers remain manual
+in `Renderer.cpp`.
 
 ## Scene, Mesh, Material, And Assets
 

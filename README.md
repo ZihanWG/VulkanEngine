@@ -25,7 +25,7 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - Compact Kulla-Conty-style multi-scattering compensation for PBR response.
 - PCF-filtered cascaded shadow maps (CSM) with basic texel snapping, optional cascade debug tinting, per-cascade GPU shadow-caster culling, and an indirect shadow draw path.
 - Descriptor indexing path for bindless material texture arrays, with a legacy descriptor-set fallback.
-- Render Graph 2.0 with logical texture/buffer handles, pass read/write declarations, conservative automatic image transitions, transient render-target descriptions, basic pass liveness/culling metadata, and ImGui pass/resource visualization.
+- Render Graph 2.0 with logical texture/buffer handles, pass read/write declarations, conservative automatic image transitions, selected buffer barrier inference, transient render-target descriptions, basic pass liveness/culling metadata, and ImGui pass/resource visualization.
 - GPU frustum culling compute pass that compacts visible indirect draw commands, writes per-batch visible counts, and can optionally run conservative previous-frame Hi-Z occlusion tests. Occlusion culling is disabled by default.
 - Multi-draw indirect batching by mesh-compatible ranges on the bindless main path and shadow path.
 - GPU timestamp profiler with per-pass timings, frame-latency readback, moving-average ImGui history, and debug labels for capture/profiling orientation.
@@ -36,7 +36,7 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 
 - Explicit graphics API design: Vulkan 1.3 object ownership, Dynamic Rendering, Synchronization2, descriptor contracts, and swapchain recreation.
 - GPU-driven rendering steps: indirect draws, bindless material textures, GPU frustum culling, optional conservative Hi-Z occlusion, and per-pass GPU timing.
-- Synchronization and resource lifetime: graph-managed image transitions, explicit buffer barriers, frame-latency readbacks, and RAII Vulkan wrappers.
+- Synchronization and resource lifetime: graph-managed image transitions and selected buffer barriers, explicit readback/intra-pass barriers, frame-latency readbacks, and RAII Vulkan wrappers.
 - Debugging/profiling infrastructure: ImGui panels for render graph resources, timestamp scopes, render targets, culling, exposure, materials, and scene metadata.
 - Data-driven material workflow: JSON material assets mapped into runtime PBR state without claiming a full editor or asset pipeline.
 
@@ -55,7 +55,7 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - `AssetManager` stores stable path-based material/texture metadata, loads/saves material JSON files, and leaves Vulkan texture ownership in `Renderer`/`VulkanTexture`.
 - The editable scene workflow stores runtime object IDs, names, visibility, transforms, camera settings, and directional-light settings as JSON under `assets/scenes/`.
 - `ImGuiLayer` owns the Dear ImGui context, SDL3 backend, Vulkan backend, and ImGui descriptor pool.
-- `RenderGraph` tracks logical texture/buffer resources for `CSMShadowPass`, `MainHDRPass`, optional `TAAResolvePass`, bloom, `LuminancePass`, `HistogramExposurePass`, `CompositePass`, and `ImGuiPass`, infers conservative image transitions, and exposes debug pass/resource metadata.
+- `RenderGraph` tracks logical texture/buffer resources for `CSMShadowPass`, `MainHDRPass`, optional `TAAResolvePass`, bloom, `LuminancePass`, `HistogramExposurePass`, `CompositePass`, and `ImGuiPass`, infers conservative image transitions plus selected buffer barriers, and exposes debug pass/resource metadata.
 - `GpuProfiler` owns one timestamp query pool per frame-in-flight slot, records named GPU scopes, and exposes completed frame results to the ImGui profiler panel without adding a new frame-loop wait.
 
 ## Engine Upgrade Audit
@@ -79,9 +79,9 @@ Start with [docs/README.md](docs/README.md) for a short index of the focused tec
 
 ## Render Graph 2.0
 
-Phase 4 upgrades the previous manual graph into a more engine-like render graph while preserving the renderer's pass order and visual output. The graph now uses `RGTextureHandle` and `RGBufferHandle` declarations, pass-builder read/write declarations, conservative Synchronization2 image transition inference for graph-managed texture resources, transient descriptions for scene color and bloom targets, imported resources for swapchain/depth/shadow/readback resources, basic pass liveness/culling metadata, and an ImGui panel that lists passes and resources.
+Phase 4 upgrades the previous manual graph into a more engine-like render graph while preserving the renderer's pass order and visual output. The graph now uses `RGTextureHandle` and `RGBufferHandle` declarations, pass-builder read/write declarations, conservative Synchronization2 image transition inference for graph-managed texture resources, selected Synchronization2 buffer barriers for declared buffer pass dependencies, transient descriptions for scene color and bloom targets, imported resources for swapchain/depth/shadow/readback resources, basic pass liveness/culling metadata, and an ImGui panel that lists passes and resources.
 
-Current graph-declared passes are `CSMShadowPass`, `MainGpuCullingPass`, `MainHDRPass`, `DepthPyramidPass`, optional `TAAResolvePass`, legacy bloom extract/blur passes, bloom mip-chain downsample/upsample passes, `LuminancePass`, `HistogramExposurePass`, `CompositePass`, and `ImGuiPass`. GPU culling buffer barriers, histogram/exposure buffer barriers, and portfolio screenshot copy barriers remain manual in `Renderer.cpp` because they are buffer/readback or external swapchain dependencies that need a broader scheduler before moving safely.
+Current graph-declared passes are `CSMShadowPass`, `MainGpuCullingPass`, `MainHDRPass`, `DepthPyramidPass`, optional `TAAResolvePass`, legacy bloom extract/blur passes, bloom mip-chain downsample/upsample passes, `LuminancePass`, `HistogramExposurePass`, `CompositePass`, and `ImGuiPass`. The graph now emits conservative buffer barriers for declared dependencies such as main GPU culling outputs consumed by `MainHDRPass`, luminance partials consumed by `HistogramExposurePass`, and exposure state consumed by `CompositePass`. Shadow-culling reset/draw barriers, intra-pass fill/dispatch/copy barriers, host readback visibility, and portfolio screenshot copy barriers remain manual in `Renderer.cpp`.
 
 More details are in `docs/render_graph.md`.
 
@@ -170,7 +170,7 @@ More details are in `docs/asset_system.md`.
 6. Begin `RenderGraph` recording, import swapchain/depth/shadow resources, register transient scene/bloom targets, and declare pass read/write usage.
 7. For each cascade, optionally reset shadow batch counts and shadow indirect commands, dispatch the GPU shadow cull with that cascade's light-frustum planes, and barrier its writes for indirect/count reads.
 8. Let the graph transition the cascaded shadow-map array, begin depth-only Dynamic Rendering against the current layer view, and draw shadow casters for that cascade.
-9. Reset the main-pass batch visible-count buffer, dispatch the camera-frustum compute culling pass, optionally sample the previous completed Hi-Z depth pyramid for conservative occlusion, barrier shader writes for indirect/count reads, and copy visible counts for readback.
+9. Reset the main-pass batch visible-count buffer, dispatch the camera-frustum compute culling pass, optionally sample the previous completed Hi-Z depth pyramid for conservative occlusion, manually barrier visible counts for the immediate readback copy, and let the graph barrier culling outputs for later indirect/count reads in `MainHDRPass`.
 10. Let the graph transition the HDR scene color image, shadow map, and main depth image for `MainHDRPass`.
 11. Begin `MainHDRPass`, draw the skybox, bind global and bindless material descriptors when available, and issue indirect indexed mesh draws into `sceneColor_`.
 12. Run `DepthPyramidPass` to sample the stored normal-Z main depth image and write the max-depth Hi-Z pyramid for later-frame culling.
@@ -178,7 +178,7 @@ More details are in `docs/asset_system.md`.
 14. Run the legacy bloom extract/blur fallback into `BloomPong`.
 15. Run the mip-chain bloom downsample passes at 1/2, 1/4, 1/8, and 1/16 resolution when practical, then progressively upsample into the final mip-chain bloom target.
 16. Run `LuminancePass` to reduce log luminance from the active HDR scene source into per-frame GPU storage.
-17. Run `HistogramExposurePass` to bin HDR scene luminance, reduce the selected exposure mode into the GPU exposure state buffer, and make that buffer visible to composite and later debug readback.
+17. Run `HistogramExposurePass` to bin HDR scene luminance, reduce the selected exposure mode into the GPU exposure state buffer, manually preserve host readback visibility, and let the graph make the exposure buffer visible to `CompositePass`.
 18. Run `CompositePass` to combine active HDR scene color + selected bloom * intensity, apply manual or GPU exposure, apply Reinhard or ACES tone mapping, and write the final color to the swapchain.
 19. If a portfolio screenshot was requested, transition the composited swapchain image to transfer source, copy it into a per-frame readback buffer, then return it to color-attachment layout.
 20. Run `ImGuiPass` to load the composited swapchain image as a color attachment and draw the debug UI overlay.
@@ -301,7 +301,7 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - The old zero-count indirect command path is still retained as a fallback when indirect-count drawing is unavailable.
 - CSM bounds use basic texel snapping, but they do not yet use stable crop matrices, cascade blending, or per-cascade resolution control.
 - Upload paths still use simple one-time command buffers and queue idle waits, which is acceptable for initialization but not ideal for runtime streaming.
-- `RenderGraph` now has logical handles, declarations, conservative image transition inference, and pass liveness metadata, but it is not a production scheduler, async compute scheduler, memory aliasing system, or full transient allocator.
+- `RenderGraph` now has logical handles, declarations, conservative image transition inference, selected buffer barrier inference, and pass liveness metadata, but it is not a production scheduler, async compute scheduler, memory aliasing system, or full transient allocator.
 - Hi-Z occlusion is conservative and previous-frame based. It is biased toward false negatives to avoid visible popping and is disabled by default.
 - Render-target debug views are basic; there is no advanced channel remapping yet.
 - There is no full texture viewer/editor yet.
@@ -946,7 +946,7 @@ The GPU culling compute descriptor set now has three storage-buffer bindings:
 
 `cull.comp` now increments the visible count for each draw item whose world-space AABB passes the frustum test. The active path still writes one indirect command per draw item: visible items keep `indexCount`, `instanceCount = 1`, `firstIndex`, `vertexOffset`, and `firstInstance = objectFrameDataIndex`, while culled items write zero-count commands. The shader also has a compact-output mode for future work, but the renderer leaves it disabled in this milestone so mesh-compatible batch ranges stay valid.
 
-After compute culling, the renderer barriers the indirect command buffer for draw-indirect reads and barriers the visible count buffer for future draw-indirect count reads plus a transfer read. It then copies the count into a small CPU-visible readback buffer and reads it after the existing frame fence. The throttled GPU timing log now includes:
+After compute culling, the graph barriers the indirect command buffer and visible count buffer for draw-indirect reads in `MainHDRPass`, while the renderer keeps a manual transfer-read barrier for the immediate visible-count copy. It then copies the count into a small CPU-visible readback buffer and reads it after the existing frame fence. The throttled GPU timing log now includes:
 
 ```text
 GPU culling:

@@ -127,9 +127,11 @@ RenderGraph::TextureAccessState accessStateFromLayout(VkImageLayout layout, VkIm
     return state;
 }
 
-std::string passBarrierSummary(uint32_t barrierCount)
+std::string passBarrierSummary(uint32_t imageBarrierCount, uint32_t bufferBarrierCount)
 {
-    return std::to_string(barrierCount) + " inferred image barrier" + (barrierCount == 1 ? "" : "s");
+    return std::to_string(imageBarrierCount) + " inferred image barrier" +
+           (imageBarrierCount == 1 ? "" : "s") + ", " + std::to_string(bufferBarrierCount) +
+           " inferred buffer barrier" + (bufferBarrierCount == 1 ? "" : "s");
 }
 
 } // namespace
@@ -898,7 +900,9 @@ void RenderGraph::endImGuiPass()
     if (frame_.passIndices.imgui != kInvalidRenderGraphHandle) {
         RenderPassNode& pass = passes_.at(frame_.passIndices.imgui);
         pass.generatedBarrierCount += presentBarriers;
-        pass.transitionSummary = passBarrierSummary(pass.generatedBarrierCount);
+        pass.generatedImageBarrierCount += presentBarriers;
+        pass.transitionSummary =
+            passBarrierSummary(pass.generatedImageBarrierCount, pass.generatedBufferBarrierCount);
     }
     activePass_ = ActivePass::None;
 }
@@ -1372,17 +1376,22 @@ bool RenderGraph::beginDeclaredPass(uint32_t passIndex)
         return false;
     }
 
-    uint32_t barrierCount = 0;
+    uint32_t imageBarrierCount = 0;
+    uint32_t bufferBarrierCount = 0;
     for (const RenderResourceUsage& usage : pass.resourceUsages) {
-        if (usage.resource.kind != RGResourceKind::Texture) {
-            continue;
+        if (usage.resource.kind == RGResourceKind::Texture) {
+            imageBarrierCount += transitionTexture(RGTextureHandle{usage.resource.index}, usage.declaredAccess);
+        } else if (usage.resource.kind == RGResourceKind::Buffer) {
+            bufferBarrierCount += transitionBuffer(RGBufferHandle{usage.resource.index}, usage.declaredAccess);
         }
-        barrierCount += transitionTexture(RGTextureHandle{usage.resource.index}, usage.declaredAccess);
     }
 
     pass.executed = true;
-    pass.generatedBarrierCount += barrierCount;
-    pass.transitionSummary = passBarrierSummary(pass.generatedBarrierCount);
+    pass.generatedBarrierCount += imageBarrierCount + bufferBarrierCount;
+    pass.generatedImageBarrierCount += imageBarrierCount;
+    pass.generatedBufferBarrierCount += bufferBarrierCount;
+    pass.transitionSummary =
+        passBarrierSummary(pass.generatedImageBarrierCount, pass.generatedBufferBarrierCount);
     return true;
 }
 
@@ -1439,6 +1448,55 @@ uint32_t RenderGraph::transitionTexture(RGTextureHandle handle, RGAccess access)
 
     vkCmdPipelineBarrier2(frame_.commandBuffer, &dependencyInfo);
     setTextureLayout(resource, desired.layout);
+    resource.lastAccess = desired;
+    resource.usedThisFrame = true;
+    return 1;
+}
+
+uint32_t RenderGraph::transitionBuffer(RGBufferHandle handle, RGAccess access)
+{
+    if (!handle.valid() || handle.index >= buffers_.size()) {
+        return 0;
+    }
+
+    BufferResource& resource = buffers_[handle.index];
+    if (resource.buffer == VK_NULL_HANDLE || resource.desc.size == 0 || access == RGAccess::Unknown) {
+        return 0;
+    }
+
+    const BufferAccessState desired = accessStateForBuffer(access);
+    if (desired.declaredAccess == RGAccess::Unknown || desired.stage == VK_PIPELINE_STAGE_2_NONE ||
+        desired.access == VK_ACCESS_2_NONE) {
+        return 0;
+    }
+
+    const BufferAccessState previous = resource.lastAccess;
+    const bool needsOrdering = (resource.usedThisFrame || previous.declaredAccess != RGAccess::Unknown) &&
+                               (accessMaskWrites(previous.access) || accessMaskWrites(desired.access));
+    if (!needsOrdering) {
+        resource.lastAccess = desired;
+        resource.usedThisFrame = true;
+        return 0;
+    }
+
+    VkBufferMemoryBarrier2 barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+    barrier.srcStageMask = previous.stage;
+    barrier.srcAccessMask = previous.access;
+    barrier.dstStageMask = desired.stage;
+    barrier.dstAccessMask = desired.access;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.buffer = resource.buffer;
+    barrier.offset = 0;
+    barrier.size = resource.desc.size;
+
+    VkDependencyInfo dependencyInfo{};
+    dependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dependencyInfo.bufferMemoryBarrierCount = 1;
+    dependencyInfo.pBufferMemoryBarriers = &barrier;
+
+    vkCmdPipelineBarrier2(frame_.commandBuffer, &dependencyInfo);
     resource.lastAccess = desired;
     resource.usedThisFrame = true;
     return 1;
@@ -1504,6 +1562,61 @@ RenderGraph::TextureAccessState RenderGraph::accessStateForTexture(const Texture
     case RGAccess::IndirectRead:
     case RGAccess::HostRead:
         state.layout = currentTextureLayout(resource);
+        state.stage = VK_PIPELINE_STAGE_2_NONE;
+        state.access = VK_ACCESS_2_NONE;
+        break;
+    }
+
+    return state;
+}
+
+RenderGraph::BufferAccessState RenderGraph::accessStateForBuffer(RGAccess access) const
+{
+    BufferAccessState state{};
+    state.declaredAccess = access;
+
+    constexpr VkPipelineStageFlags2 kShaderBufferStages = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+                                                          VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                                                          VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+
+    switch (access) {
+    case RGAccess::StorageBufferRead:
+        state.stage = kShaderBufferStages;
+        state.access = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+        break;
+    case RGAccess::StorageBufferWrite:
+        state.stage = kShaderBufferStages;
+        state.access = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        break;
+    case RGAccess::StorageBufferReadWrite:
+        state.stage = kShaderBufferStages;
+        state.access = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        break;
+    case RGAccess::IndirectRead:
+        state.stage = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
+        state.access = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+        break;
+    case RGAccess::TransferSrc:
+        state.stage = VK_PIPELINE_STAGE_2_COPY_BIT;
+        state.access = VK_ACCESS_2_TRANSFER_READ_BIT;
+        break;
+    case RGAccess::TransferDst:
+        state.stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        state.access = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        break;
+    case RGAccess::HostRead:
+        state.stage = VK_PIPELINE_STAGE_2_HOST_BIT;
+        state.access = VK_ACCESS_2_HOST_READ_BIT;
+        break;
+    case RGAccess::Unknown:
+    case RGAccess::ShaderRead:
+    case RGAccess::ColorAttachmentWrite:
+    case RGAccess::DepthStencilAttachmentWrite:
+    case RGAccess::StorageImageRead:
+    case RGAccess::StorageImageWrite:
+    case RGAccess::StorageImageReadWrite:
+    case RGAccess::Present:
+        state.declaredAccess = RGAccess::Unknown;
         state.stage = VK_PIPELINE_STAGE_2_NONE;
         state.access = VK_ACCESS_2_NONE;
         break;

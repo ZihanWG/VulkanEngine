@@ -127,6 +127,8 @@ struct RenderPassNode {
     bool culled = false;
     std::string cullReason;
     uint32_t generatedBarrierCount = 0;
+    uint32_t generatedImageBarrierCount = 0;
+    uint32_t generatedBufferBarrierCount = 0;
 };
 
 struct RenderGraphImageResource {
@@ -230,8 +232,9 @@ private:
 };
 
 // Render Graph 2.0 keeps the renderer's existing pass recorders in place while
-// adding logical handles, declarations, conservative inferred image barriers,
-// transient/imported resource metadata, pass liveness state, and debug UI data.
+// adding logical handles, declarations, conservative inferred image and buffer
+// barriers, transient/imported resource metadata, pass liveness state, and
+// debug UI data.
 class RenderGraph final {
 public:
     using SetupCallback = std::function<void(RenderGraphBuilder&)>;
@@ -310,6 +313,12 @@ public:
         RGAccess declaredAccess = RGAccess::Unknown;
     };
 
+    struct BufferAccessState {
+        VkPipelineStageFlags2 stage = VK_PIPELINE_STAGE_2_NONE;
+        VkAccessFlags2 access = VK_ACCESS_2_NONE;
+        RGAccess declaredAccess = RGAccess::Unknown;
+    };
+
 private:
     enum class ActivePass {
         None,
@@ -350,6 +359,8 @@ private:
     struct BufferResource {
         RGBufferDesc desc;
         VkBuffer buffer = VK_NULL_HANDLE;
+        BufferAccessState lastAccess{};
+        bool usedThisFrame = false;
         bool graphManaged = false;
     };
 
@@ -407,7 +418,9 @@ private:
     void compilePassCulling();
     bool beginDeclaredPass(uint32_t passIndex);
     uint32_t transitionTexture(RGTextureHandle handle, RGAccess access);
+    uint32_t transitionBuffer(RGBufferHandle handle, RGAccess access);
     [[nodiscard]] TextureAccessState accessStateForTexture(const TextureResource& resource, RGAccess access) const;
+    [[nodiscard]] BufferAccessState accessStateForBuffer(RGAccess access) const;
     [[nodiscard]] VkImageLayout currentTextureLayout(const TextureResource& resource) const;
     void setTextureLayout(TextureResource& resource, VkImageLayout layout);
     [[nodiscard]] RenderResourceHandle textureResourceHandle(RGTextureHandle handle) const;

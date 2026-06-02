@@ -1,6 +1,6 @@
 # Render Graph 2.0
 
-Phase 4 upgrades the earlier manual pass list into a small engine-style render graph. The goal is to centralize pass/resource declarations and conservative image transitions without changing the renderer's visible output or rewriting unrelated renderer systems.
+Phase 4 upgraded the earlier manual pass list into a small engine-style render graph. The current goal is to centralize pass/resource declarations plus conservative image and selected buffer synchronization without changing the renderer's visible output or rewriting unrelated renderer systems.
 
 ## Current Architecture
 
@@ -10,6 +10,7 @@ Phase 4 upgrades the earlier manual pass list into a small engine-style render g
 - imported and transient resource descriptions
 - per-pass read/write declarations
 - conservative image layout/access transition inference
+- conservative buffer access barrier inference for selected declared pass-to-pass dependencies
 - pass execution, side-effect, and culling metadata
 - ImGui debug data for pass/resource visualization
 
@@ -75,9 +76,15 @@ The currently declared passes are:
 - `CompositePass`
 - `ImGuiPass`
 
-Shadow GPU culling buffer barriers, main GPU culling buffer barriers, histogram reset, exposure reduce buffer visibility, exposure debug readback visibility, and portfolio screenshot copy are still manually synchronized in `Renderer.cpp`.
+The graph now owns selected declared buffer pass-to-pass barriers:
 
-## Transition Inference
+- `MainGpuCullingPass` storage writes to the main indirect command buffer and visible-count buffer before `MainHDRPass` indirect reads
+- `LuminancePass` storage writes to luminance partials before `HistogramExposurePass` reads them
+- `HistogramExposurePass` exposure-state writes before `CompositePass` reads the GPU exposure buffer
+
+Shadow GPU culling barriers, main GPU culling reset/copy/readback barriers, histogram reset and in-pass histogram-to-exposure-reduce barriers, exposure debug host-read visibility, and portfolio screenshot copy barriers are still manually synchronized in `Renderer.cpp`.
+
+## Synchronization Inference
 
 Texture declarations use `RGAccess` values such as:
 
@@ -90,6 +97,18 @@ Texture declarations use `RGAccess` values such as:
 - `Present`
 
 At pass begin, the graph maps the declared access to a conservative Synchronization2 image barrier. It tracks the current layout and previous access for graph-managed/imported textures and updates the owning layout state for swapchain, depth, shadow, scene color, and bloom images.
+
+Buffer declarations use existing buffer-oriented `RGAccess` values such as:
+
+- `StorageBufferRead`
+- `StorageBufferWrite`
+- `StorageBufferReadWrite`
+- `IndirectRead`
+- `TransferSrc`
+- `TransferDst`
+- `HostRead`
+
+At pass begin, the graph maps buffer accesses to conservative Synchronization2 buffer barriers. It tracks the previous stage/access for each imported buffer during the frame and emits full-buffer barriers when a declared pass-to-pass dependency includes a write-after-read, read-after-write, or write-after-write hazard. Read-after-read usage does not emit a barrier.
 
 The implementation favors correctness and debug readability over barrier minimization. Same-layout write-after-write or write-after-read cases can still emit ordering barriers.
 
@@ -115,7 +134,7 @@ The ImGui Render Graph panel shows:
 - culled status/reason
 - side-effect flag
 - read and write resources with declared access
-- generated image barrier count/summary
+- generated image and buffer barrier count/summary
 - resource name, kind, lifetime, extent/size, format, mip/layer count, initial layout, and final layout
 
 ## Known Limitations
@@ -125,7 +144,8 @@ The ImGui Render Graph panel shows:
 - No memory aliasing.
 - No resource pooling overhaul.
 - Transient scene/bloom resources and persistent TAA history resources are graph-described but still physically allocated by `Renderer`.
-- GPU culling, exposure, and readback buffer barriers remain manual.
+- Shadow GPU culling buffers are not graph-declared yet, so their reset/dispatch/draw/readback barriers remain manual.
+- Intra-pass buffer sequencing remains manual when a buffer is filled, dispatched against, copied, or made host-visible inside one renderer command block.
 - Portfolio screenshot copy remains manual because it temporarily transitions the swapchain between `CompositePass` and `ImGuiPass`.
 - Barriers are conservative and not heavily optimized.
 - Not all descriptor-driven sampled resources are graph-owned yet, including material textures, IBL cubemaps, BRDF LUT, and render-target preview descriptors.

@@ -10200,34 +10200,23 @@ void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
     vkCmdDispatch(commandBuffer, groupCount, 1, 1);
     rhi::debug::endLabel(commandBuffer);
 
-    std::array<VkBufferMemoryBarrier2, 2> computeBarriers{};
-    computeBarriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-    computeBarriers[0].srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    computeBarriers[0].srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-    computeBarriers[0].dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
-    computeBarriers[0].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
-    computeBarriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    computeBarriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    computeBarriers[0].buffer = frameIndirectDrawBuffers_.at(currentFrame_).buffer();
-    computeBarriers[0].offset = 0;
-    computeBarriers[0].size = static_cast<VkDeviceSize>(allDrawItems_.size() * sizeof(VkDrawIndexedIndirectCommand));
+    VkBufferMemoryBarrier2 visibleCountCopyBarrier{};
+    visibleCountCopyBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+    visibleCountCopyBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    visibleCountCopyBarrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    visibleCountCopyBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    visibleCountCopyBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    visibleCountCopyBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    visibleCountCopyBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    visibleCountCopyBarrier.buffer = visibleCountBuffer;
+    visibleCountCopyBarrier.offset = 0;
+    visibleCountCopyBarrier.size = kGpuCullCountBufferSize;
 
-    computeBarriers[1].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-    computeBarriers[1].srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    computeBarriers[1].srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-    computeBarriers[1].dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_COPY_BIT;
-    computeBarriers[1].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_TRANSFER_READ_BIT;
-    computeBarriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    computeBarriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    computeBarriers[1].buffer = visibleCountBuffer;
-    computeBarriers[1].offset = 0;
-    computeBarriers[1].size = kGpuCullCountBufferSize;
-
-    VkDependencyInfo dependencyInfo{};
-    dependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dependencyInfo.bufferMemoryBarrierCount = static_cast<uint32_t>(computeBarriers.size());
-    dependencyInfo.pBufferMemoryBarriers = computeBarriers.data();
-    vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
+    VkDependencyInfo visibleCountCopyDependency{};
+    visibleCountCopyDependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    visibleCountCopyDependency.bufferMemoryBarrierCount = 1;
+    visibleCountCopyDependency.pBufferMemoryBarriers = &visibleCountCopyBarrier;
+    vkCmdPipelineBarrier2(commandBuffer, &visibleCountCopyDependency);
 
     VkBufferCopy visibleCountCopy{};
     visibleCountCopy.size = kGpuCullCountBufferSize;
@@ -10549,24 +10538,6 @@ void Renderer::recordLuminanceCommands(VkCommandBuffer commandBuffer)
     vkCmdDispatch(commandBuffer, luminanceGroupCountX_, luminanceGroupCountY_, 1);
     rhi::debug::endLabel(commandBuffer);
 
-    VkBufferMemoryBarrier2 computeBarrier{};
-    computeBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-    computeBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    computeBarrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-    computeBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    computeBarrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
-    computeBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    computeBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    computeBarrier.buffer = luminanceBuffer;
-    computeBarrier.offset = 0;
-    computeBarrier.size = frameLuminanceBuffers_[currentFrame_].size();
-
-    VkDependencyInfo computeDependencyInfo{};
-    computeDependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    computeDependencyInfo.bufferMemoryBarrierCount = 1;
-    computeDependencyInfo.pBufferMemoryBarriers = &computeBarrier;
-    vkCmdPipelineBarrier2(commandBuffer, &computeDependencyInfo);
-
     rhi::debug::endLabel(commandBuffer);
 
     renderGraph_.endLuminancePass();
@@ -10718,8 +10689,8 @@ void Renderer::recordHistogramCommands(VkCommandBuffer commandBuffer)
             exposureBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
             exposureBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
             exposureBarrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-            exposureBarrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_HOST_BIT;
-            exposureBarrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_HOST_READ_BIT;
+            exposureBarrier.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+            exposureBarrier.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
             exposureBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             exposureBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             exposureBarrier.buffer = exposureBuffer;
