@@ -1,0 +1,77 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "debug",
+      "displayName": "Debug",
+      "description": "Local Debug build with dependency FetchContent fallbacks enabled.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "VULKAN_ENGINE_FETCH_DEPS": "ON"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Release",
+      "description": "Local optimized Release build with dependency FetchContent fallbacks enabled.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "VULKAN_ENGINE_FETCH_DEPS": "ON"
+      }
+    },
+    {
+      "name": "ci-debug",
+      "displayName": "CI Debug",
+      "description": "Debug configuration used by Linux CI.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/ci-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "VULKAN_ENGINE_FETCH_DEPS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "debug",
+      "displayName": "Build Debug",
+      "configurePreset": "debug",
+      "targets": [
+        "VulkanEngine"
+      ]
+    },
+    {
+      "name": "release",
+      "displayName": "Build Release",
+      "configurePreset": "release",
+      "targets": [
+        "VulkanEngine"
+      ]
+    },
+    {
+      "name": "ci-debug-shaders",
+      "displayName": "Build CI Debug Shaders",
+      "configurePreset": "ci-debug",
+      "targets": [
+        "VulkanEngineShaders"
+      ]
+    },
+    {
+      "name": "ci-debug",
+      "displayName": "Build CI Debug",
+      "configurePreset": "ci-debug",
+      "targets": [
+        "VulkanEngine"
+      ]
+    }
+  ]
+}

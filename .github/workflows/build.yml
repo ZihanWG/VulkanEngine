@@ -1,0 +1,68 @@
+name: Linux Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    name: Ubuntu Vulkan build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build and Vulkan tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            git \
+            glslc \
+            libegl1-mesa-dev \
+            libibus-1.0-dev \
+            libvulkan-dev \
+            libwayland-dev \
+            libx11-dev \
+            libx11-xcb-dev \
+            libxext-dev \
+            libxfixes-dev \
+            libxi-dev \
+            libxkbcommon-dev \
+            libxrandr-dev \
+            ninja-build \
+            pkg-config \
+            vulkan-headers \
+            wayland-protocols \
+            xorg-dev
+
+      - name: Verify Vulkan headers and shader compiler
+        run: |
+          cmake --version
+          ninja --version
+          test -f /usr/include/vulkan/vulkan.h || {
+            echo "Vulkan headers are unavailable; install vulkan-headers or the Vulkan SDK." >&2
+            exit 1
+          }
+          command -v glslc || {
+            echo "glslc is unavailable; install the Vulkan SDK or the glslc package." >&2
+            exit 1
+          }
+          glslc --version
+
+      - name: Configure CMake
+        run: cmake --preset ci-debug -DVULKAN_ENGINE_FETCH_DEPS=ON
+
+      - name: Compile GLSL shaders
+        run: |
+          if cmake --build --preset ci-debug-shaders --parallel; then
+            exit 0
+          fi
+          echo "Shader target VulkanEngineShaders failed. Confirm glslc is installed and Vulkan shader sources compile." >&2
+          exit 1
+
+      - name: Build renderer
+        run: cmake --build --preset ci-debug --parallel
