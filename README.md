@@ -251,6 +251,8 @@ ImGui uses its own descriptor pool and backend-owned descriptor layouts. It does
 
 ## Build Instructions
 
+For detailed cross-platform setup, CMake presets, shader compilation, and CI notes, see [docs/build.md](docs/build.md).
+
 Required tools:
 
 - CMake 3.25+

@@ -3,6 +3,8 @@
 Start here for focused technical notes. The root `README.md` is the portfolio
 overview; these documents describe implementation details and limitations.
 
+- [Build Guide](build.md): Required tools, Vulkan SDK setup, CMake
+  presets, shader compilation, CI behavior, and common build failures.
 - [Engine Upgrade Audit](engine_upgrade_audit.md): Current repository shape,
   implemented renderer scope, frame flow, and accurate Phase 7 limitations.
 - [GPU Profiling](profiling.md): Timestamp query profiler design, frame-latency
