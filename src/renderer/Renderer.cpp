@@ -46,6 +46,10 @@
 #include <utility>
 #include <vector>
 
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
+
 namespace ve {
 
 namespace {
@@ -620,22 +624,117 @@ void setViewportAndScissor(VkCommandBuffer commandBuffer, VkExtent2D extent)
     vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 }
 
+#if defined(__APPLE__)
+const std::filesystem::path& macosBundleResourcesPath()
+{
+    static const std::filesystem::path resourcesPath = [] {
+        uint32_t pathSize = 0;
+        _NSGetExecutablePath(nullptr, &pathSize);
+        if (pathSize == 0) {
+            return std::filesystem::path{};
+        }
+
+        std::string executablePath(pathSize, '\0');
+        if (_NSGetExecutablePath(executablePath.data(), &pathSize) != 0) {
+            return std::filesystem::path{};
+        }
+        executablePath.resize(std::char_traits<char>::length(executablePath.c_str()));
+
+        std::filesystem::path executable(executablePath);
+        std::error_code error;
+        if (!executable.is_absolute()) {
+            executable = std::filesystem::absolute(executable, error);
+            if (error) {
+                return std::filesystem::path{};
+            }
+        }
+
+        const std::filesystem::path canonicalExecutable = std::filesystem::weakly_canonical(executable, error);
+        if (!error) {
+            executable = canonicalExecutable;
+        }
+
+        const std::filesystem::path macosDirectory = executable.parent_path();
+        const std::filesystem::path contentsDirectory = macosDirectory.parent_path();
+        if (macosDirectory.filename() != "MacOS" || contentsDirectory.filename() != "Contents") {
+            return std::filesystem::path{};
+        }
+
+        const std::filesystem::path resources = contentsDirectory / "Resources";
+        return std::filesystem::is_directory(resources) ? resources : std::filesystem::path{};
+    }();
+
+    return resourcesPath;
+}
+
+std::filesystem::path bundledResourceDirectory(const char* directoryName)
+{
+    const std::filesystem::path& resources = macosBundleResourcesPath();
+    if (resources.empty()) {
+        return {};
+    }
+
+    const std::filesystem::path directory = resources / directoryName;
+    return std::filesystem::is_directory(directory) ? directory : std::filesystem::path{};
+}
+#endif
+
+std::filesystem::path shaderDirectory()
+{
+#if defined(__APPLE__)
+    const std::filesystem::path bundledDirectory = bundledResourceDirectory("shaders");
+    if (!bundledDirectory.empty()) {
+        return bundledDirectory;
+    }
+#endif
+
+#if defined(VULKAN_ENGINE_SHADER_DIR)
+    return std::filesystem::path(VULKAN_ENGINE_SHADER_DIR);
+#else
+    return std::filesystem::path("shaders");
+#endif
+}
+
+std::filesystem::path assetDirectory()
+{
+#if defined(__APPLE__)
+    const std::filesystem::path bundledDirectory = bundledResourceDirectory("assets");
+    if (!bundledDirectory.empty()) {
+        return bundledDirectory;
+    }
+#endif
+
+#if defined(VULKAN_ENGINE_ASSET_DIR)
+    return std::filesystem::path(VULKAN_ENGINE_ASSET_DIR);
+#else
+    return std::filesystem::path("assets");
+#endif
+}
+
+std::filesystem::path configDirectory()
+{
+#if defined(__APPLE__)
+    const std::filesystem::path bundledDirectory = bundledResourceDirectory("config");
+    if (!bundledDirectory.empty()) {
+        return bundledDirectory;
+    }
+#endif
+
+#if defined(VULKAN_ENGINE_CONFIG_DIR)
+    return std::filesystem::path(VULKAN_ENGINE_CONFIG_DIR);
+#else
+    return std::filesystem::path("config");
+#endif
+}
+
 std::filesystem::path shaderPath(const char* filename)
 {
-#if defined(VULKAN_ENGINE_SHADER_DIR)
-    return std::filesystem::path(VULKAN_ENGINE_SHADER_DIR) / filename;
-#else
-    return std::filesystem::path("shaders") / filename;
-#endif
+    return shaderDirectory() / filename;
 }
 
 std::filesystem::path assetPath(const char* relativePath)
 {
-#if defined(VULKAN_ENGINE_ASSET_DIR)
-    return std::filesystem::path(VULKAN_ENGINE_ASSET_DIR) / relativePath;
-#else
-    return std::filesystem::path("assets") / relativePath;
-#endif
+    return assetDirectory() / relativePath;
 }
 
 std::filesystem::path materialAssetPath(std::string_view filename)
@@ -645,11 +744,7 @@ std::filesystem::path materialAssetPath(std::string_view filename)
 
 std::filesystem::path defaultRuntimeSettingsPath()
 {
-#if defined(VULKAN_ENGINE_CONFIG_DIR)
-    return std::filesystem::path(VULKAN_ENGINE_CONFIG_DIR) / "runtime_settings.json";
-#else
-    return std::filesystem::path("config") / "runtime_settings.json";
-#endif
+    return configDirectory() / "runtime_settings.json";
 }
 
 std::string_view colorSpaceName(rhi::TextureColorSpace colorSpace)
@@ -756,6 +851,13 @@ const char* imageLayoutName(VkImageLayout layout)
 
 std::filesystem::path projectRootPath()
 {
+#if defined(__APPLE__)
+    const std::filesystem::path& resources = macosBundleResourcesPath();
+    if (!resources.empty()) {
+        return resources;
+    }
+#endif
+
 #if defined(VULKAN_ENGINE_ASSET_DIR)
     return std::filesystem::path(VULKAN_ENGINE_ASSET_DIR).parent_path();
 #else

@@ -56,6 +56,83 @@ Expected startup logs include SDL using the Cocoa video driver, SDL loading the
 Vulkan SDK loader, Vulkan API version 1.3, Apple M3 or the local Apple GPU, and
 `VK_KHR_portability_subset` when MoltenVK exposes it.
 
+## Running from Terminal
+
+The direct developer workflow is:
+
+```sh
+cd /Users/zihanw/Projects/VulkanEngine/build-mac
+source /Users/zihanw/VulkanSDK/1.4.350.1/setup-env.sh
+export SDL_VIDEODRIVER=cocoa
+./VulkanEngine
+```
+
+This remains the simplest way to run a non-bundle Debug build.
+
+## Running with `run_vulkan_engine.command`
+
+The repository includes a double-clickable Terminal launcher:
+
+```sh
+tools/macos/run_vulkan_engine.command
+```
+
+From Finder, double-click `tools/macos/run_vulkan_engine.command`. The script
+resolves the repository root relative to itself, finds `build-mac/VulkanEngine`
+or `build-mac/VulkanEngine.app/Contents/MacOS/VulkanEngine`, sources a Vulkan
+SDK `setup-env.sh` when available, sets `SDL_VIDEODRIVER=cocoa`, and runs the
+renderer from `build-mac`.
+
+SDK lookup order:
+
+1. `$VULKAN_SDK_ROOT/setup-env.sh`
+2. `$VULKAN_SDK_ROOT/macOS/setup-env.sh`
+3. `~/VulkanSDK/1.4.350.1/setup-env.sh`
+4. Latest `~/VulkanSDK/*/setup-env.sh`
+
+If the renderer exits with an error, the script waits for Return before closing
+the Terminal window so the error log remains visible.
+
+If macOS blocks the script because it is not executable, run:
+
+```sh
+chmod +x tools/macos/run_vulkan_engine.command
+```
+
+## Building `VulkanEngine.app`
+
+The default build remains a plain executable. To build an app bundle:
+
+```sh
+mkdir -p build-mac
+cd build-mac
+cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release -DVULKAN_ENGINE_BUILD_MACOS_BUNDLE=ON
+ninja
+```
+
+The bundle is created at:
+
+```sh
+build-mac/VulkanEngine.app
+```
+
+Run it from Finder by double-clicking `VulkanEngine.app`, or from Terminal:
+
+```sh
+open VulkanEngine.app
+```
+
+When bundle mode is enabled, CMake copies these folders into
+`VulkanEngine.app/Contents/Resources`:
+
+- `assets`
+- `shaders`
+- `config`
+
+At runtime, macOS builds first look for `assets`, `shaders`, and `config` under
+the app bundle `Contents/Resources` directory. Non-bundle runs fall back to the
+existing repository/build paths.
+
 ## macOS Vulkan Handling
 
 - Rendering uses MoltenVK through the LunarG Vulkan SDK loader, not by loading
@@ -68,6 +145,15 @@ Vulkan SDK loader, Vulkan API version 1.3, Apple M3 or the local Apple GPU, and
   `VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR` on Apple platforms.
 - Logical device creation always requires `VK_KHR_swapchain` and enables
   `VK_KHR_portability_subset` only when the selected physical device reports it.
+
+## Packaging Limitations
+
+- `VulkanEngine.app` is not signed or notarized.
+- The app may still require the LunarG Vulkan SDK, Vulkan loader, and MoltenVK
+  to be installed on the machine unless those dylibs are bundled in a later
+  packaging step.
+- Full redistributable packaging, dependency dylib copying, code signing, and
+  notarization are intentionally left for a later release step.
 
 ## Troubleshooting
 

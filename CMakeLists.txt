@@ -12,6 +12,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(VULKAN_ENGINE_FETCH_DEPS "Fetch missing third-party dependencies with FetchContent" ON)
+option(VULKAN_ENGINE_BUILD_MACOS_BUNDLE "Build VulkanEngine as a macOS .app bundle" OFF)
+
+if(VULKAN_ENGINE_BUILD_MACOS_BUNDLE AND NOT APPLE)
+    message(WARNING "VULKAN_ENGINE_BUILD_MACOS_BUNDLE is only supported on Apple platforms; building a normal executable.")
+endif()
 
 include(FetchContent)
 
@@ -174,6 +179,18 @@ add_executable(VulkanEngine
     src/rhi/VulkanTexture.cpp
 )
 
+if(APPLE AND VULKAN_ENGINE_BUILD_MACOS_BUNDLE)
+    set_target_properties(VulkanEngine PROPERTIES
+        MACOSX_BUNDLE TRUE
+        OUTPUT_NAME VulkanEngine
+        MACOSX_BUNDLE_BUNDLE_NAME VulkanEngine
+        MACOSX_BUNDLE_GUI_IDENTIFIER com.zihanw.VulkanEngine
+        MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
+        MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION}
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/cmake/MacOSXBundleInfo.plist.in"
+    )
+endif()
+
 target_include_directories(VulkanEngine PRIVATE src)
 target_include_directories(VulkanEngine SYSTEM PRIVATE external)
 
@@ -268,6 +285,24 @@ if(GLSLC_EXECUTABLE)
     add_dependencies(VulkanEngine VulkanEngineShaders)
 else()
     message(FATAL_ERROR "glslc was not found. Milestone 2 needs compiled SPIR-V shaders; install the Vulkan SDK.")
+endif()
+
+if(APPLE AND VULKAN_ENGINE_BUILD_MACOS_BUNDLE)
+    add_custom_command(TARGET VulkanEngine POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "$<TARGET_BUNDLE_DIR:VulkanEngine>/Contents/Resources"
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${ASSET_SOURCE_DIR}"
+            "$<TARGET_BUNDLE_DIR:VulkanEngine>/Contents/Resources/assets"
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${SHADER_BINARY_DIR}"
+            "$<TARGET_BUNDLE_DIR:VulkanEngine>/Contents/Resources/shaders"
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${CONFIG_SOURCE_DIR}"
+            "$<TARGET_BUNDLE_DIR:VulkanEngine>/Contents/Resources/config"
+        COMMENT "Copying VulkanEngine resources into the app bundle"
+        VERBATIM
+    )
 endif()
 
 if(WIN32)

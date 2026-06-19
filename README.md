@@ -282,6 +282,8 @@ ninja
 
 On Apple platforms SDL3 explicitly loads the Vulkan SDK loader from `$VULKAN_SDK/lib/libvulkan.1.dylib` or `$VULKAN_SDK/lib/libvulkan.dylib`, and Volk initializes from SDL's `vkGetInstanceProcAddr`. Instance creation enables `VK_KHR_portability_enumeration`; device creation enables `VK_KHR_portability_subset` when MoltenVK exposes it.
 
+For a double-clickable developer launcher, use `tools/macos/run_vulkan_engine.command` after building `build-mac`. To build a macOS app bundle instead, configure with `-DVULKAN_ENGINE_BUILD_MACOS_BUNDLE=ON`; this creates `build-mac/VulkanEngine.app` and copies `assets`, `shaders`, and `config` into the bundle resources. The app is not signed, notarized, or fully redistributable yet.
+
 ```powershell
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Debug
