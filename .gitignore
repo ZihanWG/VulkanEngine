@@ -1,9 +1,14 @@
 /build/
+/build-*/
 /cmake-build-*/
 /out/
 /.vs/
 /.vscode/
 /.idea/
+
+# macOS Finder metadata
+.DS_Store
+**/.DS_Store
 
 *.user
 *.suo
