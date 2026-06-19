@@ -41,11 +41,13 @@ public:
 
     [[nodiscard]] std::vector<const char*> requiredVulkanInstanceExtensions() const;
     [[nodiscard]] VkSurfaceKHR createSurface(VkInstance instance) const;
+    [[nodiscard]] PFN_vkGetInstanceProcAddr vulkanGetInstanceProcAddr() const;
 
     [[nodiscard]] SDL_Window* nativeHandle() const { return window_; }
 
 private:
     SDL_Window* window_ = nullptr;
+    bool vulkanLibraryLoaded_ = false;
     std::string title_;
     EventCallback eventCallback_;
     bool shouldClose_ = false;

@@ -5,9 +5,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace ve::rhi {
 
@@ -20,6 +22,55 @@ constexpr bool kEnableValidationLayers = false;
 #endif
 
 constexpr std::array<const char*, 1> kValidationLayers = {"VK_LAYER_KHRONOS_validation"};
+constexpr uint32_t kRequiredVulkanApiVersion = VK_API_VERSION_1_3;
+
+bool containsExtension(const std::vector<const char*>& extensions, const char* extensionName)
+{
+    return std::find_if(extensions.begin(), extensions.end(), [extensionName](const char* enabledExtension) {
+               return std::strcmp(enabledExtension, extensionName) == 0;
+           }) != extensions.end();
+}
+
+void appendUniqueExtension(std::vector<const char*>& extensions, const char* extensionName)
+{
+    if (!containsExtension(extensions, extensionName)) {
+        extensions.push_back(extensionName);
+    }
+}
+
+std::string vulkanApiVersionString(uint32_t version)
+{
+    return std::to_string(VK_API_VERSION_MAJOR(version)) + "." +
+           std::to_string(VK_API_VERSION_MINOR(version)) + "." +
+           std::to_string(VK_API_VERSION_PATCH(version));
+}
+
+uint32_t selectVulkanApiVersion()
+{
+    uint32_t supportedApiVersion = VK_API_VERSION_1_0;
+    if (vkEnumerateInstanceVersion != nullptr) {
+        VK_CHECK(vkEnumerateInstanceVersion(&supportedApiVersion));
+    }
+
+    if (supportedApiVersion < kRequiredVulkanApiVersion) {
+        throw std::runtime_error("Vulkan 1.3 is required, but the loader reports Vulkan " +
+                                 vulkanApiVersionString(supportedApiVersion) + ".");
+    }
+
+    return kRequiredVulkanApiVersion;
+}
+
+#ifndef NDEBUG
+void logEnabledExtensions(const char* label, const std::vector<const char*>& extensions)
+{
+    std::string message(label);
+    for (const char* extension : extensions) {
+        message += "\n  ";
+        message += extension;
+    }
+    Logger::info(message);
+}
+#endif
 
 VKAPI_ATTR VkBool32 VKAPI_CALL validationCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
                                                   VkDebugUtilsMessageTypeFlagsEXT,
@@ -63,7 +114,12 @@ VulkanContext::~VulkanContext()
 
 void VulkanContext::initialize(const Window& window)
 {
-    VK_CHECK(volkInitialize());
+    PFN_vkGetInstanceProcAddr getInstanceProcAddr = window.vulkanGetInstanceProcAddr();
+    if (getInstanceProcAddr == nullptr) {
+        throw std::runtime_error("SDL Vulkan vkGetInstanceProcAddr is unavailable.");
+    }
+    volkInitializeCustom(getInstanceProcAddr);
+    Logger::info("Volk initialized from SDL Vulkan vkGetInstanceProcAddr.");
 
     createInstance(window);
     volkLoadInstance(instance_);
@@ -125,13 +181,20 @@ void VulkanContext::createInstance(const Window& window)
     appInfo.applicationVersion = VK_MAKE_VERSION(0, 1, 0);
     appInfo.pEngineName = "VulkanEngine";
     appInfo.engineVersion = VK_MAKE_VERSION(0, 1, 0);
-    appInfo.apiVersion = VK_API_VERSION_1_3;
+    appInfo.apiVersion = selectVulkanApiVersion();
+    Logger::info("Selected Vulkan API version: " + vulkanApiVersionString(appInfo.apiVersion));
 
     const std::vector<const char*> extensions = requiredInstanceExtensions(window);
+#ifndef NDEBUG
+    logEnabledExtensions("Enabled Vulkan instance extensions:", extensions);
+#endif
     VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo = debugMessengerCreateInfo();
 
     VkInstanceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+#if defined(__APPLE__)
+    createInfo.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+#endif
     createInfo.pNext = kEnableValidationLayers ? &debugCreateInfo : nullptr;
     createInfo.pApplicationInfo = &appInfo;
     createInfo.enabledLayerCount = kEnableValidationLayers ? static_cast<uint32_t>(kValidationLayers.size()) : 0;
@@ -167,7 +230,7 @@ void VulkanContext::createAllocator()
     allocatorInfo.physicalDevice = device_.physicalDevice();
     allocatorInfo.device = device_.device();
     allocatorInfo.instance = instance_;
-    allocatorInfo.vulkanApiVersion = VK_API_VERSION_1_3;
+    allocatorInfo.vulkanApiVersion = kRequiredVulkanApiVersion;
     allocatorInfo.pVulkanFunctions = &vmaVulkanFunctions_;
 
     VK_CHECK(vmaCreateAllocator(&allocatorInfo, &allocator_));
@@ -211,12 +274,13 @@ std::vector<const char*> VulkanContext::requiredInstanceExtensions(const Window&
                             }) != availableExtensions.end();
     };
 
+#if defined(__APPLE__)
+    appendUniqueExtension(extensions, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+#endif
+
     const bool debugUtilsAvailable = hasExtension(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-    const bool debugUtilsRequested = std::find_if(extensions.begin(), extensions.end(), [](const char* extensionName) {
-                                         return std::strcmp(extensionName, VK_EXT_DEBUG_UTILS_EXTENSION_NAME) == 0;
-                                     }) != extensions.end();
-    if (!debugUtilsRequested && debugUtilsAvailable) {
-        extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    if (!containsExtension(extensions, VK_EXT_DEBUG_UTILS_EXTENSION_NAME) && debugUtilsAvailable) {
+        appendUniqueExtension(extensions, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     }
     if (kEnableValidationLayers && !debugUtilsAvailable) {
         throw std::runtime_error(std::string("Required Vulkan instance extension is missing: ") +

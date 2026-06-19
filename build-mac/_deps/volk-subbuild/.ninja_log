@@ -1,0 +1,21 @@
+# ninja log v7
+1	10	1781903881969378449	volk-populate-prefix/src/volk-populate-stamp/volk-populate-mkdir	e254b8ba071ef54
+1	10	1781903881969378449	/Users/zihanw/Projects/VulkanEngine/build-mac/_deps/volk-subbuild/volk-populate-prefix/src/volk-populate-stamp/volk-populate-mkdir	e254b8ba071ef54
+10	684	1781903882643173490	volk-populate-prefix/src/volk-populate-stamp/volk-populate-download	77f513104e3cf6b0
+10	684	1781903882643173490	/Users/zihanw/Projects/VulkanEngine/build-mac/_deps/volk-subbuild/volk-populate-prefix/src/volk-populate-stamp/volk-populate-download	77f513104e3cf6b0
+684	701	1781903882643595158	volk-populate-prefix/src/volk-populate-stamp/volk-populate-update	fa969c102426112e
+684	701	1781903882643595158	/Users/zihanw/Projects/VulkanEngine/build-mac/_deps/volk-subbuild/volk-populate-prefix/src/volk-populate-stamp/volk-populate-update	fa969c102426112e
+701	710	1781903882669409938	volk-populate-prefix/src/volk-populate-stamp/volk-populate-patch	e73d81cf88dfdd23
+701	710	1781903882669409938	/Users/zihanw/Projects/VulkanEngine/build-mac/_deps/volk-subbuild/volk-populate-prefix/src/volk-populate-stamp/volk-populate-patch	e73d81cf88dfdd23
+710	720	1781903882678691505	volk-populate-prefix/src/volk-populate-stamp/volk-populate-configure	2ac70be572337905
+710	720	1781903882678691505	/Users/zihanw/Projects/VulkanEngine/build-mac/_deps/volk-subbuild/volk-populate-prefix/src/volk-populate-stamp/volk-populate-configure	2ac70be572337905
+720	729	1781903882687794614	volk-populate-prefix/src/volk-populate-stamp/volk-populate-build	71c7f1010bf10515
+720	729	1781903882687794614	/Users/zihanw/Projects/VulkanEngine/build-mac/_deps/volk-subbuild/volk-populate-prefix/src/volk-populate-stamp/volk-populate-build	71c7f1010bf10515
+729	738	1781903882696740931	volk-populate-prefix/src/volk-populate-stamp/volk-populate-install	6452a00900edc1b
+729	738	1781903882696740931	/Users/zihanw/Projects/VulkanEngine/build-mac/_deps/volk-subbuild/volk-populate-prefix/src/volk-populate-stamp/volk-populate-install	6452a00900edc1b
+738	746	1781903882705624205	volk-populate-prefix/src/volk-populate-stamp/volk-populate-test	b8331a8ab8a03dd
+738	746	1781903882705624205	/Users/zihanw/Projects/VulkanEngine/build-mac/_deps/volk-subbuild/volk-populate-prefix/src/volk-populate-stamp/volk-populate-test	b8331a8ab8a03dd
+746	759	1781903882717899365	CMakeFiles/volk-populate-complete	d731fab02b708ebd
+746	759	1781903882717899365	volk-populate-prefix/src/volk-populate-stamp/volk-populate-done	d731fab02b708ebd
+746	759	1781903882717899365	/Users/zihanw/Projects/VulkanEngine/build-mac/_deps/volk-subbuild/CMakeFiles/volk-populate-complete	d731fab02b708ebd
+746	759	1781903882717899365	/Users/zihanw/Projects/VulkanEngine/build-mac/_deps/volk-subbuild/volk-populate-prefix/src/volk-populate-stamp/volk-populate-done	d731fab02b708ebd

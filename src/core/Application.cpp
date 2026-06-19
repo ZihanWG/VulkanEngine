@@ -9,6 +9,11 @@
 
 namespace ve {
 
+Application::Application()
+    : Application(Config{})
+{
+}
+
 Application::Application(Config config)
     : config_(std::move(config))
 {

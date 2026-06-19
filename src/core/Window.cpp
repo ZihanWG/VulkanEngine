@@ -1,11 +1,17 @@
 #include "core/Window.h"
 
+#include "core/Logger.h"
+
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 
+#include <cstdlib>
+#include <sstream>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace ve {
 
@@ -19,6 +25,66 @@ std::runtime_error sdlError(std::string_view action)
     return std::runtime_error(message);
 }
 
+std::string sdlVersionString(int version)
+{
+    return std::to_string(SDL_VERSIONNUM_MAJOR(version)) + "." +
+           std::to_string(SDL_VERSIONNUM_MINOR(version)) + "." +
+           std::to_string(SDL_VERSIONNUM_MICRO(version));
+}
+
+std::string pointerString(const void* pointer)
+{
+    std::ostringstream stream;
+    stream << pointer;
+    return stream.str();
+}
+
+bool tryLoadSdlVulkanLibrary(const char* path, std::string& lastError)
+{
+    const std::string description = path != nullptr ? path : "SDL default Vulkan loader";
+    Logger::info("Loading SDL Vulkan library: " + description);
+
+    if (SDL_Vulkan_LoadLibrary(path)) {
+        Logger::info("SDL_Vulkan_LoadLibrary succeeded: " + description);
+        return true;
+    }
+
+    lastError = SDL_GetError();
+    Logger::warn("SDL_Vulkan_LoadLibrary failed for " + description + ": " + lastError);
+    return false;
+}
+
+void loadSdlVulkanLibrary()
+{
+    std::string lastError;
+
+#if defined(__APPLE__)
+    const char* vulkanSdk = std::getenv("VULKAN_SDK");
+    if (vulkanSdk != nullptr && vulkanSdk[0] != '\0') {
+        const std::string sdkPath(vulkanSdk);
+        const std::vector<std::string> loaderCandidates = {
+            sdkPath + "/lib/libvulkan.1.dylib",
+            sdkPath + "/lib/libvulkan.dylib"
+        };
+
+        for (const std::string& loaderPath : loaderCandidates) {
+            if (tryLoadSdlVulkanLibrary(loaderPath.c_str(), lastError)) {
+                return;
+            }
+        }
+
+        throw std::runtime_error("SDL_Vulkan_LoadLibrary failed for Vulkan SDK loader candidates under " +
+                                 sdkPath + ". Last SDL error: " + lastError);
+    }
+
+    Logger::warn("VULKAN_SDK is not set; falling back to SDL's default Vulkan loader search path.");
+#endif
+
+    if (!tryLoadSdlVulkanLibrary(nullptr, lastError)) {
+        throw std::runtime_error("SDL_Vulkan_LoadLibrary failed: " + lastError);
+    }
+}
+
 } // namespace
 
 Window::Window(std::string title, int width, int height)
@@ -28,13 +94,35 @@ Window::Window(std::string title, int width, int height)
         throw sdlError("SDL_Init failed");
     }
 
+    Logger::info("SDL runtime version: " + sdlVersionString(SDL_GetVersion()));
+    const char* videoDriver = SDL_GetCurrentVideoDriver();
+    Logger::info(std::string("SDL current video driver: ") + (videoDriver != nullptr ? videoDriver : "<none>"));
+
+    try {
+        loadSdlVulkanLibrary();
+        vulkanLibraryLoaded_ = true;
+    } catch (...) {
+        SDL_Quit();
+        throw;
+    }
+
+    if (vulkanGetInstanceProcAddr() == nullptr) {
+        SDL_Vulkan_UnloadLibrary();
+        vulkanLibraryLoaded_ = false;
+        SDL_Quit();
+        throw sdlError("SDL_Vulkan_GetVkGetInstanceProcAddr failed");
+    }
+
     const SDL_WindowFlags flags = static_cast<SDL_WindowFlags>(
         SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     window_ = SDL_CreateWindow(title_.c_str(), width, height, flags);
     if (!window_) {
+        SDL_Vulkan_UnloadLibrary();
+        vulkanLibraryLoaded_ = false;
         SDL_Quit();
         throw sdlError("SDL_CreateWindow failed");
     }
+    Logger::info("SDL window created: " + pointerString(window_));
 }
 
 Window::~Window()
@@ -42,6 +130,10 @@ Window::~Window()
     if (window_) {
         SDL_DestroyWindow(window_);
         window_ = nullptr;
+    }
+    if (vulkanLibraryLoaded_) {
+        SDL_Vulkan_UnloadLibrary();
+        vulkanLibraryLoaded_ = false;
     }
     SDL_Quit();
 }
@@ -106,12 +198,21 @@ std::vector<const char*> Window::requiredVulkanInstanceExtensions() const
 
 VkSurfaceKHR Window::createSurface(VkInstance instance) const
 {
+    Logger::info("Creating SDL Vulkan surface for window=" + pointerString(window_) +
+                 " instance=" + pointerString(static_cast<const void*>(instance)));
+
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     if (!SDL_Vulkan_CreateSurface(window_, instance, nullptr, &surface)) {
+        Logger::error(std::string("SDL_Vulkan_CreateSurface failed: ") + SDL_GetError());
         throw sdlError("SDL_Vulkan_CreateSurface failed");
     }
 
     return surface;
+}
+
+PFN_vkGetInstanceProcAddr Window::vulkanGetInstanceProcAddr() const
+{
+    return reinterpret_cast<PFN_vkGetInstanceProcAddr>(SDL_Vulkan_GetVkGetInstanceProcAddr());
 }
 
 } // namespace ve

@@ -66,6 +66,8 @@ The current repository status is documented in `docs/engine_upgrade_audit.md`. I
 
 Start with [docs/README.md](docs/README.md) for a short index of the focused technical documents.
 
+For macOS setup, see [docs/build_macos.md](docs/build_macos.md).
+
 ## How to Demo
 
 1. Build shaders with `cmake --build build --config Debug --target VulkanEngineShaders`.
@@ -253,6 +255,8 @@ ImGui uses its own descriptor pool and backend-owned descriptor layouts. It does
 
 For detailed cross-platform setup, CMake presets, shader compilation, and CI notes, see [docs/build.md](docs/build.md).
 
+For macOS and MoltenVK setup, see [docs/build_macos.md](docs/build_macos.md).
+
 Required tools:
 
 - CMake 3.25+
@@ -261,6 +265,22 @@ Required tools:
 - Git for FetchContent fallback dependencies
 
 The CMake project first looks for installed packages. If they are missing, `VULKAN_ENGINE_FETCH_DEPS=ON` downloads SDL3, GLM, Volk, and Vulkan Memory Allocator from pinned release tags. Dear ImGui, `stb_image`, tinygltf, and nlohmann JSON are vendored under `external/`.
+
+### macOS / MoltenVK
+
+macOS is supported through the LunarG Vulkan SDK and MoltenVK for portability and basic renderer validation. The primary/full showcase platform remains RTX/NVIDIA, and some advanced GPU features may be disabled depending on Apple GPU and MoltenVK support.
+
+```sh
+source /Users/zihanw/VulkanSDK/1.4.350.1/setup-env.sh
+export SDL_VIDEODRIVER=cocoa
+mkdir -p build-mac
+cd build-mac
+cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Debug
+ninja
+./VulkanEngine
+```
+
+On Apple platforms SDL3 explicitly loads the Vulkan SDK loader from `$VULKAN_SDK/lib/libvulkan.1.dylib` or `$VULKAN_SDK/lib/libvulkan.dylib`, and Volk initializes from SDL's `vkGetInstanceProcAddr`. Instance creation enables `VK_KHR_portability_enumeration`; device creation enables `VK_KHR_portability_subset` when MoltenVK exposes it.
 
 ```powershell
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64

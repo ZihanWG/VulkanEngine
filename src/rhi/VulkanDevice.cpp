@@ -5,9 +5,11 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace ve::rhi {
 
@@ -16,6 +18,70 @@ namespace {
 constexpr std::array<const char*, 1> kRequiredDeviceExtensions = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME
 };
+
+#if defined(__APPLE__)
+#if defined(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME)
+constexpr const char* kPortabilitySubsetExtensionName = VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME;
+#else
+constexpr const char* kPortabilitySubsetExtensionName = "VK_KHR_portability_subset";
+#endif
+#endif
+
+bool containsExtension(const std::vector<const char*>& extensions, const char* extensionName)
+{
+    return std::find_if(extensions.begin(), extensions.end(), [extensionName](const char* enabledExtension) {
+               return std::strcmp(enabledExtension, extensionName) == 0;
+           }) != extensions.end();
+}
+
+void appendUniqueExtension(std::vector<const char*>& extensions, const char* extensionName)
+{
+    if (!containsExtension(extensions, extensionName)) {
+        extensions.push_back(extensionName);
+    }
+}
+
+std::vector<VkExtensionProperties> enumerateDeviceExtensions(VkPhysicalDevice candidate)
+{
+    uint32_t extensionCount = 0;
+    VK_CHECK(vkEnumerateDeviceExtensionProperties(candidate, nullptr, &extensionCount, nullptr));
+    std::vector<VkExtensionProperties> availableExtensions(extensionCount);
+    VK_CHECK(vkEnumerateDeviceExtensionProperties(candidate, nullptr, &extensionCount, availableExtensions.data()));
+    return availableExtensions;
+}
+
+bool supportsDeviceExtension(VkPhysicalDevice candidate, const char* extensionName)
+{
+    const std::vector<VkExtensionProperties> availableExtensions = enumerateDeviceExtensions(candidate);
+    return std::find_if(availableExtensions.begin(),
+                        availableExtensions.end(),
+                        [extensionName](const VkExtensionProperties& extension) {
+                            return std::strcmp(extension.extensionName, extensionName) == 0;
+                        }) != availableExtensions.end();
+}
+
+std::vector<const char*> deviceExtensionsFor(VkPhysicalDevice physicalDevice)
+{
+    std::vector<const char*> extensions(kRequiredDeviceExtensions.begin(), kRequiredDeviceExtensions.end());
+#if defined(__APPLE__)
+    if (supportsDeviceExtension(physicalDevice, kPortabilitySubsetExtensionName)) {
+        appendUniqueExtension(extensions, kPortabilitySubsetExtensionName);
+    }
+#endif
+    return extensions;
+}
+
+#ifndef NDEBUG
+void logEnabledExtensions(const char* label, const std::vector<const char*>& extensions)
+{
+    std::string message(label);
+    for (const char* extension : extensions) {
+        message += "\n  ";
+        message += extension;
+    }
+    Logger::info(message);
+}
+#endif
 
 bool supportsDescriptorIndexing(const VkPhysicalDeviceVulkan12Features& features)
 {
@@ -94,7 +160,7 @@ void VulkanDevice::pickPhysicalDevice()
 
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
-    Logger::info(std::string("Selected GPU: ") + properties.deviceName);
+    Logger::info(std::string("Selected Vulkan physical device: ") + properties.deviceName);
 }
 
 bool VulkanDevice::isDeviceSuitable(VkPhysicalDevice candidate) const
@@ -215,14 +281,19 @@ void VulkanDevice::createLogicalDevice()
             supported12.descriptorBindingVariableDescriptorCount;
     }
 
+    const std::vector<const char*> enabledExtensions = deviceExtensionsFor(physicalDevice_);
+#ifndef NDEBUG
+    logEnabledExtensions("Enabled Vulkan device extensions:", enabledExtensions);
+#endif
+
     VkDeviceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     createInfo.pNext = &enabled12;
     createInfo.pEnabledFeatures = &enabledCore;
     createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
     createInfo.pQueueCreateInfos = queueCreateInfos.data();
-    createInfo.enabledExtensionCount = static_cast<uint32_t>(kRequiredDeviceExtensions.size());
-    createInfo.ppEnabledExtensionNames = kRequiredDeviceExtensions.data();
+    createInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size());
+    createInfo.ppEnabledExtensionNames = enabledExtensions.data();
 
     VK_CHECK(vkCreateDevice(physicalDevice_, &createInfo, nullptr, &device_));
     volkLoadDevice(device_);
@@ -290,10 +361,7 @@ QueueFamilyIndices VulkanDevice::findQueueFamilies(VkPhysicalDevice candidate) c
 
 bool VulkanDevice::checkDeviceExtensionSupport(VkPhysicalDevice candidate) const
 {
-    uint32_t extensionCount = 0;
-    VK_CHECK(vkEnumerateDeviceExtensionProperties(candidate, nullptr, &extensionCount, nullptr));
-    std::vector<VkExtensionProperties> availableExtensions(extensionCount);
-    VK_CHECK(vkEnumerateDeviceExtensionProperties(candidate, nullptr, &extensionCount, availableExtensions.data()));
+    const std::vector<VkExtensionProperties> availableExtensions = enumerateDeviceExtensions(candidate);
 
     std::set<std::string> required(kRequiredDeviceExtensions.begin(), kRequiredDeviceExtensions.end());
     for (const VkExtensionProperties& extension : availableExtensions) {

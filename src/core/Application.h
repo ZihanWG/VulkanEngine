@@ -16,7 +16,8 @@ public:
         int height = 720;
     };
 
-    explicit Application(Config config = {});
+    Application();
+    explicit Application(Config config);
     ~Application();
 
     Application(const Application&) = delete;

@@ -1,0 +1,21 @@
+# ninja log v7
+0	10	1781903853245424809	glm-populate-prefix/src/glm-populate-stamp/glm-populate-mkdir	28d743dcd6d25d00
+0	10	1781903853245424809	/Users/zihanw/Projects/VulkanEngine/build-mac/_deps/glm-subbuild/glm-populate-prefix/src/glm-populate-stamp/glm-populate-mkdir	28d743dcd6d25d00
+10	28543	1781903881777853416	glm-populate-prefix/src/glm-populate-stamp/glm-populate-download	9588f202a24b9317
+10	28543	1781903881777853416	/Users/zihanw/Projects/VulkanEngine/build-mac/_deps/glm-subbuild/glm-populate-prefix/src/glm-populate-stamp/glm-populate-download	9588f202a24b9317
+28543	28565	1781903881778479167	glm-populate-prefix/src/glm-populate-stamp/glm-populate-update	f5c1dd39dafa9095
+28543	28565	1781903881778479167	/Users/zihanw/Projects/VulkanEngine/build-mac/_deps/glm-subbuild/glm-populate-prefix/src/glm-populate-stamp/glm-populate-update	f5c1dd39dafa9095
+28565	28575	1781903881809817671	glm-populate-prefix/src/glm-populate-stamp/glm-populate-patch	fe64c53ad965aeda
+28565	28575	1781903881809817671	/Users/zihanw/Projects/VulkanEngine/build-mac/_deps/glm-subbuild/glm-populate-prefix/src/glm-populate-stamp/glm-populate-patch	fe64c53ad965aeda
+28575	28584	1781903881819168364	glm-populate-prefix/src/glm-populate-stamp/glm-populate-configure	b4cf3cb4ac86cee2
+28575	28584	1781903881819168364	/Users/zihanw/Projects/VulkanEngine/build-mac/_deps/glm-subbuild/glm-populate-prefix/src/glm-populate-stamp/glm-populate-configure	b4cf3cb4ac86cee2
+28584	28593	1781903881828382223	glm-populate-prefix/src/glm-populate-stamp/glm-populate-build	84d8517280babe63
+28584	28593	1781903881828382223	/Users/zihanw/Projects/VulkanEngine/build-mac/_deps/glm-subbuild/glm-populate-prefix/src/glm-populate-stamp/glm-populate-build	84d8517280babe63
+28593	28602	1781903881837223664	glm-populate-prefix/src/glm-populate-stamp/glm-populate-install	5bac6339e2903a49
+28593	28602	1781903881837223664	/Users/zihanw/Projects/VulkanEngine/build-mac/_deps/glm-subbuild/glm-populate-prefix/src/glm-populate-stamp/glm-populate-install	5bac6339e2903a49
+28602	28611	1781903881846311314	glm-populate-prefix/src/glm-populate-stamp/glm-populate-test	26231b6cead3a3c9
+28602	28611	1781903881846311314	/Users/zihanw/Projects/VulkanEngine/build-mac/_deps/glm-subbuild/glm-populate-prefix/src/glm-populate-stamp/glm-populate-test	26231b6cead3a3c9
+28611	28623	1781903881858635807	CMakeFiles/glm-populate-complete	6eea115489892904
+28611	28623	1781903881858635807	glm-populate-prefix/src/glm-populate-stamp/glm-populate-done	6eea115489892904
+28611	28623	1781903881858635807	/Users/zihanw/Projects/VulkanEngine/build-mac/_deps/glm-subbuild/CMakeFiles/glm-populate-complete	6eea115489892904
+28611	28623	1781903881858635807	/Users/zihanw/Projects/VulkanEngine/build-mac/_deps/glm-subbuild/glm-populate-prefix/src/glm-populate-stamp/glm-populate-done	6eea115489892904
