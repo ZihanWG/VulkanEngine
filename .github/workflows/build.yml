@@ -66,3 +66,6 @@ jobs:
 
       - name: Build renderer
         run: cmake --build --preset ci-debug --parallel
+
+      - name: Run unit tests
+        run: ctest --preset ci-debug

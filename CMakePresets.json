@@ -70,8 +70,22 @@
       "displayName": "Build CI Debug",
       "configurePreset": "ci-debug",
       "targets": [
-        "VulkanEngine"
+        "VulkanEngine",
+        "VulkanEngineTests"
       ]
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "ci-debug",
+      "displayName": "Run CI Debug Tests",
+      "configurePreset": "ci-debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      }
     }
   ]
 }

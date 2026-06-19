@@ -13,6 +13,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(VULKAN_ENGINE_FETCH_DEPS "Fetch missing third-party dependencies with FetchContent" ON)
 option(VULKAN_ENGINE_BUILD_MACOS_BUNDLE "Build VulkanEngine as a macOS .app bundle" OFF)
+option(VULKAN_ENGINE_BUILD_TESTS "Build unit tests for GPU-independent engine logic" ON)
 
 if(VULKAN_ENGINE_BUILD_MACOS_BUNDLE AND NOT APPLE)
     message(WARNING "VULKAN_ENGINE_BUILD_MACOS_BUNDLE is only supported on Apple platforms; building a normal executable.")
@@ -146,11 +147,33 @@ target_link_libraries(imgui PUBLIC
     ${VOLK_TARGET}
 )
 
+# GPU-independent engine logic (serialization, logging, math helpers). Kept as a
+# separate static library so the unit tests can link it without pulling in Vulkan.
+add_library(VulkanEngineCore STATIC
+    src/core/Logger.cpp
+    src/renderer/RuntimeSettings.cpp
+)
+
+target_include_directories(VulkanEngineCore PUBLIC src)
+target_include_directories(VulkanEngineCore SYSTEM PUBLIC external)
+
+target_link_libraries(VulkanEngineCore PUBLIC glm::glm)
+
+target_compile_definitions(VulkanEngineCore PUBLIC
+    GLM_FORCE_RADIANS
+    GLM_FORCE_DEPTH_ZERO_TO_ONE
+)
+
+if(MSVC)
+    target_compile_options(VulkanEngineCore PRIVATE /W4 /permissive- /EHsc /utf-8)
+else()
+    target_compile_options(VulkanEngineCore PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 add_executable(VulkanEngine
     src/main.cpp
     src/assets/AssetManager.cpp
     src/core/Application.cpp
-    src/core/Logger.cpp
     src/core/PngWriter.cpp
     src/core/Window.cpp
     src/renderer/BindlessTextureHeap.cpp
@@ -158,7 +181,6 @@ add_executable(VulkanEngine
     src/renderer/Mesh.cpp
     src/renderer/RenderGraph.cpp
     src/renderer/Renderer.cpp
-    src/renderer/RuntimeSettings.cpp
     src/ui/ImGuiLayer.cpp
     src/rhi/VulkanBuffer.cpp
     src/rhi/VulkanBrdfLut.cpp
@@ -195,6 +217,7 @@ target_include_directories(VulkanEngine PRIVATE src)
 target_include_directories(VulkanEngine SYSTEM PRIVATE external)
 
 target_link_libraries(VulkanEngine PRIVATE
+    VulkanEngineCore
     ${SDL3_TARGET}
     ${VOLK_TARGET}
     ${VMA_TARGET}
@@ -315,4 +338,9 @@ if(WIN32)
                 "$<TARGET_FILE_DIR:VulkanEngine>"
         )
     endif()
+endif()
+
+if(VULKAN_ENGINE_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
 endif()
