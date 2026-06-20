@@ -1,0 +1,1898 @@
+// Debug ImGui panels for the renderer.
+//
+// These methods are still members of ve::Renderer; their definitions were split
+// out of Renderer.cpp to keep that translation unit focused on frame rendering
+// and to let the debug UI recompile independently. Shared file-local helpers
+// live in RendererInternal.h, which is included by both translation units.
+#include "renderer/Renderer.h"
+#include "renderer/RendererInternal.h"
+
+#include <imgui.h>
+
+namespace ve {
+
+void Renderer::buildDebugUi()
+{
+    if (!imguiLayer_.initialized()) {
+        return;
+    }
+
+    ImGui::Begin("VulkanEngine Debug");
+
+    drawRuntimeSettingsDebugUi();
+    drawScenePresetDebugUi();
+    drawPortfolioCaptureDebugUi();
+
+    if (ImGui::CollapsingHeader("Debug Views", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Checkbox("Show Render Graph panel", &debugUiSettings_.showRenderGraphPanel);
+        ImGui::Checkbox("Show Scene Hierarchy panel", &debugUiSettings_.showSceneHierarchyPanel);
+        ImGui::Checkbox("Show Material Inspector", &debugUiSettings_.showMaterialInspectorPanel);
+        ImGui::Checkbox("Show Texture Debug Views", &debugUiSettings_.showTextureDebugPanel);
+        ImGui::Checkbox("Show Render Target Debug Views", &debugUiSettings_.showRenderTargetDebugPanel);
+        ImGui::Checkbox("Show GPU Profiler panel", &debugUiSettings_.showGpuTimingGraphs);
+        ImGui::Checkbox("Show Culling stats", &debugUiSettings_.showCullingStats);
+        ImGui::Checkbox("Show Exposure graphs", &debugUiSettings_.showExposureGraphs);
+    }
+
+    if (ImGui::CollapsingHeader("Tone Mapping", ImGuiTreeNodeFlags_DefaultOpen)) {
+        const char* toneMappers[] = {"Reinhard", "ACES"};
+        ImGui::Combo("Tone mapper", &toneMappingSettings_.operatorType, toneMappers, IM_ARRAYSIZE(toneMappers));
+        ImGui::DragFloat("Manual exposure", &toneMappingSettings_.manualExposure, 0.01f, 0.0f, 64.0f, "%.3f");
+
+        const char* exposureModes[] = {"Manual", "Log-average", "Histogram"};
+        int exposureMode =
+            toneMappingSettings_.enableAutoExposure ? toneMappingSettings_.exposureMode : 0;
+        exposureMode = static_cast<int>(exposureModeValue(exposureMode));
+        if (ImGui::Combo("Exposure mode", &exposureMode, exposureModes, IM_ARRAYSIZE(exposureModes))) {
+            toneMappingSettings_.exposureMode = exposureMode;
+            toneMappingSettings_.enableAutoExposure = exposureMode != 0;
+        }
+
+        ImGui::DragFloat("Target luminance", &toneMappingSettings_.targetLuminance, 0.001f, 0.001f, 8.0f, "%.3f");
+        ImGui::DragFloat("Min exposure", &toneMappingSettings_.minExposure, 0.01f, 0.0f, 64.0f, "%.3f");
+        ImGui::DragFloat("Max exposure", &toneMappingSettings_.maxExposure, 0.01f, 0.0f, 64.0f, "%.3f");
+        ImGui::DragFloat("Adaptation rate", &toneMappingSettings_.adaptationRate, 0.01f, 0.0f, 16.0f, "%.3f");
+        ImGui::SliderFloat("Histogram low percentile", &toneMappingSettings_.lowPercentile, 0.0f, 1.0f, "%.3f");
+        ImGui::SliderFloat("Histogram high percentile", &toneMappingSettings_.highPercentile, 0.0f, 1.0f, "%.3f");
+    }
+
+    if (ImGui::CollapsingHeader("Bloom", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Checkbox("Enabled", &bloomSettings_.enabled);
+        ImGui::Checkbox("Use mip-chain bloom", &bloomSettings_.useMipChain);
+        ImGui::Text("Method: %s", bloomSettings_.useMipChain ? "Mip-chain" : "Legacy separable blur");
+        ImGui::Text("Mip count: %zu", bloomMipDownsampleImages_.size());
+        ImGui::DragFloat("Threshold", &bloomSettings_.threshold, 0.01f, 0.0f, 32.0f, "%.3f");
+        ImGui::DragFloat("Intensity", &bloomSettings_.intensity, 0.01f, 0.0f, 8.0f, "%.3f");
+        ImGui::DragFloat("Radius", &bloomSettings_.radius, 0.01f, 0.25f, 4.0f, "%.2f");
+    }
+
+    drawTaaDebugUi();
+
+    if (ImGui::CollapsingHeader("CSM", ImGuiTreeNodeFlags_DefaultOpen)) {
+        int cascadeCount = static_cast<int>(activeCascadeCount());
+        ImGui::BeginDisabled();
+        ImGui::SliderInt("Cascade count (startup)", &cascadeCount, 1, static_cast<int>(kMaxShadowCascades));
+        ImGui::EndDisabled();
+        ImGui::SliderFloat("Lambda", &csmSettings_.lambda, 0.0f, 1.0f, "%.3f");
+        ImGui::DragFloat("Shadow distance", &csmSettings_.shadowDistance, 0.1f, 1.0f, csmSettings_.farPlane, "%.2f");
+        ImGui::Checkbox("Texel snapping enabled", &csmSettings_.enableTexelSnapping);
+        ImGui::Checkbox("Cascade debug colors enabled", &csmSettings_.enableCascadeDebugColors);
+    }
+
+    if (ImGui::CollapsingHeader("GPU Culling", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (!gpuCullingAvailable_) {
+            ImGui::BeginDisabled();
+        }
+        ImGui::Checkbox("Main GPU culling enabled", &useGpuCulling_);
+        if (!gpuCullingAvailable_) {
+            ImGui::EndDisabled();
+        }
+
+        if (!gpuShadowCullingAvailable_) {
+            ImGui::BeginDisabled();
+        }
+        ImGui::Checkbox("Shadow GPU culling enabled", &useGpuShadowCulling_);
+        if (!gpuShadowCullingAvailable_) {
+            ImGui::EndDisabled();
+        }
+
+        ImGui::Text("Bindless material textures: %s", isBindlessMaterialTextureActive() ? "active" : "fallback");
+        bool bindlessEnabled = useBindlessMaterialTextures_;
+        ImGui::BeginDisabled();
+        ImGui::Checkbox("Bindless material textures enabled (startup)", &bindlessEnabled);
+        ImGui::EndDisabled();
+        ImGui::Text("Main indirect count path: %s",
+                    isFrameIndirectCountPathActive(currentFrame_) ? "active" : "fallback");
+        ImGui::Text("Shadow indirect count path: %s",
+                    isShadowIndirectCountPathActive(currentFrame_) ? "active" : "fallback");
+        if (ImGui::Button("Enable Occlusion Test Settings")) {
+            enableOcclusionTestSettings();
+        }
+        const bool occlusionControlsAvailable =
+            isGpuCullingActive() && depthPyramidBuildAvailable_ && depthPyramid_.image() != VK_NULL_HANDLE;
+        if (!occlusionControlsAvailable) {
+            ImGui::BeginDisabled();
+        }
+        ImGui::Checkbox("GPU occlusion culling enabled", &useGpuOcclusionCulling_);
+        ImGui::SliderFloat("Occlusion depth bias", &gpuOcclusionDepthBias_, 0.0f, 0.05f, "%.4f");
+        ImGui::SliderFloat(
+            "Near-object skip distance", &gpuOcclusionNearDisableDistance_, 0.0f, 10.0f, "%.2f");
+        ImGui::SliderFloat("Max occlusion screen coverage", &gpuOcclusionMaxScreenCoverage_, 0.01f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Min occlusion size pixels", &gpuOcclusionMinScreenPixels_, 1.0f, 64.0f, "%.1f");
+        if (!occlusionControlsAvailable) {
+            ImGui::EndDisabled();
+        }
+        const char* depthPyramidStatus =
+            depthPyramidBuildAvailable_ ? (depthPyramidValid_ ? "valid" : "invalid/warming up") : "unavailable";
+        ImGui::Text("Depth pyramid: %s, %u mip(s)", depthPyramidStatus, depthPyramidMipLevels_);
+    }
+
+    if (ImGui::CollapsingHeader("Environment", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Text("Environment source: %s", hdrEnvironmentLoaded_ ? "HDR environment loaded" : "procedural fallback");
+        ImGui::Text("Tone mapping exposure: %.4f", currentToneMappingExposure());
+    }
+
+    if (debugUiSettings_.showRenderGraphPanel &&
+        ImGui::CollapsingHeader("Render Graph", ImGuiTreeNodeFlags_DefaultOpen)) {
+        drawRenderGraphDebugUi();
+    }
+
+    if (debugUiSettings_.showGpuTimingGraphs &&
+        ImGui::CollapsingHeader("GPU Profiler", ImGuiTreeNodeFlags_DefaultOpen)) {
+        drawGpuTimingDebugUi();
+    }
+
+    if (debugUiSettings_.showCullingStats &&
+        ImGui::CollapsingHeader("Culling", ImGuiTreeNodeFlags_DefaultOpen)) {
+        drawCullingDebugUi();
+    }
+
+    if (debugUiSettings_.showExposureGraphs &&
+        ImGui::CollapsingHeader("Exposure", ImGuiTreeNodeFlags_DefaultOpen)) {
+        drawExposureDebugUi();
+    }
+
+    ImGui::End();
+
+    if (debugUiSettings_.showSceneHierarchyPanel) {
+        if (ImGui::Begin("Scene Hierarchy", &debugUiSettings_.showSceneHierarchyPanel)) {
+            drawSceneHierarchyDebugUi();
+        }
+        ImGui::End();
+    }
+
+    if (debugUiSettings_.showMaterialInspectorPanel) {
+        if (ImGui::Begin("Material Inspector", &debugUiSettings_.showMaterialInspectorPanel)) {
+            drawMaterialInspectorDebugUi();
+        }
+        ImGui::End();
+    }
+
+    if (debugUiSettings_.showTextureDebugPanel) {
+        if (ImGui::Begin("Texture Debug Views", &debugUiSettings_.showTextureDebugPanel)) {
+            drawTextureDebugUi();
+        }
+        ImGui::End();
+    }
+
+    if (debugUiSettings_.showRenderTargetDebugPanel) {
+        if (ImGui::Begin("Render Target Debug Views", &debugUiSettings_.showRenderTargetDebugPanel)) {
+            drawRenderTargetDebugUi();
+        }
+        ImGui::End();
+    }
+
+    clampRuntimeSettings();
+}
+
+void Renderer::drawScenePresetDebugUi()
+{
+    if (!ImGui::CollapsingHeader("Scene Presets", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+
+    size_t occlusionObjectCount = 0;
+    for (const renderer::RenderObject& object : renderObjects_) {
+        if (object.sourceType == renderer::RenderObjectSourceType::OcclusionTest) {
+            ++occlusionObjectCount;
+        }
+    }
+
+    const bool occlusionTestVisible = occlusionTestSceneActive_ && !portfolioCaptureMode_;
+    ImGui::Text("Occlusion test scene: %s", occlusionTestVisible ? "active" : "inactive");
+    ImGui::Text("Occlusion test objects: %zu", occlusionObjectCount);
+
+    if (ImGui::Button("Load Occlusion Test Scene")) {
+        loadOcclusionTestScene();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Return to Default Scene")) {
+        if (portfolioCaptureMode_) {
+            setPortfolioCaptureMode(false);
+        }
+        occlusionTestSceneActive_ = false;
+        resetCameraToDefault();
+        occlusionTestSceneStatus_ = "Default scene active; occlusion test objects are hidden.";
+    }
+
+    if (ImGui::Button("Reset Occlusion Test Camera")) {
+        resetCameraToOcclusionTestPreset();
+        occlusionTestSceneStatus_ = "Occlusion test camera preset reapplied.";
+    }
+
+    ImGui::TextWrapped("Status: %s", occlusionTestSceneStatus_.c_str());
+}
+
+void Renderer::drawPortfolioCaptureDebugUi()
+{
+    if (!ImGui::CollapsingHeader("Portfolio Capture", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+
+    bool portfolioMode = portfolioCaptureMode_;
+    if (ImGui::Checkbox("Portfolio Capture Mode", &portfolioMode)) {
+        setPortfolioCaptureMode(portfolioMode);
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("F11");
+
+    if (ImGui::Button("Load Portfolio Showcase Scene")) {
+        setPortfolioCaptureMode(true);
+        applyPortfolioCaptureSettings();
+        portfolioScreenshotStatus_ = "Portfolio showcase scene preset is active.";
+    }
+
+    if (ImGui::Button("Capture Portfolio Screenshot")) {
+        requestPortfolioScreenshot();
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("F12");
+
+    const std::filesystem::path outputDirectory = portfolioScreenshotDirectory();
+    ImGui::TextWrapped("Output: %s", (outputDirectory / "vulkan_engine_portfolio_latest.png").string().c_str());
+    if (!lastPortfolioScreenshotPath_.empty()) {
+        ImGui::TextWrapped("Last timestamped: %s", lastPortfolioScreenshotPath_.string().c_str());
+    }
+    ImGui::TextWrapped("Status: %s", portfolioScreenshotStatus_.c_str());
+    ImGui::TextDisabled("Captures the final composite before ImGui, so debug UI is excluded from the PNG.");
+
+    if (!swapchain_.supportsTransferSrc()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.25f, 1.0f),
+                           "Current swapchain does not support transfer-source screenshot capture.");
+    }
+}
+
+void Renderer::drawRuntimeSettingsDebugUi()
+{
+    if (!ImGui::CollapsingHeader("Runtime Settings", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+
+    const std::string settingsPath = runtimeSettingsPath_.string();
+    ImGui::TextWrapped("File: %s", settingsPath.c_str());
+
+    if (ImGui::Button("Save Settings")) {
+        saveRuntimeSettingsFromUi();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reload Settings")) {
+        reloadRuntimeSettingsFromUi();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reset to Defaults")) {
+        resetRuntimeSettingsToDefaults();
+    }
+
+    ImGui::TextWrapped("Last load: %s", lastRuntimeSettingsLoadStatus_.c_str());
+    ImGui::TextWrapped("Last save: %s", lastRuntimeSettingsSaveStatus_.c_str());
+    if (!runtimeSettingsWarning_.empty()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.25f, 1.0f), "Warning: %s", runtimeSettingsWarning_.c_str());
+    }
+    ImGui::TextDisabled("Runtime-safe: tone mapping, exposure, bloom, TAA, CSM lambda/distance/stability/debug, "
+                        "available GPU culling toggles, panel visibility, and render-target preview UI state.");
+    ImGui::TextDisabled("Startup-applied: CSM cascade count, bindless material texture heap, and culling resources "
+                        "that were disabled before initialization.");
+}
+
+void Renderer::drawTaaDebugUi()
+{
+    if (!ImGui::CollapsingHeader("Temporal AA", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+
+    bool changed = false;
+    changed |= ImGui::Checkbox("Enabled", &taaSettings_.enabled);
+    changed |= ImGui::Checkbox("Jitter enabled", &taaSettings_.jitterEnabled);
+    changed |= ImGui::Checkbox("Neighborhood clamp", &taaSettings_.neighborhoodClampEnabled);
+    changed |= ImGui::SliderFloat("History feedback", &taaSettings_.feedback, 0.0f, 0.98f, "%.3f");
+    if (changed) {
+        clampRuntimeSettings();
+        invalidateTaaHistory();
+    }
+
+    if (ImGui::Button("Reset TAA History")) {
+        invalidateTaaHistory();
+    }
+
+    ImGui::Text("Active: %s", isTaaActive() ? "yes" : "no");
+    ImGui::Text("History valid: %s", taaHistoryValid_ ? "yes" : "no");
+    ImGui::Text("Read/Write: %u / %u", taaHistoryReadIndex(), taaHistoryWriteIndex());
+    ImGui::Text("Jitter index: %u", taaJitterIndex_);
+    ImGui::Text("Current jitter pixels: %.3f, %.3f", taaCurrentJitterPixels_.x, taaCurrentJitterPixels_.y);
+    ImGui::Text("Current jitter NDC: %.6f, %.6f", taaCurrentJitterNdc_.x, taaCurrentJitterNdc_.y);
+}
+
+void Renderer::drawRenderGraphDebugUi()
+{
+    const auto& passes = renderGraph_.debugPasses();
+    const auto& resources = renderGraph_.debugResources();
+    ImGui::Text("Declared pass order: %zu passes, %zu resources", passes.size(), resources.size());
+
+    constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                      ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp |
+                                      ImGuiTableFlags_ScrollX;
+    if (ImGui::BeginTable("RenderGraphPassTable", 8, flags)) {
+        ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed);
+        ImGui::TableSetupColumn("Pass");
+        ImGui::TableSetupColumn("Type");
+        ImGui::TableSetupColumn("Status");
+        ImGui::TableSetupColumn("Side effect", ImGuiTableColumnFlags_WidthFixed);
+        ImGui::TableSetupColumn("Reads");
+        ImGui::TableSetupColumn("Writes");
+        ImGui::TableSetupColumn("Barriers / notes");
+        ImGui::TableHeadersRow();
+
+        for (size_t index = 0; index < passes.size(); ++index) {
+            const renderer::RenderPassNode& pass = passes[index];
+            const std::string reads = resourceUsageList(pass, renderer::RenderResourceAccess::Read);
+            const std::string writes = resourceUsageList(pass, renderer::RenderResourceAccess::Write);
+            const char* status = pass.executed ? "executed" : (pass.culled ? "culled" : "not executed");
+
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::Text("%zu", index);
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(pass.name.c_str());
+            ImGui::TableNextColumn();
+            ImGui::Text("%s / %s",
+                        renderer::renderPassExecutionTypeName(pass.executionType),
+                        renderer::renderPassTypeName(pass.type));
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(status);
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(pass.sideEffect ? "yes" : "no");
+            ImGui::TableNextColumn();
+            ImGui::TextWrapped("%s", reads.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextWrapped("%s", writes.c_str());
+            ImGui::TableNextColumn();
+            if (pass.culled && !pass.cullReason.empty()) {
+                ImGui::TextWrapped("%s", pass.cullReason.c_str());
+            } else {
+                ImGui::TextWrapped("%s", pass.transitionSummary.c_str());
+            }
+        }
+
+        ImGui::EndTable();
+    }
+
+    if (ImGui::BeginTable("RenderGraphResourceTable", 8, flags)) {
+        ImGui::TableSetupColumn("Resource");
+        ImGui::TableSetupColumn("Kind", ImGuiTableColumnFlags_WidthFixed);
+        ImGui::TableSetupColumn("Lifetime", ImGuiTableColumnFlags_WidthFixed);
+        ImGui::TableSetupColumn("Extent / size");
+        ImGui::TableSetupColumn("Format");
+        ImGui::TableSetupColumn("Mips/layers");
+        ImGui::TableSetupColumn("Initial layout");
+        ImGui::TableSetupColumn("Final layout");
+        ImGui::TableHeadersRow();
+
+        for (const renderer::RenderGraphResourceDebugInfo& resource : resources) {
+            const bool isTexture = resource.kind == renderer::RGResourceKind::Texture;
+            std::string dimensions;
+            if (isTexture) {
+                dimensions = std::to_string(resource.extent.width) + " x " + std::to_string(resource.extent.height);
+            } else {
+                dimensions = std::to_string(resource.size) + " bytes";
+            }
+
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(resource.name.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(renderer::renderGraphResourceKindName(resource.kind));
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(resource.imported ? "imported" : "transient");
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(dimensions.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(isTexture ? vkFormatName(resource.format) : "-");
+            ImGui::TableNextColumn();
+            ImGui::Text("%u / %u", resource.mipLevels, resource.arrayLayers);
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(isTexture ? imageLayoutName(resource.initialLayout) : "-");
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(isTexture ? imageLayoutName(resource.finalLayout) : "-");
+        }
+
+        ImGui::EndTable();
+    }
+}
+
+void Renderer::drawSceneEditingDebugUi()
+{
+    const std::string scenePath = sceneDocumentPath_.string();
+    ImGui::TextWrapped("Scene JSON: %s", scenePath.c_str());
+
+    if (ImGui::Button("Save Scene")) {
+        saveSceneFromUi();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Load Scene")) {
+        loadSceneFromUi();
+    }
+
+    ImGui::TextWrapped("Last save: %s", lastSceneSaveStatus_.c_str());
+    if (lastSceneLoadStatus_.starts_with(kNoSavedSceneFoundMessage)) {
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.25f, 1.0f), "Last load: %s", lastSceneLoadStatus_.c_str());
+    } else {
+        ImGui::TextWrapped("Last load: %s", lastSceneLoadStatus_.c_str());
+    }
+
+    if (ImGui::CollapsingHeader("Camera and Light", ImGuiTreeNodeFlags_DefaultOpen)) {
+        drawCameraLightEditorDebugUi();
+    }
+
+    ImGui::Separator();
+}
+
+void Renderer::drawCameraLightEditorDebugUi()
+{
+    if (portfolioCaptureMode_) {
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.25f, 1.0f),
+                           "Portfolio mode is active. F12 and Load Portfolio Showcase reapply portfolio camera and "
+                           "lighting presets.");
+    }
+
+    if (ImGui::TreeNodeEx("Camera", ImGuiTreeNodeFlags_DefaultOpen)) {
+        bool cameraChanged = false;
+        cameraChanged |= ImGui::DragFloat3("Position", &camera_.position.x, 0.02f, -1000.0f, 1000.0f, "%.3f");
+        cameraChanged |= ImGui::DragFloat3("Target", &camera_.target.x, 0.02f, -1000.0f, 1000.0f, "%.3f");
+        cameraChanged |= ImGui::DragFloat3("Up", &camera_.up.x, 0.01f, -1.0f, 1.0f, "%.3f");
+
+        float fovDegrees = glm::degrees(camera_.verticalFovRadians);
+        if (ImGui::DragFloat("FOV", &fovDegrees, 0.25f, 1.0f, 160.0f, "%.2f deg")) {
+            camera_.verticalFovRadians = glm::radians(std::clamp(fovDegrees, 1.0f, 160.0f));
+            cameraChanged = true;
+        }
+
+        if (ImGui::DragFloat("Near plane", &camera_.nearPlane, 0.005f, 0.001f, 1000.0f, "%.3f")) {
+            cameraChanged = true;
+        }
+        if (ImGui::DragFloat("Far plane", &camera_.farPlane, 0.1f, 0.01f, 10000.0f, "%.2f")) {
+            cameraChanged = true;
+        }
+
+        if (cameraChanged) {
+            camera_.nearPlane = std::max(camera_.nearPlane, 0.001f);
+            camera_.farPlane = std::max(camera_.farPlane, camera_.nearPlane + 0.001f);
+            camera_.up = normalizedOrFallback(camera_.up, {0.0f, 1.0f, 0.0f});
+            if (glm::length(camera_.target - camera_.position) <= 0.001f) {
+                camera_.target = camera_.position + glm::vec3{0.0f, 0.0f, -1.0f};
+            }
+            csmSettings_.nearPlane = camera_.nearPlane;
+            csmSettings_.farPlane = camera_.farPlane;
+            clampRuntimeSettings();
+            invalidateTaaHistory();
+        }
+
+        if (ImGui::Button("Reset Default Camera")) {
+            resetCameraToDefault();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Reset Portfolio Camera")) {
+            resetCameraToPortfolioPreset();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Reset Occlusion Test Camera")) {
+            resetCameraToOcclusionTestPreset();
+        }
+
+        ImGui::TextDisabled("Camera movement speed: not available; there is no free-camera controller yet.");
+        ImGui::TreePop();
+    }
+
+    if (ImGui::TreeNodeEx("Directional Light", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::DragFloat3("Direction", &directionalLightSettings_.direction.x, 0.01f, -1.0f, 1.0f, "%.3f");
+        directionalLightSettings_.direction =
+            normalizedOrFallback(directionalLightSettings_.direction,
+                                 {kDirectionalLightDirection.x,
+                                  kDirectionalLightDirection.y,
+                                  kDirectionalLightDirection.z});
+
+        ImGui::ColorEdit3("Color", &directionalLightSettings_.color.x);
+        directionalLightSettings_.color = glm::max(directionalLightSettings_.color, glm::vec3{0.0f});
+        ImGui::DragFloat("Intensity", &directionalLightSettings_.intensity, 0.01f, 0.0f, 16.0f, "%.3f");
+        directionalLightSettings_.intensity = std::max(directionalLightSettings_.intensity, 0.0f);
+
+        if (portfolioCaptureMode_) {
+            ImGui::TextDisabled("The editable directional light is used when portfolio mode is disabled.");
+        }
+        if (ImGui::Button("Reset Default Light")) {
+            resetDirectionalLightToDefault();
+        }
+        ImGui::TreePop();
+    }
+}
+
+void Renderer::drawSceneHierarchyDebugUi()
+{
+    if (selectedRenderObjectIndex_ >= renderObjects_.size()) {
+        selectedRenderObjectIndex_ = kInvalidRenderObjectIndex;
+    }
+
+    drawSceneEditingDebugUi();
+
+    ImGui::Text("RenderObjects: %zu", renderObjects_.size());
+    ImGui::SameLine();
+    ImGui::Text("DrawItems: %zu", allDrawItems_.size());
+    ImGui::SameLine();
+    ImGui::Text("Main batches: %zu", meshDrawBatches_.size());
+
+    ImGui::BeginChild("SceneHierarchyList", ImVec2(0.0f, 280.0f), true);
+    const ImGuiTreeNodeFlags sceneFlags = ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth;
+    if (ImGui::TreeNodeEx("Scene", sceneFlags)) {
+        for (size_t objectIndex = 0; objectIndex < renderObjects_.size(); ++objectIndex) {
+            const renderer::RenderObject& object = renderObjects_[objectIndex];
+            const ObjectDrawDebugInfo debugInfo =
+                objectDrawDebugInfo(static_cast<uint32_t>(objectIndex));
+            const bool selected = selectedRenderObjectIndex_ == objectIndex;
+            ImGuiTreeNodeFlags objectFlags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
+            if (selected) {
+                objectFlags |= ImGuiTreeNodeFlags_Selected;
+            }
+
+            const uint32_t objectId = renderObjectEditorId(object);
+            const std::string objectName = object.debugName.empty() ? "(unnamed)" : object.debugName;
+            const std::string label = std::string(object.visible ? "" : "[hidden] ") + objectName + "##" +
+                                      std::to_string(objectId);
+            const bool open = ImGui::TreeNodeEx(label.c_str(), objectFlags);
+            if (ImGui::IsItemClicked()) {
+                selectedRenderObjectIndex_ = objectIndex;
+            }
+
+            if (open) {
+                const std::string materialLabel = materialDebugLabel(object);
+                const std::string mainCullingLabel = mainCullingDebugLabel(debugInfo);
+                const std::string shadowCullingLabel = shadowCullingDebugLabel(debugInfo);
+                ImGui::Text("Object ID: %u", objectId);
+                ImGui::Text("Debug ID: %u", object.debugId);
+                ImGui::Text("Visible: %s", object.visible ? "yes" : "no");
+                ImGui::Text("Source: %s", renderObjectSourceTypeName(object.sourceType));
+                ImGui::Text("Mesh: %s", meshDebugLabel(object.mesh).c_str());
+                ImGui::Text("Material: %s", materialLabel.c_str());
+                ImGui::Text("Submeshes: %u", meshSubmeshCount(object.mesh));
+                ImGui::Text("Draw items: %zu", debugInfo.drawItemCount);
+                ImGui::Text("Main: %s", mainCullingLabel.c_str());
+                ImGui::Text("Shadow: %s", shadowCullingLabel.c_str());
+                if (object.mesh) {
+                    ImGui::TextWrapped("Local bounds: %s", formatAabb(object.mesh->localBounds()).c_str());
+                }
+                ImGui::TextWrapped("World bounds: %s", formatAabb(object.worldBounds()).c_str());
+                ImGui::TreePop();
+            }
+        }
+        ImGui::TreePop();
+    }
+    ImGui::EndChild();
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Inspector");
+    if (selectedRenderObjectIndex_ == kInvalidRenderObjectIndex) {
+        ImGui::TextDisabled("No RenderObject selected.");
+        return;
+    }
+
+    drawSelectedRenderObjectInspector(static_cast<uint32_t>(selectedRenderObjectIndex_));
+}
+
+void Renderer::drawSelectedRenderObjectInspector(uint32_t objectIndex)
+{
+    if (objectIndex >= renderObjects_.size()) {
+        ImGui::TextDisabled("Selected RenderObject is no longer available.");
+        return;
+    }
+
+    renderer::RenderObject& object = renderObjects_[objectIndex];
+    const ObjectDrawDebugInfo debugInfo = objectDrawDebugInfo(objectIndex);
+    const std::string materialLabel = materialDebugLabel(object);
+    const std::string mainCullingLabel = mainCullingDebugLabel(debugInfo);
+    const std::string shadowCullingLabel = shadowCullingDebugLabel(debugInfo);
+    const uint32_t objectId = renderObjectEditorId(object);
+
+    ImGui::Text("Name: %s", object.debugName.empty() ? "(unnamed)" : object.debugName.c_str());
+    ImGui::Text("Object index: %u", objectIndex);
+    ImGui::Text("Object ID: %u", objectId);
+    ImGui::Text("Debug ID: %u", object.debugId);
+    ImGui::Text("Source: %s", renderObjectSourceTypeName(object.sourceType));
+    ImGui::Text("Mesh: %s", meshDebugLabel(object.mesh).c_str());
+    ImGui::Text("Mesh pointer: %p", static_cast<const void*>(object.mesh));
+    if (object.mesh) {
+        ImGui::Text("Mesh indices: %u", object.mesh->indexCount());
+    }
+    ImGui::Text("Material: %s", materialLabel.c_str());
+    ImGui::Text("Material slots: %zu", object.materialCount);
+    ImGui::Text("Submeshes: %u", meshSubmeshCount(object.mesh));
+    ImGui::Text("Draw items: %zu", debugInfo.drawItemCount);
+    if (debugInfo.hasObjectDataIndex) {
+        ImGui::Text("First object-data index: %u", debugInfo.firstObjectDataIndex);
+    } else {
+        ImGui::TextDisabled("First object-data index: unavailable until draw data is built");
+    }
+    ImGui::Text("Main culling: %s", mainCullingLabel.c_str());
+    ImGui::Text("Shadow culling: %s", shadowCullingLabel.c_str());
+    ImGui::Text("Shadow draw items visible: %zu", debugInfo.visibleShadowDrawItemCount);
+
+    bool visible = object.visible;
+    if (ImGui::Checkbox("Visible", &visible)) {
+        object.visible = visible;
+        invalidateDepthPyramid();
+    }
+
+    ImGui::SeparatorText("Transform");
+    if (object.transform.useMatrixOverride) {
+        ImGui::TextDisabled("Matrix override transform; editing TRS converts it to position/rotation/scale.");
+        if (ImGui::Button("Convert to Editable TRS")) {
+            if (convertMatrixOverrideToEditableTrs(object.transform)) {
+                object.animateTransform = false;
+                invalidateDepthPyramid();
+            }
+        }
+    }
+
+    const TransformComponents transformComponents = editableTransformComponents(object.transform);
+    if (!transformComponents.valid) {
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.25f, 1.0f),
+                           "Transform cannot be decomposed for editing.");
+    } else {
+        glm::vec3 position = transformComponents.position;
+        if (ImGui::DragFloat3("Position", &position.x, 0.01f, -1000.0f, 1000.0f, "%.3f")) {
+            if (convertMatrixOverrideToEditableTrs(object.transform)) {
+                object.transform.position = position;
+                object.animateTransform = false;
+                invalidateDepthPyramid();
+            }
+        }
+
+        glm::vec3 rotationDegrees = glm::degrees(transformComponents.rotationRadians);
+        if (ImGui::DragFloat3("Rotation", &rotationDegrees.x, 0.25f, -3600.0f, 3600.0f, "%.2f deg")) {
+            if (convertMatrixOverrideToEditableTrs(object.transform)) {
+                object.transform.rotationRadians = glm::radians(rotationDegrees);
+                object.animateTransform = false;
+                invalidateDepthPyramid();
+            }
+        }
+
+        glm::vec3 scale = transformComponents.scale;
+        if (ImGui::DragFloat3("Scale", &scale.x, 0.01f, -1000.0f, 1000.0f, "%.3f")) {
+            if (convertMatrixOverrideToEditableTrs(object.transform)) {
+                object.transform.scale = scale;
+                object.animateTransform = false;
+                invalidateDepthPyramid();
+            }
+        }
+    }
+
+    ImGui::Text("Demo animation: %s", object.animateTransform ? "enabled" : "disabled");
+    ImGui::TextWrapped("Transform summary: %s", transformDebugSummary(object.transform).c_str());
+    if (object.mesh) {
+        ImGui::TextWrapped("Local bounds: %s", formatAabb(object.mesh->localBounds()).c_str());
+    } else {
+        ImGui::TextDisabled("Local bounds: unavailable");
+    }
+    ImGui::TextWrapped("World bounds: %s", formatAabb(object.worldBounds()).c_str());
+
+    if (ImGui::TreeNodeEx("Material", ImGuiTreeNodeFlags_DefaultOpen)) {
+        const std::vector<const renderer::Material*> materials = materialsForObject(object);
+        if (materials.empty()) {
+            ImGui::TextDisabled("Selected RenderObject has no material.");
+        } else {
+            if (materials.size() > 1) {
+                ImGui::Text("Material count: %zu (showing first resolved material)", materials.size());
+            }
+            drawMaterialDebugSection(materials.front(), true, mutableMaterialFromPointer(materials.front()));
+        }
+        ImGui::TreePop();
+    }
+
+    if (ImGui::TreeNode("World transform matrix")) {
+        const glm::mat4 model = object.transform.modelMatrix();
+        for (int row = 0; row < 4; ++row) {
+            const std::string matrixRow = formatMatrixRow(model, row);
+            ImGui::TextUnformatted(matrixRow.c_str());
+        }
+        ImGui::TreePop();
+    }
+}
+
+void Renderer::drawMaterialInspectorDebugUi()
+{
+    if (selectedRenderObjectIndex_ == kInvalidRenderObjectIndex || selectedRenderObjectIndex_ >= renderObjects_.size()) {
+        ImGui::TextDisabled("No RenderObject selected.");
+        return;
+    }
+
+    const renderer::RenderObject& object = renderObjects_[selectedRenderObjectIndex_];
+    ImGui::Text("RenderObject: %s", object.debugName.empty() ? "(unnamed)" : object.debugName.c_str());
+    ImGui::Text("Object index: %zu", selectedRenderObjectIndex_);
+
+    const std::vector<const renderer::Material*> materials = materialsForObject(object);
+    if (materials.empty()) {
+        ImGui::TextDisabled("Selected RenderObject has no material.");
+        return;
+    }
+
+    if (materials.size() > 1) {
+        ImGui::Text("Resolved materials: %zu (showing first material)", materials.size());
+        constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                          ImGuiTableFlags_SizingStretchProp;
+        if (ImGui::BeginTable("MaterialInspectorMaterialList", 3, flags)) {
+            ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed);
+            ImGui::TableSetupColumn("Material");
+            ImGui::TableSetupColumn("Source");
+            ImGui::TableHeadersRow();
+            for (size_t materialIndex = 0; materialIndex < materials.size(); ++materialIndex) {
+                const renderer::Material* material = materials[materialIndex];
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::Text("%zu", materialIndex);
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(materialNameOrFallback(material));
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(material ? materialSourceName(material->source) : "unknown");
+            }
+            ImGui::EndTable();
+        }
+    }
+
+    drawMaterialDebugSection(materials.front(), true, mutableMaterialFromPointer(materials.front()));
+}
+
+void Renderer::drawTextureDebugUi()
+{
+    if (ImGui::CollapsingHeader("Texture Debug Views", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (selectedRenderObjectIndex_ == kInvalidRenderObjectIndex ||
+            selectedRenderObjectIndex_ >= renderObjects_.size()) {
+            ImGui::TextDisabled("No RenderObject selected.");
+        } else {
+            const renderer::RenderObject& object = renderObjects_[selectedRenderObjectIndex_];
+            const renderer::Material* material = primaryMaterialForObject(object);
+            if (!material) {
+                ImGui::TextDisabled("Selected RenderObject has no material textures to inspect.");
+            } else {
+                ImGui::Text("RenderObject: %s", object.debugName.empty() ? "(unnamed)" : object.debugName.c_str());
+                ImGui::Text("Material: %s", materialNameOrFallback(material));
+                drawMaterialTextureSlotDebugUi("Base color",
+                                               "sRGB base color",
+                                               material->baseColorTexture,
+                                               material->baseColorTextureIndex,
+                                               material->baseColorTextureFallback,
+                                               true);
+                drawMaterialTextureSlotDebugUi("Normal",
+                                               "linear normal",
+                                               material->normalTexture,
+                                               material->normalTextureIndex,
+                                               material->normalTextureFallback,
+                                               true);
+                drawMaterialTextureSlotDebugUi("Metallic-roughness",
+                                               "linear metallic-roughness",
+                                               material->metallicRoughnessTexture,
+                                               material->metallicRoughnessTextureIndex,
+                                               material->metallicRoughnessTextureFallback,
+                                               true);
+            }
+        }
+    }
+
+    if (ImGui::CollapsingHeader("Global/Post-process Texture Metadata", ImGuiTreeNodeFlags_DefaultOpen)) {
+        drawGlobalTextureMetadata();
+    }
+}
+
+void Renderer::drawMaterialDebugSection(const renderer::Material* material,
+                                        bool includeTextureSummary,
+                                        renderer::Material* editableMaterial)
+{
+    if (!material) {
+        ImGui::TextDisabled("Material: unavailable");
+        return;
+    }
+
+    ImGui::PushID(static_cast<const void*>(material));
+
+    const auto runtimeMaterialIndexLabel = [this, material]() {
+        for (size_t materialIndex = 0; materialIndex < materialVariants_.size(); ++materialIndex) {
+            if (&materialVariants_[materialIndex] == material) {
+                return "materialVariants[" + std::to_string(materialIndex) + "]";
+            }
+        }
+        for (size_t materialIndex = 0; materialIndex < importedMaterials_.size(); ++materialIndex) {
+            if (&importedMaterials_[materialIndex] == material) {
+                return "importedMaterials[" + std::to_string(materialIndex) + "]";
+            }
+        }
+        if (&checkerboardMaterial_ == material) {
+            return std::string("checkerboardMaterial");
+        }
+        return std::string("untracked");
+    };
+
+    const std::string descriptorSetLabel = descriptorSetDebugString(material->descriptorSet);
+    ImGui::Text("Material debug name: %s", materialNameOrFallback(material));
+    ImGui::Text("Source: %s", materialSourceName(material->source));
+    ImGui::Text("Runtime material index: %s", runtimeMaterialIndexLabel().c_str());
+    ImGui::Text("Asset name: %s", material->assetName.empty() ? "(none)" : material->assetName.c_str());
+    ImGui::Text("Shader: %s", material->shader.empty() ? "(default)" : material->shader.c_str());
+    ImGui::Text("Alpha mode: %s", material->alphaMode.empty() ? "OPAQUE" : material->alphaMode.c_str());
+    if (!material->sourceAssetPath.empty()) {
+        ImGui::TextWrapped("Source asset path: %s", stableProjectPathString(material->sourceAssetPath).c_str());
+    } else {
+        ImGui::TextDisabled("Source asset path: none");
+    }
+
+    if (editableMaterial) {
+        glm::vec4 baseColor = editableMaterial->baseColorFactor;
+        if (ImGui::ColorEdit4("baseColorFactor", &baseColor.x, ImGuiColorEditFlags_Float)) {
+            editableMaterial->baseColorFactor = glm::clamp(baseColor, glm::vec4(0.0f), glm::vec4(16.0f));
+        }
+
+        float metallic = editableMaterial->metallic;
+        if (ImGui::DragFloat("metallic", &metallic, 0.01f, 0.0f, 1.0f, "%.3f")) {
+            editableMaterial->metallic = std::clamp(metallic, 0.0f, 1.0f);
+        }
+
+        float roughness = editableMaterial->roughness;
+        if (ImGui::DragFloat("roughness", &roughness, 0.01f, 0.0f, 1.0f, "%.3f")) {
+            editableMaterial->roughness = std::clamp(roughness, 0.0f, 1.0f);
+        }
+
+        float alphaCutoff = editableMaterial->alphaCutoff;
+        if (ImGui::DragFloat("alphaCutoff", &alphaCutoff, 0.01f, 0.0f, 1.0f, "%.3f")) {
+            editableMaterial->alphaCutoff = std::clamp(alphaCutoff, 0.0f, 1.0f);
+        }
+
+        bool doubleSided = editableMaterial->doubleSided;
+        if (ImGui::Checkbox("doubleSided metadata", &doubleSided)) {
+            editableMaterial->doubleSided = doubleSided;
+        }
+
+        if (ImGui::Button("Save Material")) {
+            saveMaterialAssetFromUi(*editableMaterial);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Reload Material")) {
+            reloadMaterialAssetFromUi(*editableMaterial);
+        }
+        ImGui::TextWrapped("Material asset status: %s", lastMaterialAssetStatus_.c_str());
+    } else {
+        ImGui::Text("baseColorFactor: %s", formatVec4(material->baseColorFactor).c_str());
+        ImGui::Text("metallic: %.3f", material->metallic);
+        ImGui::Text("roughness: %.3f", material->roughness);
+        ImGui::Text("alphaCutoff: %.3f", material->alphaCutoff);
+        ImGui::Text("doubleSided metadata: %s", material->doubleSided ? "true" : "false");
+    }
+
+    ImGui::Text("multiScatterStrength: %.3f", material->multiScatterStrength);
+    ImGui::Text("baseColorTextureIndex: %u", material->baseColorTextureIndex);
+    ImGui::Text("normalTextureIndex: %u", material->normalTextureIndex);
+    ImGui::Text("metallicRoughnessTextureIndex: %u", material->metallicRoughnessTextureIndex);
+    ImGui::TextWrapped("Base color texture path: %s",
+                       material->baseColorTexturePath.empty()
+                           ? "(none)"
+                           : material->baseColorTexturePath.generic_string().c_str());
+    ImGui::TextWrapped("Normal texture path: %s",
+                       material->normalTexturePath.empty() ? "(none)" : material->normalTexturePath.generic_string().c_str());
+    ImGui::TextWrapped("Metallic-roughness texture path: %s",
+                       material->metallicRoughnessTexturePath.empty()
+                           ? "(none)"
+                           : material->metallicRoughnessTexturePath.generic_string().c_str());
+    ImGui::Text("Bindless material textures: %s", isBindlessMaterialTextureActive() ? "active" : "inactive");
+    ImGui::Text("Legacy material descriptor fallback: %s",
+                isBindlessMaterialTextureActive() ? "inactive" : "active");
+    ImGui::Text("Material descriptor set: %s", descriptorSetLabel.c_str());
+
+    if (!includeTextureSummary) {
+        ImGui::PopID();
+        return;
+    }
+
+    if (ImGui::TreeNode("Material texture slots")) {
+        drawMaterialTextureSlotDebugUi("Base color",
+                                       "sRGB base color",
+                                       material->baseColorTexture,
+                                       material->baseColorTextureIndex,
+                                       material->baseColorTextureFallback,
+                                       false);
+        drawMaterialTextureSlotDebugUi("Normal",
+                                       "linear normal",
+                                       material->normalTexture,
+                                       material->normalTextureIndex,
+                                       material->normalTextureFallback,
+                                       false);
+        drawMaterialTextureSlotDebugUi("Metallic-roughness",
+                                       "linear metallic-roughness",
+                                       material->metallicRoughnessTexture,
+                                       material->metallicRoughnessTextureIndex,
+                                       material->metallicRoughnessTextureFallback,
+                                       false);
+        ImGui::TreePop();
+    }
+    ImGui::PopID();
+}
+
+void Renderer::drawMaterialTextureSlotDebugUi(const char* slotName,
+                                              const char* semantic,
+                                              const rhi::VulkanTexture* texture,
+                                              uint32_t bindlessIndex,
+                                              bool fallbackUsed,
+                                              bool showPreview)
+{
+    if (!ImGui::TreeNode(slotName)) {
+        return;
+    }
+
+    if (!texture || !texture->valid()) {
+        ImGui::TextDisabled("Texture: unavailable");
+        ImGui::TreePop();
+        return;
+    }
+
+    const rhi::TextureDebugMetadata& metadata = texture->debugMetadata();
+    const std::string debugName = metadata.debugName.empty() ? "(unnamed texture)" : metadata.debugName;
+    const bool effectiveFallback = fallbackUsed || metadata.fallback;
+
+    if (showPreview) {
+        drawTexturePreview(*texture, 112.0f);
+    }
+
+    ImGui::Text("Texture debug name: %s", debugName.c_str());
+    ImGui::Text("Bindless index: %u", bindlessIndex);
+    ImGui::Text("Dimensions: %u x %u", texture->width(), texture->height());
+    ImGui::Text("Mip levels: %u", texture->mipLevels());
+    ImGui::Text("Vulkan format: %s", vkFormatName(texture->format()));
+    ImGui::Text("Color space / semantic: %s", semantic);
+    ImGui::Text("Tracked color space: %s", std::string(colorSpaceName(metadata.colorSpace)).c_str());
+    ImGui::Text("Source: %s", textureDebugSourceName(metadata.source));
+    if (!metadata.sourcePath.empty()) {
+        ImGui::TextWrapped("Path: %s", metadata.sourcePath.c_str());
+    }
+    ImGui::Text("Fallback texture used: %s", effectiveFallback ? "yes" : "no");
+    ImGui::TreePop();
+}
+
+void Renderer::drawTexturePreview(const rhi::VulkanTexture& texture, float size)
+{
+    const VkDescriptorSet descriptorSet =
+        imguiLayer_.texturePreviewDescriptor(texture.imageView(), texture.sampler(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    if (descriptorSet == VK_NULL_HANDLE) {
+        ImGui::TextDisabled("Preview unavailable.");
+        return;
+    }
+
+    const float width = static_cast<float>(std::max(texture.width(), 1U));
+    const float height = static_cast<float>(std::max(texture.height(), 1U));
+    ImVec2 imageSize{size, size};
+    if (width > height) {
+        imageSize.y = size * (height / width);
+    } else if (height > width) {
+        imageSize.x = size * (width / height);
+    }
+
+    ImGui::Image((ImTextureID)descriptorSet, imageSize);
+}
+
+void Renderer::drawRenderTargetPreview(VkImageView imageView,
+                                       VkSampler sampler,
+                                       VkImageLayout imageLayout,
+                                       uint32_t width,
+                                       uint32_t height,
+                                       float size,
+                                       float exposureScale)
+{
+    const VkDescriptorSet descriptorSet =
+        imguiLayer_.renderTargetPreviewDescriptor(imageView, sampler, imageLayout);
+    if (descriptorSet == VK_NULL_HANDLE) {
+        ImGui::TextDisabled("Preview unavailable.");
+        return;
+    }
+
+    const float imageWidth = static_cast<float>(std::max(width, 1U));
+    const float imageHeight = static_cast<float>(std::max(height, 1U));
+    ImVec2 imageSize{size, size};
+    if (imageWidth > imageHeight) {
+        imageSize.y = size * (imageHeight / imageWidth);
+    } else if (imageHeight > imageWidth) {
+        imageSize.x = size * (imageWidth / imageHeight);
+    }
+
+    const float tintScale = std::clamp(exposureScale, 0.0f, 16.0f);
+    ImGui::Image((ImTextureID)descriptorSet,
+                 imageSize,
+                 ImVec2(0.0f, 0.0f),
+                 ImVec2(1.0f, 1.0f),
+                 ImVec4(tintScale, tintScale, tintScale, 1.0f),
+                 ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+}
+
+void Renderer::drawRenderTargetDebugUi()
+{
+    ImGui::SliderFloat("Preview scale", &debugUiSettings_.renderTargetPreviewScale, 0.25f, 2.0f, "%.2f");
+    ImGui::SliderFloat("Preview exposure", &debugUiSettings_.renderTargetPreviewExposure, 0.05f, 8.0f, "%.2f");
+    ImGui::TextDisabled("HDR previews are raw ImGui samples multiplied by preview exposure; no channel remap.");
+
+    if (ImGui::CollapsingHeader("Preview Toggles", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Checkbox("Show scene color", &showRenderTargetSceneColor_);
+        ImGui::Checkbox("Show TAA history", &showRenderTargetTaaHistory_);
+        ImGui::Checkbox("Show bloom extract", &showRenderTargetBloomExtract_);
+        ImGui::Checkbox("Show blurred bloom", &showRenderTargetBlurredBloom_);
+        ImGui::Checkbox("Show bloom mip-chain", &showRenderTargetBloomMipChain_);
+        ImGui::Checkbox("Show final composite metadata", &showRenderTargetFinalCompositeMetadata_);
+        ImGui::Checkbox("Show BRDF LUT", &showRenderTargetBrdfLut_);
+        ImGui::Checkbox("Show CSM cascades", &showRenderTargetCsmCascades_);
+    }
+
+    const auto extentString = [](uint32_t width, uint32_t height) {
+        return std::to_string(width) + " x " + std::to_string(height);
+    };
+    const auto cubeExtentString = [](uint32_t faceSize) {
+        return std::to_string(faceSize) + " x " + std::to_string(faceSize) + " x 6";
+    };
+    const auto layoutUsage = [](const char* usage, VkImageLayout layout) {
+        return std::string(usage) + "; current layout " + imageLayoutName(layout);
+    };
+
+    if (ImGui::CollapsingHeader("Resource Metadata", ImGuiTreeNodeFlags_DefaultOpen)) {
+        constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                          ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp |
+                                          ImGuiTableFlags_ScrollX;
+        if (ImGui::BeginTable("RenderTargetDebugMetadata", 8, flags)) {
+            ImGui::TableSetupColumn("Debug name");
+            ImGui::TableSetupColumn("Dimensions");
+            ImGui::TableSetupColumn("Format");
+            ImGui::TableSetupColumn("Mips", ImGuiTableColumnFlags_WidthFixed);
+            ImGui::TableSetupColumn("Layers", ImGuiTableColumnFlags_WidthFixed);
+            ImGui::TableSetupColumn("Usage");
+            ImGui::TableSetupColumn("Preview", ImGuiTableColumnFlags_WidthFixed);
+            ImGui::TableSetupColumn("Sampled as");
+            ImGui::TableHeadersRow();
+
+            const auto addMetadataRow = [](const RenderTargetDebugMetadata& metadata) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(metadata.debugName);
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(metadata.dimensions.c_str());
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(vkFormatName(metadata.format));
+                ImGui::TableNextColumn();
+                ImGui::Text("%u", metadata.mipLevels);
+                ImGui::TableNextColumn();
+                ImGui::Text("%u", metadata.arrayLayers);
+                ImGui::TableNextColumn();
+                ImGui::TextWrapped("%s", metadata.usage.c_str());
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(metadata.previewable ? "yes" : "no");
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(metadata.sampledAs.c_str());
+            };
+
+            if (sceneColor_.image() != VK_NULL_HANDLE) {
+                const VkExtent3D extent = sceneColor_.extent();
+                addMetadataRow(RenderTargetDebugMetadata{
+                    "SceneColorHDR",
+                    extentString(extent.width, extent.height),
+                    sceneColor_.format(),
+                    1,
+                    1,
+                    layoutUsage("HDR scene color attachment sampled by bloom, exposure, composite, and preview",
+                                sceneColorLayout_),
+                    true,
+                    "2D HDR"});
+            }
+            for (uint32_t historyIndex = 0; historyIndex < kTaaHistoryCount; ++historyIndex) {
+                if (taaHistoryImages_[historyIndex].image() != VK_NULL_HANDLE) {
+                    const VkExtent3D extent = taaHistoryImages_[historyIndex].extent();
+                    const std::string debugName = "TAAHistory" + std::to_string(historyIndex);
+                    addMetadataRow(RenderTargetDebugMetadata{
+                        debugName.c_str(),
+                        extentString(extent.width, extent.height),
+                        taaHistoryImages_[historyIndex].format(),
+                        1,
+                        1,
+                        layoutUsage("Persistent HDR TAA history sampled by resolve and post-process",
+                                    taaHistoryLayouts_[historyIndex]),
+                        true,
+                        "2D HDR"});
+                }
+            }
+            if (bloomExtract_.image() != VK_NULL_HANDLE) {
+                const VkExtent3D extent = bloomExtract_.extent();
+                addMetadataRow(RenderTargetDebugMetadata{
+                    "BloomExtract",
+                    extentString(extent.width, extent.height),
+                    bloomExtract_.format(),
+                    1,
+                    1,
+                    layoutUsage("Bloom bright-pass output sampled by horizontal blur and preview", bloomExtractLayout_),
+                    true,
+                    "2D HDR"});
+            }
+            if (bloomPing_.image() != VK_NULL_HANDLE) {
+                const VkExtent3D extent = bloomPing_.extent();
+                addMetadataRow(RenderTargetDebugMetadata{
+                    "BloomPing",
+                    extentString(extent.width, extent.height),
+                    bloomPing_.format(),
+                    1,
+                    1,
+                    layoutUsage("Horizontal blur output sampled by vertical blur and preview", bloomPingLayout_),
+                    true,
+                    "2D HDR"});
+            }
+            if (bloomPong_.image() != VK_NULL_HANDLE) {
+                const VkExtent3D extent = bloomPong_.extent();
+                addMetadataRow(RenderTargetDebugMetadata{
+                    "BloomPong",
+                    extentString(extent.width, extent.height),
+                    bloomPong_.format(),
+                    1,
+                    1,
+                    layoutUsage("Final blurred bloom sampled by composite and preview", bloomPongLayout_),
+                    true,
+                    "2D HDR"});
+            }
+            for (size_t level = 0; level < bloomMipDownsampleImages_.size(); ++level) {
+                const VkExtent3D extent = bloomMipDownsampleImages_[level].extent();
+                const std::string debugName = "BloomMipDownsample" + std::to_string(level);
+                addMetadataRow(RenderTargetDebugMetadata{
+                    debugName.c_str(),
+                    extentString(extent.width, extent.height),
+                    bloomMipDownsampleImages_[level].format(),
+                    1,
+                    1,
+                    layoutUsage("Mip-chain bloom downsample level",
+                                level < bloomMipDownsampleLayouts_.size() ? bloomMipDownsampleLayouts_[level]
+                                                                          : VK_IMAGE_LAYOUT_UNDEFINED),
+                    true,
+                    "2D HDR"});
+            }
+            for (size_t level = 0; level < bloomMipUpsampleImages_.size(); ++level) {
+                const VkExtent3D extent = bloomMipUpsampleImages_[level].extent();
+                const std::string debugName = "BloomMipUpsample" + std::to_string(level);
+                addMetadataRow(RenderTargetDebugMetadata{
+                    debugName.c_str(),
+                    extentString(extent.width, extent.height),
+                    bloomMipUpsampleImages_[level].format(),
+                    1,
+                    1,
+                    layoutUsage("Mip-chain bloom upsample accumulation level",
+                                level < bloomMipUpsampleLayouts_.size() ? bloomMipUpsampleLayouts_[level]
+                                                                        : VK_IMAGE_LAYOUT_UNDEFINED),
+                    true,
+                    "2D HDR"});
+            }
+            if (showRenderTargetFinalCompositeMetadata_) {
+                const VkExtent2D extent = swapchain_.extent();
+                addMetadataRow(RenderTargetDebugMetadata{
+                    "FinalCompositeSwapchain",
+                    extentString(extent.width, extent.height) + ", " + std::to_string(swapchain_.imageCount()) +
+                        " images",
+                    swapchain_.colorFormat(),
+                    1,
+                    1,
+                    "CompositePass color attachment, then ImGui overlay and present",
+                    false,
+                    "swapchain"});
+            }
+            if (brdfLutTexture_.valid()) {
+                addMetadataRow(RenderTargetDebugMetadata{
+                    "BrdfLut",
+                    extentString(brdfLutTexture_.width(), brdfLutTexture_.height()),
+                    brdfLutTexture_.format(),
+                    1,
+                    1,
+                    layoutUsage("Split-sum IBL data texture sampled by PBR shading; linear, not sRGB",
+                                brdfLutTexture_.layout()),
+                    true,
+                    "2D LUT"});
+            }
+            if (shadowMap_.valid()) {
+                const VkExtent2D extent = shadowMap_.extent();
+                addMetadataRow(RenderTargetDebugMetadata{
+                    "CascadedShadowMapArray",
+                    extentString(extent.width, extent.height),
+                    shadowMap_.format(),
+                    1,
+                    shadowMap_.layerCount(),
+                    layoutUsage("CSM depth attachment array sampled by lighting and per-layer debug previews",
+                                shadowMap_.layout()),
+                    true,
+                    "2D array / per-layer 2D"});
+            }
+            if (depthPyramid_.image() != VK_NULL_HANDLE) {
+                const VkExtent3D extent = depthPyramid_.extent();
+                addMetadataRow(RenderTargetDebugMetadata{
+                    "DepthPyramidHiZ",
+                    extentString(extent.width, extent.height),
+                    depthPyramid_.format(),
+                    depthPyramidMipLevels_,
+                    1,
+                    layoutUsage("Normal-Z max-depth Hi-Z pyramid written by compute and sampled by GPU culling",
+                                depthPyramidLayout_),
+                    true,
+                    "2D mip chain"});
+            }
+            if (diffuseIrradianceMap_.valid()) {
+                addMetadataRow(RenderTargetDebugMetadata{
+                    "DiffuseIrradianceCubemap",
+                    cubeExtentString(diffuseIrradianceMap_.faceSize()),
+                    diffuseIrradianceMap_.format(),
+                    diffuseIrradianceMap_.mipLevels(),
+                    6,
+                    hdrEnvironmentLoaded_ ? "HDR-derived diffuse IBL cubemap" : "Procedural diffuse IBL cubemap",
+                    false,
+                    "cube"});
+            }
+            if (prefilteredEnvironmentMap_.valid()) {
+                addMetadataRow(RenderTargetDebugMetadata{
+                    "PrefilteredSpecularCubemap",
+                    cubeExtentString(prefilteredEnvironmentMap_.faceSize()),
+                    prefilteredEnvironmentMap_.format(),
+                    prefilteredEnvironmentMap_.mipLevels(),
+                    6,
+                    hdrEnvironmentLoaded_ ? "HDR-derived specular IBL mip chain"
+                                          : "Procedural specular IBL mip chain",
+                    false,
+                    "cube"});
+            }
+            if (environmentMap_.valid()) {
+                addMetadataRow(RenderTargetDebugMetadata{
+                    "VisibleEnvironmentCubemap",
+                    cubeExtentString(environmentMap_.faceSize()),
+                    environmentMap_.format(),
+                    environmentMap_.mipLevels(),
+                    6,
+                    hdrEnvironmentLoaded_ ? "HDR environment skybox source" : "Procedural skybox source",
+                    false,
+                    "cube"});
+            }
+
+            ImGui::EndTable();
+        }
+    }
+
+    const float previewSize = 160.0f * std::clamp(debugUiSettings_.renderTargetPreviewScale, 0.25f, 2.0f);
+    const float hdrPreviewExposure = std::clamp(debugUiSettings_.renderTargetPreviewExposure, 0.05f, 8.0f);
+
+    if (showRenderTargetSceneColor_ && sceneColor_.imageView() != VK_NULL_HANDLE &&
+        ImGui::CollapsingHeader("HDR Scene Color", ImGuiTreeNodeFlags_DefaultOpen)) {
+        const VkExtent3D extent = sceneColor_.extent();
+        ImGui::Text("Dimensions: %u x %u", extent.width, extent.height);
+        ImGui::Text("Format: %s", vkFormatName(sceneColor_.format()));
+        ImGui::Text("Layout: %s", imageLayoutName(sceneColorLayout_));
+        drawRenderTargetPreview(sceneColor_.imageView(),
+                                postProcessSampler_,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                extent.width,
+                                extent.height,
+                                previewSize,
+                                hdrPreviewExposure);
+    }
+
+    if (showRenderTargetTaaHistory_ && ImGui::CollapsingHeader("TAA History", ImGuiTreeNodeFlags_DefaultOpen)) {
+        for (uint32_t historyIndex = 0; historyIndex < kTaaHistoryCount; ++historyIndex) {
+            if (taaHistoryImages_[historyIndex].imageView() == VK_NULL_HANDLE) {
+                continue;
+            }
+            const VkExtent3D extent = taaHistoryImages_[historyIndex].extent();
+            ImGui::Text("History %u: %u x %u, %s, %s",
+                        historyIndex,
+                        extent.width,
+                        extent.height,
+                        vkFormatName(taaHistoryImages_[historyIndex].format()),
+                        imageLayoutName(taaHistoryLayouts_[historyIndex]));
+            if (taaHistoryLayouts_[historyIndex] == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+                drawRenderTargetPreview(taaHistoryImages_[historyIndex].imageView(),
+                                        postProcessSampler_,
+                                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                        extent.width,
+                                        extent.height,
+                                        previewSize,
+                                        hdrPreviewExposure);
+            } else {
+                ImGui::TextDisabled("Preview available after the history image reaches shader-read layout.");
+            }
+        }
+    }
+
+    if ((showRenderTargetBloomExtract_ || showRenderTargetBlurredBloom_) &&
+        ImGui::CollapsingHeader("Bloom Targets", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (showRenderTargetBloomExtract_ && bloomExtract_.imageView() != VK_NULL_HANDLE) {
+            const VkExtent3D extent = bloomExtract_.extent();
+            ImGui::Text("Bloom extract: %u x %u, %s", extent.width, extent.height,
+                        vkFormatName(bloomExtract_.format()));
+            drawRenderTargetPreview(bloomExtract_.imageView(),
+                                    postProcessSampler_,
+                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                    extent.width,
+                                    extent.height,
+                                    previewSize,
+                                    hdrPreviewExposure);
+        }
+        if (showRenderTargetBlurredBloom_) {
+            if (bloomPing_.imageView() != VK_NULL_HANDLE) {
+                const VkExtent3D extent = bloomPing_.extent();
+                ImGui::Text("Bloom ping: %u x %u, %s", extent.width, extent.height, vkFormatName(bloomPing_.format()));
+                drawRenderTargetPreview(bloomPing_.imageView(),
+                                        postProcessSampler_,
+                                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                        extent.width,
+                                        extent.height,
+                                        previewSize,
+                                        hdrPreviewExposure);
+            }
+            if (bloomPong_.imageView() != VK_NULL_HANDLE) {
+                const VkExtent3D extent = bloomPong_.extent();
+                ImGui::Text("Bloom pong: %u x %u, %s", extent.width, extent.height, vkFormatName(bloomPong_.format()));
+                drawRenderTargetPreview(bloomPong_.imageView(),
+                                        postProcessSampler_,
+                                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                        extent.width,
+                                        extent.height,
+                                        previewSize,
+                                        hdrPreviewExposure);
+            }
+        }
+    }
+
+    if (showRenderTargetBloomMipChain_ && !bloomMipDownsampleImages_.empty() &&
+        ImGui::CollapsingHeader("Bloom Mip Chain", ImGuiTreeNodeFlags_DefaultOpen)) {
+        const int maxMip = static_cast<int>(bloomMipDownsampleImages_.size() - 1u);
+        int selectedMip = static_cast<int>(std::min(selectedBloomMipDebugLevel_,
+                                                    static_cast<uint32_t>(bloomMipDownsampleImages_.size() - 1u)));
+        ImGui::SliderInt("Selected bloom mip", &selectedMip, 0, maxMip);
+        selectedBloomMipDebugLevel_ = static_cast<uint32_t>(std::max(selectedMip, 0));
+
+        const rhi::VulkanImage& downsampleImage = bloomMipDownsampleImages_[selectedBloomMipDebugLevel_];
+        const VkExtent3D downsampleExtent = downsampleImage.extent();
+        ImGui::Text("Downsample %u: %u x %u, %s",
+                    selectedBloomMipDebugLevel_,
+                    downsampleExtent.width,
+                    downsampleExtent.height,
+                    vkFormatName(downsampleImage.format()));
+        drawRenderTargetPreview(downsampleImage.imageView(),
+                                postProcessSampler_,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                downsampleExtent.width,
+                                downsampleExtent.height,
+                                previewSize,
+                                hdrPreviewExposure);
+
+        if (selectedBloomMipDebugLevel_ < bloomMipUpsampleImages_.size()) {
+            const rhi::VulkanImage& upsampleImage = bloomMipUpsampleImages_[selectedBloomMipDebugLevel_];
+            const VkExtent3D upsampleExtent = upsampleImage.extent();
+            ImGui::Text("Upsample %u: %u x %u, %s",
+                        selectedBloomMipDebugLevel_,
+                        upsampleExtent.width,
+                        upsampleExtent.height,
+                        vkFormatName(upsampleImage.format()));
+            drawRenderTargetPreview(upsampleImage.imageView(),
+                                    postProcessSampler_,
+                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                    upsampleExtent.width,
+                                    upsampleExtent.height,
+                                    previewSize,
+                                    hdrPreviewExposure);
+        }
+    }
+
+    if (depthPyramid_.image() != VK_NULL_HANDLE && !depthPyramidMipImageViews_.empty() &&
+        ImGui::CollapsingHeader("Depth Pyramid", ImGuiTreeNodeFlags_DefaultOpen)) {
+        selectedDepthPyramidDebugMip_ =
+            std::min(selectedDepthPyramidDebugMip_, static_cast<uint32_t>(depthPyramidMipImageViews_.size() - 1));
+        int selectedMip = static_cast<int>(selectedDepthPyramidDebugMip_);
+        ImGui::SliderInt("Selected mip", &selectedMip, 0, static_cast<int>(depthPyramidMipImageViews_.size() - 1));
+        selectedDepthPyramidDebugMip_ = static_cast<uint32_t>(std::max(selectedMip, 0));
+        const VkExtent2D extent = mipExtent(swapchain_.extent(), selectedDepthPyramidDebugMip_);
+        ImGui::Text("Dimensions: %u x %u", extent.width, extent.height);
+        ImGui::Text("Format: %s", vkFormatName(depthPyramid_.format()));
+        ImGui::Text("Layout: %s", imageLayoutName(depthPyramidLayout_));
+        ImGui::TextDisabled("Normal-Z max-depth reduction; white/far regions are intentionally hard to cull through.");
+        drawRenderTargetPreview(depthPyramidMipImageViews_[selectedDepthPyramidDebugMip_],
+                                depthPyramidSampler_,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                extent.width,
+                                extent.height,
+                                previewSize,
+                                1.0f);
+    }
+
+    if (showRenderTargetBrdfLut_ && brdfLutTexture_.valid() &&
+        ImGui::CollapsingHeader("BRDF LUT", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Text("Dimensions: %u x %u", brdfLutTexture_.width(), brdfLutTexture_.height());
+        ImGui::Text("Format: %s", vkFormatName(brdfLutTexture_.format()));
+        ImGui::TextDisabled("Data texture for split-sum IBL; linear UNORM, not sRGB.");
+        drawRenderTargetPreview(brdfLutTexture_.imageView(),
+                                brdfLutTexture_.sampler(),
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                brdfLutTexture_.width(),
+                                brdfLutTexture_.height(),
+                                previewSize,
+                                1.0f);
+    }
+
+    if (showRenderTargetCsmCascades_ && ImGui::CollapsingHeader("CSM Cascades", ImGuiTreeNodeFlags_DefaultOpen)) {
+        drawCsmCascadeDebugUi(previewSize);
+    }
+}
+
+void Renderer::drawCsmCascadeDebugUi(float previewSize)
+{
+    if (!shadowMap_.valid()) {
+        ImGui::TextDisabled("CSM shadow map is unavailable.");
+        return;
+    }
+
+    const uint32_t cascadeCount = std::min(activeCascadeCount(), shadowMap_.layerCount());
+    if (cascadeCount == 0) {
+        ImGui::TextDisabled("No active CSM cascades.");
+        return;
+    }
+
+    int selectedCascade = static_cast<int>(std::min(debugUiSettings_.selectedCsmCascade, cascadeCount - 1));
+    if (ImGui::SliderInt("Selected cascade", &selectedCascade, 0, static_cast<int>(cascadeCount - 1))) {
+        debugUiSettings_.selectedCsmCascade = static_cast<uint32_t>(std::max(selectedCascade, 0));
+    }
+    debugUiSettings_.selectedCsmCascade = std::min(debugUiSettings_.selectedCsmCascade, cascadeCount - 1);
+
+    const VkExtent2D shadowExtent = shadowMap_.extent();
+    ImGui::Text("Shadow resolution: %u x %u", shadowExtent.width, shadowExtent.height);
+    ImGui::Text("Texel snapping: %s", csmSettings_.enableTexelSnapping ? "enabled" : "disabled");
+    ImGui::Text("GPU shadow culling: %s", isGpuShadowCullingActive() ? "active" : "inactive");
+    if (isGpuShadowCullingActive()) {
+        uint32_t gpuVisibleShadowDraws = 0;
+        if (readGpuShadowVisibleCount(currentFrame_, gpuVisibleShadowDraws)) {
+            ImGui::Text("Latest aggregate GPU visible shadow draws: %u", gpuVisibleShadowDraws);
+        } else {
+            ImGui::TextDisabled("Aggregate GPU shadow readback pending.");
+        }
+        ImGui::TextDisabled("Per-cascade draw and batch counts below are CPU frustum estimates.");
+    }
+
+    constexpr ImGuiTableFlags tableFlags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                           ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp;
+    if (ImGui::BeginTable("CsmCascadeMetadata", 7, tableFlags)) {
+        ImGui::TableSetupColumn("Cascade", ImGuiTableColumnFlags_WidthFixed);
+        ImGui::TableSetupColumn("Split range");
+        ImGui::TableSetupColumn("Layer", ImGuiTableColumnFlags_WidthFixed);
+        ImGui::TableSetupColumn("Resolution");
+        ImGui::TableSetupColumn("Coverage");
+        ImGui::TableSetupColumn("Visible draws");
+        ImGui::TableSetupColumn("Batches");
+        ImGui::TableHeadersRow();
+
+        for (uint32_t cascadeIndex = 0; cascadeIndex < cascadeCount; ++cascadeIndex) {
+            const CascadeFrameData& cascade = frameCascades_[cascadeIndex];
+            const float range = std::max(cascade.farDepth - cascade.nearDepth, 0.0f);
+            const float coverage = csmSettings_.shadowDistance > 0.0f
+                                       ? (range / csmSettings_.shadowDistance) * 100.0f
+                                       : 0.0f;
+
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::Text("%u", cascadeIndex);
+            ImGui::TableNextColumn();
+            ImGui::Text("%.3f - %.3f", cascade.nearDepth, cascade.farDepth);
+            ImGui::TableNextColumn();
+            ImGui::Text("%u", cascadeIndex);
+            ImGui::TableNextColumn();
+            ImGui::Text("%u x %u", shadowExtent.width, shadowExtent.height);
+            ImGui::TableNextColumn();
+            ImGui::Text("%.1f%%", coverage);
+            ImGui::TableNextColumn();
+            ImGui::Text("%u", shadowVisibleDrawItemsPerCascade_[cascadeIndex]);
+            ImGui::TableNextColumn();
+            ImGui::Text("%u", shadowBatchCountPerCascade_[cascadeIndex]);
+        }
+
+        ImGui::EndTable();
+    }
+
+    const uint32_t selected = debugUiSettings_.selectedCsmCascade;
+    const CascadeFrameData& cascade = frameCascades_[selected];
+    ImGui::Separator();
+    ImGui::Text("Selected cascade %u", selected);
+    ImGui::Text("Split depth: %.3f", cascade.splitDepth);
+    ImGui::Text("Split range: %.3f - %.3f", cascade.nearDepth, cascade.farDepth);
+    ImGui::Text("Layer index: %u", selected);
+    ImGui::Text("Visible shadow draw count: %u", shadowVisibleDrawItemsPerCascade_[selected]);
+    ImGui::Text("Shadow batch count: %u", shadowBatchCountPerCascade_[selected]);
+    if (ImGui::TreeNode("Light view-projection matrix")) {
+        for (int row = 0; row < 4; ++row) {
+            const std::string matrixRow = formatMatrixRow(cascade.lightViewProjection, row);
+            ImGui::TextUnformatted(matrixRow.c_str());
+        }
+        ImGui::TreePop();
+    }
+
+    ImGui::TextDisabled("Depth preview uses the existing per-layer 2D shadow image view sampled as raw depth.");
+    drawRenderTargetPreview(shadowMap_.layerImageView(selected),
+                            shadowMap_.sampler(),
+                            VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                            shadowExtent.width,
+                            shadowExtent.height,
+                            previewSize,
+                            1.0f);
+
+    if (ImGui::TreeNodeEx("Cascade thumbnails", ImGuiTreeNodeFlags_DefaultOpen)) {
+        const float thumbnailSize = std::max(64.0f, previewSize * 0.45f);
+        for (uint32_t cascadeIndex = 0; cascadeIndex < cascadeCount; ++cascadeIndex) {
+            ImGui::PushID(static_cast<int>(cascadeIndex));
+            ImGui::BeginGroup();
+            ImGui::Text("Cascade %u", cascadeIndex);
+            drawRenderTargetPreview(shadowMap_.layerImageView(cascadeIndex),
+                                    shadowMap_.sampler(),
+                                    VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                                    shadowExtent.width,
+                                    shadowExtent.height,
+                                    thumbnailSize,
+                                    1.0f);
+            if (ImGui::IsItemClicked()) {
+                debugUiSettings_.selectedCsmCascade = cascadeIndex;
+            }
+            ImGui::EndGroup();
+            ImGui::PopID();
+            if (cascadeIndex + 1 < cascadeCount) {
+                ImGui::SameLine();
+            }
+        }
+        ImGui::TreePop();
+    }
+}
+
+void Renderer::drawGlobalTextureMetadata()
+{
+    constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                      ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp;
+    if (!ImGui::BeginTable("GlobalTextureMetadata", 6, flags)) {
+        return;
+    }
+
+    ImGui::TableSetupColumn("Resource");
+    ImGui::TableSetupColumn("Type");
+    ImGui::TableSetupColumn("Dimensions");
+    ImGui::TableSetupColumn("Mip/layers");
+    ImGui::TableSetupColumn("Format");
+    ImGui::TableSetupColumn("Layout / source");
+    ImGui::TableHeadersRow();
+
+    const auto addRow = [](const char* name,
+                           const char* type,
+                           const std::string& dimensions,
+                           const std::string& mipLayers,
+                           VkFormat format,
+                           const std::string& layoutOrSource) {
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(name);
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(type);
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(dimensions.c_str());
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(mipLayers.c_str());
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(vkFormatName(format));
+        ImGui::TableNextColumn();
+        ImGui::TextWrapped("%s", layoutOrSource.c_str());
+    };
+
+    if (shadowMap_.valid()) {
+        const VkExtent2D extent = shadowMap_.extent();
+        addRow("Cascaded shadow map array",
+               "depth 2D array",
+               std::to_string(extent.width) + " x " + std::to_string(extent.height),
+               std::to_string(shadowMap_.layerCount()) + " layers",
+               shadowMap_.format(),
+               imageLayoutName(shadowMap_.layout()));
+    }
+    if (diffuseIrradianceMap_.valid()) {
+        addRow("Diffuse irradiance cubemap",
+               "cubemap",
+               std::to_string(diffuseIrradianceMap_.faceSize()) + " x " +
+                   std::to_string(diffuseIrradianceMap_.faceSize()) + " x 6",
+               std::to_string(diffuseIrradianceMap_.mipLevels()) + " mips",
+               diffuseIrradianceMap_.format(),
+               hdrEnvironmentLoaded_ ? "HDR-derived" : "procedural fallback");
+    }
+    if (prefilteredEnvironmentMap_.valid()) {
+        addRow("Prefiltered specular cubemap",
+               "cubemap",
+               std::to_string(prefilteredEnvironmentMap_.faceSize()) + " x " +
+                   std::to_string(prefilteredEnvironmentMap_.faceSize()) + " x 6",
+               std::to_string(prefilteredEnvironmentMap_.mipLevels()) + " mips",
+               prefilteredEnvironmentMap_.format(),
+               hdrEnvironmentLoaded_ ? "HDR-derived" : "procedural fallback");
+    }
+    if (brdfLutTexture_.valid()) {
+        addRow("BRDF LUT",
+               "2D LUT",
+               std::to_string(brdfLutTexture_.width()) + " x " + std::to_string(brdfLutTexture_.height()),
+               "1 mip",
+               brdfLutTexture_.format(),
+               imageLayoutName(brdfLutTexture_.layout()));
+    }
+    if (sceneColor_.image() != VK_NULL_HANDLE) {
+        const VkExtent3D extent = sceneColor_.extent();
+        addRow("SceneColor",
+               "HDR render target",
+               std::to_string(extent.width) + " x " + std::to_string(extent.height),
+               "1 mip",
+               sceneColor_.format(),
+               imageLayoutName(sceneColorLayout_));
+    }
+    for (uint32_t historyIndex = 0; historyIndex < kTaaHistoryCount; ++historyIndex) {
+        if (taaHistoryImages_[historyIndex].image() != VK_NULL_HANDLE) {
+            const VkExtent3D extent = taaHistoryImages_[historyIndex].extent();
+            const std::string name = "TAAHistory" + std::to_string(historyIndex);
+            addRow(name.c_str(),
+                   "persistent HDR history",
+                   std::to_string(extent.width) + " x " + std::to_string(extent.height),
+                   "1 mip",
+                   taaHistoryImages_[historyIndex].format(),
+                   imageLayoutName(taaHistoryLayouts_[historyIndex]));
+        }
+    }
+    if (bloomExtract_.image() != VK_NULL_HANDLE) {
+        const VkExtent3D extent = bloomExtract_.extent();
+        addRow("BloomExtract",
+               "post-process render target",
+               std::to_string(extent.width) + " x " + std::to_string(extent.height),
+               "1 mip",
+               bloomExtract_.format(),
+               imageLayoutName(bloomExtractLayout_));
+    }
+    if (bloomPing_.image() != VK_NULL_HANDLE) {
+        const VkExtent3D extent = bloomPing_.extent();
+        addRow("BloomPing",
+               "post-process render target",
+               std::to_string(extent.width) + " x " + std::to_string(extent.height),
+               "1 mip",
+               bloomPing_.format(),
+               imageLayoutName(bloomPingLayout_));
+    }
+    if (bloomPong_.image() != VK_NULL_HANDLE) {
+        const VkExtent3D extent = bloomPong_.extent();
+        addRow("BloomPong",
+               "post-process render target",
+               std::to_string(extent.width) + " x " + std::to_string(extent.height),
+               "1 mip",
+               bloomPong_.format(),
+               imageLayoutName(bloomPongLayout_));
+    }
+
+    ImGui::EndTable();
+}
+
+void Renderer::drawGpuTimingDebugUi()
+{
+    bool profilerEnabled = gpuProfilerEnabled_ && gpuProfiler_.available();
+    if (ImGui::Checkbox("GPU profiler enabled", &profilerEnabled)) {
+        gpuProfilerEnabled_ = profilerEnabled;
+        gpuProfiler_.setEnabled(gpuProfilerEnabled_);
+        if (!gpuProfilerEnabled_) {
+            latestGpuProfilerResults_ = {};
+        }
+    }
+
+    if (!gpuProfiler_.available()) {
+        ImGui::TextDisabled("GPU profiler unavailable.");
+        if (!gpuProfiler_.unavailableReason().empty()) {
+            ImGui::TextWrapped("Reason: %s", gpuProfiler_.unavailableReason().c_str());
+        }
+        ImGui::Text("CPU frame delta: %.3f ms (%.1f FPS)", cpuFrameDeltaMs_, cpuFps_);
+        return;
+    }
+
+    ImGui::SameLine();
+    if (ImGui::Button("Reset averages")) {
+        resetGpuProfilerHistory();
+        latestGpuProfilerResults_ = {};
+    }
+
+    if (!gpuProfilerEnabled_) {
+        ImGui::TextDisabled("GPU profiler disabled.");
+        ImGui::Text("CPU frame delta: %.3f ms (%.1f FPS)", cpuFrameDeltaMs_, cpuFps_);
+        return;
+    }
+
+    if (!latestGpuProfilerResults_.valid) {
+        ImGui::TextDisabled("GPU profiler is waiting for the first completed frame.");
+        ImGui::Text("CPU frame delta: %.3f ms (%.1f FPS)", cpuFrameDeltaMs_, cpuFps_);
+        return;
+    }
+
+    ImGui::Text("GPU frame total: %.3f ms", gpuFrameTimeHistory_.latest());
+    ImGui::Text("CPU frame delta: %.3f ms (%.1f FPS)", cpuFrameDeltaMs_, cpuFps_);
+    ImGui::Text("Timestamp queries: %u / %u",
+                latestGpuProfilerResults_.queryCount,
+                latestGpuProfilerResults_.maxQueryCount);
+    if (latestGpuProfilerResults_.queryLimitExceeded) {
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.25f, 1.0f), "Warning: profiler query capacity exceeded.");
+    }
+    ImGui::TextDisabled("Timings are read back after frame-fence completion. Nested scopes are shown in execution order.");
+
+    constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                      ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp;
+    if (!ImGui::BeginTable("GpuTimingHistoryTable", 5, flags)) {
+        return;
+    }
+
+    ImGui::TableSetupColumn("Range");
+    ImGui::TableSetupColumn("Current ms", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("Avg ms", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("Max ms", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("History");
+    ImGui::TableHeadersRow();
+
+    drawTimingHistoryRow("GPU frame total", gpuFrameTimeHistory_);
+    for (const renderer::GpuProfiler::ScopeResult& scope : latestGpuProfilerResults_.scopes) {
+        if (const DebugHistory* history = gpuTimingHistoryForPass(scope.name)) {
+            drawTimingHistoryRow(scope.name.c_str(), *history);
+        }
+    }
+
+    ImGui::EndTable();
+}
+
+void Renderer::drawCullingDebugUi()
+{
+    const CullingDebugSnapshot snapshot = cullingDebugSnapshot(currentFrame_);
+    const float occlusionRejectionPercent =
+        snapshot.totalDrawItems > 0
+            ? (100.0f * static_cast<float>(snapshot.occlusionCulledDrawItems) /
+               static_cast<float>(snapshot.totalDrawItems))
+            : 0.0f;
+    ImGui::Text("Occlusion test scene: %s", snapshot.occlusionTestSceneActive ? "active" : "inactive");
+    ImGui::Text("Total objects: %u", snapshot.totalObjects);
+    ImGui::Text("Total draw items: %u", snapshot.totalDrawItems);
+    ImGui::Text("Visible after culling: %u", snapshot.visibleDrawItems);
+    ImGui::Text("Culled draw items: %u", snapshot.culledDrawItems);
+    ImGui::Text("Frustum culled: %u", snapshot.frustumCulledDrawItems);
+    ImGui::Text("Occlusion culled: %u", snapshot.occlusionCulledDrawItems);
+    ImGui::Text("Occlusion rejection: %.1f%%", occlusionRejectionPercent);
+    ImGui::Text("Shadow draw items: %u", snapshot.shadowDrawItems);
+    ImGui::Text("Visible shadow draw items: %u", snapshot.visibleShadowDrawItems);
+    ImGui::Text("Culled shadow draw items: %u", snapshot.culledShadowDrawItems);
+    ImGui::Text("Shadow batches: %zu", snapshot.shadowBatchCount);
+    ImGui::Text("GPU culling: %s", snapshot.gpuCulling ? "enabled" : "disabled");
+    ImGui::Text("GPU occlusion culling: %s", snapshot.gpuOcclusionCulling ? "enabled" : "disabled");
+    const char* depthPyramidStatus = snapshot.depthPyramidBuildAvailable
+                                         ? (snapshot.depthPyramidValid ? "valid" : "invalid/warming up")
+                                         : "unavailable";
+    ImGui::Text("Depth pyramid: %s, %u mip(s)", depthPyramidStatus, snapshot.depthPyramidMipCount);
+    ImGui::Text("Previous-frame depth: %s", snapshot.previousFrameDepthValid ? "valid" : "invalid/warming up");
+    ImGui::Text("Occlusion settings: enabled=%s bias=%.4f near-skip=%.2f max-coverage=%.2f min-pixels=%.1f",
+                useGpuOcclusionCulling_ ? "true" : "false",
+                gpuOcclusionDepthBias_,
+                gpuOcclusionNearDisableDistance_,
+                gpuOcclusionMaxScreenCoverage_,
+                gpuOcclusionMinScreenPixels_);
+    ImGui::Text("GPU shadow culling: %s", snapshot.gpuShadowCulling ? "enabled" : "disabled");
+
+    constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                      ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp;
+    if (!ImGui::BeginTable("CullingHistoryTable", 5, flags)) {
+        return;
+    }
+
+    ImGui::TableSetupColumn("Metric");
+    ImGui::TableSetupColumn("Current", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("Avg", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("Max", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("History");
+    ImGui::TableHeadersRow();
+
+    drawScalarHistoryRow("Visible main draw items", visibleMainDrawItemsHistory_, "%.0f");
+    drawScalarHistoryRow("Culled main draw items", culledMainDrawItemsHistory_, "%.0f");
+    drawScalarHistoryRow("Visible shadow draw items", visibleShadowDrawItemsHistory_, "%.0f");
+    drawScalarHistoryRow("Culled shadow draw items", culledShadowDrawItemsHistory_, "%.0f");
+
+    ImGui::EndTable();
+}
+
+void Renderer::drawExposureDebugUi()
+{
+    const ExposureMode mode = exposureModeValue(toneMappingSettings_.enableAutoExposure ? toneMappingSettings_.exposureMode
+                                                                                        : 0);
+    ImGui::Text("Current exposure: %.4f", currentToneMappingExposure());
+    ImGui::Text("Log-average luminance: %.4f", averageLuminance_);
+    ImGui::Text("Histogram clipped luminance: %.4f", histogramClippedLuminance_);
+    ImGui::Text("Exposure mode: %s", exposureModeName(mode).data());
+    ImGui::Text("Composite exposure source: %s", isGpuExposureActive() ? "GPU exposure buffer" : "push constant");
+
+    constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                      ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp;
+    if (!ImGui::BeginTable("ExposureHistoryTable", 5, flags)) {
+        return;
+    }
+
+    ImGui::TableSetupColumn("Metric");
+    ImGui::TableSetupColumn("Current", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("Avg", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("Max", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("History");
+    ImGui::TableHeadersRow();
+
+    drawScalarHistoryRow("Exposure", exposureHistory_, "%.4f");
+    drawScalarHistoryRow("Log-average luminance", averageLuminanceHistory_, "%.4f");
+    drawScalarHistoryRow("Histogram clipped luminance", histogramClippedLuminanceHistory_, "%.4f");
+
+    ImGui::EndTable();
+}
+
+void Renderer::drawTimingHistoryRow(const char* label, const DebugHistory& history) const
+{
+    ImGui::PushID(label);
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(label);
+    ImGui::TableNextColumn();
+    ImGui::Text("%.3f", history.latest());
+    ImGui::TableNextColumn();
+    ImGui::Text("%.3f", history.average());
+    ImGui::TableNextColumn();
+    ImGui::Text("%.3f", history.max());
+    ImGui::TableNextColumn();
+    drawHistoryPlot(history, 42.0f);
+    ImGui::PopID();
+}
+
+void Renderer::drawScalarHistoryRow(const char* label, const DebugHistory& history, const char* valueFormat) const
+{
+    ImGui::PushID(label);
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(label);
+    ImGui::TableNextColumn();
+    ImGui::Text(valueFormat, history.latest());
+    ImGui::TableNextColumn();
+    ImGui::Text(valueFormat, history.average());
+    ImGui::TableNextColumn();
+    ImGui::Text(valueFormat, history.max());
+    ImGui::TableNextColumn();
+    drawHistoryPlot(history, 42.0f);
+    ImGui::PopID();
+}
+
+void Renderer::drawHistoryPlot(const DebugHistory& history, float height) const
+{
+    if (history.empty()) {
+        ImGui::TextDisabled("waiting");
+        return;
+    }
+
+    std::array<float, kDebugHistoryCapacity> values{};
+    const size_t sampleCount = history.copyChronological(values);
+    const float scaleMax = std::max(history.max(), 0.001f);
+    ImGui::PlotLines("##history",
+                     values.data(),
+                     static_cast<int>(sampleCount),
+                     0,
+                     nullptr,
+                     0.0f,
+                     scaleMax,
+                     ImVec2(180.0f, height));
+}
+
+} // namespace ve
