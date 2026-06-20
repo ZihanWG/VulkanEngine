@@ -1439,6 +1439,31 @@ void Renderer::createPostProcessResources()
     createPostProcessDescriptorSets();
 }
 
+VkDescriptorImageInfo Renderer::postProcessImageInfo(VkImageView imageView) const
+{
+    VkDescriptorImageInfo info{};
+    info.sampler = postProcessSampler_;
+    info.imageView = imageView;
+    info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    return info;
+}
+
+// Depth image info for the composite SSAO sampler. Falls back to a sampleable
+// texture when the depth format itself cannot be sampled.
+VkDescriptorImageInfo Renderer::postProcessDepthInfo() const
+{
+    VkDescriptorImageInfo info{};
+    info.sampler = postProcessSampler_;
+    if (swapchain_.depthSupportsSampling()) {
+        info.imageView = swapchain_.depthImageView();
+        info.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+    } else {
+        info.imageView = checkerboardTexture_.imageView();
+        info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+    return info;
+}
+
 void Renderer::createPostProcessDescriptorSets()
 {
     if (postProcessSampler_ == VK_NULL_HANDLE) {
@@ -1540,33 +1565,10 @@ void Renderer::createPostProcessDescriptorSets()
                               VK_OBJECT_TYPE_DESCRIPTOR_SET,
                               "BloomBlurVerticalDescriptorSet");
 
-    const auto imageInfo = [this](VkImageView imageView) {
-        VkDescriptorImageInfo info{};
-        info.sampler = postProcessSampler_;
-        info.imageView = imageView;
-        info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        return info;
-    };
-
-    // Depth image info for the composite SSAO sampler. Falls back to a sampleable
-    // texture when the depth format itself cannot be sampled.
-    const auto depthInfo = [this]() {
-        VkDescriptorImageInfo info{};
-        info.sampler = postProcessSampler_;
-        if (swapchain_.depthSupportsSampling()) {
-            info.imageView = swapchain_.depthImageView();
-            info.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
-        } else {
-            info.imageView = checkerboardTexture_.imageView();
-            info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        }
-        return info;
-    };
-
     std::array<VkDescriptorImageInfo, 3> legacyImageInfos{
-        imageInfo(sceneColor_.imageView()),
-        imageInfo(bloomExtract_.imageView()),
-        imageInfo(bloomPing_.imageView()),
+        postProcessImageInfo(sceneColor_.imageView()),
+        postProcessImageInfo(bloomExtract_.imageView()),
+        postProcessImageInfo(bloomPing_.imageView()),
     };
 
     std::array<VkWriteDescriptorSet, 3> writes{};
@@ -1622,9 +1624,9 @@ void Renderer::createPostProcessDescriptorSets()
         std::array<VkDescriptorImageInfo, kTaaHistoryCount> taaBloomImageInfos{};
         std::array<VkWriteDescriptorSet, kTaaHistoryCount * 3u> taaWrites{};
         for (uint32_t historyIndex = 0; historyIndex < kTaaHistoryCount; ++historyIndex) {
-            taaResolveImageInfos[historyIndex][0] = imageInfo(sceneColor_.imageView());
-            taaResolveImageInfos[historyIndex][1] = imageInfo(taaHistoryImages_[historyIndex].imageView());
-            taaBloomImageInfos[historyIndex] = imageInfo(taaHistoryImages_[historyIndex].imageView());
+            taaResolveImageInfos[historyIndex][0] = postProcessImageInfo(sceneColor_.imageView());
+            taaResolveImageInfos[historyIndex][1] = postProcessImageInfo(taaHistoryImages_[historyIndex].imageView());
+            taaBloomImageInfos[historyIndex] = postProcessImageInfo(taaHistoryImages_[historyIndex].imageView());
 
             const uint32_t writeBase = historyIndex * 3u;
             taaWrites[writeBase].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1672,7 +1674,7 @@ void Renderer::createPostProcessDescriptorSets()
             std::array<VkDescriptorImageInfo, kTaaHistoryCount> taaDownsampleImageInfos{};
             std::array<VkWriteDescriptorSet, kTaaHistoryCount> taaDownsampleWrites{};
             for (uint32_t historyIndex = 0; historyIndex < kTaaHistoryCount; ++historyIndex) {
-                taaDownsampleImageInfos[historyIndex] = imageInfo(taaHistoryImages_[historyIndex].imageView());
+                taaDownsampleImageInfos[historyIndex] = postProcessImageInfo(taaHistoryImages_[historyIndex].imageView());
                 taaDownsampleWrites[historyIndex].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 taaDownsampleWrites[historyIndex].dstSet = taaBloomMipDownsampleDescriptorSets_[historyIndex];
                 taaDownsampleWrites[historyIndex].dstBinding = 0;
@@ -1709,7 +1711,7 @@ void Renderer::createPostProcessDescriptorSets()
         for (size_t level = 0; level < bloomMipDownsampleImages_.size(); ++level) {
             const VkImageView sourceView =
                 level == 0 ? sceneColor_.imageView() : bloomMipDownsampleImages_[level - 1].imageView();
-            downsampleImageInfos[level] = imageInfo(sourceView);
+            downsampleImageInfos[level] = postProcessImageInfo(sourceView);
             downsampleWrites[level].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             downsampleWrites[level].dstSet = bloomMipDownsampleDescriptorSets_[level];
             downsampleWrites[level].dstBinding = 0;
@@ -1747,8 +1749,8 @@ void Renderer::createPostProcessDescriptorSets()
                 level + 1 == bloomMipDownsampleImages_.size() - 1
                     ? bloomMipDownsampleImages_[level + 1].imageView()
                     : bloomMipUpsampleImages_[level + 1].imageView();
-            upsampleImageInfos[level][0] = imageInfo(bloomMipDownsampleImages_[level].imageView());
-            upsampleImageInfos[level][1] = imageInfo(lowerView);
+            upsampleImageInfos[level][0] = postProcessImageInfo(bloomMipDownsampleImages_[level].imageView());
+            upsampleImageInfos[level][1] = postProcessImageInfo(lowerView);
 
             const size_t writeBase = level * 2u;
             upsampleWrites[writeBase].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1803,11 +1805,11 @@ void Renderer::createPostProcessDescriptorSets()
         // The main depth buffer is sampled by the composite pass for SSAO. When the
         // depth format cannot be sampled, bind a harmless fallback and disable SSAO.
         ssaoAvailable_ = swapchain_.depthSupportsSampling();
-        const VkDescriptorImageInfo compositeDepthInfo = depthInfo();
+        const VkDescriptorImageInfo compositeDepthInfo = postProcessDepthInfo();
         for (size_t frameIndex = 0; frameIndex < frames_.size(); ++frameIndex) {
-            compositeImageInfos[frameIndex][0] = imageInfo(sceneColor_.imageView());
-            compositeImageInfos[frameIndex][1] = imageInfo(bloomPong_.imageView());
-            compositeImageInfos[frameIndex][2] = imageInfo(mipBloomView);
+            compositeImageInfos[frameIndex][0] = postProcessImageInfo(sceneColor_.imageView());
+            compositeImageInfos[frameIndex][1] = postProcessImageInfo(bloomPong_.imageView());
+            compositeImageInfos[frameIndex][2] = postProcessImageInfo(mipBloomView);
             compositeImageInfos[frameIndex][3] = compositeDepthInfo;
 
             compositeExposureInfos[frameIndex].buffer = frameExposureBuffers_[frameIndex].buffer();
@@ -1867,12 +1869,12 @@ void Renderer::createPostProcessDescriptorSets()
                 std::vector<std::array<VkDescriptorImageInfo, 4>> taaCompositeImageInfos(frames_.size());
                 std::vector<VkDescriptorBufferInfo> taaCompositeExposureInfos(frames_.size());
                 std::vector<VkWriteDescriptorSet> taaCompositeWrites(frames_.size() * 5u);
-                const VkDescriptorImageInfo taaCompositeDepthInfo = depthInfo();
+                const VkDescriptorImageInfo taaCompositeDepthInfo = postProcessDepthInfo();
                 for (size_t frameIndex = 0; frameIndex < frames_.size(); ++frameIndex) {
                     taaCompositeImageInfos[frameIndex][0] =
-                        imageInfo(taaHistoryImages_[historyIndex].imageView());
-                    taaCompositeImageInfos[frameIndex][1] = imageInfo(bloomPong_.imageView());
-                    taaCompositeImageInfos[frameIndex][2] = imageInfo(mipBloomView);
+                        postProcessImageInfo(taaHistoryImages_[historyIndex].imageView());
+                    taaCompositeImageInfos[frameIndex][1] = postProcessImageInfo(bloomPong_.imageView());
+                    taaCompositeImageInfos[frameIndex][2] = postProcessImageInfo(mipBloomView);
                     taaCompositeImageInfos[frameIndex][3] = taaCompositeDepthInfo;
 
                     taaCompositeExposureInfos[frameIndex].buffer = frameExposureBuffers_[frameIndex].buffer();
@@ -1988,7 +1990,7 @@ void Renderer::createPostProcessDescriptorSets()
 
                     for (size_t frameIndex = 0; frameIndex < taaDescriptorSets.size(); ++frameIndex) {
                         VkDescriptorImageInfo taaSceneColorInfo =
-                            imageInfo(taaHistoryImages_[historyIndex].imageView());
+                            postProcessImageInfo(taaHistoryImages_[historyIndex].imageView());
                         VkDescriptorBufferInfo luminanceBufferInfo{};
                         luminanceBufferInfo.buffer = frameLuminanceBuffers_[frameIndex].buffer();
                         luminanceBufferInfo.offset = 0;
@@ -2091,7 +2093,7 @@ void Renderer::createPostProcessDescriptorSets()
 
                     for (size_t frameIndex = 0; frameIndex < taaDescriptorSets.size(); ++frameIndex) {
                         VkDescriptorImageInfo taaSceneColorInfo =
-                            imageInfo(taaHistoryImages_[historyIndex].imageView());
+                            postProcessImageInfo(taaHistoryImages_[historyIndex].imageView());
                         VkDescriptorBufferInfo histogramBufferInfo{};
                         histogramBufferInfo.buffer = frameHistogramBuffers_[frameIndex].buffer();
                         histogramBufferInfo.offset = 0;

@@ -233,6 +233,10 @@ private:
     void destroyPostProcessSampler();
     void createPostProcessResources();
     void createPostProcessDescriptorSets();
+    // Shared post-process descriptor-image-info helpers (promoted from local
+    // lambdas in createPostProcessDescriptorSets so the per-group helpers reuse them).
+    [[nodiscard]] VkDescriptorImageInfo postProcessImageInfo(VkImageView imageView) const;
+    [[nodiscard]] VkDescriptorImageInfo postProcessDepthInfo() const;
     void createTaaResources();
     void destroyTaaResources();
     void invalidateTaaHistory();
