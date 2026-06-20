@@ -415,6 +415,11 @@ private:
 
     void requireFrameActive(const char* operation) const;
     void buildFrameGraphDeclarations();
+    // buildFrameGraphDeclarations() groups (see RenderGraph.cpp); each declares a
+    // contiguous run of passes in the same order as before.
+    void declareGeometryPasses();
+    void declareBloomAndTaaPasses();
+    void declareExposureCompositePasses();
     void compilePassCulling();
     bool beginDeclaredPass(uint32_t passIndex);
     uint32_t transitionTexture(RGTextureHandle handle, RGAccess access);

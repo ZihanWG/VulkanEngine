@@ -1061,6 +1061,13 @@ void RenderGraph::requireFrameActive(const char* operation) const
 
 void RenderGraph::buildFrameGraphDeclarations()
 {
+    declareGeometryPasses();
+    declareBloomAndTaaPasses();
+    declareExposureCompositePasses();
+}
+
+void RenderGraph::declareGeometryPasses()
+{
     frame_.passIndices.shadow = addPass(
         "CSMShadowPass",
         RenderPassType::Shadow,
@@ -1131,7 +1138,10 @@ void RenderGraph::buildFrameGraphDeclarations()
                                  RGAccess::StorageImageWrite,
                                  "Writes the max-depth Hi-Z pyramid for later-frame occlusion culling.");
         });
+}
 
+void RenderGraph::declareBloomAndTaaPasses()
+{
     if (frame_.taaHistoryRead.valid() && frame_.taaHistoryWrite.valid()) {
         frame_.passIndices.taaResolve = addPass(
             "TAAResolvePass",
@@ -1232,7 +1242,10 @@ void RenderGraph::buildFrameGraphDeclarations()
                                      "Writes the progressively upsampled bloom chain.");
             });
     }
+}
 
+void RenderGraph::declareExposureCompositePasses()
+{
     frame_.passIndices.luminance = addPass(
         "LuminancePass",
         RenderPassType::Luminance,
