@@ -42,6 +42,21 @@ struct ToneMappingSettings {
     // 1 = ACES fitted approximation
 };
 
+// Auto-exposure selection, mirroring ToneMappingSettings::exposureMode. Lives
+// with the settings (not in a renderer-internal header) so the GPU-independent
+// clamping logic and its unit tests can use it.
+enum class ExposureMode : int {
+    Manual = 0,
+    LogAverage = 1,
+    Histogram = 2,
+};
+
+// Floor for average-luminance targets to avoid divide-by-zero in exposure math.
+inline constexpr float kMinAverageLuminance = 0.0001f;
+
+// Map an arbitrary stored int to a valid ExposureMode (defaults to Histogram).
+[[nodiscard]] ExposureMode exposureModeValue(int exposureMode);
+
 struct BloomSettings {
     bool enabled = true;
     bool useMipChain = true;
@@ -82,6 +97,16 @@ struct RuntimeSettings {
     bool enableGpuOcclusionCulling = false;
     bool enableBindlessMaterialTextures = true;
 };
+
+// Clamp the GPU-independent runtime settings into valid ranges in place
+// (tone-mapping, bloom, TAA, cascade, and debug-UI preview fields). Renderer
+// state that is not part of these structs (e.g. GPU occlusion tuning) is clamped
+// separately by the caller. Pure and unit-tested.
+void clampRuntimeSettings(ToneMappingSettings& toneMapping,
+                          BloomSettings& bloom,
+                          TaaSettings& taa,
+                          CsmSettings& csm,
+                          DebugUiSettings& debugUi);
 
 enum class RuntimeSettingsLoadStatus {
     Loaded,

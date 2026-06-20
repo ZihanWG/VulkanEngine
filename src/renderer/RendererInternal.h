@@ -146,7 +146,6 @@ constexpr uint32_t kMaxBloomMipChainLevels = 4;
 constexpr uint32_t kTaaHistoryCount = 2;
 constexpr uint32_t kTaaJitterSampleCount = 8;
 constexpr std::string_view kNoSavedSceneFoundMessage = "No saved scene found. Use Save Scene first.";
-constexpr float kMinAverageLuminance = 0.0001f;
 constexpr float kDefaultHistogramMinLogLuminance = -10.0f;
 constexpr float kDefaultHistogramMaxLogLuminance = 4.0f;
 
@@ -378,12 +377,6 @@ static_assert(offsetof(ExposureReducePushConstants, adaptationParams) == 32);
 static_assert(offsetof(ExposureReducePushConstants, histogramRange) == 48);
 static_assert(sizeof(ExposureReducePushConstants) == 64);
 
-enum class ExposureMode : int {
-    Manual = 0,
-    LogAverage = 1,
-    Histogram = 2,
-};
-
 struct RenderTargetDebugMetadata {
     const char* debugName = "";
     std::string dimensions;
@@ -405,17 +398,6 @@ float toneMappingExposureValue(float exposure)
     return std::max(exposure, 0.0f);
 }
 
-ExposureMode exposureModeValue(int exposureMode)
-{
-    if (exposureMode == static_cast<int>(ExposureMode::Manual)) {
-        return ExposureMode::Manual;
-    }
-    if (exposureMode == static_cast<int>(ExposureMode::LogAverage)) {
-        return ExposureMode::LogAverage;
-    }
-
-    return ExposureMode::Histogram;
-}
 
 std::string_view exposureModeName(ExposureMode exposureMode)
 {

@@ -6297,44 +6297,13 @@ void Renderer::loadSceneFromUi()
 
 void Renderer::clampRuntimeSettings()
 {
-    toneMappingSettings_.operatorType = std::clamp(toneMappingSettings_.operatorType, 0, 1);
-    if (!toneMappingSettings_.enableAutoExposure) {
-        toneMappingSettings_.exposureMode = static_cast<int>(ExposureMode::Manual);
-    } else {
-        toneMappingSettings_.exposureMode = static_cast<int>(exposureModeValue(toneMappingSettings_.exposureMode));
-    }
-    toneMappingSettings_.manualExposure = std::max(toneMappingSettings_.manualExposure, 0.0f);
-    toneMappingSettings_.targetLuminance = std::max(toneMappingSettings_.targetLuminance, kMinAverageLuminance);
-    toneMappingSettings_.minExposure = std::max(toneMappingSettings_.minExposure, 0.0f);
-    toneMappingSettings_.maxExposure = std::max(toneMappingSettings_.maxExposure, toneMappingSettings_.minExposure);
-    toneMappingSettings_.adaptationRate = std::max(toneMappingSettings_.adaptationRate, 0.0f);
+    // The settings-struct clamping is GPU-independent and lives in
+    // RuntimeSettings.cpp (compiled into VulkanEngineCore) so it can be tested.
+    ve::clampRuntimeSettings(
+        toneMappingSettings_, bloomSettings_, taaSettings_, csmSettings_, debugUiSettings_);
 
-    toneMappingSettings_.lowPercentile = std::clamp(toneMappingSettings_.lowPercentile, 0.0f, 1.0f);
-    toneMappingSettings_.highPercentile = std::clamp(toneMappingSettings_.highPercentile, 0.0f, 1.0f);
-    if (toneMappingSettings_.highPercentile <= toneMappingSettings_.lowPercentile) {
-        toneMappingSettings_.highPercentile = std::min(1.0f, toneMappingSettings_.lowPercentile + 0.01f);
-        toneMappingSettings_.lowPercentile = std::min(toneMappingSettings_.lowPercentile,
-                                                      toneMappingSettings_.highPercentile - 0.01f);
-    }
-
-    bloomSettings_.threshold = std::max(bloomSettings_.threshold, 0.0f);
-    bloomSettings_.intensity = std::max(bloomSettings_.intensity, 0.0f);
-    bloomSettings_.radius = std::clamp(bloomSettings_.radius, 0.25f, 4.0f);
-
-    taaSettings_.feedback = std::clamp(taaSettings_.feedback, 0.0f, 0.98f);
-
-    csmSettings_.cascadeCount = std::clamp(csmSettings_.cascadeCount, 1U, kMaxShadowCascades);
-    csmSettings_.lambda = std::clamp(csmSettings_.lambda, 0.0f, 1.0f);
-    csmSettings_.shadowDistance = std::clamp(csmSettings_.shadowDistance,
-                                             csmSettings_.nearPlane + 0.001f,
-                                             csmSettings_.farPlane);
-
-    debugUiSettings_.renderTargetPreviewExposure =
-        std::clamp(debugUiSettings_.renderTargetPreviewExposure, 0.05f, 8.0f);
-    debugUiSettings_.renderTargetPreviewScale =
-        std::clamp(debugUiSettings_.renderTargetPreviewScale, 0.25f, 2.0f);
-    debugUiSettings_.selectedCsmCascade =
-        std::min(debugUiSettings_.selectedCsmCascade, activeCascadeCount() - 1);
+    // GPU occlusion tuning is renderer state, not part of the settings structs,
+    // so it stays here.
     gpuOcclusionDepthBias_ = std::clamp(gpuOcclusionDepthBias_, 0.0f, 0.05f);
     gpuOcclusionNearDisableDistance_ = std::clamp(gpuOcclusionNearDisableDistance_, 0.0f, 10.0f);
     gpuOcclusionMaxScreenCoverage_ = std::clamp(gpuOcclusionMaxScreenCoverage_, 0.01f, 1.0f);

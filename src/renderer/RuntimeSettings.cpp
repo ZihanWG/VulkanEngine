@@ -1,6 +1,7 @@
 #include "renderer/RuntimeSettings.h"
 
 #include "core/Logger.h"
+#include "renderer/CascadeMath.h"
 
 #include <json.hpp>
 
@@ -14,6 +15,60 @@
 #include <system_error>
 
 namespace ve {
+
+ExposureMode exposureModeValue(int exposureMode)
+{
+    if (exposureMode == static_cast<int>(ExposureMode::Manual)) {
+        return ExposureMode::Manual;
+    }
+    if (exposureMode == static_cast<int>(ExposureMode::LogAverage)) {
+        return ExposureMode::LogAverage;
+    }
+
+    return ExposureMode::Histogram;
+}
+
+void clampRuntimeSettings(ToneMappingSettings& toneMapping,
+                          BloomSettings& bloom,
+                          TaaSettings& taa,
+                          CsmSettings& csm,
+                          DebugUiSettings& debugUi)
+{
+    toneMapping.operatorType = std::clamp(toneMapping.operatorType, 0, 1);
+    if (!toneMapping.enableAutoExposure) {
+        toneMapping.exposureMode = static_cast<int>(ExposureMode::Manual);
+    } else {
+        toneMapping.exposureMode = static_cast<int>(exposureModeValue(toneMapping.exposureMode));
+    }
+    toneMapping.manualExposure = std::max(toneMapping.manualExposure, 0.0f);
+    toneMapping.targetLuminance = std::max(toneMapping.targetLuminance, kMinAverageLuminance);
+    toneMapping.minExposure = std::max(toneMapping.minExposure, 0.0f);
+    toneMapping.maxExposure = std::max(toneMapping.maxExposure, toneMapping.minExposure);
+    toneMapping.adaptationRate = std::max(toneMapping.adaptationRate, 0.0f);
+
+    toneMapping.lowPercentile = std::clamp(toneMapping.lowPercentile, 0.0f, 1.0f);
+    toneMapping.highPercentile = std::clamp(toneMapping.highPercentile, 0.0f, 1.0f);
+    if (toneMapping.highPercentile <= toneMapping.lowPercentile) {
+        toneMapping.highPercentile = std::min(1.0f, toneMapping.lowPercentile + 0.01f);
+        toneMapping.lowPercentile = std::min(toneMapping.lowPercentile, toneMapping.highPercentile - 0.01f);
+    }
+
+    bloom.threshold = std::max(bloom.threshold, 0.0f);
+    bloom.intensity = std::max(bloom.intensity, 0.0f);
+    bloom.radius = std::clamp(bloom.radius, 0.25f, 4.0f);
+
+    taa.feedback = std::clamp(taa.feedback, 0.0f, 0.98f);
+
+    csm.cascadeCount = std::clamp(csm.cascadeCount, 1U, renderer::kMaxShadowCascades);
+    csm.lambda = std::clamp(csm.lambda, 0.0f, 1.0f);
+    csm.shadowDistance = std::clamp(csm.shadowDistance, csm.nearPlane + 0.001f, csm.farPlane);
+
+    debugUi.renderTargetPreviewExposure = std::clamp(debugUi.renderTargetPreviewExposure, 0.05f, 8.0f);
+    debugUi.renderTargetPreviewScale = std::clamp(debugUi.renderTargetPreviewScale, 0.25f, 2.0f);
+    // activeCascadeCount() == clamp(cascadeCount, 1, max); after the clamp above
+    // that is just csm.cascadeCount, which is >= 1 so the subtraction is safe.
+    debugUi.selectedCsmCascade = std::min(debugUi.selectedCsmCascade, csm.cascadeCount - 1U);
+}
 
 namespace {
 
