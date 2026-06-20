@@ -8,23 +8,30 @@ on:
 jobs:
   build:
     name: Ubuntu Vulkan build
-    runs-on: ubuntu-latest
+    # Pinned so the LunarG package list codename (noble) is deterministic.
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install build and Vulkan tools
+      - name: Install the Vulkan SDK (glslc, headers, loader)
         run: |
+          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc \
+            | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc > /dev/null
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-noble.list \
+            https://packages.lunarg.com/vulkan/lunarg-vulkan-noble.list
           sudo apt-get update
+          sudo apt-get install -y vulkan-sdk
+
+      - name: Install build and windowing dependencies
+        run: |
           sudo apt-get install -y --no-install-recommends \
             build-essential \
             cmake \
             git \
-            glslc \
-            libegl1-mesa-dev \
+            libegl-dev \
             libibus-1.0-dev \
-            libvulkan-dev \
             libwayland-dev \
             libx11-dev \
             libx11-xcb-dev \
@@ -35,7 +42,6 @@ jobs:
             libxrandr-dev \
             ninja-build \
             pkg-config \
-            vulkan-headers \
             wayland-protocols \
             xorg-dev
 
@@ -44,11 +50,11 @@ jobs:
           cmake --version
           ninja --version
           test -f /usr/include/vulkan/vulkan.h || {
-            echo "Vulkan headers are unavailable; install vulkan-headers or the Vulkan SDK." >&2
+            echo "Vulkan headers are unavailable; the vulkan-sdk package did not install them." >&2
             exit 1
           }
           command -v glslc || {
-            echo "glslc is unavailable; install the Vulkan SDK or the glslc package." >&2
+            echo "glslc is unavailable; the vulkan-sdk package did not provide it." >&2
             exit 1
           }
           glslc --version
