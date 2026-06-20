@@ -1289,6 +1289,9 @@ void RenderGraph::buildFrameGraphDeclarations()
             builder.readBuffer(frame_.exposureState,
                                RGAccess::StorageBufferRead,
                                "Reads GPU exposure state for auto exposure modes.");
+            builder.readTexture(frame_.mainDepth,
+                                RGAccess::ShaderRead,
+                                "Samples the main depth buffer for screen-space ambient occlusion.");
             builder.writeTexture(frame_.swapchainColor,
                                  RGAccess::ColorAttachmentWrite,
                                  "Writes the exposed and tone-mapped final color.");

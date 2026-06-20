@@ -75,6 +75,18 @@ private:
         float rasterDepthBiasSlopeFactor = 1.75f;
     };
 
+    // Screen-space ambient occlusion computed in the composite pass from the main
+    // depth buffer. Disabled by default; the toggle is only honoured when the
+    // depth image supports sampling (ssaoAvailable_).
+    struct SsaoSettings {
+        bool enabled = false;
+        float radius = 0.5f;
+        float bias = 0.025f;
+        float intensity = 1.0f;
+        float power = 2.0f;
+        int sampleCount = 16;
+    };
+
     struct CascadeFrameData {
         glm::mat4 lightViewProjection{1.0f};
         renderer::Frustum lightFrustum{};
@@ -566,6 +578,7 @@ private:
     CsmSettings csmSettings_{};
     std::vector<VkFence> imagesInFlight_;
     ShadowSettings shadowSettings_{};
+    SsaoSettings ssaoSettings_{};
     VkFormat pipelineColorFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat pipelineDepthFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat skyboxPipelineColorFormat_ = VK_FORMAT_UNDEFINED;
@@ -666,6 +679,7 @@ private:
     bool logAverageExposureWarningLogged_ = false;
     bool histogramExposureWarningLogged_ = false;
     bool shadowIndirectAvailable_ = false;
+    bool ssaoAvailable_ = false;
     bool taaHistoryValid_ = false;
     bool gpuProfilerEnabled_ = true;
     bool portfolioCaptureMode_ = false;

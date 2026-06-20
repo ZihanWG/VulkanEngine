@@ -66,6 +66,22 @@ void Renderer::buildDebugUi()
         ImGui::DragFloat("Radius", &bloomSettings_.radius, 0.01f, 0.25f, 4.0f, "%.2f");
     }
 
+    if (ImGui::CollapsingHeader("Ambient Occlusion (SSAO)", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (!ssaoAvailable_) {
+            ImGui::TextDisabled("Unavailable: the depth format cannot be sampled on this device.");
+        }
+        ImGui::BeginDisabled(!ssaoAvailable_);
+        ImGui::Checkbox("Enabled", &ssaoSettings_.enabled);
+        ImGui::DragFloat("Radius (view units)", &ssaoSettings_.radius, 0.01f, 0.05f, 5.0f, "%.3f");
+        ImGui::DragFloat("Bias", &ssaoSettings_.bias, 0.001f, 0.0f, 0.2f, "%.3f");
+        ImGui::DragFloat("Intensity", &ssaoSettings_.intensity, 0.05f, 0.0f, 4.0f, "%.2f");
+        ImGui::DragFloat("Power", &ssaoSettings_.power, 0.05f, 0.1f, 8.0f, "%.2f");
+        ImGui::SliderInt("Samples", &ssaoSettings_.sampleCount, 4, 64);
+        ImGui::TextWrapped(
+            "Screen-space AO sampled from the main depth buffer in the composite pass (applied to scene color).");
+        ImGui::EndDisabled();
+    }
+
     drawTaaDebugUi();
 
     if (ImGui::CollapsingHeader("CSM", ImGuiTreeNodeFlags_DefaultOpen)) {

@@ -717,7 +717,7 @@ void Renderer::createPostProcessDescriptorSetLayouts()
                               VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
                               "PostProcessDualImageDescriptorSetLayout");
 
-    std::array<VkDescriptorSetLayoutBinding, 4> compositeBindings{};
+    std::array<VkDescriptorSetLayoutBinding, 5> compositeBindings{};
     compositeBindings[0] = singleImageBinding;
     compositeBindings[1] = singleImageBinding;
     compositeBindings[1].binding = 1;
@@ -727,6 +727,8 @@ void Renderer::createPostProcessDescriptorSetLayouts()
     compositeBindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     compositeBindings[3].descriptorCount = 1;
     compositeBindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    compositeBindings[4] = singleImageBinding; // main depth, sampled for SSAO
+    compositeBindings[4].binding = 4;
 
     postProcessCompositeDescriptorSetLayout_.create(
         context_.vkDevice(),
@@ -1260,11 +1262,11 @@ void Renderer::createPostProcessDescriptorSets()
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     poolSizes[0].descriptorCount =
         legacyBloomSetCount + bloomDownsampleSetCount + (2u * bloomUpsampleSetCount) +
-        (3u * compositeDescriptorSetCount) +
+        (4u * compositeDescriptorSetCount) +
         (createLuminanceDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u) +
         (createHistogramDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u) +
         (2u * taaResolveSetCount) + taaBloomExtractSetCount + taaBloomDownsampleSetCount +
-        (3u * taaCompositeDescriptorSetCount) + taaLuminanceDescriptorSetCount +
+        (4u * taaCompositeDescriptorSetCount) + taaLuminanceDescriptorSetCount +
         taaHistogramDescriptorSetCount;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     poolSizes[1].descriptorCount =
@@ -1319,6 +1321,21 @@ void Renderer::createPostProcessDescriptorSets()
         info.sampler = postProcessSampler_;
         info.imageView = imageView;
         info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        return info;
+    };
+
+    // Depth image info for the composite SSAO sampler. Falls back to a sampleable
+    // texture when the depth format itself cannot be sampled.
+    const auto depthInfo = [this]() {
+        VkDescriptorImageInfo info{};
+        info.sampler = postProcessSampler_;
+        if (swapchain_.depthSupportsSampling()) {
+            info.imageView = swapchain_.depthImageView();
+            info.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+        } else {
+            info.imageView = checkerboardTexture_.imageView();
+            info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
         return info;
     };
 
@@ -1549,25 +1566,31 @@ void Renderer::createPostProcessDescriptorSets()
             context_.vkDevice(), &compositeAllocateInfo, compositeDescriptorSets_.data()));
         compositeDescriptorSet_ = compositeDescriptorSets_.empty() ? VK_NULL_HANDLE : compositeDescriptorSets_.front();
 
-        std::vector<std::array<VkDescriptorImageInfo, 3>> compositeImageInfos(frames_.size());
+        std::vector<std::array<VkDescriptorImageInfo, 4>> compositeImageInfos(frames_.size());
         std::vector<VkDescriptorBufferInfo> compositeExposureInfos(frames_.size());
-        std::vector<VkWriteDescriptorSet> compositeWrites(frames_.size() * 4u);
+        std::vector<VkWriteDescriptorSet> compositeWrites(frames_.size() * 5u);
         VkImageView mipBloomView = bloomPong_.imageView();
         if (!bloomMipUpsampleImages_.empty()) {
             mipBloomView = bloomMipUpsampleImages_.front().imageView();
         } else if (!bloomMipDownsampleImages_.empty()) {
             mipBloomView = bloomMipDownsampleImages_.front().imageView();
         }
+
+        // The main depth buffer is sampled by the composite pass for SSAO. When the
+        // depth format cannot be sampled, bind a harmless fallback and disable SSAO.
+        ssaoAvailable_ = swapchain_.depthSupportsSampling();
+        const VkDescriptorImageInfo compositeDepthInfo = depthInfo();
         for (size_t frameIndex = 0; frameIndex < frames_.size(); ++frameIndex) {
             compositeImageInfos[frameIndex][0] = imageInfo(sceneColor_.imageView());
             compositeImageInfos[frameIndex][1] = imageInfo(bloomPong_.imageView());
             compositeImageInfos[frameIndex][2] = imageInfo(mipBloomView);
+            compositeImageInfos[frameIndex][3] = compositeDepthInfo;
 
             compositeExposureInfos[frameIndex].buffer = frameExposureBuffers_[frameIndex].buffer();
             compositeExposureInfos[frameIndex].offset = 0;
             compositeExposureInfos[frameIndex].range = sizeof(ExposureState);
 
-            const size_t writeBase = frameIndex * 4u;
+            const size_t writeBase = frameIndex * 5u;
             for (uint32_t binding = 0; binding < 3; ++binding) {
                 compositeWrites[writeBase + binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 compositeWrites[writeBase + binding].dstSet = compositeDescriptorSets_[frameIndex];
@@ -1583,6 +1606,13 @@ void Renderer::createPostProcessDescriptorSets()
             compositeWrites[writeBase + 3].descriptorCount = 1;
             compositeWrites[writeBase + 3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             compositeWrites[writeBase + 3].pBufferInfo = &compositeExposureInfos[frameIndex];
+
+            compositeWrites[writeBase + 4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            compositeWrites[writeBase + 4].dstSet = compositeDescriptorSets_[frameIndex];
+            compositeWrites[writeBase + 4].dstBinding = 4;
+            compositeWrites[writeBase + 4].descriptorCount = 1;
+            compositeWrites[writeBase + 4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            compositeWrites[writeBase + 4].pImageInfo = &compositeImageInfos[frameIndex][3];
 
             rhi::debug::setObjectName(context_.vkDevice(),
                                       compositeDescriptorSets_[frameIndex],
@@ -1610,20 +1640,22 @@ void Renderer::createPostProcessDescriptorSets()
                 VK_CHECK(vkAllocateDescriptorSets(
                     context_.vkDevice(), &taaCompositeAllocateInfo, taaDescriptorSets.data()));
 
-                std::vector<std::array<VkDescriptorImageInfo, 3>> taaCompositeImageInfos(frames_.size());
+                std::vector<std::array<VkDescriptorImageInfo, 4>> taaCompositeImageInfos(frames_.size());
                 std::vector<VkDescriptorBufferInfo> taaCompositeExposureInfos(frames_.size());
-                std::vector<VkWriteDescriptorSet> taaCompositeWrites(frames_.size() * 4u);
+                std::vector<VkWriteDescriptorSet> taaCompositeWrites(frames_.size() * 5u);
+                const VkDescriptorImageInfo taaCompositeDepthInfo = depthInfo();
                 for (size_t frameIndex = 0; frameIndex < frames_.size(); ++frameIndex) {
                     taaCompositeImageInfos[frameIndex][0] =
                         imageInfo(taaHistoryImages_[historyIndex].imageView());
                     taaCompositeImageInfos[frameIndex][1] = imageInfo(bloomPong_.imageView());
                     taaCompositeImageInfos[frameIndex][2] = imageInfo(mipBloomView);
+                    taaCompositeImageInfos[frameIndex][3] = taaCompositeDepthInfo;
 
                     taaCompositeExposureInfos[frameIndex].buffer = frameExposureBuffers_[frameIndex].buffer();
                     taaCompositeExposureInfos[frameIndex].offset = 0;
                     taaCompositeExposureInfos[frameIndex].range = sizeof(ExposureState);
 
-                    const size_t writeBase = frameIndex * 4u;
+                    const size_t writeBase = frameIndex * 5u;
                     for (uint32_t binding = 0; binding < 3; ++binding) {
                         taaCompositeWrites[writeBase + binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                         taaCompositeWrites[writeBase + binding].dstSet = taaDescriptorSets[frameIndex];
@@ -1641,6 +1673,13 @@ void Renderer::createPostProcessDescriptorSets()
                     taaCompositeWrites[writeBase + 3].descriptorCount = 1;
                     taaCompositeWrites[writeBase + 3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
                     taaCompositeWrites[writeBase + 3].pBufferInfo = &taaCompositeExposureInfos[frameIndex];
+
+                    taaCompositeWrites[writeBase + 4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                    taaCompositeWrites[writeBase + 4].dstSet = taaDescriptorSets[frameIndex];
+                    taaCompositeWrites[writeBase + 4].dstBinding = 4;
+                    taaCompositeWrites[writeBase + 4].descriptorCount = 1;
+                    taaCompositeWrites[writeBase + 4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                    taaCompositeWrites[writeBase + 4].pImageInfo = &taaCompositeImageInfos[frameIndex][3];
 
                     rhi::debug::setObjectName(context_.vkDevice(),
                                               taaDescriptorSets[frameIndex],
@@ -8314,7 +8353,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                             &compositeDescriptorSet,
                             0,
                             nullptr);
-    const CompositePushConstants compositePushConstants{
+    CompositePushConstants compositePushConstants{
         currentToneMappingExposure(),
         bloomSettings_.enabled ? std::max(bloomSettings_.intensity, 0.0f) : 0.0f,
         toneMappingOperatorValue(toneMappingSettings_.operatorType),
@@ -8322,6 +8361,14 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         bloomSettings_.useMipChain && (!bloomMipUpsampleImages_.empty() || !bloomMipDownsampleImages_.empty()) ? 1u
                                                                                                                : 0u,
         isGpuExposureActive() ? 1u : 0u};
+    const bool ssaoActive = ssaoSettings_.enabled && ssaoAvailable_;
+    compositePushConstants.invProjection = glm::inverse(frameJitteredProjection_);
+    compositePushConstants.ssaoParams0 = glm::vec4(std::max(ssaoSettings_.radius, 0.0f),
+                                                   ssaoSettings_.bias,
+                                                   std::max(ssaoSettings_.intensity, 0.0f),
+                                                   std::max(ssaoSettings_.power, 0.0001f));
+    compositePushConstants.ssaoParams1 =
+        glm::vec4(ssaoActive ? 1.0f : 0.0f, static_cast<float>(std::max(ssaoSettings_.sampleCount, 1)), 0.0f, 0.0f);
     vkCmdPushConstants(commandBuffer,
                        compositePipeline_.layout(),
                        VK_SHADER_STAGE_FRAGMENT_BIT,

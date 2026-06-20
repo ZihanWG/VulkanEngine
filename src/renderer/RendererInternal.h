@@ -296,6 +296,11 @@ struct CompositePushConstants {
     uint32_t bloomEnabled = 1;
     uint32_t bloomMethod = 1;
     uint32_t useGpuExposure = 0;
+    uint32_t pad0 = 0;
+    uint32_t pad1 = 0;
+    glm::mat4 invProjection{1.0f};
+    glm::vec4 ssaoParams0{0.5f, 0.025f, 1.0f, 2.0f}; // radius, bias, intensity, power
+    glm::vec4 ssaoParams1{0.0f, 16.0f, 0.0f, 0.0f};  // enabled, sampleCount
 };
 
 static_assert(offsetof(CompositePushConstants, exposure) == 0);
@@ -304,7 +309,10 @@ static_assert(offsetof(CompositePushConstants, toneMappingOperator) == 8);
 static_assert(offsetof(CompositePushConstants, bloomEnabled) == 12);
 static_assert(offsetof(CompositePushConstants, bloomMethod) == 16);
 static_assert(offsetof(CompositePushConstants, useGpuExposure) == 20);
-static_assert(sizeof(CompositePushConstants) == 24);
+static_assert(offsetof(CompositePushConstants, invProjection) == 32);
+static_assert(offsetof(CompositePushConstants, ssaoParams0) == 96);
+static_assert(offsetof(CompositePushConstants, ssaoParams1) == 112);
+static_assert(sizeof(CompositePushConstants) == 128);
 
 struct TaaResolvePushConstants {
     glm::vec2 texelSize{1.0f, 1.0f};
