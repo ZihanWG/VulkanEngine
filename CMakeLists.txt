@@ -59,18 +59,24 @@ if(NOT TARGET glm::glm)
     FetchContent_MakeAvailable(glm)
 endif()
 
-find_package(volk CONFIG QUIET)
-if(NOT TARGET volk::volk AND NOT TARGET volk)
-    if(NOT VULKAN_ENGINE_FETCH_DEPS)
-        message(FATAL_ERROR "Volk was not found. Install Volk or configure with VULKAN_ENGINE_FETCH_DEPS=ON.")
-    endif()
-
+# Resolve volk. The LunarG Vulkan SDK (used by CI) ships a header-only volk config
+# that defines volk::volk_headers. That target both clashes with a FetchContent
+# volk (duplicate volk::volk_headers alias) and lacks the compiled volk.c the
+# engine links against. So when dependency fetching is enabled, always fetch volk
+# -- which provides the compiled volk::volk target -- instead of probing for a
+# system volk that may only ship the headers interface.
+if(VULKAN_ENGINE_FETCH_DEPS)
     set(VOLK_INSTALL OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(volk
         GIT_REPOSITORY https://github.com/zeux/volk.git
         GIT_TAG ${VULKAN_ENGINE_VOLK_TAG}
     )
     FetchContent_MakeAvailable(volk)
+else()
+    find_package(volk CONFIG QUIET)
+    if(NOT TARGET volk::volk AND NOT TARGET volk)
+        message(FATAL_ERROR "Volk (compiled volk::volk target) was not found. Configure with VULKAN_ENGINE_FETCH_DEPS=ON.")
+    endif()
 endif()
 
 find_package(VulkanMemoryAllocator CONFIG QUIET)
