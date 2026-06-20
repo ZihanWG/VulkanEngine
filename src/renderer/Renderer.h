@@ -262,6 +262,15 @@ private:
     void destroyGpuShadowCullingResources();
     void createShadowMap();
     void createPipeline();
+    // createPipeline() helpers (see Renderer.cpp); each builds one pipeline group,
+    // a verbatim slice of the former monolithic function.
+    void createMainGraphicsPipeline();
+    void createSkyboxPipeline();
+    void createShadowPipeline();
+    void createBloomPipelines();
+    void createTaaResolvePipeline();
+    void createCompositePipeline();
+    void createComputePipelines();
     void createScene();
     void addPortfolioShowcaseObjects();
     void resetPortfolioShowcaseObjectsToPreset();

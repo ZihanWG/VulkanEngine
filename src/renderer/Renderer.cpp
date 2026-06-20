@@ -2825,6 +2825,17 @@ void Renderer::createShadowMap()
 
 void Renderer::createPipeline()
 {
+    createMainGraphicsPipeline();
+    createSkyboxPipeline();
+    createShadowPipeline();
+    createBloomPipelines();
+    createTaaResolvePipeline();
+    createCompositePipeline();
+    createComputePipelines();
+}
+
+void Renderer::createMainGraphicsPipeline()
+{
     const VkVertexInputBindingDescription binding = renderer::vertexBindingDescription();
     const std::array<VkVertexInputAttributeDescription, 5> attributes = renderer::vertexAttributeDescriptions();
     const bool bindlessMaterialTexturesActive = isBindlessMaterialTextureActive();
@@ -2832,32 +2843,8 @@ void Renderer::createPipeline()
         materialDescriptorSetLayout_.handle(),
         bindlessTextureHeap_.descriptorSetLayout(),
     };
-    const VkDescriptorSetLayout skyboxDescriptorSetLayout = skyboxDescriptorSetLayout_.handle();
-    const VkDescriptorSetLayout postProcessSingleImageDescriptorSetLayout =
-        postProcessSingleImageDescriptorSetLayout_.handle();
-    const VkDescriptorSetLayout postProcessDualImageDescriptorSetLayout =
-        postProcessDualImageDescriptorSetLayout_.handle();
-    const VkDescriptorSetLayout postProcessCompositeDescriptorSetLayout =
-        postProcessCompositeDescriptorSetLayout_.handle();
-    const VkDescriptorSetLayout postProcessExposureReduceDescriptorSetLayout =
-        postProcessExposureReduceDescriptorSetLayout_.handle();
     const VkPushConstantRange pushConstantRange{
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(PushConstants))};
-    const VkPushConstantRange skyboxPushConstantRange{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                                                      0,
-                                                      static_cast<uint32_t>(sizeof(SkyboxPushConstants))};
-    const VkPushConstantRange bloomExtractPushConstantRange{
-        VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(BloomExtractPushConstants))};
-    const VkPushConstantRange bloomBlurPushConstantRange{
-        VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(BloomBlurPushConstants))};
-    const VkPushConstantRange bloomDownsamplePushConstantRange{
-        VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(BloomDownsamplePushConstants))};
-    const VkPushConstantRange bloomUpsamplePushConstantRange{
-        VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(BloomUpsamplePushConstants))};
-    const VkPushConstantRange taaResolvePushConstantRange{
-        VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(TaaResolvePushConstants))};
-    const VkPushConstantRange compositePushConstantRange{
-        VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(CompositePushConstants))};
 
     rhi::VulkanPipelineCreateInfo pipelineInfo{};
     pipelineInfo.vertexShaderPath = shaderPath("simple.vert.spv");
@@ -2880,6 +2867,14 @@ void Renderer::createPipeline()
         context_.vkDevice(), pipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "MainPipelineLayout");
     pipelineColorFormat_ = pipelineInfo.colorFormat;
     pipelineDepthFormat_ = pipelineInfo.depthFormat;
+}
+
+void Renderer::createSkyboxPipeline()
+{
+    const VkDescriptorSetLayout skyboxDescriptorSetLayout = skyboxDescriptorSetLayout_.handle();
+    const VkPushConstantRange skyboxPushConstantRange{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                                      0,
+                                                      static_cast<uint32_t>(sizeof(SkyboxPushConstants))};
 
     rhi::VulkanPipelineCreateInfo skyboxPipelineInfo{};
     skyboxPipelineInfo.vertexShaderPath = shaderPath("skybox.vert.spv");
@@ -2900,6 +2895,12 @@ void Renderer::createPipeline()
         context_.vkDevice(), skyboxPipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "SkyboxPipelineLayout");
     skyboxPipelineColorFormat_ = skyboxPipelineInfo.colorFormat;
     skyboxPipelineDepthFormat_ = skyboxPipelineInfo.depthFormat;
+}
+
+void Renderer::createShadowPipeline()
+{
+    const VkVertexInputBindingDescription binding = renderer::vertexBindingDescription();
+    const std::array<VkVertexInputAttributeDescription, 5> attributes = renderer::vertexAttributeDescriptions();
 
     rhi::VulkanPipelineCreateInfo shadowPipelineInfo{};
     shadowPipelineInfo.vertexShaderPath = shaderPath("shadow.vert.spv");
@@ -2925,6 +2926,22 @@ void Renderer::createPipeline()
     rhi::debug::setObjectName(
         context_.vkDevice(), shadowPipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "ShadowPipelineLayout");
     shadowPipelineDepthFormat_ = shadowPipelineInfo.depthFormat;
+}
+
+void Renderer::createBloomPipelines()
+{
+    const VkDescriptorSetLayout postProcessSingleImageDescriptorSetLayout =
+        postProcessSingleImageDescriptorSetLayout_.handle();
+    const VkDescriptorSetLayout postProcessDualImageDescriptorSetLayout =
+        postProcessDualImageDescriptorSetLayout_.handle();
+    const VkPushConstantRange bloomExtractPushConstantRange{
+        VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(BloomExtractPushConstants))};
+    const VkPushConstantRange bloomBlurPushConstantRange{
+        VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(BloomBlurPushConstants))};
+    const VkPushConstantRange bloomDownsamplePushConstantRange{
+        VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(BloomDownsamplePushConstants))};
+    const VkPushConstantRange bloomUpsamplePushConstantRange{
+        VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(BloomUpsamplePushConstants))};
 
     rhi::VulkanPipelineCreateInfo bloomExtractPipelineInfo{};
     bloomExtractPipelineInfo.vertexShaderPath = shaderPath("fullscreen.vert.spv");
@@ -2998,6 +3015,14 @@ void Renderer::createPipeline()
                               VK_OBJECT_TYPE_PIPELINE_LAYOUT,
                               "BloomUpsamplePipelineLayout");
     bloomUpsamplePipelineColorFormat_ = bloomUpsamplePipelineInfo.colorFormat;
+}
+
+void Renderer::createTaaResolvePipeline()
+{
+    const VkDescriptorSetLayout postProcessDualImageDescriptorSetLayout =
+        postProcessDualImageDescriptorSetLayout_.handle();
+    const VkPushConstantRange taaResolvePushConstantRange{
+        VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(TaaResolvePushConstants))};
 
     rhi::VulkanPipelineCreateInfo taaResolvePipelineInfo{};
     taaResolvePipelineInfo.vertexShaderPath = shaderPath("fullscreen.vert.spv");
@@ -3016,6 +3041,14 @@ void Renderer::createPipeline()
                               VK_OBJECT_TYPE_PIPELINE_LAYOUT,
                               "TAAResolvePipelineLayout");
     taaResolvePipelineColorFormat_ = taaResolvePipelineInfo.colorFormat;
+}
+
+void Renderer::createCompositePipeline()
+{
+    const VkDescriptorSetLayout postProcessCompositeDescriptorSetLayout =
+        postProcessCompositeDescriptorSetLayout_.handle();
+    const VkPushConstantRange compositePushConstantRange{
+        VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(CompositePushConstants))};
 
     rhi::VulkanPipelineCreateInfo compositePipelineInfo{};
     compositePipelineInfo.vertexShaderPath = shaderPath("fullscreen.vert.spv");
@@ -3031,6 +3064,12 @@ void Renderer::createPipeline()
     rhi::debug::setObjectName(
         context_.vkDevice(), compositePipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "CompositePipelineLayout");
     compositePipelineColorFormat_ = compositePipelineInfo.colorFormat;
+}
+
+void Renderer::createComputePipelines()
+{
+    const VkDescriptorSetLayout postProcessExposureReduceDescriptorSetLayout =
+        postProcessExposureReduceDescriptorSetLayout_.handle();
 
     luminancePipeline_.reset();
     histogramPipeline_.reset();
