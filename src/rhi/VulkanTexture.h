@@ -8,11 +8,23 @@
 #include <span>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace ve::rhi {
 
 class VulkanCommandContext;
 class VulkanContext;
+
+// CPU-side decoded image (tightly packed RGBA8). Decoding does not touch Vulkan,
+// so it can run on worker threads; the resulting pixels are uploaded later on the
+// thread that owns the device via VulkanTexture::createFromRgba8.
+struct DecodedImage {
+    std::vector<uint8_t> pixels;
+    uint32_t width = 0;
+    uint32_t height = 0;
+
+    [[nodiscard]] bool valid() const { return width > 0 && height > 0 && !pixels.empty(); }
+};
 
 enum class TextureColorSpace {
     Linear,
@@ -41,6 +53,12 @@ class VulkanTexture final {
 public:
     VulkanTexture() = default;
     ~VulkanTexture();
+
+    // CPU-only image decode (stb_image). Thread-safe across independent calls, so
+    // these may be dispatched to a JobSystem. They throw std::runtime_error on
+    // failure. Upload the result with createFromRgba8 on the device thread.
+    [[nodiscard]] static DecodedImage decodeImageFile(const std::filesystem::path& path);
+    [[nodiscard]] static DecodedImage decodeImageBytes(std::span<const uint8_t> encodedBytes);
 
     VulkanTexture(const VulkanTexture&) = delete;
     VulkanTexture& operator=(const VulkanTexture&) = delete;

@@ -4325,74 +4325,106 @@ void Renderer::createImportedGltfTextures(const std::vector<renderer::GltfTextur
         markNeeded(materialInfo.metallicRoughnessTextureIndex, metallicRoughnessNeeded);
     }
 
-    const auto loadTexture = [this, &textureInfos](size_t textureIndex,
-                                                   rhi::TextureColorSpace colorSpace,
-                                                   std::string_view slotName,
-                                                   std::string_view debugPrefix,
-                                                   std::vector<rhi::VulkanTexture>& textures) {
+    // Decode the needed textures on worker threads, then upload them here on the
+    // device-owning thread. PNG/JPEG decoding is the expensive part and is safe to
+    // parallelize; the Vulkan uploads stay serial on this thread.
+    struct PendingTextureUpload {
+        size_t textureIndex = 0;
+        rhi::TextureColorSpace colorSpace = rhi::TextureColorSpace::Linear;
+        std::string_view slotName;
+        std::string debugPrefix;
+        std::vector<rhi::VulkanTexture>* textures = nullptr;
+        const renderer::GltfTextureInfo* info = nullptr;
+        std::future<rhi::DecodedImage> decode;
+    };
+
+    std::vector<PendingTextureUpload> pendingUploads;
+
+    const auto enqueueDecode = [this, &textureInfos, &pendingUploads](size_t textureIndex,
+                                                                      rhi::TextureColorSpace colorSpace,
+                                                                      std::string_view slotName,
+                                                                      std::string_view debugPrefix,
+                                                                      std::vector<rhi::VulkanTexture>& textures) {
         const renderer::GltfTextureInfo& textureInfo = textureInfos[textureIndex];
         if (textureInfo.path.empty() && textureInfo.encodedData.empty()) {
             return;
         }
-
-        try {
-            if (!textureInfo.path.empty()) {
-                if (!std::filesystem::exists(textureInfo.path)) {
-                    Logger::warn("glTF texture image is missing; material fallback will be used: " +
-                                 textureInfo.path.string());
-                    return;
-                }
-
-                textures[textureIndex].createFromFile(context_, commandContext_, textureInfo.path, colorSpace, true);
-                Logger::info("Loaded glTF " + std::string(slotName) + " texture as " +
-                             std::string(colorSpaceName(colorSpace)) + ": " + textureInfo.path.string());
-            } else {
-                textures[textureIndex].createFromEncodedBytes(
-                    context_,
-                    commandContext_,
-                    std::span<const uint8_t>(textureInfo.encodedData.data(), textureInfo.encodedData.size()),
-                    colorSpace,
-                    true);
-                Logger::info("Loaded embedded glTF " + std::string(slotName) + " texture as " +
-                             std::string(colorSpaceName(colorSpace)) + ": " + textureInfo.debugName);
-            }
-
-            textures[textureIndex].setDebugMetadata(rhi::TextureDebugMetadata{
-                textureInfo.debugName.empty() ? std::string(debugPrefix) + std::to_string(textureIndex)
-                                              : textureInfo.debugName,
-                textureInfo.path.empty() ? std::string{} : textureInfo.path.string(),
-                colorSpace,
-                textureInfo.embedded ? rhi::TextureDebugSource::GltfEmbeddedData
-                                     : rhi::TextureDebugSource::GltfExternalFile,
-                false,
-            });
-            nameTextureResources(textures[textureIndex], std::string(debugPrefix) + std::to_string(textureIndex));
-        } catch (const std::exception& error) {
-            const std::string textureName =
-                !textureInfo.path.empty() ? textureInfo.path.string() : textureInfo.debugName;
-            Logger::warn("Failed to load glTF " + std::string(slotName) + " texture '" + textureName +
-                         "'; material fallback will be used: " + error.what());
+        if (!textureInfo.path.empty() && !std::filesystem::exists(textureInfo.path)) {
+            Logger::warn("glTF texture image is missing; material fallback will be used: " +
+                         textureInfo.path.string());
+            return;
         }
+
+        const renderer::GltfTextureInfo* infoPtr = &textureInfo;
+        std::future<rhi::DecodedImage> decode = jobSystem_.enqueue([infoPtr]() -> rhi::DecodedImage {
+            if (!infoPtr->path.empty()) {
+                return rhi::VulkanTexture::decodeImageFile(infoPtr->path);
+            }
+            return rhi::VulkanTexture::decodeImageBytes(
+                std::span<const uint8_t>(infoPtr->encodedData.data(), infoPtr->encodedData.size()));
+        });
+
+        pendingUploads.push_back(PendingTextureUpload{
+            textureIndex, colorSpace, slotName, std::string(debugPrefix), &textures, infoPtr, std::move(decode)});
     };
 
     for (size_t textureIndex = 0; textureIndex < textureInfos.size(); ++textureIndex) {
         if (baseColorNeeded[textureIndex] != 0) {
-            loadTexture(textureIndex,
-                        rhi::TextureColorSpace::SRGB,
-                        "base color",
-                        "GltfBaseColorTexture",
-                        importedBaseColorTextures_);
+            enqueueDecode(textureIndex,
+                          rhi::TextureColorSpace::SRGB,
+                          "base color",
+                          "GltfBaseColorTexture",
+                          importedBaseColorTextures_);
         }
         if (normalNeeded[textureIndex] != 0) {
-            loadTexture(
+            enqueueDecode(
                 textureIndex, rhi::TextureColorSpace::Linear, "normal", "GltfNormalTexture", importedNormalTextures_);
         }
         if (metallicRoughnessNeeded[textureIndex] != 0) {
-            loadTexture(textureIndex,
-                        rhi::TextureColorSpace::Linear,
-                        "metallic-roughness",
-                        "GltfMetallicRoughnessTexture",
-                        importedMetallicRoughnessTextures_);
+            enqueueDecode(textureIndex,
+                          rhi::TextureColorSpace::Linear,
+                          "metallic-roughness",
+                          "GltfMetallicRoughnessTexture",
+                          importedMetallicRoughnessTextures_);
+        }
+    }
+
+    for (PendingTextureUpload& pending : pendingUploads) {
+        std::vector<rhi::VulkanTexture>& textures = *pending.textures;
+        const renderer::GltfTextureInfo& textureInfo = *pending.info;
+        try {
+            const rhi::DecodedImage decoded = pending.decode.get();
+            textures[pending.textureIndex].createFromRgba8(context_,
+                                                           commandContext_,
+                                                           decoded.width,
+                                                           decoded.height,
+                                                           decoded.pixels,
+                                                           rhi::rgba8FormatForColorSpace(pending.colorSpace),
+                                                           true);
+            if (!textureInfo.path.empty()) {
+                Logger::info("Loaded glTF " + std::string(pending.slotName) + " texture as " +
+                             std::string(colorSpaceName(pending.colorSpace)) + ": " + textureInfo.path.string());
+            } else {
+                Logger::info("Loaded embedded glTF " + std::string(pending.slotName) + " texture as " +
+                             std::string(colorSpaceName(pending.colorSpace)) + ": " + textureInfo.debugName);
+            }
+
+            textures[pending.textureIndex].setDebugMetadata(rhi::TextureDebugMetadata{
+                textureInfo.debugName.empty() ? pending.debugPrefix + std::to_string(pending.textureIndex)
+                                              : textureInfo.debugName,
+                textureInfo.path.empty() ? std::string{} : textureInfo.path.string(),
+                pending.colorSpace,
+                textureInfo.embedded ? rhi::TextureDebugSource::GltfEmbeddedData
+                                     : rhi::TextureDebugSource::GltfExternalFile,
+                false,
+            });
+            nameTextureResources(textures[pending.textureIndex],
+                                 pending.debugPrefix + std::to_string(pending.textureIndex));
+        } catch (const std::exception& error) {
+            const std::string textureName =
+                !textureInfo.path.empty() ? textureInfo.path.string() : textureInfo.debugName;
+            Logger::warn("Failed to load glTF " + std::string(pending.slotName) + " texture '" + textureName +
+                         "'; material fallback will be used: " + error.what());
         }
     }
 }

@@ -149,7 +149,10 @@ target_link_libraries(imgui PUBLIC
 
 # GPU-independent engine logic (serialization, logging, math helpers). Kept as a
 # separate static library so the unit tests can link it without pulling in Vulkan.
+find_package(Threads REQUIRED)
+
 add_library(VulkanEngineCore STATIC
+    src/core/JobSystem.cpp
     src/core/Logger.cpp
     src/renderer/RuntimeSettings.cpp
 )
@@ -157,7 +160,7 @@ add_library(VulkanEngineCore STATIC
 target_include_directories(VulkanEngineCore PUBLIC src)
 target_include_directories(VulkanEngineCore SYSTEM PUBLIC external)
 
-target_link_libraries(VulkanEngineCore PUBLIC glm::glm)
+target_link_libraries(VulkanEngineCore PUBLIC glm::glm Threads::Threads)
 
 target_compile_definitions(VulkanEngineCore PUBLIC
     GLM_FORCE_RADIANS

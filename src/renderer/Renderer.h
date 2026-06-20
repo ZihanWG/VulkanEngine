@@ -1,6 +1,7 @@
 #pragma once
 
 #include "assets/AssetManager.h"
+#include "core/JobSystem.h"
 #include "renderer/BindlessTextureHeap.h"
 #include "renderer/Bounds.h"
 #include "renderer/Camera.h"
@@ -431,6 +432,7 @@ private:
     [[nodiscard]] bool hasPendingPortfolioScreenshotReadback() const;
 
     Window& window_;
+    JobSystem jobSystem_;
     rhi::VulkanContext context_;
     std::vector<renderer::FrameResources> frames_;
     renderer::GpuProfiler gpuProfiler_;

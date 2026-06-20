@@ -5,6 +5,9 @@
 #include "rhi/VulkanContext.h"
 
 #define STB_IMAGE_IMPLEMENTATION
+// Make stb_image's failure-reason string thread-local so concurrent decode jobs
+// (see VulkanTexture::decodeImageFile / decodeImageBytes) do not race on it.
+#define STBI_THREAD_LOCAL thread_local
 #include <stb_image.h>
 
 #include <algorithm>
@@ -203,11 +206,7 @@ void VulkanTexture::createFromFile(VulkanContext& context,
     debugMetadata_.colorSpace = colorSpace;
 }
 
-void VulkanTexture::createFromFile(VulkanContext& context,
-                                   const VulkanCommandContext& commandContext,
-                                   const std::filesystem::path& path,
-                                   VkFormat format,
-                                   bool generateMipmaps)
+DecodedImage VulkanTexture::decodeImageFile(const std::filesystem::path& path)
 {
     int loadedWidth = 0;
     int loadedHeight = 0;
@@ -226,38 +225,10 @@ void VulkanTexture::createFromFile(VulkanContext& context,
     const uint32_t width = static_cast<uint32_t>(loadedWidth);
     const uint32_t height = static_cast<uint32_t>(loadedHeight);
     const size_t byteCount = static_cast<size_t>(width) * height * kRgbaChannels;
-    createFromRgba8(context,
-                    commandContext,
-                    width,
-                    height,
-                    std::span<const uint8_t>(loadedPixels.get(), byteCount),
-                    format,
-                    generateMipmaps);
-    debugMetadata_ = TextureDebugMetadata{
-        path.filename().string(),
-        filename,
-        colorSpaceForFormat(format),
-        TextureDebugSource::LoadedFromDisk,
-        false,
-    };
+    return DecodedImage{std::vector<uint8_t>(loadedPixels.get(), loadedPixels.get() + byteCount), width, height};
 }
 
-void VulkanTexture::createFromEncodedBytes(VulkanContext& context,
-                                           const VulkanCommandContext& commandContext,
-                                           std::span<const uint8_t> encodedBytes,
-                                           TextureColorSpace colorSpace,
-                                           bool generateMipmaps)
-{
-    createFromEncodedBytes(
-        context, commandContext, encodedBytes, rgba8FormatForColorSpace(colorSpace), generateMipmaps);
-    debugMetadata_.colorSpace = colorSpace;
-}
-
-void VulkanTexture::createFromEncodedBytes(VulkanContext& context,
-                                           const VulkanCommandContext& commandContext,
-                                           std::span<const uint8_t> encodedBytes,
-                                           VkFormat format,
-                                           bool generateMipmaps)
+DecodedImage VulkanTexture::decodeImageBytes(std::span<const uint8_t> encodedBytes)
 {
     if (encodedBytes.empty()) {
         throw std::runtime_error("Encoded texture data is empty.");
@@ -287,13 +258,45 @@ void VulkanTexture::createFromEncodedBytes(VulkanContext& context,
     const uint32_t width = static_cast<uint32_t>(loadedWidth);
     const uint32_t height = static_cast<uint32_t>(loadedHeight);
     const size_t byteCount = static_cast<size_t>(width) * height * kRgbaChannels;
-    createFromRgba8(context,
-                    commandContext,
-                    width,
-                    height,
-                    std::span<const uint8_t>(loadedPixels.get(), byteCount),
-                    format,
-                    generateMipmaps);
+    return DecodedImage{std::vector<uint8_t>(loadedPixels.get(), loadedPixels.get() + byteCount), width, height};
+}
+
+void VulkanTexture::createFromFile(VulkanContext& context,
+                                   const VulkanCommandContext& commandContext,
+                                   const std::filesystem::path& path,
+                                   VkFormat format,
+                                   bool generateMipmaps)
+{
+    const DecodedImage decoded = decodeImageFile(path);
+    createFromRgba8(context, commandContext, decoded.width, decoded.height, decoded.pixels, format, generateMipmaps);
+    debugMetadata_ = TextureDebugMetadata{
+        path.filename().string(),
+        path.string(),
+        colorSpaceForFormat(format),
+        TextureDebugSource::LoadedFromDisk,
+        false,
+    };
+}
+
+void VulkanTexture::createFromEncodedBytes(VulkanContext& context,
+                                           const VulkanCommandContext& commandContext,
+                                           std::span<const uint8_t> encodedBytes,
+                                           TextureColorSpace colorSpace,
+                                           bool generateMipmaps)
+{
+    createFromEncodedBytes(
+        context, commandContext, encodedBytes, rgba8FormatForColorSpace(colorSpace), generateMipmaps);
+    debugMetadata_.colorSpace = colorSpace;
+}
+
+void VulkanTexture::createFromEncodedBytes(VulkanContext& context,
+                                           const VulkanCommandContext& commandContext,
+                                           std::span<const uint8_t> encodedBytes,
+                                           VkFormat format,
+                                           bool generateMipmaps)
+{
+    const DecodedImage decoded = decodeImageBytes(encodedBytes);
+    createFromRgba8(context, commandContext, decoded.width, decoded.height, decoded.pixels, format, generateMipmaps);
     debugMetadata_ = TextureDebugMetadata{
         "Embedded texture",
         {},
