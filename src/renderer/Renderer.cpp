@@ -4890,128 +4890,39 @@ glm::vec4 Renderer::activeDirectionalLightColor() const
 
 void Renderer::updateCascades(float aspectRatio)
 {
-    const uint32_t cascadeCount = activeCascadeCount();
-    const float nearPlane = std::max(0.001f, csmSettings_.nearPlane);
-    const float cameraFarPlane = std::max(nearPlane + 0.001f, csmSettings_.farPlane);
-    const float shadowFarPlane = std::clamp(csmSettings_.shadowDistance, nearPlane + 0.001f, cameraFarPlane);
-    const float lambda = std::clamp(csmSettings_.lambda, 0.0f, 1.0f);
-
-    const glm::vec3 cameraPosition = camera_.position;
-    const glm::vec3 cameraForward = glm::normalize(camera_.target - camera_.position);
-    const glm::vec3 cameraRight = glm::normalize(glm::cross(cameraForward, camera_.up));
-    const glm::vec3 cameraUp = glm::normalize(glm::cross(cameraRight, cameraForward));
-    const float tanHalfFov = std::tan(camera_.verticalFovRadians * 0.5f);
-
+    // The cascade fitting math is GPU-independent and lives in CascadeMath.h so
+    // it can be unit-tested. Gather the inputs from renderer state, run the pure
+    // solver, then cache the results plus their packed frustum planes.
     const glm::vec4 activeLightDirection = activeDirectionalLightDirection();
-    const glm::vec3 lightDirection =
-        glm::normalize(glm::vec3{activeLightDirection.x, activeLightDirection.y, activeLightDirection.z});
-    const glm::vec3 lightUp = std::abs(glm::dot(lightDirection, glm::vec3{0.0f, 1.0f, 0.0f})) > 0.95f
-                                  ? glm::vec3{0.0f, 0.0f, 1.0f}
-                                  : glm::vec3{0.0f, 1.0f, 0.0f};
-    const glm::vec3 lightRight = glm::normalize(glm::cross(lightDirection, lightUp));
-    const glm::vec3 lightBasisUp = glm::normalize(glm::cross(lightRight, lightDirection));
 
-    frameCascadeSplits_ = glm::vec4(shadowFarPlane);
+    renderer::CascadeBuildInput cascadeInput{};
+    cascadeInput.requestedCascadeCount = csmSettings_.cascadeCount;
+    cascadeInput.nearPlane = csmSettings_.nearPlane;
+    cascadeInput.farPlane = csmSettings_.farPlane;
+    cascadeInput.shadowDistance = csmSettings_.shadowDistance;
+    cascadeInput.lambda = csmSettings_.lambda;
+    cascadeInput.enableTexelSnapping = csmSettings_.enableTexelSnapping;
+    cascadeInput.shadowResolution = shadowSettings_.resolution;
+    cascadeInput.cameraPosition = camera_.position;
+    cascadeInput.cameraTarget = camera_.target;
+    cascadeInput.cameraUp = camera_.up;
+    cascadeInput.cameraVerticalFovRadians = camera_.verticalFovRadians;
+    cascadeInput.lightDirection =
+        glm::vec3{activeLightDirection.x, activeLightDirection.y, activeLightDirection.z};
+    cascadeInput.aspectRatio = aspectRatio;
 
-    float cascadeNear = nearPlane;
-    for (uint32_t cascadeIndex = 0; cascadeIndex < cascadeCount; ++cascadeIndex) {
-        const float splitRatio = static_cast<float>(cascadeIndex + 1) / static_cast<float>(cascadeCount);
-        const float uniformSplit = nearPlane + (shadowFarPlane - nearPlane) * splitRatio;
-        const float logSplit = nearPlane * std::pow(shadowFarPlane / nearPlane, splitRatio);
-        const float cascadeFar = glm::mix(uniformSplit, logSplit, lambda);
-        frameCascadeSplits_[cascadeIndex] = cascadeFar;
+    const renderer::CascadeBuildOutput cascadeOutput = renderer::computeShadowCascades(cascadeInput);
 
-        std::array<glm::vec3, 8> corners{};
-        const auto writeDepthCorners = [&](float depth, uint32_t baseIndex) {
-            const float halfHeight = tanHalfFov * depth;
-            const float halfWidth = halfHeight * aspectRatio;
-            const glm::vec3 center = cameraPosition + cameraForward * depth;
+    frameCascades_ = cascadeOutput.cascades;
+    frameCascadeSplits_ = cascadeOutput.splitDistances;
 
-            corners[baseIndex + 0] = center - cameraRight * halfWidth - cameraUp * halfHeight;
-            corners[baseIndex + 1] = center + cameraRight * halfWidth - cameraUp * halfHeight;
-            corners[baseIndex + 2] = center - cameraRight * halfWidth + cameraUp * halfHeight;
-            corners[baseIndex + 3] = center + cameraRight * halfWidth + cameraUp * halfHeight;
-        };
-
-        // Each cascade still starts from the readable fitted bounds of the
-        // camera-frustum slice between cascadeNear and cascadeFar.
-        writeDepthCorners(cascadeNear, 0);
-        writeDepthCorners(cascadeFar, 4);
-
-        glm::vec3 cascadeCenter{0.0f};
-        for (const glm::vec3& corner : corners) {
-            cascadeCenter += corner;
-        }
-        cascadeCenter /= static_cast<float>(corners.size());
-
-        const glm::mat4 fitLightView = glm::lookAt(cascadeCenter - lightDirection, cascadeCenter, lightUp);
-        glm::vec3 minBounds{std::numeric_limits<float>::infinity()};
-        glm::vec3 maxBounds{-std::numeric_limits<float>::infinity()};
-        for (const glm::vec3& corner : corners) {
-            const glm::vec3 lightSpaceCorner = glm::vec3(fitLightView * glm::vec4(corner, 1.0f));
-            minBounds = glm::min(minBounds, lightSpaceCorner);
-            maxBounds = glm::max(maxBounds, lightSpaceCorner);
-        }
-
-        const float orthoWidth = std::max(maxBounds.x - minBounds.x, 0.001f);
-        const float orthoHeight = std::max(maxBounds.y - minBounds.y, 0.001f);
-        const float orthoExtent = std::max(orthoWidth, orthoHeight);
-        const float shadowResolution = static_cast<float>(std::max(shadowSettings_.resolution, 1U));
-        const float worldUnitsPerTexel = orthoExtent / shadowResolution;
-
-        glm::vec3 lightViewCenter = cascadeCenter;
-        if (csmSettings_.enableTexelSnapping && worldUnitsPerTexel > std::numeric_limits<float>::epsilon()) {
-            // CSM shimmering happens when the camera moves by a sub-texel amount
-            // in the light projection: static receivers then sample a slightly
-            // different part of the shadow map every frame. Snapping the
-            // light-view center to worldUnitsPerTexel increments keeps the
-            // shadow texel grid from sliding continuously with the camera. This
-            // is a basic stabilization step, not a full production CSM solution
-            // with stable crop matrices, cascade blending, or per-cascade tuning.
-            const float centerX = glm::dot(lightViewCenter, lightRight);
-            const float centerY = glm::dot(lightViewCenter, lightBasisUp);
-            const float snappedCenterX = std::round(centerX / worldUnitsPerTexel) * worldUnitsPerTexel;
-            const float snappedCenterY = std::round(centerY / worldUnitsPerTexel) * worldUnitsPerTexel;
-            lightViewCenter += lightRight * (snappedCenterX - centerX) + lightBasisUp * (snappedCenterY - centerY);
-
-            // The orthographic bounds were fitted before moving the light view
-            // by less than one shadow texel, so add a one-texel guard band to
-            // preserve coverage after the quantized center shift.
-            minBounds.x -= worldUnitsPerTexel;
-            minBounds.y -= worldUnitsPerTexel;
-            maxBounds.x += worldUnitsPerTexel;
-            maxBounds.y += worldUnitsPerTexel;
-        }
-
-        const glm::mat4 lightView = glm::lookAt(lightViewCenter - lightDirection, lightViewCenter, lightUp);
-        const float depthRange = std::max(cascadeFar - cascadeNear, 1.0f);
-        const float zPadding = std::max(depthRange * 2.0f, 10.0f);
-        const float orthoNear = std::max(0.001f, -maxBounds.z - zPadding);
-        const float orthoFar = std::max(orthoNear + 0.001f, -minBounds.z + zPadding);
-
-        glm::mat4 lightProjection = glm::ortho(minBounds.x, maxBounds.x, minBounds.y, maxBounds.y, orthoNear, orthoFar);
-        lightProjection[1][1] *= -1.0f;
-
-        CascadeFrameData& cascade = frameCascades_[cascadeIndex];
-        cascade.lightViewProjection = lightProjection * lightView;
-        cascade.lightFrustum = renderer::Frustum::fromViewProjection(cascade.lightViewProjection);
-        cascade.splitDepth = cascadeFar;
-        cascade.nearDepth = cascadeNear;
-        cascade.farDepth = cascadeFar;
-
+    for (uint32_t cascadeIndex = 0; cascadeIndex < kMaxShadowCascades; ++cascadeIndex) {
+        const renderer::Frustum& lightFrustum = frameCascades_[cascadeIndex].lightFrustum;
         for (size_t planeIndex = 0; planeIndex < frameShadowCascadeFrustumPlanes_[cascadeIndex].size(); ++planeIndex) {
-            const renderer::FrustumPlane& lightPlane = cascade.lightFrustum.planes[planeIndex];
+            const renderer::FrustumPlane& lightPlane = lightFrustum.planes[planeIndex];
             frameShadowCascadeFrustumPlanes_[cascadeIndex][planeIndex] =
                 glm::vec4(lightPlane.normal, lightPlane.distance);
         }
-
-        cascadeNear = cascadeFar;
-    }
-
-    for (uint32_t cascadeIndex = cascadeCount; cascadeIndex < kMaxShadowCascades; ++cascadeIndex) {
-        frameCascades_[cascadeIndex] = frameCascades_[cascadeCount - 1];
-        frameCascadeSplits_[cascadeIndex] = shadowFarPlane;
-        frameShadowCascadeFrustumPlanes_[cascadeIndex] = frameShadowCascadeFrustumPlanes_[cascadeCount - 1];
     }
 }
 

@@ -16,6 +16,7 @@ endif()
 add_executable(VulkanEngineTests
     test_runtime_settings.cpp
     test_bounds.cpp
+    test_cascades.cpp
     test_job_system.cpp
     test_editor_camera.cpp
 )

@@ -176,6 +176,7 @@ find_package(Threads REQUIRED)
 add_library(VulkanEngineCore STATIC
     src/core/JobSystem.cpp
     src/core/Logger.cpp
+    src/renderer/CascadeMath.cpp
     src/renderer/EditorCamera.cpp
     src/renderer/RuntimeSettings.cpp
 )

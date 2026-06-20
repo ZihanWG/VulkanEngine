@@ -6,6 +6,7 @@
 #include "renderer/EditorCamera.h"
 #include "renderer/Bounds.h"
 #include "renderer/Camera.h"
+#include "renderer/CascadeMath.h"
 #include "renderer/FrameResources.h"
 #include "renderer/GpuProfiler.h"
 #include "renderer/Material.h"
@@ -64,7 +65,7 @@ public:
     void waitIdle();
 
 private:
-    static constexpr uint32_t kMaxShadowCascades = 4;
+    static constexpr uint32_t kMaxShadowCascades = renderer::kMaxShadowCascades;
     static constexpr size_t kDebugHistoryCapacity = 240;
     static constexpr size_t kInvalidRenderObjectIndex = std::numeric_limits<size_t>::max();
 
@@ -96,13 +97,10 @@ private:
         int sampleCount = 16;
     };
 
-    struct CascadeFrameData {
-        glm::mat4 lightViewProjection{1.0f};
-        renderer::Frustum lightFrustum{};
-        float splitDepth = 0.0f;
-        float nearDepth = 0.0f;
-        float farDepth = 0.0f;
-    };
+    // Pure cascade fit data now lives in renderer::ShadowCascade (CascadeMath.h)
+    // so the math is shared with the GPU-independent unit tests. Aliased here to
+    // keep the many frameCascades_ usages in the .cpp unchanged.
+    using CascadeFrameData = renderer::ShadowCascade;
 
     struct DrawItem {
         const renderer::Mesh* mesh = nullptr;
