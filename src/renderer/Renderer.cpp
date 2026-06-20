@@ -1545,6 +1545,18 @@ void Renderer::createPostProcessDescriptorSets()
     const PostProcessDescriptorCounts counts = computePostProcessDescriptorCounts();
     createPostProcessDescriptorPool(counts);
 
+    allocateLegacyBloomDescriptorSets();
+    createTaaResolveDescriptorSets();
+    createBloomMipDownsampleDescriptorSets();
+    createBloomMipUpsampleDescriptorSets();
+    createCompositeDescriptorSets(counts);
+    createLuminanceDescriptorSets(counts);
+    createHistogramDescriptorSets(counts);
+    createExposureReduceDescriptorSets(counts);
+}
+
+void Renderer::allocateLegacyBloomDescriptorSets()
+{
     std::array<VkDescriptorSetLayout, 3> legacyDescriptorSetLayouts{
         postProcessSingleImageDescriptorSetLayout_.handle(),
         postProcessSingleImageDescriptorSetLayout_.handle(),
@@ -1603,7 +1615,10 @@ void Renderer::createPostProcessDescriptorSets()
     writes[2].pImageInfo = &legacyImageInfos[2];
 
     vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+}
 
+void Renderer::createTaaResolveDescriptorSets()
+{
     if (taaHistoryImages_[0].imageView() != VK_NULL_HANDLE && taaHistoryImages_[1].imageView() != VK_NULL_HANDLE) {
         std::array<VkDescriptorSetLayout, kTaaHistoryCount> taaResolveLayouts{
             postProcessDualImageDescriptorSetLayout_.handle(),
@@ -1702,7 +1717,10 @@ void Renderer::createPostProcessDescriptorSets()
                                    nullptr);
         }
     }
+}
 
+void Renderer::createBloomMipDownsampleDescriptorSets()
+{
     if (!bloomMipDownsampleImages_.empty()) {
         bloomMipDownsampleDescriptorSets_.assign(bloomMipDownsampleImages_.size(), VK_NULL_HANDLE);
         std::vector<VkDescriptorSetLayout> downsampleLayouts(bloomMipDownsampleImages_.size(),
@@ -1738,7 +1756,10 @@ void Renderer::createPostProcessDescriptorSets()
                                0,
                                nullptr);
     }
+}
 
+void Renderer::createBloomMipUpsampleDescriptorSets()
+{
     if (!bloomMipUpsampleImages_.empty()) {
         bloomMipUpsampleDescriptorSets_.assign(bloomMipUpsampleImages_.size(), VK_NULL_HANDLE);
         std::vector<VkDescriptorSetLayout> upsampleLayouts(bloomMipUpsampleImages_.size(),
@@ -1787,7 +1808,10 @@ void Renderer::createPostProcessDescriptorSets()
                                0,
                                nullptr);
     }
+}
 
+void Renderer::createCompositeDescriptorSets(const PostProcessDescriptorCounts& counts)
+{
     if (counts.createCompositeDescriptors) {
         compositeDescriptorSets_.assign(frames_.size(), VK_NULL_HANDLE);
         std::vector<VkDescriptorSetLayout> compositeLayouts(frames_.size(),
@@ -1932,10 +1956,11 @@ void Renderer::createPostProcessDescriptorSets()
         }
     }
 
-    VkDescriptorImageInfo sceneColorInfo{};
-    sceneColorInfo.sampler = postProcessSampler_;
-    sceneColorInfo.imageView = sceneColor_.imageView();
-    sceneColorInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+}
+
+void Renderer::createLuminanceDescriptorSets(const PostProcessDescriptorCounts& counts)
+{
+    const VkDescriptorImageInfo sceneColorInfo = postProcessImageInfo(sceneColor_.imageView());
 
     if (counts.createLuminanceDescriptors) {
         try {
@@ -2039,6 +2064,11 @@ void Renderer::createPostProcessDescriptorSets()
                 std::string("Log-average exposure descriptor allocation failed: ") + error.what());
         }
     }
+}
+
+void Renderer::createHistogramDescriptorSets(const PostProcessDescriptorCounts& counts)
+{
+    const VkDescriptorImageInfo sceneColorInfo = postProcessImageInfo(sceneColor_.imageView());
 
     if (counts.createHistogramDescriptors) {
         try {
@@ -2142,7 +2172,10 @@ void Renderer::createPostProcessDescriptorSets()
                 std::string("Histogram exposure descriptor allocation failed: ") + error.what());
         }
     }
+}
 
+void Renderer::createExposureReduceDescriptorSets(const PostProcessDescriptorCounts& counts)
+{
     if (counts.createExposureReduceDescriptors) {
         try {
             exposureReduceDescriptorSets_.assign(frames_.size(), VK_NULL_HANDLE);

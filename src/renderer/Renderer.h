@@ -254,6 +254,17 @@ private:
     [[nodiscard]] PostProcessDescriptorCounts computePostProcessDescriptorCounts() const;
     void createPostProcessDescriptorPool(const PostProcessDescriptorCounts& counts);
     void createPostProcessDescriptorSets();
+    // createPostProcessDescriptorSets() per-group helpers; each allocates + writes
+    // one descriptor group and ends at its own vkUpdateDescriptorSets, so its
+    // image-info storage stays in scope. Verbatim slices of the former function.
+    void allocateLegacyBloomDescriptorSets();
+    void createTaaResolveDescriptorSets();
+    void createBloomMipDownsampleDescriptorSets();
+    void createBloomMipUpsampleDescriptorSets();
+    void createCompositeDescriptorSets(const PostProcessDescriptorCounts& counts);
+    void createLuminanceDescriptorSets(const PostProcessDescriptorCounts& counts);
+    void createHistogramDescriptorSets(const PostProcessDescriptorCounts& counts);
+    void createExposureReduceDescriptorSets(const PostProcessDescriptorCounts& counts);
     // Shared post-process descriptor-image-info helpers (promoted from local
     // lambdas in createPostProcessDescriptorSets so the per-group helpers reuse them).
     [[nodiscard]] VkDescriptorImageInfo postProcessImageInfo(VkImageView imageView) const;
