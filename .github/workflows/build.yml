@@ -75,3 +75,26 @@ jobs:
 
       - name: Run unit tests
         run: ctest --preset ci-debug
+
+      # Report-only static analysis over our own sources. Non-blocking for now
+      # (WarningsAsErrors is empty in .clang-tidy); tighten once the tree is clean.
+      - name: Static analysis (clang-tidy)
+        continue-on-error: true
+        run: |
+          sudo apt-get install -y --no-install-recommends clang-tidy
+          run-clang-tidy -p build/ci-debug -quiet 'src/.*' \
+            || find src -name '*.cpp' -print0 | xargs -0 -n1 clang-tidy -p build/ci-debug
+
+      # Re-build and run the headless tests under AddressSanitizer +
+      # UndefinedBehaviorSanitizer so memory/UB regressions fail CI.
+      - name: Configure CMake (ASan/UBSan)
+        run: cmake --preset ci-asan -DVULKAN_ENGINE_FETCH_DEPS=ON
+
+      - name: Build tests (ASan/UBSan)
+        run: cmake --build --preset ci-asan --parallel
+
+      - name: Run unit tests (ASan/UBSan)
+        env:
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --preset ci-asan

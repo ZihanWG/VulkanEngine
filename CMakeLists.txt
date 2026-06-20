@@ -14,9 +14,23 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(VULKAN_ENGINE_FETCH_DEPS "Fetch missing third-party dependencies with FetchContent" ON)
 option(VULKAN_ENGINE_BUILD_MACOS_BUNDLE "Build VulkanEngine as a macOS .app bundle" OFF)
 option(VULKAN_ENGINE_BUILD_TESTS "Build unit tests for GPU-independent engine logic" ON)
+option(VULKAN_ENGINE_ENABLE_SANITIZERS "Build with AddressSanitizer + UndefinedBehaviorSanitizer (GCC/Clang)" OFF)
 
 if(VULKAN_ENGINE_BUILD_MACOS_BUNDLE AND NOT APPLE)
     message(WARNING "VULKAN_ENGINE_BUILD_MACOS_BUNDLE is only supported on Apple platforms; building a normal executable.")
+endif()
+
+# Apply sanitizers directory-wide (before any targets are defined) so every
+# translation unit -- including the fetched dependencies the tests link against
+# -- is instrumented consistently. ASan/UBSan are a GCC/Clang feature; MSVC has
+# its own /fsanitize=address but no UBSan, so we skip it there.
+if(VULKAN_ENGINE_ENABLE_SANITIZERS)
+    if(MSVC)
+        message(WARNING "VULKAN_ENGINE_ENABLE_SANITIZERS supports GCC/Clang only; ignoring on MSVC.")
+    else()
+        add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
+        add_link_options(-fsanitize=address,undefined)
+    endif()
 endif()
 
 include(FetchContent)

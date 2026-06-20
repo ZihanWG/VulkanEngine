@@ -38,6 +38,18 @@
         "CMAKE_BUILD_TYPE": "Debug",
         "VULKAN_ENGINE_FETCH_DEPS": "ON"
       }
+    },
+    {
+      "name": "ci-asan",
+      "displayName": "CI ASan/UBSan",
+      "description": "Debug build with AddressSanitizer + UndefinedBehaviorSanitizer for the headless test target.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/ci-asan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "VULKAN_ENGINE_FETCH_DEPS": "ON",
+        "VULKAN_ENGINE_ENABLE_SANITIZERS": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -73,6 +85,14 @@
         "VulkanEngine",
         "VulkanEngineTests"
       ]
+    },
+    {
+      "name": "ci-asan",
+      "displayName": "Build CI ASan/UBSan Tests",
+      "configurePreset": "ci-asan",
+      "targets": [
+        "VulkanEngineTests"
+      ]
     }
   ],
   "testPresets": [
@@ -80,6 +100,17 @@
       "name": "ci-debug",
       "displayName": "Run CI Debug Tests",
       "configurePreset": "ci-debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      }
+    },
+    {
+      "name": "ci-asan",
+      "displayName": "Run CI ASan/UBSan Tests",
+      "configurePreset": "ci-asan",
       "output": {
         "outputOnFailure": true
       },

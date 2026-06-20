@@ -1,0 +1,25 @@
+# Conservative, high-signal static analysis for the engine sources.
+#
+# The set is intentionally narrow to start: correctness-leaning checks
+# (bugprone/performance) plus a few modernizations, with the noisier opinionated
+# families (readability naming, magic numbers, trailing-return, etc.) disabled.
+# WarningsAsErrors is empty so the first CI runs are report-only; tighten once
+# the existing tree is clean.
+Checks: >
+  bugprone-*,
+  performance-*,
+  modernize-use-override,
+  modernize-use-nullptr,
+  modernize-use-using,
+  modernize-use-emplace,
+  modernize-loop-convert,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -performance-avoid-endl
+
+WarningsAsErrors: ''
+
+# Only diagnose our own code; third-party headers live under external/.
+HeaderFilterRegex: '.*/src/.*'
+
+FormatStyle: file
