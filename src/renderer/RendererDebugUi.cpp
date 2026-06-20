@@ -1074,6 +1074,12 @@ void Renderer::drawRenderTargetDebugUi()
         ImGui::Checkbox("Show CSM cascades", &showRenderTargetCsmCascades_);
     }
 
+    drawRenderTargetMetadataTable();
+    drawRenderTargetPreviews();
+}
+
+void Renderer::drawRenderTargetMetadataTable()
+{
     const auto extentString = [](uint32_t width, uint32_t height) {
         return std::to_string(width) + " x " + std::to_string(height);
     };
@@ -1303,7 +1309,10 @@ void Renderer::drawRenderTargetDebugUi()
             ImGui::EndTable();
         }
     }
+}
 
+void Renderer::drawRenderTargetPreviews()
+{
     const float previewSize = 160.0f * std::clamp(debugUiSettings_.renderTargetPreviewScale, 0.25f, 2.0f);
     const float hdrPreviewExposure = std::clamp(debugUiSettings_.renderTargetPreviewExposure, 0.05f, 8.0f);
 

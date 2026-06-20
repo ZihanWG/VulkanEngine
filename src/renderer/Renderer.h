@@ -455,6 +455,9 @@ private:
     void drawMaterialInspectorDebugUi();
     void drawTextureDebugUi();
     void drawRenderTargetDebugUi();
+    // drawRenderTargetDebugUi() sections (see RendererDebugUi.cpp).
+    void drawRenderTargetMetadataTable();
+    void drawRenderTargetPreviews();
     void drawMaterialDebugSection(const renderer::Material* material,
                                   bool includeTextureSummary,
                                   renderer::Material* editableMaterial = nullptr);
