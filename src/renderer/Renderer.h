@@ -232,6 +232,27 @@ private:
     void createPostProcessSampler();
     void destroyPostProcessSampler();
     void createPostProcessResources();
+    // Per-frame descriptor-set counts + which optional groups to create, computed
+    // once and used to size the pool and gate the per-group descriptor writes.
+    struct PostProcessDescriptorCounts {
+        bool createLuminanceDescriptors = false;
+        bool createHistogramDescriptors = false;
+        bool createExposureReduceDescriptors = false;
+        bool createCompositeDescriptors = false;
+        uint32_t exposureDescriptorSetCount = 0;
+        uint32_t compositeDescriptorSetCount = 0;
+        uint32_t legacyBloomSetCount = 0;
+        uint32_t bloomDownsampleSetCount = 0;
+        uint32_t bloomUpsampleSetCount = 0;
+        uint32_t taaResolveSetCount = 0;
+        uint32_t taaBloomExtractSetCount = 0;
+        uint32_t taaBloomDownsampleSetCount = 0;
+        uint32_t taaCompositeDescriptorSetCount = 0;
+        uint32_t taaLuminanceDescriptorSetCount = 0;
+        uint32_t taaHistogramDescriptorSetCount = 0;
+    };
+    [[nodiscard]] PostProcessDescriptorCounts computePostProcessDescriptorCounts() const;
+    void createPostProcessDescriptorPool(const PostProcessDescriptorCounts& counts);
     void createPostProcessDescriptorSets();
     // Shared post-process descriptor-image-info helpers (promoted from local
     // lambdas in createPostProcessDescriptorSets so the per-group helpers reuse them).

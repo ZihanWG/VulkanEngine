@@ -1464,77 +1464,86 @@ VkDescriptorImageInfo Renderer::postProcessDepthInfo() const
     return info;
 }
 
+Renderer::PostProcessDescriptorCounts Renderer::computePostProcessDescriptorCounts() const
+{
+    PostProcessDescriptorCounts counts{};
+    counts.createLuminanceDescriptors =
+        autoExposureAvailable_ && !frameLuminanceBuffers_.empty() &&
+        frameLuminanceBuffers_.size() == frames_.size() &&
+        postProcessLuminanceDescriptorSetLayout_.handle() != VK_NULL_HANDLE;
+    counts.createHistogramDescriptors =
+        histogramExposureAvailable_ && !frameHistogramBuffers_.empty() &&
+        frameHistogramBuffers_.size() == frames_.size() &&
+        postProcessLuminanceDescriptorSetLayout_.handle() != VK_NULL_HANDLE;
+    counts.createExposureReduceDescriptors =
+        counts.createLuminanceDescriptors && counts.createHistogramDescriptors && exposureReduceAvailable_ &&
+        frameExposureBuffers_.size() == frames_.size() &&
+        postProcessExposureReduceDescriptorSetLayout_.handle() != VK_NULL_HANDLE;
+    counts.createCompositeDescriptors =
+        !frameExposureBuffers_.empty() && frameExposureBuffers_.size() == frames_.size() &&
+        postProcessCompositeDescriptorSetLayout_.handle() != VK_NULL_HANDLE;
+    counts.exposureDescriptorSetCount =
+        (counts.createLuminanceDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u) +
+        (counts.createHistogramDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u) +
+        (counts.createExposureReduceDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u);
+    counts.compositeDescriptorSetCount =
+        counts.createCompositeDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u;
+    counts.legacyBloomSetCount = 3u;
+    counts.bloomDownsampleSetCount = static_cast<uint32_t>(bloomMipDownsampleImages_.size());
+    counts.bloomUpsampleSetCount = static_cast<uint32_t>(bloomMipUpsampleImages_.size());
+    counts.taaResolveSetCount = kTaaHistoryCount;
+    counts.taaBloomExtractSetCount = kTaaHistoryCount;
+    counts.taaBloomDownsampleSetCount = bloomMipDownsampleImages_.empty() ? 0u : kTaaHistoryCount;
+    counts.taaCompositeDescriptorSetCount =
+        counts.createCompositeDescriptors ? kTaaHistoryCount * static_cast<uint32_t>(frames_.size()) : 0u;
+    counts.taaLuminanceDescriptorSetCount =
+        counts.createLuminanceDescriptors ? kTaaHistoryCount * static_cast<uint32_t>(frames_.size()) : 0u;
+    counts.taaHistogramDescriptorSetCount =
+        counts.createHistogramDescriptors ? kTaaHistoryCount * static_cast<uint32_t>(frames_.size()) : 0u;
+    return counts;
+}
+
+void Renderer::createPostProcessDescriptorPool(const PostProcessDescriptorCounts& counts)
+{
+    std::array<VkDescriptorPoolSize, 2> poolSizes{};
+    poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSizes[0].descriptorCount =
+        counts.legacyBloomSetCount + counts.bloomDownsampleSetCount + (2u * counts.bloomUpsampleSetCount) +
+        (4u * counts.compositeDescriptorSetCount) +
+        (counts.createLuminanceDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u) +
+        (counts.createHistogramDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u) +
+        (2u * counts.taaResolveSetCount) + counts.taaBloomExtractSetCount + counts.taaBloomDownsampleSetCount +
+        (4u * counts.taaCompositeDescriptorSetCount) + counts.taaLuminanceDescriptorSetCount +
+        counts.taaHistogramDescriptorSetCount;
+    poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    poolSizes[1].descriptorCount =
+        (counts.createLuminanceDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u) +
+        (counts.createHistogramDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u) +
+        (3u * (counts.createExposureReduceDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u)) +
+        counts.compositeDescriptorSetCount + counts.taaCompositeDescriptorSetCount +
+        counts.taaLuminanceDescriptorSetCount + counts.taaHistogramDescriptorSetCount;
+    const uint32_t poolSizeCount = poolSizes[1].descriptorCount > 0 ? 2u : 1u;
+    const uint32_t maxSets = counts.legacyBloomSetCount + counts.bloomDownsampleSetCount +
+                             counts.bloomUpsampleSetCount + counts.compositeDescriptorSetCount +
+                             counts.exposureDescriptorSetCount + counts.taaResolveSetCount +
+                             counts.taaBloomExtractSetCount + counts.taaBloomDownsampleSetCount +
+                             counts.taaCompositeDescriptorSetCount + counts.taaLuminanceDescriptorSetCount +
+                             counts.taaHistogramDescriptorSetCount;
+
+    postProcessDescriptorPool_.create(
+        context_.vkDevice(), std::span<const VkDescriptorPoolSize>(poolSizes.data(), poolSizeCount), maxSets);
+    rhi::debug::setObjectName(
+        context_.vkDevice(), postProcessDescriptorPool_.handle(), VK_OBJECT_TYPE_DESCRIPTOR_POOL, "PostProcessPool");
+}
+
 void Renderer::createPostProcessDescriptorSets()
 {
     if (postProcessSampler_ == VK_NULL_HANDLE) {
         throw std::runtime_error("Cannot create post-process descriptors without a sampler.");
     }
 
-    const bool createLuminanceDescriptors =
-        autoExposureAvailable_ && !frameLuminanceBuffers_.empty() &&
-        frameLuminanceBuffers_.size() == frames_.size() &&
-        postProcessLuminanceDescriptorSetLayout_.handle() != VK_NULL_HANDLE;
-    const bool createHistogramDescriptors =
-        histogramExposureAvailable_ && !frameHistogramBuffers_.empty() &&
-        frameHistogramBuffers_.size() == frames_.size() &&
-        postProcessLuminanceDescriptorSetLayout_.handle() != VK_NULL_HANDLE;
-    const bool createExposureReduceDescriptors =
-        createLuminanceDescriptors && createHistogramDescriptors && exposureReduceAvailable_ &&
-        frameExposureBuffers_.size() == frames_.size() &&
-        postProcessExposureReduceDescriptorSetLayout_.handle() != VK_NULL_HANDLE;
-    const bool createCompositeDescriptors =
-        !frameExposureBuffers_.empty() && frameExposureBuffers_.size() == frames_.size() &&
-        postProcessCompositeDescriptorSetLayout_.handle() != VK_NULL_HANDLE;
-    const uint32_t exposureDescriptorSetCount =
-        (createLuminanceDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u) +
-        (createHistogramDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u) +
-        (createExposureReduceDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u);
-    const uint32_t compositeDescriptorSetCount =
-        createCompositeDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u;
-    const uint32_t legacyBloomSetCount = 3u;
-    const uint32_t bloomDownsampleSetCount = static_cast<uint32_t>(bloomMipDownsampleImages_.size());
-    const uint32_t bloomUpsampleSetCount = static_cast<uint32_t>(bloomMipUpsampleImages_.size());
-    const uint32_t taaResolveSetCount = kTaaHistoryCount;
-    const uint32_t taaBloomExtractSetCount = kTaaHistoryCount;
-    const uint32_t taaBloomDownsampleSetCount = bloomMipDownsampleImages_.empty() ? 0u : kTaaHistoryCount;
-    const uint32_t taaCompositeDescriptorSetCount = createCompositeDescriptors
-                                                       ? kTaaHistoryCount * static_cast<uint32_t>(frames_.size())
-                                                       : 0u;
-    const uint32_t taaLuminanceDescriptorSetCount = createLuminanceDescriptors
-                                                       ? kTaaHistoryCount * static_cast<uint32_t>(frames_.size())
-                                                       : 0u;
-    const uint32_t taaHistogramDescriptorSetCount = createHistogramDescriptors
-                                                       ? kTaaHistoryCount * static_cast<uint32_t>(frames_.size())
-                                                       : 0u;
-
-    std::array<VkDescriptorPoolSize, 2> poolSizes{};
-    poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[0].descriptorCount =
-        legacyBloomSetCount + bloomDownsampleSetCount + (2u * bloomUpsampleSetCount) +
-        (4u * compositeDescriptorSetCount) +
-        (createLuminanceDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u) +
-        (createHistogramDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u) +
-        (2u * taaResolveSetCount) + taaBloomExtractSetCount + taaBloomDownsampleSetCount +
-        (4u * taaCompositeDescriptorSetCount) + taaLuminanceDescriptorSetCount +
-        taaHistogramDescriptorSetCount;
-    poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[1].descriptorCount =
-        (createLuminanceDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u) +
-        (createHistogramDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u) +
-        (3u * (createExposureReduceDescriptors ? static_cast<uint32_t>(frames_.size()) : 0u)) +
-        compositeDescriptorSetCount + taaCompositeDescriptorSetCount + taaLuminanceDescriptorSetCount +
-        taaHistogramDescriptorSetCount;
-    const uint32_t poolSizeCount = poolSizes[1].descriptorCount > 0 ? 2u : 1u;
-    const uint32_t maxSets = legacyBloomSetCount + bloomDownsampleSetCount + bloomUpsampleSetCount +
-                             compositeDescriptorSetCount + exposureDescriptorSetCount + taaResolveSetCount +
-                             taaBloomExtractSetCount + taaBloomDownsampleSetCount +
-                             taaCompositeDescriptorSetCount + taaLuminanceDescriptorSetCount +
-                             taaHistogramDescriptorSetCount;
-
-    postProcessDescriptorPool_.create(
-        context_.vkDevice(), std::span<const VkDescriptorPoolSize>(poolSizes.data(), poolSizeCount), maxSets);
-    rhi::debug::setObjectName(
-        context_.vkDevice(), postProcessDescriptorPool_.handle(), VK_OBJECT_TYPE_DESCRIPTOR_POOL, "PostProcessPool");
+    const PostProcessDescriptorCounts counts = computePostProcessDescriptorCounts();
+    createPostProcessDescriptorPool(counts);
 
     std::array<VkDescriptorSetLayout, 3> legacyDescriptorSetLayouts{
         postProcessSingleImageDescriptorSetLayout_.handle(),
@@ -1779,7 +1788,7 @@ void Renderer::createPostProcessDescriptorSets()
                                nullptr);
     }
 
-    if (createCompositeDescriptors) {
+    if (counts.createCompositeDescriptors) {
         compositeDescriptorSets_.assign(frames_.size(), VK_NULL_HANDLE);
         std::vector<VkDescriptorSetLayout> compositeLayouts(frames_.size(),
                                                             postProcessCompositeDescriptorSetLayout_.handle());
@@ -1928,7 +1937,7 @@ void Renderer::createPostProcessDescriptorSets()
     sceneColorInfo.imageView = sceneColor_.imageView();
     sceneColorInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    if (createLuminanceDescriptors) {
+    if (counts.createLuminanceDescriptors) {
         try {
             luminanceDescriptorSets_.assign(frames_.size(), VK_NULL_HANDLE);
             std::vector<VkDescriptorSetLayout> luminanceLayouts(frames_.size(),
@@ -2031,7 +2040,7 @@ void Renderer::createPostProcessDescriptorSets()
         }
     }
 
-    if (createHistogramDescriptors) {
+    if (counts.createHistogramDescriptors) {
         try {
             histogramDescriptorSets_.assign(frames_.size(), VK_NULL_HANDLE);
             std::vector<VkDescriptorSetLayout> histogramLayouts(frames_.size(),
@@ -2134,7 +2143,7 @@ void Renderer::createPostProcessDescriptorSets()
         }
     }
 
-    if (createExposureReduceDescriptors) {
+    if (counts.createExposureReduceDescriptors) {
         try {
             exposureReduceDescriptorSets_.assign(frames_.size(), VK_NULL_HANDLE);
             std::vector<VkDescriptorSetLayout> exposureLayouts(
