@@ -470,6 +470,8 @@ void Renderer::drawCameraLightEditorDebugUi()
                            "lighting presets.");
     }
 
+    ImGui::TextDisabled("Viewport: RMB+WASD/QE fly, scroll speed; LMB pick; Alt+LMB orbit; MMB pan; W/E/R gizmo.");
+
     if (ImGui::TreeNodeEx("Camera", ImGuiTreeNodeFlags_DefaultOpen)) {
         bool cameraChanged = false;
         cameraChanged |= ImGui::DragFloat3("Position", &camera_.position.x, 0.02f, -1000.0f, 1000.0f, "%.3f");
@@ -656,6 +658,21 @@ void Renderer::drawSelectedRenderObjectInspector(uint32_t objectIndex)
     }
 
     ImGui::SeparatorText("Transform");
+
+    // Viewport gizmo mode (also switchable with W / E / R, and X for space).
+    auto gizmoRadio = [this](const char* label, GizmoOperation op) {
+        if (ImGui::RadioButton(label, gizmoOperation_ == op)) {
+            gizmoOperation_ = op;
+        }
+    };
+    gizmoRadio("Move (W)", GizmoOperation::Translate);
+    ImGui::SameLine();
+    gizmoRadio("Rotate (E)", GizmoOperation::Rotate);
+    ImGui::SameLine();
+    gizmoRadio("Scale (R)", GizmoOperation::Scale);
+    ImGui::SameLine();
+    ImGui::Checkbox("World (X)", &gizmoWorldSpace_);
+
     if (object.transform.useMatrixOverride) {
         ImGui::TextDisabled("Matrix override transform; editing TRS converts it to position/rotation/scale.");
         if (ImGui::Button("Convert to Editable TRS")) {

@@ -9,8 +9,14 @@
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 #include <limits>
+#include <utility>
 
 namespace ve::renderer {
+
+struct Ray {
+    glm::vec3 origin{0.0f};
+    glm::vec3 direction{0.0f, 0.0f, -1.0f}; // expected to be normalized
+};
 
 struct Aabb {
     glm::vec3 min{std::numeric_limits<float>::infinity()};
@@ -61,6 +67,55 @@ struct Aabb {
         }
 
         return result;
+    }
+
+    // Slab-method ray/AABB intersection. On a hit, outDistance is the distance
+    // along the ray to the entry point (0 if the ray starts inside the box).
+    // The ray direction is assumed normalized; hits behind the origin are ignored.
+    [[nodiscard]] bool intersectRay(const Ray& ray, float& outDistance) const
+    {
+        if (!valid()) {
+            return false;
+        }
+
+        float tMin = -std::numeric_limits<float>::infinity();
+        float tMax = std::numeric_limits<float>::infinity();
+
+        for (int axis = 0; axis < 3; ++axis) {
+            const float origin = ray.origin[axis];
+            const float direction = ray.direction[axis];
+            const float slabMin = min[axis];
+            const float slabMax = max[axis];
+
+            if (std::abs(direction) < 1e-8f) {
+                // Ray is parallel to this slab; it misses unless the origin is inside it.
+                if (origin < slabMin || origin > slabMax) {
+                    return false;
+                }
+                continue;
+            }
+
+            const float inverse = 1.0f / direction;
+            float tEnter = (slabMin - origin) * inverse;
+            float tExit = (slabMax - origin) * inverse;
+            if (tEnter > tExit) {
+                std::swap(tEnter, tExit);
+            }
+
+            tMin = tEnter > tMin ? tEnter : tMin;
+            tMax = tExit < tMax ? tExit : tMax;
+            if (tMin > tMax) {
+                return false;
+            }
+        }
+
+        // The box is entirely behind the ray origin.
+        if (tMax < 0.0f) {
+            return false;
+        }
+
+        outDistance = tMin >= 0.0f ? tMin : 0.0f;
+        return true;
     }
 };
 

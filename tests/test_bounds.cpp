@@ -8,7 +8,18 @@
 
 using ve::renderer::Aabb;
 using ve::renderer::Frustum;
+using ve::renderer::Ray;
 using ve::renderer::Sphere;
+
+namespace {
+Aabb unitBox()
+{
+    Aabb box;
+    box.min = glm::vec3(-1.0f);
+    box.max = glm::vec3(1.0f);
+    return box;
+}
+} // namespace
 
 TEST_CASE("Aabb::transform translates the box", "[bounds]")
 {
@@ -81,6 +92,84 @@ TEST_CASE("Frustum culls spheres outside the view volume", "[bounds][frustum]")
         // Centre is off to the side but the radius reaches back into the volume.
         CHECK(frustum.testSphere(Sphere{glm::vec3(3.0f, 0.0f, 0.0f), 5.0f}));
     }
+}
+
+TEST_CASE("Ray hits an AABB it points at and reports entry distance", "[bounds][ray]")
+{
+    const Aabb box = unitBox();
+
+    SECTION("ray from outside toward the box hits at the near face")
+    {
+        Ray ray;
+        ray.origin = glm::vec3(0.0f, 0.0f, 5.0f);
+        ray.direction = glm::vec3(0.0f, 0.0f, -1.0f);
+        float distance = -1.0f;
+        REQUIRE(box.intersectRay(ray, distance));
+        CHECK(distance == Catch::Approx(4.0f)); // 5 -> near face at z=1
+    }
+
+    SECTION("ray starting inside the box reports zero distance")
+    {
+        Ray ray;
+        ray.origin = glm::vec3(0.0f);
+        ray.direction = glm::vec3(1.0f, 0.0f, 0.0f);
+        float distance = -1.0f;
+        REQUIRE(box.intersectRay(ray, distance));
+        CHECK(distance == Catch::Approx(0.0f));
+    }
+
+    SECTION("diagonal ray still hits")
+    {
+        Ray ray;
+        ray.origin = glm::vec3(5.0f, 5.0f, 5.0f);
+        ray.direction = glm::normalize(glm::vec3(-1.0f, -1.0f, -1.0f));
+        float distance = -1.0f;
+        CHECK(box.intersectRay(ray, distance));
+    }
+}
+
+TEST_CASE("Ray misses an AABB it points away from or beside", "[bounds][ray]")
+{
+    const Aabb box = unitBox();
+
+    SECTION("ray pointing away from the box misses")
+    {
+        Ray ray;
+        ray.origin = glm::vec3(0.0f, 0.0f, 5.0f);
+        ray.direction = glm::vec3(0.0f, 0.0f, 1.0f); // away from the box
+        float distance = -1.0f;
+        CHECK_FALSE(box.intersectRay(ray, distance));
+    }
+
+    SECTION("parallel ray offset beside the box misses")
+    {
+        Ray ray;
+        ray.origin = glm::vec3(5.0f, 5.0f, 5.0f);
+        ray.direction = glm::vec3(0.0f, 0.0f, -1.0f); // parallel to Z slab but x,y outside
+        float distance = -1.0f;
+        CHECK_FALSE(box.intersectRay(ray, distance));
+    }
+}
+
+TEST_CASE("Ray picks the nearest of two boxes by entry distance", "[bounds][ray]")
+{
+    Ray ray;
+    ray.origin = glm::vec3(0.0f, 0.0f, 10.0f);
+    ray.direction = glm::vec3(0.0f, 0.0f, -1.0f);
+
+    Aabb near;
+    near.min = glm::vec3(-1.0f, -1.0f, 2.0f);
+    near.max = glm::vec3(1.0f, 1.0f, 4.0f);
+    Aabb far;
+    far.min = glm::vec3(-1.0f, -1.0f, -4.0f);
+    far.max = glm::vec3(1.0f, 1.0f, -2.0f);
+
+    float nearDistance = -1.0f;
+    float farDistance = -1.0f;
+    REQUIRE(near.intersectRay(ray, nearDistance));
+    REQUIRE(far.intersectRay(ray, farDistance));
+    CHECK(nearDistance < farDistance); // the closer box is selected when picking
+    CHECK(nearDistance == Catch::Approx(6.0f));
 }
 
 TEST_CASE("Aabb frustum test matches sphere expectations", "[bounds][frustum]")

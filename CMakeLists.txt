@@ -136,11 +136,13 @@ add_library(imgui STATIC
     external/imgui/imgui_widgets.cpp
     external/imgui/backends/imgui_impl_sdl3.cpp
     external/imgui/backends/imgui_impl_vulkan.cpp
+    external/imguizmo/ImGuizmo.cpp
 )
 
 target_include_directories(imgui PUBLIC
     external/imgui
     external/imgui/backends
+    external/imguizmo
 )
 
 target_compile_definitions(imgui PUBLIC
@@ -160,6 +162,7 @@ find_package(Threads REQUIRED)
 add_library(VulkanEngineCore STATIC
     src/core/JobSystem.cpp
     src/core/Logger.cpp
+    src/renderer/EditorCamera.cpp
     src/renderer/RuntimeSettings.cpp
 )
 

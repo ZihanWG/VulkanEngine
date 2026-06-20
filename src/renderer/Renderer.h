@@ -3,6 +3,7 @@
 #include "assets/AssetManager.h"
 #include "core/JobSystem.h"
 #include "renderer/BindlessTextureHeap.h"
+#include "renderer/EditorCamera.h"
 #include "renderer/Bounds.h"
 #include "renderer/Camera.h"
 #include "renderer/FrameResources.h"
@@ -66,6 +67,14 @@ private:
     static constexpr uint32_t kMaxShadowCascades = 4;
     static constexpr size_t kDebugHistoryCapacity = 240;
     static constexpr size_t kInvalidRenderObjectIndex = std::numeric_limits<size_t>::max();
+
+    // Which transform handle the viewport gizmo manipulates (mapped to ImGuizmo
+    // operations in the .cpp so this header stays free of the ImGuizmo include).
+    enum class GizmoOperation {
+        Translate,
+        Rotate,
+        Scale
+    };
 
     struct ShadowSettings {
         uint32_t resolution = 2048;
@@ -377,6 +386,12 @@ private:
     void loadOcclusionTestScene();
     void enableOcclusionTestSettings();
     [[nodiscard]] bool previousFrameDepthValidForOcclusion() const;
+    // Editor viewport interaction: free-fly/orbit camera, click-to-select picking,
+    // and ImGuizmo transform handles. See EditorCamera and Bounds::intersectRay.
+    void updateEditorCamera(float deltaSeconds);
+    void pickObjectAtCursor(float pixelX, float pixelY);
+    [[nodiscard]] renderer::Ray screenPointToRay(float pixelX, float pixelY) const;
+    void drawViewportGizmo();
     void buildDebugUi();
     void drawScenePresetDebugUi();
     void drawPortfolioCaptureDebugUi();
@@ -532,6 +547,7 @@ private:
     std::vector<VkDescriptorSet> depthPyramidDescriptorSets_;
     std::vector<VkImageView> depthPyramidMipImageViews_;
     renderer::Camera camera_;
+    EditorCamera editorCamera_{};
     DirectionalLightSettings directionalLightSettings_{};
     renderer::Mesh cubeMesh_;
     renderer::Mesh portfolioSphereMesh_;
@@ -662,6 +678,17 @@ private:
     float histogramClippedLuminance_ = 0.18f;
     size_t selectedRenderObjectIndex_ = kInvalidRenderObjectIndex;
     uint32_t nextRenderObjectDebugId_ = 1;
+    // Editor viewport interaction state.
+    GizmoOperation gizmoOperation_ = GizmoOperation::Translate;
+    bool gizmoWorldSpace_ = true;
+    bool cameraFlying_ = false;   // RMB held: free-fly look + WASD
+    bool cameraOrbiting_ = false; // Alt+LMB: orbit around target
+    bool cameraPanning_ = false;  // MMB: pan
+    bool leftMouseDown_ = false;
+    bool leftMouseDragged_ = false;
+    glm::vec2 leftMouseDownPosition_{0.0f, 0.0f};
+    glm::vec2 pendingLookDelta_{0.0f, 0.0f}; // accumulated mouse motion while flying (pixels)
+    float pendingScroll_ = 0.0f;             // accumulated wheel this frame
     bool initialized_ = false;
     bool useBindlessMaterialTextures_ = true;
     bool bindlessMaterialTexturesAvailable_ = false;

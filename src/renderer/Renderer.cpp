@@ -9,6 +9,7 @@
 
 #include <SDL3/SDL.h>
 #include <imgui.h>
+#include <ImGuizmo.h> // must follow imgui.h (relies on its types)
 #include <json.hpp>
 
 #include <algorithm>
@@ -28,6 +29,7 @@
 #include <glm/geometric.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/matrix_inverse.hpp>
+#include <glm/gtc/type_ptr.hpp>
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/matrix_decompose.hpp>
 #include <glm/mat4x4.hpp>
@@ -174,6 +176,7 @@ void Renderer::drawFrame()
     }
 
     updateCpuFrameTime();
+    updateEditorCamera(cpuFrameDeltaMs_ * 0.001f);
 
     if (window_.wasResized()) {
         recreateSwapchain();
@@ -211,6 +214,7 @@ void Renderer::drawFrame()
 
     imguiLayer_.beginFrame();
     buildDebugUi();
+    drawViewportGizmo();
     imguiLayer_.endFrame();
     updateFrameData(currentFrame_);
     recordRenderCommands(frame.commandBuffer, imageIndex);
@@ -276,6 +280,226 @@ void Renderer::handleEvent(const SDL_Event& event)
     }
     if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat && event.key.key == SDLK_F12) {
         requestPortfolioScreenshot();
+    }
+
+    const bool uiWantsMouse = imguiLayer_.wantsMouseCapture();
+    const bool uiWantsKeyboard = imguiLayer_.wantsKeyboardCapture();
+
+    switch (event.type) {
+    case SDL_EVENT_MOUSE_BUTTON_DOWN: {
+        if (event.button.button == SDL_BUTTON_RIGHT && !uiWantsMouse) {
+            cameraFlying_ = true;
+            editorCamera_.syncFromCamera(camera_);
+            pendingLookDelta_ = glm::vec2(0.0f);
+            if (SDL_Window* sdlWindow = window_.nativeHandle()) {
+                SDL_SetWindowRelativeMouseMode(sdlWindow, true);
+            }
+        } else if (event.button.button == SDL_BUTTON_MIDDLE && !uiWantsMouse) {
+            cameraPanning_ = true;
+        } else if (event.button.button == SDL_BUTTON_LEFT && !uiWantsMouse && !ImGuizmo::IsOver() &&
+                   !ImGuizmo::IsUsing()) {
+            if ((SDL_GetModState() & SDL_KMOD_ALT) != 0) {
+                cameraOrbiting_ = true;
+            } else {
+                leftMouseDown_ = true;
+                leftMouseDragged_ = false;
+                leftMouseDownPosition_ = glm::vec2(event.button.x, event.button.y);
+            }
+        }
+        break;
+    }
+    case SDL_EVENT_MOUSE_BUTTON_UP: {
+        if (event.button.button == SDL_BUTTON_RIGHT) {
+            cameraFlying_ = false;
+            if (SDL_Window* sdlWindow = window_.nativeHandle()) {
+                SDL_SetWindowRelativeMouseMode(sdlWindow, false);
+            }
+        } else if (event.button.button == SDL_BUTTON_MIDDLE) {
+            cameraPanning_ = false;
+        } else if (event.button.button == SDL_BUTTON_LEFT) {
+            if (cameraOrbiting_) {
+                cameraOrbiting_ = false;
+            } else if (leftMouseDown_ && !leftMouseDragged_ && !ImGuizmo::IsOver() && !ImGuizmo::IsUsing()) {
+                pickObjectAtCursor(event.button.x, event.button.y);
+            }
+            leftMouseDown_ = false;
+        }
+        break;
+    }
+    case SDL_EVENT_MOUSE_MOTION: {
+        const float xrel = event.motion.xrel;
+        const float yrel = event.motion.yrel;
+        if (cameraFlying_) {
+            pendingLookDelta_ += glm::vec2(xrel, yrel);
+        } else if (cameraOrbiting_) {
+            constexpr float orbitSensitivity = 0.01f;
+            editorCamera_.orbit(camera_, -xrel * orbitSensitivity, -yrel * orbitSensitivity);
+        } else if (cameraPanning_) {
+            const float panScale = 0.01f * std::max(glm::length(camera_.target - camera_.position), 1.0f);
+            editorCamera_.pan(camera_, -xrel * panScale, yrel * panScale);
+        }
+        if (leftMouseDown_) {
+            const glm::vec2 current(event.motion.x, event.motion.y);
+            if (glm::length(current - leftMouseDownPosition_) > 4.0f) {
+                leftMouseDragged_ = true;
+            }
+        }
+        break;
+    }
+    case SDL_EVENT_MOUSE_WHEEL: {
+        if (!uiWantsMouse) {
+            pendingScroll_ += event.wheel.y;
+        }
+        break;
+    }
+    case SDL_EVENT_KEY_DOWN: {
+        if (!event.key.repeat && !cameraFlying_ && !uiWantsKeyboard) {
+            if (event.key.key == SDLK_W) {
+                gizmoOperation_ = GizmoOperation::Translate;
+            } else if (event.key.key == SDLK_E) {
+                gizmoOperation_ = GizmoOperation::Rotate;
+            } else if (event.key.key == SDLK_R) {
+                gizmoOperation_ = GizmoOperation::Scale;
+            } else if (event.key.key == SDLK_X) {
+                gizmoWorldSpace_ = !gizmoWorldSpace_;
+            }
+        }
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+void Renderer::updateEditorCamera(float deltaSeconds)
+{
+    if (cameraFlying_) {
+        EditorCameraInput input;
+        const bool* keys = SDL_GetKeyboardState(nullptr);
+        if (keys) {
+            if (keys[SDL_SCANCODE_W]) {
+                input.moveAxis.z += 1.0f;
+            }
+            if (keys[SDL_SCANCODE_S]) {
+                input.moveAxis.z -= 1.0f;
+            }
+            if (keys[SDL_SCANCODE_D]) {
+                input.moveAxis.x += 1.0f;
+            }
+            if (keys[SDL_SCANCODE_A]) {
+                input.moveAxis.x -= 1.0f;
+            }
+            if (keys[SDL_SCANCODE_E]) {
+                input.moveAxis.y += 1.0f;
+            }
+            if (keys[SDL_SCANCODE_Q]) {
+                input.moveAxis.y -= 1.0f;
+            }
+            if (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT]) {
+                input.speedScale = 3.0f;
+            }
+        }
+        constexpr float lookSensitivity = 0.0025f;
+        input.lookDelta = glm::vec2(pendingLookDelta_.x * lookSensitivity, -pendingLookDelta_.y * lookSensitivity);
+        editorCamera_.updateFly(camera_, input, deltaSeconds);
+    }
+
+    if (pendingScroll_ != 0.0f) {
+        if (cameraFlying_) {
+            const float scaled = editorCamera_.moveSpeed() * std::pow(1.15f, pendingScroll_);
+            editorCamera_.setMoveSpeed(std::clamp(scaled, 0.1f, 1000.0f));
+        } else {
+            const float distance = glm::length(camera_.target - camera_.position);
+            editorCamera_.dolly(camera_, pendingScroll_ * 0.1f * std::max(distance, 0.5f));
+        }
+    }
+
+    pendingLookDelta_ = glm::vec2(0.0f);
+    pendingScroll_ = 0.0f;
+}
+
+renderer::Ray Renderer::screenPointToRay(float pixelX, float pixelY) const
+{
+    const ImGuiIO& io = ImGui::GetIO();
+    const float width = io.DisplaySize.x > 0.0f ? io.DisplaySize.x : 1.0f;
+    const float height = io.DisplaySize.y > 0.0f ? io.DisplaySize.y : 1.0f;
+
+    // NDC in [-1, 1]. The Vulkan Y-flip is baked into frameViewProjection_, so the
+    // same screen->NDC mapping inverts consistently. (If picking ends up vertically
+    // mirrored on a given driver, flip the sign of ndcY.)
+    const float ndcX = (2.0f * pixelX / width) - 1.0f;
+    const float ndcY = (2.0f * pixelY / height) - 1.0f;
+
+    const glm::mat4 invViewProjection = glm::inverse(frameViewProjection_);
+    glm::vec4 nearPoint = invViewProjection * glm::vec4(ndcX, ndcY, 0.0f, 1.0f);
+    glm::vec4 farPoint = invViewProjection * glm::vec4(ndcX, ndcY, 1.0f, 1.0f);
+    nearPoint /= nearPoint.w;
+    farPoint /= farPoint.w;
+
+    renderer::Ray ray;
+    ray.origin = glm::vec3(nearPoint);
+    ray.direction = glm::normalize(glm::vec3(farPoint - nearPoint));
+    return ray;
+}
+
+void Renderer::pickObjectAtCursor(float pixelX, float pixelY)
+{
+    const renderer::Ray ray = screenPointToRay(pixelX, pixelY);
+    float closestDistance = std::numeric_limits<float>::infinity();
+    size_t hitIndex = kInvalidRenderObjectIndex;
+
+    for (size_t index = 0; index < renderObjects_.size(); ++index) {
+        const renderer::RenderObject& object = renderObjects_[index];
+        if (!isRenderObjectActive(object)) {
+            continue;
+        }
+
+        const renderer::Aabb bounds = object.worldBounds();
+        float distance = 0.0f;
+        if (bounds.intersectRay(ray, distance) && distance < closestDistance) {
+            closestDistance = distance;
+            hitIndex = index;
+        }
+    }
+
+    // Clicking empty space clears the selection.
+    selectedRenderObjectIndex_ = hitIndex;
+    invalidateDepthPyramid();
+}
+
+void Renderer::drawViewportGizmo()
+{
+    if (cameraFlying_ || selectedRenderObjectIndex_ >= renderObjects_.size()) {
+        return;
+    }
+
+    renderer::RenderObject& object = renderObjects_[selectedRenderObjectIndex_];
+    const ImGuiIO& io = ImGui::GetIO();
+
+    ImGuizmo::SetOrthographic(false);
+    ImGuizmo::SetDrawlist(ImGui::GetBackgroundDrawList());
+    ImGuizmo::SetRect(0.0f, 0.0f, io.DisplaySize.x, io.DisplaySize.y);
+
+    const float aspect = io.DisplaySize.y > 0.0f ? io.DisplaySize.x / io.DisplaySize.y : 1.0f;
+    glm::mat4 view = camera_.viewMatrix();
+    glm::mat4 projection = camera_.projectionMatrix(aspect);
+    projection[1][1] *= -1.0f; // undo the Vulkan Y-flip; ImGuizmo expects GL-style projection
+
+    ImGuizmo::OPERATION operation = ImGuizmo::TRANSLATE;
+    if (gizmoOperation_ == GizmoOperation::Rotate) {
+        operation = ImGuizmo::ROTATE;
+    } else if (gizmoOperation_ == GizmoOperation::Scale) {
+        operation = ImGuizmo::SCALE;
+    }
+    const ImGuizmo::MODE mode = gizmoWorldSpace_ ? ImGuizmo::WORLD : ImGuizmo::LOCAL;
+
+    glm::mat4 model = object.transform.modelMatrix();
+    if (ImGuizmo::Manipulate(
+            glm::value_ptr(view), glm::value_ptr(projection), operation, mode, glm::value_ptr(model))) {
+        object.transform = renderer::Transform::fromMatrix(model);
+        convertMatrixOverrideToEditableTrs(object.transform);
+        object.animateTransform = false;
+        invalidateDepthPyramid();
     }
 }
 

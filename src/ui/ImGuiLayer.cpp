@@ -8,6 +8,7 @@
 #include <backends/imgui_impl_sdl3.h>
 #include <backends/imgui_impl_vulkan.h>
 #include <imgui.h>
+#include <ImGuizmo.h> // must follow imgui.h (relies on its types)
 
 #include <algorithm>
 #include <array>
@@ -102,6 +103,7 @@ void ImGuiLayer::beginFrame()
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
+    ImGuizmo::BeginFrame();
 }
 
 void ImGuiLayer::endFrame()

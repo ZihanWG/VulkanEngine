@@ -17,6 +17,7 @@ add_executable(VulkanEngineTests
     test_runtime_settings.cpp
     test_bounds.cpp
     test_job_system.cpp
+    test_editor_camera.cpp
 )
 
 target_link_libraries(VulkanEngineTests PRIVATE
