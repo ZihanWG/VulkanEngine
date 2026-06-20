@@ -313,6 +313,14 @@ private:
     void updateGpuCullInputBuffer(uint32_t frameIndex);
     void updateGpuShadowCullInputBuffer(uint32_t frameIndex);
     void updateFrameData(uint32_t frameIndex);
+    // updateFrameData() helpers (see Renderer.cpp); each is a verbatim slice of the
+    // former monolithic function, kept private and behaviour-preserving.
+    void resetFrameStateForEmptyScene(uint32_t frameIndex);
+    bool updateAnimatedTransforms(float elapsedSeconds);
+    void resetGpuCullFrameCounters(uint32_t frameIndex);
+    void buildShadowFrameData(uint32_t frameIndex);
+    void buildMainCullingFrameData(uint32_t frameIndex, const renderer::Frustum& cameraFrustum);
+    void uploadObjectFrameData(uint32_t frameIndex);
     void buildDrawItems();
     void buildVisibleDrawItems(const renderer::Frustum& frustum);
     void buildMeshDrawBatches();

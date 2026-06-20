@@ -6350,51 +6350,76 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     frameCameraPosition_ = camera_.position;
 
     if (renderObjects_.empty()) {
-        allDrawItems_.clear();
-        visibleDrawItems_.clear();
-        shadowDrawItems_.clear();
-        meshDrawBatches_.clear();
-        shadowMeshDrawBatches_.clear();
-        gpuShadowMeshDrawBatches_.clear();
-        for (std::vector<DrawItem>& cascadeDrawItems : shadowCascadeDrawItems_) {
-            cascadeDrawItems.clear();
-        }
-        for (std::vector<MeshDrawBatch>& cascadeBatches : shadowCascadeMeshDrawBatches_) {
-            cascadeBatches.clear();
-        }
-        shadowVisibleDrawItemsPerCascade_.fill(0);
-        shadowBatchCountPerCascade_.fill(0);
-        cullingStats_ = {};
-        shadowCullingStats_ = {};
-        if (frameIndex < frameGpuCullTotalDrawItems_.size()) {
-            frameGpuCullTotalDrawItems_[frameIndex] = 0;
-        }
-        if (frameIndex < frameGpuCullBatchCounts_.size()) {
-            frameGpuCullBatchCounts_[frameIndex] = 0;
-        }
-        if (frameIndex < frameGpuCullReadbackReady_.size()) {
-            frameGpuCullReadbackReady_[frameIndex] = 0;
-        }
-        if (frameIndex < frameGpuCullIndirectCountPath_.size()) {
-            frameGpuCullIndirectCountPath_[frameIndex] = 0;
-        }
-        if (frameIndex < frameGpuShadowCullTotalDrawItems_.size()) {
-            frameGpuShadowCullTotalDrawItems_[frameIndex] = 0;
-        }
-        if (frameIndex < frameGpuShadowCullBatchCounts_.size()) {
-            frameGpuShadowCullBatchCounts_[frameIndex] = 0;
-        }
-        if (frameIndex < frameGpuShadowCullReadbackReady_.size()) {
-            frameGpuShadowCullReadbackReady_[frameIndex] = 0;
-        }
-        if (frameIndex < frameGpuShadowCullIndirectCountPath_.size()) {
-            frameGpuShadowCullIndirectCountPath_[frameIndex] = 0;
-        }
+        resetFrameStateForEmptyScene(frameIndex);
         return;
     }
 
     updateCascades(aspect);
 
+    if (updateAnimatedTransforms(elapsedSeconds)) {
+        invalidateDepthPyramid();
+    }
+
+    buildDrawItems();
+    resetGpuCullFrameCounters(frameIndex);
+
+    const renderer::Frustum cameraFrustum = renderer::Frustum::fromViewProjection(viewProjection);
+    for (size_t planeIndex = 0; planeIndex < frameFrustumPlanes_.size(); ++planeIndex) {
+        const renderer::FrustumPlane& cameraPlane = cameraFrustum.planes[planeIndex];
+        frameFrustumPlanes_[planeIndex] = glm::vec4(cameraPlane.normal, cameraPlane.distance);
+    }
+
+    buildShadowFrameData(frameIndex);
+    buildMainCullingFrameData(frameIndex, cameraFrustum);
+    uploadObjectFrameData(frameIndex);
+}
+
+void Renderer::resetFrameStateForEmptyScene(uint32_t frameIndex)
+{
+    allDrawItems_.clear();
+    visibleDrawItems_.clear();
+    shadowDrawItems_.clear();
+    meshDrawBatches_.clear();
+    shadowMeshDrawBatches_.clear();
+    gpuShadowMeshDrawBatches_.clear();
+    for (std::vector<DrawItem>& cascadeDrawItems : shadowCascadeDrawItems_) {
+        cascadeDrawItems.clear();
+    }
+    for (std::vector<MeshDrawBatch>& cascadeBatches : shadowCascadeMeshDrawBatches_) {
+        cascadeBatches.clear();
+    }
+    shadowVisibleDrawItemsPerCascade_.fill(0);
+    shadowBatchCountPerCascade_.fill(0);
+    cullingStats_ = {};
+    shadowCullingStats_ = {};
+    if (frameIndex < frameGpuCullTotalDrawItems_.size()) {
+        frameGpuCullTotalDrawItems_[frameIndex] = 0;
+    }
+    if (frameIndex < frameGpuCullBatchCounts_.size()) {
+        frameGpuCullBatchCounts_[frameIndex] = 0;
+    }
+    if (frameIndex < frameGpuCullReadbackReady_.size()) {
+        frameGpuCullReadbackReady_[frameIndex] = 0;
+    }
+    if (frameIndex < frameGpuCullIndirectCountPath_.size()) {
+        frameGpuCullIndirectCountPath_[frameIndex] = 0;
+    }
+    if (frameIndex < frameGpuShadowCullTotalDrawItems_.size()) {
+        frameGpuShadowCullTotalDrawItems_[frameIndex] = 0;
+    }
+    if (frameIndex < frameGpuShadowCullBatchCounts_.size()) {
+        frameGpuShadowCullBatchCounts_[frameIndex] = 0;
+    }
+    if (frameIndex < frameGpuShadowCullReadbackReady_.size()) {
+        frameGpuShadowCullReadbackReady_[frameIndex] = 0;
+    }
+    if (frameIndex < frameGpuShadowCullIndirectCountPath_.size()) {
+        frameGpuShadowCullIndirectCountPath_[frameIndex] = 0;
+    }
+}
+
+bool Renderer::updateAnimatedTransforms(float elapsedSeconds)
+{
     bool animatedTransformUpdated = false;
     for (size_t objectIndex = 0; objectIndex < renderObjects_.size(); ++objectIndex) {
         renderer::RenderObject& object = renderObjects_[objectIndex];
@@ -6423,11 +6448,11 @@ void Renderer::updateFrameData(uint32_t frameIndex)
             break;
         }
     }
-    if (animatedTransformUpdated) {
-        invalidateDepthPyramid();
-    }
+    return animatedTransformUpdated;
+}
 
-    buildDrawItems();
+void Renderer::resetGpuCullFrameCounters(uint32_t frameIndex)
+{
     if (frameIndex < frameGpuCullTotalDrawItems_.size()) {
         frameGpuCullTotalDrawItems_[frameIndex] =
             static_cast<uint32_t>(std::min(allDrawItems_.size(), static_cast<size_t>(kMaxDrawItems)));
@@ -6453,13 +6478,10 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     if (frameIndex < frameGpuShadowCullIndirectCountPath_.size()) {
         frameGpuShadowCullIndirectCountPath_[frameIndex] = 0;
     }
+}
 
-    const renderer::Frustum cameraFrustum = renderer::Frustum::fromViewProjection(viewProjection);
-    for (size_t planeIndex = 0; planeIndex < frameFrustumPlanes_.size(); ++planeIndex) {
-        const renderer::FrustumPlane& cameraPlane = cameraFrustum.planes[planeIndex];
-        frameFrustumPlanes_[planeIndex] = glm::vec4(cameraPlane.normal, cameraPlane.distance);
-    }
-
+void Renderer::buildShadowFrameData(uint32_t frameIndex)
+{
     const uint32_t cascadeCount = activeCascadeCount();
     shadowDrawItems_.clear();
     shadowMeshDrawBatches_.clear();
@@ -6525,7 +6547,10 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     } else {
         shadowCullingStats_.indirectDrawing = false;
     }
+}
 
+void Renderer::buildMainCullingFrameData(uint32_t frameIndex, const renderer::Frustum& cameraFrustum)
+{
     const bool gpuCullingActive = isGpuCullingActive();
     if (gpuCullingActive) {
         visibleDrawItems_ = allDrawItems_;
@@ -6566,7 +6591,11 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     } else {
         updateIndirectDrawBuffer(frameIndex);
     }
+}
 
+void Renderer::uploadObjectFrameData(uint32_t frameIndex)
+{
+    const uint32_t cascadeCount = activeCascadeCount();
     const size_t objectFrameCount = std::min(allDrawItems_.size(), static_cast<size_t>(kMaxDrawItems));
     std::vector<ObjectFrameData> objectFrameData(objectFrameCount);
     const glm::vec4 activeLightDirection = activeDirectionalLightDirection();
