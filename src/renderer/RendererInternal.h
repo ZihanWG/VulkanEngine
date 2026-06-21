@@ -1232,21 +1232,6 @@ std::string pointerString(const void* pointer)
     return stream.str();
 }
 
-std::string portfolioTimestamp()
-{
-    const std::time_t now = std::time(nullptr);
-    std::tm localTime{};
-#if defined(_WIN32)
-    localtime_s(&localTime, &now);
-#else
-    localtime_r(&now, &localTime);
-#endif
-
-    std::ostringstream stream;
-    stream << std::put_time(&localTime, "%Y%m%d_%H%M%S");
-    return stream.str();
-}
-
 bool supportedScreenshotFormat(VkFormat format)
 {
     switch (format) {
@@ -1258,43 +1243,6 @@ bool supportedScreenshotFormat(VkFormat format)
     default:
         return false;
     }
-}
-
-std::vector<uint8_t> convertScreenshotToRgba8(std::span<const std::byte> source,
-                                              VkExtent2D extent,
-                                              VkFormat format)
-{
-    const size_t pixelCount = static_cast<size_t>(extent.width) * extent.height;
-    const size_t byteCount = pixelCount * 4U;
-    if (source.size_bytes() < byteCount) {
-        throw std::runtime_error("Screenshot readback buffer is smaller than the captured image.");
-    }
-
-    std::vector<uint8_t> rgba(byteCount);
-    const auto* input = reinterpret_cast<const uint8_t*>(source.data());
-    for (size_t pixel = 0; pixel < pixelCount; ++pixel) {
-        const size_t offset = pixel * 4U;
-        switch (format) {
-        case VK_FORMAT_B8G8R8A8_UNORM:
-        case VK_FORMAT_B8G8R8A8_SRGB:
-            rgba[offset + 0] = input[offset + 2];
-            rgba[offset + 1] = input[offset + 1];
-            rgba[offset + 2] = input[offset + 0];
-            rgba[offset + 3] = input[offset + 3];
-            break;
-        case VK_FORMAT_R8G8B8A8_UNORM:
-        case VK_FORMAT_R8G8B8A8_SRGB:
-            rgba[offset + 0] = input[offset + 0];
-            rgba[offset + 1] = input[offset + 1];
-            rgba[offset + 2] = input[offset + 2];
-            rgba[offset + 3] = input[offset + 3];
-            break;
-        default:
-            throw std::runtime_error(std::string("Unsupported screenshot swapchain format: ") + vkFormatName(format));
-        }
-    }
-
-    return rgba;
 }
 
 std::string formatVec4(const glm::vec4& value)

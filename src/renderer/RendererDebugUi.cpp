@@ -255,7 +255,7 @@ void Renderer::drawPortfolioCaptureDebugUi()
     if (ImGui::Button("Load Portfolio Showcase Scene")) {
         setPortfolioCaptureMode(true);
         applyPortfolioCaptureSettings();
-        portfolioScreenshotStatus_ = "Portfolio showcase scene preset is active.";
+        screenshotCapture_.setStatus("Portfolio showcase scene preset is active.");
     }
 
     if (ImGui::Button("Capture Portfolio Screenshot")) {
@@ -266,10 +266,10 @@ void Renderer::drawPortfolioCaptureDebugUi()
 
     const std::filesystem::path outputDirectory = portfolioScreenshotDirectory();
     ImGui::TextWrapped("Output: %s", (outputDirectory / "vulkan_engine_portfolio_latest.png").string().c_str());
-    if (!lastPortfolioScreenshotPath_.empty()) {
-        ImGui::TextWrapped("Last timestamped: %s", lastPortfolioScreenshotPath_.string().c_str());
+    if (!screenshotCapture_.lastSavedPath().empty()) {
+        ImGui::TextWrapped("Last timestamped: %s", screenshotCapture_.lastSavedPath().string().c_str());
     }
-    ImGui::TextWrapped("Status: %s", portfolioScreenshotStatus_.c_str());
+    ImGui::TextWrapped("Status: %s", screenshotCapture_.status().c_str());
     ImGui::TextDisabled("Captures the final composite before ImGui, so debug UI is excluded from the PNG.");
 
     if (!swapchain_.supportsTransferSrc()) {

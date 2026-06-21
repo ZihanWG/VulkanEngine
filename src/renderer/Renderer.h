@@ -14,6 +14,7 @@
 #include "renderer/RenderGraph.h"
 #include "renderer/RenderObject.h"
 #include "renderer/RuntimeSettings.h"
+#include "renderer/ScreenshotCapture.h"
 #include "rhi/VulkanBuffer.h"
 #include "rhi/VulkanBrdfLut.h"
 #include "rhi/VulkanCommandContext.h"
@@ -214,15 +215,6 @@ private:
         CsmSettings csm;
         float currentExposure = 1.0f;
         bool valid = false;
-    };
-
-    struct PortfolioScreenshotReadback {
-        rhi::VulkanBuffer buffer;
-        VkExtent2D extent{};
-        VkFormat format = VK_FORMAT_UNDEFINED;
-        std::filesystem::path timestampedPath;
-        std::filesystem::path latestPath;
-        bool pending = false;
     };
 
     void createMaterialDescriptorSetLayout();
@@ -633,7 +625,6 @@ private:
     std::vector<rhi::VulkanBuffer> frameHistogramBuffers_;
     std::vector<rhi::VulkanBuffer> frameHistogramReadbackBuffers_;
     std::vector<rhi::VulkanBuffer> frameExposureBuffers_;
-    std::vector<PortfolioScreenshotReadback> portfolioScreenshotReadbacks_;
     std::vector<uint32_t> frameGpuCullTotalDrawItems_;
     std::vector<uint32_t> frameGpuCullBatchCounts_;
     std::vector<uint32_t> frameGpuShadowCullTotalDrawItems_;
@@ -722,8 +713,7 @@ private:
     std::string lastSceneSaveStatus_ = "Not saved this session.";
     std::string lastMaterialAssetStatus_ = "No material asset saved or reloaded this session.";
     std::string occlusionTestSceneStatus_ = "Occlusion test scene not loaded.";
-    std::string portfolioScreenshotStatus_ = "No capture requested.";
-    std::filesystem::path lastPortfolioScreenshotPath_;
+    renderer::ScreenshotCapture screenshotCapture_;
     PortfolioCaptureSavedState portfolioCaptureSavedState_{};
     float cpuFrameDeltaMs_ = 0.0f;
     float cpuFps_ = 0.0f;
