@@ -414,6 +414,14 @@ private:
     };
 
     void requireFrameActive(const char* operation) const;
+    // beginFrame() helpers (see RenderGraph.cpp): import the externally-owned
+    // swapchain/shadow targets, create the transient frame textures, and import
+    // the per-frame buffers. Verbatim slices of the former monolithic beginFrame.
+    void importExternalFrameTargets(rhi::VulkanSwapchain& swapchain,
+                                    rhi::VulkanShadowMap& shadowMap,
+                                    uint32_t imageIndex);
+    void createTransientFrameTextures();
+    void importFrameBuffers();
     void buildFrameGraphDeclarations();
     // buildFrameGraphDeclarations() groups (see RenderGraph.cpp); each declares a
     // contiguous run of passes in the same order as before.

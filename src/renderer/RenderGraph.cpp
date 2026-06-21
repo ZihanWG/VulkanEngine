@@ -357,6 +357,27 @@ void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
     frame_.imageIndex = imageIndex;
     frame_.swapchainImage = swapchain.image(imageIndex);
 
+    importExternalFrameTargets(swapchain, shadowMap, imageIndex);
+    createTransientFrameTextures();
+    importFrameBuffers();
+
+    buildFrameGraphDeclarations();
+    compilePassCulling();
+    refreshDebugResources();
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    VK_CHECK(vkBeginCommandBuffer(commandBuffer, &beginInfo));
+
+    frameActive_ = true;
+    activePass_ = ActivePass::None;
+}
+
+void RenderGraph::importExternalFrameTargets(rhi::VulkanSwapchain& swapchain,
+                                             rhi::VulkanShadowMap& shadowMap,
+                                             uint32_t imageIndex)
+{
     RenderGraphImageResource swapchainColor{};
     swapchainColor.name = "SwapchainColor";
     swapchainColor.image = frame_.swapchainImage;
@@ -403,7 +424,10 @@ void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
     textures_.at(frame_.shadowMapDepth.index).initialLayout = shadowMap.layout();
     textures_.at(frame_.shadowMapDepth.index).lastAccess =
         accessStateFromLayout(shadowMap.layout(), VK_IMAGE_ASPECT_DEPTH_BIT);
+}
 
+void RenderGraph::createTransientFrameTextures()
+{
     const auto makeTransientDesc = [](const RenderGraphImageResource& resource) {
         RGTextureDesc desc{};
         desc.name = resource.name;
@@ -446,7 +470,10 @@ void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
         }
     }
     frame_.depthPyramid = importTexture(frame_.resources.depthPyramid);
+}
 
+void RenderGraph::importFrameBuffers()
+{
     frame_.mainCullInput = importBuffer(frame_.resources.mainCullInput);
     frame_.mainCullIndirectOutput = importBuffer(frame_.resources.mainCullIndirectOutput);
     frame_.mainCullVisibleCounts = importBuffer(frame_.resources.mainCullVisibleCounts);
@@ -456,18 +483,6 @@ void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
     frame_.luminanceHistogram = importBuffer(frame_.resources.luminanceHistogram);
     frame_.histogramReadback = importBuffer(frame_.resources.histogramReadback);
     frame_.exposureState = importBuffer(frame_.resources.exposureState);
-
-    buildFrameGraphDeclarations();
-    compilePassCulling();
-    refreshDebugResources();
-
-    VkCommandBufferBeginInfo beginInfo{};
-    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    VK_CHECK(vkBeginCommandBuffer(commandBuffer, &beginInfo));
-
-    frameActive_ = true;
-    activePass_ = ActivePass::None;
 }
 
 void RenderGraph::beginShadowPass(uint32_t cascadeLayer)
