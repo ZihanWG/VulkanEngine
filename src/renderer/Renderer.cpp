@@ -2574,142 +2574,8 @@ void Renderer::createGpuShadowCullingResources()
             throw std::runtime_error("GPU shadow culling requires the shadow indirect draw path.");
         }
 
-        frameShadowCullInputBuffers_.resize(frames_.size());
-        for (size_t frameIndex = 0; frameIndex < frameShadowCullInputBuffers_.size(); ++frameIndex) {
-            rhi::VulkanBufferCreateInfo bufferInfo{};
-            bufferInfo.size = static_cast<VkDeviceSize>(kMaxDrawItems * sizeof(GpuCullDrawItem));
-            bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-            bufferInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
-            bufferInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-            frameShadowCullInputBuffers_[frameIndex].createBuffer(context_, bufferInfo);
-            rhi::debug::setObjectName(context_.vkDevice(),
-                                      frameShadowCullInputBuffers_[frameIndex].buffer(),
-                                      VK_OBJECT_TYPE_BUFFER,
-                                      "GpuShadowCullInputBuffer" + std::to_string(frameIndex));
-        }
-
-        frameShadowBatchVisibleCountBuffers_.resize(frames_.size());
-        frameShadowBatchVisibleCountReadbackBuffers_.resize(frames_.size());
-        frameGpuShadowCullTotalDrawItems_.assign(frames_.size(), 0);
-        frameGpuShadowCullBatchCounts_.assign(frames_.size(), 0);
-        frameGpuShadowCullReadbackReady_.assign(frames_.size(), 0);
-        frameGpuShadowCullIndirectCountPath_.assign(frames_.size(), 0);
-        for (size_t frameIndex = 0; frameIndex < frames_.size(); ++frameIndex) {
-            rhi::VulkanBufferCreateInfo gpuCountInfo{};
-            gpuCountInfo.size = kGpuCullCountBufferSize;
-            gpuCountInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                                 VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-            gpuCountInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-            frameShadowBatchVisibleCountBuffers_[frameIndex].createBuffer(context_, gpuCountInfo);
-            rhi::debug::setObjectName(context_.vkDevice(),
-                                      frameShadowBatchVisibleCountBuffers_[frameIndex].buffer(),
-                                      VK_OBJECT_TYPE_BUFFER,
-                                      "GpuShadowBatchVisibleCountBuffer" + std::to_string(frameIndex));
-
-            rhi::VulkanBufferCreateInfo readbackCountInfo{};
-            readbackCountInfo.size = kGpuCullCountBufferSize;
-            readbackCountInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-            readbackCountInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
-            readbackCountInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
-            frameShadowBatchVisibleCountReadbackBuffers_[frameIndex].createBuffer(context_, readbackCountInfo);
-            rhi::debug::setObjectName(context_.vkDevice(),
-                                      frameShadowBatchVisibleCountReadbackBuffers_[frameIndex].buffer(),
-                                      VK_OBJECT_TYPE_BUFFER,
-                                      "GpuShadowBatchVisibleCountReadbackBuffer" + std::to_string(frameIndex));
-        }
-
-        std::array<VkDescriptorPoolSize, 2> poolSizes{};
-        poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        poolSizes[0].descriptorCount = static_cast<uint32_t>(frames_.size() * 4);
-        poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        poolSizes[1].descriptorCount = static_cast<uint32_t>(frames_.size());
-
-        shadowCullDescriptorPool_.create(context_.vkDevice(),
-                                         std::span<const VkDescriptorPoolSize>(poolSizes.data(), poolSizes.size()),
-                                         static_cast<uint32_t>(frames_.size()));
-        rhi::debug::setObjectName(context_.vkDevice(),
-                                  shadowCullDescriptorPool_.handle(),
-                                  VK_OBJECT_TYPE_DESCRIPTOR_POOL,
-                                  "GpuShadowCullDescriptorPool");
-
-        shadowCullDescriptorSets_.resize(frames_.size(), VK_NULL_HANDLE);
-        std::vector<VkDescriptorSetLayout> setLayouts(frames_.size(), gpuCullDescriptorSetLayout_.handle());
-        VkDescriptorSetAllocateInfo allocateInfo{};
-        allocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        allocateInfo.descriptorPool = shadowCullDescriptorPool_.handle();
-        allocateInfo.descriptorSetCount = static_cast<uint32_t>(shadowCullDescriptorSets_.size());
-        allocateInfo.pSetLayouts = setLayouts.data();
-        VK_CHECK(vkAllocateDescriptorSets(context_.vkDevice(), &allocateInfo, shadowCullDescriptorSets_.data()));
-
-        for (size_t frameIndex = 0; frameIndex < shadowCullDescriptorSets_.size(); ++frameIndex) {
-            VkDescriptorBufferInfo inputBufferInfo{};
-            inputBufferInfo.buffer = frameShadowCullInputBuffers_[frameIndex].buffer();
-            inputBufferInfo.offset = 0;
-            inputBufferInfo.range = frameShadowCullInputBuffers_[frameIndex].size();
-
-            VkDescriptorBufferInfo outputBufferInfo{};
-            outputBufferInfo.buffer = frameShadowIndirectDrawBuffers_[frameIndex].buffer();
-            outputBufferInfo.offset = 0;
-            outputBufferInfo.range = frameShadowIndirectDrawBuffers_[frameIndex].size();
-
-            VkDescriptorBufferInfo visibleCountBufferInfo{};
-            visibleCountBufferInfo.buffer = frameShadowBatchVisibleCountBuffers_[frameIndex].buffer();
-            visibleCountBufferInfo.offset = 0;
-            visibleCountBufferInfo.range = kGpuCullCountBufferSize;
-
-            VkDescriptorImageInfo depthPyramidInfo{};
-            depthPyramidInfo.sampler = depthPyramidSampler_;
-            depthPyramidInfo.imageView = depthPyramid_.imageView();
-            depthPyramidInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-            VkDescriptorBufferInfo frameParamsBufferInfo{};
-            frameParamsBufferInfo.buffer = frameGpuCullParamBuffers_[frameIndex].buffer();
-            frameParamsBufferInfo.offset = 0;
-            frameParamsBufferInfo.range = frameGpuCullParamBuffers_[frameIndex].size();
-
-            std::array<VkWriteDescriptorSet, 5> writes{};
-            writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[0].dstSet = shadowCullDescriptorSets_[frameIndex];
-            writes[0].dstBinding = 0;
-            writes[0].descriptorCount = 1;
-            writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            writes[0].pBufferInfo = &inputBufferInfo;
-
-            writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[1].dstSet = shadowCullDescriptorSets_[frameIndex];
-            writes[1].dstBinding = 1;
-            writes[1].descriptorCount = 1;
-            writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            writes[1].pBufferInfo = &outputBufferInfo;
-
-            writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[2].dstSet = shadowCullDescriptorSets_[frameIndex];
-            writes[2].dstBinding = 2;
-            writes[2].descriptorCount = 1;
-            writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            writes[2].pBufferInfo = &visibleCountBufferInfo;
-
-            writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[3].dstSet = shadowCullDescriptorSets_[frameIndex];
-            writes[3].dstBinding = 3;
-            writes[3].descriptorCount = 1;
-            writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            writes[3].pImageInfo = &depthPyramidInfo;
-
-            writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[4].dstSet = shadowCullDescriptorSets_[frameIndex];
-            writes[4].dstBinding = 4;
-            writes[4].descriptorCount = 1;
-            writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            writes[4].pBufferInfo = &frameParamsBufferInfo;
-
-            vkUpdateDescriptorSets(
-                context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
-            rhi::debug::setObjectName(context_.vkDevice(),
-                                      shadowCullDescriptorSets_[frameIndex],
-                                      VK_OBJECT_TYPE_DESCRIPTOR_SET,
-                                      "GpuShadowCullDescriptorSet" + std::to_string(frameIndex));
-        }
+        createGpuShadowCullBuffers();
+        createGpuShadowCullDescriptorSets();
 
         gpuShadowCullingAvailable_ = true;
         Logger::info("GPU shadow culling preparation enabled with per-frame shadow cull input, compacted indirect "
@@ -2717,6 +2583,149 @@ void Renderer::createGpuShadowCullingResources()
     } catch (const std::exception& error) {
         Logger::warn(std::string("GPU shadow culling unavailable; using CPU shadow culling fallback: ") + error.what());
         destroyGpuShadowCullingResources();
+    }
+}
+
+void Renderer::createGpuShadowCullBuffers()
+{
+    frameShadowCullInputBuffers_.resize(frames_.size());
+    for (size_t frameIndex = 0; frameIndex < frameShadowCullInputBuffers_.size(); ++frameIndex) {
+        rhi::VulkanBufferCreateInfo bufferInfo{};
+        bufferInfo.size = static_cast<VkDeviceSize>(kMaxDrawItems * sizeof(GpuCullDrawItem));
+        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        bufferInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
+        bufferInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+        frameShadowCullInputBuffers_[frameIndex].createBuffer(context_, bufferInfo);
+        rhi::debug::setObjectName(context_.vkDevice(),
+                                  frameShadowCullInputBuffers_[frameIndex].buffer(),
+                                  VK_OBJECT_TYPE_BUFFER,
+                                  "GpuShadowCullInputBuffer" + std::to_string(frameIndex));
+    }
+
+    frameShadowBatchVisibleCountBuffers_.resize(frames_.size());
+    frameShadowBatchVisibleCountReadbackBuffers_.resize(frames_.size());
+    frameGpuShadowCullTotalDrawItems_.assign(frames_.size(), 0);
+    frameGpuShadowCullBatchCounts_.assign(frames_.size(), 0);
+    frameGpuShadowCullReadbackReady_.assign(frames_.size(), 0);
+    frameGpuShadowCullIndirectCountPath_.assign(frames_.size(), 0);
+    for (size_t frameIndex = 0; frameIndex < frames_.size(); ++frameIndex) {
+        rhi::VulkanBufferCreateInfo gpuCountInfo{};
+        gpuCountInfo.size = kGpuCullCountBufferSize;
+        gpuCountInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                             VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        gpuCountInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+        frameShadowBatchVisibleCountBuffers_[frameIndex].createBuffer(context_, gpuCountInfo);
+        rhi::debug::setObjectName(context_.vkDevice(),
+                                  frameShadowBatchVisibleCountBuffers_[frameIndex].buffer(),
+                                  VK_OBJECT_TYPE_BUFFER,
+                                  "GpuShadowBatchVisibleCountBuffer" + std::to_string(frameIndex));
+
+        rhi::VulkanBufferCreateInfo readbackCountInfo{};
+        readbackCountInfo.size = kGpuCullCountBufferSize;
+        readbackCountInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        readbackCountInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
+        readbackCountInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+        frameShadowBatchVisibleCountReadbackBuffers_[frameIndex].createBuffer(context_, readbackCountInfo);
+        rhi::debug::setObjectName(context_.vkDevice(),
+                                  frameShadowBatchVisibleCountReadbackBuffers_[frameIndex].buffer(),
+                                  VK_OBJECT_TYPE_BUFFER,
+                                  "GpuShadowBatchVisibleCountReadbackBuffer" + std::to_string(frameIndex));
+    }
+}
+
+void Renderer::createGpuShadowCullDescriptorSets()
+{
+    std::array<VkDescriptorPoolSize, 2> poolSizes{};
+    poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    poolSizes[0].descriptorCount = static_cast<uint32_t>(frames_.size() * 4);
+    poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSizes[1].descriptorCount = static_cast<uint32_t>(frames_.size());
+
+    shadowCullDescriptorPool_.create(context_.vkDevice(),
+                                     std::span<const VkDescriptorPoolSize>(poolSizes.data(), poolSizes.size()),
+                                     static_cast<uint32_t>(frames_.size()));
+    rhi::debug::setObjectName(context_.vkDevice(),
+                              shadowCullDescriptorPool_.handle(),
+                              VK_OBJECT_TYPE_DESCRIPTOR_POOL,
+                              "GpuShadowCullDescriptorPool");
+
+    shadowCullDescriptorSets_.resize(frames_.size(), VK_NULL_HANDLE);
+    std::vector<VkDescriptorSetLayout> setLayouts(frames_.size(), gpuCullDescriptorSetLayout_.handle());
+    VkDescriptorSetAllocateInfo allocateInfo{};
+    allocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocateInfo.descriptorPool = shadowCullDescriptorPool_.handle();
+    allocateInfo.descriptorSetCount = static_cast<uint32_t>(shadowCullDescriptorSets_.size());
+    allocateInfo.pSetLayouts = setLayouts.data();
+    VK_CHECK(vkAllocateDescriptorSets(context_.vkDevice(), &allocateInfo, shadowCullDescriptorSets_.data()));
+
+    for (size_t frameIndex = 0; frameIndex < shadowCullDescriptorSets_.size(); ++frameIndex) {
+        VkDescriptorBufferInfo inputBufferInfo{};
+        inputBufferInfo.buffer = frameShadowCullInputBuffers_[frameIndex].buffer();
+        inputBufferInfo.offset = 0;
+        inputBufferInfo.range = frameShadowCullInputBuffers_[frameIndex].size();
+
+        VkDescriptorBufferInfo outputBufferInfo{};
+        outputBufferInfo.buffer = frameShadowIndirectDrawBuffers_[frameIndex].buffer();
+        outputBufferInfo.offset = 0;
+        outputBufferInfo.range = frameShadowIndirectDrawBuffers_[frameIndex].size();
+
+        VkDescriptorBufferInfo visibleCountBufferInfo{};
+        visibleCountBufferInfo.buffer = frameShadowBatchVisibleCountBuffers_[frameIndex].buffer();
+        visibleCountBufferInfo.offset = 0;
+        visibleCountBufferInfo.range = kGpuCullCountBufferSize;
+
+        VkDescriptorImageInfo depthPyramidInfo{};
+        depthPyramidInfo.sampler = depthPyramidSampler_;
+        depthPyramidInfo.imageView = depthPyramid_.imageView();
+        depthPyramidInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkDescriptorBufferInfo frameParamsBufferInfo{};
+        frameParamsBufferInfo.buffer = frameGpuCullParamBuffers_[frameIndex].buffer();
+        frameParamsBufferInfo.offset = 0;
+        frameParamsBufferInfo.range = frameGpuCullParamBuffers_[frameIndex].size();
+
+        std::array<VkWriteDescriptorSet, 5> writes{};
+        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[0].dstSet = shadowCullDescriptorSets_[frameIndex];
+        writes[0].dstBinding = 0;
+        writes[0].descriptorCount = 1;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[0].pBufferInfo = &inputBufferInfo;
+
+        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[1].dstSet = shadowCullDescriptorSets_[frameIndex];
+        writes[1].dstBinding = 1;
+        writes[1].descriptorCount = 1;
+        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[1].pBufferInfo = &outputBufferInfo;
+
+        writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[2].dstSet = shadowCullDescriptorSets_[frameIndex];
+        writes[2].dstBinding = 2;
+        writes[2].descriptorCount = 1;
+        writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[2].pBufferInfo = &visibleCountBufferInfo;
+
+        writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[3].dstSet = shadowCullDescriptorSets_[frameIndex];
+        writes[3].dstBinding = 3;
+        writes[3].descriptorCount = 1;
+        writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[3].pImageInfo = &depthPyramidInfo;
+
+        writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[4].dstSet = shadowCullDescriptorSets_[frameIndex];
+        writes[4].dstBinding = 4;
+        writes[4].descriptorCount = 1;
+        writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[4].pBufferInfo = &frameParamsBufferInfo;
+
+        vkUpdateDescriptorSets(
+            context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        rhi::debug::setObjectName(context_.vkDevice(),
+                                  shadowCullDescriptorSets_[frameIndex],
+                                  VK_OBJECT_TYPE_DESCRIPTOR_SET,
+                                  "GpuShadowCullDescriptorSet" + std::to_string(frameIndex));
     }
 }
 

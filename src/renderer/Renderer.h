@@ -293,6 +293,10 @@ private:
     void createGpuCullDescriptorSets();
     void destroyGpuCullingResources();
     void createGpuShadowCullingResources();
+    // createGpuShadowCullingResources() helpers (see Renderer.cpp); the shadow path
+    // reuses the shared cull pipeline/layout, so it only needs its own buffers + sets.
+    void createGpuShadowCullBuffers();
+    void createGpuShadowCullDescriptorSets();
     void destroyGpuShadowCullingResources();
     void createShadowMap();
     void createPipeline();
