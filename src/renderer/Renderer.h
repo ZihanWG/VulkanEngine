@@ -337,6 +337,11 @@ private:
     void createPrefilteredEnvironmentMap();
     void createBrdfLutTexture();
     void createMaterial();
+    // createMaterial() helpers (see Renderer.cpp): build the built-in checkerboard
+    // variants and the portfolio-showcase variants (after shared bindless fallback
+    // registration in createMaterial).
+    void createBuiltInMaterialVariants();
+    void createPortfolioMaterialVariants();
     [[nodiscard]] renderer::Material createMaterialFromAsset(const assets::MaterialAsset& materialAsset,
                                                              const rhi::VulkanTexture& baseColorFallback,
                                                              const rhi::VulkanTexture& normalFallback,

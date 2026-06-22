@@ -4240,6 +4240,14 @@ void Renderer::createMaterial()
             renderer::BindlessTextureHeap::TextureKind::MetallicRoughness, neutralMetallicRoughnessTexture_);
     }
 
+    createBuiltInMaterialVariants();
+    createPortfolioMaterialVariants();
+
+    checkerboardMaterial_ = materialVariants_.front();
+}
+
+void Renderer::createBuiltInMaterialVariants()
+{
     const auto addMaterial = [this](std::string debugName,
                                     const glm::vec4& baseColorFactor,
                                     float metallic,
@@ -4269,7 +4277,10 @@ void Renderer::createMaterial()
     addMaterial("Checkerboard Warm Semi-Metal", {1.0f, 0.82f, 0.65f, 1.0f}, 0.35f, 0.38f, 0.5f);
     addMaterial("Checkerboard Cool Rough Metal", {0.72f, 0.84f, 1.0f, 1.0f}, 0.85f, 0.62f, 1.0f);
     addMaterial("Checkerboard Glossy Dielectric", {0.9f, 1.0f, 0.78f, 1.0f}, 0.0f, 0.18f, 0.25f);
+}
 
+void Renderer::createPortfolioMaterialVariants()
+{
     const auto addPortfolioMaterial = [this](std::string debugName,
                                              const rhi::VulkanTexture* baseColorTexture,
                                              const glm::vec4& baseColorFactor,
@@ -4381,8 +4392,6 @@ void Renderer::createMaterial()
                               0.05f);
     addPortfolioMaterial(
         "Portfolio_Backdrop", &portfolioBackdropTexture_, {1.0f, 1.0f, 1.0f, 1.0f}, 0.0f, 0.94f, 0.0f);
-
-    checkerboardMaterial_ = materialVariants_.front();
 }
 
 void Renderer::assignBindlessTextureIndices(renderer::Material& material)
