@@ -3089,6 +3089,20 @@ uint32_t Renderer::allocateRenderObjectDebugId()
 
 void Renderer::createScene()
 {
+    resetSceneState();
+    createSceneSharedResources();
+
+    if (tryLoadGltfScene()) {
+        return;
+    }
+
+    Logger::warn("No supported glTF mesh asset loaded; using built-in cube fallback scene.");
+    createCubeFallbackScene();
+    addPortfolioShowcaseObjects();
+}
+
+void Renderer::resetSceneState()
+{
     imguiLayer_.clearTexturePreviewDescriptors();
     renderObjects_.clear();
     selectedRenderObjectIndex_ = kInvalidRenderObjectIndex;
@@ -3116,7 +3130,10 @@ void Renderer::createScene()
     importedNormalTextures_.clear();
     importedMetallicRoughnessTextures_.clear();
     materialAssetTextures_.clear();
+}
 
+void Renderer::createSceneSharedResources()
+{
     cubeMesh_ = renderer::Mesh::createCube(context_, commandContext_);
     portfolioSphereMesh_ = renderer::Mesh::createUvSphere(context_, commandContext_);
     createCheckerboardTexture();
@@ -3130,70 +3147,10 @@ void Renderer::createScene()
     camera_ = defaultCameraPreset();
     csmSettings_.nearPlane = camera_.nearPlane;
     csmSettings_.farPlane = camera_.farPlane;
+}
 
-    const auto addCube = [this](std::string debugName,
-                                const renderer::Material* material,
-                                const glm::vec3& position,
-                                const glm::vec3& rotationRadians,
-                                const glm::vec3& scale,
-                                bool animateTransform = true,
-                                bool portfolioOnly = false,
-                                bool hideInPortfolio = false,
-                                renderer::RenderObjectSourceType sourceType =
-                                    renderer::RenderObjectSourceType::BuiltInFallbackCube) {
-        renderer::RenderObject cube{};
-        cube.debugId = allocateRenderObjectDebugId();
-        cube.sceneObjectId = cube.debugId;
-        cube.mesh = &cubeMesh_;
-        cube.material = material;
-        cube.debugName = std::move(debugName);
-        cube.sourceType = sourceType;
-        cube.transform.position = position;
-        cube.transform.rotationRadians = rotationRadians;
-        cube.transform.scale = scale;
-        cube.animateTransform = animateTransform;
-        cube.portfolioOnly = portfolioOnly;
-        cube.hideInPortfolio = hideInPortfolio;
-        renderObjects_.push_back(std::move(cube));
-    };
-
-    const auto addCubeFallbackScene = [&addCube, this]() {
-        renderObjects_.reserve(4);
-        addCube("Center Cube",
-                &materialVariants_.at(0),
-                {0.0f, -0.1f, 0.0f},
-                {0.2f, 0.0f, 0.0f},
-                {0.7f, 0.7f, 0.7f},
-                true,
-                false,
-                true);
-        addCube(
-            "Left Cube",
-            &materialVariants_.at(1),
-            {-1.35f, -0.15f, -0.35f},
-            {0.0f, 0.35f, 0.2f},
-            {0.5f, 0.5f, 0.5f},
-            true,
-            false,
-            true);
-        addCube("Right Cube",
-                &materialVariants_.at(2),
-                {1.35f, -0.05f, -0.25f},
-                {0.25f, -0.35f, 0.0f},
-                {0.55f, 0.8f, 0.55f},
-                true,
-                false,
-                true);
-        addCube("Elevated Cube",
-                &materialVariants_.at(3),
-                {0.0f, 1.0f, -0.7f},
-                {-0.3f, 0.2f, 0.45f},
-                {0.45f, 0.45f, 0.45f},
-                true,
-                false,
-                true);
-    };
-
+bool Renderer::tryLoadGltfScene()
+{
     const std::array<std::filesystem::path, 2> modelCandidates = {
         assetPath("models/test_mesh.gltf"),
         assetPath("models/test_mesh.glb"),
@@ -3245,15 +3202,77 @@ void Renderer::createScene()
                          std::to_string(renderObjects_.size()) + " render object(s), and " +
                          std::to_string(importedMaterials_.size()) + " material(s).");
             addPortfolioShowcaseObjects();
-            return;
+            return true;
         } catch (const std::exception& error) {
             Logger::warn("Failed to load glTF mesh '" + modelPath.string() + "': " + error.what());
         }
     }
 
-    Logger::warn("No supported glTF mesh asset loaded; using built-in cube fallback scene.");
-    addCubeFallbackScene();
-    addPortfolioShowcaseObjects();
+    return false;
+}
+
+void Renderer::createCubeFallbackScene()
+{
+    const auto addCube = [this](std::string debugName,
+                                const renderer::Material* material,
+                                const glm::vec3& position,
+                                const glm::vec3& rotationRadians,
+                                const glm::vec3& scale,
+                                bool animateTransform = true,
+                                bool portfolioOnly = false,
+                                bool hideInPortfolio = false,
+                                renderer::RenderObjectSourceType sourceType =
+                                    renderer::RenderObjectSourceType::BuiltInFallbackCube) {
+        renderer::RenderObject cube{};
+        cube.debugId = allocateRenderObjectDebugId();
+        cube.sceneObjectId = cube.debugId;
+        cube.mesh = &cubeMesh_;
+        cube.material = material;
+        cube.debugName = std::move(debugName);
+        cube.sourceType = sourceType;
+        cube.transform.position = position;
+        cube.transform.rotationRadians = rotationRadians;
+        cube.transform.scale = scale;
+        cube.animateTransform = animateTransform;
+        cube.portfolioOnly = portfolioOnly;
+        cube.hideInPortfolio = hideInPortfolio;
+        renderObjects_.push_back(std::move(cube));
+    };
+
+    renderObjects_.reserve(4);
+    addCube("Center Cube",
+            &materialVariants_.at(0),
+            {0.0f, -0.1f, 0.0f},
+            {0.2f, 0.0f, 0.0f},
+            {0.7f, 0.7f, 0.7f},
+            true,
+            false,
+            true);
+    addCube(
+        "Left Cube",
+        &materialVariants_.at(1),
+        {-1.35f, -0.15f, -0.35f},
+        {0.0f, 0.35f, 0.2f},
+        {0.5f, 0.5f, 0.5f},
+        true,
+        false,
+        true);
+    addCube("Right Cube",
+            &materialVariants_.at(2),
+            {1.35f, -0.05f, -0.25f},
+            {0.25f, -0.35f, 0.0f},
+            {0.55f, 0.8f, 0.55f},
+            true,
+            false,
+            true);
+    addCube("Elevated Cube",
+            &materialVariants_.at(3),
+            {0.0f, 1.0f, -0.7f},
+            {-0.3f, 0.2f, 0.45f},
+            {0.45f, 0.45f, 0.45f},
+            true,
+            false,
+            true);
 }
 
 void Renderer::addPortfolioShowcaseObjects()

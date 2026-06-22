@@ -300,6 +300,12 @@ private:
     void createCompositePipeline();
     void createComputePipelines();
     void createScene();
+    // createScene() helpers (see Renderer.cpp): reset scene state, build the shared
+    // meshes/textures/material, try the glTF scene, else the built-in cube fallback.
+    void resetSceneState();
+    void createSceneSharedResources();
+    [[nodiscard]] bool tryLoadGltfScene();
+    void createCubeFallbackScene();
     void addPortfolioShowcaseObjects();
     void resetPortfolioShowcaseObjectsToPreset();
     [[nodiscard]] bool hasPortfolioShowcaseScene() const;
