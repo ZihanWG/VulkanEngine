@@ -285,6 +285,12 @@ private:
     void recordLegacyBloomCommands(VkCommandBuffer commandBuffer);
     void recordMipChainBloomCommands(VkCommandBuffer commandBuffer);
     void createGpuCullingResources();
+    // createGpuCullingResources() helpers (see Renderer.cpp); each builds one part
+    // of the main GPU-culling compute setup, called in order inside its try/catch.
+    void createGpuCullDescriptorLayout();
+    void createGpuCullPipeline();
+    void createGpuCullBuffers();
+    void createGpuCullDescriptorSets();
     void destroyGpuCullingResources();
     void createGpuShadowCullingResources();
     void destroyGpuShadowCullingResources();
