@@ -281,6 +281,8 @@ private:
     void updateAutoExposureFromReadback(uint32_t frameIndex);
     void recordLuminanceCommands(VkCommandBuffer commandBuffer);
     void recordHistogramCommands(VkCommandBuffer commandBuffer);
+    // The GPU exposure-reduce dispatch that optionally follows histogram binning.
+    void recordExposureReduceCommands(VkCommandBuffer commandBuffer);
     void recordTaaResolveCommands(VkCommandBuffer commandBuffer);
     void recordLegacyBloomCommands(VkCommandBuffer commandBuffer);
     void recordMipChainBloomCommands(VkCommandBuffer commandBuffer);

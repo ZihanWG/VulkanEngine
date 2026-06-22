@@ -7750,6 +7750,14 @@ void Renderer::recordHistogramCommands(VkCommandBuffer commandBuffer)
     computeDependencyInfo.pBufferMemoryBarriers = &computeBarrier;
     vkCmdPipelineBarrier2(commandBuffer, &computeDependencyInfo);
 
+    recordExposureReduceCommands(commandBuffer);
+    rhi::debug::endLabel(commandBuffer);
+
+    renderGraph_.endHistogramExposurePass();
+}
+
+void Renderer::recordExposureReduceCommands(VkCommandBuffer commandBuffer)
+{
     if (isGpuExposureActive() && currentFrame_ < exposureReduceDescriptorSets_.size() &&
         currentFrame_ < frameExposureBuffers_.size()) {
         VkBuffer exposureBuffer = frameExposureBuffers_[currentFrame_].buffer();
@@ -7817,9 +7825,6 @@ void Renderer::recordHistogramCommands(VkCommandBuffer commandBuffer)
             frameExposureReadbackReady_[currentFrame_] = 1;
         }
     }
-    rhi::debug::endLabel(commandBuffer);
-
-    renderGraph_.endHistogramExposurePass();
 }
 
 void Renderer::recordTaaResolveCommands(VkCommandBuffer commandBuffer)
