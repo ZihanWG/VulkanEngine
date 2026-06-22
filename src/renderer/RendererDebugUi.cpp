@@ -22,131 +22,14 @@ void Renderer::buildDebugUi()
     drawRuntimeSettingsDebugUi();
     drawScenePresetDebugUi();
     drawPortfolioCaptureDebugUi();
-
-    if (ImGui::CollapsingHeader("Debug Views", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Checkbox("Show Render Graph panel", &debugUiSettings_.showRenderGraphPanel);
-        ImGui::Checkbox("Show Scene Hierarchy panel", &debugUiSettings_.showSceneHierarchyPanel);
-        ImGui::Checkbox("Show Material Inspector", &debugUiSettings_.showMaterialInspectorPanel);
-        ImGui::Checkbox("Show Texture Debug Views", &debugUiSettings_.showTextureDebugPanel);
-        ImGui::Checkbox("Show Render Target Debug Views", &debugUiSettings_.showRenderTargetDebugPanel);
-        ImGui::Checkbox("Show GPU Profiler panel", &debugUiSettings_.showGpuTimingGraphs);
-        ImGui::Checkbox("Show Culling stats", &debugUiSettings_.showCullingStats);
-        ImGui::Checkbox("Show Exposure graphs", &debugUiSettings_.showExposureGraphs);
-    }
-
-    if (ImGui::CollapsingHeader("Tone Mapping", ImGuiTreeNodeFlags_DefaultOpen)) {
-        const char* toneMappers[] = {"Reinhard", "ACES"};
-        ImGui::Combo("Tone mapper", &toneMappingSettings_.operatorType, toneMappers, IM_ARRAYSIZE(toneMappers));
-        ImGui::DragFloat("Manual exposure", &toneMappingSettings_.manualExposure, 0.01f, 0.0f, 64.0f, "%.3f");
-
-        const char* exposureModes[] = {"Manual", "Log-average", "Histogram"};
-        int exposureMode =
-            toneMappingSettings_.enableAutoExposure ? toneMappingSettings_.exposureMode : 0;
-        exposureMode = static_cast<int>(exposureModeValue(exposureMode));
-        if (ImGui::Combo("Exposure mode", &exposureMode, exposureModes, IM_ARRAYSIZE(exposureModes))) {
-            toneMappingSettings_.exposureMode = exposureMode;
-            toneMappingSettings_.enableAutoExposure = exposureMode != 0;
-        }
-
-        ImGui::DragFloat("Target luminance", &toneMappingSettings_.targetLuminance, 0.001f, 0.001f, 8.0f, "%.3f");
-        ImGui::DragFloat("Min exposure", &toneMappingSettings_.minExposure, 0.01f, 0.0f, 64.0f, "%.3f");
-        ImGui::DragFloat("Max exposure", &toneMappingSettings_.maxExposure, 0.01f, 0.0f, 64.0f, "%.3f");
-        ImGui::DragFloat("Adaptation rate", &toneMappingSettings_.adaptationRate, 0.01f, 0.0f, 16.0f, "%.3f");
-        ImGui::SliderFloat("Histogram low percentile", &toneMappingSettings_.lowPercentile, 0.0f, 1.0f, "%.3f");
-        ImGui::SliderFloat("Histogram high percentile", &toneMappingSettings_.highPercentile, 0.0f, 1.0f, "%.3f");
-    }
-
-    if (ImGui::CollapsingHeader("Bloom", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Checkbox("Enabled", &bloomSettings_.enabled);
-        ImGui::Checkbox("Use mip-chain bloom", &bloomSettings_.useMipChain);
-        ImGui::Text("Method: %s", bloomSettings_.useMipChain ? "Mip-chain" : "Legacy separable blur");
-        ImGui::Text("Mip count: %zu", bloomMipDownsampleImages_.size());
-        ImGui::DragFloat("Threshold", &bloomSettings_.threshold, 0.01f, 0.0f, 32.0f, "%.3f");
-        ImGui::DragFloat("Intensity", &bloomSettings_.intensity, 0.01f, 0.0f, 8.0f, "%.3f");
-        ImGui::DragFloat("Radius", &bloomSettings_.radius, 0.01f, 0.25f, 4.0f, "%.2f");
-    }
-
-    if (ImGui::CollapsingHeader("Ambient Occlusion (SSAO)", ImGuiTreeNodeFlags_DefaultOpen)) {
-        if (!ssaoAvailable_) {
-            ImGui::TextDisabled("Unavailable: the depth format cannot be sampled on this device.");
-        }
-        ImGui::BeginDisabled(!ssaoAvailable_);
-        ImGui::Checkbox("Enabled", &ssaoSettings_.enabled);
-        ImGui::DragFloat("Radius (view units)", &ssaoSettings_.radius, 0.01f, 0.05f, 5.0f, "%.3f");
-        ImGui::DragFloat("Bias", &ssaoSettings_.bias, 0.001f, 0.0f, 0.2f, "%.3f");
-        ImGui::DragFloat("Intensity", &ssaoSettings_.intensity, 0.05f, 0.0f, 4.0f, "%.2f");
-        ImGui::DragFloat("Power", &ssaoSettings_.power, 0.05f, 0.1f, 8.0f, "%.2f");
-        ImGui::SliderInt("Samples", &ssaoSettings_.sampleCount, 4, 64);
-        ImGui::TextWrapped(
-            "Screen-space AO sampled from the main depth buffer in the composite pass (applied to scene color).");
-        ImGui::EndDisabled();
-    }
-
+    drawDebugViewToggles();
+    drawToneMappingDebugUi();
+    drawBloomDebugUi();
+    drawSsaoDebugUi();
     drawTaaDebugUi();
-
-    if (ImGui::CollapsingHeader("CSM", ImGuiTreeNodeFlags_DefaultOpen)) {
-        int cascadeCount = static_cast<int>(activeCascadeCount());
-        ImGui::BeginDisabled();
-        ImGui::SliderInt("Cascade count (startup)", &cascadeCount, 1, static_cast<int>(kMaxShadowCascades));
-        ImGui::EndDisabled();
-        ImGui::SliderFloat("Lambda", &csmSettings_.lambda, 0.0f, 1.0f, "%.3f");
-        ImGui::DragFloat("Shadow distance", &csmSettings_.shadowDistance, 0.1f, 1.0f, csmSettings_.farPlane, "%.2f");
-        ImGui::Checkbox("Texel snapping enabled", &csmSettings_.enableTexelSnapping);
-        ImGui::Checkbox("Cascade debug colors enabled", &csmSettings_.enableCascadeDebugColors);
-    }
-
-    if (ImGui::CollapsingHeader("GPU Culling", ImGuiTreeNodeFlags_DefaultOpen)) {
-        if (!gpuCullingAvailable_) {
-            ImGui::BeginDisabled();
-        }
-        ImGui::Checkbox("Main GPU culling enabled", &useGpuCulling_);
-        if (!gpuCullingAvailable_) {
-            ImGui::EndDisabled();
-        }
-
-        if (!gpuShadowCullingAvailable_) {
-            ImGui::BeginDisabled();
-        }
-        ImGui::Checkbox("Shadow GPU culling enabled", &useGpuShadowCulling_);
-        if (!gpuShadowCullingAvailable_) {
-            ImGui::EndDisabled();
-        }
-
-        ImGui::Text("Bindless material textures: %s", isBindlessMaterialTextureActive() ? "active" : "fallback");
-        bool bindlessEnabled = useBindlessMaterialTextures_;
-        ImGui::BeginDisabled();
-        ImGui::Checkbox("Bindless material textures enabled (startup)", &bindlessEnabled);
-        ImGui::EndDisabled();
-        ImGui::Text("Main indirect count path: %s",
-                    isFrameIndirectCountPathActive(currentFrame_) ? "active" : "fallback");
-        ImGui::Text("Shadow indirect count path: %s",
-                    isShadowIndirectCountPathActive(currentFrame_) ? "active" : "fallback");
-        if (ImGui::Button("Enable Occlusion Test Settings")) {
-            enableOcclusionTestSettings();
-        }
-        const bool occlusionControlsAvailable =
-            isGpuCullingActive() && depthPyramidBuildAvailable_ && depthPyramid_.image() != VK_NULL_HANDLE;
-        if (!occlusionControlsAvailable) {
-            ImGui::BeginDisabled();
-        }
-        ImGui::Checkbox("GPU occlusion culling enabled", &useGpuOcclusionCulling_);
-        ImGui::SliderFloat("Occlusion depth bias", &gpuOcclusionDepthBias_, 0.0f, 0.05f, "%.4f");
-        ImGui::SliderFloat(
-            "Near-object skip distance", &gpuOcclusionNearDisableDistance_, 0.0f, 10.0f, "%.2f");
-        ImGui::SliderFloat("Max occlusion screen coverage", &gpuOcclusionMaxScreenCoverage_, 0.01f, 1.0f, "%.2f");
-        ImGui::SliderFloat("Min occlusion size pixels", &gpuOcclusionMinScreenPixels_, 1.0f, 64.0f, "%.1f");
-        if (!occlusionControlsAvailable) {
-            ImGui::EndDisabled();
-        }
-        const char* depthPyramidStatus =
-            depthPyramidBuildAvailable_ ? (depthPyramidValid_ ? "valid" : "invalid/warming up") : "unavailable";
-        ImGui::Text("Depth pyramid: %s, %u mip(s)", depthPyramidStatus, depthPyramidMipLevels_);
-    }
-
-    if (ImGui::CollapsingHeader("Environment", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Text("Environment source: %s", hdrEnvironmentLoaded_ ? "HDR environment loaded" : "procedural fallback");
-        ImGui::Text("Tone mapping exposure: %.4f", currentToneMappingExposure());
-    }
+    drawCsmSettingsDebugUi();
+    drawGpuCullingDebugUi();
+    drawEnvironmentDebugUi();
 
     if (debugUiSettings_.showRenderGraphPanel &&
         ImGui::CollapsingHeader("Render Graph", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -199,6 +82,155 @@ void Renderer::buildDebugUi()
     }
 
     clampRuntimeSettings();
+}
+
+void Renderer::drawDebugViewToggles()
+{
+    if (!ImGui::CollapsingHeader("Debug Views", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+    ImGui::Checkbox("Show Render Graph panel", &debugUiSettings_.showRenderGraphPanel);
+    ImGui::Checkbox("Show Scene Hierarchy panel", &debugUiSettings_.showSceneHierarchyPanel);
+    ImGui::Checkbox("Show Material Inspector", &debugUiSettings_.showMaterialInspectorPanel);
+    ImGui::Checkbox("Show Texture Debug Views", &debugUiSettings_.showTextureDebugPanel);
+    ImGui::Checkbox("Show Render Target Debug Views", &debugUiSettings_.showRenderTargetDebugPanel);
+    ImGui::Checkbox("Show GPU Profiler panel", &debugUiSettings_.showGpuTimingGraphs);
+    ImGui::Checkbox("Show Culling stats", &debugUiSettings_.showCullingStats);
+    ImGui::Checkbox("Show Exposure graphs", &debugUiSettings_.showExposureGraphs);
+}
+
+void Renderer::drawToneMappingDebugUi()
+{
+    if (!ImGui::CollapsingHeader("Tone Mapping", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+    const char* toneMappers[] = {"Reinhard", "ACES"};
+    ImGui::Combo("Tone mapper", &toneMappingSettings_.operatorType, toneMappers, IM_ARRAYSIZE(toneMappers));
+    ImGui::DragFloat("Manual exposure", &toneMappingSettings_.manualExposure, 0.01f, 0.0f, 64.0f, "%.3f");
+
+    const char* exposureModes[] = {"Manual", "Log-average", "Histogram"};
+    int exposureMode = toneMappingSettings_.enableAutoExposure ? toneMappingSettings_.exposureMode : 0;
+    exposureMode = static_cast<int>(exposureModeValue(exposureMode));
+    if (ImGui::Combo("Exposure mode", &exposureMode, exposureModes, IM_ARRAYSIZE(exposureModes))) {
+        toneMappingSettings_.exposureMode = exposureMode;
+        toneMappingSettings_.enableAutoExposure = exposureMode != 0;
+    }
+
+    ImGui::DragFloat("Target luminance", &toneMappingSettings_.targetLuminance, 0.001f, 0.001f, 8.0f, "%.3f");
+    ImGui::DragFloat("Min exposure", &toneMappingSettings_.minExposure, 0.01f, 0.0f, 64.0f, "%.3f");
+    ImGui::DragFloat("Max exposure", &toneMappingSettings_.maxExposure, 0.01f, 0.0f, 64.0f, "%.3f");
+    ImGui::DragFloat("Adaptation rate", &toneMappingSettings_.adaptationRate, 0.01f, 0.0f, 16.0f, "%.3f");
+    ImGui::SliderFloat("Histogram low percentile", &toneMappingSettings_.lowPercentile, 0.0f, 1.0f, "%.3f");
+    ImGui::SliderFloat("Histogram high percentile", &toneMappingSettings_.highPercentile, 0.0f, 1.0f, "%.3f");
+}
+
+void Renderer::drawBloomDebugUi()
+{
+    if (!ImGui::CollapsingHeader("Bloom", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+    ImGui::Checkbox("Enabled", &bloomSettings_.enabled);
+    ImGui::Checkbox("Use mip-chain bloom", &bloomSettings_.useMipChain);
+    ImGui::Text("Method: %s", bloomSettings_.useMipChain ? "Mip-chain" : "Legacy separable blur");
+    ImGui::Text("Mip count: %zu", bloomMipDownsampleImages_.size());
+    ImGui::DragFloat("Threshold", &bloomSettings_.threshold, 0.01f, 0.0f, 32.0f, "%.3f");
+    ImGui::DragFloat("Intensity", &bloomSettings_.intensity, 0.01f, 0.0f, 8.0f, "%.3f");
+    ImGui::DragFloat("Radius", &bloomSettings_.radius, 0.01f, 0.25f, 4.0f, "%.2f");
+}
+
+void Renderer::drawSsaoDebugUi()
+{
+    if (!ImGui::CollapsingHeader("Ambient Occlusion (SSAO)", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+    if (!ssaoAvailable_) {
+        ImGui::TextDisabled("Unavailable: the depth format cannot be sampled on this device.");
+    }
+    ImGui::BeginDisabled(!ssaoAvailable_);
+    ImGui::Checkbox("Enabled", &ssaoSettings_.enabled);
+    ImGui::DragFloat("Radius (view units)", &ssaoSettings_.radius, 0.01f, 0.05f, 5.0f, "%.3f");
+    ImGui::DragFloat("Bias", &ssaoSettings_.bias, 0.001f, 0.0f, 0.2f, "%.3f");
+    ImGui::DragFloat("Intensity", &ssaoSettings_.intensity, 0.05f, 0.0f, 4.0f, "%.2f");
+    ImGui::DragFloat("Power", &ssaoSettings_.power, 0.05f, 0.1f, 8.0f, "%.2f");
+    ImGui::SliderInt("Samples", &ssaoSettings_.sampleCount, 4, 64);
+    ImGui::TextWrapped(
+        "Screen-space AO sampled from the main depth buffer in the composite pass (applied to scene color).");
+    ImGui::EndDisabled();
+}
+
+void Renderer::drawCsmSettingsDebugUi()
+{
+    if (!ImGui::CollapsingHeader("CSM", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+    int cascadeCount = static_cast<int>(activeCascadeCount());
+    ImGui::BeginDisabled();
+    ImGui::SliderInt("Cascade count (startup)", &cascadeCount, 1, static_cast<int>(kMaxShadowCascades));
+    ImGui::EndDisabled();
+    ImGui::SliderFloat("Lambda", &csmSettings_.lambda, 0.0f, 1.0f, "%.3f");
+    ImGui::DragFloat("Shadow distance", &csmSettings_.shadowDistance, 0.1f, 1.0f, csmSettings_.farPlane, "%.2f");
+    ImGui::Checkbox("Texel snapping enabled", &csmSettings_.enableTexelSnapping);
+    ImGui::Checkbox("Cascade debug colors enabled", &csmSettings_.enableCascadeDebugColors);
+}
+
+void Renderer::drawGpuCullingDebugUi()
+{
+    if (!ImGui::CollapsingHeader("GPU Culling", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+    if (!gpuCullingAvailable_) {
+        ImGui::BeginDisabled();
+    }
+    ImGui::Checkbox("Main GPU culling enabled", &useGpuCulling_);
+    if (!gpuCullingAvailable_) {
+        ImGui::EndDisabled();
+    }
+
+    if (!gpuShadowCullingAvailable_) {
+        ImGui::BeginDisabled();
+    }
+    ImGui::Checkbox("Shadow GPU culling enabled", &useGpuShadowCulling_);
+    if (!gpuShadowCullingAvailable_) {
+        ImGui::EndDisabled();
+    }
+
+    ImGui::Text("Bindless material textures: %s", isBindlessMaterialTextureActive() ? "active" : "fallback");
+    bool bindlessEnabled = useBindlessMaterialTextures_;
+    ImGui::BeginDisabled();
+    ImGui::Checkbox("Bindless material textures enabled (startup)", &bindlessEnabled);
+    ImGui::EndDisabled();
+    ImGui::Text("Main indirect count path: %s",
+                isFrameIndirectCountPathActive(currentFrame_) ? "active" : "fallback");
+    ImGui::Text("Shadow indirect count path: %s",
+                isShadowIndirectCountPathActive(currentFrame_) ? "active" : "fallback");
+    if (ImGui::Button("Enable Occlusion Test Settings")) {
+        enableOcclusionTestSettings();
+    }
+    const bool occlusionControlsAvailable =
+        isGpuCullingActive() && depthPyramidBuildAvailable_ && depthPyramid_.image() != VK_NULL_HANDLE;
+    if (!occlusionControlsAvailable) {
+        ImGui::BeginDisabled();
+    }
+    ImGui::Checkbox("GPU occlusion culling enabled", &useGpuOcclusionCulling_);
+    ImGui::SliderFloat("Occlusion depth bias", &gpuOcclusionDepthBias_, 0.0f, 0.05f, "%.4f");
+    ImGui::SliderFloat("Near-object skip distance", &gpuOcclusionNearDisableDistance_, 0.0f, 10.0f, "%.2f");
+    ImGui::SliderFloat("Max occlusion screen coverage", &gpuOcclusionMaxScreenCoverage_, 0.01f, 1.0f, "%.2f");
+    ImGui::SliderFloat("Min occlusion size pixels", &gpuOcclusionMinScreenPixels_, 1.0f, 64.0f, "%.1f");
+    if (!occlusionControlsAvailable) {
+        ImGui::EndDisabled();
+    }
+    const char* depthPyramidStatus =
+        depthPyramidBuildAvailable_ ? (depthPyramidValid_ ? "valid" : "invalid/warming up") : "unavailable";
+    ImGui::Text("Depth pyramid: %s, %u mip(s)", depthPyramidStatus, depthPyramidMipLevels_);
+}
+
+void Renderer::drawEnvironmentDebugUi()
+{
+    if (!ImGui::CollapsingHeader("Environment", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+    ImGui::Text("Environment source: %s", hdrEnvironmentLoaded_ ? "HDR environment loaded" : "procedural fallback");
+    ImGui::Text("Tone mapping exposure: %.4f", currentToneMappingExposure());
 }
 
 void Renderer::drawScenePresetDebugUi()

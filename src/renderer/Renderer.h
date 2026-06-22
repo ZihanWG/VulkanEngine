@@ -457,6 +457,15 @@ private:
     [[nodiscard]] renderer::Ray screenPointToRay(float pixelX, float pixelY) const;
     void drawViewportGizmo();
     void buildDebugUi();
+    // buildDebugUi() panel sections (see RendererDebugUi.cpp); each owns its
+    // CollapsingHeader, matching the existing drawXxxDebugUi pattern.
+    void drawDebugViewToggles();
+    void drawToneMappingDebugUi();
+    void drawBloomDebugUi();
+    void drawSsaoDebugUi();
+    void drawCsmSettingsDebugUi();
+    void drawGpuCullingDebugUi();
+    void drawEnvironmentDebugUi();
     void drawScenePresetDebugUi();
     void drawPortfolioCaptureDebugUi();
     void drawRuntimeSettingsDebugUi();
