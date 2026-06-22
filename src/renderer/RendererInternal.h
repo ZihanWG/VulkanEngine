@@ -17,6 +17,7 @@
 #include "core/PngWriter.h"
 #include "core/Window.h"
 #include "renderer/Bounds.h"
+#include "renderer/ExposureTypes.h"
 #include "rhi/VulkanDebugUtils.h"
 
 #include <SDL3/SDL.h>
@@ -137,17 +138,10 @@ constexpr VkFormat kBloomColorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 constexpr VkFormat kDepthPyramidFormat = VK_FORMAT_R32_SFLOAT;
 constexpr uint32_t kDepthPyramidLocalSizeX = 8;
 constexpr uint32_t kDepthPyramidLocalSizeY = 8;
-constexpr uint32_t kLuminanceLocalSizeX = 16;
-constexpr uint32_t kLuminanceLocalSizeY = 16;
-constexpr uint32_t kHistogramBinCount = 256;
-constexpr uint32_t kHistogramLocalSizeX = 16;
-constexpr uint32_t kHistogramLocalSizeY = 16;
 constexpr uint32_t kMaxBloomMipChainLevels = 4;
 constexpr uint32_t kTaaHistoryCount = 2;
 constexpr uint32_t kTaaJitterSampleCount = 8;
 constexpr std::string_view kNoSavedSceneFoundMessage = "No saved scene found. Use Save Scene first.";
-constexpr float kDefaultHistogramMinLogLuminance = -10.0f;
-constexpr float kDefaultHistogramMaxLogLuminance = 4.0f;
 
 const glm::vec4 kDirectionalLightDirection{0.35f, -0.65f, -0.55f, 0.0f};
 const glm::vec4 kDirectionalLightColor{0.85f, 0.85f, 0.85f, 1.0f};
@@ -327,55 +321,6 @@ static_assert(offsetof(TaaResolvePushConstants, historyValid) == 12);
 static_assert(offsetof(TaaResolvePushConstants, neighborhoodClampEnabled) == 16);
 static_assert(sizeof(TaaResolvePushConstants) == 32);
 
-struct LuminancePushConstants {
-    glm::uvec4 params{0, 0, 0, 0};
-};
-
-static_assert(sizeof(LuminancePushConstants) == 16);
-
-struct LuminancePartial {
-    float sumLogLuminance = 0.0f;
-    float sampleCount = 0.0f;
-    float padding0 = 0.0f;
-    float padding1 = 0.0f;
-};
-
-static_assert(sizeof(LuminancePartial) == 16);
-
-struct HistogramPushConstants {
-    glm::uvec4 params{0, 0, 0, 0};
-    glm::vec4 logLuminanceRange{kDefaultHistogramMinLogLuminance, kDefaultHistogramMaxLogLuminance, 0.0001f, 0.0f};
-};
-
-static_assert(offsetof(HistogramPushConstants, params) == 0);
-static_assert(offsetof(HistogramPushConstants, logLuminanceRange) == 16);
-static_assert(sizeof(HistogramPushConstants) == 32);
-
-struct ExposureState {
-    float exposure = 1.0f;
-    float averageLuminance = 0.18f;
-    float histogramLuminance = 0.18f;
-    uint32_t mode = 0;
-};
-
-static_assert(offsetof(ExposureState, exposure) == 0);
-static_assert(offsetof(ExposureState, averageLuminance) == 4);
-static_assert(offsetof(ExposureState, histogramLuminance) == 8);
-static_assert(offsetof(ExposureState, mode) == 12);
-static_assert(sizeof(ExposureState) == 16);
-
-struct ExposureReducePushConstants {
-    glm::uvec4 params{0, 0, 0, 0};
-    glm::vec4 exposureParams{1.0f, 0.18f, 0.1f, 8.0f};
-    glm::vec4 adaptationParams{0.0f, 1.5f, 0.05f, 0.95f};
-    glm::vec4 histogramRange{kDefaultHistogramMinLogLuminance, kDefaultHistogramMaxLogLuminance, 0.0001f, 0.0f};
-};
-
-static_assert(offsetof(ExposureReducePushConstants, params) == 0);
-static_assert(offsetof(ExposureReducePushConstants, exposureParams) == 16);
-static_assert(offsetof(ExposureReducePushConstants, adaptationParams) == 32);
-static_assert(offsetof(ExposureReducePushConstants, histogramRange) == 48);
-static_assert(sizeof(ExposureReducePushConstants) == 64);
 
 struct RenderTargetDebugMetadata {
     const char* debugName = "";
@@ -392,12 +337,6 @@ uint32_t toneMappingOperatorValue(int operatorType)
 {
     return operatorType == 1 ? 1u : 0u;
 }
-
-float toneMappingExposureValue(float exposure)
-{
-    return std::max(exposure, 0.0f);
-}
-
 
 std::string_view exposureModeName(ExposureMode exposureMode)
 {
@@ -597,27 +536,6 @@ std::string meshDebugLabel(const renderer::Mesh* mesh)
     return stream.str();
 }
 
-std::pair<float, float> sanitizedHistogramLogRange(float minLogLuminance, float maxLogLuminance)
-{
-    if (!std::isfinite(minLogLuminance) || !std::isfinite(maxLogLuminance) ||
-        maxLogLuminance <= minLogLuminance + 0.001f) {
-        return {kDefaultHistogramMinLogLuminance, kDefaultHistogramMaxLogLuminance};
-    }
-
-    return {minLogLuminance, maxLogLuminance};
-}
-
-std::pair<float, float> sanitizedPercentileRange(float lowPercentile, float highPercentile)
-{
-    float low = std::clamp(lowPercentile, 0.0f, 1.0f);
-    float high = std::clamp(highPercentile, 0.0f, 1.0f);
-    if (high <= low) {
-        low = 0.05f;
-        high = 0.95f;
-    }
-
-    return {low, high};
-}
 
 void setViewportAndScissor(VkCommandBuffer commandBuffer, VkExtent2D extent)
 {
