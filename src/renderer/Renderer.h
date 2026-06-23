@@ -86,17 +86,9 @@ private:
         float rasterDepthBiasSlopeFactor = 1.75f;
     };
 
-    // Screen-space ambient occlusion computed in the composite pass from the main
-    // depth buffer. Disabled by default; the toggle is only honoured when the
-    // depth image supports sampling (ssaoAvailable_).
-    struct SsaoSettings {
-        bool enabled = false;
-        float radius = 0.5f;
-        float bias = 0.025f;
-        float intensity = 1.0f;
-        float power = 2.0f;
-        int sampleCount = 16;
-    };
+    // SsaoSettings now lives in RuntimeSettings.h alongside the other
+    // post-process settings structs so PostProcessStack and Renderer can share
+    // the type without a circular include. The ssaoSettings_ member stays here.
 
     // Pure cascade fit data now lives in renderer::ShadowCascade (CascadeMath.h)
     // so the math is shared with the GPU-independent unit tests. Aliased here to

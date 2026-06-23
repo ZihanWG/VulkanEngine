@@ -72,6 +72,20 @@ struct TaaSettings {
     float feedback = 0.88f;
 };
 
+// Screen-space ambient occlusion computed in the composite pass from the main
+// depth buffer. Disabled by default; the toggle is only honoured when the depth
+// image supports sampling (Renderer::ssaoAvailable_). Lives with the other
+// post-process settings structs so PostProcessStack and Renderer share the type
+// without a circular include.
+struct SsaoSettings {
+    bool enabled = false;
+    float radius = 0.5f;
+    float bias = 0.025f;
+    float intensity = 1.0f;
+    float power = 2.0f;
+    int sampleCount = 16;
+};
+
 struct DebugUiSettings {
     bool showRenderGraphPanel = true;
     bool showSceneHierarchyPanel = true;

@@ -206,6 +206,7 @@ add_executable(VulkanEngine
     src/renderer/BindlessTextureHeap.cpp
     src/renderer/GpuProfiler.cpp
     src/renderer/Mesh.cpp
+    src/renderer/PostProcessStack.cpp
     src/renderer/RenderGraph.cpp
     src/renderer/Renderer.cpp
     src/renderer/RendererDebugUi.cpp
