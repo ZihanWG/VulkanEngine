@@ -11,6 +11,7 @@
 #include "renderer/GpuProfiler.h"
 #include "renderer/Material.h"
 #include "renderer/Mesh.h"
+#include "renderer/PostProcessStack.h"
 #include "renderer/RenderGraph.h"
 #include "renderer/RenderObject.h"
 #include "renderer/RuntimeSettings.h"
@@ -212,72 +213,17 @@ private:
     void createMaterialDescriptorSetLayout();
     void createBindlessMaterialTextureHeap();
     void createSkyboxDescriptorSetLayout();
-    void createPostProcessDescriptorSetLayouts();
-    void createPostProcessSampler();
-    void destroyPostProcessSampler();
-    void createPostProcessResources();
-    // Per-frame descriptor-set counts + which optional groups to create, computed
-    // once and used to size the pool and gate the per-group descriptor writes.
-    struct PostProcessDescriptorCounts {
-        bool createLuminanceDescriptors = false;
-        bool createHistogramDescriptors = false;
-        bool createExposureReduceDescriptors = false;
-        bool createCompositeDescriptors = false;
-        uint32_t exposureDescriptorSetCount = 0;
-        uint32_t compositeDescriptorSetCount = 0;
-        uint32_t legacyBloomSetCount = 0;
-        uint32_t bloomDownsampleSetCount = 0;
-        uint32_t bloomUpsampleSetCount = 0;
-        uint32_t taaResolveSetCount = 0;
-        uint32_t taaBloomExtractSetCount = 0;
-        uint32_t taaBloomDownsampleSetCount = 0;
-        uint32_t taaCompositeDescriptorSetCount = 0;
-        uint32_t taaLuminanceDescriptorSetCount = 0;
-        uint32_t taaHistogramDescriptorSetCount = 0;
-    };
-    [[nodiscard]] PostProcessDescriptorCounts computePostProcessDescriptorCounts() const;
-    void createPostProcessDescriptorPool(const PostProcessDescriptorCounts& counts);
-    void createPostProcessDescriptorSets();
-    // createPostProcessDescriptorSets() per-group helpers; each allocates + writes
-    // one descriptor group and ends at its own vkUpdateDescriptorSets, so its
-    // image-info storage stays in scope. Verbatim slices of the former function.
-    void allocateLegacyBloomDescriptorSets();
-    void createTaaResolveDescriptorSets();
-    void createBloomMipDownsampleDescriptorSets();
-    void createBloomMipUpsampleDescriptorSets();
-    void createCompositeDescriptorSets(const PostProcessDescriptorCounts& counts);
-    void createLuminanceDescriptorSets(const PostProcessDescriptorCounts& counts);
-    void createHistogramDescriptorSets(const PostProcessDescriptorCounts& counts);
-    void createExposureReduceDescriptorSets(const PostProcessDescriptorCounts& counts);
-    // Shared post-process descriptor-image-info helpers (promoted from local
-    // lambdas in createPostProcessDescriptorSets so the per-group helpers reuse them).
-    [[nodiscard]] VkDescriptorImageInfo postProcessImageInfo(VkImageView imageView) const;
-    [[nodiscard]] VkDescriptorImageInfo postProcessDepthInfo() const;
-    void createTaaResources();
-    void destroyTaaResources();
+    // Resets the Renderer-owned jittered view-projection matrices, then delegates
+    // the TAA history/jitter reset to PostProcessStack.
     void invalidateTaaHistory();
-    void createExposureResources();
-    void destroyExposureResources();
     void createDepthPyramidDescriptorSetLayout();
+    // Recreates PostProcessStack resources plus the interleaved depth-pyramid and
+    // ImGui render-target-preview reset the former monolithic method performed.
+    void recreatePostProcessResources();
     void createDepthPyramidResources();
     void destroyDepthPyramidResources();
     void updateGpuCullingDepthPyramidDescriptors();
     void invalidateDepthPyramid();
-    void createLuminanceResources();
-    void destroyLuminanceResources();
-    void createHistogramResources();
-    void destroyHistogramResources();
-    void disableAutoExposureFallback(std::string_view reason);
-    void disableLogAverageExposureFallback(std::string_view reason);
-    void disableHistogramExposureFallback(std::string_view reason);
-    void updateAutoExposureFromReadback(uint32_t frameIndex);
-    void recordLuminanceCommands(VkCommandBuffer commandBuffer);
-    void recordHistogramCommands(VkCommandBuffer commandBuffer);
-    // The GPU exposure-reduce dispatch that optionally follows histogram binning.
-    void recordExposureReduceCommands(VkCommandBuffer commandBuffer);
-    void recordTaaResolveCommands(VkCommandBuffer commandBuffer);
-    void recordLegacyBloomCommands(VkCommandBuffer commandBuffer);
-    void recordMipChainBloomCommands(VkCommandBuffer commandBuffer);
     void createGpuCullingResources();
     // createGpuCullingResources() helpers (see Renderer.cpp); each builds one part
     // of the main GPU-culling compute setup, called in order inside its try/catch.
@@ -299,9 +245,6 @@ private:
     void createMainGraphicsPipeline();
     void createSkyboxPipeline();
     void createShadowPipeline();
-    void createBloomPipelines();
-    void createTaaResolvePipeline();
-    void createCompositePipeline();
     void createComputePipelines();
     void createScene();
     // createScene() helpers (see Renderer.cpp): reset scene state, build the shared
@@ -399,19 +342,6 @@ private:
     [[nodiscard]] bool isGpuCullingActive() const;
     [[nodiscard]] bool isGpuOcclusionCullingActive() const;
     [[nodiscard]] bool isGpuShadowCullingActive() const;
-    [[nodiscard]] bool isAutoExposureActive() const;
-    [[nodiscard]] bool isLogAverageExposureActive() const;
-    [[nodiscard]] bool isHistogramExposureActive() const;
-    [[nodiscard]] bool isGpuExposureActive() const;
-    [[nodiscard]] bool isTaaActive() const;
-    [[nodiscard]] bool isTaaJitterActive() const;
-    [[nodiscard]] uint32_t taaHistoryReadIndex() const;
-    [[nodiscard]] uint32_t taaHistoryWriteIndex() const;
-    [[nodiscard]] VkDescriptorSet activeBloomExtractDescriptorSet() const;
-    [[nodiscard]] VkDescriptorSet activeBloomMipDownsampleDescriptorSet(uint32_t level) const;
-    [[nodiscard]] VkDescriptorSet activeCompositeDescriptorSet() const;
-    [[nodiscard]] VkDescriptorSet activeLuminanceDescriptorSet() const;
-    [[nodiscard]] VkDescriptorSet activeHistogramDescriptorSet() const;
     [[nodiscard]] bool isBindlessMaterialTextureActive() const;
     [[nodiscard]] bool isMainPassMultiDrawIndirectActive() const;
     [[nodiscard]] bool isMainPassIndirectCountSupported() const;
@@ -421,7 +351,6 @@ private:
     [[nodiscard]] bool isShadowIndirectActive() const;
     [[nodiscard]] uint32_t activeCascadeCount() const;
     [[nodiscard]] VkDescriptorSet globalMaterialDescriptorSet() const;
-    [[nodiscard]] float currentToneMappingExposure() const;
     void nameTextureResources(const rhi::VulkanTexture& texture, std::string_view name) const;
     void nameEnvironmentMapResources(const rhi::VulkanEnvironmentMap& environmentMap, std::string_view name) const;
     void nameBrdfLutResources(const rhi::VulkanBrdfLut& brdfLut, std::string_view name) const;
@@ -539,34 +468,13 @@ private:
     ui::ImGuiLayer imguiLayer_;
     rhi::VulkanDescriptorSetLayout materialDescriptorSetLayout_;
     rhi::VulkanDescriptorSetLayout skyboxDescriptorSetLayout_;
-    rhi::VulkanDescriptorSetLayout postProcessSingleImageDescriptorSetLayout_;
-    rhi::VulkanDescriptorSetLayout postProcessDualImageDescriptorSetLayout_;
-    rhi::VulkanDescriptorSetLayout postProcessCompositeDescriptorSetLayout_;
-    rhi::VulkanDescriptorSetLayout postProcessLuminanceDescriptorSetLayout_;
-    rhi::VulkanDescriptorSetLayout postProcessExposureReduceDescriptorSetLayout_;
     rhi::VulkanDescriptorSetLayout gpuCullDescriptorSetLayout_;
     rhi::VulkanDescriptorSetLayout depthPyramidDescriptorSetLayout_;
     rhi::VulkanShadowMap shadowMap_;
-    rhi::VulkanImage sceneColor_;
-    rhi::VulkanImage bloomExtract_;
-    rhi::VulkanImage bloomPing_;
-    rhi::VulkanImage bloomPong_;
-    std::array<rhi::VulkanImage, 2> taaHistoryImages_;
-    std::vector<rhi::VulkanImage> bloomMipDownsampleImages_;
-    std::vector<rhi::VulkanImage> bloomMipUpsampleImages_;
     rhi::VulkanImage depthPyramid_;
     rhi::VulkanPipeline pipeline_;
     rhi::VulkanPipeline skyboxPipeline_;
     rhi::VulkanPipeline shadowPipeline_;
-    rhi::VulkanPipeline bloomExtractPipeline_;
-    rhi::VulkanPipeline bloomBlurPipeline_;
-    rhi::VulkanPipeline bloomDownsamplePipeline_;
-    rhi::VulkanPipeline bloomUpsamplePipeline_;
-    rhi::VulkanPipeline taaResolvePipeline_;
-    rhi::VulkanPipeline compositePipeline_;
-    rhi::VulkanComputePipeline luminancePipeline_;
-    rhi::VulkanComputePipeline histogramPipeline_;
-    rhi::VulkanComputePipeline exposureReducePipeline_;
     rhi::VulkanComputePipeline gpuCullPipeline_;
     rhi::VulkanComputePipeline depthPyramidPipeline_;
     rhi::VulkanCommandContext commandContext_;
@@ -589,29 +497,11 @@ private:
     renderer::BindlessTextureHeap bindlessTextureHeap_;
     rhi::VulkanDescriptorPool materialDescriptorPool_;
     rhi::VulkanDescriptorPool skyboxDescriptorPool_;
-    rhi::VulkanDescriptorPool postProcessDescriptorPool_;
     rhi::VulkanDescriptorPool gpuCullDescriptorPool_;
     rhi::VulkanDescriptorPool shadowCullDescriptorPool_;
     rhi::VulkanDescriptorPool depthPyramidDescriptorPool_;
-    VkSampler postProcessSampler_ = VK_NULL_HANDLE;
     VkSampler depthPyramidSampler_ = VK_NULL_HANDLE;
     VkDescriptorSet skyboxDescriptorSet_ = VK_NULL_HANDLE;
-    VkDescriptorSet bloomExtractDescriptorSet_ = VK_NULL_HANDLE;
-    VkDescriptorSet bloomBlurHorizontalDescriptorSet_ = VK_NULL_HANDLE;
-    VkDescriptorSet bloomBlurVerticalDescriptorSet_ = VK_NULL_HANDLE;
-    VkDescriptorSet compositeDescriptorSet_ = VK_NULL_HANDLE;
-    std::array<VkDescriptorSet, 2> taaResolveDescriptorSets_{VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkDescriptorSet, 2> taaBloomExtractDescriptorSets_{VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkDescriptorSet, 2> taaBloomMipDownsampleDescriptorSets_{VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::vector<VkDescriptorSet> bloomMipDownsampleDescriptorSets_;
-    std::vector<VkDescriptorSet> bloomMipUpsampleDescriptorSets_;
-    std::vector<VkDescriptorSet> compositeDescriptorSets_;
-    std::vector<VkDescriptorSet> luminanceDescriptorSets_;
-    std::vector<VkDescriptorSet> histogramDescriptorSets_;
-    std::array<std::vector<VkDescriptorSet>, 2> taaCompositeDescriptorSets_;
-    std::array<std::vector<VkDescriptorSet>, 2> taaLuminanceDescriptorSets_;
-    std::array<std::vector<VkDescriptorSet>, 2> taaHistogramDescriptorSets_;
-    std::vector<VkDescriptorSet> exposureReduceDescriptorSets_;
     std::vector<VkDescriptorSet> gpuCullDescriptorSets_;
     std::vector<VkDescriptorSet> shadowCullDescriptorSets_;
     std::vector<VkDescriptorSet> depthPyramidDescriptorSets_;
@@ -644,11 +534,6 @@ private:
     std::vector<rhi::VulkanBuffer> frameBatchVisibleCountReadbackBuffers_;
     std::vector<rhi::VulkanBuffer> frameShadowBatchVisibleCountBuffers_;
     std::vector<rhi::VulkanBuffer> frameShadowBatchVisibleCountReadbackBuffers_;
-    std::vector<rhi::VulkanBuffer> frameLuminanceBuffers_;
-    std::vector<rhi::VulkanBuffer> frameLuminanceReadbackBuffers_;
-    std::vector<rhi::VulkanBuffer> frameHistogramBuffers_;
-    std::vector<rhi::VulkanBuffer> frameHistogramReadbackBuffers_;
-    std::vector<rhi::VulkanBuffer> frameExposureBuffers_;
     std::vector<uint32_t> frameGpuCullTotalDrawItems_;
     std::vector<uint32_t> frameGpuCullBatchCounts_;
     std::vector<uint32_t> frameGpuShadowCullTotalDrawItems_;
@@ -657,9 +542,6 @@ private:
     std::vector<uint8_t> frameGpuCullIndirectCountPath_;
     std::vector<uint8_t> frameGpuShadowCullReadbackReady_;
     std::vector<uint8_t> frameGpuShadowCullIndirectCountPath_;
-    std::vector<uint8_t> frameLuminanceReadbackReady_;
-    std::vector<uint8_t> frameHistogramReadbackReady_;
-    std::vector<uint8_t> frameExposureReadbackReady_;
     CsmSettings csmSettings_{};
     std::vector<VkFence> imagesInFlight_;
     ShadowSettings shadowSettings_{};
@@ -669,24 +551,7 @@ private:
     VkFormat skyboxPipelineColorFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat skyboxPipelineDepthFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat shadowPipelineDepthFormat_ = VK_FORMAT_UNDEFINED;
-    VkFormat bloomExtractPipelineColorFormat_ = VK_FORMAT_UNDEFINED;
-    VkFormat bloomBlurPipelineColorFormat_ = VK_FORMAT_UNDEFINED;
-    VkFormat bloomDownsamplePipelineColorFormat_ = VK_FORMAT_UNDEFINED;
-    VkFormat bloomUpsamplePipelineColorFormat_ = VK_FORMAT_UNDEFINED;
-    VkFormat taaResolvePipelineColorFormat_ = VK_FORMAT_UNDEFINED;
-    VkFormat compositePipelineColorFormat_ = VK_FORMAT_UNDEFINED;
-    VkExtent2D bloomExtent_{};
-    VkImageLayout sceneColorLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
-    VkImageLayout bloomExtractLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
-    VkImageLayout bloomPingLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
-    VkImageLayout bloomPongLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
-    std::array<VkImageLayout, 2> taaHistoryLayouts_{VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED};
-    std::vector<VkImageLayout> bloomMipDownsampleLayouts_;
-    std::vector<VkImageLayout> bloomMipUpsampleLayouts_;
     VkImageLayout depthPyramidLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
-    uint32_t luminanceGroupCountX_ = 0;
-    uint32_t luminanceGroupCountY_ = 0;
-    uint32_t luminancePartialCount_ = 0;
     uint32_t depthPyramidMipLevels_ = 0;
     uint32_t selectedDepthPyramidDebugMip_ = 0;
     uint32_t selectedBloomMipDebugLevel_ = 0;
@@ -697,7 +562,6 @@ private:
     std::chrono::steady_clock::time_point startTime_ = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point lastGpuTimingPrint_ = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point lastExposureLogPrint_ = std::chrono::steady_clock::now();
-    std::chrono::steady_clock::time_point lastAutoExposureUpdate_ = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point lastFrameStartTime_ = std::chrono::steady_clock::now();
     std::array<glm::vec4, 6> frameFrustumPlanes_{};
     glm::mat4 frameViewProjection_{1.0f};
@@ -767,15 +631,8 @@ private:
     bool depthPyramidBuildAvailable_ = false;
     bool useGpuShadowCulling_ = true;
     bool gpuShadowCullingAvailable_ = false;
-    bool autoExposureAvailable_ = false;
-    bool histogramExposureAvailable_ = false;
-    bool exposureReduceAvailable_ = false;
-    bool autoExposureWarningLogged_ = false;
-    bool logAverageExposureWarningLogged_ = false;
-    bool histogramExposureWarningLogged_ = false;
     bool shadowIndirectAvailable_ = false;
     bool ssaoAvailable_ = false;
-    bool taaHistoryValid_ = false;
     bool gpuProfilerEnabled_ = true;
     bool portfolioCaptureMode_ = false;
     bool occlusionTestSceneActive_ = false;
@@ -795,13 +652,22 @@ private:
     float gpuOcclusionNearDisableDistance_ = 1.0f;
     float gpuOcclusionMaxScreenCoverage_ = 0.35f;
     float gpuOcclusionMinScreenPixels_ = 4.0f;
-    glm::vec2 taaCurrentJitterPixels_{0.0f, 0.0f};
-    glm::vec2 taaPreviousJitterPixels_{0.0f, 0.0f};
-    glm::vec2 taaCurrentJitterNdc_{0.0f, 0.0f};
-    glm::vec2 taaPreviousJitterNdc_{0.0f, 0.0f};
-    uint32_t taaJitterIndex_ = 0;
-    uint32_t taaHistoryWriteIndex_ = 0;
-    uint32_t taaPostProcessHistoryIndex_ = 0;
+
+    // HDR post-process subsystem (bloom, TAA, auto-exposure, composite). Owns its
+    // own GPU resources; borrows the services + settings declared above by
+    // reference, so it is declared last to guarantee those are constructed first.
+    renderer::PostProcessStack postProcess_{context_,
+                                            renderGraph_,
+                                            gpuProfiler_,
+                                            swapchain_,
+                                            toneMappingSettings_,
+                                            bloomSettings_,
+                                            taaSettings_,
+                                            ssaoSettings_,
+                                            currentExposure_,
+                                            averageLuminance_,
+                                            histogramClippedLuminance_,
+                                            ssaoAvailable_};
 };
 
 } // namespace ve

@@ -135,6 +135,10 @@ public:
     [[nodiscard]] VkExtent2D bloomExtent() const { return bloomExtent_; }
     [[nodiscard]] uint32_t taaPostProcessHistoryIndex() const { return taaPostProcessHistoryIndex_; }
     [[nodiscard]] bool taaHistoryValid() const { return taaHistoryValid_; }
+    // TAA jitter debug readouts (shown in the debug UI).
+    [[nodiscard]] uint32_t taaJitterIndex() const { return taaJitterIndex_; }
+    [[nodiscard]] glm::vec2 taaCurrentJitterPixels() const { return taaCurrentJitterPixels_; }
+    [[nodiscard]] glm::vec2 taaCurrentJitterNdc() const { return taaCurrentJitterNdc_; }
 
     // Mutable layout/handle access used by render-graph transition tracking.
     [[nodiscard]] VkImageLayout& bloomExtractLayout() { return bloomExtractLayout_; }
@@ -166,6 +170,23 @@ public:
     {
         return postProcessLuminanceDescriptorSetLayout_.handle();
     }
+
+    // Per-frame exposure buffers, imported by the render graph for barriers.
+    [[nodiscard]] const std::vector<rhi::VulkanBuffer>& luminanceBuffers() const { return frameLuminanceBuffers_; }
+    [[nodiscard]] const std::vector<rhi::VulkanBuffer>& luminanceReadbackBuffers() const
+    {
+        return frameLuminanceReadbackBuffers_;
+    }
+    [[nodiscard]] const std::vector<rhi::VulkanBuffer>& histogramBuffers() const { return frameHistogramBuffers_; }
+    [[nodiscard]] const std::vector<rhi::VulkanBuffer>& histogramReadbackBuffers() const
+    {
+        return frameHistogramReadbackBuffers_;
+    }
+    [[nodiscard]] const std::vector<rhi::VulkanBuffer>& exposureBuffers() const { return frameExposureBuffers_; }
+
+    // Resets the auto-exposure adaptation timer (called when settings change to
+    // avoid a large delta-time spike on the next exposure reduce).
+    void resetAutoExposureTimer() { lastAutoExposureUpdate_ = std::chrono::steady_clock::now(); }
 
 private:
     // Per-frame descriptor-set counts + which optional groups to create, computed
