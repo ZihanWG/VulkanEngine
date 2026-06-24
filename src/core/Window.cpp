@@ -59,25 +59,30 @@ void loadSdlVulkanLibrary()
     std::string lastError;
 
 #if defined(__APPLE__)
+    // On macOS the Vulkan loader is not on the default dyld search path, so SDL's
+    // leaf-name dlopen ("libvulkan.dylib") fails with "Failed to load Vulkan
+    // Portability library". Probe known absolute install locations first.
+    std::vector<std::string> loaderCandidates;
+
     const char* vulkanSdk = std::getenv("VULKAN_SDK");
     if (vulkanSdk != nullptr && vulkanSdk[0] != '\0') {
         const std::string sdkPath(vulkanSdk);
-        const std::vector<std::string> loaderCandidates = {
-            sdkPath + "/lib/libvulkan.1.dylib",
-            sdkPath + "/lib/libvulkan.dylib"
-        };
-
-        for (const std::string& loaderPath : loaderCandidates) {
-            if (tryLoadSdlVulkanLibrary(loaderPath.c_str(), lastError)) {
-                return;
-            }
-        }
-
-        throw std::runtime_error("SDL_Vulkan_LoadLibrary failed for Vulkan SDK loader candidates under " +
-                                 sdkPath + ". Last SDL error: " + lastError);
+        loaderCandidates.push_back(sdkPath + "/lib/libvulkan.1.dylib");
+        loaderCandidates.push_back(sdkPath + "/lib/libvulkan.dylib");
+    } else {
+        Logger::warn("VULKAN_SDK is not set; probing default Vulkan loader install locations.");
+        // The Vulkan SDK "system global install" drops the loader under /usr/local/lib.
+        loaderCandidates.push_back("/usr/local/lib/libvulkan.1.dylib");
+        loaderCandidates.push_back("/usr/local/lib/libvulkan.dylib");
     }
 
-    Logger::warn("VULKAN_SDK is not set; falling back to SDL's default Vulkan loader search path.");
+    for (const std::string& loaderPath : loaderCandidates) {
+        if (tryLoadSdlVulkanLibrary(loaderPath.c_str(), lastError)) {
+            return;
+        }
+    }
+
+    Logger::warn("No Vulkan loader found at known locations; falling back to SDL's default search path.");
 #endif
 
     if (!tryLoadSdlVulkanLibrary(nullptr, lastError)) {
