@@ -1634,13 +1634,14 @@ void Renderer::createScene()
     resetSceneState();
     createSceneSharedResources();
 
-    if (tryLoadGltfScene()) {
-        return;
-    }
-
-    Logger::warn("No supported glTF mesh asset loaded; using built-in cube fallback scene.");
-    createCubeFallbackScene();
+    // The portfolio sphere showcase is the default editor scene. The glTF import
+    // (tryLoadGltfScene) and the cube fallback (createCubeFallbackScene) remain available
+    // through the scene-loading UI; they are just no longer the startup default.
     addPortfolioShowcaseObjects();
+    if (renderObjects_.empty()) {
+        Logger::warn("Portfolio showcase scene unavailable; using built-in cube fallback scene.");
+        createCubeFallbackScene();
+    }
 }
 
 void Renderer::resetSceneState()
@@ -1686,7 +1687,8 @@ void Renderer::createSceneSharedResources()
     createEnvironmentMap();
     createMaterial();
 
-    camera_ = defaultCameraPreset();
+    // Frame the portfolio sphere showcase, which is now the default editor scene.
+    camera_ = portfolioCameraPreset();
     csmSettings_.nearPlane = camera_.nearPlane;
     csmSettings_.farPlane = camera_.farPlane;
 }
@@ -1843,7 +1845,9 @@ void Renderer::addPortfolioShowcaseObjects()
         cube.transform.rotationRadians = rotationRadians;
         cube.transform.scale = scale;
         cube.animateTransform = false;
-        cube.portfolioOnly = true;
+        // Visible in both the editor and F11 portfolio capture (the showcase is the
+        // default scene now); portfolio detection keys off sourceType, not this flag.
+        cube.portfolioOnly = false;
         renderObjects_.push_back(std::move(cube));
     };
 
@@ -1861,7 +1865,7 @@ void Renderer::addPortfolioShowcaseObjects()
         sphere.transform.position = position;
         sphere.transform.scale = scale;
         sphere.animateTransform = false;
-        sphere.portfolioOnly = true;
+        sphere.portfolioOnly = false;
         renderObjects_.push_back(std::move(sphere));
     };
 
@@ -1922,7 +1926,7 @@ void Renderer::resetPortfolioShowcaseObjectsToPreset()
             object.transform.useMatrixOverride = false;
             object.visible = true;
             object.animateTransform = false;
-            object.portfolioOnly = true;
+            object.portfolioOnly = false;
             object.hideInPortfolio = false;
             return;
         }
@@ -1984,8 +1988,7 @@ bool Renderer::currentFrameHasPortfolioShowcaseDrawItems() const
         }
 
         const renderer::RenderObject& object = renderObjects_[drawItem.objectIndex];
-        if (object.sourceType == renderer::RenderObjectSourceType::PortfolioShowcase && object.portfolioOnly &&
-            !object.hideInPortfolio) {
+        if (object.sourceType == renderer::RenderObjectSourceType::PortfolioShowcase && !object.hideInPortfolio) {
             return true;
         }
     }
