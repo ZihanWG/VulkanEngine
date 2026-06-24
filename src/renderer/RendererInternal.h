@@ -42,6 +42,7 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/matrix_inverse.hpp>
 #define GLM_ENABLE_EXPERIMENTAL
+#include <glm/gtx/euler_angles.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
@@ -1099,7 +1100,12 @@ TransformComponents editableTransformComponents(const renderer::Transform& trans
     }
 
     orientation = glm::normalize(orientation);
-    const glm::vec3 rotationRadians = glm::eulerAngles(orientation);
+    // Extract Euler angles in the same intrinsic X*Y*Z order that
+    // Transform::modelMatrix() composes them in, so gizmo/matrix edits round-trip
+    // faithfully. glm::eulerAngles uses a different convention, which corrupted the
+    // stored rotation (and the inspector readout) on the way back to TRS.
+    glm::vec3 rotationRadians{0.0f};
+    glm::extractEulerAngleXYZ(glm::mat4_cast(orientation), rotationRadians.x, rotationRadians.y, rotationRadians.z);
     if (!isFiniteVec3(rotationRadians)) {
         return {};
     }
