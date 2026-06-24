@@ -99,6 +99,13 @@ Window::Window(std::string title, int width, int height)
         throw sdlError("SDL_Init failed");
     }
 
+    // SDL automatically captures the mouse while a button is held so drags can extend
+    // outside the window. On macOS that capture defers the button-up event until the
+    // next mouse motion, so releasing the gizmo/a widget without moving leaves it stuck
+    // "pressed" for up to ~0.5s (even SDL_GetGlobalMouseState reports it down). We only
+    // manipulate in-window, so disable auto-capture for immediate button-up delivery.
+    SDL_SetHint(SDL_HINT_MOUSE_AUTO_CAPTURE, "0");
+
     Logger::info("SDL runtime version: " + sdlVersionString(SDL_GetVersion()));
     const char* videoDriver = SDL_GetCurrentVideoDriver();
     Logger::info(std::string("SDL current video driver: ") + (videoDriver != nullptr ? videoDriver : "<none>"));

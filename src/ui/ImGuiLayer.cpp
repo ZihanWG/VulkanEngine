@@ -55,6 +55,13 @@ void ImGuiLayer::initialize(Window& window, rhi::VulkanContext& context, VkForma
     }
     platformInitialized_ = true;
 
+    // On non-X11 backends (incl. macOS Cocoa) the SDL3 backend defaults to capturing the
+    // mouse whenever a button is held, so drags can extend outside the window. On macOS
+    // that capture swallows/defers the button-up event, leaving widgets and ImGuizmo
+    // stuck mid-drag (or releasing ~0.5s late once capture times out). We only manipulate
+    // in-window, so disable capture to get immediate, reliable button-up delivery.
+    ImGui_ImplSDL3_SetMouseCaptureMode(ImGui_ImplSDL3_MouseCaptureMode_Disabled);
+
     createDescriptorPool();
     initializeVulkanBackend(colorFormat, imageCount);
 }
