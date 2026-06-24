@@ -366,8 +366,11 @@ void Renderer::drawTaaDebugUi()
     ImGui::Text("History valid: %s", postProcess_.taaHistoryValid() ? "yes" : "no");
     ImGui::Text("Read/Write: %u / %u", postProcess_.taaHistoryReadIndex(), postProcess_.taaHistoryWriteIndex());
     ImGui::Text("Jitter index: %u", postProcess_.taaJitterIndex());
-    ImGui::Text("Current jitter pixels: %.3f, %.3f", postProcess_.taaCurrentJitterPixels().x, postProcess_.taaCurrentJitterPixels().y);
-    ImGui::Text("Current jitter NDC: %.6f, %.6f", postProcess_.taaCurrentJitterNdc().x, postProcess_.taaCurrentJitterNdc().y);
+    ImGui::Text("Current jitter pixels: %.3f, %.3f",
+                postProcess_.taaCurrentJitterPixels().x,
+                postProcess_.taaCurrentJitterPixels().y);
+    ImGui::Text(
+        "Current jitter NDC: %.6f, %.6f", postProcess_.taaCurrentJitterNdc().x, postProcess_.taaCurrentJitterNdc().y);
 }
 
 void Renderer::drawRenderGraphDebugUi()
@@ -1194,21 +1197,23 @@ void Renderer::drawRenderTargetMetadataTable()
                     postProcess_.bloomExtract().format(),
                     1,
                     1,
-                    layoutUsage("Bloom bright-pass output sampled by horizontal blur and preview", postProcess_.bloomExtractLayout()),
+                    layoutUsage("Bloom bright-pass output sampled by horizontal blur and preview",
+                                postProcess_.bloomExtractLayout()),
                     true,
                     "2D HDR"});
             }
             if (postProcess_.bloomPing().image() != VK_NULL_HANDLE) {
                 const VkExtent3D extent = postProcess_.bloomPing().extent();
-                addMetadataRow(RenderTargetDebugMetadata{
-                    "BloomPing",
-                    extentString(extent.width, extent.height),
-                    postProcess_.bloomPing().format(),
-                    1,
-                    1,
-                    layoutUsage("Horizontal blur output sampled by vertical blur and preview", postProcess_.bloomPingLayout()),
-                    true,
-                    "2D HDR"});
+                addMetadataRow(
+                    RenderTargetDebugMetadata{"BloomPing",
+                                              extentString(extent.width, extent.height),
+                                              postProcess_.bloomPing().format(),
+                                              1,
+                                              1,
+                                              layoutUsage("Horizontal blur output sampled by vertical blur and preview",
+                                                          postProcess_.bloomPingLayout()),
+                                              true,
+                                              "2D HDR"});
             }
             if (postProcess_.bloomPong().image() != VK_NULL_HANDLE) {
                 const VkExtent3D extent = postProcess_.bloomPong().extent();
@@ -1225,32 +1230,34 @@ void Renderer::drawRenderTargetMetadataTable()
             for (size_t level = 0; level < postProcess_.bloomMipDownsampleImages().size(); ++level) {
                 const VkExtent3D extent = postProcess_.bloomMipDownsampleImages()[level].extent();
                 const std::string debugName = "BloomMipDownsample" + std::to_string(level);
-                addMetadataRow(RenderTargetDebugMetadata{
-                    debugName.c_str(),
-                    extentString(extent.width, extent.height),
-                    postProcess_.bloomMipDownsampleImages()[level].format(),
-                    1,
-                    1,
-                    layoutUsage("Mip-chain bloom downsample level",
-                                level < postProcess_.bloomMipDownsampleLayouts().size() ? postProcess_.bloomMipDownsampleLayouts()[level]
-                                                                          : VK_IMAGE_LAYOUT_UNDEFINED),
-                    true,
-                    "2D HDR"});
+                addMetadataRow(
+                    RenderTargetDebugMetadata{debugName.c_str(),
+                                              extentString(extent.width, extent.height),
+                                              postProcess_.bloomMipDownsampleImages()[level].format(),
+                                              1,
+                                              1,
+                                              layoutUsage("Mip-chain bloom downsample level",
+                                                          level < postProcess_.bloomMipDownsampleLayouts().size()
+                                                              ? postProcess_.bloomMipDownsampleLayouts()[level]
+                                                              : VK_IMAGE_LAYOUT_UNDEFINED),
+                                              true,
+                                              "2D HDR"});
             }
             for (size_t level = 0; level < postProcess_.bloomMipUpsampleImages().size(); ++level) {
                 const VkExtent3D extent = postProcess_.bloomMipUpsampleImages()[level].extent();
                 const std::string debugName = "BloomMipUpsample" + std::to_string(level);
-                addMetadataRow(RenderTargetDebugMetadata{
-                    debugName.c_str(),
-                    extentString(extent.width, extent.height),
-                    postProcess_.bloomMipUpsampleImages()[level].format(),
-                    1,
-                    1,
-                    layoutUsage("Mip-chain bloom upsample accumulation level",
-                                level < postProcess_.bloomMipUpsampleLayouts().size() ? postProcess_.bloomMipUpsampleLayouts()[level]
-                                                                        : VK_IMAGE_LAYOUT_UNDEFINED),
-                    true,
-                    "2D HDR"});
+                addMetadataRow(
+                    RenderTargetDebugMetadata{debugName.c_str(),
+                                              extentString(extent.width, extent.height),
+                                              postProcess_.bloomMipUpsampleImages()[level].format(),
+                                              1,
+                                              1,
+                                              layoutUsage("Mip-chain bloom upsample accumulation level",
+                                                          level < postProcess_.bloomMipUpsampleLayouts().size()
+                                                              ? postProcess_.bloomMipUpsampleLayouts()[level]
+                                                              : VK_IMAGE_LAYOUT_UNDEFINED),
+                                              true,
+                                              "2D HDR"});
             }
             if (showRenderTargetFinalCompositeMetadata_) {
                 const VkExtent2D extent = swapchain_.extent();
@@ -1393,7 +1400,9 @@ void Renderer::drawRenderTargetPreviews()
         ImGui::CollapsingHeader("Bloom Targets", ImGuiTreeNodeFlags_DefaultOpen)) {
         if (showRenderTargetBloomExtract_ && postProcess_.bloomExtract().imageView() != VK_NULL_HANDLE) {
             const VkExtent3D extent = postProcess_.bloomExtract().extent();
-            ImGui::Text("Bloom extract: %u x %u, %s", extent.width, extent.height,
+            ImGui::Text("Bloom extract: %u x %u, %s",
+                        extent.width,
+                        extent.height,
                         vkFormatName(postProcess_.bloomExtract().format()));
             drawRenderTargetPreview(postProcess_.bloomExtract().imageView(),
                                     postProcess_.sampler(),
@@ -1406,7 +1415,10 @@ void Renderer::drawRenderTargetPreviews()
         if (showRenderTargetBlurredBloom_) {
             if (postProcess_.bloomPing().imageView() != VK_NULL_HANDLE) {
                 const VkExtent3D extent = postProcess_.bloomPing().extent();
-                ImGui::Text("Bloom ping: %u x %u, %s", extent.width, extent.height, vkFormatName(postProcess_.bloomPing().format()));
+                ImGui::Text("Bloom ping: %u x %u, %s",
+                            extent.width,
+                            extent.height,
+                            vkFormatName(postProcess_.bloomPing().format()));
                 drawRenderTargetPreview(postProcess_.bloomPing().imageView(),
                                         postProcess_.sampler(),
                                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -1417,7 +1429,10 @@ void Renderer::drawRenderTargetPreviews()
             }
             if (postProcess_.bloomPong().imageView() != VK_NULL_HANDLE) {
                 const VkExtent3D extent = postProcess_.bloomPong().extent();
-                ImGui::Text("Bloom pong: %u x %u, %s", extent.width, extent.height, vkFormatName(postProcess_.bloomPong().format()));
+                ImGui::Text("Bloom pong: %u x %u, %s",
+                            extent.width,
+                            extent.height,
+                            vkFormatName(postProcess_.bloomPong().format()));
                 drawRenderTargetPreview(postProcess_.bloomPong().imageView(),
                                         postProcess_.sampler(),
                                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -1432,8 +1447,8 @@ void Renderer::drawRenderTargetPreviews()
     if (showRenderTargetBloomMipChain_ && !postProcess_.bloomMipDownsampleImages().empty() &&
         ImGui::CollapsingHeader("Bloom Mip Chain", ImGuiTreeNodeFlags_DefaultOpen)) {
         const int maxMip = static_cast<int>(postProcess_.bloomMipDownsampleImages().size() - 1u);
-        int selectedMip = static_cast<int>(std::min(selectedBloomMipDebugLevel_,
-                                                    static_cast<uint32_t>(postProcess_.bloomMipDownsampleImages().size() - 1u)));
+        int selectedMip = static_cast<int>(std::min(
+            selectedBloomMipDebugLevel_, static_cast<uint32_t>(postProcess_.bloomMipDownsampleImages().size() - 1u)));
         ImGui::SliderInt("Selected bloom mip", &selectedMip, 0, maxMip);
         selectedBloomMipDebugLevel_ = static_cast<uint32_t>(std::max(selectedMip, 0));
 
@@ -1893,7 +1908,8 @@ void Renderer::drawExposureDebugUi()
     ImGui::Text("Log-average luminance: %.4f", averageLuminance_);
     ImGui::Text("Histogram clipped luminance: %.4f", histogramClippedLuminance_);
     ImGui::Text("Exposure mode: %s", exposureModeName(mode).data());
-    ImGui::Text("Composite exposure source: %s", postProcess_.isGpuExposureActive() ? "GPU exposure buffer" : "push constant");
+    ImGui::Text("Composite exposure source: %s",
+                postProcess_.isGpuExposureActive() ? "GPU exposure buffer" : "push constant");
 
     constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                                       ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp;

@@ -38,20 +38,11 @@ PostProcessStack::PostProcessStack(rhi::VulkanContext& context,
                                    float& averageLuminance,
                                    float& histogramClippedLuminance,
                                    bool& ssaoAvailable)
-    : context_(context)
-    , renderGraph_(renderGraph)
-    , gpuProfiler_(gpuProfiler)
-    , swapchain_(swapchain)
-    , toneMappingSettings_(toneMappingSettings)
-    , bloomSettings_(bloomSettings)
-    , taaSettings_(taaSettings)
-    , ssaoSettings_(ssaoSettings)
-    , currentExposure_(currentExposure)
-    , averageLuminance_(averageLuminance)
-    , histogramClippedLuminance_(histogramClippedLuminance)
-    , ssaoAvailable_(ssaoAvailable)
-{
-}
+    : context_(context), renderGraph_(renderGraph), gpuProfiler_(gpuProfiler), swapchain_(swapchain),
+      toneMappingSettings_(toneMappingSettings), bloomSettings_(bloomSettings), taaSettings_(taaSettings),
+      ssaoSettings_(ssaoSettings), currentExposure_(currentExposure), averageLuminance_(averageLuminance),
+      histogramClippedLuminance_(histogramClippedLuminance), ssaoAvailable_(ssaoAvailable)
+{}
 
 PostProcessStack::~PostProcessStack()
 {
@@ -187,15 +178,14 @@ void PostProcessStack::createPostProcessResources(VkImageView depthFallbackView,
     try {
         createLuminanceResources();
     } catch (const std::exception& error) {
-        disableLogAverageExposureFallback(
-            std::string("Log-average exposure luminance resources unavailable: ") + error.what());
+        disableLogAverageExposureFallback(std::string("Log-average exposure luminance resources unavailable: ") +
+                                          error.what());
     }
 
     try {
         createHistogramResources();
     } catch (const std::exception& error) {
-        disableHistogramExposureFallback(
-            std::string("Histogram exposure resources unavailable: ") + error.what());
+        disableHistogramExposureFallback(std::string("Histogram exposure resources unavailable: ") + error.what());
     }
 
     createExposureResources();
@@ -237,8 +227,8 @@ void PostProcessStack::createExposureComputePipelines()
                                       VK_OBJECT_TYPE_PIPELINE_LAYOUT,
                                       "AutoExposurePipelineLayout");
         } catch (const std::exception& error) {
-            disableLogAverageExposureFallback(
-                std::string("Log-average exposure compute pipeline creation failed: ") + error.what());
+            disableLogAverageExposureFallback(std::string("Log-average exposure compute pipeline creation failed: ") +
+                                              error.what());
         }
 
         try {
@@ -261,8 +251,8 @@ void PostProcessStack::createExposureComputePipelines()
                                       VK_OBJECT_TYPE_PIPELINE_LAYOUT,
                                       "HistogramExposurePipelineLayout");
         } catch (const std::exception& error) {
-            disableHistogramExposureFallback(
-                std::string("Histogram exposure compute pipeline creation failed: ") + error.what());
+            disableHistogramExposureFallback(std::string("Histogram exposure compute pipeline creation failed: ") +
+                                             error.what());
         }
 
         if (postProcessExposureReduceDescriptorSetLayout != VK_NULL_HANDLE) {
@@ -341,7 +331,6 @@ void PostProcessStack::recordCompositeCommands(VkCommandBuffer commandBuffer, co
     }
     rhi::debug::endLabel(commandBuffer);
 }
-
 
 void PostProcessStack::createPostProcessDescriptorSetLayouts()
 {
@@ -559,27 +548,22 @@ VkDescriptorImageInfo PostProcessStack::postProcessDepthInfo() const
 PostProcessStack::PostProcessDescriptorCounts PostProcessStack::computePostProcessDescriptorCounts() const
 {
     PostProcessDescriptorCounts counts{};
-    counts.createLuminanceDescriptors =
-        autoExposureAvailable_ && !frameLuminanceBuffers_.empty() &&
-        frameLuminanceBuffers_.size() == frameCount_ &&
-        postProcessLuminanceDescriptorSetLayout_.handle() != VK_NULL_HANDLE;
-    counts.createHistogramDescriptors =
-        histogramExposureAvailable_ && !frameHistogramBuffers_.empty() &&
-        frameHistogramBuffers_.size() == frameCount_ &&
-        postProcessLuminanceDescriptorSetLayout_.handle() != VK_NULL_HANDLE;
-    counts.createExposureReduceDescriptors =
-        counts.createLuminanceDescriptors && counts.createHistogramDescriptors && exposureReduceAvailable_ &&
-        frameExposureBuffers_.size() == frameCount_ &&
-        postProcessExposureReduceDescriptorSetLayout_.handle() != VK_NULL_HANDLE;
-    counts.createCompositeDescriptors =
-        !frameExposureBuffers_.empty() && frameExposureBuffers_.size() == frameCount_ &&
-        postProcessCompositeDescriptorSetLayout_.handle() != VK_NULL_HANDLE;
+    counts.createLuminanceDescriptors = autoExposureAvailable_ && !frameLuminanceBuffers_.empty() &&
+                                        frameLuminanceBuffers_.size() == frameCount_ &&
+                                        postProcessLuminanceDescriptorSetLayout_.handle() != VK_NULL_HANDLE;
+    counts.createHistogramDescriptors = histogramExposureAvailable_ && !frameHistogramBuffers_.empty() &&
+                                        frameHistogramBuffers_.size() == frameCount_ &&
+                                        postProcessLuminanceDescriptorSetLayout_.handle() != VK_NULL_HANDLE;
+    counts.createExposureReduceDescriptors = counts.createLuminanceDescriptors && counts.createHistogramDescriptors &&
+                                             exposureReduceAvailable_ && frameExposureBuffers_.size() == frameCount_ &&
+                                             postProcessExposureReduceDescriptorSetLayout_.handle() != VK_NULL_HANDLE;
+    counts.createCompositeDescriptors = !frameExposureBuffers_.empty() && frameExposureBuffers_.size() == frameCount_ &&
+                                        postProcessCompositeDescriptorSetLayout_.handle() != VK_NULL_HANDLE;
     counts.exposureDescriptorSetCount =
         (counts.createLuminanceDescriptors ? static_cast<uint32_t>(frameCount_) : 0u) +
         (counts.createHistogramDescriptors ? static_cast<uint32_t>(frameCount_) : 0u) +
         (counts.createExposureReduceDescriptors ? static_cast<uint32_t>(frameCount_) : 0u);
-    counts.compositeDescriptorSetCount =
-        counts.createCompositeDescriptors ? static_cast<uint32_t>(frameCount_) : 0u;
+    counts.compositeDescriptorSetCount = counts.createCompositeDescriptors ? static_cast<uint32_t>(frameCount_) : 0u;
     counts.legacyBloomSetCount = 3u;
     counts.bloomDownsampleSetCount = static_cast<uint32_t>(bloomMipDownsampleImages_.size());
     counts.bloomUpsampleSetCount = static_cast<uint32_t>(bloomMipUpsampleImages_.size());
@@ -599,14 +583,13 @@ void PostProcessStack::createPostProcessDescriptorPool(const PostProcessDescript
 {
     std::array<VkDescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[0].descriptorCount =
-        counts.legacyBloomSetCount + counts.bloomDownsampleSetCount + (2u * counts.bloomUpsampleSetCount) +
-        (4u * counts.compositeDescriptorSetCount) +
-        (counts.createLuminanceDescriptors ? static_cast<uint32_t>(frameCount_) : 0u) +
-        (counts.createHistogramDescriptors ? static_cast<uint32_t>(frameCount_) : 0u) +
-        (2u * counts.taaResolveSetCount) + counts.taaBloomExtractSetCount + counts.taaBloomDownsampleSetCount +
-        (4u * counts.taaCompositeDescriptorSetCount) + counts.taaLuminanceDescriptorSetCount +
-        counts.taaHistogramDescriptorSetCount;
+    poolSizes[0].descriptorCount = counts.legacyBloomSetCount + counts.bloomDownsampleSetCount +
+                                   (2u * counts.bloomUpsampleSetCount) + (4u * counts.compositeDescriptorSetCount) +
+                                   (counts.createLuminanceDescriptors ? static_cast<uint32_t>(frameCount_) : 0u) +
+                                   (counts.createHistogramDescriptors ? static_cast<uint32_t>(frameCount_) : 0u) +
+                                   (2u * counts.taaResolveSetCount) + counts.taaBloomExtractSetCount +
+                                   counts.taaBloomDownsampleSetCount + (4u * counts.taaCompositeDescriptorSetCount) +
+                                   counts.taaLuminanceDescriptorSetCount + counts.taaHistogramDescriptorSetCount;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     poolSizes[1].descriptorCount =
         (counts.createLuminanceDescriptors ? static_cast<uint32_t>(frameCount_) : 0u) +
@@ -615,12 +598,11 @@ void PostProcessStack::createPostProcessDescriptorPool(const PostProcessDescript
         counts.compositeDescriptorSetCount + counts.taaCompositeDescriptorSetCount +
         counts.taaLuminanceDescriptorSetCount + counts.taaHistogramDescriptorSetCount;
     const uint32_t poolSizeCount = poolSizes[1].descriptorCount > 0 ? 2u : 1u;
-    const uint32_t maxSets = counts.legacyBloomSetCount + counts.bloomDownsampleSetCount +
-                             counts.bloomUpsampleSetCount + counts.compositeDescriptorSetCount +
-                             counts.exposureDescriptorSetCount + counts.taaResolveSetCount +
-                             counts.taaBloomExtractSetCount + counts.taaBloomDownsampleSetCount +
-                             counts.taaCompositeDescriptorSetCount + counts.taaLuminanceDescriptorSetCount +
-                             counts.taaHistogramDescriptorSetCount;
+    const uint32_t maxSets =
+        counts.legacyBloomSetCount + counts.bloomDownsampleSetCount + counts.bloomUpsampleSetCount +
+        counts.compositeDescriptorSetCount + counts.exposureDescriptorSetCount + counts.taaResolveSetCount +
+        counts.taaBloomExtractSetCount + counts.taaBloomDownsampleSetCount + counts.taaCompositeDescriptorSetCount +
+        counts.taaLuminanceDescriptorSetCount + counts.taaHistogramDescriptorSetCount;
 
     postProcessDescriptorPool_.create(
         context_.vkDevice(), std::span<const VkDescriptorPoolSize>(poolSizes.data(), poolSizeCount), maxSets);
@@ -721,8 +703,8 @@ void PostProcessStack::createTaaResolveDescriptorSets()
         taaResolveAllocateInfo.descriptorPool = postProcessDescriptorPool_.handle();
         taaResolveAllocateInfo.descriptorSetCount = static_cast<uint32_t>(taaResolveLayouts.size());
         taaResolveAllocateInfo.pSetLayouts = taaResolveLayouts.data();
-        VK_CHECK(vkAllocateDescriptorSets(
-            context_.vkDevice(), &taaResolveAllocateInfo, taaResolveDescriptorSets_.data()));
+        VK_CHECK(
+            vkAllocateDescriptorSets(context_.vkDevice(), &taaResolveAllocateInfo, taaResolveDescriptorSets_.data()));
 
         std::array<VkDescriptorSetLayout, kTaaHistoryCount> taaSingleImageLayouts{
             postProcessSingleImageDescriptorSetLayout_.handle(),
@@ -790,7 +772,8 @@ void PostProcessStack::createTaaResolveDescriptorSets()
             std::array<VkDescriptorImageInfo, kTaaHistoryCount> taaDownsampleImageInfos{};
             std::array<VkWriteDescriptorSet, kTaaHistoryCount> taaDownsampleWrites{};
             for (uint32_t historyIndex = 0; historyIndex < kTaaHistoryCount; ++historyIndex) {
-                taaDownsampleImageInfos[historyIndex] = postProcessImageInfo(taaHistoryImages_[historyIndex].imageView());
+                taaDownsampleImageInfos[historyIndex] =
+                    postProcessImageInfo(taaHistoryImages_[historyIndex].imageView());
                 taaDownsampleWrites[historyIndex].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 taaDownsampleWrites[historyIndex].dstSet = taaBloomMipDownsampleDescriptorSets_[historyIndex];
                 taaDownsampleWrites[historyIndex].dstBinding = 0;
@@ -842,11 +825,8 @@ void PostProcessStack::createBloomMipDownsampleDescriptorSets()
                                       VK_OBJECT_TYPE_DESCRIPTOR_SET,
                                       "BloomMipDownsampleDescriptorSet" + std::to_string(level));
         }
-        vkUpdateDescriptorSets(context_.vkDevice(),
-                               static_cast<uint32_t>(downsampleWrites.size()),
-                               downsampleWrites.data(),
-                               0,
-                               nullptr);
+        vkUpdateDescriptorSets(
+            context_.vkDevice(), static_cast<uint32_t>(downsampleWrites.size()), downsampleWrites.data(), 0, nullptr);
     }
 }
 
@@ -867,10 +847,9 @@ void PostProcessStack::createBloomMipUpsampleDescriptorSets()
         std::vector<std::array<VkDescriptorImageInfo, 2>> upsampleImageInfos(bloomMipUpsampleImages_.size());
         std::vector<VkWriteDescriptorSet> upsampleWrites(bloomMipUpsampleImages_.size() * 2u);
         for (size_t level = 0; level < bloomMipUpsampleImages_.size(); ++level) {
-            const VkImageView lowerView =
-                level + 1 == bloomMipDownsampleImages_.size() - 1
-                    ? bloomMipDownsampleImages_[level + 1].imageView()
-                    : bloomMipUpsampleImages_[level + 1].imageView();
+            const VkImageView lowerView = level + 1 == bloomMipDownsampleImages_.size() - 1
+                                              ? bloomMipDownsampleImages_[level + 1].imageView()
+                                              : bloomMipUpsampleImages_[level + 1].imageView();
             upsampleImageInfos[level][0] = postProcessImageInfo(bloomMipDownsampleImages_[level].imageView());
             upsampleImageInfos[level][1] = postProcessImageInfo(lowerView);
 
@@ -894,11 +873,8 @@ void PostProcessStack::createBloomMipUpsampleDescriptorSets()
                                       VK_OBJECT_TYPE_DESCRIPTOR_SET,
                                       "BloomMipUpsampleDescriptorSet" + std::to_string(level));
         }
-        vkUpdateDescriptorSets(context_.vkDevice(),
-                               static_cast<uint32_t>(upsampleWrites.size()),
-                               upsampleWrites.data(),
-                               0,
-                               nullptr);
+        vkUpdateDescriptorSets(
+            context_.vkDevice(), static_cast<uint32_t>(upsampleWrites.size()), upsampleWrites.data(), 0, nullptr);
     }
 }
 
@@ -913,8 +889,8 @@ void PostProcessStack::createCompositeDescriptorSets(const PostProcessDescriptor
         compositeAllocateInfo.descriptorPool = postProcessDescriptorPool_.handle();
         compositeAllocateInfo.descriptorSetCount = static_cast<uint32_t>(compositeDescriptorSets_.size());
         compositeAllocateInfo.pSetLayouts = compositeLayouts.data();
-        VK_CHECK(vkAllocateDescriptorSets(
-            context_.vkDevice(), &compositeAllocateInfo, compositeDescriptorSets_.data()));
+        VK_CHECK(
+            vkAllocateDescriptorSets(context_.vkDevice(), &compositeAllocateInfo, compositeDescriptorSets_.data()));
         compositeDescriptorSet_ = compositeDescriptorSets_.empty() ? VK_NULL_HANDLE : compositeDescriptorSets_.front();
 
         std::vector<std::array<VkDescriptorImageInfo, 4>> compositeImageInfos(frameCount_);
@@ -971,11 +947,8 @@ void PostProcessStack::createCompositeDescriptorSets(const PostProcessDescriptor
                                       "CompositeDescriptorSet" + std::to_string(frameIndex));
         }
 
-        vkUpdateDescriptorSets(context_.vkDevice(),
-                               static_cast<uint32_t>(compositeWrites.size()),
-                               compositeWrites.data(),
-                               0,
-                               nullptr);
+        vkUpdateDescriptorSets(
+            context_.vkDevice(), static_cast<uint32_t>(compositeWrites.size()), compositeWrites.data(), 0, nullptr);
 
         if (taaHistoryImages_[0].imageView() != VK_NULL_HANDLE && taaHistoryImages_[1].imageView() != VK_NULL_HANDLE) {
             for (uint32_t historyIndex = 0; historyIndex < kTaaHistoryCount; ++historyIndex) {
@@ -988,8 +961,8 @@ void PostProcessStack::createCompositeDescriptorSets(const PostProcessDescriptor
                 taaCompositeAllocateInfo.descriptorPool = postProcessDescriptorPool_.handle();
                 taaCompositeAllocateInfo.descriptorSetCount = static_cast<uint32_t>(taaDescriptorSets.size());
                 taaCompositeAllocateInfo.pSetLayouts = taaCompositeLayouts.data();
-                VK_CHECK(vkAllocateDescriptorSets(
-                    context_.vkDevice(), &taaCompositeAllocateInfo, taaDescriptorSets.data()));
+                VK_CHECK(
+                    vkAllocateDescriptorSets(context_.vkDevice(), &taaCompositeAllocateInfo, taaDescriptorSets.data()));
 
                 std::vector<std::array<VkDescriptorImageInfo, 4>> taaCompositeImageInfos(frameCount_);
                 std::vector<VkDescriptorBufferInfo> taaCompositeExposureInfos(frameCount_);
@@ -1047,7 +1020,6 @@ void PostProcessStack::createCompositeDescriptorSets(const PostProcessDescriptor
             }
         }
     }
-
 }
 
 void PostProcessStack::createLuminanceDescriptorSets(const PostProcessDescriptorCounts& counts)
@@ -1064,8 +1036,8 @@ void PostProcessStack::createLuminanceDescriptorSets(const PostProcessDescriptor
             luminanceAllocateInfo.descriptorPool = postProcessDescriptorPool_.handle();
             luminanceAllocateInfo.descriptorSetCount = static_cast<uint32_t>(luminanceDescriptorSets_.size());
             luminanceAllocateInfo.pSetLayouts = luminanceLayouts.data();
-            VK_CHECK(vkAllocateDescriptorSets(
-                context_.vkDevice(), &luminanceAllocateInfo, luminanceDescriptorSets_.data()));
+            VK_CHECK(
+                vkAllocateDescriptorSets(context_.vkDevice(), &luminanceAllocateInfo, luminanceDescriptorSets_.data()));
 
             for (size_t frameIndex = 0; frameIndex < luminanceDescriptorSets_.size(); ++frameIndex) {
                 VkDescriptorBufferInfo luminanceBufferInfo{};
@@ -1152,8 +1124,8 @@ void PostProcessStack::createLuminanceDescriptorSets(const PostProcessDescriptor
             }
         } catch (const std::exception& error) {
             luminanceDescriptorSets_.clear();
-            disableLogAverageExposureFallback(
-                std::string("Log-average exposure descriptor allocation failed: ") + error.what());
+            disableLogAverageExposureFallback(std::string("Log-average exposure descriptor allocation failed: ") +
+                                              error.what());
         }
     }
 }
@@ -1172,8 +1144,8 @@ void PostProcessStack::createHistogramDescriptorSets(const PostProcessDescriptor
             histogramAllocateInfo.descriptorPool = postProcessDescriptorPool_.handle();
             histogramAllocateInfo.descriptorSetCount = static_cast<uint32_t>(histogramDescriptorSets_.size());
             histogramAllocateInfo.pSetLayouts = histogramLayouts.data();
-            VK_CHECK(vkAllocateDescriptorSets(
-                context_.vkDevice(), &histogramAllocateInfo, histogramDescriptorSets_.data()));
+            VK_CHECK(
+                vkAllocateDescriptorSets(context_.vkDevice(), &histogramAllocateInfo, histogramDescriptorSets_.data()));
 
             for (size_t frameIndex = 0; frameIndex < histogramDescriptorSets_.size(); ++frameIndex) {
                 VkDescriptorBufferInfo histogramBufferInfo{};
@@ -1260,8 +1232,8 @@ void PostProcessStack::createHistogramDescriptorSets(const PostProcessDescriptor
             }
         } catch (const std::exception& error) {
             histogramDescriptorSets_.clear();
-            disableHistogramExposureFallback(
-                std::string("Histogram exposure descriptor allocation failed: ") + error.what());
+            disableHistogramExposureFallback(std::string("Histogram exposure descriptor allocation failed: ") +
+                                             error.what());
         }
     }
 }
@@ -1271,8 +1243,8 @@ void PostProcessStack::createExposureReduceDescriptorSets(const PostProcessDescr
     if (counts.createExposureReduceDescriptors) {
         try {
             exposureReduceDescriptorSets_.assign(frameCount_, VK_NULL_HANDLE);
-            std::vector<VkDescriptorSetLayout> exposureLayouts(
-                frameCount_, postProcessExposureReduceDescriptorSetLayout_.handle());
+            std::vector<VkDescriptorSetLayout> exposureLayouts(frameCount_,
+                                                               postProcessExposureReduceDescriptorSetLayout_.handle());
             VkDescriptorSetAllocateInfo exposureAllocateInfo{};
             exposureAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
             exposureAllocateInfo.descriptorPool = postProcessDescriptorPool_.handle();
@@ -1454,8 +1426,7 @@ void PostProcessStack::createExposureResources()
         exposureInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
         exposureInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
         frameExposureBuffers_[frameIndex].createBuffer(context_, exposureInfo);
-        frameExposureBuffers_[frameIndex].upload(
-            std::as_bytes(std::span<const ExposureState>(&initialState, 1)));
+        frameExposureBuffers_[frameIndex].upload(std::as_bytes(std::span<const ExposureState>(&initialState, 1)));
         rhi::debug::setObjectName(context_.vkDevice(),
                                   frameExposureBuffers_[frameIndex].buffer(),
                                   VK_OBJECT_TYPE_BUFFER,
@@ -1580,10 +1551,8 @@ void PostProcessStack::createBloomPipelines()
         std::span<const VkPushConstantRange>(&bloomDownsamplePushConstantRange, 1);
 
     bloomDownsamplePipeline_.create(context_.vkDevice(), bloomDownsamplePipelineInfo);
-    rhi::debug::setObjectName(context_.vkDevice(),
-                              bloomDownsamplePipeline_.pipeline(),
-                              VK_OBJECT_TYPE_PIPELINE,
-                              "BloomDownsamplePipeline");
+    rhi::debug::setObjectName(
+        context_.vkDevice(), bloomDownsamplePipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "BloomDownsamplePipeline");
     rhi::debug::setObjectName(context_.vkDevice(),
                               bloomDownsamplePipeline_.layout(),
                               VK_OBJECT_TYPE_PIPELINE_LAYOUT,
@@ -1600,10 +1569,8 @@ void PostProcessStack::createBloomPipelines()
         std::span<const VkPushConstantRange>(&bloomUpsamplePushConstantRange, 1);
 
     bloomUpsamplePipeline_.create(context_.vkDevice(), bloomUpsamplePipelineInfo);
-    rhi::debug::setObjectName(context_.vkDevice(),
-                              bloomUpsamplePipeline_.pipeline(),
-                              VK_OBJECT_TYPE_PIPELINE,
-                              "BloomUpsamplePipeline");
+    rhi::debug::setObjectName(
+        context_.vkDevice(), bloomUpsamplePipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "BloomUpsamplePipeline");
     rhi::debug::setObjectName(context_.vkDevice(),
                               bloomUpsamplePipeline_.layout(),
                               VK_OBJECT_TYPE_PIPELINE_LAYOUT,
@@ -1624,16 +1591,13 @@ void PostProcessStack::createTaaResolvePipeline()
     taaResolvePipelineInfo.colorFormat = kSceneColorFormat;
     taaResolvePipelineInfo.descriptorSetLayouts =
         std::span<const VkDescriptorSetLayout>(&postProcessDualImageDescriptorSetLayout, 1);
-    taaResolvePipelineInfo.pushConstantRanges =
-        std::span<const VkPushConstantRange>(&taaResolvePushConstantRange, 1);
+    taaResolvePipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&taaResolvePushConstantRange, 1);
 
     taaResolvePipeline_.create(context_.vkDevice(), taaResolvePipelineInfo);
     rhi::debug::setObjectName(
         context_.vkDevice(), taaResolvePipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "TAAResolvePipeline");
-    rhi::debug::setObjectName(context_.vkDevice(),
-                              taaResolvePipeline_.layout(),
-                              VK_OBJECT_TYPE_PIPELINE_LAYOUT,
-                              "TAAResolvePipelineLayout");
+    rhi::debug::setObjectName(
+        context_.vkDevice(), taaResolvePipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "TAAResolvePipelineLayout");
     taaResolvePipelineColorFormat_ = taaResolvePipelineInfo.colorFormat;
 }
 
@@ -1741,9 +1705,9 @@ bool PostProcessStack::isGpuExposureActive() const
 bool PostProcessStack::isTaaActive() const
 {
     return taaSettings_.enabled && taaResolvePipeline_.pipeline() != VK_NULL_HANDLE &&
-           taaResolvePipeline_.layout() != VK_NULL_HANDLE &&
-           taaHistoryImages_[0].imageView() != VK_NULL_HANDLE && taaHistoryImages_[1].imageView() != VK_NULL_HANDLE &&
-           taaResolveDescriptorSets_[0] != VK_NULL_HANDLE && taaResolveDescriptorSets_[1] != VK_NULL_HANDLE;
+           taaResolvePipeline_.layout() != VK_NULL_HANDLE && taaHistoryImages_[0].imageView() != VK_NULL_HANDLE &&
+           taaHistoryImages_[1].imageView() != VK_NULL_HANDLE && taaResolveDescriptorSets_[0] != VK_NULL_HANDLE &&
+           taaResolveDescriptorSets_[1] != VK_NULL_HANDLE;
 }
 
 bool PostProcessStack::isTaaJitterActive() const
@@ -1782,8 +1746,7 @@ VkDescriptorSet PostProcessStack::activeBloomMipDownsampleDescriptorSet(uint32_t
             return descriptorSet;
         }
     }
-    return level < bloomMipDownsampleDescriptorSets_.size() ? bloomMipDownsampleDescriptorSets_[level]
-                                                           : VK_NULL_HANDLE;
+    return level < bloomMipDownsampleDescriptorSets_.size() ? bloomMipDownsampleDescriptorSets_[level] : VK_NULL_HANDLE;
 }
 
 VkDescriptorSet PostProcessStack::activeCompositeDescriptorSet() const
@@ -1795,7 +1758,7 @@ VkDescriptorSet PostProcessStack::activeCompositeDescriptorSet() const
         }
     }
     return currentFrame_ < compositeDescriptorSets_.size() ? compositeDescriptorSets_[currentFrame_]
-                                                          : compositeDescriptorSet_;
+                                                           : compositeDescriptorSet_;
 }
 
 VkDescriptorSet PostProcessStack::activeLuminanceDescriptorSet() const
@@ -1806,8 +1769,7 @@ VkDescriptorSet PostProcessStack::activeLuminanceDescriptorSet() const
             return descriptorSets[currentFrame_];
         }
     }
-    return currentFrame_ < luminanceDescriptorSets_.size() ? luminanceDescriptorSets_[currentFrame_]
-                                                          : VK_NULL_HANDLE;
+    return currentFrame_ < luminanceDescriptorSets_.size() ? luminanceDescriptorSets_[currentFrame_] : VK_NULL_HANDLE;
 }
 
 VkDescriptorSet PostProcessStack::activeHistogramDescriptorSet() const
@@ -1818,8 +1780,7 @@ VkDescriptorSet PostProcessStack::activeHistogramDescriptorSet() const
             return descriptorSets[currentFrame_];
         }
     }
-    return currentFrame_ < histogramDescriptorSets_.size() ? histogramDescriptorSets_[currentFrame_]
-                                                          : VK_NULL_HANDLE;
+    return currentFrame_ < histogramDescriptorSets_.size() ? histogramDescriptorSets_[currentFrame_] : VK_NULL_HANDLE;
 }
 
 float PostProcessStack::currentToneMappingExposure() const
@@ -1863,14 +1824,8 @@ void PostProcessStack::recordLuminanceCommands(VkCommandBuffer commandBuffer)
         rhi::debug::endLabel(commandBuffer);
         return;
     }
-    vkCmdBindDescriptorSets(commandBuffer,
-                            VK_PIPELINE_BIND_POINT_COMPUTE,
-                            luminancePipeline_.layout(),
-                            0,
-                            1,
-                            &descriptorSet,
-                            0,
-                            nullptr);
+    vkCmdBindDescriptorSets(
+        commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, luminancePipeline_.layout(), 0, 1, &descriptorSet, 0, nullptr);
 
     const VkExtent3D sceneExtent = sceneColor_.extent();
     const LuminancePushConstants pushConstants{
@@ -1894,8 +1849,7 @@ void PostProcessStack::recordLuminanceCommands(VkCommandBuffer commandBuffer)
 void PostProcessStack::recordHistogramCommands(VkCommandBuffer commandBuffer)
 {
     if (!isHistogramExposureActive() || exposureModeValue(toneMappingSettings_.exposureMode) == ExposureMode::Manual ||
-        currentFrame_ >= frameHistogramBuffers_.size() ||
-        currentFrame_ >= frameExposureReadbackReady_.size()) {
+        currentFrame_ >= frameHistogramBuffers_.size() || currentFrame_ >= frameExposureReadbackReady_.size()) {
         return;
     }
 
@@ -1944,20 +1898,13 @@ void PostProcessStack::recordHistogramCommands(VkCommandBuffer commandBuffer)
         rhi::debug::endLabel(commandBuffer);
         return;
     }
-    vkCmdBindDescriptorSets(commandBuffer,
-                            VK_PIPELINE_BIND_POINT_COMPUTE,
-                            histogramPipeline_.layout(),
-                            0,
-                            1,
-                            &descriptorSet,
-                            0,
-                            nullptr);
+    vkCmdBindDescriptorSets(
+        commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, histogramPipeline_.layout(), 0, 1, &descriptorSet, 0, nullptr);
 
     const auto [minLogLuminance, maxLogLuminance] = sanitizedHistogramLogRange(
         toneMappingSettings_.histogramMinLogLuminance, toneMappingSettings_.histogramMaxLogLuminance);
-    const HistogramPushConstants pushConstants{
-        glm::uvec4(sceneExtent.width, sceneExtent.height, kHistogramBinCount, 0),
-        glm::vec4(minLogLuminance, maxLogLuminance, kMinAverageLuminance, 0.0f)};
+    const HistogramPushConstants pushConstants{glm::uvec4(sceneExtent.width, sceneExtent.height, kHistogramBinCount, 0),
+                                               glm::vec4(minLogLuminance, maxLogLuminance, kMinAverageLuminance, 0.0f)};
     vkCmdPushConstants(commandBuffer,
                        histogramPipeline_.layout(),
                        VK_SHADER_STAGE_COMPUTE_BIT,
@@ -2012,8 +1959,7 @@ void PostProcessStack::recordExposureReduceCommands(VkCommandBuffer commandBuffe
                                     nullptr);
 
             const auto now = std::chrono::steady_clock::now();
-            const float deltaTime =
-                std::max(0.0f, std::chrono::duration<float>(now - lastAutoExposureUpdate_).count());
+            const float deltaTime = std::max(0.0f, std::chrono::duration<float>(now - lastAutoExposureUpdate_).count());
             lastAutoExposureUpdate_ = now;
             const auto [lowPercentile, highPercentile] =
                 sanitizedPercentileRange(toneMappingSettings_.lowPercentile, toneMappingSettings_.highPercentile);
@@ -2028,7 +1974,8 @@ void PostProcessStack::recordExposureReduceCommands(VkCommandBuffer commandBuffe
                           std::max(toneMappingSettings_.targetLuminance, kMinAverageLuminance),
                           minExposure,
                           maxExposure),
-                glm::vec4(deltaTime, std::max(toneMappingSettings_.adaptationRate, 0.0f), lowPercentile, highPercentile),
+                glm::vec4(
+                    deltaTime, std::max(toneMappingSettings_.adaptationRate, 0.0f), lowPercentile, highPercentile),
                 glm::vec4(reduceMinLogLuminance, reduceMaxLogLuminance, kMinAverageLuminance, 0.0f)};
             vkCmdPushConstants(commandBuffer,
                                exposureReducePipeline_.layout(),
@@ -2086,14 +2033,8 @@ void PostProcessStack::recordTaaResolveCommands(VkCommandBuffer commandBuffer)
     renderGraph_.beginTaaResolvePass();
     setViewportAndScissor(commandBuffer, VkExtent2D{sceneExtent.width, sceneExtent.height});
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, taaResolvePipeline_.pipeline());
-    vkCmdBindDescriptorSets(commandBuffer,
-                            VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            taaResolvePipeline_.layout(),
-                            0,
-                            1,
-                            &descriptorSet,
-                            0,
-                            nullptr);
+    vkCmdBindDescriptorSets(
+        commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, taaResolvePipeline_.layout(), 0, 1, &descriptorSet, 0, nullptr);
 
     const TaaResolvePushConstants pushConstants{
         glm::vec2{1.0f / static_cast<float>(sceneExtent.width), 1.0f / static_cast<float>(sceneExtent.height)},
@@ -2212,20 +2153,18 @@ void PostProcessStack::recordMipChainBloomCommands(VkCommandBuffer commandBuffer
 {
     if (bloomMipDownsampleImages_.empty() ||
         bloomMipDownsampleDescriptorSets_.size() != bloomMipDownsampleImages_.size() ||
-        bloomDownsamplePipeline_.pipeline() == VK_NULL_HANDLE ||
-        bloomDownsamplePipeline_.layout() == VK_NULL_HANDLE) {
+        bloomDownsamplePipeline_.pipeline() == VK_NULL_HANDLE || bloomDownsamplePipeline_.layout() == VK_NULL_HANDLE) {
         return;
     }
 
     rhi::debug::beginLabel(commandBuffer, "BloomMipChain");
 
-    const bool downsampleProfileScope =
-        gpuProfiler_.beginScope(currentFrame_, commandBuffer, "Bloom Downsample Chain");
+    const bool downsampleProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "Bloom Downsample Chain");
     rhi::debug::beginLabel(commandBuffer, "Bloom Downsample Chain");
     for (uint32_t level = 0; level < bloomMipDownsampleImages_.size(); ++level) {
-        const VkExtent2D sourceExtent =
-            level == 0 ? swapchain_.extent() : VkExtent2D{bloomMipDownsampleImages_[level - 1].extent().width,
-                                                          bloomMipDownsampleImages_[level - 1].extent().height};
+        const VkExtent2D sourceExtent = level == 0 ? swapchain_.extent()
+                                                   : VkExtent2D{bloomMipDownsampleImages_[level - 1].extent().width,
+                                                                bloomMipDownsampleImages_[level - 1].extent().height};
         const VkExtent3D outputExtent = bloomMipDownsampleImages_[level].extent();
         const VkExtent2D outputSize{outputExtent.width, outputExtent.height};
 
@@ -2248,8 +2187,7 @@ void PostProcessStack::recordMipChainBloomCommands(VkCommandBuffer commandBuffer
                                 0,
                                 nullptr);
         const BloomDownsamplePushConstants pushConstants{
-            glm::vec2{1.0f / static_cast<float>(sourceExtent.width),
-                      1.0f / static_cast<float>(sourceExtent.height)},
+            glm::vec2{1.0f / static_cast<float>(sourceExtent.width), 1.0f / static_cast<float>(sourceExtent.height)},
             bloomSettings_.threshold,
             level == 0 ? 1u : 0u};
         vkCmdPushConstants(commandBuffer,
@@ -2267,21 +2205,17 @@ void PostProcessStack::recordMipChainBloomCommands(VkCommandBuffer commandBuffer
         gpuProfiler_.endScope(currentFrame_, commandBuffer);
     }
 
-    if (!bloomMipUpsampleImages_.empty() &&
-        bloomMipUpsampleDescriptorSets_.size() == bloomMipUpsampleImages_.size() &&
+    if (!bloomMipUpsampleImages_.empty() && bloomMipUpsampleDescriptorSets_.size() == bloomMipUpsampleImages_.size() &&
         bloomUpsamplePipeline_.pipeline() != VK_NULL_HANDLE && bloomUpsamplePipeline_.layout() != VK_NULL_HANDLE) {
-        const bool upsampleProfileScope =
-            gpuProfiler_.beginScope(currentFrame_, commandBuffer, "Bloom Upsample Chain");
+        const bool upsampleProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "Bloom Upsample Chain");
         rhi::debug::beginLabel(commandBuffer, "Bloom Upsample Chain");
         for (uint32_t reverseIndex = 0; reverseIndex < bloomMipUpsampleImages_.size(); ++reverseIndex) {
-            const uint32_t level =
-                static_cast<uint32_t>(bloomMipUpsampleImages_.size() - 1u - reverseIndex);
+            const uint32_t level = static_cast<uint32_t>(bloomMipUpsampleImages_.size() - 1u - reverseIndex);
             const VkExtent3D outputExtent = bloomMipUpsampleImages_[level].extent();
             const VkExtent2D outputSize{outputExtent.width, outputExtent.height};
-            const VkExtent3D lowerExtent =
-                level + 1u == bloomMipDownsampleImages_.size() - 1u
-                    ? bloomMipDownsampleImages_[level + 1u].extent()
-                    : bloomMipUpsampleImages_[level + 1u].extent();
+            const VkExtent3D lowerExtent = level + 1u == bloomMipDownsampleImages_.size() - 1u
+                                               ? bloomMipDownsampleImages_[level + 1u].extent()
+                                               : bloomMipUpsampleImages_[level + 1u].extent();
 
             rhi::debug::beginLabel(commandBuffer, "BloomUpsampleMip" + std::to_string(level));
             renderGraph_.beginBloomUpsamplePass(level);
@@ -2297,8 +2231,7 @@ void PostProcessStack::recordMipChainBloomCommands(VkCommandBuffer commandBuffer
                                     0,
                                     nullptr);
             const BloomUpsamplePushConstants pushConstants{
-                glm::vec2{1.0f / static_cast<float>(lowerExtent.width),
-                          1.0f / static_cast<float>(lowerExtent.height)},
+                glm::vec2{1.0f / static_cast<float>(lowerExtent.width), 1.0f / static_cast<float>(lowerExtent.height)},
                 bloomSettings_.radius,
                 0.0f};
             vkCmdPushConstants(commandBuffer,

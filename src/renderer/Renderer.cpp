@@ -178,8 +178,7 @@ void Renderer::recreatePostProcessResources()
     imguiLayer_.clearRenderTargetPreviewDescriptors();
     selectedBloomMipDebugLevel_ = 0;
     destroyDepthPyramidResources();
-    postProcess_.createPostProcessResources(checkerboardTexture_.imageView(),
-                                            static_cast<uint32_t>(frames_.size()));
+    postProcess_.createPostProcessResources(checkerboardTexture_.imageView(), static_cast<uint32_t>(frames_.size()));
     createDepthPyramidResources();
 }
 
@@ -5163,7 +5162,8 @@ void Renderer::recreateSwapchain()
         postProcess_.luminanceDescriptorSetLayoutHandle() != VK_NULL_HANDLE &&
         ((postProcess_.autoExposureAvailable() && postProcess_.luminancePipeline().pipeline() == VK_NULL_HANDLE) ||
          (postProcess_.histogramExposureAvailable() && postProcess_.histogramPipeline().pipeline() == VK_NULL_HANDLE) ||
-         (postProcess_.exposureReduceAvailable() && postProcess_.exposureReducePipeline().pipeline() == VK_NULL_HANDLE));
+         (postProcess_.exposureReduceAvailable() &&
+          postProcess_.exposureReducePipeline().pipeline() == VK_NULL_HANDLE));
     const bool pipelineNeedsRecreate =
         pipeline_.pipeline() == VK_NULL_HANDLE || pipelineColorFormat_ != kSceneColorFormat ||
         pipelineDepthFormat_ != swapchain_.depthFormat() || skyboxPipeline_.pipeline() == VK_NULL_HANDLE ||
@@ -5221,9 +5221,7 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         };
     };
 
-    const auto bloomResource = [&bloomClear](const char* name,
-                                             const rhi::VulkanImage& image,
-                                             VkImageLayout& layout) {
+    const auto bloomResource = [&bloomClear](const char* name, const rhi::VulkanImage& image, VkImageLayout& layout) {
         const VkExtent3D extent = image.extent();
         return renderer::RenderGraphImageResource{
             name,
@@ -5242,9 +5240,8 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         };
     };
 
-    const auto taaHistoryResource = [&bloomClear](const char* name,
-                                                  const rhi::VulkanImage& image,
-                                                  VkImageLayout& layout) {
+    const auto taaHistoryResource = [&bloomClear](
+                                        const char* name, const rhi::VulkanImage& image, VkImageLayout& layout) {
         const VkExtent3D extent = image.extent();
         return renderer::RenderGraphImageResource{
             name,
@@ -5265,19 +5262,23 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
 
     std::vector<renderer::RenderGraphImageResource> bloomDownsampleResources;
     bloomDownsampleResources.reserve(postProcess_.bloomMipDownsampleImages().size());
-    for (size_t level = 0; level < postProcess_.bloomMipDownsampleImages().size() && level < postProcess_.bloomMipDownsampleLayouts().size();
+    for (size_t level = 0; level < postProcess_.bloomMipDownsampleImages().size() &&
+                           level < postProcess_.bloomMipDownsampleLayouts().size();
          ++level) {
         const std::string name = "BloomMipDownsample" + std::to_string(level);
-        bloomDownsampleResources.push_back(
-            bloomResource(name.c_str(), postProcess_.bloomMipDownsampleImages()[level], postProcess_.bloomMipDownsampleLayouts()[level]));
+        bloomDownsampleResources.push_back(bloomResource(name.c_str(),
+                                                         postProcess_.bloomMipDownsampleImages()[level],
+                                                         postProcess_.bloomMipDownsampleLayouts()[level]));
     }
 
     std::vector<renderer::RenderGraphImageResource> bloomUpsampleResources;
     bloomUpsampleResources.reserve(postProcess_.bloomMipUpsampleImages().size());
-    for (size_t level = 0; level < postProcess_.bloomMipUpsampleImages().size() && level < postProcess_.bloomMipUpsampleLayouts().size(); ++level) {
+    for (size_t level = 0;
+         level < postProcess_.bloomMipUpsampleImages().size() && level < postProcess_.bloomMipUpsampleLayouts().size();
+         ++level) {
         const std::string name = "BloomMipUpsample" + std::to_string(level);
-        bloomUpsampleResources.push_back(
-            bloomResource(name.c_str(), postProcess_.bloomMipUpsampleImages()[level], postProcess_.bloomMipUpsampleLayouts()[level]));
+        bloomUpsampleResources.push_back(bloomResource(
+            name.c_str(), postProcess_.bloomMipUpsampleImages()[level], postProcess_.bloomMipUpsampleLayouts()[level]));
     }
 
     return renderer::RenderGraphFrameResources{
@@ -5364,10 +5365,7 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             false,
             true,
         },
-        bufferResource("MainCullInput",
-                       frameCullInputBuffers_,
-                       currentFrame_,
-                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
+        bufferResource("MainCullInput", frameCullInputBuffers_, currentFrame_, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
         bufferResource("MainCullIndirectOutput",
                        frameIndirectDrawBuffers_,
                        currentFrame_,
@@ -5381,10 +5379,8 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
                        frameBatchVisibleCountReadbackBuffers_,
                        currentFrame_,
                        VK_BUFFER_USAGE_TRANSFER_DST_BIT),
-        bufferResource("LuminancePartials",
-                       postProcess_.luminanceBuffers(),
-                       currentFrame_,
-                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
+        bufferResource(
+            "LuminancePartials", postProcess_.luminanceBuffers(), currentFrame_, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
         bufferResource("LuminanceReadback",
                        postProcess_.luminanceReadbackBuffers(),
                        currentFrame_,
@@ -5397,10 +5393,8 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
                        postProcess_.histogramReadbackBuffers(),
                        currentFrame_,
                        VK_BUFFER_USAGE_TRANSFER_DST_BIT),
-        bufferResource("ExposureState",
-                       postProcess_.exposureBuffers(),
-                       currentFrame_,
-                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
+        bufferResource(
+            "ExposureState", postProcess_.exposureBuffers(), currentFrame_, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
         postProcess_.isTaaActive(),
     };
 }

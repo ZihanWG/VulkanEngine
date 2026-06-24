@@ -111,17 +111,44 @@ public:
     [[nodiscard]] uint32_t taaHistoryWriteIndex() const;
     [[nodiscard]] float currentToneMappingExposure() const;
 
-    [[nodiscard]] bool autoExposureAvailable() const { return autoExposureAvailable_; }
-    [[nodiscard]] bool histogramExposureAvailable() const { return histogramExposureAvailable_; }
-    [[nodiscard]] bool exposureReduceAvailable() const { return exposureReduceAvailable_; }
+    [[nodiscard]] bool autoExposureAvailable() const
+    {
+        return autoExposureAvailable_;
+    }
+    [[nodiscard]] bool histogramExposureAvailable() const
+    {
+        return histogramExposureAvailable_;
+    }
+    [[nodiscard]] bool exposureReduceAvailable() const
+    {
+        return exposureReduceAvailable_;
+    }
 
     // Resource accessors (main HDR pass, render graph wiring, debug-UI previews).
-    [[nodiscard]] rhi::VulkanImage& sceneColor() { return sceneColor_; }
-    [[nodiscard]] const rhi::VulkanImage& sceneColor() const { return sceneColor_; }
-    [[nodiscard]] VkImageLayout& sceneColorLayout() { return sceneColorLayout_; }
-    [[nodiscard]] const rhi::VulkanImage& bloomExtract() const { return bloomExtract_; }
-    [[nodiscard]] const rhi::VulkanImage& bloomPing() const { return bloomPing_; }
-    [[nodiscard]] const rhi::VulkanImage& bloomPong() const { return bloomPong_; }
+    [[nodiscard]] rhi::VulkanImage& sceneColor()
+    {
+        return sceneColor_;
+    }
+    [[nodiscard]] const rhi::VulkanImage& sceneColor() const
+    {
+        return sceneColor_;
+    }
+    [[nodiscard]] VkImageLayout& sceneColorLayout()
+    {
+        return sceneColorLayout_;
+    }
+    [[nodiscard]] const rhi::VulkanImage& bloomExtract() const
+    {
+        return bloomExtract_;
+    }
+    [[nodiscard]] const rhi::VulkanImage& bloomPing() const
+    {
+        return bloomPing_;
+    }
+    [[nodiscard]] const rhi::VulkanImage& bloomPong() const
+    {
+        return bloomPong_;
+    }
     [[nodiscard]] const std::vector<rhi::VulkanImage>& bloomMipDownsampleImages() const
     {
         return bloomMipDownsampleImages_;
@@ -130,41 +157,128 @@ public:
     {
         return bloomMipUpsampleImages_;
     }
-    [[nodiscard]] const std::array<rhi::VulkanImage, 2>& taaHistoryImages() const { return taaHistoryImages_; }
-    [[nodiscard]] VkSampler sampler() const { return postProcessSampler_; }
-    [[nodiscard]] VkExtent2D bloomExtent() const { return bloomExtent_; }
-    [[nodiscard]] uint32_t taaPostProcessHistoryIndex() const { return taaPostProcessHistoryIndex_; }
-    [[nodiscard]] bool taaHistoryValid() const { return taaHistoryValid_; }
+    [[nodiscard]] const std::array<rhi::VulkanImage, 2>& taaHistoryImages() const
+    {
+        return taaHistoryImages_;
+    }
+    [[nodiscard]] VkSampler sampler() const
+    {
+        return postProcessSampler_;
+    }
+    [[nodiscard]] VkExtent2D bloomExtent() const
+    {
+        return bloomExtent_;
+    }
+    [[nodiscard]] uint32_t taaPostProcessHistoryIndex() const
+    {
+        return taaPostProcessHistoryIndex_;
+    }
+    [[nodiscard]] bool taaHistoryValid() const
+    {
+        return taaHistoryValid_;
+    }
     // TAA jitter debug readouts (shown in the debug UI).
-    [[nodiscard]] uint32_t taaJitterIndex() const { return taaJitterIndex_; }
-    [[nodiscard]] glm::vec2 taaCurrentJitterPixels() const { return taaCurrentJitterPixels_; }
-    [[nodiscard]] glm::vec2 taaCurrentJitterNdc() const { return taaCurrentJitterNdc_; }
+    [[nodiscard]] uint32_t taaJitterIndex() const
+    {
+        return taaJitterIndex_;
+    }
+    [[nodiscard]] glm::vec2 taaCurrentJitterPixels() const
+    {
+        return taaCurrentJitterPixels_;
+    }
+    [[nodiscard]] glm::vec2 taaCurrentJitterNdc() const
+    {
+        return taaCurrentJitterNdc_;
+    }
 
     // Mutable layout/handle access used by render-graph transition tracking.
-    [[nodiscard]] VkImageLayout& bloomExtractLayout() { return bloomExtractLayout_; }
-    [[nodiscard]] VkImageLayout& bloomPingLayout() { return bloomPingLayout_; }
-    [[nodiscard]] VkImageLayout& bloomPongLayout() { return bloomPongLayout_; }
-    [[nodiscard]] std::array<VkImageLayout, 2>& taaHistoryLayouts() { return taaHistoryLayouts_; }
-    [[nodiscard]] std::vector<VkImageLayout>& bloomMipDownsampleLayouts() { return bloomMipDownsampleLayouts_; }
-    [[nodiscard]] std::vector<VkImageLayout>& bloomMipUpsampleLayouts() { return bloomMipUpsampleLayouts_; }
+    [[nodiscard]] VkImageLayout& bloomExtractLayout()
+    {
+        return bloomExtractLayout_;
+    }
+    [[nodiscard]] VkImageLayout& bloomPingLayout()
+    {
+        return bloomPingLayout_;
+    }
+    [[nodiscard]] VkImageLayout& bloomPongLayout()
+    {
+        return bloomPongLayout_;
+    }
+    [[nodiscard]] std::array<VkImageLayout, 2>& taaHistoryLayouts()
+    {
+        return taaHistoryLayouts_;
+    }
+    [[nodiscard]] std::vector<VkImageLayout>& bloomMipDownsampleLayouts()
+    {
+        return bloomMipDownsampleLayouts_;
+    }
+    [[nodiscard]] std::vector<VkImageLayout>& bloomMipUpsampleLayouts()
+    {
+        return bloomMipUpsampleLayouts_;
+    }
 
     // Pipeline presence / format accessors used by recreateSwapchain's
     // pipeline-recreate decision.
-    [[nodiscard]] const rhi::VulkanPipeline& bloomExtractPipeline() const { return bloomExtractPipeline_; }
-    [[nodiscard]] const rhi::VulkanPipeline& bloomBlurPipeline() const { return bloomBlurPipeline_; }
-    [[nodiscard]] const rhi::VulkanPipeline& bloomDownsamplePipeline() const { return bloomDownsamplePipeline_; }
-    [[nodiscard]] const rhi::VulkanPipeline& bloomUpsamplePipeline() const { return bloomUpsamplePipeline_; }
-    [[nodiscard]] const rhi::VulkanPipeline& taaResolvePipeline() const { return taaResolvePipeline_; }
-    [[nodiscard]] const rhi::VulkanPipeline& compositePipeline() const { return compositePipeline_; }
-    [[nodiscard]] const rhi::VulkanComputePipeline& luminancePipeline() const { return luminancePipeline_; }
-    [[nodiscard]] const rhi::VulkanComputePipeline& histogramPipeline() const { return histogramPipeline_; }
-    [[nodiscard]] const rhi::VulkanComputePipeline& exposureReducePipeline() const { return exposureReducePipeline_; }
-    [[nodiscard]] VkFormat bloomExtractPipelineColorFormat() const { return bloomExtractPipelineColorFormat_; }
-    [[nodiscard]] VkFormat bloomBlurPipelineColorFormat() const { return bloomBlurPipelineColorFormat_; }
-    [[nodiscard]] VkFormat bloomDownsamplePipelineColorFormat() const { return bloomDownsamplePipelineColorFormat_; }
-    [[nodiscard]] VkFormat bloomUpsamplePipelineColorFormat() const { return bloomUpsamplePipelineColorFormat_; }
-    [[nodiscard]] VkFormat taaResolvePipelineColorFormat() const { return taaResolvePipelineColorFormat_; }
-    [[nodiscard]] VkFormat compositePipelineColorFormat() const { return compositePipelineColorFormat_; }
+    [[nodiscard]] const rhi::VulkanPipeline& bloomExtractPipeline() const
+    {
+        return bloomExtractPipeline_;
+    }
+    [[nodiscard]] const rhi::VulkanPipeline& bloomBlurPipeline() const
+    {
+        return bloomBlurPipeline_;
+    }
+    [[nodiscard]] const rhi::VulkanPipeline& bloomDownsamplePipeline() const
+    {
+        return bloomDownsamplePipeline_;
+    }
+    [[nodiscard]] const rhi::VulkanPipeline& bloomUpsamplePipeline() const
+    {
+        return bloomUpsamplePipeline_;
+    }
+    [[nodiscard]] const rhi::VulkanPipeline& taaResolvePipeline() const
+    {
+        return taaResolvePipeline_;
+    }
+    [[nodiscard]] const rhi::VulkanPipeline& compositePipeline() const
+    {
+        return compositePipeline_;
+    }
+    [[nodiscard]] const rhi::VulkanComputePipeline& luminancePipeline() const
+    {
+        return luminancePipeline_;
+    }
+    [[nodiscard]] const rhi::VulkanComputePipeline& histogramPipeline() const
+    {
+        return histogramPipeline_;
+    }
+    [[nodiscard]] const rhi::VulkanComputePipeline& exposureReducePipeline() const
+    {
+        return exposureReducePipeline_;
+    }
+    [[nodiscard]] VkFormat bloomExtractPipelineColorFormat() const
+    {
+        return bloomExtractPipelineColorFormat_;
+    }
+    [[nodiscard]] VkFormat bloomBlurPipelineColorFormat() const
+    {
+        return bloomBlurPipelineColorFormat_;
+    }
+    [[nodiscard]] VkFormat bloomDownsamplePipelineColorFormat() const
+    {
+        return bloomDownsamplePipelineColorFormat_;
+    }
+    [[nodiscard]] VkFormat bloomUpsamplePipelineColorFormat() const
+    {
+        return bloomUpsamplePipelineColorFormat_;
+    }
+    [[nodiscard]] VkFormat taaResolvePipelineColorFormat() const
+    {
+        return taaResolvePipelineColorFormat_;
+    }
+    [[nodiscard]] VkFormat compositePipelineColorFormat() const
+    {
+        return compositePipelineColorFormat_;
+    }
 
     [[nodiscard]] VkDescriptorSetLayout luminanceDescriptorSetLayoutHandle() const
     {
@@ -172,21 +286,33 @@ public:
     }
 
     // Per-frame exposure buffers, imported by the render graph for barriers.
-    [[nodiscard]] const std::vector<rhi::VulkanBuffer>& luminanceBuffers() const { return frameLuminanceBuffers_; }
+    [[nodiscard]] const std::vector<rhi::VulkanBuffer>& luminanceBuffers() const
+    {
+        return frameLuminanceBuffers_;
+    }
     [[nodiscard]] const std::vector<rhi::VulkanBuffer>& luminanceReadbackBuffers() const
     {
         return frameLuminanceReadbackBuffers_;
     }
-    [[nodiscard]] const std::vector<rhi::VulkanBuffer>& histogramBuffers() const { return frameHistogramBuffers_; }
+    [[nodiscard]] const std::vector<rhi::VulkanBuffer>& histogramBuffers() const
+    {
+        return frameHistogramBuffers_;
+    }
     [[nodiscard]] const std::vector<rhi::VulkanBuffer>& histogramReadbackBuffers() const
     {
         return frameHistogramReadbackBuffers_;
     }
-    [[nodiscard]] const std::vector<rhi::VulkanBuffer>& exposureBuffers() const { return frameExposureBuffers_; }
+    [[nodiscard]] const std::vector<rhi::VulkanBuffer>& exposureBuffers() const
+    {
+        return frameExposureBuffers_;
+    }
 
     // Resets the auto-exposure adaptation timer (called when settings change to
     // avoid a large delta-time spike on the next exposure reduce).
-    void resetAutoExposureTimer() { lastAutoExposureUpdate_ = std::chrono::steady_clock::now(); }
+    void resetAutoExposureTimer()
+    {
+        lastAutoExposureUpdate_ = std::chrono::steady_clock::now();
+    }
 
 private:
     // Per-frame descriptor-set counts + which optional groups to create, computed
