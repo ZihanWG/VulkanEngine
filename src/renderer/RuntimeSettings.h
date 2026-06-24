@@ -87,6 +87,10 @@ struct SsaoSettings {
 };
 
 struct DebugUiSettings {
+    // Master toggle: when false the debug window shows only the common post-process
+    // knobs (tone mapping, bloom, SSAO, TAA, exposure); when true it reveals the
+    // scene, GPU, diagnostics sections and the side panels.
+    bool advancedMode = false;
     bool showRenderGraphPanel = true;
     bool showSceneHierarchyPanel = true;
     bool showMaterialInspectorPanel = true;

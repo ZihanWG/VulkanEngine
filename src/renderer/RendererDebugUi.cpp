@@ -19,69 +19,106 @@ void Renderer::buildDebugUi()
 
     ImGui::Begin("VulkanEngine Debug");
 
-    drawRuntimeSettingsDebugUi();
-    drawScenePresetDebugUi();
-    drawPortfolioCaptureDebugUi();
-    drawDebugViewToggles();
+    ImGui::Checkbox("Advanced mode", &debugUiSettings_.advancedMode);
+    ImGui::SetItemTooltip(
+        "Off: only the common post-process knobs.\nOn: scene, GPU, diagnostics sections and side panels.");
+    ImGui::Separator();
+
+    // Common post-process knobs: always visible in both simple and advanced modes.
     drawToneMappingDebugUi();
     drawBloomDebugUi();
     drawSsaoDebugUi();
     drawTaaDebugUi();
-    drawCsmSettingsDebugUi();
-    drawGpuCullingDebugUi();
-    drawEnvironmentDebugUi();
 
-    if (debugUiSettings_.showRenderGraphPanel &&
-        ImGui::CollapsingHeader("Render Graph", ImGuiTreeNodeFlags_DefaultOpen)) {
-        drawRenderGraphDebugUi();
-    }
-
-    if (debugUiSettings_.showGpuTimingGraphs &&
-        ImGui::CollapsingHeader("GPU Profiler", ImGuiTreeNodeFlags_DefaultOpen)) {
-        drawGpuTimingDebugUi();
-    }
-
-    if (debugUiSettings_.showCullingStats &&
-        ImGui::CollapsingHeader("Culling", ImGuiTreeNodeFlags_DefaultOpen)) {
-        drawCullingDebugUi();
-    }
-
-    if (debugUiSettings_.showExposureGraphs &&
-        ImGui::CollapsingHeader("Exposure", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (debugUiSettings_.showExposureGraphs && ImGui::CollapsingHeader("Exposure", ImGuiTreeNodeFlags_DefaultOpen)) {
         drawExposureDebugUi();
+    }
+
+    drawControlsDebugUi();
+
+    if (debugUiSettings_.advancedMode) {
+        ImGui::SeparatorText("Advanced");
+
+        drawRuntimeSettingsDebugUi();
+        drawScenePresetDebugUi();
+        drawPortfolioCaptureDebugUi();
+        drawDebugViewToggles();
+        drawCsmSettingsDebugUi();
+        drawGpuCullingDebugUi();
+        drawEnvironmentDebugUi();
+
+        if (debugUiSettings_.showRenderGraphPanel &&
+            ImGui::CollapsingHeader("Render Graph", ImGuiTreeNodeFlags_DefaultOpen)) {
+            drawRenderGraphDebugUi();
+        }
+
+        if (debugUiSettings_.showGpuTimingGraphs &&
+            ImGui::CollapsingHeader("GPU Profiler", ImGuiTreeNodeFlags_DefaultOpen)) {
+            drawGpuTimingDebugUi();
+        }
+
+        if (debugUiSettings_.showCullingStats && ImGui::CollapsingHeader("Culling", ImGuiTreeNodeFlags_DefaultOpen)) {
+            drawCullingDebugUi();
+        }
     }
 
     ImGui::End();
 
-    if (debugUiSettings_.showSceneHierarchyPanel) {
-        if (ImGui::Begin("Scene Hierarchy", &debugUiSettings_.showSceneHierarchyPanel)) {
-            drawSceneHierarchyDebugUi();
+    // Side panels are controlled by the toggles under Advanced, so only surface them
+    // in advanced mode (their show* flags default to true).
+    if (debugUiSettings_.advancedMode) {
+        if (debugUiSettings_.showSceneHierarchyPanel) {
+            if (ImGui::Begin("Scene Hierarchy", &debugUiSettings_.showSceneHierarchyPanel)) {
+                drawSceneHierarchyDebugUi();
+            }
+            ImGui::End();
         }
-        ImGui::End();
-    }
 
-    if (debugUiSettings_.showMaterialInspectorPanel) {
-        if (ImGui::Begin("Material Inspector", &debugUiSettings_.showMaterialInspectorPanel)) {
-            drawMaterialInspectorDebugUi();
+        if (debugUiSettings_.showMaterialInspectorPanel) {
+            if (ImGui::Begin("Material Inspector", &debugUiSettings_.showMaterialInspectorPanel)) {
+                drawMaterialInspectorDebugUi();
+            }
+            ImGui::End();
         }
-        ImGui::End();
-    }
 
-    if (debugUiSettings_.showTextureDebugPanel) {
-        if (ImGui::Begin("Texture Debug Views", &debugUiSettings_.showTextureDebugPanel)) {
-            drawTextureDebugUi();
+        if (debugUiSettings_.showTextureDebugPanel) {
+            if (ImGui::Begin("Texture Debug Views", &debugUiSettings_.showTextureDebugPanel)) {
+                drawTextureDebugUi();
+            }
+            ImGui::End();
         }
-        ImGui::End();
-    }
 
-    if (debugUiSettings_.showRenderTargetDebugPanel) {
-        if (ImGui::Begin("Render Target Debug Views", &debugUiSettings_.showRenderTargetDebugPanel)) {
-            drawRenderTargetDebugUi();
+        if (debugUiSettings_.showRenderTargetDebugPanel) {
+            if (ImGui::Begin("Render Target Debug Views", &debugUiSettings_.showRenderTargetDebugPanel)) {
+                drawRenderTargetDebugUi();
+            }
+            ImGui::End();
         }
-        ImGui::End();
     }
 
     clampRuntimeSettings();
+}
+
+void Renderer::drawControlsDebugUi()
+{
+    if (!ImGui::CollapsingHeader("Controls")) {
+        return;
+    }
+
+    ImGui::SeparatorText("Selection & Gizmo");
+    ImGui::BulletText("Left-click: select object");
+    ImGui::BulletText("W / E / R: gizmo Move / Rotate / Scale");
+    ImGui::BulletText("X: toggle gizmo World / Local space");
+
+    ImGui::SeparatorText("Camera");
+    ImGui::BulletText("Hold Right Mouse: fly  (WASD move, Q/E down/up, Shift faster, move mouse to look)");
+    ImGui::BulletText("Alt + Left-drag: orbit");
+    ImGui::BulletText("Middle-drag: pan");
+    ImGui::BulletText("Scroll wheel: zoom / dolly");
+
+    ImGui::SeparatorText("Capture");
+    ImGui::BulletText("F11: toggle portfolio capture mode");
+    ImGui::BulletText("F12: save portfolio screenshot");
 }
 
 void Renderer::drawDebugViewToggles()
@@ -129,12 +166,12 @@ void Renderer::drawBloomDebugUi()
     if (!ImGui::CollapsingHeader("Bloom", ImGuiTreeNodeFlags_DefaultOpen)) {
         return;
     }
-    ImGui::Checkbox("Enabled", &bloomSettings_.enabled);
+    ImGui::Checkbox("Enabled##bloom", &bloomSettings_.enabled);
     ImGui::Checkbox("Use mip-chain bloom", &bloomSettings_.useMipChain);
     ImGui::Text("Method: %s", bloomSettings_.useMipChain ? "Mip-chain" : "Legacy separable blur");
     ImGui::Text("Mip count: %zu", postProcess_.bloomMipDownsampleImages().size());
     ImGui::DragFloat("Threshold", &bloomSettings_.threshold, 0.01f, 0.0f, 32.0f, "%.3f");
-    ImGui::DragFloat("Intensity", &bloomSettings_.intensity, 0.01f, 0.0f, 8.0f, "%.3f");
+    ImGui::DragFloat("Intensity##bloom", &bloomSettings_.intensity, 0.01f, 0.0f, 8.0f, "%.3f");
     ImGui::DragFloat("Radius", &bloomSettings_.radius, 0.01f, 0.25f, 4.0f, "%.2f");
 }
 
@@ -147,10 +184,10 @@ void Renderer::drawSsaoDebugUi()
         ImGui::TextDisabled("Unavailable: the depth format cannot be sampled on this device.");
     }
     ImGui::BeginDisabled(!ssaoAvailable_);
-    ImGui::Checkbox("Enabled", &ssaoSettings_.enabled);
+    ImGui::Checkbox("Enabled##ssao", &ssaoSettings_.enabled);
     ImGui::DragFloat("Radius (view units)", &ssaoSettings_.radius, 0.01f, 0.05f, 5.0f, "%.3f");
     ImGui::DragFloat("Bias", &ssaoSettings_.bias, 0.001f, 0.0f, 0.2f, "%.3f");
-    ImGui::DragFloat("Intensity", &ssaoSettings_.intensity, 0.05f, 0.0f, 4.0f, "%.2f");
+    ImGui::DragFloat("Intensity##ssao", &ssaoSettings_.intensity, 0.05f, 0.0f, 4.0f, "%.2f");
     ImGui::DragFloat("Power", &ssaoSettings_.power, 0.05f, 0.1f, 8.0f, "%.2f");
     ImGui::SliderInt("Samples", &ssaoSettings_.sampleCount, 4, 64);
     ImGui::TextWrapped(
@@ -349,7 +386,7 @@ void Renderer::drawTaaDebugUi()
     }
 
     bool changed = false;
-    changed |= ImGui::Checkbox("Enabled", &taaSettings_.enabled);
+    changed |= ImGui::Checkbox("Enabled##taa", &taaSettings_.enabled);
     changed |= ImGui::Checkbox("Jitter enabled", &taaSettings_.jitterEnabled);
     changed |= ImGui::Checkbox("Neighborhood clamp", &taaSettings_.neighborhoodClampEnabled);
     changed |= ImGui::SliderFloat("History feedback", &taaSettings_.feedback, 0.0f, 0.98f, "%.3f");

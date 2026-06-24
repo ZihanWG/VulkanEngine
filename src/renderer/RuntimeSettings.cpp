@@ -287,6 +287,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
     }
 
     if (const Json* debugUi = objectMember(json, "debugUi")) {
+        readBool(*debugUi, "advancedMode", settings.debugUi.advancedMode);
         readBool(*debugUi, "showRenderGraphPanel", settings.debugUi.showRenderGraphPanel);
         readBool(*debugUi, "showSceneHierarchyPanel", settings.debugUi.showSceneHierarchyPanel);
         readBool(*debugUi, "showMaterialInspectorPanel", settings.debugUi.showMaterialInspectorPanel);
@@ -308,9 +309,8 @@ Json toJson(const RuntimeSettings& settings)
         {"toneMapping",
          Json{{"manualExposure", settings.toneMapping.manualExposure},
               {"enableAutoExposure", settings.toneMapping.enableAutoExposure},
-              {"exposureMode", exposureModeName(settings.toneMapping.enableAutoExposure
-                                                    ? settings.toneMapping.exposureMode
-                                                    : 0)},
+              {"exposureMode",
+               exposureModeName(settings.toneMapping.enableAutoExposure ? settings.toneMapping.exposureMode : 0)},
               {"targetLuminance", settings.toneMapping.targetLuminance},
               {"minExposure", settings.toneMapping.minExposure},
               {"maxExposure", settings.toneMapping.maxExposure},
@@ -343,7 +343,8 @@ Json toJson(const RuntimeSettings& settings)
               {"enableGpuOcclusionCulling", settings.enableGpuOcclusionCulling},
               {"enableBindlessMaterialTextures", settings.enableBindlessMaterialTextures}}},
         {"debugUi",
-         Json{{"showRenderGraphPanel", settings.debugUi.showRenderGraphPanel},
+         Json{{"advancedMode", settings.debugUi.advancedMode},
+              {"showRenderGraphPanel", settings.debugUi.showRenderGraphPanel},
               {"showSceneHierarchyPanel", settings.debugUi.showSceneHierarchyPanel},
               {"showMaterialInspectorPanel", settings.debugUi.showMaterialInspectorPanel},
               {"showTextureDebugPanel", settings.debugUi.showTextureDebugPanel},

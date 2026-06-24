@@ -383,6 +383,7 @@ private:
     // buildDebugUi() panel sections (see RendererDebugUi.cpp); each owns its
     // CollapsingHeader, matching the existing drawXxxDebugUi pattern.
     void drawDebugViewToggles();
+    void drawControlsDebugUi();
     void drawToneMappingDebugUi();
     void drawBloomDebugUi();
     void drawSsaoDebugUi();
