@@ -2916,6 +2916,13 @@ void Renderer::createPortfolioMaterialVariants()
                               0.05f);
     addPortfolioMaterial(
         "Portfolio_Backdrop", &portfolioBackdropTexture_, {1.0f, 1.0f, 1.0f, 1.0f}, 0.0f, 0.94f, 0.0f);
+
+    // Give the hero ceramic a soft warm emissive so factor-only emissive is
+    // visible in the default scene and reads through bloom. Editable per material
+    // from the Material Inspector.
+    if (kPortfolioHeroCeramicMaterialIndex < materialVariants_.size()) {
+        materialVariants_[kPortfolioHeroCeramicMaterialIndex].emissiveFactor = glm::vec3(0.9f, 0.45f, 0.15f);
+    }
 }
 
 void Renderer::assignBindlessTextureIndices(renderer::Material& material)
@@ -2938,6 +2945,16 @@ void Renderer::assignBindlessTextureIndices(renderer::Material& material)
             ? bindlessTextureHeap_.registerTexture(renderer::BindlessTextureHeap::TextureKind::MetallicRoughness,
                                                    *material.metallicRoughnessTexture)
             : bindlessMetallicRoughnessFallbackIndex_;
+    // Emissive maps are sRGB color, so they share the base-color bindless array.
+    // Without one, the index falls back and the shader skips sampling it
+    // (hasEmissiveTexture stays false, so emissive uses the factor only).
+    if (material.hasEmissiveTexture && material.emissiveTexture && material.emissiveTexture->valid()) {
+        material.emissiveTextureIndex = bindlessTextureHeap_.registerTexture(
+            renderer::BindlessTextureHeap::TextureKind::BaseColor, *material.emissiveTexture);
+    } else {
+        material.emissiveTextureIndex = bindlessBaseColorFallbackIndex_;
+        material.hasEmissiveTexture = false;
+    }
 }
 
 void Renderer::createMaterialDescriptorSet(renderer::Material& material)
@@ -3105,6 +3122,8 @@ void Renderer::createImportedGltfTextures(const std::vector<renderer::GltfTextur
         markNeeded(materialInfo.baseColorTextureIndex, baseColorNeeded);
         markNeeded(materialInfo.normalTextureIndex, normalNeeded);
         markNeeded(materialInfo.metallicRoughnessTextureIndex, metallicRoughnessNeeded);
+        // Emissive maps decode as sRGB into the base-color texture array.
+        markNeeded(materialInfo.emissiveTextureIndex, baseColorNeeded);
     }
 
     // Decode the needed textures on worker threads, then upload them here on the
@@ -3252,6 +3271,11 @@ void Renderer::createImportedGltfMaterials(const std::vector<renderer::GltfMater
                                                               importedMetallicRoughnessTextures_,
                                                               neutralMetallicRoughnessTexture_);
         material.baseColorFactor = materialInfo.baseColorFactor;
+        material.emissiveFactor = materialInfo.emissiveFactor;
+        material.hasEmissiveTexture = textureLoaded(materialInfo.emissiveTextureIndex, importedBaseColorTextures_);
+        material.emissiveTexture = material.hasEmissiveTexture
+                                       ? &importedBaseColorTextures_[static_cast<size_t>(materialInfo.emissiveTextureIndex)]
+                                       : nullptr;
         material.metallic = materialInfo.metallic;
         material.roughness = materialInfo.roughness;
         material.multiScatterStrength = 1.0f;
@@ -5201,7 +5225,9 @@ void Renderer::uploadObjectFrameData(uint32_t frameIndex)
             frameData.textureIndices = {material->baseColorTextureIndex,
                                         material->normalTextureIndex,
                                         material->metallicRoughnessTextureIndex,
-                                        0};
+                                        material->emissiveTextureIndex};
+            frameData.emissiveFactor =
+                glm::vec4(material->emissiveFactor, material->hasEmissiveTexture ? 1.0f : 0.0f);
         }
         frameData.cameraPosition = glm::vec4(camera_.position, csmSettings_.enableCascadeDebugColors ? 1.0f : 0.0f);
         frameData.cameraForward =

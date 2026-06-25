@@ -476,12 +476,19 @@ bool copyEncodedImageData(tinygltf::Image* image,
     }
     material.metallic = static_cast<float>(pbr.metallicFactor);
     material.roughness = static_cast<float>(pbr.roughnessFactor);
+    if (sourceMaterial.emissiveFactor.size() >= 3) {
+        material.emissiveFactor = {static_cast<float>(sourceMaterial.emissiveFactor[0]),
+                                   static_cast<float>(sourceMaterial.emissiveFactor[1]),
+                                   static_cast<float>(sourceMaterial.emissiveFactor[2])};
+    }
     material.baseColorTextureIndex =
         validTextureIndex(model, pbr.baseColorTexture.index, material.debugName, "base color");
     material.normalTextureIndex =
         validTextureIndex(model, sourceMaterial.normalTexture.index, material.debugName, "normal");
     material.metallicRoughnessTextureIndex =
         validTextureIndex(model, pbr.metallicRoughnessTexture.index, material.debugName, "metallic-roughness");
+    material.emissiveTextureIndex =
+        validTextureIndex(model, sourceMaterial.emissiveTexture.index, material.debugName, "emissive");
 
     if (pbr.baseColorTexture.index >= 0 && pbr.baseColorTexture.texCoord != 0) {
         Logger::warn("glTF material '" + material.debugName +

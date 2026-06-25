@@ -16,6 +16,7 @@ struct ObjectFrameData {
     vec4 cameraPosition;
     vec4 cameraForward;
     uvec4 textureIndices;
+    vec4 emissiveFactor;
 };
 
 layout(buffer_reference, std430) readonly buffer ObjectFrameDataBuffer {
@@ -50,6 +51,7 @@ layout(location = 17) out float vViewDepth;
 layout(location = 18) flat out vec4 vCascadeSplits;
 layout(location = 19) flat out uint vCascadeCount;
 layout(location = 20) flat out float vCascadeDebugEnabled;
+layout(location = 21) flat out vec4 vEmissiveFactor;
 
 void main()
 {
@@ -84,4 +86,5 @@ void main()
     vCascadeSplits = objectData.cascadeSplits;
     vCascadeCount = uint(max(objectData.cameraForward.w, 1.0) + 0.5);
     vCascadeDebugEnabled = objectData.cameraPosition.w;
+    vEmissiveFactor = objectData.emissiveFactor;
 }

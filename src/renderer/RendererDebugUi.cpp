@@ -995,6 +995,11 @@ void Renderer::drawMaterialDebugSection(const renderer::Material* material,
             editableMaterial->roughness = std::clamp(roughness, 0.0f, 1.0f);
         }
 
+        glm::vec3 emissive = editableMaterial->emissiveFactor;
+        if (ImGui::ColorEdit3("emissiveFactor", &emissive.x, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR)) {
+            editableMaterial->emissiveFactor = glm::clamp(emissive, glm::vec3(0.0f), glm::vec3(64.0f));
+        }
+
         float alphaCutoff = editableMaterial->alphaCutoff;
         if (ImGui::DragFloat("alphaCutoff", &alphaCutoff, 0.01f, 0.0f, 1.0f, "%.3f")) {
             editableMaterial->alphaCutoff = std::clamp(alphaCutoff, 0.0f, 1.0f);

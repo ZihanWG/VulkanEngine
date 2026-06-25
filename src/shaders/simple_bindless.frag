@@ -77,6 +77,7 @@ layout(location = 17) in float vViewDepth;
 layout(location = 18) flat in vec4 vCascadeSplits;
 layout(location = 19) flat in uint vCascadeCount;
 layout(location = 20) flat in float vCascadeDebugEnabled;
+layout(location = 21) flat in vec4 vEmissiveFactor;
 layout(location = 0) out vec4 outColor;
 
 const float PI = 3.14159265359;
@@ -408,7 +409,15 @@ void main()
         }
     }
 
-    vec3 finalColor = ambient + direct + punctual;
+    // Emissive: a constant glow added before tone mapping so it blooms. The
+    // factor (vEmissiveFactor.rgb) is modulated by an emissive map sampled from
+    // the sRGB base-color array only when one is bound (vEmissiveFactor.w).
+    vec3 emissive = vEmissiveFactor.rgb;
+    if (vEmissiveFactor.w > 0.5) {
+        emissive *= texture(uBaseColorTextures[nonuniformEXT(vTextureIndices.w)], vUV).rgb;
+    }
+
+    vec3 finalColor = ambient + direct + punctual + emissive;
 
     // Debug overlay: visualize how many lights touch each froxel. Saturates the
     // ramp at 16 lights, which is plenty to read cluster occupancy at a glance.

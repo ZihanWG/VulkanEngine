@@ -175,7 +175,8 @@ screenshots.
 - Reflections are environment-based IBL only. There is no SSR, ray tracing,
   planar reflection, local reflection probe, or glass transmission/refraction.
 - glTF support is static and narrow: no animation, skinning, morph targets,
-  cameras, lights, alpha blend/mask pipelines, occlusion maps, or emissive maps.
+  cameras, lights, alpha blend/mask pipelines, or occlusion maps. Emissive
+  factor + emissive maps are supported.
 - Upload paths still use simple queue-idle one-time command buffers for
   initialization and are not a runtime streaming system.
 - GPU profiler timestamps are useful pass-duration estimates, not CPU/GPU

@@ -59,7 +59,8 @@ Point and spot lights flow through one light buffer; the directional sun + IBL a
 - VMA-backed buffers and images, Buffer Device Address, CPU-visible uploads/readbacks, and GPU-local staging copies.
 - SDL3 window and surface integration with swapchain recreation support.
 - Static mesh path for built-in cube geometry and static glTF triangle meshes.
-- glTF material factors plus base color, normal, and metallic-roughness texture loading.
+- glTF material factors plus base color, normal, metallic-roughness, and emissive texture loading.
+- Emissive materials: per-material emissive factor and optional emissive map (sampled from the sRGB base-color array), added pre-tonemap so emission reads through bloom, editable from the Material Inspector.
 - Minimal path-based `AssetManager` for material JSON assets and texture path metadata.
 - Material asset JSON load/save for PBR scalar fields, texture path metadata, alpha metadata, and portfolio materials.
 - Tangent-space normal mapping and Cook-Torrance GGX direct lighting.
@@ -382,7 +383,7 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - There is no full texture viewer/editor yet.
 - There is no render graph node editor yet.
 - glTF support is static and intentionally narrow: no animation, skinning, morph targets, cameras, lights, or alpha modes yet.
-- Texture semantic handling covers base color, normal, and metallic-roughness today; occlusion, emissive, and other glTF texture semantics remain future work.
+- Texture semantic handling covers base color, normal, metallic-roughness, and emissive today; occlusion and other glTF texture semantics remain future work.
 - HDR environment loading is basic and uses an approximate CPU equirectangular-to-cubemap conversion.
 - Bloom still keeps the simple half-resolution extract plus separable blur path as a fallback; the default path is mip-chain bloom.
 - Auto exposure is GPU-driven for composite, but there is no local exposure yet.

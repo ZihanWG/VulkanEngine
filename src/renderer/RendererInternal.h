@@ -95,6 +95,7 @@ struct ObjectFrameData {
     glm::vec4 cameraPosition{0.0f, 0.0f, 0.0f, 0.0f};
     glm::vec4 cameraForward{0.0f, 0.0f, -1.0f, 4.0f};
     glm::uvec4 textureIndices{0, 0, 0, 0};
+    glm::vec4 emissiveFactor{0.0f, 0.0f, 0.0f, 0.0f};
 };
 
 // Mirrors the shader's std430 buffer_reference block. std430 stores mat4 as
@@ -107,7 +108,9 @@ struct ObjectFrameData {
 // cameraPosition.xyz is the world-space camera position, and w stores the
 // cascade debug-color toggle as 0.0 or 1.0.
 // cameraForward.xyz is the camera forward vector, and w stores cascade count.
-// textureIndices.x = base color, y = normal, z = metallic-roughness, w = reserved.
+// textureIndices.x = base color, y = normal, z = metallic-roughness, w = emissive.
+// emissiveFactor.rgb is the emissive color factor; emissiveFactor.w is 1.0 when an
+// emissive texture (sampled from the base-color array at textureIndices.w) is present.
 static_assert(offsetof(ObjectFrameData, mvp) == 0);
 static_assert(offsetof(ObjectFrameData, model) == 64);
 static_assert(offsetof(ObjectFrameData, lightMvp) == 128);
@@ -121,7 +124,8 @@ static_assert(offsetof(ObjectFrameData, materialParams) == 480);
 static_assert(offsetof(ObjectFrameData, cameraPosition) == 496);
 static_assert(offsetof(ObjectFrameData, cameraForward) == 512);
 static_assert(offsetof(ObjectFrameData, textureIndices) == 528);
-static_assert(sizeof(ObjectFrameData) == 544);
+static_assert(offsetof(ObjectFrameData, emissiveFactor) == 544);
+static_assert(sizeof(ObjectFrameData) == 560);
 
 constexpr uint32_t kMaxFrameObjects = 1024;
 constexpr uint32_t kMaxDrawItems = 1024;
