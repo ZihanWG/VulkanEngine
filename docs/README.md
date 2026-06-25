@@ -3,6 +3,9 @@
 Start here for focused technical notes. The root `README.md` is the portfolio
 overview; these documents describe implementation details and limitations.
 
+- [Design Decisions](design_decisions.md): The trade-offs behind the major
+  subsystems (clustered lighting, GPU-driven visibility, BDA, render graph,
+  Sync2, testing) — written as interview-ready talking points.
 - [Build Guide](build.md): Required tools, Vulkan SDK setup, CMake
   presets, shader compilation, CI behavior, and common build failures.
 - [Engine Upgrade Audit](engine_upgrade_audit.md): Current repository shape,
@@ -25,7 +28,8 @@ overview; these documents describe implementation details and limitations.
 
 ## Portfolio Summary Text
 
-C++20 Vulkan 1.3 real-time renderer featuring PBR/IBL, cascaded shadows, HDR
-post-processing, mip-chain bloom, GPU exposure, Render Graph metadata, GPU
-timestamp profiling, GPU culling, optional Hi-Z occlusion, TAA foundation,
-editable scene tools, JSON material assets, and overlay-free portfolio capture.
+C++20 Vulkan 1.3 real-time renderer featuring clustered (Forward+) lighting,
+PBR/IBL, cascaded shadows, HDR post-processing, mip-chain bloom, GPU exposure,
+Render Graph metadata, GPU timestamp profiling, GPU culling, optional Hi-Z
+occlusion, TAA foundation, editable scene tools, JSON material assets, and
+overlay-free portfolio capture.
