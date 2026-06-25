@@ -1,6 +1,27 @@
 #version 460
 
 #extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_buffer_reference : require
+
+// Punctual light record. Mirrors ve::renderer::GpuLight (64-byte std430 stride).
+struct GpuLight {
+    vec4 positionRange;   // xyz = world position, w = range
+    vec4 colorIntensity;  // rgb = color, a = intensity
+    vec4 directionType;   // xyz = spot direction, w = type (0 point, 1 spot)
+    vec4 spotScaleOffset; // x = cos(outer), y = 1/(cos(inner)-cos(outer))
+};
+
+layout(buffer_reference, std430) readonly buffer LightBuffer {
+    GpuLight lights[];
+};
+
+// Matches ve::PushConstants. The vertex stage reads the leading object-data
+// address + cascade index; the fragment stage only needs the punctual-light
+// fields, so it declares them at their explicit byte offsets.
+layout(push_constant) uniform PushConstants {
+    layout(offset = 20) uint lightCount;
+    layout(offset = 24) LightBuffer lightBuffer;
+} pc;
 
 layout(set = 0, binding = 1) uniform sampler2DArray uShadowMap;
 layout(set = 0, binding = 4) uniform samplerCube uDiffuseIrradianceMap;
@@ -186,6 +207,60 @@ vec3 approximateMultiScatterCompensation(
         * clamp(multiScatterStrength, 0.0, 1.0);
 }
 
+// Cook-Torrance contribution of one punctual (point/spot) light, with inverse-
+// square falloff, a smooth range cutoff, and an optional spot cone. Reuses the
+// same GGX/Smith/Fresnel terms as the directional term above so point, spot, and
+// sun lighting stay energy-consistent.
+vec3 evaluatePunctualLight(GpuLight light,
+                           vec3 normal,
+                           vec3 viewDirection,
+                           vec3 worldPosition,
+                           vec3 baseColor,
+                           float metallic,
+                           float roughness,
+                           vec3 f0)
+{
+    vec3 toLight = light.positionRange.xyz - worldPosition;
+    float distance = length(toLight);
+    float range = max(light.positionRange.w, EPSILON);
+    if (distance > range || distance < EPSILON) {
+        return vec3(0.0);
+    }
+
+    vec3 lightDirection = toLight / distance;
+    float distanceAttenuation = 1.0 / max(distance * distance, EPSILON);
+    float rangeFade = clamp(1.0 - pow(distance / range, 4.0), 0.0, 1.0);
+    float attenuation = distanceAttenuation * rangeFade * rangeFade;
+
+    if (light.directionType.w > 0.5) {
+        vec3 spotDirection = normalize(light.directionType.xyz);
+        float cosAngle = dot(-lightDirection, spotDirection);
+        float spotAttenuation =
+            clamp((cosAngle - light.spotScaleOffset.x) * light.spotScaleOffset.y, 0.0, 1.0);
+        attenuation *= spotAttenuation * spotAttenuation;
+    }
+
+    if (attenuation <= 0.0) {
+        return vec3(0.0);
+    }
+
+    vec3 halfVector = normalize(viewDirection + lightDirection);
+    float normalLight = max(dot(normal, lightDirection), 0.0);
+    float normalView = max(dot(normal, viewDirection), 0.0);
+    float halfView = max(dot(halfVector, viewDirection), 0.0);
+
+    vec3 fresnel = fresnelSchlick(halfView, f0);
+    float distribution = distributionGGX(normal, halfVector, roughness);
+    float geometry = geometrySmith(normal, viewDirection, lightDirection, roughness);
+
+    vec3 diffuse = (1.0 - metallic) * baseColor / PI;
+    vec3 specular =
+        distribution * geometry * fresnel / max(4.0 * normalView * normalLight, EPSILON);
+
+    vec3 radiance = light.colorIntensity.rgb * light.colorIntensity.a;
+    return (diffuse + specular) * radiance * normalLight * attenuation;
+}
+
 void main()
 {
     vec4 texColor = texture(uBaseColorTextures[nonuniformEXT(vTextureIndices.x)], vUV);
@@ -242,7 +317,22 @@ void main()
 
     vec3 ambient = diffuseIbl + specularIbl + vAmbientColor * baseColor * 0.05;
     vec3 direct = (diffuse + specular) * vLightColor * normalLight * shadowFactor;
-    vec3 finalColor = ambient + direct;
+
+    // Punctual (point/spot) lights. Phase 1 evaluates every light per fragment;
+    // Phase 2 narrows this loop to the lights touching the fragment's cluster.
+    vec3 punctual = vec3(0.0);
+    for (uint lightIndex = 0u; lightIndex < pc.lightCount; ++lightIndex) {
+        punctual += evaluatePunctualLight(pc.lightBuffer.lights[lightIndex],
+                                          normal,
+                                          viewDirection,
+                                          vWorldPosition,
+                                          baseColor,
+                                          metallic,
+                                          roughness,
+                                          f0);
+    }
+
+    vec3 finalColor = ambient + direct + punctual;
 
     if (vCascadeDebugEnabled > 0.5 && cascadeIndex >= 0) {
         finalColor = mix(finalColor, cascadeDebugColor(cascadeIndex), 0.3);

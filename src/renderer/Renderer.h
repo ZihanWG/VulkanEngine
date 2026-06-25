@@ -7,6 +7,7 @@
 #include "renderer/Bounds.h"
 #include "renderer/Camera.h"
 #include "renderer/CascadeMath.h"
+#include "renderer/ClusteredLighting.h"
 #include "renderer/FrameResources.h"
 #include "renderer/GpuProfiler.h"
 #include "renderer/Material.h"
@@ -368,6 +369,9 @@ private:
     void resetCameraToPortfolioPreset();
     void resetCameraToOcclusionTestPreset();
     void resetDirectionalLightToDefault();
+    // Populates clusteredLighting_ with a default set of demo point/spot lights.
+    // Phase 3 replaces this with UI-driven spawning + animation.
+    void seedDemoLights();
     [[nodiscard]] glm::vec4 activeDirectionalLightDirection() const;
     [[nodiscard]] glm::vec4 activeDirectionalLightColor() const;
     void loadOcclusionTestScene();
@@ -496,6 +500,7 @@ private:
     std::vector<rhi::VulkanTexture> importedMetallicRoughnessTextures_;
     std::vector<std::unique_ptr<rhi::VulkanTexture>> materialAssetTextures_;
     renderer::BindlessTextureHeap bindlessTextureHeap_;
+    renderer::ClusteredLighting clusteredLighting_;
     rhi::VulkanDescriptorPool materialDescriptorPool_;
     rhi::VulkanDescriptorPool skyboxDescriptorPool_;
     rhi::VulkanDescriptorPool gpuCullDescriptorPool_;

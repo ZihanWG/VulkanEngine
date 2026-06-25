@@ -204,6 +204,7 @@ add_executable(VulkanEngine
     src/core/PngWriter.cpp
     src/core/Window.cpp
     src/renderer/BindlessTextureHeap.cpp
+    src/renderer/ClusteredLighting.cpp
     src/renderer/GpuProfiler.cpp
     src/renderer/Mesh.cpp
     src/renderer/PostProcessStack.cpp

@@ -144,6 +144,8 @@ Renderer::Renderer(Window& window) : window_(window)
     commandContext_.initialize(context_, frames_);
     createScene();
     createObjectFrameDataBuffers();
+    clusteredLighting_.create(context_, static_cast<uint32_t>(frames_.size()));
+    seedDemoLights();
     createIndirectDrawBuffers();
     createShadowIndirectDrawBuffers();
     createGpuCullingResources();
@@ -3378,6 +3380,43 @@ uint32_t Renderer::activeCascadeCount() const
     return std::clamp(csmSettings_.cascadeCount, 1U, kMaxShadowCascades);
 }
 
+void Renderer::seedDemoLights()
+{
+    clusteredLighting_.clear();
+
+    // A ring of saturated point lights hovering just above the showcase floor,
+    // plus a white spot from overhead. Bright enough to read against the IBL
+    // ambient while staying inside the scene's exposure range. Phase 3 turns
+    // these into UI-driven, animated lights that exercise the cluster culling.
+    constexpr float kTwoPi = 6.2831853071795864769f;
+    constexpr float kDegToRad = 3.1415926535897932385f / 180.0f;
+    constexpr int kRingLightCount = 6;
+    constexpr float kRingRadius = 4.0f;
+    constexpr float kRingHeight = 2.2f;
+    const glm::vec3 ringColors[kRingLightCount] = {
+        {1.0f, 0.2f, 0.2f},
+        {0.2f, 1.0f, 0.3f},
+        {0.3f, 0.4f, 1.0f},
+        {1.0f, 0.85f, 0.2f},
+        {1.0f, 0.3f, 0.9f},
+        {0.2f, 0.95f, 1.0f},
+    };
+
+    for (int lightIndex = 0; lightIndex < kRingLightCount; ++lightIndex) {
+        const float angle = kTwoPi * static_cast<float>(lightIndex) / static_cast<float>(kRingLightCount);
+        const glm::vec3 position{kRingRadius * std::cos(angle), kRingHeight, kRingRadius * std::sin(angle)};
+        clusteredLighting_.addPointLight(position, ringColors[lightIndex], 12.0f, 9.0f);
+    }
+
+    clusteredLighting_.addSpotLight(glm::vec3{0.0f, 6.0f, 0.0f},
+                                    glm::vec3{0.0f, -1.0f, 0.0f},
+                                    glm::vec3{1.0f, 1.0f, 1.0f},
+                                    40.0f,
+                                    16.0f,
+                                    18.0f * kDegToRad,
+                                    30.0f * kDegToRad);
+}
+
 glm::vec4 Renderer::activeDirectionalLightDirection() const
 {
     if (portfolioCaptureMode_) {
@@ -4873,6 +4912,7 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     buildShadowFrameData(frameIndex);
     buildMainCullingFrameData(frameIndex, cameraFrustum);
     uploadObjectFrameData(frameIndex);
+    clusteredLighting_.upload(frameIndex);
 }
 
 void Renderer::resetFrameStateForEmptyScene(uint32_t frameIndex)
@@ -6183,9 +6223,12 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         indirectCountPathActive ? frameBatchVisibleCountBuffers_.at(currentFrame_).buffer() : VK_NULL_HANDLE;
     const uint32_t toneMappingOperator = toneMappingOperatorValue(toneMappingSettings_.operatorType);
     const float exposure = postProcess_.currentToneMappingExposure();
+    const uint32_t mainLightCount = clusteredLighting_.lightCount();
+    const VkDeviceAddress mainLightBufferAddress = clusteredLighting_.lightBufferAddress(currentFrame_);
     if (multiDrawIndirectActive) {
         if (bindlessDescriptorSetsBound) {
-            const PushConstants pushConstants{objectFrameDataBaseAddress, 0, toneMappingOperator, exposure};
+            const PushConstants pushConstants{
+                objectFrameDataBaseAddress, 0, toneMappingOperator, exposure, mainLightCount, mainLightBufferAddress};
             vkCmdPushConstants(commandBuffer,
                                pipeline_.layout(),
                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -6268,7 +6311,9 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                     static_cast<VkDeviceAddress>(drawItem.frameDataIndex * sizeof(ObjectFrameData)),
                 0,
                 toneMappingOperator,
-                exposure};
+                exposure,
+                mainLightCount,
+                mainLightBufferAddress};
 
             // Fallback recording pushes the address of this draw's object data; firstInstance stays zero.
             vkCmdPushConstants(commandBuffer,

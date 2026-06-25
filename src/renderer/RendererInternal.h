@@ -168,13 +168,21 @@ struct PushConstants {
     uint32_t cascadeIndex = 0;
     uint32_t toneMappingOperator = 0;
     float exposure = 1.0f;
+    // Punctual lighting: the main HDR fragment shader reads lightCount lights
+    // from lightBufferAddress via buffer_reference. lightBufferAddress keeps the
+    // struct's 8-byte alignment, so it follows lightCount at offset 24. Shadow
+    // and skybox passes leave both fields zero (they never read lights).
+    uint32_t lightCount = 0;
+    VkDeviceAddress lightBufferAddress = 0;
 };
 
 static_assert(offsetof(PushConstants, objectFrameDataAddress) == 0);
 static_assert(offsetof(PushConstants, cascadeIndex) == 8);
 static_assert(offsetof(PushConstants, toneMappingOperator) == 12);
 static_assert(offsetof(PushConstants, exposure) == 16);
-static_assert(sizeof(PushConstants) == 24);
+static_assert(offsetof(PushConstants, lightCount) == 20);
+static_assert(offsetof(PushConstants, lightBufferAddress) == 24);
+static_assert(sizeof(PushConstants) == 32);
 
 // Mirrors src/shaders/cull.comp. Main and shadow GPU culling both use this
 // std430 input record: vec4 members are 16-byte aligned, then scalar draw and
