@@ -182,6 +182,9 @@ struct PushConstants {
     float screenWidth = 0.0f;
     float screenHeight = 0.0f;
     uint32_t useClustered = 0;
+    // Debug: when set, the main pass outputs a per-cluster light-count heatmap
+    // instead of shaded color (requires the clustered path to be active).
+    uint32_t debugClusterHeatmap = 0;
 };
 
 static_assert(offsetof(PushConstants, objectFrameDataAddress) == 0);
@@ -197,6 +200,7 @@ static_assert(offsetof(PushConstants, clusterZFar) == 52);
 static_assert(offsetof(PushConstants, screenWidth) == 56);
 static_assert(offsetof(PushConstants, screenHeight) == 60);
 static_assert(offsetof(PushConstants, useClustered) == 64);
+static_assert(offsetof(PushConstants, debugClusterHeatmap) == 68);
 static_assert(sizeof(PushConstants) <= 128);
 
 // Mirrors src/shaders/cull.comp. Main and shadow GPU culling both use this

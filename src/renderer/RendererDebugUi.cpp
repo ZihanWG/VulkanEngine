@@ -44,6 +44,7 @@ void Renderer::buildDebugUi()
         drawPortfolioCaptureDebugUi();
         drawDebugViewToggles();
         drawCsmSettingsDebugUi();
+        drawLightsDebugUi();
         drawGpuCullingDebugUi();
         drawEnvironmentDebugUi();
 
@@ -208,6 +209,39 @@ void Renderer::drawCsmSettingsDebugUi()
     ImGui::DragFloat("Shadow distance", &csmSettings_.shadowDistance, 0.1f, 1.0f, csmSettings_.farPlane, "%.2f");
     ImGui::Checkbox("Texel snapping enabled", &csmSettings_.enableTexelSnapping);
     ImGui::Checkbox("Cascade debug colors enabled", &csmSettings_.enableCascadeDebugColors);
+}
+
+void Renderer::drawLightsDebugUi()
+{
+    if (!ImGui::CollapsingHeader("Lights (Clustered)", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+
+    const bool clusteredAvailable = clusteredLighting_.available();
+    ImGui::Text("Clustered path: %s", clusteredAvailable ? "available" : "unavailable (brute force)");
+    ImGui::Text("Froxel grid: %ux%ux%u (%u clusters)",
+                renderer::kClusterGridX,
+                renderer::kClusterGridY,
+                renderer::kClusterGridZ,
+                renderer::kClusterCount);
+    ImGui::Text("Active lights: %u", clusteredLighting_.lightCount());
+
+    ImGui::BeginDisabled(!clusteredAvailable);
+    ImGui::Checkbox("Use clustered culling", &useClusteredLighting_);
+    ImGui::SameLine();
+    ImGui::Checkbox("Cluster heatmap", &showClusterHeatmap_);
+    ImGui::EndDisabled();
+    if (!useClusteredLighting_) {
+        showClusterHeatmap_ = false;
+    }
+    ImGui::SetItemTooltip("Heatmap tints each froxel by its light count (blue=few, red=many).");
+
+    ImGui::SeparatorText("Demo light swarm");
+    ImGui::SliderInt("Light count", &demoLightCount_, 0, 512);
+    ImGui::Checkbox("Animate", &animateLights_);
+    ImGui::SliderFloat("Intensity", &demoLightIntensity_, 0.0f, 40.0f, "%.1f");
+    ImGui::SliderFloat("Range", &demoLightRange_, 1.0f, 30.0f, "%.1f");
+    ImGui::TextDisabled("Drive the count up to stress-test the clustered path.");
 }
 
 void Renderer::drawGpuCullingDebugUi()

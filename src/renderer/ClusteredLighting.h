@@ -1,5 +1,6 @@
 #pragma once
 
+#include "renderer/ClusterGrid.h"
 #include "rhi/VulkanBuffer.h"
 #include "rhi/VulkanComputePipeline.h"
 #include "rhi/VulkanDescriptor.h"
@@ -79,11 +80,8 @@ enum class LightType : uint32_t {
 class ClusteredLighting final {
 public:
     static constexpr uint32_t kMaxLights = 1024;
-    static constexpr uint32_t kClusterGridX = 16;
-    static constexpr uint32_t kClusterGridY = 9;
-    static constexpr uint32_t kClusterGridZ = 24;
-    static constexpr uint32_t kClusterCount = kClusterGridX * kClusterGridY * kClusterGridZ;
-    static constexpr uint32_t kMaxLightsPerCluster = 64;
+    // Grid dimensions, cluster count, and kMaxLightsPerCluster come from
+    // ClusterGrid.h so the CPU reference math and this subsystem cannot drift.
     static constexpr uint32_t kClusterCullLocalSize = 64;
 
     void create(rhi::VulkanContext& context,

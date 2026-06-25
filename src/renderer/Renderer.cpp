@@ -148,7 +148,7 @@ Renderer::Renderer(Window& window) : window_(window)
                               static_cast<uint32_t>(frames_.size()),
                               shaderPath("cluster_build.comp.spv"),
                               shaderPath("light_cull.comp.spv"));
-    seedDemoLights();
+    updateDemoLights(0.0f);
     createIndirectDrawBuffers();
     createShadowIndirectDrawBuffers();
     createGpuCullingResources();
@@ -3383,35 +3383,44 @@ uint32_t Renderer::activeCascadeCount() const
     return std::clamp(csmSettings_.cascadeCount, 1U, kMaxShadowCascades);
 }
 
-void Renderer::seedDemoLights()
+void Renderer::updateDemoLights(float elapsedSeconds)
 {
-    clusteredLighting_.clear();
-
-    // A ring of saturated point lights hovering just above the showcase floor,
-    // plus a white spot from overhead. Bright enough to read against the IBL
-    // ambient while staying inside the scene's exposure range. Phase 3 turns
-    // these into UI-driven, animated lights that exercise the cluster culling.
-    constexpr float kTwoPi = 6.2831853071795864769f;
     constexpr float kDegToRad = 3.1415926535897932385f / 180.0f;
-    constexpr int kRingLightCount = 6;
-    constexpr float kRingRadius = 4.0f;
-    constexpr float kRingHeight = 2.2f;
-    const glm::vec3 ringColors[kRingLightCount] = {
-        {1.0f, 0.2f, 0.2f},
-        {0.2f, 1.0f, 0.3f},
-        {0.3f, 0.4f, 1.0f},
-        {1.0f, 0.85f, 0.2f},
-        {1.0f, 0.3f, 0.9f},
-        {0.2f, 0.95f, 1.0f},
+    constexpr float kGoldenAngle = 2.39996322972865332f;
+
+    // Deterministic fractional hash so each light gets a stable radius/height/
+    // speed/hue without storing per-light state; the count slider just adds or
+    // removes entries from the end of the swarm.
+    const auto hash01 = [](int index, float seed) {
+        const float value = std::sin(static_cast<float>(index) * 12.9898f + seed) * 43758.5453f;
+        return value - std::floor(value);
     };
 
-    for (int lightIndex = 0; lightIndex < kRingLightCount; ++lightIndex) {
-        const float angle = kTwoPi * static_cast<float>(lightIndex) / static_cast<float>(kRingLightCount);
-        const glm::vec3 position{kRingRadius * std::cos(angle), kRingHeight, kRingRadius * std::sin(angle)};
-        clusteredLighting_.addPointLight(position, ringColors[lightIndex], 12.0f, 9.0f);
+    // Minimal HSV->RGB for evenly spread, saturated light colors.
+    const auto hueColor = [](float hue) {
+        const glm::vec3 k{1.0f, 2.0f / 3.0f, 1.0f / 3.0f};
+        const glm::vec3 p =
+            glm::abs(glm::fract(glm::vec3(hue) + k) * 6.0f - glm::vec3(3.0f));
+        return glm::clamp(p - glm::vec3(1.0f), glm::vec3(0.0f), glm::vec3(1.0f));
+    };
+
+    clusteredLighting_.clear();
+
+    const int lightCount = std::clamp(demoLightCount_, 0, 512);
+    for (int lightIndex = 0; lightIndex < lightCount; ++lightIndex) {
+        const float radius = 2.0f + 4.0f * hash01(lightIndex, 0.0f);
+        const float height = 0.6f + 4.0f * hash01(lightIndex, 7.0f);
+        const float speed = 0.15f + 0.55f * hash01(lightIndex, 13.0f);
+        const float baseAngle = static_cast<float>(lightIndex) * kGoldenAngle;
+        const float angle = baseAngle + (animateLights_ ? elapsedSeconds * speed : 0.0f);
+        const glm::vec3 position{radius * std::cos(angle), height, radius * std::sin(angle)};
+        const glm::vec3 color = hueColor(hash01(lightIndex, 21.0f));
+        clusteredLighting_.addPointLight(position, color, demoLightIntensity_, demoLightRange_);
     }
 
-    clusteredLighting_.addSpotLight(glm::vec3{0.0f, 6.0f, 0.0f},
+    // A white overhead spot anchors the scene regardless of the swarm size.
+    const float spotAngle = animateLights_ ? elapsedSeconds * 0.25f : 0.0f;
+    clusteredLighting_.addSpotLight(glm::vec3{2.5f * std::cos(spotAngle), 6.0f, 2.5f * std::sin(spotAngle)},
                                     glm::vec3{0.0f, -1.0f, 0.0f},
                                     glm::vec3{1.0f, 1.0f, 1.0f},
                                     40.0f,
@@ -4892,8 +4901,10 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     frameViewProjection_ = viewProjection;
     frameCameraPosition_ = camera_.position;
 
-    // Froxel grid + light culling work in view space, so they need the current
-    // view/inverse-projection and camera planes regardless of scene contents.
+    // Regenerate the animated demo light swarm, then hand the froxel grid + light
+    // culling the current view/inverse-projection and camera planes (view-space
+    // work, so it runs regardless of scene contents).
+    updateDemoLights(elapsedSeconds);
     clusteredLighting_.updateParams(frameIndex,
                                     view,
                                     glm::inverse(projection),
@@ -6275,6 +6286,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     basePushConstants.screenWidth = static_cast<float>(extent.width);
     basePushConstants.screenHeight = static_cast<float>(extent.height);
     basePushConstants.useClustered = clusteredLightingActive ? 1u : 0u;
+    basePushConstants.debugClusterHeatmap = showClusterHeatmap_ ? 1u : 0u;
     if (multiDrawIndirectActive) {
         if (bindlessDescriptorSetsBound) {
             const PushConstants pushConstants = basePushConstants;

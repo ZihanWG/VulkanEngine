@@ -47,6 +47,7 @@ layout(push_constant) uniform PushConstants {
     layout(offset = 56) float screenWidth;
     layout(offset = 60) float screenHeight;
     layout(offset = 64) uint useClustered;
+    layout(offset = 68) uint debugClusterHeatmap;
 } pc;
 
 layout(set = 0, binding = 1) uniform sampler2DArray uShadowMap;
@@ -287,6 +288,27 @@ vec3 evaluatePunctualLight(GpuLight light,
     return (diffuse + specular) * radiance * normalLight * attenuation;
 }
 
+// Blue -> cyan -> green -> yellow -> red ramp for the cluster light-count overlay.
+vec3 clusterHeatmapColor(uint count)
+{
+    float t = clamp(float(count) / 16.0, 0.0, 1.0);
+    const vec3 c0 = vec3(0.0, 0.0, 0.3);
+    const vec3 c1 = vec3(0.0, 0.6, 1.0);
+    const vec3 c2 = vec3(0.0, 1.0, 0.2);
+    const vec3 c3 = vec3(1.0, 0.9, 0.0);
+    const vec3 c4 = vec3(1.0, 0.1, 0.0);
+    if (t < 0.25) {
+        return mix(c0, c1, t / 0.25);
+    }
+    if (t < 0.5) {
+        return mix(c1, c2, (t - 0.25) / 0.25);
+    }
+    if (t < 0.75) {
+        return mix(c2, c3, (t - 0.5) / 0.25);
+    }
+    return mix(c3, c4, (t - 0.75) / 0.25);
+}
+
 void main()
 {
     vec4 texColor = texture(uBaseColorTextures[nonuniformEXT(vTextureIndices.x)], vUV);
@@ -348,6 +370,7 @@ void main()
     // fragment loops only the lights assigned to its froxel; otherwise it falls
     // back to evaluating every light (also the path for the brute-force compare).
     vec3 punctual = vec3(0.0);
+    uint clusterLightCount = 0u;
     if (pc.useClustered != 0u) {
         uint tileX = min(uint(gl_FragCoord.x / (pc.screenWidth / float(kClusterGridX))), kClusterGridX - 1u);
         uint tileY = min(uint(gl_FragCoord.y / (pc.screenHeight / float(kClusterGridY))), kClusterGridY - 1u);
@@ -360,6 +383,7 @@ void main()
         uint clusterIndex = tileX + tileY * kClusterGridX + slice * kClusterGridX * kClusterGridY;
 
         ClusterCell cell = pc.clusterGrid.cells[clusterIndex];
+        clusterLightCount = cell.count;
         for (uint i = 0u; i < cell.count; ++i) {
             uint lightIndex = pc.lightIndexList.indices[cell.offset + i];
             punctual += evaluatePunctualLight(pc.lightBuffer.lights[lightIndex],
@@ -385,6 +409,13 @@ void main()
     }
 
     vec3 finalColor = ambient + direct + punctual;
+
+    // Debug overlay: visualize how many lights touch each froxel. Saturates the
+    // ramp at 16 lights, which is plenty to read cluster occupancy at a glance.
+    if (pc.debugClusterHeatmap != 0u && pc.useClustered != 0u) {
+        outColor = vec4(clusterHeatmapColor(clusterLightCount), 1.0);
+        return;
+    }
 
     if (vCascadeDebugEnabled > 0.5 && cascadeIndex >= 0) {
         finalColor = mix(finalColor, cascadeDebugColor(cascadeIndex), 0.3);
