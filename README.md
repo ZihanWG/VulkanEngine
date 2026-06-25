@@ -51,7 +51,7 @@ The flagship subsystem ([`src/renderer/ClusteredLighting.*`](src/renderer/Cluste
 2. **Light culling** — `light_cull.comp` transforms each light into view space and tests its bounding sphere against every froxel, writing a compact per-cluster light index list.
 3. **Shading** — the main HDR fragment shader resolves its froxel from `gl_FragCoord` + view depth and loops only the lights touching that cluster, reading the grid and index list through buffer-device-address pointers.
 
-Point and spot lights flow through one light buffer; the directional sun + IBL are unchanged. A **cluster heatmap** debug view and a brute-force fallback (same light set, every light per fragment) make the win measurable, and the froxel math lives in a GPU-free header (`src/renderer/ClusterGrid.h`) that is unit-tested — including a round-trip that cross-checks the build math against the fragment's cluster lookup. See [docs/design_decisions.md](docs/design_decisions.md) for why clustered over deferred or tiled.
+Point and spot lights flow through one light buffer; the directional sun + IBL are unchanged. A **cluster heatmap** debug view and a brute-force fallback (same light set, every light per fragment) make the win measurable, and the froxel math lives in a GPU-free header (`src/renderer/ClusterGrid.h`) that is unit-tested — including a round-trip that cross-checks the build math against the fragment's cluster lookup. See [docs/clustered_lighting.md](docs/clustered_lighting.md) for the implementation deep-dive and [docs/design_decisions.md](docs/design_decisions.md) for why clustered over deferred or tiled.
 
 ## Feature List
 
