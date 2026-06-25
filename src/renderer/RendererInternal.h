@@ -169,11 +169,19 @@ struct PushConstants {
     uint32_t toneMappingOperator = 0;
     float exposure = 1.0f;
     // Punctual lighting: the main HDR fragment shader reads lightCount lights
-    // from lightBufferAddress via buffer_reference. lightBufferAddress keeps the
-    // struct's 8-byte alignment, so it follows lightCount at offset 24. Shadow
-    // and skybox passes leave both fields zero (they never read lights).
+    // from lightBufferAddress via buffer_reference. When useClustered is set it
+    // instead walks the per-froxel light list (clusterGridAddress +
+    // lightIndexListAddress) produced by the cluster culling compute passes.
+    // Shadow and skybox passes leave these fields zero (they never read lights).
     uint32_t lightCount = 0;
     VkDeviceAddress lightBufferAddress = 0;
+    VkDeviceAddress clusterGridAddress = 0;
+    VkDeviceAddress lightIndexListAddress = 0;
+    float clusterZNear = 0.1f;
+    float clusterZFar = 100.0f;
+    float screenWidth = 0.0f;
+    float screenHeight = 0.0f;
+    uint32_t useClustered = 0;
 };
 
 static_assert(offsetof(PushConstants, objectFrameDataAddress) == 0);
@@ -182,7 +190,14 @@ static_assert(offsetof(PushConstants, toneMappingOperator) == 12);
 static_assert(offsetof(PushConstants, exposure) == 16);
 static_assert(offsetof(PushConstants, lightCount) == 20);
 static_assert(offsetof(PushConstants, lightBufferAddress) == 24);
-static_assert(sizeof(PushConstants) == 32);
+static_assert(offsetof(PushConstants, clusterGridAddress) == 32);
+static_assert(offsetof(PushConstants, lightIndexListAddress) == 40);
+static_assert(offsetof(PushConstants, clusterZNear) == 48);
+static_assert(offsetof(PushConstants, clusterZFar) == 52);
+static_assert(offsetof(PushConstants, screenWidth) == 56);
+static_assert(offsetof(PushConstants, screenHeight) == 60);
+static_assert(offsetof(PushConstants, useClustered) == 64);
+static_assert(sizeof(PushConstants) <= 128);
 
 // Mirrors src/shaders/cull.comp. Main and shadow GPU culling both use this
 // std430 input record: vec4 members are 16-byte aligned, then scalar draw and

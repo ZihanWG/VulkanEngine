@@ -144,7 +144,10 @@ Renderer::Renderer(Window& window) : window_(window)
     commandContext_.initialize(context_, frames_);
     createScene();
     createObjectFrameDataBuffers();
-    clusteredLighting_.create(context_, static_cast<uint32_t>(frames_.size()));
+    clusteredLighting_.create(context_,
+                              static_cast<uint32_t>(frames_.size()),
+                              shaderPath("cluster_build.comp.spv"),
+                              shaderPath("light_cull.comp.spv"));
     seedDemoLights();
     createIndirectDrawBuffers();
     createShadowIndirectDrawBuffers();
@@ -4889,6 +4892,16 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     frameViewProjection_ = viewProjection;
     frameCameraPosition_ = camera_.position;
 
+    // Froxel grid + light culling work in view space, so they need the current
+    // view/inverse-projection and camera planes regardless of scene contents.
+    clusteredLighting_.updateParams(frameIndex,
+                                    view,
+                                    glm::inverse(projection),
+                                    camera_.nearPlane,
+                                    camera_.farPlane,
+                                    static_cast<float>(extent.width),
+                                    static_cast<float>(extent.height));
+
     if (renderObjects_.empty()) {
         resetFrameStateForEmptyScene(frameIndex);
         return;
@@ -5973,6 +5986,8 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
 {
     const VkDeviceAddress objectFrameDataBaseAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
     const size_t mainDrawItemCount = visibleDrawItems_.size();
+    const bool clusteredLightingActive = clusteredLighting_.available() && useClusteredLighting_ &&
+                                         clusteredLighting_.lightCount() > 0 && !allDrawItems_.empty();
     const bool taaActiveThisFrame = postProcess_.isTaaActive();
     postProcess_.beginFrame(currentFrame_, taaActiveThisFrame);
 
@@ -6132,6 +6147,24 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
 
     recordGpuCullingCommands(commandBuffer);
 
+    // Clustered (Forward+) light assignment: rebuild the froxel AABBs, then cull
+    // every light into its froxels. Both write buffers the main HDR fragment
+    // shader reads, so the assignment pass barriers into the fragment stage.
+    if (clusteredLightingActive) {
+        {
+            const renderer::GpuProfileScope buildScope(gpuProfiler_, currentFrame_, commandBuffer, "ClusterBuild");
+            rhi::debug::beginLabel(commandBuffer, "ClusterBuild");
+            clusteredLighting_.recordClusterBuild(commandBuffer, currentFrame_);
+            rhi::debug::endLabel(commandBuffer);
+        }
+        {
+            const renderer::GpuProfileScope cullScope(gpuProfiler_, currentFrame_, commandBuffer, "LightCull");
+            rhi::debug::beginLabel(commandBuffer, "LightCull");
+            clusteredLighting_.recordLightCull(commandBuffer, currentFrame_);
+            rhi::debug::endLabel(commandBuffer);
+        }
+    }
+
     const bool mainHdrProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "MainHDRPass");
     rhi::debug::beginLabel(commandBuffer, "MainHDRPass");
     renderGraph_.beginMainHdrPass();
@@ -6223,12 +6256,28 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         indirectCountPathActive ? frameBatchVisibleCountBuffers_.at(currentFrame_).buffer() : VK_NULL_HANDLE;
     const uint32_t toneMappingOperator = toneMappingOperatorValue(toneMappingSettings_.operatorType);
     const float exposure = postProcess_.currentToneMappingExposure();
-    const uint32_t mainLightCount = clusteredLighting_.lightCount();
-    const VkDeviceAddress mainLightBufferAddress = clusteredLighting_.lightBufferAddress(currentFrame_);
+    // Shared lighting push constant for the main pass. The clustered fields are
+    // zeroed when the per-froxel path is inactive, which makes the fragment
+    // shader fall back to brute-force light evaluation.
+    PushConstants basePushConstants{};
+    basePushConstants.objectFrameDataAddress = objectFrameDataBaseAddress;
+    basePushConstants.cascadeIndex = 0;
+    basePushConstants.toneMappingOperator = toneMappingOperator;
+    basePushConstants.exposure = exposure;
+    basePushConstants.lightCount = clusteredLighting_.lightCount();
+    basePushConstants.lightBufferAddress = clusteredLighting_.lightBufferAddress(currentFrame_);
+    basePushConstants.clusterGridAddress =
+        clusteredLightingActive ? clusteredLighting_.clusterGridAddress(currentFrame_) : 0;
+    basePushConstants.lightIndexListAddress =
+        clusteredLightingActive ? clusteredLighting_.lightIndexListAddress(currentFrame_) : 0;
+    basePushConstants.clusterZNear = camera_.nearPlane;
+    basePushConstants.clusterZFar = camera_.farPlane;
+    basePushConstants.screenWidth = static_cast<float>(extent.width);
+    basePushConstants.screenHeight = static_cast<float>(extent.height);
+    basePushConstants.useClustered = clusteredLightingActive ? 1u : 0u;
     if (multiDrawIndirectActive) {
         if (bindlessDescriptorSetsBound) {
-            const PushConstants pushConstants{
-                objectFrameDataBaseAddress, 0, toneMappingOperator, exposure, mainLightCount, mainLightBufferAddress};
+            const PushConstants pushConstants = basePushConstants;
             vkCmdPushConstants(commandBuffer,
                                pipeline_.layout(),
                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -6306,14 +6355,10 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                                         nullptr);
             }
 
-            const PushConstants pushConstants{
+            PushConstants pushConstants = basePushConstants;
+            pushConstants.objectFrameDataAddress =
                 objectFrameDataBaseAddress +
-                    static_cast<VkDeviceAddress>(drawItem.frameDataIndex * sizeof(ObjectFrameData)),
-                0,
-                toneMappingOperator,
-                exposure,
-                mainLightCount,
-                mainLightBufferAddress};
+                static_cast<VkDeviceAddress>(drawItem.frameDataIndex * sizeof(ObjectFrameData));
 
             // Fallback recording pushes the address of this draw's object data; firstInstance stays zero.
             vkCmdPushConstants(commandBuffer,

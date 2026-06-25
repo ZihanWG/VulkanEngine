@@ -1,0 +1,91 @@
+#version 460
+
+// Froxel cluster construction. One invocation per cluster computes the cluster's
+// view-space axis-aligned bounding box from its screen tile (x,y) and its
+// exponential depth slice (z). The grid only depends on the projection, so the
+// renderer can rebuild it just when the projection changes; the AABBs are then
+// reused by light_cull.comp every frame.
+//
+// Tile (i,j) covers the normalized screen rectangle [i/X,(i+1)/X] x [j/Y,(j+1)/Y].
+// Because the fragment shader derives its tile from gl_FragCoord / screenSize with
+// the identical mapping, the grid stays consistent with the rendered image
+// regardless of any projection y-flip.
+
+layout(local_size_x = 64) in;
+
+const uint kGridX = 16u;
+const uint kGridY = 9u;
+const uint kGridZ = 24u;
+const uint kClusterCount = kGridX * kGridY * kGridZ;
+
+struct ClusterAabb {
+    vec4 minView; // xyz = view-space min, w unused
+    vec4 maxView; // xyz = view-space max, w unused
+};
+
+layout(set = 0, binding = 1, std430) writeonly buffer ClusterAabbBuffer {
+    ClusterAabb clusters[];
+} aabbBuffer;
+
+layout(set = 0, binding = 4, std430) readonly buffer ClusterParamsBuffer {
+    mat4 viewMatrix;
+    mat4 inverseProjection;
+    uvec4 gridDims;          // x,y,z = grid dims, w = max lights per cluster
+    vec4 zNearFarScreen;     // x = zNear, y = zFar, z = screenW, w = screenH
+    uvec4 lightCountAndPad;  // x = light count
+} params;
+
+// Unproject a normalized-device-coordinate point to view space.
+vec3 unprojectToView(vec2 ndc, float ndcZ)
+{
+    vec4 clip = vec4(ndc, ndcZ, 1.0);
+    vec4 view = params.inverseProjection * clip;
+    return view.xyz / view.w;
+}
+
+void main()
+{
+    uint clusterIndex = gl_GlobalInvocationID.x;
+    if (clusterIndex >= kClusterCount) {
+        return;
+    }
+
+    uint tileX = clusterIndex % kGridX;
+    uint tileY = (clusterIndex / kGridX) % kGridY;
+    uint slice = clusterIndex / (kGridX * kGridY);
+
+    // Tile rectangle in NDC ([-1,1]); uv = tile / dim, ndc = uv * 2 - 1.
+    vec2 ndcMin = vec2(float(tileX) / float(kGridX), float(tileY) / float(kGridY)) * 2.0 - 1.0;
+    vec2 ndcMax = vec2(float(tileX + 1u) / float(kGridX), float(tileY + 1u) / float(kGridY)) * 2.0 - 1.0;
+
+    // Exponential depth slices. View-space z is negative (camera looks down -z).
+    float zNear = max(params.zNearFarScreen.x, 1.0e-4);
+    float zFar = max(params.zNearFarScreen.y, zNear + 1.0e-4);
+    float ratio = zFar / zNear;
+    float sliceNear = -zNear * pow(ratio, float(slice) / float(kGridZ));
+    float sliceFar = -zNear * pow(ratio, float(slice + 1u) / float(kGridZ));
+
+    vec3 aabbMin = vec3(1.0e30);
+    vec3 aabbMax = vec3(-1.0e30);
+
+    // The four tile corners define frustum-edge rays from the eye (view-space
+    // origin). Intersect each ray with the slice's constant-z planes.
+    vec2 corners[4] = vec2[4](vec2(ndcMin.x, ndcMin.y),
+                              vec2(ndcMax.x, ndcMin.y),
+                              vec2(ndcMin.x, ndcMax.y),
+                              vec2(ndcMax.x, ndcMax.y));
+
+    for (uint cornerIndex = 0u; cornerIndex < 4u; ++cornerIndex) {
+        vec3 direction = unprojectToView(corners[cornerIndex], 1.0);
+        if (abs(direction.z) < 1.0e-6) {
+            continue;
+        }
+        vec3 pointNear = direction * (sliceNear / direction.z);
+        vec3 pointFar = direction * (sliceFar / direction.z);
+        aabbMin = min(aabbMin, min(pointNear, pointFar));
+        aabbMax = max(aabbMax, max(pointNear, pointFar));
+    }
+
+    aabbBuffer.clusters[clusterIndex].minView = vec4(aabbMin, 0.0);
+    aabbBuffer.clusters[clusterIndex].maxView = vec4(aabbMax, 0.0);
+}

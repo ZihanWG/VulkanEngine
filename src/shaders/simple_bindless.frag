@@ -15,12 +15,38 @@ layout(buffer_reference, std430) readonly buffer LightBuffer {
     GpuLight lights[];
 };
 
+// Per-cluster light list produced by light_cull.comp. cells[i] = (offset, count)
+// into the flat light index list. Grid dims must match the culling shaders.
+struct ClusterCell {
+    uint offset;
+    uint count;
+};
+
+layout(buffer_reference, std430) readonly buffer ClusterGridBuffer {
+    ClusterCell cells[];
+};
+
+layout(buffer_reference, std430) readonly buffer LightIndexBuffer {
+    uint indices[];
+};
+
+const uint kClusterGridX = 16u;
+const uint kClusterGridY = 9u;
+const uint kClusterGridZ = 24u;
+
 // Matches ve::PushConstants. The vertex stage reads the leading object-data
-// address + cascade index; the fragment stage only needs the punctual-light
-// fields, so it declares them at their explicit byte offsets.
+// address + cascade index; the fragment stage reads the punctual-light and
+// cluster-grid fields, so it declares them at their explicit byte offsets.
 layout(push_constant) uniform PushConstants {
     layout(offset = 20) uint lightCount;
     layout(offset = 24) LightBuffer lightBuffer;
+    layout(offset = 32) ClusterGridBuffer clusterGrid;
+    layout(offset = 40) LightIndexBuffer lightIndexList;
+    layout(offset = 48) float clusterZNear;
+    layout(offset = 52) float clusterZFar;
+    layout(offset = 56) float screenWidth;
+    layout(offset = 60) float screenHeight;
+    layout(offset = 64) uint useClustered;
 } pc;
 
 layout(set = 0, binding = 1) uniform sampler2DArray uShadowMap;
@@ -318,18 +344,44 @@ void main()
     vec3 ambient = diffuseIbl + specularIbl + vAmbientColor * baseColor * 0.05;
     vec3 direct = (diffuse + specular) * vLightColor * normalLight * shadowFactor;
 
-    // Punctual (point/spot) lights. Phase 1 evaluates every light per fragment;
-    // Phase 2 narrows this loop to the lights touching the fragment's cluster.
+    // Punctual (point/spot) lights. When clustered culling ran this frame the
+    // fragment loops only the lights assigned to its froxel; otherwise it falls
+    // back to evaluating every light (also the path for the brute-force compare).
     vec3 punctual = vec3(0.0);
-    for (uint lightIndex = 0u; lightIndex < pc.lightCount; ++lightIndex) {
-        punctual += evaluatePunctualLight(pc.lightBuffer.lights[lightIndex],
-                                          normal,
-                                          viewDirection,
-                                          vWorldPosition,
-                                          baseColor,
-                                          metallic,
-                                          roughness,
-                                          f0);
+    if (pc.useClustered != 0u) {
+        uint tileX = min(uint(gl_FragCoord.x / (pc.screenWidth / float(kClusterGridX))), kClusterGridX - 1u);
+        uint tileY = min(uint(gl_FragCoord.y / (pc.screenHeight / float(kClusterGridY))), kClusterGridY - 1u);
+        float zNear = max(pc.clusterZNear, 1.0e-4);
+        float zFar = max(pc.clusterZFar, zNear + 1.0e-4);
+        float viewDepth = max(vViewDepth, zNear);
+        uint slice = uint(clamp(log(viewDepth / zNear) / log(zFar / zNear) * float(kClusterGridZ),
+                                0.0,
+                                float(kClusterGridZ - 1u)));
+        uint clusterIndex = tileX + tileY * kClusterGridX + slice * kClusterGridX * kClusterGridY;
+
+        ClusterCell cell = pc.clusterGrid.cells[clusterIndex];
+        for (uint i = 0u; i < cell.count; ++i) {
+            uint lightIndex = pc.lightIndexList.indices[cell.offset + i];
+            punctual += evaluatePunctualLight(pc.lightBuffer.lights[lightIndex],
+                                              normal,
+                                              viewDirection,
+                                              vWorldPosition,
+                                              baseColor,
+                                              metallic,
+                                              roughness,
+                                              f0);
+        }
+    } else {
+        for (uint lightIndex = 0u; lightIndex < pc.lightCount; ++lightIndex) {
+            punctual += evaluatePunctualLight(pc.lightBuffer.lights[lightIndex],
+                                              normal,
+                                              viewDirection,
+                                              vWorldPosition,
+                                              baseColor,
+                                              metallic,
+                                              roughness,
+                                              f0);
+        }
     }
 
     vec3 finalColor = ambient + direct + punctual;

@@ -632,6 +632,10 @@ private:
     bool bindlessMaterialTexturesAvailable_ = false;
     bool useGpuCulling_ = true;
     bool gpuCullingAvailable_ = false;
+    // When true (and clustered resources are available), the main pass walks the
+    // per-froxel light list; otherwise it brute-forces every light. The runtime
+    // toggle also enables a brute-force-vs-clustered comparison.
+    bool useClusteredLighting_ = true;
     bool useGpuOcclusionCulling_ = false;
     bool depthPyramidValid_ = false;
     bool depthPyramidBuildAvailable_ = false;

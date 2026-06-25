@@ -1,0 +1,93 @@
+#version 460
+
+// Per-cluster light assignment. One invocation per cluster transforms each light
+// into view space and tests its bounding sphere against the cluster AABB, writing
+// the surviving light indices into a fixed per-cluster region of the index list.
+// The main HDR fragment shader then loops only the lights touching its cluster.
+
+layout(local_size_x = 64) in;
+
+const uint kGridX = 16u;
+const uint kGridY = 9u;
+const uint kGridZ = 24u;
+const uint kClusterCount = kGridX * kGridY * kGridZ;
+const uint kMaxLightsPerCluster = 64u;
+
+struct GpuLight {
+    vec4 positionRange;
+    vec4 colorIntensity;
+    vec4 directionType;
+    vec4 spotScaleOffset;
+};
+
+struct ClusterAabb {
+    vec4 minView;
+    vec4 maxView;
+};
+
+struct ClusterCell {
+    uint offset; // first index into the light index list
+    uint count;  // number of lights touching this cluster
+};
+
+layout(set = 0, binding = 0, std430) readonly buffer LightBuffer {
+    GpuLight lights[];
+} lightBuffer;
+
+layout(set = 0, binding = 1, std430) readonly buffer ClusterAabbBuffer {
+    ClusterAabb clusters[];
+} aabbBuffer;
+
+layout(set = 0, binding = 2, std430) writeonly buffer ClusterGridBuffer {
+    ClusterCell cells[];
+} clusterGrid;
+
+layout(set = 0, binding = 3, std430) writeonly buffer LightIndexBuffer {
+    uint indices[];
+} lightIndexList;
+
+layout(set = 0, binding = 4, std430) readonly buffer ClusterParamsBuffer {
+    mat4 viewMatrix;
+    mat4 inverseProjection;
+    uvec4 gridDims;          // x,y,z = grid dims, w = max lights per cluster
+    vec4 zNearFarScreen;     // x = zNear, y = zFar, z = screenW, w = screenH
+    uvec4 lightCountAndPad;  // x = light count
+} params;
+
+// Squared distance from a point to an AABB (zero when the point is inside).
+float squaredDistancePointAabb(vec3 point, vec3 boundsMin, vec3 boundsMax)
+{
+    vec3 closest = clamp(point, boundsMin, boundsMax);
+    vec3 delta = point - closest;
+    return dot(delta, delta);
+}
+
+void main()
+{
+    uint clusterIndex = gl_GlobalInvocationID.x;
+    if (clusterIndex >= kClusterCount) {
+        return;
+    }
+
+    ClusterAabb aabb = aabbBuffer.clusters[clusterIndex];
+    vec3 boundsMin = aabb.minView.xyz;
+    vec3 boundsMax = aabb.maxView.xyz;
+
+    uint lightCount = params.lightCountAndPad.x;
+    uint clusterBase = clusterIndex * kMaxLightsPerCluster;
+    uint visibleCount = 0u;
+
+    for (uint lightIndex = 0u; lightIndex < lightCount && visibleCount < kMaxLightsPerCluster; ++lightIndex) {
+        GpuLight light = lightBuffer.lights[lightIndex];
+        vec3 viewPosition = (params.viewMatrix * vec4(light.positionRange.xyz, 1.0)).xyz;
+        float range = light.positionRange.w;
+
+        if (squaredDistancePointAabb(viewPosition, boundsMin, boundsMax) <= range * range) {
+            lightIndexList.indices[clusterBase + visibleCount] = lightIndex;
+            visibleCount += 1u;
+        }
+    }
+
+    clusterGrid.cells[clusterIndex].offset = clusterBase;
+    clusterGrid.cells[clusterIndex].count = visibleCount;
+}
