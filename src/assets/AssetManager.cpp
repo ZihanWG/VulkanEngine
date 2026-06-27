@@ -104,6 +104,25 @@ bool readOptionalVec4(const Json& object, const char* fieldName, glm::vec4& outp
     return true;
 }
 
+bool readOptionalVec3(const Json& object, const char* fieldName, glm::vec3& output)
+{
+    const auto it = object.find(fieldName);
+    if (it == object.end()) {
+        return false;
+    }
+    if (!it->is_array() || it->size() != 3) {
+        throw std::runtime_error(std::string("Expected vec3 array material field '") + fieldName + "'.");
+    }
+
+    glm::vec3 parsed{0.0f};
+    for (size_t componentIndex = 0; componentIndex < 3; ++componentIndex) {
+        parsed[static_cast<glm::vec3::length_type>(componentIndex)] =
+            readRequiredFloat((*it)[componentIndex], fieldName);
+    }
+    output = parsed;
+    return true;
+}
+
 std::filesystem::path readTexturePath(const Json& textures, const char* fieldName)
 {
     const auto it = textures.find(fieldName);
@@ -131,6 +150,7 @@ std::filesystem::path readTexturePath(const Json& textures, const char* fieldNam
     readOptionalString(root, "name", material.name);
     readOptionalString(root, "shader", material.shader);
     readOptionalVec4(root, "baseColorFactor", material.baseColorFactor);
+    readOptionalVec3(root, "emissiveFactor", material.emissiveFactor);
     readOptionalFloat(root, "metallicFactor", material.metallicFactor);
     readOptionalFloat(root, "roughnessFactor", material.roughnessFactor);
     readOptionalString(root, "alphaMode", material.alphaMode);
@@ -173,6 +193,8 @@ std::filesystem::path readTexturePath(const Json& textures, const char* fieldNam
                               material.baseColorFactor.g,
                               material.baseColorFactor.b,
                               material.baseColorFactor.a})},
+                {"emissiveFactor",
+                 Json::array({material.emissiveFactor.r, material.emissiveFactor.g, material.emissiveFactor.b})},
                 {"metallicFactor", material.metallicFactor},
                 {"roughnessFactor", material.roughnessFactor},
                 {"textures", std::move(texturesJson)},

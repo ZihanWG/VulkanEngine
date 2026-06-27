@@ -2638,6 +2638,7 @@ renderer::Material Renderer::createMaterialFromAsset(const assets::MaterialAsset
                                            metallicRoughnessFallback,
                                            metallicRoughnessLoadFallback);
     material.baseColorFactor = materialAsset.baseColorFactor;
+    material.emissiveFactor = glm::max(materialAsset.emissiveFactor, glm::vec3(0.0f));
     material.metallic = std::clamp(materialAsset.metallicFactor, 0.0f, 1.0f);
     material.roughness = std::clamp(materialAsset.roughnessFactor, 0.0f, 1.0f);
     material.multiScatterStrength = multiScatterStrength;
@@ -2669,6 +2670,7 @@ assets::MaterialAsset Renderer::runtimeMaterialToAsset(const renderer::Material&
     }
     materialAsset.shader = material.shader.empty() ? "pbr_opaque" : material.shader;
     materialAsset.baseColorFactor = material.baseColorFactor;
+    materialAsset.emissiveFactor = material.emissiveFactor;
     materialAsset.metallicFactor = material.metallic;
     materialAsset.roughnessFactor = material.roughness;
     materialAsset.textures.baseColor = material.baseColorTexturePath;
@@ -2732,6 +2734,7 @@ bool Renderer::reloadMaterialAssetFromUi(renderer::Material& material)
     material.assetName = materialAsset->name;
     material.shader = materialAsset->shader.empty() ? "pbr_opaque" : materialAsset->shader;
     material.baseColorFactor = materialAsset->baseColorFactor;
+    material.emissiveFactor = glm::max(materialAsset->emissiveFactor, glm::vec3(0.0f));
     material.metallic = std::clamp(materialAsset->metallicFactor, 0.0f, 1.0f);
     material.roughness = std::clamp(materialAsset->roughnessFactor, 0.0f, 1.0f);
     material.baseColorTexturePath = materialAsset->textures.baseColor;

@@ -174,6 +174,7 @@ target_link_libraries(imgui PUBLIC
 find_package(Threads REQUIRED)
 
 add_library(VulkanEngineCore STATIC
+    src/assets/AssetManager.cpp
     src/core/JobSystem.cpp
     src/core/Logger.cpp
     src/renderer/CascadeMath.cpp
@@ -199,7 +200,6 @@ endif()
 
 add_executable(VulkanEngine
     src/main.cpp
-    src/assets/AssetManager.cpp
     src/core/Application.cpp
     src/core/PngWriter.cpp
     src/core/Window.cpp

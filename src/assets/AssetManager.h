@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 #include <string>
 #include <unordered_map>
@@ -34,6 +35,7 @@ struct MaterialAsset {
     std::string name = "Default Material";
     std::string shader = "pbr_opaque";
     glm::vec4 baseColorFactor{1.0f};
+    glm::vec3 emissiveFactor{0.0f};
     float metallicFactor = 0.0f;
     float roughnessFactor = 0.5f;
     MaterialTexturePaths textures{};

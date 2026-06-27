@@ -25,6 +25,7 @@ layout(location = 17) in float vViewDepth;
 layout(location = 18) flat in vec4 vCascadeSplits;
 layout(location = 19) flat in uint vCascadeCount;
 layout(location = 20) flat in float vCascadeDebugEnabled;
+layout(location = 21) flat in vec4 vEmissiveFactor;
 layout(location = 0) out vec4 outColor;
 
 const float PI = 3.14159265359;
@@ -238,7 +239,9 @@ void main()
 
     vec3 ambient = diffuseIbl + specularIbl + vAmbientColor * baseColor * 0.05;
     vec3 direct = (diffuse + specular) * vLightColor * normalLight * shadowFactor;
-    vec3 finalColor = ambient + direct;
+    // The legacy descriptor set has no emissive map binding, so this fallback path
+    // applies the emissive factor only (the bindless path also samples the map).
+    vec3 finalColor = ambient + direct + vEmissiveFactor.rgb;
 
     if (vCascadeDebugEnabled > 0.5 && cascadeIndex >= 0) {
         finalColor = mix(finalColor, cascadeDebugColor(cascadeIndex), 0.3);
