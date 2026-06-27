@@ -1,6 +1,54 @@
 #version 460
 
 #extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_buffer_reference : require
+
+// Punctual light record. Mirrors ve::renderer::GpuLight (64-byte std430 stride).
+struct GpuLight {
+    vec4 positionRange;   // xyz = world position, w = range
+    vec4 colorIntensity;  // rgb = color, a = intensity
+    vec4 directionType;   // xyz = spot direction, w = type (0 point, 1 spot)
+    vec4 spotScaleOffset; // x = cos(outer), y = 1/(cos(inner)-cos(outer))
+};
+
+layout(buffer_reference, std430) readonly buffer LightBuffer {
+    GpuLight lights[];
+};
+
+// Per-cluster light list produced by light_cull.comp. cells[i] = (offset, count)
+// into the flat light index list. Grid dims must match the culling shaders.
+struct ClusterCell {
+    uint offset;
+    uint count;
+};
+
+layout(buffer_reference, std430) readonly buffer ClusterGridBuffer {
+    ClusterCell cells[];
+};
+
+layout(buffer_reference, std430) readonly buffer LightIndexBuffer {
+    uint indices[];
+};
+
+const uint kClusterGridX = 16u;
+const uint kClusterGridY = 9u;
+const uint kClusterGridZ = 24u;
+
+// Matches ve::PushConstants. The vertex stage reads the leading object-data
+// address + cascade index; the fragment stage reads the punctual-light and
+// cluster-grid fields, so it declares them at their explicit byte offsets.
+layout(push_constant) uniform PushConstants {
+    layout(offset = 20) uint lightCount;
+    layout(offset = 24) LightBuffer lightBuffer;
+    layout(offset = 32) ClusterGridBuffer clusterGrid;
+    layout(offset = 40) LightIndexBuffer lightIndexList;
+    layout(offset = 48) float clusterZNear;
+    layout(offset = 52) float clusterZFar;
+    layout(offset = 56) float screenWidth;
+    layout(offset = 60) float screenHeight;
+    layout(offset = 64) uint useClustered;
+    layout(offset = 68) uint debugClusterHeatmap;
+} pc;
 
 layout(set = 0, binding = 1) uniform sampler2DArray uShadowMap;
 layout(set = 0, binding = 4) uniform samplerCube uDiffuseIrradianceMap;
@@ -29,6 +77,7 @@ layout(location = 17) in float vViewDepth;
 layout(location = 18) flat in vec4 vCascadeSplits;
 layout(location = 19) flat in uint vCascadeCount;
 layout(location = 20) flat in float vCascadeDebugEnabled;
+layout(location = 21) flat in vec4 vEmissiveFactor;
 layout(location = 0) out vec4 outColor;
 
 const float PI = 3.14159265359;
@@ -186,6 +235,81 @@ vec3 approximateMultiScatterCompensation(
         * clamp(multiScatterStrength, 0.0, 1.0);
 }
 
+// Cook-Torrance contribution of one punctual (point/spot) light, with inverse-
+// square falloff, a smooth range cutoff, and an optional spot cone. Reuses the
+// same GGX/Smith/Fresnel terms as the directional term above so point, spot, and
+// sun lighting stay energy-consistent.
+vec3 evaluatePunctualLight(GpuLight light,
+                           vec3 normal,
+                           vec3 viewDirection,
+                           vec3 worldPosition,
+                           vec3 baseColor,
+                           float metallic,
+                           float roughness,
+                           vec3 f0)
+{
+    vec3 toLight = light.positionRange.xyz - worldPosition;
+    float distance = length(toLight);
+    float range = max(light.positionRange.w, EPSILON);
+    if (distance > range || distance < EPSILON) {
+        return vec3(0.0);
+    }
+
+    vec3 lightDirection = toLight / distance;
+    float distanceAttenuation = 1.0 / max(distance * distance, EPSILON);
+    float rangeFade = clamp(1.0 - pow(distance / range, 4.0), 0.0, 1.0);
+    float attenuation = distanceAttenuation * rangeFade * rangeFade;
+
+    if (light.directionType.w > 0.5) {
+        vec3 spotDirection = normalize(light.directionType.xyz);
+        float cosAngle = dot(-lightDirection, spotDirection);
+        float spotAttenuation =
+            clamp((cosAngle - light.spotScaleOffset.x) * light.spotScaleOffset.y, 0.0, 1.0);
+        attenuation *= spotAttenuation * spotAttenuation;
+    }
+
+    if (attenuation <= 0.0) {
+        return vec3(0.0);
+    }
+
+    vec3 halfVector = normalize(viewDirection + lightDirection);
+    float normalLight = max(dot(normal, lightDirection), 0.0);
+    float normalView = max(dot(normal, viewDirection), 0.0);
+    float halfView = max(dot(halfVector, viewDirection), 0.0);
+
+    vec3 fresnel = fresnelSchlick(halfView, f0);
+    float distribution = distributionGGX(normal, halfVector, roughness);
+    float geometry = geometrySmith(normal, viewDirection, lightDirection, roughness);
+
+    vec3 diffuse = (1.0 - metallic) * baseColor / PI;
+    vec3 specular =
+        distribution * geometry * fresnel / max(4.0 * normalView * normalLight, EPSILON);
+
+    vec3 radiance = light.colorIntensity.rgb * light.colorIntensity.a;
+    return (diffuse + specular) * radiance * normalLight * attenuation;
+}
+
+// Blue -> cyan -> green -> yellow -> red ramp for the cluster light-count overlay.
+vec3 clusterHeatmapColor(uint count)
+{
+    float t = clamp(float(count) / 16.0, 0.0, 1.0);
+    const vec3 c0 = vec3(0.0, 0.0, 0.3);
+    const vec3 c1 = vec3(0.0, 0.6, 1.0);
+    const vec3 c2 = vec3(0.0, 1.0, 0.2);
+    const vec3 c3 = vec3(1.0, 0.9, 0.0);
+    const vec3 c4 = vec3(1.0, 0.1, 0.0);
+    if (t < 0.25) {
+        return mix(c0, c1, t / 0.25);
+    }
+    if (t < 0.5) {
+        return mix(c1, c2, (t - 0.25) / 0.25);
+    }
+    if (t < 0.75) {
+        return mix(c2, c3, (t - 0.5) / 0.25);
+    }
+    return mix(c3, c4, (t - 0.75) / 0.25);
+}
+
 void main()
 {
     vec4 texColor = texture(uBaseColorTextures[nonuniformEXT(vTextureIndices.x)], vUV);
@@ -242,7 +366,65 @@ void main()
 
     vec3 ambient = diffuseIbl + specularIbl + vAmbientColor * baseColor * 0.05;
     vec3 direct = (diffuse + specular) * vLightColor * normalLight * shadowFactor;
-    vec3 finalColor = ambient + direct;
+
+    // Punctual (point/spot) lights. When clustered culling ran this frame the
+    // fragment loops only the lights assigned to its froxel; otherwise it falls
+    // back to evaluating every light (also the path for the brute-force compare).
+    vec3 punctual = vec3(0.0);
+    uint clusterLightCount = 0u;
+    if (pc.useClustered != 0u) {
+        uint tileX = min(uint(gl_FragCoord.x / (pc.screenWidth / float(kClusterGridX))), kClusterGridX - 1u);
+        uint tileY = min(uint(gl_FragCoord.y / (pc.screenHeight / float(kClusterGridY))), kClusterGridY - 1u);
+        float zNear = max(pc.clusterZNear, 1.0e-4);
+        float zFar = max(pc.clusterZFar, zNear + 1.0e-4);
+        float viewDepth = max(vViewDepth, zNear);
+        uint slice = uint(clamp(log(viewDepth / zNear) / log(zFar / zNear) * float(kClusterGridZ),
+                                0.0,
+                                float(kClusterGridZ - 1u)));
+        uint clusterIndex = tileX + tileY * kClusterGridX + slice * kClusterGridX * kClusterGridY;
+
+        ClusterCell cell = pc.clusterGrid.cells[clusterIndex];
+        clusterLightCount = cell.count;
+        for (uint i = 0u; i < cell.count; ++i) {
+            uint lightIndex = pc.lightIndexList.indices[cell.offset + i];
+            punctual += evaluatePunctualLight(pc.lightBuffer.lights[lightIndex],
+                                              normal,
+                                              viewDirection,
+                                              vWorldPosition,
+                                              baseColor,
+                                              metallic,
+                                              roughness,
+                                              f0);
+        }
+    } else {
+        for (uint lightIndex = 0u; lightIndex < pc.lightCount; ++lightIndex) {
+            punctual += evaluatePunctualLight(pc.lightBuffer.lights[lightIndex],
+                                              normal,
+                                              viewDirection,
+                                              vWorldPosition,
+                                              baseColor,
+                                              metallic,
+                                              roughness,
+                                              f0);
+        }
+    }
+
+    // Emissive: a constant glow added before tone mapping so it blooms. The
+    // factor (vEmissiveFactor.rgb) is modulated by an emissive map sampled from
+    // the sRGB base-color array only when one is bound (vEmissiveFactor.w).
+    vec3 emissive = vEmissiveFactor.rgb;
+    if (vEmissiveFactor.w > 0.5) {
+        emissive *= texture(uBaseColorTextures[nonuniformEXT(vTextureIndices.w)], vUV).rgb;
+    }
+
+    vec3 finalColor = ambient + direct + punctual + emissive;
+
+    // Debug overlay: visualize how many lights touch each froxel. Saturates the
+    // ramp at 16 lights, which is plenty to read cluster occupancy at a glance.
+    if (pc.debugClusterHeatmap != 0u && pc.useClustered != 0u) {
+        outColor = vec4(clusterHeatmapColor(clusterLightCount), 1.0);
+        return;
+    }
 
     if (vCascadeDebugEnabled > 0.5 && cascadeIndex >= 0) {
         finalColor = mix(finalColor, cascadeDebugColor(cascadeIndex), 0.3);

@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 #include <string>
 
@@ -34,11 +35,17 @@ struct Material {
     const rhi::VulkanTexture* baseColorTexture = nullptr;
     const rhi::VulkanTexture* normalTexture = nullptr;
     const rhi::VulkanTexture* metallicRoughnessTexture = nullptr;
+    // Emissive maps reuse the sRGB base-color bindless array, so the index is into
+    // that array; hasEmissiveTexture gates sampling so factor-only emissive needs
+    // no texture.
+    const rhi::VulkanTexture* emissiveTexture = nullptr;
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
     uint32_t baseColorTextureIndex = 0;
     uint32_t normalTextureIndex = 0;
     uint32_t metallicRoughnessTextureIndex = 0;
+    uint32_t emissiveTextureIndex = 0;
     glm::vec4 baseColorFactor = glm::vec4(1.0f);
+    glm::vec3 emissiveFactor = glm::vec3(0.0f);
     float metallic = 0.0f;
     float roughness = 0.5f;
     float multiScatterStrength = 1.0f;
@@ -50,6 +57,7 @@ struct Material {
     bool baseColorTextureFallback = false;
     bool normalTextureFallback = false;
     bool metallicRoughnessTextureFallback = false;
+    bool hasEmissiveTexture = false;
 };
 
 } // namespace ve::renderer

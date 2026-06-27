@@ -1,8 +1,57 @@
 # VulkanEngine
 
-VulkanEngine is a C++20 Vulkan 1.3 real-time renderer prototype focused on explicit GPU resource management, modern rendering architecture, GPU-driven visibility, profiling, post-processing, and lightweight editor/data workflows. It is a renderer portfolio project, not a full game engine.
+[![Linux Build](https://github.com/ZihanWG/VulkanEngine/actions/workflows/build.yml/badge.svg)](https://github.com/ZihanWG/VulkanEngine/actions/workflows/build.yml)
+[![Windows CI](https://github.com/ZihanWG/VulkanEngine/actions/workflows/windows-ci.yml/badge.svg)](https://github.com/ZihanWG/VulkanEngine/actions/workflows/windows-ci.yml)
 
-The demo renders a static glTF test scene, or a built-in cube fallback, through SDL3, Volk, Vulkan Memory Allocator, Dynamic Rendering, and Synchronization2. This is intentionally an engine-style renderer portfolio project rather than a full game engine: the code favors readable Vulkan ownership, clear resource contracts, and small milestones over a large framework.
+A **C++20 / Vulkan 1.3 real-time renderer** built as a graphics- and engine-programming portfolio. It pairs explicit GPU ownership with a **GPU-driven** pipeline — bindless materials, multi-draw indirect, compute frustum culling — and **clustered (Forward+) lighting** that scales to hundreds of dynamic lights, plus a render graph, PBR + IBL, cascaded shadows, HDR post-processing, a per-pass GPU profiler, and an ImGui editor. Everything runs on Dynamic Rendering + Synchronization2.
+
+> Not a full game engine by design. It favors readable Vulkan ownership, clear resource contracts, and small, verifiable milestones — backed by headless unit tests, Linux + Windows CI, and ASan/UBSan runs.
+
+## Demo
+
+![VulkanEngine portfolio scene](screenshots/vulkan_engine_portfolio_latest.png)
+
+> 🎥 **Clustered-lighting demo:** launch the app, open the **Lights (Clustered)** panel, toggle the **cluster heatmap**, and drive the **light count** up to a few hundred while the swarm orbits. Record it to `screenshots/clustered_lighting_demo.gif` and embed it here — motion sells the GPU-driven work far better than a still.
+
+## Highlights
+
+| Area | What it does |
+| --- | --- |
+| **GPU-driven** | Bindless material textures, multi-draw indirect batching, compute frustum culling + optional previous-frame Hi-Z occlusion |
+| **Clustered lighting** | 16×9×24 froxel grid built in compute, per-cluster light culling, hundreds of dynamic point/spot lights via Forward+ |
+| **PBR + IBL** | Cook-Torrance GGX, tangent-space normal mapping, prefiltered specular + diffuse irradiance + split-sum BRDF LUT, Kulla-Conty multi-scatter |
+| **Shadows** | PCF cascaded shadow maps with per-cascade GPU shadow-caster culling and an indirect shadow path |
+| **Post-processing** | HDR scene color, mip-chain bloom, histogram auto-exposure, ACES/Reinhard tonemap, optional TAA foundation |
+| **Architecture** | Render graph (logical handles + conservative barrier inference), RAII Vulkan RHI, per-pass GPU timestamp profiler, ImGui scene/material editor |
+| **Engineering** | C++20, Catch2 unit tests, Linux + Windows CI, AddressSanitizer/UBSan, clang-tidy/clang-format |
+
+## Architecture
+
+The renderer is GPU-driven: visibility, light assignment, and shading are decided on the GPU each frame.
+
+```mermaid
+flowchart TD
+    A[Scene update<br/>build draw items + upload object data] --> B[CSM shadow pass<br/>+ GPU shadow-caster culling]
+    B --> C[GPU frustum culling<br/>+ optional Hi-Z occlusion → indirect commands]
+    C --> D[Cluster build + light cull<br/>Forward+ froxel grid]
+    D --> E[Main HDR pass<br/>bindless + multi-draw indirect + clustered shading]
+    E --> F[Depth pyramid<br/>for next-frame occlusion]
+    E --> G[Bloom + histogram auto-exposure]
+    G --> H[Composite + tonemap]
+    H --> I[ImGui overlay → present]
+```
+
+Top-level ownership: `Application` → `Window` + `Renderer`; `Renderer` orchestrates the frame and owns subsystems (`ClusteredLighting`, `PostProcessStack`, `RenderGraph`, `GpuProfiler`, `ScreenshotCapture`) over a RAII Vulkan RHI (`src/rhi/`). See [Architecture Overview](#architecture-overview) and [docs/design_decisions.md](docs/design_decisions.md) for the trade-offs behind these choices.
+
+## Clustered (Forward+) Lighting
+
+The flagship subsystem ([`src/renderer/ClusteredLighting.*`](src/renderer/ClusteredLighting.h)) answers the classic "how do you handle a thousand lights?" question:
+
+1. **Froxel grid** — `cluster_build.comp` computes a per-cluster view-space AABB for a 16×9×24 grid (screen tiles × exponential depth slices), rebuilt from the inverse projection.
+2. **Light culling** — `light_cull.comp` transforms each light into view space and tests its bounding sphere against every froxel, writing a compact per-cluster light index list.
+3. **Shading** — the main HDR fragment shader resolves its froxel from `gl_FragCoord` + view depth and loops only the lights touching that cluster, reading the grid and index list through buffer-device-address pointers.
+
+Point and spot lights flow through one light buffer; the directional sun + IBL are unchanged. A **cluster heatmap** debug view and a brute-force fallback (same light set, every light per fragment) make the win measurable, and the froxel math lives in a GPU-free header (`src/renderer/ClusterGrid.h`) that is unit-tested — including a round-trip that cross-checks the build math against the fragment's cluster lookup. See [docs/clustered_lighting.md](docs/clustered_lighting.md) for the implementation deep-dive and [docs/design_decisions.md](docs/design_decisions.md) for why clustered over deferred or tiled.
 
 ## Feature List
 
@@ -10,7 +59,8 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - VMA-backed buffers and images, Buffer Device Address, CPU-visible uploads/readbacks, and GPU-local staging copies.
 - SDL3 window and surface integration with swapchain recreation support.
 - Static mesh path for built-in cube geometry and static glTF triangle meshes.
-- glTF material factors plus base color, normal, and metallic-roughness texture loading.
+- glTF material factors plus base color, normal, metallic-roughness, and emissive texture loading.
+- Emissive materials: per-material emissive factor and optional emissive map (sampled from the sRGB base-color array), added pre-tonemap so emission reads through bloom, editable from the Material Inspector.
 - Minimal path-based `AssetManager` for material JSON assets and texture path metadata.
 - Material asset JSON load/save for PBR scalar fields, texture path metadata, alpha metadata, and portfolio materials.
 - Tangent-space normal mapping and Cook-Torrance GGX direct lighting.
@@ -27,6 +77,7 @@ The demo renders a static glTF test scene, or a built-in cube fallback, through 
 - Descriptor indexing path for bindless material texture arrays, with a legacy descriptor-set fallback.
 - Render Graph 2.0 with logical texture/buffer handles, pass read/write declarations, conservative automatic image transitions, selected buffer barrier inference, transient render-target descriptions, basic pass liveness/culling metadata, and ImGui pass/resource visualization.
 - GPU frustum culling compute pass that compacts visible indirect draw commands, writes per-batch visible counts, and can optionally run conservative previous-frame Hi-Z occlusion tests. Occlusion culling is disabled by default.
+- Clustered (Forward+) lighting: a 16×9×24 froxel grid built in compute (`cluster_build.comp`), per-cluster GPU light culling (`light_cull.comp`), and per-froxel point/spot light evaluation in the main HDR pass, with a cluster light-count heatmap, a brute-force comparison toggle, and a GPU-free, unit-tested froxel-math header (`ClusterGrid.h`).
 - Multi-draw indirect batching by mesh-compatible ranges on the bindless main path and shadow path.
 - GPU timestamp profiler with per-pass timings, frame-latency readback, moving-average ImGui history, and debug labels for capture/profiling orientation.
 - Editable scene workflow for runtime object transforms, visibility, camera/light settings, and JSON scene save/load.
@@ -74,10 +125,11 @@ For macOS setup, see [docs/build_macos.md](docs/build_macos.md).
 2. Build the renderer with `cmake --build build --config Debug --target VulkanEngine`.
 3. Run `.\build\Debug\VulkanEngine.exe`.
 4. In `VulkanEngine Debug`, open `Debug Views`, then show the `GPU Profiler`, `Render Graph`, `Scene Hierarchy`, and `Material Inspector` panels.
-5. Use `Scene Presets` -> `Load Occlusion Test Scene`, then `GPU Culling` -> `Enable Occlusion Test Settings` to inspect conservative Hi-Z culling. Occlusion remains optional and off by default.
-6. Toggle `Temporal AA` off and on from its panel. TAA is a foundation pass and is disabled by default.
-7. Press `F11` to enable portfolio mode when reviewing the portfolio scene.
-8. Press `F12` only when intentionally updating the committed portfolio screenshots.
+5. Open the `Lights (Clustered)` panel: drive `Light count` up to a few hundred, toggle `Cluster heatmap` to see per-froxel light counts, and toggle `Use clustered culling` off to compare against the brute-force path. Watch the `ClusterBuild` and `LightCull` rows in the `GPU Profiler`.
+6. Use `Scene Presets` -> `Load Occlusion Test Scene`, then `GPU Culling` -> `Enable Occlusion Test Settings` to inspect conservative Hi-Z culling. Occlusion remains optional and off by default.
+7. Toggle `Temporal AA` off and on from its panel. TAA is a foundation pass and is disabled by default.
+8. Press `F11` to enable portfolio mode when reviewing the portfolio scene.
+9. Press `F12` only when intentionally updating the committed portfolio screenshots.
 
 ## Render Graph 2.0
 
@@ -331,7 +383,7 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 - There is no full texture viewer/editor yet.
 - There is no render graph node editor yet.
 - glTF support is static and intentionally narrow: no animation, skinning, morph targets, cameras, lights, or alpha modes yet.
-- Texture semantic handling covers base color, normal, and metallic-roughness today; occlusion, emissive, and other glTF texture semantics remain future work.
+- Texture semantic handling covers base color, normal, metallic-roughness, and emissive today; occlusion and other glTF texture semantics remain future work.
 - HDR environment loading is basic and uses an approximate CPU equirectangular-to-cubemap conversion.
 - Bloom still keeps the simple half-resolution extract plus separable blur path as a fallback; the default path is mip-chain bloom.
 - Auto exposure is GPU-driven for composite, but there is no local exposure yet.
@@ -371,14 +423,15 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 
 One-line summary:
 
-C++20 Vulkan 1.3 real-time renderer featuring PBR/IBL, cascaded shadows, HDR post-processing, mip-chain bloom, GPU exposure, Render Graph metadata, GPU timestamp profiling, GPU culling, optional Hi-Z occlusion, TAA foundation, editable scene tools, JSON material assets, and overlay-free portfolio capture.
+C++20 Vulkan 1.3 real-time renderer featuring clustered (Forward+) lighting, PBR/IBL, cascaded shadows, HDR post-processing, mip-chain bloom, GPU exposure, Render Graph metadata, GPU timestamp profiling, GPU culling, optional Hi-Z occlusion, TAA foundation, editable scene tools, JSON material assets, and overlay-free portfolio capture.
 
 Resume bullets:
 
 - Built a C++20 Vulkan 1.3 real-time renderer using Dynamic Rendering, Synchronization2, VMA, and Volk.
-- Implemented PBR/IBL shading, cascaded shadows, HDR post-processing, mip-chain bloom, GPU exposure, and a conservative TAA foundation.
-- Added GPU frustum culling, optional Hi-Z occlusion culling, indirect drawing, per-pass GPU timestamp profiling, and Render Graph metadata/transition tracking.
-- Built editor-style tooling for scene transform editing, JSON scene save/load, material asset editing, and overlay-free portfolio capture.
+- Implemented clustered (Forward+) lighting — a compute-built 16×9×24 froxel grid with GPU light culling — scaling to hundreds of dynamic point/spot lights, with a cluster heatmap debug view and unit-tested froxel math.
+- Engineered a GPU-driven pipeline: bindless material textures, multi-draw indirect, GPU frustum culling, optional Hi-Z occlusion, and per-pass GPU timestamp profiling.
+- Implemented PBR/IBL shading, cascaded shadows, HDR post-processing, mip-chain bloom, GPU histogram auto-exposure, and a conservative TAA foundation, organized behind a render graph with conservative barrier inference.
+- Built editor-style tooling (ImGui scene/material editing, JSON scene save/load, overlay-free capture) and engineering hygiene: Catch2 unit tests, Linux + Windows CI, and ASan/UBSan runs.
 
 ## Milestone History
 

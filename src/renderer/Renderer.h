@@ -7,6 +7,7 @@
 #include "renderer/Bounds.h"
 #include "renderer/Camera.h"
 #include "renderer/CascadeMath.h"
+#include "renderer/ClusteredLighting.h"
 #include "renderer/FrameResources.h"
 #include "renderer/GpuProfiler.h"
 #include "renderer/Material.h"
@@ -368,6 +369,10 @@ private:
     void resetCameraToPortfolioPreset();
     void resetCameraToOcclusionTestPreset();
     void resetDirectionalLightToDefault();
+    // Regenerates clusteredLighting_ each frame from the demo-light controls: a
+    // scattered, orbiting swarm of colored point lights plus an overhead spot.
+    // Driving the count up is how the clustered path is stress-tested.
+    void updateDemoLights(float elapsedSeconds);
     [[nodiscard]] glm::vec4 activeDirectionalLightDirection() const;
     [[nodiscard]] glm::vec4 activeDirectionalLightColor() const;
     void loadOcclusionTestScene();
@@ -388,6 +393,7 @@ private:
     void drawBloomDebugUi();
     void drawSsaoDebugUi();
     void drawCsmSettingsDebugUi();
+    void drawLightsDebugUi();
     void drawGpuCullingDebugUi();
     void drawEnvironmentDebugUi();
     void drawScenePresetDebugUi();
@@ -496,6 +502,7 @@ private:
     std::vector<rhi::VulkanTexture> importedMetallicRoughnessTextures_;
     std::vector<std::unique_ptr<rhi::VulkanTexture>> materialAssetTextures_;
     renderer::BindlessTextureHeap bindlessTextureHeap_;
+    renderer::ClusteredLighting clusteredLighting_;
     rhi::VulkanDescriptorPool materialDescriptorPool_;
     rhi::VulkanDescriptorPool skyboxDescriptorPool_;
     rhi::VulkanDescriptorPool gpuCullDescriptorPool_;
@@ -627,6 +634,17 @@ private:
     bool bindlessMaterialTexturesAvailable_ = false;
     bool useGpuCulling_ = true;
     bool gpuCullingAvailable_ = false;
+    // When true (and clustered resources are available), the main pass walks the
+    // per-froxel light list; otherwise it brute-forces every light. The runtime
+    // toggle also enables a brute-force-vs-clustered comparison.
+    bool useClusteredLighting_ = true;
+    bool showClusterHeatmap_ = false;
+    // Demo-light controls (see updateDemoLights). The count slider drives the
+    // clustered-path stress test; animation orbits the swarm each frame.
+    int demoLightCount_ = 24;
+    bool animateLights_ = true;
+    float demoLightIntensity_ = 10.0f;
+    float demoLightRange_ = 8.0f;
     bool useGpuOcclusionCulling_ = false;
     bool depthPyramidValid_ = false;
     bool depthPyramidBuildAvailable_ = false;

@@ -40,11 +40,13 @@ struct GltfTextureInfo {
 struct GltfMaterialInfo {
     std::string debugName;
     glm::vec4 baseColorFactor = glm::vec4(1.0f);
+    glm::vec3 emissiveFactor = glm::vec3(0.0f);
     float metallic = 1.0f;
     float roughness = 1.0f;
     int baseColorTextureIndex = -1;
     int normalTextureIndex = -1;
     int metallicRoughnessTextureIndex = -1;
+    int emissiveTextureIndex = -1;
     bool fallback = false;
 };
 

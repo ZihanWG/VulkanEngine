@@ -204,6 +204,7 @@ add_executable(VulkanEngine
     src/core/PngWriter.cpp
     src/core/Window.cpp
     src/renderer/BindlessTextureHeap.cpp
+    src/renderer/ClusteredLighting.cpp
     src/renderer/GpuProfiler.cpp
     src/renderer/Mesh.cpp
     src/renderer/PostProcessStack.cpp
@@ -292,6 +293,8 @@ set(SHADER_SOURCES
     "${SHADER_SOURCE_DIR}/skybox.frag"
     "${SHADER_SOURCE_DIR}/shadow.vert"
     "${SHADER_SOURCE_DIR}/cull.comp"
+    "${SHADER_SOURCE_DIR}/cluster_build.comp"
+    "${SHADER_SOURCE_DIR}/light_cull.comp"
     "${SHADER_SOURCE_DIR}/depth_pyramid.comp"
     "${SHADER_SOURCE_DIR}/luminance.comp"
     "${SHADER_SOURCE_DIR}/luminance_histogram.comp"

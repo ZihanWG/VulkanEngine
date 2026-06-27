@@ -144,6 +144,11 @@ Renderer::Renderer(Window& window) : window_(window)
     commandContext_.initialize(context_, frames_);
     createScene();
     createObjectFrameDataBuffers();
+    clusteredLighting_.create(context_,
+                              static_cast<uint32_t>(frames_.size()),
+                              shaderPath("cluster_build.comp.spv"),
+                              shaderPath("light_cull.comp.spv"));
+    updateDemoLights(0.0f);
     createIndirectDrawBuffers();
     createShadowIndirectDrawBuffers();
     createGpuCullingResources();
@@ -2911,6 +2916,13 @@ void Renderer::createPortfolioMaterialVariants()
                               0.05f);
     addPortfolioMaterial(
         "Portfolio_Backdrop", &portfolioBackdropTexture_, {1.0f, 1.0f, 1.0f, 1.0f}, 0.0f, 0.94f, 0.0f);
+
+    // Give the hero ceramic a soft warm emissive so factor-only emissive is
+    // visible in the default scene and reads through bloom. Editable per material
+    // from the Material Inspector.
+    if (kPortfolioHeroCeramicMaterialIndex < materialVariants_.size()) {
+        materialVariants_[kPortfolioHeroCeramicMaterialIndex].emissiveFactor = glm::vec3(0.9f, 0.45f, 0.15f);
+    }
 }
 
 void Renderer::assignBindlessTextureIndices(renderer::Material& material)
@@ -2933,6 +2945,16 @@ void Renderer::assignBindlessTextureIndices(renderer::Material& material)
             ? bindlessTextureHeap_.registerTexture(renderer::BindlessTextureHeap::TextureKind::MetallicRoughness,
                                                    *material.metallicRoughnessTexture)
             : bindlessMetallicRoughnessFallbackIndex_;
+    // Emissive maps are sRGB color, so they share the base-color bindless array.
+    // Without one, the index falls back and the shader skips sampling it
+    // (hasEmissiveTexture stays false, so emissive uses the factor only).
+    if (material.hasEmissiveTexture && material.emissiveTexture && material.emissiveTexture->valid()) {
+        material.emissiveTextureIndex = bindlessTextureHeap_.registerTexture(
+            renderer::BindlessTextureHeap::TextureKind::BaseColor, *material.emissiveTexture);
+    } else {
+        material.emissiveTextureIndex = bindlessBaseColorFallbackIndex_;
+        material.hasEmissiveTexture = false;
+    }
 }
 
 void Renderer::createMaterialDescriptorSet(renderer::Material& material)
@@ -3100,6 +3122,8 @@ void Renderer::createImportedGltfTextures(const std::vector<renderer::GltfTextur
         markNeeded(materialInfo.baseColorTextureIndex, baseColorNeeded);
         markNeeded(materialInfo.normalTextureIndex, normalNeeded);
         markNeeded(materialInfo.metallicRoughnessTextureIndex, metallicRoughnessNeeded);
+        // Emissive maps decode as sRGB into the base-color texture array.
+        markNeeded(materialInfo.emissiveTextureIndex, baseColorNeeded);
     }
 
     // Decode the needed textures on worker threads, then upload them here on the
@@ -3247,6 +3271,11 @@ void Renderer::createImportedGltfMaterials(const std::vector<renderer::GltfMater
                                                               importedMetallicRoughnessTextures_,
                                                               neutralMetallicRoughnessTexture_);
         material.baseColorFactor = materialInfo.baseColorFactor;
+        material.emissiveFactor = materialInfo.emissiveFactor;
+        material.hasEmissiveTexture = textureLoaded(materialInfo.emissiveTextureIndex, importedBaseColorTextures_);
+        material.emissiveTexture = material.hasEmissiveTexture
+                                       ? &importedBaseColorTextures_[static_cast<size_t>(materialInfo.emissiveTextureIndex)]
+                                       : nullptr;
         material.metallic = materialInfo.metallic;
         material.roughness = materialInfo.roughness;
         material.multiScatterStrength = 1.0f;
@@ -3376,6 +3405,52 @@ void Renderer::createShadowIndirectDrawBuffers()
 uint32_t Renderer::activeCascadeCount() const
 {
     return std::clamp(csmSettings_.cascadeCount, 1U, kMaxShadowCascades);
+}
+
+void Renderer::updateDemoLights(float elapsedSeconds)
+{
+    constexpr float kDegToRad = 3.1415926535897932385f / 180.0f;
+    constexpr float kGoldenAngle = 2.39996322972865332f;
+
+    // Deterministic fractional hash so each light gets a stable radius/height/
+    // speed/hue without storing per-light state; the count slider just adds or
+    // removes entries from the end of the swarm.
+    const auto hash01 = [](int index, float seed) {
+        const float value = std::sin(static_cast<float>(index) * 12.9898f + seed) * 43758.5453f;
+        return value - std::floor(value);
+    };
+
+    // Minimal HSV->RGB for evenly spread, saturated light colors.
+    const auto hueColor = [](float hue) {
+        const glm::vec3 k{1.0f, 2.0f / 3.0f, 1.0f / 3.0f};
+        const glm::vec3 p =
+            glm::abs(glm::fract(glm::vec3(hue) + k) * 6.0f - glm::vec3(3.0f));
+        return glm::clamp(p - glm::vec3(1.0f), glm::vec3(0.0f), glm::vec3(1.0f));
+    };
+
+    clusteredLighting_.clear();
+
+    const int lightCount = std::clamp(demoLightCount_, 0, 512);
+    for (int lightIndex = 0; lightIndex < lightCount; ++lightIndex) {
+        const float radius = 2.0f + 4.0f * hash01(lightIndex, 0.0f);
+        const float height = 0.6f + 4.0f * hash01(lightIndex, 7.0f);
+        const float speed = 0.15f + 0.55f * hash01(lightIndex, 13.0f);
+        const float baseAngle = static_cast<float>(lightIndex) * kGoldenAngle;
+        const float angle = baseAngle + (animateLights_ ? elapsedSeconds * speed : 0.0f);
+        const glm::vec3 position{radius * std::cos(angle), height, radius * std::sin(angle)};
+        const glm::vec3 color = hueColor(hash01(lightIndex, 21.0f));
+        clusteredLighting_.addPointLight(position, color, demoLightIntensity_, demoLightRange_);
+    }
+
+    // A white overhead spot anchors the scene regardless of the swarm size.
+    const float spotAngle = animateLights_ ? elapsedSeconds * 0.25f : 0.0f;
+    clusteredLighting_.addSpotLight(glm::vec3{2.5f * std::cos(spotAngle), 6.0f, 2.5f * std::sin(spotAngle)},
+                                    glm::vec3{0.0f, -1.0f, 0.0f},
+                                    glm::vec3{1.0f, 1.0f, 1.0f},
+                                    40.0f,
+                                    16.0f,
+                                    18.0f * kDegToRad,
+                                    30.0f * kDegToRad);
 }
 
 glm::vec4 Renderer::activeDirectionalLightDirection() const
@@ -4850,6 +4925,18 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     frameViewProjection_ = viewProjection;
     frameCameraPosition_ = camera_.position;
 
+    // Regenerate the animated demo light swarm, then hand the froxel grid + light
+    // culling the current view/inverse-projection and camera planes (view-space
+    // work, so it runs regardless of scene contents).
+    updateDemoLights(elapsedSeconds);
+    clusteredLighting_.updateParams(frameIndex,
+                                    view,
+                                    glm::inverse(projection),
+                                    camera_.nearPlane,
+                                    camera_.farPlane,
+                                    static_cast<float>(extent.width),
+                                    static_cast<float>(extent.height));
+
     if (renderObjects_.empty()) {
         resetFrameStateForEmptyScene(frameIndex);
         return;
@@ -4873,6 +4960,7 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     buildShadowFrameData(frameIndex);
     buildMainCullingFrameData(frameIndex, cameraFrustum);
     uploadObjectFrameData(frameIndex);
+    clusteredLighting_.upload(frameIndex);
 }
 
 void Renderer::resetFrameStateForEmptyScene(uint32_t frameIndex)
@@ -5137,7 +5225,9 @@ void Renderer::uploadObjectFrameData(uint32_t frameIndex)
             frameData.textureIndices = {material->baseColorTextureIndex,
                                         material->normalTextureIndex,
                                         material->metallicRoughnessTextureIndex,
-                                        0};
+                                        material->emissiveTextureIndex};
+            frameData.emissiveFactor =
+                glm::vec4(material->emissiveFactor, material->hasEmissiveTexture ? 1.0f : 0.0f);
         }
         frameData.cameraPosition = glm::vec4(camera_.position, csmSettings_.enableCascadeDebugColors ? 1.0f : 0.0f);
         frameData.cameraForward =
@@ -5933,6 +6023,8 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
 {
     const VkDeviceAddress objectFrameDataBaseAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
     const size_t mainDrawItemCount = visibleDrawItems_.size();
+    const bool clusteredLightingActive = clusteredLighting_.available() && useClusteredLighting_ &&
+                                         clusteredLighting_.lightCount() > 0 && !allDrawItems_.empty();
     const bool taaActiveThisFrame = postProcess_.isTaaActive();
     postProcess_.beginFrame(currentFrame_, taaActiveThisFrame);
 
@@ -6092,6 +6184,24 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
 
     recordGpuCullingCommands(commandBuffer);
 
+    // Clustered (Forward+) light assignment: rebuild the froxel AABBs, then cull
+    // every light into its froxels. Both write buffers the main HDR fragment
+    // shader reads, so the assignment pass barriers into the fragment stage.
+    if (clusteredLightingActive) {
+        {
+            const renderer::GpuProfileScope buildScope(gpuProfiler_, currentFrame_, commandBuffer, "ClusterBuild");
+            rhi::debug::beginLabel(commandBuffer, "ClusterBuild");
+            clusteredLighting_.recordClusterBuild(commandBuffer, currentFrame_);
+            rhi::debug::endLabel(commandBuffer);
+        }
+        {
+            const renderer::GpuProfileScope cullScope(gpuProfiler_, currentFrame_, commandBuffer, "LightCull");
+            rhi::debug::beginLabel(commandBuffer, "LightCull");
+            clusteredLighting_.recordLightCull(commandBuffer, currentFrame_);
+            rhi::debug::endLabel(commandBuffer);
+        }
+    }
+
     const bool mainHdrProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "MainHDRPass");
     rhi::debug::beginLabel(commandBuffer, "MainHDRPass");
     renderGraph_.beginMainHdrPass();
@@ -6183,9 +6293,29 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         indirectCountPathActive ? frameBatchVisibleCountBuffers_.at(currentFrame_).buffer() : VK_NULL_HANDLE;
     const uint32_t toneMappingOperator = toneMappingOperatorValue(toneMappingSettings_.operatorType);
     const float exposure = postProcess_.currentToneMappingExposure();
+    // Shared lighting push constant for the main pass. The clustered fields are
+    // zeroed when the per-froxel path is inactive, which makes the fragment
+    // shader fall back to brute-force light evaluation.
+    PushConstants basePushConstants{};
+    basePushConstants.objectFrameDataAddress = objectFrameDataBaseAddress;
+    basePushConstants.cascadeIndex = 0;
+    basePushConstants.toneMappingOperator = toneMappingOperator;
+    basePushConstants.exposure = exposure;
+    basePushConstants.lightCount = clusteredLighting_.lightCount();
+    basePushConstants.lightBufferAddress = clusteredLighting_.lightBufferAddress(currentFrame_);
+    basePushConstants.clusterGridAddress =
+        clusteredLightingActive ? clusteredLighting_.clusterGridAddress(currentFrame_) : 0;
+    basePushConstants.lightIndexListAddress =
+        clusteredLightingActive ? clusteredLighting_.lightIndexListAddress(currentFrame_) : 0;
+    basePushConstants.clusterZNear = camera_.nearPlane;
+    basePushConstants.clusterZFar = camera_.farPlane;
+    basePushConstants.screenWidth = static_cast<float>(extent.width);
+    basePushConstants.screenHeight = static_cast<float>(extent.height);
+    basePushConstants.useClustered = clusteredLightingActive ? 1u : 0u;
+    basePushConstants.debugClusterHeatmap = showClusterHeatmap_ ? 1u : 0u;
     if (multiDrawIndirectActive) {
         if (bindlessDescriptorSetsBound) {
-            const PushConstants pushConstants{objectFrameDataBaseAddress, 0, toneMappingOperator, exposure};
+            const PushConstants pushConstants = basePushConstants;
             vkCmdPushConstants(commandBuffer,
                                pipeline_.layout(),
                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -6263,12 +6393,10 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                                         nullptr);
             }
 
-            const PushConstants pushConstants{
+            PushConstants pushConstants = basePushConstants;
+            pushConstants.objectFrameDataAddress =
                 objectFrameDataBaseAddress +
-                    static_cast<VkDeviceAddress>(drawItem.frameDataIndex * sizeof(ObjectFrameData)),
-                0,
-                toneMappingOperator,
-                exposure};
+                static_cast<VkDeviceAddress>(drawItem.frameDataIndex * sizeof(ObjectFrameData));
 
             // Fallback recording pushes the address of this draw's object data; firstInstance stays zero.
             vkCmdPushConstants(commandBuffer,

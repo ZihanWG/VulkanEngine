@@ -95,6 +95,7 @@ struct ObjectFrameData {
     glm::vec4 cameraPosition{0.0f, 0.0f, 0.0f, 0.0f};
     glm::vec4 cameraForward{0.0f, 0.0f, -1.0f, 4.0f};
     glm::uvec4 textureIndices{0, 0, 0, 0};
+    glm::vec4 emissiveFactor{0.0f, 0.0f, 0.0f, 0.0f};
 };
 
 // Mirrors the shader's std430 buffer_reference block. std430 stores mat4 as
@@ -107,7 +108,9 @@ struct ObjectFrameData {
 // cameraPosition.xyz is the world-space camera position, and w stores the
 // cascade debug-color toggle as 0.0 or 1.0.
 // cameraForward.xyz is the camera forward vector, and w stores cascade count.
-// textureIndices.x = base color, y = normal, z = metallic-roughness, w = reserved.
+// textureIndices.x = base color, y = normal, z = metallic-roughness, w = emissive.
+// emissiveFactor.rgb is the emissive color factor; emissiveFactor.w is 1.0 when an
+// emissive texture (sampled from the base-color array at textureIndices.w) is present.
 static_assert(offsetof(ObjectFrameData, mvp) == 0);
 static_assert(offsetof(ObjectFrameData, model) == 64);
 static_assert(offsetof(ObjectFrameData, lightMvp) == 128);
@@ -121,7 +124,8 @@ static_assert(offsetof(ObjectFrameData, materialParams) == 480);
 static_assert(offsetof(ObjectFrameData, cameraPosition) == 496);
 static_assert(offsetof(ObjectFrameData, cameraForward) == 512);
 static_assert(offsetof(ObjectFrameData, textureIndices) == 528);
-static_assert(sizeof(ObjectFrameData) == 544);
+static_assert(offsetof(ObjectFrameData, emissiveFactor) == 544);
+static_assert(sizeof(ObjectFrameData) == 560);
 
 constexpr uint32_t kMaxFrameObjects = 1024;
 constexpr uint32_t kMaxDrawItems = 1024;
@@ -168,13 +172,40 @@ struct PushConstants {
     uint32_t cascadeIndex = 0;
     uint32_t toneMappingOperator = 0;
     float exposure = 1.0f;
+    // Punctual lighting: the main HDR fragment shader reads lightCount lights
+    // from lightBufferAddress via buffer_reference. When useClustered is set it
+    // instead walks the per-froxel light list (clusterGridAddress +
+    // lightIndexListAddress) produced by the cluster culling compute passes.
+    // Shadow and skybox passes leave these fields zero (they never read lights).
+    uint32_t lightCount = 0;
+    VkDeviceAddress lightBufferAddress = 0;
+    VkDeviceAddress clusterGridAddress = 0;
+    VkDeviceAddress lightIndexListAddress = 0;
+    float clusterZNear = 0.1f;
+    float clusterZFar = 100.0f;
+    float screenWidth = 0.0f;
+    float screenHeight = 0.0f;
+    uint32_t useClustered = 0;
+    // Debug: when set, the main pass outputs a per-cluster light-count heatmap
+    // instead of shaded color (requires the clustered path to be active).
+    uint32_t debugClusterHeatmap = 0;
 };
 
 static_assert(offsetof(PushConstants, objectFrameDataAddress) == 0);
 static_assert(offsetof(PushConstants, cascadeIndex) == 8);
 static_assert(offsetof(PushConstants, toneMappingOperator) == 12);
 static_assert(offsetof(PushConstants, exposure) == 16);
-static_assert(sizeof(PushConstants) == 24);
+static_assert(offsetof(PushConstants, lightCount) == 20);
+static_assert(offsetof(PushConstants, lightBufferAddress) == 24);
+static_assert(offsetof(PushConstants, clusterGridAddress) == 32);
+static_assert(offsetof(PushConstants, lightIndexListAddress) == 40);
+static_assert(offsetof(PushConstants, clusterZNear) == 48);
+static_assert(offsetof(PushConstants, clusterZFar) == 52);
+static_assert(offsetof(PushConstants, screenWidth) == 56);
+static_assert(offsetof(PushConstants, screenHeight) == 60);
+static_assert(offsetof(PushConstants, useClustered) == 64);
+static_assert(offsetof(PushConstants, debugClusterHeatmap) == 68);
+static_assert(sizeof(PushConstants) <= 128);
 
 // Mirrors src/shaders/cull.comp. Main and shadow GPU culling both use this
 // std430 input record: vec4 members are 16-byte aligned, then scalar draw and
