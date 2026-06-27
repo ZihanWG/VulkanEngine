@@ -9,9 +9,9 @@ A **C++20 / Vulkan 1.3 real-time renderer** built as a graphics- and engine-prog
 
 ## Demo
 
-![VulkanEngine portfolio scene](screenshots/vulkan_engine_portfolio_latest.png)
+![Clustered lighting demo](screenshots/clustered_lighting_demo.gif)
 
-> 🎥 **Clustered-lighting demo:** launch the app, open the **Lights (Clustered)** panel, toggle the **cluster heatmap**, and drive the **light count** up to a few hundred while the swarm orbits. Record it to `screenshots/clustered_lighting_demo.gif` and embed it here — motion sells the GPU-driven work far better than a still.
+*Hundreds of dynamic point/spot lights via clustered (Forward+) shading, with the per-froxel light-count heatmap. Implementation details in [docs/clustered_lighting.md](docs/clustered_lighting.md).*
 
 ## Highlights
 
