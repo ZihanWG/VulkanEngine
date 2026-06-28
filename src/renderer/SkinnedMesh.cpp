@@ -1,6 +1,7 @@
 #include "renderer/SkinnedMesh.h"
 
-#include "renderer/Mesh.h"
+#include "core/Logger.h"
+#include "renderer/GltfSkinnedImport.h"
 #include "rhi/VulkanContext.h"
 
 #include <cmath>
@@ -15,6 +16,7 @@ namespace {
 constexpr uint32_t kSegments = 6;
 constexpr float kSegmentHeight = 0.6f;
 constexpr float kHalfWidth = 0.22f;
+const glm::mat4 kDemoModelMatrix = glm::translate(glm::mat4(1.0f), glm::vec3(-2.6f, 0.0f, 0.0f));
 
 } // namespace
 
@@ -49,6 +51,35 @@ std::array<VkVertexInputAttributeDescription, 7> skinnedVertexAttributeDescripti
     attributes[6].format = VK_FORMAT_R32G32B32A32_SFLOAT;
     attributes[6].offset = static_cast<uint32_t>(offsetof(SkinningVertex, weights));
     return attributes;
+}
+
+void SkinnedMesh::buildBuffers(rhi::VulkanContext& context,
+                               const rhi::VulkanCommandContext& commandContext,
+                               uint32_t frameCount,
+                               std::span<const Vertex> geometry,
+                               std::span<const SkinningVertex> skinning,
+                               std::span<const uint32_t> indices)
+{
+    indexCount_ = static_cast<uint32_t>(indices.size());
+
+    geometryBuffer_.createDeviceLocal(
+        context, commandContext, std::as_bytes(geometry), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+    skinningBuffer_.createDeviceLocal(
+        context, commandContext, std::as_bytes(skinning), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+    indexBuffer_.createDeviceLocal(
+        context, commandContext, std::as_bytes(indices), VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+
+    paletteBuffers_.clear();
+    paletteBuffers_.resize(frameCount);
+    for (uint32_t frameIndex = 0; frameIndex < frameCount; ++frameIndex) {
+        rhi::VulkanBufferCreateInfo bufferInfo{};
+        bufferInfo.size = static_cast<VkDeviceSize>(kMaxJoints) * sizeof(glm::mat4);
+        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+        bufferInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
+        bufferInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+        bufferInfo.requestDeviceAddress = true;
+        paletteBuffers_[frameIndex].createBuffer(context, bufferInfo);
+    }
 }
 
 void SkinnedMesh::create(rhi::VulkanContext& context,
@@ -110,19 +141,11 @@ void SkinnedMesh::create(rhi::VulkanContext& context,
         }
     }
 
-    indexCount_ = static_cast<uint32_t>(indices.size());
-
-    geometryBuffer_.createDeviceLocal(
-        context, commandContext, std::as_bytes(std::span<const Vertex>(vertices)), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-    skinningBuffer_.createDeviceLocal(context,
-                                      commandContext,
-                                      std::as_bytes(std::span<const SkinningVertex>(skinning)),
-                                      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-    indexBuffer_.createDeviceLocal(
-        context, commandContext, std::as_bytes(std::span<const uint32_t>(indices)), VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+    buildBuffers(context, commandContext, frameCount, vertices, skinning, indices);
 
     // Joint chain: joint i is offset +kSegmentHeight from its parent, so its bind
     // global position is (0, i*kSegmentHeight, 0); inverse-bind is the inverse.
+    skeleton_ = Skeleton{};
     skeleton_.parents.resize(kSegments);
     skeleton_.bindPose.resize(kSegments);
     skeleton_.inverseBind.resize(kSegments);
@@ -135,20 +158,60 @@ void SkinnedMesh::create(rhi::VulkanContext& context,
             glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -static_cast<float>(joint) * kSegmentHeight, 0.0f));
     }
 
-    // Stand the chain on the ground beside the showcase objects.
-    modelMatrix_ = glm::translate(glm::mat4(1.0f), glm::vec3(-2.6f, 0.0f, 0.0f));
+    hasClip_ = false;
+    clipDuration_ = 0.0f;
+    sourceName_ = "procedural bone chain";
+    modelMatrix_ = kDemoModelMatrix;
+}
 
-    paletteBuffers_.clear();
-    paletteBuffers_.resize(frameCount);
-    for (uint32_t frameIndex = 0; frameIndex < frameCount; ++frameIndex) {
-        rhi::VulkanBufferCreateInfo bufferInfo{};
-        bufferInfo.size = static_cast<VkDeviceSize>(kMaxJoints) * sizeof(glm::mat4);
-        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-        bufferInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
-        bufferInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-        bufferInfo.requestDeviceAddress = true;
-        paletteBuffers_[frameIndex].createBuffer(context, bufferInfo);
+bool SkinnedMesh::createFromGltf(rhi::VulkanContext& context,
+                                 const rhi::VulkanCommandContext& commandContext,
+                                 uint32_t frameCount,
+                                 const std::filesystem::path& path)
+{
+    const SkinnedGltf imported = loadSkinnedGltf(path);
+    if (!imported.valid) {
+        if (!imported.error.empty()) {
+            Logger::warn("Skinned glTF import failed; using procedural demo instead: " + imported.error);
+        }
+        return false;
     }
+
+    std::vector<Vertex> geometry(imported.vertices.size());
+    std::vector<SkinningVertex> skinning(imported.vertices.size());
+    for (size_t i = 0; i < imported.vertices.size(); ++i) {
+        const SkinnedImportVertex& source = imported.vertices[i];
+        Vertex vertex{};
+        vertex.position = source.position;
+        vertex.color = glm::vec3(0.8f);
+        vertex.uv = source.uv;
+        vertex.normal = source.normal;
+        vertex.tangent = source.tangent;
+        geometry[i] = vertex;
+
+        SkinningVertex skin{};
+        skin.jointIndices = source.joints;
+        skin.weights = source.weights;
+        skinning[i] = skin;
+    }
+
+    buildBuffers(context, commandContext, frameCount, geometry, skinning, imported.indices);
+
+    skeleton_ = imported.skeleton;
+    if (!imported.clips.empty()) {
+        clip_ = imported.clips.front();
+        clipDuration_ = clip_.duration;
+        hasClip_ = clipDuration_ > 0.0f;
+    } else {
+        hasClip_ = false;
+        clipDuration_ = 0.0f;
+    }
+    sourceName_ = path.filename().string();
+    modelMatrix_ = kDemoModelMatrix;
+
+    Logger::info("Loaded skinned glTF '" + sourceName_ + "': " + std::to_string(skeleton_.jointCount()) +
+                 " joints, " + std::to_string(imported.clips.size()) + " clip(s).");
+    return valid();
 }
 
 void SkinnedMesh::update(uint32_t frameIndex, float timeSeconds)
@@ -157,19 +220,25 @@ void SkinnedMesh::update(uint32_t frameIndex, float timeSeconds)
         return;
     }
 
-    // Procedural sine-wave bend: each joint rotates about Z, phase-shifted down
-    // the chain so it curls. Pose math goes through the unit-tested core.
-    constexpr float kAmplitude = 0.39f; // ~22 degrees
-    constexpr float kSpeed = 2.2f;
-    constexpr float kPhase = 0.7f;
+    std::vector<glm::mat4> jointMatrices;
+    if (hasClip_) {
+        const float clipTime = clipDuration_ > 0.0f ? std::fmod(timeSeconds, clipDuration_) : 0.0f;
+        jointMatrices = computeJointMatricesAtTime(skeleton_, clip_, clipTime);
+    } else {
+        // Procedural sine-wave bend: each joint rotates about Z, phase-shifted down
+        // the chain so it curls. Pose math goes through the unit-tested core.
+        constexpr float kAmplitude = 0.39f; // ~22 degrees
+        constexpr float kSpeed = 2.2f;
+        constexpr float kPhase = 0.7f;
 
-    std::vector<JointPose> poses = skeleton_.bindPose;
-    for (size_t joint = 0; joint < poses.size(); ++joint) {
-        const float angle = kAmplitude * std::sin(timeSeconds * kSpeed + static_cast<float>(joint) * kPhase);
-        poses[joint].rotation = glm::angleAxis(angle, glm::vec3(0.0f, 0.0f, 1.0f)) * poses[joint].rotation;
+        std::vector<JointPose> poses = skeleton_.bindPose;
+        for (size_t joint = 0; joint < poses.size(); ++joint) {
+            const float angle = kAmplitude * std::sin(timeSeconds * kSpeed + static_cast<float>(joint) * kPhase);
+            poses[joint].rotation = glm::angleAxis(angle, glm::vec3(0.0f, 0.0f, 1.0f)) * poses[joint].rotation;
+        }
+        jointMatrices = computeJointMatrices(skeleton_, poses);
     }
 
-    std::vector<glm::mat4> jointMatrices = computeJointMatrices(skeleton_, poses);
     if (jointMatrices.size() > kMaxJoints) {
         jointMatrices.resize(kMaxJoints);
     }

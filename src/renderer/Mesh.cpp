@@ -5,7 +5,8 @@
 #include "rhi/VulkanContext.h"
 #include "rhi/VulkanDebugUtils.h"
 
-#define TINYGLTF_IMPLEMENTATION
+// The tinygltf implementation lives in GltfSkinnedImport.cpp (VulkanEngineCore);
+// here we only need the declarations.
 #define TINYGLTF_NO_EXTERNAL_IMAGE
 #define TINYGLTF_NO_STB_IMAGE
 #define TINYGLTF_NO_STB_IMAGE_WRITE

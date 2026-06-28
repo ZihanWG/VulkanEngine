@@ -21,8 +21,13 @@ add_executable(VulkanEngineTests
     test_cluster_grid.cpp
     test_material_asset.cpp
     test_skeletal_animation.cpp
+    test_gltf_skinned_import.cpp
     test_job_system.cpp
     test_editor_camera.cpp
+)
+
+target_compile_definitions(VulkanEngineTests PRIVATE
+    "VULKAN_ENGINE_ASSET_DIR=\"${VULKAN_ENGINE_ASSET_DIR}\""
 )
 
 target_link_libraries(VulkanEngineTests PRIVATE
