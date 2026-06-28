@@ -180,6 +180,7 @@ add_library(VulkanEngineCore STATIC
     src/renderer/CascadeMath.cpp
     src/renderer/EditorCamera.cpp
     src/renderer/RuntimeSettings.cpp
+    src/renderer/SkeletalAnimation.cpp
 )
 
 target_include_directories(VulkanEngineCore PUBLIC src)
