@@ -129,6 +129,9 @@ static_assert(sizeof(ObjectFrameData) == 560);
 
 constexpr uint32_t kMaxFrameObjects = 1024;
 constexpr uint32_t kMaxDrawItems = 1024;
+// The skinned demo mesh borrows the last object-data slot so it can reuse the
+// per-frame ObjectFrameData buffer without colliding with the scene draw items.
+constexpr uint32_t kSkinnedObjectFrameSlot = kMaxDrawItems - 1;
 constexpr uint32_t kMaxMaterialDescriptorSets = 256;
 constexpr uint32_t kGpuCullLocalSize = 64;
 constexpr uint32_t kMaxMeshDrawBatches = kMaxDrawItems;
@@ -189,6 +192,9 @@ struct PushConstants {
     // Debug: when set, the main pass outputs a per-cluster light-count heatmap
     // instead of shaded color (requires the clustered path to be active).
     uint32_t debugClusterHeatmap = 0;
+    // Skinning: the skinned vertex shader reads the joint-matrix palette from
+    // this address via buffer_reference. Zero on all non-skinned draws.
+    VkDeviceAddress jointMatricesAddress = 0;
 };
 
 static_assert(offsetof(PushConstants, objectFrameDataAddress) == 0);
@@ -205,6 +211,7 @@ static_assert(offsetof(PushConstants, screenWidth) == 56);
 static_assert(offsetof(PushConstants, screenHeight) == 60);
 static_assert(offsetof(PushConstants, useClustered) == 64);
 static_assert(offsetof(PushConstants, debugClusterHeatmap) == 68);
+static_assert(offsetof(PushConstants, jointMatricesAddress) == 72);
 static_assert(sizeof(PushConstants) <= 128);
 
 // Mirrors src/shaders/cull.comp. Main and shadow GPU culling both use this

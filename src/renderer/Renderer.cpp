@@ -149,6 +149,7 @@ Renderer::Renderer(Window& window) : window_(window)
                               shaderPath("cluster_build.comp.spv"),
                               shaderPath("light_cull.comp.spv"));
     updateDemoLights(0.0f);
+    skinnedMesh_.create(context_, commandContext_, static_cast<uint32_t>(frames_.size()));
     createIndirectDrawBuffers();
     createShadowIndirectDrawBuffers();
     createGpuCullingResources();
@@ -1493,6 +1494,7 @@ void Renderer::createShadowMap()
 void Renderer::createPipeline()
 {
     createMainGraphicsPipeline();
+    createSkinnedPipeline();
     createSkyboxPipeline();
     createShadowPipeline();
     postProcess_.createBloomPipelines();
@@ -1534,6 +1536,45 @@ void Renderer::createMainGraphicsPipeline()
         context_.vkDevice(), pipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "MainPipelineLayout");
     pipelineColorFormat_ = pipelineInfo.colorFormat;
     pipelineDepthFormat_ = pipelineInfo.depthFormat;
+}
+
+void Renderer::createSkinnedPipeline()
+{
+    // The skinned demo reuses the bindless fragment shader, so it only exists when
+    // bindless material textures are active. It shares the main pipeline layout
+    // (descriptor sets + push constant range) so the bound sets stay compatible.
+    if (!isBindlessMaterialTextureActive()) {
+        return;
+    }
+
+    const std::array<VkVertexInputBindingDescription, 2> bindings = renderer::skinnedVertexBindingDescriptions();
+    const std::array<VkVertexInputAttributeDescription, 7> attributes = renderer::skinnedVertexAttributeDescriptions();
+    std::array<VkDescriptorSetLayout, 2> skinnedDescriptorSetLayouts{
+        materialDescriptorSetLayout_.handle(),
+        bindlessTextureHeap_.descriptorSetLayout(),
+    };
+    const VkPushConstantRange pushConstantRange{
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(PushConstants))};
+
+    rhi::VulkanPipelineCreateInfo pipelineInfo{};
+    pipelineInfo.vertexShaderPath = shaderPath("simple_skinned.vert.spv");
+    pipelineInfo.fragmentShaderPath = shaderPath("simple_bindless.frag.spv");
+    pipelineInfo.colorFormat = kSceneColorFormat;
+    pipelineInfo.depthFormat = swapchain_.depthFormat();
+    pipelineInfo.vertexBindings = std::span<const VkVertexInputBindingDescription>(bindings.data(), bindings.size());
+    pipelineInfo.vertexAttributes =
+        std::span<const VkVertexInputAttributeDescription>(attributes.data(), attributes.size());
+    pipelineInfo.descriptorSetLayouts =
+        std::span<const VkDescriptorSetLayout>(skinnedDescriptorSetLayouts.data(), skinnedDescriptorSetLayouts.size());
+    pipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&pushConstantRange, 1);
+    pipelineInfo.enableDepth = true;
+    pipelineInfo.cullMode = VK_CULL_MODE_NONE;
+
+    skinnedPipeline_.create(context_.vkDevice(), pipelineInfo);
+    rhi::debug::setObjectName(
+        context_.vkDevice(), skinnedPipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "SkinnedGraphicsPipeline");
+    rhi::debug::setObjectName(
+        context_.vkDevice(), skinnedPipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "SkinnedPipelineLayout");
 }
 
 void Renderer::createSkyboxPipeline()
@@ -4932,6 +4973,16 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     // culling the current view/inverse-projection and camera planes (view-space
     // work, so it runs regardless of scene contents).
     updateDemoLights(elapsedSeconds);
+    // Advance the skinned animation by a speed-scaled frame delta so play/pause
+    // holds the current pose and the speed slider changes playback continuously.
+    const float skinnedDelta = elapsedSeconds - previousElapsedSeconds_;
+    previousElapsedSeconds_ = elapsedSeconds;
+    if (animateSkinnedMesh_) {
+        skinnedAnimationTime_ += skinnedDelta * skinnedAnimationSpeed_;
+    }
+    if (skinnedMesh_.valid()) {
+        skinnedMesh_.update(frameIndex, skinnedAnimationTime_);
+    }
     clusteredLighting_.updateParams(frameIndex,
                                     view,
                                     glm::inverse(projection),
@@ -5239,6 +5290,38 @@ void Renderer::uploadObjectFrameData(uint32_t frameIndex)
 
     frameObjectDataBuffers_.at(frameIndex)
         .upload(std::as_bytes(std::span<const ObjectFrameData>(objectFrameData.data(), objectFrameData.size())));
+
+    // The skinned demo mesh isn't a RenderObject; give it its own ObjectFrameData
+    // in the reserved last slot (same lighting/camera state as the scene draws).
+    if (skinnedMesh_.valid()) {
+        const glm::mat4 model = skinnedMesh_.modelMatrix();
+        ObjectFrameData skinnedData{};
+        skinnedData.mvp = frameJitteredViewProjection_ * model;
+        skinnedData.model = model;
+        for (uint32_t cascade = 0; cascade < kMaxShadowCascades; ++cascade) {
+            skinnedData.lightMvp[cascade] = frameCascades_[cascade].lightViewProjection * model;
+        }
+        skinnedData.lightDirection = activeLightDirection;
+        skinnedData.lightColor = activeLightColor;
+        skinnedData.ambientColor = activeAmbientLightColor;
+        skinnedData.cascadeSplits = frameCascadeSplits_;
+        skinnedData.shadowSettings = {csmSettings_.depthBiasConstant,
+                                      csmSettings_.depthBiasSlope,
+                                      shadowSettings_.enablePcf ? 1.0f : 0.0f,
+                                      static_cast<float>(std::max(shadowSettings_.pcfRadius, 0))};
+        skinnedData.baseColorFactor = glm::vec4(0.85f, 0.45f, 0.32f, 1.0f);
+        skinnedData.materialParams = {0.1f, 0.55f, 1.0f, 0.0f};
+        skinnedData.cameraPosition = glm::vec4(camera_.position, csmSettings_.enableCascadeDebugColors ? 1.0f : 0.0f);
+        skinnedData.cameraForward =
+            glm::vec4(glm::normalize(camera_.target - camera_.position), static_cast<float>(cascadeCount));
+        skinnedData.textureIndices = {bindlessBaseColorFallbackIndex_,
+                                      bindlessNormalFallbackIndex_,
+                                      bindlessMetallicRoughnessFallbackIndex_,
+                                      0};
+        frameObjectDataBuffers_.at(frameIndex)
+            .upload(std::as_bytes(std::span<const ObjectFrameData>(&skinnedData, 1)),
+                    static_cast<VkDeviceSize>(kSkinnedObjectFrameSlot) * sizeof(ObjectFrameData));
+    }
 }
 
 void Renderer::recreateSwapchain()
@@ -6429,6 +6512,49 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     rhi::debug::endLabel(commandBuffer);
     if (renderObjectsProfileScope) {
         gpuProfiler_.endScope(currentFrame_, commandBuffer);
+    }
+
+    // Skinned demo mesh: GPU vertex skinning via the joint-matrix palette. Shares
+    // the main descriptor sets + push constant layout, adds the joint-palette
+    // address, and binds a second vertex stream for joint indices/weights.
+    if (showSkinnedMesh_ && skinnedMesh_.valid() && skinnedPipeline_.pipeline() != VK_NULL_HANDLE &&
+        bindlessMaterialTexturesActive && globalDescriptorSet != VK_NULL_HANDLE) {
+        const renderer::GpuProfileScope skinnedScope(gpuProfiler_, currentFrame_, commandBuffer, "SkinnedMesh");
+        rhi::debug::beginLabel(commandBuffer, "SkinnedMesh");
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, skinnedPipeline_.pipeline());
+
+        const std::array<VkDescriptorSet, 2> skinnedSets{globalDescriptorSet, bindlessTextureHeap_.descriptorSet()};
+        vkCmdBindDescriptorSets(commandBuffer,
+                                VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                skinnedPipeline_.layout(),
+                                0,
+                                static_cast<uint32_t>(skinnedSets.size()),
+                                skinnedSets.data(),
+                                0,
+                                nullptr);
+
+        PushConstants skinnedPush = basePushConstants;
+        skinnedPush.objectFrameDataAddress = objectFrameDataBaseAddress +
+                                             static_cast<VkDeviceAddress>(kSkinnedObjectFrameSlot) *
+                                                 sizeof(ObjectFrameData);
+        skinnedPush.jointMatricesAddress = skinnedMesh_.jointPaletteAddress(currentFrame_);
+        vkCmdPushConstants(commandBuffer,
+                           skinnedPipeline_.layout(),
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0,
+                           static_cast<uint32_t>(sizeof(PushConstants)),
+                           &skinnedPush);
+
+        const std::array<VkBuffer, 2> skinnedVertexBuffers{skinnedMesh_.geometryBuffer(), skinnedMesh_.skinningBuffer()};
+        const std::array<VkDeviceSize, 2> skinnedOffsets{0, 0};
+        vkCmdBindVertexBuffers(commandBuffer,
+                               0,
+                               static_cast<uint32_t>(skinnedVertexBuffers.size()),
+                               skinnedVertexBuffers.data(),
+                               skinnedOffsets.data());
+        vkCmdBindIndexBuffer(commandBuffer, skinnedMesh_.indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(commandBuffer, skinnedMesh_.indexCount(), 1, 0, 0, 0);
+        rhi::debug::endLabel(commandBuffer);
     }
 
     renderGraph_.endMainHdrPass();

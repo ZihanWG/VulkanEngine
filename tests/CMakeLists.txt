@@ -20,6 +20,7 @@ add_executable(VulkanEngineTests
     test_cascades.cpp
     test_cluster_grid.cpp
     test_material_asset.cpp
+    test_skeletal_animation.cpp
     test_job_system.cpp
     test_editor_camera.cpp
 )

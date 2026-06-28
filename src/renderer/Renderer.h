@@ -17,6 +17,7 @@
 #include "renderer/RenderObject.h"
 #include "renderer/RuntimeSettings.h"
 #include "renderer/ScreenshotCapture.h"
+#include "renderer/SkinnedMesh.h"
 #include "rhi/VulkanBuffer.h"
 #include "rhi/VulkanBrdfLut.h"
 #include "rhi/VulkanCommandContext.h"
@@ -244,6 +245,7 @@ private:
     // createPipeline() helpers (see Renderer.cpp); each builds one pipeline group,
     // a verbatim slice of the former monolithic function.
     void createMainGraphicsPipeline();
+    void createSkinnedPipeline();
     void createSkyboxPipeline();
     void createShadowPipeline();
     void createComputePipelines();
@@ -394,6 +396,7 @@ private:
     void drawSsaoDebugUi();
     void drawCsmSettingsDebugUi();
     void drawLightsDebugUi();
+    void drawSkeletalAnimationDebugUi();
     void drawGpuCullingDebugUi();
     void drawEnvironmentDebugUi();
     void drawScenePresetDebugUi();
@@ -480,6 +483,7 @@ private:
     rhi::VulkanShadowMap shadowMap_;
     rhi::VulkanImage depthPyramid_;
     rhi::VulkanPipeline pipeline_;
+    rhi::VulkanPipeline skinnedPipeline_;
     rhi::VulkanPipeline skyboxPipeline_;
     rhi::VulkanPipeline shadowPipeline_;
     rhi::VulkanComputePipeline gpuCullPipeline_;
@@ -503,6 +507,7 @@ private:
     std::vector<std::unique_ptr<rhi::VulkanTexture>> materialAssetTextures_;
     renderer::BindlessTextureHeap bindlessTextureHeap_;
     renderer::ClusteredLighting clusteredLighting_;
+    renderer::SkinnedMesh skinnedMesh_;
     rhi::VulkanDescriptorPool materialDescriptorPool_;
     rhi::VulkanDescriptorPool skyboxDescriptorPool_;
     rhi::VulkanDescriptorPool gpuCullDescriptorPool_;
@@ -639,6 +644,12 @@ private:
     // toggle also enables a brute-force-vs-clustered comparison.
     bool useClusteredLighting_ = true;
     bool showClusterHeatmap_ = false;
+    // Procedural skinned bone-chain demo: draw it, and animate (vs hold bind pose).
+    bool showSkinnedMesh_ = true;
+    bool animateSkinnedMesh_ = true;
+    float skinnedAnimationSpeed_ = 1.0f;
+    float skinnedAnimationTime_ = 0.0f;   // accumulated playback time (scaled by speed)
+    float previousElapsedSeconds_ = 0.0f; // for the per-frame delta
     // Demo-light controls (see updateDemoLights). The count slider drives the
     // clustered-path stress test; animation orbits the swarm each frame.
     int demoLightCount_ = 24;

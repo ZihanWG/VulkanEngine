@@ -19,6 +19,7 @@ A **C++20 / Vulkan 1.3 real-time renderer** built as a graphics- and engine-prog
 | --- | --- |
 | **GPU-driven** | Bindless material textures, multi-draw indirect batching, compute frustum culling + optional previous-frame Hi-Z occlusion |
 | **Clustered lighting** | 16×9×24 froxel grid built in compute, per-cluster light culling, hundreds of dynamic point/spot lights via Forward+ |
+| **Skeletal animation** | GPU linear-blend vertex skinning from a CPU joint-matrix palette, with a unit-tested animation core (keyframe sampling + hierarchy flatten) |
 | **PBR + IBL** | Cook-Torrance GGX, tangent-space normal mapping, prefiltered specular + diffuse irradiance + split-sum BRDF LUT, Kulla-Conty multi-scatter |
 | **Shadows** | PCF cascaded shadow maps with per-cascade GPU shadow-caster culling and an indirect shadow path |
 | **Post-processing** | HDR scene color, mip-chain bloom, histogram auto-exposure, ACES/Reinhard tonemap, optional TAA foundation |
@@ -78,6 +79,7 @@ Point and spot lights flow through one light buffer; the directional sun + IBL a
 - Render Graph 2.0 with logical texture/buffer handles, pass read/write declarations, conservative automatic image transitions, selected buffer barrier inference, transient render-target descriptions, basic pass liveness/culling metadata, and ImGui pass/resource visualization.
 - GPU frustum culling compute pass that compacts visible indirect draw commands, writes per-batch visible counts, and can optionally run conservative previous-frame Hi-Z occlusion tests. Occlusion culling is disabled by default.
 - Clustered (Forward+) lighting: a 16×9×24 froxel grid built in compute (`cluster_build.comp`), per-cluster GPU light culling (`light_cull.comp`), and per-froxel point/spot light evaluation in the main HDR pass, with a cluster light-count heatmap, a brute-force comparison toggle, and a GPU-free, unit-tested froxel-math header (`ClusterGrid.h`).
+- Skeletal animation: GPU linear-blend vertex skinning (`simple_skinned.vert`) from a per-frame joint-matrix palette, fed by a GPU-free, unit-tested animation core (`SkeletalAnimation.h`: keyframe sampling with slerp + hierarchy flatten). Ships a procedural bone-chain demo with playback controls; glTF rigged-character import is the next phase.
 - Multi-draw indirect batching by mesh-compatible ranges on the bindless main path and shadow path.
 - GPU timestamp profiler with per-pass timings, frame-latency readback, moving-average ImGui history, and debug labels for capture/profiling orientation.
 - Editable scene workflow for runtime object transforms, visibility, camera/light settings, and JSON scene save/load.
@@ -423,12 +425,13 @@ Galaxy overlay layer naming warnings may appear in Debug runs. They come from an
 
 One-line summary:
 
-C++20 Vulkan 1.3 real-time renderer featuring clustered (Forward+) lighting, PBR/IBL, cascaded shadows, HDR post-processing, mip-chain bloom, GPU exposure, Render Graph metadata, GPU timestamp profiling, GPU culling, optional Hi-Z occlusion, TAA foundation, editable scene tools, JSON material assets, and overlay-free portfolio capture.
+C++20 Vulkan 1.3 real-time renderer featuring clustered (Forward+) lighting, GPU skeletal animation, PBR/IBL, cascaded shadows, HDR post-processing, mip-chain bloom, GPU exposure, Render Graph metadata, GPU timestamp profiling, GPU culling, optional Hi-Z occlusion, TAA foundation, editable scene tools, JSON material assets, and overlay-free portfolio capture.
 
 Resume bullets:
 
 - Built a C++20 Vulkan 1.3 real-time renderer using Dynamic Rendering, Synchronization2, VMA, and Volk.
 - Implemented clustered (Forward+) lighting — a compute-built 16×9×24 froxel grid with GPU light culling — scaling to hundreds of dynamic point/spot lights, with a cluster heatmap debug view and unit-tested froxel math.
+- Implemented GPU skeletal animation: linear-blend vertex skinning from a per-frame joint-matrix palette, with a unit-tested, GPU-free animation core (keyframe sampling with slerp + skeleton hierarchy flatten).
 - Engineered a GPU-driven pipeline: bindless material textures, multi-draw indirect, GPU frustum culling, optional Hi-Z occlusion, and per-pass GPU timestamp profiling.
 - Implemented PBR/IBL shading, cascaded shadows, HDR post-processing, mip-chain bloom, GPU histogram auto-exposure, and a conservative TAA foundation, organized behind a render graph with conservative barrier inference.
 - Built editor-style tooling (ImGui scene/material editing, JSON scene save/load, overlay-free capture) and engineering hygiene: Catch2 unit tests, Linux + Windows CI, and ASan/UBSan runs.

@@ -19,6 +19,9 @@ overview; these documents describe implementation details and limitations.
   previous-frame Hi-Z occlusion, occlusion test scene, counters, and fallbacks.
 - [Clustered Lighting](clustered_lighting.md): Forward+ froxel grid, GPU light
   culling, per-froxel shading, buffer layout, barriers, heatmap, and testing.
+- [Skeletal Animation](skeletal_animation.md): GPU-free animation core (pose
+  sampling + hierarchy flatten), GPU linear-blend skinning, the procedural demo,
+  and the unit-tested bind-pose invariant.
 - [Post-Processing](post_processing.md): HDR scene color, mip-chain bloom, GPU
   exposure state, tone mapping, and active HDR source routing.
 - [Temporal AA Foundation](taa.md): Optional TAA pass, Halton jitter, HDR
