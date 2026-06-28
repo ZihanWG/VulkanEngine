@@ -2,13 +2,16 @@
 
 GPU vertex skinning driven by a CPU-side animation core. The skeleton pose math
 (keyframe sampling, hierarchy flatten) runs on the CPU and produces a joint-matrix
-palette; the GPU does linear-blend skinning per vertex. Phase 1 ships a procedural
-bone-chain demo so skinning is testable and demoable without an external asset;
-glTF rigged-character import is planned next and reuses the same core.
+palette; the GPU does linear-blend skinning per vertex. It supports both a
+procedural bone-chain demo (self-contained, no external asset) and glTF skin +
+animation import through the same core; the renderer prefers a rigged glTF if one is
+present (`assets/models/skinned_rig.gltf`) and falls back to the procedural chain.
 
 The animation math lives in `src/renderer/SkeletalAnimation.{h,cpp}` (GPU-free, in
-`VulkanEngineCore`), the GPU mesh + palette in `src/renderer/SkinnedMesh.{h,cpp}`,
-and the skinning vertex shader in `src/shaders/simple_skinned.vert`.
+`VulkanEngineCore`), the glTF import in `src/renderer/GltfSkinnedImport.{h,cpp}`
+(also GPU-free + unit-tested), the GPU mesh + palette in
+`src/renderer/SkinnedMesh.{h,cpp}`, and the skinning vertex shader in
+`src/shaders/simple_skinned.vert`.
 
 ## Animation Core
 
@@ -65,11 +68,13 @@ pausing holds the pose), and a reset-to-bind-pose button.
 
 ## Limitations and Future Work
 
-- The procedural demo uses rigid (single-bone) weighting; the shader supports up to
-  four weighted influences per vertex, which the glTF path will exercise.
-- glTF skin + animation import (`JOINTS_0`/`WEIGHTS_0`, inverse-bind matrices,
-  animation channels/samplers) is the next phase and feeds the same core; it needs a
-  rigged glTF asset.
+- The procedural demo uses rigid (single-bone) weighting; the glTF path exercises
+  smooth multi-influence weights (the shader blends up to four per vertex).
+- glTF import (`GltfSkinnedImport`) reads `JOINTS_0`/`WEIGHTS_0`, inverse-bind
+  matrices, and animation channels/samplers, feeding the same core. A generator
+  (`tools/gen_skinned_rig.py`) emits a minimal embedded test rig
+  (`assets/models/skinned_rig.gltf`) that the import is unit-tested against. The
+  import currently uses the first skinned mesh + first primitive of a file.
 - One skinned instance is drawn with its own object-data slot; a general scene would
   manage many skinned instances with per-instance palette offsets.
 - Linear-blend skinning shows the usual volume-loss artifacts at extreme bends; dual

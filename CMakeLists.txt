@@ -179,6 +179,7 @@ add_library(VulkanEngineCore STATIC
     src/core/Logger.cpp
     src/renderer/CascadeMath.cpp
     src/renderer/EditorCamera.cpp
+    src/renderer/GltfSkinnedImport.cpp
     src/renderer/RuntimeSettings.cpp
     src/renderer/SkeletalAnimation.cpp
 )

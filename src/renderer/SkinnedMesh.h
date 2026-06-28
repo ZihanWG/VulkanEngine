@@ -7,14 +7,18 @@
 // without an external asset; the GPU only consumes the palette, all pose math
 // comes from the unit-tested SkeletalAnimation core.
 
+#include "renderer/Mesh.h"
 #include "renderer/SkeletalAnimation.h"
 #include "rhi/VulkanBuffer.h"
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
+#include <span>
+#include <string>
 #include <vector>
 
 namespace ve::rhi {
@@ -40,11 +44,24 @@ class SkinnedMesh final {
 public:
     static constexpr uint32_t kMaxJoints = 64;
 
+    // Builds the procedural bone-chain demo.
     void create(rhi::VulkanContext& context, const rhi::VulkanCommandContext& commandContext, uint32_t frameCount);
 
-    // Recomputes the joint-matrix palette for the frame from the procedural
-    // animation and uploads it to paletteBuffers_[frameIndex].
+    // Loads a rigged + animated glTF (skin, skeleton, first animation clip) and
+    // builds GPU buffers from it. Returns false (leaving the mesh empty) if the
+    // file has no usable skinned mesh, so the caller can fall back to create().
+    [[nodiscard]] bool createFromGltf(rhi::VulkanContext& context,
+                                      const rhi::VulkanCommandContext& commandContext,
+                                      uint32_t frameCount,
+                                      const std::filesystem::path& path);
+
+    // Recomputes the joint-matrix palette for the frame and uploads it to
+    // paletteBuffers_[frameIndex]: samples the imported clip when one is loaded,
+    // otherwise the procedural bend.
     void update(uint32_t frameIndex, float timeSeconds);
+
+    [[nodiscard]] bool usesImportedClip() const { return hasClip_; }
+    [[nodiscard]] const std::string& sourceName() const { return sourceName_; }
 
     [[nodiscard]] bool valid() const { return indexCount_ > 0; }
     [[nodiscard]] VkBuffer geometryBuffer() const { return geometryBuffer_.buffer(); }
@@ -56,8 +73,19 @@ public:
     [[nodiscard]] const glm::mat4& modelMatrix() const { return modelMatrix_; }
 
 private:
+    void buildBuffers(rhi::VulkanContext& context,
+                      const rhi::VulkanCommandContext& commandContext,
+                      uint32_t frameCount,
+                      std::span<const Vertex> geometry,
+                      std::span<const SkinningVertex> skinning,
+                      std::span<const uint32_t> indices);
+
     glm::mat4 modelMatrix_{1.0f};
     Skeleton skeleton_;
+    AnimationClip clip_;
+    bool hasClip_ = false;
+    float clipDuration_ = 0.0f;
+    std::string sourceName_ = "procedural bone chain";
     rhi::VulkanBuffer geometryBuffer_;
     rhi::VulkanBuffer skinningBuffer_;
     rhi::VulkanBuffer indexBuffer_;

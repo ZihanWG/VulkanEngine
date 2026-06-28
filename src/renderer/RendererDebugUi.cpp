@@ -256,7 +256,10 @@ void Renderer::drawSkeletalAnimationDebugUi()
         return;
     }
 
-    ImGui::Text("Procedural bone chain: %u joints (GPU linear-blend skinning)", skinnedMesh_.jointCount());
+    ImGui::Text("Source: %s (%u joints, GPU linear-blend skinning)",
+                skinnedMesh_.sourceName().c_str(),
+                skinnedMesh_.jointCount());
+    ImGui::Text("Animation: %s", skinnedMesh_.usesImportedClip() ? "imported glTF clip" : "procedural bend");
     ImGui::Checkbox("Show skinned mesh", &showSkinnedMesh_);
     ImGui::SameLine();
     ImGui::Checkbox("Animate", &animateSkinnedMesh_);
@@ -265,7 +268,6 @@ void Renderer::drawSkeletalAnimationDebugUi()
         skinnedAnimationTime_ = 0.0f;
         animateSkinnedMesh_ = false;
     }
-    ImGui::TextDisabled("glTF rigged-character import is the next phase.");
 }
 
 void Renderer::drawGpuCullingDebugUi()

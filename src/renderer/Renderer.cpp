@@ -149,7 +149,14 @@ Renderer::Renderer(Window& window) : window_(window)
                               shaderPath("cluster_build.comp.spv"),
                               shaderPath("light_cull.comp.spv"));
     updateDemoLights(0.0f);
-    skinnedMesh_.create(context_, commandContext_, static_cast<uint32_t>(frames_.size()));
+    // Prefer a rigged glTF if one is present; otherwise fall back to the
+    // self-contained procedural bone chain.
+    if (!skinnedMesh_.createFromGltf(context_,
+                                     commandContext_,
+                                     static_cast<uint32_t>(frames_.size()),
+                                     assetPath("models/skinned_rig.gltf"))) {
+        skinnedMesh_.create(context_, commandContext_, static_cast<uint32_t>(frames_.size()));
+    }
     createIndirectDrawBuffers();
     createShadowIndirectDrawBuffers();
     createGpuCullingResources();
