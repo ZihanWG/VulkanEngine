@@ -74,9 +74,13 @@ void SkinnedMesh::create(rhi::VulkanContext& context,
                                             1, 5, 7, 1, 7, 3}; // +X
 
     for (uint32_t segment = 0; segment < kSegments; ++segment) {
-        const float base = static_cast<float>(segment) * kSegmentHeight;
-        const float top = base + kSegmentHeight;
-        const glm::vec3 center{0.0f, base + kSegmentHeight * 0.5f, 0.0f};
+        // Shrink each box inside its slot so adjacent segments do not share a cap
+        // plane (which would z-fight) and have room to not intersect when bent.
+        const float slotCenter = (static_cast<float>(segment) + 0.5f) * kSegmentHeight;
+        const float halfHeight = kSegmentHeight * 0.5f * 0.78f;
+        const float base = slotCenter - halfHeight;
+        const float top = slotCenter + halfHeight;
+        const glm::vec3 center{0.0f, slotCenter, 0.0f};
         const float gradient = static_cast<float>(segment) / static_cast<float>(kSegments - 1);
         const glm::vec3 color = glm::mix(glm::vec3(0.15f, 0.65f, 0.75f), glm::vec3(0.95f, 0.5f, 0.2f), gradient);
 
