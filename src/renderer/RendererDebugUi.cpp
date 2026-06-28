@@ -45,6 +45,7 @@ void Renderer::buildDebugUi()
         drawDebugViewToggles();
         drawCsmSettingsDebugUi();
         drawLightsDebugUi();
+        drawSkeletalAnimationDebugUi();
         drawGpuCullingDebugUi();
         drawEnvironmentDebugUi();
 
@@ -242,6 +243,29 @@ void Renderer::drawLightsDebugUi()
     ImGui::SliderFloat("Intensity", &demoLightIntensity_, 0.0f, 40.0f, "%.1f");
     ImGui::SliderFloat("Range", &demoLightRange_, 1.0f, 30.0f, "%.1f");
     ImGui::TextDisabled("Drive the count up to stress-test the clustered path.");
+}
+
+void Renderer::drawSkeletalAnimationDebugUi()
+{
+    if (!ImGui::CollapsingHeader("Skeletal Animation", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+
+    if (!skinnedMesh_.valid()) {
+        ImGui::TextDisabled("Skinned mesh unavailable.");
+        return;
+    }
+
+    ImGui::Text("Procedural bone chain: %u joints (GPU linear-blend skinning)", skinnedMesh_.jointCount());
+    ImGui::Checkbox("Show skinned mesh", &showSkinnedMesh_);
+    ImGui::SameLine();
+    ImGui::Checkbox("Animate", &animateSkinnedMesh_);
+    ImGui::SliderFloat("Playback speed", &skinnedAnimationSpeed_, 0.0f, 4.0f, "%.2fx");
+    if (ImGui::Button("Reset to bind pose")) {
+        skinnedAnimationTime_ = 0.0f;
+        animateSkinnedMesh_ = false;
+    }
+    ImGui::TextDisabled("glTF rigged-character import is the next phase.");
 }
 
 void Renderer::drawGpuCullingDebugUi()

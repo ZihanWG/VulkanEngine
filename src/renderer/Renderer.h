@@ -396,6 +396,7 @@ private:
     void drawSsaoDebugUi();
     void drawCsmSettingsDebugUi();
     void drawLightsDebugUi();
+    void drawSkeletalAnimationDebugUi();
     void drawGpuCullingDebugUi();
     void drawEnvironmentDebugUi();
     void drawScenePresetDebugUi();
@@ -646,6 +647,9 @@ private:
     // Procedural skinned bone-chain demo: draw it, and animate (vs hold bind pose).
     bool showSkinnedMesh_ = true;
     bool animateSkinnedMesh_ = true;
+    float skinnedAnimationSpeed_ = 1.0f;
+    float skinnedAnimationTime_ = 0.0f;   // accumulated playback time (scaled by speed)
+    float previousElapsedSeconds_ = 0.0f; // for the per-frame delta
     // Demo-light controls (see updateDemoLights). The count slider drives the
     // clustered-path stress test; animation orbits the swarm each frame.
     int demoLightCount_ = 24;

@@ -4973,8 +4973,15 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     // culling the current view/inverse-projection and camera planes (view-space
     // work, so it runs regardless of scene contents).
     updateDemoLights(elapsedSeconds);
+    // Advance the skinned animation by a speed-scaled frame delta so play/pause
+    // holds the current pose and the speed slider changes playback continuously.
+    const float skinnedDelta = elapsedSeconds - previousElapsedSeconds_;
+    previousElapsedSeconds_ = elapsedSeconds;
+    if (animateSkinnedMesh_) {
+        skinnedAnimationTime_ += skinnedDelta * skinnedAnimationSpeed_;
+    }
     if (skinnedMesh_.valid()) {
-        skinnedMesh_.update(frameIndex, animateSkinnedMesh_ ? elapsedSeconds : 0.0f);
+        skinnedMesh_.update(frameIndex, skinnedAnimationTime_);
     }
     clusteredLighting_.updateParams(frameIndex,
                                     view,
