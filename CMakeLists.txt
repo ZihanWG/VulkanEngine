@@ -207,6 +207,7 @@ add_executable(VulkanEngine
     src/renderer/BindlessTextureHeap.cpp
     src/renderer/ClusteredLighting.cpp
     src/renderer/GpuProfiler.cpp
+    src/renderer/SkinnedMesh.cpp
     src/renderer/Mesh.cpp
     src/renderer/PostProcessStack.cpp
     src/renderer/RenderGraph.cpp
@@ -288,6 +289,7 @@ cmake_path(CONVERT "${ASSET_SOURCE_DIR}" TO_CMAKE_PATH_LIST VULKAN_ENGINE_ASSET_
 cmake_path(CONVERT "${CONFIG_SOURCE_DIR}" TO_CMAKE_PATH_LIST VULKAN_ENGINE_CONFIG_DIR NORMALIZE)
 set(SHADER_SOURCES
     "${SHADER_SOURCE_DIR}/simple.vert"
+    "${SHADER_SOURCE_DIR}/simple_skinned.vert"
     "${SHADER_SOURCE_DIR}/simple.frag"
     "${SHADER_SOURCE_DIR}/simple_bindless.frag"
     "${SHADER_SOURCE_DIR}/skybox.vert"
