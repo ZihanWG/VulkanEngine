@@ -200,8 +200,12 @@ else()
     target_compile_options(VulkanEngineCore PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-add_executable(VulkanEngine
-    src/main.cpp
+# The renderer/rhi/core engine code is built as a static library so that both the
+# VulkanEngine executable and the unit-test target can link it. Linking is
+# symbol-driven, so a test that references only one subsystem (e.g. SceneBuilder)
+# pulls in just that object plus its transitive dependencies, not the whole engine.
+# main.cpp stays in the thin executable below.
+add_library(VulkanEngineRuntime STATIC
     src/core/Application.cpp
     src/core/PngWriter.cpp
     src/core/Window.cpp
@@ -236,6 +240,10 @@ add_executable(VulkanEngine
     src/rhi/VulkanTexture.cpp
 )
 
+add_executable(VulkanEngine
+    src/main.cpp
+)
+
 if(APPLE AND VULKAN_ENGINE_BUILD_MACOS_BUNDLE)
     set_target_properties(VulkanEngine PROPERTIES
         MACOSX_BUNDLE TRUE
@@ -248,10 +256,13 @@ if(APPLE AND VULKAN_ENGINE_BUILD_MACOS_BUNDLE)
     )
 endif()
 
-target_include_directories(VulkanEngine PRIVATE src)
-target_include_directories(VulkanEngine SYSTEM PRIVATE external)
+# PUBLIC so that everything linking VulkanEngineRuntime (the executable and the
+# tests) inherits the engine's include paths, dependency libraries, and the
+# Vulkan/VMA/GLM compile definitions needed to compile its headers consistently.
+target_include_directories(VulkanEngineRuntime PUBLIC src)
+target_include_directories(VulkanEngineRuntime SYSTEM PUBLIC external)
 
-target_link_libraries(VulkanEngine PRIVATE
+target_link_libraries(VulkanEngineRuntime PUBLIC
     VulkanEngineCore
     ${SDL3_TARGET}
     ${VOLK_TARGET}
@@ -261,24 +272,30 @@ target_link_libraries(VulkanEngine PRIVATE
 )
 
 if(TARGET Vulkan::Headers)
-    target_link_libraries(VulkanEngine PRIVATE Vulkan::Headers)
+    target_link_libraries(VulkanEngineRuntime PUBLIC Vulkan::Headers)
 else()
-    target_link_libraries(VulkanEngine PRIVATE Vulkan::Vulkan)
+    target_link_libraries(VulkanEngineRuntime PUBLIC Vulkan::Vulkan)
 endif()
 
-target_compile_definitions(VulkanEngine PRIVATE
+target_compile_definitions(VulkanEngineRuntime PUBLIC
     VK_NO_PROTOTYPES
     GLM_FORCE_RADIANS
     GLM_FORCE_DEPTH_ZERO_TO_ONE
     VMA_STATIC_VULKAN_FUNCTIONS=0
     VMA_DYNAMIC_VULKAN_FUNCTIONS=1
+)
+target_compile_definitions(VulkanEngineRuntime PRIVATE
     $<$<CONFIG:Debug>:VULKAN_ENGINE_ENABLE_VALIDATION=1>
     $<$<NOT:$<CONFIG:Debug>>:VULKAN_ENGINE_ENABLE_VALIDATION=0>
 )
 
+target_link_libraries(VulkanEngine PRIVATE VulkanEngineRuntime)
+
 if(MSVC)
+    target_compile_options(VulkanEngineRuntime PRIVATE /W4 /permissive- /EHsc /utf-8)
     target_compile_options(VulkanEngine PRIVATE /W4 /permissive- /EHsc /utf-8)
 else()
+    target_compile_options(VulkanEngineRuntime PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(VulkanEngine PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
@@ -313,7 +330,9 @@ set(SHADER_SOURCES
     "${SHADER_SOURCE_DIR}/composite.frag"
 )
 
-target_compile_definitions(VulkanEngine PRIVATE
+# Consumed by the renderer code (RendererInternal.h) that now lives in the runtime
+# library, so the defines belong on the library rather than the executable.
+target_compile_definitions(VulkanEngineRuntime PRIVATE
     "VULKAN_ENGINE_SHADER_DIR=\"${VULKAN_ENGINE_SHADER_DIR}\""
     "VULKAN_ENGINE_ASSET_DIR=\"${VULKAN_ENGINE_ASSET_DIR}\""
     "VULKAN_ENGINE_CONFIG_DIR=\"${VULKAN_ENGINE_CONFIG_DIR}\""

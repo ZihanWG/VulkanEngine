@@ -1,5 +1,10 @@
-# Unit tests for GPU-independent engine logic. Catch2 v3 is fetched on demand so
-# running these tests does not require a Vulkan SDK or a GPU.
+# Unit tests for GPU-independent engine logic. Catch2 v3 is fetched on demand.
+# The tests run headless and never initialize Vulkan or touch a GPU. Most cases
+# link only VulkanEngineCore; test_scene_builder additionally links
+# VulkanEngineRuntime because SceneBuilder operates on RenderObject (whose Mesh
+# member is an RAII Vulkan buffer), so the binary links -- but never calls into --
+# the Vulkan loader / VMA. Linking is symbol-driven, so only the objects
+# SceneBuilder actually references are pulled in.
 include(FetchContent)
 
 set(VULKAN_ENGINE_CATCH2_TAG "v3.7.1")
@@ -24,14 +29,17 @@ add_executable(VulkanEngineTests
     test_gltf_skinned_import.cpp
     test_job_system.cpp
     test_editor_camera.cpp
+    test_scene_builder.cpp
 )
 
 target_compile_definitions(VulkanEngineTests PRIVATE
     "VULKAN_ENGINE_ASSET_DIR=\"${VULKAN_ENGINE_ASSET_DIR}\""
 )
 
+# VulkanEngineRuntime PUBLIC-links VulkanEngineCore, so listing Core here too would
+# only produce a duplicate-library warning -- the runtime link brings it in.
 target_link_libraries(VulkanEngineTests PRIVATE
-    VulkanEngineCore
+    VulkanEngineRuntime
     Catch2::Catch2WithMain
 )
 
