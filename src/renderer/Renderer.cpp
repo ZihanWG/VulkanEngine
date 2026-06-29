@@ -1683,18 +1683,24 @@ uint32_t Renderer::allocateRenderObjectDebugId()
     return debugId;
 }
 
+renderer::SceneBuilder Renderer::makeSceneBuilder()
+{
+    return renderer::SceneBuilder(
+        cubeMesh_, portfolioSphereMesh_, materialVariants_, [this] { return allocateRenderObjectDebugId(); });
+}
+
 void Renderer::createScene()
 {
     resetSceneState();
     createSceneSharedResources();
 
     // The portfolio sphere showcase is the default editor scene. The glTF import
-    // (tryLoadGltfScene) and the cube fallback (createCubeFallbackScene) remain available
-    // through the scene-loading UI; they are just no longer the startup default.
-    addPortfolioShowcaseObjects();
+    // (tryLoadGltfScene) and the cube fallback remain available through the
+    // scene-loading UI; they are just no longer the startup default.
+    makeSceneBuilder().appendPortfolioShowcase(renderObjects_);
     if (renderObjects_.empty()) {
         Logger::warn("Portfolio showcase scene unavailable; using built-in cube fallback scene.");
-        createCubeFallbackScene();
+        makeSceneBuilder().appendCubeFallback(renderObjects_);
     }
 }
 
@@ -1799,7 +1805,7 @@ bool Renderer::tryLoadGltfScene()
                          std::to_string(importedMeshes_.size()) + " mesh slot(s), " +
                          std::to_string(renderObjects_.size()) + " render object(s), and " +
                          std::to_string(importedMaterials_.size()) + " material(s).");
-            addPortfolioShowcaseObjects();
+            makeSceneBuilder().appendPortfolioShowcase(renderObjects_);
             return true;
         } catch (const std::exception& error) {
             Logger::warn("Failed to load glTF mesh '" + modelPath.string() + "': " + error.what());
@@ -1809,229 +1815,11 @@ bool Renderer::tryLoadGltfScene()
     return false;
 }
 
-void Renderer::createCubeFallbackScene()
-{
-    const auto addCube = [this](std::string debugName,
-                                const renderer::Material* material,
-                                const glm::vec3& position,
-                                const glm::vec3& rotationRadians,
-                                const glm::vec3& scale,
-                                bool animateTransform = true,
-                                bool portfolioOnly = false,
-                                bool hideInPortfolio = false,
-                                renderer::RenderObjectSourceType sourceType =
-                                    renderer::RenderObjectSourceType::BuiltInFallbackCube) {
-        renderer::RenderObject cube{};
-        cube.debugId = allocateRenderObjectDebugId();
-        cube.sceneObjectId = cube.debugId;
-        cube.mesh = &cubeMesh_;
-        cube.material = material;
-        cube.debugName = std::move(debugName);
-        cube.sourceType = sourceType;
-        cube.transform.position = position;
-        cube.transform.rotationRadians = rotationRadians;
-        cube.transform.scale = scale;
-        cube.animateTransform = animateTransform;
-        cube.portfolioOnly = portfolioOnly;
-        cube.hideInPortfolio = hideInPortfolio;
-        renderObjects_.push_back(std::move(cube));
-    };
-
-    renderObjects_.reserve(4);
-    addCube("Center Cube",
-            &materialVariants_.at(0),
-            {0.0f, -0.1f, 0.0f},
-            {0.2f, 0.0f, 0.0f},
-            {0.7f, 0.7f, 0.7f},
-            true,
-            false,
-            true);
-    addCube(
-        "Left Cube",
-        &materialVariants_.at(1),
-        {-1.35f, -0.15f, -0.35f},
-        {0.0f, 0.35f, 0.2f},
-        {0.5f, 0.5f, 0.5f},
-        true,
-        false,
-        true);
-    addCube("Right Cube",
-            &materialVariants_.at(2),
-            {1.35f, -0.05f, -0.25f},
-            {0.25f, -0.35f, 0.0f},
-            {0.55f, 0.8f, 0.55f},
-            true,
-            false,
-            true);
-    addCube("Elevated Cube",
-            &materialVariants_.at(3),
-            {0.0f, 1.0f, -0.7f},
-            {-0.3f, 0.2f, 0.45f},
-            {0.45f, 0.45f, 0.45f},
-            true,
-            false,
-            true);
-}
-
-void Renderer::addPortfolioShowcaseObjects()
-{
-    if (hasPortfolioShowcaseScene()) {
-        return;
-    }
-    if (materialVariants_.size() <= kPortfolioBackdropMaterialIndex) {
-        Logger::warn("Portfolio showcase scene was not added because portfolio materials are unavailable.");
-        return;
-    }
-
-    const auto addPortfolioCube = [this](std::string debugName,
-                                         const renderer::Material* material,
-                                         const glm::vec3& position,
-                                         const glm::vec3& rotationRadians,
-                                         const glm::vec3& scale) {
-        renderer::RenderObject cube{};
-        cube.debugId = allocateRenderObjectDebugId();
-        cube.sceneObjectId = cube.debugId;
-        cube.mesh = &cubeMesh_;
-        cube.material = material;
-        cube.debugName = std::move(debugName);
-        cube.sourceType = renderer::RenderObjectSourceType::PortfolioShowcase;
-        cube.transform.position = position;
-        cube.transform.rotationRadians = rotationRadians;
-        cube.transform.scale = scale;
-        cube.animateTransform = false;
-        // Visible in both the editor and F11 portfolio capture (the showcase is the
-        // default scene now); portfolio detection keys off sourceType, not this flag.
-        cube.portfolioOnly = false;
-        renderObjects_.push_back(std::move(cube));
-    };
-
-    const auto addPortfolioSphere = [this](std::string debugName,
-                                           const renderer::Material* material,
-                                           const glm::vec3& position,
-                                           const glm::vec3& scale) {
-        renderer::RenderObject sphere{};
-        sphere.debugId = allocateRenderObjectDebugId();
-        sphere.sceneObjectId = sphere.debugId;
-        sphere.mesh = &portfolioSphereMesh_;
-        sphere.material = material;
-        sphere.debugName = std::move(debugName);
-        sphere.sourceType = renderer::RenderObjectSourceType::PortfolioShowcase;
-        sphere.transform.position = position;
-        sphere.transform.scale = scale;
-        sphere.animateTransform = false;
-        sphere.portfolioOnly = false;
-        renderObjects_.push_back(std::move(sphere));
-    };
-
-    renderObjects_.reserve(renderObjects_.size() + 8);
-    addPortfolioCube("Portfolio Studio Floor",
-                     &materialVariants_.at(kPortfolioGroundMaterialIndex),
-                     {0.0f, -0.56f, 0.24f},
-                     {0.0f, 0.0f, 0.0f},
-                     {11.0f, 0.08f, 6.4f});
-    addPortfolioCube("Portfolio Studio Backdrop",
-                     &materialVariants_.at(kPortfolioBackdropMaterialIndex),
-                     {0.0f, 2.08f, -2.82f},
-                     {0.0f, 0.0f, 0.0f},
-                     {60.0f, 9.0f, 0.08f});
-    addPortfolioCube("Portfolio Side Plinth",
-                     &materialVariants_.at(kPortfolioGroundMaterialIndex),
-                     {1.02f, -0.42f, -0.18f},
-                     {0.0f, -0.16f, 0.0f},
-                     {0.96f, 0.28f, 0.70f});
-    addPortfolioSphere("Portfolio Hero Ceramic",
-                       &materialVariants_.at(kPortfolioHeroCeramicMaterialIndex),
-                       {0.0f, -0.11f, 0.08f},
-                       {0.82f, 0.82f, 0.82f});
-    addPortfolioSphere("Portfolio Matte Gray",
-                       &materialVariants_.at(kPortfolioMatteGrayMaterialIndex),
-                       {-0.92f, -0.24f, 0.06f},
-                       {0.56f, 0.56f, 0.56f});
-    addPortfolioSphere("Portfolio Glossy Blue",
-                       &materialVariants_.at(kPortfolioGlossyBlueMaterialIndex),
-                       {-0.62f, -0.33f, 0.66f},
-                       {0.38f, 0.38f, 0.38f});
-    addPortfolioSphere("Portfolio Rough Metal",
-                       &materialVariants_.at(kPortfolioRoughMetalMaterialIndex),
-                       {0.96f, -0.29f, 0.42f},
-                       {0.46f, 0.46f, 0.46f});
-    addPortfolioSphere("Portfolio Polished Metal Small",
-                       &materialVariants_.at(kPortfolioPolishedMetalSmallMaterialIndex),
-                       {1.04f, -0.09f, -0.18f},
-                       {0.38f, 0.38f, 0.38f});
-}
-
 void Renderer::resetPortfolioShowcaseObjectsToPreset()
 {
-    const auto resetObject = [this](std::string_view debugName,
-                                    const glm::vec3& position,
-                                    const glm::vec3& rotationRadians,
-                                    const glm::vec3& scale) {
-        for (renderer::RenderObject& object : renderObjects_) {
-            if (object.sourceType != renderer::RenderObjectSourceType::PortfolioShowcase ||
-                object.debugName != debugName) {
-                continue;
-            }
-
-            object.transform.position = position;
-            object.transform.rotationRadians = rotationRadians;
-            object.transform.scale = scale;
-            object.transform.matrixOverride = glm::mat4{1.0f};
-            object.transform.useMatrixOverride = false;
-            object.visible = true;
-            object.animateTransform = false;
-            object.portfolioOnly = false;
-            object.hideInPortfolio = false;
-            return;
-        }
-    };
-
-    resetObject("Portfolio Studio Floor", {0.0f, -0.56f, 0.24f}, {0.0f, 0.0f, 0.0f}, {11.0f, 0.08f, 6.4f});
-    resetObject("Portfolio Studio Backdrop", {0.0f, 2.08f, -2.82f}, {0.0f, 0.0f, 0.0f}, {60.0f, 9.0f, 0.08f});
-    resetObject("Portfolio Side Plinth", {1.02f, -0.42f, -0.18f}, {0.0f, -0.16f, 0.0f}, {0.96f, 0.28f, 0.70f});
-    resetObject("Portfolio Hero Ceramic", {0.0f, -0.11f, 0.08f}, {0.0f, 0.0f, 0.0f}, {0.82f, 0.82f, 0.82f});
-    resetObject("Portfolio Matte Gray", {-0.92f, -0.24f, 0.06f}, {0.0f, 0.0f, 0.0f}, {0.56f, 0.56f, 0.56f});
-    resetObject("Portfolio Glossy Blue", {-0.62f, -0.33f, 0.66f}, {0.0f, 0.0f, 0.0f}, {0.38f, 0.38f, 0.38f});
-    resetObject("Portfolio Rough Metal", {0.96f, -0.29f, 0.42f}, {0.0f, 0.0f, 0.0f}, {0.46f, 0.46f, 0.46f});
-    resetObject("Portfolio Polished Metal Small", {1.04f, -0.09f, -0.18f}, {0.0f, 0.0f, 0.0f}, {0.38f, 0.38f, 0.38f});
+    renderer::SceneBuilder::resetPortfolioShowcaseToPreset(renderObjects_);
     invalidateDepthPyramid();
     invalidateTaaHistory();
-}
-
-bool Renderer::hasPortfolioShowcaseScene() const
-{
-    bool hasFloor = false;
-    bool hasBackdrop = false;
-    bool hasHero = false;
-    size_t materialSampleCount = 0;
-
-    for (const renderer::RenderObject& object : renderObjects_) {
-        if (object.sourceType != renderer::RenderObjectSourceType::PortfolioShowcase || !object.mesh ||
-            !object.mesh->valid() || !object.material) {
-            continue;
-        }
-
-        if (object.debugName == "Portfolio Studio Floor") {
-            hasFloor = true;
-            continue;
-        }
-        if (object.debugName == "Portfolio Studio Backdrop") {
-            hasBackdrop = true;
-            continue;
-        }
-        if (object.material->debugName == "Portfolio_HeroCeramic") {
-            hasHero = true;
-            continue;
-        }
-        if (object.material->debugName == "Portfolio_MatteGray" ||
-            object.material->debugName == "Portfolio_GlossyBlue" ||
-            object.material->debugName == "Portfolio_RoughMetal" ||
-            object.material->debugName == "Portfolio_PolishedMetalSmall") {
-            ++materialSampleCount;
-        }
-    }
-
-    return hasFloor && hasBackdrop && hasHero && materialSampleCount >= 4;
 }
 
 bool Renderer::currentFrameHasPortfolioShowcaseDrawItems() const
@@ -2052,12 +1840,12 @@ bool Renderer::currentFrameHasPortfolioShowcaseDrawItems() const
 
 bool Renderer::ensurePortfolioShowcaseSceneReady()
 {
-    if (hasPortfolioShowcaseScene()) {
+    if (renderer::SceneBuilder::hasPortfolioShowcase(renderObjects_)) {
         return true;
     }
 
     if (!cubeMesh_.valid() || !portfolioSphereMesh_.valid() ||
-        materialVariants_.size() <= kPortfolioBackdropMaterialIndex) {
+        materialVariants_.size() <= renderer::kPortfolioBackdropMaterialIndex) {
         screenshotCapture_.setStatus(
             "Portfolio showcase scene is unavailable: required meshes or materials are not initialized.");
         Logger::warn(screenshotCapture_.status());
@@ -2065,95 +1853,14 @@ bool Renderer::ensurePortfolioShowcaseSceneReady()
     }
 
     Logger::warn("Portfolio showcase scene was missing; rebuilding portfolio-only showcase objects.");
-    addPortfolioShowcaseObjects();
-    if (hasPortfolioShowcaseScene()) {
+    makeSceneBuilder().appendPortfolioShowcase(renderObjects_);
+    if (renderer::SceneBuilder::hasPortfolioShowcase(renderObjects_)) {
         return true;
     }
 
     screenshotCapture_.setStatus("Portfolio showcase scene is unavailable after rebuild.");
     Logger::warn(screenshotCapture_.status());
     return false;
-}
-
-void Renderer::addOcclusionTestSceneObjects()
-{
-    if (!cubeMesh_.valid() || materialVariants_.empty()) {
-        occlusionTestSceneStatus_ =
-            "Occlusion test scene is unavailable: cube mesh or runtime materials are not initialized.";
-        Logger::warn(occlusionTestSceneStatus_);
-        return;
-    }
-
-    const auto materialAt = [this](size_t materialIndex) -> const renderer::Material* {
-        return &materialVariants_.at(materialIndex % materialVariants_.size());
-    };
-
-    const auto addCube = [this](std::string debugName,
-                                const renderer::Material* material,
-                                const glm::vec3& position,
-                                const glm::vec3& rotationRadians,
-                                const glm::vec3& scale) {
-        renderer::RenderObject cube{};
-        cube.debugId = allocateRenderObjectDebugId();
-        cube.sceneObjectId = cube.debugId;
-        cube.mesh = &cubeMesh_;
-        cube.material = material;
-        cube.debugName = std::move(debugName);
-        cube.sourceType = renderer::RenderObjectSourceType::OcclusionTest;
-        cube.transform.position = position;
-        cube.transform.rotationRadians = rotationRadians;
-        cube.transform.scale = scale;
-        cube.animateTransform = false;
-        cube.portfolioOnly = false;
-        cube.hideInPortfolio = true;
-        renderObjects_.push_back(std::move(cube));
-    };
-
-    renderObjects_.reserve(renderObjects_.size() + static_cast<size_t>(kOcclusionTestObjectCount));
-
-    const size_t groundMaterial = materialVariants_.size() > kPortfolioGroundMaterialIndex
-                                      ? kPortfolioGroundMaterialIndex
-                                      : 0;
-    addCube("Occlusion Test Ground",
-            materialAt(groundMaterial),
-            {0.0f, -0.10f, -4.0f},
-            {0.0f, 0.0f, 0.0f},
-            {13.0f, 0.12f, 22.0f});
-
-    const std::array<float, kOcclusionTestOccluderCount> occluderX = {-2.6f, -1.3f, 0.0f, 1.3f, 2.6f};
-    for (size_t occluderIndex = 0; occluderIndex < occluderX.size(); ++occluderIndex) {
-        std::ostringstream name;
-        name << "Occlusion Test Wall " << (occluderIndex + 1);
-        const float zOffset = (occluderIndex % 2 == 0) ? 0.15f : -0.08f;
-        addCube(name.str(),
-                materialAt(occluderIndex),
-                {occluderX[occluderIndex], 1.35f, 0.35f + zOffset},
-                {0.0f, 0.0f, 0.0f},
-                {0.98f, 3.10f, 0.55f});
-    }
-
-    for (int row = 0; row < kOcclusionTestGridRows; ++row) {
-        for (int column = 0; column < kOcclusionTestGridColumns; ++column) {
-            const float x = -5.5f + static_cast<float>(column) * 1.0f;
-            const float z = -2.4f - static_cast<float>(row) * 1.05f;
-            const bool topWitnessRow = row == kOcclusionTestGridRows - 1;
-            const bool sideWitnessColumn = column == 0 || column == kOcclusionTestGridColumns - 1;
-            const float y = topWitnessRow ? 3.05f : 0.22f + 0.34f * static_cast<float>((row + column) % 3);
-            const float uniformScale = sideWitnessColumn ? 0.40f : 0.32f + 0.035f * static_cast<float>((row + column) % 4);
-
-            std::ostringstream name;
-            name << "Occlusion Test Hidden Cube r" << row << " c" << column;
-            if (topWitnessRow || sideWitnessColumn) {
-                name << " visible-edge";
-            }
-
-            addCube(name.str(),
-                    materialAt(static_cast<size_t>((row + column) % 4)),
-                    {x, y, z},
-                    {0.0f, 0.15f * static_cast<float>((row + column) % 5), 0.0f},
-                    {uniformScale, uniformScale, uniformScale});
-        }
-    }
 }
 
 void Renderer::resetOcclusionTestSceneToPreset()
@@ -2170,36 +1877,9 @@ void Renderer::resetOcclusionTestSceneToPreset()
         renderObjects_.erase(firstRemoved, renderObjects_.end());
     }
 
-    addOcclusionTestSceneObjects();
+    makeSceneBuilder().appendOcclusionTest(renderObjects_, occlusionTestSceneStatus_);
     invalidateDepthPyramid();
     invalidateTaaHistory();
-}
-
-bool Renderer::hasOcclusionTestScene() const
-{
-    size_t occlusionObjectCount = 0;
-    bool hasGround = false;
-    bool hasWall = false;
-    bool hasHiddenObject = false;
-
-    for (const renderer::RenderObject& object : renderObjects_) {
-        if (object.sourceType != renderer::RenderObjectSourceType::OcclusionTest || !object.mesh ||
-            !object.mesh->valid() || !object.material) {
-            continue;
-        }
-
-        ++occlusionObjectCount;
-        if (object.debugName == "Occlusion Test Ground") {
-            hasGround = true;
-        } else if (object.debugName.find("Occlusion Test Wall") == 0) {
-            hasWall = true;
-        } else if (object.debugName.find("Occlusion Test Hidden Cube") == 0) {
-            hasHiddenObject = true;
-        }
-    }
-
-    return hasGround && hasWall && hasHiddenObject &&
-           occlusionObjectCount >= static_cast<size_t>(kOcclusionTestObjectCount);
 }
 
 void Renderer::createCheckerboardTexture()
@@ -3017,8 +2697,8 @@ void Renderer::createPortfolioMaterialVariants()
     // Give the hero ceramic a soft warm emissive so factor-only emissive is
     // visible in the default scene and reads through bloom. Editable per material
     // from the Material Inspector.
-    if (kPortfolioHeroCeramicMaterialIndex < materialVariants_.size()) {
-        materialVariants_[kPortfolioHeroCeramicMaterialIndex].emissiveFactor = glm::vec3(0.9f, 0.45f, 0.15f);
+    if (renderer::kPortfolioHeroCeramicMaterialIndex < materialVariants_.size()) {
+        materialVariants_[renderer::kPortfolioHeroCeramicMaterialIndex].emissiveFactor = glm::vec3(0.9f, 0.45f, 0.15f);
     }
 }
 
@@ -4635,7 +4315,7 @@ void Renderer::loadOcclusionTestScene()
     }
 
     resetOcclusionTestSceneToPreset();
-    if (!hasOcclusionTestScene()) {
+    if (!renderer::SceneBuilder::hasOcclusionTest(renderObjects_)) {
         occlusionTestSceneActive_ = false;
         return;
     }
@@ -4647,7 +4327,7 @@ void Renderer::loadOcclusionTestScene()
     debugUiSettings_.showGpuTimingGraphs = true;
     debugUiSettings_.showRenderGraphPanel = true;
     occlusionTestSceneStatus_ = "Occlusion test scene active: " +
-                                std::to_string(kOcclusionTestObjectCount) +
+                                std::to_string(renderer::kOcclusionTestObjectCount) +
                                 " procedural cube objects, including 5 occluder walls and 120 hidden/edge cubes.";
     Logger::info(occlusionTestSceneStatus_);
 }

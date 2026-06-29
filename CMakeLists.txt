@@ -214,6 +214,7 @@ add_executable(VulkanEngine
     src/renderer/RenderGraph.cpp
     src/renderer/Renderer.cpp
     src/renderer/RendererDebugUi.cpp
+    src/renderer/SceneBuilder.cpp
     src/renderer/ScreenshotCapture.cpp
     src/ui/ImGuiLayer.cpp
     src/rhi/VulkanBuffer.cpp

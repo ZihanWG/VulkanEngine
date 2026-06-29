@@ -16,6 +16,7 @@
 #include "renderer/RenderGraph.h"
 #include "renderer/RenderObject.h"
 #include "renderer/RuntimeSettings.h"
+#include "renderer/SceneBuilder.h"
 #include "renderer/ScreenshotCapture.h"
 #include "renderer/SkinnedMesh.h"
 #include "rhi/VulkanBuffer.h"
@@ -252,18 +253,17 @@ private:
     void createScene();
     // createScene() helpers (see Renderer.cpp): reset scene state, build the shared
     // meshes/textures/material, try the glTF scene, else the built-in cube fallback.
+    // The CPU-side scene-object layout itself lives in renderer::SceneBuilder.
     void resetSceneState();
     void createSceneSharedResources();
     [[nodiscard]] bool tryLoadGltfScene();
-    void createCubeFallbackScene();
-    void addPortfolioShowcaseObjects();
+    // Constructs a SceneBuilder borrowing the renderer's shared meshes, material
+    // array, and debug-id allocator. Cheap; call per scene-build operation.
+    [[nodiscard]] renderer::SceneBuilder makeSceneBuilder();
     void resetPortfolioShowcaseObjectsToPreset();
-    [[nodiscard]] bool hasPortfolioShowcaseScene() const;
     [[nodiscard]] bool currentFrameHasPortfolioShowcaseDrawItems() const;
     [[nodiscard]] bool ensurePortfolioShowcaseSceneReady();
-    void addOcclusionTestSceneObjects();
     void resetOcclusionTestSceneToPreset();
-    [[nodiscard]] bool hasOcclusionTestScene() const;
     [[nodiscard]] uint32_t allocateRenderObjectDebugId();
     void createCheckerboardTexture();
     void createPortfolioBaseColorTexture();
