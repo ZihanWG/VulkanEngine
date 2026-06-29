@@ -8,8 +8,12 @@ overview; these documents describe implementation details and limitations.
   Sync2, testing) — written as interview-ready talking points.
 - [Build Guide](build.md): Required tools, Vulkan SDK setup, CMake
   presets, shader compilation, CI behavior, and common build failures.
+- [macOS / MoltenVK Build](build_macos.md): LunarG SDK + MoltenVK setup, the
+  app-bundle target, and the double-clickable launcher.
 - [Engine Upgrade Audit](engine_upgrade_audit.md): Current repository shape,
   implemented renderer scope, frame flow, and accurate Phase 7 limitations.
+- [Frame Flow And Descriptor Contract](frame_flow.md): The full per-frame pass
+  ordering and the descriptor-set layout contract.
 - [GPU Profiling](profiling.md): Timestamp query profiler design, frame-latency
   readback model, profiled ranges, and known timing limitations.
 - [Render Graph 2.0](render_graph.md): Logical resource handles, pass
@@ -30,6 +34,10 @@ overview; these documents describe implementation details and limitations.
   scene save/load, missing saved-scene behavior, and serialization scope.
 - [Asset Manager And Material Assets](asset_system.md): Material JSON schema,
   path-based handles, runtime mapping, scene metadata, and non-goals.
+- [Portfolio Capture](portfolio_capture.md): Portfolio capture mode, the studio
+  setup, and overlay-free F12 screenshot export.
+- [Milestone History](milestones.md): Incremental build history and design
+  decisions behind the current renderer (moved out of the root README).
 
 ## Portfolio Summary Text
 

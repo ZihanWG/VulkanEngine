@@ -298,6 +298,7 @@ private:
         const rhi::VulkanTexture& fallbackTexture,
         bool& fallbackUsed);
     [[nodiscard]] assets::MaterialAsset runtimeMaterialToAsset(const renderer::Material& material) const;
+    [[nodiscard]] std::filesystem::path makeNewMaterialAssetPath(const renderer::Material& material) const;
     bool saveMaterialAssetFromUi(renderer::Material& material);
     bool reloadMaterialAssetFromUi(renderer::Material& material);
     void createImportedGltfTextures(const std::vector<renderer::GltfTextureInfo>& textureInfos,

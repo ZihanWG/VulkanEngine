@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -2731,12 +2732,57 @@ assets::MaterialAsset Renderer::runtimeMaterialToAsset(const renderer::Material&
     return materialAsset;
 }
 
+namespace {
+
+// Turns a free-form material name into a filesystem-safe slug for a new asset
+// file (lowercase, alphanumerics preserved, runs of other characters collapsed
+// to single underscores).
+std::string slugifyMaterialName(std::string_view name)
+{
+    std::string slug;
+    slug.reserve(name.size());
+    bool pendingSeparator = false;
+    for (const char ch : name) {
+        const unsigned char uch = static_cast<unsigned char>(ch);
+        if (std::isalnum(uch)) {
+            if (pendingSeparator && !slug.empty()) {
+                slug.push_back('_');
+            }
+            pendingSeparator = false;
+            slug.push_back(static_cast<char>(std::tolower(uch)));
+        } else {
+            pendingSeparator = true;
+        }
+    }
+    if (slug.empty()) {
+        slug = "material";
+    }
+    return slug;
+}
+
+} // namespace
+
+std::filesystem::path Renderer::makeNewMaterialAssetPath(const renderer::Material& material) const
+{
+    std::string_view name = !material.assetName.empty() ? std::string_view(material.assetName)
+                                                        : std::string_view(material.debugName);
+    const std::string slug = slugifyMaterialName(name);
+
+    // Avoid clobbering an existing file on disk by appending a numeric suffix.
+    std::filesystem::path candidate = materialAssetPath(slug + ".material.json");
+    for (int index = 2; std::filesystem::exists(candidate); ++index) {
+        candidate = materialAssetPath(slug + "_" + std::to_string(index) + ".material.json");
+    }
+    return candidate;
+}
+
 bool Renderer::saveMaterialAssetFromUi(renderer::Material& material)
 {
     if (material.sourceAssetPath.empty()) {
-        lastMaterialAssetStatus_ = "Save Material skipped: selected material has no source asset path. Save As is TODO.";
-        Logger::warn(lastMaterialAssetStatus_);
-        return false;
+        // "Save As": this material was created/edited in the UI without a backing
+        // file (e.g. a glTF or procedural material). Synthesize a new asset path
+        // under assets/materials/ so it can be persisted and reloaded later.
+        material.sourceAssetPath = makeNewMaterialAssetPath(material);
     }
 
     std::string errorMessage;
