@@ -8,6 +8,7 @@
 #include "renderer/Camera.h"
 #include "renderer/CascadeMath.h"
 #include "renderer/ClusteredLighting.h"
+#include "renderer/DepthPyramid.h"
 #include "renderer/FrameResources.h"
 #include "renderer/GpuProfiler.h"
 #include "renderer/Material.h"
@@ -480,15 +481,12 @@ private:
     rhi::VulkanDescriptorSetLayout materialDescriptorSetLayout_;
     rhi::VulkanDescriptorSetLayout skyboxDescriptorSetLayout_;
     rhi::VulkanDescriptorSetLayout gpuCullDescriptorSetLayout_;
-    rhi::VulkanDescriptorSetLayout depthPyramidDescriptorSetLayout_;
     rhi::VulkanShadowMap shadowMap_;
-    rhi::VulkanImage depthPyramid_;
     rhi::VulkanPipeline pipeline_;
     rhi::VulkanPipeline skinnedPipeline_;
     rhi::VulkanPipeline skyboxPipeline_;
     rhi::VulkanPipeline shadowPipeline_;
     rhi::VulkanComputePipeline gpuCullPipeline_;
-    rhi::VulkanComputePipeline depthPyramidPipeline_;
     rhi::VulkanCommandContext commandContext_;
     rhi::VulkanSync sync_;
     rhi::VulkanTexture checkerboardTexture_;
@@ -513,13 +511,9 @@ private:
     rhi::VulkanDescriptorPool skyboxDescriptorPool_;
     rhi::VulkanDescriptorPool gpuCullDescriptorPool_;
     rhi::VulkanDescriptorPool shadowCullDescriptorPool_;
-    rhi::VulkanDescriptorPool depthPyramidDescriptorPool_;
-    VkSampler depthPyramidSampler_ = VK_NULL_HANDLE;
     VkDescriptorSet skyboxDescriptorSet_ = VK_NULL_HANDLE;
     std::vector<VkDescriptorSet> gpuCullDescriptorSets_;
     std::vector<VkDescriptorSet> shadowCullDescriptorSets_;
-    std::vector<VkDescriptorSet> depthPyramidDescriptorSets_;
-    std::vector<VkImageView> depthPyramidMipImageViews_;
     renderer::Camera camera_;
     EditorCamera editorCamera_{};
     DirectionalLightSettings directionalLightSettings_{};
@@ -565,9 +559,6 @@ private:
     VkFormat skyboxPipelineColorFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat skyboxPipelineDepthFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat shadowPipelineDepthFormat_ = VK_FORMAT_UNDEFINED;
-    VkImageLayout depthPyramidLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
-    uint32_t depthPyramidMipLevels_ = 0;
-    uint32_t selectedDepthPyramidDebugMip_ = 0;
     uint32_t selectedBloomMipDebugLevel_ = 0;
     uint32_t currentFrame_ = 0;
     uint32_t bindlessBaseColorFallbackIndex_ = 0;
@@ -582,9 +573,7 @@ private:
     glm::mat4 frameJitteredProjection_{1.0f};
     glm::mat4 frameJitteredViewProjection_{1.0f};
     glm::mat4 previousFrameViewProjection_{1.0f};
-    glm::mat4 depthPyramidViewProjection_{1.0f};
     glm::vec3 frameCameraPosition_{0.0f};
-    glm::vec3 depthPyramidCameraPosition_{0.0f};
     std::array<CascadeFrameData, kMaxShadowCascades> frameCascades_{};
     glm::vec4 frameCascadeSplits_{};
     std::array<std::array<glm::vec4, 6>, kMaxShadowCascades> frameShadowCascadeFrustumPlanes_{};
@@ -658,8 +647,6 @@ private:
     float demoLightIntensity_ = 10.0f;
     float demoLightRange_ = 8.0f;
     bool useGpuOcclusionCulling_ = false;
-    bool depthPyramidValid_ = false;
-    bool depthPyramidBuildAvailable_ = false;
     bool useGpuShadowCulling_ = true;
     bool gpuShadowCullingAvailable_ = false;
     bool shadowIndirectAvailable_ = false;
@@ -699,6 +686,11 @@ private:
                                             averageLuminance_,
                                             histogramClippedLuminance_,
                                             ssaoAvailable_};
+
+    // Hi-Z depth pyramid subsystem. Like postProcess_, it owns its GPU resources
+    // and borrows the rendering services by reference, so it is declared last to
+    // guarantee those are constructed first.
+    renderer::DepthPyramid depthPyramid_{context_, swapchain_, renderGraph_, gpuProfiler_};
 };
 
 } // namespace ve

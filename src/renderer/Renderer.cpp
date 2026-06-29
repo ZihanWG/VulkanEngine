@@ -809,209 +809,39 @@ void Renderer::createSkyboxDescriptorSetLayout()
 
 void Renderer::createDepthPyramidDescriptorSetLayout()
 {
-    std::array<VkDescriptorSetLayoutBinding, 2> bindings{};
-    bindings[0].binding = 0;
-    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    bindings[0].descriptorCount = 1;
-    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    bindings[1].binding = 1;
-    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    bindings[1].descriptorCount = 1;
-    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    depthPyramidDescriptorSetLayout_.create(
-        context_.vkDevice(), std::span<const VkDescriptorSetLayoutBinding>(bindings.data(), bindings.size()));
-    rhi::debug::setObjectName(context_.vkDevice(),
-                              depthPyramidDescriptorSetLayout_.handle(),
-                              VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
-                              "DepthPyramidDescriptorSetLayout");
+    depthPyramid_.createDescriptorSetLayout();
 }
 
 void Renderer::destroyDepthPyramidResources()
 {
-    depthPyramidValid_ = false;
-    depthPyramidBuildAvailable_ = false;
-    depthPyramidDescriptorSets_.clear();
-    depthPyramidDescriptorPool_.reset();
-
-    for (VkImageView imageView : depthPyramidMipImageViews_) {
-        if (imageView != VK_NULL_HANDLE) {
-            vkDestroyImageView(context_.vkDevice(), imageView, nullptr);
-        }
-    }
-    depthPyramidMipImageViews_.clear();
-
-    if (depthPyramidSampler_ != VK_NULL_HANDLE) {
-        vkDestroySampler(context_.vkDevice(), depthPyramidSampler_, nullptr);
-        depthPyramidSampler_ = VK_NULL_HANDLE;
-    }
-
-    depthPyramid_.reset();
-    depthPyramidLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
-    depthPyramidMipLevels_ = 0;
-    selectedDepthPyramidDebugMip_ = 0;
-    depthPyramidViewProjection_ = glm::mat4{1.0f};
-    depthPyramidCameraPosition_ = glm::vec3{0.0f};
+    depthPyramid_.destroyResources();
 }
 
 void Renderer::invalidateDepthPyramid()
 {
-    depthPyramidValid_ = false;
-    depthPyramidViewProjection_ = glm::mat4{1.0f};
-    depthPyramidCameraPosition_ = glm::vec3{0.0f};
+    depthPyramid_.invalidate();
 }
 
 void Renderer::createDepthPyramidResources()
 {
-    destroyDepthPyramidResources();
-
-    if (depthPyramidDescriptorSetLayout_.handle() == VK_NULL_HANDLE) {
-        throw std::runtime_error("Cannot create depth pyramid resources without a descriptor set layout.");
-    }
-
-    const bool sampledFormatSupported =
-        depthPyramidFormatSupports(context_.physicalDevice(), VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT);
-    const bool storageFormatSupported =
-        depthPyramidFormatSupports(context_.physicalDevice(), VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT);
-    if (!sampledFormatSupported) {
-        Logger::warn("Depth pyramid disabled: VK_FORMAT_R32_SFLOAT is not sampleable on this device.");
+    depthPyramid_.createResources();
+    // The pyramid disables GPU occlusion culling when the device cannot build it;
+    // afterwards the cull descriptors are (re)bound to the new pyramid image (a
+    // no-op when no pyramid image was created).
+    if (!depthPyramid_.buildAvailable()) {
         useGpuOcclusionCulling_ = false;
-        return;
     }
-
-    const VkExtent2D extent = swapchain_.extent();
-    depthPyramidBuildAvailable_ = swapchain_.depthSupportsSampling() && storageFormatSupported;
-    depthPyramidMipLevels_ = depthPyramidBuildAvailable_ ? calculateDepthPyramidMipLevels(extent) : 1U;
-
-    rhi::VulkanImageCreateInfo imageInfo{};
-    imageInfo.width = extent.width;
-    imageInfo.height = extent.height;
-    imageInfo.format = kDepthPyramidFormat;
-    imageInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | (depthPyramidBuildAvailable_ ? VK_IMAGE_USAGE_STORAGE_BIT : 0);
-    imageInfo.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    imageInfo.mipLevels = depthPyramidMipLevels_;
-    imageInfo.debugName = "DepthPyramidHiZ";
-    depthPyramid_.create(context_, imageInfo);
-    depthPyramidLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
-
-    depthPyramidMipImageViews_.resize(depthPyramidMipLevels_, VK_NULL_HANDLE);
-    for (uint32_t mipLevel = 0; mipLevel < depthPyramidMipLevels_; ++mipLevel) {
-        VkImageViewCreateInfo viewInfo{};
-        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        viewInfo.image = depthPyramid_.image();
-        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.format = kDepthPyramidFormat;
-        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        viewInfo.subresourceRange.baseMipLevel = mipLevel;
-        viewInfo.subresourceRange.levelCount = 1;
-        viewInfo.subresourceRange.baseArrayLayer = 0;
-        viewInfo.subresourceRange.layerCount = 1;
-
-        VK_CHECK(vkCreateImageView(context_.vkDevice(), &viewInfo, nullptr, &depthPyramidMipImageViews_[mipLevel]));
-        rhi::debug::setObjectName(context_.vkDevice(),
-                                  depthPyramidMipImageViews_[mipLevel],
-                                  VK_OBJECT_TYPE_IMAGE_VIEW,
-                                  "DepthPyramidHiZMip" + std::to_string(mipLevel) + "View");
-    }
-
-    VkSamplerCreateInfo samplerInfo{};
-    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    samplerInfo.magFilter = VK_FILTER_NEAREST;
-    samplerInfo.minFilter = VK_FILTER_NEAREST;
-    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.anisotropyEnable = VK_FALSE;
-    samplerInfo.maxAnisotropy = 1.0f;
-    samplerInfo.compareEnable = VK_FALSE;
-    samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
-    samplerInfo.minLod = 0.0f;
-    samplerInfo.maxLod = static_cast<float>(std::max(depthPyramidMipLevels_, 1u) - 1u);
-    samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
-    samplerInfo.unnormalizedCoordinates = VK_FALSE;
-    VK_CHECK(vkCreateSampler(context_.vkDevice(), &samplerInfo, nullptr, &depthPyramidSampler_));
-    rhi::debug::setObjectName(
-        context_.vkDevice(), depthPyramidSampler_, VK_OBJECT_TYPE_SAMPLER, "DepthPyramidNearestClampSampler");
-
-    if (!depthPyramidBuildAvailable_) {
-        useGpuOcclusionCulling_ = false;
-        if (!swapchain_.depthSupportsSampling()) {
-            Logger::warn("Depth pyramid generation disabled: selected main depth format is not sampleable.");
-        }
-        if (!storageFormatSupported) {
-            Logger::warn("Depth pyramid generation disabled: VK_FORMAT_R32_SFLOAT storage images are unsupported.");
-        }
-        updateGpuCullingDepthPyramidDescriptors();
-        return;
-    }
-
-    std::array<VkDescriptorPoolSize, 2> poolSizes{};
-    poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[0].descriptorCount = depthPyramidMipLevels_;
-    poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    poolSizes[1].descriptorCount = depthPyramidMipLevels_;
-    depthPyramidDescriptorPool_.create(
-        context_.vkDevice(), std::span<const VkDescriptorPoolSize>(poolSizes.data(), poolSizes.size()), depthPyramidMipLevels_);
-    rhi::debug::setObjectName(context_.vkDevice(),
-                              depthPyramidDescriptorPool_.handle(),
-                              VK_OBJECT_TYPE_DESCRIPTOR_POOL,
-                              "DepthPyramidDescriptorPool");
-
-    depthPyramidDescriptorSets_.resize(depthPyramidMipLevels_, VK_NULL_HANDLE);
-    std::vector<VkDescriptorSetLayout> layouts(depthPyramidMipLevels_, depthPyramidDescriptorSetLayout_.handle());
-    VkDescriptorSetAllocateInfo allocateInfo{};
-    allocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocateInfo.descriptorPool = depthPyramidDescriptorPool_.handle();
-    allocateInfo.descriptorSetCount = static_cast<uint32_t>(depthPyramidDescriptorSets_.size());
-    allocateInfo.pSetLayouts = layouts.data();
-    VK_CHECK(vkAllocateDescriptorSets(context_.vkDevice(), &allocateInfo, depthPyramidDescriptorSets_.data()));
-
-    for (uint32_t mipLevel = 0; mipLevel < depthPyramidMipLevels_; ++mipLevel) {
-        VkDescriptorImageInfo sourceInfo{};
-        sourceInfo.sampler = depthPyramidSampler_;
-        sourceInfo.imageView = mipLevel == 0 ? swapchain_.depthImageView() : depthPyramidMipImageViews_[mipLevel - 1];
-        sourceInfo.imageLayout =
-            mipLevel == 0 ? VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL;
-
-        VkDescriptorImageInfo outputInfo{};
-        outputInfo.imageView = depthPyramidMipImageViews_[mipLevel];
-        outputInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-
-        std::array<VkWriteDescriptorSet, 2> writes{};
-        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[0].dstSet = depthPyramidDescriptorSets_[mipLevel];
-        writes[0].dstBinding = 0;
-        writes[0].descriptorCount = 1;
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[0].pImageInfo = &sourceInfo;
-
-        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[1].dstSet = depthPyramidDescriptorSets_[mipLevel];
-        writes[1].dstBinding = 1;
-        writes[1].descriptorCount = 1;
-        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        writes[1].pImageInfo = &outputInfo;
-
-        vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
-        rhi::debug::setObjectName(context_.vkDevice(),
-                                  depthPyramidDescriptorSets_[mipLevel],
-                                  VK_OBJECT_TYPE_DESCRIPTOR_SET,
-                                  "DepthPyramidDescriptorSetMip" + std::to_string(mipLevel));
-    }
-
     updateGpuCullingDepthPyramidDescriptors();
 }
 
 void Renderer::updateGpuCullingDepthPyramidDescriptors()
 {
-    if (depthPyramid_.imageView() == VK_NULL_HANDLE || depthPyramidSampler_ == VK_NULL_HANDLE) {
+    if (depthPyramid_.imageView() == VK_NULL_HANDLE || depthPyramid_.sampler() == VK_NULL_HANDLE) {
         return;
     }
 
     VkDescriptorImageInfo depthPyramidInfo{};
-    depthPyramidInfo.sampler = depthPyramidSampler_;
+    depthPyramidInfo.sampler = depthPyramid_.sampler();
     depthPyramidInfo.imageView = depthPyramid_.imageView();
     depthPyramidInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
@@ -1052,7 +882,7 @@ void Renderer::createGpuCullingResources()
             throw std::runtime_error("GPU culling requires one indirect output buffer per frame.");
         }
 
-        if (depthPyramid_.image() == VK_NULL_HANDLE || depthPyramidSampler_ == VK_NULL_HANDLE) {
+        if (depthPyramid_.image() == VK_NULL_HANDLE || depthPyramid_.sampler() == VK_NULL_HANDLE) {
             throw std::runtime_error("GPU culling requires a valid depth pyramid descriptor resource.");
         }
 
@@ -1232,7 +1062,7 @@ void Renderer::createGpuCullDescriptorSets()
         visibleCountBufferInfo.range = kGpuCullCountBufferSize;
 
         VkDescriptorImageInfo depthPyramidInfo{};
-        depthPyramidInfo.sampler = depthPyramidSampler_;
+        depthPyramidInfo.sampler = depthPyramid_.sampler();
         depthPyramidInfo.imageView = depthPyramid_.imageView();
         depthPyramidInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
@@ -1423,7 +1253,7 @@ void Renderer::createGpuShadowCullDescriptorSets()
         visibleCountBufferInfo.range = kGpuCullCountBufferSize;
 
         VkDescriptorImageInfo depthPyramidInfo{};
-        depthPyramidInfo.sampler = depthPyramidSampler_;
+        depthPyramidInfo.sampler = depthPyramid_.sampler();
         depthPyramidInfo.imageView = depthPyramid_.imageView();
         depthPyramidInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
@@ -1646,28 +1476,7 @@ void Renderer::createShadowPipeline()
 
 void Renderer::createComputePipelines()
 {
-    depthPyramidPipeline_.reset();
-    if (depthPyramidDescriptorSetLayout_.handle() != VK_NULL_HANDLE) {
-        const VkDescriptorSetLayout depthPyramidDescriptorSetLayout = depthPyramidDescriptorSetLayout_.handle();
-        const VkPushConstantRange depthPyramidPushConstantRange{
-            VK_SHADER_STAGE_COMPUTE_BIT, 0, static_cast<uint32_t>(sizeof(DepthPyramidPushConstants))};
-
-        rhi::VulkanComputePipelineCreateInfo depthPyramidPipelineInfo{};
-        depthPyramidPipelineInfo.shaderPath = shaderPath("depth_pyramid.comp.spv");
-        depthPyramidPipelineInfo.descriptorSetLayouts =
-            std::span<const VkDescriptorSetLayout>(&depthPyramidDescriptorSetLayout, 1);
-        depthPyramidPipelineInfo.pushConstantRanges =
-            std::span<const VkPushConstantRange>(&depthPyramidPushConstantRange, 1);
-        depthPyramidPipeline_.create(context_.vkDevice(), depthPyramidPipelineInfo);
-        rhi::debug::setObjectName(context_.vkDevice(),
-                                  depthPyramidPipeline_.pipeline(),
-                                  VK_OBJECT_TYPE_PIPELINE,
-                                  "DepthPyramidComputePipeline");
-        rhi::debug::setObjectName(context_.vkDevice(),
-                                  depthPyramidPipeline_.layout(),
-                                  VK_OBJECT_TYPE_PIPELINE_LAYOUT,
-                                  "DepthPyramidPipelineLayout");
-    }
+    depthPyramid_.createPipeline();
 
     // Exposure compute pipelines (luminance/histogram/reduce) now live in PostProcessStack.
     postProcess_.createExposureComputePipelines();
@@ -3526,11 +3335,11 @@ void Renderer::updateGpuCullInputBuffer(uint32_t frameIndex)
     const VkExtent2D extent = swapchain_.extent();
 
     GpuCullFrameParams frameParams{};
-    frameParams.occlusionViewProjection = depthPyramidViewProjection_;
+    frameParams.occlusionViewProjection = depthPyramid_.viewProjection();
     frameParams.cameraPosition = glm::vec4(frameCameraPosition_, 0.0f);
     frameParams.viewportAndMipCount = glm::vec4(static_cast<float>(extent.width),
                                                 static_cast<float>(extent.height),
-                                                static_cast<float>(depthPyramidMipLevels_),
+                                                static_cast<float>(depthPyramid_.mipLevels()),
                                                 0.0f);
     frameParams.occlusionSettings = glm::vec4(gpuOcclusionDepthBias_,
                                               gpuOcclusionNearDisableDistance_,
@@ -3784,7 +3593,7 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
                     << "  frustum culled draw items: " << counters.frustumCulledDrawItems << "\n"
                     << "  occlusion culled draw items: " << counters.occlusionCulledDrawItems << "\n"
                     << "  total culled draw items: " << culledDrawItems << "\n"
-                    << "  depth pyramid mips: " << depthPyramidMipLevels_ << "\n"
+                    << "  depth pyramid mips: " << depthPyramid_.mipLevels() << "\n"
                     << "  occlusion culling: " << (isGpuOcclusionCullingActive() ? "enabled" : "disabled") << "\n"
                     << "  batches: " << batchCount << "\n"
                     << "  indirect count path: "
@@ -3902,10 +3711,10 @@ Renderer::CullingDebugSnapshot Renderer::cullingDebugSnapshot(uint32_t frameInde
     snapshot.gpuOcclusionCulling = isGpuOcclusionCullingActive();
     snapshot.gpuShadowCulling = isGpuShadowCullingActive();
     snapshot.occlusionTestSceneActive = occlusionTestSceneActive_ && !portfolioCaptureMode_;
-    snapshot.depthPyramidBuildAvailable = depthPyramidBuildAvailable_;
-    snapshot.depthPyramidValid = depthPyramidValid_;
+    snapshot.depthPyramidBuildAvailable = depthPyramid_.buildAvailable();
+    snapshot.depthPyramidValid = depthPyramid_.valid();
     snapshot.previousFrameDepthValid = previousFrameDepthValidForOcclusion();
-    snapshot.depthPyramidMipCount = depthPyramidMipLevels_;
+    snapshot.depthPyramidMipCount = depthPyramid_.mipLevels();
     snapshot.totalDrawItems = static_cast<uint32_t>(
         std::min<size_t>(cullingStats_.totalDrawItems, std::numeric_limits<uint32_t>::max()));
     if (cullingStats_.gpuCulling && frameIndex < frameGpuCullTotalDrawItems_.size()) {
@@ -4352,9 +4161,9 @@ void Renderer::enableOcclusionTestSettings()
 
 bool Renderer::previousFrameDepthValidForOcclusion() const
 {
-    return depthPyramidValid_ &&
-           maxMatrixDifference(frameViewProjection_, depthPyramidViewProjection_) <= 0.0005f &&
-           glm::distance(frameCameraPosition_, depthPyramidCameraPosition_) <= 0.01f;
+    return depthPyramid_.valid() &&
+           maxMatrixDifference(frameViewProjection_, depthPyramid_.viewProjection()) <= 0.0005f &&
+           glm::distance(frameCameraPosition_, depthPyramid_.cameraPosition()) <= 0.01f;
 }
 
 void Renderer::saveSceneFromUi()
@@ -4674,7 +4483,7 @@ void Renderer::clampRuntimeSettings()
     gpuOcclusionNearDisableDistance_ = std::clamp(gpuOcclusionNearDisableDistance_, 0.0f, 10.0f);
     gpuOcclusionMaxScreenCoverage_ = std::clamp(gpuOcclusionMaxScreenCoverage_, 0.01f, 1.0f);
     gpuOcclusionMinScreenPixels_ = std::clamp(gpuOcclusionMinScreenPixels_, 1.0f, 64.0f);
-    if (!isGpuCullingActive() || !depthPyramidBuildAvailable_) {
+    if (!isGpuCullingActive() || !depthPyramid_.buildAvailable()) {
         useGpuOcclusionCulling_ = false;
     }
 }
@@ -5267,10 +5076,10 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             depthPyramid_.image(),
             depthPyramid_.imageView(),
             VkExtent2D{depthPyramidExtent.width, depthPyramidExtent.height},
-            &depthPyramidLayout_,
+            depthPyramid_.layoutPtr(),
             depthPyramid_.format(),
             VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
-            depthPyramidMipLevels_,
+            depthPyramid_.mipLevels(),
             1,
             VK_IMAGE_ASPECT_COLOR_BIT,
             {},
@@ -5415,9 +5224,9 @@ bool Renderer::isGpuCullingActive() const
 
 bool Renderer::isGpuOcclusionCullingActive() const
 {
-    return useGpuOcclusionCulling_ && isGpuCullingActive() && depthPyramidBuildAvailable_ && depthPyramidValid_ &&
-           depthPyramid_.image() != VK_NULL_HANDLE && depthPyramidSampler_ != VK_NULL_HANDLE &&
-           depthPyramidMipLevels_ > 0;
+    return useGpuOcclusionCulling_ && isGpuCullingActive() && depthPyramid_.buildAvailable() && depthPyramid_.valid() &&
+           depthPyramid_.image() != VK_NULL_HANDLE && depthPyramid_.sampler() != VK_NULL_HANDLE &&
+           depthPyramid_.mipLevels() > 0;
 }
 
 bool Renderer::isGpuShadowCullingActive() const
@@ -5738,104 +5547,12 @@ void Renderer::recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer, uin
 
 void Renderer::ensureDepthPyramidShaderReadLayout(VkCommandBuffer commandBuffer)
 {
-    if (depthPyramid_.image() == VK_NULL_HANDLE || depthPyramidMipLevels_ == 0 ||
-        depthPyramidLayout_ == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-        return;
-    }
-
-    const bool undefined = depthPyramidLayout_ == VK_IMAGE_LAYOUT_UNDEFINED;
-    const VkImageMemoryBarrier2 shaderReadBarrier =
-        imageBarrier(depthPyramid_.image(),
-                     VK_IMAGE_ASPECT_COLOR_BIT,
-                     depthPyramidLayout_,
-                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                     undefined ? VK_PIPELINE_STAGE_2_NONE : VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                     undefined ? VK_ACCESS_2_NONE
-                               : (VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT),
-                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                     VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                     0,
-                     depthPyramidMipLevels_);
-    recordImageBarrier(commandBuffer, shaderReadBarrier);
-    depthPyramidLayout_ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    depthPyramid_.ensureShaderReadLayout(commandBuffer);
 }
 
 void Renderer::recordDepthPyramidCommands(VkCommandBuffer commandBuffer)
 {
-    if (!depthPyramidBuildAvailable_ || depthPyramid_.image() == VK_NULL_HANDLE ||
-        depthPyramidPipeline_.pipeline() == VK_NULL_HANDLE ||
-        depthPyramidPipeline_.layout() == VK_NULL_HANDLE || depthPyramidDescriptorSets_.empty() ||
-        depthPyramidMipImageViews_.empty() || depthPyramidMipLevels_ == 0) {
-        depthPyramidValid_ = false;
-        return;
-    }
-
-    const renderer::GpuProfileScope profileScope(gpuProfiler_, currentFrame_, commandBuffer, "DepthPyramid");
-    renderGraph_.beginDepthPyramidPass();
-    rhi::debug::beginLabel(commandBuffer, "DepthPyramid");
-
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, depthPyramidPipeline_.pipeline());
-
-    const VkExtent2D baseExtent = swapchain_.extent();
-    for (uint32_t mipLevel = 0; mipLevel < depthPyramidMipLevels_; ++mipLevel) {
-        const VkExtent2D sourceExtent = mipLevel == 0 ? baseExtent : mipExtent(baseExtent, mipLevel - 1);
-        const VkExtent2D destinationExtent = mipExtent(baseExtent, mipLevel);
-        const VkDescriptorSet descriptorSet = depthPyramidDescriptorSets_[mipLevel];
-        vkCmdBindDescriptorSets(commandBuffer,
-                                VK_PIPELINE_BIND_POINT_COMPUTE,
-                                depthPyramidPipeline_.layout(),
-                                0,
-                                1,
-                                &descriptorSet,
-                                0,
-                                nullptr);
-
-        const DepthPyramidPushConstants pushConstants{
-            glm::uvec4(sourceExtent.width, sourceExtent.height, destinationExtent.width, destinationExtent.height)};
-        vkCmdPushConstants(commandBuffer,
-                           depthPyramidPipeline_.layout(),
-                           VK_SHADER_STAGE_COMPUTE_BIT,
-                           0,
-                           static_cast<uint32_t>(sizeof(DepthPyramidPushConstants)),
-                           &pushConstants);
-
-        const uint32_t groupCountX = (destinationExtent.width + kDepthPyramidLocalSizeX - 1) / kDepthPyramidLocalSizeX;
-        const uint32_t groupCountY =
-            (destinationExtent.height + kDepthPyramidLocalSizeY - 1) / kDepthPyramidLocalSizeY;
-        vkCmdDispatch(commandBuffer, groupCountX, groupCountY, 1);
-
-        const VkImageMemoryBarrier2 mipWriteToRead = imageBarrier(depthPyramid_.image(),
-                                                                  VK_IMAGE_ASPECT_COLOR_BIT,
-                                                                  VK_IMAGE_LAYOUT_GENERAL,
-                                                                  VK_IMAGE_LAYOUT_GENERAL,
-                                                                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                                                  VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                                                                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                                                  VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                                                                  mipLevel,
-                                                                  1);
-        recordImageBarrier(commandBuffer, mipWriteToRead);
-    }
-
-    const VkImageMemoryBarrier2 pyramidToShaderRead =
-        imageBarrier(depthPyramid_.image(),
-                     VK_IMAGE_ASPECT_COLOR_BIT,
-                     VK_IMAGE_LAYOUT_GENERAL,
-                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                     VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                     VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                     0,
-                     depthPyramidMipLevels_);
-    recordImageBarrier(commandBuffer, pyramidToShaderRead);
-    depthPyramidLayout_ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    depthPyramidValid_ = true;
-    depthPyramidViewProjection_ = frameViewProjection_;
-    depthPyramidCameraPosition_ = frameCameraPosition_;
-
-    rhi::debug::endLabel(commandBuffer);
-    renderGraph_.endDepthPyramidPass();
+    depthPyramid_.recordCommands(commandBuffer, currentFrame_, frameViewProjection_, frameCameraPosition_);
 }
 
 void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex)

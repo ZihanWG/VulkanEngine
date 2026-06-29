@@ -304,7 +304,7 @@ void Renderer::drawGpuCullingDebugUi()
         enableOcclusionTestSettings();
     }
     const bool occlusionControlsAvailable =
-        isGpuCullingActive() && depthPyramidBuildAvailable_ && depthPyramid_.image() != VK_NULL_HANDLE;
+        isGpuCullingActive() && depthPyramid_.buildAvailable() && depthPyramid_.image() != VK_NULL_HANDLE;
     if (!occlusionControlsAvailable) {
         ImGui::BeginDisabled();
     }
@@ -317,8 +317,8 @@ void Renderer::drawGpuCullingDebugUi()
         ImGui::EndDisabled();
     }
     const char* depthPyramidStatus =
-        depthPyramidBuildAvailable_ ? (depthPyramidValid_ ? "valid" : "invalid/warming up") : "unavailable";
-    ImGui::Text("Depth pyramid: %s, %u mip(s)", depthPyramidStatus, depthPyramidMipLevels_);
+        depthPyramid_.buildAvailable() ? (depthPyramid_.valid() ? "valid" : "invalid/warming up") : "unavailable";
+    ImGui::Text("Depth pyramid: %s, %u mip(s)", depthPyramidStatus, depthPyramid_.mipLevels());
 }
 
 void Renderer::drawEnvironmentDebugUi()
@@ -1405,10 +1405,10 @@ void Renderer::drawRenderTargetMetadataTable()
                     "DepthPyramidHiZ",
                     extentString(extent.width, extent.height),
                     depthPyramid_.format(),
-                    depthPyramidMipLevels_,
+                    depthPyramid_.mipLevels(),
                     1,
                     layoutUsage("Normal-Z max-depth Hi-Z pyramid written by compute and sampled by GPU culling",
-                                depthPyramidLayout_),
+                                depthPyramid_.layout()),
                     true,
                     "2D mip chain"});
             }
@@ -1587,20 +1587,21 @@ void Renderer::drawRenderTargetPreviews()
         }
     }
 
-    if (depthPyramid_.image() != VK_NULL_HANDLE && !depthPyramidMipImageViews_.empty() &&
+    if (depthPyramid_.image() != VK_NULL_HANDLE && !depthPyramid_.mipImageViews().empty() &&
         ImGui::CollapsingHeader("Depth Pyramid", ImGuiTreeNodeFlags_DefaultOpen)) {
-        selectedDepthPyramidDebugMip_ =
-            std::min(selectedDepthPyramidDebugMip_, static_cast<uint32_t>(depthPyramidMipImageViews_.size() - 1));
-        int selectedMip = static_cast<int>(selectedDepthPyramidDebugMip_);
-        ImGui::SliderInt("Selected mip", &selectedMip, 0, static_cast<int>(depthPyramidMipImageViews_.size() - 1));
-        selectedDepthPyramidDebugMip_ = static_cast<uint32_t>(std::max(selectedMip, 0));
-        const VkExtent2D extent = mipExtent(swapchain_.extent(), selectedDepthPyramidDebugMip_);
+        uint32_t selectedMipLevel = std::min(depthPyramid_.selectedDebugMip(),
+                                             static_cast<uint32_t>(depthPyramid_.mipImageViews().size() - 1));
+        int selectedMip = static_cast<int>(selectedMipLevel);
+        ImGui::SliderInt("Selected mip", &selectedMip, 0, static_cast<int>(depthPyramid_.mipImageViews().size() - 1));
+        selectedMipLevel = static_cast<uint32_t>(std::max(selectedMip, 0));
+        depthPyramid_.setSelectedDebugMip(selectedMipLevel);
+        const VkExtent2D extent = mipExtent(swapchain_.extent(), selectedMipLevel);
         ImGui::Text("Dimensions: %u x %u", extent.width, extent.height);
         ImGui::Text("Format: %s", vkFormatName(depthPyramid_.format()));
-        ImGui::Text("Layout: %s", imageLayoutName(depthPyramidLayout_));
+        ImGui::Text("Layout: %s", imageLayoutName(depthPyramid_.layout()));
         ImGui::TextDisabled("Normal-Z max-depth reduction; white/far regions are intentionally hard to cull through.");
-        drawRenderTargetPreview(depthPyramidMipImageViews_[selectedDepthPyramidDebugMip_],
-                                depthPyramidSampler_,
+        drawRenderTargetPreview(depthPyramid_.mipImageViews()[selectedMipLevel],
+                                depthPyramid_.sampler(),
                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                 extent.width,
                                 extent.height,
