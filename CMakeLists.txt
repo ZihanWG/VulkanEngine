@@ -212,6 +212,7 @@ add_library(VulkanEngineRuntime STATIC
     src/renderer/BindlessTextureHeap.cpp
     src/renderer/ClusteredLighting.cpp
     src/renderer/DepthPyramid.cpp
+    src/renderer/GpuCulling.cpp
     src/renderer/GpuProfiler.cpp
     src/renderer/SkinnedMesh.cpp
     src/renderer/Mesh.cpp
