@@ -275,19 +275,19 @@ void Renderer::drawGpuCullingDebugUi()
     if (!ImGui::CollapsingHeader("GPU Culling", ImGuiTreeNodeFlags_DefaultOpen)) {
         return;
     }
-    if (!gpuCullingAvailable_) {
+    if (!gpuCulling_.available()) {
         ImGui::BeginDisabled();
     }
     ImGui::Checkbox("Main GPU culling enabled", &useGpuCulling_);
-    if (!gpuCullingAvailable_) {
+    if (!gpuCulling_.available()) {
         ImGui::EndDisabled();
     }
 
-    if (!gpuShadowCullingAvailable_) {
+    if (!gpuCulling_.shadowAvailable()) {
         ImGui::BeginDisabled();
     }
     ImGui::Checkbox("Shadow GPU culling enabled", &useGpuShadowCulling_);
-    if (!gpuShadowCullingAvailable_) {
+    if (!gpuCulling_.shadowAvailable()) {
         ImGui::EndDisabled();
     }
 

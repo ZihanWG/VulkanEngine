@@ -82,7 +82,10 @@ public:
     [[nodiscard]] rhi::VulkanBuffer& paramBuffer(uint32_t frameIndex);
     void resetFrameCounters(uint32_t frameIndex, uint32_t mainTotalDrawItems);
     void setMainCullFrameInfo(uint32_t frameIndex, uint32_t batchCount, bool indirectCountPath);
-    void setShadowCullFrameInfo(uint32_t frameIndex, uint32_t batchCount, bool indirectCountPath);
+    void setShadowCullFrameInfo(uint32_t frameIndex,
+                                uint32_t totalDrawItems,
+                                uint32_t batchCount,
+                                bool indirectCountPath);
 
     // --- recording (called from the frame loop) ---
     // active = Renderer's isGpuCullingActive(); frustumPlanes / drawItemCount come
@@ -102,6 +105,7 @@ public:
                           const std::array<glm::vec4, 6>& cascadeFrustumPlanes);
 
     // --- readback (results consumed by the debug UI / stats in Renderer) ---
+    [[nodiscard]] bool readMainVisibleCount(bool active, uint32_t frameIndex, uint32_t& visibleCount);
     [[nodiscard]] bool readMainCounters(bool active, uint32_t frameIndex, GpuCullCounters& counters);
     [[nodiscard]] bool readShadowVisibleCount(bool active, uint32_t frameIndex, uint32_t& visibleCount);
 
@@ -111,12 +115,27 @@ public:
     [[nodiscard]] bool mainResourcesReady(uint32_t frameCount) const;
     [[nodiscard]] bool shadowResourcesReady(uint32_t frameCount) const;
     [[nodiscard]] bool frameIndirectCountPathActive(uint32_t frameIndex) const;
+    [[nodiscard]] bool frameShadowIndirectCountPathActive(uint32_t frameIndex) const;
+    [[nodiscard]] uint32_t mainTotalDrawItems(uint32_t frameIndex) const;
+    [[nodiscard]] uint32_t shadowTotalDrawItems(uint32_t frameIndex) const;
 
     // --- buffers the main draw / render graph bind (owned here) ---
     [[nodiscard]] const rhi::VulkanBuffer& visibleCountBuffer(uint32_t frameIndex) const;
     [[nodiscard]] const rhi::VulkanBuffer& shadowVisibleCountBuffer(uint32_t frameIndex) const;
     [[nodiscard]] uint32_t mainBatchCount(uint32_t frameIndex) const;
     [[nodiscard]] uint32_t shadowBatchCount(uint32_t frameIndex) const;
+
+    // Buffer vectors registered as render-graph resources (mirrors how
+    // PostProcessStack exposes exposureBuffers()).
+    [[nodiscard]] const std::vector<rhi::VulkanBuffer>& cullInputBuffers() const { return frameCullInputBuffers_; }
+    [[nodiscard]] const std::vector<rhi::VulkanBuffer>& visibleCountBuffers() const
+    {
+        return frameBatchVisibleCountBuffers_;
+    }
+    [[nodiscard]] const std::vector<rhi::VulkanBuffer>& visibleCountReadbackBuffers() const
+    {
+        return frameBatchVisibleCountReadbackBuffers_;
+    }
 
 private:
     void createCullDescriptorLayout();

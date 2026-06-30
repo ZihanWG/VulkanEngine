@@ -582,8 +582,14 @@ void GpuCulling::setMainCullFrameInfo(uint32_t frameIndex, uint32_t batchCount, 
     }
 }
 
-void GpuCulling::setShadowCullFrameInfo(uint32_t frameIndex, uint32_t batchCount, bool indirectCountPath)
+void GpuCulling::setShadowCullFrameInfo(uint32_t frameIndex,
+                                        uint32_t totalDrawItems,
+                                        uint32_t batchCount,
+                                        bool indirectCountPath)
 {
+    if (frameIndex < frameGpuShadowCullTotalDrawItems_.size()) {
+        frameGpuShadowCullTotalDrawItems_[frameIndex] = totalDrawItems;
+    }
     if (frameIndex < frameGpuShadowCullBatchCounts_.size()) {
         frameGpuShadowCullBatchCounts_[frameIndex] = batchCount;
     }
@@ -857,6 +863,38 @@ void GpuCulling::recordShadowCull(VkCommandBuffer commandBuffer,
     rhi::debug::endLabel(commandBuffer);
 }
 
+bool GpuCulling::readMainVisibleCount(bool active, uint32_t frameIndex, uint32_t& visibleCount)
+{
+    visibleCount = 0;
+    if (!active || frameIndex >= frameBatchVisibleCountReadbackBuffers_.size() ||
+        frameIndex >= frameGpuCullReadbackReady_.size() || frameGpuCullReadbackReady_[frameIndex] == 0) {
+        return false;
+    }
+
+    rhi::VulkanBuffer& readbackBuffer = frameBatchVisibleCountReadbackBuffers_[frameIndex];
+    if (!readbackBuffer.valid()) {
+        return false;
+    }
+
+    const bool indirectCountPathActive = frameIndirectCountPathActive(frameIndex);
+    const uint32_t countEntryCount = indirectCountPathActive && frameIndex < frameGpuCullBatchCounts_.size()
+                                         ? std::max(frameGpuCullBatchCounts_[frameIndex], 1U)
+                                         : 1U;
+    std::vector<uint32_t> visibleCounts(countEntryCount, 0);
+    readbackBuffer.download(std::as_writable_bytes(std::span<uint32_t>(visibleCounts.data(), visibleCounts.size())));
+
+    uint64_t totalVisibleCount = 0;
+    for (uint32_t count : visibleCounts) {
+        totalVisibleCount += count;
+    }
+
+    visibleCount = static_cast<uint32_t>(std::min<uint64_t>(totalVisibleCount, kMaxDrawItems));
+    if (frameIndex < frameGpuCullTotalDrawItems_.size()) {
+        visibleCount = std::min(visibleCount, frameGpuCullTotalDrawItems_[frameIndex]);
+    }
+    return true;
+}
+
 bool GpuCulling::readMainCounters(bool active, uint32_t frameIndex, GpuCullCounters& counters)
 {
     counters = {};
@@ -940,6 +978,22 @@ bool GpuCulling::shadowResourcesReady(uint32_t frameCount) const
 bool GpuCulling::frameIndirectCountPathActive(uint32_t frameIndex) const
 {
     return frameIndex < frameGpuCullIndirectCountPath_.size() && frameGpuCullIndirectCountPath_[frameIndex] != 0;
+}
+
+bool GpuCulling::frameShadowIndirectCountPathActive(uint32_t frameIndex) const
+{
+    return frameIndex < frameGpuShadowCullIndirectCountPath_.size() &&
+           frameGpuShadowCullIndirectCountPath_[frameIndex] != 0;
+}
+
+uint32_t GpuCulling::mainTotalDrawItems(uint32_t frameIndex) const
+{
+    return frameIndex < frameGpuCullTotalDrawItems_.size() ? frameGpuCullTotalDrawItems_[frameIndex] : 0;
+}
+
+uint32_t GpuCulling::shadowTotalDrawItems(uint32_t frameIndex) const
+{
+    return frameIndex < frameGpuShadowCullTotalDrawItems_.size() ? frameGpuShadowCullTotalDrawItems_[frameIndex] : 0;
 }
 
 const rhi::VulkanBuffer& GpuCulling::visibleCountBuffer(uint32_t frameIndex) const
