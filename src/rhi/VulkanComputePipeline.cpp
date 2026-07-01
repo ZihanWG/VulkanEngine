@@ -80,7 +80,7 @@ void VulkanComputePipeline::create(VkDevice device, const VulkanComputePipelineC
     pipelineInfo.stage = shaderStage;
     pipelineInfo.layout = layout_;
 
-    VK_CHECK(vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline_));
+    VK_CHECK(vkCreateComputePipelines(device_, createInfo.pipelineCache, 1, &pipelineInfo, nullptr, &pipeline_));
 }
 
 void VulkanComputePipeline::reset()

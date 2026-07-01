@@ -38,6 +38,7 @@ public:
 
     [[nodiscard]] VkPhysicalDevice physicalDevice() const { return physicalDevice_; }
     [[nodiscard]] VkDevice device() const { return device_; }
+    [[nodiscard]] VkPipelineCache pipelineCache() const { return pipelineCache_; }
     [[nodiscard]] VkQueue graphicsQueue() const { return graphicsQueue_; }
     [[nodiscard]] VkQueue presentQueue() const { return presentQueue_; }
     [[nodiscard]] const QueueFamilyIndices& queueFamilies() const { return queueFamilies_; }
@@ -55,6 +56,8 @@ private:
     bool isDeviceSuitable(VkPhysicalDevice candidate) const;
     int scoreDevice(VkPhysicalDevice candidate) const;
     void createLogicalDevice();
+    void createPipelineCache();
+    void destroyPipelineCache();
 
     [[nodiscard]] QueueFamilyIndices findQueueFamilies(VkPhysicalDevice candidate) const;
     [[nodiscard]] bool checkDeviceExtensionSupport(VkPhysicalDevice candidate) const;
@@ -64,6 +67,7 @@ private:
     VkSurfaceKHR surface_ = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice_ = VK_NULL_HANDLE;
     VkDevice device_ = VK_NULL_HANDLE;
+    VkPipelineCache pipelineCache_ = VK_NULL_HANDLE;
     VkQueue graphicsQueue_ = VK_NULL_HANDLE;
     VkQueue presentQueue_ = VK_NULL_HANDLE;
     QueueFamilyIndices queueFamilies_{};

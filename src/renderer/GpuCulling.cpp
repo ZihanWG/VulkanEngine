@@ -133,6 +133,7 @@ void GpuCulling::createCullPipeline()
     pipelineInfo.shaderPath = shaderPath("cull.comp.spv");
     pipelineInfo.descriptorSetLayouts = std::span<const VkDescriptorSetLayout>(&cullDescriptorSetLayout, 1);
     pipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&pushConstantRange, 1);
+    pipelineInfo.pipelineCache = context_.pipelineCache();
     gpuCullPipeline_.create(context_.vkDevice(), pipelineInfo);
     rhi::debug::setObjectName(
         context_.vkDevice(), gpuCullPipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "GpuCullComputePipeline");

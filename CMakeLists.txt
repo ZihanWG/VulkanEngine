@@ -235,6 +235,7 @@ add_library(VulkanEngineRuntime STATIC
     src/rhi/VulkanImage.cpp
     src/rhi/VulkanMemory.cpp
     src/rhi/VulkanPipeline.cpp
+    src/rhi/VulkanPipelineCache.cpp
     src/rhi/VulkanShadowMap.cpp
     src/rhi/VulkanSwapchain.cpp
     src/rhi/VulkanSync.cpp

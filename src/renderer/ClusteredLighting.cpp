@@ -216,6 +216,7 @@ void ClusteredLighting::createPipelines(const std::filesystem::path& clusterBuil
     rhi::VulkanComputePipelineCreateInfo buildInfo{};
     buildInfo.shaderPath = clusterBuildShaderPath;
     buildInfo.descriptorSetLayouts = std::span<const VkDescriptorSetLayout>(&layout, 1);
+    buildInfo.pipelineCache = context_->pipelineCache();
     clusterBuildPipeline_.create(device, buildInfo);
     rhi::debug::setObjectName(
         device, clusterBuildPipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "ClusterBuildComputePipeline");
@@ -223,6 +224,7 @@ void ClusteredLighting::createPipelines(const std::filesystem::path& clusterBuil
     rhi::VulkanComputePipelineCreateInfo cullInfo{};
     cullInfo.shaderPath = lightCullShaderPath;
     cullInfo.descriptorSetLayouts = std::span<const VkDescriptorSetLayout>(&layout, 1);
+    cullInfo.pipelineCache = context_->pipelineCache();
     lightCullPipeline_.create(device, cullInfo);
     rhi::debug::setObjectName(
         device, lightCullPipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "LightCullComputePipeline");

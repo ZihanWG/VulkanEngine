@@ -1,12 +1,19 @@
 #include "rhi/VulkanDevice.h"
 
 #include "core/Logger.h"
+#include "rhi/VulkanDebugUtils.h"
+#include "rhi/VulkanPipelineCache.h"
 
 #include <algorithm>
 #include <array>
+#include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <exception>
+#include <filesystem>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -109,6 +116,10 @@ void VulkanDevice::initialize(VkInstance instance, VkSurfaceKHR surface)
 
 void VulkanDevice::cleanup()
 {
+    // The pipeline cache is a device child: persist and destroy it before the
+    // device it was created from.
+    destroyPipelineCache();
+
     if (device_) {
         vkDestroyDevice(device_, nullptr);
         device_ = VK_NULL_HANDLE;
@@ -301,6 +312,8 @@ void VulkanDevice::createLogicalDevice()
     vkGetDeviceQueue(device_, queueFamilies_.graphicsFamily.value(), 0, &graphicsQueue_);
     vkGetDeviceQueue(device_, queueFamilies_.presentFamily.value(), 0, &presentQueue_);
 
+    createPipelineCache();
+
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
     maxDrawIndirectCount_ = properties.limits.maxDrawIndirectCount;
@@ -328,6 +341,72 @@ void VulkanDevice::createLogicalDevice()
     } else {
         Logger::warn("vkCmdDrawIndexedIndirectCount is unavailable; indirect-count drawing will remain disabled.");
     }
+}
+
+void VulkanDevice::createPipelineCache()
+{
+    assert(device_ != VK_NULL_HANDLE && "createPipelineCache() requires a live logical device.");
+
+    // Load any previously saved blob and validate it against this exact GPU +
+    // driver before handing it to the driver as initial data. On any mismatch we
+    // build an empty cache so the driver is never fed a foreign/stale blob.
+    const std::filesystem::path cachePath = pipelineCacheFilePath();
+    std::vector<std::byte> blob = readPipelineCacheBlob(cachePath);
+
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
+    const bool usable = pipelineCacheHeaderMatches(blob, properties);
+
+    VkPipelineCacheCreateInfo cacheInfo{};
+    cacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+    cacheInfo.initialDataSize = usable ? blob.size() : 0;
+    cacheInfo.pInitialData = usable ? blob.data() : nullptr;
+
+    VK_CHECK(vkCreatePipelineCache(device_, &cacheInfo, nullptr, &pipelineCache_));
+    debug::setObjectName(device_, pipelineCache_, VK_OBJECT_TYPE_PIPELINE_CACHE, "EnginePipelineCache");
+
+    if (usable) {
+        Logger::info("Loaded pipeline cache (" + std::to_string(blob.size()) + " bytes) from " +
+                     cachePath.string() + ".");
+    } else if (!blob.empty()) {
+        Logger::warn("Discarded incompatible pipeline cache at " + cachePath.string() +
+                     " (GPU/driver mismatch); starting from an empty cache.");
+    } else {
+        Logger::info("No usable pipeline cache found; starting from an empty cache.");
+    }
+}
+
+void VulkanDevice::destroyPipelineCache()
+{
+    if (pipelineCache_ == VK_NULL_HANDLE) {
+        return;
+    }
+
+    // Persist the accumulated cache before destroying it. A failed save must
+    // never abort teardown, so everything here is best-effort.
+    try {
+        std::size_t dataSize = 0;
+        if (vkGetPipelineCacheData(device_, pipelineCache_, &dataSize, nullptr) == VK_SUCCESS && dataSize > 0) {
+            std::vector<std::byte> data(dataSize);
+            if (vkGetPipelineCacheData(device_, pipelineCache_, &dataSize, data.data()) == VK_SUCCESS) {
+                data.resize(dataSize);
+                const std::filesystem::path cachePath = pipelineCacheFilePath();
+                if (writePipelineCacheBlob(cachePath, data)) {
+                    Logger::info("Saved pipeline cache (" + std::to_string(data.size()) + " bytes) to " +
+                                 cachePath.string() + ".");
+                } else {
+                    Logger::warn("Failed to save pipeline cache to disk; the next launch will rebuild it.");
+                }
+            }
+        }
+    } catch (const std::exception& error) {
+        Logger::warn(std::string("Pipeline cache save skipped: ") + error.what());
+    } catch (...) {
+        Logger::warn("Pipeline cache save skipped due to an unknown error.");
+    }
+
+    vkDestroyPipelineCache(device_, pipelineCache_, nullptr);
+    pipelineCache_ = VK_NULL_HANDLE;
 }
 
 QueueFamilyIndices VulkanDevice::findQueueFamilies(VkPhysicalDevice candidate) const

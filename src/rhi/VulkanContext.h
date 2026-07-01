@@ -29,6 +29,7 @@ public:
     [[nodiscard]] VkSurfaceKHR surface() const { return surface_; }
     [[nodiscard]] VkDevice vkDevice() const { return device_.device(); }
     [[nodiscard]] VkPhysicalDevice physicalDevice() const { return device_.physicalDevice(); }
+    [[nodiscard]] VkPipelineCache pipelineCache() const { return device_.pipelineCache(); }
     [[nodiscard]] VkQueue graphicsQueue() const { return device_.graphicsQueue(); }
     [[nodiscard]] VkQueue presentQueue() const { return device_.presentQueue(); }
     [[nodiscard]] VmaAllocator allocator() const { return allocator_; }

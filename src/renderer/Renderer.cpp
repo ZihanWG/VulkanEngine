@@ -896,6 +896,7 @@ void Renderer::createMainGraphicsPipeline()
     pipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&pushConstantRange, 1);
     pipelineInfo.enableDepth = true;
 
+    pipelineInfo.pipelineCache = context_.pipelineCache();
     pipeline_.create(context_.vkDevice(), pipelineInfo);
     rhi::debug::setObjectName(
         context_.vkDevice(), pipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "MainGraphicsPipeline");
@@ -937,6 +938,7 @@ void Renderer::createSkinnedPipeline()
     pipelineInfo.enableDepth = true;
     pipelineInfo.cullMode = VK_CULL_MODE_NONE;
 
+    pipelineInfo.pipelineCache = context_.pipelineCache();
     skinnedPipeline_.create(context_.vkDevice(), pipelineInfo);
     rhi::debug::setObjectName(
         context_.vkDevice(), skinnedPipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "SkinnedGraphicsPipeline");
@@ -963,6 +965,7 @@ void Renderer::createSkyboxPipeline()
     skyboxPipelineInfo.depthCompareOp = VK_COMPARE_OP_ALWAYS;
     skyboxPipelineInfo.cullMode = VK_CULL_MODE_NONE;
 
+    skyboxPipelineInfo.pipelineCache = context_.pipelineCache();
     skyboxPipeline_.create(context_.vkDevice(), skyboxPipelineInfo);
     rhi::debug::setObjectName(
         context_.vkDevice(), skyboxPipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "SkyboxPipeline");
@@ -995,6 +998,7 @@ void Renderer::createShadowPipeline()
     shadowPipelineInfo.depthBiasConstantFactor = shadowSettings_.rasterDepthBiasConstantFactor;
     shadowPipelineInfo.depthBiasSlopeFactor = shadowSettings_.rasterDepthBiasSlopeFactor;
 
+    shadowPipelineInfo.pipelineCache = context_.pipelineCache();
     shadowPipeline_.create(context_.vkDevice(), shadowPipelineInfo);
     rhi::debug::setObjectName(
         context_.vkDevice(), shadowPipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "ShadowPipeline");

@@ -72,6 +72,7 @@ void DepthPyramid::createPipeline()
         std::span<const VkDescriptorSetLayout>(&depthPyramidDescriptorSetLayout, 1);
     depthPyramidPipelineInfo.pushConstantRanges =
         std::span<const VkPushConstantRange>(&depthPyramidPushConstantRange, 1);
+    depthPyramidPipelineInfo.pipelineCache = context_.pipelineCache();
     pipeline_.create(context_.vkDevice(), depthPyramidPipelineInfo);
     rhi::debug::setObjectName(
         context_.vkDevice(), pipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "DepthPyramidComputePipeline");

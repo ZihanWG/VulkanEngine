@@ -217,6 +217,7 @@ void PostProcessStack::createExposureComputePipelines()
                 std::span<const VkDescriptorSetLayout>(&exposureDescriptorSetLayout, 1);
             luminancePipelineInfo.pushConstantRanges =
                 std::span<const VkPushConstantRange>(&luminancePushConstantRange, 1);
+            luminancePipelineInfo.pipelineCache = context_.pipelineCache();
             luminancePipeline_.create(context_.vkDevice(), luminancePipelineInfo);
             rhi::debug::setObjectName(context_.vkDevice(),
                                       luminancePipeline_.pipeline(),
@@ -241,6 +242,7 @@ void PostProcessStack::createExposureComputePipelines()
                 std::span<const VkDescriptorSetLayout>(&exposureDescriptorSetLayout, 1);
             histogramPipelineInfo.pushConstantRanges =
                 std::span<const VkPushConstantRange>(&histogramPushConstantRange, 1);
+            histogramPipelineInfo.pipelineCache = context_.pipelineCache();
             histogramPipeline_.create(context_.vkDevice(), histogramPipelineInfo);
             rhi::debug::setObjectName(context_.vkDevice(),
                                       histogramPipeline_.pipeline(),
@@ -266,6 +268,7 @@ void PostProcessStack::createExposureComputePipelines()
                     std::span<const VkDescriptorSetLayout>(&postProcessExposureReduceDescriptorSetLayout, 1);
                 exposureReducePipelineInfo.pushConstantRanges =
                     std::span<const VkPushConstantRange>(&exposureReducePushConstantRange, 1);
+                exposureReducePipelineInfo.pipelineCache = context_.pipelineCache();
                 exposureReducePipeline_.create(context_.vkDevice(), exposureReducePipelineInfo);
                 rhi::debug::setObjectName(context_.vkDevice(),
                                           exposureReducePipeline_.pipeline(),
@@ -1517,6 +1520,7 @@ void PostProcessStack::createBloomPipelines()
     bloomExtractPipelineInfo.pushConstantRanges =
         std::span<const VkPushConstantRange>(&bloomExtractPushConstantRange, 1);
 
+    bloomExtractPipelineInfo.pipelineCache = context_.pipelineCache();
     bloomExtractPipeline_.create(context_.vkDevice(), bloomExtractPipelineInfo);
     rhi::debug::setObjectName(
         context_.vkDevice(), bloomExtractPipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "BloomExtractPipeline");
@@ -1534,6 +1538,7 @@ void PostProcessStack::createBloomPipelines()
         std::span<const VkDescriptorSetLayout>(&postProcessSingleImageDescriptorSetLayout, 1);
     bloomBlurPipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&bloomBlurPushConstantRange, 1);
 
+    bloomBlurPipelineInfo.pipelineCache = context_.pipelineCache();
     bloomBlurPipeline_.create(context_.vkDevice(), bloomBlurPipelineInfo);
     rhi::debug::setObjectName(
         context_.vkDevice(), bloomBlurPipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "BloomBlurPipeline");
@@ -1550,6 +1555,7 @@ void PostProcessStack::createBloomPipelines()
     bloomDownsamplePipelineInfo.pushConstantRanges =
         std::span<const VkPushConstantRange>(&bloomDownsamplePushConstantRange, 1);
 
+    bloomDownsamplePipelineInfo.pipelineCache = context_.pipelineCache();
     bloomDownsamplePipeline_.create(context_.vkDevice(), bloomDownsamplePipelineInfo);
     rhi::debug::setObjectName(
         context_.vkDevice(), bloomDownsamplePipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "BloomDownsamplePipeline");
@@ -1568,6 +1574,7 @@ void PostProcessStack::createBloomPipelines()
     bloomUpsamplePipelineInfo.pushConstantRanges =
         std::span<const VkPushConstantRange>(&bloomUpsamplePushConstantRange, 1);
 
+    bloomUpsamplePipelineInfo.pipelineCache = context_.pipelineCache();
     bloomUpsamplePipeline_.create(context_.vkDevice(), bloomUpsamplePipelineInfo);
     rhi::debug::setObjectName(
         context_.vkDevice(), bloomUpsamplePipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "BloomUpsamplePipeline");
@@ -1593,6 +1600,7 @@ void PostProcessStack::createTaaResolvePipeline()
         std::span<const VkDescriptorSetLayout>(&postProcessDualImageDescriptorSetLayout, 1);
     taaResolvePipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&taaResolvePushConstantRange, 1);
 
+    taaResolvePipelineInfo.pipelineCache = context_.pipelineCache();
     taaResolvePipeline_.create(context_.vkDevice(), taaResolvePipelineInfo);
     rhi::debug::setObjectName(
         context_.vkDevice(), taaResolvePipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "TAAResolvePipeline");
@@ -1616,6 +1624,7 @@ void PostProcessStack::createCompositePipeline()
         std::span<const VkDescriptorSetLayout>(&postProcessCompositeDescriptorSetLayout, 1);
     compositePipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&compositePushConstantRange, 1);
 
+    compositePipelineInfo.pipelineCache = context_.pipelineCache();
     compositePipeline_.create(context_.vkDevice(), compositePipelineInfo);
     rhi::debug::setObjectName(
         context_.vkDevice(), compositePipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "CompositePipeline");
