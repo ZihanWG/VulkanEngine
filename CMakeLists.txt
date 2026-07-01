@@ -210,6 +210,7 @@ add_library(VulkanEngineRuntime STATIC
     src/core/PngWriter.cpp
     src/core/Window.cpp
     src/renderer/BindlessTextureHeap.cpp
+    src/renderer/BuiltinTextureFactory.cpp
     src/renderer/ClusteredLighting.cpp
     src/renderer/DepthPyramid.cpp
     src/renderer/GpuCulling.cpp
