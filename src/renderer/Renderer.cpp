@@ -809,686 +809,45 @@ void Renderer::createSkyboxDescriptorSetLayout()
 
 void Renderer::createDepthPyramidDescriptorSetLayout()
 {
-    std::array<VkDescriptorSetLayoutBinding, 2> bindings{};
-    bindings[0].binding = 0;
-    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    bindings[0].descriptorCount = 1;
-    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    bindings[1].binding = 1;
-    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    bindings[1].descriptorCount = 1;
-    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    depthPyramidDescriptorSetLayout_.create(
-        context_.vkDevice(), std::span<const VkDescriptorSetLayoutBinding>(bindings.data(), bindings.size()));
-    rhi::debug::setObjectName(context_.vkDevice(),
-                              depthPyramidDescriptorSetLayout_.handle(),
-                              VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
-                              "DepthPyramidDescriptorSetLayout");
+    depthPyramid_.createDescriptorSetLayout();
 }
 
 void Renderer::destroyDepthPyramidResources()
 {
-    depthPyramidValid_ = false;
-    depthPyramidBuildAvailable_ = false;
-    depthPyramidDescriptorSets_.clear();
-    depthPyramidDescriptorPool_.reset();
-
-    for (VkImageView imageView : depthPyramidMipImageViews_) {
-        if (imageView != VK_NULL_HANDLE) {
-            vkDestroyImageView(context_.vkDevice(), imageView, nullptr);
-        }
-    }
-    depthPyramidMipImageViews_.clear();
-
-    if (depthPyramidSampler_ != VK_NULL_HANDLE) {
-        vkDestroySampler(context_.vkDevice(), depthPyramidSampler_, nullptr);
-        depthPyramidSampler_ = VK_NULL_HANDLE;
-    }
-
-    depthPyramid_.reset();
-    depthPyramidLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
-    depthPyramidMipLevels_ = 0;
-    selectedDepthPyramidDebugMip_ = 0;
-    depthPyramidViewProjection_ = glm::mat4{1.0f};
-    depthPyramidCameraPosition_ = glm::vec3{0.0f};
+    depthPyramid_.destroyResources();
 }
 
 void Renderer::invalidateDepthPyramid()
 {
-    depthPyramidValid_ = false;
-    depthPyramidViewProjection_ = glm::mat4{1.0f};
-    depthPyramidCameraPosition_ = glm::vec3{0.0f};
+    depthPyramid_.invalidate();
 }
 
 void Renderer::createDepthPyramidResources()
 {
-    destroyDepthPyramidResources();
-
-    if (depthPyramidDescriptorSetLayout_.handle() == VK_NULL_HANDLE) {
-        throw std::runtime_error("Cannot create depth pyramid resources without a descriptor set layout.");
-    }
-
-    const bool sampledFormatSupported =
-        depthPyramidFormatSupports(context_.physicalDevice(), VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT);
-    const bool storageFormatSupported =
-        depthPyramidFormatSupports(context_.physicalDevice(), VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT);
-    if (!sampledFormatSupported) {
-        Logger::warn("Depth pyramid disabled: VK_FORMAT_R32_SFLOAT is not sampleable on this device.");
+    depthPyramid_.createResources();
+    // The pyramid disables GPU occlusion culling when the device cannot build it;
+    // afterwards the cull descriptors are (re)bound to the new pyramid image (a
+    // no-op when no pyramid image was created).
+    if (!depthPyramid_.buildAvailable()) {
         useGpuOcclusionCulling_ = false;
-        return;
     }
-
-    const VkExtent2D extent = swapchain_.extent();
-    depthPyramidBuildAvailable_ = swapchain_.depthSupportsSampling() && storageFormatSupported;
-    depthPyramidMipLevels_ = depthPyramidBuildAvailable_ ? calculateDepthPyramidMipLevels(extent) : 1U;
-
-    rhi::VulkanImageCreateInfo imageInfo{};
-    imageInfo.width = extent.width;
-    imageInfo.height = extent.height;
-    imageInfo.format = kDepthPyramidFormat;
-    imageInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | (depthPyramidBuildAvailable_ ? VK_IMAGE_USAGE_STORAGE_BIT : 0);
-    imageInfo.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    imageInfo.mipLevels = depthPyramidMipLevels_;
-    imageInfo.debugName = "DepthPyramidHiZ";
-    depthPyramid_.create(context_, imageInfo);
-    depthPyramidLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
-
-    depthPyramidMipImageViews_.resize(depthPyramidMipLevels_, VK_NULL_HANDLE);
-    for (uint32_t mipLevel = 0; mipLevel < depthPyramidMipLevels_; ++mipLevel) {
-        VkImageViewCreateInfo viewInfo{};
-        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        viewInfo.image = depthPyramid_.image();
-        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.format = kDepthPyramidFormat;
-        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        viewInfo.subresourceRange.baseMipLevel = mipLevel;
-        viewInfo.subresourceRange.levelCount = 1;
-        viewInfo.subresourceRange.baseArrayLayer = 0;
-        viewInfo.subresourceRange.layerCount = 1;
-
-        VK_CHECK(vkCreateImageView(context_.vkDevice(), &viewInfo, nullptr, &depthPyramidMipImageViews_[mipLevel]));
-        rhi::debug::setObjectName(context_.vkDevice(),
-                                  depthPyramidMipImageViews_[mipLevel],
-                                  VK_OBJECT_TYPE_IMAGE_VIEW,
-                                  "DepthPyramidHiZMip" + std::to_string(mipLevel) + "View");
-    }
-
-    VkSamplerCreateInfo samplerInfo{};
-    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    samplerInfo.magFilter = VK_FILTER_NEAREST;
-    samplerInfo.minFilter = VK_FILTER_NEAREST;
-    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.anisotropyEnable = VK_FALSE;
-    samplerInfo.maxAnisotropy = 1.0f;
-    samplerInfo.compareEnable = VK_FALSE;
-    samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
-    samplerInfo.minLod = 0.0f;
-    samplerInfo.maxLod = static_cast<float>(std::max(depthPyramidMipLevels_, 1u) - 1u);
-    samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
-    samplerInfo.unnormalizedCoordinates = VK_FALSE;
-    VK_CHECK(vkCreateSampler(context_.vkDevice(), &samplerInfo, nullptr, &depthPyramidSampler_));
-    rhi::debug::setObjectName(
-        context_.vkDevice(), depthPyramidSampler_, VK_OBJECT_TYPE_SAMPLER, "DepthPyramidNearestClampSampler");
-
-    if (!depthPyramidBuildAvailable_) {
-        useGpuOcclusionCulling_ = false;
-        if (!swapchain_.depthSupportsSampling()) {
-            Logger::warn("Depth pyramid generation disabled: selected main depth format is not sampleable.");
-        }
-        if (!storageFormatSupported) {
-            Logger::warn("Depth pyramid generation disabled: VK_FORMAT_R32_SFLOAT storage images are unsupported.");
-        }
-        updateGpuCullingDepthPyramidDescriptors();
-        return;
-    }
-
-    std::array<VkDescriptorPoolSize, 2> poolSizes{};
-    poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[0].descriptorCount = depthPyramidMipLevels_;
-    poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    poolSizes[1].descriptorCount = depthPyramidMipLevels_;
-    depthPyramidDescriptorPool_.create(
-        context_.vkDevice(), std::span<const VkDescriptorPoolSize>(poolSizes.data(), poolSizes.size()), depthPyramidMipLevels_);
-    rhi::debug::setObjectName(context_.vkDevice(),
-                              depthPyramidDescriptorPool_.handle(),
-                              VK_OBJECT_TYPE_DESCRIPTOR_POOL,
-                              "DepthPyramidDescriptorPool");
-
-    depthPyramidDescriptorSets_.resize(depthPyramidMipLevels_, VK_NULL_HANDLE);
-    std::vector<VkDescriptorSetLayout> layouts(depthPyramidMipLevels_, depthPyramidDescriptorSetLayout_.handle());
-    VkDescriptorSetAllocateInfo allocateInfo{};
-    allocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocateInfo.descriptorPool = depthPyramidDescriptorPool_.handle();
-    allocateInfo.descriptorSetCount = static_cast<uint32_t>(depthPyramidDescriptorSets_.size());
-    allocateInfo.pSetLayouts = layouts.data();
-    VK_CHECK(vkAllocateDescriptorSets(context_.vkDevice(), &allocateInfo, depthPyramidDescriptorSets_.data()));
-
-    for (uint32_t mipLevel = 0; mipLevel < depthPyramidMipLevels_; ++mipLevel) {
-        VkDescriptorImageInfo sourceInfo{};
-        sourceInfo.sampler = depthPyramidSampler_;
-        sourceInfo.imageView = mipLevel == 0 ? swapchain_.depthImageView() : depthPyramidMipImageViews_[mipLevel - 1];
-        sourceInfo.imageLayout =
-            mipLevel == 0 ? VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL;
-
-        VkDescriptorImageInfo outputInfo{};
-        outputInfo.imageView = depthPyramidMipImageViews_[mipLevel];
-        outputInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-
-        std::array<VkWriteDescriptorSet, 2> writes{};
-        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[0].dstSet = depthPyramidDescriptorSets_[mipLevel];
-        writes[0].dstBinding = 0;
-        writes[0].descriptorCount = 1;
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[0].pImageInfo = &sourceInfo;
-
-        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[1].dstSet = depthPyramidDescriptorSets_[mipLevel];
-        writes[1].dstBinding = 1;
-        writes[1].descriptorCount = 1;
-        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        writes[1].pImageInfo = &outputInfo;
-
-        vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
-        rhi::debug::setObjectName(context_.vkDevice(),
-                                  depthPyramidDescriptorSets_[mipLevel],
-                                  VK_OBJECT_TYPE_DESCRIPTOR_SET,
-                                  "DepthPyramidDescriptorSetMip" + std::to_string(mipLevel));
-    }
-
     updateGpuCullingDepthPyramidDescriptors();
 }
 
 void Renderer::updateGpuCullingDepthPyramidDescriptors()
 {
-    if (depthPyramid_.imageView() == VK_NULL_HANDLE || depthPyramidSampler_ == VK_NULL_HANDLE) {
-        return;
-    }
-
-    VkDescriptorImageInfo depthPyramidInfo{};
-    depthPyramidInfo.sampler = depthPyramidSampler_;
-    depthPyramidInfo.imageView = depthPyramid_.imageView();
-    depthPyramidInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    const auto updateSets = [this, &depthPyramidInfo](const std::vector<VkDescriptorSet>& descriptorSets) {
-        for (VkDescriptorSet descriptorSet : descriptorSets) {
-            if (descriptorSet == VK_NULL_HANDLE) {
-                continue;
-            }
-
-            VkWriteDescriptorSet write{};
-            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            write.dstSet = descriptorSet;
-            write.dstBinding = 3;
-            write.descriptorCount = 1;
-            write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            write.pImageInfo = &depthPyramidInfo;
-            vkUpdateDescriptorSets(context_.vkDevice(), 1, &write, 0, nullptr);
-        }
-    };
-
-    updateSets(gpuCullDescriptorSets_);
-    updateSets(shadowCullDescriptorSets_);
+    gpuCulling_.updateDepthPyramidDescriptors();
 }
 
 void Renderer::createGpuCullingResources()
 {
-    destroyGpuCullingResources();
-
-    if (!useGpuCulling_) {
-        if (useGpuShadowCulling_) {
-            Logger::warn("GPU shadow culling unavailable because the shared GPU culling pipeline is disabled.");
-        }
-        return;
-    }
-
-    try {
-        if (frameIndirectDrawBuffers_.size() != frames_.size()) {
-            throw std::runtime_error("GPU culling requires one indirect output buffer per frame.");
-        }
-
-        if (depthPyramid_.image() == VK_NULL_HANDLE || depthPyramidSampler_ == VK_NULL_HANDLE) {
-            throw std::runtime_error("GPU culling requires a valid depth pyramid descriptor resource.");
-        }
-
-        createGpuCullDescriptorLayout();
-        createGpuCullPipeline();
-        createGpuCullBuffers();
-        createGpuCullDescriptorSets();
-
-        gpuCullingAvailable_ = true;
-        Logger::info("GPU frustum culling enabled for main-pass indirect command generation and per-batch visible "
-                     "count readback.");
-        if (context_.device().drawIndexedIndirectCountAvailable()) {
-            Logger::info("vkCmdDrawIndexedIndirectCount support detected; compacted per-batch indirect-count drawing "
-                         "will be used when the main pass can use bindless multi-draw indirect.");
-        }
-
-        createGpuShadowCullingResources();
-    } catch (const std::exception& error) {
-        Logger::warn(std::string("GPU frustum culling unavailable; falling back to CPU culling: ") + error.what());
-        destroyGpuCullingResources();
-    }
-}
-
-void Renderer::createGpuCullDescriptorLayout()
-{
-    std::array<VkDescriptorSetLayoutBinding, 5> bindings{};
-    bindings[0].binding = 0;
-    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bindings[0].descriptorCount = 1;
-    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    bindings[1].binding = 1;
-    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bindings[1].descriptorCount = 1;
-    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    bindings[2].binding = 2;
-    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bindings[2].descriptorCount = 1;
-    bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    bindings[3].binding = 3;
-    bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    bindings[3].descriptorCount = 1;
-    bindings[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    bindings[4].binding = 4;
-    bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bindings[4].descriptorCount = 1;
-    bindings[4].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    gpuCullDescriptorSetLayout_.create(
-        context_.vkDevice(), std::span<const VkDescriptorSetLayoutBinding>(bindings.data(), bindings.size()));
-    rhi::debug::setObjectName(context_.vkDevice(),
-                              gpuCullDescriptorSetLayout_.handle(),
-                              VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
-                              "GpuCullDescriptorSetLayout");
-}
-
-void Renderer::createGpuCullPipeline()
-{
-    const VkDescriptorSetLayout cullDescriptorSetLayout = gpuCullDescriptorSetLayout_.handle();
-    const VkPushConstantRange pushConstantRange{
-        VK_SHADER_STAGE_COMPUTE_BIT, 0, static_cast<uint32_t>(sizeof(GpuCullPushConstants))};
-
-    rhi::VulkanComputePipelineCreateInfo pipelineInfo{};
-    pipelineInfo.shaderPath = shaderPath("cull.comp.spv");
-    pipelineInfo.descriptorSetLayouts = std::span<const VkDescriptorSetLayout>(&cullDescriptorSetLayout, 1);
-    pipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&pushConstantRange, 1);
-    gpuCullPipeline_.create(context_.vkDevice(), pipelineInfo);
-    rhi::debug::setObjectName(
-        context_.vkDevice(), gpuCullPipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "GpuCullComputePipeline");
-    rhi::debug::setObjectName(
-        context_.vkDevice(), gpuCullPipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "GpuCullPipelineLayout");
-}
-
-void Renderer::createGpuCullBuffers()
-{
-    frameCullInputBuffers_.resize(frames_.size());
-    for (size_t frameIndex = 0; frameIndex < frameCullInputBuffers_.size(); ++frameIndex) {
-        rhi::VulkanBufferCreateInfo bufferInfo{};
-        bufferInfo.size = static_cast<VkDeviceSize>(kMaxDrawItems * sizeof(GpuCullDrawItem));
-        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-        bufferInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
-        bufferInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-        frameCullInputBuffers_[frameIndex].createBuffer(context_, bufferInfo);
-        rhi::debug::setObjectName(context_.vkDevice(),
-                                  frameCullInputBuffers_[frameIndex].buffer(),
-                                  VK_OBJECT_TYPE_BUFFER,
-                                  "GpuCullInputBuffer" + std::to_string(frameIndex));
-    }
-
-    frameGpuCullParamBuffers_.resize(frames_.size());
-    for (size_t frameIndex = 0; frameIndex < frameGpuCullParamBuffers_.size(); ++frameIndex) {
-        rhi::VulkanBufferCreateInfo bufferInfo{};
-        bufferInfo.size = static_cast<VkDeviceSize>(sizeof(GpuCullFrameParams));
-        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-        bufferInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
-        bufferInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-        frameGpuCullParamBuffers_[frameIndex].createBuffer(context_, bufferInfo);
-        rhi::debug::setObjectName(context_.vkDevice(),
-                                  frameGpuCullParamBuffers_[frameIndex].buffer(),
-                                  VK_OBJECT_TYPE_BUFFER,
-                                  "GpuCullFrameParamsBuffer" + std::to_string(frameIndex));
-    }
-
-    frameBatchVisibleCountBuffers_.resize(frames_.size());
-    frameBatchVisibleCountReadbackBuffers_.resize(frames_.size());
-    frameGpuCullTotalDrawItems_.assign(frames_.size(), 0);
-    frameGpuCullBatchCounts_.assign(frames_.size(), 0);
-    frameGpuCullReadbackReady_.assign(frames_.size(), 0);
-    frameGpuCullIndirectCountPath_.assign(frames_.size(), 0);
-    for (size_t frameIndex = 0; frameIndex < frames_.size(); ++frameIndex) {
-        rhi::VulkanBufferCreateInfo gpuCountInfo{};
-        gpuCountInfo.size = kGpuCullCountBufferSize;
-        gpuCountInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                             VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-        gpuCountInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-        frameBatchVisibleCountBuffers_[frameIndex].createBuffer(context_, gpuCountInfo);
-        rhi::debug::setObjectName(context_.vkDevice(),
-                                  frameBatchVisibleCountBuffers_[frameIndex].buffer(),
-                                  VK_OBJECT_TYPE_BUFFER,
-                                  "GpuBatchVisibleCountBuffer" + std::to_string(frameIndex));
-
-        rhi::VulkanBufferCreateInfo readbackCountInfo{};
-        readbackCountInfo.size = kGpuCullCountBufferSize;
-        readbackCountInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        readbackCountInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
-        readbackCountInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
-        frameBatchVisibleCountReadbackBuffers_[frameIndex].createBuffer(context_, readbackCountInfo);
-        rhi::debug::setObjectName(context_.vkDevice(),
-                                  frameBatchVisibleCountReadbackBuffers_[frameIndex].buffer(),
-                                  VK_OBJECT_TYPE_BUFFER,
-                                  "GpuBatchVisibleCountReadbackBuffer" + std::to_string(frameIndex));
-    }
-}
-
-void Renderer::createGpuCullDescriptorSets()
-{
-    std::array<VkDescriptorPoolSize, 2> poolSizes{};
-    poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[0].descriptorCount = static_cast<uint32_t>(frames_.size() * 4);
-    poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[1].descriptorCount = static_cast<uint32_t>(frames_.size());
-
-    gpuCullDescriptorPool_.create(context_.vkDevice(),
-                                  std::span<const VkDescriptorPoolSize>(poolSizes.data(), poolSizes.size()),
-                                  static_cast<uint32_t>(frames_.size()));
-    rhi::debug::setObjectName(context_.vkDevice(),
-                              gpuCullDescriptorPool_.handle(),
-                              VK_OBJECT_TYPE_DESCRIPTOR_POOL,
-                              "GpuCullDescriptorPool");
-
-    gpuCullDescriptorSets_.resize(frames_.size(), VK_NULL_HANDLE);
-    std::vector<VkDescriptorSetLayout> setLayouts(frames_.size(), gpuCullDescriptorSetLayout_.handle());
-    VkDescriptorSetAllocateInfo allocateInfo{};
-    allocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocateInfo.descriptorPool = gpuCullDescriptorPool_.handle();
-    allocateInfo.descriptorSetCount = static_cast<uint32_t>(gpuCullDescriptorSets_.size());
-    allocateInfo.pSetLayouts = setLayouts.data();
-    VK_CHECK(vkAllocateDescriptorSets(context_.vkDevice(), &allocateInfo, gpuCullDescriptorSets_.data()));
-
-    for (size_t frameIndex = 0; frameIndex < gpuCullDescriptorSets_.size(); ++frameIndex) {
-        VkDescriptorBufferInfo inputBufferInfo{};
-        inputBufferInfo.buffer = frameCullInputBuffers_[frameIndex].buffer();
-        inputBufferInfo.offset = 0;
-        inputBufferInfo.range = frameCullInputBuffers_[frameIndex].size();
-
-        VkDescriptorBufferInfo outputBufferInfo{};
-        outputBufferInfo.buffer = frameIndirectDrawBuffers_[frameIndex].buffer();
-        outputBufferInfo.offset = 0;
-        outputBufferInfo.range = frameIndirectDrawBuffers_[frameIndex].size();
-
-        VkDescriptorBufferInfo visibleCountBufferInfo{};
-        visibleCountBufferInfo.buffer = frameBatchVisibleCountBuffers_[frameIndex].buffer();
-        visibleCountBufferInfo.offset = 0;
-        visibleCountBufferInfo.range = kGpuCullCountBufferSize;
-
-        VkDescriptorImageInfo depthPyramidInfo{};
-        depthPyramidInfo.sampler = depthPyramidSampler_;
-        depthPyramidInfo.imageView = depthPyramid_.imageView();
-        depthPyramidInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-        VkDescriptorBufferInfo frameParamsBufferInfo{};
-        frameParamsBufferInfo.buffer = frameGpuCullParamBuffers_[frameIndex].buffer();
-        frameParamsBufferInfo.offset = 0;
-        frameParamsBufferInfo.range = frameGpuCullParamBuffers_[frameIndex].size();
-
-        std::array<VkWriteDescriptorSet, 5> writes{};
-        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[0].dstSet = gpuCullDescriptorSets_[frameIndex];
-        writes[0].dstBinding = 0;
-        writes[0].descriptorCount = 1;
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[0].pBufferInfo = &inputBufferInfo;
-
-        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[1].dstSet = gpuCullDescriptorSets_[frameIndex];
-        writes[1].dstBinding = 1;
-        writes[1].descriptorCount = 1;
-        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[1].pBufferInfo = &outputBufferInfo;
-
-        writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[2].dstSet = gpuCullDescriptorSets_[frameIndex];
-        writes[2].dstBinding = 2;
-        writes[2].descriptorCount = 1;
-        writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[2].pBufferInfo = &visibleCountBufferInfo;
-
-        writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[3].dstSet = gpuCullDescriptorSets_[frameIndex];
-        writes[3].dstBinding = 3;
-        writes[3].descriptorCount = 1;
-        writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[3].pImageInfo = &depthPyramidInfo;
-
-        writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[4].dstSet = gpuCullDescriptorSets_[frameIndex];
-        writes[4].dstBinding = 4;
-        writes[4].descriptorCount = 1;
-        writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[4].pBufferInfo = &frameParamsBufferInfo;
-
-        vkUpdateDescriptorSets(
-            context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
-        rhi::debug::setObjectName(context_.vkDevice(),
-                                  gpuCullDescriptorSets_[frameIndex],
-                                  VK_OBJECT_TYPE_DESCRIPTOR_SET,
-                                  "GpuCullDescriptorSet" + std::to_string(frameIndex));
-    }
+    gpuCulling_.createResources(
+        static_cast<uint32_t>(frames_.size()), useGpuCulling_, useGpuShadowCulling_, isShadowIndirectActive());
 }
 
 void Renderer::destroyGpuCullingResources()
 {
-    destroyGpuShadowCullingResources();
-
-    gpuCullingAvailable_ = false;
-    gpuCullDescriptorSets_.clear();
-    gpuCullDescriptorPool_.reset();
-    frameGpuCullIndirectCountPath_.clear();
-    frameGpuCullReadbackReady_.clear();
-    frameGpuCullBatchCounts_.clear();
-    frameGpuCullTotalDrawItems_.clear();
-    frameBatchVisibleCountReadbackBuffers_.clear();
-    frameBatchVisibleCountBuffers_.clear();
-    frameGpuCullParamBuffers_.clear();
-    frameCullInputBuffers_.clear();
-    gpuCullPipeline_.reset();
-    gpuCullDescriptorSetLayout_.reset();
-}
-
-void Renderer::createGpuShadowCullingResources()
-{
-    destroyGpuShadowCullingResources();
-
-    if (!useGpuShadowCulling_) {
-        return;
-    }
-
-    try {
-        if (gpuCullDescriptorSetLayout_.handle() == VK_NULL_HANDLE || gpuCullPipeline_.pipeline() == VK_NULL_HANDLE ||
-            gpuCullPipeline_.layout() == VK_NULL_HANDLE) {
-            throw std::runtime_error("GPU shadow culling requires the shared cull.comp pipeline.");
-        }
-        if (!isShadowIndirectActive()) {
-            throw std::runtime_error("GPU shadow culling requires the shadow indirect draw path.");
-        }
-
-        createGpuShadowCullBuffers();
-        createGpuShadowCullDescriptorSets();
-
-        gpuShadowCullingAvailable_ = true;
-        Logger::info("GPU shadow culling preparation enabled with per-frame shadow cull input, compacted indirect "
-                     "output, and per-batch visible count buffers.");
-    } catch (const std::exception& error) {
-        Logger::warn(std::string("GPU shadow culling unavailable; using CPU shadow culling fallback: ") + error.what());
-        destroyGpuShadowCullingResources();
-    }
-}
-
-void Renderer::createGpuShadowCullBuffers()
-{
-    frameShadowCullInputBuffers_.resize(frames_.size());
-    for (size_t frameIndex = 0; frameIndex < frameShadowCullInputBuffers_.size(); ++frameIndex) {
-        rhi::VulkanBufferCreateInfo bufferInfo{};
-        bufferInfo.size = static_cast<VkDeviceSize>(kMaxDrawItems * sizeof(GpuCullDrawItem));
-        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-        bufferInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
-        bufferInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-        frameShadowCullInputBuffers_[frameIndex].createBuffer(context_, bufferInfo);
-        rhi::debug::setObjectName(context_.vkDevice(),
-                                  frameShadowCullInputBuffers_[frameIndex].buffer(),
-                                  VK_OBJECT_TYPE_BUFFER,
-                                  "GpuShadowCullInputBuffer" + std::to_string(frameIndex));
-    }
-
-    frameShadowBatchVisibleCountBuffers_.resize(frames_.size());
-    frameShadowBatchVisibleCountReadbackBuffers_.resize(frames_.size());
-    frameGpuShadowCullTotalDrawItems_.assign(frames_.size(), 0);
-    frameGpuShadowCullBatchCounts_.assign(frames_.size(), 0);
-    frameGpuShadowCullReadbackReady_.assign(frames_.size(), 0);
-    frameGpuShadowCullIndirectCountPath_.assign(frames_.size(), 0);
-    for (size_t frameIndex = 0; frameIndex < frames_.size(); ++frameIndex) {
-        rhi::VulkanBufferCreateInfo gpuCountInfo{};
-        gpuCountInfo.size = kGpuCullCountBufferSize;
-        gpuCountInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                             VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-        gpuCountInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-        frameShadowBatchVisibleCountBuffers_[frameIndex].createBuffer(context_, gpuCountInfo);
-        rhi::debug::setObjectName(context_.vkDevice(),
-                                  frameShadowBatchVisibleCountBuffers_[frameIndex].buffer(),
-                                  VK_OBJECT_TYPE_BUFFER,
-                                  "GpuShadowBatchVisibleCountBuffer" + std::to_string(frameIndex));
-
-        rhi::VulkanBufferCreateInfo readbackCountInfo{};
-        readbackCountInfo.size = kGpuCullCountBufferSize;
-        readbackCountInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        readbackCountInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
-        readbackCountInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
-        frameShadowBatchVisibleCountReadbackBuffers_[frameIndex].createBuffer(context_, readbackCountInfo);
-        rhi::debug::setObjectName(context_.vkDevice(),
-                                  frameShadowBatchVisibleCountReadbackBuffers_[frameIndex].buffer(),
-                                  VK_OBJECT_TYPE_BUFFER,
-                                  "GpuShadowBatchVisibleCountReadbackBuffer" + std::to_string(frameIndex));
-    }
-}
-
-void Renderer::createGpuShadowCullDescriptorSets()
-{
-    std::array<VkDescriptorPoolSize, 2> poolSizes{};
-    poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[0].descriptorCount = static_cast<uint32_t>(frames_.size() * 4);
-    poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[1].descriptorCount = static_cast<uint32_t>(frames_.size());
-
-    shadowCullDescriptorPool_.create(context_.vkDevice(),
-                                     std::span<const VkDescriptorPoolSize>(poolSizes.data(), poolSizes.size()),
-                                     static_cast<uint32_t>(frames_.size()));
-    rhi::debug::setObjectName(context_.vkDevice(),
-                              shadowCullDescriptorPool_.handle(),
-                              VK_OBJECT_TYPE_DESCRIPTOR_POOL,
-                              "GpuShadowCullDescriptorPool");
-
-    shadowCullDescriptorSets_.resize(frames_.size(), VK_NULL_HANDLE);
-    std::vector<VkDescriptorSetLayout> setLayouts(frames_.size(), gpuCullDescriptorSetLayout_.handle());
-    VkDescriptorSetAllocateInfo allocateInfo{};
-    allocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocateInfo.descriptorPool = shadowCullDescriptorPool_.handle();
-    allocateInfo.descriptorSetCount = static_cast<uint32_t>(shadowCullDescriptorSets_.size());
-    allocateInfo.pSetLayouts = setLayouts.data();
-    VK_CHECK(vkAllocateDescriptorSets(context_.vkDevice(), &allocateInfo, shadowCullDescriptorSets_.data()));
-
-    for (size_t frameIndex = 0; frameIndex < shadowCullDescriptorSets_.size(); ++frameIndex) {
-        VkDescriptorBufferInfo inputBufferInfo{};
-        inputBufferInfo.buffer = frameShadowCullInputBuffers_[frameIndex].buffer();
-        inputBufferInfo.offset = 0;
-        inputBufferInfo.range = frameShadowCullInputBuffers_[frameIndex].size();
-
-        VkDescriptorBufferInfo outputBufferInfo{};
-        outputBufferInfo.buffer = frameShadowIndirectDrawBuffers_[frameIndex].buffer();
-        outputBufferInfo.offset = 0;
-        outputBufferInfo.range = frameShadowIndirectDrawBuffers_[frameIndex].size();
-
-        VkDescriptorBufferInfo visibleCountBufferInfo{};
-        visibleCountBufferInfo.buffer = frameShadowBatchVisibleCountBuffers_[frameIndex].buffer();
-        visibleCountBufferInfo.offset = 0;
-        visibleCountBufferInfo.range = kGpuCullCountBufferSize;
-
-        VkDescriptorImageInfo depthPyramidInfo{};
-        depthPyramidInfo.sampler = depthPyramidSampler_;
-        depthPyramidInfo.imageView = depthPyramid_.imageView();
-        depthPyramidInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-        VkDescriptorBufferInfo frameParamsBufferInfo{};
-        frameParamsBufferInfo.buffer = frameGpuCullParamBuffers_[frameIndex].buffer();
-        frameParamsBufferInfo.offset = 0;
-        frameParamsBufferInfo.range = frameGpuCullParamBuffers_[frameIndex].size();
-
-        std::array<VkWriteDescriptorSet, 5> writes{};
-        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[0].dstSet = shadowCullDescriptorSets_[frameIndex];
-        writes[0].dstBinding = 0;
-        writes[0].descriptorCount = 1;
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[0].pBufferInfo = &inputBufferInfo;
-
-        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[1].dstSet = shadowCullDescriptorSets_[frameIndex];
-        writes[1].dstBinding = 1;
-        writes[1].descriptorCount = 1;
-        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[1].pBufferInfo = &outputBufferInfo;
-
-        writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[2].dstSet = shadowCullDescriptorSets_[frameIndex];
-        writes[2].dstBinding = 2;
-        writes[2].descriptorCount = 1;
-        writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[2].pBufferInfo = &visibleCountBufferInfo;
-
-        writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[3].dstSet = shadowCullDescriptorSets_[frameIndex];
-        writes[3].dstBinding = 3;
-        writes[3].descriptorCount = 1;
-        writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[3].pImageInfo = &depthPyramidInfo;
-
-        writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[4].dstSet = shadowCullDescriptorSets_[frameIndex];
-        writes[4].dstBinding = 4;
-        writes[4].descriptorCount = 1;
-        writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[4].pBufferInfo = &frameParamsBufferInfo;
-
-        vkUpdateDescriptorSets(
-            context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
-        rhi::debug::setObjectName(context_.vkDevice(),
-                                  shadowCullDescriptorSets_[frameIndex],
-                                  VK_OBJECT_TYPE_DESCRIPTOR_SET,
-                                  "GpuShadowCullDescriptorSet" + std::to_string(frameIndex));
-    }
-}
-
-void Renderer::destroyGpuShadowCullingResources()
-{
-    gpuShadowCullingAvailable_ = false;
-    shadowCullDescriptorSets_.clear();
-    shadowCullDescriptorPool_.reset();
-    frameGpuShadowCullIndirectCountPath_.clear();
-    frameGpuShadowCullReadbackReady_.clear();
-    frameGpuShadowCullBatchCounts_.clear();
-    frameGpuShadowCullTotalDrawItems_.clear();
-    frameShadowBatchVisibleCountReadbackBuffers_.clear();
-    frameShadowBatchVisibleCountBuffers_.clear();
-    frameShadowCullInputBuffers_.clear();
+    gpuCulling_.destroyResources();
 }
 
 void Renderer::createShadowMap()
@@ -1646,28 +1005,7 @@ void Renderer::createShadowPipeline()
 
 void Renderer::createComputePipelines()
 {
-    depthPyramidPipeline_.reset();
-    if (depthPyramidDescriptorSetLayout_.handle() != VK_NULL_HANDLE) {
-        const VkDescriptorSetLayout depthPyramidDescriptorSetLayout = depthPyramidDescriptorSetLayout_.handle();
-        const VkPushConstantRange depthPyramidPushConstantRange{
-            VK_SHADER_STAGE_COMPUTE_BIT, 0, static_cast<uint32_t>(sizeof(DepthPyramidPushConstants))};
-
-        rhi::VulkanComputePipelineCreateInfo depthPyramidPipelineInfo{};
-        depthPyramidPipelineInfo.shaderPath = shaderPath("depth_pyramid.comp.spv");
-        depthPyramidPipelineInfo.descriptorSetLayouts =
-            std::span<const VkDescriptorSetLayout>(&depthPyramidDescriptorSetLayout, 1);
-        depthPyramidPipelineInfo.pushConstantRanges =
-            std::span<const VkPushConstantRange>(&depthPyramidPushConstantRange, 1);
-        depthPyramidPipeline_.create(context_.vkDevice(), depthPyramidPipelineInfo);
-        rhi::debug::setObjectName(context_.vkDevice(),
-                                  depthPyramidPipeline_.pipeline(),
-                                  VK_OBJECT_TYPE_PIPELINE,
-                                  "DepthPyramidComputePipeline");
-        rhi::debug::setObjectName(context_.vkDevice(),
-                                  depthPyramidPipeline_.layout(),
-                                  VK_OBJECT_TYPE_PIPELINE_LAYOUT,
-                                  "DepthPyramidPipelineLayout");
-    }
+    depthPyramid_.createPipeline();
 
     // Exposure compute pipelines (luminance/histogram/reduce) now live in PostProcessStack.
     postProcess_.createExposureComputePipelines();
@@ -1683,18 +1021,24 @@ uint32_t Renderer::allocateRenderObjectDebugId()
     return debugId;
 }
 
+renderer::SceneBuilder Renderer::makeSceneBuilder()
+{
+    return renderer::SceneBuilder(
+        cubeMesh_, portfolioSphereMesh_, materialVariants_, [this] { return allocateRenderObjectDebugId(); });
+}
+
 void Renderer::createScene()
 {
     resetSceneState();
     createSceneSharedResources();
 
     // The portfolio sphere showcase is the default editor scene. The glTF import
-    // (tryLoadGltfScene) and the cube fallback (createCubeFallbackScene) remain available
-    // through the scene-loading UI; they are just no longer the startup default.
-    addPortfolioShowcaseObjects();
+    // (tryLoadGltfScene) and the cube fallback remain available through the
+    // scene-loading UI; they are just no longer the startup default.
+    makeSceneBuilder().appendPortfolioShowcase(renderObjects_);
     if (renderObjects_.empty()) {
         Logger::warn("Portfolio showcase scene unavailable; using built-in cube fallback scene.");
-        createCubeFallbackScene();
+        makeSceneBuilder().appendCubeFallback(renderObjects_);
     }
 }
 
@@ -1799,7 +1143,7 @@ bool Renderer::tryLoadGltfScene()
                          std::to_string(importedMeshes_.size()) + " mesh slot(s), " +
                          std::to_string(renderObjects_.size()) + " render object(s), and " +
                          std::to_string(importedMaterials_.size()) + " material(s).");
-            addPortfolioShowcaseObjects();
+            makeSceneBuilder().appendPortfolioShowcase(renderObjects_);
             return true;
         } catch (const std::exception& error) {
             Logger::warn("Failed to load glTF mesh '" + modelPath.string() + "': " + error.what());
@@ -1809,229 +1153,11 @@ bool Renderer::tryLoadGltfScene()
     return false;
 }
 
-void Renderer::createCubeFallbackScene()
-{
-    const auto addCube = [this](std::string debugName,
-                                const renderer::Material* material,
-                                const glm::vec3& position,
-                                const glm::vec3& rotationRadians,
-                                const glm::vec3& scale,
-                                bool animateTransform = true,
-                                bool portfolioOnly = false,
-                                bool hideInPortfolio = false,
-                                renderer::RenderObjectSourceType sourceType =
-                                    renderer::RenderObjectSourceType::BuiltInFallbackCube) {
-        renderer::RenderObject cube{};
-        cube.debugId = allocateRenderObjectDebugId();
-        cube.sceneObjectId = cube.debugId;
-        cube.mesh = &cubeMesh_;
-        cube.material = material;
-        cube.debugName = std::move(debugName);
-        cube.sourceType = sourceType;
-        cube.transform.position = position;
-        cube.transform.rotationRadians = rotationRadians;
-        cube.transform.scale = scale;
-        cube.animateTransform = animateTransform;
-        cube.portfolioOnly = portfolioOnly;
-        cube.hideInPortfolio = hideInPortfolio;
-        renderObjects_.push_back(std::move(cube));
-    };
-
-    renderObjects_.reserve(4);
-    addCube("Center Cube",
-            &materialVariants_.at(0),
-            {0.0f, -0.1f, 0.0f},
-            {0.2f, 0.0f, 0.0f},
-            {0.7f, 0.7f, 0.7f},
-            true,
-            false,
-            true);
-    addCube(
-        "Left Cube",
-        &materialVariants_.at(1),
-        {-1.35f, -0.15f, -0.35f},
-        {0.0f, 0.35f, 0.2f},
-        {0.5f, 0.5f, 0.5f},
-        true,
-        false,
-        true);
-    addCube("Right Cube",
-            &materialVariants_.at(2),
-            {1.35f, -0.05f, -0.25f},
-            {0.25f, -0.35f, 0.0f},
-            {0.55f, 0.8f, 0.55f},
-            true,
-            false,
-            true);
-    addCube("Elevated Cube",
-            &materialVariants_.at(3),
-            {0.0f, 1.0f, -0.7f},
-            {-0.3f, 0.2f, 0.45f},
-            {0.45f, 0.45f, 0.45f},
-            true,
-            false,
-            true);
-}
-
-void Renderer::addPortfolioShowcaseObjects()
-{
-    if (hasPortfolioShowcaseScene()) {
-        return;
-    }
-    if (materialVariants_.size() <= kPortfolioBackdropMaterialIndex) {
-        Logger::warn("Portfolio showcase scene was not added because portfolio materials are unavailable.");
-        return;
-    }
-
-    const auto addPortfolioCube = [this](std::string debugName,
-                                         const renderer::Material* material,
-                                         const glm::vec3& position,
-                                         const glm::vec3& rotationRadians,
-                                         const glm::vec3& scale) {
-        renderer::RenderObject cube{};
-        cube.debugId = allocateRenderObjectDebugId();
-        cube.sceneObjectId = cube.debugId;
-        cube.mesh = &cubeMesh_;
-        cube.material = material;
-        cube.debugName = std::move(debugName);
-        cube.sourceType = renderer::RenderObjectSourceType::PortfolioShowcase;
-        cube.transform.position = position;
-        cube.transform.rotationRadians = rotationRadians;
-        cube.transform.scale = scale;
-        cube.animateTransform = false;
-        // Visible in both the editor and F11 portfolio capture (the showcase is the
-        // default scene now); portfolio detection keys off sourceType, not this flag.
-        cube.portfolioOnly = false;
-        renderObjects_.push_back(std::move(cube));
-    };
-
-    const auto addPortfolioSphere = [this](std::string debugName,
-                                           const renderer::Material* material,
-                                           const glm::vec3& position,
-                                           const glm::vec3& scale) {
-        renderer::RenderObject sphere{};
-        sphere.debugId = allocateRenderObjectDebugId();
-        sphere.sceneObjectId = sphere.debugId;
-        sphere.mesh = &portfolioSphereMesh_;
-        sphere.material = material;
-        sphere.debugName = std::move(debugName);
-        sphere.sourceType = renderer::RenderObjectSourceType::PortfolioShowcase;
-        sphere.transform.position = position;
-        sphere.transform.scale = scale;
-        sphere.animateTransform = false;
-        sphere.portfolioOnly = false;
-        renderObjects_.push_back(std::move(sphere));
-    };
-
-    renderObjects_.reserve(renderObjects_.size() + 8);
-    addPortfolioCube("Portfolio Studio Floor",
-                     &materialVariants_.at(kPortfolioGroundMaterialIndex),
-                     {0.0f, -0.56f, 0.24f},
-                     {0.0f, 0.0f, 0.0f},
-                     {11.0f, 0.08f, 6.4f});
-    addPortfolioCube("Portfolio Studio Backdrop",
-                     &materialVariants_.at(kPortfolioBackdropMaterialIndex),
-                     {0.0f, 2.08f, -2.82f},
-                     {0.0f, 0.0f, 0.0f},
-                     {60.0f, 9.0f, 0.08f});
-    addPortfolioCube("Portfolio Side Plinth",
-                     &materialVariants_.at(kPortfolioGroundMaterialIndex),
-                     {1.02f, -0.42f, -0.18f},
-                     {0.0f, -0.16f, 0.0f},
-                     {0.96f, 0.28f, 0.70f});
-    addPortfolioSphere("Portfolio Hero Ceramic",
-                       &materialVariants_.at(kPortfolioHeroCeramicMaterialIndex),
-                       {0.0f, -0.11f, 0.08f},
-                       {0.82f, 0.82f, 0.82f});
-    addPortfolioSphere("Portfolio Matte Gray",
-                       &materialVariants_.at(kPortfolioMatteGrayMaterialIndex),
-                       {-0.92f, -0.24f, 0.06f},
-                       {0.56f, 0.56f, 0.56f});
-    addPortfolioSphere("Portfolio Glossy Blue",
-                       &materialVariants_.at(kPortfolioGlossyBlueMaterialIndex),
-                       {-0.62f, -0.33f, 0.66f},
-                       {0.38f, 0.38f, 0.38f});
-    addPortfolioSphere("Portfolio Rough Metal",
-                       &materialVariants_.at(kPortfolioRoughMetalMaterialIndex),
-                       {0.96f, -0.29f, 0.42f},
-                       {0.46f, 0.46f, 0.46f});
-    addPortfolioSphere("Portfolio Polished Metal Small",
-                       &materialVariants_.at(kPortfolioPolishedMetalSmallMaterialIndex),
-                       {1.04f, -0.09f, -0.18f},
-                       {0.38f, 0.38f, 0.38f});
-}
-
 void Renderer::resetPortfolioShowcaseObjectsToPreset()
 {
-    const auto resetObject = [this](std::string_view debugName,
-                                    const glm::vec3& position,
-                                    const glm::vec3& rotationRadians,
-                                    const glm::vec3& scale) {
-        for (renderer::RenderObject& object : renderObjects_) {
-            if (object.sourceType != renderer::RenderObjectSourceType::PortfolioShowcase ||
-                object.debugName != debugName) {
-                continue;
-            }
-
-            object.transform.position = position;
-            object.transform.rotationRadians = rotationRadians;
-            object.transform.scale = scale;
-            object.transform.matrixOverride = glm::mat4{1.0f};
-            object.transform.useMatrixOverride = false;
-            object.visible = true;
-            object.animateTransform = false;
-            object.portfolioOnly = false;
-            object.hideInPortfolio = false;
-            return;
-        }
-    };
-
-    resetObject("Portfolio Studio Floor", {0.0f, -0.56f, 0.24f}, {0.0f, 0.0f, 0.0f}, {11.0f, 0.08f, 6.4f});
-    resetObject("Portfolio Studio Backdrop", {0.0f, 2.08f, -2.82f}, {0.0f, 0.0f, 0.0f}, {60.0f, 9.0f, 0.08f});
-    resetObject("Portfolio Side Plinth", {1.02f, -0.42f, -0.18f}, {0.0f, -0.16f, 0.0f}, {0.96f, 0.28f, 0.70f});
-    resetObject("Portfolio Hero Ceramic", {0.0f, -0.11f, 0.08f}, {0.0f, 0.0f, 0.0f}, {0.82f, 0.82f, 0.82f});
-    resetObject("Portfolio Matte Gray", {-0.92f, -0.24f, 0.06f}, {0.0f, 0.0f, 0.0f}, {0.56f, 0.56f, 0.56f});
-    resetObject("Portfolio Glossy Blue", {-0.62f, -0.33f, 0.66f}, {0.0f, 0.0f, 0.0f}, {0.38f, 0.38f, 0.38f});
-    resetObject("Portfolio Rough Metal", {0.96f, -0.29f, 0.42f}, {0.0f, 0.0f, 0.0f}, {0.46f, 0.46f, 0.46f});
-    resetObject("Portfolio Polished Metal Small", {1.04f, -0.09f, -0.18f}, {0.0f, 0.0f, 0.0f}, {0.38f, 0.38f, 0.38f});
+    renderer::SceneBuilder::resetPortfolioShowcaseToPreset(renderObjects_);
     invalidateDepthPyramid();
     invalidateTaaHistory();
-}
-
-bool Renderer::hasPortfolioShowcaseScene() const
-{
-    bool hasFloor = false;
-    bool hasBackdrop = false;
-    bool hasHero = false;
-    size_t materialSampleCount = 0;
-
-    for (const renderer::RenderObject& object : renderObjects_) {
-        if (object.sourceType != renderer::RenderObjectSourceType::PortfolioShowcase || !object.mesh ||
-            !object.mesh->valid() || !object.material) {
-            continue;
-        }
-
-        if (object.debugName == "Portfolio Studio Floor") {
-            hasFloor = true;
-            continue;
-        }
-        if (object.debugName == "Portfolio Studio Backdrop") {
-            hasBackdrop = true;
-            continue;
-        }
-        if (object.material->debugName == "Portfolio_HeroCeramic") {
-            hasHero = true;
-            continue;
-        }
-        if (object.material->debugName == "Portfolio_MatteGray" ||
-            object.material->debugName == "Portfolio_GlossyBlue" ||
-            object.material->debugName == "Portfolio_RoughMetal" ||
-            object.material->debugName == "Portfolio_PolishedMetalSmall") {
-            ++materialSampleCount;
-        }
-    }
-
-    return hasFloor && hasBackdrop && hasHero && materialSampleCount >= 4;
 }
 
 bool Renderer::currentFrameHasPortfolioShowcaseDrawItems() const
@@ -2052,12 +1178,12 @@ bool Renderer::currentFrameHasPortfolioShowcaseDrawItems() const
 
 bool Renderer::ensurePortfolioShowcaseSceneReady()
 {
-    if (hasPortfolioShowcaseScene()) {
+    if (renderer::SceneBuilder::hasPortfolioShowcase(renderObjects_)) {
         return true;
     }
 
     if (!cubeMesh_.valid() || !portfolioSphereMesh_.valid() ||
-        materialVariants_.size() <= kPortfolioBackdropMaterialIndex) {
+        materialVariants_.size() <= renderer::kPortfolioBackdropMaterialIndex) {
         screenshotCapture_.setStatus(
             "Portfolio showcase scene is unavailable: required meshes or materials are not initialized.");
         Logger::warn(screenshotCapture_.status());
@@ -2065,95 +1191,14 @@ bool Renderer::ensurePortfolioShowcaseSceneReady()
     }
 
     Logger::warn("Portfolio showcase scene was missing; rebuilding portfolio-only showcase objects.");
-    addPortfolioShowcaseObjects();
-    if (hasPortfolioShowcaseScene()) {
+    makeSceneBuilder().appendPortfolioShowcase(renderObjects_);
+    if (renderer::SceneBuilder::hasPortfolioShowcase(renderObjects_)) {
         return true;
     }
 
     screenshotCapture_.setStatus("Portfolio showcase scene is unavailable after rebuild.");
     Logger::warn(screenshotCapture_.status());
     return false;
-}
-
-void Renderer::addOcclusionTestSceneObjects()
-{
-    if (!cubeMesh_.valid() || materialVariants_.empty()) {
-        occlusionTestSceneStatus_ =
-            "Occlusion test scene is unavailable: cube mesh or runtime materials are not initialized.";
-        Logger::warn(occlusionTestSceneStatus_);
-        return;
-    }
-
-    const auto materialAt = [this](size_t materialIndex) -> const renderer::Material* {
-        return &materialVariants_.at(materialIndex % materialVariants_.size());
-    };
-
-    const auto addCube = [this](std::string debugName,
-                                const renderer::Material* material,
-                                const glm::vec3& position,
-                                const glm::vec3& rotationRadians,
-                                const glm::vec3& scale) {
-        renderer::RenderObject cube{};
-        cube.debugId = allocateRenderObjectDebugId();
-        cube.sceneObjectId = cube.debugId;
-        cube.mesh = &cubeMesh_;
-        cube.material = material;
-        cube.debugName = std::move(debugName);
-        cube.sourceType = renderer::RenderObjectSourceType::OcclusionTest;
-        cube.transform.position = position;
-        cube.transform.rotationRadians = rotationRadians;
-        cube.transform.scale = scale;
-        cube.animateTransform = false;
-        cube.portfolioOnly = false;
-        cube.hideInPortfolio = true;
-        renderObjects_.push_back(std::move(cube));
-    };
-
-    renderObjects_.reserve(renderObjects_.size() + static_cast<size_t>(kOcclusionTestObjectCount));
-
-    const size_t groundMaterial = materialVariants_.size() > kPortfolioGroundMaterialIndex
-                                      ? kPortfolioGroundMaterialIndex
-                                      : 0;
-    addCube("Occlusion Test Ground",
-            materialAt(groundMaterial),
-            {0.0f, -0.10f, -4.0f},
-            {0.0f, 0.0f, 0.0f},
-            {13.0f, 0.12f, 22.0f});
-
-    const std::array<float, kOcclusionTestOccluderCount> occluderX = {-2.6f, -1.3f, 0.0f, 1.3f, 2.6f};
-    for (size_t occluderIndex = 0; occluderIndex < occluderX.size(); ++occluderIndex) {
-        std::ostringstream name;
-        name << "Occlusion Test Wall " << (occluderIndex + 1);
-        const float zOffset = (occluderIndex % 2 == 0) ? 0.15f : -0.08f;
-        addCube(name.str(),
-                materialAt(occluderIndex),
-                {occluderX[occluderIndex], 1.35f, 0.35f + zOffset},
-                {0.0f, 0.0f, 0.0f},
-                {0.98f, 3.10f, 0.55f});
-    }
-
-    for (int row = 0; row < kOcclusionTestGridRows; ++row) {
-        for (int column = 0; column < kOcclusionTestGridColumns; ++column) {
-            const float x = -5.5f + static_cast<float>(column) * 1.0f;
-            const float z = -2.4f - static_cast<float>(row) * 1.05f;
-            const bool topWitnessRow = row == kOcclusionTestGridRows - 1;
-            const bool sideWitnessColumn = column == 0 || column == kOcclusionTestGridColumns - 1;
-            const float y = topWitnessRow ? 3.05f : 0.22f + 0.34f * static_cast<float>((row + column) % 3);
-            const float uniformScale = sideWitnessColumn ? 0.40f : 0.32f + 0.035f * static_cast<float>((row + column) % 4);
-
-            std::ostringstream name;
-            name << "Occlusion Test Hidden Cube r" << row << " c" << column;
-            if (topWitnessRow || sideWitnessColumn) {
-                name << " visible-edge";
-            }
-
-            addCube(name.str(),
-                    materialAt(static_cast<size_t>((row + column) % 4)),
-                    {x, y, z},
-                    {0.0f, 0.15f * static_cast<float>((row + column) % 5), 0.0f},
-                    {uniformScale, uniformScale, uniformScale});
-        }
-    }
 }
 
 void Renderer::resetOcclusionTestSceneToPreset()
@@ -2170,36 +1215,9 @@ void Renderer::resetOcclusionTestSceneToPreset()
         renderObjects_.erase(firstRemoved, renderObjects_.end());
     }
 
-    addOcclusionTestSceneObjects();
+    makeSceneBuilder().appendOcclusionTest(renderObjects_, occlusionTestSceneStatus_);
     invalidateDepthPyramid();
     invalidateTaaHistory();
-}
-
-bool Renderer::hasOcclusionTestScene() const
-{
-    size_t occlusionObjectCount = 0;
-    bool hasGround = false;
-    bool hasWall = false;
-    bool hasHiddenObject = false;
-
-    for (const renderer::RenderObject& object : renderObjects_) {
-        if (object.sourceType != renderer::RenderObjectSourceType::OcclusionTest || !object.mesh ||
-            !object.mesh->valid() || !object.material) {
-            continue;
-        }
-
-        ++occlusionObjectCount;
-        if (object.debugName == "Occlusion Test Ground") {
-            hasGround = true;
-        } else if (object.debugName.find("Occlusion Test Wall") == 0) {
-            hasWall = true;
-        } else if (object.debugName.find("Occlusion Test Hidden Cube") == 0) {
-            hasHiddenObject = true;
-        }
-    }
-
-    return hasGround && hasWall && hasHiddenObject &&
-           occlusionObjectCount >= static_cast<size_t>(kOcclusionTestObjectCount);
 }
 
 void Renderer::createCheckerboardTexture()
@@ -3017,8 +2035,8 @@ void Renderer::createPortfolioMaterialVariants()
     // Give the hero ceramic a soft warm emissive so factor-only emissive is
     // visible in the default scene and reads through bloom. Editable per material
     // from the Material Inspector.
-    if (kPortfolioHeroCeramicMaterialIndex < materialVariants_.size()) {
-        materialVariants_[kPortfolioHeroCeramicMaterialIndex].emissiveFactor = glm::vec3(0.9f, 0.45f, 0.15f);
+    if (renderer::kPortfolioHeroCeramicMaterialIndex < materialVariants_.size()) {
+        materialVariants_[renderer::kPortfolioHeroCeramicMaterialIndex].emissiveFactor = glm::vec3(0.9f, 0.45f, 0.15f);
     }
 }
 
@@ -3838,26 +2856,26 @@ void Renderer::updateGpuCullInputBuffer(uint32_t frameIndex)
     if (allDrawItems_.empty()) {
         return;
     }
-    if (frameIndex >= frameCullInputBuffers_.size() || frameIndex >= frameGpuCullParamBuffers_.size()) {
-        throw std::runtime_error("GPU cull input buffer frame index is out of range.");
+    if (!gpuCulling_.available()) {
+        return;
     }
 
     const bool occlusionEnabledThisFrame = isGpuOcclusionCullingActive() && previousFrameDepthValidForOcclusion();
     const VkExtent2D extent = swapchain_.extent();
 
     GpuCullFrameParams frameParams{};
-    frameParams.occlusionViewProjection = depthPyramidViewProjection_;
+    frameParams.occlusionViewProjection = depthPyramid_.viewProjection();
     frameParams.cameraPosition = glm::vec4(frameCameraPosition_, 0.0f);
     frameParams.viewportAndMipCount = glm::vec4(static_cast<float>(extent.width),
                                                 static_cast<float>(extent.height),
-                                                static_cast<float>(depthPyramidMipLevels_),
+                                                static_cast<float>(depthPyramid_.mipLevels()),
                                                 0.0f);
     frameParams.occlusionSettings = glm::vec4(gpuOcclusionDepthBias_,
                                               gpuOcclusionNearDisableDistance_,
                                               gpuOcclusionMaxScreenCoverage_,
                                               gpuOcclusionMinScreenPixels_);
     frameParams.counterAndFlags = glm::uvec4(kGpuCullStatsCounterOffset, occlusionEnabledThisFrame ? 1u : 0u, 0u, 0u);
-    frameGpuCullParamBuffers_.at(frameIndex)
+    gpuCulling_.paramBuffer(frameIndex)
         .upload(std::as_bytes(std::span<const GpuCullFrameParams>(&frameParams, 1)));
 
     std::vector<GpuCullDrawItem> cullDrawItems(allDrawItems_.size());
@@ -3895,7 +2913,7 @@ void Renderer::updateGpuCullInputBuffer(uint32_t frameIndex)
         }
     }
 
-    frameCullInputBuffers_.at(frameIndex)
+    gpuCulling_.cullInputBuffer(frameIndex)
         .upload(std::as_bytes(std::span<const GpuCullDrawItem>(cullDrawItems.data(), cullDrawItems.size())));
 }
 
@@ -3904,13 +2922,13 @@ void Renderer::updateGpuShadowCullInputBuffer(uint32_t frameIndex)
     if (allDrawItems_.empty()) {
         return;
     }
-    if (frameIndex >= frameShadowCullInputBuffers_.size() || frameIndex >= frameGpuCullParamBuffers_.size()) {
-        throw std::runtime_error("GPU shadow cull input buffer frame index is out of range.");
+    if (!gpuCulling_.shadowAvailable()) {
+        return;
     }
 
     GpuCullFrameParams frameParams{};
     frameParams.counterAndFlags = glm::uvec4(kGpuCullStatsCounterOffset, 0u, 0u, 0u);
-    frameGpuCullParamBuffers_.at(frameIndex)
+    gpuCulling_.paramBuffer(frameIndex)
         .upload(std::as_bytes(std::span<const GpuCullFrameParams>(&frameParams, 1)));
 
     std::vector<GpuCullDrawItem> cullDrawItems(allDrawItems_.size());
@@ -3948,7 +2966,7 @@ void Renderer::updateGpuShadowCullInputBuffer(uint32_t frameIndex)
         }
     }
 
-    frameShadowCullInputBuffers_.at(frameIndex)
+    gpuCulling_.shadowCullInputBuffer(frameIndex)
         .upload(std::as_bytes(std::span<const GpuCullDrawItem>(cullDrawItems.data(), cullDrawItems.size())));
 }
 
@@ -4085,14 +3103,14 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
         message << "  " << scope.name << ": " << scope.elapsedMs << " ms\n";
     }
     if (cullingStats_.gpuCulling) {
-        const uint32_t totalDrawItems = frameIndex < frameGpuCullTotalDrawItems_.size()
-                                            ? frameGpuCullTotalDrawItems_[frameIndex]
+        const uint32_t totalDrawItems = gpuCulling_.available()
+                                            ? gpuCulling_.mainTotalDrawItems(frameIndex)
                                             : static_cast<uint32_t>(cullingStats_.totalDrawItems);
-        const uint32_t batchCount = frameIndex < frameGpuCullBatchCounts_.size()
-                                        ? frameGpuCullBatchCounts_[frameIndex]
+        const uint32_t batchCount = gpuCulling_.available()
+                                        ? gpuCulling_.mainBatchCount(frameIndex)
                                         : static_cast<uint32_t>(cullingStats_.batchCount);
         uint32_t visibleDrawItems = 0;
-        GpuCullCounters counters{};
+        renderer::GpuCullCounters counters{};
         if (readGpuCullCounters(frameIndex, counters)) {
             const uint32_t culledDrawItems =
                 counters.totalDrawItems > counters.visibleDrawItems
@@ -4104,7 +3122,7 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
                     << "  frustum culled draw items: " << counters.frustumCulledDrawItems << "\n"
                     << "  occlusion culled draw items: " << counters.occlusionCulledDrawItems << "\n"
                     << "  total culled draw items: " << culledDrawItems << "\n"
-                    << "  depth pyramid mips: " << depthPyramidMipLevels_ << "\n"
+                    << "  depth pyramid mips: " << depthPyramid_.mipLevels() << "\n"
                     << "  occlusion culling: " << (isGpuOcclusionCullingActive() ? "enabled" : "disabled") << "\n"
                     << "  batches: " << batchCount << "\n"
                     << "  indirect count path: "
@@ -4222,14 +3240,14 @@ Renderer::CullingDebugSnapshot Renderer::cullingDebugSnapshot(uint32_t frameInde
     snapshot.gpuOcclusionCulling = isGpuOcclusionCullingActive();
     snapshot.gpuShadowCulling = isGpuShadowCullingActive();
     snapshot.occlusionTestSceneActive = occlusionTestSceneActive_ && !portfolioCaptureMode_;
-    snapshot.depthPyramidBuildAvailable = depthPyramidBuildAvailable_;
-    snapshot.depthPyramidValid = depthPyramidValid_;
+    snapshot.depthPyramidBuildAvailable = depthPyramid_.buildAvailable();
+    snapshot.depthPyramidValid = depthPyramid_.valid();
     snapshot.previousFrameDepthValid = previousFrameDepthValidForOcclusion();
-    snapshot.depthPyramidMipCount = depthPyramidMipLevels_;
+    snapshot.depthPyramidMipCount = depthPyramid_.mipLevels();
     snapshot.totalDrawItems = static_cast<uint32_t>(
         std::min<size_t>(cullingStats_.totalDrawItems, std::numeric_limits<uint32_t>::max()));
-    if (cullingStats_.gpuCulling && frameIndex < frameGpuCullTotalDrawItems_.size()) {
-        snapshot.totalDrawItems = frameGpuCullTotalDrawItems_[frameIndex];
+    if (cullingStats_.gpuCulling && gpuCulling_.available()) {
+        snapshot.totalDrawItems = gpuCulling_.mainTotalDrawItems(frameIndex);
     }
 
     snapshot.visibleDrawItems =
@@ -4238,7 +3256,7 @@ Renderer::CullingDebugSnapshot Renderer::cullingDebugSnapshot(uint32_t frameInde
                                           ? snapshot.totalDrawItems - snapshot.visibleDrawItems
                                           : 0;
     uint32_t gpuVisibleDrawItems = 0;
-    GpuCullCounters gpuCounters{};
+    renderer::GpuCullCounters gpuCounters{};
     if (readGpuCullCounters(frameIndex, gpuCounters)) {
         snapshot.totalDrawItems = std::min(gpuCounters.totalDrawItems, snapshot.totalDrawItems);
         snapshot.visibleDrawItems = std::min(gpuCounters.visibleDrawItems, snapshot.totalDrawItems);
@@ -4260,8 +3278,8 @@ Renderer::CullingDebugSnapshot Renderer::cullingDebugSnapshot(uint32_t frameInde
 
     snapshot.shadowDrawItems = static_cast<uint32_t>(
         std::min<size_t>(shadowCullingStats_.totalDrawItems, std::numeric_limits<uint32_t>::max()));
-    if (shadowCullingStats_.gpuCulling && frameIndex < frameGpuShadowCullTotalDrawItems_.size()) {
-        snapshot.shadowDrawItems = frameGpuShadowCullTotalDrawItems_[frameIndex];
+    if (shadowCullingStats_.gpuCulling && gpuCulling_.shadowAvailable()) {
+        snapshot.shadowDrawItems = gpuCulling_.shadowTotalDrawItems(frameIndex);
     }
 
     snapshot.visibleShadowDrawItems = static_cast<uint32_t>(
@@ -4517,10 +3535,10 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
         useGpuOcclusionCulling_ = settings.enableGpuOcclusionCulling && settings.useGpuCulling;
         useBindlessMaterialTextures_ = settings.enableBindlessMaterialTextures;
     } else {
-        if (!settings.useGpuCulling || gpuCullingAvailable_) {
+        if (!settings.useGpuCulling || gpuCulling_.available()) {
             useGpuCulling_ = settings.useGpuCulling;
         }
-        if (!settings.useGpuShadowCulling || gpuShadowCullingAvailable_) {
+        if (!settings.useGpuShadowCulling || gpuCulling_.shadowAvailable()) {
             useGpuShadowCulling_ = settings.useGpuShadowCulling;
         }
         useGpuOcclusionCulling_ = settings.enableGpuOcclusionCulling;
@@ -4635,7 +3653,7 @@ void Renderer::loadOcclusionTestScene()
     }
 
     resetOcclusionTestSceneToPreset();
-    if (!hasOcclusionTestScene()) {
+    if (!renderer::SceneBuilder::hasOcclusionTest(renderObjects_)) {
         occlusionTestSceneActive_ = false;
         return;
     }
@@ -4647,7 +3665,7 @@ void Renderer::loadOcclusionTestScene()
     debugUiSettings_.showGpuTimingGraphs = true;
     debugUiSettings_.showRenderGraphPanel = true;
     occlusionTestSceneStatus_ = "Occlusion test scene active: " +
-                                std::to_string(kOcclusionTestObjectCount) +
+                                std::to_string(renderer::kOcclusionTestObjectCount) +
                                 " procedural cube objects, including 5 occluder walls and 120 hidden/edge cubes.";
     Logger::info(occlusionTestSceneStatus_);
 }
@@ -4672,9 +3690,9 @@ void Renderer::enableOcclusionTestSettings()
 
 bool Renderer::previousFrameDepthValidForOcclusion() const
 {
-    return depthPyramidValid_ &&
-           maxMatrixDifference(frameViewProjection_, depthPyramidViewProjection_) <= 0.0005f &&
-           glm::distance(frameCameraPosition_, depthPyramidCameraPosition_) <= 0.01f;
+    return depthPyramid_.valid() &&
+           maxMatrixDifference(frameViewProjection_, depthPyramid_.viewProjection()) <= 0.0005f &&
+           glm::distance(frameCameraPosition_, depthPyramid_.cameraPosition()) <= 0.01f;
 }
 
 void Renderer::saveSceneFromUi()
@@ -4994,7 +4012,7 @@ void Renderer::clampRuntimeSettings()
     gpuOcclusionNearDisableDistance_ = std::clamp(gpuOcclusionNearDisableDistance_, 0.0f, 10.0f);
     gpuOcclusionMaxScreenCoverage_ = std::clamp(gpuOcclusionMaxScreenCoverage_, 0.01f, 1.0f);
     gpuOcclusionMinScreenPixels_ = std::clamp(gpuOcclusionMinScreenPixels_, 1.0f, 64.0f);
-    if (!isGpuCullingActive() || !depthPyramidBuildAvailable_) {
+    if (!isGpuCullingActive() || !depthPyramid_.buildAvailable()) {
         useGpuOcclusionCulling_ = false;
     }
 }
@@ -5088,30 +4106,7 @@ void Renderer::resetFrameStateForEmptyScene(uint32_t frameIndex)
     shadowBatchCountPerCascade_.fill(0);
     cullingStats_ = {};
     shadowCullingStats_ = {};
-    if (frameIndex < frameGpuCullTotalDrawItems_.size()) {
-        frameGpuCullTotalDrawItems_[frameIndex] = 0;
-    }
-    if (frameIndex < frameGpuCullBatchCounts_.size()) {
-        frameGpuCullBatchCounts_[frameIndex] = 0;
-    }
-    if (frameIndex < frameGpuCullReadbackReady_.size()) {
-        frameGpuCullReadbackReady_[frameIndex] = 0;
-    }
-    if (frameIndex < frameGpuCullIndirectCountPath_.size()) {
-        frameGpuCullIndirectCountPath_[frameIndex] = 0;
-    }
-    if (frameIndex < frameGpuShadowCullTotalDrawItems_.size()) {
-        frameGpuShadowCullTotalDrawItems_[frameIndex] = 0;
-    }
-    if (frameIndex < frameGpuShadowCullBatchCounts_.size()) {
-        frameGpuShadowCullBatchCounts_[frameIndex] = 0;
-    }
-    if (frameIndex < frameGpuShadowCullReadbackReady_.size()) {
-        frameGpuShadowCullReadbackReady_[frameIndex] = 0;
-    }
-    if (frameIndex < frameGpuShadowCullIndirectCountPath_.size()) {
-        frameGpuShadowCullIndirectCountPath_[frameIndex] = 0;
-    }
+    gpuCulling_.resetFrameCounters(frameIndex, 0);
 }
 
 bool Renderer::updateAnimatedTransforms(float elapsedSeconds)
@@ -5149,31 +4144,8 @@ bool Renderer::updateAnimatedTransforms(float elapsedSeconds)
 
 void Renderer::resetGpuCullFrameCounters(uint32_t frameIndex)
 {
-    if (frameIndex < frameGpuCullTotalDrawItems_.size()) {
-        frameGpuCullTotalDrawItems_[frameIndex] =
-            static_cast<uint32_t>(std::min(allDrawItems_.size(), static_cast<size_t>(kMaxDrawItems)));
-    }
-    if (frameIndex < frameGpuCullReadbackReady_.size()) {
-        frameGpuCullReadbackReady_[frameIndex] = 0;
-    }
-    if (frameIndex < frameGpuCullBatchCounts_.size()) {
-        frameGpuCullBatchCounts_[frameIndex] = 0;
-    }
-    if (frameIndex < frameGpuCullIndirectCountPath_.size()) {
-        frameGpuCullIndirectCountPath_[frameIndex] = 0;
-    }
-    if (frameIndex < frameGpuShadowCullTotalDrawItems_.size()) {
-        frameGpuShadowCullTotalDrawItems_[frameIndex] = 0;
-    }
-    if (frameIndex < frameGpuShadowCullReadbackReady_.size()) {
-        frameGpuShadowCullReadbackReady_[frameIndex] = 0;
-    }
-    if (frameIndex < frameGpuShadowCullBatchCounts_.size()) {
-        frameGpuShadowCullBatchCounts_[frameIndex] = 0;
-    }
-    if (frameIndex < frameGpuShadowCullIndirectCountPath_.size()) {
-        frameGpuShadowCullIndirectCountPath_[frameIndex] = 0;
-    }
+    gpuCulling_.resetFrameCounters(
+        frameIndex, static_cast<uint32_t>(std::min(allDrawItems_.size(), static_cast<size_t>(kMaxDrawItems))));
 }
 
 void Renderer::buildShadowFrameData(uint32_t frameIndex)
@@ -5225,17 +4197,11 @@ void Renderer::buildShadowFrameData(uint32_t frameIndex)
             }
         }
 
-        if (frameIndex < frameGpuShadowCullTotalDrawItems_.size()) {
-            frameGpuShadowCullTotalDrawItems_[frameIndex] = static_cast<uint32_t>(
-                std::min(allDrawItems_.size() * cascadeCount, static_cast<size_t>(kMaxDrawItems)));
-        }
-        if (frameIndex < frameGpuShadowCullBatchCounts_.size()) {
-            frameGpuShadowCullBatchCounts_[frameIndex] =
-                static_cast<uint32_t>(gpuShadowMeshDrawBatches_.size() * cascadeCount);
-        }
-        if (frameIndex < frameGpuShadowCullIndirectCountPath_.size()) {
-            frameGpuShadowCullIndirectCountPath_[frameIndex] = shadowIndirectCountPathActive ? 1 : 0;
-        }
+        gpuCulling_.setShadowCullFrameInfo(
+            frameIndex,
+            static_cast<uint32_t>(std::min(allDrawItems_.size() * cascadeCount, static_cast<size_t>(kMaxDrawItems))),
+            static_cast<uint32_t>(gpuShadowMeshDrawBatches_.size() * cascadeCount),
+            shadowIndirectCountPathActive);
 
         shadowCullingStats_.gpuCulling = true;
         shadowCullingStats_.indirectDrawing = true;
@@ -5277,12 +4243,8 @@ void Renderer::buildMainCullingFrameData(uint32_t frameIndex, const renderer::Fr
             }
         }
 
-        if (frameIndex < frameGpuCullBatchCounts_.size()) {
-            frameGpuCullBatchCounts_[frameIndex] = static_cast<uint32_t>(meshDrawBatches_.size());
-        }
-        if (frameIndex < frameGpuCullIndirectCountPath_.size()) {
-            frameGpuCullIndirectCountPath_[frameIndex] = indirectCountPathActive ? 1 : 0;
-        }
+        gpuCulling_.setMainCullFrameInfo(
+            frameIndex, static_cast<uint32_t>(meshDrawBatches_.size()), indirectCountPathActive);
         updateGpuCullInputBuffer(frameIndex);
     } else {
         updateIndirectDrawBuffer(frameIndex);
@@ -5587,28 +4549,29 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             depthPyramid_.image(),
             depthPyramid_.imageView(),
             VkExtent2D{depthPyramidExtent.width, depthPyramidExtent.height},
-            &depthPyramidLayout_,
+            depthPyramid_.layoutPtr(),
             depthPyramid_.format(),
             VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
-            depthPyramidMipLevels_,
+            depthPyramid_.mipLevels(),
             1,
             VK_IMAGE_ASPECT_COLOR_BIT,
             {},
             false,
             true,
         },
-        bufferResource("MainCullInput", frameCullInputBuffers_, currentFrame_, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
+        bufferResource(
+            "MainCullInput", gpuCulling_.cullInputBuffers(), currentFrame_, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
         bufferResource("MainCullIndirectOutput",
                        frameIndirectDrawBuffers_,
                        currentFrame_,
                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT),
         bufferResource("MainCullVisibleCounts",
-                       frameBatchVisibleCountBuffers_,
+                       gpuCulling_.visibleCountBuffers(),
                        currentFrame_,
                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
                            VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT),
         bufferResource("MainCullReadback",
-                       frameBatchVisibleCountReadbackBuffers_,
+                       gpuCulling_.visibleCountReadbackBuffers(),
                        currentFrame_,
                        VK_BUFFER_USAGE_TRANSFER_DST_BIT),
         bufferResource(
@@ -5633,121 +4596,35 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
 
 bool Renderer::readGpuVisibleCount(uint32_t frameIndex, uint32_t& visibleCount)
 {
-    visibleCount = 0;
-    if (!isGpuCullingActive() || frameIndex >= frameBatchVisibleCountReadbackBuffers_.size() ||
-        frameIndex >= frameGpuCullReadbackReady_.size() || frameGpuCullReadbackReady_[frameIndex] == 0) {
-        return false;
-    }
-
-    rhi::VulkanBuffer& readbackBuffer = frameBatchVisibleCountReadbackBuffers_[frameIndex];
-    if (!readbackBuffer.valid()) {
-        return false;
-    }
-
-    const bool indirectCountPathActive = isFrameIndirectCountPathActive(frameIndex);
-    const uint32_t countEntryCount = indirectCountPathActive && frameIndex < frameGpuCullBatchCounts_.size()
-                                         ? std::max(frameGpuCullBatchCounts_[frameIndex], 1U)
-                                         : 1U;
-    std::vector<uint32_t> visibleCounts(countEntryCount, 0);
-    readbackBuffer.download(std::as_writable_bytes(std::span<uint32_t>(visibleCounts.data(), visibleCounts.size())));
-
-    uint64_t totalVisibleCount = 0;
-    for (uint32_t count : visibleCounts) {
-        totalVisibleCount += count;
-    }
-
-    visibleCount = static_cast<uint32_t>(std::min<uint64_t>(totalVisibleCount, kMaxDrawItems));
-    if (frameIndex < frameGpuCullTotalDrawItems_.size()) {
-        visibleCount = std::min(visibleCount, frameGpuCullTotalDrawItems_[frameIndex]);
-    }
-    return true;
+    return gpuCulling_.readMainVisibleCount(isGpuCullingActive(), frameIndex, visibleCount);
 }
 
-bool Renderer::readGpuCullCounters(uint32_t frameIndex, GpuCullCounters& counters)
+bool Renderer::readGpuCullCounters(uint32_t frameIndex, renderer::GpuCullCounters& counters)
 {
-    counters = {};
-    if (!isGpuCullingActive() || frameIndex >= frameBatchVisibleCountReadbackBuffers_.size() ||
-        frameIndex >= frameGpuCullReadbackReady_.size() || frameGpuCullReadbackReady_[frameIndex] == 0) {
-        return false;
-    }
-
-    rhi::VulkanBuffer& readbackBuffer = frameBatchVisibleCountReadbackBuffers_[frameIndex];
-    if (!readbackBuffer.valid()) {
-        return false;
-    }
-
-    std::array<uint32_t, kGpuCullStatsCounterCount> values{};
-    readbackBuffer.download(std::as_writable_bytes(std::span<uint32_t>(values.data(), values.size())),
-                            static_cast<VkDeviceSize>(kGpuCullStatsCounterOffset * sizeof(uint32_t)));
-
-    counters.totalDrawItems = values[0];
-    counters.visibleDrawItems = values[1];
-    counters.frustumCulledDrawItems = values[2];
-    counters.occlusionCulledDrawItems = values[3];
-    if (frameIndex < frameGpuCullTotalDrawItems_.size()) {
-        counters.totalDrawItems = std::min(counters.totalDrawItems, frameGpuCullTotalDrawItems_[frameIndex]);
-        counters.visibleDrawItems = std::min(counters.visibleDrawItems, counters.totalDrawItems);
-        counters.frustumCulledDrawItems = std::min(counters.frustumCulledDrawItems, counters.totalDrawItems);
-        counters.occlusionCulledDrawItems = std::min(counters.occlusionCulledDrawItems, counters.totalDrawItems);
-    }
-    return true;
+    return gpuCulling_.readMainCounters(isGpuCullingActive(), frameIndex, counters);
 }
 
 bool Renderer::readGpuShadowVisibleCount(uint32_t frameIndex, uint32_t& visibleCount)
 {
-    visibleCount = 0;
-    if (!isGpuShadowCullingActive() || frameIndex >= frameShadowBatchVisibleCountReadbackBuffers_.size() ||
-        frameIndex >= frameGpuShadowCullReadbackReady_.size() || frameGpuShadowCullReadbackReady_[frameIndex] == 0) {
-        return false;
-    }
-
-    rhi::VulkanBuffer& readbackBuffer = frameShadowBatchVisibleCountReadbackBuffers_[frameIndex];
-    if (!readbackBuffer.valid()) {
-        return false;
-    }
-
-    const uint32_t countEntryCount = frameIndex < frameGpuShadowCullBatchCounts_.size()
-                                         ? std::max(frameGpuShadowCullBatchCounts_[frameIndex], 1U)
-                                         : 1U;
-    std::vector<uint32_t> visibleCounts(countEntryCount, 0);
-    readbackBuffer.download(std::as_writable_bytes(std::span<uint32_t>(visibleCounts.data(), visibleCounts.size())));
-
-    uint64_t totalVisibleCount = 0;
-    for (uint32_t count : visibleCounts) {
-        totalVisibleCount += count;
-    }
-
-    visibleCount = static_cast<uint32_t>(std::min<uint64_t>(totalVisibleCount, kMaxDrawItems));
-    if (frameIndex < frameGpuShadowCullTotalDrawItems_.size()) {
-        visibleCount = std::min(visibleCount, frameGpuShadowCullTotalDrawItems_[frameIndex]);
-    }
-    return true;
+    return gpuCulling_.readShadowVisibleCount(isGpuShadowCullingActive(), frameIndex, visibleCount);
 }
 
 bool Renderer::isGpuCullingActive() const
 {
-    return useGpuCulling_ && gpuCullingAvailable_ && gpuCullPipeline_.pipeline() != VK_NULL_HANDLE &&
-           gpuCullPipeline_.layout() != VK_NULL_HANDLE && !gpuCullDescriptorSets_.empty() &&
-           frameCullInputBuffers_.size() == frames_.size() && frameBatchVisibleCountBuffers_.size() == frames_.size() &&
-           frameBatchVisibleCountReadbackBuffers_.size() == frames_.size() &&
-           frameGpuCullParamBuffers_.size() == frames_.size();
+    return useGpuCulling_ && gpuCulling_.mainResourcesReady(static_cast<uint32_t>(frames_.size()));
 }
 
 bool Renderer::isGpuOcclusionCullingActive() const
 {
-    return useGpuOcclusionCulling_ && isGpuCullingActive() && depthPyramidBuildAvailable_ && depthPyramidValid_ &&
-           depthPyramid_.image() != VK_NULL_HANDLE && depthPyramidSampler_ != VK_NULL_HANDLE &&
-           depthPyramidMipLevels_ > 0;
+    return useGpuOcclusionCulling_ && isGpuCullingActive() && depthPyramid_.buildAvailable() && depthPyramid_.valid() &&
+           depthPyramid_.image() != VK_NULL_HANDLE && depthPyramid_.sampler() != VK_NULL_HANDLE &&
+           depthPyramid_.mipLevels() > 0;
 }
 
 bool Renderer::isGpuShadowCullingActive() const
 {
-    return useGpuShadowCulling_ && gpuShadowCullingAvailable_ && isShadowIndirectActive() &&
-           gpuCullPipeline_.pipeline() != VK_NULL_HANDLE && gpuCullPipeline_.layout() != VK_NULL_HANDLE &&
-           !shadowCullDescriptorSets_.empty() && frameShadowCullInputBuffers_.size() == frames_.size() &&
-           frameShadowBatchVisibleCountBuffers_.size() == frames_.size() &&
-           frameShadowBatchVisibleCountReadbackBuffers_.size() == frames_.size() &&
-           frameGpuCullParamBuffers_.size() == frames_.size();
+    return useGpuShadowCulling_ && isShadowIndirectActive() &&
+           gpuCulling_.shadowResourcesReady(static_cast<uint32_t>(frames_.size()));
 }
 
 bool Renderer::isBindlessMaterialTextureActive() const
@@ -5769,7 +4646,7 @@ bool Renderer::isMainPassIndirectCountSupported() const
 
 bool Renderer::isFrameIndirectCountPathActive(uint32_t frameIndex) const
 {
-    return frameIndex < frameGpuCullIndirectCountPath_.size() && frameGpuCullIndirectCountPath_[frameIndex] != 0;
+    return gpuCulling_.frameIndirectCountPathActive(frameIndex);
 }
 
 bool Renderer::isShadowIndirectCountSupported() const
@@ -5779,8 +4656,7 @@ bool Renderer::isShadowIndirectCountSupported() const
 
 bool Renderer::isShadowIndirectCountPathActive(uint32_t frameIndex) const
 {
-    return frameIndex < frameGpuShadowCullIndirectCountPath_.size() &&
-           frameGpuShadowCullIndirectCountPath_[frameIndex] != 0;
+    return gpuCulling_.frameShadowIndirectCountPathActive(frameIndex);
 }
 
 bool Renderer::isShadowIndirectActive() const
@@ -5801,361 +4677,33 @@ VkDescriptorSet Renderer::globalMaterialDescriptorSet() const
 
 void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
 {
-    if (!isGpuCullingActive() || allDrawItems_.empty()) {
-        return;
-    }
-    if (currentFrame_ >= gpuCullDescriptorSets_.size() || currentFrame_ >= frameBatchVisibleCountBuffers_.size() ||
-        currentFrame_ >= frameBatchVisibleCountReadbackBuffers_.size() ||
-        currentFrame_ >= frameGpuCullReadbackReady_.size()) {
-        return;
-    }
-
-    VkBuffer visibleCountBuffer = frameBatchVisibleCountBuffers_.at(currentFrame_).buffer();
-    VkBuffer visibleCountReadbackBuffer = frameBatchVisibleCountReadbackBuffers_.at(currentFrame_).buffer();
-    if (visibleCountBuffer == VK_NULL_HANDLE || visibleCountReadbackBuffer == VK_NULL_HANDLE) {
-        return;
-    }
-
-    const bool indirectCountPathActive = isFrameIndirectCountPathActive(currentFrame_);
-
-    const renderer::GpuProfileScope profileScope(gpuProfiler_, currentFrame_, commandBuffer, "MainGpuCullingPass");
-    renderGraph_.beginMainGpuCullingPass();
-    rhi::debug::beginLabel(commandBuffer, "GpuCulling");
-    ensureDepthPyramidShaderReadLayout(commandBuffer);
-    vkCmdFillBuffer(commandBuffer, visibleCountBuffer, 0, kGpuCullCountBufferSize, 0);
-
-    VkBufferMemoryBarrier2 resetCountBarrier{};
-    resetCountBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-    resetCountBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-    resetCountBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    resetCountBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    resetCountBarrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-    resetCountBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    resetCountBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    resetCountBarrier.buffer = visibleCountBuffer;
-    resetCountBarrier.offset = 0;
-    resetCountBarrier.size = kGpuCullCountBufferSize;
-
-    VkDependencyInfo resetDependencyInfo{};
-    resetDependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    resetDependencyInfo.bufferMemoryBarrierCount = 1;
-    resetDependencyInfo.pBufferMemoryBarriers = &resetCountBarrier;
-    vkCmdPipelineBarrier2(commandBuffer, &resetDependencyInfo);
-
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, gpuCullPipeline_.pipeline());
-
-    const VkDescriptorSet descriptorSet = gpuCullDescriptorSets_[currentFrame_];
-    vkCmdBindDescriptorSets(
-        commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, gpuCullPipeline_.layout(), 0, 1, &descriptorSet, 0, nullptr);
-
-    GpuCullPushConstants pushConstants{};
-    pushConstants.frustumPlanes = frameFrustumPlanes_;
-    pushConstants.params = glm::uvec4(static_cast<uint32_t>(allDrawItems_.size()),
-                                      isMainPassMultiDrawIndirectActive() ? 1U : 0U,
-                                      indirectCountPathActive ? 1U : 0U,
-                                      1U);
-    vkCmdPushConstants(commandBuffer,
-                       gpuCullPipeline_.layout(),
-                       VK_SHADER_STAGE_COMPUTE_BIT,
-                       0,
-                       static_cast<uint32_t>(sizeof(GpuCullPushConstants)),
-                       &pushConstants);
-
-    rhi::debug::beginLabel(commandBuffer, "ComputeCullDispatch");
-    const uint32_t groupCount =
-        (static_cast<uint32_t>(allDrawItems_.size()) + kGpuCullLocalSize - 1) / kGpuCullLocalSize;
-    vkCmdDispatch(commandBuffer, groupCount, 1, 1);
-    rhi::debug::endLabel(commandBuffer);
-
-    VkBufferMemoryBarrier2 visibleCountCopyBarrier{};
-    visibleCountCopyBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-    visibleCountCopyBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    visibleCountCopyBarrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-    visibleCountCopyBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-    visibleCountCopyBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
-    visibleCountCopyBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    visibleCountCopyBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    visibleCountCopyBarrier.buffer = visibleCountBuffer;
-    visibleCountCopyBarrier.offset = 0;
-    visibleCountCopyBarrier.size = kGpuCullCountBufferSize;
-
-    VkDependencyInfo visibleCountCopyDependency{};
-    visibleCountCopyDependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    visibleCountCopyDependency.bufferMemoryBarrierCount = 1;
-    visibleCountCopyDependency.pBufferMemoryBarriers = &visibleCountCopyBarrier;
-    vkCmdPipelineBarrier2(commandBuffer, &visibleCountCopyDependency);
-
-    VkBufferCopy visibleCountCopy{};
-    visibleCountCopy.size = kGpuCullCountBufferSize;
-    vkCmdCopyBuffer(commandBuffer, visibleCountBuffer, visibleCountReadbackBuffer, 1, &visibleCountCopy);
-
-    VkBufferMemoryBarrier2 readbackBarrier{};
-    readbackBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-    readbackBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-    readbackBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    readbackBarrier.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
-    readbackBarrier.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
-    readbackBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    readbackBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    readbackBarrier.buffer = visibleCountReadbackBuffer;
-    readbackBarrier.offset = 0;
-    readbackBarrier.size = kGpuCullCountBufferSize;
-
-    VkDependencyInfo readbackDependencyInfo{};
-    readbackDependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    readbackDependencyInfo.bufferMemoryBarrierCount = 1;
-    readbackDependencyInfo.pBufferMemoryBarriers = &readbackBarrier;
-    vkCmdPipelineBarrier2(commandBuffer, &readbackDependencyInfo);
-
-    frameGpuCullReadbackReady_[currentFrame_] = 1;
-    rhi::debug::endLabel(commandBuffer);
-    renderGraph_.endMainGpuCullingPass();
+    gpuCulling_.recordMainCull(commandBuffer,
+                               currentFrame_,
+                               isGpuCullingActive(),
+                               static_cast<uint32_t>(allDrawItems_.size()),
+                               frameFrustumPlanes_,
+                               isMainPassMultiDrawIndirectActive());
 }
 
 void Renderer::recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer, uint32_t cascadeIndex)
 {
-    if (!isGpuShadowCullingActive() || allDrawItems_.empty()) {
-        return;
-    }
-    if (cascadeIndex >= activeCascadeCount()) {
-        return;
-    }
-    if (currentFrame_ >= shadowCullDescriptorSets_.size() ||
-        currentFrame_ >= frameShadowBatchVisibleCountBuffers_.size() ||
-        currentFrame_ >= frameShadowBatchVisibleCountReadbackBuffers_.size() ||
-        currentFrame_ >= frameShadowIndirectDrawBuffers_.size() ||
-        currentFrame_ >= frameGpuShadowCullReadbackReady_.size()) {
-        return;
-    }
-
-    VkBuffer visibleCountBuffer = frameShadowBatchVisibleCountBuffers_.at(currentFrame_).buffer();
-    VkBuffer visibleCountReadbackBuffer = frameShadowBatchVisibleCountReadbackBuffers_.at(currentFrame_).buffer();
-    VkBuffer shadowIndirectDrawBuffer = frameShadowIndirectDrawBuffers_.at(currentFrame_).buffer();
-    if (visibleCountBuffer == VK_NULL_HANDLE || visibleCountReadbackBuffer == VK_NULL_HANDLE ||
-        shadowIndirectDrawBuffer == VK_NULL_HANDLE) {
-        return;
-    }
-
-    const VkDeviceSize shadowIndirectBufferSize =
-        std::min<VkDeviceSize>(frameShadowIndirectDrawBuffers_.at(currentFrame_).size(),
-                               static_cast<VkDeviceSize>(allDrawItems_.size() * sizeof(VkDrawIndexedIndirectCommand)));
-    if (shadowIndirectBufferSize == 0) {
-        return;
-    }
-
-    const std::string profileName = "ShadowGpuCullingCascade" + std::to_string(cascadeIndex);
-    const renderer::GpuProfileScope profileScope(gpuProfiler_, currentFrame_, commandBuffer, profileName);
-    rhi::debug::beginLabel(commandBuffer, "GpuShadowCullingCascade" + std::to_string(cascadeIndex));
-    ensureDepthPyramidShaderReadLayout(commandBuffer);
-    vkCmdFillBuffer(commandBuffer, visibleCountBuffer, 0, kGpuCullCountBufferSize, 0);
-    vkCmdFillBuffer(commandBuffer, shadowIndirectDrawBuffer, 0, shadowIndirectBufferSize, 0);
-
-    std::array<VkBufferMemoryBarrier2, 2> resetBarriers{};
-    resetBarriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-    resetBarriers[0].srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-    resetBarriers[0].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    resetBarriers[0].dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    resetBarriers[0].dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-    resetBarriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    resetBarriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    resetBarriers[0].buffer = visibleCountBuffer;
-    resetBarriers[0].offset = 0;
-    resetBarriers[0].size = kGpuCullCountBufferSize;
-
-    resetBarriers[1].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-    resetBarriers[1].srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-    resetBarriers[1].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    resetBarriers[1].dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    resetBarriers[1].dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-    resetBarriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    resetBarriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    resetBarriers[1].buffer = shadowIndirectDrawBuffer;
-    resetBarriers[1].offset = 0;
-    resetBarriers[1].size = shadowIndirectBufferSize;
-
-    VkDependencyInfo resetDependencyInfo{};
-    resetDependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    resetDependencyInfo.bufferMemoryBarrierCount = static_cast<uint32_t>(resetBarriers.size());
-    resetDependencyInfo.pBufferMemoryBarriers = resetBarriers.data();
-    vkCmdPipelineBarrier2(commandBuffer, &resetDependencyInfo);
-
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, gpuCullPipeline_.pipeline());
-
-    const VkDescriptorSet descriptorSet = shadowCullDescriptorSets_[currentFrame_];
-    vkCmdBindDescriptorSets(
-        commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, gpuCullPipeline_.layout(), 0, 1, &descriptorSet, 0, nullptr);
-
-    GpuCullPushConstants pushConstants{};
-    pushConstants.frustumPlanes = frameShadowCascadeFrustumPlanes_[cascadeIndex];
-    pushConstants.params = glm::uvec4(static_cast<uint32_t>(allDrawItems_.size()), 1U, 1U, 0U);
-    vkCmdPushConstants(commandBuffer,
-                       gpuCullPipeline_.layout(),
-                       VK_SHADER_STAGE_COMPUTE_BIT,
-                       0,
-                       static_cast<uint32_t>(sizeof(GpuCullPushConstants)),
-                       &pushConstants);
-
-    rhi::debug::beginLabel(commandBuffer, "ShadowCullDispatchCascade" + std::to_string(cascadeIndex));
-    const uint32_t groupCount =
-        (static_cast<uint32_t>(allDrawItems_.size()) + kGpuCullLocalSize - 1) / kGpuCullLocalSize;
-    vkCmdDispatch(commandBuffer, groupCount, 1, 1);
-    rhi::debug::endLabel(commandBuffer);
-
-    std::array<VkBufferMemoryBarrier2, 2> computeBarriers{};
-    computeBarriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-    computeBarriers[0].srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    computeBarriers[0].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-    computeBarriers[0].dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
-    computeBarriers[0].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
-    computeBarriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    computeBarriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    computeBarriers[0].buffer = shadowIndirectDrawBuffer;
-    computeBarriers[0].offset = 0;
-    computeBarriers[0].size = shadowIndirectBufferSize;
-
-    computeBarriers[1].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-    computeBarriers[1].srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    computeBarriers[1].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-    computeBarriers[1].dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_COPY_BIT;
-    computeBarriers[1].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_TRANSFER_READ_BIT;
-    computeBarriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    computeBarriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    computeBarriers[1].buffer = visibleCountBuffer;
-    computeBarriers[1].offset = 0;
-    computeBarriers[1].size = kGpuCullCountBufferSize;
-
-    VkDependencyInfo dependencyInfo{};
-    dependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dependencyInfo.bufferMemoryBarrierCount = static_cast<uint32_t>(computeBarriers.size());
-    dependencyInfo.pBufferMemoryBarriers = computeBarriers.data();
-    vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
-
-    VkBufferCopy visibleCountCopy{};
-    visibleCountCopy.size = kGpuCullCountBufferSize;
-    vkCmdCopyBuffer(commandBuffer, visibleCountBuffer, visibleCountReadbackBuffer, 1, &visibleCountCopy);
-
-    VkBufferMemoryBarrier2 readbackBarrier{};
-    readbackBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-    readbackBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-    readbackBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    readbackBarrier.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
-    readbackBarrier.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
-    readbackBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    readbackBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    readbackBarrier.buffer = visibleCountReadbackBuffer;
-    readbackBarrier.offset = 0;
-    readbackBarrier.size = kGpuCullCountBufferSize;
-
-    VkDependencyInfo readbackDependencyInfo{};
-    readbackDependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    readbackDependencyInfo.bufferMemoryBarrierCount = 1;
-    readbackDependencyInfo.pBufferMemoryBarriers = &readbackBarrier;
-    vkCmdPipelineBarrier2(commandBuffer, &readbackDependencyInfo);
-
-    frameGpuShadowCullReadbackReady_[currentFrame_] = 1;
-    rhi::debug::endLabel(commandBuffer);
+    gpuCulling_.recordShadowCull(commandBuffer,
+                                 currentFrame_,
+                                 isGpuShadowCullingActive(),
+                                 cascadeIndex,
+                                 activeCascadeCount(),
+                                 static_cast<uint32_t>(allDrawItems_.size()),
+                                 frameShadowCascadeFrustumPlanes_[cascadeIndex]);
 }
 
 void Renderer::ensureDepthPyramidShaderReadLayout(VkCommandBuffer commandBuffer)
 {
-    if (depthPyramid_.image() == VK_NULL_HANDLE || depthPyramidMipLevels_ == 0 ||
-        depthPyramidLayout_ == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-        return;
-    }
-
-    const bool undefined = depthPyramidLayout_ == VK_IMAGE_LAYOUT_UNDEFINED;
-    const VkImageMemoryBarrier2 shaderReadBarrier =
-        imageBarrier(depthPyramid_.image(),
-                     VK_IMAGE_ASPECT_COLOR_BIT,
-                     depthPyramidLayout_,
-                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                     undefined ? VK_PIPELINE_STAGE_2_NONE : VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                     undefined ? VK_ACCESS_2_NONE
-                               : (VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT),
-                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                     VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                     0,
-                     depthPyramidMipLevels_);
-    recordImageBarrier(commandBuffer, shaderReadBarrier);
-    depthPyramidLayout_ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    depthPyramid_.ensureShaderReadLayout(commandBuffer);
 }
 
 void Renderer::recordDepthPyramidCommands(VkCommandBuffer commandBuffer)
 {
-    if (!depthPyramidBuildAvailable_ || depthPyramid_.image() == VK_NULL_HANDLE ||
-        depthPyramidPipeline_.pipeline() == VK_NULL_HANDLE ||
-        depthPyramidPipeline_.layout() == VK_NULL_HANDLE || depthPyramidDescriptorSets_.empty() ||
-        depthPyramidMipImageViews_.empty() || depthPyramidMipLevels_ == 0) {
-        depthPyramidValid_ = false;
-        return;
-    }
-
-    const renderer::GpuProfileScope profileScope(gpuProfiler_, currentFrame_, commandBuffer, "DepthPyramid");
-    renderGraph_.beginDepthPyramidPass();
-    rhi::debug::beginLabel(commandBuffer, "DepthPyramid");
-
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, depthPyramidPipeline_.pipeline());
-
-    const VkExtent2D baseExtent = swapchain_.extent();
-    for (uint32_t mipLevel = 0; mipLevel < depthPyramidMipLevels_; ++mipLevel) {
-        const VkExtent2D sourceExtent = mipLevel == 0 ? baseExtent : mipExtent(baseExtent, mipLevel - 1);
-        const VkExtent2D destinationExtent = mipExtent(baseExtent, mipLevel);
-        const VkDescriptorSet descriptorSet = depthPyramidDescriptorSets_[mipLevel];
-        vkCmdBindDescriptorSets(commandBuffer,
-                                VK_PIPELINE_BIND_POINT_COMPUTE,
-                                depthPyramidPipeline_.layout(),
-                                0,
-                                1,
-                                &descriptorSet,
-                                0,
-                                nullptr);
-
-        const DepthPyramidPushConstants pushConstants{
-            glm::uvec4(sourceExtent.width, sourceExtent.height, destinationExtent.width, destinationExtent.height)};
-        vkCmdPushConstants(commandBuffer,
-                           depthPyramidPipeline_.layout(),
-                           VK_SHADER_STAGE_COMPUTE_BIT,
-                           0,
-                           static_cast<uint32_t>(sizeof(DepthPyramidPushConstants)),
-                           &pushConstants);
-
-        const uint32_t groupCountX = (destinationExtent.width + kDepthPyramidLocalSizeX - 1) / kDepthPyramidLocalSizeX;
-        const uint32_t groupCountY =
-            (destinationExtent.height + kDepthPyramidLocalSizeY - 1) / kDepthPyramidLocalSizeY;
-        vkCmdDispatch(commandBuffer, groupCountX, groupCountY, 1);
-
-        const VkImageMemoryBarrier2 mipWriteToRead = imageBarrier(depthPyramid_.image(),
-                                                                  VK_IMAGE_ASPECT_COLOR_BIT,
-                                                                  VK_IMAGE_LAYOUT_GENERAL,
-                                                                  VK_IMAGE_LAYOUT_GENERAL,
-                                                                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                                                  VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                                                                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                                                  VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                                                                  mipLevel,
-                                                                  1);
-        recordImageBarrier(commandBuffer, mipWriteToRead);
-    }
-
-    const VkImageMemoryBarrier2 pyramidToShaderRead =
-        imageBarrier(depthPyramid_.image(),
-                     VK_IMAGE_ASPECT_COLOR_BIT,
-                     VK_IMAGE_LAYOUT_GENERAL,
-                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                     VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                     VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                     0,
-                     depthPyramidMipLevels_);
-    recordImageBarrier(commandBuffer, pyramidToShaderRead);
-    depthPyramidLayout_ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    depthPyramidValid_ = true;
-    depthPyramidViewProjection_ = frameViewProjection_;
-    depthPyramidCameraPosition_ = frameCameraPosition_;
-
-    rhi::debug::endLabel(commandBuffer);
-    renderGraph_.endDepthPyramidPass();
+    depthPyramid_.recordCommands(commandBuffer, currentFrame_, frameViewProjection_, frameCameraPosition_);
 }
 
 void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex)
@@ -6237,7 +4785,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
 
             const VkBuffer shadowIndirectDrawBuffer = frameShadowIndirectDrawBuffers_.at(currentFrame_).buffer();
             const VkBuffer shadowBatchVisibleCountBuffer =
-                shadowIndirectCountPathActive ? frameShadowBatchVisibleCountBuffers_.at(currentFrame_).buffer()
+                shadowIndirectCountPathActive ? gpuCulling_.shadowVisibleCountBuffer(currentFrame_).buffer()
                                               : VK_NULL_HANDLE;
             const std::string shadowBatchesLabel = "ShadowIndirectDrawBatches " +
                                                    std::to_string(activeShadowMeshDrawBatches.size()) +
@@ -6429,7 +4977,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     const VkBuffer indirectDrawBuffer = frameIndirectDrawBuffers_.at(currentFrame_).buffer();
     const bool indirectCountPathActive = isFrameIndirectCountPathActive(currentFrame_);
     const VkBuffer batchVisibleCountBuffer =
-        indirectCountPathActive ? frameBatchVisibleCountBuffers_.at(currentFrame_).buffer() : VK_NULL_HANDLE;
+        indirectCountPathActive ? gpuCulling_.visibleCountBuffer(currentFrame_).buffer() : VK_NULL_HANDLE;
     const uint32_t toneMappingOperator = toneMappingOperatorValue(toneMappingSettings_.operatorType);
     const float exposure = postProcess_.currentToneMappingExposure();
     // Shared lighting push constant for the main pass. The clustered fields are

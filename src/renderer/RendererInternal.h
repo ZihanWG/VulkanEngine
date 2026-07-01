@@ -157,18 +157,8 @@ const glm::vec4 kAmbientLightColor{0.15f, 0.15f, 0.15f, 1.0f};
 const glm::vec4 kPortfolioLightDirection{-0.38f, -0.78f, -0.48f, 0.0f};
 const glm::vec4 kPortfolioLightColor{1.08f, 1.03f, 0.94f, 1.0f};
 const glm::vec4 kPortfolioAmbientLightColor{0.20f, 0.22f, 0.24f, 1.0f};
-constexpr size_t kPortfolioGroundMaterialIndex = 4;
-constexpr size_t kPortfolioMatteGrayMaterialIndex = 5;
-constexpr size_t kPortfolioGlossyBlueMaterialIndex = 6;
-constexpr size_t kPortfolioRoughMetalMaterialIndex = 7;
-constexpr size_t kPortfolioPolishedMetalSmallMaterialIndex = 8;
-constexpr size_t kPortfolioHeroCeramicMaterialIndex = 9;
-constexpr size_t kPortfolioBackdropMaterialIndex = 10;
-constexpr int kOcclusionTestGridColumns = 12;
-constexpr int kOcclusionTestGridRows = 10;
-constexpr int kOcclusionTestOccluderCount = 5;
-constexpr int kOcclusionTestObjectCount =
-    1 + kOcclusionTestOccluderCount + (kOcclusionTestGridColumns * kOcclusionTestGridRows);
+// Portfolio material-slot indices and occlusion-test scene constants now live in
+// renderer/SceneBuilder.h alongside the scene-layout logic that consumes them.
 
 struct PushConstants {
     VkDeviceAddress objectFrameDataAddress = 0;

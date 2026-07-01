@@ -1,0 +1,398 @@
+{
+    "camera": {
+        "farPlane": 100.0,
+        "nearPlane": 0.10000000149011612,
+        "position": [
+            1.8200000524520874,
+            0.7799999713897705,
+            2.9200000762939453
+        ],
+        "target": [
+            0.0,
+            -0.07999999821186066,
+            0.18000000715255737
+        ],
+        "up": [
+            0.0,
+            1.0,
+            0.0
+        ],
+        "verticalFovDegrees": 45.0
+    },
+    "directionalLight": {
+        "color": [
+            0.8500000238418579,
+            0.8500000238418579,
+            0.8500000238418579
+        ],
+        "direction": [
+            0.3801878094673157,
+            -0.7060630917549133,
+            -0.5974380373954773
+        ],
+        "intensity": 1.0,
+        "portfolioPresetActive": true
+    },
+    "limitations": [
+        "Mesh references and glTF material-table references are saved as debug metadata only.",
+        "Simple object material asset paths are restored when they match a loaded runtime material.",
+        "glTF material-table assignments remain runtime data and are not rebuilt from scene JSON.",
+        "Load preserves current runtime mesh/material pointers and restores matching object transforms, names, visibility, camera, and light."
+    ],
+    "objects": [
+        {
+            "debugId": 1,
+            "drawItemCount": 1,
+            "hideInPortfolio": false,
+            "id": 1,
+            "material": {
+                "assetName": "Portfolio_Ground",
+                "assetPath": "",
+                "materialAssetRebinding": "restored by assetPath when available",
+                "name": "Portfolio_Ground",
+                "pointer": "0x144977ec0",
+                "primaryLabel": "Portfolio_Ground",
+                "shader": "pbr_opaque",
+                "slotCount": 0,
+                "source": "built-in/procedural material"
+            },
+            "mesh": {
+                "name": "Built-in Cube Mesh",
+                "pointer": "0x1468296c8",
+                "submeshCount": 1
+            },
+            "name": "Portfolio Studio Floor",
+            "portfolioOnly": false,
+            "source": "portfolio showcase",
+            "transform": {
+                "mode": "trs",
+                "position": [
+                    0.0,
+                    -0.5600000023841858,
+                    0.23999999463558197
+                ],
+                "rotationDegrees": [
+                    0.0,
+                    0.0,
+                    0.0
+                ],
+                "scale": [
+                    11.0,
+                    0.07999999821186066,
+                    6.400000095367432
+                ]
+            },
+            "visible": true
+        },
+        {
+            "debugId": 2,
+            "drawItemCount": 1,
+            "hideInPortfolio": false,
+            "id": 2,
+            "material": {
+                "assetName": "Portfolio_Backdrop",
+                "assetPath": "",
+                "materialAssetRebinding": "restored by assetPath when available",
+                "name": "Portfolio_Backdrop",
+                "pointer": "0x1449785e0",
+                "primaryLabel": "Portfolio_Backdrop",
+                "shader": "pbr_opaque",
+                "slotCount": 0,
+                "source": "built-in/procedural material"
+            },
+            "mesh": {
+                "name": "Built-in Cube Mesh",
+                "pointer": "0x1468296c8",
+                "submeshCount": 1
+            },
+            "name": "Portfolio Studio Backdrop",
+            "portfolioOnly": false,
+            "source": "portfolio showcase",
+            "transform": {
+                "mode": "trs",
+                "position": [
+                    0.0,
+                    2.0799999237060547,
+                    -2.819999933242798
+                ],
+                "rotationDegrees": [
+                    0.0,
+                    0.0,
+                    0.0
+                ],
+                "scale": [
+                    60.0,
+                    9.0,
+                    0.07999999821186066
+                ]
+            },
+            "visible": true
+        },
+        {
+            "debugId": 3,
+            "drawItemCount": 1,
+            "hideInPortfolio": false,
+            "id": 3,
+            "material": {
+                "assetName": "Portfolio_Ground",
+                "assetPath": "",
+                "materialAssetRebinding": "restored by assetPath when available",
+                "name": "Portfolio_Ground",
+                "pointer": "0x144977ec0",
+                "primaryLabel": "Portfolio_Ground",
+                "shader": "pbr_opaque",
+                "slotCount": 0,
+                "source": "built-in/procedural material"
+            },
+            "mesh": {
+                "name": "Built-in Cube Mesh",
+                "pointer": "0x1468296c8",
+                "submeshCount": 1
+            },
+            "name": "Portfolio Side Plinth",
+            "portfolioOnly": false,
+            "source": "portfolio showcase",
+            "transform": {
+                "mode": "trs",
+                "position": [
+                    1.0199999809265137,
+                    -0.41999998688697815,
+                    -0.18000000715255737
+                ],
+                "rotationDegrees": [
+                    0.0,
+                    -9.167325019836426,
+                    0.0
+                ],
+                "scale": [
+                    0.9599999785423279,
+                    0.2800000011920929,
+                    0.699999988079071
+                ]
+            },
+            "visible": true
+        },
+        {
+            "debugId": 4,
+            "drawItemCount": 1,
+            "hideInPortfolio": false,
+            "id": 4,
+            "material": {
+                "assetName": "Portfolio_HeroCeramic",
+                "assetPath": "assets/materials/portfolio_hero_ceramic.material.json",
+                "materialAssetRebinding": "restored by assetPath when available",
+                "name": "Portfolio_HeroCeramic",
+                "pointer": "0x1449784b0",
+                "primaryLabel": "Portfolio_HeroCeramic",
+                "shader": "pbr_opaque",
+                "slotCount": 0,
+                "source": "JSON material asset"
+            },
+            "mesh": {
+                "name": "Built-in UV Sphere Mesh",
+                "pointer": "0x146829788",
+                "submeshCount": 1
+            },
+            "name": "Portfolio Hero Ceramic",
+            "portfolioOnly": false,
+            "source": "portfolio showcase",
+            "transform": {
+                "mode": "trs",
+                "position": [
+                    0.0,
+                    -0.10999999940395355,
+                    0.07999999821186066
+                ],
+                "rotationDegrees": [
+                    0.0,
+                    0.0,
+                    0.0
+                ],
+                "scale": [
+                    0.8199999928474426,
+                    0.8199999928474426,
+                    0.8199999928474426
+                ]
+            },
+            "visible": true
+        },
+        {
+            "debugId": 5,
+            "drawItemCount": 1,
+            "hideInPortfolio": false,
+            "id": 5,
+            "material": {
+                "assetName": "Portfolio_MatteGray",
+                "assetPath": "assets/materials/portfolio_matte_gray.material.json",
+                "materialAssetRebinding": "restored by assetPath when available",
+                "name": "Portfolio_MatteGray",
+                "pointer": "0x144977ff0",
+                "primaryLabel": "Portfolio_MatteGray",
+                "shader": "pbr_opaque",
+                "slotCount": 0,
+                "source": "JSON material asset"
+            },
+            "mesh": {
+                "name": "Built-in UV Sphere Mesh",
+                "pointer": "0x146829788",
+                "submeshCount": 1
+            },
+            "name": "Portfolio Matte Gray",
+            "portfolioOnly": false,
+            "source": "portfolio showcase",
+            "transform": {
+                "mode": "trs",
+                "position": [
+                    -0.9200000166893005,
+                    -0.23999999463558197,
+                    0.05999999865889549
+                ],
+                "rotationDegrees": [
+                    0.0,
+                    0.0,
+                    0.0
+                ],
+                "scale": [
+                    0.5600000023841858,
+                    0.5600000023841858,
+                    0.5600000023841858
+                ]
+            },
+            "visible": true
+        },
+        {
+            "debugId": 6,
+            "drawItemCount": 1,
+            "hideInPortfolio": false,
+            "id": 6,
+            "material": {
+                "assetName": "Portfolio_GlossyBlue",
+                "assetPath": "assets/materials/portfolio_glossy_blue.material.json",
+                "materialAssetRebinding": "restored by assetPath when available",
+                "name": "Portfolio_GlossyBlue",
+                "pointer": "0x144978120",
+                "primaryLabel": "Portfolio_GlossyBlue",
+                "shader": "pbr_opaque",
+                "slotCount": 0,
+                "source": "JSON material asset"
+            },
+            "mesh": {
+                "name": "Built-in UV Sphere Mesh",
+                "pointer": "0x146829788",
+                "submeshCount": 1
+            },
+            "name": "Portfolio Glossy Blue",
+            "portfolioOnly": false,
+            "source": "portfolio showcase",
+            "transform": {
+                "mode": "trs",
+                "position": [
+                    -0.6200000047683716,
+                    -0.33000001311302185,
+                    0.6600000262260437
+                ],
+                "rotationDegrees": [
+                    0.0,
+                    0.0,
+                    0.0
+                ],
+                "scale": [
+                    0.3799999952316284,
+                    0.3799999952316284,
+                    0.3799999952316284
+                ]
+            },
+            "visible": true
+        },
+        {
+            "debugId": 7,
+            "drawItemCount": 1,
+            "hideInPortfolio": false,
+            "id": 7,
+            "material": {
+                "assetName": "Portfolio_RoughMetal",
+                "assetPath": "assets/materials/portfolio_rough_metal.material.json",
+                "materialAssetRebinding": "restored by assetPath when available",
+                "name": "Portfolio_RoughMetal",
+                "pointer": "0x144978250",
+                "primaryLabel": "Portfolio_RoughMetal",
+                "shader": "pbr_opaque",
+                "slotCount": 0,
+                "source": "JSON material asset"
+            },
+            "mesh": {
+                "name": "Built-in UV Sphere Mesh",
+                "pointer": "0x146829788",
+                "submeshCount": 1
+            },
+            "name": "Portfolio Rough Metal",
+            "portfolioOnly": false,
+            "source": "portfolio showcase",
+            "transform": {
+                "mode": "trs",
+                "position": [
+                    0.9599999785423279,
+                    -0.28999999165534973,
+                    0.41999998688697815
+                ],
+                "rotationDegrees": [
+                    0.0,
+                    0.0,
+                    0.0
+                ],
+                "scale": [
+                    0.46000000834465027,
+                    0.46000000834465027,
+                    0.46000000834465027
+                ]
+            },
+            "visible": true
+        },
+        {
+            "debugId": 8,
+            "drawItemCount": 1,
+            "hideInPortfolio": false,
+            "id": 8,
+            "material": {
+                "assetName": "Portfolio_PolishedMetalSmall",
+                "assetPath": "assets/materials/portfolio_polished_metal_small.material.json",
+                "materialAssetRebinding": "restored by assetPath when available",
+                "name": "Portfolio_PolishedMetalSmall",
+                "pointer": "0x144978380",
+                "primaryLabel": "Portfolio_PolishedMetalSmall",
+                "shader": "pbr_opaque",
+                "slotCount": 0,
+                "source": "JSON material asset"
+            },
+            "mesh": {
+                "name": "Built-in UV Sphere Mesh",
+                "pointer": "0x146829788",
+                "submeshCount": 1
+            },
+            "name": "Portfolio Polished Metal Small",
+            "portfolioOnly": false,
+            "source": "portfolio showcase",
+            "transform": {
+                "mode": "trs",
+                "position": [
+                    1.0399999618530273,
+                    -0.09000000357627869,
+                    -0.18000000715255737
+                ],
+                "rotationDegrees": [
+                    0.0,
+                    0.0,
+                    0.0
+                ],
+                "scale": [
+                    0.3799999952316284,
+                    0.3799999952316284,
+                    0.3799999952316284
+                ]
+            },
+            "visible": true
+        }
+    ],
+    "sceneName": "Portfolio Runtime Scene",
+    "schemaVersion": 1
+}

@@ -8,6 +8,8 @@
 #include "renderer/Camera.h"
 #include "renderer/CascadeMath.h"
 #include "renderer/ClusteredLighting.h"
+#include "renderer/DepthPyramid.h"
+#include "renderer/GpuCulling.h"
 #include "renderer/FrameResources.h"
 #include "renderer/GpuProfiler.h"
 #include "renderer/Material.h"
@@ -16,6 +18,7 @@
 #include "renderer/RenderGraph.h"
 #include "renderer/RenderObject.h"
 #include "renderer/RuntimeSettings.h"
+#include "renderer/SceneBuilder.h"
 #include "renderer/ScreenshotCapture.h"
 #include "renderer/SkinnedMesh.h"
 #include "rhi/VulkanBuffer.h"
@@ -127,12 +130,7 @@ private:
         bool gpuCulling = false;
     };
 
-    struct GpuCullCounters {
-        uint32_t totalDrawItems = 0;
-        uint32_t visibleDrawItems = 0;
-        uint32_t frustumCulledDrawItems = 0;
-        uint32_t occlusionCulledDrawItems = 0;
-    };
+    // GpuCullCounters now lives in renderer/GpuCulling.h alongside the subsystem.
 
     struct ShadowCullingStats {
         size_t cascadeCount = 0;
@@ -224,22 +222,13 @@ private:
     void recreatePostProcessResources();
     void createDepthPyramidResources();
     void destroyDepthPyramidResources();
+    // Thin wrappers over the gpuCulling_ subsystem (resource lifetime + depth
+    // pyramid descriptor rebind); the GPU-culling implementation lives in
+    // renderer::GpuCulling.
     void updateGpuCullingDepthPyramidDescriptors();
     void invalidateDepthPyramid();
     void createGpuCullingResources();
-    // createGpuCullingResources() helpers (see Renderer.cpp); each builds one part
-    // of the main GPU-culling compute setup, called in order inside its try/catch.
-    void createGpuCullDescriptorLayout();
-    void createGpuCullPipeline();
-    void createGpuCullBuffers();
-    void createGpuCullDescriptorSets();
     void destroyGpuCullingResources();
-    void createGpuShadowCullingResources();
-    // createGpuShadowCullingResources() helpers (see Renderer.cpp); the shadow path
-    // reuses the shared cull pipeline/layout, so it only needs its own buffers + sets.
-    void createGpuShadowCullBuffers();
-    void createGpuShadowCullDescriptorSets();
-    void destroyGpuShadowCullingResources();
     void createShadowMap();
     void createPipeline();
     // createPipeline() helpers (see Renderer.cpp); each builds one pipeline group,
@@ -252,18 +241,17 @@ private:
     void createScene();
     // createScene() helpers (see Renderer.cpp): reset scene state, build the shared
     // meshes/textures/material, try the glTF scene, else the built-in cube fallback.
+    // The CPU-side scene-object layout itself lives in renderer::SceneBuilder.
     void resetSceneState();
     void createSceneSharedResources();
     [[nodiscard]] bool tryLoadGltfScene();
-    void createCubeFallbackScene();
-    void addPortfolioShowcaseObjects();
+    // Constructs a SceneBuilder borrowing the renderer's shared meshes, material
+    // array, and debug-id allocator. Cheap; call per scene-build operation.
+    [[nodiscard]] renderer::SceneBuilder makeSceneBuilder();
     void resetPortfolioShowcaseObjectsToPreset();
-    [[nodiscard]] bool hasPortfolioShowcaseScene() const;
     [[nodiscard]] bool currentFrameHasPortfolioShowcaseDrawItems() const;
     [[nodiscard]] bool ensurePortfolioShowcaseSceneReady();
-    void addOcclusionTestSceneObjects();
     void resetOcclusionTestSceneToPreset();
-    [[nodiscard]] bool hasOcclusionTestScene() const;
     [[nodiscard]] uint32_t allocateRenderObjectDebugId();
     void createCheckerboardTexture();
     void createPortfolioBaseColorTexture();
@@ -341,7 +329,7 @@ private:
     void recordDepthPyramidCommands(VkCommandBuffer commandBuffer);
     [[nodiscard]] renderer::RenderGraphFrameResources renderGraphFrameResources();
     bool readGpuVisibleCount(uint32_t frameIndex, uint32_t& visibleCount);
-    bool readGpuCullCounters(uint32_t frameIndex, GpuCullCounters& counters);
+    bool readGpuCullCounters(uint32_t frameIndex, renderer::GpuCullCounters& counters);
     bool readGpuShadowVisibleCount(uint32_t frameIndex, uint32_t& visibleCount);
     [[nodiscard]] bool isGpuCullingActive() const;
     [[nodiscard]] bool isGpuOcclusionCullingActive() const;
@@ -479,16 +467,11 @@ private:
     ui::ImGuiLayer imguiLayer_;
     rhi::VulkanDescriptorSetLayout materialDescriptorSetLayout_;
     rhi::VulkanDescriptorSetLayout skyboxDescriptorSetLayout_;
-    rhi::VulkanDescriptorSetLayout gpuCullDescriptorSetLayout_;
-    rhi::VulkanDescriptorSetLayout depthPyramidDescriptorSetLayout_;
     rhi::VulkanShadowMap shadowMap_;
-    rhi::VulkanImage depthPyramid_;
     rhi::VulkanPipeline pipeline_;
     rhi::VulkanPipeline skinnedPipeline_;
     rhi::VulkanPipeline skyboxPipeline_;
     rhi::VulkanPipeline shadowPipeline_;
-    rhi::VulkanComputePipeline gpuCullPipeline_;
-    rhi::VulkanComputePipeline depthPyramidPipeline_;
     rhi::VulkanCommandContext commandContext_;
     rhi::VulkanSync sync_;
     rhi::VulkanTexture checkerboardTexture_;
@@ -511,15 +494,7 @@ private:
     renderer::SkinnedMesh skinnedMesh_;
     rhi::VulkanDescriptorPool materialDescriptorPool_;
     rhi::VulkanDescriptorPool skyboxDescriptorPool_;
-    rhi::VulkanDescriptorPool gpuCullDescriptorPool_;
-    rhi::VulkanDescriptorPool shadowCullDescriptorPool_;
-    rhi::VulkanDescriptorPool depthPyramidDescriptorPool_;
-    VkSampler depthPyramidSampler_ = VK_NULL_HANDLE;
     VkDescriptorSet skyboxDescriptorSet_ = VK_NULL_HANDLE;
-    std::vector<VkDescriptorSet> gpuCullDescriptorSets_;
-    std::vector<VkDescriptorSet> shadowCullDescriptorSets_;
-    std::vector<VkDescriptorSet> depthPyramidDescriptorSets_;
-    std::vector<VkImageView> depthPyramidMipImageViews_;
     renderer::Camera camera_;
     EditorCamera editorCamera_{};
     DirectionalLightSettings directionalLightSettings_{};
@@ -539,23 +514,10 @@ private:
     std::array<std::vector<MeshDrawBatch>, kMaxShadowCascades> shadowCascadeMeshDrawBatches_;
     std::vector<MeshDrawBatch> gpuShadowMeshDrawBatches_;
     std::vector<rhi::VulkanBuffer> frameObjectDataBuffers_;
-    std::vector<rhi::VulkanBuffer> frameCullInputBuffers_;
-    std::vector<rhi::VulkanBuffer> frameShadowCullInputBuffers_;
-    std::vector<rhi::VulkanBuffer> frameGpuCullParamBuffers_;
+    // Indirect-draw output buffers stay owned here (the main/shadow draw passes read
+    // them); gpuCulling_ borrows them by reference to write the compacted commands.
     std::vector<rhi::VulkanBuffer> frameIndirectDrawBuffers_;
     std::vector<rhi::VulkanBuffer> frameShadowIndirectDrawBuffers_;
-    std::vector<rhi::VulkanBuffer> frameBatchVisibleCountBuffers_;
-    std::vector<rhi::VulkanBuffer> frameBatchVisibleCountReadbackBuffers_;
-    std::vector<rhi::VulkanBuffer> frameShadowBatchVisibleCountBuffers_;
-    std::vector<rhi::VulkanBuffer> frameShadowBatchVisibleCountReadbackBuffers_;
-    std::vector<uint32_t> frameGpuCullTotalDrawItems_;
-    std::vector<uint32_t> frameGpuCullBatchCounts_;
-    std::vector<uint32_t> frameGpuShadowCullTotalDrawItems_;
-    std::vector<uint32_t> frameGpuShadowCullBatchCounts_;
-    std::vector<uint8_t> frameGpuCullReadbackReady_;
-    std::vector<uint8_t> frameGpuCullIndirectCountPath_;
-    std::vector<uint8_t> frameGpuShadowCullReadbackReady_;
-    std::vector<uint8_t> frameGpuShadowCullIndirectCountPath_;
     CsmSettings csmSettings_{};
     std::vector<VkFence> imagesInFlight_;
     ShadowSettings shadowSettings_{};
@@ -565,9 +527,6 @@ private:
     VkFormat skyboxPipelineColorFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat skyboxPipelineDepthFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat shadowPipelineDepthFormat_ = VK_FORMAT_UNDEFINED;
-    VkImageLayout depthPyramidLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
-    uint32_t depthPyramidMipLevels_ = 0;
-    uint32_t selectedDepthPyramidDebugMip_ = 0;
     uint32_t selectedBloomMipDebugLevel_ = 0;
     uint32_t currentFrame_ = 0;
     uint32_t bindlessBaseColorFallbackIndex_ = 0;
@@ -582,9 +541,7 @@ private:
     glm::mat4 frameJitteredProjection_{1.0f};
     glm::mat4 frameJitteredViewProjection_{1.0f};
     glm::mat4 previousFrameViewProjection_{1.0f};
-    glm::mat4 depthPyramidViewProjection_{1.0f};
     glm::vec3 frameCameraPosition_{0.0f};
-    glm::vec3 depthPyramidCameraPosition_{0.0f};
     std::array<CascadeFrameData, kMaxShadowCascades> frameCascades_{};
     glm::vec4 frameCascadeSplits_{};
     std::array<std::array<glm::vec4, 6>, kMaxShadowCascades> frameShadowCascadeFrustumPlanes_{};
@@ -639,7 +596,6 @@ private:
     bool useBindlessMaterialTextures_ = true;
     bool bindlessMaterialTexturesAvailable_ = false;
     bool useGpuCulling_ = true;
-    bool gpuCullingAvailable_ = false;
     // When true (and clustered resources are available), the main pass walks the
     // per-froxel light list; otherwise it brute-forces every light. The runtime
     // toggle also enables a brute-force-vs-clustered comparison.
@@ -658,10 +614,7 @@ private:
     float demoLightIntensity_ = 10.0f;
     float demoLightRange_ = 8.0f;
     bool useGpuOcclusionCulling_ = false;
-    bool depthPyramidValid_ = false;
-    bool depthPyramidBuildAvailable_ = false;
     bool useGpuShadowCulling_ = true;
-    bool gpuShadowCullingAvailable_ = false;
     bool shadowIndirectAvailable_ = false;
     bool ssaoAvailable_ = false;
     bool gpuProfilerEnabled_ = true;
@@ -699,6 +652,22 @@ private:
                                             averageLuminance_,
                                             histogramClippedLuminance_,
                                             ssaoAvailable_};
+
+    // Hi-Z depth pyramid subsystem. Like postProcess_, it owns its GPU resources
+    // and borrows the rendering services by reference, so it is declared last to
+    // guarantee those are constructed first.
+    renderer::DepthPyramid depthPyramid_{context_, swapchain_, renderGraph_, gpuProfiler_};
+
+    // GPU-driven visibility culling (main frustum/occlusion + per-cascade shadow).
+    // Owns its cull pipeline/descriptors/buffers; borrows the services, the depth
+    // pyramid, and the indirect-draw output buffers. Declared last so all of those
+    // are constructed first.
+    renderer::GpuCulling gpuCulling_{context_,
+                                     depthPyramid_,
+                                     renderGraph_,
+                                     gpuProfiler_,
+                                     frameIndirectDrawBuffers_,
+                                     frameShadowIndirectDrawBuffers_};
 };
 
 } // namespace ve
