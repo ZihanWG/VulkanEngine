@@ -129,6 +129,16 @@ void PostProcessStack::createPostProcessResources(VkImageView depthFallbackView,
     sceneColor_.create(context_, sceneColorInfo);
     sceneColorLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 
+    rhi::VulkanImageCreateInfo velocityInfo{};
+    velocityInfo.width = extent.width;
+    velocityInfo.height = extent.height;
+    velocityInfo.format = kVelocityFormat;
+    velocityInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    velocityInfo.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    velocityInfo.debugName = "VelocityBuffer";
+    velocity_.create(context_, velocityInfo);
+    velocityLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+
     createTaaResources();
 
     bloomExtent_.width = std::max(1u, extent.width / 2u);
@@ -363,6 +373,21 @@ void PostProcessStack::createPostProcessDescriptorSetLayouts()
                               VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
                               "PostProcessDualImageDescriptorSetLayout");
 
+    // TAA resolve: current color, history color, velocity, main depth.
+    std::array<VkDescriptorSetLayoutBinding, 4> taaResolveBindings{};
+    for (uint32_t bindingIndex = 0; bindingIndex < taaResolveBindings.size(); ++bindingIndex) {
+        taaResolveBindings[bindingIndex] = singleImageBinding;
+        taaResolveBindings[bindingIndex].binding = bindingIndex;
+    }
+
+    postProcessTaaResolveDescriptorSetLayout_.create(
+        context_.vkDevice(),
+        std::span<const VkDescriptorSetLayoutBinding>(taaResolveBindings.data(), taaResolveBindings.size()));
+    rhi::debug::setObjectName(context_.vkDevice(),
+                              postProcessTaaResolveDescriptorSetLayout_.handle(),
+                              VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
+                              "PostProcessTaaResolveDescriptorSetLayout");
+
     std::array<VkDescriptorSetLayoutBinding, 5> compositeBindings{};
     compositeBindings[0] = singleImageBinding;
     compositeBindings[1] = singleImageBinding;
@@ -590,7 +615,7 @@ void PostProcessStack::createPostProcessDescriptorPool(const PostProcessDescript
                                    (2u * counts.bloomUpsampleSetCount) + (4u * counts.compositeDescriptorSetCount) +
                                    (counts.createLuminanceDescriptors ? static_cast<uint32_t>(frameCount_) : 0u) +
                                    (counts.createHistogramDescriptors ? static_cast<uint32_t>(frameCount_) : 0u) +
-                                   (2u * counts.taaResolveSetCount) + counts.taaBloomExtractSetCount +
+                                   (4u * counts.taaResolveSetCount) + counts.taaBloomExtractSetCount +
                                    counts.taaBloomDownsampleSetCount + (4u * counts.taaCompositeDescriptorSetCount) +
                                    counts.taaLuminanceDescriptorSetCount + counts.taaHistogramDescriptorSetCount;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -698,8 +723,8 @@ void PostProcessStack::createTaaResolveDescriptorSets()
 {
     if (taaHistoryImages_[0].imageView() != VK_NULL_HANDLE && taaHistoryImages_[1].imageView() != VK_NULL_HANDLE) {
         std::array<VkDescriptorSetLayout, kTaaHistoryCount> taaResolveLayouts{
-            postProcessDualImageDescriptorSetLayout_.handle(),
-            postProcessDualImageDescriptorSetLayout_.handle(),
+            postProcessTaaResolveDescriptorSetLayout_.handle(),
+            postProcessTaaResolveDescriptorSetLayout_.handle(),
         };
         VkDescriptorSetAllocateInfo taaResolveAllocateInfo{};
         taaResolveAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -721,35 +746,32 @@ void PostProcessStack::createTaaResolveDescriptorSets()
         VK_CHECK(vkAllocateDescriptorSets(
             context_.vkDevice(), &taaBloomAllocateInfo, taaBloomExtractDescriptorSets_.data()));
 
-        std::array<std::array<VkDescriptorImageInfo, 2>, kTaaHistoryCount> taaResolveImageInfos{};
+        std::array<std::array<VkDescriptorImageInfo, 4>, kTaaHistoryCount> taaResolveImageInfos{};
         std::array<VkDescriptorImageInfo, kTaaHistoryCount> taaBloomImageInfos{};
-        std::array<VkWriteDescriptorSet, kTaaHistoryCount * 3u> taaWrites{};
+        std::array<VkWriteDescriptorSet, kTaaHistoryCount * 5u> taaWrites{};
         for (uint32_t historyIndex = 0; historyIndex < kTaaHistoryCount; ++historyIndex) {
             taaResolveImageInfos[historyIndex][0] = postProcessImageInfo(sceneColor_.imageView());
             taaResolveImageInfos[historyIndex][1] = postProcessImageInfo(taaHistoryImages_[historyIndex].imageView());
+            taaResolveImageInfos[historyIndex][2] = postProcessImageInfo(velocity_.imageView());
+            taaResolveImageInfos[historyIndex][3] = postProcessDepthInfo();
             taaBloomImageInfos[historyIndex] = postProcessImageInfo(taaHistoryImages_[historyIndex].imageView());
 
-            const uint32_t writeBase = historyIndex * 3u;
-            taaWrites[writeBase].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            taaWrites[writeBase].dstSet = taaResolveDescriptorSets_[historyIndex];
-            taaWrites[writeBase].dstBinding = 0;
-            taaWrites[writeBase].descriptorCount = 1;
-            taaWrites[writeBase].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            taaWrites[writeBase].pImageInfo = &taaResolveImageInfos[historyIndex][0];
+            const uint32_t writeBase = historyIndex * 5u;
+            for (uint32_t binding = 0; binding < 4u; ++binding) {
+                taaWrites[writeBase + binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                taaWrites[writeBase + binding].dstSet = taaResolveDescriptorSets_[historyIndex];
+                taaWrites[writeBase + binding].dstBinding = binding;
+                taaWrites[writeBase + binding].descriptorCount = 1;
+                taaWrites[writeBase + binding].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                taaWrites[writeBase + binding].pImageInfo = &taaResolveImageInfos[historyIndex][binding];
+            }
 
-            taaWrites[writeBase + 1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            taaWrites[writeBase + 1].dstSet = taaResolveDescriptorSets_[historyIndex];
-            taaWrites[writeBase + 1].dstBinding = 1;
-            taaWrites[writeBase + 1].descriptorCount = 1;
-            taaWrites[writeBase + 1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            taaWrites[writeBase + 1].pImageInfo = &taaResolveImageInfos[historyIndex][1];
-
-            taaWrites[writeBase + 2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            taaWrites[writeBase + 2].dstSet = taaBloomExtractDescriptorSets_[historyIndex];
-            taaWrites[writeBase + 2].dstBinding = 0;
-            taaWrites[writeBase + 2].descriptorCount = 1;
-            taaWrites[writeBase + 2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            taaWrites[writeBase + 2].pImageInfo = &taaBloomImageInfos[historyIndex];
+            taaWrites[writeBase + 4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            taaWrites[writeBase + 4].dstSet = taaBloomExtractDescriptorSets_[historyIndex];
+            taaWrites[writeBase + 4].dstBinding = 0;
+            taaWrites[writeBase + 4].descriptorCount = 1;
+            taaWrites[writeBase + 4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            taaWrites[writeBase + 4].pImageInfo = &taaBloomImageInfos[historyIndex];
 
             rhi::debug::setObjectName(context_.vkDevice(),
                                       taaResolveDescriptorSets_[historyIndex],
@@ -1587,8 +1609,7 @@ void PostProcessStack::createBloomPipelines()
 
 void PostProcessStack::createTaaResolvePipeline()
 {
-    const VkDescriptorSetLayout postProcessDualImageDescriptorSetLayout =
-        postProcessDualImageDescriptorSetLayout_.handle();
+    const VkDescriptorSetLayout taaResolveDescriptorSetLayout = postProcessTaaResolveDescriptorSetLayout_.handle();
     const VkPushConstantRange taaResolvePushConstantRange{
         VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(TaaResolvePushConstants))};
 
@@ -1597,7 +1618,7 @@ void PostProcessStack::createTaaResolvePipeline()
     taaResolvePipelineInfo.fragmentShaderPath = shaderPath("taa_resolve.frag.spv");
     taaResolvePipelineInfo.colorFormat = kSceneColorFormat;
     taaResolvePipelineInfo.descriptorSetLayouts =
-        std::span<const VkDescriptorSetLayout>(&postProcessDualImageDescriptorSetLayout, 1);
+        std::span<const VkDescriptorSetLayout>(&taaResolveDescriptorSetLayout, 1);
     taaResolvePipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&taaResolvePushConstantRange, 1);
 
     taaResolvePipelineInfo.pipelineCache = context_.pipelineCache();
@@ -2050,7 +2071,11 @@ void PostProcessStack::recordTaaResolveCommands(VkCommandBuffer commandBuffer)
         taaSettings_.feedback,
         taaHistoryValid_ ? 1u : 0u,
         taaSettings_.neighborhoodClampEnabled ? 1u : 0u,
-        {0u, 0u, 0u}};
+        taaSettings_.reprojectionEnabled ? 1u : 0u,
+        // Depth dilation needs a samplable main depth; otherwise binding 3 holds
+        // the checkerboard fallback and the shader must skip the depth reads.
+        swapchain_.depthSupportsSampling() ? 1u : 0u,
+        0u};
     vkCmdPushConstants(commandBuffer,
                        taaResolvePipeline_.layout(),
                        VK_SHADER_STAGE_FRAGMENT_BIT,

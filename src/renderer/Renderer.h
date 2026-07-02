@@ -294,6 +294,9 @@ private:
     void updateGpuCullInputBuffer(uint32_t frameIndex);
     void updateGpuShadowCullInputBuffer(uint32_t frameIndex);
     void updateFrameData(uint32_t frameIndex);
+    // Captures this frame's view-projection and per-object model matrices as the
+    // "previous frame" inputs for next frame's motion vectors.
+    void capturePreviousFrameMatrices();
     // updateFrameData() helpers (see Renderer.cpp); each is a verbatim slice of the
     // former monolithic function, kept private and behaviour-preserving.
     void resetFrameStateForEmptyScene(uint32_t frameIndex);
@@ -535,7 +538,13 @@ private:
     glm::mat4 frameViewProjection_{1.0f};
     glm::mat4 frameJitteredProjection_{1.0f};
     glm::mat4 frameJitteredViewProjection_{1.0f};
+    // Previous frame's unjittered view-projection, used with the per-object
+    // previous model matrices to build motion vectors. Invalid after a TAA
+    // history reset so the first frame reprojects with zero camera motion.
     glm::mat4 previousFrameViewProjection_{1.0f};
+    bool previousFrameViewProjectionValid_ = false;
+    glm::mat4 previousSkinnedModelMatrix_{1.0f};
+    bool previousSkinnedModelValid_ = false;
     glm::vec3 frameCameraPosition_{0.0f};
     std::array<CascadeFrameData, kMaxShadowCascades> frameCascades_{};
     glm::vec4 frameCascadeSplits_{};

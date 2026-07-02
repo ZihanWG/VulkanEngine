@@ -157,6 +157,7 @@ struct RenderGraphBufferResource {
 
 struct RenderGraphFrameResources {
     RenderGraphImageResource sceneColor;
+    RenderGraphImageResource velocity;
     RenderGraphImageResource taaHistoryRead;
     RenderGraphImageResource taaHistoryWrite;
     RenderGraphImageResource bloomExtract;
@@ -393,6 +394,7 @@ private:
         RGTextureHandle mainDepth{};
         RGTextureHandle shadowMapDepth{};
         RGTextureHandle sceneColor{};
+        RGTextureHandle velocity{};
         RGTextureHandle taaHistoryRead{};
         RGTextureHandle taaHistoryWrite{};
         RGTextureHandle postProcessSceneColor{};

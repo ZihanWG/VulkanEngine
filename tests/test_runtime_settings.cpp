@@ -51,6 +51,7 @@ RuntimeSettings makeNonDefaultSettings()
     settings.taa.enabled = true;
     settings.taa.jitterEnabled = false;
     settings.taa.neighborhoodClampEnabled = false;
+    settings.taa.reprojectionEnabled = false;
     settings.taa.feedback = 0.75f;
 
     settings.csm.cascadeCount = 3;
@@ -116,6 +117,7 @@ TEST_CASE("RuntimeSettings save -> load round-trips every persisted field", "[se
     CHECK(loaded.taa.enabled == original.taa.enabled);
     CHECK(loaded.taa.jitterEnabled == original.taa.jitterEnabled);
     CHECK(loaded.taa.neighborhoodClampEnabled == original.taa.neighborhoodClampEnabled);
+    CHECK(loaded.taa.reprojectionEnabled == original.taa.reprojectionEnabled);
     CHECK(loaded.taa.feedback == Catch::Approx(original.taa.feedback));
 
     CHECK(loaded.csm.cascadeCount == original.csm.cascadeCount);

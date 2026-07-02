@@ -17,6 +17,8 @@ struct ObjectFrameData {
     vec4 cameraForward;
     uvec4 textureIndices;
     vec4 emissiveFactor;
+    mat4 currMvpNoJitter;
+    mat4 prevMvpNoJitter;
 };
 
 layout(buffer_reference, std430) readonly buffer ObjectFrameDataBuffer {
@@ -52,6 +54,8 @@ layout(location = 18) flat out vec4 vCascadeSplits;
 layout(location = 19) flat out uint vCascadeCount;
 layout(location = 20) flat out float vCascadeDebugEnabled;
 layout(location = 21) flat out vec4 vEmissiveFactor;
+layout(location = 22) out vec4 vCurrClipPos;
+layout(location = 23) out vec4 vPrevClipPos;
 
 void main()
 {
@@ -87,4 +91,6 @@ void main()
     vCascadeCount = uint(max(objectData.cameraForward.w, 1.0) + 0.5);
     vCascadeDebugEnabled = objectData.cameraPosition.w;
     vEmissiveFactor = objectData.emissiveFactor;
+    vCurrClipPos = objectData.currMvpNoJitter * vec4(inPosition, 1.0);
+    vPrevClipPos = objectData.prevMvpNoJitter * vec4(inPosition, 1.0);
 }

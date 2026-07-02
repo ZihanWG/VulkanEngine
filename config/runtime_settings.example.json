@@ -25,6 +25,7 @@
         "enabled": false,
         "jitterEnabled": true,
         "neighborhoodClampEnabled": true,
+        "reprojectionEnabled": true,
         "feedback": 0.88
     },
     "csm": {

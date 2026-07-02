@@ -78,7 +78,22 @@ layout(location = 18) flat in vec4 vCascadeSplits;
 layout(location = 19) flat in uint vCascadeCount;
 layout(location = 20) flat in float vCascadeDebugEnabled;
 layout(location = 21) flat in vec4 vEmissiveFactor;
+layout(location = 22) in vec4 vCurrClipPos;
+layout(location = 23) in vec4 vPrevClipPos;
 layout(location = 0) out vec4 outColor;
+layout(location = 1) out vec2 outVelocity;
+
+// UV-space motion vector from the unjittered current/previous clip positions.
+// NDC-to-UV halves the delta; Vulkan's y-down NDC matches y-down UV, so no flip.
+vec2 computeVelocity()
+{
+    if (vPrevClipPos.w <= 0.0 || vCurrClipPos.w <= 0.0) {
+        return vec2(0.0);
+    }
+    vec2 currNdc = vCurrClipPos.xy / vCurrClipPos.w;
+    vec2 prevNdc = vPrevClipPos.xy / vPrevClipPos.w;
+    return (currNdc - prevNdc) * 0.5;
+}
 
 const float PI = 3.14159265359;
 const float EPSILON = 0.0001;
@@ -431,4 +446,5 @@ void main()
     }
 
     outColor = vec4(finalColor, alpha);
+    outVelocity = computeVelocity();
 }

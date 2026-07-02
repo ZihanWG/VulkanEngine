@@ -449,6 +449,7 @@ void Renderer::drawTaaDebugUi()
     changed |= ImGui::Checkbox("Enabled##taa", &taaSettings_.enabled);
     changed |= ImGui::Checkbox("Jitter enabled", &taaSettings_.jitterEnabled);
     changed |= ImGui::Checkbox("Neighborhood clamp", &taaSettings_.neighborhoodClampEnabled);
+    changed |= ImGui::Checkbox("Motion reprojection", &taaSettings_.reprojectionEnabled);
     changed |= ImGui::SliderFloat("History feedback", &taaSettings_.feedback, 0.0f, 0.98f, "%.3f");
     if (changed) {
         clampRuntimeSettings();

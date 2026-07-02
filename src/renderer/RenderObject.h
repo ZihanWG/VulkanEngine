@@ -25,6 +25,11 @@ struct RenderObject {
     const Material* materialTable = nullptr;
     size_t materialCount = 0;
     Transform transform{};
+    // Previous-frame model matrix captured at the end of each frame update and
+    // used to build per-object motion vectors; previousModelValid is false until
+    // the object has been through one frame (velocity then sees zero object motion).
+    glm::mat4 previousModelMatrix{1.0f};
+    bool previousModelValid = false;
     std::string debugName;
     RenderObjectSourceType sourceType = RenderObjectSourceType::BuiltInFallbackCube;
     bool visible = true;

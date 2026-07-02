@@ -96,6 +96,8 @@ struct ObjectFrameData {
     glm::vec4 cameraForward{0.0f, 0.0f, -1.0f, 4.0f};
     glm::uvec4 textureIndices{0, 0, 0, 0};
     glm::vec4 emissiveFactor{0.0f, 0.0f, 0.0f, 0.0f};
+    glm::mat4 currMvpNoJitter{1.0f};
+    glm::mat4 prevMvpNoJitter{1.0f};
 };
 
 // Mirrors the shader's std430 buffer_reference block. std430 stores mat4 as
@@ -111,6 +113,9 @@ struct ObjectFrameData {
 // textureIndices.x = base color, y = normal, z = metallic-roughness, w = emissive.
 // emissiveFactor.rgb is the emissive color factor; emissiveFactor.w is 1.0 when an
 // emissive texture (sampled from the base-color array at textureIndices.w) is present.
+// currMvpNoJitter/prevMvpNoJitter are the unjittered current/previous-frame MVP
+// matrices used to derive per-pixel motion vectors; rasterization keeps using the
+// jittered mvp so TAA jitter never leaks into the velocity buffer.
 static_assert(offsetof(ObjectFrameData, mvp) == 0);
 static_assert(offsetof(ObjectFrameData, model) == 64);
 static_assert(offsetof(ObjectFrameData, lightMvp) == 128);
@@ -125,7 +130,9 @@ static_assert(offsetof(ObjectFrameData, cameraPosition) == 496);
 static_assert(offsetof(ObjectFrameData, cameraForward) == 512);
 static_assert(offsetof(ObjectFrameData, textureIndices) == 528);
 static_assert(offsetof(ObjectFrameData, emissiveFactor) == 544);
-static_assert(sizeof(ObjectFrameData) == 560);
+static_assert(offsetof(ObjectFrameData, currMvpNoJitter) == 560);
+static_assert(offsetof(ObjectFrameData, prevMvpNoJitter) == 624);
+static_assert(sizeof(ObjectFrameData) == 688);
 
 constexpr uint32_t kMaxFrameObjects = 1024;
 constexpr uint32_t kMaxDrawItems = 1024;
@@ -143,6 +150,9 @@ constexpr VkDeviceSize kGpuCullCountBufferSize =
 constexpr float kUnboundedCullExtent = 100000000.0f;
 constexpr VkFormat kSceneColorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 constexpr VkFormat kBloomColorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+// UV-space motion vectors written by the main HDR pass as its second color
+// attachment and consumed by the TAA resolve for history reprojection.
+constexpr VkFormat kVelocityFormat = VK_FORMAT_R16G16_SFLOAT;
 constexpr VkFormat kDepthPyramidFormat = VK_FORMAT_R32_SFLOAT;
 constexpr uint32_t kDepthPyramidLocalSizeX = 8;
 constexpr uint32_t kDepthPyramidLocalSizeY = 8;
@@ -263,16 +273,18 @@ struct DepthPyramidPushConstants {
 
 static_assert(sizeof(DepthPyramidPushConstants) == 16);
 
+// prevViewProjection is the previous frame's unjittered view-projection; the
+// fragment shader projects the sky direction with w=0 (translation drops out)
+// to derive rotation-only sky motion vectors. Exactly 128 bytes, the guaranteed
+// push-constant minimum, so no room for further fields.
 struct SkyboxPushConstants {
     glm::mat4 inverseViewProjection{1.0f};
-    float exposure = 1.0f;
-    uint32_t toneMappingOperator = 0;
+    glm::mat4 prevViewProjection{1.0f};
 };
 
 static_assert(offsetof(SkyboxPushConstants, inverseViewProjection) == 0);
-static_assert(offsetof(SkyboxPushConstants, exposure) == sizeof(glm::mat4));
-static_assert(offsetof(SkyboxPushConstants, toneMappingOperator) == sizeof(glm::mat4) + sizeof(float));
-static_assert(sizeof(SkyboxPushConstants) >= sizeof(glm::mat4) + sizeof(float) + sizeof(uint32_t));
+static_assert(offsetof(SkyboxPushConstants, prevViewProjection) == sizeof(glm::mat4));
+static_assert(sizeof(SkyboxPushConstants) == 128);
 
 struct BloomExtractPushConstants {
     float threshold = 1.0f;
@@ -341,13 +353,17 @@ struct TaaResolvePushConstants {
     float feedback = 0.88f;
     uint32_t historyValid = 0;
     uint32_t neighborhoodClampEnabled = 1;
-    uint32_t padding[3]{};
+    uint32_t reprojectionEnabled = 1;
+    uint32_t depthDilationEnabled = 1;
+    uint32_t padding = 0;
 };
 
 static_assert(offsetof(TaaResolvePushConstants, texelSize) == 0);
 static_assert(offsetof(TaaResolvePushConstants, feedback) == 8);
 static_assert(offsetof(TaaResolvePushConstants, historyValid) == 12);
 static_assert(offsetof(TaaResolvePushConstants, neighborhoodClampEnabled) == 16);
+static_assert(offsetof(TaaResolvePushConstants, reprojectionEnabled) == 20);
+static_assert(offsetof(TaaResolvePushConstants, depthDilationEnabled) == 24);
 static_assert(sizeof(TaaResolvePushConstants) == 32);
 
 

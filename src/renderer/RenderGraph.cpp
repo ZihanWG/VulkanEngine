@@ -339,6 +339,7 @@ void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
         throw std::logic_error("RenderGraph::beginFrame requires a valid command buffer.");
     }
     requireImageResource(frameResources.sceneColor, "RenderGraph::beginFrame");
+    requireImageResource(frameResources.velocity, "RenderGraph::beginFrame");
     requireImageResource(frameResources.bloomExtract, "RenderGraph::beginFrame");
     requireImageResource(frameResources.bloomPing, "RenderGraph::beginFrame");
     requireImageResource(frameResources.bloomPong, "RenderGraph::beginFrame");
@@ -444,6 +445,7 @@ void RenderGraph::createTransientFrameTextures()
     };
 
     frame_.sceneColor = createTransientTexture(makeTransientDesc(frame_.resources.sceneColor), frame_.resources.sceneColor);
+    frame_.velocity = createTransientTexture(makeTransientDesc(frame_.resources.velocity), frame_.resources.velocity);
     frame_.postProcessSceneColor = frame_.sceneColor;
     if (frame_.resources.taaEnabled && validImageResource(frame_.resources.taaHistoryRead) &&
         validImageResource(frame_.resources.taaHistoryWrite)) {
@@ -576,14 +578,24 @@ void RenderGraph::beginMainHdrPass()
     clearColor.color.float32[3] = 1.0f;
 
     const TextureResource& sceneColor = textures_.at(frame_.sceneColor.index);
+    const TextureResource& velocity = textures_.at(frame_.velocity.index);
 
-    VkRenderingAttachmentInfo colorAttachment{};
+    std::array<VkRenderingAttachmentInfo, 2> colorAttachments{};
+    VkRenderingAttachmentInfo& colorAttachment = colorAttachments[0];
     colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     colorAttachment.imageView = sceneColor.imageView;
     colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     colorAttachment.clearValue = clearColor;
+
+    VkRenderingAttachmentInfo& velocityAttachment = colorAttachments[1];
+    velocityAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    velocityAttachment.imageView = velocity.imageView;
+    velocityAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    velocityAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    velocityAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    velocityAttachment.clearValue = VkClearValue{};
 
     VkClearValue depthClear{};
     depthClear.depthStencil.depth = 1.0f;
@@ -602,8 +614,8 @@ void RenderGraph::beginMainHdrPass()
     renderingInfo.renderArea.offset = {0, 0};
     renderingInfo.renderArea.extent = sceneColor.desc.extent;
     renderingInfo.layerCount = 1;
-    renderingInfo.colorAttachmentCount = 1;
-    renderingInfo.pColorAttachments = &colorAttachment;
+    renderingInfo.colorAttachmentCount = static_cast<uint32_t>(colorAttachments.size());
+    renderingInfo.pColorAttachments = colorAttachments.data();
     renderingInfo.pDepthAttachment = &depthAttachment;
 
     vkCmdBeginRendering(frame_.commandBuffer, &renderingInfo);
@@ -1129,6 +1141,9 @@ void RenderGraph::declareGeometryPasses()
             builder.writeTexture(frame_.sceneColor,
                                  RGAccess::ColorAttachmentWrite,
                                  "Writes linear HDR skybox and mesh lighting.");
+            builder.writeTexture(frame_.velocity,
+                                 RGAccess::ColorAttachmentWrite,
+                                 "Writes UV-space motion vectors for TAA history reprojection.");
             builder.writeTexture(frame_.mainDepth,
                                  RGAccess::DepthStencilAttachmentWrite,
                                  "Clears and writes the main depth attachment.");
@@ -1170,6 +1185,14 @@ void RenderGraph::declareBloomAndTaaPasses()
                 builder.readTexture(frame_.taaHistoryRead,
                                     RGAccess::ShaderRead,
                                     "Samples the previous HDR TAA history image.");
+                builder.readTexture(frame_.velocity,
+                                    RGAccess::ShaderRead,
+                                    "Samples motion vectors to reproject the history UV.");
+                if (frame_.swapchain->depthSupportsSampling()) {
+                    builder.readTexture(frame_.mainDepth,
+                                        RGAccess::ShaderRead,
+                                        "Samples main depth for closest-depth velocity dilation.");
+                }
                 builder.writeTexture(frame_.taaHistoryWrite,
                                      RGAccess::ColorAttachmentWrite,
                                      "Writes the resolved HDR TAA history image.");

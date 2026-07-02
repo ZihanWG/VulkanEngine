@@ -17,6 +17,8 @@ struct ObjectFrameData {
     vec4 cameraForward;
     uvec4 textureIndices;
     vec4 emissiveFactor;
+    mat4 currMvpNoJitter;
+    mat4 prevMvpNoJitter;
 };
 
 layout(buffer_reference, std430) readonly buffer ObjectFrameDataBuffer {
