@@ -477,10 +477,15 @@ void Renderer::drawRenderGraphDebugUi()
     const auto& resources = renderGraph_.debugResources();
     ImGui::Text("Declared pass order: %zu passes, %zu resources", passes.size(), resources.size());
 
+    // ScrollX makes the table a child window whose default height is "remaining
+    // visible space" — near the bottom of a scrolled panel that collapses to a
+    // bare scrollbar. Pin an explicit height (with ScrollY) so both tables stay
+    // readable regardless of where the section sits in the debug window.
     constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                                       ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp |
-                                      ImGuiTableFlags_ScrollX;
-    if (ImGui::BeginTable("RenderGraphPassTable", 8, flags)) {
+                                      ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY;
+    const ImVec2 tableSize(0.0f, ImGui::GetTextLineHeightWithSpacing() * 12.0f);
+    if (ImGui::BeginTable("RenderGraphPassTable", 8, flags, tableSize)) {
         ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed);
         ImGui::TableSetupColumn("Pass");
         ImGui::TableSetupColumn("Type");
@@ -525,7 +530,7 @@ void Renderer::drawRenderGraphDebugUi()
         ImGui::EndTable();
     }
 
-    if (ImGui::BeginTable("RenderGraphResourceTable", 8, flags)) {
+    if (ImGui::BeginTable("RenderGraphResourceTable", 8, flags, tableSize)) {
         ImGui::TableSetupColumn("Resource");
         ImGui::TableSetupColumn("Kind", ImGuiTableColumnFlags_WidthFixed);
         ImGui::TableSetupColumn("Lifetime", ImGuiTableColumnFlags_WidthFixed);
