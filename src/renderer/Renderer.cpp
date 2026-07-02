@@ -255,7 +255,12 @@ void Renderer::drawFrame()
     buildDebugUi();
     drawViewportGizmo();
     imguiLayer_.endFrame();
-    updateFrameData(currentFrame_);
+    {
+        const auto framePrepStart = std::chrono::steady_clock::now();
+        updateFrameData(currentFrame_);
+        framePrepCpuHistory_.push(
+            std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - framePrepStart).count());
+    }
     recordRenderCommands(frame.commandBuffer, imageIndex);
     const VkSemaphore renderFinished = sync_.renderFinishedSemaphore(imageIndex);
 
@@ -2457,6 +2462,28 @@ bool Renderer::appendDrawItemsForObject(uint32_t objectIndex, std::vector<DrawIt
     return true;
 }
 
+void Renderer::framePrepParallelFor(size_t count, const std::function<void(size_t, size_t)>& body)
+{
+    // Chunks below this size cost more to dispatch than to run inline.
+    constexpr size_t kMinChunkSize = 64;
+    if (parallelFramePrepEnabled_) {
+        jobSystem_.parallelFor(count, kMinChunkSize, body);
+    } else if (count > 0) {
+        body(0, count);
+    }
+}
+
+void Renderer::updateFrameWorldBounds()
+{
+    const size_t objectCount = renderObjects_.size();
+    frameWorldBounds_.resize(objectCount);
+    framePrepParallelFor(objectCount, [this](size_t begin, size_t end) {
+        for (size_t objectIndex = begin; objectIndex < end; ++objectIndex) {
+            frameWorldBounds_[objectIndex] = renderObjects_[objectIndex].worldBounds();
+        }
+    });
+}
+
 void Renderer::buildDrawItems()
 {
     allDrawItems_.clear();
@@ -2486,29 +2513,45 @@ void Renderer::buildVisibleDrawItems(const renderer::Frustum& frustum)
     cullingStats_.totalDrawItems = allDrawItems_.size();
 
     const size_t objectCount = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
-    std::vector<bool> objectVisible(objectCount, false);
-    for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
-        const renderer::RenderObject& object = renderObjects_[objectIndex];
-        if (!isRenderObjectActive(object)) {
-            continue;
-        }
-        if (!object.mesh || !object.mesh->valid()) {
-            continue;
-        }
+    // uint8_t instead of vector<bool>: parallel chunks write disjoint indices,
+    // which vector<bool>'s packed bits would turn into data races.
+    std::vector<uint8_t> objectVisible(objectCount, 0);
+    std::atomic<size_t> totalObjects{0};
+    std::atomic<size_t> culledObjects{0};
+    std::atomic<size_t> visibleObjects{0};
+    framePrepParallelFor(objectCount, [&](size_t begin, size_t end) {
+        size_t chunkTotal = 0;
+        size_t chunkCulled = 0;
+        size_t chunkVisible = 0;
+        for (size_t objectIndex = begin; objectIndex < end; ++objectIndex) {
+            const renderer::RenderObject& object = renderObjects_[objectIndex];
+            if (!isRenderObjectActive(object)) {
+                continue;
+            }
+            if (!object.mesh || !object.mesh->valid()) {
+                continue;
+            }
 
-        ++cullingStats_.totalObjects;
-        const renderer::Aabb worldBounds = object.worldBounds();
-        if (worldBounds.valid() && !frustum.testAabb(worldBounds)) {
-            ++cullingStats_.culledObjects;
-            continue;
-        }
+            ++chunkTotal;
+            const renderer::Aabb& worldBounds = frameWorldBounds_[objectIndex];
+            if (worldBounds.valid() && !frustum.testAabb(worldBounds)) {
+                ++chunkCulled;
+                continue;
+            }
 
-        ++cullingStats_.visibleObjects;
-        objectVisible[objectIndex] = true;
-    }
+            ++chunkVisible;
+            objectVisible[objectIndex] = 1;
+        }
+        totalObjects.fetch_add(chunkTotal, std::memory_order_relaxed);
+        culledObjects.fetch_add(chunkCulled, std::memory_order_relaxed);
+        visibleObjects.fetch_add(chunkVisible, std::memory_order_relaxed);
+    });
+    cullingStats_.totalObjects = totalObjects.load();
+    cullingStats_.culledObjects = culledObjects.load();
+    cullingStats_.visibleObjects = visibleObjects.load();
 
     for (const DrawItem& drawItem : allDrawItems_) {
-        if (drawItem.objectIndex < objectVisible.size() && objectVisible[drawItem.objectIndex]) {
+        if (drawItem.objectIndex < objectVisible.size() && objectVisible[drawItem.objectIndex] != 0) {
             visibleDrawItems_.push_back(drawItem);
         }
     }
@@ -2532,8 +2575,10 @@ void Renderer::buildShadowDrawItems(uint32_t cascadeIndex, const renderer::Frust
     cascadeDrawItems.clear();
     cascadeDrawItems.reserve(allDrawItems_.size());
 
+    // Serial on purpose: this runs inside the per-cascade parallel loop in
+    // buildShadowFrameData, and framePrepParallelFor must not nest.
     const size_t objectCount = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
-    std::vector<bool> objectVisible(objectCount, false);
+    std::vector<uint8_t> objectVisible(objectCount, 0);
     for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
         const renderer::RenderObject& object = renderObjects_[objectIndex];
         if (!isRenderObjectActive(object)) {
@@ -2543,16 +2588,16 @@ void Renderer::buildShadowDrawItems(uint32_t cascadeIndex, const renderer::Frust
             continue;
         }
 
-        const renderer::Aabb worldBounds = object.worldBounds();
+        const renderer::Aabb& worldBounds = frameWorldBounds_[objectIndex];
         if (worldBounds.valid() && !lightFrustum.testAabb(worldBounds)) {
             continue;
         }
 
-        objectVisible[objectIndex] = true;
+        objectVisible[objectIndex] = 1;
     }
 
     for (const DrawItem& drawItem : allDrawItems_) {
-        if (drawItem.objectIndex < objectVisible.size() && objectVisible[drawItem.objectIndex]) {
+        if (drawItem.objectIndex < objectVisible.size() && objectVisible[drawItem.objectIndex] != 0) {
             cascadeDrawItems.push_back(drawItem);
         }
     }
@@ -2621,29 +2666,32 @@ void Renderer::updateGpuCullInputBuffer(uint32_t frameIndex)
         .upload(std::as_bytes(std::span<const GpuCullFrameParams>(&frameParams, 1)));
 
     std::vector<GpuCullDrawItem> cullDrawItems(allDrawItems_.size());
-    for (size_t drawIndex = 0; drawIndex < allDrawItems_.size(); ++drawIndex) {
-        const DrawItem& drawItem = allDrawItems_[drawIndex];
-        GpuCullDrawItem& gpuDrawItem = cullDrawItems[drawIndex];
+    framePrepParallelFor(allDrawItems_.size(), [&](size_t begin, size_t end) {
+        for (size_t drawIndex = begin; drawIndex < end; ++drawIndex) {
+            const DrawItem& drawItem = allDrawItems_[drawIndex];
+            GpuCullDrawItem& gpuDrawItem = cullDrawItems[drawIndex];
 
-        renderer::Aabb worldBounds{};
-        if (drawItem.objectIndex < renderObjects_.size()) {
-            worldBounds = renderObjects_[drawItem.objectIndex].worldBounds();
+            renderer::Aabb worldBounds{};
+            if (drawItem.objectIndex < frameWorldBounds_.size()) {
+                worldBounds = frameWorldBounds_[drawItem.objectIndex];
+            }
+
+            if (worldBounds.valid()) {
+                gpuDrawItem.boundsMin = glm::vec4(worldBounds.min, 0.0f);
+                gpuDrawItem.boundsMax = glm::vec4(worldBounds.max, 0.0f);
+            } else {
+                gpuDrawItem.boundsMin =
+                    glm::vec4(-kUnboundedCullExtent, -kUnboundedCullExtent, -kUnboundedCullExtent, 0.0f);
+                gpuDrawItem.boundsMax =
+                    glm::vec4(kUnboundedCullExtent, kUnboundedCullExtent, kUnboundedCullExtent, 0.0f);
+            }
+
+            gpuDrawItem.indexCount = drawItem.indexCount;
+            gpuDrawItem.firstIndex = drawItem.firstIndex;
+            gpuDrawItem.vertexOffset = drawItem.vertexOffset;
+            gpuDrawItem.objectFrameDataIndex = drawItem.frameDataIndex;
         }
-
-        if (worldBounds.valid()) {
-            gpuDrawItem.boundsMin = glm::vec4(worldBounds.min, 0.0f);
-            gpuDrawItem.boundsMax = glm::vec4(worldBounds.max, 0.0f);
-        } else {
-            gpuDrawItem.boundsMin =
-                glm::vec4(-kUnboundedCullExtent, -kUnboundedCullExtent, -kUnboundedCullExtent, 0.0f);
-            gpuDrawItem.boundsMax = glm::vec4(kUnboundedCullExtent, kUnboundedCullExtent, kUnboundedCullExtent, 0.0f);
-        }
-
-        gpuDrawItem.indexCount = drawItem.indexCount;
-        gpuDrawItem.firstIndex = drawItem.firstIndex;
-        gpuDrawItem.vertexOffset = drawItem.vertexOffset;
-        gpuDrawItem.objectFrameDataIndex = drawItem.frameDataIndex;
-    }
+    });
 
     for (size_t batchIndex = 0; batchIndex < meshDrawBatches_.size(); ++batchIndex) {
         const MeshDrawBatch& batch = meshDrawBatches_[batchIndex];
@@ -2674,29 +2722,32 @@ void Renderer::updateGpuShadowCullInputBuffer(uint32_t frameIndex)
         .upload(std::as_bytes(std::span<const GpuCullFrameParams>(&frameParams, 1)));
 
     std::vector<GpuCullDrawItem> cullDrawItems(allDrawItems_.size());
-    for (size_t drawIndex = 0; drawIndex < allDrawItems_.size(); ++drawIndex) {
-        const DrawItem& drawItem = allDrawItems_[drawIndex];
-        GpuCullDrawItem& gpuDrawItem = cullDrawItems[drawIndex];
+    framePrepParallelFor(allDrawItems_.size(), [&](size_t begin, size_t end) {
+        for (size_t drawIndex = begin; drawIndex < end; ++drawIndex) {
+            const DrawItem& drawItem = allDrawItems_[drawIndex];
+            GpuCullDrawItem& gpuDrawItem = cullDrawItems[drawIndex];
 
-        renderer::Aabb worldBounds{};
-        if (drawItem.objectIndex < renderObjects_.size()) {
-            worldBounds = renderObjects_[drawItem.objectIndex].worldBounds();
+            renderer::Aabb worldBounds{};
+            if (drawItem.objectIndex < frameWorldBounds_.size()) {
+                worldBounds = frameWorldBounds_[drawItem.objectIndex];
+            }
+
+            if (worldBounds.valid()) {
+                gpuDrawItem.boundsMin = glm::vec4(worldBounds.min, 0.0f);
+                gpuDrawItem.boundsMax = glm::vec4(worldBounds.max, 0.0f);
+            } else {
+                gpuDrawItem.boundsMin =
+                    glm::vec4(-kUnboundedCullExtent, -kUnboundedCullExtent, -kUnboundedCullExtent, 0.0f);
+                gpuDrawItem.boundsMax =
+                    glm::vec4(kUnboundedCullExtent, kUnboundedCullExtent, kUnboundedCullExtent, 0.0f);
+            }
+
+            gpuDrawItem.indexCount = drawItem.indexCount;
+            gpuDrawItem.firstIndex = drawItem.firstIndex;
+            gpuDrawItem.vertexOffset = drawItem.vertexOffset;
+            gpuDrawItem.objectFrameDataIndex = drawItem.frameDataIndex;
         }
-
-        if (worldBounds.valid()) {
-            gpuDrawItem.boundsMin = glm::vec4(worldBounds.min, 0.0f);
-            gpuDrawItem.boundsMax = glm::vec4(worldBounds.max, 0.0f);
-        } else {
-            gpuDrawItem.boundsMin =
-                glm::vec4(-kUnboundedCullExtent, -kUnboundedCullExtent, -kUnboundedCullExtent, 0.0f);
-            gpuDrawItem.boundsMax = glm::vec4(kUnboundedCullExtent, kUnboundedCullExtent, kUnboundedCullExtent, 0.0f);
-        }
-
-        gpuDrawItem.indexCount = drawItem.indexCount;
-        gpuDrawItem.firstIndex = drawItem.firstIndex;
-        gpuDrawItem.vertexOffset = drawItem.vertexOffset;
-        gpuDrawItem.objectFrameDataIndex = drawItem.frameDataIndex;
-    }
+    });
 
     for (size_t batchIndex = 0; batchIndex < gpuShadowMeshDrawBatches_.size(); ++batchIndex) {
         const MeshDrawBatch& batch = gpuShadowMeshDrawBatches_[batchIndex];
@@ -3820,6 +3871,10 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         invalidateDepthPyramid();
     }
 
+    // Transforms are final for this frame; cache every object's world AABB once
+    // for the visibility, shadow-cascade, and GPU-cull-input passes below.
+    updateFrameWorldBounds();
+
     buildDrawItems();
     resetGpuCullFrameCounters(frameIndex);
 
@@ -3930,10 +3985,25 @@ void Renderer::buildShadowFrameData(uint32_t frameIndex)
         cascadeBatches.clear();
     }
 
+    // Cascades are independent (each writes only its own draw-item/batch slot),
+    // so they run as parallel jobs; the stats reduction happens after the join.
+    if (parallelFramePrepEnabled_) {
+        jobSystem_.parallelFor(cascadeCount, 1, [this](size_t begin, size_t end) {
+            for (size_t cascadeIndex = begin; cascadeIndex < end; ++cascadeIndex) {
+                buildShadowDrawItems(static_cast<uint32_t>(cascadeIndex),
+                                     frameCascades_[cascadeIndex].lightFrustum);
+                buildMeshDrawBatchesForItems(shadowCascadeDrawItems_[cascadeIndex],
+                                             shadowCascadeMeshDrawBatches_[cascadeIndex]);
+            }
+        });
+    } else {
+        for (uint32_t cascadeIndex = 0; cascadeIndex < cascadeCount; ++cascadeIndex) {
+            buildShadowDrawItems(cascadeIndex, frameCascades_[cascadeIndex].lightFrustum);
+            buildMeshDrawBatchesForItems(shadowCascadeDrawItems_[cascadeIndex],
+                                         shadowCascadeMeshDrawBatches_[cascadeIndex]);
+        }
+    }
     for (uint32_t cascadeIndex = 0; cascadeIndex < cascadeCount; ++cascadeIndex) {
-        buildShadowDrawItems(cascadeIndex, frameCascades_[cascadeIndex].lightFrustum);
-        buildMeshDrawBatchesForItems(shadowCascadeDrawItems_[cascadeIndex],
-                                     shadowCascadeMeshDrawBatches_[cascadeIndex]);
         shadowVisibleDrawItemsPerCascade_[cascadeIndex] =
             static_cast<uint32_t>(shadowCascadeDrawItems_[cascadeIndex].size());
         shadowBatchCountPerCascade_[cascadeIndex] =
@@ -4025,50 +4095,57 @@ void Renderer::uploadObjectFrameData(uint32_t frameIndex)
     const glm::vec4 activeAmbientLightColor =
         portfolioCaptureMode_ ? kPortfolioAmbientLightColor : kAmbientLightColor;
 
-    for (size_t drawIndex = 0; drawIndex < objectFrameCount; ++drawIndex) {
-        const DrawItem& drawItem = allDrawItems_[drawIndex];
-        if (drawItem.objectIndex >= renderObjects_.size()) {
-            continue;
-        }
+    // Per-item fill is the heaviest CPU loop of the frame (six mat4 multiplies
+    // per draw item); every iteration writes only objectFrameData[drawIndex] and
+    // reads shared frame state, so it chunks cleanly across the JobSystem.
+    framePrepParallelFor(objectFrameCount, [&](size_t begin, size_t end) {
+        for (size_t drawIndex = begin; drawIndex < end; ++drawIndex) {
+            const DrawItem& drawItem = allDrawItems_[drawIndex];
+            if (drawItem.objectIndex >= renderObjects_.size()) {
+                continue;
+            }
 
-        const renderer::RenderObject& object = renderObjects_[drawItem.objectIndex];
-        if (!object.mesh) {
-            continue;
-        }
+            const renderer::RenderObject& object = renderObjects_[drawItem.objectIndex];
+            if (!object.mesh) {
+                continue;
+            }
 
-        const glm::mat4 model = object.transform.modelMatrix();
-        ObjectFrameData& frameData = objectFrameData[drawIndex];
-        frameData.mvp = frameJitteredViewProjection_ * model;
-        frameData.model = model;
-        frameData.currMvpNoJitter = frameViewProjection_ * model;
-        frameData.prevMvpNoJitter =
-            previousFrameViewProjection_ * (object.previousModelValid ? object.previousModelMatrix : model);
-        for (uint32_t cascadeIndex = 0; cascadeIndex < kMaxShadowCascades; ++cascadeIndex) {
-            frameData.lightMvp[cascadeIndex] = frameCascades_[cascadeIndex].lightViewProjection * model;
+            const glm::mat4 model = object.transform.modelMatrix();
+            ObjectFrameData& frameData = objectFrameData[drawIndex];
+            frameData.mvp = frameJitteredViewProjection_ * model;
+            frameData.model = model;
+            frameData.currMvpNoJitter = frameViewProjection_ * model;
+            frameData.prevMvpNoJitter =
+                previousFrameViewProjection_ * (object.previousModelValid ? object.previousModelMatrix : model);
+            for (uint32_t cascadeIndex = 0; cascadeIndex < kMaxShadowCascades; ++cascadeIndex) {
+                frameData.lightMvp[cascadeIndex] = frameCascades_[cascadeIndex].lightViewProjection * model;
+            }
+            frameData.lightDirection = activeLightDirection;
+            frameData.lightColor = activeLightColor;
+            frameData.ambientColor = activeAmbientLightColor;
+            frameData.cascadeSplits = frameCascadeSplits_;
+            frameData.shadowSettings = {csmSettings_.depthBiasConstant,
+                                        csmSettings_.depthBiasSlope,
+                                        shadowSettings_.enablePcf ? 1.0f : 0.0f,
+                                        static_cast<float>(std::max(shadowSettings_.pcfRadius, 0))};
+            const renderer::Material* material = drawItem.material ? drawItem.material : object.material;
+            if (material) {
+                frameData.baseColorFactor = material->baseColorFactor;
+                frameData.materialParams = {
+                    material->metallic, material->roughness, material->multiScatterStrength, 0.0f};
+                frameData.textureIndices = {material->baseColorTextureIndex,
+                                            material->normalTextureIndex,
+                                            material->metallicRoughnessTextureIndex,
+                                            material->emissiveTextureIndex};
+                frameData.emissiveFactor =
+                    glm::vec4(material->emissiveFactor, material->hasEmissiveTexture ? 1.0f : 0.0f);
+            }
+            frameData.cameraPosition =
+                glm::vec4(camera_.position, csmSettings_.enableCascadeDebugColors ? 1.0f : 0.0f);
+            frameData.cameraForward =
+                glm::vec4(glm::normalize(camera_.target - camera_.position), static_cast<float>(cascadeCount));
         }
-        frameData.lightDirection = activeLightDirection;
-        frameData.lightColor = activeLightColor;
-        frameData.ambientColor = activeAmbientLightColor;
-        frameData.cascadeSplits = frameCascadeSplits_;
-        frameData.shadowSettings = {csmSettings_.depthBiasConstant,
-                                    csmSettings_.depthBiasSlope,
-                                    shadowSettings_.enablePcf ? 1.0f : 0.0f,
-                                    static_cast<float>(std::max(shadowSettings_.pcfRadius, 0))};
-        const renderer::Material* material = drawItem.material ? drawItem.material : object.material;
-        if (material) {
-            frameData.baseColorFactor = material->baseColorFactor;
-            frameData.materialParams = {material->metallic, material->roughness, material->multiScatterStrength, 0.0f};
-            frameData.textureIndices = {material->baseColorTextureIndex,
-                                        material->normalTextureIndex,
-                                        material->metallicRoughnessTextureIndex,
-                                        material->emissiveTextureIndex};
-            frameData.emissiveFactor =
-                glm::vec4(material->emissiveFactor, material->hasEmissiveTexture ? 1.0f : 0.0f);
-        }
-        frameData.cameraPosition = glm::vec4(camera_.position, csmSettings_.enableCascadeDebugColors ? 1.0f : 0.0f);
-        frameData.cameraForward =
-            glm::vec4(glm::normalize(camera_.target - camera_.position), static_cast<float>(cascadeCount));
-    }
+    });
 
     frameObjectDataBuffers_.at(frameIndex)
         .upload(std::as_bytes(std::span<const ObjectFrameData>(objectFrameData.data(), objectFrameData.size())));

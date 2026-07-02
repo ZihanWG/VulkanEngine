@@ -2,6 +2,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -92,4 +93,74 @@ TEST_CASE("JobSystem auto-sizes to at least one worker", "[jobs]")
 
     auto future = jobs.enqueue([] { return 42; });
     CHECK(future.get() == 42);
+}
+
+TEST_CASE("parallelFor covers every index exactly once", "[jobs]")
+{
+    JobSystem jobs(4);
+
+    // Deliberately not a multiple of any chunk size the pool might pick.
+    constexpr std::size_t count = 1013;
+    std::vector<int> touches(count, 0);
+    jobs.parallelFor(count, 16, [&touches](std::size_t begin, std::size_t end) {
+        for (std::size_t i = begin; i < end; ++i) {
+            ++touches[i]; // chunks are disjoint, so unsynchronized writes are safe
+        }
+    });
+
+    CHECK(std::count(touches.begin(), touches.end(), 1) == static_cast<long>(count));
+}
+
+TEST_CASE("parallelFor runs small ranges inline on the calling thread", "[jobs]")
+{
+    JobSystem jobs(4);
+
+    std::mutex mutex;
+    std::set<std::thread::id> threadIds;
+    jobs.parallelFor(8, 64, [&](std::size_t, std::size_t) {
+        std::lock_guard<std::mutex> lock(mutex);
+        threadIds.insert(std::this_thread::get_id());
+    });
+
+    REQUIRE(threadIds.size() == 1);
+    CHECK(*threadIds.begin() == std::this_thread::get_id());
+}
+
+TEST_CASE("parallelFor distributes large ranges across threads", "[jobs]")
+{
+    JobSystem jobs(4);
+
+    std::mutex mutex;
+    std::set<std::thread::id> threadIds;
+    jobs.parallelFor(4096, 1, [&](std::size_t, std::size_t) {
+        // Keep each chunk busy briefly so workers overlap with the caller.
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        std::lock_guard<std::mutex> lock(mutex);
+        threadIds.insert(std::this_thread::get_id());
+    });
+
+    CHECK(threadIds.size() > 1);
+}
+
+TEST_CASE("parallelFor is a no-op for an empty range", "[jobs]")
+{
+    JobSystem jobs(2);
+
+    bool called = false;
+    jobs.parallelFor(0, 1, [&called](std::size_t, std::size_t) { called = true; });
+    CHECK_FALSE(called);
+}
+
+TEST_CASE("parallelFor rethrows the first chunk exception", "[jobs]")
+{
+    JobSystem jobs(4);
+
+    CHECK_THROWS_AS(jobs.parallelFor(1024,
+                                     1,
+                                     [](std::size_t begin, std::size_t) {
+                                         if (begin > 0) {
+                                             throw std::runtime_error("chunk failure");
+                                         }
+                                     }),
+                    std::runtime_error);
 }
