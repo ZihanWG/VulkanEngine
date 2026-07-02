@@ -23,6 +23,8 @@ struct ObjectFrameData {
     vec4 cameraForward;
     uvec4 textureIndices;
     vec4 emissiveFactor;
+    mat4 currMvpNoJitter;
+    mat4 prevMvpNoJitter;
 };
 
 layout(buffer_reference, std430) readonly buffer ObjectFrameDataBuffer {
@@ -66,6 +68,8 @@ layout(location = 18) flat out vec4 vCascadeSplits;
 layout(location = 19) flat out uint vCascadeCount;
 layout(location = 20) flat out float vCascadeDebugEnabled;
 layout(location = 21) flat out vec4 vEmissiveFactor;
+layout(location = 22) out vec4 vCurrClipPos;
+layout(location = 23) out vec4 vPrevClipPos;
 
 void main()
 {
@@ -112,4 +116,9 @@ void main()
     vCascadeCount = uint(max(objectData.cameraForward.w, 1.0) + 0.5);
     vCascadeDebugEnabled = objectData.cameraPosition.w;
     vEmissiveFactor = objectData.emissiveFactor;
+    // Motion vectors reuse this frame's skinned position for both projections,
+    // so they capture camera + rigid object motion but not joint-space motion
+    // (that would need the previous frame's joint palette).
+    vCurrClipPos = objectData.currMvpNoJitter * skinnedPosition;
+    vPrevClipPos = objectData.prevMvpNoJitter * skinnedPosition;
 }

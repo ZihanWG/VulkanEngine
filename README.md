@@ -22,7 +22,7 @@ A **C++20 / Vulkan 1.3 real-time renderer** built as a graphics- and engine-prog
 | **Skeletal animation** | GPU linear-blend vertex skinning from a CPU joint-matrix palette, with a unit-tested animation core (keyframe sampling + hierarchy flatten) |
 | **PBR + IBL** | Cook-Torrance GGX, tangent-space normal mapping, prefiltered specular + diffuse irradiance + split-sum BRDF LUT, Kulla-Conty multi-scatter |
 | **Shadows** | PCF cascaded shadow maps with per-cascade GPU shadow-caster culling and an indirect shadow path |
-| **Post-processing** | HDR scene color, mip-chain bloom, histogram auto-exposure, ACES/Reinhard tonemap, optional TAA foundation |
+| **Post-processing** | HDR scene color, mip-chain bloom, histogram auto-exposure, ACES/Reinhard tonemap, motion-vector TAA with reprojected history |
 | **Architecture** | Render graph (logical handles + conservative barrier inference), RAII Vulkan RHI, per-pass GPU timestamp profiler, ImGui scene/material editor |
 | **Engineering** | C++20, Catch2 unit tests, Linux + Windows CI, AddressSanitizer/UBSan, clang-tidy/clang-format |
 
@@ -73,7 +73,7 @@ GPU linear-blend vertex skinning (`simple_skinned.vert`) driven by a per-frame j
 - Optional HDR environment loading with a procedural fallback, cubemap skybox/IBL, diffuse irradiance, GGX prefiltered specular IBL, and split-sum BRDF LUT.
 - Skybox and mesh shaders output HDR linear color into an offscreen scene color target before post-processing.
 - Mip-chain bloom (default) with a legacy half-res extract + separable blur fallback, and a final composite pass.
-- Optional Temporal AA foundation, disabled by default: Halton subpixel jitter, ping-pong HDR history, conservative neighborhood clamping, explicit history reset.
+- Optional Temporal AA, disabled by default: Halton subpixel jitter, a main-pass velocity buffer (camera, rigid object, and rotation-only sky motion), history reprojection with closest-depth velocity dilation, conservative neighborhood clamping, ping-pong HDR history, explicit history reset.
 - GPU histogram auto-exposure: log-average + histogram luminance reduced into a GPU exposure-state buffer read directly by composite; manual exposure remains as a fallback.
 - Reinhard/ACES tone mapping applied in the final composite before swapchain output.
 - PCF-filtered cascaded shadow maps (CSM) with texel snapping, optional cascade debug tinting, per-cascade GPU shadow-caster culling, and an indirect shadow draw path.
@@ -172,7 +172,7 @@ This is a rendering/engine portfolio, not a full game engine — no physics, gam
 - CSM uses basic texel snapping, without stable crop matrices, cascade blending, or per-cascade resolution control.
 - Hi-Z occlusion is conservative, previous-frame based, biased toward false negatives, and disabled by default.
 - Upload paths use one-time command buffers + queue idle waits — fine for init, not ideal for runtime streaming.
-- TAA is a foundation pass: no motion vectors, depth reprojection, temporal upscaling, FSR/DLSS/XeSS, or camera-cut detection.
+- TAA reprojects history along a main-pass velocity buffer, but skinned joint-space motion, disocclusion masks, temporal upscaling, and FSR/DLSS/XeSS are not implemented.
 - Reflections are environment-based IBL only: no SSR, ray tracing, planar reflections, or glass transmission.
 - glTF import covers static + skinned meshes and base color/normal/metallic-roughness/emissive textures; occlusion textures, morph targets, cameras, and scene lights are future work.
 - ImGui is a debug UI only (no docking/editor layout); scene editing is limited to existing runtime objects.

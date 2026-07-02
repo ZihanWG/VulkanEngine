@@ -69,6 +69,9 @@ struct TaaSettings {
     bool enabled = false;
     bool jitterEnabled = true;
     bool neighborhoodClampEnabled = true;
+    // Reprojects the history sample along the velocity buffer (camera + object
+    // motion). Off falls back to same-UV history sampling for A/B comparison.
+    bool reprojectionEnabled = true;
     float feedback = 0.88f;
 };
 

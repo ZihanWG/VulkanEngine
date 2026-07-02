@@ -137,6 +137,14 @@ public:
     {
         return sceneColorLayout_;
     }
+    [[nodiscard]] const rhi::VulkanImage& velocity() const
+    {
+        return velocity_;
+    }
+    [[nodiscard]] VkImageLayout& velocityLayout()
+    {
+        return velocityLayout_;
+    }
     [[nodiscard]] const rhi::VulkanImage& bloomExtract() const
     {
         return bloomExtract_;
@@ -388,12 +396,15 @@ private:
 
     rhi::VulkanDescriptorSetLayout postProcessSingleImageDescriptorSetLayout_;
     rhi::VulkanDescriptorSetLayout postProcessDualImageDescriptorSetLayout_;
+    // TAA resolve: current color, history color, velocity, main depth.
+    rhi::VulkanDescriptorSetLayout postProcessTaaResolveDescriptorSetLayout_;
     rhi::VulkanDescriptorSetLayout postProcessCompositeDescriptorSetLayout_;
     rhi::VulkanDescriptorSetLayout postProcessLuminanceDescriptorSetLayout_;
     rhi::VulkanDescriptorSetLayout postProcessExposureReduceDescriptorSetLayout_;
     rhi::VulkanDescriptorPool postProcessDescriptorPool_;
 
     rhi::VulkanImage sceneColor_;
+    rhi::VulkanImage velocity_;
     rhi::VulkanImage bloomExtract_;
     rhi::VulkanImage bloomPing_;
     rhi::VulkanImage bloomPong_;
@@ -446,6 +457,7 @@ private:
 
     VkExtent2D bloomExtent_{};
     VkImageLayout sceneColorLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImageLayout velocityLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     VkImageLayout bloomExtractLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     VkImageLayout bloomPingLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     VkImageLayout bloomPongLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;

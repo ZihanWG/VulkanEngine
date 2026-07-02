@@ -268,6 +268,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readBool(*taa, "enabled", settings.taa.enabled);
         readBool(*taa, "jitterEnabled", settings.taa.jitterEnabled);
         readBool(*taa, "neighborhoodClampEnabled", settings.taa.neighborhoodClampEnabled);
+        readBool(*taa, "reprojectionEnabled", settings.taa.reprojectionEnabled);
         readFloat(*taa, "feedback", settings.taa.feedback);
     }
 
@@ -330,6 +331,7 @@ Json toJson(const RuntimeSettings& settings)
          Json{{"enabled", settings.taa.enabled},
               {"jitterEnabled", settings.taa.jitterEnabled},
               {"neighborhoodClampEnabled", settings.taa.neighborhoodClampEnabled},
+              {"reprojectionEnabled", settings.taa.reprojectionEnabled},
               {"feedback", settings.taa.feedback}}},
         {"csm",
          Json{{"cascadeCount", settings.csm.cascadeCount},

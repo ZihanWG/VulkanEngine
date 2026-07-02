@@ -204,6 +204,7 @@ void Renderer::invalidateTaaHistory()
     frameJitteredProjection_ = glm::mat4{1.0f};
     frameJitteredViewProjection_ = glm::mat4{1.0f};
     previousFrameViewProjection_ = glm::mat4{1.0f};
+    previousFrameViewProjectionValid_ = false;
     postProcess_.invalidateTaaHistory();
 }
 
@@ -283,6 +284,7 @@ void Renderer::drawFrame()
 
     VK_CHECK(vkQueueSubmit2(context_.graphicsQueue(), 1, &submitInfo, frame.inFlightFence));
     gpuProfiler_.markFrameSubmitted(currentFrame_);
+    capturePreviousFrameMatrices();
 
     VkPresentInfoKHR presentInfo{};
     presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -882,11 +884,15 @@ void Renderer::createMainGraphicsPipeline()
     const VkPushConstantRange pushConstantRange{
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(PushConstants))};
 
+    // The main pass renders HDR color plus UV-space motion vectors (MRT).
+    const std::array<VkFormat, 2> mainPassColorFormats{kSceneColorFormat, kVelocityFormat};
+
     rhi::VulkanPipelineCreateInfo pipelineInfo{};
     pipelineInfo.vertexShaderPath = shaderPath("simple.vert.spv");
     pipelineInfo.fragmentShaderPath =
         bindlessMaterialTexturesActive ? shaderPath("simple_bindless.frag.spv") : shaderPath("simple.frag.spv");
     pipelineInfo.colorFormat = kSceneColorFormat;
+    pipelineInfo.colorFormats = std::span<const VkFormat>(mainPassColorFormats.data(), mainPassColorFormats.size());
     pipelineInfo.depthFormat = swapchain_.depthFormat();
     pipelineInfo.vertexBindings = std::span<const VkVertexInputBindingDescription>(&binding, 1);
     pipelineInfo.vertexAttributes =
@@ -924,10 +930,13 @@ void Renderer::createSkinnedPipeline()
     const VkPushConstantRange pushConstantRange{
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(PushConstants))};
 
+    const std::array<VkFormat, 2> mainPassColorFormats{kSceneColorFormat, kVelocityFormat};
+
     rhi::VulkanPipelineCreateInfo pipelineInfo{};
     pipelineInfo.vertexShaderPath = shaderPath("simple_skinned.vert.spv");
     pipelineInfo.fragmentShaderPath = shaderPath("simple_bindless.frag.spv");
     pipelineInfo.colorFormat = kSceneColorFormat;
+    pipelineInfo.colorFormats = std::span<const VkFormat>(mainPassColorFormats.data(), mainPassColorFormats.size());
     pipelineInfo.depthFormat = swapchain_.depthFormat();
     pipelineInfo.vertexBindings = std::span<const VkVertexInputBindingDescription>(bindings.data(), bindings.size());
     pipelineInfo.vertexAttributes =
@@ -953,10 +962,13 @@ void Renderer::createSkyboxPipeline()
                                                       0,
                                                       static_cast<uint32_t>(sizeof(SkyboxPushConstants))};
 
+    const std::array<VkFormat, 2> mainPassColorFormats{kSceneColorFormat, kVelocityFormat};
+
     rhi::VulkanPipelineCreateInfo skyboxPipelineInfo{};
     skyboxPipelineInfo.vertexShaderPath = shaderPath("skybox.vert.spv");
     skyboxPipelineInfo.fragmentShaderPath = shaderPath("skybox.frag.spv");
     skyboxPipelineInfo.colorFormat = kSceneColorFormat;
+    skyboxPipelineInfo.colorFormats = std::span<const VkFormat>(mainPassColorFormats.data(), mainPassColorFormats.size());
     skyboxPipelineInfo.depthFormat = swapchain_.depthFormat();
     skyboxPipelineInfo.descriptorSetLayouts = std::span<const VkDescriptorSetLayout>(&skyboxDescriptorSetLayout, 1);
     skyboxPipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&skyboxPushConstantRange, 1);
@@ -3764,11 +3776,16 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     const glm::vec2 jitterNdc = postProcess_.advanceJitter(extent);
     jitteredProjection[2][0] += jitterNdc.x;
     jitteredProjection[2][1] += jitterNdc.y;
-    previousFrameViewProjection_ = frameJitteredViewProjection_;
     frameJitteredProjection_ = jitteredProjection;
     frameJitteredViewProjection_ = jitteredProjection * view;
     frameViewProjection_ = viewProjection;
     frameCameraPosition_ = camera_.position;
+    // First frame after a history reset: reproject against the current matrices
+    // so the velocity buffer reads as zero motion instead of garbage.
+    if (!previousFrameViewProjectionValid_) {
+        previousFrameViewProjection_ = viewProjection;
+        previousFrameViewProjectionValid_ = true;
+    }
 
     // Regenerate the animated demo light swarm, then hand the froxel grid + light
     // culling the current view/inverse-projection and camera planes (view-space
@@ -3816,6 +3833,23 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     buildMainCullingFrameData(frameIndex, cameraFrustum);
     uploadObjectFrameData(frameIndex);
     clusteredLighting_.upload(frameIndex);
+}
+
+// Called from drawFrame after command recording: both the object-data upload and
+// the skybox push constants must still see the previous frame's matrices, so the
+// capture happens only once the frame has been fully recorded.
+void Renderer::capturePreviousFrameMatrices()
+{
+    previousFrameViewProjection_ = frameViewProjection_;
+    previousFrameViewProjectionValid_ = true;
+    for (renderer::RenderObject& object : renderObjects_) {
+        object.previousModelMatrix = object.transform.modelMatrix();
+        object.previousModelValid = true;
+    }
+    if (skinnedMesh_.valid()) {
+        previousSkinnedModelMatrix_ = skinnedMesh_.modelMatrix();
+        previousSkinnedModelValid_ = true;
+    }
 }
 
 void Renderer::resetFrameStateForEmptyScene(uint32_t frameIndex)
@@ -4006,6 +4040,9 @@ void Renderer::uploadObjectFrameData(uint32_t frameIndex)
         ObjectFrameData& frameData = objectFrameData[drawIndex];
         frameData.mvp = frameJitteredViewProjection_ * model;
         frameData.model = model;
+        frameData.currMvpNoJitter = frameViewProjection_ * model;
+        frameData.prevMvpNoJitter =
+            previousFrameViewProjection_ * (object.previousModelValid ? object.previousModelMatrix : model);
         for (uint32_t cascadeIndex = 0; cascadeIndex < kMaxShadowCascades; ++cascadeIndex) {
             frameData.lightMvp[cascadeIndex] = frameCascades_[cascadeIndex].lightViewProjection * model;
         }
@@ -4043,6 +4080,9 @@ void Renderer::uploadObjectFrameData(uint32_t frameIndex)
         ObjectFrameData skinnedData{};
         skinnedData.mvp = frameJitteredViewProjection_ * model;
         skinnedData.model = model;
+        skinnedData.currMvpNoJitter = frameViewProjection_ * model;
+        skinnedData.prevMvpNoJitter =
+            previousFrameViewProjection_ * (previousSkinnedModelValid_ ? previousSkinnedModelMatrix_ : model);
         for (uint32_t cascade = 0; cascade < kMaxShadowCascades; ++cascade) {
             skinnedData.lightMvp[cascade] = frameCascades_[cascade].lightViewProjection * model;
         }
@@ -4218,6 +4258,21 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             1,
             VK_IMAGE_ASPECT_COLOR_BIT,
             sceneClear,
+            true,
+            false,
+        },
+        renderer::RenderGraphImageResource{
+            "VelocityBuffer",
+            postProcess_.velocity().image(),
+            postProcess_.velocity().imageView(),
+            VkExtent2D{sceneExtent.width, sceneExtent.height},
+            &postProcess_.velocityLayout(),
+            postProcess_.velocity().format(),
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            1,
+            1,
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            VkClearValue{},
             true,
             false,
         },
@@ -4647,9 +4702,11 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         glm::mat4 skyboxView = camera_.viewMatrix();
         skyboxView[3] = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
         const glm::mat4 projection = frameJitteredProjection_;
+        // The fragment shader projects the sky direction with w = 0, which drops
+        // the translation column, so the full previous view-projection doubles as
+        // the rotation-only sky reprojection matrix.
         const SkyboxPushConstants skyboxPushConstants{glm::inverse(projection * skyboxView),
-                                                      postProcess_.currentToneMappingExposure(),
-                                                      toneMappingOperatorValue(toneMappingSettings_.operatorType)};
+                                                      previousFrameViewProjection_};
 
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, skyboxPipeline_.pipeline());
         vkCmdBindDescriptorSets(commandBuffer,

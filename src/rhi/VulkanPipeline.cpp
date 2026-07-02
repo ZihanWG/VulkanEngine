@@ -59,8 +59,18 @@ void VulkanPipeline::create(VkDevice device, const VulkanPipelineCreateInfo& cre
 {
     reset();
 
-    if (createInfo.enableColorAttachment && createInfo.colorFormat == VK_FORMAT_UNDEFINED) {
-        throw std::runtime_error("Cannot create graphics pipeline with an undefined color format.");
+    std::vector<VkFormat> colorFormats;
+    if (createInfo.enableColorAttachment) {
+        if (!createInfo.colorFormats.empty()) {
+            colorFormats.assign(createInfo.colorFormats.begin(), createInfo.colorFormats.end());
+        } else {
+            colorFormats.push_back(createInfo.colorFormat);
+        }
+        for (const VkFormat format : colorFormats) {
+            if (format == VK_FORMAT_UNDEFINED) {
+                throw std::runtime_error("Cannot create graphics pipeline with an undefined color format.");
+            }
+        }
     }
     if (createInfo.enableDepth && createInfo.depthFormat == VK_FORMAT_UNDEFINED) {
         throw std::runtime_error("Cannot create depth-enabled graphics pipeline with an undefined depth format.");
@@ -131,11 +141,13 @@ void VulkanPipeline::create(VkDevice device, const VulkanPipelineCreateInfo& cre
     VkPipelineColorBlendAttachmentState colorBlendAttachment{};
     colorBlendAttachment.colorWriteMask =
         VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    const std::vector<VkPipelineColorBlendAttachmentState> colorBlendAttachments(colorFormats.size(),
+                                                                                 colorBlendAttachment);
 
     VkPipelineColorBlendStateCreateInfo colorBlend{};
     colorBlend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    colorBlend.attachmentCount = createInfo.enableColorAttachment ? 1u : 0u;
-    colorBlend.pAttachments = createInfo.enableColorAttachment ? &colorBlendAttachment : nullptr;
+    colorBlend.attachmentCount = static_cast<uint32_t>(colorBlendAttachments.size());
+    colorBlend.pAttachments = colorBlendAttachments.empty() ? nullptr : colorBlendAttachments.data();
 
     const std::array<VkDynamicState, 2> dynamicStates = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
 
@@ -152,11 +164,10 @@ void VulkanPipeline::create(VkDevice device, const VulkanPipelineCreateInfo& cre
     layoutInfo.pPushConstantRanges = createInfo.pushConstantRanges.data();
     VK_CHECK(vkCreatePipelineLayout(device_, &layoutInfo, nullptr, &layout_));
 
-    VkFormat colorFormat = createInfo.colorFormat;
     VkPipelineRenderingCreateInfo renderingInfo{};
     renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    renderingInfo.colorAttachmentCount = createInfo.enableColorAttachment ? 1u : 0u;
-    renderingInfo.pColorAttachmentFormats = createInfo.enableColorAttachment ? &colorFormat : nullptr;
+    renderingInfo.colorAttachmentCount = static_cast<uint32_t>(colorFormats.size());
+    renderingInfo.pColorAttachmentFormats = colorFormats.empty() ? nullptr : colorFormats.data();
     renderingInfo.depthAttachmentFormat = createInfo.enableDepth ? createInfo.depthFormat : VK_FORMAT_UNDEFINED;
 
     // Dynamic Rendering has no VkRenderPass compatibility object, so the pipeline

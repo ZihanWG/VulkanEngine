@@ -11,6 +11,9 @@ struct VulkanPipelineCreateInfo {
     std::filesystem::path vertexShaderPath;
     std::filesystem::path fragmentShaderPath;
     VkFormat colorFormat = VK_FORMAT_UNDEFINED;
+    // Multi-attachment override: when non-empty this span replaces colorFormat,
+    // and the pipeline renders into one color attachment per listed format.
+    std::span<const VkFormat> colorFormats;
     VkFormat depthFormat = VK_FORMAT_UNDEFINED;
     std::span<const VkVertexInputBindingDescription> vertexBindings;
     std::span<const VkVertexInputAttributeDescription> vertexAttributes;
