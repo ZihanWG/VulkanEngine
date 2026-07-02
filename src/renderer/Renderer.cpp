@@ -896,6 +896,7 @@ void Renderer::createMainGraphicsPipeline()
     pipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&pushConstantRange, 1);
     pipelineInfo.enableDepth = true;
 
+    pipelineInfo.pipelineCache = context_.pipelineCache();
     pipeline_.create(context_.vkDevice(), pipelineInfo);
     rhi::debug::setObjectName(
         context_.vkDevice(), pipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "MainGraphicsPipeline");
@@ -937,6 +938,7 @@ void Renderer::createSkinnedPipeline()
     pipelineInfo.enableDepth = true;
     pipelineInfo.cullMode = VK_CULL_MODE_NONE;
 
+    pipelineInfo.pipelineCache = context_.pipelineCache();
     skinnedPipeline_.create(context_.vkDevice(), pipelineInfo);
     rhi::debug::setObjectName(
         context_.vkDevice(), skinnedPipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "SkinnedGraphicsPipeline");
@@ -963,6 +965,7 @@ void Renderer::createSkyboxPipeline()
     skyboxPipelineInfo.depthCompareOp = VK_COMPARE_OP_ALWAYS;
     skyboxPipelineInfo.cullMode = VK_CULL_MODE_NONE;
 
+    skyboxPipelineInfo.pipelineCache = context_.pipelineCache();
     skyboxPipeline_.create(context_.vkDevice(), skyboxPipelineInfo);
     rhi::debug::setObjectName(
         context_.vkDevice(), skyboxPipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "SkyboxPipeline");
@@ -995,6 +998,7 @@ void Renderer::createShadowPipeline()
     shadowPipelineInfo.depthBiasConstantFactor = shadowSettings_.rasterDepthBiasConstantFactor;
     shadowPipelineInfo.depthBiasSlopeFactor = shadowSettings_.rasterDepthBiasSlopeFactor;
 
+    shadowPipelineInfo.pipelineCache = context_.pipelineCache();
     shadowPipeline_.create(context_.vkDevice(), shadowPipelineInfo);
     rhi::debug::setObjectName(
         context_.vkDevice(), shadowPipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "ShadowPipeline");
@@ -1077,11 +1081,18 @@ void Renderer::createSceneSharedResources()
 {
     cubeMesh_ = renderer::Mesh::createCube(context_, commandContext_);
     portfolioSphereMesh_ = renderer::Mesh::createUvSphere(context_, commandContext_);
-    createCheckerboardTexture();
-    createPortfolioBaseColorTexture();
-    createPortfolioBackdropTexture();
-    createNormalTexture();
-    createMetallicRoughnessTexture();
+    const std::filesystem::path builtinAssetDir = assetDirectory();
+    builtinTextureFactory_.createCheckerboardBaseColor(context_, commandContext_, builtinAssetDir, checkerboardTexture_);
+    builtinTextureFactory_.createPortfolioBaseColor(context_, commandContext_, portfolioBaseColorTexture_);
+    builtinTextureFactory_.createPortfolioBackdrop(context_, commandContext_, portfolioBackdropTexture_);
+    builtinTextureFactory_.createNormal(
+        context_, commandContext_, builtinAssetDir, normalMapTexture_, flatNormalTexture_, normalMapAssetLoaded_);
+    builtinTextureFactory_.createMetallicRoughness(context_,
+                                                   commandContext_,
+                                                   builtinAssetDir,
+                                                   metallicRoughnessTexture_,
+                                                   neutralMetallicRoughnessTexture_,
+                                                   metallicRoughnessMapAssetLoaded_);
     createEnvironmentMap();
     createMaterial();
 
@@ -1218,287 +1229,6 @@ void Renderer::resetOcclusionTestSceneToPreset()
     makeSceneBuilder().appendOcclusionTest(renderObjects_, occlusionTestSceneStatus_);
     invalidateDepthPyramid();
     invalidateTaaHistory();
-}
-
-void Renderer::createCheckerboardTexture()
-{
-    const std::filesystem::path texturePath = assetPath("textures/checker.png");
-    if (std::filesystem::exists(texturePath)) {
-        try {
-            checkerboardTexture_.createFromFile(
-                context_, commandContext_, texturePath, rhi::TextureColorSpace::SRGB, true);
-            checkerboardTexture_.setDebugMetadata(rhi::TextureDebugMetadata{
-                "Checkerboard base color",
-                texturePath.string(),
-                rhi::TextureColorSpace::SRGB,
-                rhi::TextureDebugSource::LoadedFromDisk,
-                false,
-            });
-            nameTextureResources(checkerboardTexture_, "BaseColorTexture");
-            Logger::info("Loaded base color texture as sRGB: " + texturePath.string());
-            return;
-        } catch (const std::exception& error) {
-            Logger::warn("Failed to load texture '" + texturePath.string() + "': " + error.what());
-        }
-    } else {
-        Logger::warn("Texture asset missing, using procedural checkerboard fallback: " + texturePath.string());
-    }
-
-    checkerboardTexture_.createCheckerboard(context_, commandContext_, 256, 256, rhi::TextureColorSpace::SRGB);
-    checkerboardTexture_.setDebugMetadata(rhi::TextureDebugMetadata{
-        "Procedural checkerboard base color",
-        {},
-        rhi::TextureColorSpace::SRGB,
-        rhi::TextureDebugSource::ProceduralFallback,
-        true,
-    });
-    nameTextureResources(checkerboardTexture_, "BaseColorTexture");
-    Logger::info("Created procedural checkerboard base color texture as sRGB.");
-}
-
-void Renderer::createPortfolioBaseColorTexture()
-{
-    constexpr uint32_t width = 4;
-    constexpr uint32_t height = 4;
-    std::array<uint8_t, width * height * 4> pixels{};
-    for (size_t offset = 0; offset < pixels.size(); offset += 4) {
-        pixels[offset + 0] = 255;
-        pixels[offset + 1] = 255;
-        pixels[offset + 2] = 255;
-        pixels[offset + 3] = 255;
-    }
-
-    portfolioBaseColorTexture_.createFromRgba8(context_,
-                                               commandContext_,
-                                               width,
-                                               height,
-                                               std::span<const uint8_t>(pixels.data(), pixels.size()),
-                                               VK_FORMAT_R8G8B8A8_SRGB,
-                                               false);
-    portfolioBaseColorTexture_.setDebugMetadata(rhi::TextureDebugMetadata{
-        "Portfolio solid base color",
-        {},
-        rhi::TextureColorSpace::SRGB,
-        rhi::TextureDebugSource::ProceduralFallback,
-        false,
-    });
-    nameTextureResources(portfolioBaseColorTexture_, "PortfolioBaseColorTexture");
-}
-
-void Renderer::createPortfolioBackdropTexture()
-{
-    constexpr uint32_t width = 16;
-    constexpr uint32_t height = 64;
-    std::array<uint8_t, width * height * 4> pixels{};
-    const glm::vec3 bottom{132.0f, 144.0f, 154.0f};
-    const glm::vec3 top{78.0f, 94.0f, 112.0f};
-
-    for (uint32_t y = 0; y < height; ++y) {
-        const float t = static_cast<float>(y) / static_cast<float>(height - 1);
-        const glm::vec3 color = glm::mix(bottom, top, t);
-        for (uint32_t x = 0; x < width; ++x) {
-            const size_t offset = (static_cast<size_t>(y) * width + x) * 4U;
-            pixels[offset + 0] = static_cast<uint8_t>(std::clamp(color.r, 0.0f, 255.0f));
-            pixels[offset + 1] = static_cast<uint8_t>(std::clamp(color.g, 0.0f, 255.0f));
-            pixels[offset + 2] = static_cast<uint8_t>(std::clamp(color.b, 0.0f, 255.0f));
-            pixels[offset + 3] = 255;
-        }
-    }
-
-    portfolioBackdropTexture_.createFromRgba8(context_,
-                                              commandContext_,
-                                              width,
-                                              height,
-                                              std::span<const uint8_t>(pixels.data(), pixels.size()),
-                                              VK_FORMAT_R8G8B8A8_SRGB,
-                                              false);
-    portfolioBackdropTexture_.setDebugMetadata(rhi::TextureDebugMetadata{
-        "Portfolio studio backdrop gradient",
-        {},
-        rhi::TextureColorSpace::SRGB,
-        rhi::TextureDebugSource::ProceduralFallback,
-        false,
-    });
-    nameTextureResources(portfolioBackdropTexture_, "PortfolioBackdropTexture");
-}
-
-void Renderer::createNormalTexture()
-{
-    normalMapAssetLoaded_ = false;
-    bool loadedAsset = false;
-
-    const std::filesystem::path texturePath = assetPath("textures/checker_normal.png");
-    if (std::filesystem::exists(texturePath)) {
-        try {
-            normalMapTexture_.createFromFile(
-                context_, commandContext_, texturePath, rhi::TextureColorSpace::Linear, true);
-            normalMapTexture_.setDebugMetadata(rhi::TextureDebugMetadata{
-                "Checker normal map",
-                texturePath.string(),
-                rhi::TextureColorSpace::Linear,
-                rhi::TextureDebugSource::LoadedFromDisk,
-                false,
-            });
-            normalMapAssetLoaded_ = true;
-            nameTextureResources(normalMapTexture_, "NormalTexture");
-            Logger::info("Loaded normal texture as linear UNORM: " + texturePath.string());
-            loadedAsset = true;
-        } catch (const std::exception& error) {
-            Logger::warn("Failed to load normal texture '" + texturePath.string() + "': " + error.what());
-        }
-    } else {
-        Logger::warn("Normal texture asset missing, using procedural flat normal fallback: " + texturePath.string());
-    }
-
-    if (!loadedAsset) {
-        constexpr uint32_t width = 4;
-        constexpr uint32_t height = 4;
-        std::array<uint8_t, width * height * 4> pixels{};
-        for (size_t offset = 0; offset < pixels.size(); offset += 4) {
-            pixels[offset + 0] = 128;
-            pixels[offset + 1] = 128;
-            pixels[offset + 2] = 255;
-            pixels[offset + 3] = 255;
-        }
-
-        normalMapTexture_.createFromRgba8(context_,
-                                          commandContext_,
-                                          width,
-                                          height,
-                                          std::span<const uint8_t>(pixels.data(), pixels.size()),
-                                          VK_FORMAT_R8G8B8A8_UNORM,
-                                          false);
-        normalMapTexture_.setDebugMetadata(rhi::TextureDebugMetadata{
-            "Procedural flat normal map",
-            {},
-            rhi::TextureColorSpace::Linear,
-            rhi::TextureDebugSource::ProceduralFallback,
-            true,
-        });
-        nameTextureResources(normalMapTexture_, "NormalTexture");
-        Logger::info("Created procedural flat normal texture as linear UNORM.");
-    }
-
-    createFlatNormalTexture();
-}
-
-void Renderer::createFlatNormalTexture()
-{
-    constexpr uint32_t width = 4;
-    constexpr uint32_t height = 4;
-    std::array<uint8_t, width * height * 4> pixels{};
-    for (size_t offset = 0; offset < pixels.size(); offset += 4) {
-        pixels[offset + 0] = 128;
-        pixels[offset + 1] = 128;
-        pixels[offset + 2] = 255;
-        pixels[offset + 3] = 255;
-    }
-
-    flatNormalTexture_.createFromRgba8(context_,
-                                       commandContext_,
-                                       width,
-                                       height,
-                                       std::span<const uint8_t>(pixels.data(), pixels.size()),
-                                       VK_FORMAT_R8G8B8A8_UNORM,
-                                       false);
-    flatNormalTexture_.setDebugMetadata(rhi::TextureDebugMetadata{
-        "Flat normal fallback",
-        {},
-        rhi::TextureColorSpace::Linear,
-        rhi::TextureDebugSource::ProceduralFallback,
-        true,
-    });
-    nameTextureResources(flatNormalTexture_, "FlatNormalTexture");
-}
-
-void Renderer::createMetallicRoughnessTexture()
-{
-    metallicRoughnessMapAssetLoaded_ = false;
-    bool loadedAsset = false;
-
-    const std::filesystem::path texturePath = assetPath("textures/checker_mr.png");
-    if (std::filesystem::exists(texturePath)) {
-        try {
-            metallicRoughnessTexture_.createFromFile(
-                context_, commandContext_, texturePath, rhi::TextureColorSpace::Linear, true);
-            metallicRoughnessTexture_.setDebugMetadata(rhi::TextureDebugMetadata{
-                "Checker metallic-roughness map",
-                texturePath.string(),
-                rhi::TextureColorSpace::Linear,
-                rhi::TextureDebugSource::LoadedFromDisk,
-                false,
-            });
-            metallicRoughnessMapAssetLoaded_ = true;
-            nameTextureResources(metallicRoughnessTexture_, "MetallicRoughnessTexture");
-            Logger::info("Loaded metallic-roughness texture as linear UNORM: " + texturePath.string());
-            loadedAsset = true;
-        } catch (const std::exception& error) {
-            Logger::warn("Failed to load metallic-roughness texture '" + texturePath.string() + "': " + error.what());
-        }
-    } else {
-        Logger::warn("Metallic-roughness texture asset missing, using procedural neutral fallback: " +
-                     texturePath.string());
-    }
-
-    if (!loadedAsset) {
-        constexpr uint32_t width = 4;
-        constexpr uint32_t height = 4;
-        std::array<uint8_t, width * height * 4> pixels{};
-        for (size_t offset = 0; offset < pixels.size(); offset += 4) {
-            pixels[offset + 0] = 255;
-            pixels[offset + 1] = 255;
-            pixels[offset + 2] = 0;
-            pixels[offset + 3] = 255;
-        }
-
-        metallicRoughnessTexture_.createFromRgba8(context_,
-                                                  commandContext_,
-                                                  width,
-                                                  height,
-                                                  std::span<const uint8_t>(pixels.data(), pixels.size()),
-                                                  VK_FORMAT_R8G8B8A8_UNORM,
-                                                  false);
-        metallicRoughnessTexture_.setDebugMetadata(rhi::TextureDebugMetadata{
-            "Procedural neutral metallic-roughness map",
-            {},
-            rhi::TextureColorSpace::Linear,
-            rhi::TextureDebugSource::ProceduralFallback,
-            true,
-        });
-        nameTextureResources(metallicRoughnessTexture_, "MetallicRoughnessTexture");
-        Logger::info("Created procedural neutral metallic-roughness texture as linear UNORM.");
-    }
-
-    createNeutralMetallicRoughnessTexture();
-}
-
-void Renderer::createNeutralMetallicRoughnessTexture()
-{
-    constexpr uint32_t width = 4;
-    constexpr uint32_t height = 4;
-    std::array<uint8_t, width * height * 4> pixels{};
-    for (size_t offset = 0; offset < pixels.size(); offset += 4) {
-        pixels[offset + 0] = 255;
-        pixels[offset + 1] = 255;
-        pixels[offset + 2] = 0;
-        pixels[offset + 3] = 255;
-    }
-
-    neutralMetallicRoughnessTexture_.createFromRgba8(context_,
-                                                     commandContext_,
-                                                     width,
-                                                     height,
-                                                     std::span<const uint8_t>(pixels.data(), pixels.size()),
-                                                     VK_FORMAT_R8G8B8A8_UNORM,
-                                                     false);
-    neutralMetallicRoughnessTexture_.setDebugMetadata(rhi::TextureDebugMetadata{
-        "Neutral metallic-roughness fallback",
-        {},
-        rhi::TextureColorSpace::Linear,
-        rhi::TextureDebugSource::ProceduralFallback,
-        true,
-    });
-    nameTextureResources(neutralMetallicRoughnessTexture_, "NeutralMetallicRoughnessTexture");
 }
 
 void Renderer::createEnvironmentMap()

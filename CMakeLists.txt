@@ -210,6 +210,7 @@ add_library(VulkanEngineRuntime STATIC
     src/core/PngWriter.cpp
     src/core/Window.cpp
     src/renderer/BindlessTextureHeap.cpp
+    src/renderer/BuiltinTextureFactory.cpp
     src/renderer/ClusteredLighting.cpp
     src/renderer/DepthPyramid.cpp
     src/renderer/GpuCulling.cpp
@@ -235,6 +236,7 @@ add_library(VulkanEngineRuntime STATIC
     src/rhi/VulkanImage.cpp
     src/rhi/VulkanMemory.cpp
     src/rhi/VulkanPipeline.cpp
+    src/rhi/VulkanPipelineCache.cpp
     src/rhi/VulkanShadowMap.cpp
     src/rhi/VulkanSwapchain.cpp
     src/rhi/VulkanSync.cpp

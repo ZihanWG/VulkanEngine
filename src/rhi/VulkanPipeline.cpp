@@ -177,7 +177,7 @@ void VulkanPipeline::create(VkDevice device, const VulkanPipelineCreateInfo& cre
     pipelineInfo.layout = layout_;
     pipelineInfo.renderPass = VK_NULL_HANDLE;
 
-    VK_CHECK(vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline_));
+    VK_CHECK(vkCreateGraphicsPipelines(device_, createInfo.pipelineCache, 1, &pipelineInfo, nullptr, &pipeline_));
 }
 
 void VulkanPipeline::reset()

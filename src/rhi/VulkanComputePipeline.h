@@ -11,6 +11,8 @@ struct VulkanComputePipelineCreateInfo {
     std::filesystem::path shaderPath;
     std::span<const VkDescriptorSetLayout> descriptorSetLayouts;
     std::span<const VkPushConstantRange> pushConstantRanges;
+    // Optional shared pipeline cache; defaults to VK_NULL_HANDLE (cold compile).
+    VkPipelineCache pipelineCache = VK_NULL_HANDLE;
 };
 
 class VulkanComputePipeline final {

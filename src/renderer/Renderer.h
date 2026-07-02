@@ -3,6 +3,7 @@
 #include "assets/AssetManager.h"
 #include "core/JobSystem.h"
 #include "renderer/BindlessTextureHeap.h"
+#include "renderer/BuiltinTextureFactory.h"
 #include "renderer/EditorCamera.h"
 #include "renderer/Bounds.h"
 #include "renderer/Camera.h"
@@ -253,13 +254,6 @@ private:
     [[nodiscard]] bool ensurePortfolioShowcaseSceneReady();
     void resetOcclusionTestSceneToPreset();
     [[nodiscard]] uint32_t allocateRenderObjectDebugId();
-    void createCheckerboardTexture();
-    void createPortfolioBaseColorTexture();
-    void createPortfolioBackdropTexture();
-    void createNormalTexture();
-    void createFlatNormalTexture();
-    void createMetallicRoughnessTexture();
-    void createNeutralMetallicRoughnessTexture();
     void createEnvironmentMap();
     void createDiffuseIrradianceMap();
     void createPrefilteredEnvironmentMap();
@@ -490,6 +484,7 @@ private:
     std::vector<rhi::VulkanTexture> importedMetallicRoughnessTextures_;
     std::vector<std::unique_ptr<rhi::VulkanTexture>> materialAssetTextures_;
     renderer::BindlessTextureHeap bindlessTextureHeap_;
+    renderer::BuiltinTextureFactory builtinTextureFactory_{};
     renderer::ClusteredLighting clusteredLighting_;
     renderer::SkinnedMesh skinnedMesh_;
     rhi::VulkanDescriptorPool materialDescriptorPool_;
