@@ -481,19 +481,23 @@ void Renderer::drawRenderGraphDebugUi()
     // visible space" — near the bottom of a scrolled panel that collapses to a
     // bare scrollbar. Pin an explicit height (with ScrollY) so both tables stay
     // readable regardless of where the section sits in the debug window.
+    // Sizing must be FixedFit: stretch-proportional columns degenerate under
+    // ScrollX (the long text columns collapse to a few characters and wrapped
+    // text turns into one giant row).
     constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-                                      ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp |
+                                      ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingFixedFit |
                                       ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY;
     const ImVec2 tableSize(0.0f, ImGui::GetTextLineHeightWithSpacing() * 12.0f);
-    if (ImGui::BeginTable("RenderGraphPassTable", 8, flags, tableSize)) {
-        ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed);
+    const float wideColumnWidth = ImGui::GetFontSize() * 16.0f;
+    if (ImGui::BeginTable("RenderGraphPassesV2", 8, flags, tableSize)) {
+        ImGui::TableSetupColumn("#");
         ImGui::TableSetupColumn("Pass");
         ImGui::TableSetupColumn("Type");
         ImGui::TableSetupColumn("Status");
-        ImGui::TableSetupColumn("Side effect", ImGuiTableColumnFlags_WidthFixed);
-        ImGui::TableSetupColumn("Reads");
-        ImGui::TableSetupColumn("Writes");
-        ImGui::TableSetupColumn("Barriers / notes");
+        ImGui::TableSetupColumn("Side effect");
+        ImGui::TableSetupColumn("Reads", ImGuiTableColumnFlags_WidthFixed, wideColumnWidth);
+        ImGui::TableSetupColumn("Writes", ImGuiTableColumnFlags_WidthFixed, wideColumnWidth);
+        ImGui::TableSetupColumn("Barriers / notes", ImGuiTableColumnFlags_WidthFixed, wideColumnWidth);
         ImGui::TableHeadersRow();
 
         for (size_t index = 0; index < passes.size(); ++index) {
@@ -530,10 +534,10 @@ void Renderer::drawRenderGraphDebugUi()
         ImGui::EndTable();
     }
 
-    if (ImGui::BeginTable("RenderGraphResourceTable", 8, flags, tableSize)) {
+    if (ImGui::BeginTable("RenderGraphResourcesV2", 8, flags, tableSize)) {
         ImGui::TableSetupColumn("Resource");
-        ImGui::TableSetupColumn("Kind", ImGuiTableColumnFlags_WidthFixed);
-        ImGui::TableSetupColumn("Lifetime", ImGuiTableColumnFlags_WidthFixed);
+        ImGui::TableSetupColumn("Kind");
+        ImGui::TableSetupColumn("Lifetime");
         ImGui::TableSetupColumn("Extent / size");
         ImGui::TableSetupColumn("Format");
         ImGui::TableSetupColumn("Mips/layers");
