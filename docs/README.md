@@ -14,6 +14,9 @@ overview; these documents describe implementation details and limitations.
   implemented renderer scope, frame flow, and accurate Phase 7 limitations.
 - [Frame Flow And Descriptor Contract](frame_flow.md): The full per-frame pass
   ordering and the descriptor-set layout contract.
+- [Parallel Frame Preparation](parallel_frame_prep.md): JobSystem
+  parallelFor, the per-frame world-bounds cache, which frame-prep loops run on
+  workers, and the A/B toggle + CPU timing readout.
 - [GPU Profiling](profiling.md): Timestamp query profiler design, frame-latency
   readback model, profiled ranges, and known timing limitations.
 - [Render Graph 2.0](render_graph.md): Logical resource handles, pass

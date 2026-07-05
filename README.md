@@ -23,7 +23,7 @@ A **C++20 / Vulkan 1.3 real-time renderer** built as a graphics- and engine-prog
 | **PBR + IBL** | Cook-Torrance GGX, tangent-space normal mapping, prefiltered specular + diffuse irradiance + split-sum BRDF LUT, Kulla-Conty multi-scatter |
 | **Shadows** | PCF cascaded shadow maps with per-cascade GPU shadow-caster culling and an indirect shadow path |
 | **Post-processing** | HDR scene color, mip-chain bloom, histogram auto-exposure, ACES/Reinhard tonemap, motion-vector TAA with reprojected history |
-| **Architecture** | Render graph (logical handles + conservative barrier inference), RAII Vulkan RHI, per-pass GPU timestamp profiler, ImGui scene/material editor |
+| **Architecture** | Render graph (logical handles + conservative barrier inference), RAII Vulkan RHI, task-parallel frame prep on a job system, per-pass GPU timestamp profiler, ImGui scene/material editor |
 | **Engineering** | C++20, Catch2 unit tests, Linux + Windows CI, AddressSanitizer/UBSan, clang-tidy/clang-format |
 
 ## Architecture
@@ -84,6 +84,7 @@ GPU linear-blend vertex skinning (`simple_skinned.vert`) driven by a per-frame j
 - Skeletal animation: GPU linear-blend skinning from a per-frame joint-matrix palette, GPU-free unit-tested animation core, rigged/animated glTF import + procedural fallback.
 - Multi-draw indirect batching by mesh-compatible ranges on the bindless main path and shadow path.
 - GPU timestamp profiler with per-pass timings, frame-latency readback, moving-average ImGui history, and debug labels.
+- Task-parallel CPU frame preparation: a unit-tested `JobSystem::parallelFor` spreads the world-bounds cache, per-object frame data, CPU frustum culling, shadow-cascade visibility, and GPU-cull input builds across worker threads, with an A/B toggle and CPU timing readout in the profiler panel.
 - Editable scene workflow for runtime object transforms, visibility, camera/light settings, and JSON scene save/load.
 - Dear ImGui debug overlay: runtime render settings with JSON persistence, render graph visualization, profiler/frame timeline, culling/exposure history plots, scene hierarchy + material inspector, render-target/CSM cascade debug views.
 - Portfolio screenshot capture mode with F12 PNG export from the final tonemapped swapchain image before the ImGui overlay.

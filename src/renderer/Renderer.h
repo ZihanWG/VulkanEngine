@@ -297,6 +297,14 @@ private:
     // Captures this frame's view-projection and per-object model matrices as the
     // "previous frame" inputs for next frame's motion vectors.
     void capturePreviousFrameMatrices();
+    // Recomputes every active object's world AABB once per frame into
+    // frameWorldBounds_ so visibility, shadow cascades, and GPU-cull input
+    // builds share it instead of re-deriving the model matrix per use.
+    void updateFrameWorldBounds();
+    // Runs body(begin, end) over [0, count): chunked across the JobSystem when
+    // parallel frame prep is enabled, inline on the calling thread otherwise.
+    // Callers must not nest framePrepParallelFor inside a parallel body.
+    void framePrepParallelFor(size_t count, const std::function<void(size_t, size_t)>& body);
     // updateFrameData() helpers (see Renderer.cpp); each is a verbatim slice of the
     // former monolithic function, kept private and behaviour-preserving.
     void resetFrameStateForEmptyScene(uint32_t frameIndex);
@@ -580,6 +588,12 @@ private:
     PortfolioCaptureSavedState portfolioCaptureSavedState_{};
     float cpuFrameDeltaMs_ = 0.0f;
     float cpuFps_ = 0.0f;
+    // CPU frame-preparation cost (updateFrameData: transforms, bounds, draw
+    // items, culling inputs, per-object frame data) and the JobSystem toggle
+    // that lets the debug UI A/B single-threaded vs parallel prep.
+    bool parallelFramePrepEnabled_ = true;
+    DebugHistory framePrepCpuHistory_{};
+    std::vector<renderer::Aabb> frameWorldBounds_;
     float currentExposure_ = 1.0f;
     float averageLuminance_ = 0.18f;
     float histogramClippedLuminance_ = 0.18f;

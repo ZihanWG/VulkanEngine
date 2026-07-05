@@ -1926,6 +1926,15 @@ void Renderer::drawGpuTimingDebugUi()
 
     ImGui::Text("GPU frame total: %.3f ms", gpuFrameTimeHistory_.latest());
     ImGui::Text("CPU frame delta: %.3f ms (%.1f FPS)", cpuFrameDeltaMs_, cpuFps_);
+    ImGui::Checkbox("Parallel frame prep (JobSystem)", &parallelFramePrepEnabled_);
+    ImGui::SameLine();
+    ImGui::TextDisabled("(%zu workers)", jobSystem_.threadCount());
+    if (!framePrepCpuHistory_.empty()) {
+        ImGui::Text("Frame prep CPU: %.3f ms (avg %.3f, max %.3f)",
+                    framePrepCpuHistory_.latest(),
+                    framePrepCpuHistory_.average(),
+                    framePrepCpuHistory_.max());
+    }
     ImGui::Text("Timestamp queries: %u / %u",
                 latestGpuProfilerResults_.queryCount,
                 latestGpuProfilerResults_.maxQueryCount);
