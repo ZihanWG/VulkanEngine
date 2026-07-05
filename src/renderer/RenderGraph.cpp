@@ -571,6 +571,12 @@ void RenderGraph::beginMainHdrPass()
         throw std::logic_error("RenderGraph::beginMainHdrPass was culled but the renderer attempted to record it.");
     }
 
+    beginMainHdrRendering(false);
+    activePass_ = ActivePass::MainHdr;
+}
+
+void RenderGraph::beginMainHdrRendering(bool loadExisting)
+{
     VkClearValue clearColor{};
     clearColor.color.float32[0] = 0.03f;
     clearColor.color.float32[1] = 0.04f;
@@ -585,7 +591,7 @@ void RenderGraph::beginMainHdrPass()
     colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     colorAttachment.imageView = sceneColor.imageView;
     colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAttachment.loadOp = loadExisting ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
     colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     colorAttachment.clearValue = clearColor;
 
@@ -593,7 +599,7 @@ void RenderGraph::beginMainHdrPass()
     velocityAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     velocityAttachment.imageView = velocity.imageView;
     velocityAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    velocityAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    velocityAttachment.loadOp = loadExisting ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
     velocityAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     velocityAttachment.clearValue = VkClearValue{};
 
@@ -605,7 +611,7 @@ void RenderGraph::beginMainHdrPass()
     depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     depthAttachment.imageView = frame_.swapchain->depthImageView();
     depthAttachment.imageLayout = depthAttachmentLayout(VK_IMAGE_ASPECT_DEPTH_BIT);
-    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAttachment.loadOp = loadExisting ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
     depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     depthAttachment.clearValue = depthClear;
 
@@ -619,7 +625,6 @@ void RenderGraph::beginMainHdrPass()
     renderingInfo.pDepthAttachment = &depthAttachment;
 
     vkCmdBeginRendering(frame_.commandBuffer, &renderingInfo);
-    activePass_ = ActivePass::MainHdr;
 }
 
 void RenderGraph::endMainHdrPass()
@@ -630,6 +635,82 @@ void RenderGraph::endMainHdrPass()
     }
 
     vkCmdEndRendering(frame_.commandBuffer);
+    activePass_ = ActivePass::None;
+}
+
+void RenderGraph::beginMainHdrPhase2Pass()
+{
+    requireFrameActive("RenderGraph::beginMainHdrPhase2Pass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginMainHdrPhase2Pass called while another pass is active.");
+    }
+    if (!beginDeclaredPass(frame_.passIndices.mainHdrPhase2)) {
+        throw std::logic_error(
+            "RenderGraph::beginMainHdrPhase2Pass was culled but the renderer attempted to record it.");
+    }
+
+    beginMainHdrRendering(true);
+    activePass_ = ActivePass::MainHdrPhase2;
+}
+
+void RenderGraph::endMainHdrPhase2Pass()
+{
+    requireFrameActive("RenderGraph::endMainHdrPhase2Pass");
+    if (activePass_ != ActivePass::MainHdrPhase2) {
+        throw std::logic_error("RenderGraph::endMainHdrPhase2Pass called without an active phase-2 main HDR pass.");
+    }
+
+    vkCmdEndRendering(frame_.commandBuffer);
+    activePass_ = ActivePass::None;
+}
+
+void RenderGraph::beginMainGpuCullingPhase2Pass()
+{
+    requireFrameActive("RenderGraph::beginMainGpuCullingPhase2Pass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginMainGpuCullingPhase2Pass called while another pass is active.");
+    }
+    if (!beginDeclaredPass(frame_.passIndices.mainGpuCullingPhase2)) {
+        throw std::logic_error(
+            "RenderGraph::beginMainGpuCullingPhase2Pass was culled but the renderer attempted to record it.");
+    }
+
+    activePass_ = ActivePass::MainGpuCullingPhase2;
+}
+
+void RenderGraph::endMainGpuCullingPhase2Pass()
+{
+    requireFrameActive("RenderGraph::endMainGpuCullingPhase2Pass");
+    if (activePass_ != ActivePass::MainGpuCullingPhase2) {
+        throw std::logic_error(
+            "RenderGraph::endMainGpuCullingPhase2Pass called without an active phase-2 culling pass.");
+    }
+
+    activePass_ = ActivePass::None;
+}
+
+void RenderGraph::beginDepthPyramidMidPass()
+{
+    requireFrameActive("RenderGraph::beginDepthPyramidMidPass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginDepthPyramidMidPass called while another pass is active.");
+    }
+    if (!beginDeclaredPass(frame_.passIndices.depthPyramidMid)) {
+        throw std::logic_error(
+            "RenderGraph::beginDepthPyramidMidPass was culled but the renderer attempted to record it.");
+    }
+
+    activePass_ = ActivePass::DepthPyramidMid;
+}
+
+void RenderGraph::endDepthPyramidMidPass()
+{
+    requireFrameActive("RenderGraph::endDepthPyramidMidPass");
+    if (activePass_ != ActivePass::DepthPyramidMid) {
+        throw std::logic_error(
+            "RenderGraph::endDepthPyramidMidPass called without an active mid-frame depth pyramid pass.");
+    }
+
     activePass_ = ActivePass::None;
 }
 
@@ -1154,6 +1235,71 @@ void RenderGraph::declareGeometryPasses()
                                RGAccess::IndirectRead,
                                "Reads per-batch visible counts when indirect-count drawing is active.");
         });
+
+    if (frame_.resources.twoPhaseOcclusionEnabled) {
+        frame_.passIndices.depthPyramidMid = addPass(
+            "DepthPyramidMidPass",
+            RenderPassType::DepthPyramid,
+            RenderPassExecutionType::Compute,
+            true,
+            [this](RenderGraphBuilder& builder) {
+                builder.readTexture(frame_.mainDepth,
+                                    RGAccess::ShaderRead,
+                                    "Samples phase-1 main depth for the mid-frame Hi-Z rebuild.");
+                builder.writeTexture(frame_.depthPyramid,
+                                     RGAccess::StorageImageWrite,
+                                     "Rebuilds the Hi-Z pyramid so phase 2 can re-test occlusion candidates.");
+            });
+
+        frame_.passIndices.mainGpuCullingPhase2 = addPass(
+            "MainGpuCullingPhase2",
+            RenderPassType::MainGpuCulling,
+            RenderPassExecutionType::Compute,
+            true,
+            [this](RenderGraphBuilder& builder) {
+                builder.readBuffer(frame_.mainCullInput,
+                                   RGAccess::StorageBufferRead,
+                                   "Re-reads per-draw AABBs for the phase-1 occlusion candidates.");
+                builder.readTexture(frame_.depthPyramid,
+                                    RGAccess::ShaderRead,
+                                    "Samples the mid-frame Hi-Z pyramid for the candidate re-test.");
+                builder.writeBuffer(frame_.mainCullIndirectOutput,
+                                    RGAccess::StorageBufferWrite,
+                                    "Writes indirect draw commands for rescued (disoccluded) draws.");
+                builder.writeBuffer(frame_.mainCullVisibleCounts,
+                                    RGAccess::StorageBufferReadWrite,
+                                    "Resets per-batch counts and appends the rescued stats counter.");
+                builder.writeBuffer(frame_.mainCullReadback,
+                                    RGAccess::TransferDst,
+                                    "Receives the combined two-phase culling counters for CPU readback.");
+            });
+
+        frame_.passIndices.mainHdrPhase2 = addPass(
+            "MainHDRPhase2",
+            RenderPassType::MainHdr,
+            RenderPassExecutionType::Graphics,
+            false,
+            [this](RenderGraphBuilder& builder) {
+                builder.readTexture(frame_.shadowMapDepth,
+                                    RGAccess::ShaderRead,
+                                    "Samples the cascaded shadow-map array for lighting.");
+                builder.writeTexture(frame_.sceneColor,
+                                     RGAccess::ColorAttachmentWrite,
+                                     "Draws rescued disoccluded objects into the existing HDR color.");
+                builder.writeTexture(frame_.velocity,
+                                     RGAccess::ColorAttachmentWrite,
+                                     "Appends motion vectors for the rescued draws.");
+                builder.writeTexture(frame_.mainDepth,
+                                     RGAccess::DepthStencilAttachmentWrite,
+                                     "Loads and extends phase-1 depth with the rescued draws.");
+                builder.readBuffer(frame_.mainCullIndirectOutput,
+                                   RGAccess::IndirectRead,
+                                   "Reads the phase-2 compacted indirect draw commands.");
+                builder.readBuffer(frame_.mainCullVisibleCounts,
+                                   RGAccess::IndirectRead,
+                                   "Reads the phase-2 per-batch visible counts.");
+            });
+    }
 
     frame_.passIndices.depthPyramid = addPass(
         "DepthPyramidPass",

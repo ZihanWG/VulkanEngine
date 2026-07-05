@@ -67,10 +67,14 @@ public:
     // so the culling pass will not trust them for occlusion this frame.
     void invalidate();
 
+    // midFrame: records into the DepthPyramidMidPass graph slot (the two-phase
+    // occlusion rebuild between the phase-1 and phase-2 main passes) instead of
+    // the end-of-frame DepthPyramidPass.
     void recordCommands(VkCommandBuffer commandBuffer,
                         uint32_t frameIndex,
                         const glm::mat4& frameViewProjection,
-                        const glm::vec3& frameCameraPosition);
+                        const glm::vec3& frameCameraPosition,
+                        bool midFrame = false);
     void ensureShaderReadLayout(VkCommandBuffer commandBuffer);
 
     // --- accessors for the GPU culling code (binds image/sampler) and debug UI ---

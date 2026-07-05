@@ -89,7 +89,7 @@ void GpuCulling::createResources(uint32_t frameCount,
 
 void GpuCulling::createCullDescriptorLayout()
 {
-    std::array<VkDescriptorSetLayoutBinding, 5> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 6> bindings{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     bindings[0].descriptorCount = 1;
@@ -114,6 +114,13 @@ void GpuCulling::createCullDescriptorLayout()
     bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     bindings[4].descriptorCount = 1;
     bindings[4].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    // Two-phase occlusion phase-result buffer (written in phase 1, read in
+    // phase 2). Shadow culling binds it too (shared layout) but never uses it.
+    bindings[5].binding = 5;
+    bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[5].descriptorCount = 1;
+    bindings[5].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
     gpuCullDescriptorSetLayout_.create(
         context_.vkDevice(), std::span<const VkDescriptorSetLayoutBinding>(bindings.data(), bindings.size()));
@@ -171,6 +178,19 @@ void GpuCulling::createCullBuffers(uint32_t frameCount)
                                   "GpuCullFrameParamsBuffer" + std::to_string(frameIndex));
     }
 
+    framePhaseResultBuffers_.resize(frameCount);
+    for (size_t frameIndex = 0; frameIndex < framePhaseResultBuffers_.size(); ++frameIndex) {
+        rhi::VulkanBufferCreateInfo bufferInfo{};
+        bufferInfo.size = static_cast<VkDeviceSize>(kMaxDrawItems * sizeof(uint32_t));
+        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        bufferInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+        framePhaseResultBuffers_[frameIndex].createBuffer(context_, bufferInfo);
+        rhi::debug::setObjectName(context_.vkDevice(),
+                                  framePhaseResultBuffers_[frameIndex].buffer(),
+                                  VK_OBJECT_TYPE_BUFFER,
+                                  "GpuCullPhaseResultBuffer" + std::to_string(frameIndex));
+    }
+
     frameBatchVisibleCountBuffers_.resize(frameCount);
     frameBatchVisibleCountReadbackBuffers_.resize(frameCount);
     frameGpuCullTotalDrawItems_.assign(frameCount, 0);
@@ -206,7 +226,7 @@ void GpuCulling::createCullDescriptorSets(uint32_t frameCount)
 {
     std::array<VkDescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[0].descriptorCount = static_cast<uint32_t>(frameCount * 4);
+    poolSizes[0].descriptorCount = static_cast<uint32_t>(frameCount * 5);
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     poolSizes[1].descriptorCount = static_cast<uint32_t>(frameCount);
 
@@ -253,7 +273,12 @@ void GpuCulling::createCullDescriptorSets(uint32_t frameCount)
         frameParamsBufferInfo.offset = 0;
         frameParamsBufferInfo.range = frameGpuCullParamBuffers_[frameIndex].size();
 
-        std::array<VkWriteDescriptorSet, 5> writes{};
+        VkDescriptorBufferInfo phaseResultBufferInfo{};
+        phaseResultBufferInfo.buffer = framePhaseResultBuffers_[frameIndex].buffer();
+        phaseResultBufferInfo.offset = 0;
+        phaseResultBufferInfo.range = framePhaseResultBuffers_[frameIndex].size();
+
+        std::array<VkWriteDescriptorSet, 6> writes{};
         writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstSet = gpuCullDescriptorSets_[frameIndex];
         writes[0].dstBinding = 0;
@@ -289,6 +314,13 @@ void GpuCulling::createCullDescriptorSets(uint32_t frameCount)
         writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writes[4].pBufferInfo = &frameParamsBufferInfo;
 
+        writes[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[5].dstSet = gpuCullDescriptorSets_[frameIndex];
+        writes[5].dstBinding = 5;
+        writes[5].descriptorCount = 1;
+        writes[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[5].pBufferInfo = &phaseResultBufferInfo;
+
         vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
         rhi::debug::setObjectName(context_.vkDevice(),
                                   gpuCullDescriptorSets_[frameIndex],
@@ -310,6 +342,7 @@ void GpuCulling::destroyResources()
     frameGpuCullTotalDrawItems_.clear();
     frameBatchVisibleCountReadbackBuffers_.clear();
     frameBatchVisibleCountBuffers_.clear();
+    framePhaseResultBuffers_.clear();
     frameGpuCullParamBuffers_.clear();
     frameCullInputBuffers_.clear();
     gpuCullPipeline_.reset();
@@ -393,7 +426,7 @@ void GpuCulling::createShadowCullDescriptorSets(uint32_t frameCount)
 {
     std::array<VkDescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[0].descriptorCount = static_cast<uint32_t>(frameCount * 4);
+    poolSizes[0].descriptorCount = static_cast<uint32_t>(frameCount * 5);
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     poolSizes[1].descriptorCount = static_cast<uint32_t>(frameCount);
 
@@ -440,7 +473,12 @@ void GpuCulling::createShadowCullDescriptorSets(uint32_t frameCount)
         frameParamsBufferInfo.offset = 0;
         frameParamsBufferInfo.range = frameGpuCullParamBuffers_[frameIndex].size();
 
-        std::array<VkWriteDescriptorSet, 5> writes{};
+        VkDescriptorBufferInfo phaseResultBufferInfo{};
+        phaseResultBufferInfo.buffer = framePhaseResultBuffers_[frameIndex].buffer();
+        phaseResultBufferInfo.offset = 0;
+        phaseResultBufferInfo.range = framePhaseResultBuffers_[frameIndex].size();
+
+        std::array<VkWriteDescriptorSet, 6> writes{};
         writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstSet = shadowCullDescriptorSets_[frameIndex];
         writes[0].dstBinding = 0;
@@ -475,6 +513,13 @@ void GpuCulling::createShadowCullDescriptorSets(uint32_t frameCount)
         writes[4].descriptorCount = 1;
         writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writes[4].pBufferInfo = &frameParamsBufferInfo;
+
+        writes[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[5].dstSet = shadowCullDescriptorSets_[frameIndex];
+        writes[5].dstBinding = 5;
+        writes[5].descriptorCount = 1;
+        writes[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[5].pBufferInfo = &phaseResultBufferInfo;
 
         vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
         rhi::debug::setObjectName(context_.vkDevice(),
@@ -604,7 +649,8 @@ void GpuCulling::recordMainCull(VkCommandBuffer commandBuffer,
                                 bool active,
                                 uint32_t drawItemCount,
                                 const std::array<glm::vec4, 6>& frustumPlanes,
-                                bool mainPassMultiDrawIndirect)
+                                bool mainPassMultiDrawIndirect,
+                                bool copyReadback)
 {
     if (!active || drawItemCount == 0) {
         return;
@@ -670,6 +716,18 @@ void GpuCulling::recordMainCull(VkCommandBuffer commandBuffer,
     vkCmdDispatch(commandBuffer, groupCount, 1, 1);
     rhi::debug::endLabel(commandBuffer);
 
+    if (copyReadback) {
+        recordMainVisibleCountReadback(commandBuffer, frameIndex);
+    }
+    rhi::debug::endLabel(commandBuffer);
+    renderGraph_.endMainGpuCullingPass();
+}
+
+void GpuCulling::recordMainVisibleCountReadback(VkCommandBuffer commandBuffer, uint32_t frameIndex)
+{
+    VkBuffer visibleCountBuffer = frameBatchVisibleCountBuffers_.at(frameIndex).buffer();
+    VkBuffer visibleCountReadbackBuffer = frameBatchVisibleCountReadbackBuffers_.at(frameIndex).buffer();
+
     VkBufferMemoryBarrier2 visibleCountCopyBarrier{};
     visibleCountCopyBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
     visibleCountCopyBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
@@ -711,8 +769,89 @@ void GpuCulling::recordMainCull(VkCommandBuffer commandBuffer,
     vkCmdPipelineBarrier2(commandBuffer, &readbackDependencyInfo);
 
     frameGpuCullReadbackReady_[frameIndex] = 1;
+}
+
+void GpuCulling::recordMainCullPhase2(VkCommandBuffer commandBuffer,
+                                      uint32_t frameIndex,
+                                      bool active,
+                                      uint32_t drawItemCount,
+                                      const std::array<glm::vec4, 6>& frustumPlanes,
+                                      bool mainPassMultiDrawIndirect)
+{
+    if (!active || drawItemCount == 0) {
+        return;
+    }
+    if (frameIndex >= gpuCullDescriptorSets_.size() || frameIndex >= frameBatchVisibleCountBuffers_.size() ||
+        frameIndex >= frameBatchVisibleCountReadbackBuffers_.size() || frameIndex >= frameGpuCullReadbackReady_.size()) {
+        return;
+    }
+
+    VkBuffer visibleCountBuffer = frameBatchVisibleCountBuffers_.at(frameIndex).buffer();
+    if (visibleCountBuffer == VK_NULL_HANDLE) {
+        return;
+    }
+
+    const renderer::GpuProfileScope profileScope(gpuProfiler_, frameIndex, commandBuffer, "MainGpuCullingPhase2");
+    renderGraph_.beginMainGpuCullingPhase2Pass();
+    rhi::debug::beginLabel(commandBuffer, "GpuCullingPhase2");
+    depthPyramid_.ensureShaderReadLayout(commandBuffer);
+
+    // Compacted path: reset only the per-batch visible counts, because phase 2
+    // compacts its rescued draws into the same batch regions the phase-1 draws
+    // already consumed. The stats counters at kGpuCullStatsCounterOffset persist
+    // so phase 2 can append the rescued count to phase 1's totals. The
+    // non-compacted path overwrites every fixed command slot instead, so no
+    // count reset is needed there.
+    if (frameIndirectCountPathActive(frameIndex)) {
+        vkCmdFillBuffer(commandBuffer, visibleCountBuffer, 0, kBatchVisibleCountBufferSize, 0);
+
+        VkBufferMemoryBarrier2 resetCountBarrier{};
+        resetCountBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+        resetCountBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        resetCountBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        resetCountBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        resetCountBarrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        resetCountBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        resetCountBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        resetCountBarrier.buffer = visibleCountBuffer;
+        resetCountBarrier.offset = 0;
+        resetCountBarrier.size = kBatchVisibleCountBufferSize;
+
+        VkDependencyInfo resetDependencyInfo{};
+        resetDependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        resetDependencyInfo.bufferMemoryBarrierCount = 1;
+        resetDependencyInfo.pBufferMemoryBarriers = &resetCountBarrier;
+        vkCmdPipelineBarrier2(commandBuffer, &resetDependencyInfo);
+    }
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, gpuCullPipeline_.pipeline());
+
+    const VkDescriptorSet descriptorSet = gpuCullDescriptorSets_[frameIndex];
+    vkCmdBindDescriptorSets(
+        commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, gpuCullPipeline_.layout(), 0, 1, &descriptorSet, 0, nullptr);
+
+    GpuCullPushConstants pushConstants{};
+    pushConstants.frustumPlanes = frustumPlanes;
+    // w = occlusion allowed (bit 0) + phase 2 (bit 1).
+    pushConstants.params = glm::uvec4(drawItemCount,
+                                      mainPassMultiDrawIndirect ? 1U : 0U,
+                                      frameIndirectCountPathActive(frameIndex) ? 1U : 0U,
+                                      3U);
+    vkCmdPushConstants(commandBuffer,
+                       gpuCullPipeline_.layout(),
+                       VK_SHADER_STAGE_COMPUTE_BIT,
+                       0,
+                       static_cast<uint32_t>(sizeof(GpuCullPushConstants)),
+                       &pushConstants);
+
+    rhi::debug::beginLabel(commandBuffer, "ComputeCullPhase2Dispatch");
+    const uint32_t groupCount = (drawItemCount + kGpuCullLocalSize - 1) / kGpuCullLocalSize;
+    vkCmdDispatch(commandBuffer, groupCount, 1, 1);
     rhi::debug::endLabel(commandBuffer);
-    renderGraph_.endMainGpuCullingPass();
+
+    recordMainVisibleCountReadback(commandBuffer, frameIndex);
+    rhi::debug::endLabel(commandBuffer);
+    renderGraph_.endMainGpuCullingPhase2Pass();
 }
 
 void GpuCulling::recordShadowCull(VkCommandBuffer commandBuffer,
@@ -917,11 +1056,13 @@ bool GpuCulling::readMainCounters(bool active, uint32_t frameIndex, GpuCullCount
     counters.visibleDrawItems = values[1];
     counters.frustumCulledDrawItems = values[2];
     counters.occlusionCulledDrawItems = values[3];
+    counters.phase2RescuedDrawItems = values[4];
     if (frameIndex < frameGpuCullTotalDrawItems_.size()) {
         counters.totalDrawItems = std::min(counters.totalDrawItems, frameGpuCullTotalDrawItems_[frameIndex]);
         counters.visibleDrawItems = std::min(counters.visibleDrawItems, counters.totalDrawItems);
         counters.frustumCulledDrawItems = std::min(counters.frustumCulledDrawItems, counters.totalDrawItems);
         counters.occlusionCulledDrawItems = std::min(counters.occlusionCulledDrawItems, counters.totalDrawItems);
+        counters.phase2RescuedDrawItems = std::min(counters.phase2RescuedDrawItems, counters.occlusionCulledDrawItems);
     }
     return true;
 }

@@ -34,6 +34,11 @@ struct DrawIndexedIndirectCommand {
     uint firstInstance;
 };
 
+// Two-phase occlusion phase results, written by phase 1 and consumed by phase 2.
+const uint kPhaseFrustumCulled = 0u;
+const uint kPhaseVisible = 1u;
+const uint kPhaseOcclusionCandidate = 2u;
+
 layout(set = 0, binding = 0, std430) readonly buffer CullInputBuffer {
     GpuCullDrawItem drawItems[];
 } cullInput;
@@ -50,17 +55,27 @@ layout(set = 0, binding = 3) uniform sampler2D depthPyramid;
 
 layout(set = 0, binding = 4, std430) readonly buffer CullFrameParamsBuffer {
     mat4 occlusionViewProjection;
+    mat4 occlusionViewProjectionPhase2;
     vec4 cameraPosition;
     vec4 viewportAndMipCount; // x = width, y = height, z = mip count
     vec4 occlusionSettings; // x = normal-Z depth bias, y = near disable distance, z = max coverage, w = min pixels
     uvec4 counterAndFlags; // x = stats counter base, y bit 0 = occlusion enabled for this frame
 } cullFrame;
 
+// Phase 1 writes one result code per draw item; phase 2 dispatches over the full
+// range again and re-tests only the kPhaseOcclusionCandidate entries against the
+// freshly built current-frame pyramid.
+layout(set = 0, binding = 5, std430) buffer PhaseResultBuffer {
+    uint results[];
+} phaseResults;
+
 // The renderer reuses this shader for camera-frustum main culling and
 // directional-light-frustum shadow culling by pushing the relevant planes.
 layout(push_constant) uniform CullPushConstants {
     vec4 frustumPlanes[6];
-    uvec4 params; // x = draw item count, y = write objectFrameDataIndex, z = compact commands, w bit 0 = allow occlusion
+    // x = draw item count, y = write objectFrameDataIndex, z = compact commands,
+    // w bit 0 = allow occlusion, w bit 1 = occlusion phase 2 (re-test candidates)
+    uvec4 params;
 } pc;
 
 bool testAabb(vec3 boundsMin, vec3 boundsMax)
@@ -90,7 +105,7 @@ bool validBounds(vec3 boundsMin, vec3 boundsMax)
     return all(greaterThanEqual(extent, vec3(0.0001)));
 }
 
-bool testOcclusion(vec3 boundsMin, vec3 boundsMax)
+bool testOcclusion(vec3 boundsMin, vec3 boundsMax, mat4 occlusionViewProjection)
 {
     if (!validBounds(boundsMin, boundsMax)) {
         return false;
@@ -124,7 +139,7 @@ bool testOcclusion(vec3 boundsMin, vec3 boundsMax)
             (cornerIndex & 2u) != 0u ? boundsMax.y : boundsMin.y,
             (cornerIndex & 4u) != 0u ? boundsMax.z : boundsMin.z);
 
-        vec4 clip = cullFrame.occlusionViewProjection * vec4(corner, 1.0);
+        vec4 clip = occlusionViewProjection * vec4(corner, 1.0);
         if (clip.w <= 0.0001 || clip.z <= 0.0) {
             return false;
         }
@@ -177,38 +192,13 @@ bool testOcclusion(vec3 boundsMin, vec3 boundsMax)
     return hizDepth + depthBias < objectNearestDepth;
 }
 
-void main()
+void emitCommand(GpuCullDrawItem drawItem, uint drawIndex, bool compactCommands)
 {
-    uint drawIndex = gl_GlobalInvocationID.x;
-    if (drawIndex >= pc.params.x) {
-        return;
-    }
-
-    GpuCullDrawItem drawItem = cullInput.drawItems[drawIndex];
-    bool frustumVisible = testAabb(drawItem.boundsMin.xyz, drawItem.boundsMax.xyz);
-    bool occlusionEnabled = (pc.params.w & 1u) != 0u && (cullFrame.counterAndFlags.y & 1u) != 0u;
-    bool occluded = frustumVisible && occlusionEnabled && testOcclusion(drawItem.boundsMin.xyz, drawItem.boundsMax.xyz);
-    bool visible = frustumVisible && !occluded;
-    bool compactCommands = pc.params.z != 0;
-
-    uint statsBase = cullFrame.counterAndFlags.x;
-    atomicAdd(batchVisibleCounts.visibleCounts[statsBase + 0u], 1u);
-    if (visible) {
-        atomicAdd(batchVisibleCounts.visibleCounts[statsBase + 1u], 1u);
-    } else if (!frustumVisible) {
-        atomicAdd(batchVisibleCounts.visibleCounts[statsBase + 2u], 1u);
-    } else if (occluded) {
-        atomicAdd(batchVisibleCounts.visibleCounts[statsBase + 3u], 1u);
-    }
-
     uint outputIndex = drawIndex;
     if (compactCommands) {
-        if (!visible) {
-            return;
-        }
         uint localVisibleIndex = atomicAdd(batchVisibleCounts.visibleCounts[drawItem.batchIndex], 1);
         outputIndex = drawItem.batchOutputBase + localVisibleIndex;
-    } else if (visible) {
+    } else {
         atomicAdd(batchVisibleCounts.visibleCounts[0], 1);
     }
 
@@ -218,11 +208,78 @@ void main()
     command.firstIndex = drawItem.firstIndex;
     command.vertexOffset = drawItem.vertexOffset;
     command.firstInstance = pc.params.y != 0 ? drawItem.objectFrameDataIndex : 0;
+    indirectOutput.commands[outputIndex] = command;
+}
 
-    if (!visible) {
-        command.indexCount = 0;
-        command.instanceCount = 0;
+void main()
+{
+    uint drawIndex = gl_GlobalInvocationID.x;
+    if (drawIndex >= pc.params.x) {
+        return;
     }
 
-    indirectOutput.commands[outputIndex] = command;
+    GpuCullDrawItem drawItem = cullInput.drawItems[drawIndex];
+    bool compactCommands = pc.params.z != 0;
+    uint statsBase = cullFrame.counterAndFlags.x;
+
+    // Phase 2: re-test the phase-1 occlusion candidates against the pyramid just
+    // built from this frame's phase-1 depth. Anything no longer occluded is a
+    // disocclusion false-negative that phase 1 missed; emit it now.
+    if ((pc.params.w & 2u) != 0u) {
+        bool candidate = phaseResults.results[drawIndex] == kPhaseOcclusionCandidate;
+        bool rescued = candidate &&
+                       !testOcclusion(drawItem.boundsMin.xyz,
+                                      drawItem.boundsMax.xyz,
+                                      cullFrame.occlusionViewProjectionPhase2);
+        if (rescued) {
+            atomicAdd(batchVisibleCounts.visibleCounts[statsBase + 4u], 1u);
+            emitCommand(drawItem, drawIndex, compactCommands);
+        } else if (!compactCommands) {
+            // Non-compacted phase 2 owns every fixed command slot: zero the
+            // non-rescued ones so the replayed multi-draw skips items phase 1
+            // already drew or culled.
+            DrawIndexedIndirectCommand command;
+            command.indexCount = 0;
+            command.instanceCount = 0;
+            command.firstIndex = 0;
+            command.vertexOffset = 0;
+            command.firstInstance = 0;
+            indirectOutput.commands[drawIndex] = command;
+        }
+        return;
+    }
+
+    bool frustumVisible = testAabb(drawItem.boundsMin.xyz, drawItem.boundsMax.xyz);
+    bool occlusionEnabled = (pc.params.w & 1u) != 0u && (cullFrame.counterAndFlags.y & 1u) != 0u;
+    bool occluded = frustumVisible && occlusionEnabled &&
+                    testOcclusion(drawItem.boundsMin.xyz, drawItem.boundsMax.xyz, cullFrame.occlusionViewProjection);
+    bool visible = frustumVisible && !occluded;
+
+    phaseResults.results[drawIndex] =
+        visible ? kPhaseVisible : (occluded ? kPhaseOcclusionCandidate : kPhaseFrustumCulled);
+
+    atomicAdd(batchVisibleCounts.visibleCounts[statsBase + 0u], 1u);
+    if (visible) {
+        atomicAdd(batchVisibleCounts.visibleCounts[statsBase + 1u], 1u);
+    } else if (!frustumVisible) {
+        atomicAdd(batchVisibleCounts.visibleCounts[statsBase + 2u], 1u);
+    } else if (occluded) {
+        atomicAdd(batchVisibleCounts.visibleCounts[statsBase + 3u], 1u);
+    }
+
+    if (visible) {
+        emitCommand(drawItem, drawIndex, compactCommands);
+    } else if (compactCommands) {
+        return;
+    } else {
+        // Non-compacted paths keep one command slot per draw item; zero it so the
+        // fixed-slot indirect draw skips this item.
+        DrawIndexedIndirectCommand command;
+        command.indexCount = 0;
+        command.instanceCount = 0;
+        command.firstIndex = drawItem.firstIndex;
+        command.vertexOffset = drawItem.vertexOffset;
+        command.firstInstance = 0;
+        indirectOutput.commands[drawIndex] = command;
+    }
 }

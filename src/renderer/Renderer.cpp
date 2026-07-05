@@ -2647,11 +2647,18 @@ void Renderer::updateGpuCullInputBuffer(uint32_t frameIndex)
         return;
     }
 
-    const bool occlusionEnabledThisFrame = isGpuOcclusionCullingActive() && previousFrameDepthValidForOcclusion();
+    // Two-phase mode drops the camera-still requirement: phase 1 projects with
+    // the pyramid's stored (previous-frame) view-projection, and phase 2 corrects
+    // any resulting false negatives against the mid-frame rebuild. Single-phase
+    // keeps the conservative previous-frame validity gate.
+    const bool occlusionEnabledThisFrame =
+        isGpuOcclusionCullingActive() &&
+        (frameTwoPhaseOcclusionActive_ || previousFrameDepthValidForOcclusion());
     const VkExtent2D extent = swapchain_.extent();
 
     GpuCullFrameParams frameParams{};
     frameParams.occlusionViewProjection = depthPyramid_.viewProjection();
+    frameParams.occlusionViewProjectionPhase2 = frameViewProjection_;
     frameParams.cameraPosition = glm::vec4(frameCameraPosition_, 0.0f);
     frameParams.viewportAndMipCount = glm::vec4(static_cast<float>(extent.width),
                                                 static_cast<float>(extent.height),
@@ -3052,9 +3059,15 @@ Renderer::CullingDebugSnapshot Renderer::cullingDebugSnapshot(uint32_t frameInde
     renderer::GpuCullCounters gpuCounters{};
     if (readGpuCullCounters(frameIndex, gpuCounters)) {
         snapshot.totalDrawItems = std::min(gpuCounters.totalDrawItems, snapshot.totalDrawItems);
-        snapshot.visibleDrawItems = std::min(gpuCounters.visibleDrawItems, snapshot.totalDrawItems);
+        snapshot.phase2RescuedDrawItems = gpuCounters.phase2RescuedDrawItems;
+        // Phase 2 rescues count as visible; the effective occlusion-culled count
+        // excludes them.
+        snapshot.visibleDrawItems =
+            std::min(gpuCounters.visibleDrawItems + gpuCounters.phase2RescuedDrawItems, snapshot.totalDrawItems);
         snapshot.frustumCulledDrawItems = std::min(gpuCounters.frustumCulledDrawItems, snapshot.totalDrawItems);
-        snapshot.occlusionCulledDrawItems = std::min(gpuCounters.occlusionCulledDrawItems, snapshot.totalDrawItems);
+        snapshot.occlusionCulledDrawItems =
+            std::min(gpuCounters.occlusionCulledDrawItems - gpuCounters.phase2RescuedDrawItems,
+                     snapshot.totalDrawItems);
     } else if (readGpuVisibleCount(frameIndex, gpuVisibleDrawItems)) {
         snapshot.visibleDrawItems = std::min(gpuVisibleDrawItems, snapshot.totalDrawItems);
         snapshot.frustumCulledDrawItems = snapshot.totalDrawItems > snapshot.visibleDrawItems
@@ -3067,7 +3080,9 @@ Renderer::CullingDebugSnapshot Renderer::cullingDebugSnapshot(uint32_t frameInde
     if (!snapshot.gpuCulling) {
         snapshot.frustumCulledDrawItems = snapshot.culledDrawItems;
         snapshot.occlusionCulledDrawItems = 0;
+        snapshot.phase2RescuedDrawItems = 0;
     }
+    snapshot.twoPhaseOcclusion = frameTwoPhaseOcclusionActive_;
 
     snapshot.shadowDrawItems = static_cast<uint32_t>(
         std::min<size_t>(shadowCullingStats_.totalDrawItems, std::numeric_limits<uint32_t>::max()));
@@ -3326,6 +3341,7 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
         useGpuCulling_ = settings.useGpuCulling;
         useGpuShadowCulling_ = settings.useGpuShadowCulling;
         useGpuOcclusionCulling_ = settings.enableGpuOcclusionCulling && settings.useGpuCulling;
+        useTwoPhaseOcclusion_ = settings.enableTwoPhaseOcclusion;
         useBindlessMaterialTextures_ = settings.enableBindlessMaterialTextures;
     } else {
         if (!settings.useGpuCulling || gpuCulling_.available()) {
@@ -3335,6 +3351,7 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
             useGpuShadowCulling_ = settings.useGpuShadowCulling;
         }
         useGpuOcclusionCulling_ = settings.enableGpuOcclusionCulling;
+        useTwoPhaseOcclusion_ = settings.enableTwoPhaseOcclusion;
     }
 
     clampRuntimeSettings();
@@ -3366,6 +3383,7 @@ RuntimeSettings Renderer::captureRuntimeSettings() const
     settings.useGpuCulling = useGpuCulling_;
     settings.useGpuShadowCulling = useGpuShadowCulling_;
     settings.enableGpuOcclusionCulling = useGpuOcclusionCulling_;
+    settings.enableTwoPhaseOcclusion = useTwoPhaseOcclusion_;
     settings.enableBindlessMaterialTextures = useBindlessMaterialTextures_;
     return settings;
 }
@@ -3909,6 +3927,7 @@ void Renderer::capturePreviousFrameMatrices()
 
 void Renderer::resetFrameStateForEmptyScene(uint32_t frameIndex)
 {
+    frameTwoPhaseOcclusionActive_ = false;
     allDrawItems_.clear();
     visibleDrawItems_.clear();
     shadowDrawItems_.clear();
@@ -4079,8 +4098,15 @@ void Renderer::buildMainCullingFrameData(uint32_t frameIndex, const renderer::Fr
 
         gpuCulling_.setMainCullFrameInfo(
             frameIndex, static_cast<uint32_t>(meshDrawBatches_.size()), indirectCountPathActive);
+        // Two-phase occlusion needs the bindless multi-draw-indirect path (the
+        // phase-2 pass replays the batch draws) and a valid previous-frame
+        // pyramid. With the indirect-count path phase 2 re-compacts into the
+        // batch regions; without it, phase 2 rewrites the fixed per-item slots.
+        frameTwoPhaseOcclusionActive_ =
+            useTwoPhaseOcclusion_ && isMainPassMultiDrawIndirectActive() && isGpuOcclusionCullingActive();
         updateGpuCullInputBuffer(frameIndex);
     } else {
+        frameTwoPhaseOcclusionActive_ = false;
         updateIndirectDrawBuffer(frameIndex);
     }
 }
@@ -4453,6 +4479,7 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         bufferResource(
             "ExposureState", postProcess_.exposureBuffers(), currentFrame_, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
         postProcess_.isTaaActive(),
+        frameTwoPhaseOcclusionActive_,
     };
 }
 
@@ -4544,7 +4571,8 @@ void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
                                isGpuCullingActive(),
                                static_cast<uint32_t>(allDrawItems_.size()),
                                frameFrustumPlanes_,
-                               isMainPassMultiDrawIndirectActive());
+                               isMainPassMultiDrawIndirectActive(),
+                               /*copyReadback=*/!frameTwoPhaseOcclusionActive_);
 }
 
 void Renderer::recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer, uint32_t cascadeIndex)
@@ -4563,9 +4591,9 @@ void Renderer::ensureDepthPyramidShaderReadLayout(VkCommandBuffer commandBuffer)
     depthPyramid_.ensureShaderReadLayout(commandBuffer);
 }
 
-void Renderer::recordDepthPyramidCommands(VkCommandBuffer commandBuffer)
+void Renderer::recordDepthPyramidCommands(VkCommandBuffer commandBuffer, bool midFrame)
 {
-    depthPyramid_.recordCommands(commandBuffer, currentFrame_, frameViewProjection_, frameCameraPosition_);
+    depthPyramid_.recordCommands(commandBuffer, currentFrame_, frameViewProjection_, frameCameraPosition_, midFrame);
 }
 
 void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex)
@@ -5026,6 +5054,87 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     rhi::debug::endLabel(commandBuffer);
     if (mainHdrProfileScope) {
         gpuProfiler_.endScope(currentFrame_, commandBuffer);
+    }
+
+    // Two-phase Hi-Z occlusion: rebuild the pyramid from phase-1 depth, re-test
+    // the phase-1 occlusion candidates against it, then draw the rescued
+    // (disoccluded) objects into the existing attachments with LOAD ops. The
+    // final end-of-frame pyramid rebuild below then includes the rescued draws.
+    if (frameTwoPhaseOcclusionActive_) {
+        recordDepthPyramidCommands(commandBuffer, /*midFrame=*/true);
+        gpuCulling_.recordMainCullPhase2(commandBuffer,
+                                         currentFrame_,
+                                         isGpuCullingActive(),
+                                         static_cast<uint32_t>(allDrawItems_.size()),
+                                         frameFrustumPlanes_,
+                                         isMainPassMultiDrawIndirectActive());
+
+        const bool phase2ProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "MainHDRPhase2");
+        rhi::debug::beginLabel(commandBuffer, "MainHDRPhase2");
+        renderGraph_.beginMainHdrPhase2Pass();
+
+        vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+        vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.pipeline());
+        if (bindlessDescriptorSetsBound) {
+            const std::array<VkDescriptorSet, 2> phase2Sets{
+                globalDescriptorSet,
+                bindlessTextureHeap_.descriptorSet(),
+            };
+            vkCmdBindDescriptorSets(commandBuffer,
+                                    VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    pipeline_.layout(),
+                                    0,
+                                    static_cast<uint32_t>(phase2Sets.size()),
+                                    phase2Sets.data(),
+                                    0,
+                                    nullptr);
+            vkCmdPushConstants(commandBuffer,
+                               pipeline_.layout(),
+                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0,
+                               static_cast<uint32_t>(sizeof(PushConstants)),
+                               &basePushConstants);
+
+            const renderer::Mesh* phase2BoundMesh = nullptr;
+            for (const MeshDrawBatch& batch : meshDrawBatches_) {
+                if (!batch.mesh || batch.drawItemCount == 0) {
+                    continue;
+                }
+
+                if (phase2BoundMesh != batch.mesh) {
+                    const VkBuffer vertexBuffers[] = {batch.mesh->vertexBuffer()};
+                    const VkDeviceSize vertexOffsets[] = {0};
+                    vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
+                    vkCmdBindIndexBuffer(commandBuffer, batch.mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+                    phase2BoundMesh = batch.mesh;
+                }
+
+                const VkDeviceSize indirectOffset =
+                    static_cast<VkDeviceSize>(batch.compactedCommandOffset * sizeof(VkDrawIndexedIndirectCommand));
+                if (indirectCountPathActive && batchVisibleCountBuffer != VK_NULL_HANDLE) {
+                    vkCmdDrawIndexedIndirectCount(commandBuffer,
+                                                  indirectDrawBuffer,
+                                                  indirectOffset,
+                                                  batchVisibleCountBuffer,
+                                                  batch.visibleCountOffset,
+                                                  batch.drawItemCount,
+                                                  sizeof(VkDrawIndexedIndirectCommand));
+                } else {
+                    vkCmdDrawIndexedIndirect(commandBuffer,
+                                             indirectDrawBuffer,
+                                             indirectOffset,
+                                             batch.drawItemCount,
+                                             sizeof(VkDrawIndexedIndirectCommand));
+                }
+            }
+        }
+
+        renderGraph_.endMainHdrPhase2Pass();
+        rhi::debug::endLabel(commandBuffer);
+        if (phase2ProfileScope) {
+            gpuProfiler_.endScope(currentFrame_, commandBuffer);
+        }
     }
 
     recordDepthPyramidCommands(commandBuffer);

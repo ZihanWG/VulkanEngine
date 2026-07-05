@@ -62,7 +62,8 @@ RuntimeSettings makeNonDefaultSettings()
 
     settings.useGpuCulling = false;
     settings.useGpuShadowCulling = false;
-    settings.enableGpuOcclusionCulling = true;
+    settings.enableGpuOcclusionCulling = false;
+    settings.enableTwoPhaseOcclusion = false;
     settings.enableBindlessMaterialTextures = false;
 
     settings.debugUi.showRenderGraphPanel = false;
@@ -129,6 +130,7 @@ TEST_CASE("RuntimeSettings save -> load round-trips every persisted field", "[se
     CHECK(loaded.useGpuCulling == original.useGpuCulling);
     CHECK(loaded.useGpuShadowCulling == original.useGpuShadowCulling);
     CHECK(loaded.enableGpuOcclusionCulling == original.enableGpuOcclusionCulling);
+    CHECK(loaded.enableTwoPhaseOcclusion == original.enableTwoPhaseOcclusion);
     CHECK(loaded.enableBindlessMaterialTextures == original.enableBindlessMaterialTextures);
 
     CHECK(loaded.debugUi.showRenderGraphPanel == original.debugUi.showRenderGraphPanel);
