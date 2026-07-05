@@ -176,6 +176,9 @@ struct RenderGraphFrameResources {
     RenderGraphBufferResource histogramReadback;
     RenderGraphBufferResource exposureState;
     bool taaEnabled = false;
+    // Declares the two-phase occlusion passes (mid-frame depth pyramid, cull
+    // phase 2, second main HDR pass) for this frame.
+    bool twoPhaseOcclusionEnabled = false;
 };
 
 struct RenderGraphResourceDebugInfo {
@@ -254,6 +257,14 @@ public:
     void endMainGpuCullingPass();
     void beginMainHdrPass();
     void endMainHdrPass();
+    // Two-phase occlusion: mid-frame pyramid build, candidate re-test, and the
+    // second (load, no clear) main HDR pass for the rescued draws.
+    void beginDepthPyramidMidPass();
+    void endDepthPyramidMidPass();
+    void beginMainGpuCullingPhase2Pass();
+    void endMainGpuCullingPhase2Pass();
+    void beginMainHdrPhase2Pass();
+    void endMainHdrPhase2Pass();
     void beginDepthPyramidPass();
     void endDepthPyramidPass();
     void beginTaaResolvePass();
@@ -326,6 +337,9 @@ private:
         Shadow,
         MainGpuCulling,
         MainHdr,
+        MainGpuCullingPhase2,
+        MainHdrPhase2,
+        DepthPyramidMid,
         DepthPyramid,
         TaaResolve,
         BloomExtract,
@@ -369,6 +383,9 @@ private:
         uint32_t shadow = kInvalidRenderGraphHandle;
         uint32_t mainGpuCulling = kInvalidRenderGraphHandle;
         uint32_t mainHdr = kInvalidRenderGraphHandle;
+        uint32_t depthPyramidMid = kInvalidRenderGraphHandle;
+        uint32_t mainGpuCullingPhase2 = kInvalidRenderGraphHandle;
+        uint32_t mainHdrPhase2 = kInvalidRenderGraphHandle;
         uint32_t depthPyramid = kInvalidRenderGraphHandle;
         uint32_t taaResolve = kInvalidRenderGraphHandle;
         uint32_t bloomExtract = kInvalidRenderGraphHandle;
@@ -452,6 +469,9 @@ private:
                         std::string description);
     void refreshDebugResources();
     void beginColorRendering(const TextureResource& resource, VkClearValue clearValue);
+    // Shared main-HDR dynamic-rendering setup; loadExisting selects LOAD ops for
+    // the phase-2 pass instead of the phase-1 clears.
+    void beginMainHdrRendering(bool loadExisting);
     void beginSwapchainRendering(VkClearValue clearValue, VkAttachmentLoadOp loadOp);
 
     FrameState frame_{};

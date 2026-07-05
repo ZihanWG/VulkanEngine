@@ -185,6 +185,8 @@ private:
         bool depthPyramidValid = false;
         bool previousFrameDepthValid = false;
         uint32_t depthPyramidMipCount = 0;
+        uint32_t phase2RescuedDrawItems = 0;
+        bool twoPhaseOcclusion = false;
     };
 
     struct ObjectDrawDebugInfo {
@@ -331,7 +333,7 @@ private:
     void recordGpuCullingCommands(VkCommandBuffer commandBuffer);
     void recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer, uint32_t cascadeIndex);
     void ensureDepthPyramidShaderReadLayout(VkCommandBuffer commandBuffer);
-    void recordDepthPyramidCommands(VkCommandBuffer commandBuffer);
+    void recordDepthPyramidCommands(VkCommandBuffer commandBuffer, bool midFrame = false);
     [[nodiscard]] renderer::RenderGraphFrameResources renderGraphFrameResources();
     bool readGpuVisibleCount(uint32_t frameIndex, uint32_t& visibleCount);
     bool readGpuCullCounters(uint32_t frameIndex, renderer::GpuCullCounters& counters);
@@ -632,6 +634,12 @@ private:
     float demoLightIntensity_ = 10.0f;
     float demoLightRange_ = 8.0f;
     bool useGpuOcclusionCulling_ = false;
+    // Two-phase Hi-Z occlusion: phase 1 culls against the previous frame's
+    // pyramid, phase 2 re-tests the occluded candidates against a mid-frame
+    // rebuild so disocclusions never drop draws. Requires the indirect-count
+    // path; frameTwoPhaseOcclusionActive_ is the per-frame resolved predicate.
+    bool useTwoPhaseOcclusion_ = true;
+    bool frameTwoPhaseOcclusionActive_ = false;
     bool useGpuShadowCulling_ = true;
     bool shadowIndirectAvailable_ = false;
     bool ssaoAvailable_ = false;

@@ -1,6 +1,19 @@
 # GPU Culling
 
-Phase 5 keeps the renderer's existing draw-item and indirect-draw model, then adds an optional conservative Hi-Z occlusion test to the GPU culling shader. The goal is to reject only objects that are clearly hidden while preserving the CPU fallback and the existing frustum culling behavior when occlusion is disabled.
+Phase 5 kept the renderer's existing draw-item and indirect-draw model and added an optional conservative Hi-Z occlusion test to the GPU culling shader. The two-phase upgrade later made occlusion safe to enable by default: phase 1 culls against the previous frame's pyramid without requiring a still camera, and a phase-2 re-test rescues disoccluded objects the same frame, so occlusion never drops a visible draw.
+
+## Two-Phase Occlusion (default on)
+
+1. **Cull phase 1** — frustum test + Hi-Z test against the *previous frame's* pyramid, projected with the view-projection stored at that pyramid's build (correct under camera motion). Visible items emit compacted indirect commands; in-frustum-but-occluded items are marked as candidates in a per-item phase-result buffer (`cull.comp` binding 5).
+2. **Main HDR pass (phase 1)** draws as usual.
+3. **Mid-frame pyramid rebuild** (`DepthPyramidMidPass`) downsamples the phase-1 depth.
+4. **Cull phase 2** (`MainGpuCullingPhase2`) resets only the per-batch visible counts (the stats counters persist), re-tests the candidates against the mid-frame pyramid with the *current* view-projection, and emits commands for anything no longer occluded. A `rescued` stats counter records them.
+5. **Main HDR phase 2** (`MainHDRPhase2`) replays the per-batch indirect-count draws with LOAD attachments (color, velocity, depth), so rescued objects composite into the existing frame.
+6. The end-of-frame pyramid rebuild then includes the rescued draws for next frame's phase 1.
+
+Correctness: phase-1 false negatives (disocclusions) are exactly the phase-2 candidates, and the phase-2 pyramid only contains real geometry from this frame, so the max-depth test stays conservative — an object behind a not-yet-drawn occluder simply draws (overdraw, never a hole).
+
+Requirements: the bindless multi-draw-indirect path and a valid previous-frame pyramid. With the indirect-count path (`vkCmdDrawIndexedIndirectCount`), phase 2 resets the per-batch counts and re-compacts into the batch regions the phase-1 draws already consumed; without it (e.g. MoltenVK), phase 2 instead rewrites every fixed per-item command slot — rescued items get real commands, everything else is zeroed — and the replayed multi-draw skips the zeroes. When the requirements are missing, the frame falls back to the single-phase behavior below, which only trusts the pyramid while the camera holds still. `enableTwoPhaseOcclusion` (settings / GPU Culling panel) toggles the mode for A/B comparison.
 
 ## Existing Frustum Culling
 
@@ -113,7 +126,7 @@ The GPU profiler adds a `DepthPyramid` timestamp scope. Main GPU culling timing 
 
 ## Known Limitations
 
-- Occlusion is disabled by default.
+- Single-phase mode (two-phase disabled) only runs occlusion while the camera holds still.
 - Occlusion uses previous-frame depth, not a current-frame prepass.
 - Animated transforms invalidate the pyramid, so moving scenes may get few or no occlusion rejections.
 - There is no HLOD, meshlet culling, mesh shader path, software occlusion rasterizer, ray tracing, or full GPU-built draw-list rewrite.

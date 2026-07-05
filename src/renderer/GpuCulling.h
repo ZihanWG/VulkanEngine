@@ -43,11 +43,15 @@ class RenderGraph;
 class GpuProfiler;
 
 // Result of reading back the main cull pass's per-frame visible/culled counts.
+// phase2RescuedDrawItems counts phase-1 occlusion candidates that the two-phase
+// re-test emitted after all; the effective occlusion-culled count is
+// occlusionCulledDrawItems - phase2RescuedDrawItems.
 struct GpuCullCounters {
     uint32_t totalDrawItems = 0;
     uint32_t visibleDrawItems = 0;
     uint32_t frustumCulledDrawItems = 0;
     uint32_t occlusionCulledDrawItems = 0;
+    uint32_t phase2RescuedDrawItems = 0;
 };
 
 class GpuCulling final {
@@ -90,12 +94,27 @@ public:
     // --- recording (called from the frame loop) ---
     // active = Renderer's isGpuCullingActive(); frustumPlanes / drawItemCount come
     // from the frame; mainPassMultiDrawIndirect = isMainPassMultiDrawIndirectActive().
+    // copyReadback: copies the stats counters to the readback buffer at the end
+    // of this dispatch. Pass false when a phase-2 dispatch follows (the phase-2
+    // recording copies the combined counters instead).
     void recordMainCull(VkCommandBuffer commandBuffer,
                         uint32_t frameIndex,
                         bool active,
                         uint32_t drawItemCount,
                         const std::array<glm::vec4, 6>& frustumPlanes,
-                        bool mainPassMultiDrawIndirect);
+                        bool mainPassMultiDrawIndirect,
+                        bool copyReadback);
+    // Two-phase occlusion phase 2: resets the per-batch visible counts (stats
+    // counters persist), re-tests the phase-1 occlusion candidates against the
+    // freshly built current-frame pyramid, and copies the combined counters to
+    // the readback buffer. Recorded between the phase-1 main pass and the
+    // phase-2 main pass.
+    void recordMainCullPhase2(VkCommandBuffer commandBuffer,
+                              uint32_t frameIndex,
+                              bool active,
+                              uint32_t drawItemCount,
+                              const std::array<glm::vec4, 6>& frustumPlanes,
+                              bool mainPassMultiDrawIndirect);
     void recordShadowCull(VkCommandBuffer commandBuffer,
                           uint32_t frameIndex,
                           bool active,
@@ -138,6 +157,9 @@ public:
     }
 
 private:
+    // Barrier + copy of the visible-count/stats buffer into the host-readable
+    // readback buffer, shared by the single-phase and phase-2 recording paths.
+    void recordMainVisibleCountReadback(VkCommandBuffer commandBuffer, uint32_t frameIndex);
     void createCullDescriptorLayout();
     void createCullPipeline();
     void createCullBuffers(uint32_t frameCount);
@@ -161,6 +183,7 @@ private:
     std::vector<VkDescriptorSet> gpuCullDescriptorSets_;
     std::vector<VkDescriptorSet> shadowCullDescriptorSets_;
     std::vector<rhi::VulkanBuffer> frameCullInputBuffers_;
+    std::vector<rhi::VulkanBuffer> framePhaseResultBuffers_;
     std::vector<rhi::VulkanBuffer> frameShadowCullInputBuffers_;
     std::vector<rhi::VulkanBuffer> frameGpuCullParamBuffers_;
     std::vector<rhi::VulkanBuffer> frameBatchVisibleCountBuffers_;

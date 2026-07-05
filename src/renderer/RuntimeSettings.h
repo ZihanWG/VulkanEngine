@@ -115,7 +115,13 @@ struct RuntimeSettings {
     DebugUiSettings debugUi;
     bool useGpuCulling = true;
     bool useGpuShadowCulling = true;
-    bool enableGpuOcclusionCulling = false;
+    // Hi-Z occlusion defaults ON now that two-phase re-testing removes the
+    // disocclusion false negatives that used to make it opt-in.
+    bool enableGpuOcclusionCulling = true;
+    // Phase-1 (previous-frame pyramid) cull + phase-2 candidate re-test against a
+    // mid-frame rebuild. Off falls back to the conservative single-phase test
+    // that only runs while the camera holds still.
+    bool enableTwoPhaseOcclusion = true;
     bool enableBindlessMaterialTextures = true;
 };
 

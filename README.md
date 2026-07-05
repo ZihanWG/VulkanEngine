@@ -17,7 +17,7 @@ A **C++20 / Vulkan 1.3 real-time renderer** built as a graphics- and engine-prog
 
 | Area | What it does |
 | --- | --- |
-| **GPU-driven** | Bindless material textures, multi-draw indirect batching, compute frustum culling + optional previous-frame Hi-Z occlusion |
+| **GPU-driven** | Bindless material textures, multi-draw indirect batching, compute frustum culling + two-phase Hi-Z occlusion culling (on by default) |
 | **Clustered lighting** | 16×9×24 froxel grid built in compute, per-cluster light culling, hundreds of dynamic point/spot lights via Forward+ |
 | **Skeletal animation** | GPU linear-blend vertex skinning from a CPU joint-matrix palette, with a unit-tested animation core (keyframe sampling + hierarchy flatten) |
 | **PBR + IBL** | Cook-Torrance GGX, tangent-space normal mapping, prefiltered specular + diffuse irradiance + split-sum BRDF LUT, Kulla-Conty multi-scatter |
@@ -33,7 +33,7 @@ The renderer is GPU-driven: visibility, light assignment, and shading are decide
 ```mermaid
 flowchart TD
     A[Scene update<br/>build draw items + upload object data] --> B[CSM shadow pass<br/>+ GPU shadow-caster culling]
-    B --> C[GPU frustum culling<br/>+ optional Hi-Z occlusion → indirect commands]
+    B --> C[GPU frustum culling<br/>+ two-phase Hi-Z occlusion → indirect commands]
     C --> D[Cluster build + light cull<br/>Forward+ froxel grid]
     D --> E[Main HDR pass<br/>bindless + multi-draw indirect + clustered shading]
     E --> F[Depth pyramid<br/>for next-frame occlusion]
@@ -79,7 +79,7 @@ GPU linear-blend vertex skinning (`simple_skinned.vert`) driven by a per-frame j
 - PCF-filtered cascaded shadow maps (CSM) with texel snapping, optional cascade debug tinting, per-cascade GPU shadow-caster culling, and an indirect shadow draw path.
 - Descriptor-indexing path for bindless material texture arrays, with a legacy descriptor-set fallback.
 - Render Graph 2.0: logical texture/buffer handles, pass read/write declarations, conservative automatic image transitions, selected buffer barrier inference, transient render targets, pass liveness metadata, and ImGui pass/resource visualization.
-- GPU frustum culling compute pass that compacts visible indirect draw commands and can optionally run conservative previous-frame Hi-Z occlusion (off by default).
+- GPU frustum culling compute pass that compacts visible indirect draw commands, with two-phase Hi-Z occlusion culling on by default: phase 1 culls against the previous frame's depth pyramid, a mid-frame rebuild re-tests the occluded candidates, and rescued disocclusions draw in a second load-op main pass — no false negatives, no camera-still restriction.
 - Clustered (Forward+) lighting: compute-built 16×9×24 froxel grid, per-cluster GPU light culling, per-froxel point/spot evaluation, heatmap + brute-force toggle, unit-tested froxel math.
 - Skeletal animation: GPU linear-blend skinning from a per-frame joint-matrix palette, GPU-free unit-tested animation core, rigged/animated glTF import + procedural fallback.
 - Multi-draw indirect batching by mesh-compatible ranges on the bindless main path and shadow path.
@@ -92,7 +92,7 @@ GPU linear-blend vertex skinning (`simple_skinned.vert`) driven by a per-frame j
 ## Engineering Focus
 
 - Explicit graphics API design: Vulkan 1.3 object ownership, Dynamic Rendering, Synchronization2, descriptor contracts, and swapchain recreation.
-- GPU-driven rendering steps: indirect draws, bindless material textures, GPU frustum culling, optional conservative Hi-Z occlusion, and per-pass GPU timing.
+- GPU-driven rendering steps: indirect draws, bindless material textures, GPU frustum culling, default-on two-phase Hi-Z occlusion, and per-pass GPU timing.
 - Synchronization and resource lifetime: graph-managed image transitions and selected buffer barriers, explicit readback/intra-pass barriers, frame-latency readbacks, and RAII Vulkan wrappers.
 - Debugging/profiling infrastructure: ImGui panels for render graph resources, timestamp scopes, render targets, culling, exposure, materials, and scene metadata.
 - Data-driven material workflow: JSON material assets mapped into runtime PBR state without claiming a full editor or asset pipeline.
@@ -124,7 +124,7 @@ Focused technical write-ups for each major subsystem (start with [docs/README.md
 3. Run `.\build\Debug\VulkanEngine.exe` (or `./build/VulkanEngine` on macOS/Linux).
 4. In `VulkanEngine Debug`, open `Debug Views`, then show the `GPU Profiler`, `Render Graph`, `Scene Hierarchy`, and `Material Inspector` panels.
 5. Open the `Lights (Clustered)` panel: drive `Light count` up to a few hundred, toggle `Cluster heatmap`, and toggle `Use clustered culling` off to compare against the brute-force path. Watch the `ClusterBuild` and `LightCull` rows in the `GPU Profiler`.
-6. Use `Scene Presets` → `Load Occlusion Test Scene`, then `GPU Culling` → `Enable Occlusion Test Settings` to inspect conservative Hi-Z culling (optional, off by default).
+6. Use `Scene Presets` → `Load Occlusion Test Scene` and watch the `GPU Culling` panel: `Occlusion culled` counts phase-1 rejections and `Phase-2 rescued` counts disocclusions the re-test brought back (two-phase Hi-Z occlusion is on by default).
 7. Press `F11` to enable portfolio mode; press `F12` only when intentionally updating the committed portfolio screenshots.
 
 ## Build
@@ -171,7 +171,7 @@ This is a rendering/engine portfolio, not a full game engine — no physics, gam
 - `RenderGraph` infers conservative barriers and pass liveness, but is not a production scheduler, async-compute scheduler, memory-aliasing system, or full transient allocator.
 - GPU shadow culling is optional and still uses CPU-built draw items/batches; it is not alpha-tested, occlusion-driven, or BVH-backed.
 - CSM uses basic texel snapping, without stable crop matrices, cascade blending, or per-cascade resolution control.
-- Hi-Z occlusion is conservative, previous-frame based, biased toward false negatives, and disabled by default.
+- Two-phase Hi-Z occlusion re-tests candidates against a mid-frame pyramid rebuild, but is object-granularity (AABB screen rects, no per-cluster/meshlet tests) and requires the bindless multi-draw-indirect path.
 - Upload paths use one-time command buffers + queue idle waits — fine for init, not ideal for runtime streaming.
 - TAA reprojects history along a main-pass velocity buffer, but skinned joint-space motion, disocclusion masks, temporal upscaling, and FSR/DLSS/XeSS are not implemented.
 - Reflections are environment-based IBL only: no SSR, ray tracing, planar reflections, or glass transmission.

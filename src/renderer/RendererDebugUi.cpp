@@ -309,6 +309,7 @@ void Renderer::drawGpuCullingDebugUi()
         ImGui::BeginDisabled();
     }
     ImGui::Checkbox("GPU occlusion culling enabled", &useGpuOcclusionCulling_);
+    ImGui::Checkbox("Two-phase occlusion (Hi-Z re-test)", &useTwoPhaseOcclusion_);
     ImGui::SliderFloat("Occlusion depth bias", &gpuOcclusionDepthBias_, 0.0f, 0.05f, "%.4f");
     ImGui::SliderFloat("Near-object skip distance", &gpuOcclusionNearDisableDistance_, 0.0f, 10.0f, "%.2f");
     ImGui::SliderFloat("Max occlusion screen coverage", &gpuOcclusionMaxScreenCoverage_, 0.01f, 1.0f, "%.2f");
@@ -1981,6 +1982,7 @@ void Renderer::drawCullingDebugUi()
     ImGui::Text("Culled draw items: %u", snapshot.culledDrawItems);
     ImGui::Text("Frustum culled: %u", snapshot.frustumCulledDrawItems);
     ImGui::Text("Occlusion culled: %u", snapshot.occlusionCulledDrawItems);
+    ImGui::Text("Phase-2 rescued: %u", snapshot.phase2RescuedDrawItems);
     ImGui::Text("Occlusion rejection: %.1f%%", occlusionRejectionPercent);
     ImGui::Text("Shadow draw items: %u", snapshot.shadowDrawItems);
     ImGui::Text("Visible shadow draw items: %u", snapshot.visibleShadowDrawItems);
@@ -1988,6 +1990,7 @@ void Renderer::drawCullingDebugUi()
     ImGui::Text("Shadow batches: %zu", snapshot.shadowBatchCount);
     ImGui::Text("GPU culling: %s", snapshot.gpuCulling ? "enabled" : "disabled");
     ImGui::Text("GPU occlusion culling: %s", snapshot.gpuOcclusionCulling ? "enabled" : "disabled");
+    ImGui::Text("Two-phase occlusion: %s", snapshot.twoPhaseOcclusion ? "active" : "inactive");
     const char* depthPyramidStatus = snapshot.depthPyramidBuildAvailable
                                          ? (snapshot.depthPyramidValid ? "valid" : "invalid/warming up")
                                          : "unavailable";

@@ -142,7 +142,8 @@ constexpr uint32_t kSkinnedObjectFrameSlot = kMaxDrawItems - 1;
 constexpr uint32_t kMaxMaterialDescriptorSets = 256;
 constexpr uint32_t kGpuCullLocalSize = 64;
 constexpr uint32_t kMaxMeshDrawBatches = kMaxDrawItems;
-constexpr uint32_t kGpuCullStatsCounterCount = 4;
+// [total, visible, frustum-culled, occlusion-culled, phase-2 rescued]
+constexpr uint32_t kGpuCullStatsCounterCount = 5;
 constexpr uint32_t kGpuCullStatsCounterOffset = kMaxMeshDrawBatches;
 constexpr VkDeviceSize kBatchVisibleCountBufferSize = kMaxMeshDrawBatches * sizeof(uint32_t);
 constexpr VkDeviceSize kGpuCullCountBufferSize =
@@ -252,8 +253,12 @@ static_assert(offsetof(GpuCullPushConstants, params) == 96);
 static_assert(sizeof(GpuCullPushConstants) == 112);
 static_assert(sizeof(GpuCullPushConstants) <= 128);
 
+// occlusionViewProjection projects against the previous frame's pyramid in
+// phase 1; occlusionViewProjectionPhase2 is the current frame's unjittered VP
+// used when phase 2 re-tests candidates against the mid-frame pyramid.
 struct GpuCullFrameParams {
     glm::mat4 occlusionViewProjection{1.0f};
+    glm::mat4 occlusionViewProjectionPhase2{1.0f};
     glm::vec4 cameraPosition{0.0f};
     glm::vec4 viewportAndMipCount{0.0f};
     glm::vec4 occlusionSettings{0.0f};
@@ -261,11 +266,12 @@ struct GpuCullFrameParams {
 };
 
 static_assert(offsetof(GpuCullFrameParams, occlusionViewProjection) == 0);
-static_assert(offsetof(GpuCullFrameParams, cameraPosition) == 64);
-static_assert(offsetof(GpuCullFrameParams, viewportAndMipCount) == 80);
-static_assert(offsetof(GpuCullFrameParams, occlusionSettings) == 96);
-static_assert(offsetof(GpuCullFrameParams, counterAndFlags) == 112);
-static_assert(sizeof(GpuCullFrameParams) == 128);
+static_assert(offsetof(GpuCullFrameParams, occlusionViewProjectionPhase2) == 64);
+static_assert(offsetof(GpuCullFrameParams, cameraPosition) == 128);
+static_assert(offsetof(GpuCullFrameParams, viewportAndMipCount) == 144);
+static_assert(offsetof(GpuCullFrameParams, occlusionSettings) == 160);
+static_assert(offsetof(GpuCullFrameParams, counterAndFlags) == 176);
+static_assert(sizeof(GpuCullFrameParams) == 192);
 
 struct DepthPyramidPushConstants {
     glm::uvec4 sizes{0, 0, 0, 0};
