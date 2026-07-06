@@ -232,6 +232,20 @@ void Renderer::drawLightsDebugUi()
     ImGui::SameLine();
     ImGui::Checkbox("Cluster heatmap", &showClusterHeatmap_);
     ImGui::EndDisabled();
+
+    ImGui::BeginDisabled(!asyncCompute_.available());
+    ImGui::Checkbox("Async compute (cluster build + light cull)", &useAsyncCompute_);
+    ImGui::EndDisabled();
+    if (!asyncCompute_.available()) {
+        ImGui::TextDisabled("Async compute queue unavailable; cluster passes run on the graphics queue.");
+        ImGui::TextDisabled("(MoltenVK: set MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES=1 to expose one.)");
+    } else {
+        ImGui::Text("Async compute: %s", frameAsyncComputeActive_ ? "active" : "inactive");
+        if (frameAsyncComputeActive_) {
+            ImGui::TextDisabled("ClusterBuild/LightCull run on the compute queue; their GPU profiler rows are "
+                                "not captured there.");
+        }
+    }
     if (!useClusteredLighting_) {
         showClusterHeatmap_ = false;
     }

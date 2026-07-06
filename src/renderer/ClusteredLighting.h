@@ -124,8 +124,12 @@ public:
     // Records the froxel build + light assignment compute passes for the frame.
     // Each method emits its own Synchronization2 barriers; the assignment pass
     // ends with a barrier that makes its output visible to the fragment shader.
-    void recordClusterBuild(VkCommandBuffer commandBuffer, uint32_t frameIndex);
-    void recordLightCull(VkCommandBuffer commandBuffer, uint32_t frameIndex);
+    // asyncQueue: recording happens on the async compute queue. The trailing
+    // compute->fragment barriers are skipped there (FRAGMENT is not a valid
+    // stage on a compute-only queue; the submit semaphore provides the
+    // cross-queue memory dependency instead).
+    void recordClusterBuild(VkCommandBuffer commandBuffer, uint32_t frameIndex, bool asyncQueue = false);
+    void recordLightCull(VkCommandBuffer commandBuffer, uint32_t frameIndex, bool asyncQueue = false);
 
     [[nodiscard]] bool available() const
     {

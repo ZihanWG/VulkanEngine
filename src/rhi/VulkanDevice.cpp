@@ -12,6 +12,7 @@
 #include <cstring>
 #include <exception>
 #include <filesystem>
+#include <map>
 #include <set>
 #include <span>
 #include <stdexcept>
@@ -128,6 +129,10 @@ void VulkanDevice::cleanup()
     physicalDevice_ = VK_NULL_HANDLE;
     graphicsQueue_ = VK_NULL_HANDLE;
     presentQueue_ = VK_NULL_HANDLE;
+    asyncComputeQueue_ = VK_NULL_HANDLE;
+    asyncComputeQueueFamily_ = UINT32_MAX;
+    asyncComputeAvailable_ = false;
+    asyncComputeDedicatedFamily_ = false;
     queueFamilies_ = {};
     descriptorIndexingEnabled_ = false;
     descriptorUpdateAfterBindEnabled_ = false;
@@ -230,21 +235,55 @@ int VulkanDevice::scoreDevice(VkPhysicalDevice candidate) const
 
 void VulkanDevice::createLogicalDevice()
 {
-    const std::array<uint32_t, 2> familyCandidates = {
-        queueFamilies_.graphicsFamily.value(),
-        queueFamilies_.presentFamily.value()
-    };
-    std::set<uint32_t> uniqueFamilies(familyCandidates.begin(), familyCandidates.end());
+    const uint32_t graphicsFamily = queueFamilies_.graphicsFamily.value();
 
-    const float queuePriority = 1.0f;
+    // Async compute queue selection: a dedicated compute-only family runs on the
+    // GPU's compute ring and overlaps rasterization best; a second queue in the
+    // graphics family still lets the driver interleave. Neither is required.
+    uint32_t queueFamilyCount = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice_, &queueFamilyCount, nullptr);
+    std::vector<VkQueueFamilyProperties> familyProperties(queueFamilyCount);
+    vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice_, &queueFamilyCount, familyProperties.data());
+
+    asyncComputeQueueFamily_ = UINT32_MAX;
+    asyncComputeDedicatedFamily_ = false;
+    uint32_t asyncComputeQueueIndex = 0;
+    for (uint32_t family = 0; family < queueFamilyCount; ++family) {
+        const VkQueueFlags flags = familyProperties[family].queueFlags;
+        if ((flags & VK_QUEUE_COMPUTE_BIT) != 0 && (flags & VK_QUEUE_GRAPHICS_BIT) == 0 &&
+            familyProperties[family].queueCount >= 1) {
+            asyncComputeQueueFamily_ = family;
+            asyncComputeDedicatedFamily_ = true;
+            asyncComputeQueueIndex = 0;
+            break;
+        }
+    }
+    if (asyncComputeQueueFamily_ == UINT32_MAX && graphicsFamily < queueFamilyCount &&
+        familyProperties[graphicsFamily].queueCount >= 2) {
+        asyncComputeQueueFamily_ = graphicsFamily;
+        asyncComputeQueueIndex = 1;
+    }
+
+    std::map<uint32_t, uint32_t> familyQueueCounts;
+    familyQueueCounts[graphicsFamily] = 1;
+    familyQueueCounts[queueFamilies_.presentFamily.value()] =
+        std::max(familyQueueCounts[queueFamilies_.presentFamily.value()], 1u);
+    if (asyncComputeQueueFamily_ != UINT32_MAX) {
+        familyQueueCounts[asyncComputeQueueFamily_] =
+            std::max(familyQueueCounts[asyncComputeQueueFamily_], asyncComputeQueueIndex + 1);
+    }
+
+    // The async compute queue gets a lower priority so it never starves the
+    // frame-critical graphics queue.
+    static constexpr std::array<float, 2> kQueuePriorities = {1.0f, 0.5f};
     std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
-    queueCreateInfos.reserve(uniqueFamilies.size());
-    for (uint32_t family : uniqueFamilies) {
+    queueCreateInfos.reserve(familyQueueCounts.size());
+    for (const auto& [family, count] : familyQueueCounts) {
         VkDeviceQueueCreateInfo queueCreateInfo{};
         queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
         queueCreateInfo.queueFamilyIndex = family;
-        queueCreateInfo.queueCount = 1;
-        queueCreateInfo.pQueuePriorities = &queuePriority;
+        queueCreateInfo.queueCount = std::min<uint32_t>(count, static_cast<uint32_t>(kQueuePriorities.size()));
+        queueCreateInfo.pQueuePriorities = kQueuePriorities.data();
         queueCreateInfos.push_back(queueCreateInfo);
     }
 
@@ -319,6 +358,20 @@ void VulkanDevice::createLogicalDevice()
 
     vkGetDeviceQueue(device_, queueFamilies_.graphicsFamily.value(), 0, &graphicsQueue_);
     vkGetDeviceQueue(device_, queueFamilies_.presentFamily.value(), 0, &presentQueue_);
+
+    if (asyncComputeQueueFamily_ != UINT32_MAX) {
+        vkGetDeviceQueue(device_, asyncComputeQueueFamily_, asyncComputeQueueIndex, &asyncComputeQueue_);
+        asyncComputeAvailable_ = asyncComputeQueue_ != VK_NULL_HANDLE;
+    }
+    if (asyncComputeAvailable_) {
+        Logger::info(std::string("Async compute queue available (") +
+                     (asyncComputeDedicatedFamily_ ? "dedicated compute-only family "
+                                                   : "second queue in the graphics family ") +
+                     std::to_string(asyncComputeQueueFamily_) + ").");
+    } else {
+        Logger::info("No async compute queue available; compute passes stay on the graphics queue. "
+                     "(On MoltenVK, set MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES=1 to expose one.)");
+    }
 
     createPipelineCache();
 

@@ -41,6 +41,13 @@ public:
     [[nodiscard]] VkPipelineCache pipelineCache() const { return pipelineCache_; }
     [[nodiscard]] VkQueue graphicsQueue() const { return graphicsQueue_; }
     [[nodiscard]] VkQueue presentQueue() const { return presentQueue_; }
+    // Async compute queue for overlapping compute with rasterization. Prefers a
+    // dedicated compute-only family; falls back to a second queue in the
+    // graphics family; unavailable when the device exposes neither.
+    [[nodiscard]] VkQueue asyncComputeQueue() const { return asyncComputeQueue_; }
+    [[nodiscard]] uint32_t asyncComputeQueueFamily() const { return asyncComputeQueueFamily_; }
+    [[nodiscard]] bool asyncComputeAvailable() const { return asyncComputeAvailable_; }
+    [[nodiscard]] bool asyncComputeDedicatedFamily() const { return asyncComputeDedicatedFamily_; }
     [[nodiscard]] const QueueFamilyIndices& queueFamilies() const { return queueFamilies_; }
     [[nodiscard]] bool descriptorIndexingEnabled() const { return descriptorIndexingEnabled_; }
     [[nodiscard]] bool descriptorUpdateAfterBindEnabled() const { return descriptorUpdateAfterBindEnabled_; }
@@ -71,6 +78,10 @@ private:
     VkPipelineCache pipelineCache_ = VK_NULL_HANDLE;
     VkQueue graphicsQueue_ = VK_NULL_HANDLE;
     VkQueue presentQueue_ = VK_NULL_HANDLE;
+    VkQueue asyncComputeQueue_ = VK_NULL_HANDLE;
+    uint32_t asyncComputeQueueFamily_ = UINT32_MAX;
+    bool asyncComputeAvailable_ = false;
+    bool asyncComputeDedicatedFamily_ = false;
     QueueFamilyIndices queueFamilies_{};
     bool descriptorIndexingEnabled_ = false;
     bool descriptorUpdateAfterBindEnabled_ = false;

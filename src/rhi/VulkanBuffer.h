@@ -16,6 +16,10 @@ struct VulkanBufferCreateInfo {
     VmaMemoryUsage memoryUsage = VMA_MEMORY_USAGE_AUTO;
     VmaAllocationCreateFlags allocationFlags = 0;
     bool requestDeviceAddress = false;
+    // Two or more distinct family indices switch the buffer to
+    // VK_SHARING_MODE_CONCURRENT so it can be accessed from multiple queue
+    // families without ownership transfers (used for async compute).
+    std::span<const uint32_t> sharedQueueFamilies;
 };
 
 class VulkanBuffer final {

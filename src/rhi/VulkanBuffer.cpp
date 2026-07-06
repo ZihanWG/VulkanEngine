@@ -54,7 +54,13 @@ void VulkanBuffer::createBuffer(VulkanContext& context, const VulkanBufferCreate
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bufferInfo.size = createInfo.size;
     bufferInfo.usage = usage;
-    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (createInfo.sharedQueueFamilies.size() >= 2) {
+        bufferInfo.sharingMode = VK_SHARING_MODE_CONCURRENT;
+        bufferInfo.queueFamilyIndexCount = static_cast<uint32_t>(createInfo.sharedQueueFamilies.size());
+        bufferInfo.pQueueFamilyIndices = createInfo.sharedQueueFamilies.data();
+    } else {
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    }
 
     VmaAllocationCreateInfo allocationInfo{};
     allocationInfo.usage = createInfo.memoryUsage;
