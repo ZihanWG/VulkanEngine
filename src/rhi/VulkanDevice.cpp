@@ -130,6 +130,7 @@ void VulkanDevice::cleanup()
     presentQueue_ = VK_NULL_HANDLE;
     queueFamilies_ = {};
     descriptorIndexingEnabled_ = false;
+    descriptorUpdateAfterBindEnabled_ = false;
     bufferDeviceAddressEnabled_ = false;
     multiDrawIndirectEnabled_ = false;
     drawIndirectFirstInstanceEnabled_ = false;
@@ -260,6 +261,8 @@ void VulkanDevice::createLogicalDevice()
     vkGetPhysicalDeviceFeatures2(physicalDevice_, &supportedFeatures);
 
     descriptorIndexingEnabled_ = supportsDescriptorIndexing(supported12);
+    descriptorUpdateAfterBindEnabled_ = descriptorIndexingEnabled_ &&
+                                        supported12.descriptorBindingSampledImageUpdateAfterBind == VK_TRUE;
     bufferDeviceAddressEnabled_ = supported12.bufferDeviceAddress == VK_TRUE;
     multiDrawIndirectEnabled_ = supportedFeatures.features.multiDrawIndirect == VK_TRUE;
     drawIndirectFirstInstanceEnabled_ = supportedFeatures.features.drawIndirectFirstInstance == VK_TRUE;
@@ -290,6 +293,11 @@ void VulkanDevice::createLogicalDevice()
         // future experiments, but do not require it for Milestone 30.
         enabled12.descriptorBindingVariableDescriptorCount =
             supported12.descriptorBindingVariableDescriptorCount;
+        // Update-after-bind lets the bindless heap be validated against the much
+        // larger maxPerStageDescriptorUpdateAfterBind* limits instead of the
+        // small non-update-after-bind per-stage limits.
+        enabled12.descriptorBindingSampledImageUpdateAfterBind =
+            descriptorUpdateAfterBindEnabled_ ? VK_TRUE : VK_FALSE;
     }
 
     const std::vector<const char*> enabledExtensions = deviceExtensionsFor(physicalDevice_);
@@ -322,7 +330,8 @@ void VulkanDevice::createLogicalDevice()
                                          maxDrawIndirectCount_ > 0;
 
     if (descriptorIndexingEnabled_) {
-        Logger::info("Descriptor indexing features for bindless material textures are enabled.");
+        Logger::info(std::string("Descriptor indexing features for bindless material textures are enabled") +
+                     (descriptorUpdateAfterBindEnabled_ ? " (with update-after-bind)." : " (without update-after-bind)."));
     } else {
         Logger::warn("Descriptor indexing features required for bindless material textures are not fully supported; "
                      "the renderer will use per-material descriptor sets.");

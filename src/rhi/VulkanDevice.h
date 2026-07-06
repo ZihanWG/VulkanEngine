@@ -43,6 +43,7 @@ public:
     [[nodiscard]] VkQueue presentQueue() const { return presentQueue_; }
     [[nodiscard]] const QueueFamilyIndices& queueFamilies() const { return queueFamilies_; }
     [[nodiscard]] bool descriptorIndexingEnabled() const { return descriptorIndexingEnabled_; }
+    [[nodiscard]] bool descriptorUpdateAfterBindEnabled() const { return descriptorUpdateAfterBindEnabled_; }
     [[nodiscard]] bool bufferDeviceAddressEnabled() const { return bufferDeviceAddressEnabled_; }
     [[nodiscard]] bool multiDrawIndirectEnabled() const { return multiDrawIndirectEnabled_; }
     [[nodiscard]] bool drawIndirectFirstInstanceEnabled() const { return drawIndirectFirstInstanceEnabled_; }
@@ -72,6 +73,7 @@ private:
     VkQueue presentQueue_ = VK_NULL_HANDLE;
     QueueFamilyIndices queueFamilies_{};
     bool descriptorIndexingEnabled_ = false;
+    bool descriptorUpdateAfterBindEnabled_ = false;
     bool bufferDeviceAddressEnabled_ = false;
     bool multiDrawIndirectEnabled_ = false;
     bool drawIndirectFirstInstanceEnabled_ = false;
