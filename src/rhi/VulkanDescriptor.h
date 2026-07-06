@@ -41,7 +41,10 @@ public:
     VulkanDescriptorPool(VulkanDescriptorPool&& other) noexcept;
     VulkanDescriptorPool& operator=(VulkanDescriptorPool&& other) noexcept;
 
-    void create(VkDevice device, std::span<const VkDescriptorPoolSize> poolSizes, uint32_t maxSets);
+    void create(VkDevice device,
+                std::span<const VkDescriptorPoolSize> poolSizes,
+                uint32_t maxSets,
+                VkDescriptorPoolCreateFlags flags = 0);
     void reset();
 
     [[nodiscard]] VkDescriptorPool handle() const { return pool_; }

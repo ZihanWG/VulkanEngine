@@ -79,7 +79,10 @@ VulkanDescriptorPool& VulkanDescriptorPool::operator=(VulkanDescriptorPool&& oth
     return *this;
 }
 
-void VulkanDescriptorPool::create(VkDevice device, std::span<const VkDescriptorPoolSize> poolSizes, uint32_t maxSets)
+void VulkanDescriptorPool::create(VkDevice device,
+                                  std::span<const VkDescriptorPoolSize> poolSizes,
+                                  uint32_t maxSets,
+                                  VkDescriptorPoolCreateFlags flags)
 {
     reset();
 
@@ -87,6 +90,7 @@ void VulkanDescriptorPool::create(VkDevice device, std::span<const VkDescriptorP
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.flags = flags;
     poolInfo.maxSets = maxSets;
     poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
     poolInfo.pPoolSizes = poolSizes.data();
