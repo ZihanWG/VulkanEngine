@@ -22,6 +22,7 @@
 #include "renderer/SceneBuilder.h"
 #include "renderer/ScreenshotCapture.h"
 #include "renderer/SkinnedMesh.h"
+#include "rhi/VulkanAsyncCompute.h"
 #include "rhi/VulkanBuffer.h"
 #include "rhi/VulkanBrdfLut.h"
 #include "rhi/VulkanCommandContext.h"
@@ -480,6 +481,10 @@ private:
     rhi::VulkanPipeline skyboxPipeline_;
     rhi::VulkanPipeline shadowPipeline_;
     rhi::VulkanCommandContext commandContext_;
+    // Async compute: per-frame command buffers + semaphores for the queue that
+    // runs ClusterBuild/LightCull in parallel with the shadow passes. Falls
+    // back to inline graphics-queue recording when unavailable or disabled.
+    rhi::VulkanAsyncCompute asyncCompute_;
     rhi::VulkanSync sync_;
     rhi::VulkanTexture checkerboardTexture_;
     rhi::VulkanTexture portfolioBaseColorTexture_;
@@ -640,6 +645,8 @@ private:
     // path; frameTwoPhaseOcclusionActive_ is the per-frame resolved predicate.
     bool useTwoPhaseOcclusion_ = true;
     bool frameTwoPhaseOcclusionActive_ = false;
+    bool useAsyncCompute_ = true;
+    bool frameAsyncComputeActive_ = false;
     bool useGpuShadowCulling_ = true;
     bool shadowIndirectAvailable_ = false;
     bool ssaoAvailable_ = false;

@@ -32,6 +32,9 @@ public:
     [[nodiscard]] VkPipelineCache pipelineCache() const { return device_.pipelineCache(); }
     [[nodiscard]] VkQueue graphicsQueue() const { return device_.graphicsQueue(); }
     [[nodiscard]] VkQueue presentQueue() const { return device_.presentQueue(); }
+    [[nodiscard]] VkQueue asyncComputeQueue() const { return device_.asyncComputeQueue(); }
+    [[nodiscard]] uint32_t asyncComputeQueueFamily() const { return device_.asyncComputeQueueFamily(); }
+    [[nodiscard]] bool asyncComputeAvailable() const { return device_.asyncComputeAvailable(); }
     [[nodiscard]] VmaAllocator allocator() const { return allocator_; }
     [[nodiscard]] const VulkanDevice& device() const { return device_; }
     [[nodiscard]] const QueueFamilyIndices& queueFamilies() const { return device_.queueFamilies(); }

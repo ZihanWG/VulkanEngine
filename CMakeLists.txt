@@ -226,6 +226,7 @@ add_library(VulkanEngineRuntime STATIC
     src/ui/ImGuiLayer.cpp
     src/rhi/VulkanBuffer.cpp
     src/rhi/VulkanBrdfLut.cpp
+    src/rhi/VulkanAsyncCompute.cpp
     src/rhi/VulkanCommandContext.cpp
     src/rhi/VulkanComputePipeline.cpp
     src/rhi/VulkanContext.cpp

@@ -285,6 +285,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readBool(*renderer, "useGpuShadowCulling", settings.useGpuShadowCulling);
         readBool(*renderer, "enableGpuOcclusionCulling", settings.enableGpuOcclusionCulling);
         readBool(*renderer, "enableTwoPhaseOcclusion", settings.enableTwoPhaseOcclusion);
+        readBool(*renderer, "enableAsyncCompute", settings.enableAsyncCompute);
         readBool(*renderer, "enableBindlessMaterialTextures", settings.enableBindlessMaterialTextures);
     }
 
@@ -345,6 +346,7 @@ Json toJson(const RuntimeSettings& settings)
               {"useGpuShadowCulling", settings.useGpuShadowCulling},
               {"enableGpuOcclusionCulling", settings.enableGpuOcclusionCulling},
               {"enableTwoPhaseOcclusion", settings.enableTwoPhaseOcclusion},
+              {"enableAsyncCompute", settings.enableAsyncCompute},
               {"enableBindlessMaterialTextures", settings.enableBindlessMaterialTextures}}},
         {"debugUi",
          Json{{"advancedMode", settings.debugUi.advancedMode},

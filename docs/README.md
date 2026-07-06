@@ -24,6 +24,9 @@ overview; these documents describe implementation details and limitations.
   liveness metadata, and graph UI.
 - [GPU Culling](gpu_culling.md): GPU frustum culling, optional conservative
   previous-frame Hi-Z occlusion, occlusion test scene, counters, and fallbacks.
+- [Async Compute](async_compute.md): The async compute queue selection,
+  overlapping ClusterBuild/LightCull with the shadow passes, the semaphore
+  model, and concurrent-sharing buffers.
 - [Clustered Lighting](clustered_lighting.md): Forward+ froxel grid, GPU light
   culling, per-froxel shading, buffer layout, barriers, heatmap, and testing.
 - [Skeletal Animation](skeletal_animation.md): GPU-free animation core (pose

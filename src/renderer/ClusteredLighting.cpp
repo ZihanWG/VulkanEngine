@@ -85,6 +85,18 @@ void ClusteredLighting::createBuffers(uint32_t frameCount)
 {
     const VkDevice device = context_->vkDevice();
 
+    // When the async compute queue lives in a different family, every clustered
+    // buffer is created CONCURRENT across both families so the cluster passes can
+    // write on the compute queue while the fragment shader reads on graphics —
+    // no queue-family ownership transfers needed.
+    std::array<uint32_t, 2> sharedFamilies{};
+    size_t sharedFamilyCount = 0;
+    if (context_->asyncComputeAvailable() &&
+        context_->asyncComputeQueueFamily() != context_->queueFamilies().graphicsFamily.value()) {
+        sharedFamilies = {context_->queueFamilies().graphicsFamily.value(), context_->asyncComputeQueueFamily()};
+        sharedFamilyCount = 2;
+    }
+
     auto makeBuffer = [&](std::vector<rhi::VulkanBuffer>& buffers,
                           VkDeviceSize size,
                           VkBufferUsageFlags usage,
@@ -100,6 +112,8 @@ void ClusteredLighting::createBuffers(uint32_t frameCount)
             bufferInfo.memoryUsage = hostVisible ? VMA_MEMORY_USAGE_AUTO : VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
             bufferInfo.allocationFlags = hostVisible ? VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT : 0;
             bufferInfo.requestDeviceAddress = deviceAddress;
+            bufferInfo.sharedQueueFamilies =
+                std::span<const uint32_t>(sharedFamilies.data(), sharedFamilyCount);
             buffers[frameIndex].createBuffer(*context_, bufferInfo);
             rhi::debug::setObjectName(
                 device, buffers[frameIndex].buffer(), VK_OBJECT_TYPE_BUFFER, name + std::to_string(frameIndex));
@@ -296,8 +310,10 @@ void ClusteredLighting::updateParams(uint32_t frameIndex,
     paramsBuffers_[frameIndex].upload(std::as_bytes(std::span<const ClusterGridParams>(&params, 1)));
 }
 
-void ClusteredLighting::recordClusterBuild(VkCommandBuffer commandBuffer, uint32_t frameIndex)
+void ClusteredLighting::recordClusterBuild(VkCommandBuffer commandBuffer, uint32_t frameIndex, bool asyncQueue)
 {
+    (void)asyncQueue; // the build->cull barrier is compute->compute on any queue
+
     if (!available_ || frameIndex >= descriptorSets_.size()) {
         return;
     }
@@ -325,7 +341,7 @@ void ClusteredLighting::recordClusterBuild(VkCommandBuffer commandBuffer, uint32
     submitBufferBarriers(commandBuffer, std::span<const VkBufferMemoryBarrier2>(&barrier, 1));
 }
 
-void ClusteredLighting::recordLightCull(VkCommandBuffer commandBuffer, uint32_t frameIndex)
+void ClusteredLighting::recordLightCull(VkCommandBuffer commandBuffer, uint32_t frameIndex, bool asyncQueue)
 {
     if (!available_ || frameIndex >= descriptorSets_.size()) {
         return;
@@ -338,6 +354,13 @@ void ClusteredLighting::recordLightCull(VkCommandBuffer commandBuffer, uint32_t 
 
     const uint32_t groupCount = (kClusterCount + kClusterCullLocalSize - 1) / kClusterCullLocalSize;
     vkCmdDispatch(commandBuffer, groupCount, 1, 1);
+
+    // On the async compute queue the fragment stage is not a valid barrier
+    // destination; the graphics submit's semaphore wait (at FRAGMENT_SHADER)
+    // provides the cross-queue execution + memory dependency instead.
+    if (asyncQueue) {
+        return;
+    }
 
     // The grid + index list are read by the main HDR fragment shader (via BDA).
     const std::array<VkBufferMemoryBarrier2, 2> barriers{

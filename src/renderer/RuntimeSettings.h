@@ -122,6 +122,10 @@ struct RuntimeSettings {
     // mid-frame rebuild. Off falls back to the conservative single-phase test
     // that only runs while the camera holds still.
     bool enableTwoPhaseOcclusion = true;
+    // Runs ClusterBuild/LightCull on the async compute queue, overlapping the
+    // shadow passes. Ignored (graphics-queue fallback) when the device exposes
+    // no async-capable queue.
+    bool enableAsyncCompute = true;
     bool enableBindlessMaterialTextures = true;
 };
 

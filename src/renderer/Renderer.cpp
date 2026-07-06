@@ -143,6 +143,7 @@ Renderer::Renderer(Window& window) : window_(window)
     recreatePostProcessResources();
     createPipeline();
     commandContext_.initialize(context_, frames_);
+    asyncCompute_.initialize(context_, static_cast<uint32_t>(frames_.size()));
     createScene();
     createObjectFrameDataBuffers();
     clusteredLighting_.create(context_,
@@ -261,13 +262,60 @@ void Renderer::drawFrame()
         framePrepCpuHistory_.push(
             std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - framePrepStart).count());
     }
+
+    // Async compute: cluster build + light cull go to the compute queue before
+    // the graphics command buffer is even recorded, so the GPU overlaps them
+    // with the shadow passes (and with this CPU recording). The graphics submit
+    // below waits on the semaphore at FRAGMENT_SHADER — the first stage that
+    // reads the cluster buffers — so shadow/culling work is never blocked.
+    if (frameAsyncComputeActive_) {
+        const VkCommandBuffer asyncCommandBuffer = asyncCompute_.commandBuffer(currentFrame_);
+        VK_CHECK(vkResetCommandBuffer(asyncCommandBuffer, 0));
+
+        VkCommandBufferBeginInfo asyncBeginInfo{};
+        asyncBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        asyncBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        VK_CHECK(vkBeginCommandBuffer(asyncCommandBuffer, &asyncBeginInfo));
+        rhi::debug::beginLabel(asyncCommandBuffer, "AsyncClusteredLighting");
+        clusteredLighting_.recordClusterBuild(asyncCommandBuffer, currentFrame_, /*asyncQueue=*/true);
+        clusteredLighting_.recordLightCull(asyncCommandBuffer, currentFrame_, /*asyncQueue=*/true);
+        rhi::debug::endLabel(asyncCommandBuffer);
+        VK_CHECK(vkEndCommandBuffer(asyncCommandBuffer));
+
+        VkCommandBufferSubmitInfo asyncCommandBufferInfo{};
+        asyncCommandBufferInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+        asyncCommandBufferInfo.commandBuffer = asyncCommandBuffer;
+
+        VkSemaphoreSubmitInfo asyncSignalSemaphore{};
+        asyncSignalSemaphore.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+        asyncSignalSemaphore.semaphore = asyncCompute_.semaphore(currentFrame_);
+        asyncSignalSemaphore.stageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+
+        VkSubmitInfo2 asyncSubmitInfo{};
+        asyncSubmitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+        asyncSubmitInfo.commandBufferInfoCount = 1;
+        asyncSubmitInfo.pCommandBufferInfos = &asyncCommandBufferInfo;
+        asyncSubmitInfo.signalSemaphoreInfoCount = 1;
+        asyncSubmitInfo.pSignalSemaphoreInfos = &asyncSignalSemaphore;
+        VK_CHECK(vkQueueSubmit2(asyncCompute_.queue(), 1, &asyncSubmitInfo, VK_NULL_HANDLE));
+    }
+
     recordRenderCommands(frame.commandBuffer, imageIndex);
     const VkSemaphore renderFinished = sync_.renderFinishedSemaphore(imageIndex);
 
-    VkSemaphoreSubmitInfo waitSemaphore{};
-    waitSemaphore.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-    waitSemaphore.semaphore = frame.imageAvailable;
-    waitSemaphore.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    std::array<VkSemaphoreSubmitInfo, 2> waitSemaphores{};
+    waitSemaphores[0].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+    waitSemaphores[0].semaphore = frame.imageAvailable;
+    waitSemaphores[0].stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    uint32_t waitSemaphoreCount = 1;
+    if (frameAsyncComputeActive_) {
+        waitSemaphores[waitSemaphoreCount].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+        waitSemaphores[waitSemaphoreCount].semaphore = asyncCompute_.semaphore(currentFrame_);
+        // First stage that reads the cluster grid / light index buffers; shadow
+        // depth-only rasterization and the culling compute run unblocked.
+        waitSemaphores[waitSemaphoreCount].stageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        ++waitSemaphoreCount;
+    }
 
     VkCommandBufferSubmitInfo commandBufferInfo{};
     commandBufferInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
@@ -280,8 +328,8 @@ void Renderer::drawFrame()
 
     VkSubmitInfo2 submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
-    submitInfo.waitSemaphoreInfoCount = 1;
-    submitInfo.pWaitSemaphoreInfos = &waitSemaphore;
+    submitInfo.waitSemaphoreInfoCount = waitSemaphoreCount;
+    submitInfo.pWaitSemaphoreInfos = waitSemaphores.data();
     submitInfo.commandBufferInfoCount = 1;
     submitInfo.pCommandBufferInfos = &commandBufferInfo;
     submitInfo.signalSemaphoreInfoCount = 1;
@@ -3342,6 +3390,7 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
         useGpuShadowCulling_ = settings.useGpuShadowCulling;
         useGpuOcclusionCulling_ = settings.enableGpuOcclusionCulling && settings.useGpuCulling;
         useTwoPhaseOcclusion_ = settings.enableTwoPhaseOcclusion;
+        useAsyncCompute_ = settings.enableAsyncCompute;
         useBindlessMaterialTextures_ = settings.enableBindlessMaterialTextures;
     } else {
         if (!settings.useGpuCulling || gpuCulling_.available()) {
@@ -3352,6 +3401,7 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
         }
         useGpuOcclusionCulling_ = settings.enableGpuOcclusionCulling;
         useTwoPhaseOcclusion_ = settings.enableTwoPhaseOcclusion;
+        useAsyncCompute_ = settings.enableAsyncCompute;
     }
 
     clampRuntimeSettings();
@@ -3384,6 +3434,7 @@ RuntimeSettings Renderer::captureRuntimeSettings() const
     settings.useGpuShadowCulling = useGpuShadowCulling_;
     settings.enableGpuOcclusionCulling = useGpuOcclusionCulling_;
     settings.enableTwoPhaseOcclusion = useTwoPhaseOcclusion_;
+    settings.enableAsyncCompute = useAsyncCompute_;
     settings.enableBindlessMaterialTextures = useBindlessMaterialTextures_;
     return settings;
 }
@@ -3906,6 +3957,12 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     buildMainCullingFrameData(frameIndex, cameraFrustum);
     uploadObjectFrameData(frameIndex);
     clusteredLighting_.upload(frameIndex);
+
+    // Resolved here (not in recordRenderCommands) so drawFrame can submit the
+    // async compute work before the graphics command buffer is even recorded.
+    const bool clusteredLightingActiveThisFrame = clusteredLighting_.available() && useClusteredLighting_ &&
+                                                  clusteredLighting_.lightCount() > 0 && !allDrawItems_.empty();
+    frameAsyncComputeActive_ = clusteredLightingActiveThisFrame && useAsyncCompute_ && asyncCompute_.available();
 }
 
 // Called from drawFrame after command recording: both the object-data upload and
@@ -3928,6 +3985,7 @@ void Renderer::capturePreviousFrameMatrices()
 void Renderer::resetFrameStateForEmptyScene(uint32_t frameIndex)
 {
     frameTwoPhaseOcclusionActive_ = false;
+    frameAsyncComputeActive_ = false;
     allDrawItems_.clear();
     visibleDrawItems_.clear();
     shadowDrawItems_.clear();
@@ -4764,7 +4822,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     // Clustered (Forward+) light assignment: rebuild the froxel AABBs, then cull
     // every light into its froxels. Both write buffers the main HDR fragment
     // shader reads, so the assignment pass barriers into the fragment stage.
-    if (clusteredLightingActive) {
+    if (clusteredLightingActive && !frameAsyncComputeActive_) {
         {
             const renderer::GpuProfileScope buildScope(gpuProfiler_, currentFrame_, commandBuffer, "ClusterBuild");
             rhi::debug::beginLabel(commandBuffer, "ClusterBuild");

@@ -18,7 +18,7 @@ A **C++20 / Vulkan 1.3 real-time renderer** built as a graphics- and engine-prog
 | Area | What it does |
 | --- | --- |
 | **GPU-driven** | Bindless material textures, multi-draw indirect batching, compute frustum culling + two-phase Hi-Z occlusion culling (on by default) |
-| **Clustered lighting** | 16×9×24 froxel grid built in compute, per-cluster light culling, hundreds of dynamic point/spot lights via Forward+ |
+| **Clustered lighting** | 16×9×24 froxel grid built in compute, per-cluster light culling, hundreds of dynamic point/spot lights via Forward+, cluster passes on an async compute queue overlapping the shadow passes |
 | **Skeletal animation** | GPU linear-blend vertex skinning from a CPU joint-matrix palette, with a unit-tested animation core (keyframe sampling + hierarchy flatten) |
 | **PBR + IBL** | Cook-Torrance GGX, tangent-space normal mapping, prefiltered specular + diffuse irradiance + split-sum BRDF LUT, Kulla-Conty multi-scatter |
 | **Shadows** | PCF cascaded shadow maps with per-cascade GPU shadow-caster culling and an indirect shadow path |
@@ -81,6 +81,7 @@ GPU linear-blend vertex skinning (`simple_skinned.vert`) driven by a per-frame j
 - Render Graph 2.0: logical texture/buffer handles, pass read/write declarations, conservative automatic image transitions, selected buffer barrier inference, transient render targets, pass liveness metadata, and ImGui pass/resource visualization.
 - GPU frustum culling compute pass that compacts visible indirect draw commands, with two-phase Hi-Z occlusion culling on by default: phase 1 culls against the previous frame's depth pyramid, a mid-frame rebuild re-tests the occluded candidates, and rescued disocclusions draw in a second load-op main pass — no false negatives, no camera-still restriction.
 - Clustered (Forward+) lighting: compute-built 16×9×24 froxel grid, per-cluster GPU light culling, per-froxel point/spot evaluation, heatmap + brute-force toggle, unit-tested froxel math.
+- Async compute: ClusterBuild/LightCull run on a dedicated compute queue overlapping the CSM shadow passes — submitted before graphics recording even starts, synchronized by a per-frame semaphore waited at the fragment stage, with concurrent-sharing buffers across queue families and a graphics-queue fallback when no async queue exists.
 - Skeletal animation: GPU linear-blend skinning from a per-frame joint-matrix palette, GPU-free unit-tested animation core, rigged/animated glTF import + procedural fallback.
 - Multi-draw indirect batching by mesh-compatible ranges on the bindless main path and shadow path.
 - GPU timestamp profiler with per-pass timings, frame-latency readback, moving-average ImGui history, and debug labels.
@@ -168,7 +169,7 @@ Validated locally on Windows + Visual Studio 2022 MSVC x64, Vulkan SDK 1.4.328.1
 
 This is a rendering/engine portfolio, not a full game engine — no physics, gameplay scripting, full ECS, or production editor. Selected current limitations (full list in [docs/engine_upgrade_audit.md](docs/engine_upgrade_audit.md)):
 
-- `RenderGraph` infers conservative barriers and pass liveness, but is not a production scheduler, async-compute scheduler, memory-aliasing system, or full transient allocator.
+- `RenderGraph` infers conservative barriers and pass liveness, but is not a production scheduler or memory-aliasing/transient-allocation system; async compute is handled outside the graph (the cluster passes manage their own barriers), not by a multi-queue graph scheduler.
 - GPU shadow culling is optional and still uses CPU-built draw items/batches; it is not alpha-tested, occlusion-driven, or BVH-backed.
 - CSM uses basic texel snapping, without stable crop matrices, cascade blending, or per-cascade resolution control.
 - Two-phase Hi-Z occlusion re-tests candidates against a mid-frame pyramid rebuild, but is object-granularity (AABB screen rects, no per-cluster/meshlet tests) and requires the bindless multi-draw-indirect path.

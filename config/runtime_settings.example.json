@@ -40,6 +40,7 @@
         "useGpuShadowCulling": true,
         "enableGpuOcclusionCulling": true,
         "enableTwoPhaseOcclusion": true,
+        "enableAsyncCompute": true,
         "enableBindlessMaterialTextures": true
     },
     "debugUi": {
