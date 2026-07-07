@@ -29,6 +29,7 @@ void Renderer::buildDebugUi()
     drawBloomDebugUi();
     drawSsaoDebugUi();
     drawTaaDebugUi();
+    drawSsrDebugUi();
 
     if (debugUiSettings_.showExposureGraphs && ImGui::CollapsingHeader("Exposure", ImGuiTreeNodeFlags_DefaultOpen)) {
         drawExposureDebugUi();
@@ -484,6 +485,37 @@ void Renderer::drawTaaDebugUi()
                 postProcess_.taaCurrentJitterPixels().y);
     ImGui::Text(
         "Current jitter NDC: %.6f, %.6f", postProcess_.taaCurrentJitterNdc().x, postProcess_.taaCurrentJitterNdc().y);
+}
+
+void Renderer::drawSsrDebugUi()
+{
+    if (!ImGui::CollapsingHeader("Screen-Space Reflections", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+
+    if (!ssr_.available()) {
+        ImGui::TextDisabled("SSR unavailable (requires a samplable main depth image).");
+        return;
+    }
+
+    // "##ssr" suffixes keep these IDs distinct from same-labelled widgets in
+    // other sections (e.g. the light swarm's Intensity slider) — collapsing
+    // headers do not scope ImGui IDs.
+    bool changed = false;
+    changed |= ImGui::Checkbox("Enabled##ssr", &ssrSettings_.enabled);
+    changed |= ImGui::SliderInt("March steps##ssr", &ssrSettings_.maxSteps, 8, 128);
+    changed |= ImGui::SliderInt("Refinement steps##ssr", &ssrSettings_.refinementSteps, 0, 8);
+    changed |= ImGui::SliderFloat("Max distance##ssr", &ssrSettings_.maxDistance, 1.0f, 200.0f, "%.1f");
+    changed |= ImGui::SliderFloat("Thickness##ssr", &ssrSettings_.thickness, 0.01f, 2.0f, "%.3f");
+    changed |= ImGui::SliderFloat("Intensity##ssr", &ssrSettings_.intensity, 0.0f, 4.0f, "%.2f");
+    changed |= ImGui::SliderFloat("Max roughness##ssr", &ssrSettings_.maxRoughness, 0.05f, 1.0f, "%.2f");
+    if (changed) {
+        clampRuntimeSettings();
+    }
+
+    ImGui::Text("Active: %s", frameSsrActive_ ? "yes" : "no");
+    ImGui::TextDisabled("Traces the main depth buffer; reflections blend in before TAA. Lower Max");
+    ImGui::TextDisabled("roughness for mirror-only, raise Intensity to exaggerate for inspection.");
 }
 
 void Renderer::drawRenderGraphDebugUi()

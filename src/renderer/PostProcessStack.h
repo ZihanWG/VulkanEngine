@@ -145,6 +145,14 @@ public:
     {
         return velocityLayout_;
     }
+    [[nodiscard]] const rhi::VulkanImage& normalRoughness() const
+    {
+        return normalRoughness_;
+    }
+    [[nodiscard]] VkImageLayout& normalRoughnessLayout()
+    {
+        return normalRoughnessLayout_;
+    }
     [[nodiscard]] const rhi::VulkanImage& bloomExtract() const
     {
         return bloomExtract_;
@@ -405,6 +413,7 @@ private:
 
     rhi::VulkanImage sceneColor_;
     rhi::VulkanImage velocity_;
+    rhi::VulkanImage normalRoughness_;
     rhi::VulkanImage bloomExtract_;
     rhi::VulkanImage bloomPing_;
     rhi::VulkanImage bloomPong_;
@@ -458,6 +467,7 @@ private:
     VkExtent2D bloomExtent_{};
     VkImageLayout sceneColorLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     VkImageLayout velocityLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImageLayout normalRoughnessLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     VkImageLayout bloomExtractLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     VkImageLayout bloomPingLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     VkImageLayout bloomPongLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;

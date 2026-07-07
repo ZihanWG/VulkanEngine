@@ -31,6 +31,7 @@ ExposureMode exposureModeValue(int exposureMode)
 void clampRuntimeSettings(ToneMappingSettings& toneMapping,
                           BloomSettings& bloom,
                           TaaSettings& taa,
+                          SsrSettings& ssr,
                           CsmSettings& csm,
                           DebugUiSettings& debugUi)
 {
@@ -58,6 +59,14 @@ void clampRuntimeSettings(ToneMappingSettings& toneMapping,
     bloom.radius = std::clamp(bloom.radius, 0.25f, 4.0f);
 
     taa.feedback = std::clamp(taa.feedback, 0.0f, 0.98f);
+
+    ssr.maxSteps = std::clamp(ssr.maxSteps, 8, 128);
+    ssr.refinementSteps = std::clamp(ssr.refinementSteps, 0, 8);
+    ssr.maxDistance = std::clamp(ssr.maxDistance, 1.0f, 200.0f);
+    ssr.thickness = std::clamp(ssr.thickness, 0.01f, 2.0f);
+    ssr.intensity = std::clamp(ssr.intensity, 0.0f, 4.0f);
+    ssr.maxRoughness = std::clamp(ssr.maxRoughness, 0.05f, 1.0f);
+    ssr.screenEdgeFade = std::clamp(ssr.screenEdgeFade, 0.01f, 0.49f);
 
     csm.cascadeCount = std::clamp(csm.cascadeCount, 1U, renderer::kMaxShadowCascades);
     csm.lambda = std::clamp(csm.lambda, 0.0f, 1.0f);
@@ -272,6 +281,17 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readFloat(*taa, "feedback", settings.taa.feedback);
     }
 
+    if (const Json* ssr = objectMember(json, "ssr")) {
+        readBool(*ssr, "enabled", settings.ssr.enabled);
+        readInt(*ssr, "maxSteps", settings.ssr.maxSteps);
+        readInt(*ssr, "refinementSteps", settings.ssr.refinementSteps);
+        readFloat(*ssr, "maxDistance", settings.ssr.maxDistance);
+        readFloat(*ssr, "thickness", settings.ssr.thickness);
+        readFloat(*ssr, "intensity", settings.ssr.intensity);
+        readFloat(*ssr, "maxRoughness", settings.ssr.maxRoughness);
+        readFloat(*ssr, "screenEdgeFade", settings.ssr.screenEdgeFade);
+    }
+
     if (const Json* csm = objectMember(json, "csm")) {
         readUint32(*csm, "cascadeCount", settings.csm.cascadeCount);
         readFloat(*csm, "lambda", settings.csm.lambda);
@@ -335,6 +355,15 @@ Json toJson(const RuntimeSettings& settings)
               {"neighborhoodClampEnabled", settings.taa.neighborhoodClampEnabled},
               {"reprojectionEnabled", settings.taa.reprojectionEnabled},
               {"feedback", settings.taa.feedback}}},
+        {"ssr",
+         Json{{"enabled", settings.ssr.enabled},
+              {"maxSteps", settings.ssr.maxSteps},
+              {"refinementSteps", settings.ssr.refinementSteps},
+              {"maxDistance", settings.ssr.maxDistance},
+              {"thickness", settings.ssr.thickness},
+              {"intensity", settings.ssr.intensity},
+              {"maxRoughness", settings.ssr.maxRoughness},
+              {"screenEdgeFade", settings.ssr.screenEdgeFade}}},
         {"csm",
          Json{{"cascadeCount", settings.csm.cascadeCount},
               {"lambda", settings.csm.lambda},

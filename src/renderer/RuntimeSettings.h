@@ -107,10 +107,26 @@ struct DebugUiSettings {
     float renderTargetPreviewScale = 1.0f;
 };
 
+// Screen-space reflections: a view-space linear march with binary refinement
+// against the main depth buffer, additively blended into scene color before
+// TAA. Requires a samplable main depth image (same gate as SSAO).
+struct SsrSettings {
+    bool enabled = true;
+    int maxSteps = 48;
+    int refinementSteps = 5;
+    float maxDistance = 30.0f;
+    float thickness = 0.35f;
+    float intensity = 1.0f;
+    // Surfaces rougher than this trace no reflections (mirror-to-glossy fade).
+    float maxRoughness = 0.6f;
+    float screenEdgeFade = 0.1f;
+};
+
 struct RuntimeSettings {
     ToneMappingSettings toneMapping;
     BloomSettings bloom;
     TaaSettings taa;
+    SsrSettings ssr;
     CsmSettings csm;
     DebugUiSettings debugUi;
     bool useGpuCulling = true;
@@ -136,6 +152,7 @@ struct RuntimeSettings {
 void clampRuntimeSettings(ToneMappingSettings& toneMapping,
                           BloomSettings& bloom,
                           TaaSettings& taa,
+                          SsrSettings& ssr,
                           CsmSettings& csm,
                           DebugUiSettings& debugUi);
 

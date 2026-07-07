@@ -30,6 +30,18 @@ layout(location = 22) in vec4 vCurrClipPos;
 layout(location = 23) in vec4 vPrevClipPos;
 layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec2 outVelocity;
+layout(location = 2) out vec4 outNormalRoughness;
+
+// Octahedral encode of a unit vector into [0,1]^2 for the thin G-buffer.
+vec2 octEncode(vec3 n)
+{
+    n /= (abs(n.x) + abs(n.y) + abs(n.z));
+    vec2 e = n.xy;
+    if (n.z < 0.0) {
+        e = (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
+    }
+    return e * 0.5 + 0.5;
+}
 
 // UV-space motion vector from the unjittered current/previous clip positions.
 // NDC-to-UV halves the delta; Vulkan's y-down NDC matches y-down UV, so no flip.
@@ -264,4 +276,5 @@ void main()
 
     outColor = vec4(finalColor, alpha);
     outVelocity = computeVelocity();
+    outNormalRoughness = vec4(octEncode(normal), roughness, metallic);
 }

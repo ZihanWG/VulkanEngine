@@ -225,6 +225,8 @@ const char* renderPassTypeName(RenderPassType type)
         return "Depth Pyramid";
     case RenderPassType::MainHdr:
         return "Main HDR";
+    case RenderPassType::Ssr:
+        return "SSR";
     case RenderPassType::TaaResolve:
         return "TAA Resolve";
     case RenderPassType::BloomExtract:
@@ -340,6 +342,7 @@ void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
     }
     requireImageResource(frameResources.sceneColor, "RenderGraph::beginFrame");
     requireImageResource(frameResources.velocity, "RenderGraph::beginFrame");
+    requireImageResource(frameResources.normalRoughness, "RenderGraph::beginFrame");
     requireImageResource(frameResources.bloomExtract, "RenderGraph::beginFrame");
     requireImageResource(frameResources.bloomPing, "RenderGraph::beginFrame");
     requireImageResource(frameResources.bloomPong, "RenderGraph::beginFrame");
@@ -446,6 +449,12 @@ void RenderGraph::createTransientFrameTextures()
 
     frame_.sceneColor = createTransientTexture(makeTransientDesc(frame_.resources.sceneColor), frame_.resources.sceneColor);
     frame_.velocity = createTransientTexture(makeTransientDesc(frame_.resources.velocity), frame_.resources.velocity);
+    frame_.normalRoughness = createTransientTexture(makeTransientDesc(frame_.resources.normalRoughness),
+                                                    frame_.resources.normalRoughness);
+    if (frame_.resources.ssrEnabled && validImageResource(frame_.resources.ssrSceneColorCopy)) {
+        frame_.ssrSceneColorCopy = createTransientTexture(makeTransientDesc(frame_.resources.ssrSceneColorCopy),
+                                                          frame_.resources.ssrSceneColorCopy);
+    }
     frame_.postProcessSceneColor = frame_.sceneColor;
     if (frame_.resources.taaEnabled && validImageResource(frame_.resources.taaHistoryRead) &&
         validImageResource(frame_.resources.taaHistoryWrite)) {
@@ -585,8 +594,9 @@ void RenderGraph::beginMainHdrRendering(bool loadExisting)
 
     const TextureResource& sceneColor = textures_.at(frame_.sceneColor.index);
     const TextureResource& velocity = textures_.at(frame_.velocity.index);
+    const TextureResource& normalRoughness = textures_.at(frame_.normalRoughness.index);
 
-    std::array<VkRenderingAttachmentInfo, 2> colorAttachments{};
+    std::array<VkRenderingAttachmentInfo, 3> colorAttachments{};
     VkRenderingAttachmentInfo& colorAttachment = colorAttachments[0];
     colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     colorAttachment.imageView = sceneColor.imageView;
@@ -602,6 +612,14 @@ void RenderGraph::beginMainHdrRendering(bool loadExisting)
     velocityAttachment.loadOp = loadExisting ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
     velocityAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     velocityAttachment.clearValue = VkClearValue{};
+
+    VkRenderingAttachmentInfo& normalRoughnessAttachment = colorAttachments[2];
+    normalRoughnessAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    normalRoughnessAttachment.imageView = normalRoughness.imageView;
+    normalRoughnessAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    normalRoughnessAttachment.loadOp = loadExisting ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
+    normalRoughnessAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    normalRoughnessAttachment.clearValue = VkClearValue{};
 
     VkClearValue depthClear{};
     depthClear.depthStencil.depth = 1.0f;
@@ -658,6 +676,71 @@ void RenderGraph::endMainHdrPhase2Pass()
     requireFrameActive("RenderGraph::endMainHdrPhase2Pass");
     if (activePass_ != ActivePass::MainHdrPhase2) {
         throw std::logic_error("RenderGraph::endMainHdrPhase2Pass called without an active phase-2 main HDR pass.");
+    }
+
+    vkCmdEndRendering(frame_.commandBuffer);
+    activePass_ = ActivePass::None;
+}
+
+void RenderGraph::beginSsrCopyPass()
+{
+    requireFrameActive("RenderGraph::beginSsrCopyPass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginSsrCopyPass called while another pass is active.");
+    }
+    if (!beginDeclaredPass(frame_.passIndices.ssrCopy)) {
+        throw std::logic_error("RenderGraph::beginSsrCopyPass was culled but the renderer attempted to record it.");
+    }
+
+    activePass_ = ActivePass::SsrCopy;
+}
+
+void RenderGraph::endSsrCopyPass()
+{
+    requireFrameActive("RenderGraph::endSsrCopyPass");
+    if (activePass_ != ActivePass::SsrCopy) {
+        throw std::logic_error("RenderGraph::endSsrCopyPass called without an active SSR copy pass.");
+    }
+
+    activePass_ = ActivePass::None;
+}
+
+void RenderGraph::beginSsrTracePass()
+{
+    requireFrameActive("RenderGraph::beginSsrTracePass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginSsrTracePass called while another pass is active.");
+    }
+    if (!beginDeclaredPass(frame_.passIndices.ssrTrace)) {
+        throw std::logic_error("RenderGraph::beginSsrTracePass was culled but the renderer attempted to record it.");
+    }
+
+    const TextureResource& sceneColor = textures_.at(frame_.sceneColor.index);
+
+    VkRenderingAttachmentInfo colorAttachment{};
+    colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAttachment.imageView = sceneColor.imageView;
+    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+    VkRenderingInfo renderingInfo{};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea.offset = {0, 0};
+    renderingInfo.renderArea.extent = sceneColor.desc.extent;
+    renderingInfo.layerCount = 1;
+    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.pColorAttachments = &colorAttachment;
+
+    vkCmdBeginRendering(frame_.commandBuffer, &renderingInfo);
+    activePass_ = ActivePass::SsrTrace;
+}
+
+void RenderGraph::endSsrTracePass()
+{
+    requireFrameActive("RenderGraph::endSsrTracePass");
+    if (activePass_ != ActivePass::SsrTrace) {
+        throw std::logic_error("RenderGraph::endSsrTracePass called without an active SSR trace pass.");
     }
 
     vkCmdEndRendering(frame_.commandBuffer);
@@ -1225,6 +1308,9 @@ void RenderGraph::declareGeometryPasses()
             builder.writeTexture(frame_.velocity,
                                  RGAccess::ColorAttachmentWrite,
                                  "Writes UV-space motion vectors for TAA history reprojection.");
+            builder.writeTexture(frame_.normalRoughness,
+                                 RGAccess::ColorAttachmentWrite,
+                                 "Writes the thin G-buffer (normal, roughness, metallic) for SSR.");
             builder.writeTexture(frame_.mainDepth,
                                  RGAccess::DepthStencilAttachmentWrite,
                                  "Clears and writes the main depth attachment.");
@@ -1289,6 +1375,9 @@ void RenderGraph::declareGeometryPasses()
                 builder.writeTexture(frame_.velocity,
                                      RGAccess::ColorAttachmentWrite,
                                      "Appends motion vectors for the rescued draws.");
+                builder.writeTexture(frame_.normalRoughness,
+                                     RGAccess::ColorAttachmentWrite,
+                                     "Appends thin G-buffer data for the rescued draws.");
                 builder.writeTexture(frame_.mainDepth,
                                      RGAccess::DepthStencilAttachmentWrite,
                                      "Loads and extends phase-1 depth with the rescued draws.");
@@ -1298,6 +1387,42 @@ void RenderGraph::declareGeometryPasses()
                 builder.readBuffer(frame_.mainCullVisibleCounts,
                                    RGAccess::IndirectRead,
                                    "Reads the phase-2 per-batch visible counts.");
+            });
+    }
+
+    if (frame_.resources.ssrEnabled && frame_.ssrSceneColorCopy.valid()) {
+        frame_.passIndices.ssrCopy = addPass(
+            "SSRCopyPass",
+            RenderPassType::Ssr,
+            RenderPassExecutionType::Transfer,
+            false,
+            [this](RenderGraphBuilder& builder) {
+                builder.readTexture(frame_.sceneColor,
+                                    RGAccess::TransferSrc,
+                                    "Copies the lit opaque scene color as the SSR reflection source.");
+                builder.writeTexture(frame_.ssrSceneColorCopy,
+                                     RGAccess::TransferDst,
+                                     "Receives the scene-color copy the trace samples.");
+            });
+
+        frame_.passIndices.ssrTrace = addPass(
+            "SSRTracePass",
+            RenderPassType::Ssr,
+            RenderPassExecutionType::Graphics,
+            false,
+            [this](RenderGraphBuilder& builder) {
+                builder.readTexture(frame_.ssrSceneColorCopy,
+                                    RGAccess::ShaderRead,
+                                    "Samples the pre-reflection scene color at ray hit points.");
+                builder.readTexture(frame_.normalRoughness,
+                                    RGAccess::ShaderRead,
+                                    "Reads surface normal/roughness/metallic for ray setup and weighting.");
+                builder.readTexture(frame_.mainDepth,
+                                    RGAccess::ShaderRead,
+                                    "Marches rays against the main depth buffer.");
+                builder.writeTexture(frame_.sceneColor,
+                                     RGAccess::ColorAttachmentWrite,
+                                     "Additively blends fresnel-weighted reflections into scene color.");
             });
     }
 

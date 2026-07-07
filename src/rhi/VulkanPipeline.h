@@ -22,6 +22,10 @@ struct VulkanPipelineCreateInfo {
     // Optional shared pipeline cache; defaults to VK_NULL_HANDLE (cold compile).
     VkPipelineCache pipelineCache = VK_NULL_HANDLE;
     bool enableColorAttachment = true;
+    // ONE + ONE additive blending on every color attachment (the shader
+    // pre-multiplies its weights). Used by the SSR trace pass to accumulate
+    // reflections into the existing scene color.
+    bool enableAdditiveBlend = false;
     bool enableDepth = false;
     bool depthWriteEnable = true;
     bool enableDepthBias = false;

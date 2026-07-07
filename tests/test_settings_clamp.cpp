@@ -12,6 +12,7 @@ using ve::DebugUiSettings;
 using ve::ExposureMode;
 using ve::exposureModeValue;
 using ve::TaaSettings;
+using ve::SsrSettings;
 using ve::ToneMappingSettings;
 
 namespace {
@@ -21,10 +22,11 @@ struct Settings {
     ToneMappingSettings toneMapping;
     BloomSettings bloom;
     TaaSettings taa;
+    SsrSettings ssr;
     CsmSettings csm;
     DebugUiSettings debugUi;
 
-    void clamp() { clampRuntimeSettings(toneMapping, bloom, taa, csm, debugUi); }
+    void clamp() { clampRuntimeSettings(toneMapping, bloom, taa, ssr, csm, debugUi); }
 };
 
 } // namespace
@@ -138,4 +140,25 @@ TEST_CASE("Debug-UI preview ranges are clamped", "[settings]")
     s.clamp();
     CHECK(s.debugUi.renderTargetPreviewExposure == Catch::Approx(8.0f));
     CHECK(s.debugUi.renderTargetPreviewScale == Catch::Approx(2.0f));
+}
+
+TEST_CASE("SSR settings clamp into their valid ranges", "[settings]")
+{
+    Settings settings;
+    settings.ssr.maxSteps = 4096;
+    settings.ssr.refinementSteps = -3;
+    settings.ssr.maxDistance = 100000.0f;
+    settings.ssr.thickness = 0.0f;
+    settings.ssr.intensity = -1.0f;
+    settings.ssr.maxRoughness = 2.0f;
+    settings.ssr.screenEdgeFade = 0.9f;
+    settings.clamp();
+
+    CHECK(settings.ssr.maxSteps == 128);
+    CHECK(settings.ssr.refinementSteps == 0);
+    CHECK(settings.ssr.maxDistance == 200.0f);
+    CHECK(settings.ssr.thickness == 0.01f);
+    CHECK(settings.ssr.intensity == 0.0f);
+    CHECK(settings.ssr.maxRoughness == 1.0f);
+    CHECK(settings.ssr.screenEdgeFade == 0.49f);
 }
