@@ -139,6 +139,16 @@ void PostProcessStack::createPostProcessResources(VkImageView depthFallbackView,
     velocity_.create(context_, velocityInfo);
     velocityLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 
+    rhi::VulkanImageCreateInfo normalRoughnessInfo{};
+    normalRoughnessInfo.width = extent.width;
+    normalRoughnessInfo.height = extent.height;
+    normalRoughnessInfo.format = kNormalRoughnessFormat;
+    normalRoughnessInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    normalRoughnessInfo.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    normalRoughnessInfo.debugName = "NormalRoughnessGBuffer";
+    normalRoughness_.create(context_, normalRoughnessInfo);
+    normalRoughnessLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+
     createTaaResources();
 
     bloomExtent_.width = std::max(1u, extent.width / 2u);

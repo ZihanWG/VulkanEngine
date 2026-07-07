@@ -28,6 +28,16 @@
         "reprojectionEnabled": true,
         "feedback": 0.88
     },
+    "ssr": {
+        "enabled": true,
+        "maxSteps": 48,
+        "refinementSteps": 5,
+        "maxDistance": 30.0,
+        "thickness": 0.35,
+        "intensity": 1.0,
+        "maxRoughness": 0.6,
+        "screenEdgeFade": 0.1
+    },
     "csm": {
         "cascadeCount": 4,
         "lambda": 0.5,

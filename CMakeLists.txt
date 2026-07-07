@@ -222,6 +222,7 @@ add_library(VulkanEngineRuntime STATIC
     src/renderer/Renderer.cpp
     src/renderer/RendererDebugUi.cpp
     src/renderer/SceneBuilder.cpp
+    src/renderer/ScreenSpaceReflections.cpp
     src/renderer/ScreenshotCapture.cpp
     src/ui/ImGuiLayer.cpp
     src/rhi/VulkanBuffer.cpp
@@ -331,6 +332,7 @@ set(SHADER_SOURCES
     "${SHADER_SOURCE_DIR}/bloom_downsample.frag"
     "${SHADER_SOURCE_DIR}/bloom_upsample.frag"
     "${SHADER_SOURCE_DIR}/taa_resolve.frag"
+    "${SHADER_SOURCE_DIR}/ssr_trace.frag"
     "${SHADER_SOURCE_DIR}/exposure_reduce.comp"
     "${SHADER_SOURCE_DIR}/composite.frag"
 )

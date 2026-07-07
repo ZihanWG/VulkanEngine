@@ -22,7 +22,7 @@ A **C++20 / Vulkan 1.3 real-time renderer** built as a graphics- and engine-prog
 | **Skeletal animation** | GPU linear-blend vertex skinning from a CPU joint-matrix palette, with a unit-tested animation core (keyframe sampling + hierarchy flatten) |
 | **PBR + IBL** | Cook-Torrance GGX, tangent-space normal mapping, prefiltered specular + diffuse irradiance + split-sum BRDF LUT, Kulla-Conty multi-scatter |
 | **Shadows** | PCF cascaded shadow maps with per-cascade GPU shadow-caster culling and an indirect shadow path |
-| **Post-processing** | HDR scene color, mip-chain bloom, histogram auto-exposure, ACES/Reinhard tonemap, motion-vector TAA with reprojected history |
+| **Post-processing** | HDR scene color, screen-space reflections, mip-chain bloom, histogram auto-exposure, ACES/Reinhard tonemap, motion-vector TAA with reprojected history |
 | **Architecture** | Render graph (logical handles + conservative barrier inference), RAII Vulkan RHI, task-parallel frame prep on a job system, per-pass GPU timestamp profiler, ImGui scene/material editor |
 | **Engineering** | C++20, Catch2 unit tests, Linux + Windows CI, AddressSanitizer/UBSan, clang-tidy/clang-format |
 
@@ -75,6 +75,7 @@ GPU linear-blend vertex skinning (`simple_skinned.vert`) driven by a per-frame j
 - Mip-chain bloom (default) with a legacy half-res extract + separable blur fallback, and a final composite pass.
 - Optional Temporal AA, disabled by default: Halton subpixel jitter, a main-pass velocity buffer (camera, rigid object, and rotation-only sky motion), history reprojection with closest-depth velocity dilation, conservative neighborhood clamping, ping-pong HDR history, explicit history reset.
 - GPU histogram auto-exposure: log-average + histogram luminance reduced into a GPU exposure-state buffer read directly by composite; manual exposure remains as a fallback.
+- Screen-space reflections, on by default: the main pass writes a thin G-buffer (octahedral world normal + roughness + metallic), a fullscreen trace marches the depth buffer (jittered start, binary refinement, thickness test) and additively blends fresnel- and confidence-weighted reflections into scene color before TAA.
 - Reinhard/ACES tone mapping applied in the final composite before swapchain output.
 - PCF-filtered cascaded shadow maps (CSM) with texel snapping, optional cascade debug tinting, per-cascade GPU shadow-caster culling, and an indirect shadow draw path.
 - Descriptor-indexing path for bindless material texture arrays, with a legacy descriptor-set fallback.
@@ -175,7 +176,7 @@ This is a rendering/engine portfolio, not a full game engine — no physics, gam
 - Two-phase Hi-Z occlusion re-tests candidates against a mid-frame pyramid rebuild, but is object-granularity (AABB screen rects, no per-cluster/meshlet tests) and requires the bindless multi-draw-indirect path.
 - Upload paths use one-time command buffers + queue idle waits — fine for init, not ideal for runtime streaming.
 - TAA reprojects history along a main-pass velocity buffer, but skinned joint-space motion, disocclusion masks, temporal upscaling, and FSR/DLSS/XeSS are not implemented.
-- Reflections are environment-based IBL only: no SSR, ray tracing, planar reflections, or glass transmission.
+- Screen-space reflections are linear-march (no Hi-Z acceleration or roughness-cone blur) and add on top of IBL specular; no ray tracing, planar reflections, or glass transmission.
 - glTF import covers static + skinned meshes and base color/normal/metallic-roughness/emissive textures; occlusion textures, morph targets, cameras, and scene lights are future work.
 - ImGui is a debug UI only (no docking/editor layout); scene editing is limited to existing runtime objects.
 - HDR swapchain output, local exposure, and high-resolution offline capture are not implemented.

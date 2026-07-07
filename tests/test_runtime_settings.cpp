@@ -54,6 +54,15 @@ RuntimeSettings makeNonDefaultSettings()
     settings.taa.reprojectionEnabled = false;
     settings.taa.feedback = 0.75f;
 
+    settings.ssr.enabled = false;
+    settings.ssr.maxSteps = 64;
+    settings.ssr.refinementSteps = 3;
+    settings.ssr.maxDistance = 55.0f;
+    settings.ssr.thickness = 0.5f;
+    settings.ssr.intensity = 1.5f;
+    settings.ssr.maxRoughness = 0.4f;
+    settings.ssr.screenEdgeFade = 0.2f;
+
     settings.csm.cascadeCount = 3;
     settings.csm.lambda = 0.7f;
     settings.csm.shadowDistance = 60.0f;
@@ -121,6 +130,15 @@ TEST_CASE("RuntimeSettings save -> load round-trips every persisted field", "[se
     CHECK(loaded.taa.neighborhoodClampEnabled == original.taa.neighborhoodClampEnabled);
     CHECK(loaded.taa.reprojectionEnabled == original.taa.reprojectionEnabled);
     CHECK(loaded.taa.feedback == Catch::Approx(original.taa.feedback));
+
+    CHECK(loaded.ssr.enabled == original.ssr.enabled);
+    CHECK(loaded.ssr.maxSteps == original.ssr.maxSteps);
+    CHECK(loaded.ssr.refinementSteps == original.ssr.refinementSteps);
+    CHECK(loaded.ssr.maxDistance == Catch::Approx(original.ssr.maxDistance));
+    CHECK(loaded.ssr.thickness == Catch::Approx(original.ssr.thickness));
+    CHECK(loaded.ssr.intensity == Catch::Approx(original.ssr.intensity));
+    CHECK(loaded.ssr.maxRoughness == Catch::Approx(original.ssr.maxRoughness));
+    CHECK(loaded.ssr.screenEdgeFade == Catch::Approx(original.ssr.screenEdgeFade));
 
     CHECK(loaded.csm.cascadeCount == original.csm.cascadeCount);
     CHECK(loaded.csm.lambda == Catch::Approx(original.csm.lambda));

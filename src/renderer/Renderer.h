@@ -20,6 +20,7 @@
 #include "renderer/RenderObject.h"
 #include "renderer/RuntimeSettings.h"
 #include "renderer/SceneBuilder.h"
+#include "renderer/ScreenSpaceReflections.h"
 #include "renderer/ScreenshotCapture.h"
 #include "renderer/SkinnedMesh.h"
 #include "rhi/VulkanAsyncCompute.h"
@@ -433,6 +434,7 @@ private:
     void drawCullingDebugUi();
     void drawExposureDebugUi();
     void drawTaaDebugUi();
+    void drawSsrDebugUi();
     void drawTimingHistoryRow(const char* label, const DebugHistory& history) const;
     void drawScalarHistoryRow(const char* label, const DebugHistory& history, const char* valueFormat) const;
     void drawHistoryPlot(const DebugHistory& history, float height) const;
@@ -571,6 +573,7 @@ private:
     ToneMappingSettings toneMappingSettings_{};
     BloomSettings bloomSettings_{};
     TaaSettings taaSettings_{};
+    SsrSettings ssrSettings_{};
     DebugUiSettings debugUiSettings_{};
     DebugHistory gpuFrameTimeHistory_{};
     std::vector<GpuTimingHistory> gpuTimingHistories_;
@@ -647,6 +650,8 @@ private:
     bool frameTwoPhaseOcclusionActive_ = false;
     bool useAsyncCompute_ = true;
     bool frameAsyncComputeActive_ = false;
+    bool frameSsrActive_ = false;
+    uint32_t ssrFrameCounter_ = 0;
     bool useGpuShadowCulling_ = true;
     bool shadowIndirectAvailable_ = false;
     bool ssaoAvailable_ = false;
@@ -685,6 +690,11 @@ private:
                                             averageLuminance_,
                                             histogramClippedLuminance_,
                                             ssaoAvailable_};
+
+    // Screen-space reflections: view-space march against main depth using the
+    // thin G-buffer, additively blended into scene color before TAA. Declared
+    // after the services + settings it borrows.
+    renderer::ScreenSpaceReflections ssr_{context_, swapchain_, renderGraph_, gpuProfiler_, ssrSettings_};
 
     // Hi-Z depth pyramid subsystem. Like postProcess_, it owns its GPU resources
     // and borrows the rendering services by reference, so it is declared last to

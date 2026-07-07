@@ -32,6 +32,8 @@ overview; these documents describe implementation details and limitations.
 - [Skeletal Animation](skeletal_animation.md): GPU-free animation core (pose
   sampling + hierarchy flatten), GPU linear-blend skinning, the procedural demo,
   and the unit-tested bind-pose invariant.
+- [Screen-Space Reflections](ssr.md): The thin G-buffer, the copy + trace
+  passes, march/refinement parameters, and current limitations.
 - [Post-Processing](post_processing.md): HDR scene color, mip-chain bloom, GPU
   exposure state, tone mapping, and active HDR source routing.
 - [Temporal AA Foundation](taa.md): Optional TAA pass, Halton jitter, HDR

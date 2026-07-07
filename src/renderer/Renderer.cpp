@@ -137,6 +137,7 @@ Renderer::Renderer(Window& window) : window_(window)
     createBindlessMaterialTextureHeap();
     createSkyboxDescriptorSetLayout();
     postProcess_.createPostProcessDescriptorSetLayouts();
+    ssr_.createDescriptorSetLayout();
     createDepthPyramidDescriptorSetLayout();
     postProcess_.createPostProcessSampler();
     createShadowMap();
@@ -194,6 +195,7 @@ void Renderer::recreatePostProcessResources()
     selectedBloomMipDebugLevel_ = 0;
     destroyDepthPyramidResources();
     postProcess_.createPostProcessResources(checkerboardTexture_.imageView(), static_cast<uint32_t>(frames_.size()));
+    ssr_.createResources(postProcess_.normalRoughness().imageView(), static_cast<uint32_t>(frames_.size()));
     createDepthPyramidResources();
 }
 
@@ -922,6 +924,7 @@ void Renderer::createPipeline()
     postProcess_.createBloomPipelines();
     postProcess_.createTaaResolvePipeline();
     postProcess_.createCompositePipeline();
+    ssr_.createPipeline(shaderPath("fullscreen.vert.spv"), shaderPath("ssr_trace.frag.spv"));
     createComputePipelines();
 }
 
@@ -937,8 +940,9 @@ void Renderer::createMainGraphicsPipeline()
     const VkPushConstantRange pushConstantRange{
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(PushConstants))};
 
-    // The main pass renders HDR color plus UV-space motion vectors (MRT).
-    const std::array<VkFormat, 2> mainPassColorFormats{kSceneColorFormat, kVelocityFormat};
+    // The main pass renders HDR color, UV-space motion vectors, and the thin
+    // G-buffer (normal/roughness/metallic) for SSR (MRT).
+    const std::array<VkFormat, 3> mainPassColorFormats{kSceneColorFormat, kVelocityFormat, kNormalRoughnessFormat};
 
     rhi::VulkanPipelineCreateInfo pipelineInfo{};
     pipelineInfo.vertexShaderPath = shaderPath("simple.vert.spv");
@@ -983,7 +987,7 @@ void Renderer::createSkinnedPipeline()
     const VkPushConstantRange pushConstantRange{
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(PushConstants))};
 
-    const std::array<VkFormat, 2> mainPassColorFormats{kSceneColorFormat, kVelocityFormat};
+    const std::array<VkFormat, 3> mainPassColorFormats{kSceneColorFormat, kVelocityFormat, kNormalRoughnessFormat};
 
     rhi::VulkanPipelineCreateInfo pipelineInfo{};
     pipelineInfo.vertexShaderPath = shaderPath("simple_skinned.vert.spv");
@@ -1015,7 +1019,7 @@ void Renderer::createSkyboxPipeline()
                                                       0,
                                                       static_cast<uint32_t>(sizeof(SkyboxPushConstants))};
 
-    const std::array<VkFormat, 2> mainPassColorFormats{kSceneColorFormat, kVelocityFormat};
+    const std::array<VkFormat, 3> mainPassColorFormats{kSceneColorFormat, kVelocityFormat, kNormalRoughnessFormat};
 
     rhi::VulkanPipelineCreateInfo skyboxPipelineInfo{};
     skyboxPipelineInfo.vertexShaderPath = shaderPath("skybox.vert.spv");
@@ -3377,6 +3381,7 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
     toneMappingSettings_ = settings.toneMapping;
     bloomSettings_ = settings.bloom;
     taaSettings_ = settings.taa;
+    ssrSettings_ = settings.ssr;
     debugUiSettings_ = settings.debugUi;
 
     csmSettings_.lambda = settings.csm.lambda;
@@ -3428,6 +3433,7 @@ RuntimeSettings Renderer::captureRuntimeSettings() const
     settings.toneMapping = toneMappingSettings_;
     settings.bloom = bloomSettings_;
     settings.taa = taaSettings_;
+    settings.ssr = ssrSettings_;
     settings.csm = csmSettings_;
     settings.debugUi = debugUiSettings_;
     settings.useGpuCulling = useGpuCulling_;
@@ -3866,7 +3872,7 @@ void Renderer::clampRuntimeSettings()
     // The settings-struct clamping is GPU-independent and lives in
     // RuntimeSettings.cpp (compiled into VulkanEngineCore) so it can be tested.
     ve::clampRuntimeSettings(
-        toneMappingSettings_, bloomSettings_, taaSettings_, csmSettings_, debugUiSettings_);
+        toneMappingSettings_, bloomSettings_, taaSettings_, ssrSettings_, csmSettings_, debugUiSettings_);
 
     // GPU occlusion tuning is renderer state, not part of the settings structs,
     // so it stays here.
@@ -3963,6 +3969,13 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     const bool clusteredLightingActiveThisFrame = clusteredLighting_.available() && useClusteredLighting_ &&
                                                   clusteredLighting_.lightCount() > 0 && !allDrawItems_.empty();
     frameAsyncComputeActive_ = clusteredLightingActiveThisFrame && useAsyncCompute_ && asyncCompute_.available();
+
+    frameSsrActive_ = ssrSettings_.enabled && ssr_.available() && !allDrawItems_.empty();
+    if (frameSsrActive_) {
+        // The trace reconstructs positions from the jitter-rendered depth, so it
+        // uses the same jittered projection the rasterizer used.
+        ssr_.uploadParams(frameIndex, view, frameJitteredProjection_, ssrFrameCounter_++);
+    }
 }
 
 // Called from drawFrame after command recording: both the object-data upload and
@@ -3986,6 +3999,7 @@ void Renderer::resetFrameStateForEmptyScene(uint32_t frameIndex)
 {
     frameTwoPhaseOcclusionActive_ = false;
     frameAsyncComputeActive_ = false;
+    frameSsrActive_ = false;
     allDrawItems_.clear();
     visibleDrawItems_.clear();
     shadowDrawItems_.clear();
@@ -4406,6 +4420,25 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             name.c_str(), postProcess_.bloomMipUpsampleImages()[level], postProcess_.bloomMipUpsampleLayouts()[level]));
     }
 
+    renderer::RenderGraphImageResource ssrSceneColorCopyResource{};
+    if (ssr_.available()) {
+        ssrSceneColorCopyResource = renderer::RenderGraphImageResource{
+            "SsrSceneColorCopy",
+            ssr_.sceneColorCopy().image(),
+            ssr_.sceneColorCopy().imageView(),
+            VkExtent2D{sceneExtent.width, sceneExtent.height},
+            ssr_.sceneColorCopyLayoutPtr(),
+            ssr_.sceneColorCopy().format(),
+            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            1,
+            1,
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            VkClearValue{},
+            false,
+            false,
+        };
+    }
+
     return renderer::RenderGraphFrameResources{
         renderer::RenderGraphImageResource{
             "SceneColor",
@@ -4437,6 +4470,22 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             true,
             false,
         },
+        renderer::RenderGraphImageResource{
+            "NormalRoughnessGBuffer",
+            postProcess_.normalRoughness().image(),
+            postProcess_.normalRoughness().imageView(),
+            VkExtent2D{sceneExtent.width, sceneExtent.height},
+            &postProcess_.normalRoughnessLayout(),
+            postProcess_.normalRoughness().format(),
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            1,
+            1,
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            VkClearValue{},
+            true,
+            false,
+        },
+        ssrSceneColorCopyResource,
         taaHistoryResource("TAAHistoryRead",
                            postProcess_.taaHistoryImages()[postProcess_.taaHistoryReadIndex()],
                            postProcess_.taaHistoryLayouts()[postProcess_.taaHistoryReadIndex()]),
@@ -4538,6 +4587,7 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             "ExposureState", postProcess_.exposureBuffers(), currentFrame_, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
         postProcess_.isTaaActive(),
         frameTwoPhaseOcclusionActive_,
+        frameSsrActive_,
     };
 }
 
@@ -5193,6 +5243,10 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         if (phase2ProfileScope) {
             gpuProfiler_.endScope(currentFrame_, commandBuffer);
         }
+    }
+
+    if (frameSsrActive_) {
+        ssr_.recordCommands(commandBuffer, currentFrame_, postProcess_.sceneColor().image(), extent);
     }
 
     recordDepthPyramidCommands(commandBuffer);

@@ -154,6 +154,10 @@ constexpr VkFormat kBloomColorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 // UV-space motion vectors written by the main HDR pass as its second color
 // attachment and consumed by the TAA resolve for history reprojection.
 constexpr VkFormat kVelocityFormat = VK_FORMAT_R16G16_SFLOAT;
+// Thin G-buffer written as the main pass's third attachment: octahedral-encoded
+// world-space shading normal (RG), roughness (B), metallic (A). Consumed by the
+// SSR trace pass.
+constexpr VkFormat kNormalRoughnessFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 constexpr VkFormat kDepthPyramidFormat = VK_FORMAT_R32_SFLOAT;
 constexpr uint32_t kDepthPyramidLocalSizeX = 8;
 constexpr uint32_t kDepthPyramidLocalSizeY = 8;

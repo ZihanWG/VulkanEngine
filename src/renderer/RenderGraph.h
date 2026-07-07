@@ -60,6 +60,7 @@ enum class RenderPassType {
     MainGpuCulling,
     DepthPyramid,
     MainHdr,
+    Ssr,
     TaaResolve,
     BloomExtract,
     BloomBlur,
@@ -158,6 +159,8 @@ struct RenderGraphBufferResource {
 struct RenderGraphFrameResources {
     RenderGraphImageResource sceneColor;
     RenderGraphImageResource velocity;
+    RenderGraphImageResource normalRoughness;
+    RenderGraphImageResource ssrSceneColorCopy;
     RenderGraphImageResource taaHistoryRead;
     RenderGraphImageResource taaHistoryWrite;
     RenderGraphImageResource bloomExtract;
@@ -179,6 +182,8 @@ struct RenderGraphFrameResources {
     // Declares the two-phase occlusion passes (mid-frame depth pyramid, cull
     // phase 2, second main HDR pass) for this frame.
     bool twoPhaseOcclusionEnabled = false;
+    // Declares the SSR copy + trace passes for this frame.
+    bool ssrEnabled = false;
 };
 
 struct RenderGraphResourceDebugInfo {
@@ -265,6 +270,12 @@ public:
     void endMainGpuCullingPhase2Pass();
     void beginMainHdrPhase2Pass();
     void endMainHdrPhase2Pass();
+    // SSR: transfer copy of the lit scene color (the trace's reflection source),
+    // then the trace pass blending reflections back into scene color (LOAD).
+    void beginSsrCopyPass();
+    void endSsrCopyPass();
+    void beginSsrTracePass();
+    void endSsrTracePass();
     void beginDepthPyramidPass();
     void endDepthPyramidPass();
     void beginTaaResolvePass();
@@ -339,6 +350,8 @@ private:
         MainHdr,
         MainGpuCullingPhase2,
         MainHdrPhase2,
+        SsrCopy,
+        SsrTrace,
         DepthPyramidMid,
         DepthPyramid,
         TaaResolve,
@@ -386,6 +399,8 @@ private:
         uint32_t depthPyramidMid = kInvalidRenderGraphHandle;
         uint32_t mainGpuCullingPhase2 = kInvalidRenderGraphHandle;
         uint32_t mainHdrPhase2 = kInvalidRenderGraphHandle;
+        uint32_t ssrCopy = kInvalidRenderGraphHandle;
+        uint32_t ssrTrace = kInvalidRenderGraphHandle;
         uint32_t depthPyramid = kInvalidRenderGraphHandle;
         uint32_t taaResolve = kInvalidRenderGraphHandle;
         uint32_t bloomExtract = kInvalidRenderGraphHandle;
@@ -412,6 +427,8 @@ private:
         RGTextureHandle shadowMapDepth{};
         RGTextureHandle sceneColor{};
         RGTextureHandle velocity{};
+        RGTextureHandle normalRoughness{};
+        RGTextureHandle ssrSceneColorCopy{};
         RGTextureHandle taaHistoryRead{};
         RGTextureHandle taaHistoryWrite{};
         RGTextureHandle postProcessSceneColor{};
