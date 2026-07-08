@@ -62,6 +62,7 @@ enum class RenderPassType {
     MainHdr,
     Ssr,
     Gtao,
+    GtaoBlur,
     TaaResolve,
     BloomExtract,
     BloomBlur,
@@ -162,6 +163,7 @@ struct RenderGraphFrameResources {
     RenderGraphImageResource velocity;
     RenderGraphImageResource normalRoughness;
     RenderGraphImageResource ambientOcclusion;
+    RenderGraphImageResource ambientOcclusionRaw;
     RenderGraphImageResource ssrSceneColorCopy;
     RenderGraphImageResource taaHistoryRead;
     RenderGraphImageResource taaHistoryWrite;
@@ -280,9 +282,12 @@ public:
     void endSsrCopyPass();
     void beginSsrTracePass();
     void endSsrTracePass();
-    // GTAO: horizon-search fullscreen pass writing the ambient-occlusion target.
+    // GTAO: horizon-search fullscreen pass writing the raw AO target, then a
+    // bilateral blur denoising it into the composite-visible AO target.
     void beginGtaoPass();
     void endGtaoPass();
+    void beginGtaoBlurPass();
+    void endGtaoBlurPass();
     void beginDepthPyramidPass();
     void endDepthPyramidPass();
     void beginTaaResolvePass();
@@ -360,6 +365,7 @@ private:
         SsrCopy,
         SsrTrace,
         Gtao,
+        GtaoBlur,
         DepthPyramidMid,
         DepthPyramid,
         TaaResolve,
@@ -410,6 +416,7 @@ private:
         uint32_t ssrCopy = kInvalidRenderGraphHandle;
         uint32_t ssrTrace = kInvalidRenderGraphHandle;
         uint32_t gtao = kInvalidRenderGraphHandle;
+        uint32_t gtaoBlur = kInvalidRenderGraphHandle;
         uint32_t depthPyramid = kInvalidRenderGraphHandle;
         uint32_t taaResolve = kInvalidRenderGraphHandle;
         uint32_t bloomExtract = kInvalidRenderGraphHandle;
@@ -438,6 +445,7 @@ private:
         RGTextureHandle velocity{};
         RGTextureHandle normalRoughness{};
         RGTextureHandle ambientOcclusion{};
+        RGTextureHandle ambientOcclusionRaw{};
         RGTextureHandle ssrSceneColorCopy{};
         RGTextureHandle taaHistoryRead{};
         RGTextureHandle taaHistoryWrite{};

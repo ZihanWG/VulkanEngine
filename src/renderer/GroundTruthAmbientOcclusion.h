@@ -21,6 +21,7 @@
 #include "rhi/VulkanBuffer.h"
 #include "rhi/VulkanCommon.h"
 #include "rhi/VulkanDescriptor.h"
+#include "rhi/VulkanImage.h"
 #include "rhi/VulkanPipeline.h"
 
 #include <cstdint>
@@ -56,7 +57,8 @@ public:
     // Created once at startup; survives swapchain recreation.
     void createDescriptorSetLayout();
     void createPipeline(const std::filesystem::path& vertexShaderPath,
-                        const std::filesystem::path& fragmentShaderPath);
+                        const std::filesystem::path& fragmentShaderPath,
+                        const std::filesystem::path& blurFragmentShaderPath);
 
     // (Re)creates the params buffers and descriptor sets for the current
     // swapchain extent. normalRoughnessView is the thin G-buffer written by the
@@ -76,6 +78,13 @@ public:
 
     [[nodiscard]] bool available() const { return available_; }
 
+    // The raw (pre-denoise) AO target is owned here and wrapped by the render
+    // graph, mirroring how SSR owns its scene-color copy. The GTAO trace pass
+    // writes it and the bilateral blur pass reads it; the denoised result lands
+    // in the composite-visible target owned by PostProcessStack.
+    [[nodiscard]] const rhi::VulkanImage& rawAmbientOcclusion() const { return rawAo_; }
+    [[nodiscard]] VkImageLayout* rawAmbientOcclusionLayoutPtr() { return &rawAoLayout_; }
+
 private:
     rhi::VulkanContext& context_;
     rhi::VulkanSwapchain& swapchain_;
@@ -86,8 +95,12 @@ private:
     rhi::VulkanDescriptorSetLayout descriptorSetLayout_;
     rhi::VulkanDescriptorPool descriptorPool_;
     rhi::VulkanPipeline pipeline_;
+    rhi::VulkanPipeline blurPipeline_;
+    rhi::VulkanImage rawAo_;
+    VkImageLayout rawAoLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     VkSampler sampler_ = VK_NULL_HANDLE;
-    std::vector<VkDescriptorSet> descriptorSets_;
+    std::vector<VkDescriptorSet> descriptorSets_;     // trace: depth + normal + params
+    std::vector<VkDescriptorSet> blurDescriptorSets_; // blur: depth + raw AO + params
     std::vector<rhi::VulkanBuffer> frameParamsBuffers_;
     bool available_ = false;
 };

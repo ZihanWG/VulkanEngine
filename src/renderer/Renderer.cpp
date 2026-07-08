@@ -927,7 +927,8 @@ void Renderer::createPipeline()
     postProcess_.createTaaResolvePipeline();
     postProcess_.createCompositePipeline();
     ssr_.createPipeline(shaderPath("fullscreen.vert.spv"), shaderPath("ssr_trace.frag.spv"));
-    gtao_.createPipeline(shaderPath("fullscreen.vert.spv"), shaderPath("gtao.frag.spv"));
+    gtao_.createPipeline(
+        shaderPath("fullscreen.vert.spv"), shaderPath("gtao.frag.spv"), shaderPath("gtao_blur.frag.spv"));
     createComputePipelines();
 }
 
@@ -4431,6 +4432,25 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             name.c_str(), postProcess_.bloomMipUpsampleImages()[level], postProcess_.bloomMipUpsampleLayouts()[level]));
     }
 
+    renderer::RenderGraphImageResource gtaoRawResource{};
+    if (gtao_.available()) {
+        gtaoRawResource = renderer::RenderGraphImageResource{
+            "GtaoRawAmbientOcclusion",
+            gtao_.rawAmbientOcclusion().image(),
+            gtao_.rawAmbientOcclusion().imageView(),
+            VkExtent2D{sceneExtent.width, sceneExtent.height},
+            gtao_.rawAmbientOcclusionLayoutPtr(),
+            gtao_.rawAmbientOcclusion().format(),
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            1,
+            1,
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            VkClearValue{},
+            false,
+            false,
+        };
+    }
+
     renderer::RenderGraphImageResource ssrSceneColorCopyResource{};
     if (ssr_.available()) {
         ssrSceneColorCopyResource = renderer::RenderGraphImageResource{
@@ -4511,6 +4531,7 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             true,
             false,
         },
+        gtaoRawResource,
         ssrSceneColorCopyResource,
         taaHistoryResource("TAAHistoryRead",
                            postProcess_.taaHistoryImages()[postProcess_.taaHistoryReadIndex()],

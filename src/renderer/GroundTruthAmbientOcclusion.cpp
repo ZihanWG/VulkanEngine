@@ -46,6 +46,7 @@ GroundTruthAmbientOcclusion::GroundTruthAmbientOcclusion(rhi::VulkanContext& con
 GroundTruthAmbientOcclusion::~GroundTruthAmbientOcclusion()
 {
     destroyResources();
+    blurPipeline_.reset();
     pipeline_.reset();
     descriptorSetLayout_.reset();
 }
@@ -74,10 +75,14 @@ void GroundTruthAmbientOcclusion::createDescriptorSetLayout()
 }
 
 void GroundTruthAmbientOcclusion::createPipeline(const std::filesystem::path& vertexShaderPath,
-                                                 const std::filesystem::path& fragmentShaderPath)
+                                                 const std::filesystem::path& fragmentShaderPath,
+                                                 const std::filesystem::path& blurFragmentShaderPath)
 {
     const VkDescriptorSetLayout setLayout = descriptorSetLayout_.handle();
 
+    // The horizon-search trace and the bilateral blur share the descriptor layout
+    // (depth + one sampled image + params SSBO) and the single-channel target
+    // format; only the fragment shader and the sampled image differ.
     rhi::VulkanPipelineCreateInfo pipelineInfo{};
     pipelineInfo.vertexShaderPath = vertexShaderPath;
     pipelineInfo.fragmentShaderPath = fragmentShaderPath;
@@ -88,6 +93,12 @@ void GroundTruthAmbientOcclusion::createPipeline(const std::filesystem::path& ve
     rhi::debug::setObjectName(context_.vkDevice(), pipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "GtaoPipeline");
     rhi::debug::setObjectName(
         context_.vkDevice(), pipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "GtaoPipelineLayout");
+
+    pipelineInfo.fragmentShaderPath = blurFragmentShaderPath;
+    blurPipeline_.create(context_.vkDevice(), pipelineInfo);
+    rhi::debug::setObjectName(context_.vkDevice(), blurPipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "GtaoBlurPipeline");
+    rhi::debug::setObjectName(
+        context_.vkDevice(), blurPipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "GtaoBlurPipelineLayout");
 }
 
 void GroundTruthAmbientOcclusion::createResources(VkImageView normalRoughnessView, uint32_t frameCount)
@@ -98,12 +109,25 @@ void GroundTruthAmbientOcclusion::createResources(VkImageView normalRoughnessVie
         if (!swapchain_.depthSupportsSampling()) {
             throw std::runtime_error("GTAO requires a samplable main depth image.");
         }
-        if (pipeline_.pipeline() == VK_NULL_HANDLE || descriptorSetLayout_.handle() == VK_NULL_HANDLE) {
+        if (pipeline_.pipeline() == VK_NULL_HANDLE || blurPipeline_.pipeline() == VK_NULL_HANDLE ||
+            descriptorSetLayout_.handle() == VK_NULL_HANDLE) {
             throw std::runtime_error("GTAO pipeline resources are missing.");
         }
         if (normalRoughnessView == VK_NULL_HANDLE) {
             throw std::runtime_error("GTAO requires the thin G-buffer image view.");
         }
+
+        // Raw (pre-denoise) visibility target the trace writes and the blur reads.
+        const VkExtent2D extent = swapchain_.extent();
+        rhi::VulkanImageCreateInfo rawAoInfo{};
+        rawAoInfo.width = extent.width;
+        rawAoInfo.height = extent.height;
+        rawAoInfo.format = VK_FORMAT_R8_UNORM;
+        rawAoInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        rawAoInfo.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        rawAoInfo.debugName = "GtaoRawAmbientOcclusion";
+        rawAo_.create(context_, rawAoInfo);
+        rawAoLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 
         VkSamplerCreateInfo samplerInfo{};
         samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -130,17 +154,21 @@ void GroundTruthAmbientOcclusion::createResources(VkImageView normalRoughnessVie
                                       "GtaoParamsBuffer" + std::to_string(frameIndex));
         }
 
+        // Two descriptor sets per frame sharing one layout: the trace
+        // (depth + normal + params) and the bilateral blur (depth + raw AO + params).
         std::array<VkDescriptorPoolSize, 2> poolSizes{};
         poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        poolSizes[0].descriptorCount = frameCount * 2;
+        poolSizes[0].descriptorCount = frameCount * 4;
         poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        poolSizes[1].descriptorCount = frameCount;
-        descriptorPool_.create(
-            context_.vkDevice(), std::span<const VkDescriptorPoolSize>(poolSizes.data(), poolSizes.size()), frameCount);
+        poolSizes[1].descriptorCount = frameCount * 2;
+        descriptorPool_.create(context_.vkDevice(),
+                               std::span<const VkDescriptorPoolSize>(poolSizes.data(), poolSizes.size()),
+                               frameCount * 2);
         rhi::debug::setObjectName(
             context_.vkDevice(), descriptorPool_.handle(), VK_OBJECT_TYPE_DESCRIPTOR_POOL, "GtaoDescriptorPool");
 
         descriptorSets_.resize(frameCount, VK_NULL_HANDLE);
+        blurDescriptorSets_.resize(frameCount, VK_NULL_HANDLE);
         std::vector<VkDescriptorSetLayout> setLayouts(frameCount, descriptorSetLayout_.handle());
         VkDescriptorSetAllocateInfo allocateInfo{};
         allocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -148,6 +176,7 @@ void GroundTruthAmbientOcclusion::createResources(VkImageView normalRoughnessVie
         allocateInfo.descriptorSetCount = frameCount;
         allocateInfo.pSetLayouts = setLayouts.data();
         VK_CHECK(vkAllocateDescriptorSets(context_.vkDevice(), &allocateInfo, descriptorSets_.data()));
+        VK_CHECK(vkAllocateDescriptorSets(context_.vkDevice(), &allocateInfo, blurDescriptorSets_.data()));
 
         for (uint32_t frameIndex = 0; frameIndex < frameCount; ++frameIndex) {
             VkDescriptorImageInfo depthInfo{};
@@ -160,27 +189,44 @@ void GroundTruthAmbientOcclusion::createResources(VkImageView normalRoughnessVie
             normalRoughnessInfo.imageView = normalRoughnessView;
             normalRoughnessInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
+            VkDescriptorImageInfo rawAoDescInfo{};
+            rawAoDescInfo.sampler = sampler_;
+            rawAoDescInfo.imageView = rawAo_.imageView();
+            rawAoDescInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
             VkDescriptorBufferInfo paramsInfo{};
             paramsInfo.buffer = frameParamsBuffers_[frameIndex].buffer();
             paramsInfo.offset = 0;
             paramsInfo.range = sizeof(GtaoParams);
 
-            std::array<VkWriteDescriptorSet, 3> writes{};
-            const std::array<const VkDescriptorImageInfo*, 2> imageInfos{&depthInfo, &normalRoughnessInfo};
-            for (uint32_t bindingIndex = 0; bindingIndex < 2; ++bindingIndex) {
-                writes[bindingIndex].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                writes[bindingIndex].dstSet = descriptorSets_[frameIndex];
-                writes[bindingIndex].dstBinding = bindingIndex;
-                writes[bindingIndex].descriptorCount = 1;
-                writes[bindingIndex].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                writes[bindingIndex].pImageInfo = imageInfos[bindingIndex];
+            const std::array<VkDescriptorSet, 2> targetSets{descriptorSets_[frameIndex], blurDescriptorSets_[frameIndex]};
+            // Binding 1 differs per set: the trace reads the normal, the blur reads raw AO.
+            const std::array<const VkDescriptorImageInfo*, 2> secondImageInfos{&normalRoughnessInfo, &rawAoDescInfo};
+
+            std::array<VkWriteDescriptorSet, 6> writes{};
+            for (uint32_t setIndex = 0; setIndex < 2; ++setIndex) {
+                const uint32_t base = setIndex * 3u;
+                writes[base + 0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                writes[base + 0].dstSet = targetSets[setIndex];
+                writes[base + 0].dstBinding = 0;
+                writes[base + 0].descriptorCount = 1;
+                writes[base + 0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                writes[base + 0].pImageInfo = &depthInfo;
+
+                writes[base + 1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                writes[base + 1].dstSet = targetSets[setIndex];
+                writes[base + 1].dstBinding = 1;
+                writes[base + 1].descriptorCount = 1;
+                writes[base + 1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                writes[base + 1].pImageInfo = secondImageInfos[setIndex];
+
+                writes[base + 2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                writes[base + 2].dstSet = targetSets[setIndex];
+                writes[base + 2].dstBinding = 2;
+                writes[base + 2].descriptorCount = 1;
+                writes[base + 2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                writes[base + 2].pBufferInfo = &paramsInfo;
             }
-            writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[2].dstSet = descriptorSets_[frameIndex];
-            writes[2].dstBinding = 2;
-            writes[2].descriptorCount = 1;
-            writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            writes[2].pBufferInfo = &paramsInfo;
             vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
         }
 
@@ -196,12 +242,15 @@ void GroundTruthAmbientOcclusion::destroyResources()
 {
     available_ = false;
     descriptorSets_.clear();
+    blurDescriptorSets_.clear();
     descriptorPool_.reset();
     frameParamsBuffers_.clear();
     if (sampler_ != VK_NULL_HANDLE) {
         vkDestroySampler(context_.vkDevice(), sampler_, nullptr);
         sampler_ = VK_NULL_HANDLE;
     }
+    rawAo_.reset();
+    rawAoLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 }
 
 void GroundTruthAmbientOcclusion::uploadParams(uint32_t frameIndex,
@@ -230,13 +279,9 @@ void GroundTruthAmbientOcclusion::uploadParams(uint32_t frameIndex,
 
 void GroundTruthAmbientOcclusion::recordCommands(VkCommandBuffer commandBuffer, uint32_t frameIndex, VkExtent2D extent)
 {
-    if (!available_ || frameIndex >= descriptorSets_.size()) {
+    if (!available_ || frameIndex >= descriptorSets_.size() || frameIndex >= blurDescriptorSets_.size()) {
         return;
     }
-
-    const GpuProfileScope gtaoScope(gpuProfiler_, frameIndex, commandBuffer, "GTAO");
-    rhi::debug::beginLabel(commandBuffer, "GTAOPass");
-    renderGraph_.beginGtaoPass();
 
     VkViewport viewport{};
     viewport.width = static_cast<float>(extent.width);
@@ -245,22 +290,52 @@ void GroundTruthAmbientOcclusion::recordCommands(VkCommandBuffer commandBuffer, 
     viewport.maxDepth = 1.0f;
     VkRect2D scissor{};
     scissor.extent = extent;
-    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
-    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.pipeline());
-    vkCmdBindDescriptorSets(commandBuffer,
-                            VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            pipeline_.layout(),
-                            0,
-                            1,
-                            &descriptorSets_[frameIndex],
-                            0,
-                            nullptr);
-    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+    // Trace: horizon search into the raw AO target.
+    {
+        const GpuProfileScope traceScope(gpuProfiler_, frameIndex, commandBuffer, "GTAO");
+        rhi::debug::beginLabel(commandBuffer, "GTAOPass");
+        renderGraph_.beginGtaoPass();
 
-    renderGraph_.endGtaoPass();
-    rhi::debug::endLabel(commandBuffer);
+        vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+        vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.pipeline());
+        vkCmdBindDescriptorSets(commandBuffer,
+                                VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                pipeline_.layout(),
+                                0,
+                                1,
+                                &descriptorSets_[frameIndex],
+                                0,
+                                nullptr);
+        vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+
+        renderGraph_.endGtaoPass();
+        rhi::debug::endLabel(commandBuffer);
+    }
+
+    // Bilateral denoise: raw AO -> composite-visible AO target.
+    {
+        const GpuProfileScope blurScope(gpuProfiler_, frameIndex, commandBuffer, "GTAOBlur");
+        rhi::debug::beginLabel(commandBuffer, "GTAOBlurPass");
+        renderGraph_.beginGtaoBlurPass();
+
+        vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+        vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, blurPipeline_.pipeline());
+        vkCmdBindDescriptorSets(commandBuffer,
+                                VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                blurPipeline_.layout(),
+                                0,
+                                1,
+                                &blurDescriptorSets_[frameIndex],
+                                0,
+                                nullptr);
+        vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+
+        renderGraph_.endGtaoBlurPass();
+        rhi::debug::endLabel(commandBuffer);
+    }
 }
 
 } // namespace ve::renderer

@@ -335,6 +335,7 @@ set(SHADER_SOURCES
     "${SHADER_SOURCE_DIR}/taa_resolve.frag"
     "${SHADER_SOURCE_DIR}/ssr_trace.frag"
     "${SHADER_SOURCE_DIR}/gtao.frag"
+    "${SHADER_SOURCE_DIR}/gtao_blur.frag"
     "${SHADER_SOURCE_DIR}/exposure_reduce.comp"
     "${SHADER_SOURCE_DIR}/composite.frag"
 )

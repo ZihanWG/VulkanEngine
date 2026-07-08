@@ -1531,6 +1531,24 @@ void Renderer::drawRenderTargetPreviews()
                                 hdrPreviewExposure);
     }
 
+    if (postProcess_.ambientOcclusion().imageView() != VK_NULL_HANDLE &&
+        postProcess_.ambientOcclusionLayout() == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
+        ImGui::CollapsingHeader("GTAO Visibility", ImGuiTreeNodeFlags_DefaultOpen)) {
+        const VkExtent3D extent = postProcess_.ambientOcclusion().extent();
+        ImGui::Text("Dimensions: %u x %u", extent.width, extent.height);
+        ImGui::Text("Format: %s", vkFormatName(postProcess_.ambientOcclusion().format()));
+        ImGui::TextDisabled("%s", frameGtaoActive_ ? "Denoised visibility (1 = lit)."
+                                                    : "GTAO disabled; showing the last-written term.");
+        // AO is an LDR [0,1] visibility term, so preview it without HDR exposure scaling.
+        drawRenderTargetPreview(postProcess_.ambientOcclusion().imageView(),
+                                postProcess_.sampler(),
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                extent.width,
+                                extent.height,
+                                previewSize,
+                                1.0f);
+    }
+
     if (showRenderTargetTaaHistory_ && ImGui::CollapsingHeader("TAA History", ImGuiTreeNodeFlags_DefaultOpen)) {
         for (uint32_t historyIndex = 0; historyIndex < kTaaHistoryCount; ++historyIndex) {
             if (postProcess_.taaHistoryImages()[historyIndex].imageView() == VK_NULL_HANDLE) {

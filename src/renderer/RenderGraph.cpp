@@ -229,6 +229,8 @@ const char* renderPassTypeName(RenderPassType type)
         return "SSR";
     case RenderPassType::Gtao:
         return "GTAO";
+    case RenderPassType::GtaoBlur:
+        return "GTAO Blur";
     case RenderPassType::TaaResolve:
         return "TAA Resolve";
     case RenderPassType::BloomExtract:
@@ -456,6 +458,10 @@ void RenderGraph::createTransientFrameTextures()
                                                     frame_.resources.normalRoughness);
     frame_.ambientOcclusion = createTransientTexture(makeTransientDesc(frame_.resources.ambientOcclusion),
                                                      frame_.resources.ambientOcclusion);
+    if (frame_.resources.gtaoEnabled && validImageResource(frame_.resources.ambientOcclusionRaw)) {
+        frame_.ambientOcclusionRaw = createTransientTexture(makeTransientDesc(frame_.resources.ambientOcclusionRaw),
+                                                            frame_.resources.ambientOcclusionRaw);
+    }
     if (frame_.resources.ssrEnabled && validImageResource(frame_.resources.ssrSceneColorCopy)) {
         frame_.ssrSceneColorCopy = createTransientTexture(makeTransientDesc(frame_.resources.ssrSceneColorCopy),
                                                           frame_.resources.ssrSceneColorCopy);
@@ -762,6 +768,48 @@ void RenderGraph::beginGtaoPass()
         throw std::logic_error("RenderGraph::beginGtaoPass was culled but the renderer attempted to record it.");
     }
 
+    const TextureResource& rawAo = textures_.at(frame_.ambientOcclusionRaw.index);
+
+    VkRenderingAttachmentInfo colorAttachment{};
+    colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAttachment.imageView = rawAo.imageView;
+    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; // every texel is overwritten
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+    VkRenderingInfo renderingInfo{};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea.offset = {0, 0};
+    renderingInfo.renderArea.extent = rawAo.desc.extent;
+    renderingInfo.layerCount = 1;
+    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.pColorAttachments = &colorAttachment;
+
+    vkCmdBeginRendering(frame_.commandBuffer, &renderingInfo);
+    activePass_ = ActivePass::Gtao;
+}
+
+void RenderGraph::endGtaoPass()
+{
+    requireFrameActive("RenderGraph::endGtaoPass");
+    if (activePass_ != ActivePass::Gtao) {
+        throw std::logic_error("RenderGraph::endGtaoPass called without an active GTAO pass.");
+    }
+
+    vkCmdEndRendering(frame_.commandBuffer);
+    activePass_ = ActivePass::None;
+}
+
+void RenderGraph::beginGtaoBlurPass()
+{
+    requireFrameActive("RenderGraph::beginGtaoBlurPass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginGtaoBlurPass called while another pass is active.");
+    }
+    if (!beginDeclaredPass(frame_.passIndices.gtaoBlur)) {
+        throw std::logic_error("RenderGraph::beginGtaoBlurPass was culled but the renderer attempted to record it.");
+    }
+
     const TextureResource& ambientOcclusion = textures_.at(frame_.ambientOcclusion.index);
 
     VkRenderingAttachmentInfo colorAttachment{};
@@ -780,14 +828,14 @@ void RenderGraph::beginGtaoPass()
     renderingInfo.pColorAttachments = &colorAttachment;
 
     vkCmdBeginRendering(frame_.commandBuffer, &renderingInfo);
-    activePass_ = ActivePass::Gtao;
+    activePass_ = ActivePass::GtaoBlur;
 }
 
-void RenderGraph::endGtaoPass()
+void RenderGraph::endGtaoBlurPass()
 {
-    requireFrameActive("RenderGraph::endGtaoPass");
-    if (activePass_ != ActivePass::Gtao) {
-        throw std::logic_error("RenderGraph::endGtaoPass called without an active GTAO pass.");
+    requireFrameActive("RenderGraph::endGtaoBlurPass");
+    if (activePass_ != ActivePass::GtaoBlur) {
+        throw std::logic_error("RenderGraph::endGtaoBlurPass called without an active GTAO blur pass.");
     }
 
     vkCmdEndRendering(frame_.commandBuffer);
@@ -1473,7 +1521,7 @@ void RenderGraph::declareGeometryPasses()
             });
     }
 
-    if (frame_.resources.gtaoEnabled && frame_.ambientOcclusion.valid()) {
+    if (frame_.resources.gtaoEnabled && frame_.ambientOcclusion.valid() && frame_.ambientOcclusionRaw.valid()) {
         frame_.passIndices.gtao = addPass(
             "GTAOPass",
             RenderPassType::Gtao,
@@ -1486,9 +1534,26 @@ void RenderGraph::declareGeometryPasses()
                 builder.readTexture(frame_.normalRoughness,
                                     RGAccess::ShaderRead,
                                     "Reads the surface normal for GTAO slice integration.");
+                builder.writeTexture(frame_.ambientOcclusionRaw,
+                                     RGAccess::ColorAttachmentWrite,
+                                     "Writes the raw (pre-denoise) GTAO visibility term.");
+            });
+
+        frame_.passIndices.gtaoBlur = addPass(
+            "GTAOBlurPass",
+            RenderPassType::GtaoBlur,
+            RenderPassExecutionType::Graphics,
+            false,
+            [this](RenderGraphBuilder& builder) {
+                builder.readTexture(frame_.ambientOcclusionRaw,
+                                    RGAccess::ShaderRead,
+                                    "Samples the raw GTAO term for depth-aware bilateral denoising.");
+                builder.readTexture(frame_.mainDepth,
+                                    RGAccess::ShaderRead,
+                                    "Samples main depth for the bilateral blur's edge-stopping weights.");
                 builder.writeTexture(frame_.ambientOcclusion,
                                      RGAccess::ColorAttachmentWrite,
-                                     "Writes the ground-truth ambient-occlusion visibility term.");
+                                     "Writes the denoised GTAO visibility term the composite multiplies in.");
             });
     }
 
