@@ -138,6 +138,7 @@ Renderer::Renderer(Window& window) : window_(window)
     createSkyboxDescriptorSetLayout();
     postProcess_.createPostProcessDescriptorSetLayouts();
     ssr_.createDescriptorSetLayout();
+    gtao_.createDescriptorSetLayout();
     createDepthPyramidDescriptorSetLayout();
     postProcess_.createPostProcessSampler();
     createShadowMap();
@@ -196,6 +197,7 @@ void Renderer::recreatePostProcessResources()
     destroyDepthPyramidResources();
     postProcess_.createPostProcessResources(checkerboardTexture_.imageView(), static_cast<uint32_t>(frames_.size()));
     ssr_.createResources(postProcess_.normalRoughness().imageView(), static_cast<uint32_t>(frames_.size()));
+    gtao_.createResources(postProcess_.normalRoughness().imageView(), static_cast<uint32_t>(frames_.size()));
     createDepthPyramidResources();
 }
 
@@ -925,6 +927,7 @@ void Renderer::createPipeline()
     postProcess_.createTaaResolvePipeline();
     postProcess_.createCompositePipeline();
     ssr_.createPipeline(shaderPath("fullscreen.vert.spv"), shaderPath("ssr_trace.frag.spv"));
+    gtao_.createPipeline(shaderPath("fullscreen.vert.spv"), shaderPath("gtao.frag.spv"));
     createComputePipelines();
 }
 
@@ -3976,6 +3979,13 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         // uses the same jittered projection the rasterizer used.
         ssr_.uploadParams(frameIndex, view, frameJitteredProjection_, ssrFrameCounter_++);
     }
+
+    frameGtaoActive_ = ssaoSettings_.enabled && gtao_.available() && !allDrawItems_.empty();
+    if (frameGtaoActive_) {
+        // The horizon search reconstructs positions from the same jitter-rendered
+        // depth the composite consumes, so it uses the jittered projection too.
+        gtao_.uploadParams(frameIndex, view, frameJitteredProjection_, gtaoFrameCounter_++);
+    }
 }
 
 // Called from drawFrame after command recording: both the object-data upload and
@@ -4000,6 +4010,7 @@ void Renderer::resetFrameStateForEmptyScene(uint32_t frameIndex)
     frameTwoPhaseOcclusionActive_ = false;
     frameAsyncComputeActive_ = false;
     frameSsrActive_ = false;
+    frameGtaoActive_ = false;
     allDrawItems_.clear();
     visibleDrawItems_.clear();
     shadowDrawItems_.clear();
@@ -4485,6 +4496,21 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             true,
             false,
         },
+        renderer::RenderGraphImageResource{
+            "AmbientOcclusion",
+            postProcess_.ambientOcclusion().image(),
+            postProcess_.ambientOcclusion().imageView(),
+            VkExtent2D{sceneExtent.width, sceneExtent.height},
+            &postProcess_.ambientOcclusionLayout(),
+            postProcess_.ambientOcclusion().format(),
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            1,
+            1,
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            VkClearValue{},
+            true,
+            false,
+        },
         ssrSceneColorCopyResource,
         taaHistoryResource("TAAHistoryRead",
                            postProcess_.taaHistoryImages()[postProcess_.taaHistoryReadIndex()],
@@ -4588,6 +4614,7 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         postProcess_.isTaaActive(),
         frameTwoPhaseOcclusionActive_,
         frameSsrActive_,
+        frameGtaoActive_,
     };
 }
 
@@ -5247,6 +5274,10 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
 
     if (frameSsrActive_) {
         ssr_.recordCommands(commandBuffer, currentFrame_, postProcess_.sceneColor().image(), extent);
+    }
+
+    if (frameGtaoActive_) {
+        gtao_.recordCommands(commandBuffer, currentFrame_, extent);
     }
 
     recordDepthPyramidCommands(commandBuffer);

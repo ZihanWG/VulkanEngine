@@ -149,6 +149,16 @@ void PostProcessStack::createPostProcessResources(VkImageView depthFallbackView,
     normalRoughness_.create(context_, normalRoughnessInfo);
     normalRoughnessLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 
+    rhi::VulkanImageCreateInfo ambientOcclusionInfo{};
+    ambientOcclusionInfo.width = extent.width;
+    ambientOcclusionInfo.height = extent.height;
+    ambientOcclusionInfo.format = kAmbientOcclusionFormat;
+    ambientOcclusionInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    ambientOcclusionInfo.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    ambientOcclusionInfo.debugName = "AmbientOcclusion";
+    ambientOcclusion_.create(context_, ambientOcclusionInfo);
+    ambientOcclusionLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+
     createTaaResources();
 
     bloomExtent_.width = std::max(1u, extent.width / 2u);
@@ -333,14 +343,14 @@ void PostProcessStack::recordCompositeCommands(VkCommandBuffer commandBuffer, co
         bloomSettings_.useMipChain && (!bloomMipUpsampleImages_.empty() || !bloomMipDownsampleImages_.empty()) ? 1u
                                                                                                                : 0u,
         isGpuExposureActive() ? 1u : 0u};
+    // GTAO is computed in its own pass now; the composite only multiplies the
+    // precomputed visibility term, gated by this enable flag. invProjection is
+    // retained in the push block (still fed from the jittered projection) for
+    // future depth-driven composite effects.
     const bool ssaoActive = ssaoSettings_.enabled && ssaoAvailable_;
     compositePushConstants.invProjection = glm::inverse(jitteredProjection);
-    compositePushConstants.ssaoParams0 = glm::vec4(std::max(ssaoSettings_.radius, 0.0f),
-                                                   ssaoSettings_.bias,
-                                                   std::max(ssaoSettings_.intensity, 0.0f),
-                                                   std::max(ssaoSettings_.power, 0.0001f));
-    compositePushConstants.ssaoParams1 =
-        glm::vec4(ssaoActive ? 1.0f : 0.0f, static_cast<float>(std::max(ssaoSettings_.sampleCount, 1)), 0.0f, 0.0f);
+    compositePushConstants.ssaoParams0 = glm::vec4(0.0f);
+    compositePushConstants.ssaoParams1 = glm::vec4(ssaoActive ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
     vkCmdPushConstants(commandBuffer,
                        compositePipeline_.layout(),
                        VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -408,7 +418,7 @@ void PostProcessStack::createPostProcessDescriptorSetLayouts()
     compositeBindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     compositeBindings[3].descriptorCount = 1;
     compositeBindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    compositeBindings[4] = singleImageBinding; // main depth, sampled for SSAO
+    compositeBindings[4] = singleImageBinding; // GTAO visibility term, multiplied into scene color
     compositeBindings[4].binding = 4;
 
     postProcessCompositeDescriptorSetLayout_.create(
@@ -938,15 +948,16 @@ void PostProcessStack::createCompositeDescriptorSets(const PostProcessDescriptor
             mipBloomView = bloomMipDownsampleImages_.front().imageView();
         }
 
-        // The main depth buffer is sampled by the composite pass for SSAO. When the
-        // depth format cannot be sampled, bind a harmless fallback and disable SSAO.
+        // The composite multiplies the GTAO visibility term into scene color. The
+        // subsystem gates on a samplable depth image (same requirement the GTAO
+        // horizon search has), so mirror that availability flag here.
         ssaoAvailable_ = swapchain_.depthSupportsSampling();
-        const VkDescriptorImageInfo compositeDepthInfo = postProcessDepthInfo();
+        const VkDescriptorImageInfo compositeAmbientOcclusionInfo = postProcessImageInfo(ambientOcclusion_.imageView());
         for (size_t frameIndex = 0; frameIndex < frameCount_; ++frameIndex) {
             compositeImageInfos[frameIndex][0] = postProcessImageInfo(sceneColor_.imageView());
             compositeImageInfos[frameIndex][1] = postProcessImageInfo(bloomPong_.imageView());
             compositeImageInfos[frameIndex][2] = postProcessImageInfo(mipBloomView);
-            compositeImageInfos[frameIndex][3] = compositeDepthInfo;
+            compositeImageInfos[frameIndex][3] = compositeAmbientOcclusionInfo;
 
             compositeExposureInfos[frameIndex].buffer = frameExposureBuffers_[frameIndex].buffer();
             compositeExposureInfos[frameIndex].offset = 0;
@@ -1002,13 +1013,14 @@ void PostProcessStack::createCompositeDescriptorSets(const PostProcessDescriptor
                 std::vector<std::array<VkDescriptorImageInfo, 4>> taaCompositeImageInfos(frameCount_);
                 std::vector<VkDescriptorBufferInfo> taaCompositeExposureInfos(frameCount_);
                 std::vector<VkWriteDescriptorSet> taaCompositeWrites(frameCount_ * 5u);
-                const VkDescriptorImageInfo taaCompositeDepthInfo = postProcessDepthInfo();
+                const VkDescriptorImageInfo taaCompositeAmbientOcclusionInfo =
+                    postProcessImageInfo(ambientOcclusion_.imageView());
                 for (size_t frameIndex = 0; frameIndex < frameCount_; ++frameIndex) {
                     taaCompositeImageInfos[frameIndex][0] =
                         postProcessImageInfo(taaHistoryImages_[historyIndex].imageView());
                     taaCompositeImageInfos[frameIndex][1] = postProcessImageInfo(bloomPong_.imageView());
                     taaCompositeImageInfos[frameIndex][2] = postProcessImageInfo(mipBloomView);
-                    taaCompositeImageInfos[frameIndex][3] = taaCompositeDepthInfo;
+                    taaCompositeImageInfos[frameIndex][3] = taaCompositeAmbientOcclusionInfo;
 
                     taaCompositeExposureInfos[frameIndex].buffer = frameExposureBuffers_[frameIndex].buffer();
                     taaCompositeExposureInfos[frameIndex].offset = 0;

@@ -158,6 +158,9 @@ constexpr VkFormat kVelocityFormat = VK_FORMAT_R16G16_SFLOAT;
 // world-space shading normal (RG), roughness (B), metallic (A). Consumed by the
 // SSR trace pass.
 constexpr VkFormat kNormalRoughnessFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+// Single-channel GTAO visibility term (1 = fully lit) written by the GTAO pass
+// and multiplied into scene color by the composite.
+constexpr VkFormat kAmbientOcclusionFormat = VK_FORMAT_R8_UNORM;
 constexpr VkFormat kDepthPyramidFormat = VK_FORMAT_R32_SFLOAT;
 constexpr uint32_t kDepthPyramidLocalSizeX = 8;
 constexpr uint32_t kDepthPyramidLocalSizeY = 8;

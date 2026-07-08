@@ -75,18 +75,22 @@ struct TaaSettings {
     float feedback = 0.88f;
 };
 
-// Screen-space ambient occlusion computed in the composite pass from the main
-// depth buffer. Disabled by default; the toggle is only honoured when the depth
-// image supports sampling (Renderer::ssaoAvailable_). Lives with the other
-// post-process settings structs so PostProcessStack and Renderer share the type
-// without a circular include.
+// Ground-truth ambient occlusion (Jimenez et al. 2016): a dedicated horizon-
+// search pass consumes the main depth buffer and the thin G-buffer normal and
+// writes a visibility texture the composite pass multiplies into scene color.
+// Disabled by default; the toggle is only honoured when the depth image supports
+// sampling (Renderer::ssaoAvailable_). Lives with the other post-process
+// settings structs so PostProcessStack and Renderer share the type without a
+// circular include.
 struct SsaoSettings {
     bool enabled = false;
-    float radius = 0.5f;
-    float bias = 0.025f;
-    float intensity = 1.0f;
-    float power = 2.0f;
-    int sampleCount = 16;
+    float radius = 0.5f;      // horizon-search radius in view-space units
+    float intensity = 1.0f;   // occlusion strength multiplier
+    float power = 2.0f;       // contrast curve applied to the visibility term
+    int sliceCount = 3;       // GTAO slices swept around the view direction
+    int stepsPerSlice = 6;    // horizon-march steps per slice, per side
+    float falloff = 0.6f;     // 0..1 fraction of the radius over which samples fade
+    float thickness = 0.5f;   // view-space thickness heuristic (reserved for denoise)
 };
 
 struct DebugUiSettings {

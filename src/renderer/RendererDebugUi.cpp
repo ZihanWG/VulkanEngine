@@ -180,7 +180,7 @@ void Renderer::drawBloomDebugUi()
 
 void Renderer::drawSsaoDebugUi()
 {
-    if (!ImGui::CollapsingHeader("Ambient Occlusion (SSAO)", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (!ImGui::CollapsingHeader("Ambient Occlusion (GTAO)", ImGuiTreeNodeFlags_DefaultOpen)) {
         return;
     }
     if (!ssaoAvailable_) {
@@ -189,12 +189,14 @@ void Renderer::drawSsaoDebugUi()
     ImGui::BeginDisabled(!ssaoAvailable_);
     ImGui::Checkbox("Enabled##ssao", &ssaoSettings_.enabled);
     ImGui::DragFloat("Radius (view units)", &ssaoSettings_.radius, 0.01f, 0.05f, 5.0f, "%.3f");
-    ImGui::DragFloat("Bias", &ssaoSettings_.bias, 0.001f, 0.0f, 0.2f, "%.3f");
     ImGui::DragFloat("Intensity##ssao", &ssaoSettings_.intensity, 0.05f, 0.0f, 4.0f, "%.2f");
     ImGui::DragFloat("Power", &ssaoSettings_.power, 0.05f, 0.1f, 8.0f, "%.2f");
-    ImGui::SliderInt("Samples", &ssaoSettings_.sampleCount, 4, 64);
+    ImGui::SliderInt("Slices", &ssaoSettings_.sliceCount, 1, 8);
+    ImGui::SliderInt("Steps / slice", &ssaoSettings_.stepsPerSlice, 2, 16);
+    ImGui::DragFloat("Falloff", &ssaoSettings_.falloff, 0.01f, 0.05f, 1.0f, "%.2f");
     ImGui::TextWrapped(
-        "Screen-space AO sampled from the main depth buffer in the composite pass (applied to scene color).");
+        "Ground-truth ambient occlusion: a horizon-search pass reads the main depth buffer and the thin "
+        "G-buffer normal, and the composite multiplies the visibility term into scene color.");
     ImGui::EndDisabled();
 }
 
