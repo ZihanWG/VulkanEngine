@@ -20,6 +20,7 @@
 #include "renderer/RenderObject.h"
 #include "renderer/RuntimeSettings.h"
 #include "renderer/SceneBuilder.h"
+#include "renderer/GroundTruthAmbientOcclusion.h"
 #include "renderer/ScreenSpaceReflections.h"
 #include "renderer/ScreenshotCapture.h"
 #include "renderer/SkinnedMesh.h"
@@ -651,7 +652,9 @@ private:
     bool useAsyncCompute_ = true;
     bool frameAsyncComputeActive_ = false;
     bool frameSsrActive_ = false;
+    bool frameGtaoActive_ = false;
     uint32_t ssrFrameCounter_ = 0;
+    uint32_t gtaoFrameCounter_ = 0;
     bool useGpuShadowCulling_ = true;
     bool shadowIndirectAvailable_ = false;
     bool ssaoAvailable_ = false;
@@ -695,6 +698,11 @@ private:
     // thin G-buffer, additively blended into scene color before TAA. Declared
     // after the services + settings it borrows.
     renderer::ScreenSpaceReflections ssr_{context_, swapchain_, renderGraph_, gpuProfiler_, ssrSettings_};
+
+    // Ground-truth ambient occlusion: horizon-search pass reading main depth +
+    // the thin G-buffer normal, writing the visibility target the composite
+    // multiplies into scene color. Borrows the same services + the SSAO settings.
+    renderer::GroundTruthAmbientOcclusion gtao_{context_, swapchain_, renderGraph_, gpuProfiler_, ssaoSettings_};
 
     // Hi-Z depth pyramid subsystem. Like postProcess_, it owns its GPU resources
     // and borrows the rendering services by reference, so it is declared last to

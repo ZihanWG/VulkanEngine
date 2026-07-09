@@ -153,6 +153,16 @@ public:
     {
         return normalRoughnessLayout_;
     }
+    // GTAO visibility target: owned here alongside the G-buffer targets, written
+    // by the GTAO subsystem's pass and sampled by the composite.
+    [[nodiscard]] const rhi::VulkanImage& ambientOcclusion() const
+    {
+        return ambientOcclusion_;
+    }
+    [[nodiscard]] VkImageLayout& ambientOcclusionLayout()
+    {
+        return ambientOcclusionLayout_;
+    }
     [[nodiscard]] const rhi::VulkanImage& bloomExtract() const
     {
         return bloomExtract_;
@@ -414,6 +424,7 @@ private:
     rhi::VulkanImage sceneColor_;
     rhi::VulkanImage velocity_;
     rhi::VulkanImage normalRoughness_;
+    rhi::VulkanImage ambientOcclusion_;
     rhi::VulkanImage bloomExtract_;
     rhi::VulkanImage bloomPing_;
     rhi::VulkanImage bloomPong_;
@@ -468,6 +479,7 @@ private:
     VkImageLayout sceneColorLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     VkImageLayout velocityLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     VkImageLayout normalRoughnessLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImageLayout ambientOcclusionLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     VkImageLayout bloomExtractLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     VkImageLayout bloomPingLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     VkImageLayout bloomPongLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;

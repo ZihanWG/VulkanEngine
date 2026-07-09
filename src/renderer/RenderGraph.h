@@ -61,6 +61,8 @@ enum class RenderPassType {
     DepthPyramid,
     MainHdr,
     Ssr,
+    Gtao,
+    GtaoBlur,
     TaaResolve,
     BloomExtract,
     BloomBlur,
@@ -160,6 +162,8 @@ struct RenderGraphFrameResources {
     RenderGraphImageResource sceneColor;
     RenderGraphImageResource velocity;
     RenderGraphImageResource normalRoughness;
+    RenderGraphImageResource ambientOcclusion;
+    RenderGraphImageResource ambientOcclusionRaw;
     RenderGraphImageResource ssrSceneColorCopy;
     RenderGraphImageResource taaHistoryRead;
     RenderGraphImageResource taaHistoryWrite;
@@ -184,6 +188,8 @@ struct RenderGraphFrameResources {
     bool twoPhaseOcclusionEnabled = false;
     // Declares the SSR copy + trace passes for this frame.
     bool ssrEnabled = false;
+    // Declares the GTAO horizon-search pass for this frame.
+    bool gtaoEnabled = false;
 };
 
 struct RenderGraphResourceDebugInfo {
@@ -276,6 +282,12 @@ public:
     void endSsrCopyPass();
     void beginSsrTracePass();
     void endSsrTracePass();
+    // GTAO: horizon-search fullscreen pass writing the raw AO target, then a
+    // bilateral blur denoising it into the composite-visible AO target.
+    void beginGtaoPass();
+    void endGtaoPass();
+    void beginGtaoBlurPass();
+    void endGtaoBlurPass();
     void beginDepthPyramidPass();
     void endDepthPyramidPass();
     void beginTaaResolvePass();
@@ -352,6 +364,8 @@ private:
         MainHdrPhase2,
         SsrCopy,
         SsrTrace,
+        Gtao,
+        GtaoBlur,
         DepthPyramidMid,
         DepthPyramid,
         TaaResolve,
@@ -401,6 +415,8 @@ private:
         uint32_t mainHdrPhase2 = kInvalidRenderGraphHandle;
         uint32_t ssrCopy = kInvalidRenderGraphHandle;
         uint32_t ssrTrace = kInvalidRenderGraphHandle;
+        uint32_t gtao = kInvalidRenderGraphHandle;
+        uint32_t gtaoBlur = kInvalidRenderGraphHandle;
         uint32_t depthPyramid = kInvalidRenderGraphHandle;
         uint32_t taaResolve = kInvalidRenderGraphHandle;
         uint32_t bloomExtract = kInvalidRenderGraphHandle;
@@ -428,6 +444,8 @@ private:
         RGTextureHandle sceneColor{};
         RGTextureHandle velocity{};
         RGTextureHandle normalRoughness{};
+        RGTextureHandle ambientOcclusion{};
+        RGTextureHandle ambientOcclusionRaw{};
         RGTextureHandle ssrSceneColorCopy{};
         RGTextureHandle taaHistoryRead{};
         RGTextureHandle taaHistoryWrite{};
