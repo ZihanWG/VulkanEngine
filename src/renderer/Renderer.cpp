@@ -4434,11 +4434,13 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
 
     renderer::RenderGraphImageResource gtaoRawResource{};
     if (gtao_.available()) {
+        // Raw AO is half resolution; import its actual extent, not the scene's.
+        const VkExtent3D gtaoRawExtent = gtao_.rawAmbientOcclusion().extent();
         gtaoRawResource = renderer::RenderGraphImageResource{
             "GtaoRawAmbientOcclusion",
             gtao_.rawAmbientOcclusion().image(),
             gtao_.rawAmbientOcclusion().imageView(),
-            VkExtent2D{sceneExtent.width, sceneExtent.height},
+            VkExtent2D{gtaoRawExtent.width, gtaoRawExtent.height},
             gtao_.rawAmbientOcclusionLayoutPtr(),
             gtao_.rawAmbientOcclusion().format(),
             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,

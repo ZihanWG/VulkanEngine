@@ -11,8 +11,8 @@ The forward renderer has no G-buffer, so the main HDR pass writes a third MRT
 attachment (`NormalRoughnessGBuffer`, RGBA16F): octahedral-encoded world-space
 shading normal (RG, including normal mapping), roughness (B), metallic (A).
 The skybox writes roughness 1 so sky pixels never trace. The attachment is
-owned by PostProcessStack next to the velocity target and also positions the
-renderer for a future SSAO → GTAO upgrade.
+owned by PostProcessStack next to the velocity target and is also read by the
+GTAO pass (see [gtao.md](gtao.md)), which reuses this normal.
 
 ## Pass structure
 

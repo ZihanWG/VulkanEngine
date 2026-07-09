@@ -117,11 +117,15 @@ void GroundTruthAmbientOcclusion::createResources(VkImageView normalRoughnessVie
             throw std::runtime_error("GTAO requires the thin G-buffer image view.");
         }
 
-        // Raw (pre-denoise) visibility target the trace writes and the blur reads.
+        // Raw (pre-denoise) visibility target the trace writes and the upsample
+        // reads. The horizon search runs at half resolution (4x fewer searches);
+        // the joint-bilateral upsample restores full resolution from the full-res
+        // depth buffer.
         const VkExtent2D extent = swapchain_.extent();
+        const VkExtent2D halfExtent{std::max(1u, extent.width / 2u), std::max(1u, extent.height / 2u)};
         rhi::VulkanImageCreateInfo rawAoInfo{};
-        rawAoInfo.width = extent.width;
-        rawAoInfo.height = extent.height;
+        rawAoInfo.width = halfExtent.width;
+        rawAoInfo.height = halfExtent.height;
         rawAoInfo.format = VK_FORMAT_R8_UNORM;
         rawAoInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         rawAoInfo.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -283,20 +287,22 @@ void GroundTruthAmbientOcclusion::recordCommands(VkCommandBuffer commandBuffer, 
         return;
     }
 
+    const VkExtent2D halfExtent{std::max(1u, extent.width / 2u), std::max(1u, extent.height / 2u)};
+
     VkViewport viewport{};
-    viewport.width = static_cast<float>(extent.width);
-    viewport.height = static_cast<float>(extent.height);
     viewport.minDepth = 0.0f;
     viewport.maxDepth = 1.0f;
     VkRect2D scissor{};
-    scissor.extent = extent;
 
-    // Trace: horizon search into the raw AO target.
+    // Trace: horizon search into the half-resolution raw AO target.
     {
         const GpuProfileScope traceScope(gpuProfiler_, frameIndex, commandBuffer, "GTAO");
         rhi::debug::beginLabel(commandBuffer, "GTAOPass");
         renderGraph_.beginGtaoPass();
 
+        viewport.width = static_cast<float>(halfExtent.width);
+        viewport.height = static_cast<float>(halfExtent.height);
+        scissor.extent = halfExtent;
         vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.pipeline());
@@ -314,12 +320,15 @@ void GroundTruthAmbientOcclusion::recordCommands(VkCommandBuffer commandBuffer, 
         rhi::debug::endLabel(commandBuffer);
     }
 
-    // Bilateral denoise: raw AO -> composite-visible AO target.
+    // Joint-bilateral upsample + denoise: half-res raw AO -> full-res composite AO.
     {
         const GpuProfileScope blurScope(gpuProfiler_, frameIndex, commandBuffer, "GTAOBlur");
         rhi::debug::beginLabel(commandBuffer, "GTAOBlurPass");
         renderGraph_.beginGtaoBlurPass();
 
+        viewport.width = static_cast<float>(extent.width);
+        viewport.height = static_cast<float>(extent.height);
+        scissor.extent = extent;
         vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, blurPipeline_.pipeline());

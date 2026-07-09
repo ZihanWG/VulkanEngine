@@ -22,7 +22,7 @@ A **C++20 / Vulkan 1.3 real-time renderer** built as a graphics- and engine-prog
 | **Skeletal animation** | GPU linear-blend vertex skinning from a CPU joint-matrix palette, with a unit-tested animation core (keyframe sampling + hierarchy flatten) |
 | **PBR + IBL** | Cook-Torrance GGX, tangent-space normal mapping, prefiltered specular + diffuse irradiance + split-sum BRDF LUT, Kulla-Conty multi-scatter |
 | **Shadows** | PCF cascaded shadow maps with per-cascade GPU shadow-caster culling and an indirect shadow path |
-| **Post-processing** | HDR scene color, screen-space reflections, mip-chain bloom, histogram auto-exposure, ACES/Reinhard tonemap, motion-vector TAA with reprojected history |
+| **Post-processing** | HDR scene color, screen-space reflections, ground-truth ambient occlusion (GTAO), mip-chain bloom, histogram auto-exposure, ACES/Reinhard tonemap, motion-vector TAA with reprojected history |
 | **Architecture** | Render graph (logical handles + conservative barrier inference), RAII Vulkan RHI, task-parallel frame prep on a job system, per-pass GPU timestamp profiler, ImGui scene/material editor |
 | **Engineering** | C++20, Catch2 unit tests, Linux + Windows CI, AddressSanitizer/UBSan, clang-tidy/clang-format |
 
@@ -76,6 +76,7 @@ GPU linear-blend vertex skinning (`simple_skinned.vert`) driven by a per-frame j
 - Optional Temporal AA, disabled by default: Halton subpixel jitter, a main-pass velocity buffer (camera, rigid object, and rotation-only sky motion), history reprojection with closest-depth velocity dilation, conservative neighborhood clamping, ping-pong HDR history, explicit history reset.
 - GPU histogram auto-exposure: log-average + histogram luminance reduced into a GPU exposure-state buffer read directly by composite; manual exposure remains as a fallback.
 - Screen-space reflections, on by default: the main pass writes a thin G-buffer (octahedral world normal + roughness + metallic), a fullscreen trace marches the depth buffer (jittered start, binary refinement, thickness test) and additively blends fresnel- and confidence-weighted reflections into scene color before TAA.
+- Ground-truth ambient occlusion (GTAO), off by default: a half-resolution horizon-search pass reuses the thin G-buffer normal and the depth buffer to integrate the cosine-weighted visibility arc over several slices, a joint-bilateral pass denoises and upsamples it against full-res depth, and the composite multiplies the term into scene color — replacing the former depth-only inline SSAO.
 - Reinhard/ACES tone mapping applied in the final composite before swapchain output.
 - PCF-filtered cascaded shadow maps (CSM) with texel snapping, optional cascade debug tinting, per-cascade GPU shadow-caster culling, and an indirect shadow draw path.
 - Descriptor-indexing path for bindless material texture arrays, with a legacy descriptor-set fallback.
@@ -110,6 +111,7 @@ Focused technical write-ups for each major subsystem (start with [docs/README.md
 | Clustered (Forward+) lighting | [clustered_lighting.md](docs/clustered_lighting.md) |
 | Skeletal animation | [skeletal_animation.md](docs/skeletal_animation.md) |
 | Render graph | [render_graph.md](docs/render_graph.md) |
+| Screen-space reflections, GTAO | [ssr.md](docs/ssr.md), [gtao.md](docs/gtao.md) |
 | Post-processing and TAA | [post_processing.md](docs/post_processing.md), [taa.md](docs/taa.md) |
 | GPU culling + Hi-Z occlusion | [gpu_culling.md](docs/gpu_culling.md) |
 | GPU profiler | [profiling.md](docs/profiling.md) |
@@ -177,6 +179,7 @@ This is a rendering/engine portfolio, not a full game engine — no physics, gam
 - Upload paths use one-time command buffers + queue idle waits — fine for init, not ideal for runtime streaming.
 - TAA reprojects history along a main-pass velocity buffer, but skinned joint-space motion, disocclusion masks, temporal upscaling, and FSR/DLSS/XeSS are not implemented.
 - Screen-space reflections are linear-march (no Hi-Z acceleration or roughness-cone blur) and add on top of IBL specular; no ray tracing, planar reflections, or glass transmission.
+- GTAO is applied as a scene-color multiply in the composite (not restricted to indirect/ambient light), has no multi-bounce term (the thin G-buffer stores no albedo) and no temporal accumulation yet; it is spatial half-res + joint-bilateral upsample only.
 - glTF import covers static + skinned meshes and base color/normal/metallic-roughness/emissive textures; occlusion textures, morph targets, cameras, and scene lights are future work.
 - ImGui is a debug UI only (no docking/editor layout); scene editing is limited to existing runtime objects.
 - HDR swapchain output, local exposure, and high-resolution offline capture are not implemented.
