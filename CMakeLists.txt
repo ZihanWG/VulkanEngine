@@ -41,6 +41,7 @@ set(VULKAN_ENGINE_SDL3_TAG "release-3.4.8")
 set(VULKAN_ENGINE_GLM_TAG "1.0.3")
 set(VULKAN_ENGINE_VOLK_TAG "vulkan-sdk-1.4.328.1")
 set(VULKAN_ENGINE_VMA_TAG "v3.3.0")
+set(VULKAN_ENGINE_MESHOPTIMIZER_TAG "v0.22")
 
 find_package(Vulkan REQUIRED)
 
@@ -104,6 +105,35 @@ if(NOT TARGET GPUOpen::VulkanMemoryAllocator AND NOT TARGET VulkanMemoryAllocato
         GIT_TAG ${VULKAN_ENGINE_VMA_TAG}
     )
     FetchContent_MakeAvailable(vma)
+endif()
+
+# meshoptimizer generates the discrete LOD chains (meshopt_simplify) and runs the
+# vertex-cache optimization on each level. Mesh building is the only consumer.
+find_package(meshoptimizer CONFIG QUIET)
+if(NOT TARGET meshoptimizer AND NOT TARGET meshoptimizer::meshoptimizer)
+    if(NOT VULKAN_ENGINE_FETCH_DEPS)
+        message(FATAL_ERROR "meshoptimizer was not found. Install it or configure with VULKAN_ENGINE_FETCH_DEPS=ON.")
+    endif()
+
+    set(MESHOPT_BUILD_DEMO OFF CACHE BOOL "" FORCE)
+    set(MESHOPT_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+    set(MESHOPT_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(meshoptimizer
+        GIT_REPOSITORY https://github.com/zeux/meshoptimizer.git
+        GIT_TAG ${VULKAN_ENGINE_MESHOPTIMIZER_TAG}
+    )
+    FetchContent_MakeAvailable(meshoptimizer)
+endif()
+
+# Older meshoptimizer releases only define the bare target, newer ones add the
+# namespaced alias; normalize so the link line below can name one thing.
+set(MESHOPTIMIZER_TARGET "")
+if(TARGET meshoptimizer::meshoptimizer)
+    set(MESHOPTIMIZER_TARGET meshoptimizer::meshoptimizer)
+elseif(TARGET meshoptimizer)
+    set(MESHOPTIMIZER_TARGET meshoptimizer)
+else()
+    message(FATAL_ERROR "meshoptimizer was resolved but no usable target was defined.")
 endif()
 
 set(SDL3_TARGET "")
@@ -218,6 +248,7 @@ add_library(VulkanEngineRuntime STATIC
     src/renderer/GroundTruthAmbientOcclusion.cpp
     src/renderer/SkinnedMesh.cpp
     src/renderer/Mesh.cpp
+    src/renderer/MeshLod.cpp
     src/renderer/PostProcessStack.cpp
     src/renderer/RenderGraph.cpp
     src/renderer/Renderer.cpp
@@ -277,6 +308,10 @@ target_link_libraries(VulkanEngineRuntime PUBLIC
     glm::glm
     imgui
 )
+
+# Only Mesh.cpp calls into meshoptimizer, and MeshLod (the type the rest of the
+# engine sees) is a plain struct, so this stays PRIVATE.
+target_link_libraries(VulkanEngineRuntime PRIVATE ${MESHOPTIMIZER_TARGET})
 
 if(TARGET Vulkan::Headers)
     target_link_libraries(VulkanEngineRuntime PUBLIC Vulkan::Headers)

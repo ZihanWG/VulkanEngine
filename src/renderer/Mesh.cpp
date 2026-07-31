@@ -35,6 +35,7 @@ namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
 
+
 const std::array<Vertex, 24> kCubeVertices = {{
     // Front (+Z)
     {{-0.5f, -0.5f, 0.5f}, {1.0f, 0.95f, 0.95f}, {0.0f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 0.0f, 0.0f, 1.0f}},
@@ -649,13 +650,28 @@ Mesh Mesh::createCube(rhi::VulkanContext& context, const rhi::VulkanCommandConte
         std::as_bytes(std::span<const Vertex>(kCubeVertices.data(), kCubeVertices.size())),
         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
 
+    mesh.indexCount_ = static_cast<uint32_t>(kCubeIndices.size());
+
+    // 12 triangles is far under kMinLodIndexCount, so this produces a level-0-only
+    // chain. It still runs so every valid mesh has a LOD table and the cull shader
+    // never has to special-case a missing one.
+    std::vector<uint32_t> indices(kCubeIndices.begin(), kCubeIndices.end());
+    mesh.lods_ = buildLodChain(indices,
+                               0,
+                               mesh.indexCount_,
+                               &kCubeVertices[0].position.x,
+                               kCubeVertices.size(),
+                               sizeof(Vertex),
+                               mesh.debugName_);
+    mesh.lodBase_ = 0;
+    mesh.lodCount_ = static_cast<uint32_t>(mesh.lods_.size());
+
     mesh.indexBuffer_.createDeviceLocal(
         context,
         commandContext,
-        std::as_bytes(std::span<const uint32_t>(kCubeIndices.data(), kCubeIndices.size())),
+        std::as_bytes(std::span<const uint32_t>(indices.data(), indices.size())),
         VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
 
-    mesh.indexCount_ = static_cast<uint32_t>(kCubeIndices.size());
     return mesh;
 }
 
@@ -732,13 +748,23 @@ Mesh Mesh::createUvSphere(
         std::as_bytes(std::span<const Vertex>(vertices.data(), vertices.size())),
         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
 
+    mesh.indexCount_ = static_cast<uint32_t>(indices.size());
+    mesh.lods_ = buildLodChain(indices,
+                               0,
+                               mesh.indexCount_,
+                               &vertices[0].position.x,
+                               vertices.size(),
+                               sizeof(Vertex),
+                               mesh.debugName_);
+    mesh.lodBase_ = 0;
+    mesh.lodCount_ = static_cast<uint32_t>(mesh.lods_.size());
+
     mesh.indexBuffer_.createDeviceLocal(
         context,
         commandContext,
         std::as_bytes(std::span<const uint32_t>(indices.data(), indices.size())),
         VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
 
-    mesh.indexCount_ = static_cast<uint32_t>(indices.size());
     rhi::debug::setObjectName(
         context.vkDevice(), mesh.vertexBuffer_.buffer(), VK_OBJECT_TYPE_BUFFER, "PortfolioSphereVertexBuffer");
     rhi::debug::setObjectName(
@@ -912,11 +938,33 @@ LoadedGltfAsset Mesh::createFromGltf(
         // Milestone 26 preserves glTF positions and node transforms as authored.
         // No handedness or up-axis conversion is applied yet.
         Mesh mesh;
+        mesh.debugName_ = meshDebugName(sourceMesh, meshIndex);
         mesh.vertexBuffer_.createDeviceLocal(
             context,
             commandContext,
             std::as_bytes(std::span<const Vertex>(vertices.data(), vertices.size())),
             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+
+        // Authored index total. Simplified levels are appended past it below, so
+        // this has to be captured before the LOD chains grow `indices`.
+        mesh.indexCount_ = static_cast<uint32_t>(indices.size());
+
+        // One chain per primitive, since primitives are drawn independently and
+        // each needs its own (firstIndex, indexCount) per level. They all share
+        // the mesh's flat LOD table, addressed through lodBase/lodCount.
+        for (MeshPrimitive& primitive : subMeshes) {
+            const std::vector<MeshLod> primitiveLods =
+                buildLodChain(indices,
+                              primitive.firstIndex,
+                              primitive.indexCount,
+                              &vertices[0].position.x,
+                              vertices.size(),
+                              sizeof(Vertex),
+                              mesh.debugName_);
+            primitive.lodBase = static_cast<uint32_t>(mesh.lods_.size());
+            primitive.lodCount = static_cast<uint32_t>(primitiveLods.size());
+            mesh.lods_.insert(mesh.lods_.end(), primitiveLods.begin(), primitiveLods.end());
+        }
 
         mesh.indexBuffer_.createDeviceLocal(
             context,
@@ -924,10 +972,8 @@ LoadedGltfAsset Mesh::createFromGltf(
             std::as_bytes(std::span<const uint32_t>(indices.data(), indices.size())),
             VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
 
-        mesh.indexCount_ = static_cast<uint32_t>(indices.size());
         mesh.subMeshes_ = std::move(subMeshes);
         mesh.localBounds_ = localBounds;
-        mesh.debugName_ = meshDebugName(sourceMesh, meshIndex);
 
         const std::string debugName = path.stem().string() + "Mesh" + std::to_string(meshIndex);
         rhi::debug::setObjectName(
