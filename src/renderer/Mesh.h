@@ -47,6 +47,12 @@ struct GltfMaterialInfo {
     int normalTextureIndex = -1;
     int metallicRoughnessTextureIndex = -1;
     int emissiveTextureIndex = -1;
+    // glTF alphaMode / alphaCutoff / doubleSided, kept in the source spelling so
+    // Material can round-trip them. They decide the render bucket, so importing a
+    // cutout or transparent glTF without them would silently render it opaque.
+    std::string alphaMode = "OPAQUE";
+    float alphaCutoff = 0.5f;
+    bool doubleSided = false;
     bool fallback = false;
 };
 

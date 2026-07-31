@@ -105,6 +105,32 @@ private:
     // keep the many frameCascades_ usages in the .cpp unchanged.
     using CascadeFrameData = renderer::ShadowCascade;
 
+    // Draw items are sorted by (bucket, mesh) so every bucket owns one contiguous
+    // range of allDrawItems_/visibleDrawItems_ and batches never straddle a bucket
+    // boundary. Opaque and Mask share the main pipeline (the cutoff in
+    // ObjectFrameData::materialParams.w makes the alpha test data-driven) but need
+    // different *shadow* pipelines; Blend additionally needs its own pass, sort
+    // order, and blend state. The numeric order is also the render order.
+    enum class RenderBucket : uint8_t {
+        Opaque = 0,
+        Mask = 1,
+        Blend = 2,
+    };
+
+    static constexpr size_t kRenderBucketCount = 3;
+
+    [[nodiscard]] static RenderBucket renderBucketForMaterial(const renderer::Material* material);
+    [[nodiscard]] static const char* renderBucketName(RenderBucket bucket);
+
+    // Half-open [begin, end) range of draw items belonging to one bucket.
+    struct RenderBucketRange {
+        uint32_t begin = 0;
+        uint32_t end = 0;
+
+        [[nodiscard]] uint32_t count() const { return end - begin; }
+        [[nodiscard]] bool empty() const { return end <= begin; }
+    };
+
     struct DrawItem {
         const renderer::Mesh* mesh = nullptr;
         const renderer::Material* material = nullptr;
@@ -114,6 +140,7 @@ private:
         uint32_t indexCount = 0;
         int32_t vertexOffset = 0;
         uint32_t frameDataIndex = 0;
+        RenderBucket bucket = RenderBucket::Opaque;
     };
 
     struct MeshDrawBatch {
@@ -122,6 +149,7 @@ private:
         uint32_t drawItemCount = 0;
         uint32_t compactedCommandOffset = 0;
         uint32_t visibleCountOffset = 0;
+        RenderBucket bucket = RenderBucket::Opaque;
     };
 
     struct CullingStats {
@@ -243,6 +271,8 @@ private:
     void createSkinnedPipeline();
     void createSkyboxPipeline();
     void createShadowPipeline();
+    void createMaskedShadowPipeline(const VkVertexInputBindingDescription& binding,
+                                    const std::array<VkVertexInputAttributeDescription, 5>& attributes);
     void createComputePipelines();
     void createScene();
     // createScene() helpers (see Renderer.cpp): reset scene state, build the shared
@@ -483,6 +513,10 @@ private:
     rhi::VulkanPipeline skinnedPipeline_;
     rhi::VulkanPipeline skyboxPipeline_;
     rhi::VulkanPipeline shadowPipeline_;
+    // Alpha-tested shadow casters. Separate from shadowPipeline_ because the
+    // depth-only pipeline has no fragment stage at all; this one adds the cutout
+    // discard and therefore needs the bindless base-color array bound.
+    rhi::VulkanPipeline maskedShadowPipeline_;
     rhi::VulkanCommandContext commandContext_;
     // Async compute: per-frame command buffers + semaphores for the queue that
     // runs ClusterBuild/LightCull in parallel with the shadow passes. Falls
@@ -492,6 +526,9 @@ private:
     rhi::VulkanTexture checkerboardTexture_;
     rhi::VulkanTexture portfolioBaseColorTexture_;
     rhi::VulkanTexture portfolioBackdropTexture_;
+    // Perforated panel driving the alpha-mask demo; its alpha channel is what the
+    // main pass and the alpha-tested shadow pipeline both clip against.
+    rhi::VulkanTexture cutoutLatticeTexture_;
     rhi::VulkanTexture normalMapTexture_;
     rhi::VulkanTexture flatNormalTexture_;
     rhi::VulkanTexture metallicRoughnessTexture_;

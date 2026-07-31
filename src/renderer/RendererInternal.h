@@ -105,7 +105,9 @@ struct ObjectFrameData {
 // intentionally duplicate cascade data per draw for this educational milestone;
 // a later scene/light buffer can remove that per-object cost.
 // materialParams.x = metallic, y = roughness, z = multiScatterStrength,
-// and w is reserved for future scalar material data.
+// and w is the alpha-test cutoff: >= 0 clips fragments whose base-color alpha
+// falls below it (glTF MASK), < 0 disables the test (OPAQUE and BLEND). See
+// renderer::kNoAlphaTestCutoff.
 // cascadeSplits stores positive camera-view depths for cascades 0..3.
 // cameraPosition.xyz is the world-space camera position, and w stores the
 // cascade debug-color toggle as 0.0 or 1.0.

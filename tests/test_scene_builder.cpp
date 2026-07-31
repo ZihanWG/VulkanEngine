@@ -3,6 +3,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <set>
 #include <string>
@@ -24,12 +25,12 @@ struct IdAllocator {
     uint32_t operator()() { return next++; }
 };
 
-// Builds a material array sized so the portfolio slot indices (up to
-// kPortfolioBackdropMaterialIndex == 10) are valid, tagging the PBR-sample slots
-// with the debug names SceneBuilder keys its has-checks off.
+// Builds a material array sized so every portfolio slot index (up to
+// kPortfolioCutoutLatticeMaterialIndex == 11) is valid, tagging the PBR-sample
+// slots with the debug names SceneBuilder keys its has-checks off.
 std::vector<Material> makePortfolioMaterials()
 {
-    std::vector<Material> materials(11);
+    std::vector<Material> materials(ve::renderer::kPortfolioCutoutLatticeMaterialIndex + 1);
     materials[ve::renderer::kPortfolioHeroCeramicMaterialIndex].debugName = "Portfolio_HeroCeramic";
     materials[ve::renderer::kPortfolioMatteGrayMaterialIndex].debugName = "Portfolio_MatteGray";
     materials[ve::renderer::kPortfolioGlossyBlueMaterialIndex].debugName = "Portfolio_GlossyBlue";
@@ -99,6 +100,7 @@ TEST_CASE("SceneBuilder portfolio showcase lays out floor, backdrop, plinth, and
                                         "Portfolio Glossy Blue",
                                         "Portfolio Rough Metal",
                                         "Portfolio Polished Metal Small",
+                                        "Portfolio Cutout Panel",
                                     });
 
     for (const RenderObject& object : objects) {
@@ -107,13 +109,15 @@ TEST_CASE("SceneBuilder portfolio showcase lays out floor, backdrop, plinth, and
         CHECK_FALSE(object.portfolioOnly);
     }
 
-    // First three are cubes (floor/backdrop/plinth); the remaining five are spheres.
+    // First three are cubes (floor/backdrop/plinth), then five spheres, and the
+    // cutout panel is a cube again.
     CHECK(objects[0].mesh == &cubeMesh);
     CHECK(objects[1].mesh == &cubeMesh);
     CHECK(objects[2].mesh == &cubeMesh);
-    for (size_t index = 3; index < objects.size(); ++index) {
+    for (size_t index = 3; index < 8; ++index) {
         CHECK(objects[index].mesh == &sphereMesh);
     }
+    CHECK(objects[8].mesh == &cubeMesh);
 
     // Material slot wiring matches the named indices in SceneBuilder.h.
     CHECK(objects[0].material == &materials[ve::renderer::kPortfolioGroundMaterialIndex]);
@@ -121,6 +125,31 @@ TEST_CASE("SceneBuilder portfolio showcase lays out floor, backdrop, plinth, and
     CHECK(objects[2].material == &materials[ve::renderer::kPortfolioGroundMaterialIndex]);
     CHECK(objects[3].material == &materials[ve::renderer::kPortfolioHeroCeramicMaterialIndex]);
     CHECK(objects[7].material == &materials[ve::renderer::kPortfolioPolishedMetalSmallMaterialIndex]);
+    CHECK(objects[8].material == &materials[ve::renderer::kPortfolioCutoutLatticeMaterialIndex]);
+}
+
+TEST_CASE("SceneBuilder omits the cutout panel when the lattice material slot is missing", "[scene]")
+{
+    // The showcase only needs slots through kPortfolioBackdropMaterialIndex, so a
+    // material array that stops there must still build — just without the cutout
+    // demo — rather than indexing past the end.
+    Mesh cubeMesh;
+    Mesh sphereMesh;
+    std::vector<Material> materials(ve::renderer::kPortfolioBackdropMaterialIndex + 1);
+    materials[ve::renderer::kPortfolioHeroCeramicMaterialIndex].debugName = "Portfolio_HeroCeramic";
+    materials[ve::renderer::kPortfolioMatteGrayMaterialIndex].debugName = "Portfolio_MatteGray";
+    materials[ve::renderer::kPortfolioGlossyBlueMaterialIndex].debugName = "Portfolio_GlossyBlue";
+    materials[ve::renderer::kPortfolioRoughMetalMaterialIndex].debugName = "Portfolio_RoughMetal";
+    materials[ve::renderer::kPortfolioPolishedMetalSmallMaterialIndex].debugName = "Portfolio_PolishedMetalSmall";
+    IdAllocator ids;
+    SceneBuilder builder(cubeMesh, sphereMesh, materials, std::ref(ids));
+
+    std::vector<RenderObject> objects;
+    builder.appendPortfolioShowcase(objects);
+
+    CHECK(objects.size() == 8);
+    const std::vector<std::string> names = objectNames(objects);
+    CHECK(std::find(names.begin(), names.end(), "Portfolio Cutout Panel") == names.end());
 }
 
 TEST_CASE("SceneBuilder skips the portfolio showcase without portfolio materials", "[scene]")

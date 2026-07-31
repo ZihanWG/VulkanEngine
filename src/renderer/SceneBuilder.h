@@ -35,6 +35,9 @@ constexpr size_t kPortfolioRoughMetalMaterialIndex = 7;
 constexpr size_t kPortfolioPolishedMetalSmallMaterialIndex = 8;
 constexpr size_t kPortfolioHeroCeramicMaterialIndex = 9;
 constexpr size_t kPortfolioBackdropMaterialIndex = 10;
+// glTF MASK material for the perforated-panel cutout demo. Its holes must show up
+// in the shadow map too, which is what the alpha-tested shadow pipeline adds.
+constexpr size_t kPortfolioCutoutLatticeMaterialIndex = 11;
 constexpr int kOcclusionTestGridColumns = 12;
 constexpr int kOcclusionTestGridRows = 10;
 constexpr int kOcclusionTestOccluderCount = 5;

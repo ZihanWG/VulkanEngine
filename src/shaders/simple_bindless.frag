@@ -343,6 +343,15 @@ void main()
     vec4 materialColor = texColor * vBaseColorFactor;
     vec3 baseColor = materialColor.rgb;
     float alpha = materialColor.a;
+
+    // glTF MASK cutout. vMaterialParams.w carries the cutoff and is negative for
+    // OPAQUE/BLEND, so this branch costs one compare for materials that never
+    // clip. Discarding here — before any lighting, shadow, or IBL work — also
+    // keeps the clipped fragments off the velocity and G-buffer attachments.
+    if (vMaterialParams.w >= 0.0 && alpha < vMaterialParams.w) {
+        discard;
+    }
+
     vec4 mrSample = texture(uMetallicRoughnessTextures[nonuniformEXT(vTextureIndices.z)], vUV);
     float textureMetallic = mrSample.r;
     float textureRoughness = mrSample.g;

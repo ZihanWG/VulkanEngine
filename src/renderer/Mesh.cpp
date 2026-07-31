@@ -491,6 +491,21 @@ bool copyEncodedImageData(tinygltf::Image* image,
     material.emissiveTextureIndex =
         validTextureIndex(model, sourceMaterial.emissiveTexture.index, material.debugName, "emissive");
 
+    // tinygltf defaults alphaMode to "OPAQUE" and alphaCutoff to 0.5, matching the
+    // glTF spec, but guard the string anyway so an unknown mode degrades to opaque
+    // instead of reaching renderBucketForMaterial as garbage.
+    if (sourceMaterial.alphaMode == "MASK" || sourceMaterial.alphaMode == "BLEND") {
+        material.alphaMode = sourceMaterial.alphaMode;
+    } else {
+        if (!sourceMaterial.alphaMode.empty() && sourceMaterial.alphaMode != "OPAQUE") {
+            Logger::warn("glTF material '" + material.debugName + "' has an unknown alphaMode '" +
+                         sourceMaterial.alphaMode + "'; treating it as OPAQUE.");
+        }
+        material.alphaMode = "OPAQUE";
+    }
+    material.alphaCutoff = static_cast<float>(sourceMaterial.alphaCutoff);
+    material.doubleSided = sourceMaterial.doubleSided;
+
     if (pbr.baseColorTexture.index >= 0 && pbr.baseColorTexture.texCoord != 0) {
         Logger::warn("glTF material '" + material.debugName +
                      "' uses a base color texCoord set other than TEXCOORD_0; TEXCOORD_0 will be sampled.");

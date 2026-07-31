@@ -10,12 +10,14 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <filesystem>
 #include <span>
 #include <string>
+#include <vector>
 
 namespace ve::renderer {
 
@@ -125,6 +127,62 @@ void BuiltinTextureFactory::createPortfolioBackdrop(rhi::VulkanContext& context,
         false,
     });
     nameTexture(context, out, "PortfolioBackdropTexture");
+}
+
+void BuiltinTextureFactory::createCutoutLattice(rhi::VulkanContext& context,
+                                                const rhi::VulkanCommandContext& commandContext,
+                                                rhi::VulkanTexture& out) const
+{
+    constexpr uint32_t width = 256;
+    constexpr uint32_t height = 256;
+    constexpr uint32_t cellCount = 8;
+    constexpr float cellSize = static_cast<float>(width) / static_cast<float>(cellCount);
+    // Hole radius as a fraction of the cell. Leaves a solid frame between holes so
+    // the panel still reads as a surface rather than a sieve.
+    constexpr float holeRadius = cellSize * 0.34f;
+
+    std::vector<uint8_t> pixels(static_cast<size_t>(width) * height * 4U);
+    const glm::vec3 panelColor{198.0f, 176.0f, 132.0f};
+    const glm::vec3 rimColor{150.0f, 126.0f, 88.0f};
+
+    for (uint32_t y = 0; y < height; ++y) {
+        for (uint32_t x = 0; x < width; ++x) {
+            // Distance from this texel to the centre of the cell it falls in.
+            const float cellX = std::fmod(static_cast<float>(x), cellSize) - cellSize * 0.5f;
+            const float cellY = std::fmod(static_cast<float>(y), cellSize) - cellSize * 0.5f;
+            const float distance = std::sqrt(cellX * cellX + cellY * cellY);
+
+            // One-texel-wide ramp instead of a hard step: the alpha test still
+            // produces a crisp edge, but the gradient keeps the cutoff meaningful
+            // and gives mip levels something sane to filter.
+            const float alpha = std::clamp(distance - holeRadius, 0.0f, 1.0f);
+            // Darken toward the hole rim so the perforation reads in the shading
+            // and not only in the silhouette.
+            const glm::vec3 color = glm::mix(rimColor, panelColor, std::clamp((distance - holeRadius) / 3.0f, 0.0f, 1.0f));
+
+            const size_t offset = (static_cast<size_t>(y) * width + x) * 4U;
+            pixels[offset + 0] = static_cast<uint8_t>(std::clamp(color.r, 0.0f, 255.0f));
+            pixels[offset + 1] = static_cast<uint8_t>(std::clamp(color.g, 0.0f, 255.0f));
+            pixels[offset + 2] = static_cast<uint8_t>(std::clamp(color.b, 0.0f, 255.0f));
+            pixels[offset + 3] = static_cast<uint8_t>(std::clamp(alpha * 255.0f, 0.0f, 255.0f));
+        }
+    }
+
+    out.createFromRgba8(context,
+                        commandContext,
+                        width,
+                        height,
+                        std::span<const uint8_t>(pixels.data(), pixels.size()),
+                        VK_FORMAT_R8G8B8A8_SRGB,
+                        true);
+    out.setDebugMetadata(rhi::TextureDebugMetadata{
+        "Procedural cutout lattice (alpha-mask demo)",
+        {},
+        rhi::TextureColorSpace::SRGB,
+        rhi::TextureDebugSource::ProceduralFallback,
+        false,
+    });
+    nameTexture(context, out, "CutoutLatticeTexture");
 }
 
 void BuiltinTextureFactory::createNormal(rhi::VulkanContext& context,

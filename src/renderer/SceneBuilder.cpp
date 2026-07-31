@@ -109,6 +109,16 @@ void SceneBuilder::appendPortfolioShowcase(std::vector<RenderObject>& objects) c
                        &materials_.at(kPortfolioPolishedMetalSmallMaterialIndex),
                        {1.04f, -0.09f, -0.18f},
                        {0.38f, 0.38f, 0.38f});
+
+    // Alpha-mask demo. Stands on the floor, angled into the key light so the
+    // perforations read both in the panel itself and in the shadow it throws.
+    if (materials_.size() > kPortfolioCutoutLatticeMaterialIndex) {
+        addPortfolioCube("Portfolio Cutout Panel",
+                         &materials_.at(kPortfolioCutoutLatticeMaterialIndex),
+                         {-1.55f, -0.21f, 0.34f},
+                         {0.0f, 0.38f, 0.0f},
+                         {0.92f, 0.62f, 0.05f});
+    }
 }
 
 void SceneBuilder::appendCubeFallback(std::vector<RenderObject>& objects) const
@@ -290,6 +300,7 @@ void SceneBuilder::resetPortfolioShowcaseToPreset(std::vector<RenderObject>& obj
     resetObject("Portfolio Glossy Blue", {-0.62f, -0.33f, 0.66f}, {0.0f, 0.0f, 0.0f}, {0.38f, 0.38f, 0.38f});
     resetObject("Portfolio Rough Metal", {0.96f, -0.29f, 0.42f}, {0.0f, 0.0f, 0.0f}, {0.46f, 0.46f, 0.46f});
     resetObject("Portfolio Polished Metal Small", {1.04f, -0.09f, -0.18f}, {0.0f, 0.0f, 0.0f}, {0.38f, 0.38f, 0.38f});
+    resetObject("Portfolio Cutout Panel", {-1.55f, -0.21f, 0.34f}, {0.0f, 0.38f, 0.0f}, {0.92f, 0.62f, 0.05f});
 }
 
 bool SceneBuilder::hasPortfolioShowcase(const std::vector<RenderObject>& objects)
