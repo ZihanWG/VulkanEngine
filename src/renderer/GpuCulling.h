@@ -19,6 +19,7 @@
 // Renderer predicates combine the toggles with mainResourcesReady()/
 // shadowResourcesReady().
 
+#include "renderer/MeshLod.h"
 #include "rhi/VulkanBuffer.h"
 #include "rhi/VulkanCommon.h"
 #include "rhi/VulkanComputePipeline.h"
@@ -52,6 +53,9 @@ struct GpuCullCounters {
     uint32_t frustumCulledDrawItems = 0;
     uint32_t occlusionCulledDrawItems = 0;
     uint32_t phase2RescuedDrawItems = 0;
+    // Emitted draws per LOD level, counted by the cull shader as it selects.
+    // Meshes with no chain are not counted, so this sums to <= visibleDrawItems.
+    std::array<uint32_t, kMaxMeshLods> lodDrawItems{};
 };
 
 class GpuCulling final {
@@ -84,6 +88,9 @@ public:
     [[nodiscard]] rhi::VulkanBuffer& cullInputBuffer(uint32_t frameIndex);
     [[nodiscard]] rhi::VulkanBuffer& shadowCullInputBuffer(uint32_t frameIndex);
     [[nodiscard]] rhi::VulkanBuffer& paramBuffer(uint32_t frameIndex);
+    // Flat LOD table the Renderer refills each frame; draw items index it with
+    // their lodBase/lodCount.
+    [[nodiscard]] rhi::VulkanBuffer& meshLodBuffer(uint32_t frameIndex);
     void resetFrameCounters(uint32_t frameIndex, uint32_t mainTotalDrawItems);
     void setMainCullFrameInfo(uint32_t frameIndex, uint32_t batchCount, bool indirectCountPath);
     void setShadowCullFrameInfo(uint32_t frameIndex,
@@ -184,6 +191,8 @@ private:
     std::vector<VkDescriptorSet> shadowCullDescriptorSets_;
     std::vector<rhi::VulkanBuffer> frameCullInputBuffers_;
     std::vector<rhi::VulkanBuffer> framePhaseResultBuffers_;
+    // Per-frame LOD table (binding 6), shared by the main and shadow cull sets.
+    std::vector<rhi::VulkanBuffer> frameMeshLodBuffers_;
     std::vector<rhi::VulkanBuffer> frameShadowCullInputBuffers_;
     std::vector<rhi::VulkanBuffer> frameGpuCullParamBuffers_;
     std::vector<rhi::VulkanBuffer> frameBatchVisibleCountBuffers_;

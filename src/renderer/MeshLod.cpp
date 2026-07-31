@@ -4,7 +4,9 @@
 
 #include <meshoptimizer.h>
 
+#include <algorithm>
 #include <cmath>
+#include <limits>
 #include <string>
 
 namespace ve::renderer {
@@ -86,6 +88,53 @@ std::vector<MeshLod> buildLodChain(std::vector<uint32_t>& indices,
     }
 
     return lods;
+}
+
+float projectedScreenRadius(float radius, float distance, float projScaleY)
+{
+    if (radius <= 0.0f || projScaleY <= 0.0f) {
+        return 0.0f;
+    }
+
+    // Camera inside (or on) the bounding sphere: the object fills the view, so
+    // report something large enough that selection lands on level 0.
+    constexpr float kMinDistance = 1.0e-4f;
+    if (distance <= kMinDistance) {
+        return std::numeric_limits<float>::max();
+    }
+
+    return radius / distance * projScaleY;
+}
+
+uint32_t selectLodIndex(float projectedRadiusPixels, uint32_t lodCount, const LodSelectionSettings& settings)
+{
+    if (lodCount <= 1) {
+        return 0;
+    }
+
+    const uint32_t maxLod = lodCount - 1;
+    if (settings.forcedLod >= 0) {
+        return std::min(static_cast<uint32_t>(settings.forcedLod), maxLod);
+    }
+
+    // Degenerate or vanishingly small on screen: nothing to preserve, take the
+    // cheapest level.
+    if (!(projectedRadiusPixels > 0.0f)) {
+        return maxLod;
+    }
+
+    const float reference = std::max(settings.referenceRadiusPixels, 1.0f);
+    // Each level covers one halving of the on-screen radius, so the level is just
+    // how many times the projected radius fits into the reference, in octaves.
+    const float level = std::log2(reference / projectedRadiusPixels) + settings.bias;
+    if (!(level > 0.0f)) {
+        return 0;
+    }
+    if (level >= static_cast<float>(maxLod)) {
+        return maxLod;
+    }
+
+    return static_cast<uint32_t>(level);
 }
 
 } // namespace ve::renderer

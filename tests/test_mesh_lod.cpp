@@ -1,5 +1,6 @@
 #include "renderer/MeshLod.h"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdint>
@@ -9,7 +10,10 @@ using ve::renderer::buildLodChain;
 using ve::renderer::kMaxMeshLods;
 using ve::renderer::kMinLodIndexCount;
 using ve::renderer::LodBuildSettings;
+using ve::renderer::LodSelectionSettings;
 using ve::renderer::MeshLod;
+using ve::renderer::projectedScreenRadius;
+using ve::renderer::selectLodIndex;
 
 namespace {
 
@@ -214,4 +218,98 @@ TEST_CASE("A null position stream degrades to a level-0-only chain", "[mesh][lod
 
     CHECK(lods.size() == 1);
     CHECK(grid.indices.size() == indicesBefore);
+}
+
+// --- selection -----------------------------------------------------------
+// These pin the reference implementation that selectLodIndex() in
+// src/shaders/cull.comp mirrors.
+
+TEST_CASE("Projected radius falls off with distance", "[mesh][lod]")
+{
+    const float projScaleY = 1000.0f;
+    const float near = projectedScreenRadius(1.0f, 10.0f, projScaleY);
+    const float far = projectedScreenRadius(1.0f, 20.0f, projScaleY);
+
+    CHECK(near == Catch::Approx(100.0f));
+    // Twice the distance, half the projected radius.
+    CHECK(far == Catch::Approx(near * 0.5f));
+}
+
+TEST_CASE("Projected radius rejects degenerate inputs", "[mesh][lod]")
+{
+    CHECK(projectedScreenRadius(0.0f, 10.0f, 1000.0f) == Catch::Approx(0.0f));
+    // A negative projScaleY is the Vulkan-Y-flip mistake: the caller must pass
+    // |proj[1][1]|, and anything else is treated as unusable rather than
+    // silently producing a negative radius.
+    CHECK(projectedScreenRadius(1.0f, 10.0f, -1000.0f) == Catch::Approx(0.0f));
+}
+
+TEST_CASE("A camera inside the bounding sphere stays at full detail", "[mesh][lod]")
+{
+    const float radius = projectedScreenRadius(1.0f, 0.0f, 1000.0f);
+    CHECK(selectLodIndex(radius, 4) == 0);
+}
+
+TEST_CASE("A mesh without a chain always selects level 0", "[mesh][lod]")
+{
+    LodSelectionSettings settings{};
+    settings.forcedLod = 3;
+
+    CHECK(selectLodIndex(1.0f, 0, settings) == 0);
+    CHECK(selectLodIndex(1.0f, 1, settings) == 0);
+}
+
+TEST_CASE("Each halving of projected radius steps one level down", "[mesh][lod]")
+{
+    LodSelectionSettings settings{};
+    settings.referenceRadiusPixels = 200.0f;
+
+    CHECK(selectLodIndex(200.0f, 4, settings) == 0);
+    CHECK(selectLodIndex(100.0f, 4, settings) == 1);
+    CHECK(selectLodIndex(50.0f, 4, settings) == 2);
+    CHECK(selectLodIndex(25.0f, 4, settings) == 3);
+}
+
+TEST_CASE("Selection clamps to the chain length", "[mesh][lod]")
+{
+    LodSelectionSettings settings{};
+    settings.referenceRadiusPixels = 200.0f;
+
+    // Far past the last level: clamp rather than read off the end of the table.
+    CHECK(selectLodIndex(0.01f, 3, settings) == 2);
+    CHECK(selectLodIndex(0.01f, 2, settings) == 1);
+    // Larger on screen than the reference never goes below level 0.
+    CHECK(selectLodIndex(10000.0f, 4, settings) == 0);
+}
+
+TEST_CASE("Bias shifts selection toward lower detail", "[mesh][lod]")
+{
+    LodSelectionSettings settings{};
+    settings.referenceRadiusPixels = 200.0f;
+
+    CHECK(selectLodIndex(200.0f, 4, settings) == 0);
+
+    // This is what the shadow dispatch does on top of the shared bias.
+    settings.bias = 2.0f;
+    CHECK(selectLodIndex(200.0f, 4, settings) == 2);
+
+    settings.bias = -1.0f;
+    CHECK(selectLodIndex(100.0f, 4, settings) == 0);
+}
+
+TEST_CASE("A forced level overrides distance", "[mesh][lod]")
+{
+    LodSelectionSettings settings{};
+    settings.forcedLod = 2;
+
+    CHECK(selectLodIndex(10000.0f, 4, settings) == 2);
+    CHECK(selectLodIndex(0.01f, 4, settings) == 2);
+    // Still clamped to what the chain actually has.
+    CHECK(selectLodIndex(10000.0f, 2, settings) == 1);
+}
+
+TEST_CASE("A zero or negative projected radius takes the cheapest level", "[mesh][lod]")
+{
+    CHECK(selectLodIndex(0.0f, 4) == 3);
+    CHECK(selectLodIndex(-1.0f, 4) == 3);
 }

@@ -66,4 +66,37 @@ struct LodBuildSettings {
                                                  std::string_view debugName = {},
                                                  const LodBuildSettings& settings = {});
 
+// --- LOD selection -------------------------------------------------------
+//
+// Mirrored by selectLodIndex() in src/shaders/cull.comp, which is where it
+// actually runs: selection happens per draw item inside the cull dispatch that
+// already has the bounds and the camera, so picking a level costs no extra pass
+// and no CPU round-trip. This C++ copy is the unit-tested reference — keep the
+// two in sync, the same way ClusterGrid.h mirrors cluster_build.comp.
+
+struct LodSelectionSettings {
+    // Projected sphere radius, in pixels, at which level 0 is still the right
+    // choice. Each halving of the on-screen radius steps one level down, which
+    // lines up with the chain halving triangle count per level.
+    float referenceRadiusPixels = 220.0f;
+    // Positive biases toward *lower* detail. Shadow passes push a bias here
+    // because shadow-map error hides simplification far better than the main
+    // pass does.
+    float bias = 0.0f;
+    // >= 0 pins every draw item to that level, for the debug view.
+    int32_t forcedLod = -1;
+};
+
+// Radius in pixels that a bounding sphere of `radius` at `distance` from the
+// camera covers. projScaleY = viewportHeight * 0.5 * projection[1][1], i.e. the
+// vertical pixels per unit of projected height at unit distance.
+[[nodiscard]] float projectedScreenRadius(float radius, float distance, float projScaleY);
+
+// Level for a given projected radius, clamped into [0, lodCount - 1]. Returns 0
+// when the mesh has no chain, so a missing LOD table degrades to the authored
+// geometry rather than to an out-of-range read.
+[[nodiscard]] uint32_t selectLodIndex(float projectedRadiusPixels,
+                                      uint32_t lodCount,
+                                      const LodSelectionSettings& settings = {});
+
 } // namespace ve::renderer

@@ -89,7 +89,7 @@ void GpuCulling::createResources(uint32_t frameCount,
 
 void GpuCulling::createCullDescriptorLayout()
 {
-    std::array<VkDescriptorSetLayoutBinding, 6> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 7> bindings{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     bindings[0].descriptorCount = 1;
@@ -121,6 +121,13 @@ void GpuCulling::createCullDescriptorLayout()
     bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     bindings[5].descriptorCount = 1;
     bindings[5].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    // Per-frame LOD table. The shader indexes it with each draw item's
+    // lodBase/lodCount to pick the level's (firstIndex, indexCount).
+    bindings[6].binding = 6;
+    bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[6].descriptorCount = 1;
+    bindings[6].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
     gpuCullDescriptorSetLayout_.create(
         context_.vkDevice(), std::span<const VkDescriptorSetLayoutBinding>(bindings.data(), bindings.size()));
@@ -178,6 +185,20 @@ void GpuCulling::createCullBuffers(uint32_t frameCount)
                                   "GpuCullFrameParamsBuffer" + std::to_string(frameIndex));
     }
 
+    frameMeshLodBuffers_.resize(frameCount);
+    for (size_t frameIndex = 0; frameIndex < frameMeshLodBuffers_.size(); ++frameIndex) {
+        rhi::VulkanBufferCreateInfo bufferInfo{};
+        bufferInfo.size = kMeshLodBufferSize;
+        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        bufferInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
+        bufferInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+        frameMeshLodBuffers_[frameIndex].createBuffer(context_, bufferInfo);
+        rhi::debug::setObjectName(context_.vkDevice(),
+                                  frameMeshLodBuffers_[frameIndex].buffer(),
+                                  VK_OBJECT_TYPE_BUFFER,
+                                  "GpuCullMeshLodBuffer" + std::to_string(frameIndex));
+    }
+
     framePhaseResultBuffers_.resize(frameCount);
     for (size_t frameIndex = 0; frameIndex < framePhaseResultBuffers_.size(); ++frameIndex) {
         rhi::VulkanBufferCreateInfo bufferInfo{};
@@ -226,7 +247,7 @@ void GpuCulling::createCullDescriptorSets(uint32_t frameCount)
 {
     std::array<VkDescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[0].descriptorCount = static_cast<uint32_t>(frameCount * 5);
+    poolSizes[0].descriptorCount = static_cast<uint32_t>(frameCount * 6);
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     poolSizes[1].descriptorCount = static_cast<uint32_t>(frameCount);
 
@@ -278,7 +299,12 @@ void GpuCulling::createCullDescriptorSets(uint32_t frameCount)
         phaseResultBufferInfo.offset = 0;
         phaseResultBufferInfo.range = framePhaseResultBuffers_[frameIndex].size();
 
-        std::array<VkWriteDescriptorSet, 6> writes{};
+        VkDescriptorBufferInfo meshLodBufferInfo{};
+        meshLodBufferInfo.buffer = frameMeshLodBuffers_[frameIndex].buffer();
+        meshLodBufferInfo.offset = 0;
+        meshLodBufferInfo.range = frameMeshLodBuffers_[frameIndex].size();
+
+        std::array<VkWriteDescriptorSet, 7> writes{};
         writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstSet = gpuCullDescriptorSets_[frameIndex];
         writes[0].dstBinding = 0;
@@ -321,6 +347,13 @@ void GpuCulling::createCullDescriptorSets(uint32_t frameCount)
         writes[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writes[5].pBufferInfo = &phaseResultBufferInfo;
 
+        writes[6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[6].dstSet = gpuCullDescriptorSets_[frameIndex];
+        writes[6].dstBinding = 6;
+        writes[6].descriptorCount = 1;
+        writes[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[6].pBufferInfo = &meshLodBufferInfo;
+
         vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
         rhi::debug::setObjectName(context_.vkDevice(),
                                   gpuCullDescriptorSets_[frameIndex],
@@ -343,6 +376,7 @@ void GpuCulling::destroyResources()
     frameBatchVisibleCountReadbackBuffers_.clear();
     frameBatchVisibleCountBuffers_.clear();
     framePhaseResultBuffers_.clear();
+    frameMeshLodBuffers_.clear();
     frameGpuCullParamBuffers_.clear();
     frameCullInputBuffers_.clear();
     gpuCullPipeline_.reset();
@@ -426,7 +460,7 @@ void GpuCulling::createShadowCullDescriptorSets(uint32_t frameCount)
 {
     std::array<VkDescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[0].descriptorCount = static_cast<uint32_t>(frameCount * 5);
+    poolSizes[0].descriptorCount = static_cast<uint32_t>(frameCount * 6);
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     poolSizes[1].descriptorCount = static_cast<uint32_t>(frameCount);
 
@@ -478,7 +512,14 @@ void GpuCulling::createShadowCullDescriptorSets(uint32_t frameCount)
         phaseResultBufferInfo.offset = 0;
         phaseResultBufferInfo.range = framePhaseResultBuffers_[frameIndex].size();
 
-        std::array<VkWriteDescriptorSet, 6> writes{};
+        // Shadow culling shares the main pass's LOD table: the levels are a
+        // property of the mesh, and only the selection bias differs per pass.
+        VkDescriptorBufferInfo meshLodBufferInfo{};
+        meshLodBufferInfo.buffer = frameMeshLodBuffers_[frameIndex].buffer();
+        meshLodBufferInfo.offset = 0;
+        meshLodBufferInfo.range = frameMeshLodBuffers_[frameIndex].size();
+
+        std::array<VkWriteDescriptorSet, 7> writes{};
         writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstSet = shadowCullDescriptorSets_[frameIndex];
         writes[0].dstBinding = 0;
@@ -520,6 +561,13 @@ void GpuCulling::createShadowCullDescriptorSets(uint32_t frameCount)
         writes[5].descriptorCount = 1;
         writes[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writes[5].pBufferInfo = &phaseResultBufferInfo;
+
+        writes[6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[6].dstSet = shadowCullDescriptorSets_[frameIndex];
+        writes[6].dstBinding = 6;
+        writes[6].descriptorCount = 1;
+        writes[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[6].pBufferInfo = &meshLodBufferInfo;
 
         vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
         rhi::debug::setObjectName(context_.vkDevice(),
@@ -588,6 +636,11 @@ rhi::VulkanBuffer& GpuCulling::shadowCullInputBuffer(uint32_t frameIndex)
 rhi::VulkanBuffer& GpuCulling::paramBuffer(uint32_t frameIndex)
 {
     return frameGpuCullParamBuffers_.at(frameIndex);
+}
+
+rhi::VulkanBuffer& GpuCulling::meshLodBuffer(uint32_t frameIndex)
+{
+    return frameMeshLodBuffers_.at(frameIndex);
 }
 
 void GpuCulling::resetFrameCounters(uint32_t frameIndex, uint32_t mainTotalDrawItems)
@@ -935,7 +988,10 @@ void GpuCulling::recordShadowCull(VkCommandBuffer commandBuffer,
 
     GpuCullPushConstants pushConstants{};
     pushConstants.frustumPlanes = cascadeFrustumPlanes;
-    pushConstants.params = glm::uvec4(drawItemCount, 1U, 1U, 0U);
+    // Bit 2 marks this as a shadow dispatch: cull.comp adds the shadow LOD bias
+    // on top of the shared one, since shadow-map resolution and PCF hide
+    // simplification far better than the main pass does.
+    pushConstants.params = glm::uvec4(drawItemCount, 1U, 1U, 4U);
     vkCmdPushConstants(commandBuffer,
                        gpuCullPipeline_.layout(),
                        VK_SHADER_STAGE_COMPUTE_BIT,
@@ -1057,6 +1113,9 @@ bool GpuCulling::readMainCounters(bool active, uint32_t frameIndex, GpuCullCount
     counters.frustumCulledDrawItems = values[2];
     counters.occlusionCulledDrawItems = values[3];
     counters.phase2RescuedDrawItems = values[4];
+    for (size_t level = 0; level < counters.lodDrawItems.size(); ++level) {
+        counters.lodDrawItems[level] = values[kGpuCullStatsLodCounterOffset + level];
+    }
     if (frameIndex < frameGpuCullTotalDrawItems_.size()) {
         counters.totalDrawItems = std::min(counters.totalDrawItems, frameGpuCullTotalDrawItems_[frameIndex]);
         counters.visibleDrawItems = std::min(counters.visibleDrawItems, counters.totalDrawItems);

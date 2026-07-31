@@ -47,6 +47,7 @@
 #include <string_view>
 #include <system_error>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -2694,6 +2695,105 @@ void Renderer::buildMeshDrawBatchesForItems(const std::vector<DrawItem>& drawIte
     }
 }
 
+void Renderer::buildFrameMeshLodTable()
+{
+    frameMeshLodTable_.clear();
+    frameDrawItemLodRanges_.assign(allDrawItems_.size(), glm::uvec2(0));
+
+    // Dedup by mesh: a mesh's whole chain is uploaded once and every draw item
+    // referencing it offsets into that block. Serial on purpose -- the dedup map
+    // is shared state, and the loop is one hash lookup per draw item.
+    std::unordered_map<const renderer::Mesh*, uint32_t> meshLodBases;
+    for (size_t drawIndex = 0; drawIndex < allDrawItems_.size(); ++drawIndex) {
+        const DrawItem& drawItem = allDrawItems_[drawIndex];
+        const renderer::Mesh* mesh = drawItem.mesh;
+        if (!mesh) {
+            continue;
+        }
+
+        const std::span<const renderer::MeshLod> meshLods = mesh->lods();
+        if (meshLods.empty()) {
+            continue;
+        }
+
+        uint32_t meshBase = 0;
+        const auto found = meshLodBases.find(mesh);
+        if (found != meshLodBases.end()) {
+            meshBase = found->second;
+        } else {
+            if (frameMeshLodTable_.size() + meshLods.size() > kMaxMeshLodEntries) {
+                // Table full: leave this draw item without a chain so the cull
+                // shader falls back to its authored index range.
+                continue;
+            }
+            meshBase = static_cast<uint32_t>(frameMeshLodTable_.size());
+            frameMeshLodTable_.insert(frameMeshLodTable_.end(), meshLods.begin(), meshLods.end());
+            meshLodBases.emplace(mesh, meshBase);
+        }
+
+        // Sub-meshed meshes carry a chain per primitive; the rest use the
+        // whole-mesh range.
+        uint32_t localBase = 0;
+        uint32_t localCount = 0;
+        if (mesh->hasSubMeshes()) {
+            const std::span<const renderer::MeshPrimitive> primitives = mesh->primitives();
+            if (drawItem.submeshIndex < primitives.size()) {
+                localBase = primitives[drawItem.submeshIndex].lodBase;
+                localCount = primitives[drawItem.submeshIndex].lodCount;
+            }
+        } else {
+            localBase = mesh->lodBase();
+            localCount = mesh->lodCount();
+        }
+
+        if (localCount == 0 || static_cast<size_t>(localBase) + localCount > meshLods.size()) {
+            continue;
+        }
+
+        frameDrawItemLodRanges_[drawIndex] = glm::uvec2(meshBase + localBase, localCount);
+    }
+}
+
+void Renderer::uploadGpuCullFrameParams(uint32_t frameIndex, bool occlusionEnabledThisFrame)
+{
+    const VkExtent2D extent = swapchain_.extent();
+
+    GpuCullFrameParams frameParams{};
+    frameParams.occlusionViewProjection = depthPyramid_.viewProjection();
+    frameParams.occlusionViewProjectionPhase2 = frameViewProjection_;
+    frameParams.cameraPosition = glm::vec4(frameCameraPosition_, 0.0f);
+
+    // projScaleY converts a world-space radius at unit distance into vertical
+    // pixels: |proj[1][1]| is 1/tan(fovY/2), and half the viewport height maps NDC
+    // [-1,1] onto pixels. The cull shader divides by view distance to get the
+    // projected pixel radius it selects a LOD from.
+    //
+    // The abs() is load-bearing: these projections carry the Vulkan Y-flip, so
+    // proj[1][1] is negative (see the ImGuizmo un-flip in drawViewportGizmo).
+    // Passing it through signed makes the shader's projScaleY <= 0 guard fire on
+    // every draw item, which silently pins everything to level 0.
+    const float projScaleY = 0.5f * static_cast<float>(extent.height) * std::abs(frameJitteredProjection_[1][1]);
+    frameParams.viewportAndMipCount = glm::vec4(static_cast<float>(extent.width),
+                                                static_cast<float>(extent.height),
+                                                static_cast<float>(depthPyramid_.mipLevels()),
+                                                projScaleY);
+    frameParams.occlusionSettings = glm::vec4(gpuOcclusionDepthBias_,
+                                              gpuOcclusionNearDisableDistance_,
+                                              gpuOcclusionMaxScreenCoverage_,
+                                              gpuOcclusionMinScreenPixels_);
+    // Disabling LOD selection is expressed as pinning level 0, so the shader has
+    // one code path rather than an extra branch.
+    const float forcedLod =
+        lodSettings_.enabled ? static_cast<float>(lodSettings_.forcedLod) : 0.0f;
+    frameParams.lodSettings = glm::vec4(lodSettings_.referenceRadiusPixels,
+                                        lodSettings_.bias,
+                                        forcedLod,
+                                        lodSettings_.shadowBias);
+    frameParams.counterAndFlags = glm::uvec4(kGpuCullStatsCounterOffset, occlusionEnabledThisFrame ? 1u : 0u, 0u, 0u);
+    gpuCulling_.paramBuffer(frameIndex)
+        .upload(std::as_bytes(std::span<const GpuCullFrameParams>(&frameParams, 1)));
+}
+
 void Renderer::updateGpuCullInputBuffer(uint32_t frameIndex)
 {
     if (allDrawItems_.empty()) {
@@ -2710,23 +2810,13 @@ void Renderer::updateGpuCullInputBuffer(uint32_t frameIndex)
     const bool occlusionEnabledThisFrame =
         isGpuOcclusionCullingActive() &&
         (frameTwoPhaseOcclusionActive_ || previousFrameDepthValidForOcclusion());
-    const VkExtent2D extent = swapchain_.extent();
+    uploadGpuCullFrameParams(frameIndex, occlusionEnabledThisFrame);
 
-    GpuCullFrameParams frameParams{};
-    frameParams.occlusionViewProjection = depthPyramid_.viewProjection();
-    frameParams.occlusionViewProjectionPhase2 = frameViewProjection_;
-    frameParams.cameraPosition = glm::vec4(frameCameraPosition_, 0.0f);
-    frameParams.viewportAndMipCount = glm::vec4(static_cast<float>(extent.width),
-                                                static_cast<float>(extent.height),
-                                                static_cast<float>(depthPyramid_.mipLevels()),
-                                                0.0f);
-    frameParams.occlusionSettings = glm::vec4(gpuOcclusionDepthBias_,
-                                              gpuOcclusionNearDisableDistance_,
-                                              gpuOcclusionMaxScreenCoverage_,
-                                              gpuOcclusionMinScreenPixels_);
-    frameParams.counterAndFlags = glm::uvec4(kGpuCullStatsCounterOffset, occlusionEnabledThisFrame ? 1u : 0u, 0u, 0u);
-    gpuCulling_.paramBuffer(frameIndex)
-        .upload(std::as_bytes(std::span<const GpuCullFrameParams>(&frameParams, 1)));
+    if (!frameMeshLodTable_.empty()) {
+        gpuCulling_.meshLodBuffer(frameIndex)
+            .upload(std::as_bytes(
+                std::span<const renderer::MeshLod>(frameMeshLodTable_.data(), frameMeshLodTable_.size())));
+    }
 
     std::vector<GpuCullDrawItem> cullDrawItems(allDrawItems_.size());
     framePrepParallelFor(allDrawItems_.size(), [&](size_t begin, size_t end) {
@@ -2753,6 +2843,14 @@ void Renderer::updateGpuCullInputBuffer(uint32_t frameIndex)
             gpuDrawItem.firstIndex = drawItem.firstIndex;
             gpuDrawItem.vertexOffset = drawItem.vertexOffset;
             gpuDrawItem.objectFrameDataIndex = drawItem.frameDataIndex;
+
+            // (base, count) into the per-frame LOD table; (0, 0) when the mesh
+            // has no chain, which makes the shader emit the authored range.
+            const glm::uvec2 lodRange = drawIndex < frameDrawItemLodRanges_.size()
+                                            ? frameDrawItemLodRanges_[drawIndex]
+                                            : glm::uvec2(0);
+            gpuDrawItem.lodBase = lodRange.x;
+            gpuDrawItem.lodCount = lodRange.y;
         }
     });
 
@@ -2779,10 +2877,15 @@ void Renderer::updateGpuShadowCullInputBuffer(uint32_t frameIndex)
         return;
     }
 
-    GpuCullFrameParams frameParams{};
-    frameParams.counterAndFlags = glm::uvec4(kGpuCullStatsCounterOffset, 0u, 0u, 0u);
-    gpuCulling_.paramBuffer(frameIndex)
-        .upload(std::as_bytes(std::span<const GpuCullFrameParams>(&frameParams, 1)));
+    // Same params as the main dispatch (occlusion off): both read one buffer, so
+    // writing identical values keeps the result independent of upload order.
+    uploadGpuCullFrameParams(frameIndex, /*occlusionEnabledThisFrame=*/false);
+
+    if (!frameMeshLodTable_.empty()) {
+        gpuCulling_.meshLodBuffer(frameIndex)
+            .upload(std::as_bytes(
+                std::span<const renderer::MeshLod>(frameMeshLodTable_.data(), frameMeshLodTable_.size())));
+    }
 
     std::vector<GpuCullDrawItem> cullDrawItems(allDrawItems_.size());
     framePrepParallelFor(allDrawItems_.size(), [&](size_t begin, size_t end) {
@@ -2809,6 +2912,14 @@ void Renderer::updateGpuShadowCullInputBuffer(uint32_t frameIndex)
             gpuDrawItem.firstIndex = drawItem.firstIndex;
             gpuDrawItem.vertexOffset = drawItem.vertexOffset;
             gpuDrawItem.objectFrameDataIndex = drawItem.frameDataIndex;
+
+            // (base, count) into the per-frame LOD table; (0, 0) when the mesh
+            // has no chain, which makes the shader emit the authored range.
+            const glm::uvec2 lodRange = drawIndex < frameDrawItemLodRanges_.size()
+                                            ? frameDrawItemLodRanges_[drawIndex]
+                                            : glm::uvec2(0);
+            gpuDrawItem.lodBase = lodRange.x;
+            gpuDrawItem.lodCount = lodRange.y;
         }
     });
 
@@ -2978,6 +3089,11 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
                     << "  frustum culled draw items: " << counters.frustumCulledDrawItems << "\n"
                     << "  occlusion culled draw items: " << counters.occlusionCulledDrawItems << "\n"
                     << "  total culled draw items: " << culledDrawItems << "\n"
+                    << "  LOD distribution:";
+            for (size_t level = 0; level < counters.lodDrawItems.size(); ++level) {
+                message << " L" << level << "=" << counters.lodDrawItems[level];
+            }
+            message << "\n"
                     << "  depth pyramid mips: " << depthPyramid_.mipLevels() << "\n"
                     << "  occlusion culling: " << (isGpuOcclusionCullingActive() ? "enabled" : "disabled") << "\n"
                     << "  batches: " << batchCount << "\n"
@@ -3955,6 +4071,7 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     updateFrameWorldBounds();
 
     buildDrawItems();
+    buildFrameMeshLodTable();
     resetGpuCullFrameCounters(frameIndex);
 
     const renderer::Frustum cameraFrustum = renderer::Frustum::fromViewProjection(viewProjection);

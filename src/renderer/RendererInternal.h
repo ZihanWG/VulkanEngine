@@ -142,8 +142,12 @@ constexpr uint32_t kSkinnedObjectFrameSlot = kMaxDrawItems - 1;
 constexpr uint32_t kMaxMaterialDescriptorSets = 256;
 constexpr uint32_t kGpuCullLocalSize = 64;
 constexpr uint32_t kMaxMeshDrawBatches = kMaxDrawItems;
-// [total, visible, frustum-culled, occlusion-culled, phase-2 rescued]
-constexpr uint32_t kGpuCullStatsCounterCount = 5;
+// [total, visible, frustum-culled, occlusion-culled, phase-2 rescued] followed by
+// one emitted-draw counter per LOD level, which is how the debug UI reports the
+// level distribution the cull pass actually chose.
+constexpr uint32_t kGpuCullStatsBaseCounterCount = 5;
+constexpr uint32_t kGpuCullStatsLodCounterOffset = kGpuCullStatsBaseCounterCount;
+constexpr uint32_t kGpuCullStatsCounterCount = kGpuCullStatsBaseCounterCount + renderer::kMaxMeshLods;
 constexpr uint32_t kGpuCullStatsCounterOffset = kMaxMeshDrawBatches;
 constexpr VkDeviceSize kBatchVisibleCountBufferSize = kMaxMeshDrawBatches * sizeof(uint32_t);
 constexpr VkDeviceSize kGpuCullCountBufferSize =
@@ -236,8 +240,12 @@ struct GpuCullDrawItem {
     uint32_t objectFrameDataIndex = 0;
     uint32_t batchIndex = 0;
     uint32_t batchOutputBase = 0;
-    uint32_t padding0 = 0;
-    uint32_t padding1 = 0;
+    // Half-open range into the per-frame LOD table (binding 6). The two former
+    // padding words absorb this, so adding GPU LOD selection did not grow the
+    // record or change its 64-byte stride. lodCount == 0 means "no chain": the
+    // cull shader then emits indexCount/firstIndex above unchanged.
+    uint32_t lodBase = 0;
+    uint32_t lodCount = 0;
 };
 
 static_assert(offsetof(GpuCullDrawItem, boundsMin) == 0);
@@ -248,7 +256,22 @@ static_assert(offsetof(GpuCullDrawItem, vertexOffset) == 40);
 static_assert(offsetof(GpuCullDrawItem, objectFrameDataIndex) == 44);
 static_assert(offsetof(GpuCullDrawItem, batchIndex) == 48);
 static_assert(offsetof(GpuCullDrawItem, batchOutputBase) == 52);
+static_assert(offsetof(GpuCullDrawItem, lodBase) == 56);
+static_assert(offsetof(GpuCullDrawItem, lodCount) == 60);
 static_assert(sizeof(GpuCullDrawItem) == 64);
+
+// The per-frame LOD table (binding 6) uploads renderer::MeshLod records
+// unchanged: two tightly packed uint32s is exactly the std430 layout the shader's
+// MeshLod struct expects, so there is no separate GPU mirror of the type to keep
+// in sync.
+static_assert(sizeof(renderer::MeshLod) == 8);
+static_assert(offsetof(renderer::MeshLod, firstIndex) == 0);
+static_assert(offsetof(renderer::MeshLod, indexCount) == 4);
+
+// Worst case is every draw item contributing a full chain; meshes are deduped
+// when the table is built, so this is a generous upper bound (32 KB).
+constexpr uint32_t kMaxMeshLodEntries = kMaxDrawItems * renderer::kMaxMeshLods;
+constexpr VkDeviceSize kMeshLodBufferSize = kMaxMeshLodEntries * sizeof(renderer::MeshLod);
 
 struct GpuCullPushConstants {
     std::array<glm::vec4, 6> frustumPlanes{};
@@ -263,12 +286,18 @@ static_assert(sizeof(GpuCullPushConstants) <= 128);
 // occlusionViewProjection projects against the previous frame's pyramid in
 // phase 1; occlusionViewProjectionPhase2 is the current frame's unjittered VP
 // used when phase 2 re-tests candidates against the mid-frame pyramid.
+// viewportAndMipCount.w carries projScaleY (viewportHeight * 0.5 * proj[1][1]),
+// the pixels-per-unit-height at unit distance that turns a world-space bounding
+// sphere into a projected pixel radius for LOD selection.
+// lodSettings.x = reference radius in pixels, y = bias, z = forced level as a
+// float (< 0 disables), w = the extra bias shadow-cascade dispatches add.
 struct GpuCullFrameParams {
     glm::mat4 occlusionViewProjection{1.0f};
     glm::mat4 occlusionViewProjectionPhase2{1.0f};
     glm::vec4 cameraPosition{0.0f};
     glm::vec4 viewportAndMipCount{0.0f};
     glm::vec4 occlusionSettings{0.0f};
+    glm::vec4 lodSettings{0.0f};
     glm::uvec4 counterAndFlags{0, 0, 0, 0};
 };
 
@@ -277,8 +306,9 @@ static_assert(offsetof(GpuCullFrameParams, occlusionViewProjectionPhase2) == 64)
 static_assert(offsetof(GpuCullFrameParams, cameraPosition) == 128);
 static_assert(offsetof(GpuCullFrameParams, viewportAndMipCount) == 144);
 static_assert(offsetof(GpuCullFrameParams, occlusionSettings) == 160);
-static_assert(offsetof(GpuCullFrameParams, counterAndFlags) == 176);
-static_assert(sizeof(GpuCullFrameParams) == 192);
+static_assert(offsetof(GpuCullFrameParams, lodSettings) == 176);
+static_assert(offsetof(GpuCullFrameParams, counterAndFlags) == 192);
+static_assert(sizeof(GpuCullFrameParams) == 208);
 
 struct DepthPyramidPushConstants {
     glm::uvec4 sizes{0, 0, 0, 0};

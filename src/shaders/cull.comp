@@ -10,6 +10,8 @@ layout(local_size_x = 64) in;
 //   object-data array indexing; fallback recording keeps firstInstance at zero.
 // - batchIndex selects the per-batch visible-count entry.
 // - batchOutputBase is the first command slot in that batch's compacted region.
+// - lodBase/lodCount address this draw item's chain in the LOD table (binding 6);
+//   they reuse what used to be two padding words, so the stride is unchanged.
 // - Runtime array stride is therefore 64 bytes, matching the C++ struct.
 struct GpuCullDrawItem {
     vec4 boundsMin;
@@ -20,8 +22,17 @@ struct GpuCullDrawItem {
     uint objectFrameDataIndex;
     uint batchIndex;
     uint batchOutputBase;
-    uint padding0;
-    uint padding1;
+    uint lodBase;
+    uint lodCount;
+};
+
+// One level of a mesh's LOD chain: a triangle range in the shared index buffer.
+// Because every level lives in that one buffer, switching level is only a change
+// of the emitted (indexCount, firstIndex) -- no rebind, so it can be decided
+// here, per draw item, instead of on the CPU.
+struct MeshLod {
+    uint firstIndex;
+    uint indexCount;
 };
 
 // Matches VkDrawIndexedIndirectCommand exactly. std430 keeps the runtime array
@@ -38,6 +49,10 @@ struct DrawIndexedIndirectCommand {
 const uint kPhaseFrustumCulled = 0u;
 const uint kPhaseVisible = 1u;
 const uint kPhaseOcclusionCandidate = 2u;
+
+// Offset of the per-LOD counters inside the stats block; mirrors
+// kGpuCullStatsLodCounterOffset in RendererInternal.h.
+const uint kStatsLodCounterOffset = 5u;
 
 layout(set = 0, binding = 0, std430) readonly buffer CullInputBuffer {
     GpuCullDrawItem drawItems[];
@@ -57,8 +72,9 @@ layout(set = 0, binding = 4, std430) readonly buffer CullFrameParamsBuffer {
     mat4 occlusionViewProjection;
     mat4 occlusionViewProjectionPhase2;
     vec4 cameraPosition;
-    vec4 viewportAndMipCount; // x = width, y = height, z = mip count
+    vec4 viewportAndMipCount; // x = width, y = height, z = mip count, w = projScaleY
     vec4 occlusionSettings; // x = normal-Z depth bias, y = near disable distance, z = max coverage, w = min pixels
+    vec4 lodSettings; // x = reference radius px, y = bias, z = forced level (< 0 = off), w = shadow bias
     uvec4 counterAndFlags; // x = stats counter base, y bit 0 = occlusion enabled for this frame
 } cullFrame;
 
@@ -69,14 +85,73 @@ layout(set = 0, binding = 5, std430) buffer PhaseResultBuffer {
     uint results[];
 } phaseResults;
 
+// Flat LOD table for every mesh referenced this frame, refilled by the renderer
+// alongside the cull input. Shared by the main and shadow dispatches -- the
+// levels belong to the mesh; only the selection bias differs per pass.
+layout(set = 0, binding = 6, std430) readonly buffer MeshLodBuffer {
+    MeshLod lods[];
+} meshLods;
+
 // The renderer reuses this shader for camera-frustum main culling and
 // directional-light-frustum shadow culling by pushing the relevant planes.
 layout(push_constant) uniform CullPushConstants {
     vec4 frustumPlanes[6];
     // x = draw item count, y = write objectFrameDataIndex, z = compact commands,
-    // w bit 0 = allow occlusion, w bit 1 = occlusion phase 2 (re-test candidates)
+    // w bit 0 = allow occlusion, w bit 1 = occlusion phase 2 (re-test candidates),
+    // w bit 2 = shadow dispatch (adds cullFrame.lodSettings.w to the LOD bias)
     uvec4 params;
 } pc;
+
+// Mirrors projectedScreenRadius()/selectLodIndex() in renderer/MeshLod.h, which
+// is the unit-tested reference copy. Keep the two in sync -- same arrangement as
+// ClusterGrid.h and cluster_build.comp.
+uint selectLodIndex(vec3 boundsMin, vec3 boundsMax, uint lodCount)
+{
+    if (lodCount <= 1u) {
+        return 0u;
+    }
+
+    uint maxLod = lodCount - 1u;
+
+    float forcedLod = cullFrame.lodSettings.z;
+    if (forcedLod >= 0.0) {
+        return min(uint(forcedLod), maxLod);
+    }
+
+    vec3 center = (boundsMin + boundsMax) * 0.5;
+    float radius = length(boundsMax - center);
+    float projScaleY = cullFrame.viewportAndMipCount.w;
+    if (radius <= 0.0 || projScaleY <= 0.0) {
+        return 0u;
+    }
+
+    // Camera inside the bounding sphere: the object fills the view, keep level 0.
+    float distanceToCamera = length(center - cullFrame.cameraPosition.xyz);
+    if (distanceToCamera <= 1.0e-4) {
+        return 0u;
+    }
+
+    float projectedRadiusPixels = radius / distanceToCamera * projScaleY;
+    if (!(projectedRadiusPixels > 0.0)) {
+        return maxLod;
+    }
+
+    float bias = cullFrame.lodSettings.y;
+    // Shadow dispatches drop extra detail: shadow-map resolution and PCF hide
+    // simplification far better than the main pass does.
+    if ((pc.params.w & 4u) != 0u) {
+        bias += cullFrame.lodSettings.w;
+    }
+
+    // Each level covers one halving of the on-screen radius, matching the chain
+    // halving triangle count per level.
+    float reference = max(cullFrame.lodSettings.x, 1.0);
+    float level = log2(reference / projectedRadiusPixels) + bias;
+    if (!(level > 0.0)) {
+        return 0u;
+    }
+    return min(uint(level), maxLod);
+}
 
 bool testAabb(vec3 boundsMin, vec3 boundsMax)
 {
@@ -202,10 +277,29 @@ void emitCommand(GpuCullDrawItem drawItem, uint drawIndex, bool compactCommands)
         atomicAdd(batchVisibleCounts.visibleCounts[0], 1);
     }
 
+    // LOD selection is a pure rewrite of the emitted index range: same vertex
+    // buffer, same vertexOffset, just a different slice of the index buffer.
+    // lodCount == 0 means the mesh has no chain, so fall back to the authored
+    // range carried on the draw item.
+    uint indexCount = drawItem.indexCount;
+    uint firstIndex = drawItem.firstIndex;
+    if (drawItem.lodCount > 0u) {
+        uint lodIndex = selectLodIndex(drawItem.boundsMin.xyz, drawItem.boundsMax.xyz, drawItem.lodCount);
+        MeshLod lod = meshLods.lods[drawItem.lodBase + lodIndex];
+        indexCount = lod.indexCount;
+        firstIndex = lod.firstIndex;
+
+        // Per-level emitted-draw histogram, read back for the debug UI. Without
+        // it there is no way to tell selection apart from silently always
+        // picking level 0.
+        uint statsBase = cullFrame.counterAndFlags.x;
+        atomicAdd(batchVisibleCounts.visibleCounts[statsBase + kStatsLodCounterOffset + min(lodIndex, 3u)], 1u);
+    }
+
     DrawIndexedIndirectCommand command;
-    command.indexCount = drawItem.indexCount;
+    command.indexCount = indexCount;
     command.instanceCount = 1;
-    command.firstIndex = drawItem.firstIndex;
+    command.firstIndex = firstIndex;
     command.vertexOffset = drawItem.vertexOffset;
     command.firstInstance = pc.params.y != 0 ? drawItem.objectFrameDataIndex : 0;
     indirectOutput.commands[outputIndex] = command;
