@@ -152,6 +152,9 @@ private:
         RenderBucket bucket = RenderBucket::Opaque;
     };
 
+    // Filled by updateVisibleBucketRanges() from visibleDrawItems_.
+    std::array<RenderBucketRange, kRenderBucketCount> frameVisibleBucketRanges_{};
+
     struct CullingStats {
         size_t totalObjects = 0;
         size_t visibleObjects = 0;
@@ -270,6 +273,7 @@ private:
     void createMainGraphicsPipeline();
     void createSkinnedPipeline();
     void createSkyboxPipeline();
+    void createTransparentPipeline();
     void createShadowPipeline();
     void createMaskedShadowPipeline(const VkVertexInputBindingDescription& binding,
                                     const std::array<VkVertexInputAttributeDescription, 5>& attributes);
@@ -351,6 +355,10 @@ private:
     void buildDrawItems();
     void buildVisibleDrawItems(const renderer::Frustum& frustum);
     void buildMeshDrawBatches();
+    // Contiguous [begin, end) ranges of visibleDrawItems_ per bucket, and the
+    // per-frame back-to-front reorder the blend range needs.
+    void updateVisibleBucketRanges();
+    void sortTransparentDrawItems();
     void buildShadowDrawItems(uint32_t cascadeIndex, const renderer::Frustum& lightFrustum);
     void buildShadowMeshDrawBatches();
     void buildMeshDrawBatchesForItems(const std::vector<DrawItem>& drawItems,
@@ -517,6 +525,9 @@ private:
     // depth-only pipeline has no fragment stage at all; this one adds the cutout
     // discard and therefore needs the bindless base-color array bound.
     rhi::VulkanPipeline maskedShadowPipeline_;
+    // glTF BLEND geometry: same shaders as the main pass, but "over" blending,
+    // depth writes off, and a scene-color-only attachment set.
+    rhi::VulkanPipeline transparentPipeline_;
     rhi::VulkanCommandContext commandContext_;
     // Async compute: per-frame command buffers + semaphores for the queue that
     // runs ClusterBuild/LightCull in parallel with the shadow passes. Falls

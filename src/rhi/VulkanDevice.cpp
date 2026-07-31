@@ -139,6 +139,7 @@ void VulkanDevice::cleanup()
     bufferDeviceAddressEnabled_ = false;
     multiDrawIndirectEnabled_ = false;
     drawIndirectFirstInstanceEnabled_ = false;
+    independentBlendEnabled_ = false;
     drawIndexedIndirectCountAvailable_ = false;
     maxDrawIndirectCount_ = 0;
 }
@@ -307,11 +308,16 @@ void VulkanDevice::createLogicalDevice()
                                         supported12.descriptorBindingSampledImageUpdateAfterBind == VK_TRUE;
     bufferDeviceAddressEnabled_ = supported12.bufferDeviceAddress == VK_TRUE;
     multiDrawIndirectEnabled_ = supportedFeatures.features.multiDrawIndirect == VK_TRUE;
+    // Per-attachment blend state. The transparent pass wants "over" blending on
+    // scene color while velocity and the thin G-buffer are plain overwrites;
+    // without this, all attachments must share one blend state.
+    independentBlendEnabled_ = supportedFeatures.features.independentBlend == VK_TRUE;
     drawIndirectFirstInstanceEnabled_ = supportedFeatures.features.drawIndirectFirstInstance == VK_TRUE;
 
     VkPhysicalDeviceFeatures enabledCore{};
     enabledCore.multiDrawIndirect = multiDrawIndirectEnabled_ ? VK_TRUE : VK_FALSE;
     enabledCore.drawIndirectFirstInstance = drawIndirectFirstInstanceEnabled_ ? VK_TRUE : VK_FALSE;
+    enabledCore.independentBlend = independentBlendEnabled_ ? VK_TRUE : VK_FALSE;
 
     VkPhysicalDeviceVulkan13Features enabled13{};
     enabled13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;

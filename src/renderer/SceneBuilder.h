@@ -38,6 +38,9 @@ constexpr size_t kPortfolioBackdropMaterialIndex = 10;
 // glTF MASK material for the perforated-panel cutout demo. Its holes must show up
 // in the shadow map too, which is what the alpha-tested shadow pipeline adds.
 constexpr size_t kPortfolioCutoutLatticeMaterialIndex = 11;
+// glTF BLEND material for the transparency demo. Sorted back to front and drawn
+// in the dedicated transparent pass, after every screen-space effect.
+constexpr size_t kPortfolioGlassMaterialIndex = 12;
 constexpr int kOcclusionTestGridColumns = 12;
 constexpr int kOcclusionTestGridRows = 10;
 constexpr int kOcclusionTestOccluderCount = 5;

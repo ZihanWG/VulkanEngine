@@ -63,6 +63,7 @@ enum class RenderPassType {
     Ssr,
     Gtao,
     GtaoBlur,
+    Transparent,
     TaaResolve,
     BloomExtract,
     BloomBlur,
@@ -190,6 +191,9 @@ struct RenderGraphFrameResources {
     bool ssrEnabled = false;
     // Declares the GTAO horizon-search pass for this frame.
     bool gtaoEnabled = false;
+    // Number of alpha-blended draw items this frame. Zero skips declaring the
+    // transparent pass entirely, so a fully opaque scene costs nothing.
+    uint32_t transparentDrawCount = 0;
 };
 
 struct RenderGraphResourceDebugInfo {
@@ -288,6 +292,11 @@ public:
     void endGtaoPass();
     void beginGtaoBlurPass();
     void endGtaoBlurPass();
+    // Alpha-blended geometry. Scene color only (no velocity, no G-buffer) with
+    // depth test on and depth write off, recorded after every screen-space effect
+    // that needs a clean opaque depth/G-buffer and before the TAA resolve.
+    void beginTransparentPass();
+    void endTransparentPass();
     void beginDepthPyramidPass();
     void endDepthPyramidPass();
     void beginTaaResolvePass();
@@ -366,6 +375,7 @@ private:
         SsrTrace,
         Gtao,
         GtaoBlur,
+        Transparent,
         DepthPyramidMid,
         DepthPyramid,
         TaaResolve,
@@ -417,6 +427,7 @@ private:
         uint32_t ssrTrace = kInvalidRenderGraphHandle;
         uint32_t gtao = kInvalidRenderGraphHandle;
         uint32_t gtaoBlur = kInvalidRenderGraphHandle;
+        uint32_t transparent = kInvalidRenderGraphHandle;
         uint32_t depthPyramid = kInvalidRenderGraphHandle;
         uint32_t taaResolve = kInvalidRenderGraphHandle;
         uint32_t bloomExtract = kInvalidRenderGraphHandle;
