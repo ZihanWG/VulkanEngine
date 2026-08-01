@@ -1,6 +1,7 @@
 #include "renderer/RuntimeSettings.h"
 
 #include "renderer/CascadeMath.h"
+#include "renderer/MeshLod.h"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -10,6 +11,7 @@ using ve::clampRuntimeSettings;
 using ve::CsmSettings;
 using ve::DebugUiSettings;
 using ve::ExposureMode;
+using ve::LodSettings;
 using ve::exposureModeValue;
 using ve::TaaSettings;
 using ve::SsrSettings;
@@ -24,9 +26,10 @@ struct Settings {
     TaaSettings taa;
     SsrSettings ssr;
     CsmSettings csm;
+    LodSettings lod;
     DebugUiSettings debugUi;
 
-    void clamp() { clampRuntimeSettings(toneMapping, bloom, taa, ssr, csm, debugUi); }
+    void clamp() { clampRuntimeSettings(toneMapping, bloom, taa, ssr, csm, lod, debugUi); }
 };
 
 } // namespace
@@ -161,4 +164,39 @@ TEST_CASE("SSR settings clamp into their valid ranges", "[settings]")
     CHECK(settings.ssr.intensity == 0.0f);
     CHECK(settings.ssr.maxRoughness == 1.0f);
     CHECK(settings.ssr.screenEdgeFade == 0.49f);
+}
+
+TEST_CASE("LOD settings clamp into usable ranges", "[settings][lod]")
+{
+    Settings settings;
+    settings.lod.referenceRadiusPixels = 0.0f;
+    settings.lod.bias = 100.0f;
+    settings.lod.shadowBias = -100.0f;
+    settings.clamp();
+
+    // A reference radius at or below a pixel would select the coarsest level for
+    // everything on screen.
+    CHECK(settings.lod.referenceRadiusPixels >= 8.0f);
+    CHECK(settings.lod.bias <= 4.0f);
+    CHECK(settings.lod.shadowBias >= -4.0f);
+}
+
+TEST_CASE("Forced LOD keeps its select-by-distance sentinel", "[settings][lod]")
+{
+    Settings settings;
+
+    settings.lod.forcedLod = -1;
+    settings.clamp();
+    CHECK(settings.lod.forcedLod == -1);
+
+    // Anything below the sentinel collapses onto it rather than becoming a
+    // different negative value the shader would not recognise.
+    settings.lod.forcedLod = -50;
+    settings.clamp();
+    CHECK(settings.lod.forcedLod == -1);
+
+    // And a forced level can never exceed the longest chain the builder makes.
+    settings.lod.forcedLod = 99;
+    settings.clamp();
+    CHECK(settings.lod.forcedLod == static_cast<int>(ve::renderer::kMaxMeshLods) - 1);
 }

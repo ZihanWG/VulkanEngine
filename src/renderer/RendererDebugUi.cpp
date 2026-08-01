@@ -48,6 +48,7 @@ void Renderer::buildDebugUi()
         drawLightsDebugUi();
         drawSkeletalAnimationDebugUi();
         drawGpuCullingDebugUi();
+        drawMeshLodDebugUi();
         drawEnvironmentDebugUi();
 
         if (debugUiSettings_.showRenderGraphPanel &&
@@ -284,6 +285,114 @@ void Renderer::drawSkeletalAnimationDebugUi()
     if (ImGui::Button("Reset to bind pose")) {
         skinnedAnimationTime_ = 0.0f;
         animateSkinnedMesh_ = false;
+    }
+}
+
+void Renderer::drawMeshLodDebugUi()
+{
+    if (!ImGui::CollapsingHeader("Mesh LOD", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+
+    // Selection runs inside the GPU cull dispatch, so every control here is a
+    // field of GpuCullFrameParams::lodSettings uploaded next frame -- nothing is
+    // recomputed on the CPU.
+    ImGui::Checkbox("LOD selection enabled", &lodSettings_.enabled);
+    ImGui::SameLine();
+    ImGui::TextDisabled("(off pins every draw to level 0)");
+
+    ImGui::BeginDisabled(!lodSettings_.enabled);
+
+    ImGui::DragFloat("Reference radius (px)", &lodSettings_.referenceRadiusPixels, 1.0f, 8.0f, 4096.0f, "%.0f");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Projected sphere radius at which level 0 is still chosen.\n"
+                          "Each halving of the on-screen radius steps one level down.");
+    }
+    ImGui::DragFloat("Bias", &lodSettings_.bias, 0.05f, -4.0f, 4.0f, "%.2f");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Positive biases toward lower detail. One unit is one level.");
+    }
+    ImGui::DragFloat("Shadow bias", &lodSettings_.shadowBias, 0.05f, -4.0f, 4.0f, "%.2f");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Added on top of Bias for shadow-cascade dispatches, which hide\n"
+                          "simplification far better than the main pass.");
+    }
+
+    // -1 is the "select by distance" sentinel, so the combo is offset by one.
+    static const char* kForcedLodLabels[] = {"Auto (by distance)", "Force 0", "Force 1", "Force 2", "Force 3"};
+    int forcedLodChoice = std::clamp(lodSettings_.forcedLod + 1, 0, static_cast<int>(renderer::kMaxMeshLods));
+    if (ImGui::Combo("Forced level", &forcedLodChoice, kForcedLodLabels, IM_ARRAYSIZE(kForcedLodLabels))) {
+        lodSettings_.forcedLod = forcedLodChoice - 1;
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Pins every draw item to one level. Clamped per mesh to the\n"
+                          "levels its chain actually has, so low-poly meshes stay at 0.");
+    }
+
+    ImGui::Checkbox("Color by LOD", &lodSettings_.debugHeatmap);
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Green -> yellow -> orange -> red as detail drops.\n"
+                          "The level is packed into the high bits of gl_InstanceIndex\n"
+                          "by the cull pass, since only it knows what was selected.");
+    }
+
+    ImGui::EndDisabled();
+
+    if (ImGui::Button("Reset LOD settings")) {
+        lodSettings_ = LodSettings{};
+    }
+
+    clampRuntimeSettings();
+
+    ImGui::Separator();
+
+    // Emitted-draw counts per level, read back from the cull stats block. Meshes
+    // with no chain are not counted, so the total can be below the visible count.
+    renderer::GpuCullCounters counters{};
+    if (gpuCulling_.readMainCounters(isGpuCullingActive(), currentFrame_, counters)) {
+        uint32_t countedDraws = 0;
+        for (const uint32_t levelCount : counters.lodDrawItems) {
+            countedDraws += levelCount;
+        }
+
+        ImGui::Text("Selected levels (%u draws with a chain):", countedDraws);
+        for (size_t level = 0; level < counters.lodDrawItems.size(); ++level) {
+            const float fraction =
+                countedDraws > 0 ? static_cast<float>(counters.lodDrawItems[level]) / static_cast<float>(countedDraws)
+                                 : 0.0f;
+            const std::string overlay =
+                "L" + std::to_string(level) + ": " + std::to_string(counters.lodDrawItems[level]);
+            ImGui::ProgressBar(fraction, ImVec2(-FLT_MIN, 0.0f), overlay.c_str());
+        }
+    } else {
+        ImGui::TextDisabled("Level distribution needs GPU culling (readback comes from the cull stats).");
+    }
+
+    // Chain lengths are a property of the loaded meshes, so report what actually
+    // got built -- a mesh too small to simplify is a level-0-only chain, and that
+    // is the usual reason a scene shows no level variety at all.
+    ImGui::Separator();
+    ImGui::Text("Mesh chains:");
+    std::vector<const renderer::Mesh*> reportedMeshes;
+    for (const renderer::RenderObject& object : renderObjects_) {
+        const renderer::Mesh* mesh = object.mesh;
+        if (!mesh || !mesh->valid()) {
+            continue;
+        }
+        if (std::find(reportedMeshes.begin(), reportedMeshes.end(), mesh) != reportedMeshes.end()) {
+            continue;
+        }
+        reportedMeshes.push_back(mesh);
+
+        const std::span<const renderer::MeshLod> lods = mesh->lods();
+        std::string summary;
+        for (size_t level = 0; level < lods.size(); ++level) {
+            summary += (level == 0 ? "" : " -> ") + std::to_string(lods[level].indexCount / 3) + "tri";
+        }
+        if (lods.size() <= 1) {
+            summary += " (too small to simplify)";
+        }
+        ImGui::BulletText("%s: %s", mesh->debugName().c_str(), summary.c_str());
     }
 }
 

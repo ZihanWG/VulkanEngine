@@ -207,6 +207,9 @@ struct PushConstants {
     // Skinning: the skinned vertex shader reads the joint-matrix palette from
     // this address via buffer_reference. Zero on all non-skinned draws.
     VkDeviceAddress jointMatricesAddress = 0;
+    // Debug: tints geometry by the LOD level the cull pass selected, which the
+    // vertex stage recovers from the high bits of gl_InstanceIndex.
+    uint32_t debugLodHeatmap = 0;
 };
 
 static_assert(offsetof(PushConstants, objectFrameDataAddress) == 0);

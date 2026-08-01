@@ -401,6 +401,7 @@ private:
     void drawLightsDebugUi();
     void drawSkeletalAnimationDebugUi();
     void drawGpuCullingDebugUi();
+    void drawMeshLodDebugUi();
     void drawEnvironmentDebugUi();
     void drawScenePresetDebugUi();
     void drawPortfolioCaptureDebugUi();
@@ -560,16 +561,6 @@ private:
     // Discrete-LOD selection knobs. Selection itself runs in cull.comp; these are
     // uploaded in GpuCullFrameParams::lodSettings. renderer::MeshLod.h holds the
     // unit-tested reference copy of the selection math.
-    struct LodSettings {
-        bool enabled = true;
-        float referenceRadiusPixels = 220.0f;
-        float bias = 0.0f;
-        // Shadow cascades drop extra detail on top of `bias`.
-        float shadowBias = 1.0f;
-        // >= 0 pins every draw item to that level (debug view).
-        int32_t forcedLod = -1;
-    };
-
     LodSettings lodSettings_{};
     // Flat per-frame LOD table uploaded to the cull pass, plus each draw item's
     // (base, count) range into it. Rebuilt every frame alongside the cull input

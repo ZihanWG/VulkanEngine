@@ -3502,6 +3502,7 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
     bloomSettings_ = settings.bloom;
     taaSettings_ = settings.taa;
     ssrSettings_ = settings.ssr;
+    lodSettings_ = settings.lod;
     debugUiSettings_ = settings.debugUi;
 
     csmSettings_.lambda = settings.csm.lambda;
@@ -3554,6 +3555,7 @@ RuntimeSettings Renderer::captureRuntimeSettings() const
     settings.bloom = bloomSettings_;
     settings.taa = taaSettings_;
     settings.ssr = ssrSettings_;
+    settings.lod = lodSettings_;
     settings.csm = csmSettings_;
     settings.debugUi = debugUiSettings_;
     settings.useGpuCulling = useGpuCulling_;
@@ -3992,7 +3994,8 @@ void Renderer::clampRuntimeSettings()
     // The settings-struct clamping is GPU-independent and lives in
     // RuntimeSettings.cpp (compiled into VulkanEngineCore) so it can be tested.
     ve::clampRuntimeSettings(
-        toneMappingSettings_, bloomSettings_, taaSettings_, ssrSettings_, csmSettings_, debugUiSettings_);
+        toneMappingSettings_, bloomSettings_, taaSettings_, ssrSettings_, csmSettings_, lodSettings_,
+        debugUiSettings_);
 
     // GPU occlusion tuning is renderer state, not part of the settings structs,
     // so it stays here.
@@ -5167,6 +5170,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     basePushConstants.screenHeight = static_cast<float>(extent.height);
     basePushConstants.useClustered = clusteredLightingActive ? 1u : 0u;
     basePushConstants.debugClusterHeatmap = showClusterHeatmap_ ? 1u : 0u;
+    basePushConstants.debugLodHeatmap = lodSettings_.debugHeatmap ? 1u : 0u;
     if (multiDrawIndirectActive) {
         if (bindlessDescriptorSetsBound) {
             const PushConstants pushConstants = basePushConstants;

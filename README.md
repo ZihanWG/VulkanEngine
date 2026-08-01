@@ -17,7 +17,7 @@ A **C++20 / Vulkan 1.3 real-time renderer** built as a graphics- and engine-prog
 
 | Area | What it does |
 | --- | --- |
-| **GPU-driven** | Bindless material textures, multi-draw indirect batching, compute frustum culling + two-phase Hi-Z occlusion culling (on by default) |
+| **GPU-driven** | Bindless material textures, multi-draw indirect batching, compute frustum culling + two-phase Hi-Z occlusion culling (on by default), and per-draw-item discrete LOD selection in the same cull dispatch |
 | **Clustered lighting** | 16×9×24 froxel grid built in compute, per-cluster light culling, hundreds of dynamic point/spot lights via Forward+, cluster passes on an async compute queue overlapping the shadow passes |
 | **Skeletal animation** | GPU linear-blend vertex skinning from a CPU joint-matrix palette, with a unit-tested animation core (keyframe sampling + hierarchy flatten) |
 | **PBR + IBL** | Cook-Torrance GGX, tangent-space normal mapping, prefiltered specular + diffuse irradiance + split-sum BRDF LUT, Kulla-Conty multi-scatter |
@@ -62,6 +62,7 @@ GPU linear-blend vertex skinning (`simple_skinned.vert`) driven by a per-frame j
 
 ## Feature List
 
+- Discrete mesh LOD: chains built at load with meshoptimizer, all levels sharing one index buffer so a level is just a `(firstIndex, indexCount)` pair. The cull compute shader picks the level per draw item from projected screen size and writes it straight into the indirect command -- no extra pass, no CPU round-trip, and `GpuCullDrawItem` absorbed the indices into its former padding so the record is still 64 bytes. Per-level readback, forced-level override, and a color-by-LOD view in the debug panel. See [docs/mesh_lod.md](docs/mesh_lod.md).
 - Vulkan 1.3 initialization with Volk, validation in Debug, Dynamic Rendering, and Synchronization2.
 - VMA-backed buffers and images, Buffer Device Address, CPU-visible uploads/readbacks, and GPU-local staging copies.
 - SDL3 window and surface integration with swapchain recreation support.

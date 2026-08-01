@@ -283,9 +283,10 @@ void emitCommand(GpuCullDrawItem drawItem, uint drawIndex, bool compactCommands)
     // range carried on the draw item.
     uint indexCount = drawItem.indexCount;
     uint firstIndex = drawItem.firstIndex;
+    uint selectedLod = 0u;
     if (drawItem.lodCount > 0u) {
-        uint lodIndex = selectLodIndex(drawItem.boundsMin.xyz, drawItem.boundsMax.xyz, drawItem.lodCount);
-        MeshLod lod = meshLods.lods[drawItem.lodBase + lodIndex];
+        selectedLod = selectLodIndex(drawItem.boundsMin.xyz, drawItem.boundsMax.xyz, drawItem.lodCount);
+        MeshLod lod = meshLods.lods[drawItem.lodBase + selectedLod];
         indexCount = lod.indexCount;
         firstIndex = lod.firstIndex;
 
@@ -293,7 +294,7 @@ void emitCommand(GpuCullDrawItem drawItem, uint drawIndex, bool compactCommands)
         // it there is no way to tell selection apart from silently always
         // picking level 0.
         uint statsBase = cullFrame.counterAndFlags.x;
-        atomicAdd(batchVisibleCounts.visibleCounts[statsBase + kStatsLodCounterOffset + min(lodIndex, 3u)], 1u);
+        atomicAdd(batchVisibleCounts.visibleCounts[statsBase + kStatsLodCounterOffset + min(selectedLod, 3u)], 1u);
     }
 
     DrawIndexedIndirectCommand command;
@@ -301,7 +302,13 @@ void emitCommand(GpuCullDrawItem drawItem, uint drawIndex, bool compactCommands)
     command.instanceCount = 1;
     command.firstIndex = firstIndex;
     command.vertexOffset = drawItem.vertexOffset;
-    command.firstInstance = pc.params.y != 0 ? drawItem.objectFrameDataIndex : 0;
+    // firstInstance carries the object-data slot in the low 16 bits and the
+    // selected LOD level in the high bits. Draw-item indices are bounded by
+    // kMaxDrawItems (1024), so the high half is always free -- this is how the
+    // level, which is only known here, reaches the vertex stage without an extra
+    // buffer, descriptor, or push constant. Every vertex shader that indexes
+    // object data masks with 0xFFFF.
+    command.firstInstance = pc.params.y != 0 ? (drawItem.objectFrameDataIndex | (selectedLod << 16)) : 0;
     indirectOutput.commands[outputIndex] = command;
 }
 
