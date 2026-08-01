@@ -125,7 +125,7 @@ Renderer::Renderer(Window& window) : window_(window)
     sceneDocumentPath_ = defaultSceneDocumentPath();
     loadRuntimeSettingsAtStartup();
 
-    context_.initialize(window_);
+    context_.initialize(window_, shaderDirectory());
 
     frames_.resize(rhi::kMaxFramesInFlight);
     screenshotCapture_.initialize(

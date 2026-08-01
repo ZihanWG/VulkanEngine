@@ -17,6 +17,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace ve::rhi {
@@ -106,10 +107,11 @@ VulkanDevice::~VulkanDevice()
     cleanup();
 }
 
-void VulkanDevice::initialize(VkInstance instance, VkSurfaceKHR surface)
+void VulkanDevice::initialize(VkInstance instance, VkSurfaceKHR surface, std::filesystem::path shaderDirectory)
 {
     instance_ = instance;
     surface_ = surface;
+    shaderDirectory_ = std::move(shaderDirectory);
 
     pickPhysicalDevice();
     createLogicalDevice();
@@ -409,32 +411,57 @@ void VulkanDevice::createPipelineCache()
 {
     assert(device_ != VK_NULL_HANDLE && "createPipelineCache() requires a live logical device.");
 
+    // Bind the cache to the exact SPIR-V it was built from. The driver header
+    // only identifies the GPU and driver, so a blob written before a shader
+    // interface change looks valid to the driver; MoltenVK then fails pipeline
+    // creation outright instead of dropping the stale entries. Hashing the
+    // compiled modules turns that into a cache miss.
+    shaderHash_ = hashShaderDirectory(shaderDirectory_);
+    if (shaderHash_ == 0) {
+        Logger::warn("Could not hash the compiled shader directory (" + shaderDirectory_.string() +
+                     "); the pipeline cache will not be invalidated by shader changes.");
+    }
+
     // Load any previously saved blob and validate it against this exact GPU +
-    // driver before handing it to the driver as initial data. On any mismatch we
-    // build an empty cache so the driver is never fed a foreign/stale blob.
+    // driver + shader set before handing it to the driver as initial data. On
+    // any mismatch we build an empty cache so the driver is never fed a
+    // foreign/stale blob.
     const std::filesystem::path cachePath = pipelineCacheFilePath();
-    std::vector<std::byte> blob = readPipelineCacheBlob(cachePath);
+    const std::vector<std::byte> blob = readPipelineCacheBlob(cachePath);
 
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
-    const bool usable = pipelineCacheHeaderMatches(blob, properties);
+    const PipelineCacheContents contents = decodePipelineCacheBlob(blob, properties, shaderHash_);
+    const bool usable = contents.status == PipelineCacheStatus::Usable;
 
     VkPipelineCacheCreateInfo cacheInfo{};
     cacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-    cacheInfo.initialDataSize = usable ? blob.size() : 0;
-    cacheInfo.pInitialData = usable ? blob.data() : nullptr;
+    cacheInfo.initialDataSize = usable ? contents.driverData.size() : 0;
+    cacheInfo.pInitialData = usable ? contents.driverData.data() : nullptr;
 
     VK_CHECK(vkCreatePipelineCache(device_, &cacheInfo, nullptr, &pipelineCache_));
     debug::setObjectName(device_, pipelineCache_, VK_OBJECT_TYPE_PIPELINE_CACHE, "EnginePipelineCache");
 
-    if (usable) {
-        Logger::info("Loaded pipeline cache (" + std::to_string(blob.size()) + " bytes) from " +
+    switch (contents.status) {
+    case PipelineCacheStatus::Usable:
+        Logger::info("Loaded pipeline cache (" + std::to_string(contents.driverData.size()) + " bytes) from " +
                      cachePath.string() + ".");
-    } else if (!blob.empty()) {
+        break;
+    case PipelineCacheStatus::Missing:
+        Logger::info("No usable pipeline cache found; starting from an empty cache.");
+        break;
+    case PipelineCacheStatus::ShaderMismatch:
+        Logger::info("Discarded pipeline cache at " + cachePath.string() +
+                     " (compiled shaders changed since it was written); starting from an empty cache.");
+        break;
+    case PipelineCacheStatus::DeviceMismatch:
         Logger::warn("Discarded incompatible pipeline cache at " + cachePath.string() +
                      " (GPU/driver mismatch); starting from an empty cache.");
-    } else {
-        Logger::info("No usable pipeline cache found; starting from an empty cache.");
+        break;
+    case PipelineCacheStatus::Malformed:
+        Logger::warn("Discarded unrecognized pipeline cache at " + cachePath.string() +
+                     " (written by an older engine build, or truncated); starting from an empty cache.");
+        break;
     }
 }
 
@@ -453,7 +480,11 @@ void VulkanDevice::destroyPipelineCache()
             if (vkGetPipelineCacheData(device_, pipelineCache_, &dataSize, data.data()) == VK_SUCCESS) {
                 data.resize(dataSize);
                 const std::filesystem::path cachePath = pipelineCacheFilePath();
-                if (writePipelineCacheBlob(cachePath, data)) {
+                // Stamp the digest captured at startup, not a fresh one: these
+                // pipelines were compiled from the modules loaded back then, so
+                // a shader edited mid-run must still invalidate the blob.
+                const std::vector<std::byte> blob = encodePipelineCacheBlob(data, shaderHash_);
+                if (writePipelineCacheBlob(cachePath, blob)) {
                     Logger::info("Saved pipeline cache (" + std::to_string(data.size()) + " bytes) to " +
                                  cachePath.string() + ".");
                 } else {

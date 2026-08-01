@@ -2,6 +2,8 @@
 
 #include "rhi/VulkanCommon.h"
 
+#include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <vector>
 
@@ -33,7 +35,11 @@ public:
     VulkanDevice(VulkanDevice&&) = delete;
     VulkanDevice& operator=(VulkanDevice&&) = delete;
 
-    void initialize(VkInstance instance, VkSurfaceKHR surface);
+    // shaderDirectory is the directory holding the compiled SPIR-V modules this
+    // run will load. It is hashed into the persisted pipeline cache so the blob
+    // is discarded whenever the shaders change; pass an empty path to fall back
+    // to device-identity-only validation.
+    void initialize(VkInstance instance, VkSurfaceKHR surface, std::filesystem::path shaderDirectory);
     void cleanup();
 
     [[nodiscard]] VkPhysicalDevice physicalDevice() const { return physicalDevice_; }
@@ -76,6 +82,10 @@ private:
     VkPhysicalDevice physicalDevice_ = VK_NULL_HANDLE;
     VkDevice device_ = VK_NULL_HANDLE;
     VkPipelineCache pipelineCache_ = VK_NULL_HANDLE;
+    std::filesystem::path shaderDirectory_;
+    // Digest of shaderDirectory_ taken when the cache was created; reused when
+    // saving so the blob is stamped with the shaders its pipelines came from.
+    uint64_t shaderHash_ = 0;
     VkQueue graphicsQueue_ = VK_NULL_HANDLE;
     VkQueue presentQueue_ = VK_NULL_HANDLE;
     VkQueue asyncComputeQueue_ = VK_NULL_HANDLE;

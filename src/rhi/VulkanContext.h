@@ -3,6 +3,7 @@
 #include "rhi/VulkanDevice.h"
 #include "rhi/VulkanMemory.h"
 
+#include <filesystem>
 #include <vector>
 
 namespace ve {
@@ -21,7 +22,9 @@ public:
     VulkanContext(VulkanContext&&) = delete;
     VulkanContext& operator=(VulkanContext&&) = delete;
 
-    void initialize(const Window& window);
+    // shaderDirectory is forwarded to VulkanDevice, which hashes the compiled
+    // SPIR-V in it to key the persisted pipeline cache.
+    void initialize(const Window& window, std::filesystem::path shaderDirectory);
     void cleanup();
     void waitIdle() const;
 
