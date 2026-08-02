@@ -10,6 +10,7 @@
 #include "renderer/CascadeMath.h"
 #include "renderer/ClusteredLighting.h"
 #include "renderer/PunctualShadows.h"
+#include "renderer/VolumetricFogPass.h"
 #include "renderer/DepthPyramid.h"
 #include "renderer/GpuCulling.h"
 #include "renderer/FrameResources.h"
@@ -424,6 +425,14 @@ private:
     // updateDemoLights (which rebuilds the light list) and before the light
     // buffer is uploaded, since it mutates those records in place.
     void updatePunctualShadowSlots(uint32_t frameIndex, float aspectRatio);
+    // Fills the fog volume's per-frame parameters from camera, light, and
+    // cascade state. Runs after updateCascades so the cascade matrices it hands
+    // the injection pass are this frame's.
+    void updateVolumetricFogParams(uint32_t frameIndex, float aspectRatio);
+    [[nodiscard]] bool isVolumetricFogActive() const
+    {
+        return volumetricFog_.available() && fogSettings_.enabled && fogSettings_.density > 0.0f;
+    }
     // Records the punctual shadow atlas pass: one dynamic-rendering pass over
     // the whole atlas, with a viewport/scissor per allocated slot.
     void recordPunctualShadowPass(VkCommandBuffer commandBuffer);
@@ -446,6 +455,7 @@ private:
     void drawToneMappingDebugUi();
     void drawBloomDebugUi();
     void drawSsaoDebugUi();
+    void drawVolumetricFogDebugUi();
     void drawShadowsDebugUi();
     void drawLightsDebugUi();
     void drawSkeletalAnimationDebugUi();
@@ -579,6 +589,10 @@ private:
     // directional CSM array) because punctual casters need per-light perspective
     // projections packed into one texture rather than a fixed cascade array.
     renderer::PunctualShadows punctualShadows_;
+    // Froxel volumetric fog. Its volume is sampled by the main HDR pass, so it
+    // has to be recorded before that pass and after the CSM cascades it reads.
+    renderer::VolumetricFogPass volumetricFog_;
+    renderer::FogSettings fogSettings_{};
     renderer::SkinnedMesh skinnedMesh_;
     rhi::VulkanDescriptorPool materialDescriptorPool_;
     rhi::VulkanDescriptorPool skyboxDescriptorPool_;

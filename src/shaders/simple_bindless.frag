@@ -66,6 +66,7 @@ layout(push_constant) uniform PushConstants {
     layout(offset = 80) uint debugLodHeatmap;
     layout(offset = 88) ShadowSlotBuffer punctualShadowSlots;
     layout(offset = 96) uint debugPunctualShadows;
+    layout(offset = 100) float fogMaxDistance;
 } pc;
 
 layout(set = 0, binding = 1) uniform sampler2DArray uShadowMap;
@@ -73,6 +74,9 @@ layout(set = 0, binding = 4) uniform samplerCube uDiffuseIrradianceMap;
 layout(set = 0, binding = 5) uniform samplerCube uPrefilteredEnvMap;
 layout(set = 0, binding = 6) uniform sampler2D uBrdfLut;
 layout(set = 0, binding = 7) uniform sampler2D uPunctualShadowAtlas;
+// Integrated fog volume: rgb = light gathered in front of this froxel,
+// a = how much of the background still shows through.
+layout(set = 0, binding = 8) uniform sampler3D uFogVolume;
 
 layout(set = 1, binding = 0) uniform sampler2D uBaseColorTextures[];
 layout(set = 1, binding = 1) uniform sampler2D uNormalTextures[];
@@ -654,6 +658,27 @@ void main()
     }
 
     vec3 finalColor = ambient + direct + punctual + emissive;
+
+    // Volumetric fog. Applied here rather than in composite because the view
+    // depth needed to find the froxel is already a varying, so no depth
+    // attachment has to be made samplable; it also lands in scene colour before
+    // bloom and TAA, which is where fog belongs.
+    //
+    // A max distance of zero means fog is off, so no separate flag is needed.
+    if (pc.fogMaxDistance > 0.0) {
+        // Exponential slice distribution, inverting ve::renderer's
+        // fogSliceViewDepth. Its round trip against the injection pass is
+        // pinned by a unit test.
+        const float kFogNearPlane = 0.5;
+        float fogFar = max(pc.fogMaxDistance, kFogNearPlane + 1.0e-3);
+        float fogDepth = clamp(vViewDepth, kFogNearPlane, fogFar);
+        float fogW = log(fogDepth / kFogNearPlane) / log(fogFar / kFogNearPlane);
+
+        vec2 fogUv = vec2(gl_FragCoord.x / pc.screenWidth, gl_FragCoord.y / pc.screenHeight);
+        vec4 fog = texture(uFogVolume, vec3(fogUv, clamp(fogW, 0.0, 1.0)));
+
+        finalColor = finalColor * fog.a + fog.rgb;
+    }
 
     // Debug overlay: the punctual shadow visibility term on its own. White is
     // fully lit, black fully shadowed, so a flat white frame means the atlas is

@@ -11,6 +11,9 @@ class VulkanContext;
 struct VulkanImageCreateInfo {
     uint32_t width = 0;
     uint32_t height = 0;
+    // Depth > 1 makes this a VK_IMAGE_TYPE_3D image. Vulkan forbids array layers
+    // on 3D images, so arrayLayers must stay 1 when depth > 1.
+    uint32_t depth = 1;
     uint32_t arrayLayers = 1;
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkImageUsageFlags usage = 0;

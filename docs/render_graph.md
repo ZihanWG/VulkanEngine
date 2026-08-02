@@ -64,6 +64,7 @@ The currently declared passes are:
 
 - `CSMShadowPass`
 - `PunctualShadowAtlasPass` when at least one punctual light was assigned an atlas tile
+- `VolumetricFogPass` when fog is enabled; it declares only its shadow-map read, since its output volumes are not graph resources
 - `MainGpuCullingPass`
 - `MainHDRPass`
 - `DepthPyramidPass`

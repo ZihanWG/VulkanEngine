@@ -57,6 +57,7 @@ enum class RGAccess {
 enum class RenderPassType {
     Shadow,
     ShadowGpuCulling,
+    VolumetricFog,
     MainGpuCulling,
     DepthPyramid,
     MainHdr,
@@ -200,6 +201,11 @@ struct RenderGraphFrameResources {
     // descriptors claim -- otherwise a frame that casts nothing would leave the
     // image in whatever layout it happened to be in.
     uint32_t punctualShadowSlotCount = 0;
+    // Declares the volumetric fog compute pass for this frame. It only needs to
+    // exist so the graph moves the cascaded shadow map into a sampled layout
+    // before the injection dispatch reads it -- without it the fog runs while
+    // the map is still a depth attachment.
+    bool volumetricFogEnabled = false;
 };
 
 struct RenderGraphResourceDebugInfo {
@@ -281,6 +287,10 @@ public:
     // caller sets a viewport/scissor per slot inside it.
     void beginPunctualShadowPass();
     void endPunctualShadowPass();
+    // Volumetric fog's compute passes. No rendering scope; this exists so the
+    // graph transitions the cascaded shadow map the injection pass samples.
+    void beginVolumetricFogPass();
+    void endVolumetricFogPass();
     void beginMainGpuCullingPass();
     void endMainGpuCullingPass();
     void beginMainHdrPass();
@@ -381,6 +391,7 @@ private:
         None,
         Shadow,
         PunctualShadow,
+        VolumetricFog,
         MainGpuCulling,
         MainHdr,
         MainGpuCullingPhase2,
@@ -434,6 +445,7 @@ private:
     struct BuiltinPassIndices {
         uint32_t shadow = kInvalidRenderGraphHandle;
         uint32_t punctualShadow = kInvalidRenderGraphHandle;
+        uint32_t volumetricFog = kInvalidRenderGraphHandle;
         uint32_t mainGpuCulling = kInvalidRenderGraphHandle;
         uint32_t mainHdr = kInvalidRenderGraphHandle;
         uint32_t depthPyramidMid = kInvalidRenderGraphHandle;

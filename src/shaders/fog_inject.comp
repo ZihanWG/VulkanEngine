@@ -1,0 +1,170 @@
+#version 460
+
+// Volumetric fog, pass 1 of 2: medium injection.
+//
+// One invocation per froxel of the fog volume. It reconstructs the froxel's
+// world position, evaluates the participating medium's density there, lights it
+// with the directional light (shadowed by the same cascaded shadow map the
+// opaque pass uses), and writes the result as
+//   rgb = light scattered toward the eye per unit length
+//   a   = extinction coefficient per unit length
+// which pass 2 then integrates front to back.
+//
+// The volume is addressed like the clustered lighting grid -- screen tiles in
+// XY, exponential slices in Z -- but at its own resolution and with its own,
+// much nearer far plane, because fog only matters over the first few dozen
+// units while the light grid has to reach the scene's far plane.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// Must match ve::renderer::kFogGrid*.
+const uint kFogGridX = 160u;
+const uint kFogGridY = 90u;
+const uint kFogGridZ = 64u;
+// Must match ve::renderer::kFogNearPlane.
+const float kFogNearPlane = 0.5;
+
+const uint kMaxCascades = 4u;
+const float kInverseFourPi = 0.0795774715;
+
+layout(set = 0, binding = 0) uniform FogParamsBuffer {
+    mat4 inverseView;
+    mat4 inverseProjection;
+    mat4 cascadeViewProjection[kMaxCascades];
+    vec4 cascadeSplits;
+    vec4 cameraPosition;
+    // xyz = direction the light travels along, w = cascade count
+    vec4 lightDirection;
+    // rgb = colour * intensity
+    vec4 lightColor;
+    // x = density, y = max distance, z = anisotropy, w = height falloff
+    vec4 fogParams;
+    // x = base height, y = ambient scale, z unused, w unused
+    vec4 fogParams2;
+    // rgb = scattering albedo
+    vec4 scatteringColor;
+    vec4 ambientColor;
+} params;
+
+layout(set = 0, binding = 1) uniform sampler2DArray uShadowMap;
+layout(set = 0, binding = 2, rgba16f) uniform writeonly image3D uScatterVolume;
+
+// View-space depth at a slice boundary. Mirrors
+// ve::renderer::fogSliceViewDepth; the apply pass inverts it, and a unit test
+// pins the round trip.
+float fogSliceViewDepth(float slice, float maxDistance)
+{
+    float far = max(maxDistance, kFogNearPlane + 1.0e-3);
+    float normalized = clamp(slice / float(kFogGridZ), 0.0, 1.0);
+    return kFogNearPlane * pow(far / kFogNearPlane, normalized);
+}
+
+// Henyey-Greenstein, mirroring ve::renderer::henyeyGreensteinPhase.
+float henyeyGreensteinPhase(vec3 viewDirection, vec3 lightDirection, float anisotropy)
+{
+    float g = clamp(anisotropy, -0.99, 0.99);
+    float cosTheta = dot(viewDirection, lightDirection);
+    float gSquared = g * g;
+    float denominator = 1.0 + gSquared - 2.0 * g * cosTheta;
+    return kInverseFourPi * (1.0 - gSquared) / max(pow(denominator, 1.5), 1.0e-6);
+}
+
+// Cascade whose split range contains this view depth, matching the opaque
+// pass's selection so fog and geometry never disagree about which cascade to
+// blame for a shadow.
+int selectCascade(float viewDepth)
+{
+    uint cascadeCount = max(uint(params.lightDirection.w), 1u);
+    for (uint cascade = 0u; cascade < cascadeCount && cascade < kMaxCascades; ++cascade) {
+        if (viewDepth <= params.cascadeSplits[cascade]) {
+            return int(cascade);
+        }
+    }
+    return int(min(cascadeCount, kMaxCascades) - 1u);
+}
+
+float directionalShadow(vec3 worldPosition, float viewDepth)
+{
+    int cascade = selectCascade(viewDepth);
+    if (cascade < 0) {
+        return 1.0;
+    }
+
+    vec4 lightSpace = params.cascadeViewProjection[cascade] * vec4(worldPosition, 1.0);
+    if (lightSpace.w <= 0.0) {
+        return 1.0;
+    }
+
+    vec3 projected = lightSpace.xyz / lightSpace.w;
+    vec2 shadowUv = projected.xy * 0.5 + 0.5;
+    if (projected.z < 0.0 || projected.z > 1.0 || shadowUv.x < 0.0 || shadowUv.x > 1.0 || shadowUv.y < 0.0 ||
+        shadowUv.y > 1.0) {
+        return 1.0;
+    }
+
+    // No normal to bias along inside a participating medium, so this leans on a
+    // small constant offset only. Fog has no surface to self-shadow, which is
+    // exactly why the acne that would force a larger bias cannot occur here.
+    const float kFogShadowBias = 0.0008;
+    float closestDepth = texture(uShadowMap, vec3(shadowUv, float(cascade))).r;
+    return (projected.z - kFogShadowBias) <= closestDepth ? 1.0 : 0.0;
+}
+
+void main()
+{
+    uvec3 froxel = gl_GlobalInvocationID;
+    if (froxel.x >= kFogGridX || froxel.y >= kFogGridY || froxel.z >= kFogGridZ) {
+        return;
+    }
+
+    float maxDistance = max(params.fogParams.y, kFogNearPlane + 1.0e-3);
+
+    // Sample the middle of the froxel in all three axes so the slab that pass 2
+    // integrates is represented by its centre rather than its near face.
+    vec2 uv = (vec2(froxel.xy) + 0.5) / vec2(float(kFogGridX), float(kFogGridY));
+    vec2 ndc = uv * 2.0 - 1.0;
+    float viewDepth = fogSliceViewDepth(float(froxel.z) + 0.5, maxDistance);
+
+    // Ray through this tile at the far plane, then scaled to the slice's depth.
+    // Reusing the camera's own inverse projection keeps the volume aligned with
+    // the image regardless of the projection's y-flip.
+    vec4 clip = params.inverseProjection * vec4(ndc, 1.0, 1.0);
+    vec3 viewRay = clip.xyz / clip.w;
+    // View space looks down -Z, so this scales the ray to the wanted depth.
+    vec3 viewPosition = viewRay * (viewDepth / max(-viewRay.z, 1.0e-4));
+    vec3 worldPosition = (params.inverseView * vec4(viewPosition, 1.0)).xyz;
+
+    // Exponential height fog. Full density at and below the base height so a
+    // camera inside the layer does not see it thin out downward.
+    float heightFalloff = max(params.fogParams.w, 0.0);
+    float heightDensity =
+        heightFalloff > 0.0 ? exp(-max(worldPosition.y - params.fogParams2.x, 0.0) * heightFalloff) : 1.0;
+    float density = max(params.fogParams.x, 0.0) * heightDensity;
+
+    if (density <= 0.0) {
+        imageStore(uScatterVolume, ivec3(froxel), vec4(0.0));
+        return;
+    }
+
+    vec3 albedo = params.scatteringColor.rgb;
+    // Scattering coefficient; extinction is absorption + out-scattering, and
+    // treating albedo as the ratio between them keeps the medium energy
+    // conserving for any albedo <= 1.
+    float extinction = density;
+    vec3 scattering = albedo * density;
+
+    vec3 toCamera = normalize(params.cameraPosition.xyz - worldPosition);
+    vec3 lightTravel = normalize(params.lightDirection.xyz);
+    // Direction *toward* the light, which is what the phase function compares
+    // against the view direction.
+    vec3 toLight = -lightTravel;
+
+    float phase = henyeyGreensteinPhase(toCamera, toLight, params.fogParams.z);
+    float shadow = directionalShadow(worldPosition, viewDepth);
+
+    vec3 inScattering = scattering * params.lightColor.rgb * phase * shadow;
+    // Ambient keeps unlit fog from going black; isotropic, so no phase term.
+    inScattering += scattering * params.ambientColor.rgb * params.fogParams2.y * kInverseFourPi;
+
+    imageStore(uScatterVolume, ivec3(froxel), vec4(inScattering, extinction));
+}

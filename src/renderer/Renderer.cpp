@@ -777,7 +777,7 @@ void Renderer::restorePortfolioCaptureSettings()
 
 void Renderer::createMaterialDescriptorSetLayout()
 {
-    std::array<VkDescriptorSetLayoutBinding, 8> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 9> bindings{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[0].descriptorCount = 1;
@@ -817,6 +817,11 @@ void Renderer::createMaterialDescriptorSetLayout()
     bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[7].descriptorCount = 1;
     bindings[7].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    bindings[8].binding = 8;
+    bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[8].descriptorCount = 1;
+    bindings[8].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     // Set 0 binding 0 is the base color texture, binding 1 is the cascaded
     // shadow-map array, binding 2 is the tangent-space normal map, and binding 3 is the
@@ -931,6 +936,20 @@ void Renderer::createShadowMap()
     // Recreated alongside the CSM so a cascade-count change cannot leave the
     // material descriptor sets pointing at a destroyed image.
     punctualShadows_.create(context_, static_cast<uint32_t>(frames_.size()));
+
+    // The fog injection pass samples the cascaded shadow map, so it is created
+    // here alongside it -- a cascade-count change recreates the shadow map, and
+    // the fog descriptors cache its view.
+    if (volumetricFog_.hasVolume()) {
+        volumetricFog_.updateShadowMap(shadowMap_.imageView(), shadowMap_.sampler());
+    } else {
+        volumetricFog_.create(context_,
+                              static_cast<uint32_t>(frames_.size()),
+                              shaderPath("fog_inject.comp.spv"),
+                              shaderPath("fog_integrate.comp.spv"),
+                              shadowMap_.imageView(),
+                              shadowMap_.sampler());
+    }
 }
 
 void Renderer::createPipeline()
@@ -2094,7 +2113,7 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
 
     VkDescriptorPoolSize poolSize{};
     poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = kMaxMaterialDescriptorSets * 8;
+    poolSize.descriptorCount = kMaxMaterialDescriptorSets * 9;
 
     if (materialDescriptorPool_.handle() == VK_NULL_HANDLE) {
         materialDescriptorPool_.create(
@@ -2150,6 +2169,19 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     // not do. Nothing ever samples it: without an atlas no light is handed a
     // slot, so every light decodes to the unshadowed sentinel and the shader
     // skips the fetch entirely.
+    // Without fog the descriptor still has to be complete and type-correct
+    // (binding 8 is a sampler3D), so it binds the fog volume whenever the
+    // subsystem allocated one. Nothing samples it: the shader gates on a
+    // non-zero fog max distance, which stays zero while fog is off.
+    if (!volumetricFog_.hasVolume()) {
+        throw std::runtime_error(
+            "Cannot create a material descriptor set without a fog volume for binding 8.");
+    }
+    VkDescriptorImageInfo fogVolumeInfo{};
+    fogVolumeInfo.sampler = volumetricFog_.sampler();
+    fogVolumeInfo.imageView = volumetricFog_.integratedVolume().imageView();
+    fogVolumeInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
     const bool punctualAtlasAvailable = punctualShadows_.valid();
     VkDescriptorImageInfo punctualShadowInfo{};
     punctualShadowInfo.sampler =
@@ -2158,7 +2190,7 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
         punctualAtlasAvailable ? punctualShadows_.atlas().imageView() : shadowMap_.layerImageView(0);
     punctualShadowInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
 
-    std::array<VkWriteDescriptorSet, 8> writes{};
+    std::array<VkWriteDescriptorSet, 9> writes{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = material.descriptorSet;
     writes[0].dstBinding = 0;
@@ -2222,6 +2254,14 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     writes[7].descriptorCount = 1;
     writes[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[7].pImageInfo = &punctualShadowInfo;
+
+    writes[8].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[8].dstSet = material.descriptorSet;
+    writes[8].dstBinding = 8;
+    writes[8].dstArrayElement = 0;
+    writes[8].descriptorCount = 1;
+    writes[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[8].pImageInfo = &fogVolumeInfo;
 
     // The material descriptor stores sampled images only: base color at binding 0,
     // cascaded shadow-map array at binding 1, normal map at binding 2, and metallic-roughness
@@ -2587,6 +2627,47 @@ void Renderer::updateDemoLights(float elapsedSeconds)
                                     16.0f,
                                     18.0f * kDegToRad,
                                     30.0f * kDegToRad);
+}
+
+void Renderer::updateVolumetricFogParams(uint32_t frameIndex, float aspectRatio)
+{
+    if (!volumetricFog_.available()) {
+        return;
+    }
+
+    renderer::FogInjectParams params{};
+    const glm::mat4 view = camera_.viewMatrix();
+    const glm::mat4 projection = camera_.projectionMatrix(aspectRatio);
+    params.inverseView = glm::inverse(view);
+    // The camera's own projection, y-flip included, so the volume stays aligned
+    // with the image the main pass will sample it from.
+    params.inverseProjection = glm::inverse(projection);
+
+    const uint32_t cascadeCount = activeCascadeCount();
+    for (uint32_t cascade = 0; cascade < renderer::kMaxFogCascades; ++cascade) {
+        // Unused slots repeat the last active cascade so an out-of-range read
+        // still samples something valid rather than an identity matrix.
+        const uint32_t source = std::min(cascade, cascadeCount - 1);
+        params.cascadeViewProjection[cascade] = frameCascades_[source].lightViewProjection;
+    }
+    params.cascadeSplits = frameCascadeSplits_;
+
+    params.cameraPosition = glm::vec4(camera_.position, 1.0f);
+    const glm::vec4 lightDirection = activeDirectionalLightDirection();
+    params.lightDirection = glm::vec4(glm::vec3(lightDirection), static_cast<float>(cascadeCount));
+    params.lightColor = activeDirectionalLightColor();
+    params.ambientColor =
+        portfolioCaptureMode_ ? kPortfolioAmbientLightColor : kAmbientLightColor;
+
+    params.fogParams = glm::vec4(std::max(fogSettings_.density, 0.0f),
+                                 std::max(fogSettings_.maxDistance, renderer::kFogNearPlane + 1.0f),
+                                 std::clamp(fogSettings_.anisotropy, -0.95f, 0.95f),
+                                 std::max(fogSettings_.heightFalloff, 0.0f));
+    params.fogParams2 =
+        glm::vec4(fogSettings_.baseHeight, std::max(fogSettings_.ambientScale, 0.0f), 0.0f, 0.0f);
+    params.scatteringColor = glm::vec4(glm::max(fogSettings_.scatteringColor, glm::vec3{0.0f}), 1.0f);
+
+    volumetricFog_.updateParams(frameIndex, params);
 }
 
 void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer)
@@ -4612,6 +4693,9 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     }
 
     updateCascades(aspect);
+    // After updateCascades so the injection pass gets this frame's cascade
+    // matrices, and before recording, which reads the uploaded buffer.
+    updateVolumetricFogParams(frameIndex, aspect);
 
     if (updateAnimatedTransforms(elapsedSeconds)) {
         invalidateDepthPyramid();
@@ -5313,6 +5397,7 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         frameGtaoActive_,
         frameVisibleBucketRanges_[static_cast<size_t>(RenderBucket::Blend)].count(),
         punctualShadows_.slotCount(),
+        isVolumetricFogActive(),
     };
 }
 
@@ -5659,6 +5744,27 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     // so both shadow sources are resident before the main HDR pass samples them.
     recordPunctualShadowPass(commandBuffer);
 
+    // Fog injection samples the cascaded shadow map, so it has to follow the
+    // shadow passes; the main HDR pass samples the integrated volume, so it has
+    // to precede that.
+    // Runs whether or not fog is on: binding 8 claims a sampled layout
+    // unconditionally, so the volume has to reach it even on a cold start with
+    // fog disabled. No-op after the first frame.
+    volumetricFog_.ensureVolumeInitialized(commandBuffer);
+
+    if (isVolumetricFogActive()) {
+        const bool fogProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "VolumetricFog");
+        // The graph pass carries no rendering scope; it exists so the cascaded
+        // shadow map is transitioned out of its depth-attachment layout before
+        // the injection dispatch samples it.
+        renderGraph_.beginVolumetricFogPass();
+        volumetricFog_.recordCommands(commandBuffer, currentFrame_);
+        renderGraph_.endVolumetricFogPass();
+        if (fogProfileScope) {
+            gpuProfiler_.endScope(currentFrame_, commandBuffer);
+        }
+    }
+
     recordGpuCullingCommands(commandBuffer);
 
     // Clustered (Forward+) light assignment: rebuild the froxel AABBs, then cull
@@ -5798,6 +5904,9 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     basePushConstants.punctualShadowSlotAddress =
         punctualShadows_.slotCount() > 0 ? punctualShadows_.slotBufferAddress(currentFrame_) : 0;
     basePushConstants.debugPunctualShadows = showPunctualShadowDebug_ ? 1u : 0u;
+    // Zero disables the fog fetch in the shader, so the off state needs no
+    // separate flag.
+    basePushConstants.fogMaxDistance = isVolumetricFogActive() ? fogSettings_.maxDistance : 0.0f;
     if (multiDrawIndirectActive) {
         if (bindlessDescriptorSetsBound) {
             const PushConstants pushConstants = basePushConstants;
