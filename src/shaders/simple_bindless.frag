@@ -316,10 +316,19 @@ float punctualShadowFactor(GpuLight light, vec3 worldPosition, vec3 normal)
 
     GpuShadowSlot slot = pc.punctualShadowSlots.slots[uint(encodedSlot)];
 
-    // Offsetting the sample along the surface normal fixes acne more cheaply
-    // than a large depth bias would, and it does not detach contact shadows the
-    // way peter-panning bias does.
-    vec3 biasedPosition = worldPosition + normal * slot.params.y;
+    // Sine of the angle between the surface and the light: 0 when the light hits
+    // head-on, 1 at grazing incidence. One shadow texel spans the most depth at
+    // grazing incidence, which is where acne appears -- on surfaces edge-on to a
+    // downward spot it reads as combed streaks along the shadow boundaries.
+    vec3 toLight = normalize(light.positionRange.xyz - worldPosition);
+    float normalLight = clamp(dot(normal, toLight), 0.0, 1.0);
+    float grazing = sqrt(max(1.0 - normalLight * normalLight, 0.0));
+
+    // Both biases scale with that angle, the same shape shadowDepthBias uses on
+    // the CSM path. Offsetting along the normal fixes acne more cheaply than
+    // depth bias alone; keeping the head-on term small stops contact shadows
+    // from detaching into peter panning.
+    vec3 biasedPosition = worldPosition + normal * (slot.params.y * (0.2 + grazing));
 
     vec4 lightSpace = slot.viewProjection * vec4(biasedPosition, 1.0);
     if (lightSpace.w <= 0.0) {
@@ -337,7 +346,7 @@ float punctualShadowFactor(GpuLight light, vec3 worldPosition, vec3 normal)
         return 1.0;
     }
 
-    float currentDepth = projected.z - slot.params.x;
+    float currentDepth = projected.z - slot.params.x * (1.0 + grazing * 7.0);
     vec2 atlasUv = slot.atlasUvOffsetScale.xy + tileUv * slot.atlasUvOffsetScale.zw;
 
     // 3x3 PCF in atlas space. Taps stay inside the tile except within one texel

@@ -90,6 +90,14 @@ Normal-offset bias fixes acne more cheaply than a large constant depth bias and
 does not detach contact shadows the way peter-panning bias does; both biases are
 per-slot in `GpuShadowSlot::params` and tunable live from the debug panel.
 
+Both biases are **slope-scaled** by the sine of the angle between the surface
+and the light, matching the shape `shadowDepthBias` uses on the CSM path. That
+term is not optional: one shadow texel spans the most depth at grazing
+incidence, so a flat constant bias leaves acne on every surface edge-on to the
+light. Under a downward spot that is the vertical side of every object, and it
+reads as combed streaks along the shadow boundaries. Keeping the head-on term
+small is what stops the fix from turning into peter panning.
+
 Fragments that project outside the slot's frustum return "lit". For a spot that
 is exactly the region outside the lit cone, where the falloff has already
 reached zero, so it changes nothing visually.
