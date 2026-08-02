@@ -267,6 +267,23 @@ void Renderer::drawLightsDebugUi()
                     renderer::kMaxPunctualShadowSlots,
                     renderer::kPunctualShadowTileSize);
         ImGui::Text("Slots used: %u / %u", punctualShadowSlotsUsed_, renderer::kMaxPunctualShadowSlots);
+
+        // Looking at the atlas directly is the only reliable way to tell a
+        // wrong projection from a wrong sample: in the beauty shot an overhead
+        // spot is easily washed out by the directional key light.
+        if (ImGui::TreeNode("Atlas depth preview")) {
+            const VkExtent2D atlasExtent = punctualShadows_.atlas().extent();
+            ImGui::TextDisabled("Occupied tiles fill row-major from the top-left; %upx each.",
+                                renderer::kPunctualShadowTileSize);
+            drawRenderTargetPreview(punctualShadows_.atlas().imageView(),
+                                    punctualShadows_.atlas().sampler(),
+                                    VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                                    atlasExtent.width,
+                                    atlasExtent.height,
+                                    160.0f * std::clamp(debugUiSettings_.renderTargetPreviewScale, 0.25f, 2.0f),
+                                    1.0f);
+            ImGui::TreePop();
+        }
         // Point lights need six cube faces each, which the atlas pass does not
         // record yet, so they are shaded but never shadowed.
         ImGui::TextDisabled("Spot lights only; point lights are not shadowed yet.");

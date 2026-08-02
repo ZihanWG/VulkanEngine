@@ -131,6 +131,12 @@ Debug panel → Clustered Lighting → **Punctual shadows**:
 | Slots used | Tiles allocated this frame, out of 64 |
 | Depth bias | Constant offset applied to the compared depth |
 | Normal bias | World-space offset along the surface normal before projecting |
+| Atlas depth preview | Samples the atlas image directly, so occupied tiles and their depth content are visible |
+
+The atlas preview is the diagnostic that matters when something looks wrong: in
+a beauty shot an overhead spot is easily washed out by the directional key
+light, and the preview is the only reliable way to tell a bad projection (wrong
+or empty tile contents) from a bad sample (correct tile, wrong lookup).
 
 ## Testing
 
