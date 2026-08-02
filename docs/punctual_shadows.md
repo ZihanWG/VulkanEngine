@@ -123,7 +123,9 @@ from the cull input.
 
 ## Controls
 
-Debug panel → Clustered Lighting → **Punctual shadows**:
+Debug panel → tick **Advanced mode** → **Shadows** → *Punctual (spot/point)*.
+The controls are behind the advanced-mode gate, which is where the cascaded
+shadow settings have always lived:
 
 | Control | Effect |
 | --- | --- |

@@ -446,7 +446,7 @@ private:
     void drawToneMappingDebugUi();
     void drawBloomDebugUi();
     void drawSsaoDebugUi();
-    void drawCsmSettingsDebugUi();
+    void drawShadowsDebugUi();
     void drawLightsDebugUi();
     void drawSkeletalAnimationDebugUi();
     void drawGpuCullingDebugUi();
