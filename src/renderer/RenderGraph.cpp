@@ -842,6 +842,81 @@ void RenderGraph::endGtaoBlurPass()
     activePass_ = ActivePass::None;
 }
 
+void RenderGraph::beginTransparentPass()
+{
+    requireFrameActive("RenderGraph::beginTransparentPass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginTransparentPass called while another pass is active.");
+    }
+    if (!beginDeclaredPass(frame_.passIndices.transparent)) {
+        throw std::logic_error("RenderGraph::beginTransparentPass was culled but the renderer attempted to record it.");
+    }
+
+    const TextureResource& sceneColor = textures_.at(frame_.sceneColor.index);
+    const TextureResource& velocity = textures_.at(frame_.velocity.index);
+    const TextureResource& normalRoughness = textures_.at(frame_.normalRoughness.index);
+
+    // Same three attachments as the main pass, all loaded rather than cleared.
+    // Only scene color blends; velocity and the thin G-buffer are overwritten by
+    // the transparent fragments. Writing velocity is deliberate -- it is what lets
+    // the TAA resolve reproject blended surfaces with their own motion instead of
+    // the opaque geometry's. Overwriting the G-buffer is harmless because SSR and
+    // GTAO, its only readers, have already run by this point in the frame.
+    std::array<VkRenderingAttachmentInfo, 3> colorAttachments{};
+    VkRenderingAttachmentInfo& colorAttachment = colorAttachments[0];
+    colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAttachment.imageView = sceneColor.imageView;
+    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+    VkRenderingAttachmentInfo& velocityAttachment = colorAttachments[1];
+    velocityAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    velocityAttachment.imageView = velocity.imageView;
+    velocityAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    velocityAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    velocityAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+    VkRenderingAttachmentInfo& normalRoughnessAttachment = colorAttachments[2];
+    normalRoughnessAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    normalRoughnessAttachment.imageView = normalRoughness.imageView;
+    normalRoughnessAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    normalRoughnessAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    normalRoughnessAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+    // Loaded and stored but never written: the pipeline disables depth writes, so
+    // transparents occlude against opaque geometry without occluding each other.
+    VkRenderingAttachmentInfo depthAttachment{};
+    depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    depthAttachment.imageView = frame_.swapchain->depthImageView();
+    depthAttachment.imageLayout = depthAttachmentLayout(VK_IMAGE_ASPECT_DEPTH_BIT);
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+    VkRenderingInfo renderingInfo{};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea.offset = {0, 0};
+    renderingInfo.renderArea.extent = sceneColor.desc.extent;
+    renderingInfo.layerCount = 1;
+    renderingInfo.colorAttachmentCount = static_cast<uint32_t>(colorAttachments.size());
+    renderingInfo.pColorAttachments = colorAttachments.data();
+    renderingInfo.pDepthAttachment = &depthAttachment;
+
+    vkCmdBeginRendering(frame_.commandBuffer, &renderingInfo);
+    activePass_ = ActivePass::Transparent;
+}
+
+void RenderGraph::endTransparentPass()
+{
+    requireFrameActive("RenderGraph::endTransparentPass");
+    if (activePass_ != ActivePass::Transparent) {
+        throw std::logic_error("RenderGraph::endTransparentPass called without an active transparent pass.");
+    }
+
+    vkCmdEndRendering(frame_.commandBuffer);
+    activePass_ = ActivePass::None;
+}
+
 void RenderGraph::beginMainGpuCullingPhase2Pass()
 {
     requireFrameActive("RenderGraph::beginMainGpuCullingPhase2Pass");
@@ -1554,6 +1629,38 @@ void RenderGraph::declareGeometryPasses()
                 builder.writeTexture(frame_.ambientOcclusion,
                                      RGAccess::ColorAttachmentWrite,
                                      "Writes the denoised GTAO visibility term the composite multiplies in.");
+            });
+    }
+
+    // Transparents come after SSR and GTAO, which both need an opaque-only depth
+    // buffer and G-buffer, and before the TAA resolve so blended edges still get
+    // antialiased. They read depth without writing it, so the depth pyramid built
+    // below is unaffected.
+    if (frame_.resources.transparentDrawCount > 0) {
+        frame_.passIndices.transparent = addPass(
+            "TransparentPass",
+            RenderPassType::Transparent,
+            RenderPassExecutionType::Graphics,
+            false,
+            [this](RenderGraphBuilder& builder) {
+                builder.readTexture(frame_.mainDepth,
+                                    RGAccess::DepthStencilAttachmentWrite,
+                                    "Depth-tests blended geometry against the opaque depth buffer (no writes).");
+                // Read-modify-write, not a plain write: the "over" blend reads the
+                // destination. Declaring it write-only makes the pass culler treat
+                // every earlier write to scene color -- the main pass, and SSR's
+                // additive blend -- as dead, and cull them.
+                builder.readWriteTexture(frame_.sceneColor,
+                                         RGAccess::ColorAttachmentWrite,
+                                         "Alpha-blends sorted transparent geometry over the lit opaque scene color.");
+                builder.readWriteTexture(frame_.velocity,
+                                         RGAccess::ColorAttachmentWrite,
+                                         "Overwrites motion vectors for blended pixels so TAA reprojects them "
+                                         "with their own motion; loaded, so opaque velocity survives.");
+                builder.readWriteTexture(frame_.normalRoughness,
+                                         RGAccess::ColorAttachmentWrite,
+                                         "Written because the shared fragment shader emits it; SSR and GTAO, its "
+                                         "only readers, already ran earlier this frame.");
             });
     }
 

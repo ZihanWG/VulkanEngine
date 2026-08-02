@@ -25,6 +25,7 @@ add_executable(VulkanEngineTests
     test_cascades.cpp
     test_cluster_grid.cpp
     test_material_asset.cpp
+    test_material_alpha.cpp
     test_mesh_lod.cpp
     test_skeletal_animation.cpp
     test_gltf_skinned_import.cpp

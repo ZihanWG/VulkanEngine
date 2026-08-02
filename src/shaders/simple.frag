@@ -216,6 +216,12 @@ void main()
     vec4 materialColor = texColor * vBaseColorFactor;
     vec3 baseColor = materialColor.rgb;
     float alpha = materialColor.a;
+
+    // glTF MASK cutout; see simple_bindless.frag for the encoding rationale.
+    if (vMaterialParams.w >= 0.0 && alpha < vMaterialParams.w) {
+        discard;
+    }
+
     vec4 mrSample = texture(uMetallicRoughnessMap, vUV);
     float textureMetallic = mrSample.r;
     float textureRoughness = mrSample.g;

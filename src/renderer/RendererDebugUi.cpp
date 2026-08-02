@@ -2153,6 +2153,22 @@ void Renderer::drawCullingDebugUi()
     ImGui::Text("Occlusion test scene: %s", snapshot.occlusionTestSceneActive ? "active" : "inactive");
     ImGui::Text("Total objects: %u", snapshot.totalObjects);
     ImGui::Text("Total draw items: %u", snapshot.totalDrawItems);
+
+    // Render-bucket split. Opaque and Mask share the main pipeline (the alpha test
+    // is data-driven through ObjectFrameData::materialParams.w) but take different
+    // shadow pipelines, and batches never straddle a bucket, so this line also
+    // explains any jump in the batch count.
+    std::array<uint32_t, kRenderBucketCount> bucketDrawItemCounts{};
+    for (const DrawItem& drawItem : allDrawItems_) {
+        bucketDrawItemCounts[static_cast<size_t>(drawItem.bucket)] += 1;
+    }
+    ImGui::Text("Render buckets: opaque %u, mask %u, blend %u",
+                bucketDrawItemCounts[static_cast<size_t>(RenderBucket::Opaque)],
+                bucketDrawItemCounts[static_cast<size_t>(RenderBucket::Mask)],
+                bucketDrawItemCounts[static_cast<size_t>(RenderBucket::Blend)]);
+    ImGui::Text("Alpha-tested shadow pipeline: %s",
+                maskedShadowPipeline_.pipeline() != VK_NULL_HANDLE ? "active" : "unavailable (bindless required)");
+
     ImGui::Text("Visible after culling: %u", snapshot.visibleDrawItems);
     ImGui::Text("Culled draw items: %u", snapshot.culledDrawItems);
     ImGui::Text("Frustum culled: %u", snapshot.frustumCulledDrawItems);

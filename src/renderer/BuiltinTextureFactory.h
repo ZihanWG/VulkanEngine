@@ -40,6 +40,15 @@ public:
                                  const rhi::VulkanCommandContext& commandContext,
                                  rhi::VulkanTexture& out) const;
 
+    // 256x256 sRGB perforated-lattice base color whose alpha channel punches a
+    // grid of round holes. Drives the alpha-mask (glTF MASK) demo: the holes have
+    // to appear in the shadow map as well as the main pass, which is exactly what
+    // a depth-only shadow pipeline gets wrong. Mipmapped so the cutout is also a
+    // readable test of alpha-test stability under minification.
+    void createCutoutLattice(rhi::VulkanContext& context,
+                             const rhi::VulkanCommandContext& commandContext,
+                             rhi::VulkanTexture& out) const;
+
     // Normal map: try "<assetDirectory>/textures/checker_normal.png" (linear),
     // else a procedural flat normal. Reports whether the asset loaded via
     // outAssetLoaded, and also populates flatOut with the standalone flat-normal

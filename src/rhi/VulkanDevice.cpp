@@ -139,6 +139,7 @@ void VulkanDevice::cleanup()
     bufferDeviceAddressEnabled_ = false;
     multiDrawIndirectEnabled_ = false;
     drawIndirectFirstInstanceEnabled_ = false;
+    independentBlendEnabled_ = false;
     drawIndexedIndirectCountAvailable_ = false;
     maxDrawIndirectCount_ = 0;
 }
@@ -216,6 +217,9 @@ bool VulkanDevice::isDeviceSuitable(VkPhysicalDevice candidate) const
 
     return features13.dynamicRendering == VK_TRUE
         && features13.synchronization2 == VK_TRUE
+        // Needed by the alpha-tested main and shadow fragment shaders; see the
+        // enabled13 setup in createLogicalDevice for why `discard` requires it.
+        && features13.shaderDemoteToHelperInvocation == VK_TRUE
         && features12.bufferDeviceAddress == VK_TRUE
         && features12.separateDepthStencilLayouts == VK_TRUE;
 }
@@ -304,16 +308,26 @@ void VulkanDevice::createLogicalDevice()
                                         supported12.descriptorBindingSampledImageUpdateAfterBind == VK_TRUE;
     bufferDeviceAddressEnabled_ = supported12.bufferDeviceAddress == VK_TRUE;
     multiDrawIndirectEnabled_ = supportedFeatures.features.multiDrawIndirect == VK_TRUE;
+    // Per-attachment blend state. The transparent pass wants "over" blending on
+    // scene color while velocity and the thin G-buffer are plain overwrites;
+    // without this, all attachments must share one blend state.
+    independentBlendEnabled_ = supportedFeatures.features.independentBlend == VK_TRUE;
     drawIndirectFirstInstanceEnabled_ = supportedFeatures.features.drawIndirectFirstInstance == VK_TRUE;
 
     VkPhysicalDeviceFeatures enabledCore{};
     enabledCore.multiDrawIndirect = multiDrawIndirectEnabled_ ? VK_TRUE : VK_FALSE;
     enabledCore.drawIndirectFirstInstance = drawIndirectFirstInstanceEnabled_ ? VK_TRUE : VK_FALSE;
+    enabledCore.independentBlend = independentBlendEnabled_ ? VK_TRUE : VK_FALSE;
 
     VkPhysicalDeviceVulkan13Features enabled13{};
     enabled13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
     enabled13.synchronization2 = VK_TRUE;
     enabled13.dynamicRendering = VK_TRUE;
+    // SPIR-V 1.6 (what --target-env=vulkan1.3 emits) lowers GLSL `discard` to
+    // OpDemoteToHelperInvocation rather than the deprecated OpKill, so every
+    // fragment shader with an alpha test needs this bit. Promoted to core in 1.3
+    // and required by isDeviceSuitable, so it is always available here.
+    enabled13.shaderDemoteToHelperInvocation = VK_TRUE;
 
     VkPhysicalDeviceVulkan12Features enabled12{};
     enabled12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;

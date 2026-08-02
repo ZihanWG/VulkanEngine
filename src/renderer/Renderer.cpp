@@ -922,6 +922,7 @@ void Renderer::createPipeline()
 {
     createMainGraphicsPipeline();
     createSkinnedPipeline();
+    createTransparentPipeline();
     createSkyboxPipeline();
     createShadowPipeline();
     postProcess_.createBloomPipelines();
@@ -1017,6 +1018,67 @@ void Renderer::createSkinnedPipeline()
         context_.vkDevice(), skinnedPipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "SkinnedPipelineLayout");
 }
 
+void Renderer::createTransparentPipeline()
+{
+    // Same shaders and descriptor contract as the main pass; only the blend,
+    // depth-write, and attachment state differ. Reusing simple_bindless.frag also
+    // means BLEND materials get the identical PBR/IBL/clustered lighting path
+    // rather than a separate, drifting shader.
+    const VkVertexInputBindingDescription binding = renderer::vertexBindingDescription();
+    const std::array<VkVertexInputAttributeDescription, 5> attributes = renderer::vertexAttributeDescriptions();
+    const bool bindlessMaterialTexturesActive = isBindlessMaterialTextureActive();
+    if (!bindlessMaterialTexturesActive) {
+        // The transparent pass only has a bindless recording path.
+        transparentPipeline_.reset();
+        return;
+    }
+
+    const std::array<VkDescriptorSetLayout, 2> descriptorSetLayouts{
+        materialDescriptorSetLayout_.handle(),
+        bindlessTextureHeap_.descriptorSetLayout(),
+    };
+    const VkPushConstantRange pushConstantRange{
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, static_cast<uint32_t>(sizeof(PushConstants))};
+
+    // Same MRT set as the main pass. The shared fragment shader declares all three
+    // outputs, so binding fewer would leave declared outputs without attachments;
+    // more importantly, letting transparents write velocity is what gives them
+    // correct TAA reprojection instead of inheriting the background's motion.
+    // Only attachment 0 blends (see enableAlphaBlend).
+    const std::array<VkFormat, 3> transparentColorFormats{kSceneColorFormat, kVelocityFormat, kNormalRoughnessFormat};
+
+    rhi::VulkanPipelineCreateInfo pipelineInfo{};
+    pipelineInfo.vertexShaderPath = shaderPath("simple.vert.spv");
+    pipelineInfo.fragmentShaderPath = shaderPath("simple_bindless.frag.spv");
+    pipelineInfo.colorFormat = kSceneColorFormat;
+    pipelineInfo.colorFormats =
+        std::span<const VkFormat>(transparentColorFormats.data(), transparentColorFormats.size());
+    pipelineInfo.depthFormat = swapchain_.depthFormat();
+    pipelineInfo.vertexBindings = std::span<const VkVertexInputBindingDescription>(&binding, 1);
+    pipelineInfo.vertexAttributes =
+        std::span<const VkVertexInputAttributeDescription>(attributes.data(), attributes.size());
+    pipelineInfo.descriptorSetLayouts =
+        std::span<const VkDescriptorSetLayout>(descriptorSetLayouts.data(), descriptorSetLayouts.size());
+    pipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&pushConstantRange, 1);
+    pipelineInfo.enableAlphaBlend = true;
+    pipelineInfo.independentBlendAvailable = context_.device().independentBlendEnabled();
+    pipelineInfo.enableDepth = true;
+    // Test against opaque depth, but do not write: transparents must not occlude
+    // each other, that is what the back-to-front sort is for.
+    pipelineInfo.depthWriteEnable = false;
+    // Blended surfaces are routinely seen from both sides (glass, foliage cards).
+    pipelineInfo.cullMode = VK_CULL_MODE_NONE;
+
+    pipelineInfo.pipelineCache = context_.pipelineCache();
+    transparentPipeline_.create(context_.vkDevice(), pipelineInfo);
+    rhi::debug::setObjectName(
+        context_.vkDevice(), transparentPipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "TransparentPipeline");
+    rhi::debug::setObjectName(context_.vkDevice(),
+                              transparentPipeline_.layout(),
+                              VK_OBJECT_TYPE_PIPELINE_LAYOUT,
+                              "TransparentPipelineLayout");
+}
+
 void Renderer::createSkyboxPipeline()
 {
     const VkDescriptorSetLayout skyboxDescriptorSetLayout = skyboxDescriptorSetLayout_.handle();
@@ -1079,6 +1141,54 @@ void Renderer::createShadowPipeline()
     rhi::debug::setObjectName(
         context_.vkDevice(), shadowPipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "ShadowPipelineLayout");
     shadowPipelineDepthFormat_ = shadowPipelineInfo.depthFormat;
+
+    createMaskedShadowPipeline(binding, attributes);
+}
+
+void Renderer::createMaskedShadowPipeline(const VkVertexInputBindingDescription& binding,
+                                          const std::array<VkVertexInputAttributeDescription, 5>& attributes)
+{
+    // Cutout shadow casters need the bindless base-color array to run the alpha
+    // test, so this variant only exists when the bindless heap does. Without it
+    // MASK casters fall back to shadowPipeline_ and throw a solid silhouette.
+    if (!isBindlessMaterialTextureActive() || bindlessTextureHeap_.descriptorSetLayout() == VK_NULL_HANDLE) {
+        maskedShadowPipeline_.reset();
+        return;
+    }
+
+    // Position (location 0) drives the depth write; UV (location 2) feeds the
+    // cutout sample. The intermediate attributes are skipped, so this cannot be a
+    // prefix subspan of the shared attribute list.
+    const std::array<VkVertexInputAttributeDescription, 2> maskedAttributes{attributes[0], attributes[2]};
+    const VkDescriptorSetLayout bindlessLayout = bindlessTextureHeap_.descriptorSetLayout();
+    const VkPushConstantRange maskedPushConstantRange{
+        VK_SHADER_STAGE_VERTEX_BIT, 0, static_cast<uint32_t>(sizeof(PushConstants))};
+
+    rhi::VulkanPipelineCreateInfo maskedInfo{};
+    maskedInfo.vertexShaderPath = shaderPath("shadow_masked.vert.spv");
+    maskedInfo.fragmentShaderPath = shaderPath("shadow_masked.frag.spv");
+    maskedInfo.depthFormat = shadowMap_.format();
+    maskedInfo.vertexBindings = std::span<const VkVertexInputBindingDescription>(&binding, 1);
+    maskedInfo.vertexAttributes =
+        std::span<const VkVertexInputAttributeDescription>(maskedAttributes.data(), maskedAttributes.size());
+    maskedInfo.descriptorSetLayouts = std::span<const VkDescriptorSetLayout>(&bindlessLayout, 1);
+    maskedInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&maskedPushConstantRange, 1);
+    maskedInfo.enableColorAttachment = false;
+    maskedInfo.enableDepth = true;
+    maskedInfo.depthWriteEnable = true;
+    maskedInfo.enableDepthBias = true;
+    maskedInfo.cullMode = VK_CULL_MODE_NONE;
+    maskedInfo.depthBiasConstantFactor = shadowSettings_.rasterDepthBiasConstantFactor;
+    maskedInfo.depthBiasSlopeFactor = shadowSettings_.rasterDepthBiasSlopeFactor;
+    maskedInfo.pipelineCache = context_.pipelineCache();
+
+    maskedShadowPipeline_.create(context_.vkDevice(), maskedInfo);
+    rhi::debug::setObjectName(
+        context_.vkDevice(), maskedShadowPipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "MaskedShadowPipeline");
+    rhi::debug::setObjectName(context_.vkDevice(),
+                              maskedShadowPipeline_.layout(),
+                              VK_OBJECT_TYPE_PIPELINE_LAYOUT,
+                              "MaskedShadowPipelineLayout");
 }
 
 void Renderer::createComputePipelines()
@@ -1159,6 +1269,7 @@ void Renderer::createSceneSharedResources()
     builtinTextureFactory_.createCheckerboardBaseColor(context_, commandContext_, builtinAssetDir, checkerboardTexture_);
     builtinTextureFactory_.createPortfolioBaseColor(context_, commandContext_, portfolioBaseColorTexture_);
     builtinTextureFactory_.createPortfolioBackdrop(context_, commandContext_, portfolioBackdropTexture_);
+    builtinTextureFactory_.createCutoutLattice(context_, commandContext_, cutoutLatticeTexture_);
     builtinTextureFactory_.createNormal(
         context_, commandContext_, builtinAssetDir, normalMapTexture_, flatNormalTexture_, normalMapAssetLoaded_);
     builtinTextureFactory_.createMetallicRoughness(context_,
@@ -1835,12 +1946,36 @@ void Renderer::createPortfolioMaterialVariants()
                               0.05f);
     addPortfolioMaterial(
         "Portfolio_Backdrop", &portfolioBackdropTexture_, {1.0f, 1.0f, 1.0f, 1.0f}, 0.0f, 0.94f, 0.0f);
+    addPortfolioMaterial(
+        "Portfolio_CutoutLattice", &cutoutLatticeTexture_, {1.0f, 1.0f, 1.0f, 1.0f}, 0.0f, 0.58f, 0.0f);
+    // baseColorFactor.a is the glass opacity; the blend pipeline reads it straight
+    // out of the fragment shader's existing alpha output.
+    addPortfolioMaterial(
+        "Portfolio_Glass", &portfolioBaseColorTexture_, {0.42f, 0.68f, 0.78f, 0.38f}, 0.0f, 0.08f, 0.0f);
 
     // Give the hero ceramic a soft warm emissive so factor-only emissive is
     // visible in the default scene and reads through bloom. Editable per material
     // from the Material Inspector.
     if (renderer::kPortfolioHeroCeramicMaterialIndex < materialVariants_.size()) {
         materialVariants_[renderer::kPortfolioHeroCeramicMaterialIndex].emissiveFactor = glm::vec3(0.9f, 0.45f, 0.15f);
+    }
+
+    // addPortfolioMaterial builds opaque materials; promote this one to glTF MASK
+    // so it lands in the Mask render bucket and clips against the lattice alpha.
+    // Double-sided because a perforated panel is visible through its own holes.
+    if (renderer::kPortfolioCutoutLatticeMaterialIndex < materialVariants_.size()) {
+        renderer::Material& cutoutMaterial = materialVariants_[renderer::kPortfolioCutoutLatticeMaterialIndex];
+        cutoutMaterial.alphaMode = "MASK";
+        cutoutMaterial.alphaCutoff = 0.5f;
+        cutoutMaterial.doubleSided = true;
+    }
+
+    // Same promotion for the glass: addPortfolioMaterial builds opaque materials,
+    // so the BLEND mode is applied afterwards.
+    if (renderer::kPortfolioGlassMaterialIndex < materialVariants_.size()) {
+        renderer::Material& glassMaterial = materialVariants_[renderer::kPortfolioGlassMaterialIndex];
+        glassMaterial.alphaMode = "BLEND";
+        glassMaterial.doubleSided = true;
     }
 }
 
@@ -2198,6 +2333,9 @@ void Renderer::createImportedGltfMaterials(const std::vector<renderer::GltfMater
         material.metallic = materialInfo.metallic;
         material.roughness = materialInfo.roughness;
         material.multiScatterStrength = 1.0f;
+        material.alphaMode = materialInfo.alphaMode;
+        material.alphaCutoff = std::max(materialInfo.alphaCutoff, 0.0f);
+        material.doubleSided = materialInfo.doubleSided;
         material.source =
             materialInfo.fallback ? renderer::MaterialSource::Fallback : renderer::MaterialSource::Gltf;
         material.hasNormalMap = textureLoaded(materialInfo.normalTextureIndex, importedNormalTextures_);
@@ -2461,6 +2599,36 @@ bool Renderer::isRenderObjectActive(const renderer::RenderObject& object) const
     return !object.portfolioOnly || portfolioCaptureMode_;
 }
 
+Renderer::RenderBucket Renderer::renderBucketForMaterial(const renderer::Material* material)
+{
+    if (!material) {
+        return RenderBucket::Opaque;
+    }
+
+    switch (material->alphaModeValue()) {
+    case renderer::AlphaMode::Mask:
+        return RenderBucket::Mask;
+    case renderer::AlphaMode::Blend:
+        return RenderBucket::Blend;
+    case renderer::AlphaMode::Opaque:
+        break;
+    }
+    return RenderBucket::Opaque;
+}
+
+const char* Renderer::renderBucketName(RenderBucket bucket)
+{
+    switch (bucket) {
+    case RenderBucket::Mask:
+        return "Mask";
+    case RenderBucket::Blend:
+        return "Blend";
+    case RenderBucket::Opaque:
+        break;
+    }
+    return "Opaque";
+}
+
 bool Renderer::appendDrawItemsForObject(uint32_t objectIndex, std::vector<DrawItem>& drawItems) const
 {
     if (objectIndex >= renderObjects_.size()) {
@@ -2497,6 +2665,7 @@ bool Renderer::appendDrawItemsForObject(uint32_t objectIndex, std::vector<DrawIt
             drawItem.firstIndex = primitive.firstIndex;
             drawItem.indexCount = primitive.indexCount;
             drawItem.frameDataIndex = static_cast<uint32_t>(drawItems.size());
+            drawItem.bucket = renderBucketForMaterial(drawItem.material);
             drawItems.push_back(drawItem);
         }
         return true;
@@ -2515,6 +2684,7 @@ bool Renderer::appendDrawItemsForObject(uint32_t objectIndex, std::vector<DrawIt
     drawItem.objectIndex = objectIndex;
     drawItem.indexCount = mesh->indexCount();
     drawItem.frameDataIndex = static_cast<uint32_t>(drawItems.size());
+    drawItem.bucket = renderBucketForMaterial(drawItem.material);
     drawItems.push_back(drawItem);
     return true;
 }
@@ -2553,9 +2723,20 @@ void Renderer::buildDrawItems()
         }
     }
 
+    // Bucket is the primary key so each bucket is one contiguous range (the pass
+    // and pipeline split reduces to a range walk); mesh stays the secondary key so
+    // batching inside a bucket still coalesces vertex/index buffer binds.
     std::stable_sort(allDrawItems_.begin(), allDrawItems_.end(), [](const DrawItem& lhs, const DrawItem& rhs) {
+        if (lhs.bucket != rhs.bucket) {
+            return lhs.bucket < rhs.bucket;
+        }
         return std::less<const renderer::Mesh*>{}(lhs.mesh, rhs.mesh);
     });
+
+    // Blend is the last bucket, so its items form a suffix that gets reordered
+    // back to front. Runs before frameDataIndex is assigned so the object-data
+    // slots follow the final order.
+    sortTransparentDrawItems();
 
     for (size_t drawIndex = 0; drawIndex < allDrawItems_.size(); ++drawIndex) {
         allDrawItems_[drawIndex].frameDataIndex = static_cast<uint32_t>(drawIndex);
@@ -2612,6 +2793,61 @@ void Renderer::buildVisibleDrawItems(const renderer::Frustum& frustum)
             visibleDrawItems_.push_back(drawItem);
         }
     }
+}
+
+void Renderer::updateVisibleBucketRanges()
+{
+    // visibleDrawItems_ inherits allDrawItems_' (bucket, mesh) ordering, so each
+    // bucket is one contiguous run and the ranges are a single linear scan.
+    for (RenderBucketRange& range : frameVisibleBucketRanges_) {
+        range = {};
+    }
+
+    size_t index = 0;
+    for (size_t bucket = 0; bucket < kRenderBucketCount; ++bucket) {
+        const RenderBucket wanted = static_cast<RenderBucket>(bucket);
+        const size_t begin = index;
+        while (index < visibleDrawItems_.size() && visibleDrawItems_[index].bucket == wanted) {
+            ++index;
+        }
+        frameVisibleBucketRanges_[bucket] = {static_cast<uint32_t>(begin), static_cast<uint32_t>(index)};
+    }
+}
+
+void Renderer::sortTransparentDrawItems()
+{
+    // Operates on allDrawItems_, not visibleDrawItems_: when GPU culling is on,
+    // the cull input is marshalled from allDrawItems_ while the batches index
+    // visibleDrawItems_, and the two are only interchangeable because they share
+    // an ordering. Sorting one and not the other would silently mismatch every
+    // batch's command range.
+    const auto blendBegin = std::find_if(allDrawItems_.begin(), allDrawItems_.end(), [](const DrawItem& drawItem) {
+        return drawItem.bucket == RenderBucket::Blend;
+    });
+    if (std::distance(blendBegin, allDrawItems_.end()) < 2) {
+        return;
+    }
+
+    // Back to front by distance from the camera to the object's world-bounds
+    // centre. Unlike the opaque buckets, the blend range cannot stay grouped by
+    // mesh: correct compositing order beats batching, and transparent draws are
+    // few enough for that to be the right trade.
+    const glm::vec3 cameraPosition = camera_.position;
+    const auto viewDistanceSquared = [&](const DrawItem& drawItem) {
+        if (drawItem.objectIndex >= frameWorldBounds_.size()) {
+            return 0.0f;
+        }
+        const renderer::Aabb& bounds = frameWorldBounds_[drawItem.objectIndex];
+        if (!bounds.valid()) {
+            return 0.0f;
+        }
+        const glm::vec3 offset = (bounds.min + bounds.max) * 0.5f - cameraPosition;
+        return glm::dot(offset, offset);
+    };
+
+    std::stable_sort(blendBegin, allDrawItems_.end(), [&](const DrawItem& lhs, const DrawItem& rhs) {
+        return viewDistanceSquared(lhs) > viewDistanceSquared(rhs);
+    });
 }
 
 void Renderer::buildMeshDrawBatches()
@@ -2671,6 +2907,7 @@ void Renderer::buildMeshDrawBatchesForItems(const std::vector<DrawItem>& drawIte
                                             std::vector<MeshDrawBatch>& batches) const
 {
     const renderer::Mesh* currentMesh = nullptr;
+    RenderBucket currentBucket = RenderBucket::Opaque;
     MeshDrawBatch* currentBatch = nullptr;
     for (size_t drawItemIndex = 0; drawItemIndex < drawItems.size(); ++drawItemIndex) {
         const DrawItem& drawItem = drawItems[drawItemIndex];
@@ -2680,15 +2917,19 @@ void Renderer::buildMeshDrawBatchesForItems(const std::vector<DrawItem>& drawIte
             continue;
         }
 
-        if (!currentBatch || currentMesh != drawItem.mesh) {
+        // A batch is one indirect draw with one pipeline bound, so it must not
+        // straddle a bucket boundary even when consecutive items share a mesh.
+        if (!currentBatch || currentMesh != drawItem.mesh || currentBucket != drawItem.bucket) {
             MeshDrawBatch batch{};
             batch.mesh = drawItem.mesh;
             batch.beginDrawItem = static_cast<uint32_t>(drawItemIndex);
             batch.compactedCommandOffset = static_cast<uint32_t>(drawItemIndex);
             batch.visibleCountOffset = static_cast<uint32_t>(batches.size() * sizeof(uint32_t));
+            batch.bucket = drawItem.bucket;
             batches.push_back(batch);
             currentBatch = &batches.back();
             currentMesh = drawItem.mesh;
+            currentBucket = drawItem.bucket;
         }
 
         ++currentBatch->drawItemCount;
@@ -4286,6 +4527,9 @@ void Renderer::buildMainCullingFrameData(uint32_t frameIndex, const renderer::Fr
     } else {
         buildVisibleDrawItems(cameraFrustum);
     }
+    // allDrawItems_ was already bucket-sorted and depth-sorted in buildDrawItems,
+    // so visibleDrawItems_ inherits the final order and this is just a scan.
+    updateVisibleBucketRanges();
     buildMeshDrawBatches();
 
     if (gpuCullingActive) {
@@ -4361,8 +4605,10 @@ void Renderer::uploadObjectFrameData(uint32_t frameIndex)
             const renderer::Material* material = drawItem.material ? drawItem.material : object.material;
             if (material) {
                 frameData.baseColorFactor = material->baseColorFactor;
-                frameData.materialParams = {
-                    material->metallic, material->roughness, material->multiScatterStrength, 0.0f};
+                frameData.materialParams = {material->metallic,
+                                            material->roughness,
+                                            material->multiScatterStrength,
+                                            material->alphaTestCutoff()};
                 frameData.textureIndices = {material->baseColorTextureIndex,
                                             material->normalTextureIndex,
                                             material->metallicRoughnessTextureIndex,
@@ -4402,7 +4648,7 @@ void Renderer::uploadObjectFrameData(uint32_t frameIndex)
                                       shadowSettings_.enablePcf ? 1.0f : 0.0f,
                                       static_cast<float>(std::max(shadowSettings_.pcfRadius, 0))};
         skinnedData.baseColorFactor = glm::vec4(0.85f, 0.45f, 0.32f, 1.0f);
-        skinnedData.materialParams = {0.1f, 0.55f, 1.0f, 0.0f};
+        skinnedData.materialParams = {0.1f, 0.55f, 1.0f, renderer::kNoAlphaTestCutoff};
         skinnedData.cameraPosition = glm::vec4(camera_.position, csmSettings_.enableCascadeDebugColors ? 1.0f : 0.0f);
         skinnedData.cameraForward =
             glm::vec4(glm::normalize(camera_.target - camera_.position), static_cast<float>(cascadeCount));
@@ -4758,6 +5004,7 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         frameTwoPhaseOcclusionActive_,
         frameSsrActive_,
         frameGtaoActive_,
+        frameVisibleBucketRanges_[static_cast<size_t>(RenderBucket::Blend)].count(),
     };
 }
 
@@ -4941,11 +5188,44 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                  : " CPU culling direct fallback");
         rhi::debug::beginLabel(commandBuffer, shadowDrawLabel);
 
+        // Cutout casters swap to the alpha-tested shadow pipeline. Its layout adds
+        // the bindless set, so the layouts are not push-constant compatible and
+        // every switch has to re-push. Returns true when a switch happened.
+        const bool maskedShadowPipelineReady = maskedShadowPipeline_.pipeline() != VK_NULL_HANDLE;
+        VkPipelineLayout boundShadowLayout = shadowPipeline_.layout();
+        RenderBucket boundShadowBucket = RenderBucket::Opaque;
+        auto bindShadowPipelineForBucket = [&](RenderBucket bucket) {
+            // Without the bindless heap there is nothing to sample, so MASK falls
+            // back to the depth-only pipeline and casts a solid silhouette.
+            const bool wantMasked = maskedShadowPipelineReady && bucket == RenderBucket::Mask;
+            const RenderBucket effectiveBucket = wantMasked ? RenderBucket::Mask : RenderBucket::Opaque;
+            if (boundShadowBucket == effectiveBucket) {
+                return false;
+            }
+
+            const rhi::VulkanPipeline& pipeline = wantMasked ? maskedShadowPipeline_ : shadowPipeline_;
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline());
+            if (wantMasked) {
+                const VkDescriptorSet bindlessSet = bindlessTextureHeap_.descriptorSet();
+                vkCmdBindDescriptorSets(commandBuffer,
+                                        VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        pipeline.layout(),
+                                        0,
+                                        1,
+                                        &bindlessSet,
+                                        0,
+                                        nullptr);
+            }
+            boundShadowLayout = pipeline.layout();
+            boundShadowBucket = effectiveBucket;
+            return true;
+        };
+
         const renderer::Mesh* boundShadowMesh = nullptr;
         if (gpuShadowCullingActive && !activeShadowDrawItems.empty()) {
             const PushConstants pushConstants{objectFrameDataBaseAddress, cascadeIndex, 0};
             vkCmdPushConstants(commandBuffer,
-                               shadowPipeline_.layout(),
+                               boundShadowLayout,
                                VK_SHADER_STAGE_VERTEX_BIT,
                                0,
                                static_cast<uint32_t>(sizeof(PushConstants)),
@@ -4962,6 +5242,15 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
             for (const MeshDrawBatch& batch : activeShadowMeshDrawBatches) {
                 if (!batch.mesh || batch.drawItemCount == 0) {
                     continue;
+                }
+
+                if (bindShadowPipelineForBucket(batch.bucket)) {
+                    vkCmdPushConstants(commandBuffer,
+                                       boundShadowLayout,
+                                       VK_SHADER_STAGE_VERTEX_BIT,
+                                       0,
+                                       static_cast<uint32_t>(sizeof(PushConstants)),
+                                       &pushConstants);
                 }
 
                 if (boundShadowMesh != batch.mesh) {
@@ -4998,6 +5287,8 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                     continue;
                 }
 
+                bindShadowPipelineForBucket(drawItem.bucket);
+
                 const PushConstants pushConstants{
                     objectFrameDataBaseAddress +
                         static_cast<VkDeviceAddress>(drawItem.frameDataIndex * sizeof(ObjectFrameData)),
@@ -5005,7 +5296,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                     0};
 
                 vkCmdPushConstants(commandBuffer,
-                                   shadowPipeline_.layout(),
+                                   boundShadowLayout,
                                    VK_SHADER_STAGE_VERTEX_BIT,
                                    0,
                                    static_cast<uint32_t>(sizeof(PushConstants)),
@@ -5189,6 +5480,12 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                 if (!batch.mesh || batch.drawItemCount == 0) {
                     continue;
                 }
+                // Blended geometry is drawn later, by recordTransparentPass. The
+                // GPU cull still emits commands for it into the compacted buffer;
+                // those slots are simply never replayed here.
+                if (batch.bucket == RenderBucket::Blend) {
+                    continue;
+                }
 
                 if (boundMesh != batch.mesh) {
                     const VkBuffer vertexBuffers[] = {batch.mesh->vertexBuffer()};
@@ -5228,6 +5525,9 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         for (size_t drawIndex = 0; drawIndex < mainDrawItemCount; ++drawIndex) {
             const DrawItem& drawItem = visibleDrawItems_[drawIndex];
             if (!drawItem.mesh || drawItem.frameDataIndex >= kMaxDrawItems) {
+                continue;
+            }
+            if (drawItem.bucket == RenderBucket::Blend) {
                 continue;
             }
 
@@ -5422,6 +5722,72 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
 
     if (frameGtaoActive_) {
         gtao_.recordCommands(commandBuffer, currentFrame_, extent);
+    }
+
+    // Transparent pass. After SSR and GTAO, which both need opaque-only depth and
+    // G-buffer data, and before the TAA resolve so blended edges are still
+    // antialiased. Recorded inline because it reuses this scope's push constants,
+    // descriptor sets, and viewport rather than rebuilding them.
+    const RenderBucketRange blendRange = frameVisibleBucketRanges_[static_cast<size_t>(RenderBucket::Blend)];
+    if (!blendRange.empty() && transparentPipeline_.pipeline() != VK_NULL_HANDLE &&
+        globalDescriptorSet != VK_NULL_HANDLE && bindlessMaterialTexturesActive) {
+        const renderer::GpuProfileScope transparentScope(gpuProfiler_, currentFrame_, commandBuffer, "Transparent");
+        rhi::debug::beginLabel(commandBuffer, "Transparent " + std::to_string(blendRange.count()) + " draws");
+        renderGraph_.beginTransparentPass();
+
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, transparentPipeline_.pipeline());
+        vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+        vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+        const std::array<VkDescriptorSet, 2> transparentSets{globalDescriptorSet,
+                                                             bindlessTextureHeap_.descriptorSet()};
+        vkCmdBindDescriptorSets(commandBuffer,
+                                VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                transparentPipeline_.layout(),
+                                0,
+                                static_cast<uint32_t>(transparentSets.size()),
+                                transparentSets.data(),
+                                0,
+                                nullptr);
+
+        const PushConstants transparentPushConstants = basePushConstants;
+        vkCmdPushConstants(commandBuffer,
+                           transparentPipeline_.layout(),
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0,
+                           static_cast<uint32_t>(sizeof(PushConstants)),
+                           &transparentPushConstants);
+
+        // Direct draws rather than multi-draw indirect. The GPU cull compacts
+        // visible commands within a batch, and compaction is by definition
+        // order-destroying -- it would undo the back-to-front sort these draws
+        // depend on. firstInstance still carries the object-data slot exactly as
+        // the indirect path does, so the vertex shader is unchanged.
+        const renderer::Mesh* boundTransparentMesh = nullptr;
+        for (uint32_t drawIndex = blendRange.begin; drawIndex < blendRange.end; ++drawIndex) {
+            const DrawItem& drawItem = visibleDrawItems_[drawIndex];
+            if (!drawItem.mesh || drawItem.indexCount == 0 || drawItem.frameDataIndex >= kMaxDrawItems) {
+                continue;
+            }
+
+            if (boundTransparentMesh != drawItem.mesh) {
+                const VkBuffer vertexBuffers[] = {drawItem.mesh->vertexBuffer()};
+                const VkDeviceSize vertexOffsets[] = {0};
+                vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
+                vkCmdBindIndexBuffer(commandBuffer, drawItem.mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+                boundTransparentMesh = drawItem.mesh;
+            }
+
+            vkCmdDrawIndexed(commandBuffer,
+                             drawItem.indexCount,
+                             1,
+                             drawItem.firstIndex,
+                             drawItem.vertexOffset,
+                             drawItem.frameDataIndex);
+        }
+
+        renderGraph_.endTransparentPass();
+        rhi::debug::endLabel(commandBuffer);
     }
 
     recordDepthPyramidCommands(commandBuffer);

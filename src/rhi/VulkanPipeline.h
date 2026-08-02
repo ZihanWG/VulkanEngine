@@ -26,6 +26,18 @@ struct VulkanPipelineCreateInfo {
     // pre-multiplies its weights). Used by the SSR trace pass to accumulate
     // reflections into the existing scene color.
     bool enableAdditiveBlend = false;
+    // Standard SRC_ALPHA / ONE_MINUS_SRC_ALPHA "over" blending for glTF BLEND
+    // materials. Mutually exclusive with enableAdditiveBlend.
+    //
+    // Unlike enableAdditiveBlend, this applies to attachment 0 only; the rest are
+    // plain overwrites. The transparent pass renders into the same MRT set as the
+    // main pass, and blending a velocity vector or an octahedral normal would be
+    // meaningless -- only the colour is composited.
+    bool enableAlphaBlend = false;
+    // Set from VulkanDevice::independentBlendEnabled(). Without it Vulkan requires
+    // every attachment to share one blend state, so enableAlphaBlend falls back to
+    // blending all of them.
+    bool independentBlendAvailable = false;
     bool enableDepth = false;
     bool depthWriteEnable = true;
     bool enableDepthBias = false;

@@ -150,8 +150,25 @@ void VulkanPipeline::create(VkDevice device, const VulkanPipelineCreateInfo& cre
         colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
         colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
     }
-    const std::vector<VkPipelineColorBlendAttachmentState> colorBlendAttachments(colorFormats.size(),
-                                                                                 colorBlendAttachment);
+    std::vector<VkPipelineColorBlendAttachmentState> colorBlendAttachments(colorFormats.size(), colorBlendAttachment);
+
+    if (createInfo.enableAlphaBlend && !colorBlendAttachments.empty()) {
+        // Per-attachment state needs independentBlend; without it every attachment
+        // must be identical, so the whole set blends. That only degrades the
+        // motion vectors of blended pixels, so it is an acceptable fallback.
+        const size_t blendedAttachmentCount =
+            createInfo.independentBlendAvailable ? 1U : colorBlendAttachments.size();
+        for (size_t attachment = 0; attachment < blendedAttachmentCount; ++attachment) {
+            VkPipelineColorBlendAttachmentState& target = colorBlendAttachments[attachment];
+            target.blendEnable = VK_TRUE;
+            target.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+            target.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            target.colorBlendOp = VK_BLEND_OP_ADD;
+            target.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+            target.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            target.alphaBlendOp = VK_BLEND_OP_ADD;
+        }
+    }
 
     VkPipelineColorBlendStateCreateInfo colorBlend{};
     colorBlend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
