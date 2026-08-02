@@ -1,6 +1,7 @@
 #pragma once
 
 #include "renderer/Bounds.h"
+#include "renderer/MeshLod.h"
 #include "rhi/VulkanBuffer.h"
 
 #include <array>
@@ -28,6 +29,10 @@ struct MeshPrimitive {
     uint32_t firstIndex = 0;
     uint32_t indexCount = 0;
     uint32_t materialIndex = 0;
+    // Half-open range inside Mesh::lods(). lodCount is at least 1 for any
+    // primitive that produced geometry, because level 0 always exists.
+    uint32_t lodBase = 0;
+    uint32_t lodCount = 0;
 };
 
 struct GltfTextureInfo {
@@ -88,9 +93,17 @@ public:
 
     [[nodiscard]] VkBuffer vertexBuffer() const { return vertexBuffer_.buffer(); }
     [[nodiscard]] VkBuffer indexBuffer() const { return indexBuffer_.buffer(); }
+    // Index count of LOD 0, i.e. the authored geometry. Simplified levels live
+    // past it in the same buffer and are addressed through lods().
     [[nodiscard]] uint32_t indexCount() const { return indexCount_; }
     [[nodiscard]] std::span<const MeshPrimitive> primitives() const { return subMeshes_; }
     [[nodiscard]] bool hasSubMeshes() const { return !subMeshes_.empty(); }
+
+    // Flat LOD table. Sub-meshed meshes address it through MeshPrimitive::lodBase
+    // / lodCount; meshes without sub-meshes use lodBase() / lodCount() below.
+    [[nodiscard]] std::span<const MeshLod> lods() const { return lods_; }
+    [[nodiscard]] uint32_t lodBase() const { return lodBase_; }
+    [[nodiscard]] uint32_t lodCount() const { return lodCount_; }
     [[nodiscard]] const Aabb& localBounds() const { return localBounds_; }
     [[nodiscard]] const std::string& debugName() const { return debugName_; }
     [[nodiscard]] bool valid() const { return vertexBuffer_.buffer() != VK_NULL_HANDLE && indexCount_ > 0; }
@@ -101,6 +114,10 @@ private:
     rhi::VulkanBuffer indexBuffer_;
     uint32_t indexCount_ = 0;
     std::vector<MeshPrimitive> subMeshes_;
+    std::vector<MeshLod> lods_;
+    // LOD range for the whole-mesh path; unused when subMeshes_ is populated.
+    uint32_t lodBase_ = 0;
+    uint32_t lodCount_ = 0;
     Aabb localBounds_{};
     std::string debugName_;
 };

@@ -126,12 +126,32 @@ struct SsrSettings {
     float screenEdgeFade = 0.1f;
 };
 
+// Discrete mesh level of detail. Selection runs per draw item inside the GPU cull
+// dispatch (see cull.comp); these are the knobs uploaded to it each frame. The
+// selection math itself lives in renderer/MeshLod.h.
+struct LodSettings {
+    bool enabled = true;
+    // Projected sphere radius, in pixels, at which level 0 is still the right
+    // choice. Each halving of the on-screen radius steps one level down.
+    float referenceRadiusPixels = 220.0f;
+    // Positive biases toward lower detail.
+    float bias = 0.0f;
+    // Added on top of `bias` for shadow-cascade dispatches, which tolerate
+    // simplification far better than the main pass.
+    float shadowBias = 1.0f;
+    // >= 0 pins every draw item to that level; -1 selects by distance.
+    int forcedLod = -1;
+    // Tints geometry by the level the cull pass actually chose.
+    bool debugHeatmap = false;
+};
+
 struct RuntimeSettings {
     ToneMappingSettings toneMapping;
     BloomSettings bloom;
     TaaSettings taa;
     SsrSettings ssr;
     CsmSettings csm;
+    LodSettings lod;
     DebugUiSettings debugUi;
     bool useGpuCulling = true;
     bool useGpuShadowCulling = true;
@@ -158,6 +178,7 @@ void clampRuntimeSettings(ToneMappingSettings& toneMapping,
                           TaaSettings& taa,
                           SsrSettings& ssr,
                           CsmSettings& csm,
+                          LodSettings& lod,
                           DebugUiSettings& debugUi);
 
 enum class RuntimeSettingsLoadStatus {

@@ -41,6 +41,11 @@ layout(push_constant) uniform PushConstants {
     layout(offset = 72) JointPalette jointPalette;
 } pc;
 
+// gl_InstanceIndex packs the object-data slot in the low 16 bits and the
+// cull-selected LOD level in the high bits (see cull.comp). Draws that do not go
+// through the cull pass leave the high bits zero, so the mask is always safe.
+const uint kObjectIndexMask = 0xFFFFu;
+
 layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inColor;
 layout(location = 2) in vec2 inUV;
@@ -70,10 +75,15 @@ layout(location = 20) flat out float vCascadeDebugEnabled;
 layout(location = 21) flat out vec4 vEmissiveFactor;
 layout(location = 22) out vec4 vCurrClipPos;
 layout(location = 23) out vec4 vPrevClipPos;
+// Declared to match simple_bindless.frag, which this stage shares with the main
+// pass. The skinned demo does not go through the cull pass, so it has no
+// selected level and always reports 0.
+layout(location = 24) flat out uint vLodIndex;
 
 void main()
 {
-    ObjectFrameData objectData = pc.objectFrameData.objects[gl_InstanceIndex];
+    ObjectFrameData objectData = pc.objectFrameData.objects[gl_InstanceIndex & kObjectIndexMask];
+    vLodIndex = 0u;
 
     // Linear-blend skinning: weighted sum of the bound joints' palette matrices.
     mat4 skinMatrix = inJointWeights.x * pc.jointPalette.jointMatrices[inJointIndices.x] +

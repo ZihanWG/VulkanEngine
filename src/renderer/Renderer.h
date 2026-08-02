@@ -296,6 +296,10 @@ private:
     void createIndirectDrawBuffers();
     void createShadowIndirectDrawBuffers();
     void updateCascades(float aspectRatio);
+    void buildFrameMeshLodTable();
+    // Shared by the main and shadow cull-input updates so both dispatches see the
+    // same camera, viewport, and LOD settings regardless of upload order.
+    void uploadGpuCullFrameParams(uint32_t frameIndex, bool occlusionEnabledThisFrame);
     void updateGpuCullInputBuffer(uint32_t frameIndex);
     void updateGpuShadowCullInputBuffer(uint32_t frameIndex);
     void updateFrameData(uint32_t frameIndex);
@@ -397,6 +401,7 @@ private:
     void drawLightsDebugUi();
     void drawSkeletalAnimationDebugUi();
     void drawGpuCullingDebugUi();
+    void drawMeshLodDebugUi();
     void drawEnvironmentDebugUi();
     void drawScenePresetDebugUi();
     void drawPortfolioCaptureDebugUi();
@@ -553,6 +558,19 @@ private:
     std::chrono::steady_clock::time_point lastExposureLogPrint_ = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point lastFrameStartTime_ = std::chrono::steady_clock::now();
     std::array<glm::vec4, 6> frameFrustumPlanes_{};
+    // Discrete-LOD selection knobs. Selection itself runs in cull.comp; these are
+    // uploaded in GpuCullFrameParams::lodSettings. renderer::MeshLod.h holds the
+    // unit-tested reference copy of the selection math.
+    LodSettings lodSettings_{};
+    // Flat per-frame LOD table uploaded to the cull pass, plus each draw item's
+    // (base, count) range into it. Rebuilt every frame alongside the cull input
+    // because scene edits add and remove meshes; deduped by mesh so a mesh's
+    // chain is uploaded once no matter how many draw items reference it.
+    // renderer::MeshLod is already the GPU record: two uint32s, std430-compatible
+    // (static_assert'd in Renderer.cpp), so the table uploads without conversion.
+    std::vector<renderer::MeshLod> frameMeshLodTable_;
+    std::vector<glm::uvec2> frameDrawItemLodRanges_;
+
     glm::mat4 frameViewProjection_{1.0f};
     glm::mat4 frameJitteredProjection_{1.0f};
     glm::mat4 frameJitteredViewProjection_{1.0f};

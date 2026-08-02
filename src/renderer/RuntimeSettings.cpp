@@ -1,5 +1,7 @@
 #include "renderer/RuntimeSettings.h"
 
+#include "renderer/MeshLod.h"
+
 #include "core/Logger.h"
 #include "renderer/CascadeMath.h"
 
@@ -33,6 +35,7 @@ void clampRuntimeSettings(ToneMappingSettings& toneMapping,
                           TaaSettings& taa,
                           SsrSettings& ssr,
                           CsmSettings& csm,
+                          LodSettings& lod,
                           DebugUiSettings& debugUi)
 {
     toneMapping.operatorType = std::clamp(toneMapping.operatorType, 0, 1);
@@ -67,6 +70,15 @@ void clampRuntimeSettings(ToneMappingSettings& toneMapping,
     ssr.intensity = std::clamp(ssr.intensity, 0.0f, 4.0f);
     ssr.maxRoughness = std::clamp(ssr.maxRoughness, 0.05f, 1.0f);
     ssr.screenEdgeFade = std::clamp(ssr.screenEdgeFade, 0.01f, 0.49f);
+
+    // A reference radius at or below 1px would make every object select the
+    // coarsest level; the bias range is what a user can meaningfully explore
+    // before everything pins to one end. forcedLod is clamped against the chain
+    // cap, and -1 stays the "select by distance" sentinel.
+    lod.referenceRadiusPixels = std::clamp(lod.referenceRadiusPixels, 8.0f, 4096.0f);
+    lod.bias = std::clamp(lod.bias, -4.0f, 4.0f);
+    lod.shadowBias = std::clamp(lod.shadowBias, -4.0f, 4.0f);
+    lod.forcedLod = std::clamp(lod.forcedLod, -1, static_cast<int>(renderer::kMaxMeshLods) - 1);
 
     csm.cascadeCount = std::clamp(csm.cascadeCount, 1U, renderer::kMaxShadowCascades);
     csm.lambda = std::clamp(csm.lambda, 0.0f, 1.0f);
@@ -281,6 +293,15 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readFloat(*taa, "feedback", settings.taa.feedback);
     }
 
+    if (const Json* lod = objectMember(json, "lod")) {
+        readBool(*lod, "enabled", settings.lod.enabled);
+        readFloat(*lod, "referenceRadiusPixels", settings.lod.referenceRadiusPixels);
+        readFloat(*lod, "bias", settings.lod.bias);
+        readFloat(*lod, "shadowBias", settings.lod.shadowBias);
+        readInt(*lod, "forcedLod", settings.lod.forcedLod);
+        readBool(*lod, "debugHeatmap", settings.lod.debugHeatmap);
+    }
+
     if (const Json* ssr = objectMember(json, "ssr")) {
         readBool(*ssr, "enabled", settings.ssr.enabled);
         readInt(*ssr, "maxSteps", settings.ssr.maxSteps);
@@ -355,6 +376,13 @@ Json toJson(const RuntimeSettings& settings)
               {"neighborhoodClampEnabled", settings.taa.neighborhoodClampEnabled},
               {"reprojectionEnabled", settings.taa.reprojectionEnabled},
               {"feedback", settings.taa.feedback}}},
+        {"lod",
+         Json{{"enabled", settings.lod.enabled},
+              {"referenceRadiusPixels", settings.lod.referenceRadiusPixels},
+              {"bias", settings.lod.bias},
+              {"shadowBias", settings.lod.shadowBias},
+              {"forcedLod", settings.lod.forcedLod},
+              {"debugHeatmap", settings.lod.debugHeatmap}}},
         {"ssr",
          Json{{"enabled", settings.ssr.enabled},
               {"maxSteps", settings.ssr.maxSteps},

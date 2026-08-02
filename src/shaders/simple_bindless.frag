@@ -48,6 +48,7 @@ layout(push_constant) uniform PushConstants {
     layout(offset = 60) float screenHeight;
     layout(offset = 64) uint useClustered;
     layout(offset = 68) uint debugClusterHeatmap;
+    layout(offset = 80) uint debugLodHeatmap;
 } pc;
 
 layout(set = 0, binding = 1) uniform sampler2DArray uShadowMap;
@@ -80,6 +81,8 @@ layout(location = 20) flat in float vCascadeDebugEnabled;
 layout(location = 21) flat in vec4 vEmissiveFactor;
 layout(location = 22) in vec4 vCurrClipPos;
 layout(location = 23) in vec4 vPrevClipPos;
+// LOD level chosen by the cull pass, recovered from gl_InstanceIndex's high bits.
+layout(location = 24) flat in uint vLodIndex;
 layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec2 outVelocity;
 layout(location = 2) out vec4 outNormalRoughness;
@@ -141,6 +144,22 @@ int selectShadowCascade()
     }
 
     return cascadeCount - 1;
+}
+
+// Green -> yellow -> orange -> red as detail drops, so a glance shows both the
+// spatial LOD distribution and any popping as the camera moves.
+vec3 lodDebugColor(uint lodIndex)
+{
+    if (lodIndex == 0u) {
+        return vec3(0.15, 0.85, 0.25);
+    }
+    if (lodIndex == 1u) {
+        return vec3(0.95, 0.90, 0.20);
+    }
+    if (lodIndex == 2u) {
+        return vec3(1.0, 0.50, 0.10);
+    }
+    return vec3(0.95, 0.15, 0.15);
 }
 
 vec3 cascadeDebugColor(int cascadeIndex)
@@ -450,6 +469,16 @@ void main()
     // ramp at 16 lights, which is plenty to read cluster occupancy at a glance.
     if (pc.debugClusterHeatmap != 0u && pc.useClustered != 0u) {
         outColor = vec4(clusterHeatmapColor(clusterLightCount), 1.0);
+        return;
+    }
+
+    // Keep the lighting term as luminance so silhouettes and shading still read
+    // through the tint, rather than flattening the scene into blocks of colour.
+    if (pc.debugLodHeatmap != 0u) {
+        float luminance = dot(finalColor, vec3(0.2126, 0.7152, 0.0722));
+        outColor = vec4(lodDebugColor(vLodIndex) * (0.35 + 0.65 * clamp(luminance, 0.0, 1.0)), alpha);
+        outVelocity = computeVelocity();
+        outNormalRoughness = vec4(octEncode(normal), roughness, metallic);
         return;
     }
 
