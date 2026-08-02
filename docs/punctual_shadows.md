@@ -172,9 +172,17 @@ Fragments that project outside the slot's frustum return "lit". For a spot that
 is exactly the region outside the lit cone, where the falloff has already
 reached zero, so it changes nothing visually.
 
-Filtering is a 3x3 PCF in atlas UV space. Taps stay inside the tile except
-within one texel of its border — and that border is the edge of the light's
-cone, where the falloff is already zero.
+Filtering is a 3x3 PCF in atlas UV space, with every tap **clamped into the
+slot's own tile**.
+
+That clamp is load-bearing rather than defensive. Neighbouring atlas texels
+belong to a different tile — for a cube face the adjacent face, and with the
+quadtree allocator possibly an unrelated light — so a tap that walks out
+compares against unrelated depth. On a spot this only ever happened at the cone
+edge, where the falloff is already zero, so it was invisible and the original
+code skipped the clamp on exactly that reasoning. On a cube face the tile border
+is the *middle* of the lit scene, and the same mismatch draws hard seams along
+every face boundary.
 
 ## Render graph integration
 
@@ -277,10 +285,12 @@ near-black and reads as a catastrophic bug that is not there.
   a visible light then cannot have.
 - **The point-light demotion is a fixed one class**, not derived from the actual
   per-face footprint.
-- **Uniform tile size.** A light one metre away gets the same 512px tile as one
-  at the far plane.
 - **CPU caster culling.** Each slot frustum-tests every draw item on the CPU
   rather than going through the existing GPU shadow-cull path.
 - **No filtering beyond 3x3 PCF.** No variance/moment maps, no contact-hardening.
+- **No cross-face filtering.** PCF is clamped inside a face rather than
+  continuing onto the neighbour, so filtering narrows slightly at face
+  boundaries instead of blending across them. Correct, but not seamless; proper
+  cross-face taps need neighbour-face lookups.
 - **The atlas preview cannot show perspective depth.** See [Controls](#controls);
   the caster-draw counter covers the diagnostic need in the meantime.
