@@ -14,7 +14,9 @@
 
 #include "renderer/Bounds.h"
 
+#include <array>
 #include <cstdint>
+#include <vector>
 
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
@@ -22,14 +24,46 @@
 
 namespace ve::renderer {
 
-// Atlas geometry. 4096/512 gives an 8x8 grid = 64 slots, which covers the demo
-// scene's shadow-casting spots with headroom for point-light faces later. The
-// shader only needs the tile UV extent, and that arrives per slot in
+// Atlas geometry. Tiles come in power-of-two size classes rather than one fixed
+// size, so a light dominating the screen can get four times the resolution of
+// one barely visible instead of both getting the same 512px. The shader is
+// unaffected either way -- it only ever reads the per-slot UV rect out of
 // GpuShadowSlot::atlasUvOffsetScale, so these constants stay CPU-side.
 inline constexpr uint32_t kPunctualShadowAtlasSize = 4096;
-inline constexpr uint32_t kPunctualShadowTileSize = 512;
-inline constexpr uint32_t kPunctualShadowTilesPerSide = kPunctualShadowAtlasSize / kPunctualShadowTileSize;
-inline constexpr uint32_t kMaxPunctualShadowSlots = kPunctualShadowTilesPerSide * kPunctualShadowTilesPerSide;
+inline constexpr uint32_t kPunctualShadowMaxTileSize = 1024;
+inline constexpr uint32_t kPunctualShadowMinTileSize = 256;
+// 1024, 512, 256.
+inline constexpr uint32_t kPunctualShadowSizeClassCount = 3;
+
+// Upper bound on slots, reached only if every tile is the smallest class.
+inline constexpr uint32_t kMaxPunctualShadowSlots =
+    (kPunctualShadowAtlasSize / kPunctualShadowMinTileSize) * (kPunctualShadowAtlasSize / kPunctualShadowMinTileSize);
+
+// Edge length of a size class, class 0 being the largest.
+[[nodiscard]] uint32_t punctualShadowTileSizeForClass(uint32_t sizeClass);
+
+// Projected pixel radius of a light's sphere of influence -- the priority
+// signal. Uses the same projScaleY (viewportHeight * 0.5 * proj[1][1]) the
+// mesh-LOD selection uses, so "how big does this look" means the same thing
+// across the engine. Lights at or behind the eye clamp to a huge radius rather
+// than going negative: something wrapped around the camera is not a candidate
+// for demotion.
+[[nodiscard]] float punctualShadowProjectedRadius(const glm::vec3& lightPosition,
+                                                  float range,
+                                                  const glm::vec3& cameraPosition,
+                                                  float projScaleY);
+
+// Size class for a light of the given projected radius. A tile is "enough" when
+// its edge covers the light's projected footprint, so the thresholds are the
+// tile sizes themselves.
+//
+// isPoint demotes the result one class. A point light pays for six tiles rather
+// than one, so ranking it against a spot on the same threshold lets a single
+// point light swallow six of the largest tiles and starve everything behind it.
+// Each cube face also only covers 90 degrees of the sphere, so a face genuinely
+// warrants less resolution than the light's whole projected footprint implies --
+// the demotion is a coarse stand-in for that, not just a budget hack.
+[[nodiscard]] uint32_t punctualShadowSizeClassForRadius(float projectedRadius, bool isPoint = false);
 
 // Floor for the punctual shadow near plane. Small enough that geometry hugging
 // the bulb still rasterizes; see punctualShadowNearPlane for why the plane is
@@ -86,11 +120,10 @@ static_assert(offsetof(GpuShadowSlot, viewProjection) == 0);
 static_assert(offsetof(GpuShadowSlot, atlasUvOffsetScale) == 64);
 static_assert(offsetof(GpuShadowSlot, params) == 80);
 
-// Pixel rect of a slot. Slots fill the grid in row-major order.
-[[nodiscard]] ShadowAtlasRect punctualShadowSlotRect(uint32_t slot);
-
-// The same rect expressed as the UV offset/scale pair the shader needs.
-[[nodiscard]] glm::vec4 punctualShadowSlotUvOffsetScale(uint32_t slot);
+// A tile rect expressed as the UV offset/scale pair the shader needs. Tiles no
+// longer have a fixed size, so a slot's rect cannot be derived from its index
+// and travels with the slot record instead.
+[[nodiscard]] glm::vec4 shadowAtlasRectUvOffsetScale(const ShadowAtlasRect& rect);
 
 // GpuLight carries the slot index in a float field, so the sentinel has to
 // become a value the shader can test without an exact-equality trap. These two
@@ -126,41 +159,52 @@ inline constexpr uint32_t kPointShadowFaceCount = 6;
                                                              float range,
                                                              float nearPlane = 0.0f);
 
-// Fixed-grid slot allocator, reset once per frame and filled in whatever
-// priority order the caller walks its lights in. Uniform tiles make allocation
-// a bump counter; variable tile sizes (so a near light gets a sharper map) are
-// deliberately left out until there is a priority pass to drive them.
+// Quadtree tile allocator, reset once per frame and filled in priority order.
+//
+// The atlas starts as a grid of largest-class tiles. Allocating a smaller class
+// splits a larger free tile into four and keeps three for later, so a frame that
+// wants a few big tiles and many small ones packs without either class having a
+// reserved region it cannot lend out. Nothing is freed mid-frame and the whole
+// structure is rebuilt each frame, so there is no coalescing pass and no
+// fragmentation that outlives a frame.
 class PunctualShadowAtlasAllocator final {
 public:
-    void reset()
+    PunctualShadowAtlasAllocator()
     {
-        nextSlot_ = 0;
+        reset();
     }
 
-    // Returns the next free slot, or kInvalidPunctualShadowSlot once the grid is
-    // exhausted. Callers treat exhaustion as "this light is unshadowed this
-    // frame" rather than an error, so an over-budget scene degrades instead of
-    // failing.
-    [[nodiscard]] uint32_t allocate();
+    void reset();
 
-    // Reserves `count` consecutive slots and returns the first, or
-    // kInvalidPunctualShadowSlot when that many do not remain. Consecutive
-    // matters for cube faces: the light stores only a base slot and the shader
-    // adds the face index to it, so the six have to be adjacent.
-    [[nodiscard]] uint32_t allocateRange(uint32_t count);
+    // Reserves one tile of the given size class. Returns false when the atlas
+    // cannot fit it; callers treat that as "this light is unshadowed this
+    // frame" rather than an error, so an over-budget scene degrades rather than
+    // failing.
+    [[nodiscard]] bool allocate(uint32_t sizeClass, ShadowAtlasRect& outRect);
+
+    // Reserves `count` tiles of one size class, all or nothing. Cube faces need
+    // this: a light that got four of six faces would sample cleared tiles for
+    // the other two, which is worse than not casting at all. On failure nothing
+    // is consumed.
+    [[nodiscard]] bool allocateRange(uint32_t sizeClass, uint32_t count, std::vector<ShadowAtlasRect>& outRects);
 
     [[nodiscard]] uint32_t allocatedCount() const
     {
-        return nextSlot_;
+        return allocatedCount_;
     }
 
-    [[nodiscard]] bool full() const
-    {
-        return nextSlot_ >= kMaxPunctualShadowSlots;
-    }
+    // Atlas area handed out so far, as a fraction of the whole. Reported in the
+    // debug panel because with mixed tile sizes a slot count no longer says
+    // anything about how full the atlas is.
+    [[nodiscard]] float occupancy() const;
 
 private:
-    uint32_t nextSlot_ = 0;
+    [[nodiscard]] bool allocateNode(uint32_t sizeClass, ShadowAtlasRect& outRect);
+
+    // Free tiles per size class, largest class first.
+    std::array<std::vector<ShadowAtlasRect>, kPunctualShadowSizeClassCount> freeTiles_{};
+    uint32_t allocatedCount_ = 0;
+    uint64_t allocatedArea_ = 0;
 };
 
 // Light-space view-projection for one spot light. The perspective FOV is the

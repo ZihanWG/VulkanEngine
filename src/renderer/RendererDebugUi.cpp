@@ -226,12 +226,16 @@ void Renderer::drawShadowsDebugUi()
     } else {
         ImGui::Checkbox("Cast punctual shadows", &usePunctualShadows_);
         ImGui::SetItemTooltip("Spot lights render into a shared depth atlas and shadow the clustered pass.");
-        ImGui::Text("Atlas: %ux%u, %u tiles of %upx",
+        ImGui::Text("Atlas: %ux%u, tiles %u-%upx",
                     renderer::kPunctualShadowAtlasSize,
                     renderer::kPunctualShadowAtlasSize,
-                    renderer::kMaxPunctualShadowSlots,
-                    renderer::kPunctualShadowTileSize);
-        ImGui::Text("Slots used: %u / %u", punctualShadowSlotsUsed_, renderer::kMaxPunctualShadowSlots);
+                    renderer::kPunctualShadowMinTileSize,
+                    renderer::kPunctualShadowMaxTileSize);
+        // With mixed tile sizes a slot count says nothing about how full the
+        // atlas is, so the occupancy fraction is the number that matters.
+        ImGui::Text("Slots used: %u  (atlas %.0f%% full)",
+                    punctualShadowSlotsUsed_,
+                    punctualShadows_.occupancy() * 100.0f);
         ImGui::Text("Caster draws recorded: %u", punctualShadowDrawsRecorded_);
         ImGui::SetItemTooltip("Zero here with slots > 0 means the atlas pass culled or skipped everything.");
         ImGui::Checkbox("Debug: shadow term only", &showPunctualShadowDebug_);
@@ -242,7 +246,7 @@ void Renderer::drawShadowsDebugUi()
         ImGui::SliderInt("Max shadowed point lights",
                          &maxShadowCastingPointLights_,
                          0,
-                         static_cast<int>(renderer::kMaxPunctualShadowSlots / renderer::kPointShadowFaceCount));
+                         16);
         ImGui::SetItemTooltip("Each point light costs 6 tiles (one per cube face).\n"
                               "Nearest to the camera are served first.");
 
@@ -251,8 +255,9 @@ void Renderer::drawShadowsDebugUi()
         // spot is easily washed out by the directional key light.
         if (ImGui::TreeNodeEx("Atlas depth preview", ImGuiTreeNodeFlags_DefaultOpen)) {
             const VkExtent2D atlasExtent = punctualShadows_.atlas().extent();
-            ImGui::TextDisabled("Occupied tiles fill row-major from the top-left; %upx each.",
-                                renderer::kPunctualShadowTileSize);
+            ImGui::TextDisabled("Tiles are %u-%upx, sized by each light's projected radius.",
+                                renderer::kPunctualShadowMinTileSize,
+                                renderer::kPunctualShadowMaxTileSize);
             // The preview is a plain ImGui::Image with a multiplicative tint, so
             // it cannot expand contrast near 1.0. Perspective depth sits up
             // there almost everywhere, which makes even a correctly rendered

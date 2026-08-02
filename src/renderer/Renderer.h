@@ -423,7 +423,7 @@ private:
     // resulting slot index back into each GpuLight record. Runs after
     // updateDemoLights (which rebuilds the light list) and before the light
     // buffer is uploaded, since it mutates those records in place.
-    void updatePunctualShadowSlots(uint32_t frameIndex);
+    void updatePunctualShadowSlots(uint32_t frameIndex, float aspectRatio);
     // Records the punctual shadow atlas pass: one dynamic-rendering pass over
     // the whole atlas, with a viewport/scissor per allocated slot.
     void recordPunctualShadowPass(VkCommandBuffer commandBuffer);
@@ -724,9 +724,15 @@ private:
     // Point lights cost six tiles each against 64 total, so how many may cast is
     // a budget the user can see and set rather than an implicit cap.
     int maxShadowCastingPointLights_ = 4;
-    // Scratch: point-light indices sorted by camera distance. Member so the
+    // One punctual light ranked for atlas assignment.
+    struct PunctualShadowCandidate {
+        size_t lightIndex = 0;
+        float projectedRadius = 0.0f;
+        bool isSpot = false;
+    };
+    // Scratch: every punctual light ranked by projected size. Member so the
     // per-frame assignment does not reallocate every frame.
-    std::vector<size_t> punctualShadowPointOrder_;
+    std::vector<PunctualShadowCandidate> punctualShadowCandidates_;
     // Slots filled last frame, surfaced in the debug panel.
     uint32_t punctualShadowSlotsUsed_ = 0;
     // Caster draws the atlas pass actually recorded last frame. Surfaced because

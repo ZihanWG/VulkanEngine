@@ -15,10 +15,55 @@ which does not survive a light count in the hundreds. One atlas keeps it to a
 single image and a single descriptor binding, and turns "which lights cast this
 frame" into a tile-allocation problem instead of a resource-allocation problem.
 
-The atlas is 4096x4096 split into a uniform 8x8 grid of 512px tiles — 64 slots.
-Uniform tiles make allocation a bump counter. Variable tile sizes (so a nearby
-light gets a sharper map) are deliberately absent until there is a priority pass
-to decide who deserves the big tiles; see [Limitations](#limitations).
+The atlas is 4096x4096, handed out in power-of-two tiles of 1024, 512, or 256px
+by a quadtree allocator. A light dominating the view gets four times the
+resolution of one barely visible, instead of both getting the same fixed tile.
+
+## Tile allocation
+
+The allocator starts each frame with the atlas cut into largest-class tiles.
+Allocating a smaller class splits a free larger tile into four and banks three
+for later, so neither class has a reserved region it cannot lend out — a frame
+wanting a few big tiles and many small ones packs either way.
+
+Nothing is freed mid-frame and the whole structure is rebuilt every frame, so
+there is no coalescing pass and no fragmentation that outlives a frame.
+
+Cube faces reserve **all six or none**, via a snapshot-and-roll-back. A light
+that got four of six faces would sample cleared tiles for the other two, which
+reads as light leaking through solid geometry — worse than not casting at all.
+
+Because tiles now vary in size, a slot's rect no longer follows from its index.
+The rect travels with the slot record and the atlas pass reads it back for the
+viewport/scissor. Slot *indices* stay sequential, which is what keeps the float
+encoding and the consecutive cube-face property working unchanged.
+
+## Priority
+
+Lights are ranked by **projected pixel radius** — `range / distance *
+projScaleY`, using the same `projScaleY` the mesh-LOD selection uses, so "how
+big does this look" means one thing across the engine. That single number drives
+both who gets a tile and how big a tile they get.
+
+This is what distance-only ordering could not express: a large light far away
+can outrank a small one nearby, and it should.
+
+A light whose radius encloses the camera clamps to maximum priority rather than
+letting the projection blow up or go negative — something wrapped around the
+camera is not a candidate for demotion.
+
+Point lights are **demoted one size class**. A point light buys six tiles rather
+than one, so ranking it against a spot on the same threshold lets a single point
+light swallow six of the largest tiles and starve everything behind it. Each
+cube face also only covers 90 degrees of the sphere, so a face genuinely
+warrants less resolution than the light's whole footprint implies — the
+demotion is a coarse stand-in for that, not purely a budget hack. On the demo
+scene it is the difference between 2 point lights at 81% occupancy and 4 at 43%.
+
+The sort orders *indices*, never the light array itself — the cluster
+light-culling pass indexes into that array by position, so reordering it would
+reassign every froxel's light list. Ties break on light index so equally-ranked
+lights do not shuffle between frames and flicker their shadows.
 
 ## Point lights: six faces, one budget
 
@@ -28,20 +73,10 @@ base slot, and the shader adds the face index it derives from the
 light-to-fragment direction. `allocateRange` therefore fails whole rather than
 partially reserving, so a light can never get a truncated cube.
 
-Six tiles per light against 64 total means the atlas is oversubscribed the
-moment a light swarm shows up, so *which* lights cast becomes a real decision:
-
-- spot lights are served first, since one tile each buys more shadowed lights
-  per tile than six;
-- point lights are then served nearest-camera-first, up to the **Max shadowed
-  point lights** budget (default 4, so 24 tiles).
-
-Nearest-to-camera is a stand-in for a real screen-size priority pass. The budget
-is a visible slider rather than an implicit cap so the cost stays obvious.
-
-The sort orders *indices*, never the light array itself — the cluster
-light-culling pass indexes into that array by position, so reordering it would
-reassign every froxel's light list.
+Six tiles per light means the atlas oversubscribes as soon as a swarm shows up,
+so how many point lights may cast is capped by a visible **Max shadowed point
+lights** slider rather than an implicit limit. Which ones is decided by the
+priority ranking above.
 
 ### The face convention is the thing to get right
 
@@ -173,7 +208,7 @@ shadow settings have always lived:
 | Control | Effect |
 | --- | --- |
 | Cast punctual shadows | Master toggle; off stamps the unshadowed sentinel into every light |
-| Slots used | Tiles allocated this frame, out of 64 |
+| Slots used | Tiles allocated this frame, with atlas occupancy by area — with mixed tile sizes a slot count says nothing about how full the atlas is |
 | Depth bias | Constant offset applied to the compared depth |
 | Normal bias | World-space offset along the surface normal before projecting |
 | Max shadowed point lights | Budget, in lights; each costs 6 tiles. Nearest to the camera are served first |
@@ -225,12 +260,14 @@ bug on its own.
 
 ## Limitations
 
-- **Priority is distance, not screen size.** A large nearby-looking light and a
-  small one are ranked the same if their positions are; a real priority pass
-  would weigh projected size. Spots are also served unconditionally ahead of
-  point lights rather than competing with them on merit.
 - **No caching.** Every allocated face re-renders every frame, even for a light
-  and geometry that have not moved.
+  and geometry that have not moved. Static lights over static geometry are the
+  obvious win here and it is not taken.
+- **Priority ignores occlusion and the view frustum.** A light directly behind
+  the camera ranks by projected size like any other, so it can take a tile that
+  a visible light then cannot have.
+- **The point-light demotion is a fixed one class**, not derived from the actual
+  per-face footprint.
 - **Uniform tile size.** A light one metre away gets the same 512px tile as one
   at the far plane.
 - **CPU caster culling.** Each slot frustum-tests every draw item on the CPU

@@ -2614,7 +2614,9 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer)
     uint32_t recordedDraws = 0;
 
     for (uint32_t slot = 0; slot < slotCount; ++slot) {
-        const renderer::ShadowAtlasRect rect = renderer::punctualShadowSlotRect(slot);
+        // Rects vary in size now, so the atlas pass reads each slot's own rect
+        // back rather than deriving it from the index.
+        const renderer::ShadowAtlasRect rect = punctualShadows_.slotRect(slot);
         if (rect.size == 0) {
             continue;
         }
@@ -2695,7 +2697,7 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer)
     }
 }
 
-void Renderer::updatePunctualShadowSlots(uint32_t frameIndex)
+void Renderer::updatePunctualShadowSlots(uint32_t frameIndex, float aspectRatio)
 {
     punctualShadows_.beginFrame();
 
@@ -2713,71 +2715,74 @@ void Renderer::updatePunctualShadowSlots(uint32_t frameIndex)
         return;
     }
 
-    // Spots first: they cost one tile each against a point light's six, so
-    // serving them first maximises the number of shadowed lights per tile.
-    for (renderer::GpuLight& light : lights) {
-        if (light.directionType.w <= 0.5f) {
+    // Rank every punctual light by how large it projects on screen, using the
+    // same projScaleY the mesh-LOD selection uses so "how big does this look"
+    // means one thing across the engine. That drives both who gets a tile at all
+    // and how big a tile they get -- a light dominating the view is worth four
+    // times the resolution of one barely visible, and the old distance-only
+    // ordering could not express that.
+    const float projScaleY =
+        static_cast<float>(swapchain_.extent().height) * 0.5f * camera_.projectionMatrix(aspectRatio)[1][1];
+
+    punctualShadowCandidates_.clear();
+    for (size_t lightIndex = 0; lightIndex < lights.size(); ++lightIndex) {
+        const renderer::GpuLight& light = lights[lightIndex];
+        const bool isSpot = light.directionType.w > 0.5f;
+
+        PunctualShadowCandidate candidate{};
+        candidate.lightIndex = lightIndex;
+        candidate.isSpot = isSpot;
+        candidate.projectedRadius = renderer::punctualShadowProjectedRadius(
+            glm::vec3(light.positionRange), light.positionRange.w, camera_.position, std::abs(projScaleY));
+        punctualShadowCandidates_.push_back(candidate);
+    }
+
+    std::sort(punctualShadowCandidates_.begin(),
+              punctualShadowCandidates_.end(),
+              [](const PunctualShadowCandidate& left, const PunctualShadowCandidate& right) {
+                  if (left.projectedRadius != right.projectedRadius) {
+                      return left.projectedRadius > right.projectedRadius;
+                  }
+                  // Stable tiebreak so a frame's assignment does not shuffle
+                  // between equally-ranked lights and flicker their shadows.
+                  return left.lightIndex < right.lightIndex;
+              });
+
+    const uint32_t pointLightBudget = static_cast<uint32_t>(std::max(maxShadowCastingPointLights_, 0));
+    uint32_t pointLightsShadowed = 0;
+
+    for (const PunctualShadowCandidate& candidate : punctualShadowCandidates_) {
+        renderer::GpuLight& light = lights[candidate.lightIndex];
+        const uint32_t sizeClass =
+            renderer::punctualShadowSizeClassForRadius(candidate.projectedRadius, !candidate.isSpot);
+
+        if (candidate.isSpot) {
+            const float cosOuter = std::clamp(light.spotScaleOffset.x, -1.0f, 1.0f);
+            const float outerAngle = std::acos(cosOuter);
+            const uint32_t slot = punctualShadows_.addSpotLight(glm::vec3(light.positionRange),
+                                                                glm::vec3(light.directionType),
+                                                                outerAngle,
+                                                                light.positionRange.w,
+                                                                sizeClass);
+            // A full atlas degrades to an unshadowed light rather than an error,
+            // and lower-ranked lights may still fit in a smaller leftover tile,
+            // so this keeps walking instead of breaking out.
+            light.spotScaleOffset.z = renderer::punctualShadowSlotToFloat(slot);
             continue;
         }
 
-        // The cone half-angle is stored as its cosine for the shading falloff;
-        // recover the angle so the shadow frustum matches the lit cone exactly.
-        const float cosOuter = std::clamp(light.spotScaleOffset.x, -1.0f, 1.0f);
-        const float outerAngle = std::acos(cosOuter);
-
-        const uint32_t slot = punctualShadows_.addSpotLight(glm::vec3(light.positionRange),
-                                                            glm::vec3(light.directionType),
-                                                            outerAngle,
-                                                            light.positionRange.w);
-        // A full atlas degrades to an unshadowed light instead of dropping it.
-        light.spotScaleOffset.z = renderer::punctualShadowSlotToFloat(slot);
-    }
-
-    // Point lights take six tiles each, so with a swarm of them the atlas is
-    // oversubscribed immediately and the choice of *which* ones cast starts to
-    // matter. Nearest-to-camera is the stand-in until the real screen-size
-    // priority pass lands; the budget slider keeps the cost explicit meanwhile.
-    const uint32_t pointLightBudget =
-        static_cast<uint32_t>(std::max(maxShadowCastingPointLights_, 0));
-    if (pointLightBudget == 0) {
-        punctualShadowSlotsUsed_ = punctualShadows_.slotCount();
-        punctualShadows_.upload(frameIndex);
-        return;
-    }
-
-    // Sorts indices, never the light array itself: the cluster light-culling
-    // pass indexes into lights_ by position, so reordering it would reassign
-    // every froxel's light list.
-    punctualShadowPointOrder_.clear();
-    for (size_t lightIndex = 0; lightIndex < lights.size(); ++lightIndex) {
-        if (lights[lightIndex].directionType.w <= 0.5f) {
-            punctualShadowPointOrder_.push_back(lightIndex);
+        if (pointLightsShadowed >= pointLightBudget) {
+            continue;
         }
-    }
 
-    const glm::vec3 cameraPosition = camera_.position;
-    const size_t keep = std::min<size_t>(punctualShadowPointOrder_.size(), pointLightBudget);
-    std::partial_sort(punctualShadowPointOrder_.begin(),
-                      punctualShadowPointOrder_.begin() + static_cast<ptrdiff_t>(keep),
-                      punctualShadowPointOrder_.end(),
-                      [&](size_t left, size_t right) {
-                          const float leftDistance =
-                              glm::distance2(glm::vec3(lights[left].positionRange), cameraPosition);
-                          const float rightDistance =
-                              glm::distance2(glm::vec3(lights[right].positionRange), cameraPosition);
-                          return leftDistance < rightDistance;
-                      });
-
-    for (size_t orderIndex = 0; orderIndex < keep; ++orderIndex) {
-        renderer::GpuLight& light = lights[punctualShadowPointOrder_[orderIndex]];
         const uint32_t baseSlot =
-            punctualShadows_.addPointLight(glm::vec3(light.positionRange), light.positionRange.w);
+            punctualShadows_.addPointLight(glm::vec3(light.positionRange), light.positionRange.w, sizeClass);
         if (baseSlot == renderer::kInvalidPunctualShadowSlot) {
-            // Atlas exhausted: everything after this would fail too.
-            break;
+            continue;
         }
 
         light.spotScaleOffset.z = renderer::punctualShadowSlotToFloat(baseSlot);
+        ++pointLightsShadowed;
     }
 
     punctualShadowSlotsUsed_ = punctualShadows_.slotCount();
@@ -3645,7 +3650,8 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
     message << "Punctual shadows:\n"
             << "  atlas: " << (punctualShadows_.valid() ? "available" : "unavailable") << "\n"
             << "  casting: " << (usePunctualShadows_ ? "enabled" : "disabled") << "\n"
-            << "  slots used: " << punctualShadowSlotsUsed_ << "/" << renderer::kMaxPunctualShadowSlots << "\n"
+            << "  slots used: " << punctualShadowSlotsUsed_ << "\n"
+            << "  atlas occupancy: " << static_cast<int>(punctualShadows_.occupancy() * 100.0f) << "%\n"
             << "  caster draws recorded: " << punctualShadowDrawsRecorded_ << "\n";
     message << "Shadow culling:\n";
     message << "  cascade count: " << shadowCullingStats_.cascadeCount << "\n"
@@ -4563,7 +4569,7 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     // Assign atlas tiles before the light buffer is uploaded below: this stamps
     // the slot index into each GpuLight, so it has to run between the rebuild
     // and clusteredLighting_.upload().
-    updatePunctualShadowSlots(frameIndex);
+    updatePunctualShadowSlots(frameIndex, aspect);
     // Advance the skinned animation by a speed-scaled frame delta so play/pause
     // holds the current pose and the speed slider changes playback continuously.
     const float skinnedDelta = elapsedSeconds - previousElapsedSeconds_;

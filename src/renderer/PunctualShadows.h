@@ -46,13 +46,14 @@ public:
     uint32_t addSpotLight(const glm::vec3& position,
                           const glm::vec3& direction,
                           float outerAngleRadians,
-                          float range);
+                          float range,
+                          uint32_t sizeClass);
 
     // Assigns six consecutive tiles to one shadow-casting point light, one per
     // cube face, and returns the base slot. The shader adds the face index it
     // derives from the light-to-fragment direction, which is why the six have to
     // be consecutive. Returns kInvalidPunctualShadowSlot when six do not remain.
-    uint32_t addPointLight(const glm::vec3& position, float range);
+    uint32_t addPointLight(const glm::vec3& position, float range, uint32_t sizeClass);
 
     // Writes the frame's slot records into the per-frame device-address buffer.
     void upload(uint32_t frameIndex);
@@ -82,9 +83,19 @@ public:
         return slots_;
     }
 
-    // Light-space view-projection and cull frustum for one allocated slot.
+    // Light-space view-projection, cull frustum, and atlas rect for one slot.
+    // The rect no longer follows from the index -- tiles vary in size, so it is
+    // stored per slot and the atlas pass reads it back for viewport/scissor.
     [[nodiscard]] const glm::mat4& slotViewProjection(uint32_t slot) const;
     [[nodiscard]] const Frustum& slotFrustum(uint32_t slot) const;
+    [[nodiscard]] ShadowAtlasRect slotRect(uint32_t slot) const;
+
+    // Fraction of the atlas area handed out this frame. With mixed tile sizes a
+    // slot count says nothing about how full the atlas actually is.
+    [[nodiscard]] float occupancy() const
+    {
+        return allocator_.occupancy();
+    }
 
     // Depth bias applied when the shader compares against the atlas. Exposed so
     // the debug UI can tune it against real geometry the way the CSM bias is.
@@ -111,9 +122,13 @@ private:
 
     PunctualShadowAtlasAllocator allocator_;
     std::vector<GpuShadowSlot> slots_;
-    // Parallel to slots_: the cull frustum for each, kept off the GPU record
-    // because the shader never needs it.
+    // Parallel to slots_: the cull frustum and pixel rect for each, kept off the
+    // GPU record because the shader needs neither (it reads the UV rect that is
+    // already inside GpuShadowSlot).
     std::vector<Frustum> slotFrustums_;
+    std::vector<ShadowAtlasRect> slotRects_;
+    // Scratch for the all-or-nothing cube-face reservation.
+    std::vector<ShadowAtlasRect> pendingFaceRects_;
 
     // Defaults tuned against the demo scene's spot cone; both are in the same
     // units the CSM path uses so the two shadow types stay comparable.

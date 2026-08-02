@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -24,22 +25,14 @@ namespace {
 
 } // namespace
 
-ShadowAtlasRect punctualShadowSlotRect(uint32_t slot)
+uint32_t punctualShadowTileSizeForClass(uint32_t sizeClass)
 {
-    if (slot >= kMaxPunctualShadowSlots) {
-        return {};
-    }
-
-    ShadowAtlasRect rect{};
-    rect.x = (slot % kPunctualShadowTilesPerSide) * kPunctualShadowTileSize;
-    rect.y = (slot / kPunctualShadowTilesPerSide) * kPunctualShadowTileSize;
-    rect.size = kPunctualShadowTileSize;
-    return rect;
+    const uint32_t clamped = std::min(sizeClass, kPunctualShadowSizeClassCount - 1);
+    return kPunctualShadowMaxTileSize >> clamped;
 }
 
-glm::vec4 punctualShadowSlotUvOffsetScale(uint32_t slot)
+glm::vec4 shadowAtlasRectUvOffsetScale(const ShadowAtlasRect& rect)
 {
-    const ShadowAtlasRect rect = punctualShadowSlotRect(slot);
     if (rect.size == 0) {
         return glm::vec4{0.0f};
     }
@@ -50,6 +43,44 @@ glm::vec4 punctualShadowSlotUvOffsetScale(uint32_t slot)
                      static_cast<float>(rect.y) / kAtlasSize,
                      extent,
                      extent};
+}
+
+float punctualShadowProjectedRadius(const glm::vec3& lightPosition,
+                                    float range,
+                                    const glm::vec3& cameraPosition,
+                                    float projScaleY)
+{
+    const float distance = glm::length(lightPosition - cameraPosition);
+    const float clampedRange = std::max(range, 0.0f);
+
+    // Inside its own radius the light wraps the camera; treat that as maximally
+    // important rather than letting the projection blow up or go negative.
+    if (distance <= clampedRange) {
+        return std::numeric_limits<float>::max();
+    }
+
+    return clampedRange / distance * std::max(projScaleY, 0.0f);
+}
+
+uint32_t punctualShadowSizeClassForRadius(float projectedRadius, bool isPoint)
+{
+    // A tile is enough when its edge covers the projected footprint, so each
+    // class's threshold is its own size. Walk from largest down and take the
+    // first that is not oversized for this light.
+    uint32_t chosen = kPunctualShadowSizeClassCount - 1;
+    for (uint32_t sizeClass = 0; sizeClass + 1 < kPunctualShadowSizeClassCount; ++sizeClass) {
+        const auto tileSize = static_cast<float>(punctualShadowTileSizeForClass(sizeClass));
+        if (projectedRadius >= tileSize) {
+            chosen = sizeClass;
+            break;
+        }
+    }
+
+    if (isPoint) {
+        chosen = std::min(chosen + 1, kPunctualShadowSizeClassCount - 1);
+    }
+
+    return chosen;
 }
 
 float punctualShadowSlotToFloat(uint32_t slot)
@@ -82,20 +113,107 @@ float punctualShadowNearPlane(float range)
     return std::max(kMinPunctualShadowNearPlane, std::max(range, 0.0f) * kPunctualShadowNearPlaneRangeFraction);
 }
 
-uint32_t PunctualShadowAtlasAllocator::allocate()
+void PunctualShadowAtlasAllocator::reset()
 {
-    return allocateRange(1);
+    for (auto& tiles : freeTiles_) {
+        tiles.clear();
+    }
+    allocatedCount_ = 0;
+    allocatedArea_ = 0;
+
+    // Seed with the atlas cut into largest-class tiles; every smaller tile is
+    // produced by splitting one of these on demand.
+    const uint32_t tileSize = punctualShadowTileSizeForClass(0);
+    for (uint32_t y = 0; y < kPunctualShadowAtlasSize; y += tileSize) {
+        for (uint32_t x = 0; x < kPunctualShadowAtlasSize; x += tileSize) {
+            freeTiles_[0].push_back(ShadowAtlasRect{x, y, tileSize});
+        }
+    }
 }
 
-uint32_t PunctualShadowAtlasAllocator::allocateRange(uint32_t count)
+bool PunctualShadowAtlasAllocator::allocateNode(uint32_t sizeClass, ShadowAtlasRect& outRect)
 {
-    if (count == 0 || count > kMaxPunctualShadowSlots || nextSlot_ + count > kMaxPunctualShadowSlots) {
-        return kInvalidPunctualShadowSlot;
+    if (sizeClass >= kPunctualShadowSizeClassCount) {
+        return false;
     }
 
-    const uint32_t first = nextSlot_;
-    nextSlot_ += count;
-    return first;
+    std::vector<ShadowAtlasRect>& tiles = freeTiles_[sizeClass];
+    if (!tiles.empty()) {
+        outRect = tiles.back();
+        tiles.pop_back();
+        return true;
+    }
+
+    // Nothing free at this size: split one class up. Recursion bottoms out at
+    // class 0, which is only ever seeded by reset().
+    if (sizeClass == 0) {
+        return false;
+    }
+
+    ShadowAtlasRect parent{};
+    if (!allocateNode(sizeClass - 1, parent)) {
+        return false;
+    }
+
+    const uint32_t half = parent.size / 2;
+    // Keep one quadrant, bank the other three for later allocations.
+    freeTiles_[sizeClass].push_back(ShadowAtlasRect{parent.x + half, parent.y, half});
+    freeTiles_[sizeClass].push_back(ShadowAtlasRect{parent.x, parent.y + half, half});
+    freeTiles_[sizeClass].push_back(ShadowAtlasRect{parent.x + half, parent.y + half, half});
+
+    outRect = ShadowAtlasRect{parent.x, parent.y, half};
+    return true;
+}
+
+bool PunctualShadowAtlasAllocator::allocate(uint32_t sizeClass, ShadowAtlasRect& outRect)
+{
+    const uint32_t clamped = std::min(sizeClass, kPunctualShadowSizeClassCount - 1);
+    if (!allocateNode(clamped, outRect)) {
+        return false;
+    }
+
+    ++allocatedCount_;
+    allocatedArea_ += static_cast<uint64_t>(outRect.size) * outRect.size;
+    return true;
+}
+
+bool PunctualShadowAtlasAllocator::allocateRange(uint32_t sizeClass,
+                                                 uint32_t count,
+                                                 std::vector<ShadowAtlasRect>& outRects)
+{
+    outRects.clear();
+    if (count == 0) {
+        return false;
+    }
+
+    // All-or-nothing via a snapshot: a partially reserved cube would have the
+    // light sampling cleared tiles for its missing faces, which reads as light
+    // leaking through solid geometry -- worse than not casting at all.
+    const auto savedTiles = freeTiles_;
+    const uint32_t savedCount = allocatedCount_;
+    const uint64_t savedArea = allocatedArea_;
+
+    outRects.reserve(count);
+    for (uint32_t index = 0; index < count; ++index) {
+        ShadowAtlasRect rect{};
+        if (!allocate(sizeClass, rect)) {
+            freeTiles_ = savedTiles;
+            allocatedCount_ = savedCount;
+            allocatedArea_ = savedArea;
+            outRects.clear();
+            return false;
+        }
+        outRects.push_back(rect);
+    }
+
+    return true;
+}
+
+float PunctualShadowAtlasAllocator::occupancy() const
+{
+    constexpr auto kAtlasArea =
+        static_cast<double>(kPunctualShadowAtlasSize) * static_cast<double>(kPunctualShadowAtlasSize);
+    return static_cast<float>(static_cast<double>(allocatedArea_) / kAtlasArea);
 }
 
 glm::vec3 pointShadowFaceDirection(uint32_t face)

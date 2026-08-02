@@ -8,6 +8,7 @@
 #include <cmath>
 #include <limits>
 #include <set>
+#include <vector>
 #include <utility>
 
 using Catch::Approx;
@@ -17,13 +18,16 @@ using ve::renderer::GpuShadowSlot;
 using ve::renderer::kInvalidPunctualShadowSlot;
 using ve::renderer::kMaxPunctualShadowSlots;
 using ve::renderer::kPunctualShadowAtlasSize;
-using ve::renderer::kPunctualShadowTilesPerSide;
-using ve::renderer::kPunctualShadowTileSize;
+using ve::renderer::kPunctualShadowMaxTileSize;
+using ve::renderer::kPunctualShadowMinTileSize;
+using ve::renderer::kPunctualShadowSizeClassCount;
+using ve::renderer::punctualShadowSizeClassForRadius;
+using ve::renderer::punctualShadowProjectedRadius;
 using ve::renderer::punctualShadowSlotFromFloat;
-using ve::renderer::punctualShadowSlotRect;
 using ve::renderer::punctualShadowSlotToFloat;
+using ve::renderer::punctualShadowTileSizeForClass;
 using ve::renderer::PunctualShadowAtlasAllocator;
-using ve::renderer::punctualShadowSlotUvOffsetScale;
+using ve::renderer::shadowAtlasRectUvOffsetScale;
 using ve::renderer::ShadowAtlasRect;
 
 namespace {
@@ -39,80 +43,186 @@ glm::vec3 projectToShadowUv(const glm::mat4& viewProjection, const glm::vec3& wo
 
 } // namespace
 
-TEST_CASE("Atlas slots tile the texture without overlapping", "[shadowatlas]")
+namespace {
+
+// Do two tiles share any texel?
+bool rectsOverlap(const ShadowAtlasRect& a, const ShadowAtlasRect& b)
 {
-    std::set<std::pair<uint32_t, uint32_t>> origins;
+    return a.x < b.x + b.size && b.x < a.x + a.size && a.y < b.y + b.size && b.y < a.y + a.size;
+}
 
-    for (uint32_t slot = 0; slot < kMaxPunctualShadowSlots; ++slot) {
-        const ShadowAtlasRect rect = punctualShadowSlotRect(slot);
+} // namespace
 
-        CHECK(rect.size == kPunctualShadowTileSize);
-        // Every tile lands fully inside the atlas.
+TEST_CASE("The allocator never hands out overlapping tiles", "[shadowatlas]")
+{
+    PunctualShadowAtlasAllocator allocator;
+    std::vector<ShadowAtlasRect> handedOut;
+
+    // Deliberately mixed classes, so splitting is exercised rather than a single
+    // uniform size that could pass by accident.
+    for (int round = 0; round < 40; ++round) {
+        const uint32_t sizeClass = static_cast<uint32_t>(round % kPunctualShadowSizeClassCount);
+        ShadowAtlasRect rect{};
+        if (!allocator.allocate(sizeClass, rect)) {
+            break;
+        }
+
+        CHECK(rect.size == punctualShadowTileSizeForClass(sizeClass));
+        // Inside the atlas, and aligned to its own size -- a quadtree tile can
+        // only ever sit on a multiple of its edge.
         CHECK(rect.x + rect.size <= kPunctualShadowAtlasSize);
         CHECK(rect.y + rect.size <= kPunctualShadowAtlasSize);
-        // Tiles are grid-aligned.
-        CHECK(rect.x % kPunctualShadowTileSize == 0u);
-        CHECK(rect.y % kPunctualShadowTileSize == 0u);
+        CHECK(rect.x % rect.size == 0u);
+        CHECK(rect.y % rect.size == 0u);
 
-        // No two slots share an origin, so with uniform sizes none overlap.
-        CHECK(origins.insert({rect.x, rect.y}).second);
+        for (const ShadowAtlasRect& existing : handedOut) {
+            CHECK_FALSE(rectsOverlap(existing, rect));
+        }
+        handedOut.push_back(rect);
     }
 
-    CHECK(origins.size() == kMaxPunctualShadowSlots);
-    // The grid is exactly covered -- no wasted tiles, no slot off the end.
-    CHECK(kMaxPunctualShadowSlots == kPunctualShadowTilesPerSide * kPunctualShadowTilesPerSide);
+    // The loop stops when the atlas cannot fit the next tile, not at a fixed
+    // count -- a mixed-size run exhausts on area, so the useful assertions are
+    // that it got a meaningful way in and never exceeded the atlas.
+    CHECK(handedOut.size() > 20u);
+    CHECK(allocator.allocatedCount() == handedOut.size());
+    // Occupancy tracks area, not slot count.
+    CHECK(allocator.occupancy() > 0.5f);
+    CHECK(allocator.occupancy() <= 1.0f);
+
+    // The area handed out equals the sum of the tiles, i.e. nothing was
+    // double-counted and nothing leaked.
+    uint64_t summedArea = 0;
+    for (const ShadowAtlasRect& rect : handedOut) {
+        summedArea += static_cast<uint64_t>(rect.size) * rect.size;
+    }
+    const auto atlasArea =
+        static_cast<double>(kPunctualShadowAtlasSize) * static_cast<double>(kPunctualShadowAtlasSize);
+    CHECK(allocator.occupancy() == Approx(static_cast<float>(static_cast<double>(summedArea) / atlasArea)));
 }
 
-TEST_CASE("Out-of-range slots produce an empty rect", "[shadowatlas]")
+TEST_CASE("The allocator fills the atlas exactly and then degrades", "[shadowatlas]")
 {
-    CHECK(punctualShadowSlotRect(kMaxPunctualShadowSlots).size == 0u);
-    CHECK(punctualShadowSlotRect(kInvalidPunctualShadowSlot).size == 0u);
-    CHECK(punctualShadowSlotUvOffsetScale(kMaxPunctualShadowSlots) == glm::vec4(0.0f));
+    PunctualShadowAtlasAllocator allocator;
+
+    // Smallest class only: the atlas should divide into exactly kMax tiles.
+    const uint32_t smallest = kPunctualShadowSizeClassCount - 1;
+    uint32_t granted = 0;
+    ShadowAtlasRect rect{};
+    while (allocator.allocate(smallest, rect)) {
+        ++granted;
+        REQUIRE(granted <= kMaxPunctualShadowSlots);
+    }
+
+    CHECK(granted == kMaxPunctualShadowSlots);
+    CHECK(allocator.occupancy() == Approx(1.0f));
+    // Exhaustion is a graceful "unshadowed this frame", not an error.
+    CHECK_FALSE(allocator.allocate(smallest, rect));
+
+    allocator.reset();
+    CHECK(allocator.allocatedCount() == 0u);
+    CHECK(allocator.occupancy() == Approx(0.0f));
+    CHECK(allocator.allocate(0, rect));
 }
 
-TEST_CASE("Slot UV rects match their pixel rects", "[shadowatlas]")
+TEST_CASE("A big tile consumes the area of many small ones", "[shadowatlas]")
+{
+    // The whole point of size classes: one class-0 tile costs what four class-1
+    // tiles cost, so a frame of big tiles runs out sooner.
+    PunctualShadowAtlasAllocator big;
+    uint32_t bigCount = 0;
+    ShadowAtlasRect rect{};
+    while (big.allocate(0, rect)) {
+        ++bigCount;
+    }
+
+    PunctualShadowAtlasAllocator small;
+    uint32_t smallCount = 0;
+    while (small.allocate(1, rect)) {
+        ++smallCount;
+    }
+
+    CHECK(smallCount == bigCount * 4);
+    CHECK(big.occupancy() == Approx(1.0f));
+    CHECK(small.occupancy() == Approx(1.0f));
+}
+
+TEST_CASE("Tile rects map to the UV rects the shader reads", "[shadowatlas]")
 {
     constexpr float kAtlasSize = static_cast<float>(kPunctualShadowAtlasSize);
+    PunctualShadowAtlasAllocator allocator;
 
-    for (uint32_t slot = 0; slot < kMaxPunctualShadowSlots; ++slot) {
-        const ShadowAtlasRect rect = punctualShadowSlotRect(slot);
-        const glm::vec4 uv = punctualShadowSlotUvOffsetScale(slot);
+    for (uint32_t sizeClass = 0; sizeClass < kPunctualShadowSizeClassCount; ++sizeClass) {
+        ShadowAtlasRect rect{};
+        REQUIRE(allocator.allocate(sizeClass, rect));
 
+        const glm::vec4 uv = shadowAtlasRectUvOffsetScale(rect);
         CHECK(uv.x == Approx(static_cast<float>(rect.x) / kAtlasSize));
         CHECK(uv.y == Approx(static_cast<float>(rect.y) / kAtlasSize));
         CHECK(uv.z == Approx(static_cast<float>(rect.size) / kAtlasSize));
         CHECK(uv.w == Approx(uv.z));
-
-        // A tile's UV window stays within the atlas.
         CHECK(uv.x + uv.z <= 1.0f + 1.0e-6f);
         CHECK(uv.y + uv.w <= 1.0f + 1.0e-6f);
     }
+
+    // An empty rect yields an empty window rather than sampling the whole atlas.
+    CHECK(shadowAtlasRectUvOffsetScale(ShadowAtlasRect{}) == glm::vec4(0.0f));
 }
 
-TEST_CASE("The allocator hands out every slot once and then degrades", "[shadowatlas]")
+TEST_CASE("Tile size follows a light's projected size", "[shadowatlas]")
 {
-    PunctualShadowAtlasAllocator allocator;
-    std::set<uint32_t> handedOut;
+    constexpr float projScaleY = 540.0f; // 1080p half-height at unit projection
 
-    for (uint32_t i = 0; i < kMaxPunctualShadowSlots; ++i) {
-        const uint32_t slot = allocator.allocate();
-        REQUIRE(slot != kInvalidPunctualShadowSlot);
-        CHECK(slot < kMaxPunctualShadowSlots);
-        CHECK(handedOut.insert(slot).second);
+    const glm::vec3 camera{0.0f, 0.0f, 0.0f};
+    // Same range, increasing distance -> shrinking projected radius -> smaller
+    // tiles. This is the behaviour distance-only ordering could not express.
+    const float near = punctualShadowProjectedRadius(glm::vec3{0.0f, 0.0f, 10.0f}, 8.0f, camera, projScaleY);
+    const float mid = punctualShadowProjectedRadius(glm::vec3{0.0f, 0.0f, 40.0f}, 8.0f, camera, projScaleY);
+    const float far = punctualShadowProjectedRadius(glm::vec3{0.0f, 0.0f, 400.0f}, 8.0f, camera, projScaleY);
+
+    CHECK(near > mid);
+    CHECK(mid > far);
+    CHECK(punctualShadowSizeClassForRadius(near) <= punctualShadowSizeClassForRadius(mid));
+    CHECK(punctualShadowSizeClassForRadius(mid) <= punctualShadowSizeClassForRadius(far));
+
+    // A bigger light at the same distance outranks a smaller one, which pure
+    // distance ordering treated as equal.
+    const float small = punctualShadowProjectedRadius(glm::vec3{0.0f, 0.0f, 40.0f}, 2.0f, camera, projScaleY);
+    CHECK(mid > small);
+
+    // Class thresholds are the tile sizes themselves.
+    CHECK(punctualShadowSizeClassForRadius(static_cast<float>(kPunctualShadowMaxTileSize) + 1.0f) == 0u);
+    CHECK(punctualShadowSizeClassForRadius(0.0f) == kPunctualShadowSizeClassCount - 1);
+    for (uint32_t sizeClass = 0; sizeClass < kPunctualShadowSizeClassCount; ++sizeClass) {
+        const uint32_t chosen =
+            punctualShadowSizeClassForRadius(static_cast<float>(punctualShadowTileSizeForClass(sizeClass)));
+        CHECK(chosen <= sizeClass);
     }
 
-    CHECK(allocator.allocatedCount() == kMaxPunctualShadowSlots);
-    CHECK(allocator.full());
+    // A point light is demoted one class: it buys six tiles, not one, so ranking
+    // it against a spot on the same threshold lets one point light swallow six
+    // of the largest tiles and starve everything behind it.
+    for (float radius : {4000.0f, 900.0f, 400.0f, 10.0f}) {
+        const uint32_t spotClass = punctualShadowSizeClassForRadius(radius, false);
+        const uint32_t pointClass = punctualShadowSizeClassForRadius(radius, true);
+        CHECK(pointClass >= spotClass);
+        CHECK(pointClass <= kPunctualShadowSizeClassCount - 1);
+        if (spotClass < kPunctualShadowSizeClassCount - 1) {
+            CHECK(pointClass == spotClass + 1);
+        }
+    }
+    // The demotion still clamps at the smallest class rather than running off.
+    CHECK(punctualShadowSizeClassForRadius(0.0f, true) == kPunctualShadowSizeClassCount - 1);
 
-    // Over budget is a graceful "unshadowed this frame", not an error.
-    CHECK(allocator.allocate() == kInvalidPunctualShadowSlot);
-    CHECK(allocator.allocate() == kInvalidPunctualShadowSlot);
-    CHECK(allocator.allocatedCount() == kMaxPunctualShadowSlots);
+    // A light enclosing the camera is maximally important, not degenerate.
+    const float enclosing = punctualShadowProjectedRadius(glm::vec3{0.0f, 0.0f, 1.0f}, 8.0f, camera, projScaleY);
+    CHECK(enclosing > near);
+    CHECK(punctualShadowSizeClassForRadius(enclosing) == 0u);
 
-    allocator.reset();
-    CHECK(allocator.allocatedCount() == 0u);
-    CHECK_FALSE(allocator.full());
-    CHECK(allocator.allocate() == 0u);
+    CHECK(punctualShadowTileSizeForClass(0) == kPunctualShadowMaxTileSize);
+    CHECK(punctualShadowTileSizeForClass(kPunctualShadowSizeClassCount - 1) == kPunctualShadowMinTileSize);
+    // Out-of-range classes clamp rather than shifting off the end.
+    CHECK(punctualShadowTileSizeForClass(99) == kPunctualShadowMinTileSize);
 }
 
 TEST_CASE("Slot indices survive the float round-trip through GpuLight", "[shadowatlas]")
@@ -320,34 +430,50 @@ TEST_CASE("Cube face selection and face projections agree", "[shadowatlas]")
     CHECK(seenFaces.size() == kPointShadowFaceCount);
 }
 
-TEST_CASE("Cube faces take six consecutive slots", "[shadowatlas]")
+TEST_CASE("Cube faces reserve all six tiles or none", "[shadowatlas]")
 {
     using ve::renderer::kPointShadowFaceCount;
 
     PunctualShadowAtlasAllocator allocator;
+    std::vector<ShadowAtlasRect> faces;
 
-    const uint32_t first = allocator.allocateRange(kPointShadowFaceCount);
-    CHECK(first == 0u);
-    CHECK(allocator.allocatedCount() == kPointShadowFaceCount);
+    REQUIRE(allocator.allocateRange(1, kPointShadowFaceCount, faces));
+    CHECK(faces.size() == kPointShadowFaceCount);
+    for (size_t i = 0; i < faces.size(); ++i) {
+        for (size_t j = i + 1; j < faces.size(); ++j) {
+            CHECK_FALSE(rectsOverlap(faces[i], faces[j]));
+        }
+    }
 
-    // Consecutive is load-bearing: the light stores only the base and the shader
-    // adds the face index to it.
-    const uint32_t second = allocator.allocateRange(kPointShadowFaceCount);
-    CHECK(second == kPointShadowFaceCount);
+    // Fill the atlas with the largest class, then confirm a six-face request
+    // fails whole. A partially reserved cube would have the light sampling
+    // cleared tiles for its missing faces, which reads as light leaking through
+    // solid geometry -- worse than not casting at all.
+    PunctualShadowAtlasAllocator full;
+    ShadowAtlasRect rect{};
+    while (full.allocate(0, rect)) {
+    }
+    const uint32_t consumedBefore = full.allocatedCount();
+    const float occupancyBefore = full.occupancy();
 
-    // A range that does not fit fails whole rather than partially reserving --
-    // otherwise a light would get a truncated cube.
-    PunctualShadowAtlasAllocator nearlyFull;
-    const uint32_t leaveThree = kMaxPunctualShadowSlots - 3;
-    CHECK(nearlyFull.allocateRange(leaveThree) == 0u);
-    CHECK(nearlyFull.allocateRange(kPointShadowFaceCount) == kInvalidPunctualShadowSlot);
-    CHECK(nearlyFull.allocatedCount() == leaveThree);
-    // The three that do remain are still handed out one at a time.
-    CHECK(nearlyFull.allocate() != kInvalidPunctualShadowSlot);
+    std::vector<ShadowAtlasRect> denied{ShadowAtlasRect{1, 2, 3}};
+    CHECK_FALSE(full.allocateRange(0, kPointShadowFaceCount, denied));
+    CHECK(denied.empty());
+    // Nothing was consumed by the failed attempt.
+    CHECK(full.allocatedCount() == consumedBefore);
+    CHECK(full.occupancy() == Approx(occupancyBefore));
+
+    // A partial fit still fails whole: room for some faces is not room for six.
+    PunctualShadowAtlasAllocator partial;
+    while (partial.allocatedCount() + 3 < kMaxPunctualShadowSlots) {
+        REQUIRE(partial.allocate(kPunctualShadowSizeClassCount - 1, rect));
+    }
+    const uint32_t partialBefore = partial.allocatedCount();
+    CHECK_FALSE(partial.allocateRange(kPunctualShadowSizeClassCount - 1, kPointShadowFaceCount, faces));
+    CHECK(partial.allocatedCount() == partialBefore);
 
     PunctualShadowAtlasAllocator edge;
-    CHECK(edge.allocateRange(0) == kInvalidPunctualShadowSlot);
-    CHECK(edge.allocateRange(kMaxPunctualShadowSlots + 1) == kInvalidPunctualShadowSlot);
+    CHECK_FALSE(edge.allocateRange(0, 0, faces));
     CHECK(edge.allocatedCount() == 0u);
 }
 
