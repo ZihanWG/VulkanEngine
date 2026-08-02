@@ -9,6 +9,7 @@
 #include "renderer/Camera.h"
 #include "renderer/CascadeMath.h"
 #include "renderer/ClusteredLighting.h"
+#include "renderer/PunctualShadows.h"
 #include "renderer/DepthPyramid.h"
 #include "renderer/GpuCulling.h"
 #include "renderer/FrameResources.h"
@@ -275,6 +276,8 @@ private:
     void createSkyboxPipeline();
     void createTransparentPipeline();
     void createShadowPipeline();
+    void createPunctualShadowPipeline(const VkVertexInputBindingDescription& binding,
+                                      const std::array<VkVertexInputAttributeDescription, 5>& attributes);
     void createMaskedShadowPipeline(const VkVertexInputBindingDescription& binding,
                                     const std::array<VkVertexInputAttributeDescription, 5>& attributes);
     void createComputePipelines();
@@ -416,6 +419,14 @@ private:
     // scattered, orbiting swarm of colored point lights plus an overhead spot.
     // Driving the count up is how the clustered path is stress-tested.
     void updateDemoLights(float elapsedSeconds);
+    // Hands atlas tiles to the shadow-casting punctual lights and stamps the
+    // resulting slot index back into each GpuLight record. Runs after
+    // updateDemoLights (which rebuilds the light list) and before the light
+    // buffer is uploaded, since it mutates those records in place.
+    void updatePunctualShadowSlots(uint32_t frameIndex, float aspectRatio);
+    // Records the punctual shadow atlas pass: one dynamic-rendering pass over
+    // the whole atlas, with a viewport/scissor per allocated slot.
+    void recordPunctualShadowPass(VkCommandBuffer commandBuffer);
     [[nodiscard]] glm::vec4 activeDirectionalLightDirection() const;
     [[nodiscard]] glm::vec4 activeDirectionalLightColor() const;
     void loadOcclusionTestScene();
@@ -435,7 +446,7 @@ private:
     void drawToneMappingDebugUi();
     void drawBloomDebugUi();
     void drawSsaoDebugUi();
-    void drawCsmSettingsDebugUi();
+    void drawShadowsDebugUi();
     void drawLightsDebugUi();
     void drawSkeletalAnimationDebugUi();
     void drawGpuCullingDebugUi();
@@ -530,6 +541,10 @@ private:
     // depth-only pipeline has no fragment stage at all; this one adds the cutout
     // discard and therefore needs the bindless base-color array bound.
     rhi::VulkanPipeline maskedShadowPipeline_;
+    // Depth-only pipeline for the punctual shadow atlas. Separate from
+    // shadowPipeline_ because its push-constant layout carries the slot's
+    // view-projection instead of a cascade index.
+    rhi::VulkanPipeline punctualShadowPipeline_;
     // glTF BLEND geometry: same shaders as the main pass, but "over" blending,
     // depth writes off, and a scene-color-only attachment set.
     rhi::VulkanPipeline transparentPipeline_;
@@ -560,6 +575,10 @@ private:
     renderer::BindlessTextureHeap bindlessTextureHeap_;
     renderer::BuiltinTextureFactory builtinTextureFactory_{};
     renderer::ClusteredLighting clusteredLighting_;
+    // Spot/point shadow atlas. Independent of shadowMap_ (which stays the
+    // directional CSM array) because punctual casters need per-light perspective
+    // projections packed into one texture rather than a fixed cascade array.
+    renderer::PunctualShadows punctualShadows_;
     renderer::SkinnedMesh skinnedMesh_;
     rhi::VulkanDescriptorPool materialDescriptorPool_;
     rhi::VulkanDescriptorPool skyboxDescriptorPool_;
@@ -596,6 +615,7 @@ private:
     VkFormat skyboxPipelineColorFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat skyboxPipelineDepthFormat_ = VK_FORMAT_UNDEFINED;
     VkFormat shadowPipelineDepthFormat_ = VK_FORMAT_UNDEFINED;
+    VkFormat punctualShadowPipelineDepthFormat_ = VK_FORMAT_UNDEFINED;
     uint32_t selectedBloomMipDebugLevel_ = 0;
     uint32_t currentFrame_ = 0;
     uint32_t bindlessBaseColorFallbackIndex_ = 0;
@@ -695,6 +715,46 @@ private:
     // per-froxel light list; otherwise it brute-forces every light. The runtime
     // toggle also enables a brute-force-vs-clustered comparison.
     bool useClusteredLighting_ = true;
+    // Punctual (spot/point) shadow casting. On by default; the toggle exists so
+    // the atlas cost and its visual contribution can be A/B'd against the same
+    // light set the way the clustered/brute-force toggle is.
+    bool usePunctualShadows_ = true;
+    // Debug view: outputs the punctual shadow visibility term as greyscale.
+    bool showPunctualShadowDebug_ = false;
+    // Point lights cost six tiles each against 64 total, so how many may cast is
+    // a budget the user can see and set rather than an implicit cap.
+    int maxShadowCastingPointLights_ = 4;
+    // One punctual light ranked for atlas assignment.
+    struct PunctualShadowCandidate {
+        size_t lightIndex = 0;
+        float projectedRadius = 0.0f;
+        bool isSpot = false;
+    };
+    // Scratch: every punctual light ranked by projected size. Member so the
+    // per-frame assignment does not reallocate every frame.
+    std::vector<PunctualShadowCandidate> punctualShadowCandidates_;
+    // Per-light assignment state carried across frames, indexed by light index.
+    // Light indices are stable frame to frame because updateDemoLights rebuilds
+    // the swarm in a deterministic order; a scene with dynamic light lifetimes
+    // would need real light IDs instead.
+    struct PunctualShadowLightState {
+        uint32_t sizeClass = 0;
+        bool shadowed = false;
+        bool valid = false;
+    };
+    std::vector<PunctualShadowLightState> punctualShadowLightState_;
+    // How many lights gained or lost their shadow between the last two frames.
+    // Surfaced because assignment churn is exactly what reads as popping, and
+    // guessing at it from the image is how the last few rounds went wrong.
+    uint32_t punctualShadowAssignmentChurn_ = 0;
+    uint64_t punctualShadowAssignmentChurnTotal_ = 0;
+    // Slots filled last frame, surfaced in the debug panel.
+    uint32_t punctualShadowSlotsUsed_ = 0;
+    // Caster draws the atlas pass actually recorded last frame. Surfaced because
+    // the atlas preview cannot distinguish "nothing drew" from "everything drew
+    // but perspective depth is compressed into the top few percent" -- both look
+    // like a solid far-plane tile.
+    uint32_t punctualShadowDrawsRecorded_ = 0;
     bool showClusterHeatmap_ = false;
     // Procedural skinned bone-chain demo: draw it, and animate (vs hold bind pose).
     bool showSkinnedMesh_ = true;

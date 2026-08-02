@@ -212,6 +212,15 @@ struct PushConstants {
     // Debug: tints geometry by the LOD level the cull pass selected, which the
     // vertex stage recovers from the high bits of gl_InstanceIndex.
     uint32_t debugLodHeatmap = 0;
+    // Punctual shadow atlas: per-slot projections + atlas UV rects, read through
+    // buffer_reference by the punctual lighting loop. Zero when no light got a
+    // tile this frame, which the shader also treats as "nothing casts".
+    VkDeviceAddress punctualShadowSlotAddress = 0;
+    // Debug: outputs the punctual shadow visibility term as greyscale instead of
+    // shaded colour. The only unambiguous way to tell a working atlas from a
+    // working *lookup* -- a single spot among dozens of lights is easy to lose
+    // in the beauty image.
+    uint32_t debugPunctualShadows = 0;
 };
 
 static_assert(offsetof(PushConstants, objectFrameDataAddress) == 0);
@@ -232,6 +241,8 @@ static_assert(offsetof(PushConstants, jointMatricesAddress) == 72);
 // simple_bindless.frag declares this at an explicit layout(offset = 80), so the
 // offset is part of the shader contract and not just an implementation detail.
 static_assert(offsetof(PushConstants, debugLodHeatmap) == 80);
+static_assert(offsetof(PushConstants, punctualShadowSlotAddress) == 88);
+static_assert(offsetof(PushConstants, debugPunctualShadows) == 96);
 static_assert(sizeof(PushConstants) <= 128);
 
 // Mirrors src/shaders/cull.comp. Main and shadow GPU culling both use this
@@ -280,6 +291,22 @@ static_assert(offsetof(renderer::MeshLod, indexCount) == 4);
 // when the table is built, so this is a generous upper bound (32 KB).
 constexpr uint32_t kMaxMeshLodEntries = kMaxDrawItems * renderer::kMaxMeshLods;
 constexpr VkDeviceSize kMeshLodBufferSize = kMaxMeshLodEntries * sizeof(renderer::MeshLod);
+
+// Push constant for the punctual shadow atlas pass (shadow_punctual.vert).
+// The explicit padding is load-bearing: GLSL push-constant layout rounds the
+// mat4 up to its 16-byte alignment, so the matrix lands at offset 16 rather
+// than packing against the 8-byte buffer address.
+struct PunctualShadowPushConstants {
+    VkDeviceAddress objectFrameDataAddress = 0;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+    glm::mat4 lightViewProjection{1.0f};
+};
+
+static_assert(offsetof(PunctualShadowPushConstants, objectFrameDataAddress) == 0);
+static_assert(offsetof(PunctualShadowPushConstants, lightViewProjection) == 16);
+static_assert(sizeof(PunctualShadowPushConstants) == 80);
+static_assert(sizeof(PunctualShadowPushConstants) <= 128);
 
 struct GpuCullPushConstants {
     std::array<glm::vec4, 6> frustumPlanes{};

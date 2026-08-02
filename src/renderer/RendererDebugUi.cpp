@@ -44,7 +44,7 @@ void Renderer::buildDebugUi()
         drawScenePresetDebugUi();
         drawPortfolioCaptureDebugUi();
         drawDebugViewToggles();
-        drawCsmSettingsDebugUi();
+        drawShadowsDebugUi();
         drawLightsDebugUi();
         drawSkeletalAnimationDebugUi();
         drawGpuCullingDebugUi();
@@ -201,11 +201,16 @@ void Renderer::drawSsaoDebugUi()
     ImGui::EndDisabled();
 }
 
-void Renderer::drawCsmSettingsDebugUi()
+void Renderer::drawShadowsDebugUi()
 {
-    if (!ImGui::CollapsingHeader("CSM", ImGuiTreeNodeFlags_DefaultOpen)) {
+    // Both shadow sources live here rather than splitting the directional ones
+    // out under CSM and the punctual ones under Lights: they are tuned against
+    // each other, and the atlas preview is the main diagnostic for either.
+    if (!ImGui::CollapsingHeader("Shadows", ImGuiTreeNodeFlags_DefaultOpen)) {
         return;
     }
+
+    ImGui::SeparatorText("Cascaded (directional)");
     int cascadeCount = static_cast<int>(activeCascadeCount());
     ImGui::BeginDisabled();
     ImGui::SliderInt("Cascade count (startup)", &cascadeCount, 1, static_cast<int>(kMaxShadowCascades));
@@ -214,6 +219,79 @@ void Renderer::drawCsmSettingsDebugUi()
     ImGui::DragFloat("Shadow distance", &csmSettings_.shadowDistance, 0.1f, 1.0f, csmSettings_.farPlane, "%.2f");
     ImGui::Checkbox("Texel snapping enabled", &csmSettings_.enableTexelSnapping);
     ImGui::Checkbox("Cascade debug colors enabled", &csmSettings_.enableCascadeDebugColors);
+
+    ImGui::SeparatorText("Punctual (spot/point)");
+    if (!punctualShadows_.valid()) {
+        ImGui::TextDisabled("Shadow atlas unavailable; point/spot lights do not cast.");
+    } else {
+        ImGui::Checkbox("Cast punctual shadows", &usePunctualShadows_);
+        ImGui::SetItemTooltip("Spot lights render into a shared depth atlas and shadow the clustered pass.");
+        ImGui::Text("Atlas: %ux%u, tiles %u-%upx",
+                    renderer::kPunctualShadowAtlasSize,
+                    renderer::kPunctualShadowAtlasSize,
+                    renderer::kPunctualShadowMinTileSize,
+                    renderer::kPunctualShadowMaxTileSize);
+        // With mixed tile sizes a slot count says nothing about how full the
+        // atlas is, so the occupancy fraction is the number that matters.
+        ImGui::Text("Slots used: %u  (atlas %.0f%% full)",
+                    punctualShadowSlotsUsed_,
+                    punctualShadows_.occupancy() * 100.0f);
+        ImGui::Text("Caster draws recorded: %u", punctualShadowDrawsRecorded_);
+        // Assignment churn is what popping actually looks like, so it is
+        // measured rather than inferred from the image.
+        ImGui::Text("Assignment churn: %u this frame", punctualShadowAssignmentChurn_);
+        ImGui::SetItemTooltip("Lights that gained or lost their shadow since last frame.\n"
+                              "Persistently non-zero is what reads as shadows popping in and out.");
+        ImGui::SetItemTooltip("Zero here with slots > 0 means the atlas pass culled or skipped everything.");
+        ImGui::Checkbox("Debug: shadow term only", &showPunctualShadowDebug_);
+        ImGui::SetItemTooltip("Greyscale punctual visibility, min across the lights that actually reach\n"
+                              "each fragment. Flat white = the atlas is never sampled; any structure =\n"
+                              "the lookup works. Several casters overlapping darkens a lot of the frame\n"
+                              "here without the shaded image changing nearly as much.");
+        // Six tiles per point light against 64 total, so the budget is explicit
+        // rather than an implicit cap the user cannot see.
+        ImGui::SliderInt("Max shadowed point lights",
+                         &maxShadowCastingPointLights_,
+                         0,
+                         16);
+        ImGui::SetItemTooltip("Each point light costs 6 tiles (one per cube face).\n"
+                              "Nearest to the camera are served first.");
+
+        // Looking at the atlas directly is the only reliable way to tell a
+        // wrong projection from a wrong sample: in the beauty shot an overhead
+        // spot is easily washed out by the directional key light.
+        if (ImGui::TreeNodeEx("Atlas depth preview", ImGuiTreeNodeFlags_DefaultOpen)) {
+            const VkExtent2D atlasExtent = punctualShadows_.atlas().extent();
+            ImGui::TextDisabled("Tiles are %u-%upx, sized by each light's projected radius.",
+                                renderer::kPunctualShadowMinTileSize,
+                                renderer::kPunctualShadowMaxTileSize);
+            // The preview is a plain ImGui::Image with a multiplicative tint, so
+            // it cannot expand contrast near 1.0. Perspective depth sits up
+            // there almost everywhere, which makes even a correctly rendered
+            // tile read as solid red. The CSM cascade previews look fine only
+            // because an orthographic projection gives linear depth. Use the
+            // caster-draw count above to tell "empty" from "just compressed".
+            ImGui::TextDisabled("Perspective depth reads near-white/red even when correct;");
+            ImGui::TextDisabled("trust \"caster draws recorded\" above, not this image.");
+            drawRenderTargetPreview(punctualShadows_.atlas().imageView(),
+                                    punctualShadows_.atlas().sampler(),
+                                    VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                                    atlasExtent.width,
+                                    atlasExtent.height,
+                                    160.0f * std::clamp(debugUiSettings_.renderTargetPreviewScale, 0.25f, 2.0f),
+                                    1.0f);
+            ImGui::TreePop();
+        }
+
+        float constantBias = punctualShadows_.constantBias();
+        float normalBias = punctualShadows_.normalBias();
+        bool biasChanged = ImGui::SliderFloat("Depth bias", &constantBias, 0.0f, 0.01f, "%.4f");
+        biasChanged |= ImGui::SliderFloat("Normal bias", &normalBias, 0.0f, 0.2f, "%.3f");
+        if (biasChanged) {
+            punctualShadows_.setDepthBias(constantBias, normalBias);
+        }
+        ImGui::SetItemTooltip("Raise until acne disappears; too much detaches shadows from their casters.");
+    }
 }
 
 void Renderer::drawLightsDebugUi()

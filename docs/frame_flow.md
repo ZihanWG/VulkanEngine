@@ -12,20 +12,21 @@ _Detailed per-frame pass ordering and the descriptor-set layout contract, moved 
 6. Begin `RenderGraph` recording, import swapchain/depth/shadow resources, register transient scene/bloom targets, and declare pass read/write usage.
 7. For each cascade, optionally reset shadow batch counts and shadow indirect commands, dispatch the GPU shadow cull with that cascade's light-frustum planes, and barrier its writes for indirect/count reads.
 8. Let the graph transition the cascaded shadow-map array, begin depth-only Dynamic Rendering against the current layer view, and draw shadow casters for that cascade.
-9. Reset the main-pass batch visible-count buffer, dispatch the camera-frustum compute culling pass, optionally sample the previous completed Hi-Z depth pyramid for conservative occlusion, manually barrier visible counts for the immediate readback copy, and let the graph barrier culling outputs for later indirect/count reads in `MainHDRPass`.
-10. Let the graph transition the HDR scene color image, shadow map, and main depth image for `MainHDRPass`.
-11. Begin `MainHDRPass`, draw the skybox, bind global and bindless material descriptors when available, and issue indirect indexed mesh draws into `sceneColor_`.
-12. Run `DepthPyramidPass` to sample the stored normal-Z main depth image and write the max-depth Hi-Z pyramid for later-frame culling.
-13. If TAA is enabled, run `TAAResolvePass` to resolve jittered `sceneColor_` into the current HDR history target; otherwise keep `sceneColor_` as the active post-process source.
-14. Run the legacy bloom extract/blur fallback into `BloomPong`.
-15. Run the mip-chain bloom downsample passes at 1/2, 1/4, 1/8, and 1/16 resolution when practical, then progressively upsample into the final mip-chain bloom target.
-16. Run `LuminancePass` to reduce log luminance from the active HDR scene source into per-frame GPU storage.
-17. Run `HistogramExposurePass` to bin HDR scene luminance, reduce the selected exposure mode into the GPU exposure state buffer, manually preserve host readback visibility, and let the graph make the exposure buffer visible to `CompositePass`.
-18. Run `CompositePass` to combine active HDR scene color + selected bloom * intensity, apply manual or GPU exposure, apply Reinhard or ACES tone mapping, and write the final color to the swapchain.
-19. If a portfolio screenshot was requested, transition the composited swapchain image to transfer source, copy it into a per-frame readback buffer, then return it to color-attachment layout.
-20. Run `ImGuiPass` to load the composited swapchain image as a color attachment and draw the debug UI overlay.
-21. Let the graph transition the swapchain image to present, submit with `vkQueueSubmit2`, and present.
-22. Recreate the swapchain, post-process images, TAA history, depth pyramid resources, and ImGui swapchain-dependent backend state if presentation reports an out-of-date or resized surface.
+9. If any punctual light was assigned an atlas tile, run `PunctualShadowAtlasPass`: let the graph transition the punctual shadow atlas, open one depth-only Dynamic Rendering scope over the whole atlas, and draw each slot's casters under that slot's viewport/scissor.
+10. Reset the main-pass batch visible-count buffer, dispatch the camera-frustum compute culling pass, optionally sample the previous completed Hi-Z depth pyramid for conservative occlusion, manually barrier visible counts for the immediate readback copy, and let the graph barrier culling outputs for later indirect/count reads in `MainHDRPass`.
+11. Let the graph transition the HDR scene color image, cascaded shadow map, punctual shadow atlas, and main depth image for `MainHDRPass`.
+12. Begin `MainHDRPass`, draw the skybox, bind global and bindless material descriptors when available, and issue indirect indexed mesh draws into `sceneColor_`.
+13. Run `DepthPyramidPass` to sample the stored normal-Z main depth image and write the max-depth Hi-Z pyramid for later-frame culling.
+14. If TAA is enabled, run `TAAResolvePass` to resolve jittered `sceneColor_` into the current HDR history target; otherwise keep `sceneColor_` as the active post-process source.
+15. Run the legacy bloom extract/blur fallback into `BloomPong`.
+16. Run the mip-chain bloom downsample passes at 1/2, 1/4, 1/8, and 1/16 resolution when practical, then progressively upsample into the final mip-chain bloom target.
+17. Run `LuminancePass` to reduce log luminance from the active HDR scene source into per-frame GPU storage.
+18. Run `HistogramExposurePass` to bin HDR scene luminance, reduce the selected exposure mode into the GPU exposure state buffer, manually preserve host readback visibility, and let the graph make the exposure buffer visible to `CompositePass`.
+19. Run `CompositePass` to combine active HDR scene color + selected bloom * intensity, apply manual or GPU exposure, apply Reinhard or ACES tone mapping, and write the final color to the swapchain.
+20. If a portfolio screenshot was requested, transition the composited swapchain image to transfer source, copy it into a per-frame readback buffer, then return it to color-attachment layout.
+21. Run `ImGuiPass` to load the composited swapchain image as a color attachment and draw the debug UI overlay.
+22. Let the graph transition the swapchain image to present, submit with `vkQueueSubmit2`, and present.
+23. Recreate the swapchain, post-process images, TAA history, depth pyramid resources, and ImGui swapchain-dependent backend state if presentation reports an out-of-date or resized surface.
 
 ## Current Descriptor Contract
 
@@ -35,6 +36,7 @@ Bindless main-pass global resource descriptor set 0:
 - binding 4 = diffuse irradiance cubemap combined image sampler
 - binding 5 = prefiltered specular cubemap combined image sampler
 - binding 6 = BRDF LUT combined image sampler
+- binding 7 = punctual (spot/point) shadow atlas combined image sampler, sampled as `sampler2D`
 
 Bindless material texture descriptor set 1:
 
@@ -74,6 +76,7 @@ Legacy fallback material descriptor set 0, used when descriptor indexing is unav
 - binding 4 = diffuse irradiance cubemap combined image sampler
 - binding 5 = prefiltered specular cubemap combined image sampler
 - binding 6 = BRDF LUT combined image sampler
+- binding 7 = punctual (spot/point) shadow atlas combined image sampler, sampled as `sampler2D`
 
 GPU culling compute descriptor set:
 

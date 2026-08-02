@@ -194,6 +194,12 @@ struct RenderGraphFrameResources {
     // Number of alpha-blended draw items this frame. Zero skips declaring the
     // transparent pass entirely, so a fully opaque scene costs nothing.
     uint32_t transparentDrawCount = 0;
+    // Punctual shadow atlas tiles allocated this frame. Zero skips declaring the
+    // atlas pass, but the atlas texture is still imported and still declared as a
+    // main-pass read so the graph transitions it into the layout the material
+    // descriptors claim -- otherwise a frame that casts nothing would leave the
+    // image in whatever layout it happened to be in.
+    uint32_t punctualShadowSlotCount = 0;
 };
 
 struct RenderGraphResourceDebugInfo {
@@ -261,13 +267,20 @@ public:
 
     RenderGraph();
 
+    // punctualShadowAtlas is nullable: the atlas is an optional subsystem, and a
+    // null pointer simply leaves its texture and pass out of this frame's graph.
     void beginFrame(VkCommandBuffer commandBuffer,
                     rhi::VulkanSwapchain& swapchain,
                     rhi::VulkanShadowMap& shadowMap,
+                    rhi::VulkanShadowMap* punctualShadowAtlas,
                     uint32_t imageIndex,
                     RenderGraphFrameResources frameResources);
     void beginShadowPass(uint32_t cascadeLayer);
     void endShadowPass(bool finalCascade);
+    // Punctual shadow atlas. One rendering scope covers the whole atlas; the
+    // caller sets a viewport/scissor per slot inside it.
+    void beginPunctualShadowPass();
+    void endPunctualShadowPass();
     void beginMainGpuCullingPass();
     void endMainGpuCullingPass();
     void beginMainHdrPass();
@@ -367,6 +380,7 @@ private:
     enum class ActivePass {
         None,
         Shadow,
+        PunctualShadow,
         MainGpuCulling,
         MainHdr,
         MainGpuCullingPhase2,
@@ -393,7 +407,8 @@ private:
         ExternalLayoutPointer,
         SwapchainColor,
         SwapchainDepth,
-        ShadowMap
+        ShadowMap,
+        PunctualShadowAtlas
     };
 
     struct TextureResource {
@@ -418,6 +433,7 @@ private:
 
     struct BuiltinPassIndices {
         uint32_t shadow = kInvalidRenderGraphHandle;
+        uint32_t punctualShadow = kInvalidRenderGraphHandle;
         uint32_t mainGpuCulling = kInvalidRenderGraphHandle;
         uint32_t mainHdr = kInvalidRenderGraphHandle;
         uint32_t depthPyramidMid = kInvalidRenderGraphHandle;
@@ -445,6 +461,9 @@ private:
         VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
         rhi::VulkanSwapchain* swapchain = nullptr;
         rhi::VulkanShadowMap* shadowMap = nullptr;
+        // Null when the punctual atlas failed to allocate; every use is guarded,
+        // and the pass is simply never declared in that case.
+        rhi::VulkanShadowMap* punctualShadowAtlas = nullptr;
         RenderGraphFrameResources resources{};
         BuiltinPassIndices passIndices{};
         uint32_t imageIndex = 0;
@@ -452,6 +471,7 @@ private:
         RGTextureHandle swapchainColor{};
         RGTextureHandle mainDepth{};
         RGTextureHandle shadowMapDepth{};
+        RGTextureHandle punctualShadowAtlasDepth{};
         RGTextureHandle sceneColor{};
         RGTextureHandle velocity{};
         RGTextureHandle normalRoughness{};
@@ -484,6 +504,7 @@ private:
     // the per-frame buffers. Verbatim slices of the former monolithic beginFrame.
     void importExternalFrameTargets(rhi::VulkanSwapchain& swapchain,
                                     rhi::VulkanShadowMap& shadowMap,
+                                    rhi::VulkanShadowMap* punctualShadowAtlas,
                                     uint32_t imageIndex);
     void createTransientFrameTextures();
     void importFrameBuffers();

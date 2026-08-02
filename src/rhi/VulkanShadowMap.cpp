@@ -52,7 +52,11 @@ VulkanShadowMap& VulkanShadowMap::operator=(VulkanShadowMap&& other) noexcept
     return *this;
 }
 
-void VulkanShadowMap::create(VulkanContext& context, uint32_t width, uint32_t height, uint32_t layerCount)
+void VulkanShadowMap::create(VulkanContext& context,
+                             uint32_t width,
+                             uint32_t height,
+                             uint32_t layerCount,
+                             const std::string& debugName)
 {
     reset();
 
@@ -73,11 +77,13 @@ void VulkanShadowMap::create(VulkanContext& context, uint32_t width, uint32_t he
     imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     imageInfo.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
     imageInfo.viewType = layerCount > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
-    imageInfo.debugName = layerCount > 1 ? "CascadedShadowMapArray" : "DirectionalShadowMap";
+    const std::string label =
+        debugName.empty() ? (layerCount > 1 ? "CascadedShadowMap" : "DirectionalShadowMap") : debugName;
+    imageInfo.debugName = layerCount > 1 ? label + "Array" : label;
     image_.create(context, imageInfo);
 
-    createLayerImageViews();
-    createSampler();
+    createLayerImageViews(label);
+    createSampler(label);
     layout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 }
 
@@ -112,7 +118,7 @@ VkImageView VulkanShadowMap::layerImageView(uint32_t layer) const
     return layerImageViews_[layer];
 }
 
-void VulkanShadowMap::createLayerImageViews()
+void VulkanShadowMap::createLayerImageViews(const std::string& debugName)
 {
     layerImageViews_.resize(layerCount_, VK_NULL_HANDLE);
 
@@ -132,11 +138,11 @@ void VulkanShadowMap::createLayerImageViews()
         debug::setObjectName(device_,
                              layerImageViews_[layer],
                              VK_OBJECT_TYPE_IMAGE_VIEW,
-                             "CascadedShadowMapLayer" + std::to_string(layer) + "View");
+                             debugName + "Layer" + std::to_string(layer) + "View");
     }
 }
 
-void VulkanShadowMap::createSampler()
+void VulkanShadowMap::createSampler(const std::string& debugName)
 {
     VkSamplerCreateInfo samplerInfo{};
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -157,7 +163,7 @@ void VulkanShadowMap::createSampler()
     samplerInfo.unnormalizedCoordinates = VK_FALSE;
 
     VK_CHECK(vkCreateSampler(device_, &samplerInfo, nullptr, &sampler_));
-    debug::setObjectName(device_, sampler_, VK_OBJECT_TYPE_SAMPLER, "CascadedShadowMapSampler");
+    debug::setObjectName(device_, sampler_, VK_OBJECT_TYPE_SAMPLER, debugName + "Sampler");
 }
 
 void VulkanShadowMap::moveFrom(VulkanShadowMap& other) noexcept

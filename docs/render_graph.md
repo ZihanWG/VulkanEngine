@@ -32,6 +32,7 @@ Imported resources are owned outside the graph:
 - swapchain color image
 - main depth image
 - cascaded shadow map array
+- punctual (spot/point) shadow atlas, when the atlas allocated successfully
 - TAA history read/write images
 - depth pyramid image
 - per-frame luminance, histogram, exposure, and culling buffers
@@ -62,6 +63,7 @@ Pass declarations are recorded with `RenderGraphBuilder`:
 The currently declared passes are:
 
 - `CSMShadowPass`
+- `PunctualShadowAtlasPass` when at least one punctual light was assigned an atlas tile
 - `MainGpuCullingPass`
 - `MainHDRPass`
 - `DepthPyramidPass`
