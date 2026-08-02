@@ -262,6 +262,95 @@ TEST_CASE("The near plane scales with range to hold depth precision", "[shadowat
                                    .z));
 }
 
+TEST_CASE("Cube face selection and face projections agree", "[shadowatlas]")
+{
+    using ve::renderer::computePointShadowFaceViewProjection;
+    using ve::renderer::kPointShadowFaceCount;
+    using ve::renderer::pointShadowFaceDirection;
+    using ve::renderer::pointShadowFaceIndex;
+
+    const glm::vec3 position{1.5f, 3.0f, -2.0f};
+    constexpr float range = 12.0f;
+
+    // Each face axis selects its own face.
+    for (uint32_t face = 0; face < kPointShadowFaceCount; ++face) {
+        CHECK(pointShadowFaceIndex(pointShadowFaceDirection(face)) == face);
+    }
+
+    // The invariant that matters: for directions all over the sphere, the face
+    // the shader would pick is the face whose projection actually contains that
+    // direction. A convention mismatch between the two sides samples the wrong
+    // tile, which looks like plausible-but-wrong shadows rather than a crash.
+    uint32_t facesExercised = 0;
+    std::set<uint32_t> seenFaces;
+    for (int xStep = -3; xStep <= 3; ++xStep) {
+        for (int yStep = -3; yStep <= 3; ++yStep) {
+            for (int zStep = -3; zStep <= 3; ++zStep) {
+                if (xStep == 0 && yStep == 0 && zStep == 0) {
+                    continue;
+                }
+
+                const glm::vec3 direction = glm::normalize(
+                    glm::vec3(static_cast<float>(xStep), static_cast<float>(yStep), static_cast<float>(zStep)));
+                const uint32_t face = pointShadowFaceIndex(direction);
+                REQUIRE(face < kPointShadowFaceCount);
+                seenFaces.insert(face);
+
+                const glm::mat4 viewProjection =
+                    computePointShadowFaceViewProjection(position, face, range);
+                const glm::vec3 target = position + direction * 4.0f;
+                const glm::vec4 clip = viewProjection * glm::vec4(target, 1.0f);
+
+                // In front of that face's camera...
+                REQUIRE(clip.w > 0.0f);
+                const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+                // ...and inside its 90-degree frustum.
+                CHECK(std::abs(ndc.x) <= 1.0f + 1.0e-4f);
+                CHECK(std::abs(ndc.y) <= 1.0f + 1.0e-4f);
+                CHECK(ndc.z >= 0.0f);
+                CHECK(ndc.z <= 1.0f);
+                ++facesExercised;
+            }
+        }
+    }
+
+    CHECK(facesExercised > 300);
+    // All six faces were actually reached, so this is not passing by only ever
+    // testing one of them.
+    CHECK(seenFaces.size() == kPointShadowFaceCount);
+}
+
+TEST_CASE("Cube faces take six consecutive slots", "[shadowatlas]")
+{
+    using ve::renderer::kPointShadowFaceCount;
+
+    PunctualShadowAtlasAllocator allocator;
+
+    const uint32_t first = allocator.allocateRange(kPointShadowFaceCount);
+    CHECK(first == 0u);
+    CHECK(allocator.allocatedCount() == kPointShadowFaceCount);
+
+    // Consecutive is load-bearing: the light stores only the base and the shader
+    // adds the face index to it.
+    const uint32_t second = allocator.allocateRange(kPointShadowFaceCount);
+    CHECK(second == kPointShadowFaceCount);
+
+    // A range that does not fit fails whole rather than partially reserving --
+    // otherwise a light would get a truncated cube.
+    PunctualShadowAtlasAllocator nearlyFull;
+    const uint32_t leaveThree = kMaxPunctualShadowSlots - 3;
+    CHECK(nearlyFull.allocateRange(leaveThree) == 0u);
+    CHECK(nearlyFull.allocateRange(kPointShadowFaceCount) == kInvalidPunctualShadowSlot);
+    CHECK(nearlyFull.allocatedCount() == leaveThree);
+    // The three that do remain are still handed out one at a time.
+    CHECK(nearlyFull.allocate() != kInvalidPunctualShadowSlot);
+
+    PunctualShadowAtlasAllocator edge;
+    CHECK(edge.allocateRange(0) == kInvalidPunctualShadowSlot);
+    CHECK(edge.allocateRange(kMaxPunctualShadowSlots + 1) == kInvalidPunctualShadowSlot);
+    CHECK(edge.allocatedCount() == 0u);
+}
+
 TEST_CASE("The GPU slot record keeps its std430 layout", "[shadowatlas]")
 {
     // The fragment shader indexes these through a buffer-device-address pointer,

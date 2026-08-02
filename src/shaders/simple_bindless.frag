@@ -307,6 +307,27 @@ vec3 approximateMultiScatterCompensation(
 // stamps it into every light whenever the atlas is unavailable or disabled, and
 // the slot address is only non-zero when at least one light got a tile. So a
 // light with a valid slot always implies a valid buffer.
+// Cube face containing a direction: the axis with the largest magnitude,
+// resolved by sign. Face order is +X, -X, +Y, -Y, +Z, -Z.
+//
+// This mirrors ve::renderer::pointShadowFaceIndex verbatim, including the >=
+// comparisons that break ties toward the earlier axis. The CPU builds one
+// projection per face in that same order, so the two must agree exactly -- a
+// mismatch samples the wrong tile, which looks like plausible-but-wrong shadows
+// rather than an obvious failure.
+uint pointShadowFaceIndex(vec3 direction)
+{
+    vec3 magnitude = abs(direction);
+    if (magnitude.x >= magnitude.y && magnitude.x >= magnitude.z) {
+        return direction.x >= 0.0 ? 0u : 1u;
+    }
+    if (magnitude.y >= magnitude.z) {
+        return direction.y >= 0.0 ? 2u : 3u;
+    }
+
+    return direction.z >= 0.0 ? 4u : 5u;
+}
+
 float punctualShadowFactor(GpuLight light, vec3 worldPosition, vec3 normal)
 {
     float encodedSlot = light.spotScaleOffset.z;
@@ -314,7 +335,14 @@ float punctualShadowFactor(GpuLight light, vec3 worldPosition, vec3 normal)
         return 1.0;
     }
 
-    GpuShadowSlot slot = pc.punctualShadowSlots.slots[uint(encodedSlot)];
+    // A spot stores its single slot; a point light stores the base of six
+    // consecutive cube-face slots and picks the face here.
+    uint slotIndex = uint(encodedSlot);
+    if (light.directionType.w <= 0.5) {
+        slotIndex += pointShadowFaceIndex(worldPosition - light.positionRange.xyz);
+    }
+
+    GpuShadowSlot slot = pc.punctualShadowSlots.slots[slotIndex];
 
     // Sine of the angle between the surface and the light: 0 when the light hits
     // head-on, 1 at grazing incidence. One shadow texel spans the most depth at

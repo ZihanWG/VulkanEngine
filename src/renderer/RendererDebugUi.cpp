@@ -237,9 +237,14 @@ void Renderer::drawShadowsDebugUi()
         ImGui::Checkbox("Debug: shadow term only", &showPunctualShadowDebug_);
         ImGui::SetItemTooltip("Greyscale punctual visibility. Flat white = the atlas is never sampled;\n"
                               "any structure = the lookup works and the term is just subtle when shaded.");
-        // Point lights need six cube faces each, which the atlas pass does not
-        // record yet, so they are shaded but never shadowed.
-        ImGui::TextDisabled("Spot lights only; point lights are not shadowed yet.");
+        // Six tiles per point light against 64 total, so the budget is explicit
+        // rather than an implicit cap the user cannot see.
+        ImGui::SliderInt("Max shadowed point lights",
+                         &maxShadowCastingPointLights_,
+                         0,
+                         static_cast<int>(renderer::kMaxPunctualShadowSlots / renderer::kPointShadowFaceCount));
+        ImGui::SetItemTooltip("Each point light costs 6 tiles (one per cube face).\n"
+                              "Nearest to the camera are served first.");
 
         // Looking at the atlas directly is the only reliable way to tell a
         // wrong projection from a wrong sample: in the beauty shot an overhead

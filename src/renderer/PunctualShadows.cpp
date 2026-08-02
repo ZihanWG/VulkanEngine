@@ -115,6 +115,33 @@ uint32_t PunctualShadows::addSpotLight(const glm::vec3& position,
     return slot;
 }
 
+uint32_t PunctualShadows::addPointLight(const glm::vec3& position, float range)
+{
+    if (!valid()) {
+        return kInvalidPunctualShadowSlot;
+    }
+
+    const uint32_t baseSlot = allocator_.allocateRange(kPointShadowFaceCount);
+    if (baseSlot == kInvalidPunctualShadowSlot) {
+        return kInvalidPunctualShadowSlot;
+    }
+
+    for (uint32_t face = 0; face < kPointShadowFaceCount; ++face) {
+        const glm::mat4 viewProjection = computePointShadowFaceViewProjection(position, face, range);
+
+        GpuShadowSlot record{};
+        record.viewProjection = viewProjection;
+        record.atlasUvOffsetScale = punctualShadowSlotUvOffsetScale(baseSlot + face);
+        record.params = glm::vec4(
+            constantBias_, normalBias_, 1.0f / static_cast<float>(kPunctualShadowAtlasSize), 0.0f);
+
+        slots_.push_back(record);
+        slotFrustums_.push_back(computeSpotShadowFrustum(viewProjection));
+    }
+
+    return baseSlot;
+}
+
 void PunctualShadows::upload(uint32_t frameIndex)
 {
     if (frameIndex >= slotBuffers_.size() || slots_.empty()) {

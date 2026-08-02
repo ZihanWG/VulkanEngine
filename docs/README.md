@@ -30,8 +30,8 @@ overview; these documents describe implementation details and limitations.
 - [Clustered Lighting](clustered_lighting.md): Forward+ froxel grid, GPU light
   culling, per-froxel shading, buffer layout, barriers, heatmap, and testing.
 - [Punctual Shadows](punctual_shadows.md): The spot/point shadow atlas, its tile
-  allocator and slot encoding, the dedicated caster vertex shader, and why point
-  lights do not cast yet.
+  allocator and slot encoding, the dedicated caster vertex shader, cube-face
+  point lights, and the tile budget.
 - [Skeletal Animation](skeletal_animation.md): GPU-free animation core (pose
   sampling + hierarchy flatten), GPU linear-blend skinning, the procedural demo,
   and the unit-tested bind-pose invariant.

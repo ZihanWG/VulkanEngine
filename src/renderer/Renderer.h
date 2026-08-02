@@ -721,6 +721,12 @@ private:
     bool usePunctualShadows_ = true;
     // Debug view: outputs the punctual shadow visibility term as greyscale.
     bool showPunctualShadowDebug_ = false;
+    // Point lights cost six tiles each against 64 total, so how many may cast is
+    // a budget the user can see and set rather than an implicit cap.
+    int maxShadowCastingPointLights_ = 4;
+    // Scratch: point-light indices sorted by camera distance. Member so the
+    // per-frame assignment does not reallocate every frame.
+    std::vector<size_t> punctualShadowPointOrder_;
     // Slots filled last frame, surfaced in the debug panel.
     uint32_t punctualShadowSlotsUsed_ = 0;
     // Caster draws the atlas pass actually recorded last frame. Surfaced because

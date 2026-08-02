@@ -100,6 +100,32 @@ static_assert(offsetof(GpuShadowSlot, params) == 80);
 [[nodiscard]] float punctualShadowSlotToFloat(uint32_t slot);
 [[nodiscard]] uint32_t punctualShadowSlotFromFloat(float encoded);
 
+// A point light is shadowed by six 90-degree faces, one per signed axis, packed
+// into six consecutive atlas slots. Six tiles per light against 64 total is what
+// makes a budget necessary rather than optional.
+inline constexpr uint32_t kPointShadowFaceCount = 6;
+
+// Face order is +X, -X, +Y, -Y, +Z, -Z.
+//
+// This is the one convention that has to hold on both sides: the CPU builds a
+// projection per face, and the shader picks a face from the light-to-fragment
+// direction. If the two disagree, every point light samples the wrong tile --
+// which looks like plausible-but-wrong shadows rather than an obvious failure.
+// pointShadowFaceDirection and pointShadowFaceIndex are inverses of each other,
+// and a unit test pins that they agree for directions all over the sphere.
+[[nodiscard]] glm::vec3 pointShadowFaceDirection(uint32_t face);
+
+// Face whose frustum contains this direction: the axis with the largest
+// magnitude, resolved by sign. Mirrored verbatim in simple_bindless.frag.
+[[nodiscard]] uint32_t pointShadowFaceIndex(const glm::vec3& direction);
+
+// Light-space view-projection for one cube face. The FOV is exactly 90 degrees
+// so the six faces tile the sphere with no gaps and no overlap.
+[[nodiscard]] glm::mat4 computePointShadowFaceViewProjection(const glm::vec3& position,
+                                                             uint32_t face,
+                                                             float range,
+                                                             float nearPlane = 0.0f);
+
 // Fixed-grid slot allocator, reset once per frame and filled in whatever
 // priority order the caller walks its lights in. Uniform tiles make allocation
 // a bump counter; variable tile sizes (so a near light gets a sharper map) are
@@ -116,6 +142,12 @@ public:
     // frame" rather than an error, so an over-budget scene degrades instead of
     // failing.
     [[nodiscard]] uint32_t allocate();
+
+    // Reserves `count` consecutive slots and returns the first, or
+    // kInvalidPunctualShadowSlot when that many do not remain. Consecutive
+    // matters for cube faces: the light stores only a base slot and the shader
+    // adds the face index to it, so the six have to be adjacent.
+    [[nodiscard]] uint32_t allocateRange(uint32_t count);
 
     [[nodiscard]] uint32_t allocatedCount() const
     {

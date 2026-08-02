@@ -48,6 +48,12 @@ public:
                           float outerAngleRadians,
                           float range);
 
+    // Assigns six consecutive tiles to one shadow-casting point light, one per
+    // cube face, and returns the base slot. The shader adds the face index it
+    // derives from the light-to-fragment direction, which is why the six have to
+    // be consecutive. Returns kInvalidPunctualShadowSlot when six do not remain.
+    uint32_t addPointLight(const glm::vec3& position, float range);
+
     // Writes the frame's slot records into the per-frame device-address buffer.
     void upload(uint32_t frameIndex);
 

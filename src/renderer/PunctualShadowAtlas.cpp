@@ -84,11 +84,71 @@ float punctualShadowNearPlane(float range)
 
 uint32_t PunctualShadowAtlasAllocator::allocate()
 {
-    if (full()) {
+    return allocateRange(1);
+}
+
+uint32_t PunctualShadowAtlasAllocator::allocateRange(uint32_t count)
+{
+    if (count == 0 || count > kMaxPunctualShadowSlots || nextSlot_ + count > kMaxPunctualShadowSlots) {
         return kInvalidPunctualShadowSlot;
     }
 
-    return nextSlot_++;
+    const uint32_t first = nextSlot_;
+    nextSlot_ += count;
+    return first;
+}
+
+glm::vec3 pointShadowFaceDirection(uint32_t face)
+{
+    switch (face) {
+    case 0:
+        return glm::vec3{1.0f, 0.0f, 0.0f};
+    case 1:
+        return glm::vec3{-1.0f, 0.0f, 0.0f};
+    case 2:
+        return glm::vec3{0.0f, 1.0f, 0.0f};
+    case 3:
+        return glm::vec3{0.0f, -1.0f, 0.0f};
+    case 4:
+        return glm::vec3{0.0f, 0.0f, 1.0f};
+    default:
+        return glm::vec3{0.0f, 0.0f, -1.0f};
+    }
+}
+
+uint32_t pointShadowFaceIndex(const glm::vec3& direction)
+{
+    // Ties are broken toward the earlier axis, and the shader's mirror of this
+    // uses the same >= comparisons so a direction exactly on a face boundary
+    // resolves identically on both sides.
+    const glm::vec3 magnitude = glm::abs(direction);
+    if (magnitude.x >= magnitude.y && magnitude.x >= magnitude.z) {
+        return direction.x >= 0.0f ? 0u : 1u;
+    }
+    if (magnitude.y >= magnitude.z) {
+        return direction.y >= 0.0f ? 2u : 3u;
+    }
+
+    return direction.z >= 0.0f ? 4u : 5u;
+}
+
+glm::mat4 computePointShadowFaceViewProjection(const glm::vec3& position,
+                                               uint32_t face,
+                                               float range,
+                                               float nearPlane)
+{
+    const glm::vec3 faceDirection = pointShadowFaceDirection(face % kPointShadowFaceCount);
+
+    const float requestedNear = nearPlane > 0.0f ? nearPlane : punctualShadowNearPlane(range);
+    const float clampedNear = std::max(requestedNear, 1.0e-3f);
+    const float clampedFar = std::max(range, clampedNear + 1.0e-3f);
+
+    const glm::mat4 view = glm::lookAt(position, position + faceDirection, shadowUpVector(faceDirection));
+    // Exactly 90 degrees, so the six faces tile the sphere without gaps.
+    const glm::mat4 projection =
+        glm::perspective(glm::radians(90.0f), 1.0f, clampedNear, clampedFar);
+
+    return projection * view;
 }
 
 glm::mat4 computeSpotShadowViewProjection(const glm::vec3& position,

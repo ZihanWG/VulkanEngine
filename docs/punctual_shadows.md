@@ -5,9 +5,8 @@ screen, but none of them cast: the only shadow source was the directional CSM.
 This subsystem gives punctual lights a shared depth atlas so spot lights shadow
 the same geometry the sun does.
 
-Status: **spot lights cast; point lights do not yet.** A point light needs six
-cube faces, and the atlas pass only records one projection per slot so far.
-Point lights are shaded normally, they just never occlude.
+Both spot and point lights cast. A spot takes one atlas tile; a point light
+takes six, one per cube face.
 
 ## Why an atlas rather than per-light shadow maps
 
@@ -20,6 +19,42 @@ The atlas is 4096x4096 split into a uniform 8x8 grid of 512px tiles — 64 slots
 Uniform tiles make allocation a bump counter. Variable tile sizes (so a nearby
 light gets a sharper map) are deliberately absent until there is a priority pass
 to decide who deserves the big tiles; see [Limitations](#limitations).
+
+## Point lights: six faces, one budget
+
+A point light is shadowed by six 90-degree faces, one per signed axis, packed
+into **consecutive** slots. Consecutive is load-bearing: the light stores only a
+base slot, and the shader adds the face index it derives from the
+light-to-fragment direction. `allocateRange` therefore fails whole rather than
+partially reserving, so a light can never get a truncated cube.
+
+Six tiles per light against 64 total means the atlas is oversubscribed the
+moment a light swarm shows up, so *which* lights cast becomes a real decision:
+
+- spot lights are served first, since one tile each buys more shadowed lights
+  per tile than six;
+- point lights are then served nearest-camera-first, up to the **Max shadowed
+  point lights** budget (default 4, so 24 tiles).
+
+Nearest-to-camera is a stand-in for a real screen-size priority pass. The budget
+is a visible slider rather than an implicit cap so the cost stays obvious.
+
+The sort orders *indices*, never the light array itself — the cluster
+light-culling pass indexes into that array by position, so reordering it would
+reassign every froxel's light list.
+
+### The face convention is the thing to get right
+
+The CPU builds one projection per face and the shader picks a face from the
+light-to-fragment direction. If those two disagree, every point light samples
+the wrong tile — and that fails *plausibly*, as shadows in roughly the right
+place with the wrong contents, rather than as an obvious crash.
+
+So the order (+X, -X, +Y, -Y, +Z, -Z) and the tie-breaking `>=` comparisons are
+written identically in `pointShadowFaceIndex` and its GLSL mirror, and a unit
+test pins the invariant directly: for directions all over the sphere, the face
+selection picks the face whose projection actually contains that direction, and
+all six faces are exercised.
 
 ## Pass structure
 
@@ -141,6 +176,7 @@ shadow settings have always lived:
 | Slots used | Tiles allocated this frame, out of 64 |
 | Depth bias | Constant offset applied to the compared depth |
 | Normal bias | World-space offset along the surface normal before projecting |
+| Max shadowed point lights | Budget, in lights; each costs 6 tiles. Nearest to the camera are served first |
 | Caster draws recorded | Draws the atlas pass issued last frame; zero with slots > 0 means it culled everything |
 | Debug: shadow term only | Renders the punctual visibility term as greyscale instead of shaded colour |
 | Atlas depth preview | Samples the atlas image directly (see the caveat below) |
@@ -189,11 +225,12 @@ bug on its own.
 
 ## Limitations
 
-- **Point lights do not cast.** Six cube faces per light are not recorded yet.
-- **No priority or budget.** Slots are handed out in light order until the atlas
-  runs dry; an over-budget scene silently drops the lights that come last rather
-  than the least important ones. This only starts to matter once point lights
-  land, since each one costs six tiles and the demo swarm goes to 512 lights.
+- **Priority is distance, not screen size.** A large nearby-looking light and a
+  small one are ranked the same if their positions are; a real priority pass
+  would weigh projected size. Spots are also served unconditionally ahead of
+  point lights rather than competing with them on merit.
+- **No caching.** Every allocated face re-renders every frame, even for a light
+  and geometry that have not moved.
 - **Uniform tile size.** A light one metre away gets the same 512px tile as one
   at the far plane.
 - **CPU caster culling.** Each slot frustum-tests every draw item on the CPU
