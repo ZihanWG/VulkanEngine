@@ -335,14 +335,8 @@ float punctualShadowFactor(GpuLight light, vec3 worldPosition, vec3 normal)
         return 1.0;
     }
 
-    // A spot stores its single slot; a point light stores the base of six
-    // consecutive cube-face slots and picks the face here.
-    uint slotIndex = uint(encodedSlot);
-    if (light.directionType.w <= 0.5) {
-        slotIndex += pointShadowFaceIndex(worldPosition - light.positionRange.xyz);
-    }
-
-    GpuShadowSlot slot = pc.punctualShadowSlots.slots[slotIndex];
+    uint baseSlotIndex = uint(encodedSlot);
+    bool isPoint = light.directionType.w <= 0.5;
 
     // Sine of the angle between the surface and the light: 0 when the light hits
     // head-on, 1 at grazing incidence. One shadow texel spans the most depth at
@@ -352,11 +346,29 @@ float punctualShadowFactor(GpuLight light, vec3 worldPosition, vec3 normal)
     float normalLight = clamp(dot(normal, toLight), 0.0, 1.0);
     float grazing = sqrt(max(1.0 - normalLight * normalLight, 0.0));
 
-    // Both biases scale with that angle, the same shape shadowDepthBias uses on
-    // the CSM path. Offsetting along the normal fixes acne more cheaply than
-    // depth bias alone; keeping the head-on term small stops contact shadows
-    // from detaching into peter panning.
-    vec3 biasedPosition = worldPosition + normal * (slot.params.y * (0.2 + grazing));
+    // Bias before choosing a face. All six faces of a light carry identical
+    // params, so reading the base slot's normal bias here is exact rather than
+    // an approximation.
+    //
+    // Both biases scale with the grazing angle, the same shape shadowDepthBias
+    // uses on the CSM path. Offsetting along the normal fixes acne more cheaply
+    // than depth bias alone; keeping the head-on term small stops contact
+    // shadows from detaching into peter panning.
+    float normalBias = pc.punctualShadowSlots.slots[baseSlotIndex].params.y;
+    vec3 biasedPosition = worldPosition + normal * (normalBias * (0.2 + grazing));
+
+    // Select the face from the *biased* position, the same one the projection
+    // below uses. Selecting from the unbiased direction instead lets the normal
+    // offset push a sample across a face boundary into a face whose frustum no
+    // longer contains it; the bounds test then reports "outside the light" and
+    // returns fully lit, drawing a bright seam along every cube face boundary.
+    // Deriving both from one position is what makes that unrepresentable.
+    uint slotIndex = baseSlotIndex;
+    if (isPoint) {
+        slotIndex += pointShadowFaceIndex(biasedPosition - light.positionRange.xyz);
+    }
+
+    GpuShadowSlot slot = pc.punctualShadowSlots.slots[slotIndex];
 
     vec4 lightSpace = slot.viewProjection * vec4(biasedPosition, 1.0);
     if (lightSpace.w <= 0.0) {

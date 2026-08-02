@@ -91,6 +91,21 @@ test pins the invariant directly: for directions all over the sphere, the face
 selection picks the face whose projection actually contains that direction, and
 all six faces are exercised.
 
+That test has a blind spot worth naming, because a real bug lived in it. It
+feeds the *same* position to both sides, so it can only catch a disagreement in
+the convention itself — never a disagreement in the **input**. The shader
+originally picked the face from the unbiased world position but projected the
+normal-offset-biased one, and near a boundary the offset pushes a sample into
+the neighbouring face's cone. It then projected outside the selected face's
+frustum, the bounds test read that as "outside the light", and every face
+boundary got a bright fully-lit seam.
+
+The fix is structural rather than a correction: the bias is computed first and
+one position drives both the face selection and the projection, so the two
+cannot take different inputs. (Reading the normal bias before the face is known
+is exact, not an approximation — all six faces of a light carry identical
+params.)
+
 ## Pass structure
 
 ```
@@ -280,6 +295,11 @@ near-black and reads as a catastrophic bug that is not there.
 - **No caching.** Every allocated face re-renders every frame, even for a light
   and geometry that have not moved. Static lights over static geometry are the
   obvious win here and it is not taken.
+- **Tile assignment is recomputed from scratch every frame**, and priority
+  depends on the camera, so moving the camera reshuffles which lights hold tiles
+  and can flip a light between size classes at a threshold. Both pop visibly.
+  Fixing it needs hysteresis on the size class and stable light identity across
+  frames, neither of which exists yet.
 - **Priority ignores occlusion and the view frustum.** A light directly behind
   the camera ranks by projected size like any other, so it can take a tile that
   a visible light then cannot have.
