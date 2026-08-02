@@ -5522,6 +5522,15 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                 if (!batch.mesh || batch.drawItemCount == 0) {
                     continue;
                 }
+                // Blended geometry only depth-tests in the main pass, so treating
+                // it as a solid occluder here would have clear glass throw an
+                // opaque silhouette. Skipped at replay rather than filtered out of
+                // the caster list, exactly like the main pass does: the GPU cull
+                // still emits commands for these slots and they are simply never
+                // drawn, which keeps every batch's command range valid.
+                if (batch.bucket == RenderBucket::Blend) {
+                    continue;
+                }
 
                 if (bindShadowPipelineForBucket(batch.bucket)) {
                     vkCmdPushConstants(commandBuffer,
@@ -5563,6 +5572,11 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
             for (size_t drawIndex = 0; drawIndex < shadowDrawItemCount; ++drawIndex) {
                 const DrawItem& drawItem = activeShadowDrawItems[drawIndex];
                 if (!drawItem.mesh || drawItem.frameDataIndex >= kMaxDrawItems) {
+                    continue;
+                }
+                // Same rule as the indirect path above: blended geometry is not
+                // an occluder.
+                if (drawItem.bucket == RenderBucket::Blend) {
                     continue;
                 }
 
