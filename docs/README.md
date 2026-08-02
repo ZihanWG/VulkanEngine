@@ -29,6 +29,9 @@ overview; these documents describe implementation details and limitations.
   model, and concurrent-sharing buffers.
 - [Clustered Lighting](clustered_lighting.md): Forward+ froxel grid, GPU light
   culling, per-froxel shading, buffer layout, barriers, heatmap, and testing.
+- [Volumetric Fog](volumetric_fog.md): The froxel volume, injection and
+  integration passes, why fog is applied in the main pass, and the slab
+  integral.
 - [Punctual Shadows](punctual_shadows.md): The spot/point shadow atlas, its tile
   allocator and slot encoding, the dedicated caster vertex shader, cube-face
   point lights, and the tile budget.

@@ -635,6 +635,30 @@ void RenderGraph::endPunctualShadowPass()
     activePass_ = ActivePass::None;
 }
 
+void RenderGraph::beginVolumetricFogPass()
+{
+    requireFrameActive("RenderGraph::beginVolumetricFogPass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginVolumetricFogPass called while another pass is active.");
+    }
+    if (!beginDeclaredPass(frame_.passIndices.volumetricFog)) {
+        throw std::logic_error(
+            "RenderGraph::beginVolumetricFogPass was culled but the renderer attempted to record it.");
+    }
+
+    activePass_ = ActivePass::VolumetricFog;
+}
+
+void RenderGraph::endVolumetricFogPass()
+{
+    requireFrameActive("RenderGraph::endVolumetricFogPass");
+    if (activePass_ != ActivePass::VolumetricFog) {
+        throw std::logic_error("RenderGraph::endVolumetricFogPass called without an active fog pass.");
+    }
+
+    activePass_ = ActivePass::None;
+}
+
 void RenderGraph::beginMainGpuCullingPass()
 {
     requireFrameActive("RenderGraph::beginMainGpuCullingPass");
@@ -1532,6 +1556,22 @@ void RenderGraph::declareGeometryPasses()
                 builder.writeTexture(frame_.punctualShadowAtlasDepth,
                                      RGAccess::DepthStencilAttachmentWrite,
                                      "Writes per-slot spot-light depth tiles into the punctual shadow atlas.");
+            });
+    }
+
+    if (frame_.resources.volumetricFogEnabled) {
+        frame_.passIndices.volumetricFog = addPass(
+            "VolumetricFogPass",
+            RenderPassType::VolumetricFog,
+            RenderPassExecutionType::Compute,
+            // Side effect: its output volumes are not graph resources, so
+            // nothing downstream declares a read on them and liveness analysis
+            // would otherwise cull the pass away.
+            true,
+            [this](RenderGraphBuilder& builder) {
+                builder.readTexture(frame_.shadowMapDepth,
+                                    RGAccess::ShaderRead,
+                                    "Samples the cascaded shadow map to shadow the fog froxels.");
             });
     }
 

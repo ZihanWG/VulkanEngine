@@ -30,6 +30,7 @@ void Renderer::buildDebugUi()
     drawSsaoDebugUi();
     drawTaaDebugUi();
     drawSsrDebugUi();
+    drawVolumetricFogDebugUi();
 
     if (debugUiSettings_.showExposureGraphs && ImGui::CollapsingHeader("Exposure", ImGuiTreeNodeFlags_DefaultOpen)) {
         drawExposureDebugUi();
@@ -199,6 +200,40 @@ void Renderer::drawSsaoDebugUi()
         "Ground-truth ambient occlusion: a horizon-search pass reads the main depth buffer and the thin "
         "G-buffer normal, and the composite multiplies the visibility term into scene color.");
     ImGui::EndDisabled();
+}
+
+void Renderer::drawVolumetricFogDebugUi()
+{
+    if (!ImGui::CollapsingHeader("Volumetric Fog", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+
+    if (!volumetricFog_.available()) {
+        ImGui::TextDisabled("Volumetric fog unavailable; see the startup log.");
+        return;
+    }
+
+    ImGui::Checkbox("Enable volumetric fog", &fogSettings_.enabled);
+    ImGui::SetItemTooltip("Off by default: fog changes the look of every shot, so it is opt-in.");
+    ImGui::BeginDisabled(!fogSettings_.enabled);
+    ImGui::SliderFloat("Density", &fogSettings_.density, 0.0f, 0.3f, "%.3f");
+    ImGui::SliderFloat("Max distance", &fogSettings_.maxDistance, 8.0f, 200.0f, "%.0f");
+    ImGui::SetItemTooltip("Fog volume depth range. Shorter puts the 64 slices where the fog is visible.");
+    ImGui::SliderFloat("Anisotropy", &fogSettings_.anisotropy, -0.9f, 0.9f, "%.2f");
+    ImGui::SetItemTooltip("Forward scattering. Positive gives the halo when looking toward a light.");
+    ImGui::SliderFloat("Height falloff", &fogSettings_.heightFalloff, 0.0f, 0.5f, "%.3f");
+    ImGui::SetItemTooltip("Zero is uniform density; larger values pull the fog into a ground layer.");
+    ImGui::SliderFloat("Base height", &fogSettings_.baseHeight, -10.0f, 20.0f, "%.1f");
+    ImGui::SliderFloat("Ambient scale", &fogSettings_.ambientScale, 0.0f, 3.0f, "%.2f");
+    ImGui::ColorEdit3("Scattering color", &fogSettings_.scatteringColor.x);
+    ImGui::EndDisabled();
+
+    ImGui::TextDisabled("Volume: %ux%ux%u froxels, exponential Z from %.1f.",
+                        renderer::kFogGridX,
+                        renderer::kFogGridY,
+                        renderer::kFogGridZ,
+                        renderer::kFogNearPlane);
+    ImGui::TextDisabled("Directional light only; punctual light shafts are not wired up yet.");
 }
 
 void Renderer::drawShadowsDebugUi()

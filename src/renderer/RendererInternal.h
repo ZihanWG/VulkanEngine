@@ -221,6 +221,10 @@ struct PushConstants {
     // working *lookup* -- a single spot among dozens of lights is easy to lose
     // in the beauty image.
     uint32_t debugPunctualShadows = 0;
+    // Volumetric fog apply. Zero max distance disables it, so the shader needs
+    // no separate flag -- the same "one value carries the off state" shape the
+    // punctual shadow slot sentinel uses.
+    float fogMaxDistance = 0.0f;
 };
 
 static_assert(offsetof(PushConstants, objectFrameDataAddress) == 0);
@@ -243,6 +247,7 @@ static_assert(offsetof(PushConstants, jointMatricesAddress) == 72);
 static_assert(offsetof(PushConstants, debugLodHeatmap) == 80);
 static_assert(offsetof(PushConstants, punctualShadowSlotAddress) == 88);
 static_assert(offsetof(PushConstants, debugPunctualShadows) == 96);
+static_assert(offsetof(PushConstants, fogMaxDistance) == 100);
 static_assert(sizeof(PushConstants) <= 128);
 
 // Mirrors src/shaders/cull.comp. Main and shadow GPU culling both use this

@@ -1,0 +1,84 @@
+#version 460
+
+// Volumetric fog, pass 2 of 2: scattering integration.
+//
+// One invocation per (x, y) column of the fog volume, marching front to back
+// through the Z slices and accumulating
+//   rgb = light gathered between the eye and this slice
+//   a   = how much of the background still shows through
+// so the apply step is a single texture fetch: scene * a + rgb.
+//
+// A column per thread rather than a froxel per thread is what makes the march
+// sequential and lets each slice reuse the transmittance accumulated in front
+// of it, which is the whole point -- light from a far slice has to travel back
+// through everything nearer the eye.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// Must match ve::renderer::kFogGrid*.
+const uint kFogGridX = 160u;
+const uint kFogGridY = 90u;
+const uint kFogGridZ = 64u;
+// Must match ve::renderer::kFogNearPlane.
+const float kFogNearPlane = 0.5;
+
+// Mirrors ve::renderer::integrateFogSlice's threshold: below this the analytic
+// slab integral degenerates and dividing by extinction loses precision.
+const float kMinExtinction = 1.0e-4;
+
+layout(set = 0, binding = 0) uniform FogIntegrateParams {
+    // x = max distance, y..w unused
+    vec4 fogParams;
+} params;
+
+layout(set = 0, binding = 1, rgba16f) uniform readonly image3D uScatterVolume;
+layout(set = 0, binding = 2, rgba16f) uniform writeonly image3D uIntegratedVolume;
+
+float fogSliceViewDepth(float slice, float maxDistance)
+{
+    float far = max(maxDistance, kFogNearPlane + 1.0e-3);
+    float normalized = clamp(slice / float(kFogGridZ), 0.0, 1.0);
+    return kFogNearPlane * pow(far / kFogNearPlane, normalized);
+}
+
+void main()
+{
+    uvec2 column = gl_GlobalInvocationID.xy;
+    if (column.x >= kFogGridX || column.y >= kFogGridY) {
+        return;
+    }
+
+    float maxDistance = max(params.fogParams.x, kFogNearPlane + 1.0e-3);
+
+    vec3 accumulatedScattering = vec3(0.0);
+    float accumulatedTransmittance = 1.0;
+    float sliceNear = fogSliceViewDepth(0.0, maxDistance);
+
+    for (uint slice = 0u; slice < kFogGridZ; ++slice) {
+        ivec3 coord = ivec3(column, int(slice));
+        vec4 medium = imageLoad(uScatterVolume, coord);
+
+        // Slices are exponentially spaced, so the real thickness matters: it is
+        // what turns an extinction coefficient into a per-slice transmittance.
+        float sliceFar = fogSliceViewDepth(float(slice + 1u), maxDistance);
+        float thickness = max(sliceFar - sliceNear, 0.0);
+        sliceNear = sliceFar;
+
+        float extinction = max(medium.a, 0.0);
+        float sliceTransmittance = exp(-extinction * thickness);
+
+        // Analytic integral of in-scattering across a homogeneous slab,
+        // mirroring ve::renderer::integrateFogSlice. A plain
+        // `scattering * thickness` ignores that light scattered in near the back
+        // of a slice is partly absorbed before leaving it, and blows dense fog
+        // out to white instead of saturating at the medium's own colour.
+        vec3 sliceIntegral = extinction > kMinExtinction
+                                 ? medium.rgb * ((1.0 - sliceTransmittance) / extinction)
+                                 : medium.rgb * thickness;
+
+        accumulatedScattering += accumulatedTransmittance * sliceIntegral;
+        accumulatedTransmittance *= sliceTransmittance;
+
+        imageStore(uIntegratedVolume, coord, vec4(accumulatedScattering, accumulatedTransmittance));
+    }
+}

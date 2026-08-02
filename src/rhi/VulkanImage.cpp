@@ -4,6 +4,7 @@
 #include "rhi/VulkanDebugUtils.h"
 
 #include <algorithm>
+#include <stdexcept>
 #include <string>
 #include <utility>
 
@@ -35,12 +36,18 @@ void VulkanImage::create(VulkanContext& context, const VulkanImageCreateInfo& cr
 
     context_ = &context;
     format_ = createInfo.format;
-    extent_ = {createInfo.width, createInfo.height, 1};
+    const uint32_t depth = std::max(createInfo.depth, 1u);
+    extent_ = {createInfo.width, createInfo.height, depth};
     mipLevels_ = std::max(createInfo.mipLevels, 1u);
+
+    const bool volumeImage = depth > 1;
+    if (volumeImage && createInfo.arrayLayers != 1) {
+        throw std::runtime_error("A 3D image cannot have array layers; set arrayLayers to 1.");
+    }
 
     VkImageCreateInfo imageInfo{};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.imageType = volumeImage ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
     imageInfo.format = createInfo.format;
     imageInfo.extent = extent_;
     imageInfo.mipLevels = mipLevels_;
