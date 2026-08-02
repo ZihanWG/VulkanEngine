@@ -776,7 +776,7 @@ void Renderer::restorePortfolioCaptureSettings()
 
 void Renderer::createMaterialDescriptorSetLayout()
 {
-    std::array<VkDescriptorSetLayoutBinding, 7> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 8> bindings{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[0].descriptorCount = 1;
@@ -812,10 +812,17 @@ void Renderer::createMaterialDescriptorSetLayout()
     bindings[6].descriptorCount = 1;
     bindings[6].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+    bindings[7].binding = 7;
+    bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[7].descriptorCount = 1;
+    bindings[7].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
     // Set 0 binding 0 is the base color texture, binding 1 is the cascaded
     // shadow-map array, binding 2 is the tangent-space normal map, and binding 3 is the
     // metallic-roughness map. Binding 4 is diffuse irradiance, binding 5 is
-    // prefiltered environment specular, and binding 6 is the split-sum BRDF LUT.
+    // prefiltered environment specular, and binding 6 is the split-sum BRDF LUT,
+    // and binding 7 is the punctual (spot/point) shadow atlas. The per-slot
+    // projections that go with binding 7 ride the BDA path, not a descriptor.
     // Object MVP/model/light/material data stays on the BDA + vertex push constant path.
     materialDescriptorSetLayout_.create(
         context_.vkDevice(), std::span<const VkDescriptorSetLayoutBinding>(bindings.data(), bindings.size()));
@@ -915,7 +922,14 @@ void Renderer::createShadowMap()
     // The CSM depth array is fixed-size for now and intentionally independent
     // of swapchain resize; only the main color/depth targets follow the window extent.
     imguiLayer_.clearRenderTargetPreviewDescriptors();
-    shadowMap_.create(context_, shadowSettings_.resolution, shadowSettings_.resolution, activeCascadeCount());
+    shadowMap_.create(
+        context_, shadowSettings_.resolution, shadowSettings_.resolution, activeCascadeCount(), "CascadedShadowMap");
+
+    // The punctual atlas is fixed-size and independent of the CSM resolution
+    // setting: its tiles are sized by the atlas grid, not by shadowSettings_.
+    // Recreated alongside the CSM so a cascade-count change cannot leave the
+    // material descriptor sets pointing at a destroyed image.
+    punctualShadows_.create(context_, static_cast<uint32_t>(frames_.size()));
 }
 
 void Renderer::createPipeline()
@@ -1143,6 +1157,47 @@ void Renderer::createShadowPipeline()
     shadowPipelineDepthFormat_ = shadowPipelineInfo.depthFormat;
 
     createMaskedShadowPipeline(binding, attributes);
+    createPunctualShadowPipeline(binding, attributes);
+}
+
+void Renderer::createPunctualShadowPipeline(const VkVertexInputBindingDescription& binding,
+                                            const std::array<VkVertexInputAttributeDescription, 5>& attributes)
+{
+    if (!punctualShadows_.valid()) {
+        punctualShadowPipeline_.reset();
+        return;
+    }
+
+    rhi::VulkanPipelineCreateInfo info{};
+    info.vertexShaderPath = shaderPath("shadow_punctual.vert.spv");
+    info.depthFormat = punctualShadows_.atlas().format();
+    info.vertexBindings = std::span<const VkVertexInputBindingDescription>(&binding, 1);
+    // Depth-only, so position (location 0) is the only attribute consumed.
+    info.vertexAttributes = std::span<const VkVertexInputAttributeDescription>(attributes.data(), 1);
+    const VkPushConstantRange pushConstantRange{
+        VK_SHADER_STAGE_VERTEX_BIT, 0, static_cast<uint32_t>(sizeof(PunctualShadowPushConstants))};
+    info.pushConstantRanges = std::span<const VkPushConstantRange>(&pushConstantRange, 1);
+    info.enableColorAttachment = false;
+    info.enableDepth = true;
+    info.depthWriteEnable = true;
+    // Same acne/peter-panning tradeoff as the CSM pipeline, and the same
+    // settings drive it so tuning one shadow type does not desync the other.
+    info.enableDepthBias = true;
+    info.cullMode = VK_CULL_MODE_NONE;
+    info.depthBiasConstantFactor = shadowSettings_.rasterDepthBiasConstantFactor;
+    info.depthBiasSlopeFactor = shadowSettings_.rasterDepthBiasSlopeFactor;
+    info.pipelineCache = context_.pipelineCache();
+
+    punctualShadowPipeline_.create(context_.vkDevice(), info);
+    rhi::debug::setObjectName(context_.vkDevice(),
+                              punctualShadowPipeline_.pipeline(),
+                              VK_OBJECT_TYPE_PIPELINE,
+                              "PunctualShadowPipeline");
+    rhi::debug::setObjectName(context_.vkDevice(),
+                              punctualShadowPipeline_.layout(),
+                              VK_OBJECT_TYPE_PIPELINE_LAYOUT,
+                              "PunctualShadowPipelineLayout");
+    punctualShadowPipelineDepthFormat_ = info.depthFormat;
 }
 
 void Renderer::createMaskedShadowPipeline(const VkVertexInputBindingDescription& binding,
@@ -2038,7 +2093,7 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
 
     VkDescriptorPoolSize poolSize{};
     poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = kMaxMaterialDescriptorSets * 7;
+    poolSize.descriptorCount = kMaxMaterialDescriptorSets * 8;
 
     if (materialDescriptorPool_.handle() == VK_NULL_HANDLE) {
         materialDescriptorPool_.create(
@@ -2088,7 +2143,21 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     brdfLutInfo.imageView = brdfLutTexture_.imageView();
     brdfLutInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    std::array<VkWriteDescriptorSet, 7> writes{};
+    // When the punctual atlas failed to allocate, bind cascade 0's single-layer
+    // view in its place so the descriptor stays complete and type-correct -- the
+    // shader declares binding 7 as sampler2D, so the CSM's 2D_ARRAY view would
+    // not do. Nothing ever samples it: without an atlas no light is handed a
+    // slot, so every light decodes to the unshadowed sentinel and the shader
+    // skips the fetch entirely.
+    const bool punctualAtlasAvailable = punctualShadows_.valid();
+    VkDescriptorImageInfo punctualShadowInfo{};
+    punctualShadowInfo.sampler =
+        punctualAtlasAvailable ? punctualShadows_.atlas().sampler() : shadowMap_.sampler();
+    punctualShadowInfo.imageView =
+        punctualAtlasAvailable ? punctualShadows_.atlas().imageView() : shadowMap_.layerImageView(0);
+    punctualShadowInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+
+    std::array<VkWriteDescriptorSet, 8> writes{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = material.descriptorSet;
     writes[0].dstBinding = 0;
@@ -2145,10 +2214,19 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     writes[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[6].pImageInfo = &brdfLutInfo;
 
+    writes[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[7].dstSet = material.descriptorSet;
+    writes[7].dstBinding = 7;
+    writes[7].dstArrayElement = 0;
+    writes[7].descriptorCount = 1;
+    writes[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[7].pImageInfo = &punctualShadowInfo;
+
     // The material descriptor stores sampled images only: base color at binding 0,
     // cascaded shadow-map array at binding 1, normal map at binding 2, and metallic-roughness
     // map at binding 3. Bindings 4-6 are diffuse irradiance, prefiltered specular
-    // environment, and the BRDF LUT. Object data remains outside descriptors.
+    // environment, and the BRDF LUT; binding 7 is the punctual shadow atlas.
+    // Object data remains outside descriptors.
     vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
@@ -2508,6 +2586,203 @@ void Renderer::updateDemoLights(float elapsedSeconds)
                                     16.0f,
                                     18.0f * kDegToRad,
                                     30.0f * kDegToRad);
+}
+
+void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer)
+{
+    const uint32_t slotCount = punctualShadows_.slotCount();
+    if (!punctualShadows_.valid() || punctualShadowPipeline_.pipeline() == VK_NULL_HANDLE || slotCount == 0 ||
+        allDrawItems_.empty()) {
+        return;
+    }
+
+    // The atlas is deliberately not a render-graph resource yet: the graph's
+    // pass list is a fixed sequence of named begin/end methods, and threading a
+    // variable per-slot loop through it needs a graph change of its own. Nothing
+    // else touches this image, so a pair of explicit Synchronization2 barriers
+    // around the pass is sufficient and cannot conflict with the graph's
+    // inference. Registering it (for the graph panel) is a follow-up.
+    rhi::VulkanShadowMap& atlas = punctualShadows_.atlas();
+    const bool profileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "PunctualShadowAtlas");
+    rhi::debug::beginLabel(commandBuffer, "PunctualShadowAtlas");
+
+    VkImageMemoryBarrier2 toAttachment{};
+    toAttachment.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    // The previous frame left the atlas readable by the fragment shader; the
+    // first frame leaves it UNDEFINED. Either way the clear below overwrites
+    // every texel, so discarding the old contents is correct.
+    toAttachment.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    toAttachment.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    toAttachment.dstStageMask =
+        VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+    toAttachment.dstAccessMask =
+        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+    toAttachment.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    toAttachment.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    toAttachment.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toAttachment.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toAttachment.image = atlas.image();
+    toAttachment.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+
+    VkDependencyInfo toAttachmentDependency{};
+    toAttachmentDependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    toAttachmentDependency.imageMemoryBarrierCount = 1;
+    toAttachmentDependency.pImageMemoryBarriers = &toAttachment;
+    vkCmdPipelineBarrier2(commandBuffer, &toAttachmentDependency);
+
+    VkRenderingAttachmentInfo depthAttachment{};
+    depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    depthAttachment.imageView = atlas.imageView();
+    depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    depthAttachment.clearValue.depthStencil = {1.0f, 0};
+
+    // One rendering scope covers the whole atlas: the clear runs once and each
+    // slot is isolated by its viewport/scissor, which is cheaper than a
+    // begin/end pair per tile and keeps the tiles that got no casters cleared.
+    VkRenderingInfo renderingInfo{};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea.offset = {0, 0};
+    renderingInfo.renderArea.extent = atlas.extent();
+    renderingInfo.layerCount = 1;
+    renderingInfo.pDepthAttachment = &depthAttachment;
+    vkCmdBeginRendering(commandBuffer, &renderingInfo);
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, punctualShadowPipeline_.pipeline());
+
+    const VkDeviceAddress objectFrameDataBaseAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
+    const renderer::Mesh* boundMesh = nullptr;
+    uint32_t recordedDraws = 0;
+
+    for (uint32_t slot = 0; slot < slotCount; ++slot) {
+        const renderer::ShadowAtlasRect rect = renderer::punctualShadowSlotRect(slot);
+        if (rect.size == 0) {
+            continue;
+        }
+
+        VkViewport viewport{};
+        viewport.x = static_cast<float>(rect.x);
+        viewport.y = static_cast<float>(rect.y);
+        viewport.width = static_cast<float>(rect.size);
+        viewport.height = static_cast<float>(rect.size);
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+        vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+
+        VkRect2D scissor{};
+        scissor.offset = {static_cast<int32_t>(rect.x), static_cast<int32_t>(rect.y)};
+        scissor.extent = {rect.size, rect.size};
+        vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+        const renderer::Frustum& slotFrustum = punctualShadows_.slotFrustum(slot);
+
+        for (const DrawItem& drawItem : allDrawItems_) {
+            if (!drawItem.mesh || drawItem.frameDataIndex >= kMaxDrawItems || drawItem.indexCount == 0) {
+                continue;
+            }
+            // Blended geometry does not write depth in the main pass, so letting
+            // it cast an opaque shadow here would be wrong.
+            if (drawItem.bucket == RenderBucket::Blend) {
+                continue;
+            }
+            // CPU cull against the slot's own frustum. With one tile per light
+            // this is a handful of sphere tests per slot; moving punctual slots
+            // onto the existing GPU shadow-cull path is a follow-up.
+            if (drawItem.objectIndex < frameWorldBounds_.size() &&
+                !slotFrustum.testAabb(frameWorldBounds_[drawItem.objectIndex])) {
+                continue;
+            }
+
+            PunctualShadowPushConstants pushConstants{};
+            // Offsetting the base address per draw lets the vertex stage read
+            // objects[0] with an instance index of zero, matching the CSM
+            // direct-draw fallback.
+            pushConstants.objectFrameDataAddress =
+                objectFrameDataBaseAddress +
+                static_cast<VkDeviceAddress>(drawItem.frameDataIndex * sizeof(ObjectFrameData));
+            pushConstants.lightViewProjection = punctualShadows_.slotViewProjection(slot);
+            vkCmdPushConstants(commandBuffer,
+                               punctualShadowPipeline_.layout(),
+                               VK_SHADER_STAGE_VERTEX_BIT,
+                               0,
+                               static_cast<uint32_t>(sizeof(PunctualShadowPushConstants)),
+                               &pushConstants);
+
+            if (boundMesh != drawItem.mesh) {
+                const VkBuffer vertexBuffers[] = {drawItem.mesh->vertexBuffer()};
+                const VkDeviceSize vertexOffsets[] = {0};
+                vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
+                vkCmdBindIndexBuffer(commandBuffer, drawItem.mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+                boundMesh = drawItem.mesh;
+            }
+
+            vkCmdDrawIndexed(
+                commandBuffer, drawItem.indexCount, 1, drawItem.firstIndex, drawItem.vertexOffset, 0);
+            ++recordedDraws;
+        }
+    }
+
+    vkCmdEndRendering(commandBuffer);
+
+    VkImageMemoryBarrier2 toReadOnly = toAttachment;
+    toReadOnly.srcStageMask =
+        VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+    toReadOnly.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    toReadOnly.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    toReadOnly.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    toReadOnly.oldLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    toReadOnly.newLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+
+    VkDependencyInfo toReadOnlyDependency{};
+    toReadOnlyDependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    toReadOnlyDependency.imageMemoryBarrierCount = 1;
+    toReadOnlyDependency.pImageMemoryBarriers = &toReadOnly;
+    vkCmdPipelineBarrier2(commandBuffer, &toReadOnlyDependency);
+
+    atlas.setLayout(VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL);
+
+    rhi::debug::beginLabel(commandBuffer,
+                           "PunctualShadowSlots " + std::to_string(slotCount) + " draws " +
+                               std::to_string(recordedDraws));
+    rhi::debug::endLabel(commandBuffer);
+    rhi::debug::endLabel(commandBuffer);
+    if (profileScope) {
+        gpuProfiler_.endScope(currentFrame_, commandBuffer);
+    }
+}
+
+void Renderer::updatePunctualShadowSlots(uint32_t frameIndex)
+{
+    punctualShadows_.beginFrame();
+
+    std::vector<renderer::GpuLight>& lights = clusteredLighting_.lights();
+    const bool atlasUsable = punctualShadows_.valid() && usePunctualShadows_;
+
+    for (renderer::GpuLight& light : lights) {
+        // Point lights need six cube faces, which the atlas pass does not record
+        // yet, so they stay unshadowed rather than getting a single wrong tile.
+        const bool isSpot = light.directionType.w > 0.5f;
+        if (!atlasUsable || !isSpot) {
+            light.spotScaleOffset.z = renderer::punctualShadowSlotToFloat(renderer::kInvalidPunctualShadowSlot);
+            continue;
+        }
+
+        // The cone half-angle is stored as its cosine for the shading falloff;
+        // recover the angle so the shadow frustum matches the lit cone exactly.
+        const float cosOuter = std::clamp(light.spotScaleOffset.x, -1.0f, 1.0f);
+        const float outerAngle = std::acos(cosOuter);
+
+        const uint32_t slot = punctualShadows_.addSpotLight(glm::vec3(light.positionRange),
+                                                            glm::vec3(light.directionType),
+                                                            outerAngle,
+                                                            light.positionRange.w);
+        // A full atlas degrades to an unshadowed light instead of dropping it.
+        light.spotScaleOffset.z = renderer::punctualShadowSlotToFloat(slot);
+    }
+
+    punctualShadowSlotsUsed_ = punctualShadows_.slotCount();
+    punctualShadows_.upload(frameIndex);
 }
 
 glm::vec4 Renderer::activeDirectionalLightDirection() const
@@ -4281,6 +4556,10 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     // culling the current view/inverse-projection and camera planes (view-space
     // work, so it runs regardless of scene contents).
     updateDemoLights(elapsedSeconds);
+    // Assign atlas tiles before the light buffer is uploaded below: this stamps
+    // the slot index into each GpuLight, so it has to run between the rebuild
+    // and clusteredLighting_.upload().
+    updatePunctualShadowSlots(frameIndex);
     // Advance the skinned animation by a speed-scaled frame delta so play/pause
     // holds the current pose and the speed slider changes playback continuously.
     const float skinnedDelta = elapsedSeconds - previousElapsedSeconds_;
@@ -5328,6 +5607,10 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         gpuProfiler_.endScope(currentFrame_, commandBuffer);
     }
 
+    // Punctual casters go into the atlas right after the directional cascades,
+    // so both shadow sources are resident before the main HDR pass samples them.
+    recordPunctualShadowPass(commandBuffer);
+
     recordGpuCullingCommands(commandBuffer);
 
     // Clustered (Forward+) light assignment: rebuild the froxel AABBs, then cull
@@ -5462,6 +5745,10 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     basePushConstants.useClustered = clusteredLightingActive ? 1u : 0u;
     basePushConstants.debugClusterHeatmap = showClusterHeatmap_ ? 1u : 0u;
     basePushConstants.debugLodHeatmap = lodSettings_.debugHeatmap ? 1u : 0u;
+    // Zero when nothing got a tile this frame, so the shader's null-address test
+    // is enough to skip the atlas fetch -- it never has to consult a count.
+    basePushConstants.punctualShadowSlotAddress =
+        punctualShadows_.slotCount() > 0 ? punctualShadows_.slotBufferAddress(currentFrame_) : 0;
     if (multiDrawIndirectActive) {
         if (bindlessDescriptorSetsBound) {
             const PushConstants pushConstants = basePushConstants;

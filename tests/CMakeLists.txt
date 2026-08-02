@@ -24,6 +24,7 @@ add_executable(VulkanEngineTests
     test_bounds.cpp
     test_cascades.cpp
     test_cluster_grid.cpp
+    test_punctual_shadow_atlas.cpp
     test_material_asset.cpp
     test_material_alpha.cpp
     test_mesh_lod.cpp

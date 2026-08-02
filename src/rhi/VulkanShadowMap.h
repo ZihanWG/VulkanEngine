@@ -3,6 +3,7 @@
 #include "rhi/VulkanImage.h"
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace ve::rhi {
@@ -19,7 +20,14 @@ public:
     VulkanShadowMap(VulkanShadowMap&& other) noexcept;
     VulkanShadowMap& operator=(VulkanShadowMap&& other) noexcept;
 
-    void create(VulkanContext& context, uint32_t width = 2048, uint32_t height = 2048, uint32_t layerCount = 1);
+    // debugName labels the image, its views, and its sampler. It defaults to the
+    // cascaded-shadow naming this class was written for; the punctual shadow
+    // atlas passes its own so RenderDoc captures stay readable.
+    void create(VulkanContext& context,
+                uint32_t width = 2048,
+                uint32_t height = 2048,
+                uint32_t layerCount = 1,
+                const std::string& debugName = {});
     void reset();
 
     [[nodiscard]] VkImage image() const { return image_.image(); }
@@ -35,8 +43,8 @@ public:
     void setLayout(VkImageLayout layout) { layout_ = layout; }
 
 private:
-    void createLayerImageViews();
-    void createSampler();
+    void createLayerImageViews(const std::string& debugName);
+    void createSampler(const std::string& debugName);
     void moveFrom(VulkanShadowMap& other) noexcept;
 
     VulkanContext* context_ = nullptr;

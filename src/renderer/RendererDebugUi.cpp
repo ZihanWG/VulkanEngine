@@ -255,6 +255,32 @@ void Renderer::drawLightsDebugUi()
     }
     ImGui::SetItemTooltip("Heatmap tints each froxel by its light count (blue=few, red=many).");
 
+    ImGui::SeparatorText("Punctual shadows");
+    if (!punctualShadows_.valid()) {
+        ImGui::TextDisabled("Shadow atlas unavailable; point/spot lights do not cast.");
+    } else {
+        ImGui::Checkbox("Cast punctual shadows", &usePunctualShadows_);
+        ImGui::SetItemTooltip("Spot lights render into a shared depth atlas and shadow the clustered pass.");
+        ImGui::Text("Atlas: %ux%u, %u tiles of %upx",
+                    renderer::kPunctualShadowAtlasSize,
+                    renderer::kPunctualShadowAtlasSize,
+                    renderer::kMaxPunctualShadowSlots,
+                    renderer::kPunctualShadowTileSize);
+        ImGui::Text("Slots used: %u / %u", punctualShadowSlotsUsed_, renderer::kMaxPunctualShadowSlots);
+        // Point lights need six cube faces each, which the atlas pass does not
+        // record yet, so they are shaded but never shadowed.
+        ImGui::TextDisabled("Spot lights only; point lights are not shadowed yet.");
+
+        float constantBias = punctualShadows_.constantBias();
+        float normalBias = punctualShadows_.normalBias();
+        bool biasChanged = ImGui::SliderFloat("Depth bias", &constantBias, 0.0f, 0.01f, "%.4f");
+        biasChanged |= ImGui::SliderFloat("Normal bias", &normalBias, 0.0f, 0.2f, "%.3f");
+        if (biasChanged) {
+            punctualShadows_.setDepthBias(constantBias, normalBias);
+        }
+        ImGui::SetItemTooltip("Raise until acne disappears; too much detaches shadows from their casters.");
+    }
+
     ImGui::SeparatorText("Demo light swarm");
     ImGui::SliderInt("Light count", &demoLightCount_, 0, 512);
     ImGui::Checkbox("Animate", &animateLights_);

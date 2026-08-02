@@ -8,11 +8,26 @@ struct GpuLight {
     vec4 positionRange;   // xyz = world position, w = range
     vec4 colorIntensity;  // rgb = color, a = intensity
     vec4 directionType;   // xyz = spot direction, w = type (0 point, 1 spot)
-    vec4 spotScaleOffset; // x = cos(outer), y = 1/(cos(inner)-cos(outer))
+    // x = cos(outer), y = 1/(cos(inner)-cos(outer)),
+    // z = punctual shadow atlas slot as a float (< 0 means this light does not
+    // cast this frame -- not a caster, culled, or the atlas ran out of tiles).
+    vec4 spotScaleOffset;
 };
 
 layout(buffer_reference, std430) readonly buffer LightBuffer {
     GpuLight lights[];
+};
+
+// One punctual shadow atlas tile. Mirrors ve::renderer::GpuShadowSlot
+// (96-byte std430 stride).
+struct GpuShadowSlot {
+    mat4 viewProjection;
+    vec4 atlasUvOffsetScale; // xy = tile UV origin, zw = tile UV extent
+    vec4 params;             // x = constant bias, y = normal bias, z = atlas texel in UV
+};
+
+layout(buffer_reference, std430) readonly buffer ShadowSlotBuffer {
+    GpuShadowSlot slots[];
 };
 
 // Per-cluster light list produced by light_cull.comp. cells[i] = (offset, count)
@@ -49,12 +64,14 @@ layout(push_constant) uniform PushConstants {
     layout(offset = 64) uint useClustered;
     layout(offset = 68) uint debugClusterHeatmap;
     layout(offset = 80) uint debugLodHeatmap;
+    layout(offset = 88) ShadowSlotBuffer punctualShadowSlots;
 } pc;
 
 layout(set = 0, binding = 1) uniform sampler2DArray uShadowMap;
 layout(set = 0, binding = 4) uniform samplerCube uDiffuseIrradianceMap;
 layout(set = 0, binding = 5) uniform samplerCube uPrefilteredEnvMap;
 layout(set = 0, binding = 6) uniform sampler2D uBrdfLut;
+layout(set = 0, binding = 7) uniform sampler2D uPunctualShadowAtlas;
 
 layout(set = 1, binding = 0) uniform sampler2D uBaseColorTextures[];
 layout(set = 1, binding = 1) uniform sampler2D uNormalTextures[];
@@ -281,6 +298,63 @@ vec3 approximateMultiScatterCompensation(
         * clamp(multiScatterStrength, 0.0, 1.0);
 }
 
+// Visibility of one punctual light at the shaded point, read from the shadow
+// atlas. Returns 1.0 (fully lit) whenever the light has no tile this frame, so
+// the caller can multiply unconditionally.
+//
+// The negative-slot sentinel is what guards the buffer dereference: the CPU
+// stamps it into every light whenever the atlas is unavailable or disabled, and
+// the slot address is only non-zero when at least one light got a tile. So a
+// light with a valid slot always implies a valid buffer.
+float punctualShadowFactor(GpuLight light, vec3 worldPosition, vec3 normal)
+{
+    float encodedSlot = light.spotScaleOffset.z;
+    if (encodedSlot < 0.0) {
+        return 1.0;
+    }
+
+    GpuShadowSlot slot = pc.punctualShadowSlots.slots[uint(encodedSlot)];
+
+    // Offsetting the sample along the surface normal fixes acne more cheaply
+    // than a large depth bias would, and it does not detach contact shadows the
+    // way peter-panning bias does.
+    vec3 biasedPosition = worldPosition + normal * slot.params.y;
+
+    vec4 lightSpace = slot.viewProjection * vec4(biasedPosition, 1.0);
+    if (lightSpace.w <= 0.0) {
+        return 1.0; // behind the light
+    }
+
+    vec3 projected = lightSpace.xyz / lightSpace.w;
+    vec2 tileUv = projected.xy * 0.5 + 0.5;
+
+    // Outside the light's own frustum there is no depth to compare against. For
+    // a spot that is exactly outside the lit cone, where the falloff has already
+    // reached zero, so returning "lit" here changes nothing visually.
+    if (projected.z < 0.0 || projected.z > 1.0 || tileUv.x < 0.0 || tileUv.x > 1.0 || tileUv.y < 0.0 ||
+        tileUv.y > 1.0) {
+        return 1.0;
+    }
+
+    float currentDepth = projected.z - slot.params.x;
+    vec2 atlasUv = slot.atlasUvOffsetScale.xy + tileUv * slot.atlasUvOffsetScale.zw;
+
+    // 3x3 PCF in atlas space. Taps stay inside the tile except within one texel
+    // of its border, and the border of a tile is the edge of the light's cone
+    // where the falloff has already gone to zero.
+    float texel = slot.params.z;
+    float litSamples = 0.0;
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            vec2 offset = vec2(float(x), float(y)) * texel;
+            float closestDepth = texture(uPunctualShadowAtlas, atlasUv + offset).r;
+            litSamples += currentDepth <= closestDepth ? 1.0 : 0.0;
+        }
+    }
+
+    return litSamples / 9.0;
+}
+
 // Cook-Torrance contribution of one punctual (point/spot) light, with inverse-
 // square falloff, a smooth range cutoff, and an optional spot cone. Reuses the
 // same GGX/Smith/Fresnel terms as the directional term above so point, spot, and
@@ -314,6 +388,13 @@ vec3 evaluatePunctualLight(GpuLight light,
         attenuation *= spotAttenuation * spotAttenuation;
     }
 
+    if (attenuation <= 0.0) {
+        return vec3(0.0);
+    }
+
+    // Sampled after the cheap rejections above so fully attenuated fragments
+    // never pay for the atlas fetch.
+    attenuation *= punctualShadowFactor(light, worldPosition, normal);
     if (attenuation <= 0.0) {
         return vec3(0.0);
     }

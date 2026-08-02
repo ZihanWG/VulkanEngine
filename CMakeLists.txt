@@ -210,6 +210,7 @@ add_library(VulkanEngineCore STATIC
     src/renderer/CascadeMath.cpp
     src/renderer/EditorCamera.cpp
     src/renderer/GltfSkinnedImport.cpp
+    src/renderer/PunctualShadowAtlas.cpp
     src/renderer/RuntimeSettings.cpp
     src/renderer/SkeletalAnimation.cpp
 )
@@ -250,6 +251,7 @@ add_library(VulkanEngineRuntime STATIC
     src/renderer/Mesh.cpp
     src/renderer/MeshLod.cpp
     src/renderer/PostProcessStack.cpp
+    src/renderer/PunctualShadows.cpp
     src/renderer/RenderGraph.cpp
     src/renderer/Renderer.cpp
     src/renderer/RendererDebugUi.cpp
@@ -357,6 +359,7 @@ set(SHADER_SOURCES
     "${SHADER_SOURCE_DIR}/skybox.frag"
     "${SHADER_SOURCE_DIR}/shadow.vert"
     "${SHADER_SOURCE_DIR}/shadow_masked.vert"
+    "${SHADER_SOURCE_DIR}/shadow_punctual.vert"
     "${SHADER_SOURCE_DIR}/shadow_masked.frag"
     "${SHADER_SOURCE_DIR}/cull.comp"
     "${SHADER_SOURCE_DIR}/cluster_build.comp"
