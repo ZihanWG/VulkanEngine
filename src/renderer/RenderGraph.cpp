@@ -231,6 +231,8 @@ const char* renderPassTypeName(RenderPassType type)
         return "GTAO";
     case RenderPassType::GtaoBlur:
         return "GTAO Blur";
+    case RenderPassType::Transparent:
+        return "Transparent";
     case RenderPassType::TaaResolve:
         return "TAA Resolve";
     case RenderPassType::BloomExtract:
