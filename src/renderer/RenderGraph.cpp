@@ -337,6 +337,7 @@ const char* rgAccessName(RGAccess access)
 void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
                              rhi::VulkanSwapchain& swapchain,
                              rhi::VulkanShadowMap& shadowMap,
+                             rhi::VulkanShadowMap* punctualShadowAtlas,
                              uint32_t imageIndex,
                              RenderGraphFrameResources frameResources)
 {
@@ -364,11 +365,15 @@ void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
     frame_.commandBuffer = commandBuffer;
     frame_.swapchain = &swapchain;
     frame_.shadowMap = &shadowMap;
+    // Only treated as present when it actually has an image; a failed atlas
+    // allocation leaves the pointer non-null but invalid.
+    frame_.punctualShadowAtlas =
+        (punctualShadowAtlas != nullptr && punctualShadowAtlas->valid()) ? punctualShadowAtlas : nullptr;
     frame_.resources = std::move(frameResources);
     frame_.imageIndex = imageIndex;
     frame_.swapchainImage = swapchain.image(imageIndex);
 
-    importExternalFrameTargets(swapchain, shadowMap, imageIndex);
+    importExternalFrameTargets(swapchain, shadowMap, frame_.punctualShadowAtlas, imageIndex);
     createTransientFrameTextures();
     importFrameBuffers();
 
@@ -387,6 +392,7 @@ void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
 
 void RenderGraph::importExternalFrameTargets(rhi::VulkanSwapchain& swapchain,
                                              rhi::VulkanShadowMap& shadowMap,
+                                             rhi::VulkanShadowMap* punctualShadowAtlas,
                                              uint32_t imageIndex)
 {
     RenderGraphImageResource swapchainColor{};
@@ -435,6 +441,26 @@ void RenderGraph::importExternalFrameTargets(rhi::VulkanSwapchain& swapchain,
     textures_.at(frame_.shadowMapDepth.index).initialLayout = shadowMap.layout();
     textures_.at(frame_.shadowMapDepth.index).lastAccess =
         accessStateFromLayout(shadowMap.layout(), VK_IMAGE_ASPECT_DEPTH_BIT);
+
+    if (punctualShadowAtlas == nullptr) {
+        return;
+    }
+
+    RenderGraphImageResource punctualDepth{};
+    punctualDepth.name = "PunctualShadowAtlas";
+    punctualDepth.image = punctualShadowAtlas->image();
+    punctualDepth.imageView = punctualShadowAtlas->imageView();
+    punctualDepth.extent = punctualShadowAtlas->extent();
+    punctualDepth.format = punctualShadowAtlas->format();
+    punctualDepth.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    punctualDepth.arrayLayers = 1;
+    punctualDepth.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    punctualDepth.imported = true;
+    frame_.punctualShadowAtlasDepth = importTexture(punctualDepth);
+    textures_.at(frame_.punctualShadowAtlasDepth.index).owner = TextureOwner::PunctualShadowAtlas;
+    textures_.at(frame_.punctualShadowAtlasDepth.index).initialLayout = punctualShadowAtlas->layout();
+    textures_.at(frame_.punctualShadowAtlasDepth.index).lastAccess =
+        accessStateFromLayout(punctualShadowAtlas->layout(), VK_IMAGE_ASPECT_DEPTH_BIT);
 }
 
 void RenderGraph::createTransientFrameTextures()
@@ -552,6 +578,57 @@ void RenderGraph::endShadowPass(bool /*finalCascade*/)
     requireFrameActive("RenderGraph::endShadowPass");
     if (activePass_ != ActivePass::Shadow) {
         throw std::logic_error("RenderGraph::endShadowPass called without an active shadow pass.");
+    }
+
+    vkCmdEndRendering(frame_.commandBuffer);
+    activePass_ = ActivePass::None;
+}
+
+void RenderGraph::beginPunctualShadowPass()
+{
+    requireFrameActive("RenderGraph::beginPunctualShadowPass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginPunctualShadowPass called while another pass is active.");
+    }
+    if (frame_.punctualShadowAtlas == nullptr) {
+        throw std::logic_error("RenderGraph::beginPunctualShadowPass requires an imported punctual shadow atlas.");
+    }
+    if (!beginDeclaredPass(frame_.passIndices.punctualShadow)) {
+        throw std::logic_error(
+            "RenderGraph::beginPunctualShadowPass was culled but the renderer attempted to record it.");
+    }
+
+    VkClearValue atlasDepthClear{};
+    atlasDepthClear.depthStencil.depth = 1.0f;
+    atlasDepthClear.depthStencil.stencil = 0;
+
+    VkRenderingAttachmentInfo atlasDepthAttachment{};
+    atlasDepthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    atlasDepthAttachment.imageView = frame_.punctualShadowAtlas->imageView();
+    atlasDepthAttachment.imageLayout = depthAttachmentLayout(VK_IMAGE_ASPECT_DEPTH_BIT);
+    // One clear for the whole atlas, so slots that got no casters stay at the
+    // far plane instead of holding a previous frame's depth.
+    atlasDepthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    atlasDepthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    atlasDepthAttachment.clearValue = atlasDepthClear;
+
+    VkRenderingInfo atlasRenderingInfo{};
+    atlasRenderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    atlasRenderingInfo.renderArea.offset = {0, 0};
+    atlasRenderingInfo.renderArea.extent = frame_.punctualShadowAtlas->extent();
+    atlasRenderingInfo.layerCount = 1;
+    atlasRenderingInfo.colorAttachmentCount = 0;
+    atlasRenderingInfo.pDepthAttachment = &atlasDepthAttachment;
+
+    vkCmdBeginRendering(frame_.commandBuffer, &atlasRenderingInfo);
+    activePass_ = ActivePass::PunctualShadow;
+}
+
+void RenderGraph::endPunctualShadowPass()
+{
+    requireFrameActive("RenderGraph::endPunctualShadowPass");
+    if (activePass_ != ActivePass::PunctualShadow) {
+        throw std::logic_error("RenderGraph::endPunctualShadowPass called without an active punctual shadow pass.");
     }
 
     vkCmdEndRendering(frame_.commandBuffer);
@@ -1442,6 +1519,22 @@ void RenderGraph::declareGeometryPasses()
                                  "Writes cascaded shadow-map depth array layers.");
         });
 
+    // Only declared when a light actually got a tile. The atlas texture is
+    // still imported and still read by the main pass below, so a frame that
+    // casts nothing gets the read-layout transition without the write pass.
+    if (frame_.punctualShadowAtlas != nullptr && frame_.resources.punctualShadowSlotCount > 0) {
+        frame_.passIndices.punctualShadow = addPass(
+            "PunctualShadowAtlasPass",
+            RenderPassType::Shadow,
+            RenderPassExecutionType::Graphics,
+            false,
+            [this](RenderGraphBuilder& builder) {
+                builder.writeTexture(frame_.punctualShadowAtlasDepth,
+                                     RGAccess::DepthStencilAttachmentWrite,
+                                     "Writes per-slot spot-light depth tiles into the punctual shadow atlas.");
+            });
+    }
+
     frame_.passIndices.mainGpuCulling = addPass(
         "MainGpuCullingPass",
         RenderPassType::MainGpuCulling,
@@ -1474,6 +1567,14 @@ void RenderGraph::declareGeometryPasses()
             builder.readTexture(frame_.shadowMapDepth,
                                 RGAccess::ShaderRead,
                                 "Samples the cascaded shadow-map array for lighting.");
+            if (frame_.punctualShadowAtlas != nullptr) {
+                // Declared unconditionally (not just when slots exist) so the
+                // atlas always reaches the layout the material descriptors
+                // record, even on frames where nothing cast.
+                builder.readTexture(frame_.punctualShadowAtlasDepth,
+                                    RGAccess::ShaderRead,
+                                    "Samples the punctual shadow atlas for spot-light visibility.");
+            }
             builder.writeTexture(frame_.sceneColor,
                                  RGAccess::ColorAttachmentWrite,
                                  "Writes linear HDR skybox and mesh lighting.");
@@ -2201,6 +2302,8 @@ VkImageLayout RenderGraph::currentTextureLayout(const TextureResource& resource)
         return frame_.swapchain ? frame_.swapchain->depthImageLayout() : VK_IMAGE_LAYOUT_UNDEFINED;
     case TextureOwner::ShadowMap:
         return frame_.shadowMap ? frame_.shadowMap->layout() : VK_IMAGE_LAYOUT_UNDEFINED;
+    case TextureOwner::PunctualShadowAtlas:
+        return frame_.punctualShadowAtlas ? frame_.punctualShadowAtlas->layout() : VK_IMAGE_LAYOUT_UNDEFINED;
     }
 
     return VK_IMAGE_LAYOUT_UNDEFINED;
@@ -2227,6 +2330,11 @@ void RenderGraph::setTextureLayout(TextureResource& resource, VkImageLayout layo
     case TextureOwner::ShadowMap:
         if (frame_.shadowMap) {
             frame_.shadowMap->setLayout(layout);
+        }
+        break;
+    case TextureOwner::PunctualShadowAtlas:
+        if (frame_.punctualShadowAtlas) {
+            frame_.punctualShadowAtlas->setLayout(layout);
         }
         break;
     }

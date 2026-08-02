@@ -2596,58 +2596,14 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer)
         return;
     }
 
-    // The atlas is deliberately not a render-graph resource yet: the graph's
-    // pass list is a fixed sequence of named begin/end methods, and threading a
-    // variable per-slot loop through it needs a graph change of its own. Nothing
-    // else touches this image, so a pair of explicit Synchronization2 barriers
-    // around the pass is sufficient and cannot conflict with the graph's
-    // inference. Registering it (for the graph panel) is a follow-up.
-    rhi::VulkanShadowMap& atlas = punctualShadows_.atlas();
     const bool profileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "PunctualShadowAtlas");
     rhi::debug::beginLabel(commandBuffer, "PunctualShadowAtlas");
 
-    VkImageMemoryBarrier2 toAttachment{};
-    toAttachment.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    // The previous frame left the atlas readable by the fragment shader; the
-    // first frame leaves it UNDEFINED. Either way the clear below overwrites
-    // every texel, so discarding the old contents is correct.
-    toAttachment.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    toAttachment.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-    toAttachment.dstStageMask =
-        VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-    toAttachment.dstAccessMask =
-        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
-    toAttachment.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    toAttachment.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-    toAttachment.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    toAttachment.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    toAttachment.image = atlas.image();
-    toAttachment.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
-
-    VkDependencyInfo toAttachmentDependency{};
-    toAttachmentDependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    toAttachmentDependency.imageMemoryBarrierCount = 1;
-    toAttachmentDependency.pImageMemoryBarriers = &toAttachment;
-    vkCmdPipelineBarrier2(commandBuffer, &toAttachmentDependency);
-
-    VkRenderingAttachmentInfo depthAttachment{};
-    depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    depthAttachment.imageView = atlas.imageView();
-    depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    depthAttachment.clearValue.depthStencil = {1.0f, 0};
-
-    // One rendering scope covers the whole atlas: the clear runs once and each
-    // slot is isolated by its viewport/scissor, which is cheaper than a
-    // begin/end pair per tile and keeps the tiles that got no casters cleared.
-    VkRenderingInfo renderingInfo{};
-    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-    renderingInfo.renderArea.offset = {0, 0};
-    renderingInfo.renderArea.extent = atlas.extent();
-    renderingInfo.layerCount = 1;
-    renderingInfo.pDepthAttachment = &depthAttachment;
-    vkCmdBeginRendering(commandBuffer, &renderingInfo);
+    // Layout transitions and the atlas clear both come from the graph: the pass
+    // declares a depth-attachment write on the imported atlas texture, and the
+    // main HDR pass declares the matching sampled read, so the graph infers the
+    // barriers in both directions.
+    renderGraph_.beginPunctualShadowPass();
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, punctualShadowPipeline_.pipeline());
 
@@ -2723,24 +2679,7 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer)
         }
     }
 
-    vkCmdEndRendering(commandBuffer);
-
-    VkImageMemoryBarrier2 toReadOnly = toAttachment;
-    toReadOnly.srcStageMask =
-        VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-    toReadOnly.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    toReadOnly.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    toReadOnly.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-    toReadOnly.oldLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-    toReadOnly.newLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
-
-    VkDependencyInfo toReadOnlyDependency{};
-    toReadOnlyDependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    toReadOnlyDependency.imageMemoryBarrierCount = 1;
-    toReadOnlyDependency.pImageMemoryBarriers = &toReadOnly;
-    vkCmdPipelineBarrier2(commandBuffer, &toReadOnlyDependency);
-
-    atlas.setLayout(VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL);
+    renderGraph_.endPunctualShadowPass();
 
     rhi::debug::beginLabel(commandBuffer,
                            "PunctualShadowSlots " + std::to_string(slotCount) + " draws " +
@@ -5284,6 +5223,7 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         frameSsrActive_,
         frameGtaoActive_,
         frameVisibleBucketRanges_[static_cast<size_t>(RenderBucket::Blend)].count(),
+        punctualShadows_.slotCount(),
     };
 }
 
@@ -5409,7 +5349,12 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     const bool taaActiveThisFrame = postProcess_.isTaaActive();
     postProcess_.beginFrame(currentFrame_, taaActiveThisFrame);
 
-    renderGraph_.beginFrame(commandBuffer, swapchain_, shadowMap_, imageIndex, renderGraphFrameResources());
+    renderGraph_.beginFrame(commandBuffer,
+                            swapchain_,
+                            shadowMap_,
+                            punctualShadows_.valid() ? &punctualShadows_.atlas() : nullptr,
+                            imageIndex,
+                            renderGraphFrameResources());
     rhi::debug::beginLabel(commandBuffer, "Frame");
     gpuProfiler_.beginFrame(currentFrame_, commandBuffer);
 
