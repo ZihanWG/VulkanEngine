@@ -377,15 +377,27 @@ float punctualShadowFactor(GpuLight light, vec3 worldPosition, vec3 normal)
     float currentDepth = projected.z - slot.params.x * (1.0 + grazing * 7.0);
     vec2 atlasUv = slot.atlasUvOffsetScale.xy + tileUv * slot.atlasUvOffsetScale.zw;
 
-    // 3x3 PCF in atlas space. Taps stay inside the tile except within one texel
-    // of its border, and the border of a tile is the edge of the light's cone
-    // where the falloff has already gone to zero.
+    // 3x3 PCF in atlas space, with every tap clamped into this slot's own tile.
+    //
+    // The clamp is not cosmetic. Neighbouring atlas texels belong to a different
+    // tile -- for a cube face that is the adjacent face, and with the quadtree
+    // allocator it can be an unrelated light entirely -- so a tap that walks out
+    // compares against unrelated depth. On a spot that only ever happened at the
+    // cone edge where the falloff is already zero, which is why it went
+    // unnoticed; on a cube face the tile border is the *middle* of the lit
+    // scene, and the mismatch draws hard seams along the face boundaries.
     float texel = slot.params.z;
+    vec2 tileMin = slot.atlasUvOffsetScale.xy;
+    // Last addressable texel of the tile: the sampler is NEAREST, so staying
+    // within the final texel is enough to keep the fetch inside.
+    vec2 tileMax = tileMin + slot.atlasUvOffsetScale.zw - vec2(texel);
+
     float litSamples = 0.0;
     for (int y = -1; y <= 1; ++y) {
         for (int x = -1; x <= 1; ++x) {
             vec2 offset = vec2(float(x), float(y)) * texel;
-            float closestDepth = texture(uPunctualShadowAtlas, atlasUv + offset).r;
+            vec2 sampleUv = clamp(atlasUv + offset, tileMin, tileMax);
+            float closestDepth = texture(uPunctualShadowAtlas, sampleUv).r;
             litSamples += currentDepth <= closestDepth ? 1.0 : 0.0;
         }
     }
