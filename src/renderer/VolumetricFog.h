@@ -91,6 +91,24 @@ struct FogIntegratedSample {
                                           const glm::vec3& lightDirection,
                                           float anisotropy);
 
+// Light cluster covering a fog froxel's centre.
+//
+// The fog volume and the clustered lighting grid are different resolutions with
+// different depth ranges, so a fog froxel has to be mapped into the light grid
+// explicitly to reuse its light list. This is the one place the two systems have
+// to agree: getting it wrong hands a froxel some other cluster's lights, which
+// looks like fog lit slightly wrong rather than anything obviously broken.
+//
+// Defined as "the cluster the fragment shader would pick for a fragment at this
+// froxel's screen position and view depth", and a unit test asserts exactly
+// that against ClusterGrid.h's own clusterIndex rather than re-deriving it.
+[[nodiscard]] uint32_t fogFroxelClusterIndex(uint32_t froxelX,
+                                             uint32_t froxelY,
+                                             uint32_t froxelZ,
+                                             float fogMaxDistance,
+                                             float clusterZNear,
+                                             float clusterZFar);
+
 // Density at a world height for exponential height fog. `falloff` of zero gives
 // uniform density; larger values pull the fog down toward `baseHeight`.
 [[nodiscard]] float fogHeightDensity(float worldHeight, float baseHeight, float falloff);

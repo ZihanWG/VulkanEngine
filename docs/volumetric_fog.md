@@ -7,10 +7,8 @@ HDR pass as a single texture fetch.
 Off by default — fog changes the look of every shot, so it is opt-in the way
 GTAO and TAA are.
 
-Status: **directional light only.** The punctual lights that the shadow atlas
-now shadows do not yet contribute to the fog, so there are no light shafts from
-spot or point lights. That is the next phase, and it is the payoff of having
-built the two systems in this order.
+Both the directional light and the punctual (spot/point) lights contribute, so
+shadowed lights cast visible shafts through the medium.
 
 ## Why a froxel volume
 
@@ -73,13 +71,42 @@ exponential slices in Z — but is deliberately *not* the same grid:
 - fog wants its own, much nearer far plane (64 units by default, versus the
   scene's far plane) so its 64 slices land where fog is actually visible.
 
-What is shared is the addressing scheme, which is what will let a fog froxel
-find the light cluster covering it and reuse its light list when punctual
-lighting is added.
+What is shared is the addressing scheme, and that is what lets a fog froxel find
+the light cluster covering it and walk **that cluster's light list** rather than
+every light in the scene — the same amortisation the opaque pass gets.
+
+That mapping is the one place the two systems have to agree, and getting it
+wrong hands a froxel some other cluster's lights, which looks like fog lit
+slightly wrong rather than anything obviously broken. So it is a GPU-free
+function (`fogFroxelClusterIndex`) defined as "the cluster the fragment shader
+would pick for a fragment at this froxel's screen position and view depth", and
+a unit test asserts exactly that against `ClusterGrid.h`'s own `clusterIndex`
+instead of re-deriving the arithmetic.
 
 The fog volume also uses its own near plane (0.5 rather than the camera's 0.1),
 because an exponential distribution anchored at 0.1 spends most of its slices in
 the first metre where almost nothing is visible.
+
+## Light shafts
+
+Punctual lighting inside the medium reuses what the surrounding systems already
+built: the per-cluster light lists from the clustered lighting passes, and the
+tiles from the punctual shadow atlas. Fog builds neither of its own.
+
+That also fixes the pass ordering. Fog injection has to run *after* the cluster
+build and light cull, because it walks their output, and *before* the main HDR
+pass, which samples the volume. It sits between them.
+
+The shadow lookup is deliberately simpler than the surface one in
+`simple_bindless.frag`: no normal-offset bias, no slope scaling, and a single
+tap instead of 3x3 PCF. That is not a shortcut. Those biases exist to stop a
+surface shadowing itself, and a participating medium has no surface to
+self-shadow; and froxels are far coarser than pixels with a trilinear filter on
+the way out, so extra taps would be filtered away regardless.
+
+Attenuation, the range cutoff, and the spot cone are evaluated exactly as the
+surface path does them, so a light does not appear to reach further through fog
+than it does across a floor.
 
 ## The slab integral
 
@@ -132,8 +159,6 @@ Debug panel → **Volumetric Fog**:
 
 ## Limitations
 
-- **Directional light only.** No punctual light contribution, so no shafts from
-  the spot and point lights that now cast shadows.
 - **No temporal filtering.** One sample per froxel per frame, so a low-density
   medium under a high-frequency shadow can alias. The usual fix is a jittered
   sample plus reprojection against the previous frame's volume.
@@ -143,3 +168,7 @@ Debug panel → **Volumetric Fog**:
   volume.
 - **Uniform medium.** No noise or density texture, so the fog has no internal
   structure.
+- **Punctual shafts cost.** Every froxel walks its cluster's light list, which
+  takes the fog passes from roughly 0.3ms to roughly 1.0ms on the demo scene.
+  There is no per-light importance cut, so a froxel in a dense cluster pays for
+  every light in it.

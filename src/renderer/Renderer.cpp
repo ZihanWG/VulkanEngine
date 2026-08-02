@@ -940,15 +940,29 @@ void Renderer::createShadowMap()
     // The fog injection pass samples the cascaded shadow map, so it is created
     // here alongside it -- a cascade-count change recreates the shadow map, and
     // the fog descriptors cache its view.
+    // Fog samples both shadow sources: the cascades for the directional light
+    // and the punctual atlas for the spot/point shafts, so it is created after
+    // punctualShadows_ above. When the atlas failed to allocate, cascade 0's
+    // single-layer 2D view stands in -- the binding is a sampler2D, so the CSM
+    // array view would not do, and nothing samples it because every light then
+    // carries the unshadowed sentinel.
+    const VkImageView punctualAtlasView =
+        punctualShadows_.valid() ? punctualShadows_.atlas().imageView() : shadowMap_.layerImageView(0);
+    const VkSampler punctualAtlasSampler =
+        punctualShadows_.valid() ? punctualShadows_.atlas().sampler() : shadowMap_.sampler();
+
     if (volumetricFog_.hasVolume()) {
-        volumetricFog_.updateShadowMap(shadowMap_.imageView(), shadowMap_.sampler());
+        volumetricFog_.updateShadowMap(
+            shadowMap_.imageView(), shadowMap_.sampler(), punctualAtlasView, punctualAtlasSampler);
     } else {
         volumetricFog_.create(context_,
                               static_cast<uint32_t>(frames_.size()),
                               shaderPath("fog_inject.comp.spv"),
                               shaderPath("fog_integrate.comp.spv"),
                               shadowMap_.imageView(),
-                              shadowMap_.sampler());
+                              shadowMap_.sampler(),
+                              punctualAtlasView,
+                              punctualAtlasSampler);
     }
 }
 
@@ -5752,19 +5766,6 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     // fog disabled. No-op after the first frame.
     volumetricFog_.ensureVolumeInitialized(commandBuffer);
 
-    if (isVolumetricFogActive()) {
-        const bool fogProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "VolumetricFog");
-        // The graph pass carries no rendering scope; it exists so the cascaded
-        // shadow map is transitioned out of its depth-attachment layout before
-        // the injection dispatch samples it.
-        renderGraph_.beginVolumetricFogPass();
-        volumetricFog_.recordCommands(commandBuffer, currentFrame_);
-        renderGraph_.endVolumetricFogPass();
-        if (fogProfileScope) {
-            gpuProfiler_.endScope(currentFrame_, commandBuffer);
-        }
-    }
-
     recordGpuCullingCommands(commandBuffer);
 
     // Clustered (Forward+) light assignment: rebuild the froxel AABBs, then cull
@@ -5782,6 +5783,38 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
             rhi::debug::beginLabel(commandBuffer, "LightCull");
             clusteredLighting_.recordLightCull(commandBuffer, currentFrame_);
             rhi::debug::endLabel(commandBuffer);
+        }
+    }
+
+    // Fog runs here, not with the shadow passes: injection walks the per-cluster
+    // light lists, so it has to follow the cluster build and light cull above.
+    // It still has to precede the main HDR pass, which samples the volume.
+    if (isVolumetricFogActive()) {
+        const bool fogProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "VolumetricFog");
+        // The graph pass carries no rendering scope; it exists so the cascaded
+        // shadow map is transitioned out of its depth-attachment layout before
+        // the injection dispatch samples it.
+        // Fog reuses the light lists the cluster passes just produced and the
+        // atlas tiles the punctual shadow pass just filled, rather than
+        // building either for itself.
+        renderer::FogInjectPushConstants fogPushConstants{};
+        fogPushConstants.lightBufferAddress = clusteredLighting_.lightBufferAddress(currentFrame_);
+        fogPushConstants.clusterGridAddress =
+            clusteredLightingActive ? clusteredLighting_.clusterGridAddress(currentFrame_) : 0;
+        fogPushConstants.lightIndexListAddress =
+            clusteredLightingActive ? clusteredLighting_.lightIndexListAddress(currentFrame_) : 0;
+        fogPushConstants.punctualShadowSlotAddress =
+            punctualShadows_.slotCount() > 0 ? punctualShadows_.slotBufferAddress(currentFrame_) : 0;
+        fogPushConstants.lightCount = clusteredLighting_.lightCount();
+        fogPushConstants.useClustered = clusteredLightingActive ? 1u : 0u;
+        fogPushConstants.clusterZNear = camera_.nearPlane;
+        fogPushConstants.clusterZFar = camera_.farPlane;
+
+        renderGraph_.beginVolumetricFogPass();
+        volumetricFog_.recordCommands(commandBuffer, currentFrame_, fogPushConstants);
+        renderGraph_.endVolumetricFogPass();
+        if (fogProfileScope) {
+            gpuProfiler_.endScope(currentFrame_, commandBuffer);
         }
     }
 

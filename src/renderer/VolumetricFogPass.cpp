@@ -18,7 +18,8 @@ namespace {
 constexpr uint32_t kInjectBindingParams = 0;
 constexpr uint32_t kInjectBindingShadowMap = 1;
 constexpr uint32_t kInjectBindingScatterVolume = 2;
-constexpr uint32_t kInjectBindingCount = 3;
+constexpr uint32_t kInjectBindingPunctualAtlas = 3;
+constexpr uint32_t kInjectBindingCount = 4;
 
 constexpr uint32_t kIntegrateBindingParams = 0;
 constexpr uint32_t kIntegrateBindingScatterVolume = 1;
@@ -77,12 +78,16 @@ void VolumetricFogPass::create(rhi::VulkanContext& context,
                                const std::filesystem::path& injectShaderPath,
                                const std::filesystem::path& integrateShaderPath,
                                VkImageView shadowMapView,
-                               VkSampler shadowMapSampler)
+                               VkSampler shadowMapSampler,
+                               VkImageView punctualShadowAtlasView,
+                               VkSampler punctualShadowAtlasSampler)
 {
     reset();
     context_ = &context;
     shadowMapView_ = shadowMapView;
     shadowMapSampler_ = shadowMapSampler;
+    punctualShadowAtlasView_ = punctualShadowAtlasView;
+    punctualShadowAtlasSampler_ = punctualShadowAtlasSampler;
 
     // Volumes and sampler are created outside the try: the material descriptor
     // set binds the integrated volume at a sampler3D binding whether or not fog
@@ -94,6 +99,9 @@ void VolumetricFogPass::create(rhi::VulkanContext& context,
     try {
         if (shadowMapView_ == VK_NULL_HANDLE || shadowMapSampler_ == VK_NULL_HANDLE) {
             throw std::runtime_error("Volumetric fog requires the cascaded shadow map to sample.");
+        }
+        if (punctualShadowAtlasView_ == VK_NULL_HANDLE || punctualShadowAtlasSampler_ == VK_NULL_HANDLE) {
+            throw std::runtime_error("Volumetric fog requires the punctual shadow atlas to sample.");
         }
 
         createDescriptorResources(frameCount);
@@ -144,6 +152,8 @@ void VolumetricFogPass::reset()
     integratedVolumeLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     shadowMapView_ = VK_NULL_HANDLE;
     shadowMapSampler_ = VK_NULL_HANDLE;
+    punctualShadowAtlasView_ = VK_NULL_HANDLE;
+    punctualShadowAtlasSampler_ = VK_NULL_HANDLE;
     volumeInitialized_ = false;
     available_ = false;
     context_ = nullptr;
@@ -220,6 +230,10 @@ void VolumetricFogPass::createDescriptorResources(uint32_t frameCount)
     injectBindings[kInjectBindingScatterVolume].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     injectBindings[kInjectBindingScatterVolume].descriptorCount = 1;
     injectBindings[kInjectBindingScatterVolume].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    injectBindings[kInjectBindingPunctualAtlas].binding = kInjectBindingPunctualAtlas;
+    injectBindings[kInjectBindingPunctualAtlas].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    injectBindings[kInjectBindingPunctualAtlas].descriptorCount = 1;
+    injectBindings[kInjectBindingPunctualAtlas].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
     injectSetLayout_.create(device,
                             std::span<const VkDescriptorSetLayoutBinding>(injectBindings.data(),
@@ -247,7 +261,7 @@ void VolumetricFogPass::createDescriptorResources(uint32_t frameCount)
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSizes[0].descriptorCount = frameCount * 2;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[1].descriptorCount = frameCount;
+    poolSizes[1].descriptorCount = frameCount * 2;
     poolSizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     poolSizes[2].descriptorCount = frameCount * 3;
     descriptorPool_.create(device, std::span<const VkDescriptorPoolSize>(poolSizes.data(), poolSizes.size()),
@@ -294,9 +308,12 @@ void VolumetricFogPass::createPipelines(const std::filesystem::path& injectShade
     const VkDevice device = context_->vkDevice();
 
     const VkDescriptorSetLayout injectLayout = injectSetLayout_.handle();
+    const VkPushConstantRange injectPushConstantRange{
+        VK_SHADER_STAGE_COMPUTE_BIT, 0, static_cast<uint32_t>(sizeof(FogInjectPushConstants))};
     rhi::VulkanComputePipelineCreateInfo injectInfo{};
     injectInfo.shaderPath = injectShaderPath;
     injectInfo.descriptorSetLayouts = std::span<const VkDescriptorSetLayout>(&injectLayout, 1);
+    injectInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&injectPushConstantRange, 1);
     injectInfo.pipelineCache = context_->pipelineCache();
     injectPipeline_.create(device, injectInfo);
     rhi::debug::setObjectName(device, injectPipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "FogInjectPipeline");
@@ -339,7 +356,12 @@ void VolumetricFogPass::writeDescriptorSets()
         integratedInfo.imageView = integratedVolume_.imageView();
         integratedInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
-        std::array<VkWriteDescriptorSet, 6> writes{};
+        VkDescriptorImageInfo punctualAtlasInfo{};
+        punctualAtlasInfo.sampler = punctualShadowAtlasSampler_;
+        punctualAtlasInfo.imageView = punctualShadowAtlasView_;
+        punctualAtlasInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+
+        std::array<VkWriteDescriptorSet, 7> writes{};
         const auto makeWrite =
             [](VkDescriptorSet set, uint32_t binding, VkDescriptorType type) {
                 VkWriteDescriptorSet write{};
@@ -361,6 +383,10 @@ void VolumetricFogPass::writeDescriptorSets()
             makeWrite(injectSets_[frameIndex], kInjectBindingScatterVolume, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
         writes[2].pImageInfo = &scatterInfo;
 
+        writes[6] = makeWrite(
+            injectSets_[frameIndex], kInjectBindingPunctualAtlas, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+        writes[6].pImageInfo = &punctualAtlasInfo;
+
         writes[3] =
             makeWrite(integrateSets_[frameIndex], kIntegrateBindingParams, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
         writes[3].pBufferInfo = &integrateParamsInfo;
@@ -375,14 +401,20 @@ void VolumetricFogPass::writeDescriptorSets()
     }
 }
 
-void VolumetricFogPass::updateShadowMap(VkImageView shadowMapView, VkSampler shadowMapSampler)
+void VolumetricFogPass::updateShadowMap(VkImageView shadowMapView,
+                                        VkSampler shadowMapSampler,
+                                        VkImageView punctualShadowAtlasView,
+                                        VkSampler punctualShadowAtlasSampler)
 {
-    if (!available_ || shadowMapView == VK_NULL_HANDLE || shadowMapSampler == VK_NULL_HANDLE) {
+    if (!available_ || shadowMapView == VK_NULL_HANDLE || shadowMapSampler == VK_NULL_HANDLE ||
+        punctualShadowAtlasView == VK_NULL_HANDLE || punctualShadowAtlasSampler == VK_NULL_HANDLE) {
         return;
     }
 
     shadowMapView_ = shadowMapView;
     shadowMapSampler_ = shadowMapSampler;
+    punctualShadowAtlasView_ = punctualShadowAtlasView;
+    punctualShadowAtlasSampler_ = punctualShadowAtlasSampler;
     writeDescriptorSets();
 }
 
@@ -443,7 +475,9 @@ void VolumetricFogPass::ensureVolumeInitialized(VkCommandBuffer commandBuffer)
     rhi::debug::endLabel(commandBuffer);
 }
 
-void VolumetricFogPass::recordCommands(VkCommandBuffer commandBuffer, uint32_t frameIndex)
+void VolumetricFogPass::recordCommands(VkCommandBuffer commandBuffer,
+                                       uint32_t frameIndex,
+                                       const FogInjectPushConstants& pushConstants)
 {
     if (!available_ || frameIndex >= injectSets_.size()) {
         return;
@@ -483,6 +517,12 @@ void VolumetricFogPass::recordCommands(VkCommandBuffer commandBuffer, uint32_t f
                             &injectSets_[frameIndex],
                             0,
                             nullptr);
+    vkCmdPushConstants(commandBuffer,
+                       injectPipeline_.layout(),
+                       VK_SHADER_STAGE_COMPUTE_BIT,
+                       0,
+                       static_cast<uint32_t>(sizeof(FogInjectPushConstants)),
+                       &pushConstants);
     vkCmdDispatch(commandBuffer,
                   dispatchCount(kFogGridX, kFogLocalSize),
                   dispatchCount(kFogGridY, kFogLocalSize),

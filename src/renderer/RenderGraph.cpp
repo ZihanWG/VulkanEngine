@@ -1572,6 +1572,14 @@ void RenderGraph::declareGeometryPasses()
                 builder.readTexture(frame_.shadowMapDepth,
                                     RGAccess::ShaderRead,
                                     "Samples the cascaded shadow map to shadow the fog froxels.");
+                if (frame_.punctualShadowAtlas != nullptr) {
+                    // Fog runs between the atlas pass and the main pass, so
+                    // without this the atlas is still a depth attachment when
+                    // the injection dispatch samples it for light shafts.
+                    builder.readTexture(frame_.punctualShadowAtlasDepth,
+                                        RGAccess::ShaderRead,
+                                        "Samples the punctual shadow atlas for fog light shafts.");
+                }
             });
     }
 

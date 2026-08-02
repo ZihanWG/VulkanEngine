@@ -50,6 +50,23 @@ struct FogInjectParams {
     glm::vec4 ambientColor{0.0f};
 };
 
+// Mirrors the push constant block in fog_inject.comp. The buffer addresses come
+// from ClusteredLighting and PunctualShadows, so fog reuses the light lists and
+// shadow tiles those already produce rather than building its own.
+struct FogInjectPushConstants {
+    VkDeviceAddress lightBufferAddress = 0;
+    VkDeviceAddress clusterGridAddress = 0;
+    VkDeviceAddress lightIndexListAddress = 0;
+    VkDeviceAddress punctualShadowSlotAddress = 0;
+    uint32_t lightCount = 0;
+    uint32_t useClustered = 0;
+    float clusterZNear = 0.1f;
+    float clusterZFar = 100.0f;
+};
+
+static_assert(sizeof(FogInjectPushConstants) == 48);
+static_assert(sizeof(FogInjectPushConstants) <= 128);
+
 // Mirrors FogIntegrateParams in fog_integrate.comp.
 struct FogIntegrateParams {
     glm::vec4 fogParams{kDefaultFogMaxDistance, 0.0f, 0.0f, 0.0f};
@@ -88,18 +105,25 @@ public:
                 const std::filesystem::path& injectShaderPath,
                 const std::filesystem::path& integrateShaderPath,
                 VkImageView shadowMapView,
-                VkSampler shadowMapSampler);
+                VkSampler shadowMapSampler,
+                VkImageView punctualShadowAtlasView,
+                VkSampler punctualShadowAtlasSampler);
     void reset();
 
     // Rebinds the cascaded shadow map. Called when the shadow map is recreated,
     // since the descriptor sets cache its view.
-    void updateShadowMap(VkImageView shadowMapView, VkSampler shadowMapSampler);
+    void updateShadowMap(VkImageView shadowMapView,
+                         VkSampler shadowMapSampler,
+                         VkImageView punctualShadowAtlasView,
+                         VkSampler punctualShadowAtlasSampler);
 
     void updateParams(uint32_t frameIndex, const FogInjectParams& injectParams);
 
     // Records injection then integration, with a barrier between them: the
     // second pass reads every froxel the first wrote.
-    void recordCommands(VkCommandBuffer commandBuffer, uint32_t frameIndex);
+    void recordCommands(VkCommandBuffer commandBuffer,
+                        uint32_t frameIndex,
+                        const FogInjectPushConstants& pushConstants);
 
     // Clears the integrated volume to "no fog" and puts it in the layout the
     // material descriptors record. Must be called even on frames where fog is
@@ -159,6 +183,8 @@ private:
 
     VkImageView shadowMapView_ = VK_NULL_HANDLE;
     VkSampler shadowMapSampler_ = VK_NULL_HANDLE;
+    VkImageView punctualShadowAtlasView_ = VK_NULL_HANDLE;
+    VkSampler punctualShadowAtlasSampler_ = VK_NULL_HANDLE;
     bool volumeInitialized_ = false;
 
     std::vector<rhi::VulkanBuffer> injectParamBuffers_;
