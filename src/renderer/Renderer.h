@@ -733,6 +733,21 @@ private:
     // Scratch: every punctual light ranked by projected size. Member so the
     // per-frame assignment does not reallocate every frame.
     std::vector<PunctualShadowCandidate> punctualShadowCandidates_;
+    // Per-light assignment state carried across frames, indexed by light index.
+    // Light indices are stable frame to frame because updateDemoLights rebuilds
+    // the swarm in a deterministic order; a scene with dynamic light lifetimes
+    // would need real light IDs instead.
+    struct PunctualShadowLightState {
+        uint32_t sizeClass = 0;
+        bool shadowed = false;
+        bool valid = false;
+    };
+    std::vector<PunctualShadowLightState> punctualShadowLightState_;
+    // How many lights gained or lost their shadow between the last two frames.
+    // Surfaced because assignment churn is exactly what reads as popping, and
+    // guessing at it from the image is how the last few rounds went wrong.
+    uint32_t punctualShadowAssignmentChurn_ = 0;
+    uint64_t punctualShadowAssignmentChurnTotal_ = 0;
     // Slots filled last frame, surfaced in the debug panel.
     uint32_t punctualShadowSlotsUsed_ = 0;
     // Caster draws the atlas pass actually recorded last frame. Surfaced because

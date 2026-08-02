@@ -214,10 +214,31 @@ TEST_CASE("Tile size follows a light's projected size", "[shadowatlas]")
     // The demotion still clamps at the smallest class rather than running off.
     CHECK(punctualShadowSizeClassForRadius(0.0f, true) == kPunctualShadowSizeClassCount - 1);
 
-    // A light enclosing the camera is maximally important, not degenerate.
+    // Lights enclosing the camera outrank every light that does not...
     const float enclosing = punctualShadowProjectedRadius(glm::vec3{0.0f, 0.0f, 1.0f}, 8.0f, camera, projScaleY);
     CHECK(enclosing > near);
-    CHECK(punctualShadowSizeClassForRadius(enclosing) == 0u);
+    // Never a worse class than a light it outranks. Not pinned to class 0
+    // outright: the class follows the projected radius, and this case's
+    // deliberately small projScaleY keeps even a fully enclosing light under the
+    // largest class's threshold. Real projScaleY values clear it comfortably.
+    CHECK(punctualShadowSizeClassForRadius(enclosing) <= punctualShadowSizeClassForRadius(near));
+
+    // ...but they still rank against *each other*. Saturating them all to one
+    // value collapses the ordering exactly when a scene has many overlapping
+    // lights: they tie, the tiebreak falls back to light index, and priority
+    // degenerates into "whichever lights come first".
+    const float deep = punctualShadowProjectedRadius(glm::vec3{0.0f, 0.0f, 0.5f}, 8.0f, camera, projScaleY);
+    const float shallow = punctualShadowProjectedRadius(glm::vec3{0.0f, 0.0f, 7.0f}, 8.0f, camera, projScaleY);
+    CHECK(deep > shallow);
+    CHECK(shallow > punctualShadowProjectedRadius(glm::vec3{0.0f, 0.0f, 9.0f}, 8.0f, camera, projScaleY));
+    CHECK(std::isfinite(deep));
+
+    // Continuous where the two branches meet, so a light drifting across its own
+    // radius does not pop between size classes.
+    const float justInside = punctualShadowProjectedRadius(glm::vec3{0.0f, 0.0f, 8.0f}, 8.0f, camera, projScaleY);
+    const float justOutside =
+        punctualShadowProjectedRadius(glm::vec3{0.0f, 0.0f, 8.001f}, 8.0f, camera, projScaleY);
+    CHECK(justInside == Approx(justOutside).epsilon(0.001));
 
     CHECK(punctualShadowTileSizeForClass(0) == kPunctualShadowMaxTileSize);
     CHECK(punctualShadowTileSizeForClass(kPunctualShadowSizeClassCount - 1) == kPunctualShadowMinTileSize);

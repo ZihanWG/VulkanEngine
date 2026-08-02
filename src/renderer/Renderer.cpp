@@ -2785,6 +2785,22 @@ void Renderer::updatePunctualShadowSlots(uint32_t frameIndex, float aspectRatio)
         ++pointLightsShadowed;
     }
 
+    // Measure how much the assignment moved. Lights popping in and out of the
+    // shadowed set frame to frame is what reads as flicker, so it gets counted
+    // rather than eyeballed.
+    punctualShadowLightState_.resize(lights.size());
+    punctualShadowAssignmentChurn_ = 0;
+    for (size_t lightIndex = 0; lightIndex < lights.size(); ++lightIndex) {
+        const bool shadowed = lights[lightIndex].spotScaleOffset.z >= 0.0f;
+        PunctualShadowLightState& state = punctualShadowLightState_[lightIndex];
+        if (state.valid && state.shadowed != shadowed) {
+            ++punctualShadowAssignmentChurn_;
+            ++punctualShadowAssignmentChurnTotal_;
+        }
+        state.shadowed = shadowed;
+        state.valid = true;
+    }
+
     punctualShadowSlotsUsed_ = punctualShadows_.slotCount();
     punctualShadows_.upload(frameIndex);
 }
@@ -3652,7 +3668,9 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
             << "  casting: " << (usePunctualShadows_ ? "enabled" : "disabled") << "\n"
             << "  slots used: " << punctualShadowSlotsUsed_ << "\n"
             << "  atlas occupancy: " << static_cast<int>(punctualShadows_.occupancy() * 100.0f) << "%\n"
-            << "  caster draws recorded: " << punctualShadowDrawsRecorded_ << "\n";
+            << "  caster draws recorded: " << punctualShadowDrawsRecorded_ << "\n"
+            << "  assignment churn this frame: " << punctualShadowAssignmentChurn_
+            << ", cumulative: " << punctualShadowAssignmentChurnTotal_ << "\n";
     message << "Shadow culling:\n";
     message << "  cascade count: " << shadowCullingStats_.cascadeCount << "\n"
             << "  total shadow draw items across cascades: " << shadowCullingStats_.totalDrawItems << "\n"

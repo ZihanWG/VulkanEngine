@@ -53,13 +53,23 @@ float punctualShadowProjectedRadius(const glm::vec3& lightPosition,
     const float distance = glm::length(lightPosition - cameraPosition);
     const float clampedRange = std::max(range, 0.0f);
 
-    // Inside its own radius the light wraps the camera; treat that as maximally
-    // important rather than letting the projection blow up or go negative.
+    const float scale = std::max(projScaleY, 0.0f);
+
+    // Inside its own radius the light wraps the camera, and range/distance stops
+    // describing a footprint. Returning one saturated value for all of them
+    // collapses the ranking exactly when a scene has many overlapping lights --
+    // they tie, the tiebreak falls back to light index, and priority silently
+    // degenerates into "whichever lights come first".
+    //
+    // Instead keep ranking them, by how deeply they enclose the camera. This is
+    // continuous with the branch below (both give `scale` at distance == range),
+    // so a light drifting across its own radius does not pop between classes.
     if (distance <= clampedRange) {
-        return std::numeric_limits<float>::max();
+        const float enclosure = clampedRange > 0.0f ? (clampedRange - distance) / clampedRange : 1.0f;
+        return scale * (1.0f + enclosure);
     }
 
-    return clampedRange / distance * std::max(projScaleY, 0.0f);
+    return clampedRange / distance * scale;
 }
 
 uint32_t punctualShadowSizeClassForRadius(float projectedRadius, bool isPoint)

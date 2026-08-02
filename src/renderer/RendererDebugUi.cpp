@@ -237,6 +237,11 @@ void Renderer::drawShadowsDebugUi()
                     punctualShadowSlotsUsed_,
                     punctualShadows_.occupancy() * 100.0f);
         ImGui::Text("Caster draws recorded: %u", punctualShadowDrawsRecorded_);
+        // Assignment churn is what popping actually looks like, so it is
+        // measured rather than inferred from the image.
+        ImGui::Text("Assignment churn: %u this frame", punctualShadowAssignmentChurn_);
+        ImGui::SetItemTooltip("Lights that gained or lost their shadow since last frame.\n"
+                              "Persistently non-zero is what reads as shadows popping in and out.");
         ImGui::SetItemTooltip("Zero here with slots > 0 means the atlas pass culled or skipped everything.");
         ImGui::Checkbox("Debug: shadow term only", &showPunctualShadowDebug_);
         ImGui::SetItemTooltip("Greyscale punctual visibility, min across the lights that actually reach\n"

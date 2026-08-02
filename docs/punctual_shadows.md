@@ -48,9 +48,16 @@ both who gets a tile and how big a tile they get.
 This is what distance-only ordering could not express: a large light far away
 can outrank a small one nearby, and it should.
 
-A light whose radius encloses the camera clamps to maximum priority rather than
-letting the projection blow up or go negative — something wrapped around the
-camera is not a candidate for demotion.
+A light whose radius encloses the camera needs separate handling, because
+`range / distance` stops describing a footprint there. It ranks by how deeply it
+encloses the camera instead, on a scale that starts exactly where the
+non-enclosing branch ends — so a light drifting across its own radius does not
+pop between size classes.
+
+Saturating all such lights to one value instead looks harmless and is not: they
+tie, the tiebreak falls back to light index, and priority silently degenerates
+into "whichever lights come first". In a scene of overlapping lights that is
+most of them, which makes the whole ranking inert.
 
 Point lights are **demoted one size class**. A point light buys six tiles rather
 than one, so ranking it against a spot on the same threshold lets a single point
@@ -236,6 +243,7 @@ shadow settings have always lived:
 | Normal bias | World-space offset along the surface normal before projecting |
 | Max shadowed point lights | Budget, in lights; each costs 6 tiles. Nearest to the camera are served first |
 | Caster draws recorded | Draws the atlas pass issued last frame; zero with slots > 0 means it culled everything |
+| Assignment churn | Lights that gained or lost a shadow since last frame; persistently non-zero is what popping looks like |
 | Debug: shadow term only | Renders the punctual visibility term as greyscale instead of shaded colour |
 | Atlas depth preview | Samples the atlas image directly (see the caveat below) |
 
