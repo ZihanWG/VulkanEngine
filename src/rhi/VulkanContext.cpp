@@ -9,6 +9,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace ve::rhi {
@@ -112,7 +113,7 @@ VulkanContext::~VulkanContext()
     cleanup();
 }
 
-void VulkanContext::initialize(const Window& window)
+void VulkanContext::initialize(const Window& window, std::filesystem::path shaderDirectory)
 {
     PFN_vkGetInstanceProcAddr getInstanceProcAddr = window.vulkanGetInstanceProcAddr();
     if (getInstanceProcAddr == nullptr) {
@@ -127,7 +128,7 @@ void VulkanContext::initialize(const Window& window)
     setupDebugMessenger();
     surface_ = window.createSurface(instance_);
 
-    device_.initialize(instance_, surface_);
+    device_.initialize(instance_, surface_, std::move(shaderDirectory));
     createAllocator();
 }
 
