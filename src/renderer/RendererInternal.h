@@ -216,6 +216,11 @@ struct PushConstants {
     // buffer_reference by the punctual lighting loop. Zero when no light got a
     // tile this frame, which the shader also treats as "nothing casts".
     VkDeviceAddress punctualShadowSlotAddress = 0;
+    // Debug: outputs the punctual shadow visibility term as greyscale instead of
+    // shaded colour. The only unambiguous way to tell a working atlas from a
+    // working *lookup* -- a single spot among dozens of lights is easy to lose
+    // in the beauty image.
+    uint32_t debugPunctualShadows = 0;
 };
 
 static_assert(offsetof(PushConstants, objectFrameDataAddress) == 0);
@@ -237,6 +242,7 @@ static_assert(offsetof(PushConstants, jointMatricesAddress) == 72);
 // offset is part of the shader contract and not just an implementation detail.
 static_assert(offsetof(PushConstants, debugLodHeatmap) == 80);
 static_assert(offsetof(PushConstants, punctualShadowSlotAddress) == 88);
+static_assert(offsetof(PushConstants, debugPunctualShadows) == 96);
 static_assert(sizeof(PushConstants) <= 128);
 
 // Mirrors src/shaders/cull.comp. Main and shadow GPU culling both use this

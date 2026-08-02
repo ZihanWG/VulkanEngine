@@ -234,6 +234,9 @@ void Renderer::drawShadowsDebugUi()
         ImGui::Text("Slots used: %u / %u", punctualShadowSlotsUsed_, renderer::kMaxPunctualShadowSlots);
         ImGui::Text("Caster draws recorded: %u", punctualShadowDrawsRecorded_);
         ImGui::SetItemTooltip("Zero here with slots > 0 means the atlas pass culled or skipped everything.");
+        ImGui::Checkbox("Debug: shadow term only", &showPunctualShadowDebug_);
+        ImGui::SetItemTooltip("Greyscale punctual visibility. Flat white = the atlas is never sampled;\n"
+                              "any structure = the lookup works and the term is just subtle when shaded.");
         // Point lights need six cube faces each, which the atlas pass does not
         // record yet, so they are shaded but never shadowed.
         ImGui::TextDisabled("Spot lights only; point lights are not shadowed yet.");

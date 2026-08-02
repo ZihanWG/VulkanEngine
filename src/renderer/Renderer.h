@@ -719,6 +719,8 @@ private:
     // the atlas cost and its visual contribution can be A/B'd against the same
     // light set the way the clustered/brute-force toggle is.
     bool usePunctualShadows_ = true;
+    // Debug view: outputs the punctual shadow visibility term as greyscale.
+    bool showPunctualShadowDebug_ = false;
     // Slots filled last frame, surfaced in the debug panel.
     uint32_t punctualShadowSlotsUsed_ = 0;
     // Caster draws the atlas pass actually recorded last frame. Surfaced because

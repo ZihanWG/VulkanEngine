@@ -5716,6 +5716,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     // is enough to skip the atlas fetch -- it never has to consult a count.
     basePushConstants.punctualShadowSlotAddress =
         punctualShadows_.slotCount() > 0 ? punctualShadows_.slotBufferAddress(currentFrame_) : 0;
+    basePushConstants.debugPunctualShadows = showPunctualShadowDebug_ ? 1u : 0u;
     if (multiDrawIndirectActive) {
         if (bindlessDescriptorSetsBound) {
             const PushConstants pushConstants = basePushConstants;

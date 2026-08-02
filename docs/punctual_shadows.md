@@ -133,7 +133,9 @@ shadow settings have always lived:
 | Slots used | Tiles allocated this frame, out of 64 |
 | Depth bias | Constant offset applied to the compared depth |
 | Normal bias | World-space offset along the surface normal before projecting |
-| Atlas depth preview | Samples the atlas image directly, so occupied tiles and their depth content are visible |
+| Caster draws recorded | Draws the atlas pass issued last frame; zero with slots > 0 means it culled everything |
+| Debug: shadow term only | Renders the punctual visibility term as greyscale instead of shaded colour |
+| Atlas depth preview | Samples the atlas image directly (see the caveat below) |
 
 **Read the caster-draw count, not the preview image.** The preview is a plain
 `ImGui::Image` with a multiplicative tint, so it cannot expand contrast near
@@ -146,6 +148,18 @@ So the useful signal is `Caster draws recorded`: zero with slots > 0 means the
 atlas pass culled or skipped everything; non-zero means the pass ran and any
 remaining problem is in the lookup. Making the preview itself readable needs a
 linearising remap, which the shared preview helper has no place to put.
+
+That splits the diagnosis cleanly across the two halves:
+
+| Symptom | Meaning |
+| --- | --- |
+| `Caster draws recorded` is 0 with slots > 0 | The atlas pass culled or skipped everything |
+| Draws > 0 but **Debug: shadow term only** is flat white | The atlas is written but never sampled — the lookup is wrong |
+| Draws > 0 and the debug view shows structure | Both halves work; the term is simply subtle in the shaded image |
+
+The debug view exists because a single spot among dozens of clustered lights is
+easy to lose in the beauty image — "I cannot see a shadow" is not evidence of a
+bug on its own.
 
 ## Testing
 

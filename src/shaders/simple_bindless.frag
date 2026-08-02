@@ -65,6 +65,7 @@ layout(push_constant) uniform PushConstants {
     layout(offset = 68) uint debugClusterHeatmap;
     layout(offset = 80) uint debugLodHeatmap;
     layout(offset = 88) ShadowSlotBuffer punctualShadowSlots;
+    layout(offset = 96) uint debugPunctualShadows;
 } pc;
 
 layout(set = 0, binding = 1) uniform sampler2DArray uShadowMap;
@@ -507,6 +508,10 @@ void main()
     // fragment loops only the lights assigned to its froxel; otherwise it falls
     // back to evaluating every light (also the path for the brute-force compare).
     vec3 punctual = vec3(0.0);
+    // Darkest visibility any punctual light reports at this fragment, for the
+    // debug view below. Starts fully lit so a fragment no light reaches reads
+    // as unshadowed rather than black.
+    float punctualVisibility = 1.0;
     uint clusterLightCount = 0u;
     if (pc.useClustered != 0u) {
         uint tileX = min(uint(gl_FragCoord.x / (pc.screenWidth / float(kClusterGridX))), kClusterGridX - 1u);
@@ -523,6 +528,8 @@ void main()
         clusterLightCount = cell.count;
         for (uint i = 0u; i < cell.count; ++i) {
             uint lightIndex = pc.lightIndexList.indices[cell.offset + i];
+            punctualVisibility = min(punctualVisibility,
+                                     punctualShadowFactor(pc.lightBuffer.lights[lightIndex], vWorldPosition, normal));
             punctual += evaluatePunctualLight(pc.lightBuffer.lights[lightIndex],
                                               normal,
                                               viewDirection,
@@ -534,6 +541,8 @@ void main()
         }
     } else {
         for (uint lightIndex = 0u; lightIndex < pc.lightCount; ++lightIndex) {
+            punctualVisibility = min(punctualVisibility,
+                                     punctualShadowFactor(pc.lightBuffer.lights[lightIndex], vWorldPosition, normal));
             punctual += evaluatePunctualLight(pc.lightBuffer.lights[lightIndex],
                                               normal,
                                               viewDirection,
@@ -554,6 +563,17 @@ void main()
     }
 
     vec3 finalColor = ambient + direct + punctual + emissive;
+
+    // Debug overlay: the punctual shadow visibility term on its own. White is
+    // fully lit, black fully shadowed, so a flat white frame means the atlas is
+    // never being sampled while any structure means the lookup works and the
+    // term is simply subtle in the shaded image.
+    if (pc.debugPunctualShadows != 0u) {
+        outColor = vec4(vec3(punctualVisibility), 1.0);
+        outVelocity = computeVelocity();
+        outNormalRoughness = vec4(octEncode(normal), roughness, metallic);
+        return;
+    }
 
     // Debug overlay: visualize how many lights touch each froxel. Saturates the
     // ramp at 16 lights, which is plenty to read cluster occupancy at a glance.
