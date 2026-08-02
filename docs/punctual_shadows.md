@@ -240,6 +240,15 @@ The debug view exists because a single spot among dozens of clustered lights is
 easy to lose in the beauty image — "I cannot see a shadow" is not evidence of a
 bug on its own.
 
+Read the debug view as a **min across the lights that actually reach each
+fragment**, not as a preview of the shaded result. Several casters overlapping
+darkens a great deal of the frame there while the shaded image changes far less,
+because shading also weighs each light's attenuation. The gate matters:
+`evaluatePunctualLight` applies the shadow only after its range and cone
+early-outs, so the debug path has to reproduce them — without that it reports
+occlusion from lights contributing no light at all, which min()s the frame to
+near-black and reads as a catastrophic bug that is not there.
+
 ## Testing
 
 `tests/test_punctual_shadow_atlas.cpp` covers the GPU-free core the same way

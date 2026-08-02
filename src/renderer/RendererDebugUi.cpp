@@ -239,8 +239,10 @@ void Renderer::drawShadowsDebugUi()
         ImGui::Text("Caster draws recorded: %u", punctualShadowDrawsRecorded_);
         ImGui::SetItemTooltip("Zero here with slots > 0 means the atlas pass culled or skipped everything.");
         ImGui::Checkbox("Debug: shadow term only", &showPunctualShadowDebug_);
-        ImGui::SetItemTooltip("Greyscale punctual visibility. Flat white = the atlas is never sampled;\n"
-                              "any structure = the lookup works and the term is just subtle when shaded.");
+        ImGui::SetItemTooltip("Greyscale punctual visibility, min across the lights that actually reach\n"
+                              "each fragment. Flat white = the atlas is never sampled; any structure =\n"
+                              "the lookup works. Several casters overlapping darkens a lot of the frame\n"
+                              "here without the shaded image changing nearly as much.");
         // Six tiles per point light against 64 total, so the budget is explicit
         // rather than an implicit cap the user cannot see.
         ImGui::SliderInt("Max shadowed point lights",

@@ -393,6 +393,34 @@ float punctualShadowFactor(GpuLight light, vec3 worldPosition, vec3 normal)
     return litSamples / 9.0;
 }
 
+// Shadow term for the debug view, gated on the light actually reaching this
+// fragment.
+//
+// evaluatePunctualLight applies the shadow only after its range and cone
+// early-outs, so an out-of-range light never darkens the shaded image. The
+// debug accumulation has to reproduce those gates or it reports occlusion from
+// lights that contribute no light at all -- with several casters that min()s the
+// whole frame to black and looks like a catastrophic shadow bug.
+float punctualShadowDebugFactor(GpuLight light, vec3 worldPosition, vec3 normal)
+{
+    vec3 toLight = light.positionRange.xyz - worldPosition;
+    float distance = length(toLight);
+    float range = max(light.positionRange.w, EPSILON);
+    if (distance > range || distance < EPSILON) {
+        return 1.0;
+    }
+
+    if (light.directionType.w > 0.5) {
+        vec3 spotDirection = normalize(light.directionType.xyz);
+        float cosAngle = dot(-(toLight / distance), spotDirection);
+        if (clamp((cosAngle - light.spotScaleOffset.x) * light.spotScaleOffset.y, 0.0, 1.0) <= 0.0) {
+            return 1.0;
+        }
+    }
+
+    return punctualShadowFactor(light, worldPosition, normal);
+}
+
 // Cook-Torrance contribution of one punctual (point/spot) light, with inverse-
 // square falloff, a smooth range cutoff, and an optional spot cone. Reuses the
 // same GGX/Smith/Fresnel terms as the directional term above so point, spot, and
@@ -565,8 +593,9 @@ void main()
         clusterLightCount = cell.count;
         for (uint i = 0u; i < cell.count; ++i) {
             uint lightIndex = pc.lightIndexList.indices[cell.offset + i];
-            punctualVisibility = min(punctualVisibility,
-                                     punctualShadowFactor(pc.lightBuffer.lights[lightIndex], vWorldPosition, normal));
+            punctualVisibility =
+                min(punctualVisibility,
+                    punctualShadowDebugFactor(pc.lightBuffer.lights[lightIndex], vWorldPosition, normal));
             punctual += evaluatePunctualLight(pc.lightBuffer.lights[lightIndex],
                                               normal,
                                               viewDirection,
@@ -578,8 +607,9 @@ void main()
         }
     } else {
         for (uint lightIndex = 0u; lightIndex < pc.lightCount; ++lightIndex) {
-            punctualVisibility = min(punctualVisibility,
-                                     punctualShadowFactor(pc.lightBuffer.lights[lightIndex], vWorldPosition, normal));
+            punctualVisibility =
+                min(punctualVisibility,
+                    punctualShadowDebugFactor(pc.lightBuffer.lights[lightIndex], vWorldPosition, normal));
             punctual += evaluatePunctualLight(pc.lightBuffer.lights[lightIndex],
                                               normal,
                                               viewDirection,
