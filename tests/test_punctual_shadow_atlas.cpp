@@ -221,6 +221,47 @@ TEST_CASE("Spot shadow projections stay finite at degenerate inputs", "[shadowat
     }
 }
 
+TEST_CASE("The near plane scales with range to hold depth precision", "[shadowatlas]")
+{
+    using ve::renderer::kMinPunctualShadowNearPlane;
+    using ve::renderer::punctualShadowNearPlane;
+
+    // Never below the floor, however small the range.
+    CHECK(punctualShadowNearPlane(0.0f) == Approx(kMinPunctualShadowNearPlane));
+    CHECK(punctualShadowNearPlane(-5.0f) == Approx(kMinPunctualShadowNearPlane));
+    CHECK(punctualShadowNearPlane(0.1f) == Approx(kMinPunctualShadowNearPlane));
+
+    // Past the floor it tracks the range, holding the near:far ratio constant so
+    // depth precision does not degrade as ranges grow.
+    CHECK(punctualShadowNearPlane(16.0f) == Approx(0.32f));
+    CHECK(punctualShadowNearPlane(100.0f) == Approx(2.0f));
+    CHECK(punctualShadowNearPlane(200.0f) / 200.0f == Approx(punctualShadowNearPlane(100.0f) / 100.0f));
+
+    // The practical payoff: a receiver partway down a spot's range lands well
+    // inside the depth range instead of being crushed against the far plane.
+    // With a fixed 0.05 near and a range of 16, a receiver at 6 units sat at
+    // ~0.995 -- indistinguishable from the far-plane clear.
+    const glm::vec3 position{0.0f, 6.0f, 0.0f};
+    const glm::vec3 direction{0.0f, -1.0f, 0.0f};
+    const glm::mat4 derived = computeSpotShadowViewProjection(position, direction, 0.5f, 16.0f);
+    const float derivedDepth = projectToShadowUv(derived, glm::vec3{0.0f, 0.0f, 0.0f}).z;
+
+    const glm::mat4 fixedNear =
+        computeSpotShadowViewProjection(position, direction, 0.5f, 16.0f, 0.05f);
+    const float fixedDepth = projectToShadowUv(fixedNear, glm::vec3{0.0f, 0.0f, 0.0f}).z;
+
+    CHECK(derivedDepth < fixedDepth);
+    CHECK(fixedDepth > 0.99f);  // the old behaviour: crushed against the clear
+    CHECK(derivedDepth < 0.98f);
+    CHECK(derivedDepth > 0.0f);
+
+    // An explicit positive near plane still overrides the derivation.
+    CHECK(fixedDepth == Approx(projectToShadowUv(
+                                   computeSpotShadowViewProjection(position, direction, 0.5f, 16.0f, 0.05f),
+                                   glm::vec3{0.0f, 0.0f, 0.0f})
+                                   .z));
+}
+
 TEST_CASE("The GPU slot record keeps its std430 layout", "[shadowatlas]")
 {
     // The fragment shader indexes these through a buffer-device-address pointer,

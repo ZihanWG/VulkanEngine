@@ -721,6 +721,11 @@ private:
     bool usePunctualShadows_ = true;
     // Slots filled last frame, surfaced in the debug panel.
     uint32_t punctualShadowSlotsUsed_ = 0;
+    // Caster draws the atlas pass actually recorded last frame. Surfaced because
+    // the atlas preview cannot distinguish "nothing drew" from "everything drew
+    // but perspective depth is compressed into the top few percent" -- both look
+    // like a solid far-plane tile.
+    uint32_t punctualShadowDrawsRecorded_ = 0;
     bool showClusterHeatmap_ = false;
     // Procedural skinned bone-chain demo: draw it, and animate (vs hold bind pose).
     bool showSkinnedMesh_ = true;

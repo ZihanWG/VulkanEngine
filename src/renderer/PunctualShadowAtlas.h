@@ -31,10 +31,23 @@ inline constexpr uint32_t kPunctualShadowTileSize = 512;
 inline constexpr uint32_t kPunctualShadowTilesPerSide = kPunctualShadowAtlasSize / kPunctualShadowTileSize;
 inline constexpr uint32_t kMaxPunctualShadowSlots = kPunctualShadowTilesPerSide * kPunctualShadowTilesPerSide;
 
-// Near plane every punctual shadow projection uses. Small enough that geometry
-// hugging the bulb still rasterizes, large enough to keep the [0,1] depth
-// distribution from collapsing into the first few percent of the range.
-inline constexpr float kPunctualShadowNearPlane = 0.05f;
+// Floor for the punctual shadow near plane. Small enough that geometry hugging
+// the bulb still rasterizes; see punctualShadowNearPlane for why the plane is
+// usually pushed well past this.
+inline constexpr float kMinPunctualShadowNearPlane = 0.05f;
+
+// Fraction of a light's range used as its shadow near plane.
+//
+// A perspective projection spends most of its [0,1] depth range close to the
+// near plane, so a fixed 0.05 near against a range of 16 (a 320:1 ratio) leaves
+// everything past a couple of units crammed into the last ~2% of the range --
+// which is exactly where the receiving geometry actually is. Scaling the near
+// plane with the range keeps that ratio fixed at 50:1 no matter how far the
+// light reaches, so precision does not silently degrade as ranges grow.
+inline constexpr float kPunctualShadowNearPlaneRangeFraction = 0.02f;
+
+// Near plane for a light of the given range.
+[[nodiscard]] float punctualShadowNearPlane(float range);
 
 // Widest half-angle a spot shadow will project with. The perspective FOV is
 // twice this, so the clamp keeps the frustum strictly under 180 degrees where
@@ -122,11 +135,14 @@ private:
 // full cone angle (2 * outer) so the lit cone inscribes the tile, and the far
 // plane is the light's range -- exactly where the shading falloff reaches zero,
 // so nothing that could receive light falls outside the depth range.
+//
+// A nearPlane of 0 (the default) derives one from the range via
+// punctualShadowNearPlane; pass a positive value to override it.
 [[nodiscard]] glm::mat4 computeSpotShadowViewProjection(const glm::vec3& position,
                                                         const glm::vec3& direction,
                                                         float outerAngleRadians,
                                                         float range,
-                                                        float nearPlane = kPunctualShadowNearPlane);
+                                                        float nearPlane = 0.0f);
 
 // Frustum of a spot shadow projection, used to cull casters down to the ones
 // that can actually write into the slot.

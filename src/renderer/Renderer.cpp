@@ -2593,6 +2593,7 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer)
     const uint32_t slotCount = punctualShadows_.slotCount();
     if (!punctualShadows_.valid() || punctualShadowPipeline_.pipeline() == VK_NULL_HANDLE || slotCount == 0 ||
         allDrawItems_.empty()) {
+        punctualShadowDrawsRecorded_ = 0;
         return;
     }
 
@@ -2680,6 +2681,8 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer)
     }
 
     renderGraph_.endPunctualShadowPass();
+
+    punctualShadowDrawsRecorded_ = recordedDraws;
 
     rhi::debug::beginLabel(commandBuffer,
                            "PunctualShadowSlots " + std::to_string(slotCount) + " draws " +
@@ -3582,6 +3585,11 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
             << "  cascades: " << activeCascadeCount() << "\n"
             << "  texel snapping: " << (csmSettings_.enableTexelSnapping ? "enabled" : "disabled") << "\n"
             << "  debug colors: " << (csmSettings_.enableCascadeDebugColors ? "enabled" : "disabled") << "\n";
+    message << "Punctual shadows:\n"
+            << "  atlas: " << (punctualShadows_.valid() ? "available" : "unavailable") << "\n"
+            << "  casting: " << (usePunctualShadows_ ? "enabled" : "disabled") << "\n"
+            << "  slots used: " << punctualShadowSlotsUsed_ << "/" << renderer::kMaxPunctualShadowSlots << "\n"
+            << "  caster draws recorded: " << punctualShadowDrawsRecorded_ << "\n";
     message << "Shadow culling:\n";
     message << "  cascade count: " << shadowCullingStats_.cascadeCount << "\n"
             << "  total shadow draw items across cascades: " << shadowCullingStats_.totalDrawItems << "\n"

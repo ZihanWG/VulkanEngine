@@ -77,6 +77,11 @@ uint32_t punctualShadowSlotFromFloat(float encoded)
     return slot;
 }
 
+float punctualShadowNearPlane(float range)
+{
+    return std::max(kMinPunctualShadowNearPlane, std::max(range, 0.0f) * kPunctualShadowNearPlaneRangeFraction);
+}
+
 uint32_t PunctualShadowAtlasAllocator::allocate()
 {
     if (full()) {
@@ -96,7 +101,9 @@ glm::mat4 computeSpotShadowViewProjection(const glm::vec3& position,
     const glm::vec3 normalizedDirection =
         directionLength > 0.0f ? direction / directionLength : glm::vec3{0.0f, -1.0f, 0.0f};
 
-    const float clampedNear = std::max(nearPlane, 1.0e-3f);
+    // A non-positive nearPlane means "derive it from the range".
+    const float requestedNear = nearPlane > 0.0f ? nearPlane : punctualShadowNearPlane(range);
+    const float clampedNear = std::max(requestedNear, 1.0e-3f);
     const float clampedFar = std::max(range, clampedNear + 1.0e-3f);
     const float halfAngle = std::clamp(outerAngleRadians, 1.0e-3f, kMaxSpotShadowHalfAngleRadians);
 

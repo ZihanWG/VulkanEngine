@@ -232,6 +232,8 @@ void Renderer::drawShadowsDebugUi()
                     renderer::kMaxPunctualShadowSlots,
                     renderer::kPunctualShadowTileSize);
         ImGui::Text("Slots used: %u / %u", punctualShadowSlotsUsed_, renderer::kMaxPunctualShadowSlots);
+        ImGui::Text("Caster draws recorded: %u", punctualShadowDrawsRecorded_);
+        ImGui::SetItemTooltip("Zero here with slots > 0 means the atlas pass culled or skipped everything.");
         // Point lights need six cube faces each, which the atlas pass does not
         // record yet, so they are shaded but never shadowed.
         ImGui::TextDisabled("Spot lights only; point lights are not shadowed yet.");
@@ -243,6 +245,14 @@ void Renderer::drawShadowsDebugUi()
             const VkExtent2D atlasExtent = punctualShadows_.atlas().extent();
             ImGui::TextDisabled("Occupied tiles fill row-major from the top-left; %upx each.",
                                 renderer::kPunctualShadowTileSize);
+            // The preview is a plain ImGui::Image with a multiplicative tint, so
+            // it cannot expand contrast near 1.0. Perspective depth sits up
+            // there almost everywhere, which makes even a correctly rendered
+            // tile read as solid red. The CSM cascade previews look fine only
+            // because an orthographic projection gives linear depth. Use the
+            // caster-draw count above to tell "empty" from "just compressed".
+            ImGui::TextDisabled("Perspective depth reads near-white/red even when correct;");
+            ImGui::TextDisabled("trust \"caster draws recorded\" above, not this image.");
             drawRenderTargetPreview(punctualShadows_.atlas().imageView(),
                                     punctualShadows_.atlas().sampler(),
                                     VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,

@@ -135,10 +135,17 @@ shadow settings have always lived:
 | Normal bias | World-space offset along the surface normal before projecting |
 | Atlas depth preview | Samples the atlas image directly, so occupied tiles and their depth content are visible |
 
-The atlas preview is the diagnostic that matters when something looks wrong: in
-a beauty shot an overhead spot is easily washed out by the directional key
-light, and the preview is the only reliable way to tell a bad projection (wrong
-or empty tile contents) from a bad sample (correct tile, wrong lookup).
+**Read the caster-draw count, not the preview image.** The preview is a plain
+`ImGui::Image` with a multiplicative tint, so it cannot expand contrast near
+1.0 — and a perspective projection puts almost all of its depth range up there.
+A correctly rendered tile therefore reads as solid far-plane colour, identical
+to an empty one. The CSM cascade previews do not have this problem only because
+an orthographic projection gives linear depth.
+
+So the useful signal is `Caster draws recorded`: zero with slots > 0 means the
+atlas pass culled or skipped everything; non-zero means the pass ran and any
+remaining problem is in the lookup. Making the preview itself readable needs a
+linearising remap, which the shared preview helper has no place to put.
 
 ## Testing
 
@@ -170,3 +177,5 @@ or empty tile contents) from a bad sample (correct tile, wrong lookup).
 - **CPU caster culling.** Each slot frustum-tests every draw item on the CPU
   rather than going through the existing GPU shadow-cull path.
 - **No filtering beyond 3x3 PCF.** No variance/moment maps, no contact-hardening.
+- **The atlas preview cannot show perspective depth.** See [Controls](#controls);
+  the caster-draw counter covers the diagnostic need in the meantime.
