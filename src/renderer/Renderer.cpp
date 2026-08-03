@@ -211,6 +211,7 @@ void Renderer::invalidateTaaHistory()
     frameJitteredProjection_ = glm::mat4{1.0f};
     frameJitteredViewProjection_ = glm::mat4{1.0f};
     previousFrameViewProjection_ = glm::mat4{1.0f};
+    previousFrameView_ = glm::mat4{1.0f};
     previousFrameViewProjectionValid_ = false;
     postProcess_.invalidateTaaHistory();
 }
@@ -867,13 +868,27 @@ void Renderer::createBindlessMaterialTextureHeap()
 
 void Renderer::createSkyboxDescriptorSetLayout()
 {
-    VkDescriptorSetLayoutBinding binding{};
-    binding.binding = 0;
-    binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    binding.descriptorCount = 1;
-    binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    std::array<VkDescriptorSetLayoutBinding, 2> bindings{};
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    skyboxDescriptorSetLayout_.create(context_.vkDevice(), std::span<const VkDescriptorSetLayoutBinding>(&binding, 1));
+    // The integrated fog volume. The sky is infinitely far, so it samples the
+    // volume's far slice and needs no depth of its own.
+    //
+    // There is no enable flag to go with it, unlike the main pass: the skybox
+    // push constants are already two mat4s, exactly the 128-byte guaranteed
+    // minimum, so there is nowhere to put one. Instead the volume is kept
+    // neutral whenever fog is off (see markVolumeNeedsClear), which makes an
+    // unconditional sample a no-op.
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    skyboxDescriptorSetLayout_.create(
+        context_.vkDevice(), std::span<const VkDescriptorSetLayoutBinding>(bindings.data(), bindings.size()));
     rhi::debug::setObjectName(context_.vkDevice(),
                               skyboxDescriptorSetLayout_.handle(),
                               VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
@@ -940,15 +955,29 @@ void Renderer::createShadowMap()
     // The fog injection pass samples the cascaded shadow map, so it is created
     // here alongside it -- a cascade-count change recreates the shadow map, and
     // the fog descriptors cache its view.
+    // Fog samples both shadow sources: the cascades for the directional light
+    // and the punctual atlas for the spot/point shafts, so it is created after
+    // punctualShadows_ above. When the atlas failed to allocate, cascade 0's
+    // single-layer 2D view stands in -- the binding is a sampler2D, so the CSM
+    // array view would not do, and nothing samples it because every light then
+    // carries the unshadowed sentinel.
+    const VkImageView punctualAtlasView =
+        punctualShadows_.valid() ? punctualShadows_.atlas().imageView() : shadowMap_.layerImageView(0);
+    const VkSampler punctualAtlasSampler =
+        punctualShadows_.valid() ? punctualShadows_.atlas().sampler() : shadowMap_.sampler();
+
     if (volumetricFog_.hasVolume()) {
-        volumetricFog_.updateShadowMap(shadowMap_.imageView(), shadowMap_.sampler());
+        volumetricFog_.updateShadowMap(
+            shadowMap_.imageView(), shadowMap_.sampler(), punctualAtlasView, punctualAtlasSampler);
     } else {
         volumetricFog_.create(context_,
                               static_cast<uint32_t>(frames_.size()),
                               shaderPath("fog_inject.comp.spv"),
                               shaderPath("fog_integrate.comp.spv"),
                               shadowMap_.imageView(),
-                              shadowMap_.sampler());
+                              shadowMap_.sampler(),
+                              punctualAtlasView,
+                              punctualAtlasSampler);
     }
 }
 
@@ -2478,7 +2507,7 @@ void Renderer::createSkyboxDescriptorSet()
 
     VkDescriptorPoolSize poolSize{};
     poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = 1;
+    poolSize.descriptorCount = 2;
 
     skyboxDescriptorSet_ = VK_NULL_HANDLE;
     skyboxDescriptorPool_.create(context_.vkDevice(), std::span<const VkDescriptorPoolSize>(&poolSize, 1), 1);
@@ -2496,16 +2525,29 @@ void Renderer::createSkyboxDescriptorSet()
     environmentInfo.imageView = environmentMap_.imageView();
     environmentInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    VkWriteDescriptorSet write{};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = skyboxDescriptorSet_;
-    write.dstBinding = 0;
-    write.dstArrayElement = 0;
-    write.descriptorCount = 1;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.pImageInfo = &environmentInfo;
+    VkDescriptorImageInfo fogVolumeInfo{};
+    fogVolumeInfo.sampler = volumetricFog_.sampler();
+    fogVolumeInfo.imageView = volumetricFog_.integratedVolume().imageView();
+    fogVolumeInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    vkUpdateDescriptorSets(context_.vkDevice(), 1, &write, 0, nullptr);
+    std::array<VkWriteDescriptorSet, 2> writes{};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = skyboxDescriptorSet_;
+    writes[0].dstBinding = 0;
+    writes[0].dstArrayElement = 0;
+    writes[0].descriptorCount = 1;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[0].pImageInfo = &environmentInfo;
+
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = skyboxDescriptorSet_;
+    writes[1].dstBinding = 1;
+    writes[1].dstArrayElement = 0;
+    writes[1].descriptorCount = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[1].pImageInfo = &fogVolumeInfo;
+
+    vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
 void Renderer::createObjectFrameDataBuffers()
@@ -2666,6 +2708,28 @@ void Renderer::updateVolumetricFogParams(uint32_t frameIndex, float aspectRatio)
     params.fogParams2 =
         glm::vec4(fogSettings_.baseHeight, std::max(fogSettings_.ambientScale, 0.0f), 0.0f, 0.0f);
     params.scatteringColor = glm::vec4(glm::max(fogSettings_.scatteringColor, glm::vec3{0.0f}), 1.0f);
+
+    // Temporal reprojection. The matrices come from the same previous-frame
+    // state TAA already tracks, so fog and TAA cannot disagree about where the
+    // camera was.
+    params.previousViewProjection = previousFrameViewProjection_;
+    params.previousView = previousFrameView_;
+
+    if (fogSettings_.temporalEnabled) {
+        // Halton 2,3,5 over a 16-frame cycle: the same low-discrepancy sequence
+        // the TAA jitter uses, extended to the volume's third axis so slices are
+        // sampled at varying depths too.
+        const uint32_t sampleIndex = fogTemporalSampleIndex_ % 16u;
+        params.jitterAndBlend = glm::vec4(halton(sampleIndex + 1u, 2u),
+                                          halton(sampleIndex + 1u, 3u),
+                                          halton(sampleIndex + 1u, 5u),
+                                          std::clamp(fogSettings_.temporalBlend, 0.0f, 0.98f));
+        ++fogTemporalSampleIndex_;
+    } else {
+        // Froxel centres and no history: deterministic, and the reference the
+        // temporal path is judged against.
+        params.jitterAndBlend = glm::vec4(0.5f, 0.5f, 0.5f, 0.0f);
+    }
 
     volumetricFog_.updateParams(frameIndex, params);
 }
@@ -4653,11 +4717,13 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     frameJitteredProjection_ = jitteredProjection;
     frameJitteredViewProjection_ = jitteredProjection * view;
     frameViewProjection_ = viewProjection;
+    frameView_ = view;
     frameCameraPosition_ = camera_.position;
     // First frame after a history reset: reproject against the current matrices
     // so the velocity buffer reads as zero motion instead of garbage.
     if (!previousFrameViewProjectionValid_) {
         previousFrameViewProjection_ = viewProjection;
+        previousFrameView_ = view;
         previousFrameViewProjectionValid_ = true;
     }
 
@@ -4747,6 +4813,7 @@ void Renderer::updateFrameData(uint32_t frameIndex)
 void Renderer::capturePreviousFrameMatrices()
 {
     previousFrameViewProjection_ = frameViewProjection_;
+    previousFrameView_ = frameView_;
     previousFrameViewProjectionValid_ = true;
     for (renderer::RenderObject& object : renderObjects_) {
         object.previousModelMatrix = object.transform.modelMatrix();
@@ -5750,20 +5817,16 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     // Runs whether or not fog is on: binding 8 claims a sampled layout
     // unconditionally, so the volume has to reach it even on a cold start with
     // fog disabled. No-op after the first frame.
-    volumetricFog_.ensureVolumeInitialized(commandBuffer);
-
-    if (isVolumetricFogActive()) {
-        const bool fogProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "VolumetricFog");
-        // The graph pass carries no rendering scope; it exists so the cascaded
-        // shadow map is transitioned out of its depth-attachment layout before
-        // the injection dispatch samples it.
-        renderGraph_.beginVolumetricFogPass();
-        volumetricFog_.recordCommands(commandBuffer, currentFrame_);
-        renderGraph_.endVolumetricFogPass();
-        if (fogProfileScope) {
-            gpuProfiler_.endScope(currentFrame_, commandBuffer);
-        }
+    // Fog switching off has to leave a neutral volume behind, because the
+    // skybox samples it unconditionally. Detected here rather than in the UI so
+    // any path that disables fog -- settings load, preset, toggle -- is covered.
+    const bool fogActiveThisFrame = isVolumetricFogActive();
+    if (fogWasActive_ && !fogActiveThisFrame) {
+        volumetricFog_.markVolumeNeedsClear();
     }
+    fogWasActive_ = fogActiveThisFrame;
+
+    volumetricFog_.ensureVolumeInitialized(commandBuffer);
 
     recordGpuCullingCommands(commandBuffer);
 
@@ -5782,6 +5845,38 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
             rhi::debug::beginLabel(commandBuffer, "LightCull");
             clusteredLighting_.recordLightCull(commandBuffer, currentFrame_);
             rhi::debug::endLabel(commandBuffer);
+        }
+    }
+
+    // Fog runs here, not with the shadow passes: injection walks the per-cluster
+    // light lists, so it has to follow the cluster build and light cull above.
+    // It still has to precede the main HDR pass, which samples the volume.
+    if (isVolumetricFogActive()) {
+        const bool fogProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "VolumetricFog");
+        // The graph pass carries no rendering scope; it exists so the cascaded
+        // shadow map is transitioned out of its depth-attachment layout before
+        // the injection dispatch samples it.
+        // Fog reuses the light lists the cluster passes just produced and the
+        // atlas tiles the punctual shadow pass just filled, rather than
+        // building either for itself.
+        renderer::FogInjectPushConstants fogPushConstants{};
+        fogPushConstants.lightBufferAddress = clusteredLighting_.lightBufferAddress(currentFrame_);
+        fogPushConstants.clusterGridAddress =
+            clusteredLightingActive ? clusteredLighting_.clusterGridAddress(currentFrame_) : 0;
+        fogPushConstants.lightIndexListAddress =
+            clusteredLightingActive ? clusteredLighting_.lightIndexListAddress(currentFrame_) : 0;
+        fogPushConstants.punctualShadowSlotAddress =
+            punctualShadows_.slotCount() > 0 ? punctualShadows_.slotBufferAddress(currentFrame_) : 0;
+        fogPushConstants.lightCount = clusteredLighting_.lightCount();
+        fogPushConstants.useClustered = clusteredLightingActive ? 1u : 0u;
+        fogPushConstants.clusterZNear = camera_.nearPlane;
+        fogPushConstants.clusterZFar = camera_.farPlane;
+
+        renderGraph_.beginVolumetricFogPass();
+        volumetricFog_.recordCommands(commandBuffer, currentFrame_, fogPushConstants);
+        renderGraph_.endVolumetricFogPass();
+        if (fogProfileScope) {
+            gpuProfiler_.endScope(currentFrame_, commandBuffer);
         }
     }
 

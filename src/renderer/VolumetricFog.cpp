@@ -1,5 +1,7 @@
 #include "renderer/VolumetricFog.h"
 
+#include "renderer/ClusterGrid.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -84,6 +86,25 @@ float henyeyGreensteinPhase(const glm::vec3& viewDirection, const glm::vec3& lig
     constexpr float kInverseFourPi = 0.0795774715f;
 
     return kInverseFourPi * (1.0f - gSquared) / std::max(std::pow(denominator, 1.5f), 1.0e-6f);
+}
+
+uint32_t fogFroxelClusterIndex(uint32_t froxelX,
+                               uint32_t froxelY,
+                               uint32_t froxelZ,
+                               float fogMaxDistance,
+                               float clusterZNear,
+                               float clusterZFar)
+{
+    // Froxel centre in normalized screen space, matching what the injection
+    // shader uses to build its world position.
+    const float u = (static_cast<float>(froxelX) + 0.5f) / static_cast<float>(kFogGridX);
+    const float v = (static_cast<float>(froxelY) + 0.5f) / static_cast<float>(kFogGridY);
+    const float viewDepth = fogSliceViewDepth(static_cast<float>(froxelZ) + 0.5f, fogMaxDistance);
+
+    // Expressed against a unit-sized screen so the mapping does not depend on
+    // the swapchain extent: clusterIndex divides by screenWidth/Height, and the
+    // fog volume only ever knows normalized coordinates.
+    return clusterIndex(u, v, viewDepth, 1.0f, 1.0f, clusterZNear, clusterZFar);
 }
 
 float fogHeightDensity(float worldHeight, float baseHeight, float falloff)

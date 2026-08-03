@@ -14,6 +14,7 @@
 #include "rhi/VulkanDescriptor.h"
 #include "rhi/VulkanImage.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -48,7 +49,31 @@ struct FogInjectParams {
     glm::vec4 fogParams2{0.0f, 1.0f, 0.0f, 0.0f};
     glm::vec4 scatteringColor{1.0f};
     glm::vec4 ambientColor{0.0f};
+    // Reprojection of the previous frame's volume. Needed as two matrices, not
+    // one: the view-projection places a froxel in the previous frame's screen
+    // tile, and the view alone recovers its previous view depth for the slice.
+    glm::mat4 previousViewProjection{1.0f};
+    glm::mat4 previousView{1.0f};
+    // xyz = sub-froxel jitter in [0,1), w = how much history to keep.
+    glm::vec4 jitterAndBlend{0.5f, 0.5f, 0.5f, 0.0f};
 };
+
+// Mirrors the push constant block in fog_inject.comp. The buffer addresses come
+// from ClusteredLighting and PunctualShadows, so fog reuses the light lists and
+// shadow tiles those already produce rather than building its own.
+struct FogInjectPushConstants {
+    VkDeviceAddress lightBufferAddress = 0;
+    VkDeviceAddress clusterGridAddress = 0;
+    VkDeviceAddress lightIndexListAddress = 0;
+    VkDeviceAddress punctualShadowSlotAddress = 0;
+    uint32_t lightCount = 0;
+    uint32_t useClustered = 0;
+    float clusterZNear = 0.1f;
+    float clusterZFar = 100.0f;
+};
+
+static_assert(sizeof(FogInjectPushConstants) == 48);
+static_assert(sizeof(FogInjectPushConstants) <= 128);
 
 // Mirrors FogIntegrateParams in fog_integrate.comp.
 struct FogIntegrateParams {
@@ -67,6 +92,13 @@ struct FogSettings {
     float baseHeight = 0.0f;
     float ambientScale = 0.6f;
     glm::vec3 scatteringColor{1.0f, 1.0f, 1.0f};
+    // Temporal reprojection. One sample per froxel per frame aliases badly
+    // under a high-frequency shadow; jittering the sample and blending against
+    // the reprojected previous volume converges it instead.
+    bool temporalEnabled = true;
+    // Fraction of the previous frame kept. Higher is smoother but smears more
+    // when lights or the camera move.
+    float temporalBlend = 0.9f;
 };
 
 class VolumetricFogPass final {
@@ -88,18 +120,25 @@ public:
                 const std::filesystem::path& injectShaderPath,
                 const std::filesystem::path& integrateShaderPath,
                 VkImageView shadowMapView,
-                VkSampler shadowMapSampler);
+                VkSampler shadowMapSampler,
+                VkImageView punctualShadowAtlasView,
+                VkSampler punctualShadowAtlasSampler);
     void reset();
 
     // Rebinds the cascaded shadow map. Called when the shadow map is recreated,
     // since the descriptor sets cache its view.
-    void updateShadowMap(VkImageView shadowMapView, VkSampler shadowMapSampler);
+    void updateShadowMap(VkImageView shadowMapView,
+                         VkSampler shadowMapSampler,
+                         VkImageView punctualShadowAtlasView,
+                         VkSampler punctualShadowAtlasSampler);
 
     void updateParams(uint32_t frameIndex, const FogInjectParams& injectParams);
 
     // Records injection then integration, with a barrier between them: the
     // second pass reads every froxel the first wrote.
-    void recordCommands(VkCommandBuffer commandBuffer, uint32_t frameIndex);
+    void recordCommands(VkCommandBuffer commandBuffer,
+                        uint32_t frameIndex,
+                        const FogInjectPushConstants& pushConstants);
 
     // Clears the integrated volume to "no fog" and puts it in the layout the
     // material descriptors record. Must be called even on frames where fog is
@@ -107,6 +146,15 @@ public:
     // an untouched volume would sit in UNDEFINED and trip layout validation the
     // first time anything sampled the set. A no-op after the first call.
     void ensureVolumeInitialized(VkCommandBuffer commandBuffer);
+
+    // Requests one re-clear of the volumes to their neutral state. Called when
+    // fog is switched off: the skybox samples the volume unconditionally (it has
+    // no push-constant room for an enable flag), so a disabled fog has to leave
+    // behind a neutral volume rather than its last computed frame.
+    void markVolumeNeedsClear()
+    {
+        volumeInitialized_ = false;
+    }
 
     // The compute half works. False still leaves the volumes allocated.
     [[nodiscard]] bool available() const
@@ -149,16 +197,20 @@ private:
     bool available_ = false;
 
     // rgb = in-scattering per unit length, a = extinction. Written by injection,
-    // consumed by integration.
-    rhi::VulkanImage scatterVolume_;
+    // consumed by integration. Two of them, ping-ponged: injection blends the
+    // previous frame's volume, reprojected, into the one it is writing.
+    std::array<rhi::VulkanImage, 2> scatterVolumes_;
+    std::array<VkImageLayout, 2> scatterVolumeLayouts_{VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED};
+    uint32_t historyParity_ = 0;
     // rgb = accumulated in-scattering, a = transmittance. Read by composite.
     rhi::VulkanImage integratedVolume_;
-    VkImageLayout scatterVolumeLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     VkImageLayout integratedVolumeLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     VkSampler sampler_ = VK_NULL_HANDLE;
 
     VkImageView shadowMapView_ = VK_NULL_HANDLE;
     VkSampler shadowMapSampler_ = VK_NULL_HANDLE;
+    VkImageView punctualShadowAtlasView_ = VK_NULL_HANDLE;
+    VkSampler punctualShadowAtlasSampler_ = VK_NULL_HANDLE;
     bool volumeInitialized_ = false;
 
     std::vector<rhi::VulkanBuffer> injectParamBuffers_;

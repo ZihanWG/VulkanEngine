@@ -654,12 +654,24 @@ private:
     std::vector<glm::uvec2> frameDrawItemLodRanges_;
 
     glm::mat4 frameViewProjection_{1.0f};
+    // This frame's view on its own. Fog reprojection needs it to recover a
+    // previous view depth, which the view-projection cannot give back.
+    glm::mat4 frameView_{1.0f};
     glm::mat4 frameJitteredProjection_{1.0f};
     glm::mat4 frameJitteredViewProjection_{1.0f};
     // Previous frame's unjittered view-projection, used with the per-object
     // previous model matrices to build motion vectors. Invalid after a TAA
     // history reset so the first frame reprojects with zero camera motion.
     glm::mat4 previousFrameViewProjection_{1.0f};
+    // Kept alongside the view-projection, and captured at the same moment, so
+    // the two cannot drift. Fog reprojection needs the view on its own to
+    // recover a previous view depth for the slice lookup.
+    glm::mat4 previousFrameView_{1.0f};
+    // Advances once per fog params update; indexes the Halton jitter sequence.
+    uint32_t fogTemporalSampleIndex_ = 0;
+    // Tracks fog enable across frames so switching it off can neutralise the
+    // volume the skybox samples unconditionally.
+    bool fogWasActive_ = false;
     bool previousFrameViewProjectionValid_ = false;
     glm::mat4 previousSkinnedModelMatrix_{1.0f};
     bool previousSkinnedModelValid_ = false;

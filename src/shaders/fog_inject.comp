@@ -15,6 +15,8 @@
 // much nearer far plane, because fog only matters over the first few dozen
 // units while the light grid has to reach the scene's far plane.
 
+#extension GL_EXT_buffer_reference : require
+
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 // Must match ve::renderer::kFogGrid*.
@@ -44,10 +46,75 @@ layout(set = 0, binding = 0) uniform FogParamsBuffer {
     // rgb = scattering albedo
     vec4 scatteringColor;
     vec4 ambientColor;
+    // Reprojection of the previous frame's volume. Two matrices, not one: the
+    // view-projection finds the previous screen tile, the view alone recovers
+    // the previous view depth for the slice.
+    mat4 previousViewProjection;
+    mat4 previousView;
+    // xyz = sub-froxel jitter in [0,1), w = how much history to keep
+    vec4 jitterAndBlend;
 } params;
 
 layout(set = 0, binding = 1) uniform sampler2DArray uShadowMap;
 layout(set = 0, binding = 2, rgba16f) uniform writeonly image3D uScatterVolume;
+layout(set = 0, binding = 3) uniform sampler2D uPunctualShadowAtlas;
+// Previous frame's scatter volume, sampled rather than fetched: reprojection
+// lands between froxels.
+layout(set = 0, binding = 4) uniform sampler3D uHistoryScatterVolume;
+
+// Mirrors ve::renderer::GpuLight (64-byte std430 stride).
+struct GpuLight {
+    vec4 positionRange;
+    vec4 colorIntensity;
+    vec4 directionType;
+    // z carries the punctual shadow atlas slot as a float; < 0 means the light
+    // does not cast this frame.
+    vec4 spotScaleOffset;
+};
+
+layout(buffer_reference, std430) readonly buffer LightBuffer {
+    GpuLight lights[];
+};
+
+struct ClusterCell {
+    uint offset;
+    uint count;
+};
+
+layout(buffer_reference, std430) readonly buffer ClusterGridBuffer {
+    ClusterCell cells[];
+};
+
+layout(buffer_reference, std430) readonly buffer LightIndexBuffer {
+    uint indices[];
+};
+
+// Mirrors ve::renderer::GpuShadowSlot (96-byte std430 stride).
+struct GpuShadowSlot {
+    mat4 viewProjection;
+    vec4 atlasUvOffsetScale;
+    vec4 params;
+};
+
+layout(buffer_reference, std430) readonly buffer ShadowSlotBuffer {
+    GpuShadowSlot slots[];
+};
+
+// Cluster grid dimensions, matching ve::renderer::kClusterGrid*.
+const uint kClusterGridX = 16u;
+const uint kClusterGridY = 9u;
+const uint kClusterGridZ = 24u;
+
+layout(push_constant) uniform FogInjectPushConstants {
+    LightBuffer lightBuffer;
+    ClusterGridBuffer clusterGrid;
+    LightIndexBuffer lightIndexList;
+    ShadowSlotBuffer punctualShadowSlots;
+    uint lightCount;
+    uint useClustered;
+    float clusterZNear;
+    float clusterZFar;
+} pc;
 
 // View-space depth at a slice boundary. Mirrors
 // ve::renderer::fogSliceViewDepth; the apply pass inverts it, and a unit test
@@ -110,6 +177,99 @@ float directionalShadow(vec3 worldPosition, float viewDepth)
     return (projected.z - kFogShadowBias) <= closestDepth ? 1.0 : 0.0;
 }
 
+// Cube face containing a direction, mirroring
+// ve::renderer::pointShadowFaceIndex and its copy in simple_bindless.frag.
+uint pointShadowFaceIndex(vec3 direction)
+{
+    vec3 magnitude = abs(direction);
+    if (magnitude.x >= magnitude.y && magnitude.x >= magnitude.z) {
+        return direction.x >= 0.0 ? 0u : 1u;
+    }
+    if (magnitude.y >= magnitude.z) {
+        return direction.y >= 0.0 ? 2u : 3u;
+    }
+    return direction.z >= 0.0 ? 4u : 5u;
+}
+
+// Visibility of a punctual light at a point inside the medium.
+//
+// Simpler than the surface version in simple_bindless.frag, and deliberately
+// so: fog has no normal, so there is no normal-offset bias and no slope
+// scaling. That is not a shortcut -- those exist to stop a surface shadowing
+// itself, and a participating medium has no surface to self-shadow. A small
+// constant offset is all that is needed.
+float punctualFogShadow(GpuLight light, vec3 worldPosition)
+{
+    float encodedSlot = light.spotScaleOffset.z;
+    if (encodedSlot < 0.0) {
+        return 1.0;
+    }
+
+    uint slotIndex = uint(encodedSlot);
+    if (light.directionType.w <= 0.5) {
+        slotIndex += pointShadowFaceIndex(worldPosition - light.positionRange.xyz);
+    }
+
+    GpuShadowSlot slot = pc.punctualShadowSlots.slots[slotIndex];
+    vec4 lightSpace = slot.viewProjection * vec4(worldPosition, 1.0);
+    if (lightSpace.w <= 0.0) {
+        return 1.0;
+    }
+
+    vec3 projected = lightSpace.xyz / lightSpace.w;
+    vec2 tileUv = projected.xy * 0.5 + 0.5;
+    if (projected.z < 0.0 || projected.z > 1.0 || tileUv.x < 0.0 || tileUv.x > 1.0 || tileUv.y < 0.0 ||
+        tileUv.y > 1.0) {
+        return 1.0;
+    }
+
+    vec2 atlasUv = slot.atlasUvOffsetScale.xy + tileUv * slot.atlasUvOffsetScale.zw;
+    // Single tap rather than the surface path's 3x3 PCF: froxels are far
+    // coarser than pixels and the volume is trilinearly filtered on the way
+    // out, so the extra taps would be filtered away anyway.
+    float closestDepth = texture(uPunctualShadowAtlas, atlasUv).r;
+    return (projected.z - slot.params.x) <= closestDepth ? 1.0 : 0.0;
+}
+
+// In-scattering contributed by one punctual light at a froxel.
+vec3 punctualFogScattering(GpuLight light, vec3 worldPosition, vec3 toCamera, float anisotropy)
+{
+    vec3 toLight = light.positionRange.xyz - worldPosition;
+    float distance = length(toLight);
+    float range = max(light.positionRange.w, 1.0e-4);
+    if (distance > range || distance < 1.0e-4) {
+        return vec3(0.0);
+    }
+
+    vec3 lightDirection = toLight / distance;
+    // Same inverse-square falloff and smooth range cutoff the surface shading
+    // uses, so a light does not appear to reach further through fog than it
+    // does across a floor.
+    float attenuation = 1.0 / max(distance * distance, 1.0e-4);
+    float rangeFade = clamp(1.0 - pow(distance / range, 4.0), 0.0, 1.0);
+    attenuation *= rangeFade * rangeFade;
+
+    if (light.directionType.w > 0.5) {
+        vec3 spotDirection = normalize(light.directionType.xyz);
+        float cosAngle = dot(-lightDirection, spotDirection);
+        float spotAttenuation =
+            clamp((cosAngle - light.spotScaleOffset.x) * light.spotScaleOffset.y, 0.0, 1.0);
+        attenuation *= spotAttenuation * spotAttenuation;
+    }
+
+    if (attenuation <= 0.0) {
+        return vec3(0.0);
+    }
+
+    attenuation *= punctualFogShadow(light, worldPosition);
+    if (attenuation <= 0.0) {
+        return vec3(0.0);
+    }
+
+    float phase = henyeyGreensteinPhase(toCamera, lightDirection, anisotropy);
+    return light.colorIntensity.rgb * light.colorIntensity.a * phase * attenuation;
+}
+
 void main()
 {
     uvec3 froxel = gl_GlobalInvocationID;
@@ -121,9 +281,14 @@ void main()
 
     // Sample the middle of the froxel in all three axes so the slab that pass 2
     // integrates is represented by its centre rather than its near face.
-    vec2 uv = (vec2(froxel.xy) + 0.5) / vec2(float(kFogGridX), float(kFogGridY));
+    // Jittered sample position. Without this the froxel is sampled dead centre
+    // every frame, so the temporal blend would average identical samples and
+    // converge to nothing; the jitter is what gives history something new to
+    // integrate, turning a hard per-froxel shadow test into a soft average.
+    vec3 jitter = params.jitterAndBlend.xyz;
+    vec2 uv = (vec2(froxel.xy) + jitter.xy) / vec2(float(kFogGridX), float(kFogGridY));
     vec2 ndc = uv * 2.0 - 1.0;
-    float viewDepth = fogSliceViewDepth(float(froxel.z) + 0.5, maxDistance);
+    float viewDepth = fogSliceViewDepth(float(froxel.z) + jitter.z, maxDistance);
 
     // Ray through this tile at the far plane, then scaled to the slice's depth.
     // Reusing the camera's own inverse projection keeps the volume aligned with
@@ -166,5 +331,71 @@ void main()
     // Ambient keeps unlit fog from going black; isotropic, so no phase term.
     inScattering += scattering * params.ambientColor.rgb * params.fogParams2.y * kInverseFourPi;
 
-    imageStore(uScatterVolume, ivec3(froxel), vec4(inScattering, extinction));
+    // Punctual lights. This is what turns fog into light shafts, and it is why
+    // the fog volume shares the cluster grid's addressing: the froxel resolves
+    // to the light cluster covering it and walks only that cluster's list,
+    // exactly as a fragment there would.
+    if (pc.lightCount > 0u) {
+        vec3 punctual = vec3(0.0);
+
+        if (pc.useClustered != 0u) {
+            uint tileX = min(uint(uv.x * float(kClusterGridX)), kClusterGridX - 1u);
+            uint tileY = min(uint(uv.y * float(kClusterGridY)), kClusterGridY - 1u);
+            float zNear = max(pc.clusterZNear, 1.0e-4);
+            float zFar = max(pc.clusterZFar, zNear + 1.0e-4);
+            float clusterDepth = clamp(viewDepth, zNear, zFar);
+            uint slice = uint(clamp(log(clusterDepth / zNear) / log(zFar / zNear) * float(kClusterGridZ),
+                                    0.0,
+                                    float(kClusterGridZ - 1u)));
+            uint clusterIndex = tileX + tileY * kClusterGridX + slice * kClusterGridX * kClusterGridY;
+
+            ClusterCell cell = pc.clusterGrid.cells[clusterIndex];
+            for (uint i = 0u; i < cell.count; ++i) {
+                uint lightIndex = pc.lightIndexList.indices[cell.offset + i];
+                punctual += punctualFogScattering(
+                    pc.lightBuffer.lights[lightIndex], worldPosition, toCamera, params.fogParams.z);
+            }
+        } else {
+            for (uint lightIndex = 0u; lightIndex < pc.lightCount; ++lightIndex) {
+                punctual += punctualFogScattering(
+                    pc.lightBuffer.lights[lightIndex], worldPosition, toCamera, params.fogParams.z);
+            }
+        }
+
+        inScattering += scattering * punctual;
+    }
+
+    vec4 current = vec4(inScattering, extinction);
+
+    // Temporal reprojection. One sample per froxel per frame aliases badly under
+    // a high-frequency shadow -- a froxel is either fully lit or fully shadowed,
+    // and the shaft edges crawl. Jittering the sample position each frame and
+    // blending against the previous volume converges it instead.
+    float historyWeight = params.jitterAndBlend.w;
+    if (historyWeight > 0.0) {
+        // Where this froxel's world position sat in the previous frame's volume.
+        vec4 previousClip = params.previousViewProjection * vec4(worldPosition, 1.0);
+        if (previousClip.w > 0.0) {
+            vec3 previousNdc = previousClip.xyz / previousClip.w;
+            vec2 previousUv = previousNdc.xy * 0.5 + 0.5;
+            float previousViewDepth = -(params.previousView * vec4(worldPosition, 1.0)).z;
+
+            // Reject anything that was off screen or outside the volume last
+            // frame: there is no history for it, and clamping would smear an
+            // edge froxel across the whole disoccluded region.
+            if (previousUv.x >= 0.0 && previousUv.x <= 1.0 && previousUv.y >= 0.0 && previousUv.y <= 1.0 &&
+                previousViewDepth >= kFogNearPlane && previousViewDepth <= maxDistance) {
+                float previousSlice =
+                    log(previousViewDepth / kFogNearPlane) / log(maxDistance / kFogNearPlane);
+                vec4 history = texture(uHistoryScatterVolume, vec3(previousUv, previousSlice));
+                // Guard the feedback loop: a NaN or negative that gets into the
+                // history is blended forward forever.
+                if (all(greaterThanEqual(history, vec4(0.0))) && !any(isnan(history))) {
+                    current = mix(current, history, historyWeight);
+                }
+            }
+        }
+    }
+
+    imageStore(uScatterVolume, ivec3(froxel), current);
 }

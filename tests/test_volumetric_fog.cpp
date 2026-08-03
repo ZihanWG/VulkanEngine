@@ -1,3 +1,4 @@
+#include "renderer/ClusterGrid.h"
 #include "renderer/VolumetricFog.h"
 
 #include <catch2/catch_approx.hpp>
@@ -191,6 +192,58 @@ TEST_CASE("The phase function conserves energy and points forward", "[fog]")
         CHECK(std::isfinite(henyeyGreensteinPhase(view, -view, g)));
         CHECK(henyeyGreensteinPhase(view, view, g) >= 0.0f);
     }
+}
+
+TEST_CASE("A fog froxel maps to the cluster a fragment there would use", "[fog]")
+{
+    using ve::renderer::clusterIndex;
+    using ve::renderer::fogFroxelClusterIndex;
+    using ve::renderer::kClusterCount;
+    using ve::renderer::kFogGridX;
+    using ve::renderer::kFogGridY;
+
+    constexpr float fogMaxDistance = 64.0f;
+    constexpr float zNear = 0.1f;
+    constexpr float zFar = 100.0f;
+
+    // The invariant that matters: the fog volume and the light grid are
+    // different resolutions with different depth ranges, and the only thing
+    // making a shared light list correct is that a froxel resolves to the same
+    // cluster a fragment at that screen position and depth would.
+    size_t checked = 0;
+    for (uint32_t x = 0; x < kFogGridX; x += 7) {
+        for (uint32_t y = 0; y < kFogGridY; y += 5) {
+            for (uint32_t z = 0; z < kFogGridZ; z += 3) {
+                const uint32_t fogCluster =
+                    fogFroxelClusterIndex(x, y, z, fogMaxDistance, zNear, zFar);
+                REQUIRE(fogCluster < kClusterCount);
+
+                const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(kFogGridX);
+                const float v = (static_cast<float>(y) + 0.5f) / static_cast<float>(kFogGridY);
+                const float viewDepth = fogSliceViewDepth(static_cast<float>(z) + 0.5f, fogMaxDistance);
+
+                // Same query, expressed the way the fragment shader asks it.
+                CHECK(fogCluster == clusterIndex(u, v, viewDepth, 1.0f, 1.0f, zNear, zFar));
+                ++checked;
+            }
+        }
+    }
+    CHECK(checked > 3000);
+
+    // Neighbouring froxels stay in the same cluster or an adjacent one -- the
+    // fog volume is finer than the light grid in every axis, so the mapping
+    // must never skip clusters.
+    for (uint32_t x = 0; x + 1 < kFogGridX; ++x) {
+        const uint32_t left = fogFroxelClusterIndex(x, 40, 20, fogMaxDistance, zNear, zFar);
+        const uint32_t right = fogFroxelClusterIndex(x + 1, 40, 20, fogMaxDistance, zNear, zFar);
+        CHECK(right >= left);
+        CHECK(right - left <= 1u);
+    }
+
+    // Corners land inside the grid rather than off either end.
+    CHECK(fogFroxelClusterIndex(0, 0, 0, fogMaxDistance, zNear, zFar) < kClusterCount);
+    CHECK(fogFroxelClusterIndex(kFogGridX - 1, kFogGridY - 1, kFogGridZ - 1, fogMaxDistance, zNear, zFar) <
+          kClusterCount);
 }
 
 TEST_CASE("Height fog falls off above its base", "[fog]")
