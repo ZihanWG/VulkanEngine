@@ -4,6 +4,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 #include <cmath>
 #include <limits>
@@ -496,6 +497,94 @@ TEST_CASE("Cube faces reserve all six tiles or none", "[shadowatlas]")
     PunctualShadowAtlasAllocator edge;
     CHECK_FALSE(edge.allocateRange(0, 0, faces));
     CHECK(edge.allocatedCount() == 0u);
+}
+
+TEST_CASE("The cache key moves when any input moves", "[shadowatlas]")
+{
+    using ve::renderer::PunctualShadowCacheKey;
+
+    // A cached shadow tile is only safe if nothing that could change its
+    // contents has changed, so what matters is that every kind of input the
+    // atlas pass consumes actually perturbs the key. A stale shadow shows up far
+    // from its cause, so this is the test that keeps caching honest.
+    const auto keyFor = [](const glm::mat4& viewProjection,
+                           const ShadowAtlasRect& rect,
+                           const glm::mat4& model,
+                           const void* mesh,
+                           uint32_t firstIndex,
+                           float bias) {
+        PunctualShadowCacheKey key;
+        key.reset();
+        key.add(viewProjection);
+        key.add(rect);
+        key.add(model);
+        key.add(mesh);
+        key.add(firstIndex);
+        key.add(bias);
+        return key.value();
+    };
+
+    const glm::mat4 viewProjection = glm::perspective(1.0f, 1.0f, 0.1f, 50.0f);
+    const ShadowAtlasRect rect{512, 256, 512};
+    const glm::mat4 model = glm::translate(glm::mat4{1.0f}, glm::vec3{1.0f, 2.0f, 3.0f});
+    int meshA = 0;
+    int meshB = 0;
+
+    const uint64_t base = keyFor(viewProjection, rect, model, &meshA, 12u, 0.0015f);
+
+    // Identical inputs hash identically -- otherwise nothing would ever cache.
+    CHECK(keyFor(viewProjection, rect, model, &meshA, 12u, 0.0015f) == base);
+
+    // The light moved, or its cone/range changed: all of that lands in the
+    // projection.
+    CHECK(keyFor(glm::perspective(1.01f, 1.0f, 0.1f, 50.0f), rect, model, &meshA, 12u, 0.0015f) != base);
+    // The tile moved or changed size class.
+    CHECK(keyFor(viewProjection, ShadowAtlasRect{512, 256, 256}, model, &meshA, 12u, 0.0015f) != base);
+    CHECK(keyFor(viewProjection, ShadowAtlasRect{0, 256, 512}, model, &meshA, 12u, 0.0015f) != base);
+    // A caster moved.
+    CHECK(keyFor(viewProjection,
+                 rect,
+                 glm::translate(glm::mat4{1.0f}, glm::vec3{1.0f, 2.0f, 3.001f}),
+                 &meshA,
+                 12u,
+                 0.0015f) != base);
+    // A caster swapped mesh, or swapped LOD level within one mesh.
+    CHECK(keyFor(viewProjection, rect, model, &meshB, 12u, 0.0015f) != base);
+    CHECK(keyFor(viewProjection, rect, model, &meshA, 13u, 0.0015f) != base);
+    // The raster depth bias was retuned, which changes what gets written.
+    CHECK(keyFor(viewProjection, rect, model, &meshA, 12u, 0.0016f) != base);
+
+    // Tiny float deltas count: the hash is over exact bit patterns, so this is
+    // never an approximate comparison that could call a changed scene unchanged.
+    glm::mat4 nudged = model;
+    nudged[3][0] = std::nextafter(nudged[3][0], 100.0f);
+    CHECK(keyFor(viewProjection, rect, nudged, &meshA, 12u, 0.0015f) != base);
+
+    // Order matters, so two casters swapping places is not mistaken for no
+    // change -- they can occlude each other differently.
+    PunctualShadowCacheKey forward;
+    forward.reset();
+    forward.add(1.0f);
+    forward.add(2.0f);
+    PunctualShadowCacheKey reversed;
+    reversed.reset();
+    reversed.add(2.0f);
+    reversed.add(1.0f);
+    CHECK(forward.value() != reversed.value());
+
+    // reset() really returns to the starting state, so frame N+1 does not
+    // inherit frame N.
+    PunctualShadowCacheKey reused;
+    reused.reset();
+    reused.add(7.0f);
+    reused.reset();
+    PunctualShadowCacheKey fresh;
+    fresh.reset();
+    CHECK(reused.value() == fresh.value());
+
+    // An empty frame (no slots, no casters) is a stable key rather than a
+    // coincidence of zero.
+    CHECK(fresh.value() != 0u);
 }
 
 TEST_CASE("The GPU slot record keeps its std430 layout", "[shadowatlas]")

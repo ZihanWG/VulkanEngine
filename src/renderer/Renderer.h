@@ -425,6 +425,13 @@ private:
     // updateDemoLights (which rebuilds the light list) and before the light
     // buffer is uploaded, since it mutates those records in place.
     void updatePunctualShadowSlots(uint32_t frameIndex, float aspectRatio);
+    // Hashes the atlas pass's inputs and decides whether the resident atlas can
+    // be reused this frame. See the definition for why this is a content hash
+    // rather than a set of dirty flags.
+    void updatePunctualShadowCacheState();
+    // Drops the cache; the next frame re-renders. Called when the atlas image
+    // itself stops being trustworthy, which no input hash can express.
+    void invalidatePunctualShadowCache();
     // Fills the fog volume's per-frame parameters from camera, light, and
     // cascade state. Runs after updateCascades so the cascade matrices it hands
     // the injection pass are this frame's.
@@ -776,6 +783,15 @@ private:
     uint64_t punctualShadowAssignmentChurnTotal_ = 0;
     // Slots filled last frame, surfaced in the debug panel.
     uint32_t punctualShadowSlotsUsed_ = 0;
+    // Shadow-atlas caching. The atlas is re-rendered only when the hash of its
+    // inputs moves, so a static light over static geometry costs nothing.
+    renderer::PunctualShadowCacheKey punctualShadowCacheKey_;
+    uint64_t punctualShadowResidentKey_ = 0;
+    uint64_t punctualShadowPendingKey_ = 0;
+    bool punctualShadowAtlasResident_ = false;
+    bool punctualShadowCacheHit_ = false;
+    // Frames the atlas pass was skipped, for the debug panel.
+    uint32_t punctualShadowCachedFrames_ = 0;
     // Caster draws the atlas pass actually recorded last frame. Surfaced because
     // the atlas preview cannot distinguish "nothing drew" from "everything drew
     // but perspective depth is compressed into the top few percent" -- both look

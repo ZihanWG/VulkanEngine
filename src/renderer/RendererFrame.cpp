@@ -170,6 +170,62 @@ void Renderer::updateVolumetricFogParams(uint32_t frameIndex, float aspectRatio)
     volumetricFog_.updateParams(frameIndex, params);
 }
 
+// Decides whether this frame's atlas contents would be identical to the one
+// already resident, by hashing everything the pass consumes.
+//
+// The enumeration below is the load-bearing part: anything that can change a
+// tile and is not hashed here becomes a stale shadow, which surfaces far from
+// its cause. Hence hashing the inputs rather than tracking dirty flags -- a
+// missed input is one bug in one place instead of one per mutable input.
+void Renderer::updatePunctualShadowCacheState()
+{
+    punctualShadowCacheKey_.reset();
+
+    // Per slot: the projection carries the light's position, direction, range,
+    // cone, and near plane; the rect carries where and at what resolution it
+    // renders.
+    const uint32_t slotCount = punctualShadows_.slotCount();
+    punctualShadowCacheKey_.add(slotCount);
+    for (uint32_t slot = 0; slot < slotCount; ++slot) {
+        punctualShadowCacheKey_.add(punctualShadows_.slotViewProjection(slot));
+        punctualShadowCacheKey_.add(punctualShadows_.slotRect(slot));
+    }
+
+    // Per caster: which geometry, where. The per-slot frustum cull is a pure
+    // function of these plus the slot projections above, so its result does not
+    // need hashing separately.
+    punctualShadowCacheKey_.add(static_cast<uint32_t>(allDrawItems_.size()));
+    for (const DrawItem& drawItem : allDrawItems_) {
+        if (!drawItem.mesh || drawItem.bucket == RenderBucket::Blend) {
+            continue;
+        }
+        punctualShadowCacheKey_.add(static_cast<const void*>(drawItem.mesh));
+        punctualShadowCacheKey_.add(drawItem.firstIndex);
+        punctualShadowCacheKey_.add(drawItem.indexCount);
+        punctualShadowCacheKey_.add(static_cast<uint32_t>(drawItem.bucket));
+        if (drawItem.objectIndex < frameWorldBounds_.size()) {
+            punctualShadowCacheKey_.add(renderObjects_[drawItem.objectIndex].transform.modelMatrix());
+        }
+    }
+
+    // Raster depth bias is pipeline state the tiles are rendered with, so
+    // retuning it has to invalidate them.
+    punctualShadowCacheKey_.add(shadowSettings_.rasterDepthBiasConstantFactor);
+    punctualShadowCacheKey_.add(shadowSettings_.rasterDepthBiasSlopeFactor);
+
+    const uint64_t key = punctualShadowCacheKey_.value();
+    // Only reusable if the atlas actually holds a rendered frame: after a device
+    // or swapchain recreation the image is undefined regardless of the key.
+    punctualShadowCacheHit_ = punctualShadowAtlasResident_ && key == punctualShadowResidentKey_;
+    punctualShadowPendingKey_ = key;
+}
+
+void Renderer::invalidatePunctualShadowCache()
+{
+    punctualShadowAtlasResident_ = false;
+    punctualShadowCacheHit_ = false;
+}
+
 void Renderer::updatePunctualShadowSlots(uint32_t frameIndex, float aspectRatio)
 {
     punctualShadows_.beginFrame();
@@ -1066,6 +1122,14 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     updateFrameWorldBounds();
 
     buildDrawItems();
+
+    // Deliberately here and not with the slot assignment above. The hash covers
+    // caster transforms and draw items, and both are still the previous frame's
+    // values at that point -- updateAnimatedTransforms and buildDrawItems run
+    // between. Hashing there would notice every change exactly one frame late,
+    // which is a single stale shadow frame on every edit: visible, and hard to
+    // attribute. The slots are final by now, so nothing is lost by waiting.
+    updatePunctualShadowCacheState();
     buildFrameMeshLodTable();
     resetGpuCullFrameCounters(frameIndex);
 
@@ -1122,6 +1186,10 @@ void Renderer::capturePreviousFrameMatrices()
 
 void Renderer::resetFrameStateForEmptyScene(uint32_t frameIndex)
 {
+    // This path returns before the cache hash is recomputed, so the flag would
+    // otherwise keep the previous frame's answer and suppress a pass that has
+    // no business being suppressed.
+    punctualShadowCacheHit_ = false;
     frameTwoPhaseOcclusionActive_ = false;
     frameAsyncComputeActive_ = false;
     frameSsrActive_ = false;

@@ -219,6 +219,51 @@ material descriptors record. Without that, a cold start with punctual shadows
 disabled would leave the image in `UNDEFINED` while binding 7 claimed
 `DEPTH_READ_ONLY_OPTIMAL`.
 
+## Caching
+
+Every allocated tile used to re-render every frame, including for a static light
+over static geometry. The pass now hashes everything it consumes and skips
+entirely when that hash is unchanged: no clear, no draws, and no layout
+transition, since the atlas keeps the sampled layout the main pass left it in
+and the main pass wants that same layout next frame.
+
+**A content hash rather than dirty flags.** The failure mode of caching a shadow
+is a stale one, which shows up far from its cause and reads as a rendering bug.
+Dirty flags spread the risk across every input that can change and every place
+that changes one; hashing the inputs concentrates it into a single enumeration
+that is either complete or not. What is hashed:
+
+| Input | Why |
+| --- | --- |
+| Per-slot view-projection | Carries the light's position, direction, range, cone, and near plane |
+| Per-slot atlas rect | Where the tile renders and at what resolution |
+| Caster mesh, index range, bucket | Which geometry is drawn |
+| Caster model matrix | Where it is |
+| Raster depth bias settings | Pipeline state the tiles are rendered with |
+
+The per-slot frustum cull is a pure function of the slot projections and caster
+transforms, so its result needs no separate hashing. Floats are hashed by exact
+bit pattern, so this is a strict "identical inputs" test and never approximate.
+
+Two things the hash cannot express, handled separately:
+
+- **A recreated atlas image.** Its contents are undefined even when the key
+  matches, so `createShadowMap` drops the cache outright.
+- **An empty scene.** That path returns before the hash is recomputed, so it
+  clears the flag rather than inheriting the previous frame's answer.
+
+**Where the hash is computed matters.** It runs after `updateAnimatedTransforms`
+and `buildDrawItems`, not alongside the slot assignment. Hashing at assignment
+time would read the *previous* frame's transforms and draw items, so every
+change would be noticed exactly one frame late -- a single stale shadow frame on
+every edit, which is both visible and hard to attribute.
+
+The debug panel reports whether the atlas was reused or re-rendered this frame,
+and how many frames have been served from cache, so the hit rate is measured
+rather than assumed. In the demo scene the lights orbit and several objects
+rotate, so the hash legitimately moves every frame and the cache never hits;
+freezing both gives a hit on every frame after the first.
+
 ## Blended geometry does not cast
 
 Alpha-blended draw items are skipped in the atlas pass, matching the rule
@@ -300,9 +345,11 @@ near-black and reads as a catastrophic bug that is not there.
 
 ## Limitations
 
-- **No caching.** Every allocated face re-renders every frame, even for a light
-  and geometry that have not moved. Static lights over static geometry are the
-  obvious win here and it is not taken.
+- **Caching is all-or-nothing.** One moved caster re-renders every tile, not
+  just the tiles whose frustums contain it. Per-slot invalidation needs a
+  partial atlas clear (`vkCmdClearAttachments` per tile) and per-slot hashes,
+  and would turn the common "one thing moved in a mostly static scene" case from
+  a full rebuild into a couple of tiles.
 - **Tile assignment is recomputed from scratch every frame**, and priority
   depends on the camera, so moving the camera reshuffles which lights hold tiles
   and can flip a light between size classes at a threshold. Both pop visibly.

@@ -15,6 +15,7 @@
 #include "renderer/Bounds.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -158,6 +159,61 @@ inline constexpr uint32_t kPointShadowFaceCount = 6;
                                                              uint32_t face,
                                                              float range,
                                                              float nearPlane = 0.0f);
+
+// Content hash of everything the atlas pass consumes in a frame.
+//
+// Caching a shadow tile is only safe if nothing that could change its contents
+// has changed, and the failure mode of getting that wrong is a stale shadow --
+// which shows up far from its cause and looks like a rendering bug. So instead
+// of tracking individual dirty flags and hoping the list stays complete, the
+// pass hashes its actual inputs and re-renders whenever the hash moves.
+//
+// That concentrates the risk: a forgotten input is a correctness bug either
+// way, but here it is one bug in one place rather than one per input that can
+// change. Floats are hashed by exact bit pattern, so this is a strict
+// "identical inputs" test and never an approximate one.
+class PunctualShadowCacheKey final {
+public:
+    void reset()
+    {
+        // FNV-1a 64-bit offset basis.
+        hash_ = 1469598103934665603ULL;
+    }
+
+    void addBytes(const void* data, size_t size);
+
+    void add(float value)
+    {
+        addBytes(&value, sizeof(value));
+    }
+    void add(uint32_t value)
+    {
+        addBytes(&value, sizeof(value));
+    }
+    void add(const glm::mat4& value)
+    {
+        addBytes(&value, sizeof(value));
+    }
+    void add(const ShadowAtlasRect& rect)
+    {
+        addBytes(&rect, sizeof(rect));
+    }
+    // Pointer identity stands in for "which mesh", which is what the draw
+    // actually selects. Hashing the address is safe because a reallocation that
+    // reused an address would have changed the geometry hashed alongside it.
+    void add(const void* pointer)
+    {
+        addBytes(&pointer, sizeof(pointer));
+    }
+
+    [[nodiscard]] uint64_t value() const
+    {
+        return hash_;
+    }
+
+private:
+    uint64_t hash_ = 1469598103934665603ULL;
+};
 
 // Quadtree tile allocator, reset once per frame and filled in priority order.
 //
