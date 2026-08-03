@@ -584,7 +584,7 @@ void RenderGraph::endShadowPass(bool /*finalCascade*/)
     activePass_ = ActivePass::None;
 }
 
-void RenderGraph::beginPunctualShadowPass()
+void RenderGraph::beginPunctualShadowPass(bool clearWholeAtlas)
 {
     requireFrameActive("RenderGraph::beginPunctualShadowPass");
     if (activePass_ != ActivePass::None) {
@@ -606,9 +606,13 @@ void RenderGraph::beginPunctualShadowPass()
     atlasDepthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     atlasDepthAttachment.imageView = frame_.punctualShadowAtlas->imageView();
     atlasDepthAttachment.imageLayout = depthAttachmentLayout(VK_IMAGE_ASPECT_DEPTH_BIT);
-    // One clear for the whole atlas, so slots that got no casters stay at the
-    // far plane instead of holding a previous frame's depth.
-    atlasDepthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    // CLEAR wipes the whole atlas, which is only correct when nothing in it can
+    // be trusted -- the first frame after the image is created. Otherwise LOAD
+    // preserves the tiles the caller means to reuse, and the caller clears just
+    // the ones it is about to redraw. The graph's write transition uses the
+    // tracked current layout rather than UNDEFINED, so contents survive it.
+    atlasDepthAttachment.loadOp =
+        clearWholeAtlas ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
     atlasDepthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     atlasDepthAttachment.clearValue = atlasDepthClear;
 

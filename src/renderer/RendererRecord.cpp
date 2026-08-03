@@ -123,11 +123,48 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer)
     const bool profileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "PunctualShadowAtlas");
     rhi::debug::beginLabel(commandBuffer, "PunctualShadowAtlas");
 
-    // Layout transitions and the atlas clear both come from the graph: the pass
-    // declares a depth-attachment write on the imported atlas texture, and the
-    // main HDR pass declares the matching sampled read, so the graph infers the
-    // barriers in both directions.
-    renderGraph_.beginPunctualShadowPass();
+    // Layout transitions come from the graph: the pass declares a
+    // depth-attachment write on the imported atlas texture and the main HDR pass
+    // declares the matching sampled read, so the barriers are inferred in both
+    // directions.
+    //
+    // The clear does not. A full-image clear would wipe the cached tiles this
+    // whole mechanism exists to keep, so only the first frame after the image is
+    // created clears everything; after that the attachment loads and the dirty
+    // tiles are cleared individually below.
+    const bool clearWholeAtlas = punctualShadowNeedsFullClear_;
+    renderGraph_.beginPunctualShadowPass(clearWholeAtlas);
+
+    if (!clearWholeAtlas) {
+        // One vkCmdClearAttachments with a rect per dirty tile. Batched because
+        // the clear is a real draw-time operation, not a load-op, and issuing it
+        // per tile would serialise them for no reason.
+        punctualShadowClearRects_.clear();
+        punctualShadowClearRects_.reserve(punctualShadowDirtySlots_.size());
+        for (const uint32_t slot : punctualShadowDirtySlots_) {
+            const renderer::ShadowAtlasRect rect = punctualShadows_.slotRect(slot);
+            if (rect.size == 0) {
+                continue;
+            }
+            VkClearRect clearRect{};
+            clearRect.rect.offset = {static_cast<int32_t>(rect.x), static_cast<int32_t>(rect.y)};
+            clearRect.rect.extent = {rect.size, rect.size};
+            clearRect.baseArrayLayer = 0;
+            clearRect.layerCount = 1;
+            punctualShadowClearRects_.push_back(clearRect);
+        }
+
+        if (!punctualShadowClearRects_.empty()) {
+            VkClearAttachment clearAttachment{};
+            clearAttachment.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+            clearAttachment.clearValue.depthStencil = {1.0f, 0};
+            vkCmdClearAttachments(commandBuffer,
+                                  1,
+                                  &clearAttachment,
+                                  static_cast<uint32_t>(punctualShadowClearRects_.size()),
+                                  punctualShadowClearRects_.data());
+        }
+    }
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, punctualShadowPipeline_.pipeline());
 
@@ -135,9 +172,11 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer)
     const renderer::Mesh* boundMesh = nullptr;
     uint32_t recordedDraws = 0;
 
-    for (uint32_t slot = 0; slot < slotCount; ++slot) {
-        // Rects vary in size now, so the atlas pass reads each slot's own rect
-        // back rather than deriving it from the index.
+    // Only the dirty tiles. Everything else in the atlas is already exactly what
+    // this frame would have drawn there.
+    for (const uint32_t slot : punctualShadowDirtySlots_) {
+        // Rects vary in size, so the pass reads each slot's own rect back rather
+        // than deriving it from the index.
         const renderer::ShadowAtlasRect rect = punctualShadows_.slotRect(slot);
         if (rect.size == 0) {
             continue;
@@ -208,10 +247,29 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer)
     renderGraph_.endPunctualShadowPass();
 
     punctualShadowDrawsRecorded_ = recordedDraws;
-    // The atlas now matches the key computed for this frame, so subsequent
-    // frames with identical inputs can reuse it.
-    punctualShadowResidentKey_ = punctualShadowPendingKey_;
-    punctualShadowAtlasResident_ = true;
+    punctualShadowSlotsRedrawn_ = static_cast<uint32_t>(punctualShadowDirtySlots_.size());
+
+    // Record what the atlas now holds, keyed by tile. Only the tiles just drawn
+    // are updated; the rest keep the entries that made them cacheable.
+    for (const uint32_t slot : punctualShadowDirtySlots_) {
+        const renderer::ShadowAtlasRect rect = punctualShadows_.slotRect(slot);
+        if (rect.size == 0) {
+            continue;
+        }
+        punctualShadowResidentTiles_[renderer::packShadowAtlasRect(rect)] = punctualShadowSlotKeys_[slot];
+    }
+    // A full clear wiped every tile, so any entry for a tile not redrawn above
+    // now describes contents that no longer exist.
+    if (clearWholeAtlas) {
+        for (auto it = punctualShadowResidentTiles_.begin(); it != punctualShadowResidentTiles_.end();) {
+            const bool redrawn = std::any_of(
+                punctualShadowDirtySlots_.begin(), punctualShadowDirtySlots_.end(), [&](uint32_t slot) {
+                    return renderer::packShadowAtlasRect(punctualShadows_.slotRect(slot)) == it->first;
+                });
+            it = redrawn ? std::next(it) : punctualShadowResidentTiles_.erase(it);
+        }
+    }
+    punctualShadowNeedsFullClear_ = false;
 
     rhi::debug::beginLabel(commandBuffer,
                            "PunctualShadowSlots " + std::to_string(slotCount) + " draws " +

@@ -287,8 +287,10 @@ void Renderer::drawShadowsDebugUi()
         // Assignment churn is what popping actually looks like, so it is
         // measured rather than inferred from the image.
         ImGui::Text("Assignment churn: %u this frame", punctualShadowAssignmentChurn_);
-        ImGui::Text("Atlas: %s (%u frames cached)",
-                    punctualShadowCacheHit_ ? "reused" : "re-rendered",
+        ImGui::Text("Atlas: %s, %u/%u tiles redrawn (%u frames fully cached)",
+                    punctualShadowCacheHit_ ? "reused" : "partial",
+                    punctualShadowSlotsRedrawn_,
+                    punctualShadowSlotsUsed_,
                     punctualShadowCachedFrames_);
         ImGui::SetItemTooltip("The atlas is re-rendered only when a hash of its inputs moves:\n"
                               "light projections, tile rects, caster transforms and geometry,\n"

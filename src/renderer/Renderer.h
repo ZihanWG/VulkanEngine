@@ -55,6 +55,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 typedef union SDL_Event SDL_Event;
@@ -786,12 +787,25 @@ private:
     // Shadow-atlas caching. The atlas is re-rendered only when the hash of its
     // inputs moves, so a static light over static geometry costs nothing.
     renderer::PunctualShadowCacheKey punctualShadowCacheKey_;
-    uint64_t punctualShadowResidentKey_ = 0;
-    uint64_t punctualShadowPendingKey_ = 0;
-    bool punctualShadowAtlasResident_ = false;
+    // Per-slot content hash for this frame, parallel to the slot list.
+    std::vector<uint64_t> punctualShadowSlotKeys_;
+    // Which slots actually need redrawing this frame.
+    std::vector<uint32_t> punctualShadowDirtySlots_;
+    // What the atlas currently holds, keyed by *tile rect* rather than slot
+    // index. Slot indices shift between frames as lights are reordered, but a
+    // tile is a fixed region of the image: if the tile at rect R holds the
+    // render described by hash H, then any slot this frame wanting rect R with
+    // hash H already has its contents there, whichever light it belongs to.
+    std::unordered_map<uint64_t, uint64_t> punctualShadowResidentTiles_;
+    // Set when the atlas image itself cannot be trusted (freshly created), which
+    // no per-tile hash can express. Forces one full-clear frame.
+    bool punctualShadowNeedsFullClear_ = true;
     bool punctualShadowCacheHit_ = false;
-    // Frames the atlas pass was skipped, for the debug panel.
+    // Frames the atlas pass was skipped entirely, and tiles redrawn last frame.
     uint32_t punctualShadowCachedFrames_ = 0;
+    uint32_t punctualShadowSlotsRedrawn_ = 0;
+    // Scratch for the per-tile partial clear.
+    std::vector<VkClearRect> punctualShadowClearRects_;
     // Caster draws the atlas pass actually recorded last frame. Surfaced because
     // the atlas preview cannot distinguish "nothing drew" from "everything drew
     // but perspective depth is compressed into the top few percent" -- both look

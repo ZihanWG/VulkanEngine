@@ -285,7 +285,13 @@ public:
     void endShadowPass(bool finalCascade);
     // Punctual shadow atlas. One rendering scope covers the whole atlas; the
     // caller sets a viewport/scissor per slot inside it.
-    void beginPunctualShadowPass();
+    //
+    // clearWholeAtlas selects the load op. False preserves the tiles already in
+    // the atlas so cached ones survive, which is what per-slot invalidation
+    // needs -- the caller then clears just the tiles it is about to redraw.
+    // True is for the first frame after the image is (re)created, when its
+    // contents are undefined and no tile can be trusted.
+    void beginPunctualShadowPass(bool clearWholeAtlas);
     void endPunctualShadowPass();
     // Volumetric fog's compute passes. No rendering scope; this exists so the
     // graph transitions the cascaded shadow map the injection pass samples.
