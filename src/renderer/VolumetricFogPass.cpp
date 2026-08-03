@@ -19,7 +19,8 @@ constexpr uint32_t kInjectBindingParams = 0;
 constexpr uint32_t kInjectBindingShadowMap = 1;
 constexpr uint32_t kInjectBindingScatterVolume = 2;
 constexpr uint32_t kInjectBindingPunctualAtlas = 3;
-constexpr uint32_t kInjectBindingCount = 4;
+constexpr uint32_t kInjectBindingHistoryVolume = 4;
+constexpr uint32_t kInjectBindingCount = 5;
 
 constexpr uint32_t kIntegrateBindingParams = 0;
 constexpr uint32_t kIntegrateBindingScatterVolume = 1;
@@ -146,9 +147,12 @@ void VolumetricFogPass::reset()
     integrateSetLayout_.reset();
     injectParamBuffers_.clear();
     integrateParamBuffers_.clear();
-    scatterVolume_.reset();
+    for (auto& volume : scatterVolumes_) {
+        volume.reset();
+    }
     integratedVolume_.reset();
-    scatterVolumeLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+    scatterVolumeLayouts_ = {VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED};
+    historyParity_ = 0;
     integratedVolumeLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     shadowMapView_ = VK_NULL_HANDLE;
     shadowMapSampler_ = VK_NULL_HANDLE;
@@ -180,7 +184,8 @@ void VolumetricFogPass::createVolumes()
         image.create(*context_, info);
     };
 
-    makeVolume(scatterVolume_, "FogScatterVolume");
+    makeVolume(scatterVolumes_[0], "FogScatterVolume0");
+    makeVolume(scatterVolumes_[1], "FogScatterVolume1");
     makeVolume(integratedVolume_, "FogIntegratedVolume");
 }
 
@@ -234,6 +239,12 @@ void VolumetricFogPass::createDescriptorResources(uint32_t frameCount)
     injectBindings[kInjectBindingPunctualAtlas].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     injectBindings[kInjectBindingPunctualAtlas].descriptorCount = 1;
     injectBindings[kInjectBindingPunctualAtlas].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    // Sampled rather than a storage image: reprojection lands between froxels,
+    // so the history has to be filtered, not point-fetched.
+    injectBindings[kInjectBindingHistoryVolume].binding = kInjectBindingHistoryVolume;
+    injectBindings[kInjectBindingHistoryVolume].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    injectBindings[kInjectBindingHistoryVolume].descriptorCount = 1;
+    injectBindings[kInjectBindingHistoryVolume].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
     injectSetLayout_.create(device,
                             std::span<const VkDescriptorSetLayoutBinding>(injectBindings.data(),
@@ -259,18 +270,20 @@ void VolumetricFogPass::createDescriptorResources(uint32_t frameCount)
 
     std::array<VkDescriptorPoolSize, 3> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSizes[0].descriptorCount = frameCount * 2;
+    poolSizes[0].descriptorCount = frameCount * 4;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[1].descriptorCount = frameCount * 2;
+    poolSizes[1].descriptorCount = frameCount * 6;
     poolSizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    poolSizes[2].descriptorCount = frameCount * 3;
+    poolSizes[2].descriptorCount = frameCount * 6;
+    // Two sets per frame per pipeline, one per ping-pong parity: a set bakes in
+    // which volume is written and which is sampled as history.
     descriptorPool_.create(device, std::span<const VkDescriptorPoolSize>(poolSizes.data(), poolSizes.size()),
-                           frameCount * 2);
+                           frameCount * 4);
 
     injectParamBuffers_.resize(frameCount);
     integrateParamBuffers_.resize(frameCount);
-    injectSets_.resize(frameCount);
-    integrateSets_.resize(frameCount);
+    injectSets_.resize(static_cast<size_t>(frameCount) * 2);
+    integrateSets_.resize(static_cast<size_t>(frameCount) * 2);
 
     for (uint32_t frameIndex = 0; frameIndex < frameCount; ++frameIndex) {
         const auto makeUniformBuffer = [&](rhi::VulkanBuffer& buffer, VkDeviceSize size, const char* name) {
@@ -287,9 +300,11 @@ void VolumetricFogPass::createDescriptorResources(uint32_t frameCount)
         makeUniformBuffer(injectParamBuffers_[frameIndex], sizeof(FogInjectParams), "FogInjectParams");
         makeUniformBuffer(integrateParamBuffers_[frameIndex], sizeof(FogIntegrateParams), "FogIntegrateParams");
 
-        const std::array<VkDescriptorSetLayout, 2> layouts{injectSetLayout_.handle(),
+        const std::array<VkDescriptorSetLayout, 4> layouts{injectSetLayout_.handle(),
+                                                           injectSetLayout_.handle(),
+                                                           integrateSetLayout_.handle(),
                                                            integrateSetLayout_.handle()};
-        std::array<VkDescriptorSet, 2> sets{};
+        std::array<VkDescriptorSet, 4> sets{};
         VkDescriptorSetAllocateInfo allocateInfo{};
         allocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
         allocateInfo.descriptorPool = descriptorPool_.handle();
@@ -297,8 +312,10 @@ void VolumetricFogPass::createDescriptorResources(uint32_t frameCount)
         allocateInfo.pSetLayouts = layouts.data();
         VK_CHECK(vkAllocateDescriptorSets(device, &allocateInfo, sets.data()));
 
-        injectSets_[frameIndex] = sets[0];
-        integrateSets_[frameIndex] = sets[1];
+        injectSets_[frameIndex * 2 + 0] = sets[0];
+        injectSets_[frameIndex * 2 + 1] = sets[1];
+        integrateSets_[frameIndex * 2 + 0] = sets[2];
+        integrateSets_[frameIndex * 2 + 1] = sets[3];
     }
 }
 
@@ -332,7 +349,14 @@ void VolumetricFogPass::writeDescriptorSets()
 {
     const VkDevice device = context_->vkDevice();
 
-    for (size_t frameIndex = 0; frameIndex < injectSets_.size(); ++frameIndex) {
+    for (size_t setIndex = 0; setIndex < injectSets_.size(); ++setIndex) {
+        // setIndex encodes (frame, parity). The params buffers are per frame,
+        // but which volume is written and which is sampled as history follows
+        // the ping-pong parity, so a set has to bake in both.
+        const size_t frameIndex = setIndex / 2;
+        const size_t writeParity = setIndex % 2;
+        const size_t historyParity = 1 - writeParity;
+
         VkDescriptorBufferInfo injectParamsInfo{};
         injectParamsInfo.buffer = injectParamBuffers_[frameIndex].buffer();
         injectParamsInfo.offset = 0;
@@ -344,8 +368,13 @@ void VolumetricFogPass::writeDescriptorSets()
         shadowInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
 
         VkDescriptorImageInfo scatterInfo{};
-        scatterInfo.imageView = scatterVolume_.imageView();
+        scatterInfo.imageView = scatterVolumes_[writeParity].imageView();
         scatterInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+        VkDescriptorImageInfo historyInfo{};
+        historyInfo.sampler = sampler_;
+        historyInfo.imageView = scatterVolumes_[historyParity].imageView();
+        historyInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
         VkDescriptorBufferInfo integrateParamsInfo{};
         integrateParamsInfo.buffer = integrateParamBuffers_[frameIndex].buffer();
@@ -361,7 +390,7 @@ void VolumetricFogPass::writeDescriptorSets()
         punctualAtlasInfo.imageView = punctualShadowAtlasView_;
         punctualAtlasInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
 
-        std::array<VkWriteDescriptorSet, 7> writes{};
+        std::array<VkWriteDescriptorSet, 8> writes{};
         const auto makeWrite =
             [](VkDescriptorSet set, uint32_t binding, VkDescriptorType type) {
                 VkWriteDescriptorSet write{};
@@ -374,27 +403,31 @@ void VolumetricFogPass::writeDescriptorSets()
                 return write;
             };
 
-        writes[0] = makeWrite(injectSets_[frameIndex], kInjectBindingParams, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+        writes[0] = makeWrite(injectSets_[setIndex], kInjectBindingParams, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
         writes[0].pBufferInfo = &injectParamsInfo;
         writes[1] =
-            makeWrite(injectSets_[frameIndex], kInjectBindingShadowMap, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+            makeWrite(injectSets_[setIndex], kInjectBindingShadowMap, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
         writes[1].pImageInfo = &shadowInfo;
         writes[2] =
-            makeWrite(injectSets_[frameIndex], kInjectBindingScatterVolume, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+            makeWrite(injectSets_[setIndex], kInjectBindingScatterVolume, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
         writes[2].pImageInfo = &scatterInfo;
 
         writes[6] = makeWrite(
-            injectSets_[frameIndex], kInjectBindingPunctualAtlas, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+            injectSets_[setIndex], kInjectBindingPunctualAtlas, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
         writes[6].pImageInfo = &punctualAtlasInfo;
 
+        writes[7] = makeWrite(
+            injectSets_[setIndex], kInjectBindingHistoryVolume, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+        writes[7].pImageInfo = &historyInfo;
+
         writes[3] =
-            makeWrite(integrateSets_[frameIndex], kIntegrateBindingParams, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+            makeWrite(integrateSets_[setIndex], kIntegrateBindingParams, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
         writes[3].pBufferInfo = &integrateParamsInfo;
         writes[4] = makeWrite(
-            integrateSets_[frameIndex], kIntegrateBindingScatterVolume, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+            integrateSets_[setIndex], kIntegrateBindingScatterVolume, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
         writes[4].pImageInfo = &scatterInfo;
         writes[5] = makeWrite(
-            integrateSets_[frameIndex], kIntegrateBindingIntegratedVolume, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+            integrateSets_[setIndex], kIntegrateBindingIntegratedVolume, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
         writes[5].pImageInfo = &integratedInfo;
 
         vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
@@ -440,14 +473,34 @@ void VolumetricFogPass::ensureVolumeInitialized(VkCommandBuffer commandBuffer)
 
     rhi::debug::beginLabel(commandBuffer, "FogVolumeInit");
 
-    const VkImageMemoryBarrier2 toTransfer = volumeBarrier(integratedVolume_.image(),
-                                                           VK_IMAGE_LAYOUT_UNDEFINED,
-                                                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                                           VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-                                                           VK_ACCESS_2_NONE,
-                                                           VK_PIPELINE_STAGE_2_CLEAR_BIT,
-                                                           VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    submitImageBarriers(commandBuffer, std::span<const VkImageMemoryBarrier2>(&toTransfer, 1));
+    // All three volumes, not just the integrated one. The scatter volumes feed
+    // each other through the temporal blend, so an uninitialised history would
+    // not merely look wrong on frame one -- a NaN read out of undefined memory
+    // would be blended forward and never leave the volume.
+    const std::array<VkImageMemoryBarrier2, 3> toTransfer{
+        volumeBarrier(integratedVolume_.image(),
+                      VK_IMAGE_LAYOUT_UNDEFINED,
+                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                      VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                      VK_ACCESS_2_NONE,
+                      VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                      VK_ACCESS_2_TRANSFER_WRITE_BIT),
+        volumeBarrier(scatterVolumes_[0].image(),
+                      VK_IMAGE_LAYOUT_UNDEFINED,
+                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                      VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                      VK_ACCESS_2_NONE,
+                      VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                      VK_ACCESS_2_TRANSFER_WRITE_BIT),
+        volumeBarrier(scatterVolumes_[1].image(),
+                      VK_IMAGE_LAYOUT_UNDEFINED,
+                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                      VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                      VK_ACCESS_2_NONE,
+                      VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                      VK_ACCESS_2_TRANSFER_WRITE_BIT)};
+    submitImageBarriers(commandBuffer,
+                        std::span<const VkImageMemoryBarrier2>(toTransfer.data(), toTransfer.size()));
 
     // rgb = 0 scattered light, a = 1 transmittance: the identity for the apply
     // step, so sampling it changes nothing.
@@ -460,16 +513,40 @@ void VolumetricFogPass::ensureVolumeInitialized(VkCommandBuffer commandBuffer)
     vkCmdClearColorImage(
         commandBuffer, integratedVolume_.image(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clearValue, 1, &range);
 
-    const VkImageMemoryBarrier2 toSampled = volumeBarrier(integratedVolume_.image(),
-                                                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                                          VK_PIPELINE_STAGE_2_CLEAR_BIT,
-                                                          VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                                                          VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                                                          VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-    submitImageBarriers(commandBuffer, std::span<const VkImageMemoryBarrier2>(&toSampled, 1));
+    // Scatter volumes clear to fully empty medium: no scattering, no extinction.
+    VkClearColorValue emptyMedium{};
+    vkCmdClearColorImage(
+        commandBuffer, scatterVolumes_[0].image(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &emptyMedium, 1, &range);
+    vkCmdClearColorImage(
+        commandBuffer, scatterVolumes_[1].image(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &emptyMedium, 1, &range);
+
+    const std::array<VkImageMemoryBarrier2, 3> toSampled{
+        volumeBarrier(integratedVolume_.image(),
+                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                      VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                      VK_ACCESS_2_SHADER_SAMPLED_READ_BIT),
+        volumeBarrier(scatterVolumes_[0].image(),
+                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                      VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                      VK_ACCESS_2_SHADER_SAMPLED_READ_BIT),
+        volumeBarrier(scatterVolumes_[1].image(),
+                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                      VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                      VK_ACCESS_2_SHADER_SAMPLED_READ_BIT)};
+    submitImageBarriers(commandBuffer,
+                        std::span<const VkImageMemoryBarrier2>(toSampled.data(), toSampled.size()));
 
     integratedVolumeLayout_ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    scatterVolumeLayouts_ = {VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     volumeInitialized_ = true;
 
     rhi::debug::endLabel(commandBuffer);
@@ -479,23 +556,36 @@ void VolumetricFogPass::recordCommands(VkCommandBuffer commandBuffer,
                                        uint32_t frameIndex,
                                        const FogInjectPushConstants& pushConstants)
 {
-    if (!available_ || frameIndex >= injectSets_.size()) {
+    const size_t setIndex = static_cast<size_t>(frameIndex) * 2 + historyParity_;
+    if (!available_ || setIndex >= injectSets_.size()) {
         return;
     }
 
     rhi::debug::beginLabel(commandBuffer, "VolumetricFog");
 
-    // Both volumes are storage images for the duration of these two passes. The
-    // integrated volume also has to come back from SHADER_READ_ONLY, which is
-    // where the previous frame's composite left it.
-    std::array<VkImageMemoryBarrier2, 2> toGeneral{
-        volumeBarrier(scatterVolume_.image(),
-                      scatterVolumeLayout_,
+    const size_t writeParity = historyParity_;
+    const size_t readParity = 1 - historyParity_;
+
+    // Three transitions. The volume being written and the integrated volume
+    // become storage images; the *other* scatter volume becomes sampled, since
+    // injection reads it as this frame's reprojected history. The integrated
+    // volume also has to come back from SHADER_READ_ONLY, where the previous
+    // frame's main pass left it.
+    std::array<VkImageMemoryBarrier2, 3> toGeneral{
+        volumeBarrier(scatterVolumes_[writeParity].image(),
+                      scatterVolumeLayouts_[writeParity],
                       VK_IMAGE_LAYOUT_GENERAL,
                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                      VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                      VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                       VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT),
+        volumeBarrier(scatterVolumes_[readParity].image(),
+                      scatterVolumeLayouts_[readParity],
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                      VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                      VK_ACCESS_2_SHADER_SAMPLED_READ_BIT),
         volumeBarrier(integratedVolume_.image(),
                       integratedVolumeLayout_,
                       VK_IMAGE_LAYOUT_GENERAL,
@@ -504,7 +594,8 @@ void VolumetricFogPass::recordCommands(VkCommandBuffer commandBuffer,
                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                       VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT)};
     submitImageBarriers(commandBuffer, std::span<const VkImageMemoryBarrier2>(toGeneral.data(), toGeneral.size()));
-    scatterVolumeLayout_ = VK_IMAGE_LAYOUT_GENERAL;
+    scatterVolumeLayouts_[writeParity] = VK_IMAGE_LAYOUT_GENERAL;
+    scatterVolumeLayouts_[readParity] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     integratedVolumeLayout_ = VK_IMAGE_LAYOUT_GENERAL;
 
     rhi::debug::beginLabel(commandBuffer, "FogInject");
@@ -514,7 +605,7 @@ void VolumetricFogPass::recordCommands(VkCommandBuffer commandBuffer,
                             injectPipeline_.layout(),
                             0,
                             1,
-                            &injectSets_[frameIndex],
+                            &injectSets_[setIndex],
                             0,
                             nullptr);
     vkCmdPushConstants(commandBuffer,
@@ -532,7 +623,7 @@ void VolumetricFogPass::recordCommands(VkCommandBuffer commandBuffer,
     // Integration reads every froxel injection wrote, and each column reads
     // slices written by different workgroups, so the whole dispatch has to
     // complete first.
-    const VkImageMemoryBarrier2 injectToIntegrate = volumeBarrier(scatterVolume_.image(),
+    const VkImageMemoryBarrier2 injectToIntegrate = volumeBarrier(scatterVolumes_[writeParity].image(),
                                                                   VK_IMAGE_LAYOUT_GENERAL,
                                                                   VK_IMAGE_LAYOUT_GENERAL,
                                                                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -548,7 +639,7 @@ void VolumetricFogPass::recordCommands(VkCommandBuffer commandBuffer,
                             integratePipeline_.layout(),
                             0,
                             1,
-                            &integrateSets_[frameIndex],
+                            &integrateSets_[setIndex],
                             0,
                             nullptr);
     // One invocation per column; the march over Z happens inside the shader.
@@ -566,6 +657,9 @@ void VolumetricFogPass::recordCommands(VkCommandBuffer commandBuffer,
                                                           VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     submitImageBarriers(commandBuffer, std::span<const VkImageMemoryBarrier2>(&toSampled, 1));
     integratedVolumeLayout_ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    // Swap: what this frame wrote becomes next frame's history.
+    historyParity_ = 1 - historyParity_;
 
     rhi::debug::endLabel(commandBuffer);
 }

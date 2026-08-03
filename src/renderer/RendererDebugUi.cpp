@@ -220,6 +220,18 @@ void Renderer::drawVolumetricFogDebugUi()
     ImGui::SliderFloat("Max distance", &fogSettings_.maxDistance, 8.0f, 200.0f, "%.0f");
     ImGui::SetItemTooltip("Fog volume depth range. Shorter puts the 64 slices where the fog is visible.");
     ImGui::SliderFloat("Anisotropy", &fogSettings_.anisotropy, -0.9f, 0.9f, "%.2f");
+    ImGui::SetItemTooltip("Positive scatters light forward, which is what makes a shaft\n"
+                          "bloom when you look toward the light through it.");
+
+    ImGui::Checkbox("Temporal filtering", &fogSettings_.temporalEnabled);
+    ImGui::SetItemTooltip("Jitters the froxel sample each frame and blends against the\n"
+                          "reprojected previous volume. Off shows the raw single-sample\n"
+                          "result, which is what the filtering is judged against.");
+    ImGui::BeginDisabled(!fogSettings_.temporalEnabled);
+    ImGui::SliderFloat("History blend", &fogSettings_.temporalBlend, 0.0f, 0.98f, "%.2f");
+    ImGui::SetItemTooltip("Fraction of the previous frame kept. Higher is smoother but\n"
+                          "smears more when lights or the camera move.");
+    ImGui::EndDisabled();
     ImGui::SetItemTooltip("Forward scattering. Positive gives the halo when looking toward a light.");
     ImGui::SliderFloat("Height falloff", &fogSettings_.heightFalloff, 0.0f, 0.5f, "%.3f");
     ImGui::SetItemTooltip("Zero is uniform density; larger values pull the fog into a ground layer.");

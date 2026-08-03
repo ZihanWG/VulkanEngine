@@ -108,6 +108,52 @@ Attenuation, the range cutoff, and the spot cone are evaluated exactly as the
 surface path does them, so a light does not appear to reach further through fog
 than it does across a floor.
 
+## Temporal filtering
+
+One sample per froxel per frame aliases badly under a high-frequency shadow: a
+froxel is either fully lit or fully shadowed, so shaft edges crawl and flicker
+as anything moves.
+
+The fix is the standard pair. The sample position is jittered inside its froxel
+each frame using Halton 2/3/5 over a 16-frame cycle -- the same sequence the TAA
+jitter uses, extended to the volume's third axis so slices are sampled at
+varying depths too. The result is then blended against the previous frame's
+volume, reprojected through the previous view-projection.
+
+The jitter is not optional decoration: without it every frame samples the froxel
+centre, the blend averages identical samples, and the filter converges to
+exactly the unfiltered result. The jitter is what gives the history something
+new to integrate.
+
+Two guards matter:
+
+- **Reprojection rejects anything off screen or outside the volume last frame.**
+  There is no history for it, and clamping would smear one edge froxel across
+  the whole disoccluded region.
+- **The history is rejected if it is negative or NaN.** This is a feedback loop
+  writing into itself, so one bad value would be blended forward forever rather
+  than washing out. For the same reason both scatter volumes are cleared at
+  startup rather than left `UNDEFINED`.
+
+The volumes ping-pong, so a descriptor set bakes in which one is written and
+which is sampled as history -- hence two sets per frame, one per parity.
+
+Cost is negligible next to the light loop: the fog passes stay at roughly 1.0ms
+with filtering on.
+
+## Fog on the sky
+
+The skybox is infinitely far, so it samples the volume's far slice -- the total
+fog along the whole view ray. Without it the world fogs out while the sky behind
+stays perfectly crisp, which reads as a hole in the fog rather than as depth.
+
+It samples **unconditionally**, with no enable flag, because the skybox push
+constants are already two mat4s -- exactly the 128-byte guaranteed minimum, with
+nowhere to put one. Instead, switching fog off re-clears the volume to its
+neutral state (zero scattering, unit transmittance), which makes the sample a
+no-op. That is detected from the fog-active state each frame rather than in the
+UI callback, so every path that disables fog is covered.
+
 ## The slab integral
 
 The integration uses the analytic integral of scattering across a homogeneous
@@ -159,16 +205,14 @@ Debug panel → **Volumetric Fog**:
 
 ## Limitations
 
-- **No temporal filtering.** One sample per froxel per frame, so a low-density
-  medium under a high-frequency shadow can alias. The usual fix is a jittered
-  sample plus reprojection against the previous frame's volume.
-- **The skybox gets no fog.** It is drawn without the fog fetch, so the horizon
-  does not fade into the medium.
-- **No fog on transparent geometry.** The transparent pass does not sample the
-  volume.
+- **Reprojection is camera-only.** A moving light drags its shaft through the
+  history rather than being rejected, so a fast-moving light smears at high
+  history-blend values. Proper rejection needs a per-froxel validity signal, not
+  just the previous camera.
 - **Uniform medium.** No noise or density texture, so the fog has no internal
   structure.
 - **Punctual shafts cost.** Every froxel walks its cluster's light list, which
   takes the fog passes from roughly 0.3ms to roughly 1.0ms on the demo scene.
   There is no per-light importance cut, so a froxel in a dense cluster pays for
-  every light in it.
+  every light in it. Temporal filtering adds nothing measurable on top.
+- **The volume is a fixed 160x90x64** regardless of resolution or fog distance.
