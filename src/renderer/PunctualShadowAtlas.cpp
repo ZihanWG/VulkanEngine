@@ -26,6 +26,12 @@ namespace {
 
 } // namespace
 
+uint64_t packShadowAtlasRect(const ShadowAtlasRect& rect)
+{
+    return (static_cast<uint64_t>(rect.x) << 32) | (static_cast<uint64_t>(rect.y) << 16) |
+           static_cast<uint64_t>(rect.size);
+}
+
 void PunctualShadowCacheKey::addBytes(const void* data, size_t size)
 {
     const auto* bytes = static_cast<const unsigned char*>(data);

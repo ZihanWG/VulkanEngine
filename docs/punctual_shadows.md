@@ -227,6 +227,24 @@ entirely when that hash is unchanged: no clear, no draws, and no layout
 transition, since the atlas keeps the sampled layout the main pass left it in
 and the main pass wants that same layout next frame.
 
+Invalidation is **per tile**, not per frame. A tile only cares about the casters
+inside its own frustum, so one moving object re-renders the handful of tiles
+that can see it rather than the whole atlas.
+
+**Tile rect is the cache identity, not slot index.** Slot indices shift between
+frames as lights are reordered by priority, but a tile is a fixed region of the
+image. If the tile at rect R holds the render described by hash H, then any slot
+this frame wanting rect R with hash H already has its contents there, whichever
+light it belongs to. So the resident map is keyed by packed rect, and the
+packing is exact rather than itself a hash -- two tiles colliding into one key
+would let one tile's contents pass for another's.
+
+Preserving cached tiles means the attachment loads instead of clearing, and the
+dirty tiles are cleared individually with one batched `vkCmdClearAttachments`.
+The first frame after the atlas image is created still clears everything, since
+nothing in it can be trusted then; that also purges resident entries for tiles
+the full clear wiped but did not redraw.
+
 **A content hash rather than dirty flags.** The failure mode of caching a shadow
 is a stale one, which shows up far from its cause and reads as a rendering bug.
 Dirty flags spread the risk across every input that can change and every place
@@ -240,6 +258,11 @@ that is either complete or not. What is hashed:
 | Caster mesh, index range, bucket | Which geometry is drawn |
 | Caster model matrix | Where it is |
 | Raster depth bias settings | Pipeline state the tiles are rendered with |
+
+Only the casters that survive *that tile's* frustum cull are hashed, and that
+cull mirrors the one the recording pass performs. If the two ever diverge the
+hash stops describing what actually gets drawn, which is the one way this can
+silently go wrong.
 
 The per-slot frustum cull is a pure function of the slot projections and caster
 transforms, so its result needs no separate hashing. Floats are hashed by exact
@@ -258,11 +281,18 @@ time would read the *previous* frame's transforms and draw items, so every
 change would be noticed exactly one frame late -- a single stale shadow frame on
 every edit, which is both visible and hard to attribute.
 
-The debug panel reports whether the atlas was reused or re-rendered this frame,
-and how many frames have been served from cache, so the hit rate is measured
-rather than assumed. In the demo scene the lights orbit and several objects
-rotate, so the hash legitimately moves every frame and the cache never hits;
-freezing both gives a hit on every frame after the first.
+The debug panel reports how many tiles were redrawn out of how many exist, plus
+how many frames were skipped entirely, so the hit rate is measured rather than
+assumed. Measured on the demo scene:
+
+| Scene state | Tiles redrawn |
+| --- | --- |
+| Lights orbiting (the default) | 25 of 25 -- every projection changes, so nothing is reusable |
+| Lights frozen, nothing moving | 0, the pass is skipped outright |
+| Lights frozen, one object rotating | 9-10 of 25, varying as it moves through frustums |
+
+The middle row is the case the whole mechanism exists for, and the last row is
+the one per-tile invalidation adds over a single frame-wide hash.
 
 ## Blended geometry does not cast
 
@@ -345,11 +375,13 @@ near-black and reads as a catastrophic bug that is not there.
 
 ## Limitations
 
-- **Caching is all-or-nothing.** One moved caster re-renders every tile, not
-  just the tiles whose frustums contain it. Per-slot invalidation needs a
-  partial atlas clear (`vkCmdClearAttachments` per tile) and per-slot hashes,
-  and would turn the common "one thing moved in a mostly static scene" case from
-  a full rebuild into a couple of tiles.
+- **A tile is all-or-nothing internally.** One moved caster inside a tile's
+  frustum redraws that whole tile, including the casters in it that did not
+  move. That is inherent to a shadow map: the depth buffer is not separable per
+  caster.
+- **Invalidation is conservative about frustum membership.** A caster whose
+  bounds intersect a tile's frustum dirties it even if it is fully occluded by
+  something nearer the light and could not change the result.
 - **Tile assignment is recomputed from scratch every frame**, and priority
   depends on the camera, so moving the camera reshuffles which lights hold tiles
   and can flip a light between size classes at a threshold. Both pop visibly.

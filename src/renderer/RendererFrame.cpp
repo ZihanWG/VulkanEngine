@@ -170,59 +170,83 @@ void Renderer::updateVolumetricFogParams(uint32_t frameIndex, float aspectRatio)
     volumetricFog_.updateParams(frameIndex, params);
 }
 
-// Decides whether this frame's atlas contents would be identical to the one
-// already resident, by hashing everything the pass consumes.
+// Computes a content hash per atlas tile and works out which tiles this frame
+// would draw differently from what the atlas already holds.
 //
-// The enumeration below is the load-bearing part: anything that can change a
+// Per tile rather than per frame: one moved caster used to invalidate every
+// tile, so a mostly-static scene with one moving object paid the full atlas
+// cost. A tile only cares about the casters inside its own frustum.
+//
+// The enumeration below is the load-bearing part. Anything that can change a
 // tile and is not hashed here becomes a stale shadow, which surfaces far from
-// its cause. Hence hashing the inputs rather than tracking dirty flags -- a
-// missed input is one bug in one place instead of one per mutable input.
+// its cause. Hashing inputs rather than tracking dirty flags concentrates that
+// risk into one list instead of spreading it over every mutable input.
 void Renderer::updatePunctualShadowCacheState()
 {
-    punctualShadowCacheKey_.reset();
-
-    // Per slot: the projection carries the light's position, direction, range,
-    // cone, and near plane; the rect carries where and at what resolution it
-    // renders.
     const uint32_t slotCount = punctualShadows_.slotCount();
-    punctualShadowCacheKey_.add(slotCount);
-    for (uint32_t slot = 0; slot < slotCount; ++slot) {
-        punctualShadowCacheKey_.add(punctualShadows_.slotViewProjection(slot));
-        punctualShadowCacheKey_.add(punctualShadows_.slotRect(slot));
-    }
+    punctualShadowSlotKeys_.assign(slotCount, 0);
+    punctualShadowDirtySlots_.clear();
 
-    // Per caster: which geometry, where. The per-slot frustum cull is a pure
-    // function of these plus the slot projections above, so its result does not
-    // need hashing separately.
-    punctualShadowCacheKey_.add(static_cast<uint32_t>(allDrawItems_.size()));
-    for (const DrawItem& drawItem : allDrawItems_) {
-        if (!drawItem.mesh || drawItem.bucket == RenderBucket::Blend) {
-            continue;
-        }
-        punctualShadowCacheKey_.add(static_cast<const void*>(drawItem.mesh));
-        punctualShadowCacheKey_.add(drawItem.firstIndex);
-        punctualShadowCacheKey_.add(drawItem.indexCount);
-        punctualShadowCacheKey_.add(static_cast<uint32_t>(drawItem.bucket));
-        if (drawItem.objectIndex < frameWorldBounds_.size()) {
+    for (uint32_t slot = 0; slot < slotCount; ++slot) {
+        const renderer::ShadowAtlasRect rect = punctualShadows_.slotRect(slot);
+
+        punctualShadowCacheKey_.reset();
+        // The projection carries the light's position, direction, range, cone
+        // and near plane; the rect carries where and at what resolution.
+        punctualShadowCacheKey_.add(punctualShadows_.slotViewProjection(slot));
+        punctualShadowCacheKey_.add(rect);
+        // Raster depth bias is pipeline state the tile is rendered with.
+        punctualShadowCacheKey_.add(shadowSettings_.rasterDepthBiasConstantFactor);
+        punctualShadowCacheKey_.add(shadowSettings_.rasterDepthBiasSlopeFactor);
+
+        // Only the casters this tile actually draws. The cull below mirrors the
+        // one in recordPunctualShadowPass exactly -- if the two ever diverge,
+        // the hash stops describing what gets drawn, so they are kept adjacent
+        // in intent even though they live in different translation units.
+        const renderer::Frustum& slotFrustum = punctualShadows_.slotFrustum(slot);
+        for (const DrawItem& drawItem : allDrawItems_) {
+            if (!drawItem.mesh || drawItem.frameDataIndex >= kMaxDrawItems || drawItem.indexCount == 0) {
+                continue;
+            }
+            if (drawItem.bucket == RenderBucket::Blend) {
+                continue;
+            }
+            if (drawItem.objectIndex < frameWorldBounds_.size() &&
+                !slotFrustum.testAabb(frameWorldBounds_[drawItem.objectIndex])) {
+                continue;
+            }
+
+            punctualShadowCacheKey_.add(static_cast<const void*>(drawItem.mesh));
+            punctualShadowCacheKey_.add(drawItem.firstIndex);
+            punctualShadowCacheKey_.add(drawItem.indexCount);
             punctualShadowCacheKey_.add(renderObjects_[drawItem.objectIndex].transform.modelMatrix());
         }
+
+        const uint64_t key = punctualShadowCacheKey_.value();
+        punctualShadowSlotKeys_[slot] = key;
+
+        if (punctualShadowNeedsFullClear_) {
+            // Nothing in the image is trustworthy yet, so every tile is dirty
+            // regardless of what the hashes say.
+            punctualShadowDirtySlots_.push_back(slot);
+            continue;
+        }
+
+        const auto resident = punctualShadowResidentTiles_.find(packShadowAtlasRect(rect));
+        if (resident == punctualShadowResidentTiles_.end() || resident->second != key) {
+            punctualShadowDirtySlots_.push_back(slot);
+        }
     }
 
-    // Raster depth bias is pipeline state the tiles are rendered with, so
-    // retuning it has to invalidate them.
-    punctualShadowCacheKey_.add(shadowSettings_.rasterDepthBiasConstantFactor);
-    punctualShadowCacheKey_.add(shadowSettings_.rasterDepthBiasSlopeFactor);
-
-    const uint64_t key = punctualShadowCacheKey_.value();
-    // Only reusable if the atlas actually holds a rendered frame: after a device
-    // or swapchain recreation the image is undefined regardless of the key.
-    punctualShadowCacheHit_ = punctualShadowAtlasResident_ && key == punctualShadowResidentKey_;
-    punctualShadowPendingKey_ = key;
+    // Nothing to redraw means the pass is skipped outright: no clear, no draws,
+    // no transition.
+    punctualShadowCacheHit_ = punctualShadowDirtySlots_.empty() && slotCount > 0;
 }
 
 void Renderer::invalidatePunctualShadowCache()
 {
-    punctualShadowAtlasResident_ = false;
+    punctualShadowResidentTiles_.clear();
+    punctualShadowNeedsFullClear_ = true;
     punctualShadowCacheHit_ = false;
 }
 

@@ -160,6 +160,19 @@ inline constexpr uint32_t kPointShadowFaceCount = 6;
                                                              float range,
                                                              float nearPlane = 0.0f);
 
+// A tile rect packed into one integer, for use as a map key.
+//
+// Tile rect, not slot index, is the stable identity for caching: slot indices
+// shift between frames as lights are reordered, but a tile is a fixed region of
+// the image. If the tile at rect R holds the render described by some hash, any
+// later slot wanting rect R with that same hash already has its contents there,
+// whichever light it happens to belong to.
+//
+// Atlas coordinates and sizes are all well under 16 bits, so this is exact
+// rather than itself a hash -- two different rects can never collide into one
+// key and be mistaken for the same tile.
+[[nodiscard]] uint64_t packShadowAtlasRect(const ShadowAtlasRect& rect);
+
 // Content hash of everything the atlas pass consumes in a frame.
 //
 // Caching a shadow tile is only safe if nothing that could change its contents

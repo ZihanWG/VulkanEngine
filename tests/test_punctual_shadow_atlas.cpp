@@ -587,6 +587,45 @@ TEST_CASE("The cache key moves when any input moves", "[shadowatlas]")
     CHECK(fresh.value() != 0u);
 }
 
+TEST_CASE("Tile rects pack to distinct cache keys", "[shadowatlas]")
+{
+    using ve::renderer::packShadowAtlasRect;
+
+    // The per-tile cache is keyed by packed rect, so two different tiles
+    // colliding into one key would let one tile's contents be mistaken for
+    // another's -- a stale shadow in the wrong place. Atlas coordinates and
+    // sizes fit well inside the packing, so this is exact rather than a hash.
+    PunctualShadowAtlasAllocator allocator;
+    std::set<uint64_t> keys;
+    std::vector<ShadowAtlasRect> rects;
+
+    for (int round = 0; round < 60; ++round) {
+        ShadowAtlasRect rect{};
+        if (!allocator.allocate(static_cast<uint32_t>(round % kPunctualShadowSizeClassCount), rect)) {
+            break;
+        }
+        // Every distinct tile gets a distinct key.
+        CHECK(keys.insert(packShadowAtlasRect(rect)).second);
+        rects.push_back(rect);
+    }
+    CHECK(keys.size() == rects.size());
+    CHECK(rects.size() > 20u);
+
+    // The same rect always packs the same way, which is what makes a cache hit
+    // possible at all.
+    for (const ShadowAtlasRect& rect : rects) {
+        CHECK(packShadowAtlasRect(rect) == packShadowAtlasRect(ShadowAtlasRect{rect.x, rect.y, rect.size}));
+    }
+
+    // Each field participates: two tiles differing in only one of them are
+    // never the same key.
+    CHECK(packShadowAtlasRect(ShadowAtlasRect{0, 0, 256}) != packShadowAtlasRect(ShadowAtlasRect{256, 0, 256}));
+    CHECK(packShadowAtlasRect(ShadowAtlasRect{0, 0, 256}) != packShadowAtlasRect(ShadowAtlasRect{0, 256, 256}));
+    // Same origin, different size class -- a tile that shrank in place must not
+    // inherit the larger tile's cached contents.
+    CHECK(packShadowAtlasRect(ShadowAtlasRect{0, 0, 256}) != packShadowAtlasRect(ShadowAtlasRect{0, 0, 512}));
+}
+
 TEST_CASE("The GPU slot record keeps its std430 layout", "[shadowatlas]")
 {
     // The fragment shader indexes these through a buffer-device-address pointer,
