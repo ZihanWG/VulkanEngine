@@ -95,6 +95,12 @@ struct FogSettings {
     // Temporal reprojection. One sample per froxel per frame aliases badly
     // under a high-frequency shadow; jittering the sample and blending against
     // the reprojected previous volume converges it instead.
+    // Per-light importance cull. A froxel bounds what each light could still
+    // contribute -- brightest channel * intensity * attenuation * the phase
+    // peak -- and skips it before the shadow fetch when even that bound falls
+    // below this. Zero disables the cull entirely, which is the reference the
+    // culled result is judged against.
+    float lightCullThreshold = 0.05f;
     bool temporalEnabled = true;
     // Fraction of the previous frame kept. Higher is smoother but smears more
     // when lights or the camera move.

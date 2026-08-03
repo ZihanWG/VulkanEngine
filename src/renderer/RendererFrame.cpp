@@ -141,8 +141,10 @@ void Renderer::updateVolumetricFogParams(uint32_t frameIndex, float aspectRatio)
                                  std::max(fogSettings_.maxDistance, renderer::kFogNearPlane + 1.0f),
                                  std::clamp(fogSettings_.anisotropy, -0.95f, 0.95f),
                                  std::max(fogSettings_.heightFalloff, 0.0f));
-    params.fogParams2 =
-        glm::vec4(fogSettings_.baseHeight, std::max(fogSettings_.ambientScale, 0.0f), 0.0f, 0.0f);
+    params.fogParams2 = glm::vec4(fogSettings_.baseHeight,
+                                 std::max(fogSettings_.ambientScale, 0.0f),
+                                 std::max(fogSettings_.lightCullThreshold, 0.0f),
+                                 0.0f);
     params.scatteringColor = glm::vec4(glm::max(fogSettings_.scatteringColor, glm::vec3{0.0f}), 1.0f);
 
     // Temporal reprojection. The matrices come from the same previous-frame

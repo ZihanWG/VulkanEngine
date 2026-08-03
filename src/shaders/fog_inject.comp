@@ -41,7 +41,7 @@ layout(set = 0, binding = 0) uniform FogParamsBuffer {
     vec4 lightColor;
     // x = density, y = max distance, z = anisotropy, w = height falloff
     vec4 fogParams;
-    // x = base height, y = ambient scale, z unused, w unused
+    // x = base height, y = ambient scale, z = per-light cull threshold, w unused
     vec4 fogParams2;
     // rgb = scattering albedo
     vec4 scatteringColor;
@@ -231,14 +231,52 @@ float punctualFogShadow(GpuLight light, vec3 worldPosition)
     return (projected.z - slot.params.x) <= closestDepth ? 1.0 : 0.0;
 }
 
+// Largest value henyeyGreensteinPhase can return for this anisotropy, over any
+// scattering angle. Mirrors ve::renderer::maxHenyeyGreensteinPhase, whose
+// bounding property is pinned by a unit test.
+float maxHenyeyGreensteinPhase(float anisotropy)
+{
+    float g = clamp(anisotropy, -0.99, 0.99);
+    float magnitude = abs(g);
+    float denominator = (1.0 - magnitude) * (1.0 - magnitude) * (1.0 - magnitude);
+    return kInverseFourPi * (1.0 - g * g) / max(denominator, 1.0e-6);
+}
+
 // In-scattering contributed by one punctual light at a froxel.
-vec3 punctualFogScattering(GpuLight light, vec3 worldPosition, vec3 toCamera, float anisotropy)
+//
+// phaseBound is the most the phase function can return for this frame's
+// anisotropy, computed once per froxel rather than per light.
+vec3 punctualFogScattering(
+    GpuLight light, vec3 worldPosition, vec3 toCamera, float anisotropy, float phaseBound, float cullThreshold)
 {
     vec3 toLight = light.positionRange.xyz - worldPosition;
     float distance = length(toLight);
     float range = max(light.positionRange.w, 1.0e-4);
     if (distance > range || distance < 1.0e-4) {
         return vec3(0.0);
+    }
+
+    // Importance cull, before any of the per-light work below.
+    //
+    // Placement is the whole point. Measuring showed the shadow fetch and the
+    // phase function are not what this loop costs -- culling every light after
+    // them saved under 10%. The cost is walking the list and the attenuation
+    // arithmetic itself, in particular the pow() in the range fade. So the
+    // bound is taken here, from inverse-square falloff alone, and skips all of
+    // it.
+    //
+    // Conservative, never approximate: the range fade, the spot cone, and the
+    // shadow term are each at most 1, and the phase is at most phaseBound, so
+    // this can only overstate the light's real contribution. A light that would
+    // have been visible is never dropped. The brightest channel rather than
+    // luminance keeps that true for strongly tinted lights too.
+    if (cullThreshold > 0.0) {
+        vec3 radiance = light.colorIntensity.rgb * light.colorIntensity.a;
+        float upperBound =
+            max(max(radiance.r, radiance.g), radiance.b) / max(distance * distance, 1.0e-4) * phaseBound;
+        if (upperBound < cullThreshold) {
+            return vec3(0.0);
+        }
     }
 
     vec3 lightDirection = toLight / distance;
@@ -337,6 +375,10 @@ void main()
     // exactly as a fragment there would.
     if (pc.lightCount > 0u) {
         vec3 punctual = vec3(0.0);
+        // Both constant across the froxel's light list, so they are hoisted out
+        // rather than recomputed per light.
+        float phaseBound = maxHenyeyGreensteinPhase(params.fogParams.z);
+        float cullThreshold = max(params.fogParams2.z, 0.0);
 
         if (pc.useClustered != 0u) {
             uint tileX = min(uint(uv.x * float(kClusterGridX)), kClusterGridX - 1u);
@@ -352,13 +394,21 @@ void main()
             ClusterCell cell = pc.clusterGrid.cells[clusterIndex];
             for (uint i = 0u; i < cell.count; ++i) {
                 uint lightIndex = pc.lightIndexList.indices[cell.offset + i];
-                punctual += punctualFogScattering(
-                    pc.lightBuffer.lights[lightIndex], worldPosition, toCamera, params.fogParams.z);
+                punctual += punctualFogScattering(pc.lightBuffer.lights[lightIndex],
+                                                  worldPosition,
+                                                  toCamera,
+                                                  params.fogParams.z,
+                                                  phaseBound,
+                                                  cullThreshold);
             }
         } else {
             for (uint lightIndex = 0u; lightIndex < pc.lightCount; ++lightIndex) {
-                punctual += punctualFogScattering(
-                    pc.lightBuffer.lights[lightIndex], worldPosition, toCamera, params.fogParams.z);
+                punctual += punctualFogScattering(pc.lightBuffer.lights[lightIndex],
+                                                  worldPosition,
+                                                  toCamera,
+                                                  params.fogParams.z,
+                                                  phaseBound,
+                                                  cullThreshold);
             }
         }
 

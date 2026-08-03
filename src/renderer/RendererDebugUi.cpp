@@ -223,6 +223,12 @@ void Renderer::drawVolumetricFogDebugUi()
     ImGui::SetItemTooltip("Positive scatters light forward, which is what makes a shaft\n"
                           "bloom when you look toward the light through it.");
 
+    ImGui::SliderFloat("Light cull threshold", &fogSettings_.lightCullThreshold, 0.0f, 1.0f, "%.3f");
+    ImGui::SetItemTooltip("Skips a light for a froxel when a conservative upper bound on what it\n"
+                          "could contribute falls below this. 0 disables the cull and is the\n"
+                          "reference to compare against. Raise it while watching the fog near\n"
+                          "the edge of a light's range -- that is where it starts to show.");
+
     ImGui::Checkbox("Temporal filtering", &fogSettings_.temporalEnabled);
     ImGui::SetItemTooltip("Jitters the froxel sample each frame and blends against the\n"
                           "reprojected previous volume. Off shows the raw single-sample\n"

@@ -154,6 +154,46 @@ neutral state (zero scattering, unit transmittance), which makes the sample a
 no-op. That is detected from the fog-active state each frame rather than in the
 UI callback, so every path that disables fog is covered.
 
+## Per-light importance culling
+
+A froxel bounds what each light could still contribute before doing the work,
+and skips it when even that bound is negligible. The bound is
+`brightest channel * intensity / distance^2 * maxPhase(anisotropy)`.
+
+**Conservative, not approximate.** The range fade, the spot cone, and the shadow
+term are each at most 1, and the phase is at most `maxHenyeyGreensteinPhase`, so
+the bound can only ever overstate the real contribution — a light that would
+have been visible is never dropped. Using the brightest channel rather than
+luminance keeps that true for strongly tinted lights. A unit test pins the phase
+bound against the phase function over a full sweep of angles and anisotropies,
+including that it is *tight* and not merely safe: a loose bound would make the
+cull silently never fire.
+
+**Where the test goes is the whole optimisation, and the first placement was
+wrong.** It originally sat just before the shadow-atlas fetch and the phase
+function, on the assumption that those dominate. Measuring said otherwise:
+culling *every* light there saved under 10%. What the loop actually costs is
+walking the list and the attenuation arithmetic — particularly the `pow()` in
+the range fade. Moving the test above all of that is what made it worth having.
+
+Measured on the demo scene, taking the minimum and median over ~19 samples,
+because single averages on this machine are noise-dominated:
+
+| Threshold | Median | Note |
+| --- | --- | --- |
+| 0 (off) | 1.13 ms | Reference |
+| 0.05 (default) | ~1.15 ms | Within noise here; culls only the outer shell |
+| 0.2 | 0.80 ms | Clear win, starts trading fidelity |
+| Cull everything | 0.70 ms | The floor — what the light loop costs in total |
+
+The default is deliberately conservative. At 0.05 with the demo's lights it only
+culls beyond ~7.1 of 8 units, where `rangeFade²` has already reduced the true
+contribution to under 0.007 — genuinely invisible, but also a small enough share
+of the work that the win does not clear the measurement noise on this machine.
+The win is real and clear at higher thresholds, and grows with light density:
+the demo has only a handful of lights per cluster, which is the case this helps
+least.
+
 ## The slab integral
 
 The integration uses the analytic integral of scattering across a homogeneous
@@ -213,6 +253,10 @@ Debug panel → **Volumetric Fog**:
   structure.
 - **Punctual shafts cost.** Every froxel walks its cluster's light list, which
   takes the fog passes from roughly 0.3ms to roughly 1.0ms on the demo scene.
-  There is no per-light importance cut, so a froxel in a dense cluster pays for
-  every light in it. Temporal filtering adds nothing measurable on top.
+  Importance culling trims that but cannot remove the list walk itself.
+  Temporal filtering adds nothing measurable on top.
+- **The cull threshold is absolute, not relative.** It is a radiance bound, so a
+  value tuned for one scene's light intensities does not transfer to another
+  with very different ones. A threshold relative to the froxel's own accumulated
+  scattering would, but needs two passes over the light list.
 - **The volume is a fixed 160x90x64** regardless of resolution or fog distance.
