@@ -85,7 +85,7 @@ The graph now owns selected declared buffer pass-to-pass barriers:
 - `LuminancePass` storage writes to luminance partials before `HistogramExposurePass` reads them
 - `HistogramExposurePass` exposure-state writes before `CompositePass` reads the GPU exposure buffer
 
-Shadow GPU culling barriers, main GPU culling reset/copy/readback barriers, histogram reset and in-pass histogram-to-exposure-reduce barriers, exposure debug host-read visibility, and portfolio screenshot copy barriers are still manually synchronized in `Renderer.cpp`.
+Shadow GPU culling barriers, main GPU culling reset/copy/readback barriers, histogram reset and in-pass histogram-to-exposure-reduce barriers, exposure debug host-read visibility, and portfolio screenshot copy barriers are still manually synchronized in `RendererRecord.cpp`.
 
 ## Synchronization Inference
 

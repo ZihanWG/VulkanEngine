@@ -14,6 +14,13 @@ document, not a roadmap for adding new rendering features.
 - `src/renderer/` owns frame orchestration, render objects, draw-item
   construction, material state, bindless texture heap, runtime settings, GPU
   profiler integration, scene JSON save/load, and Render Graph metadata.
+  `Renderer` itself is one class spread across several translation units --
+  `Renderer.cpp` (lifecycle, frame loop, input, settings), `RendererResources.cpp`
+  (pipelines, descriptors, buffers, IBL), `RendererScene.cpp` (scene, materials,
+  asset JSON), `RendererFrame.cpp` (per-frame CPU prep), `RendererRecord.cpp`
+  (command recording), and `RendererDebugUi.cpp` (ImGui panels). Shared
+  file-local helpers live in `RendererInternal.h`. The class is still large; only
+  the file was split.
 - `src/assets/` owns the path-based `AssetManager` for material JSON assets and
   texture path metadata. Runtime Vulkan images still live in renderer/RHI code.
 - `src/ui/` owns Dear ImGui integration through `ImGuiLayer`.
@@ -118,7 +125,7 @@ metadata, declared access, conservative image transitions, selected declared
 buffer pass-to-pass barriers, side effects, pass liveness, and debug UI rows.
 Physical resource allocation remains in `Renderer`, and shadow-culling,
 intra-pass reset/copy, host-readback, and screenshot-copy barriers remain manual
-in `Renderer.cpp`.
+in `RendererRecord.cpp`.
 
 ## Scene, Mesh, Material, And Assets
 

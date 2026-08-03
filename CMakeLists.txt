@@ -257,6 +257,10 @@ add_library(VulkanEngineRuntime STATIC
     src/renderer/RenderGraph.cpp
     src/renderer/Renderer.cpp
     src/renderer/RendererDebugUi.cpp
+    src/renderer/RendererFrame.cpp
+    src/renderer/RendererRecord.cpp
+    src/renderer/RendererResources.cpp
+    src/renderer/RendererScene.cpp
     src/renderer/SceneBuilder.cpp
     src/renderer/ScreenSpaceReflections.cpp
     src/renderer/ScreenshotCapture.cpp
