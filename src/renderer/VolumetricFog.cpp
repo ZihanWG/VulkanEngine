@@ -88,6 +88,22 @@ float henyeyGreensteinPhase(const glm::vec3& viewDirection, const glm::vec3& lig
     return kInverseFourPi * (1.0f - gSquared) / std::max(std::pow(denominator, 1.5f), 1.0e-6f);
 }
 
+float maxHenyeyGreensteinPhase(float anisotropy)
+{
+    // Same clamp the phase function applies, so the bound is computed for the
+    // anisotropy actually used rather than the one requested.
+    const float g = std::clamp(anisotropy, -0.99f, 0.99f);
+
+    // The peak sits at cosTheta = +1 for forward scattering and -1 for backward,
+    // and both reduce to this once the sign is folded into |g|: the denominator
+    // (1 + g^2 - 2*g*cosTheta) is minimised when g*cosTheta is largest.
+    const float magnitude = std::abs(g);
+    const float denominator = (1.0f - magnitude) * (1.0f - magnitude) * (1.0f - magnitude);
+    constexpr float kInverseFourPi = 0.0795774715f;
+
+    return kInverseFourPi * (1.0f - g * g) / std::max(denominator, 1.0e-6f);
+}
+
 uint32_t fogFroxelClusterIndex(uint32_t froxelX,
                                uint32_t froxelY,
                                uint32_t froxelZ,

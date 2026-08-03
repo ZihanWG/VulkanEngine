@@ -91,6 +91,21 @@ struct FogIntegratedSample {
                                           const glm::vec3& lightDirection,
                                           float anisotropy);
 
+// Largest value henyeyGreensteinPhase can return for a given anisotropy, over
+// every possible scattering angle.
+//
+// This exists to make the fog's per-light culling *conservative* rather than
+// approximate. A froxel can bound a light's possible contribution before doing
+// any expensive work -- colour * intensity * attenuation * this -- and skip the
+// light only when even that bound is negligible. Because the bound can never
+// understate the real contribution, a light that would have been visible is
+// never dropped; the cull only ever removes work whose result was going to be
+// below the threshold anyway.
+//
+// A unit test pins the bounding property directly against the phase function
+// over a sweep of angles and anisotropies.
+[[nodiscard]] float maxHenyeyGreensteinPhase(float anisotropy);
+
 // Light cluster covering a fog froxel's centre.
 //
 // The fog volume and the clustered lighting grid are different resolutions with

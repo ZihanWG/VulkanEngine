@@ -194,6 +194,48 @@ TEST_CASE("The phase function conserves energy and points forward", "[fog]")
     }
 }
 
+TEST_CASE("The phase bound is never exceeded by the phase itself", "[fog]")
+{
+    using ve::renderer::maxHenyeyGreensteinPhase;
+
+    // This is the property the fog's per-light culling rests on. The cull skips
+    // a light when colour * intensity * attenuation * bound is negligible, so if
+    // the bound could ever understate the real phase, a visible light would be
+    // dropped -- and it would be dropped only at certain viewing angles, which
+    // is the kind of bug that looks like flickering rather than like a cull.
+    const glm::vec3 view{0.0f, 0.0f, 1.0f};
+
+    for (float g = -0.98f; g <= 0.98f; g += 0.04f) {
+        const float bound = maxHenyeyGreensteinPhase(g);
+        CHECK(std::isfinite(bound));
+        CHECK(bound > 0.0f);
+
+        // Sweep the full scattering sphere, not just the axes: the peak of a
+        // strongly anisotropic phase is narrow, so a coarse check could miss it.
+        for (int step = 0; step <= 360; ++step) {
+            const float theta = static_cast<float>(step) * 3.14159265f / 180.0f;
+            const glm::vec3 lightDirection{std::sin(theta), 0.0f, std::cos(theta)};
+            const float phase = henyeyGreensteinPhase(view, lightDirection, g);
+            CHECK(phase <= bound * (1.0f + 1.0e-4f));
+        }
+
+        // And it is tight, not just safe: an infinite bound would make the cull
+        // never fire, which is a silent performance regression rather than a
+        // visual bug.
+        const glm::vec3 peakDirection = g >= 0.0f ? view : -view;
+        CHECK(henyeyGreensteinPhase(view, peakDirection, g) == Approx(bound).epsilon(0.001));
+    }
+
+    // Isotropic scattering bounds to the uniform value.
+    CHECK(maxHenyeyGreensteinPhase(0.0f) == Approx(0.0795774715f).epsilon(0.001));
+    // Out-of-range anisotropy clamps the same way the phase function does, so
+    // the two cannot disagree about which anisotropy is in effect.
+    CHECK(maxHenyeyGreensteinPhase(5.0f) == Approx(maxHenyeyGreensteinPhase(0.99f)));
+    CHECK(maxHenyeyGreensteinPhase(-5.0f) == Approx(maxHenyeyGreensteinPhase(-0.99f)));
+    CHECK(std::isfinite(maxHenyeyGreensteinPhase(1.0f)));
+    CHECK(std::isfinite(maxHenyeyGreensteinPhase(-1.0f)));
+}
+
 TEST_CASE("A fog froxel maps to the cluster a fragment there would use", "[fog]")
 {
     using ve::renderer::clusterIndex;
