@@ -862,6 +862,7 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
             << "  caster draws recorded: " << punctualShadowDrawsRecorded_ << "\n"
             << "  atlas this frame: " << (punctualShadowCacheHit_ ? "fully cached" : "partial") << "\n"
             << "  tiles redrawn: " << punctualShadowSlotsRedrawn_ << "/" << punctualShadowSlotsUsed_ << "\n"
+            << "  cull+record CPU: " << punctualShadowCpuMicros_ << " us\n"
             << "  frames served from cache: " << punctualShadowCachedFrames_ << "\n"
             << "  assignment churn this frame: " << punctualShadowAssignmentChurn_
             << ", cumulative: " << punctualShadowAssignmentChurnTotal_ << "\n";

@@ -231,6 +231,10 @@ void Renderer::createShadowMap()
     // Recreated alongside the CSM so a cascade-count change cannot leave the
     // material descriptor sets pointing at a destroyed image.
     punctualShadows_.create(context_, static_cast<uint32_t>(frames_.size()));
+    // Optional: failure leaves the CPU frustum tests in place.
+    punctualShadows_.createCullResources(static_cast<uint32_t>(frames_.size()),
+                                         shaderPath("punctual_shadow_cull.comp.spv"),
+                                         kMaxDrawItems);
     // A fresh atlas image has undefined contents, which no input hash can
     // express: the key could match the previous atlas exactly while the memory
     // behind it no longer holds that render.

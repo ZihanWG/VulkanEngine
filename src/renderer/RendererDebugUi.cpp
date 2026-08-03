@@ -293,6 +293,10 @@ void Renderer::drawShadowsDebugUi()
         // Assignment churn is what popping actually looks like, so it is
         // measured rather than inferred from the image.
         ImGui::Text("Assignment churn: %u this frame", punctualShadowAssignmentChurn_);
+        ImGui::Text("Cull + record CPU: %lld us", punctualShadowCpuMicros_);
+        ImGui::SetItemTooltip("What GPU caster culling would remove. Compare against the\n"
+                              "PunctualShadowGpuCull and PunctualShadowAtlas rows in the\n"
+                              "profiler before deciding the trade is worth it.");
         ImGui::Text("Atlas: %s, %u/%u tiles redrawn (%u frames fully cached)",
                     punctualShadowCacheHit_ ? "reused" : "partial",
                     punctualShadowSlotsRedrawn_,
@@ -304,6 +308,17 @@ void Renderer::drawShadowsDebugUi()
         ImGui::SetItemTooltip("Lights that gained or lost their shadow since last frame.\n"
                               "Persistently non-zero is what reads as shadows popping in and out.");
         ImGui::SetItemTooltip("Zero here with slots > 0 means the atlas pass culled or skipped everything.");
+        ImGui::BeginDisabled(!punctualShadows_.cullAvailable());
+        ImGui::Checkbox("GPU caster culling", &useGpuPunctualShadowCulling_);
+        ImGui::SetItemTooltip("Culls casters per slot in one compute dispatch instead of on the CPU.\n"
+                              "Off by default: on this scene it is a net loss, trading ~40us of CPU\n"
+                              "frustum tests for a dispatch and its barriers. It is here because the\n"
+                              "CPU cost is O(slots x draw items) and this scene has 11 of the latter.");
+        ImGui::EndDisabled();
+        if (!punctualShadows_.cullAvailable()) {
+            ImGui::TextDisabled("GPU caster culling unavailable; CPU frustum tests in use.");
+        }
+
         ImGui::Checkbox("Debug: shadow term only", &showPunctualShadowDebug_);
         ImGui::SetItemTooltip("Greyscale punctual visibility, min across the lights that actually reach\n"
                               "each fragment. Flat white = the atlas is never sampled; any structure =\n"

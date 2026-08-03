@@ -366,6 +366,7 @@ set(SHADER_SOURCES
     "${SHADER_SOURCE_DIR}/shadow.vert"
     "${SHADER_SOURCE_DIR}/shadow_masked.vert"
     "${SHADER_SOURCE_DIR}/shadow_punctual.vert"
+    "${SHADER_SOURCE_DIR}/punctual_shadow_cull.comp"
     "${SHADER_SOURCE_DIR}/fog_inject.comp"
     "${SHADER_SOURCE_DIR}/fog_integrate.comp"
     "${SHADER_SOURCE_DIR}/shadow_masked.frag"

@@ -219,6 +219,48 @@ material descriptors record. Without that, a cold start with punctual shadows
 disabled would leave the image in `UNDEFINED` while binding 7 claimed
 `DEPTH_READ_ONLY_OPTIMAL`.
 
+## GPU caster culling
+
+Optional, off by default, and honestly a pessimisation at this scene's size.
+
+The CPU path frustum-tests every draw item against every slot, which is
+`O(slots x draw items)`. The GPU path replaces that with **one** dispatch over
+every (slot, draw item) pair, writing each slot's survivors into its own region
+of an indirect buffer so the atlas pass issues one draw call per slot.
+
+One dispatch rather than one per slot is forced by where it has to run: compute
+cannot be recorded inside a dynamic-rendering scope, and the atlas pass is a
+single scope so its cached tiles survive the partial clear. Everything is
+therefore culled before the scope opens — and once that is true, batching it
+into one dispatch is both less code and avoids per-slot dispatch overhead.
+
+**Measured on the demo scene**, which is why it defaults off:
+
+| | CPU cull + record | Atlas GPU | Cull GPU |
+| --- | --- | --- | --- |
+| CPU culling | ~40us (release) | 0.19ms | — |
+| GPU culling | lower | 0.33-0.43ms | 0.02-0.08ms |
+
+It moves work off the CPU and makes the GPU pass *slower*. The reason is the
+missing `vkCmdDrawIndexedIndirectCount` on MoltenVK: without it each slot submits
+the full draw-item count as indirect commands and relies on the zeroed ones being
+no-ops, so a slot that culls everything still costs a command per draw item. The
+CSM path has the same limitation for the same reason.
+
+So it pays off when two things hold, neither true here: enough draw items that
+the CPU cost stops being ~40us, and a platform with indirect-count so the draw
+side scales with survivors rather than candidates. It is kept as a toggle so the
+comparison is something you run rather than something you argue about, and the
+panel reports the CPU cost it would remove next to the GPU cost it would add.
+
+**One trap worth recording.** The cull input buffer is shared with the main and
+CSM paths and carries no bucket, and `GpuCullDrawItem` is exactly 64 bytes with
+no spare field. The CSM path filters blended geometry at *replay* time, which an
+indirect per-slot draw cannot do because the commands are already compacted by
+then. Without a separate per-draw-item caster mask, enabling GPU culling
+silently reintroduces alpha-blended geometry casting opaque shadows — a bug this
+engine already had and fixed once.
+
 ## Caching
 
 Every allocated tile used to re-render every frame, including for a static light
@@ -392,8 +434,8 @@ near-black and reads as a catastrophic bug that is not there.
   a visible light then cannot have.
 - **The point-light demotion is a fixed one class**, not derived from the actual
   per-face footprint.
-- **CPU caster culling.** Each slot frustum-tests every draw item on the CPU
-  rather than going through the existing GPU shadow-cull path.
+- **GPU caster culling is off by default, and on this scene it is a net loss.**
+  See [GPU caster culling](#gpu-caster-culling).
 - **No filtering beyond 3x3 PCF.** No variance/moment maps, no contact-hardening.
 - **No cross-face filtering.** PCF is clamped inside a face rather than
   continuing onto the neighbour, so filtering narrows slightly at face

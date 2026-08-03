@@ -101,7 +101,14 @@ void Renderer::recordPortfolioScreenshotCopy(VkCommandBuffer commandBuffer, uint
     screenshotCapture_.recordCopy(commandBuffer, currentFrame_, swapchain_, imageIndex);
 }
 
-void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer)
+bool Renderer::isGpuPunctualShadowCullingActive() const
+{
+    return useGpuPunctualShadowCulling_ && punctualShadows_.cullAvailable() && punctualShadows_.valid() &&
+           usePunctualShadows_ && punctualShadows_.slotCount() > 0 && !allDrawItems_.empty() &&
+           !punctualShadowCacheHit_ && context_.device().drawIndirectFirstInstanceEnabled();
+}
+
+void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuCullActive)
 {
     const uint32_t slotCount = punctualShadows_.slotCount();
     if (!punctualShadows_.valid() || punctualShadowPipeline_.pipeline() == VK_NULL_HANDLE || slotCount == 0 ||
@@ -172,6 +179,12 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer)
     const renderer::Mesh* boundMesh = nullptr;
     uint32_t recordedDraws = 0;
 
+    // The CPU cost of culling and recording this pass. Kept because it is the
+    // number that decides whether GPU caster culling is worth enabling: it is
+    // what that path removes, and on this scene it is small enough that the
+    // dispatch does not pay for itself.
+    const auto punctualCpuStart = std::chrono::high_resolution_clock::now();
+
     // Only the dirty tiles. Everything else in the atlas is already exactly what
     // this frame would have drawn there.
     for (const uint32_t slot : punctualShadowDirtySlots_) {
@@ -195,6 +208,51 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer)
         scissor.offset = {static_cast<int32_t>(rect.x), static_cast<int32_t>(rect.y)};
         scissor.extent = {rect.size, rect.size};
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+        // GPU-culled path: the compute dispatch above already compacted this
+        // slot's surviving casters into its own region of the indirect buffer,
+        // so the whole slot is one draw call regardless of caster count. There
+        // is no indirect-count on this platform, so the full per-slot stride is
+        // submitted and the zeroed commands the dispatch left behind are no-ops.
+        if (gpuCullActive && slot < renderer::PunctualShadows::kMaxGpuCulledSlots) {
+            const VkBuffer indirectBuffer = punctualShadows_.cullIndirectBuffer(currentFrame_);
+            if (indirectBuffer != VK_NULL_HANDLE && !allDrawItems_.empty()) {
+                const renderer::Mesh* indirectMesh = allDrawItems_.front().mesh;
+                if (indirectMesh != nullptr) {
+                    if (boundMesh != indirectMesh) {
+                        const VkBuffer vertexBuffers[] = {indirectMesh->vertexBuffer()};
+                        const VkDeviceSize vertexOffsets[] = {0};
+                        vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
+                        vkCmdBindIndexBuffer(commandBuffer, indirectMesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+                        boundMesh = indirectMesh;
+                    }
+
+                    // Base address, not a per-draw offset: indirect draws carry
+                    // the object-data index in firstInstance, which the vertex
+                    // stage reads back out of gl_InstanceIndex.
+                    PunctualShadowPushConstants pushConstants{};
+                    pushConstants.objectFrameDataAddress = objectFrameDataBaseAddress;
+                    pushConstants.lightViewProjection = punctualShadows_.slotViewProjection(slot);
+                    vkCmdPushConstants(commandBuffer,
+                                       punctualShadowPipeline_.layout(),
+                                       VK_SHADER_STAGE_VERTEX_BIT,
+                                       0,
+                                       static_cast<uint32_t>(sizeof(PunctualShadowPushConstants)),
+                                       &pushConstants);
+
+                    const uint32_t stride = punctualShadows_.cullSlotCommandStride();
+                    const uint32_t drawCount = std::min(stride, static_cast<uint32_t>(allDrawItems_.size()));
+                    vkCmdDrawIndexedIndirect(
+                        commandBuffer,
+                        indirectBuffer,
+                        static_cast<VkDeviceSize>(slot) * stride * sizeof(VkDrawIndexedIndirectCommand),
+                        drawCount,
+                        sizeof(VkDrawIndexedIndirectCommand));
+                    recordedDraws += drawCount;
+                }
+            }
+            continue;
+        }
 
         const renderer::Frustum& slotFrustum = punctualShadows_.slotFrustum(slot);
 
@@ -245,6 +303,10 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer)
     }
 
     renderGraph_.endPunctualShadowPass();
+
+    const auto punctualCpuEnd = std::chrono::high_resolution_clock::now();
+    punctualShadowCpuMicros_ =
+        std::chrono::duration_cast<std::chrono::microseconds>(punctualCpuEnd - punctualCpuStart).count();
 
     punctualShadowDrawsRecorded_ = recordedDraws;
     punctualShadowSlotsRedrawn_ = static_cast<uint32_t>(punctualShadowDirtySlots_.size());
@@ -847,9 +909,43 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         gpuProfiler_.endScope(currentFrame_, commandBuffer);
     }
 
+    // GPU caster culling for the atlas, when enabled. Recorded here rather than
+    // inside recordPunctualShadowPass because compute cannot run inside a
+    // dynamic-rendering scope, and that pass is one scope so its cached tiles
+    // survive a partial clear. Every slot is therefore culled up front.
+    const bool gpuPunctualCullActive = isGpuPunctualShadowCullingActive();
+    if (gpuPunctualCullActive) {
+        const renderer::GpuProfileScope cullScope(
+            gpuProfiler_, currentFrame_, commandBuffer, "PunctualShadowGpuCull");
+        rhi::debug::beginLabel(commandBuffer, "PunctualShadowGpuCull");
+        punctualShadows_.uploadSlotFrustums(currentFrame_);
+
+        // The shared cull input carries no bucket, so the "does this cast" test
+        // travels beside it. Blended geometry only depth-tests in the main pass;
+        // letting it cast would put an opaque silhouette back into the atlas.
+        punctualShadowCasterFlags_.assign(allDrawItems_.size(), 1u);
+        for (size_t drawIndex = 0; drawIndex < allDrawItems_.size(); ++drawIndex) {
+            const DrawItem& drawItem = allDrawItems_[drawIndex];
+            if (drawItem.bucket == RenderBucket::Blend || drawItem.mesh == nullptr ||
+                drawItem.indexCount == 0) {
+                punctualShadowCasterFlags_[drawIndex] = 0u;
+            }
+        }
+
+        rhi::VulkanBuffer& cullInput = gpuCulling_.shadowCullInputBuffer(currentFrame_);
+        punctualShadows_.recordCull(
+            commandBuffer,
+            currentFrame_,
+            cullInput.buffer(),
+            cullInput.size(),
+            static_cast<uint32_t>(allDrawItems_.size()),
+            std::span<const uint32_t>(punctualShadowCasterFlags_.data(), punctualShadowCasterFlags_.size()));
+        rhi::debug::endLabel(commandBuffer);
+    }
+
     // Punctual casters go into the atlas right after the directional cascades,
     // so both shadow sources are resident before the main HDR pass samples them.
-    recordPunctualShadowPass(commandBuffer);
+    recordPunctualShadowPass(commandBuffer, gpuPunctualCullActive);
 
     // Fog injection samples the cascaded shadow map, so it has to follow the
     // shadow passes; the main HDR pass samples the integrated volume, so it has

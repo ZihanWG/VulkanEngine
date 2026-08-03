@@ -443,7 +443,8 @@ private:
     }
     // Records the punctual shadow atlas pass: one dynamic-rendering pass over
     // the whole atlas, with a viewport/scissor per allocated slot.
-    void recordPunctualShadowPass(VkCommandBuffer commandBuffer);
+    void recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuCullActive);
+    [[nodiscard]] bool isGpuPunctualShadowCullingActive() const;
     [[nodiscard]] glm::vec4 activeDirectionalLightDirection() const;
     [[nodiscard]] glm::vec4 activeDirectionalLightColor() const;
     void loadOcclusionTestScene();
@@ -753,6 +754,12 @@ private:
     // the atlas cost and its visual contribution can be A/B'd against the same
     // light set the way the clustered/brute-force toggle is.
     bool usePunctualShadows_ = true;
+    // GPU caster culling for the atlas. Off by default: measured on the demo
+    // scene it is a net loss, because it replaces ~40us of CPU frustum tests
+    // with a compute dispatch and its barriers. It is here for scale -- the CPU
+    // cost is O(slots * draw items) and this scene has 11 of the latter -- and
+    // as a toggle so the two paths can be compared rather than argued about.
+    bool useGpuPunctualShadowCulling_ = false;
     // Debug view: outputs the punctual shadow visibility term as greyscale.
     bool showPunctualShadowDebug_ = false;
     // Point lights cost six tiles each against 64 total, so how many may cast is
@@ -804,8 +811,12 @@ private:
     // Frames the atlas pass was skipped entirely, and tiles redrawn last frame.
     uint32_t punctualShadowCachedFrames_ = 0;
     uint32_t punctualShadowSlotsRedrawn_ = 0;
+    long long punctualShadowCpuMicros_ = 0;
     // Scratch for the per-tile partial clear.
     std::vector<VkClearRect> punctualShadowClearRects_;
+    // Per draw item: does it cast into the atlas? Fed to the GPU cull, which
+    // reads a shared input buffer that carries no bucket information.
+    std::vector<uint32_t> punctualShadowCasterFlags_;
     // Caster draws the atlas pass actually recorded last frame. Surfaced because
     // the atlas preview cannot distinguish "nothing drew" from "everything drew
     // but perspective depth is compressed into the top few percent" -- both look

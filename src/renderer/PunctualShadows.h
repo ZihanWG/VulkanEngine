@@ -16,9 +16,13 @@
 #include "renderer/Bounds.h"
 #include "renderer/PunctualShadowAtlas.h"
 #include "rhi/VulkanBuffer.h"
+#include "rhi/VulkanComputePipeline.h"
+#include "rhi/VulkanDescriptor.h"
 #include "rhi/VulkanShadowMap.h"
 
 #include <cstdint>
+#include <filesystem>
+#include <span>
 #include <vector>
 
 #include <glm/mat4x4.hpp>
@@ -32,7 +36,48 @@ namespace ve::renderer {
 
 class PunctualShadows final {
 public:
+    // Slots beyond this fall back to CPU culling. The indirect buffer is sized
+    // slots * kMaxDrawItems commands, so the cap is what keeps that from growing
+    // to megabytes for an atlas that in practice holds a couple of dozen tiles.
+    static constexpr uint32_t kMaxGpuCulledSlots = 64;
+
     void create(rhi::VulkanContext& context, uint32_t frameCount);
+
+    // Optional GPU caster culling. Failure leaves cullAvailable() false and the
+    // renderer keeps its CPU frustum tests, matching how every other optional
+    // subsystem here degrades.
+    void createCullResources(uint32_t frameCount,
+                             const std::filesystem::path& cullShaderPath,
+                             uint32_t maxDrawItems);
+
+    [[nodiscard]] bool cullAvailable() const
+    {
+        return cullAvailable_;
+    }
+
+    // Uploads this frame's per-slot frustum planes for the cull to read.
+    void uploadSlotFrustums(uint32_t frameIndex);
+
+    // One dispatch over every (slot, draw item) pair. Must be recorded *outside*
+    // the atlas rendering scope -- compute cannot run inside one -- which is why
+    // every slot is culled up front rather than interleaved with its draws the
+    // way the CSM path does per cascade.
+    // casterFlags is one entry per draw item, zero for anything that must not
+    // cast. It is separate from the shared cull input because that buffer serves
+    // the main and CSM paths too and carries no bucket information.
+    void recordCull(VkCommandBuffer commandBuffer,
+                    uint32_t frameIndex,
+                    VkBuffer cullInputBuffer,
+                    VkDeviceSize cullInputSize,
+                    uint32_t drawItemCount,
+                    std::span<const uint32_t> casterFlags);
+
+    [[nodiscard]] VkBuffer cullIndirectBuffer(uint32_t frameIndex) const;
+    // Commands reserved per slot; also the offset multiplier into the buffer.
+    [[nodiscard]] uint32_t cullSlotCommandStride() const
+    {
+        return cullSlotCommandStride_;
+    }
     void reset();
 
     // Drops every slot from the previous frame. Called before the per-light
@@ -129,6 +174,25 @@ private:
     std::vector<ShadowAtlasRect> slotRects_;
     // Scratch for the all-or-nothing cube-face reservation.
     std::vector<ShadowAtlasRect> pendingFaceRects_;
+
+    // --- optional GPU caster culling ---
+    bool cullAvailable_ = false;
+    uint32_t cullSlotCommandStride_ = 0;
+    rhi::VulkanComputePipeline cullPipeline_;
+    rhi::VulkanDescriptorSetLayout cullSetLayout_;
+    rhi::VulkanDescriptorPool cullDescriptorPool_;
+    std::vector<VkDescriptorSet> cullSets_;
+    // Per frame: six planes per slot, host-visible since they change every frame.
+    std::vector<rhi::VulkanBuffer> slotFrustumBuffers_;
+    // Per frame: compacted commands, one region of cullSlotCommandStride_ per slot.
+    std::vector<rhi::VulkanBuffer> cullIndirectBuffers_;
+    // Per frame: one visible count per slot, reset each dispatch.
+    std::vector<rhi::VulkanBuffer> cullVisibleCountBuffers_;
+    // Per frame: one flag per draw item, host-visible since buckets change with
+    // the scene.
+    std::vector<rhi::VulkanBuffer> casterFlagBuffers_;
+    // Scratch for the plane upload.
+    std::vector<glm::vec4> slotFrustumPlanes_;
 
     // Defaults tuned against the demo scene's spot cone; both are in the same
     // units the CSM path uses so the two shadow types stay comparable.

@@ -1,0 +1,138 @@
+#version 460
+
+// GPU caster culling for the punctual shadow atlas.
+//
+// One dispatch covers every (slot, draw item) pair rather than one dispatch per
+// slot the way the CSM path does per cascade. That is forced by where this has
+// to run: compute cannot be recorded inside a dynamic-rendering scope, and the
+// atlas pass is a single scope so its cached tiles survive a partial clear. All
+// culling therefore happens before the scope opens, and once every slot is being
+// culled up front anyway, doing it in one dispatch is both less code and avoids
+// paying dispatch overhead per slot.
+//
+// Each slot writes its surviving commands into its own region of the output
+// buffer, so the draws afterwards are one indirect call per slot.
+
+layout(local_size_x = 64) in;
+
+// Mirrors GpuCullDrawItem in cull.comp and ve::GpuCullDrawItem (64-byte stride).
+// Shared with the main and CSM cull paths, so the same per-frame input buffer
+// feeds all three.
+struct GpuCullDrawItem {
+    vec4 boundsMin;
+    vec4 boundsMax;
+    uint indexCount;
+    uint firstIndex;
+    int vertexOffset;
+    uint objectFrameDataIndex;
+    uint batchIndex;
+    uint batchOutputBase;
+    uint lodBase;
+    uint lodCount;
+};
+
+// Matches VkDrawIndexedIndirectCommand (20-byte std430 stride).
+struct DrawIndexedIndirectCommand {
+    uint indexCount;
+    uint instanceCount;
+    uint firstIndex;
+    int vertexOffset;
+    uint firstInstance;
+};
+
+layout(set = 0, binding = 0, std430) readonly buffer CullInputBuffer {
+    GpuCullDrawItem drawItems[];
+} cullInput;
+
+layout(set = 0, binding = 1, std430) writeonly buffer IndirectOutputBuffer {
+    DrawIndexedIndirectCommand commands[];
+} indirectOutput;
+
+layout(set = 0, binding = 2, std430) buffer SlotVisibleCountBuffer {
+    uint visibleCounts[];
+} slotVisibleCounts;
+
+// Six planes per slot, laid out consecutively.
+layout(set = 0, binding = 3, std430) readonly buffer SlotFrustumBuffer {
+    vec4 planes[];
+} slotFrustums;
+
+// 1 for draw items that cast, 0 otherwise.
+//
+// This exists because the cull input buffer is shared with the main and CSM
+// paths and carries no bucket information, while GpuCullDrawItem is exactly 64
+// bytes with no spare field to add one. The CSM path can skip blended batches at
+// replay time; an indirect per-slot draw cannot, because by then the commands
+// are already compacted. So the filter has to happen here, or alpha-blended
+// geometry silently starts throwing opaque shadows again -- which is a bug this
+// engine has already had once.
+layout(set = 0, binding = 4, std430) readonly buffer CasterFlagBuffer {
+    uint flags[];
+} casterFlags;
+
+layout(push_constant) uniform PunctualCullPushConstants {
+    uint slotCount;
+    uint drawItemCount;
+    // Stride between slots in the output buffer, in commands. Constant rather
+    // than drawItemCount so a frame with fewer draw items still writes where the
+    // draw side expects to read.
+    uint slotCommandStride;
+    uint padding;
+} pc;
+
+// Same conservative AABB test the other cull paths use: outside only when the
+// box's most-positive corner along the plane normal is still behind it.
+bool aabbOutsidePlane(vec3 boundsMin, vec3 boundsMax, vec4 plane)
+{
+    vec3 positive = vec3(plane.x >= 0.0 ? boundsMax.x : boundsMin.x,
+                         plane.y >= 0.0 ? boundsMax.y : boundsMin.y,
+                         plane.z >= 0.0 ? boundsMax.z : boundsMin.z);
+    return dot(plane.xyz, positive) + plane.w < 0.0;
+}
+
+void main()
+{
+    uint globalIndex = gl_GlobalInvocationID.x;
+    uint drawItemCount = max(pc.drawItemCount, 1u);
+
+    uint slot = globalIndex / drawItemCount;
+    uint item = globalIndex - slot * drawItemCount;
+    if (slot >= pc.slotCount || item >= pc.drawItemCount) {
+        return;
+    }
+
+    if (casterFlags.flags[item] == 0u) {
+        return;
+    }
+
+    GpuCullDrawItem drawItem = cullInput.drawItems[item];
+    if (drawItem.indexCount == 0u) {
+        return;
+    }
+
+    uint planeBase = slot * 6u;
+    for (uint planeIndex = 0u; planeIndex < 6u; ++planeIndex) {
+        if (aabbOutsidePlane(drawItem.boundsMin.xyz, drawItem.boundsMax.xyz, slotFrustums.planes[planeBase + planeIndex])) {
+            return;
+        }
+    }
+
+    // Compact into this slot's region. The order within a slot is whatever the
+    // atomics produce, which is fine for a depth-only pass: every surviving
+    // caster writes depth and the result is order-independent.
+    uint localIndex = atomicAdd(slotVisibleCounts.visibleCounts[slot], 1u);
+    if (localIndex >= pc.slotCommandStride) {
+        return;
+    }
+
+    DrawIndexedIndirectCommand command;
+    command.indexCount = drawItem.indexCount;
+    command.instanceCount = 1u;
+    command.firstIndex = drawItem.firstIndex;
+    command.vertexOffset = drawItem.vertexOffset;
+    // The vertex stage recovers its object-data slot from the instance index,
+    // exactly as the CSM indirect path does.
+    command.firstInstance = drawItem.objectFrameDataIndex;
+
+    indirectOutput.commands[slot * pc.slotCommandStride + localIndex] = command;
+}
