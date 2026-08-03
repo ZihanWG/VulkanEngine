@@ -70,7 +70,7 @@ Render Graph metadata now includes:
 - GPU exposure state buffer
 - Composite reads of scene color, bloom, and exposure state
 
-GPU profiler scopes include optional `TAAResolvePass`, `Bloom Downsample Chain`, `Bloom Upsample Chain`, `Histogram Exposure`, and `CompositePass`. Buffer barriers for histogram reset, exposure reduce, and debug readback remain manual in `Renderer.cpp`.
+GPU profiler scopes include optional `TAAResolvePass`, `Bloom Downsample Chain`, `Bloom Upsample Chain`, `Histogram Exposure`, and `CompositePass`. Buffer barriers for histogram reset, exposure reduce, and debug readback remain manual in `RendererRecord.cpp`.
 
 ## Debug UI
 
