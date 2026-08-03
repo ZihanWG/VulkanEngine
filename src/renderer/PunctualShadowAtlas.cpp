@@ -1,6 +1,7 @@
 #include "renderer/PunctualShadowAtlas.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cmath>
 #include <limits>
 
@@ -24,6 +25,16 @@ namespace {
 }
 
 } // namespace
+
+void PunctualShadowCacheKey::addBytes(const void* data, size_t size)
+{
+    const auto* bytes = static_cast<const unsigned char*>(data);
+    for (size_t i = 0; i < size; ++i) {
+        hash_ ^= bytes[i];
+        // FNV-1a 64-bit prime.
+        hash_ *= 1099511628211ULL;
+    }
+}
 
 uint32_t punctualShadowTileSizeForClass(uint32_t sizeClass)
 {

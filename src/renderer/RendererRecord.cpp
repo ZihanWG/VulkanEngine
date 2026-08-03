@@ -110,6 +110,16 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer)
         return;
     }
 
+    // Cache hit: the atlas already holds exactly what this frame would draw, so
+    // the pass is skipped entirely -- no clear, no draws, no transition. The
+    // image stays in the sampled layout the main pass left it in, which is the
+    // layout the main pass wants next, so the graph emits nothing either.
+    if (punctualShadowCacheHit_) {
+        punctualShadowDrawsRecorded_ = 0;
+        ++punctualShadowCachedFrames_;
+        return;
+    }
+
     const bool profileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "PunctualShadowAtlas");
     rhi::debug::beginLabel(commandBuffer, "PunctualShadowAtlas");
 
@@ -198,6 +208,10 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer)
     renderGraph_.endPunctualShadowPass();
 
     punctualShadowDrawsRecorded_ = recordedDraws;
+    // The atlas now matches the key computed for this frame, so subsequent
+    // frames with identical inputs can reuse it.
+    punctualShadowResidentKey_ = punctualShadowPendingKey_;
+    punctualShadowAtlasResident_ = true;
 
     rhi::debug::beginLabel(commandBuffer,
                            "PunctualShadowSlots " + std::to_string(slotCount) + " draws " +
@@ -509,7 +523,10 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         frameSsrActive_,
         frameGtaoActive_,
         frameVisibleBucketRanges_[static_cast<size_t>(RenderBucket::Blend)].count(),
-        punctualShadows_.slotCount(),
+        // Zero on a cache hit, which stops the graph declaring the atlas write
+        // pass at all. The main pass still declares its read, so the image keeps
+        // the layout it already has and no barrier is emitted for it.
+        punctualShadowCacheHit_ ? 0u : punctualShadows_.slotCount(),
         isVolumetricFogActive(),
     };
 }

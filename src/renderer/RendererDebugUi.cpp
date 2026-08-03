@@ -287,6 +287,12 @@ void Renderer::drawShadowsDebugUi()
         // Assignment churn is what popping actually looks like, so it is
         // measured rather than inferred from the image.
         ImGui::Text("Assignment churn: %u this frame", punctualShadowAssignmentChurn_);
+        ImGui::Text("Atlas: %s (%u frames cached)",
+                    punctualShadowCacheHit_ ? "reused" : "re-rendered",
+                    punctualShadowCachedFrames_);
+        ImGui::SetItemTooltip("The atlas is re-rendered only when a hash of its inputs moves:\n"
+                              "light projections, tile rects, caster transforms and geometry,\n"
+                              "and the raster depth bias. Static light over static geometry is free.");
         ImGui::SetItemTooltip("Lights that gained or lost their shadow since last frame.\n"
                               "Persistently non-zero is what reads as shadows popping in and out.");
         ImGui::SetItemTooltip("Zero here with slots > 0 means the atlas pass culled or skipped everything.");
