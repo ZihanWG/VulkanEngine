@@ -35,6 +35,10 @@ overview; these documents describe implementation details and limitations.
 - [Punctual Shadows](punctual_shadows.md): The spot/point shadow atlas, its tile
   allocator and slot encoding, the dedicated caster vertex shader, cube-face
   point lights, and the tile budget.
+- [Irradiance Probes](irradiance_probes.md): Real-time global illumination
+  without ray tracing — the octahedral probe atlases and their seam border, the
+  amortised cube capture and its convolution, Chebyshev visibility weighting,
+  and why temporal accumulation needs jitter to do anything at all.
 - [Skeletal Animation](skeletal_animation.md): GPU-free animation core (pose
   sampling + hierarchy flatten), GPU linear-blend skinning, the procedural demo,
   and the unit-tested bind-pose invariant.
