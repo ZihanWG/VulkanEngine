@@ -174,10 +174,12 @@ struct GiSettings {
     // independently of whether *capture* is, and a standing check on the
     // octahedral border.
     bool debugPattern = false;
-    // Display-only gain for the atlas previews. Probe values are linear radiance
-    // well below 1.0, so at 1:1 a correct atlas is indistinguishable from an
-    // empty one.
-    float previewGain = 6.0f;
+    // Display-only gain for the atlas previews and the probe-only view. Probe
+    // values are linear radiance well below 1.0, so at 1:1 a correct atlas is
+    // indistinguishable from an empty one. Three puts a typical gathered value
+    // (~0.26 here) in the upper half of the display range without clipping it,
+    // which six did.
+    float previewGain = 3.0f;
     // How strongly probe irradiance replaces the constant environment term.
     // Zero disables the lookup outright rather than scaling it to nothing, so
     // the shader needs no separate flag.

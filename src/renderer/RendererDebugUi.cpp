@@ -313,7 +313,10 @@ void Renderer::drawIrradianceProbesDebugUi()
     ImGui::Checkbox("Debug: probe irradiance only", &giSettings_.debugIrradianceOnly);
     ImGui::SetItemTooltip("Outputs the gathered indirect term on its own, bypassing exposure\n"
                           "and tone mapping -- auto-exposure would otherwise cancel exactly the\n"
-                          "brightness change this view exists to show. Scaled by Debug gain.");
+                          "brightness change this view exists to show.\n"
+                          "Shown before Intensity is applied, so that slider keeps its real\n"
+                          "meaning instead of doubling as a brightness knob; use Debug gain.\n"
+                          "The background is the skybox, not a probe value.");
 
     if (ImGui::Checkbox("Debug pattern", &giSettings_.debugPattern)) {
         // Updates are off by default, so without this the atlases would keep

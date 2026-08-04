@@ -738,11 +738,13 @@ void main()
     // it: both answer "what diffuse light arrives here", and summing them would
     // double-count. Zero intensity keeps the IBL term, which is what "off" has
     // always meant.
+    // Kept unscaled by intensity: the debug view below reports what the probes
+    // actually hold, and folding a user-set multiplier into a diagnostic means
+    // its display gain has to be retuned every time that multiplier moves.
     vec3 probeIrradiance = vec3(0.0);
     if (probeParams.gridOrigin.w > 0.0) {
-        probeIrradiance = sampleProbeIrradiance(vWorldPosition, normal, viewDirection) *
-                          probeParams.gridOrigin.w;
-        diffuseIbl = probeIrradiance * kD;
+        probeIrradiance = sampleProbeIrradiance(vWorldPosition, normal, viewDirection);
+        diffuseIbl = probeIrradiance * probeParams.gridOrigin.w * kD;
     }
 
     vec3 ambient = diffuseIbl + specularIbl + vAmbientColor * baseColor * 0.05;
