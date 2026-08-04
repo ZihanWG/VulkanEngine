@@ -23,7 +23,9 @@
 // it.
 
 #include <cstdint>
+#include <vector>
 
+#include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 
@@ -75,6 +77,54 @@ inline constexpr uint32_t kProbeIrradianceAtlasWidth = kProbeAtlasTilesX * kProb
 inline constexpr uint32_t kProbeIrradianceAtlasHeight = kProbeAtlasTilesY * kProbeIrradianceTileSize;
 inline constexpr uint32_t kProbeDepthAtlasWidth = kProbeAtlasTilesX * kProbeDepthTileSize;
 inline constexpr uint32_t kProbeDepthAtlasHeight = kProbeAtlasTilesY * kProbeDepthTileSize;
+
+// --- Capture ---
+//
+// A probe gathers radiance by rasterising the scene from its own position into
+// the six faces of a cube, which the convolution below turns into the probe's
+// two octahedral tiles. Six rasterisations rather than one octahedral pass
+// because the octahedral map is not a projective transform -- no vertex shader
+// can produce it.
+//
+// The face convention, the projections, and the face directions are the ones
+// PunctualShadowAtlas.h already defines for point-light shadow cubes. Reused
+// rather than re-derived: a second cube convention in the same engine is the
+// kind of thing that produces plausible-but-rotated lighting.
+inline constexpr uint32_t kProbeCaptureFaceCount = 6;
+
+// Resolution of one captured cube face.
+//
+// Small on purpose, and the convolution is what sets the bound rather than the
+// rasterisation. Every output texel integrates over *every* captured texel, so
+// this squared times six is the inner loop: 16 gives 1536 samples per probe,
+// which is the same order as DDGI's 256 rays per probe and still cheap enough
+// to run several probes a frame. Doubling it would quadruple the convolution.
+inline constexpr uint32_t kProbeCaptureFaceResolution = 16;
+
+// Near plane for a capture face.
+//
+// Deliberately not punctualShadowNearPlane(kProbeMaxDistance), which would put
+// it past a metre: a probe sits *inside* the room it is measuring, so geometry
+// a few centimetres away still has to rasterise. The depth precision that near
+// plane exists to protect does not matter here -- the capture's depth buffer
+// only resolves occlusion between surfaces, and distance is written explicitly
+// by the fragment shader rather than read back out of depth.
+inline constexpr float kProbeCaptureNearPlane = 0.05f;
+
+// Cap on how many probes one frame may capture, which is what bounds the
+// capture atlas. The per-frame count is a runtime setting under this.
+inline constexpr uint32_t kMaxProbesPerFrame = 16;
+
+// Sharpness of the lobe the depth convolution integrates over.
+//
+// Visibility wants a much tighter filter than irradiance: a probe's stored
+// distance in a direction should describe what is actually in that direction,
+// not an average over the hemisphere, or a wall stops occluding anything.
+// DDGI uses 50 with a 256-ray budget and leans on temporal accumulation to make
+// that many samples enough. Until that phase exists this is deliberately
+// blunter, trading some sharpness for a result that does not swim frame to
+// frame at 1536 samples.
+inline constexpr float kProbeDepthLobeExponent = 20.0f;
 
 // Distances written into the depth atlas are clamped to this. Two reasons, and
 // only the first is about storage: the atlas keeps distance and distance
@@ -174,5 +224,43 @@ struct ProbeBlend {
 // the function total and lets the border pass run over a whole tile without
 // branching on the caller's side.
 [[nodiscard]] glm::ivec2 probeBorderSource(int32_t x, int32_t y, uint32_t coreResolution);
+
+// --- Capture addressing ---
+
+// View-projection a probe rasterises one cube face with. Thin wrapper over the
+// point-shadow cube projection so the two cannot drift apart; only the near and
+// far planes differ.
+[[nodiscard]] glm::mat4 probeCaptureFaceViewProjection(const glm::vec3& probePosition, uint32_t face);
+
+// World direction a capture texel looks along. Texel centres, so the (x, y)
+// range is [0, resolution).
+[[nodiscard]] glm::vec3 probeCubeTexelDirection(uint32_t face, uint32_t x, uint32_t y, uint32_t resolution);
+
+// Solid angle a capture texel subtends, in steradians.
+//
+// Not optional and not uniform: a cube face's texels shrink toward its corners
+// by up to a factor of three, so summing radiance without this weight
+// systematically over-counts the corners of every face. The result is a smooth
+// bias in the gathered irradiance -- it looks like the GI being "a bit off"
+// rather than like an integration bug, which is why a test pins the total over
+// all six faces to 4*pi.
+[[nodiscard]] float probeCubeTexelSolidAngle(uint32_t x, uint32_t y, uint32_t resolution);
+
+// Where a (probe slot, face) pair lands in the capture atlas. `slot` indexes
+// this frame's batch, not the probe grid: the atlas only ever holds the probes
+// being captured right now.
+[[nodiscard]] glm::uvec2 probeCaptureTileOrigin(uint32_t slot, uint32_t face);
+[[nodiscard]] glm::uvec2 probeCaptureAtlasSize();
+
+// The probes to capture this frame, appended to `outProbeIndices`, and the
+// cursor the next frame should start from.
+//
+// Plain round robin. Its job is that the refresh interval of any one probe is
+// bounded -- a scheme that picked probes by importance would let a probe nothing
+// currently looks at go stale indefinitely, and staleness in GI reads as light
+// that lags the scene rather than as a missing update.
+[[nodiscard]] uint32_t probeUpdateBatch(uint32_t cursor,
+                                        uint32_t probesPerFrame,
+                                        std::vector<uint32_t>& outProbeIndices);
 
 } // namespace ve::renderer

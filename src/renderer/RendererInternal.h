@@ -167,6 +167,12 @@ constexpr VkFormat kNormalRoughnessFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 // Single-channel GTAO visibility term (1 = fully lit) written by the GTAO pass
 // and multiplied into scene color by the composite.
 constexpr VkFormat kAmbientOcclusionFormat = VK_FORMAT_R8_UNORM;
+// Irradiance-probe capture target: rgb = outgoing radiance seen from the probe,
+// a = distance to that surface. One attachment rather than two because the
+// convolution reads both for every texel it visits. Must match the format
+// IrradianceProbeVolume creates the capture atlas with.
+constexpr VkFormat kProbeCaptureColorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+constexpr VkFormat kProbeCaptureDepthFormat = VK_FORMAT_D32_SFLOAT;
 constexpr VkFormat kDepthPyramidFormat = VK_FORMAT_R32_SFLOAT;
 constexpr uint32_t kDepthPyramidLocalSizeX = 8;
 constexpr uint32_t kDepthPyramidLocalSizeY = 8;
@@ -312,6 +318,28 @@ static_assert(offsetof(PunctualShadowPushConstants, objectFrameDataAddress) == 0
 static_assert(offsetof(PunctualShadowPushConstants, lightViewProjection) == 16);
 static_assert(sizeof(PunctualShadowPushConstants) == 80);
 static_assert(sizeof(PunctualShadowPushConstants) <= 128);
+
+// Mirrors the push constant block in probe_capture.vert / probe_capture.frag.
+// Same shape as PunctualShadowPushConstants, and the same padding for the same
+// reason: the mat4 rounds up to a 16-byte boundary after the buffer reference.
+//
+// The fragment stage declares the reference field as a uvec2 it never reads,
+// which is the same 8 bytes with the same alignment, so both stages agree on
+// where the members after it start -- one push fills the range for both.
+struct ProbeCapturePushConstants {
+    VkDeviceAddress objectFrameDataAddress = 0;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+    glm::mat4 faceViewProjection{1.0f};
+    // xyz = the capturing probe's world position; the fragment stage records
+    // distance from it, which is what the depth atlas stores.
+    glm::vec4 probePosition{0.0f};
+};
+
+static_assert(offsetof(ProbeCapturePushConstants, faceViewProjection) == 16);
+static_assert(offsetof(ProbeCapturePushConstants, probePosition) == 80);
+static_assert(sizeof(ProbeCapturePushConstants) == 96);
+static_assert(sizeof(ProbeCapturePushConstants) <= 128);
 
 struct GpuCullPushConstants {
     std::array<glm::vec4, 6> frustumPlanes{};

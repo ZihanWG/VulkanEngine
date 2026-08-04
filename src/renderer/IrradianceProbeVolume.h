@@ -24,8 +24,13 @@
 #include "rhi/VulkanDescriptor.h"
 #include "rhi/VulkanImage.h"
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <vector>
+
+#include <glm/vec4.hpp>
 
 namespace ve::rhi {
 class VulkanContext;
@@ -54,6 +59,25 @@ enum class ProbeAtlasTarget : int32_t {
     Depth = 1
 };
 
+// Mirrors the push constant block in probe_convolve.comp.
+//
+// The batch's probe indices travel explicitly rather than as a base index the
+// shader adds its workgroup id to: the round-robin cursor wraps at the end of a
+// cycle, so a contiguous run is exactly what the batch is not on those frames.
+struct ProbeConvolvePushConstants {
+    int32_t probeCount = 0;
+    int32_t padding0 = 0;
+    int32_t padding1 = 0;
+    int32_t padding2 = 0;
+    // Four to a vector because a push-constant array of scalars pads each
+    // element to 16 bytes.
+    std::array<glm::ivec4, kMaxProbesPerFrame / 4> probeIndices{};
+};
+
+static_assert(sizeof(ProbeConvolvePushConstants) == 80);
+static_assert(sizeof(ProbeConvolvePushConstants) <= 128);
+static_assert(offsetof(ProbeConvolvePushConstants, probeIndices) == 16);
+
 class IrradianceProbeVolume final {
 public:
     IrradianceProbeVolume() = default;
@@ -69,8 +93,41 @@ public:
 
     void create(rhi::VulkanContext& context,
                 const std::filesystem::path& debugFillShaderPath,
-                const std::filesystem::path& borderShaderPath);
+                const std::filesystem::path& borderShaderPath,
+                const std::filesystem::path& convolveShaderPath);
     void reset();
+
+    // Picks the probes to capture this frame and returns them. Advances the
+    // round-robin cursor, so it is called exactly once per frame that captures.
+    [[nodiscard]] const std::vector<uint32_t>& beginCaptureBatch(uint32_t probesPerFrame);
+
+    // The batch chosen by the last beginCaptureBatch, which is what the capture
+    // pass rasterises and the convolution then reads back out of the capture
+    // atlas in the same slot order.
+    [[nodiscard]] const std::vector<uint32_t>& captureBatch() const
+    {
+        return captureBatch_;
+    }
+
+    // Marks this frame as capturing nothing, without touching the cursor -- so a
+    // frame with probes disabled resumes where it left off instead of skipping a
+    // stripe of the grid.
+    void clearCaptureBatch()
+    {
+        captureBatch_.clear();
+    }
+
+    // Probes captured since startup, for the debug panel. Coverage over time is
+    // the thing worth watching with an amortised update: it says how long the
+    // grid takes to reflect a change rather than how fast one frame was.
+    [[nodiscard]] uint64_t capturedProbeCount() const
+    {
+        return capturedProbeCount_;
+    }
+    [[nodiscard]] uint32_t updateCursor() const
+    {
+        return updateCursor_;
+    }
 
     // Whether the update pass has to be declared and recorded this frame.
     //
@@ -93,14 +150,39 @@ public:
         atlasesInitialized_ = false;
     }
 
-    // Fills every probe tile and then wraps the octahedral seam into the border.
-    // Two dispatches per atlas, in that order: the border copy reads core texels
-    // the fill wrote, so they cannot be merged.
+    // Turns this frame's capture into probe tiles, then wraps the octahedral
+    // seam into their borders. The border copy reads core texels the step before
+    // it wrote, so the two cannot be merged.
     //
-    // debugPattern selects the direction pattern over the neutral empty-atlas
-    // state. Until the capture phase lands those are the only two contents an
-    // atlas can have.
-    void recordUpdate(VkCommandBuffer commandBuffer, bool debugPattern);
+    // useDebugPattern replaces the convolution with the synthetic direction fill
+    // from phase one, which is what makes an addressing or border mistake
+    // legible; it also covers the case where the capture pipeline is
+    // unavailable and there is nothing real to convolve.
+    void recordUpdate(VkCommandBuffer commandBuffer, bool useDebugPattern);
+
+    // True when the convolution pipeline came up, so a real capture can be
+    // turned into probe tiles. False falls back to the debug pattern.
+    [[nodiscard]] bool convolveAvailable() const
+    {
+        return convolveAvailable_;
+    }
+
+    [[nodiscard]] const rhi::VulkanImage& captureAtlas() const
+    {
+        return captureAtlas_;
+    }
+    [[nodiscard]] const rhi::VulkanImage& captureDepth() const
+    {
+        return captureDepth_;
+    }
+    [[nodiscard]] VkImageLayout* captureAtlasLayoutPtr()
+    {
+        return &captureAtlasLayout_;
+    }
+    [[nodiscard]] VkImageLayout* captureDepthLayoutPtr()
+    {
+        return &captureDepthLayout_;
+    }
 
     // The compute half works and the update pass can run.
     [[nodiscard]] bool available() const
@@ -154,19 +236,38 @@ private:
     void createSampler();
     void createDescriptorResources();
     void createPipelines(const std::filesystem::path& debugFillShaderPath,
-                         const std::filesystem::path& borderShaderPath);
+                         const std::filesystem::path& borderShaderPath,
+                         const std::filesystem::path& convolveShaderPath);
     void writeDescriptorSet();
     void dispatchAtlas(VkCommandBuffer commandBuffer,
                        const rhi::VulkanComputePipeline& pipeline,
                        ProbeAtlasTarget target,
                        bool debugPattern);
+    void recordConvolve(VkCommandBuffer commandBuffer);
+    void recordDebugFill(VkCommandBuffer commandBuffer, bool debugPattern);
+    void recordBorder(VkCommandBuffer commandBuffer);
 
     rhi::VulkanContext* context_ = nullptr;
     bool available_ = false;
     bool atlasesInitialized_ = false;
 
+    bool convolveAvailable_ = false;
+
     rhi::VulkanImage irradianceAtlas_;
     rhi::VulkanImage depthAtlas_;
+    // Scratch, not storage: it holds only the probes being captured right now,
+    // one row per capture slot and one column per cube face, and is overwritten
+    // every frame that captures.
+    rhi::VulkanImage captureAtlas_;
+    rhi::VulkanImage captureDepth_;
+    VkImageLayout captureAtlasLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImageLayout captureDepthLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    // Round-robin state. The cursor is what bounds any one probe's staleness;
+    // see probeUpdateBatch.
+    uint32_t updateCursor_ = 0;
+    std::vector<uint32_t> captureBatch_;
+    uint64_t capturedProbeCount_ = 0;
     // Owned by this class but driven by the render graph, which transitions both
     // images and writes the layout back through these pointers.
     VkImageLayout irradianceAtlasLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -181,6 +282,7 @@ private:
 
     rhi::VulkanComputePipeline debugFillPipeline_;
     rhi::VulkanComputePipeline borderPipeline_;
+    rhi::VulkanComputePipeline convolvePipeline_;
 
     ProbeGridBounds bounds_{};
 };

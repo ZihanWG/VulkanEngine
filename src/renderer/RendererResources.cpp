@@ -326,6 +326,63 @@ void Renderer::createMainGraphicsPipeline()
     pipelineDepthFormat_ = pipelineInfo.depthFormat;
 }
 
+void Renderer::createProbeCapturePipeline()
+{
+    probeCapturePipeline_.reset();
+
+    // Bindless-only, like the skinned pipeline. The capture fragment shader
+    // samples base colour by index out of the shared heap; the per-material
+    // descriptor fallback would mean binding a set per draw across six faces
+    // per probe, which is a second recording path to maintain for a feature
+    // that is off by default. Without bindless, probes hold the debug pattern.
+    if (!isBindlessMaterialTextureActive() || !irradianceProbes_.hasAtlases()) {
+        return;
+    }
+
+    const VkVertexInputBindingDescription binding = renderer::vertexBindingDescription();
+    const std::array<VkVertexInputAttributeDescription, 5> attributes = renderer::vertexAttributeDescriptions();
+    const std::array<VkDescriptorSetLayout, 2> descriptorSetLayouts{
+        materialDescriptorSetLayout_.handle(),
+        bindlessTextureHeap_.descriptorSetLayout(),
+    };
+    const VkPushConstantRange pushConstantRange{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                                0,
+                                                static_cast<uint32_t>(sizeof(ProbeCapturePushConstants))};
+
+    try {
+        rhi::VulkanPipelineCreateInfo pipelineInfo{};
+        pipelineInfo.vertexShaderPath = shaderPath("probe_capture.vert.spv");
+        pipelineInfo.fragmentShaderPath = shaderPath("probe_capture.frag.spv");
+        pipelineInfo.colorFormat = kProbeCaptureColorFormat;
+        pipelineInfo.depthFormat = kProbeCaptureDepthFormat;
+        pipelineInfo.vertexBindings = std::span<const VkVertexInputBindingDescription>(&binding, 1);
+        pipelineInfo.vertexAttributes =
+            std::span<const VkVertexInputAttributeDescription>(attributes.data(), attributes.size());
+        pipelineInfo.descriptorSetLayouts = std::span<const VkDescriptorSetLayout>(
+            descriptorSetLayouts.data(), descriptorSetLayouts.size());
+        pipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&pushConstantRange, 1);
+        pipelineInfo.enableDepth = true;
+        // No back-face culling. A probe sits inside the room it measures, so it
+        // sees the inward side of walls authored facing outward; culling those
+        // would leave the probe looking through them at the sky. The fragment
+        // shader flips normals toward the probe to match.
+        pipelineInfo.cullMode = VK_CULL_MODE_NONE;
+        pipelineInfo.pipelineCache = context_.pipelineCache();
+        probeCapturePipeline_.create(context_.vkDevice(), pipelineInfo);
+        rhi::debug::setObjectName(context_.vkDevice(),
+                                  probeCapturePipeline_.pipeline(),
+                                  VK_OBJECT_TYPE_PIPELINE,
+                                  "ProbeCapturePipeline");
+    } catch (const std::exception& error) {
+        // Optional like every other probe piece: without the capture pipeline
+        // the atlases still exist and still hold the debug pattern.
+        probeCapturePipeline_.reset();
+        Logger::warn(std::string("Irradiance probe capture unavailable; probes will hold the debug pattern "
+                                 "rather than captured radiance: ") +
+                     error.what());
+    }
+}
+
 void Renderer::createSkinnedPipeline()
 {
     // The skinned demo reuses the bindless fragment shader, so it only exists when

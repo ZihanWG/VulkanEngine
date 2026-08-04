@@ -300,6 +300,11 @@ private:
     void resetOcclusionTestSceneToPreset();
     [[nodiscard]] uint32_t allocateRenderObjectDebugId();
     void createEnvironmentMap();
+    // Graphics pipeline the probe capture pass rasterises with. Owned here
+    // rather than by IrradianceProbeVolume because it needs the material and
+    // bindless descriptor set layouts, which Renderer owns -- the same split
+    // PunctualShadows uses for its caster draws.
+    void createProbeCapturePipeline();
     void createDiffuseIrradianceMap();
     void createPrefilteredEnvironmentMap();
     void createBrdfLutTexture();
@@ -453,6 +458,11 @@ private:
     {
         return irradianceProbes_.needsUpdate(giSettings_.enabled);
     }
+    // Records the probe capture pass: one dynamic-rendering scope over the whole
+    // capture atlas, with a viewport per (probe, cube face) inside it -- the
+    // same arrangement the punctual shadow atlas uses for its slots.
+    void recordProbeCapturePass(VkCommandBuffer commandBuffer);
+    [[nodiscard]] bool isProbeCaptureActive() const;
     // Records the punctual shadow atlas pass: one dynamic-rendering pass over
     // the whole atlas, with a viewport/scissor per allocated slot.
     void recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuCullActive);
@@ -577,6 +587,7 @@ private:
     // shadowPipeline_ because its push-constant layout carries the slot's
     // view-projection instead of a cascade index.
     rhi::VulkanPipeline punctualShadowPipeline_;
+    rhi::VulkanPipeline probeCapturePipeline_;
     // glTF BLEND geometry: same shaders as the main pass, but "over" blending,
     // depth writes off, and a scene-color-only attachment set.
     rhi::VulkanPipeline transparentPipeline_;
@@ -840,6 +851,10 @@ private:
     // but perspective depth is compressed into the top few percent" -- both look
     // like a solid far-plane tile.
     uint32_t punctualShadowDrawsRecorded_ = 0;
+    // Draws the probe capture pass issued last frame. Zero with a non-empty
+    // batch means every face culled everything, which is the difference between
+    // "probes captured black" and "probes never captured".
+    uint32_t probeCaptureDrawsRecorded_ = 0;
     bool showClusterHeatmap_ = false;
     // Procedural skinned bone-chain demo: draw it, and animate (vs hold bind pose).
     bool showSkinnedMesh_ = true;
@@ -864,6 +879,10 @@ private:
     bool frameAsyncComputeActive_ = false;
     bool frameSsrActive_ = false;
     bool frameGtaoActive_ = false;
+    // Whether this frame captures probes. Latched during frame prep alongside
+    // the batch it refers to, because the graph declaration and the recording
+    // have to agree and choosing the batch advances the round-robin cursor.
+    bool frameProbeCaptureActive_ = false;
     uint32_t ssrFrameCounter_ = 0;
     uint32_t gtaoFrameCounter_ = 0;
     bool useGpuShadowCulling_ = true;

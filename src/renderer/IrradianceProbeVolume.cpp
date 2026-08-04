@@ -17,7 +17,8 @@ namespace {
 
 constexpr uint32_t kBindingIrradianceAtlas = 0;
 constexpr uint32_t kBindingDepthAtlas = 1;
-constexpr uint32_t kBindingCount = 2;
+constexpr uint32_t kBindingCaptureAtlas = 2;
+constexpr uint32_t kBindingCount = 3;
 
 // Matches the local_size in probe_debug_fill.comp and probe_border.comp.
 constexpr uint32_t kProbeLocalSize = 8;
@@ -65,7 +66,8 @@ IrradianceProbeVolume::~IrradianceProbeVolume()
 
 void IrradianceProbeVolume::create(rhi::VulkanContext& context,
                                    const std::filesystem::path& debugFillShaderPath,
-                                   const std::filesystem::path& borderShaderPath)
+                                   const std::filesystem::path& borderShaderPath,
+                                   const std::filesystem::path& convolveShaderPath)
 {
     reset();
     context_ = &context;
@@ -79,7 +81,7 @@ void IrradianceProbeVolume::create(rhi::VulkanContext& context,
 
     try {
         createDescriptorResources();
-        createPipelines(debugFillShaderPath, borderShaderPath);
+        createPipelines(debugFillShaderPath, borderShaderPath, convolveShaderPath);
         writeDescriptorSet();
 
         available_ = true;
@@ -95,12 +97,21 @@ void IrradianceProbeVolume::create(rhi::VulkanContext& context,
         // so everything that references them still has a valid image.
         debugFillPipeline_.reset();
         borderPipeline_.reset();
+        convolvePipeline_.reset();
         descriptorSet_ = VK_NULL_HANDLE;
         descriptorPool_.reset();
         setLayout_.reset();
         available_ = false;
+        convolveAvailable_ = false;
         Logger::warn(std::string("Irradiance probes unavailable: ") + error.what());
     }
+}
+
+const std::vector<uint32_t>& IrradianceProbeVolume::beginCaptureBatch(uint32_t probesPerFrame)
+{
+    updateCursor_ = probeUpdateBatch(updateCursor_, probesPerFrame, captureBatch_);
+    capturedProbeCount_ += captureBatch_.size();
+    return captureBatch_;
 }
 
 void IrradianceProbeVolume::reset()
@@ -112,15 +123,24 @@ void IrradianceProbeVolume::reset()
 
     debugFillPipeline_.reset();
     borderPipeline_.reset();
+    convolvePipeline_.reset();
     descriptorSet_ = VK_NULL_HANDLE;
     descriptorPool_.reset();
     setLayout_.reset();
     irradianceAtlas_.reset();
     depthAtlas_.reset();
+    captureAtlas_.reset();
+    captureDepth_.reset();
     irradianceAtlasLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     depthAtlasLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+    captureAtlasLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+    captureDepthLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+    updateCursor_ = 0;
+    captureBatch_.clear();
+    capturedProbeCount_ = 0;
     atlasesInitialized_ = false;
     available_ = false;
+    convolveAvailable_ = false;
     context_ = nullptr;
 }
 
@@ -151,6 +171,36 @@ void IrradianceProbeVolume::createAtlases()
     depthInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
     depthInfo.debugName = "ProbeDepthAtlas";
     depthAtlas_.create(*context_, depthInfo);
+
+    const glm::uvec2 captureSize = probeCaptureAtlasSize();
+
+    rhi::VulkanImageCreateInfo captureInfo{};
+    captureInfo.width = captureSize.x;
+    captureInfo.height = captureSize.y;
+    // rgb = outgoing radiance, a = distance from the probe. One attachment
+    // rather than two: the convolution reads both for every texel it visits, so
+    // splitting them would double the fetch count in the one loop that matters.
+    captureInfo.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    captureInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
+                        VK_IMAGE_USAGE_SAMPLED_BIT;
+    captureInfo.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    captureInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    captureInfo.debugName = "ProbeCaptureAtlas";
+    captureAtlas_.create(*context_, captureInfo);
+
+    rhi::VulkanImageCreateInfo captureDepthInfo{};
+    captureDepthInfo.width = captureSize.x;
+    captureDepthInfo.height = captureSize.y;
+    // Only ever a depth attachment: distance is written explicitly by the
+    // capture fragment shader rather than reconstructed from this, which is why
+    // it needs no sampled usage and no particular precision beyond resolving
+    // which surface is nearest.
+    captureDepthInfo.format = VK_FORMAT_D32_SFLOAT;
+    captureDepthInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    captureDepthInfo.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    captureDepthInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    captureDepthInfo.debugName = "ProbeCaptureDepth";
+    captureDepth_.create(*context_, captureDepthInfo);
 }
 
 void IrradianceProbeVolume::createSampler()
@@ -194,6 +244,13 @@ void IrradianceProbeVolume::createDescriptorResources()
     bindings[kBindingDepthAtlas].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     bindings[kBindingDepthAtlas].descriptorCount = 1;
     bindings[kBindingDepthAtlas].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    // Only the convolution reads this one; the fill and border shaders simply do
+    // not declare it. One layout for all three keeps a single descriptor set for
+    // the whole subsystem, and an unused binding costs nothing.
+    bindings[kBindingCaptureAtlas].binding = kBindingCaptureAtlas;
+    bindings[kBindingCaptureAtlas].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    bindings[kBindingCaptureAtlas].descriptorCount = 1;
+    bindings[kBindingCaptureAtlas].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
     setLayout_.create(device, std::span<const VkDescriptorSetLayoutBinding>(bindings.data(), bindings.size()));
 
@@ -212,16 +269,20 @@ void IrradianceProbeVolume::createDescriptorResources()
 }
 
 void IrradianceProbeVolume::createPipelines(const std::filesystem::path& debugFillShaderPath,
-                                            const std::filesystem::path& borderShaderPath)
+                                            const std::filesystem::path& borderShaderPath,
+                                            const std::filesystem::path& convolveShaderPath)
 {
     const VkDevice device = context_->vkDevice();
     const VkDescriptorSetLayout layout = setLayout_.handle();
-    const VkPushConstantRange pushConstantRange{
-        VK_SHADER_STAGE_COMPUTE_BIT, 0, static_cast<uint32_t>(sizeof(ProbeAtlasPushConstants))};
 
+    // Same descriptor set layout for all three, different push-constant ranges:
+    // the convolution carries this frame's probe indices, which the per-atlas
+    // shaders have no use for.
     const auto makePipeline = [&](rhi::VulkanComputePipeline& pipeline,
                                   const std::filesystem::path& shaderPath,
+                                  uint32_t pushConstantSize,
                                   const char* debugName) {
+        const VkPushConstantRange pushConstantRange{VK_SHADER_STAGE_COMPUTE_BIT, 0, pushConstantSize};
         rhi::VulkanComputePipelineCreateInfo info{};
         info.shaderPath = shaderPath;
         info.descriptorSetLayouts = std::span<const VkDescriptorSetLayout>(&layout, 1);
@@ -231,8 +292,25 @@ void IrradianceProbeVolume::createPipelines(const std::filesystem::path& debugFi
         rhi::debug::setObjectName(device, pipeline.pipeline(), VK_OBJECT_TYPE_PIPELINE, debugName);
     };
 
-    makePipeline(debugFillPipeline_, debugFillShaderPath, "ProbeDebugFillPipeline");
-    makePipeline(borderPipeline_, borderShaderPath, "ProbeBorderPipeline");
+    makePipeline(
+        debugFillPipeline_, debugFillShaderPath, sizeof(ProbeAtlasPushConstants), "ProbeDebugFillPipeline");
+    makePipeline(borderPipeline_, borderShaderPath, sizeof(ProbeAtlasPushConstants), "ProbeBorderPipeline");
+
+    // The convolution is what turns a capture into probe tiles, and it is the
+    // only piece here that can fail without taking the rest with it: the debug
+    // fill still produces a valid, inspectable atlas. So it degrades separately
+    // rather than failing the whole subsystem.
+    try {
+        makePipeline(
+            convolvePipeline_, convolveShaderPath, sizeof(ProbeConvolvePushConstants), "ProbeConvolvePipeline");
+        convolveAvailable_ = true;
+    } catch (const std::exception& error) {
+        convolvePipeline_.reset();
+        convolveAvailable_ = false;
+        Logger::warn(std::string("Irradiance probe convolution unavailable; probes will hold the debug "
+                                 "pattern rather than captured radiance: ") +
+                     error.what());
+    }
 }
 
 void IrradianceProbeVolume::writeDescriptorSet()
@@ -245,6 +323,10 @@ void IrradianceProbeVolume::writeDescriptorSet()
     depthInfo.imageView = depthAtlas_.imageView();
     depthInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
+    VkDescriptorImageInfo captureInfo{};
+    captureInfo.imageView = captureAtlas_.imageView();
+    captureInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
     std::array<VkWriteDescriptorSet, kBindingCount> writes{};
     for (uint32_t binding = 0; binding < kBindingCount; ++binding) {
         writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -256,6 +338,7 @@ void IrradianceProbeVolume::writeDescriptorSet()
     }
     writes[kBindingIrradianceAtlas].pImageInfo = &irradianceInfo;
     writes[kBindingDepthAtlas].pImageInfo = &depthInfo;
+    writes[kBindingCaptureAtlas].pImageInfo = &captureInfo;
 
     vkUpdateDescriptorSets(
         context_->vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
@@ -286,14 +369,8 @@ void IrradianceProbeVolume::dispatchAtlas(VkCommandBuffer commandBuffer,
                   1);
 }
 
-void IrradianceProbeVolume::recordUpdate(VkCommandBuffer commandBuffer, bool debugPattern)
+void IrradianceProbeVolume::recordDebugFill(VkCommandBuffer commandBuffer, bool debugPattern)
 {
-    if (!available_) {
-        return;
-    }
-
-    rhi::debug::beginLabel(commandBuffer, "IrradianceProbeUpdate");
-
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, debugFillPipeline_.pipeline());
     vkCmdBindDescriptorSets(commandBuffer,
                             VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -305,11 +382,110 @@ void IrradianceProbeVolume::recordUpdate(VkCommandBuffer commandBuffer, bool deb
                             nullptr);
     dispatchAtlas(commandBuffer, debugFillPipeline_, ProbeAtlasTarget::Irradiance, debugPattern);
     dispatchAtlas(commandBuffer, debugFillPipeline_, ProbeAtlasTarget::Depth, debugPattern);
+}
 
-    // The border pass reads core texels the fill just wrote. Both dispatches
-    // touch the same images, so this is a genuine read-after-write and not
-    // something the render graph can infer -- the graph sees one pass.
-    const std::array<VkImageMemoryBarrier2, 2> fillToBorder{
+void IrradianceProbeVolume::recordConvolve(VkCommandBuffer commandBuffer)
+{
+    ProbeConvolvePushConstants pushConstants{};
+    pushConstants.probeCount = static_cast<int32_t>(captureBatch_.size());
+    for (size_t slot = 0; slot < captureBatch_.size() && slot < kMaxProbesPerFrame; ++slot) {
+        pushConstants.probeIndices[slot / 4][slot % 4] = static_cast<int32_t>(captureBatch_[slot]);
+    }
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, convolvePipeline_.pipeline());
+    vkCmdBindDescriptorSets(commandBuffer,
+                            VK_PIPELINE_BIND_POINT_COMPUTE,
+                            convolvePipeline_.layout(),
+                            0,
+                            1,
+                            &descriptorSet_,
+                            0,
+                            nullptr);
+    vkCmdPushConstants(commandBuffer,
+                       convolvePipeline_.layout(),
+                       VK_SHADER_STAGE_COMPUTE_BIT,
+                       0,
+                       sizeof(ProbeConvolvePushConstants),
+                       &pushConstants);
+    // One workgroup per probe in the batch. The workgroup is 16x16, sized to the
+    // depth tile, and its first 8x8 threads also produce the irradiance tile.
+    vkCmdDispatch(commandBuffer, static_cast<uint32_t>(captureBatch_.size()), 1, 1);
+}
+
+void IrradianceProbeVolume::recordBorder(VkCommandBuffer commandBuffer)
+{
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, borderPipeline_.pipeline());
+    vkCmdBindDescriptorSets(commandBuffer,
+                            VK_PIPELINE_BIND_POINT_COMPUTE,
+                            borderPipeline_.layout(),
+                            0,
+                            1,
+                            &descriptorSet_,
+                            0,
+                            nullptr);
+    // Over the whole atlas rather than just the probes that changed. The border
+    // is a texel-for-texel copy over ~110k texels; restricting it to this
+    // frame's tiles would save a fraction of a very small pass and add a second
+    // dispatch shape to get wrong.
+    dispatchAtlas(commandBuffer, borderPipeline_, ProbeAtlasTarget::Irradiance, false);
+    dispatchAtlas(commandBuffer, borderPipeline_, ProbeAtlasTarget::Depth, false);
+}
+
+void IrradianceProbeVolume::recordUpdate(VkCommandBuffer commandBuffer, bool useDebugPattern)
+{
+    if (!available_) {
+        return;
+    }
+
+    // The convolution needs something to convolve. Without a batch (probes per
+    // frame set to zero, or the capture pipeline missing) the debug fill is what
+    // keeps the atlases holding something defined.
+    const bool convolve = !useDebugPattern && convolveAvailable_ && !captureBatch_.empty();
+
+    rhi::debug::beginLabel(commandBuffer, convolve ? "IrradianceProbeConvolve" : "IrradianceProbeFill");
+
+    // An amortised update only ever writes the tiles of the probes it captured,
+    // and the atlases are never cleared, so on the first update every probe the
+    // batch did not include would still hold whatever its allocation contained.
+    // Seeding all of them once is what stops an uncaptured probe from
+    // contributing garbage -- and the seed is the neutral "gathered nothing"
+    // state rather than the direction pattern, because that is the honest value
+    // for a probe that has not been captured yet.
+    const bool seedEveryTile = !atlasesInitialized_;
+    if (seedEveryTile || !convolve) {
+        // A fill standing in for a failed convolution uses the pattern instead:
+        // a blank atlas would be indistinguishable from a working one.
+        recordDebugFill(commandBuffer, convolve ? false : (useDebugPattern || !convolveAvailable_));
+    }
+
+    if (convolve) {
+        if (seedEveryTile) {
+            // Both dispatches write the same tiles; without this the seed could
+            // land after the convolution and wipe it.
+            const std::array<VkImageMemoryBarrier2, 2> seedToConvolve{
+                atlasBarrier(irradianceAtlas_.image(),
+                             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT),
+                atlasBarrier(depthAtlas_.image(),
+                             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT)};
+            VkDependencyInfo seedDependency{};
+            seedDependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            seedDependency.imageMemoryBarrierCount = static_cast<uint32_t>(seedToConvolve.size());
+            seedDependency.pImageMemoryBarriers = seedToConvolve.data();
+            vkCmdPipelineBarrier2(commandBuffer, &seedDependency);
+        }
+        recordConvolve(commandBuffer);
+    }
+
+    // The border pass reads core texels the step above just wrote. Both touch
+    // the same images inside one graph pass, so this is a read-after-write the
+    // graph cannot infer -- it sees a single pass.
+    const std::array<VkImageMemoryBarrier2, 2> writeToBorder{
         atlasBarrier(irradianceAtlas_.image(),
                      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                      VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
@@ -323,21 +499,11 @@ void IrradianceProbeVolume::recordUpdate(VkCommandBuffer commandBuffer, bool deb
 
     VkDependencyInfo dependency{};
     dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dependency.imageMemoryBarrierCount = static_cast<uint32_t>(fillToBorder.size());
-    dependency.pImageMemoryBarriers = fillToBorder.data();
+    dependency.imageMemoryBarrierCount = static_cast<uint32_t>(writeToBorder.size());
+    dependency.pImageMemoryBarriers = writeToBorder.data();
     vkCmdPipelineBarrier2(commandBuffer, &dependency);
 
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, borderPipeline_.pipeline());
-    vkCmdBindDescriptorSets(commandBuffer,
-                            VK_PIPELINE_BIND_POINT_COMPUTE,
-                            borderPipeline_.layout(),
-                            0,
-                            1,
-                            &descriptorSet_,
-                            0,
-                            nullptr);
-    dispatchAtlas(commandBuffer, borderPipeline_, ProbeAtlasTarget::Irradiance, debugPattern);
-    dispatchAtlas(commandBuffer, borderPipeline_, ProbeAtlasTarget::Depth, debugPattern);
+    recordBorder(commandBuffer);
 
     atlasesInitialized_ = true;
 

@@ -108,6 +108,132 @@ bool Renderer::isGpuPunctualShadowCullingActive() const
            !punctualShadowCacheHit_ && context_.device().drawIndirectFirstInstanceEnabled();
 }
 
+bool Renderer::isProbeCaptureActive() const
+{
+    return giSettings_.enabled && !giSettings_.debugPattern && irradianceProbes_.available() &&
+           irradianceProbes_.convolveAvailable() && probeCapturePipeline_.pipeline() != VK_NULL_HANDLE &&
+           giSettings_.probesPerFrame > 0 && !allDrawItems_.empty();
+}
+
+void Renderer::recordProbeCapturePass(VkCommandBuffer commandBuffer)
+{
+    const std::vector<uint32_t>& batch = irradianceProbes_.captureBatch();
+    if (batch.empty()) {
+        return;
+    }
+
+    const VkDescriptorSet globalDescriptorSet = globalMaterialDescriptorSet();
+    if (globalDescriptorSet == VK_NULL_HANDLE) {
+        return;
+    }
+
+    const bool profileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "ProbeCapture");
+    rhi::debug::beginLabel(commandBuffer, "ProbeCapture");
+
+    // One rendering scope over the whole capture atlas, with a viewport per
+    // (probe, face) inside it. Same reasoning as the punctual shadow atlas: the
+    // clear runs once for the image instead of once per tile, and the 96 tiles
+    // do not each pay for a render pass.
+    renderGraph_.beginProbeCapturePass();
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, probeCapturePipeline_.pipeline());
+
+    const std::array<VkDescriptorSet, 2> descriptorSets{globalDescriptorSet,
+                                                        bindlessTextureHeap_.descriptorSet()};
+    vkCmdBindDescriptorSets(commandBuffer,
+                            VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            probeCapturePipeline_.layout(),
+                            0,
+                            static_cast<uint32_t>(descriptorSets.size()),
+                            descriptorSets.data(),
+                            0,
+                            nullptr);
+
+    const VkDeviceAddress objectFrameDataBaseAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
+    const renderer::ProbeGridBounds bounds = irradianceProbes_.bounds();
+    const renderer::Mesh* boundMesh = nullptr;
+    uint32_t recordedDraws = 0;
+
+    for (uint32_t slot = 0; slot < batch.size(); ++slot) {
+        const glm::vec3 probePosition = renderer::probeWorldPosition(batch[slot], bounds);
+
+        for (uint32_t face = 0; face < renderer::kProbeCaptureFaceCount; ++face) {
+            const glm::uvec2 origin = renderer::probeCaptureTileOrigin(slot, face);
+
+            VkViewport viewport{};
+            viewport.x = static_cast<float>(origin.x);
+            viewport.y = static_cast<float>(origin.y);
+            viewport.width = static_cast<float>(renderer::kProbeCaptureFaceResolution);
+            viewport.height = static_cast<float>(renderer::kProbeCaptureFaceResolution);
+            viewport.minDepth = 0.0f;
+            viewport.maxDepth = 1.0f;
+            vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+
+            VkRect2D scissor{};
+            scissor.offset = {static_cast<int32_t>(origin.x), static_cast<int32_t>(origin.y)};
+            scissor.extent = {renderer::kProbeCaptureFaceResolution, renderer::kProbeCaptureFaceResolution};
+            vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+            const glm::mat4 faceViewProjection = renderer::probeCaptureFaceViewProjection(probePosition, face);
+            // Reuses the spot-shadow frustum extractor: it takes any perspective
+            // view-projection, and a cube face is one. Without this every probe
+            // would submit every draw item six times over.
+            const renderer::Frustum faceFrustum = renderer::computeSpotShadowFrustum(faceViewProjection);
+
+            for (const DrawItem& drawItem : allDrawItems_) {
+                if (!drawItem.mesh || drawItem.frameDataIndex >= kMaxDrawItems || drawItem.indexCount == 0) {
+                    continue;
+                }
+                // Alpha-blended geometry is skipped for the same reason it does
+                // not cast shadows: it never wrote opaque depth, and treating it
+                // as an opaque occluder here would block light it should let
+                // through.
+                if (drawItem.bucket == RenderBucket::Blend) {
+                    continue;
+                }
+                if (drawItem.objectIndex < frameWorldBounds_.size() &&
+                    !faceFrustum.testAabb(frameWorldBounds_[drawItem.objectIndex])) {
+                    continue;
+                }
+
+                if (boundMesh != drawItem.mesh) {
+                    const VkBuffer vertexBuffers[] = {drawItem.mesh->vertexBuffer()};
+                    const VkDeviceSize vertexOffsets[] = {0};
+                    vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
+                    vkCmdBindIndexBuffer(commandBuffer, drawItem.mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+                    boundMesh = drawItem.mesh;
+                }
+
+                ProbeCapturePushConstants pushConstants{};
+                // Offset per draw so the vertex stage reads objects[0] with an
+                // instance index of zero, matching the direct-draw shadow path.
+                pushConstants.objectFrameDataAddress =
+                    objectFrameDataBaseAddress +
+                    static_cast<VkDeviceAddress>(drawItem.frameDataIndex) * sizeof(ObjectFrameData);
+                pushConstants.faceViewProjection = faceViewProjection;
+                pushConstants.probePosition = glm::vec4{probePosition, 0.0f};
+                vkCmdPushConstants(commandBuffer,
+                                   probeCapturePipeline_.layout(),
+                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0,
+                                   static_cast<uint32_t>(sizeof(ProbeCapturePushConstants)),
+                                   &pushConstants);
+
+                vkCmdDrawIndexed(commandBuffer, drawItem.indexCount, 1, drawItem.firstIndex, 0, 0);
+                ++recordedDraws;
+            }
+        }
+    }
+
+    renderGraph_.endProbeCapturePass();
+    probeCaptureDrawsRecorded_ = recordedDraws;
+
+    rhi::debug::endLabel(commandBuffer);
+    if (profileScope) {
+        gpuProfiler_.endScope(currentFrame_, commandBuffer);
+    }
+}
+
 void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuCullActive)
 {
     const uint32_t slotCount = punctualShadows_.slotCount();
@@ -480,6 +606,41 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
     // every other target here their extent comes from the image itself. A failed
     // probe subsystem leaves null handles, which importTexture turns into an
     // invalid handle and every declaration then skips.
+    // What a probe records in directions where nothing was drawn. The same
+    // ambient term the main pass adds to every surface, standing in for the sky:
+    // a probe that saw black there would be far too dark outdoors, and it would
+    // look like moody indirect light rather than like a missing term.
+    const glm::vec4 ambientSky = portfolioCaptureMode_ ? kPortfolioAmbientLightColor : kAmbientLightColor;
+    VkClearValue probeCaptureSkyClear{};
+    probeCaptureSkyClear.color.float32[0] = ambientSky.r;
+    probeCaptureSkyClear.color.float32[1] = ambientSky.g;
+    probeCaptureSkyClear.color.float32[2] = ambientSky.b;
+    probeCaptureSkyClear.color.float32[3] = renderer::kProbeMaxDistance;
+
+    const auto probeCaptureResource = [](const char* name,
+                                         const rhi::VulkanImage& image,
+                                         VkImageLayout* layout,
+                                         VkImageUsageFlags usage,
+                                         VkImageAspectFlags aspect,
+                                         VkClearValue clearValue = VkClearValue{}) {
+        const VkExtent3D extent = image.extent();
+        return renderer::RenderGraphImageResource{
+            name,
+            image.image(),
+            image.imageView(),
+            VkExtent2D{extent.width, extent.height},
+            layout,
+            image.format(),
+            usage,
+            1,
+            1,
+            aspect,
+            clearValue,
+            true,
+            true,
+        };
+    };
+
     const auto probeAtlasResource = [](const char* name, const rhi::VulkanImage& image, VkImageLayout* layout) {
         const VkExtent3D extent = image.extent();
         return renderer::RenderGraphImageResource{
@@ -635,6 +796,18 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
                            irradianceProbes_.irradianceAtlasLayoutPtr()),
         probeAtlasResource(
             "ProbeDepthAtlas", irradianceProbes_.depthAtlas(), irradianceProbes_.depthAtlasLayoutPtr()),
+        probeCaptureResource("ProbeCaptureAtlas",
+                             irradianceProbes_.captureAtlas(),
+                             irradianceProbes_.captureAtlasLayoutPtr(),
+                             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
+                                 VK_IMAGE_USAGE_SAMPLED_BIT,
+                             VK_IMAGE_ASPECT_COLOR_BIT,
+                             probeCaptureSkyClear),
+        probeCaptureResource("ProbeCaptureDepth",
+                             irradianceProbes_.captureDepth(),
+                             irradianceProbes_.captureDepthLayoutPtr(),
+                             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                             VK_IMAGE_ASPECT_DEPTH_BIT),
         bufferResource(
             "MainCullInput", gpuCulling_.cullInputBuffers(), currentFrame_, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
         bufferResource("MainCullIndirectOutput",
@@ -677,6 +850,7 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         punctualShadowCacheHit_ ? 0u : punctualShadows_.slotCount(),
         isVolumetricFogActive(),
         isIrradianceProbeUpdateActive(),
+        frameProbeCaptureActive_,
     };
 }
 
@@ -1045,9 +1219,16 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         }
     }
 
-    // Probe atlas maintenance. Before the main pass, which declares a read on
-    // both atlases; after the shadow and cluster passes, which is what the
-    // capture phase will need to gather radiance from.
+    // Probe capture, then the convolution that turns it into probe tiles. Both
+    // sit after the shadow passes -- the capture samples the cascades so the
+    // radiance it records is shadowed -- and before the main pass, which
+    // declares a read on the probe atlases.
+    if (frameProbeCaptureActive_) {
+        recordProbeCapturePass(commandBuffer);
+    } else {
+        probeCaptureDrawsRecorded_ = 0;
+    }
+
     if (isIrradianceProbeUpdateActive()) {
         const bool probeProfileScope =
             gpuProfiler_.beginScope(currentFrame_, commandBuffer, "IrradianceProbeUpdate");

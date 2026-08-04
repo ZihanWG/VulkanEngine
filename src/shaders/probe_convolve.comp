@@ -1,0 +1,200 @@
+#version 460
+
+// Turns one probe's six captured cube faces into its two octahedral tiles.
+//
+// One workgroup per probe, 16x16 threads. Every thread walks the whole capture
+// -- all 6 * 16 * 16 texels -- and accumulates the ones on its own side of the
+// sphere. That is quadratic-looking and is fine at these sizes: the inner loop
+// is 1536 iterations and every thread in the workgroup reads the same texel at
+// the same time, so the loads broadcast out of cache rather than scattering.
+//
+// Threads do double duty. All 256 compute a depth texel; the first 8x8 of them
+// also compute an irradiance texel. Two dispatches would be simpler to read but
+// would fetch the whole capture twice, and the fetch is the entire cost here.
+//
+//   irradiance  cosine lobe, normalised   -> mean radiance arriving at a surface
+//                                            facing that way
+//   depth       sharp lobe, normalised    -> mean distance and mean distance
+//                                            squared, the two moments a
+//                                            Chebyshev visibility bound needs
+//
+// Normalising by the accumulated weight rather than multiplying by a constant is
+// what makes the result independent of how the capture is discretised. A CPU
+// test pins it: a scene of uniform radiance must convolve back to exactly that
+// radiance in every direction.
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// Must match ve::renderer::kProbe*.
+const int kProbeBorderTexels = 1;
+const int kProbeIrradianceResolution = 8;
+const int kProbeDepthResolution = 16;
+const int kProbeAtlasTilesX = 32;
+const int kProbeCaptureFaceCount = 6;
+const int kProbeCaptureFaceResolution = 16;
+const float kProbeMaxDistance = 64.0;
+const float kProbeDepthLobeExponent = 20.0;
+
+layout(set = 0, binding = 0, rgba16f) uniform writeonly image2D uIrradianceAtlas;
+layout(set = 0, binding = 1, rg16f) uniform writeonly image2D uDepthAtlas;
+layout(set = 0, binding = 2, rgba16f) uniform readonly image2D uCaptureAtlas;
+
+layout(push_constant) uniform ProbeConvolvePush {
+    int probeCount;
+    int padding0;
+    int padding1;
+    int padding2;
+    // Grid index per capture slot, packed four to a vec4 because push-constant
+    // arrays of scalars are padded to 16 bytes an element. Passed explicitly
+    // rather than derived from a base index: the round-robin batch wraps at the
+    // end of a cycle, so "base + slot" is wrong on exactly the frames that are
+    // hardest to notice being wrong.
+    ivec4 probeIndices[4];
+} push;
+
+// The engine's octahedral decode. Identical to simple.frag, ssr_trace.frag,
+// gtao.frag, probe_debug_fill.comp and ve::renderer::octahedralDecode.
+vec3 octDecode(vec2 e)
+{
+    e = e * 2.0 - 1.0;
+    vec3 n = vec3(e.x, e.y, 1.0 - abs(e.x) - abs(e.y));
+    if (n.z < 0.0) {
+        n.xy = (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
+    }
+    return normalize(n);
+}
+
+// Mirrors ve::renderer::pointShadowFaceDirection. Face order +X, -X, +Y, -Y,
+// +Z, -Z, shared with the punctual shadow cube.
+vec3 cubeFaceForward(int face)
+{
+    if (face == 0) { return vec3(1.0, 0.0, 0.0); }
+    if (face == 1) { return vec3(-1.0, 0.0, 0.0); }
+    if (face == 2) { return vec3(0.0, 1.0, 0.0); }
+    if (face == 3) { return vec3(0.0, -1.0, 0.0); }
+    if (face == 4) { return vec3(0.0, 0.0, 1.0); }
+    return vec3(0.0, 0.0, -1.0);
+}
+
+// Mirrors ve::renderer::probeCubeTexelDirection. The basis is the one
+// glm::lookAt builds inside the face projection, including the reference-axis
+// switch on the two vertical faces; a CPU test projects these directions back
+// through the real matrix to pin the two together.
+vec3 cubeTexelDirection(int face, vec2 texel)
+{
+    float size = float(kProbeCaptureFaceResolution);
+    float u = (texel.x + 0.5) / size * 2.0 - 1.0;
+    float v = (texel.y + 0.5) / size * 2.0 - 1.0;
+
+    vec3 forward = cubeFaceForward(face);
+    vec3 worldUp = abs(forward.y) > 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+    vec3 right = normalize(cross(forward, worldUp));
+    vec3 up = cross(right, forward);
+
+    return normalize(forward + right * u + up * v);
+}
+
+// Mirrors ve::renderer::probeCubeTexelSolidAngle. Cube texels shrink toward a
+// face's corners by up to a factor of three; without this the corners of every
+// face are over-counted and the gathered irradiance is smoothly biased.
+float cubeTexelSolidAngle(vec2 texel)
+{
+    float size = float(kProbeCaptureFaceResolution);
+    float u = (texel.x + 0.5) / size * 2.0 - 1.0;
+    float v = (texel.y + 0.5) / size * 2.0 - 1.0;
+    float denominator = 1.0 + u * u + v * v;
+    return (4.0 / (size * size)) / (denominator * sqrt(denominator));
+}
+
+ivec2 probeTileOrigin(int probeIndex, int coreResolution)
+{
+    int tileSize = coreResolution + 2 * kProbeBorderTexels;
+    return ivec2(probeIndex % kProbeAtlasTilesX, probeIndex / kProbeAtlasTilesX) * tileSize;
+}
+
+// Mirrors ve::renderer::probeTexelDirection, except that this takes the texel
+// relative to the core rather than to the tile -- the C++ version takes
+// tile-local coordinates and subtracts the border itself.
+vec3 probeCoreTexelDirection(ivec2 coreTexel, int resolution)
+{
+    vec2 octant = (vec2(coreTexel) + 0.5) / float(resolution);
+    return octDecode(octant);
+}
+
+void main()
+{
+    int slot = int(gl_WorkGroupID.x);
+    if (slot >= push.probeCount) {
+        return;
+    }
+
+    int probeIndex = push.probeIndices[slot >> 2][slot & 3];
+    ivec2 localTexel = ivec2(gl_LocalInvocationID.xy);
+    int captureRow = slot * kProbeCaptureFaceResolution;
+
+    // Output directions for this thread's two jobs. The irradiance tile is
+    // coarser, so only the first 8x8 threads have one.
+    vec3 depthDirection = probeCoreTexelDirection(localTexel, kProbeDepthResolution);
+    bool writesIrradiance =
+        localTexel.x < kProbeIrradianceResolution && localTexel.y < kProbeIrradianceResolution;
+    vec3 irradianceDirection = probeCoreTexelDirection(localTexel, kProbeIrradianceResolution);
+
+    vec3 radianceSum = vec3(0.0);
+    float radianceWeight = 0.0;
+    float distanceSum = 0.0;
+    float distanceSquaredSum = 0.0;
+    float distanceWeight = 0.0;
+
+    for (int face = 0; face < kProbeCaptureFaceCount; ++face) {
+        int faceColumn = face * kProbeCaptureFaceResolution;
+        for (int y = 0; y < kProbeCaptureFaceResolution; ++y) {
+            for (int x = 0; x < kProbeCaptureFaceResolution; ++x) {
+                vec2 texel = vec2(float(x), float(y));
+                vec3 sampleDirection = cubeTexelDirection(face, texel);
+                float solidAngle = cubeTexelSolidAngle(texel);
+
+                vec4 captured = imageLoad(uCaptureAtlas, ivec2(faceColumn + x, captureRow + y));
+
+                if (writesIrradiance) {
+                    float cosine = dot(irradianceDirection, sampleDirection);
+                    if (cosine > 0.0) {
+                        float weight = cosine * solidAngle;
+                        radianceSum += captured.rgb * weight;
+                        radianceWeight += weight;
+                    }
+                }
+
+                float depthCosine = dot(depthDirection, sampleDirection);
+                if (depthCosine > 0.0) {
+                    // A sharp lobe, because visibility in a direction has to
+                    // describe what is actually in that direction. A cosine
+                    // would average a wall together with the open space beside
+                    // it and stop occluding anything.
+                    float weight = pow(depthCosine, kProbeDepthLobeExponent) * solidAngle;
+                    float distance = min(captured.a, kProbeMaxDistance);
+                    distanceSum += distance * weight;
+                    distanceSquaredSum += distance * distance * weight;
+                    distanceWeight += weight;
+                }
+            }
+        }
+    }
+
+    // No blend against what the tile already holds. A probe is re-captured on a
+    // fixed cycle and its value only moves when the scene does, so in a static
+    // scene there is nothing to smooth; when the scene does move the update
+    // steps rather than eases, which is what the temporal phase is for.
+    if (writesIrradiance) {
+        vec3 irradiance = radianceWeight > 0.0 ? radianceSum / radianceWeight : vec3(0.0);
+        ivec2 target = probeTileOrigin(probeIndex, kProbeIrradianceResolution) +
+                       localTexel + ivec2(kProbeBorderTexels);
+        imageStore(uIrradianceAtlas, target, vec4(irradiance, 1.0));
+    }
+
+    float meanDistance = distanceWeight > 0.0 ? distanceSum / distanceWeight : kProbeMaxDistance;
+    float meanDistanceSquared =
+        distanceWeight > 0.0 ? distanceSquaredSum / distanceWeight : kProbeMaxDistance * kProbeMaxDistance;
+    ivec2 depthTarget =
+        probeTileOrigin(probeIndex, kProbeDepthResolution) + localTexel + ivec2(kProbeBorderTexels);
+    imageStore(uDepthAtlas, depthTarget, vec4(meanDistance, meanDistanceSquared, 0.0, 0.0));
+}

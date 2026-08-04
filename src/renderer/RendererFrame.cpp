@@ -1189,6 +1189,20 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         // depth the composite consumes, so it uses the jittered projection too.
         gtao_.uploadParams(frameIndex, view, frameJitteredProjection_, gtaoFrameCounter_++);
     }
+
+    // Latched here rather than recomputed at record time because the batch has
+    // to be chosen once: the graph declaration, the capture draws and the
+    // convolution all have to agree on which probes this frame is about, and
+    // beginCaptureBatch advances the round-robin cursor as a side effect.
+    frameProbeCaptureActive_ = isProbeCaptureActive();
+    if (frameProbeCaptureActive_) {
+        irradianceProbes_.beginCaptureBatch(static_cast<uint32_t>(giSettings_.probesPerFrame));
+        frameProbeCaptureActive_ = !irradianceProbes_.captureBatch().empty();
+    } else {
+        // Leaves the update pass with nothing to convolve, which is what makes
+        // it fall back to the fill.
+        irradianceProbes_.clearCaptureBatch();
+    }
 }
 
 // Called from drawFrame after command recording: both the object-data upload and
@@ -1220,6 +1234,8 @@ void Renderer::resetFrameStateForEmptyScene(uint32_t frameIndex)
     frameAsyncComputeActive_ = false;
     frameSsrActive_ = false;
     frameGtaoActive_ = false;
+    frameProbeCaptureActive_ = false;
+    irradianceProbes_.clearCaptureBatch();
     allDrawItems_.clear();
     visibleDrawItems_.clear();
     shadowDrawItems_.clear();

@@ -90,6 +90,10 @@ void clampRuntimeSettings(ToneMappingSettings& toneMapping,
     for (float& spacing : gi.gridSpacing) {
         spacing = std::clamp(spacing, 0.05f, renderer::kProbeMaxDistance);
     }
+    // Zero is a legal setting: it pauses capture without losing the cursor, so
+    // resuming continues round-robin rather than restarting. The upper bound is
+    // what the capture atlas is sized for.
+    gi.probesPerFrame = std::clamp(gi.probesPerFrame, 0, static_cast<int>(renderer::kMaxProbesPerFrame));
 
     csm.cascadeCount = std::clamp(csm.cascadeCount, 1U, renderer::kMaxShadowCascades);
     csm.lambda = std::clamp(csm.lambda, 0.0f, 1.0f);
@@ -335,6 +339,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
     if (const Json* gi = objectMember(json, "gi")) {
         readBool(*gi, "enabled", settings.gi.enabled);
         readBool(*gi, "debugPattern", settings.gi.debugPattern);
+        readInt(*gi, "probesPerFrame", settings.gi.probesPerFrame);
         readFloat(*gi, "gridOriginX", settings.gi.gridOrigin[0]);
         readFloat(*gi, "gridOriginY", settings.gi.gridOrigin[1]);
         readFloat(*gi, "gridOriginZ", settings.gi.gridOrigin[2]);
@@ -423,6 +428,7 @@ Json toJson(const RuntimeSettings& settings)
         {"gi",
          Json{{"enabled", settings.gi.enabled},
               {"debugPattern", settings.gi.debugPattern},
+              {"probesPerFrame", settings.gi.probesPerFrame},
               {"gridOriginX", settings.gi.gridOrigin[0]},
               {"gridOriginY", settings.gi.gridOrigin[1]},
               {"gridOriginZ", settings.gi.gridOrigin[2]},

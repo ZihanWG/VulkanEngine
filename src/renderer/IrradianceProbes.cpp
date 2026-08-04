@@ -1,5 +1,7 @@
 #include "renderer/IrradianceProbes.h"
 
+#include "renderer/PunctualShadowAtlas.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -212,6 +214,90 @@ glm::ivec2 probeBorderSource(int32_t x, int32_t y, uint32_t coreResolution)
     }
 
     return glm::ivec2{x, y};
+}
+
+glm::mat4 probeCaptureFaceViewProjection(const glm::vec3& probePosition, uint32_t face)
+{
+    return computePointShadowFaceViewProjection(probePosition, face, kProbeMaxDistance, kProbeCaptureNearPlane);
+}
+
+glm::vec3 probeCubeTexelDirection(uint32_t face, uint32_t x, uint32_t y, uint32_t resolution)
+{
+    const float size = static_cast<float>(std::max(resolution, 1u));
+    // Texel centre in the face's [-1, 1] plane. The 90-degree projection puts
+    // the face plane exactly one unit from the probe, so this doubles as the
+    // unnormalised direction's tangential components.
+    const float u = (static_cast<float>(x) + 0.5f) / size * 2.0f - 1.0f;
+    const float v = (static_cast<float>(y) + 0.5f) / size * 2.0f - 1.0f;
+
+    // The basis has to be the one glm::lookAt actually builds inside
+    // computePointShadowFaceViewProjection, or the convolution reads every texel
+    // as looking somewhere it does not -- and that fails smoothly, as lighting
+    // arriving from the wrong direction, rather than as anything obviously
+    // broken. Derived here to keep the shader mirror simple, and pinned to the
+    // matrix by a round-trip test rather than by this comment.
+    //
+    // The reference axis switch on near-vertical faces is shadowUpVector's, not
+    // a reinvention: lookAt degenerates when the view direction is parallel to
+    // the up vector, and both +Y and -Y fall back to the same +Z.
+    const glm::vec3 forward = pointShadowFaceDirection(face);
+    const glm::vec3 worldUp =
+        std::abs(forward.y) > 0.999f ? glm::vec3{0.0f, 0.0f, 1.0f} : glm::vec3{0.0f, 1.0f, 0.0f};
+    const glm::vec3 right = glm::normalize(glm::cross(forward, worldUp));
+    const glm::vec3 up = glm::cross(right, forward);
+
+    return glm::normalize(forward + right * u + up * v);
+}
+
+float probeCubeTexelSolidAngle(uint32_t x, uint32_t y, uint32_t resolution)
+{
+    const float size = static_cast<float>(std::max(resolution, 1u));
+    const float u = (static_cast<float>(x) + 0.5f) / size * 2.0f - 1.0f;
+    const float v = (static_cast<float>(y) + 0.5f) / size * 2.0f - 1.0f;
+
+    // Jacobian of the cube-face parameterisation: a texel of side 2/resolution
+    // in the face plane projects onto (1 + u^2 + v^2)^(3/2) less sphere the
+    // further it sits from the face centre.
+    const float denominator = 1.0f + u * u + v * v;
+    return (4.0f / (size * size)) / (denominator * std::sqrt(denominator));
+}
+
+glm::uvec2 probeCaptureTileOrigin(uint32_t slot, uint32_t face)
+{
+    // One row per probe slot, one column per face. Keeping a probe's six faces
+    // on one row is what lets the convolution walk them with a single row
+    // offset, and it makes the debug preview readable as one probe per line.
+    const uint32_t clampedSlot = std::min(slot, kMaxProbesPerFrame - 1);
+    const uint32_t clampedFace = std::min(face, kProbeCaptureFaceCount - 1);
+    return glm::uvec2{clampedFace * kProbeCaptureFaceResolution, clampedSlot * kProbeCaptureFaceResolution};
+}
+
+glm::uvec2 probeCaptureAtlasSize()
+{
+    return glm::uvec2{kProbeCaptureFaceCount * kProbeCaptureFaceResolution,
+                      kMaxProbesPerFrame * kProbeCaptureFaceResolution};
+}
+
+uint32_t probeUpdateBatch(uint32_t cursor, uint32_t probesPerFrame, std::vector<uint32_t>& outProbeIndices)
+{
+    outProbeIndices.clear();
+
+    // Clamped rather than asserted: the count is a live setting, and a frame
+    // that asks for more probes than exist should capture each one once rather
+    // than capture some of them twice into the same tile.
+    const uint32_t count = std::min({probesPerFrame, kMaxProbesPerFrame, kProbeCount});
+    if (count == 0) {
+        return cursor % kProbeCount;
+    }
+
+    uint32_t next = cursor % kProbeCount;
+    outProbeIndices.reserve(count);
+    for (uint32_t i = 0; i < count; ++i) {
+        outProbeIndices.push_back(next);
+        next = (next + 1) % kProbeCount;
+    }
+
+    return next;
 }
 
 } // namespace ve::renderer

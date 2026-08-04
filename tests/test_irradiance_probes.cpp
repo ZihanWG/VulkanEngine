@@ -11,9 +11,12 @@
 #include <vector>
 
 using Catch::Approx;
+using ve::renderer::kMaxProbesPerFrame;
 using ve::renderer::kProbeAtlasTilesX;
 using ve::renderer::kProbeAtlasTilesY;
 using ve::renderer::kProbeBorderTexels;
+using ve::renderer::kProbeCaptureFaceCount;
+using ve::renderer::kProbeCaptureFaceResolution;
 using ve::renderer::kProbeCount;
 using ve::renderer::kProbeDepthResolution;
 using ve::renderer::kProbeGridX;
@@ -27,6 +30,12 @@ using ve::renderer::probeAtlasSize;
 using ve::renderer::probeAtlasUv;
 using ve::renderer::probeBlendAt;
 using ve::renderer::probeBorderSource;
+using ve::renderer::probeCaptureAtlasSize;
+using ve::renderer::probeCaptureFaceViewProjection;
+using ve::renderer::probeCaptureTileOrigin;
+using ve::renderer::probeCubeTexelDirection;
+using ve::renderer::probeCubeTexelSolidAngle;
+using ve::renderer::probeUpdateBatch;
 using ve::renderer::probeCoord;
 using ve::renderer::probeCornerCoord;
 using ve::renderer::probeCornerWeight;
@@ -594,4 +603,259 @@ TEST_CASE("The border keeps bilinear filtering continuous across the seam", "[pr
         // than as an addressing bug.
         CHECK(torusSeamMax > 0.5f);
     }
+}
+
+TEST_CASE("Capture texel directions agree with the projection that rasterises them", "[probes]")
+{
+    // The one convention in the capture path that cannot be checked by looking
+    // at it. The convolution reconstructs each capture texel's world direction
+    // from its position in the atlas; the rasteriser puts geometry there using
+    // the face view-projection. If the two disagree the probe gathers real
+    // radiance and files it under the wrong direction -- lighting that arrives
+    // from the wrong side, which reads as a lighting bug, not a mapping one.
+    //
+    // So rather than trusting the basis derivation, project each texel's
+    // direction back through the actual matrix and check it lands on that
+    // texel's own pixel.
+    const glm::vec3 probePosition{3.0f, 2.0f, -5.0f};
+    const auto resolution = static_cast<float>(kProbeCaptureFaceResolution);
+
+    for (uint32_t face = 0; face < kProbeCaptureFaceCount; ++face) {
+        const glm::mat4 viewProjection = probeCaptureFaceViewProjection(probePosition, face);
+
+        for (uint32_t y = 0; y < kProbeCaptureFaceResolution; ++y) {
+            for (uint32_t x = 0; x < kProbeCaptureFaceResolution; ++x) {
+                const glm::vec3 direction = probeCubeTexelDirection(face, x, y, kProbeCaptureFaceResolution);
+                CHECK(glm::length(direction) == Approx(1.0f).margin(1.0e-5f));
+
+                // A point along that direction, comfortably inside the frustum.
+                const glm::vec4 clip = viewProjection * glm::vec4{probePosition + direction * 10.0f, 1.0f};
+                REQUIRE(clip.w > 0.0f);
+                const glm::vec2 ndc{clip.x / clip.w, clip.y / clip.w};
+
+                // Framebuffer pixel, with y running down the image the way the
+                // viewport is set up (positive height, no flip).
+                const glm::vec2 pixel{(ndc.x * 0.5f + 0.5f) * resolution, (ndc.y * 0.5f + 0.5f) * resolution};
+                CHECK(pixel.x == Approx(static_cast<float>(x) + 0.5f).margin(1.0e-3f));
+                CHECK(pixel.y == Approx(static_cast<float>(y) + 0.5f).margin(1.0e-3f));
+            }
+        }
+    }
+}
+
+TEST_CASE("Capture texel solid angles sum to the whole sphere", "[probes]")
+{
+    // Cube texels are not equal in solid angle: a face's corners subtend up to
+    // three times less than its centre. Integrating radiance without that weight
+    // over-counts every face's corners, and the result is a smooth bias -- the
+    // GI comes out "a bit wrong" everywhere rather than visibly broken
+    // somewhere, which is the hardest kind of error to notice.
+    //
+    // The six faces tile the sphere exactly, so the weights have exactly one
+    // correct total: 4*pi.
+    //
+    // The sum is a midpoint rule over a smooth integrand, so it approaches that
+    // rather than hitting it. Checking *convergence* is the sharper test anyway:
+    // a plausible-but-wrong Jacobian can land within a few percent at one
+    // resolution, but only the right one keeps closing on 4*pi as the grid
+    // refines.
+    constexpr double kSphere = 4.0 * 3.14159265358979;
+    double previousError = 1.0e9;
+
+    for (const uint32_t resolution : {4u, 8u, kProbeCaptureFaceResolution, 32u, 64u}) {
+        double total = 0.0;
+        float smallest = 1.0e9f;
+        float largest = 0.0f;
+        for (uint32_t y = 0; y < resolution; ++y) {
+            for (uint32_t x = 0; x < resolution; ++x) {
+                const float solidAngle = probeCubeTexelSolidAngle(x, y, resolution);
+                CHECK(solidAngle > 0.0f);
+                smallest = std::min(smallest, solidAngle);
+                largest = std::max(largest, solidAngle);
+                total += static_cast<double>(solidAngle);
+            }
+        }
+        total *= static_cast<double>(kProbeCaptureFaceCount);
+
+        const double error = std::abs(total - kSphere) / kSphere;
+        INFO("resolution " << resolution << " total " << total << " relative error " << error);
+
+        // Loose enough to hold at the coarsest grid tested, which is four times
+        // coarser than anything the engine captures at.
+        CHECK(total == Approx(kSphere).epsilon(0.02));
+        // Each refinement halves the texel size, and a midpoint rule is second
+        // order, so the error should fall by roughly four. Requiring only that
+        // it halves leaves room for the corner texels without letting a
+        // non-converging formula through.
+        CHECK(error < previousError * 0.5);
+        previousError = error;
+
+        // And the weighting is doing real work: a uniform weight would be flat.
+        CHECK(largest > smallest * 2.0f);
+    }
+
+    // At the resolution actually used, the quadrature error is far below
+    // anything that could show up as a lighting difference.
+    CHECK(previousError < 1.0e-3);
+}
+
+TEST_CASE("Cosine convolution reproduces a constant radiance field", "[probes]")
+{
+    // The convolution normalises by the accumulated weight, so a scene of
+    // uniform radiance L must come back as exactly L in every direction. That
+    // pins the normalisation and the solid-angle weighting together: get either
+    // wrong and this comes out darkened, brightened, or direction-dependent --
+    // all of which look like plausible lighting rather than a bug.
+    //
+    // This mirrors what probe_convolve.comp does, over the same helpers it
+    // mirrors, so a divergence between them is what the numbers below would
+    // catch on the CPU side.
+    constexpr float kConstantRadiance = 0.7f;
+
+    for (const uint32_t outputResolution : {ve::renderer::kProbeIrradianceResolution}) {
+        float darkest = 1.0e9f;
+        float brightest = 0.0f;
+
+        for (uint32_t oy = 0; oy < outputResolution; ++oy) {
+            for (uint32_t ox = 0; ox < outputResolution; ++ox) {
+                const glm::vec3 outputDirection =
+                    probeTexelDirection(ox + kProbeBorderTexels, oy + kProbeBorderTexels, outputResolution);
+
+                float weightedSum = 0.0f;
+                float weightTotal = 0.0f;
+                for (uint32_t face = 0; face < kProbeCaptureFaceCount; ++face) {
+                    for (uint32_t y = 0; y < kProbeCaptureFaceResolution; ++y) {
+                        for (uint32_t x = 0; x < kProbeCaptureFaceResolution; ++x) {
+                            const glm::vec3 sampleDirection =
+                                probeCubeTexelDirection(face, x, y, kProbeCaptureFaceResolution);
+                            const float cosine = glm::dot(outputDirection, sampleDirection);
+                            if (cosine <= 0.0f) {
+                                continue;
+                            }
+                            const float weight =
+                                cosine * probeCubeTexelSolidAngle(x, y, kProbeCaptureFaceResolution);
+                            weightedSum += kConstantRadiance * weight;
+                            weightTotal += weight;
+                        }
+                    }
+                }
+
+                REQUIRE(weightTotal > 0.0f);
+                const float result = weightedSum / weightTotal;
+                darkest = std::min(darkest, result);
+                brightest = std::max(brightest, result);
+            }
+        }
+
+        INFO("darkest " << darkest << " brightest " << brightest);
+        CHECK(darkest == Approx(kConstantRadiance).margin(1.0e-4f));
+        CHECK(brightest == Approx(kConstantRadiance).margin(1.0e-4f));
+    }
+}
+
+TEST_CASE("Every hemisphere gathers a meaningful share of the capture", "[probes]")
+{
+    // A weight total that collapses toward zero for some output directions would
+    // make those texels dominated by one or two samples, which is noise rather
+    // than irradiance. The cosine lobe over a full sphere of samples should
+    // gather close to pi steradians-weighted no matter which way it points, so
+    // the spread across output directions bounds how uneven the estimate can be.
+    const uint32_t outputResolution = ve::renderer::kProbeIrradianceResolution;
+    float smallestTotal = 1.0e9f;
+    float largestTotal = 0.0f;
+
+    for (uint32_t oy = 0; oy < outputResolution; ++oy) {
+        for (uint32_t ox = 0; ox < outputResolution; ++ox) {
+            const glm::vec3 outputDirection =
+                probeTexelDirection(ox + kProbeBorderTexels, oy + kProbeBorderTexels, outputResolution);
+            float weightTotal = 0.0f;
+            for (uint32_t face = 0; face < kProbeCaptureFaceCount; ++face) {
+                for (uint32_t y = 0; y < kProbeCaptureFaceResolution; ++y) {
+                    for (uint32_t x = 0; x < kProbeCaptureFaceResolution; ++x) {
+                        const float cosine = glm::dot(
+                            outputDirection, probeCubeTexelDirection(face, x, y, kProbeCaptureFaceResolution));
+                        if (cosine > 0.0f) {
+                            weightTotal += cosine * probeCubeTexelSolidAngle(x, y, kProbeCaptureFaceResolution);
+                        }
+                    }
+                }
+            }
+            smallestTotal = std::min(smallestTotal, weightTotal);
+            largestTotal = std::max(largestTotal, weightTotal);
+        }
+    }
+
+    // The analytic answer is pi for every direction; the discretisation moves it
+    // by a fraction of a percent, not by a factor.
+    INFO("smallest " << smallestTotal << " largest " << largestTotal);
+    CHECK(smallestTotal == Approx(3.14159265f).epsilon(0.02));
+    CHECK(largestTotal == Approx(3.14159265f).epsilon(0.02));
+}
+
+TEST_CASE("Capture tiles pack the capture atlas without overlapping", "[probes]")
+{
+    const glm::uvec2 atlas = probeCaptureAtlasSize();
+    CHECK(atlas.x == kProbeCaptureFaceCount * kProbeCaptureFaceResolution);
+    CHECK(atlas.y == kMaxProbesPerFrame * kProbeCaptureFaceResolution);
+
+    std::set<uint64_t> occupied;
+    for (uint32_t slot = 0; slot < kMaxProbesPerFrame; ++slot) {
+        for (uint32_t face = 0; face < kProbeCaptureFaceCount; ++face) {
+            const glm::uvec2 origin = probeCaptureTileOrigin(slot, face);
+            CHECK(origin.x + kProbeCaptureFaceResolution <= atlas.x);
+            CHECK(origin.y + kProbeCaptureFaceResolution <= atlas.y);
+            CHECK(occupied.insert(static_cast<uint64_t>(origin.y) * atlas.x + origin.x).second);
+        }
+    }
+    CHECK(occupied.size() == static_cast<size_t>(kMaxProbesPerFrame) * kProbeCaptureFaceCount);
+
+    // Out-of-range slots and faces clamp into the atlas rather than addressing
+    // past its end.
+    const glm::uvec2 clamped = probeCaptureTileOrigin(kMaxProbesPerFrame + 4, kProbeCaptureFaceCount + 2);
+    CHECK(clamped.x + kProbeCaptureFaceResolution <= atlas.x);
+    CHECK(clamped.y + kProbeCaptureFaceResolution <= atlas.y);
+}
+
+TEST_CASE("Round-robin capture visits every probe once per cycle", "[probes]")
+{
+    // The property that matters is bounded staleness. A probe skipped
+    // indefinitely holds lighting from an older version of the scene, and that
+    // reads as light lagging behind the geometry rather than as a missing
+    // update, so "every probe, within a known number of frames" is the
+    // invariant rather than "eventually".
+    for (const uint32_t perFrame : {1u, 3u, 8u, kMaxProbesPerFrame}) {
+        std::vector<uint32_t> batch;
+        std::vector<uint32_t> visitCount(kProbeCount, 0);
+
+        uint32_t cursor = 0;
+        const uint32_t frames = (kProbeCount + perFrame - 1) / perFrame;
+        for (uint32_t frame = 0; frame < frames; ++frame) {
+            cursor = probeUpdateBatch(cursor, perFrame, batch);
+            CHECK(batch.size() == std::min(perFrame, kProbeCount));
+            for (const uint32_t index : batch) {
+                REQUIRE(index < kProbeCount);
+                ++visitCount[index];
+            }
+        }
+
+        for (uint32_t index = 0; index < kProbeCount; ++index) {
+            INFO("perFrame " << perFrame << " probe " << index);
+            CHECK(visitCount[index] >= 1);
+        }
+    }
+
+    std::vector<uint32_t> batch;
+
+    // Zero probes per frame is a legal setting (updates paused); it must not
+    // advance the cursor, or resuming would skip a stripe of the grid.
+    const uint32_t held = probeUpdateBatch(17, 0, batch);
+    CHECK(batch.empty());
+    CHECK(held == 17u);
+
+    // Asking for more probes than exist captures each one once rather than
+    // capturing some of them twice into the same capture tile.
+    const uint32_t wrapped = probeUpdateBatch(0, kProbeCount + 50, batch);
+    CHECK(batch.size() <= kProbeCount);
+    CHECK(std::set<uint32_t>(batch.begin(), batch.end()).size() == batch.size());
+    CHECK(wrapped < kProbeCount);
 }

@@ -160,11 +160,16 @@ struct GiSettings {
     // header stays free of renderer and glm types, like every other struct here.
     float gridOrigin[3] = {-14.0f, 0.5f, -14.0f};
     float gridSpacing[3] = {4.0f, 3.0f, 4.0f};
+    // Probes captured per frame, round robin. This is the whole cost control:
+    // the grid is 256 probes and each capture is six small rasterisations plus a
+    // convolution, so this sets both the per-frame cost and how many frames the
+    // grid takes to catch up with a change in the scene.
+    int probesPerFrame = 4;
     // Fills the atlases with the direction each texel stands for instead of
-    // captured radiance. The only way to see whether probe *storage* is correct
-    // before anything captures into it, and a standing check on the octahedral
-    // border afterwards.
-    bool debugPattern = true;
+    // captured radiance. The way to see whether probe *storage* is correct
+    // independently of whether *capture* is, and a standing check on the
+    // octahedral border.
+    bool debugPattern = false;
 };
 
 struct RuntimeSettings {

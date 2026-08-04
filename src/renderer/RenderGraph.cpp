@@ -1,5 +1,6 @@
 #include "renderer/RenderGraph.h"
 
+#include "renderer/IrradianceProbes.h"
 #include "rhi/VulkanShadowMap.h"
 #include "rhi/VulkanSwapchain.h"
 
@@ -221,6 +222,8 @@ const char* renderPassTypeName(RenderPassType type)
         return "Shadow GPU Culling";
     case RenderPassType::VolumetricFog:
         return "Volumetric Fog";
+    case RenderPassType::ProbeCapture:
+        return "Probe Capture";
     case RenderPassType::IrradianceProbes:
         return "Irradiance Probes";
     case RenderPassType::MainGpuCulling:
@@ -529,6 +532,12 @@ void RenderGraph::createTransientFrameTextures()
     // treat their contents as discardable.
     frame_.probeIrradianceAtlas = importTexture(frame_.resources.probeIrradianceAtlas);
     frame_.probeDepthAtlas = importTexture(frame_.resources.probeDepthAtlas);
+    // The capture targets are scratch -- overwritten every frame that captures --
+    // but still imported rather than transient: they are owned by
+    // IrradianceProbeVolume, and the graph only aliases memory for the resources
+    // it allocates itself.
+    frame_.probeCaptureAtlas = importTexture(frame_.resources.probeCaptureAtlas);
+    frame_.probeCaptureDepth = importTexture(frame_.resources.probeCaptureDepth);
 }
 
 void RenderGraph::importFrameBuffers()
@@ -669,6 +678,81 @@ void RenderGraph::endVolumetricFogPass()
         throw std::logic_error("RenderGraph::endVolumetricFogPass called without an active fog pass.");
     }
 
+    activePass_ = ActivePass::None;
+}
+
+void RenderGraph::beginProbeCapturePass()
+{
+    requireFrameActive("RenderGraph::beginProbeCapturePass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginProbeCapturePass called while another pass is active.");
+    }
+    if (!beginDeclaredPass(frame_.passIndices.probeCapture)) {
+        throw std::logic_error(
+            "RenderGraph::beginProbeCapturePass was culled but the renderer attempted to record it.");
+    }
+
+    const TextureResource& colorResource = textures_.at(frame_.probeCaptureAtlas.index);
+    const TextureResource& depthResource = textures_.at(frame_.probeCaptureDepth.index);
+
+    // Cleared, not loaded. Unlike the punctual shadow atlas there is nothing to
+    // preserve: the capture atlas holds only the probes being captured right
+    // now, and a tile whose face culled every draw item has to read as empty sky
+    // rather than as whatever probe used that row last frame.
+    // The clear is what a probe sees in directions with no geometry, so it is
+    // the sky term rather than a blank. Black here would be a real error, not a
+    // cosmetic one: outdoors most of a probe's hemisphere is sky, and treating
+    // it as unlit makes every probe far too dark while still looking like
+    // plausible -- just moody -- indirect light.
+    //
+    // The caller supplies it; see renderGraphFrameResources.
+    VkClearValue colorClear = colorResource.desc.clearValue;
+    // Alpha is distance, so "nothing here" is the far bound rather than zero --
+    // a zero would tell the visibility test every direction is blocked at the
+    // probe itself.
+    colorClear.color.float32[3] = kProbeMaxDistance;
+
+    VkClearValue depthClear{};
+    depthClear.depthStencil.depth = 1.0f;
+    depthClear.depthStencil.stencil = 0;
+
+    VkRenderingAttachmentInfo colorAttachment{};
+    colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAttachment.imageView = colorResource.imageView;
+    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAttachment.clearValue = colorClear;
+
+    VkRenderingAttachmentInfo depthAttachment{};
+    depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    depthAttachment.imageView = depthResource.imageView;
+    depthAttachment.imageLayout = depthAttachmentLayout(VK_IMAGE_ASPECT_DEPTH_BIT);
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAttachment.clearValue = depthClear;
+
+    VkRenderingInfo renderingInfo{};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea.offset = {0, 0};
+    renderingInfo.renderArea.extent = colorResource.desc.extent;
+    renderingInfo.layerCount = 1;
+    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.pColorAttachments = &colorAttachment;
+    renderingInfo.pDepthAttachment = &depthAttachment;
+
+    vkCmdBeginRendering(frame_.commandBuffer, &renderingInfo);
+    activePass_ = ActivePass::ProbeCapture;
+}
+
+void RenderGraph::endProbeCapturePass()
+{
+    requireFrameActive("RenderGraph::endProbeCapturePass");
+    if (activePass_ != ActivePass::ProbeCapture) {
+        throw std::logic_error("RenderGraph::endProbeCapturePass called without an active probe capture pass.");
+    }
+
+    vkCmdEndRendering(frame_.commandBuffer);
     activePass_ = ActivePass::None;
 }
 
@@ -1620,6 +1704,26 @@ void RenderGraph::declareGeometryPasses()
             });
     }
 
+    if (frame_.resources.probeCaptureEnabled && frame_.probeCaptureAtlas.valid() &&
+        frame_.probeCaptureDepth.valid()) {
+        frame_.passIndices.probeCapture = addPass(
+            "ProbeCapture",
+            RenderPassType::ProbeCapture,
+            RenderPassExecutionType::Graphics,
+            false,
+            [this](RenderGraphBuilder& builder) {
+                builder.readTexture(frame_.shadowMapDepth,
+                                    RGAccess::ShaderRead,
+                                    "Samples the cascaded shadow map so captured radiance is shadowed.");
+                builder.writeTexture(frame_.probeCaptureAtlas,
+                                     RGAccess::ColorAttachmentWrite,
+                                     "Writes radiance and distance for every face of this frame's probes.");
+                builder.writeTexture(frame_.probeCaptureDepth,
+                                     RGAccess::DepthStencilAttachmentWrite,
+                                     "Resolves which surface each capture texel sees.");
+            });
+    }
+
     if (frame_.resources.irradianceProbeUpdateEnabled && frame_.probeIrradianceAtlas.valid() &&
         frame_.probeDepthAtlas.valid()) {
         frame_.passIndices.irradianceProbes = addPass(
@@ -1645,6 +1749,14 @@ void RenderGraph::declareGeometryPasses()
                 builder.readWriteTexture(frame_.probeDepthAtlas,
                                          RGAccess::StorageImageReadWrite,
                                          "Writes probe visibility tiles and wraps their octahedral border.");
+                if (frame_.resources.probeCaptureEnabled && frame_.probeCaptureAtlas.valid()) {
+                    // Moves the capture atlas out of the colour-attachment
+                    // layout the pass above left it in and into the one the
+                    // convolution reads it as.
+                    builder.readTexture(frame_.probeCaptureAtlas,
+                                        RGAccess::StorageImageRead,
+                                        "Reads this frame's captured cube faces to convolve into probe tiles.");
+                }
             });
     }
 

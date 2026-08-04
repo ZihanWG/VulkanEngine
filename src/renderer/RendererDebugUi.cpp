@@ -255,6 +255,7 @@ void Renderer::drawVolumetricFogDebugUi()
     ImGui::TextDisabled("Directional light only; punctual light shafts are not wired up yet.");
 }
 
+
 void Renderer::drawIrradianceProbesDebugUi()
 {
     if (!ImGui::CollapsingHeader("Global Illumination (Irradiance Probes)", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -267,9 +268,19 @@ void Renderer::drawIrradianceProbesDebugUi()
     }
 
     ImGui::Checkbox("Enable irradiance probes", &giSettings_.enabled);
-    ImGui::SetItemTooltip("Off by default. The atlases are still built once at startup so nothing\n"
+    ImGui::SetItemTooltip("Off by default. The atlases are still seeded once at startup so nothing\n"
                           "ever samples them out of an undefined layout; this controls whether\n"
-                          "they are rebuilt each frame.");
+                          "probes are captured and convolved each frame.");
+
+    ImGui::BeginDisabled(!giSettings_.enabled);
+    ImGui::SliderInt("Probes per frame",
+                     &giSettings_.probesPerFrame,
+                     0,
+                     static_cast<int>(renderer::kMaxProbesPerFrame));
+    ImGui::SetItemTooltip("Round robin over the grid. This is the whole cost control: raising it\n"
+                          "makes the grid catch up with a lighting change sooner and makes every\n"
+                          "frame more expensive. Zero pauses capture without losing the cursor.");
+    ImGui::EndDisabled();
 
     if (ImGui::Checkbox("Debug pattern", &giSettings_.debugPattern)) {
         // Updates are off by default, so without this the atlases would keep
@@ -302,6 +313,27 @@ void Renderer::drawIrradianceProbesDebugUi()
                         renderer::kProbeBorderTexels,
                         renderer::kProbeDepthResolution,
                         renderer::kProbeBorderTexels);
+    if (!irradianceProbes_.convolveAvailable() || probeCapturePipeline_.pipeline() == VK_NULL_HANDLE) {
+        ImGui::TextDisabled("Capture unavailable; probes hold the debug pattern. See the startup log.");
+    } else {
+        const int perFrame = std::max(giSettings_.probesPerFrame, 1);
+        ImGui::TextDisabled("Capture: %u faces per probe at %ux%u, %d probes per frame -> full grid every "
+                            "%d frames.",
+                            renderer::kProbeCaptureFaceCount,
+                            renderer::kProbeCaptureFaceResolution,
+                            renderer::kProbeCaptureFaceResolution,
+                            giSettings_.probesPerFrame,
+                            (static_cast<int>(renderer::kProbeCount) + perFrame - 1) / perFrame);
+        // Zero draws with a non-empty batch is the useful diagnostic: it
+        // separates "probes captured nothing" from "probes were never
+        // captured", which look identical in the atlas.
+        ImGui::TextDisabled("Capture draws last frame: %u. Cursor at probe %u of %u; %llu captured so far.",
+                            probeCaptureDrawsRecorded_,
+                            irradianceProbes_.updateCursor(),
+                            renderer::kProbeCount,
+                            static_cast<unsigned long long>(irradianceProbes_.capturedProbeCount()));
+    }
+
     ImGui::TextDisabled("Nothing samples these atlases yet; the shading lookup is a later phase.");
 
     ImGui::SeparatorText("Atlas previews");

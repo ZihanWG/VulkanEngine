@@ -173,9 +173,12 @@ Renderer::Renderer(Window& window) : window_(window)
     // Created once and kept across swapchain recreation: the probe atlases are
     // sized by the probe grid, not the window, and their contents persist across
     // frames by design.
-    irradianceProbes_.create(
-        context_, shaderPath("probe_debug_fill.comp.spv"), shaderPath("probe_border.comp.spv"));
+    irradianceProbes_.create(context_,
+                             shaderPath("probe_debug_fill.comp.spv"),
+                             shaderPath("probe_border.comp.spv"),
+                             shaderPath("probe_convolve.comp.spv"));
     irradianceProbes_.setBounds(giGridBounds());
+    createProbeCapturePipeline();
     updateDemoLights(0.0f);
     // Prefer a rigged glTF if one is present; otherwise fall back to the
     // self-contained procedural bone chain.
