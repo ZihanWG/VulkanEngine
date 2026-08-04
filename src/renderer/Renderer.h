@@ -9,6 +9,7 @@
 #include "renderer/Camera.h"
 #include "renderer/CascadeMath.h"
 #include "renderer/ClusteredLighting.h"
+#include "renderer/IrradianceProbeVolume.h"
 #include "renderer/PunctualShadows.h"
 #include "renderer/VolumetricFogPass.h"
 #include "renderer/DepthPyramid.h"
@@ -441,6 +442,17 @@ private:
     {
         return volumetricFog_.available() && fogSettings_.enabled && fogSettings_.density > 0.0f;
     }
+    // The probe grid's world placement, as the math header wants it. GiSettings
+    // stores plain floats so RuntimeSettings.h stays free of renderer types;
+    // this is the one place the two representations meet.
+    [[nodiscard]] renderer::ProbeGridBounds giGridBounds() const;
+    // Whether the probe atlases have to be (re)built this frame. True on the
+    // first frame regardless of the toggle: the main pass declares a read on the
+    // atlases unconditionally, so they must never be sampled out of UNDEFINED.
+    [[nodiscard]] bool isIrradianceProbeUpdateActive() const
+    {
+        return irradianceProbes_.needsUpdate(giSettings_.enabled);
+    }
     // Records the punctual shadow atlas pass: one dynamic-rendering pass over
     // the whole atlas, with a viewport/scissor per allocated slot.
     void recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuCullActive);
@@ -465,6 +477,7 @@ private:
     void drawBloomDebugUi();
     void drawSsaoDebugUi();
     void drawVolumetricFogDebugUi();
+    void drawIrradianceProbesDebugUi();
     void drawShadowsDebugUi();
     void drawLightsDebugUi();
     void drawSkeletalAnimationDebugUi();
@@ -602,6 +615,10 @@ private:
     // has to be recorded before that pass and after the CSM cascades it reads.
     renderer::VolumetricFogPass volumetricFog_;
     renderer::FogSettings fogSettings_{};
+    // Irradiance-probe GI. Owns the two octahedral probe atlases; the update
+    // compute pass runs before the main HDR pass, which declares a read on both
+    // atlases whether or not any probe updated this frame.
+    renderer::IrradianceProbeVolume irradianceProbes_;
     renderer::SkinnedMesh skinnedMesh_;
     rhi::VulkanDescriptorPool materialDescriptorPool_;
     rhi::VulkanDescriptorPool skyboxDescriptorPool_;
@@ -653,6 +670,7 @@ private:
     // uploaded in GpuCullFrameParams::lodSettings. renderer::MeshLod.h holds the
     // unit-tested reference copy of the selection math.
     LodSettings lodSettings_{};
+    GiSettings giSettings_{};
     // Flat per-frame LOD table uploaded to the cull pass, plus each draw item's
     // (base, count) range into it. Rebuilt every frame alongside the cull input
     // because scene edits add and remove meshes; deduped by mesh so a mesh's

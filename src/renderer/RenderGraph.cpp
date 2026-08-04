@@ -219,6 +219,10 @@ const char* renderPassTypeName(RenderPassType type)
         return "Shadow";
     case RenderPassType::ShadowGpuCulling:
         return "Shadow GPU Culling";
+    case RenderPassType::VolumetricFog:
+        return "Volumetric Fog";
+    case RenderPassType::IrradianceProbes:
+        return "Irradiance Probes";
     case RenderPassType::MainGpuCulling:
         return "Main GPU Culling";
     case RenderPassType::DepthPyramid:
@@ -520,6 +524,11 @@ void RenderGraph::createTransientFrameTextures()
         }
     }
     frame_.depthPyramid = importTexture(frame_.resources.depthPyramid);
+    // Imported rather than transient: the probe atlases persist across frames --
+    // that is the point of amortising probe updates -- so the graph must not
+    // treat their contents as discardable.
+    frame_.probeIrradianceAtlas = importTexture(frame_.resources.probeIrradianceAtlas);
+    frame_.probeDepthAtlas = importTexture(frame_.resources.probeDepthAtlas);
 }
 
 void RenderGraph::importFrameBuffers()
@@ -658,6 +667,30 @@ void RenderGraph::endVolumetricFogPass()
     requireFrameActive("RenderGraph::endVolumetricFogPass");
     if (activePass_ != ActivePass::VolumetricFog) {
         throw std::logic_error("RenderGraph::endVolumetricFogPass called without an active fog pass.");
+    }
+
+    activePass_ = ActivePass::None;
+}
+
+void RenderGraph::beginIrradianceProbePass()
+{
+    requireFrameActive("RenderGraph::beginIrradianceProbePass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginIrradianceProbePass called while another pass is active.");
+    }
+    if (!beginDeclaredPass(frame_.passIndices.irradianceProbes)) {
+        throw std::logic_error(
+            "RenderGraph::beginIrradianceProbePass was culled but the renderer attempted to record it.");
+    }
+
+    activePass_ = ActivePass::IrradianceProbes;
+}
+
+void RenderGraph::endIrradianceProbePass()
+{
+    requireFrameActive("RenderGraph::endIrradianceProbePass");
+    if (activePass_ != ActivePass::IrradianceProbes) {
+        throw std::logic_error("RenderGraph::endIrradianceProbePass called without an active probe pass.");
     }
 
     activePass_ = ActivePass::None;
@@ -1587,6 +1620,34 @@ void RenderGraph::declareGeometryPasses()
             });
     }
 
+    if (frame_.resources.irradianceProbeUpdateEnabled && frame_.probeIrradianceAtlas.valid() &&
+        frame_.probeDepthAtlas.valid()) {
+        frame_.passIndices.irradianceProbes = addPass(
+            "IrradianceProbeUpdate",
+            RenderPassType::IrradianceProbes,
+            RenderPassExecutionType::Compute,
+            // Side effect, even though both atlases are graph resources with a
+            // declared reader. The atlases persist across frames by design, so
+            // the pass's real consumer is the *next* frame's update, which
+            // liveness analysis cannot see. Without this the pass survives only
+            // because the main pass declares a read it does not yet use, and the
+            // day that read is conditioned or removed the pass is culled while
+            // the renderer still tries to record it -- which throws rather than
+            // degrades.
+            true,
+            [this](RenderGraphBuilder& builder) {
+                // Read-write, not write: the border dispatch copies core texels
+                // the fill dispatch produced, and later phases blend new radiance
+                // against what the atlas already holds.
+                builder.readWriteTexture(frame_.probeIrradianceAtlas,
+                                         RGAccess::StorageImageReadWrite,
+                                         "Writes probe irradiance tiles and wraps their octahedral border.");
+                builder.readWriteTexture(frame_.probeDepthAtlas,
+                                         RGAccess::StorageImageReadWrite,
+                                         "Writes probe visibility tiles and wraps their octahedral border.");
+            });
+    }
+
     frame_.passIndices.mainGpuCulling = addPass(
         "MainGpuCullingPass",
         RenderPassType::MainGpuCulling,
@@ -1626,6 +1687,19 @@ void RenderGraph::declareGeometryPasses()
                 builder.readTexture(frame_.punctualShadowAtlasDepth,
                                     RGAccess::ShaderRead,
                                     "Samples the punctual shadow atlas for spot-light visibility.");
+            }
+            if (frame_.probeIrradianceAtlas.valid() && frame_.probeDepthAtlas.valid()) {
+                // Same asymmetry as the punctual atlas above, for the same
+                // reason: declared whenever the atlases exist rather than only
+                // when probes updated, so they always reach a sampled layout.
+                // Nothing samples them until the shading phase lands; the
+                // declaration is what keeps them out of UNDEFINED until then.
+                builder.readTexture(frame_.probeIrradianceAtlas,
+                                    RGAccess::ShaderRead,
+                                    "Samples probe irradiance for indirect diffuse.");
+                builder.readTexture(frame_.probeDepthAtlas,
+                                    RGAccess::ShaderRead,
+                                    "Samples probe visibility to reject leaked probe contributions.");
             }
             builder.writeTexture(frame_.sceneColor,
                                  RGAccess::ColorAttachmentWrite,

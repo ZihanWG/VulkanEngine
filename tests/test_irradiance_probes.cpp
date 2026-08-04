@@ -5,23 +5,36 @@
 
 #include <glm/glm.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <set>
+#include <vector>
 
 using Catch::Approx;
+using ve::renderer::kProbeAtlasTilesX;
+using ve::renderer::kProbeAtlasTilesY;
+using ve::renderer::kProbeBorderTexels;
 using ve::renderer::kProbeCount;
+using ve::renderer::kProbeDepthResolution;
 using ve::renderer::kProbeGridX;
 using ve::renderer::kProbeGridY;
 using ve::renderer::kProbeGridZ;
+using ve::renderer::kProbeIrradianceResolution;
 using ve::renderer::octahedralDecode;
 using ve::renderer::octahedralEncode;
 using ve::renderer::ProbeBlend;
+using ve::renderer::probeAtlasSize;
+using ve::renderer::probeAtlasUv;
 using ve::renderer::probeBlendAt;
+using ve::renderer::probeBorderSource;
 using ve::renderer::probeCoord;
 using ve::renderer::probeCornerCoord;
 using ve::renderer::probeCornerWeight;
 using ve::renderer::ProbeGridBounds;
 using ve::renderer::probeIndex;
+using ve::renderer::probeTexelDirection;
+using ve::renderer::probeTileCoord;
+using ve::renderer::probeTileOrigin;
 using ve::renderer::probeWorldPosition;
 
 namespace {
@@ -281,4 +294,304 @@ TEST_CASE("Points outside the grid clamp instead of extrapolating", "[probes]")
     const ProbeBlend blend = probeBlendAt(glm::vec3{1.0f, 2.0f, 3.0f}, degenerate);
     CHECK(std::isfinite(blend.fraction.x));
     CHECK(blend.baseCoord.x < kProbeGridX);
+}
+
+namespace {
+
+// One probe's tile, holding a direction per texel. Directions are the sharpest
+// test signal available: they are what the octahedral square actually
+// parameterises, so a border texel copied from the wrong place points somewhere
+// visibly else rather than merely being slightly off.
+struct ProbeTile {
+    uint32_t core = 0;
+    uint32_t size = 0;
+    std::vector<glm::vec3> texels;
+
+    [[nodiscard]] glm::vec3 at(int32_t x, int32_t y) const
+    {
+        const int32_t clampedX = std::clamp(x, 0, static_cast<int32_t>(size) - 1);
+        const int32_t clampedY = std::clamp(y, 0, static_cast<int32_t>(size) - 1);
+        return texels[static_cast<size_t>(clampedY) * size + static_cast<size_t>(clampedX)];
+    }
+};
+
+// The rule under test, plus the two ways of getting it wrong that a reader would
+// actually reach for.
+enum class BorderRule {
+    // What probeBorderSource implements.
+    Octahedral,
+    // A border treated as padding. Costs half a texel of bias at every edge --
+    // small, but it is the difference between filtering and not filtering there.
+    ClampToEdge,
+    // The seam wrapped the way an equirectangular map wraps: off the left edge,
+    // on at the right. Plausible, and wrong by most of a hemisphere, because the
+    // octahedral square folds back onto its *own* edge rather than the opposite
+    // one.
+    TorusWrap
+};
+
+ProbeTile makeProbeTile(uint32_t core, BorderRule rule)
+{
+    ProbeTile tile{};
+    tile.core = core;
+    tile.size = core + 2 * kProbeBorderTexels;
+    tile.texels.resize(static_cast<size_t>(tile.size) * tile.size);
+
+    const auto border = static_cast<int32_t>(kProbeBorderTexels);
+    const auto last = static_cast<int32_t>(core + kProbeBorderTexels - 1);
+    const auto size = static_cast<int32_t>(tile.size);
+
+    for (int32_t y = 0; y < size; ++y) {
+        for (int32_t x = 0; x < size; ++x) {
+            glm::ivec2 source{x, y};
+            switch (rule) {
+            case BorderRule::Octahedral:
+                source = probeBorderSource(x, y, core);
+                break;
+            case BorderRule::ClampToEdge:
+                source = glm::ivec2{std::clamp(x, border, last), std::clamp(y, border, last)};
+                break;
+            case BorderRule::TorusWrap:
+                source = glm::ivec2{x < border ? last : (x > last ? border : x),
+                                    y < border ? last : (y > last ? border : y)};
+                break;
+            }
+            tile.texels[static_cast<size_t>(y) * tile.size + static_cast<size_t>(x)] =
+                probeTexelDirection(static_cast<uint32_t>(source.x), static_cast<uint32_t>(source.y), core);
+        }
+    }
+    return tile;
+}
+
+// The filtering the GPU would do: texel centres at (i + 0.5), so a tap at pixel
+// coordinate p blends the texels straddling p - 0.5.
+glm::vec3 sampleBilinear(const ProbeTile& tile, const glm::vec2& pixel)
+{
+    const glm::vec2 shifted = pixel - 0.5f;
+    const float baseX = std::floor(shifted.x);
+    const float baseY = std::floor(shifted.y);
+    const float fractionX = shifted.x - baseX;
+    const float fractionY = shifted.y - baseY;
+
+    const auto x0 = static_cast<int32_t>(baseX);
+    const auto y0 = static_cast<int32_t>(baseY);
+
+    const glm::vec3 top = glm::mix(tile.at(x0, y0), tile.at(x0 + 1, y0), fractionX);
+    const glm::vec3 bottom = glm::mix(tile.at(x0, y0 + 1), tile.at(x0 + 1, y0 + 1), fractionX);
+    return glm::mix(top, bottom, fractionY);
+}
+
+// Angle between the filtered direction and the one it should reconstruct.
+float reconstructionError(const ProbeTile& tile, const glm::vec3& direction)
+{
+    // Probe 0's tile starts at the atlas origin, so the atlas UV scales straight
+    // back into tile-local pixels.
+    const glm::vec2 uv = probeAtlasUv(0, direction, tile.core);
+    const glm::vec2 pixel = uv * glm::vec2{probeAtlasSize(tile.core)};
+
+    const glm::vec3 filtered = sampleBilinear(tile, pixel);
+    if (glm::length(filtered) <= 0.0f) {
+        return 3.14159265f;
+    }
+    return std::acos(std::clamp(glm::dot(glm::normalize(filtered), direction), -1.0f, 1.0f));
+}
+
+// A direction is "on the seam" when its tap straddles the square's boundary --
+// exactly the taps that reach a border texel.
+bool onSeam(const glm::vec3& direction, uint32_t core)
+{
+    const glm::vec2 octant = octahedralEncode(direction) * static_cast<float>(core);
+    return octant.x < 0.5f || octant.x > static_cast<float>(core) - 0.5f || octant.y < 0.5f ||
+           octant.y > static_cast<float>(core) - 0.5f;
+}
+
+} // namespace
+
+TEST_CASE("Probe tiles pack the atlas without overlapping", "[probes]")
+{
+    for (const uint32_t core : {kProbeIrradianceResolution, kProbeDepthResolution}) {
+        const uint32_t tileSize = core + 2 * kProbeBorderTexels;
+        const glm::uvec2 atlas = probeAtlasSize(core);
+        CHECK(atlas.x == kProbeAtlasTilesX * tileSize);
+        CHECK(atlas.y == kProbeAtlasTilesY * tileSize);
+
+        std::set<uint64_t> occupiedTiles;
+        for (uint32_t index = 0; index < kProbeCount; ++index) {
+            const glm::uvec2 tile = probeTileCoord(index);
+            CHECK(tile.x < kProbeAtlasTilesX);
+            CHECK(tile.y < kProbeAtlasTilesY);
+            // Two probes sharing a tile would have one silently overwrite the
+            // other's irradiance every update.
+            CHECK(occupiedTiles.insert(static_cast<uint64_t>(tile.y) * kProbeAtlasTilesX + tile.x).second);
+
+            const glm::uvec2 origin = probeTileOrigin(index, core);
+            CHECK(origin.x == tile.x * tileSize);
+            CHECK(origin.y == tile.y * tileSize);
+            CHECK(origin.x + tileSize <= atlas.x);
+            CHECK(origin.y + tileSize <= atlas.y);
+        }
+        CHECK(occupiedTiles.size() == kProbeCount);
+
+        // Out-of-range indices clamp into the atlas rather than addressing past
+        // its end.
+        const glm::uvec2 clamped = probeTileOrigin(kProbeCount + 17, core);
+        CHECK(clamped.x + tileSize <= atlas.x);
+        CHECK(clamped.y + tileSize <= atlas.y);
+    }
+}
+
+TEST_CASE("Probe atlas UVs stay inside the probe's own tile", "[probes]")
+{
+    // A tap that leaves the tile reads another probe entirely, which shows up as
+    // one probe's lighting bleeding into its neighbour -- a gradient artefact
+    // that looks like the GI itself rather than an addressing bug.
+    for (const uint32_t core : {kProbeIrradianceResolution, kProbeDepthResolution}) {
+        const auto tileSize = static_cast<float>(core + 2 * kProbeBorderTexels);
+        const glm::vec2 atlas{probeAtlasSize(core)};
+
+        for (const uint32_t index : {0u, 1u, kProbeAtlasTilesX - 1u, kProbeCount / 2u, kProbeCount - 1u}) {
+            const glm::vec2 origin{probeTileOrigin(index, core)};
+
+            for (const glm::vec3& direction : sphereDirections()) {
+                const glm::vec2 pixel = probeAtlasUv(index, direction, core) * atlas - origin;
+
+                // Inside the core square...
+                CHECK(pixel.x >= static_cast<float>(kProbeBorderTexels) - 1.0e-4f);
+                CHECK(pixel.y >= static_cast<float>(kProbeBorderTexels) - 1.0e-4f);
+                CHECK(pixel.x <= tileSize - static_cast<float>(kProbeBorderTexels) + 1.0e-4f);
+                CHECK(pixel.y <= tileSize - static_cast<float>(kProbeBorderTexels) + 1.0e-4f);
+
+                // ...and far enough in that the bilinear footprint, which spans
+                // half a texel either side, still cannot escape the tile.
+                CHECK(pixel.x - 0.5f >= -1.0e-4f);
+                CHECK(pixel.y - 0.5f >= -1.0e-4f);
+                CHECK(pixel.x + 0.5f <= tileSize + 1.0e-4f);
+                CHECK(pixel.y + 0.5f <= tileSize + 1.0e-4f);
+            }
+        }
+    }
+}
+
+TEST_CASE("Texel directions round-trip through the atlas UV", "[probes]")
+{
+    // probeTexelDirection is what the update pass writes with and probeAtlasUv is
+    // what the lookup reads with. If the two disagree by so much as half a texel
+    // the whole atlas is shifted, so they are pinned against each other rather
+    // than each being checked alone.
+    const uint32_t core = kProbeIrradianceResolution;
+    const glm::vec2 atlas{probeAtlasSize(core)};
+
+    for (const uint32_t index : {0u, 5u, kProbeCount - 1u}) {
+        const glm::vec2 origin{probeTileOrigin(index, core)};
+        for (uint32_t y = kProbeBorderTexels; y <= core; ++y) {
+            for (uint32_t x = kProbeBorderTexels; x <= core; ++x) {
+                const glm::vec3 direction = probeTexelDirection(x, y, core);
+                const glm::vec2 pixel = probeAtlasUv(index, direction, core) * atlas - origin;
+                CHECK(pixel.x == Approx(static_cast<float>(x) + 0.5f).margin(1.0e-3f));
+                CHECK(pixel.y == Approx(static_cast<float>(y) + 0.5f).margin(1.0e-3f));
+            }
+        }
+    }
+}
+
+TEST_CASE("The octahedral border mirrors the seam", "[probes]")
+{
+    for (const uint32_t core : {kProbeIrradianceResolution, kProbeDepthResolution}) {
+        const auto last = static_cast<int32_t>(core + kProbeBorderTexels - 1);
+        const auto border = static_cast<int32_t>(kProbeBorderTexels);
+        const auto size = static_cast<int32_t>(core + 2 * kProbeBorderTexels);
+
+        // Core texels are their own source, so the border pass can run over a
+        // whole tile without the caller classifying texels first.
+        for (int32_t y = border; y <= last; ++y) {
+            for (int32_t x = border; x <= last; ++x) {
+                const glm::ivec2 source = probeBorderSource(x, y, core);
+                CHECK(source.x == x);
+                CHECK(source.y == y);
+            }
+        }
+
+        // Corners take the diagonally opposite core corner. Taking the one they
+        // touch instead is the intuitive mistake and is wrong: a corner texel is
+        // across two seams, not one.
+        CHECK(probeBorderSource(0, 0, core) == glm::ivec2{last, last});
+        CHECK(probeBorderSource(size - 1, 0, core) == glm::ivec2{border, last});
+        CHECK(probeBorderSource(0, size - 1, core) == glm::ivec2{last, border});
+        CHECK(probeBorderSource(size - 1, size - 1, core) == glm::ivec2{border, border});
+
+        // Edges take the adjacent core row/column, reversed.
+        for (int32_t i = border; i <= last; ++i) {
+            const int32_t mirrored = size - 1 - i;
+            CHECK(probeBorderSource(0, i, core) == glm::ivec2{border, mirrored});
+            CHECK(probeBorderSource(size - 1, i, core) == glm::ivec2{last, mirrored});
+            CHECK(probeBorderSource(i, 0, core) == glm::ivec2{mirrored, border});
+            CHECK(probeBorderSource(i, size - 1, core) == glm::ivec2{mirrored, last});
+        }
+
+        // Every border texel resolves to a real core texel; one landing back in
+        // the border would copy an uninitialised value.
+        for (int32_t y = 0; y < size; ++y) {
+            for (int32_t x = 0; x < size; ++x) {
+                const glm::ivec2 source = probeBorderSource(x, y, core);
+                CHECK(source.x >= border);
+                CHECK(source.x <= last);
+                CHECK(source.y >= border);
+                CHECK(source.y <= last);
+            }
+        }
+    }
+}
+
+TEST_CASE("The border keeps bilinear filtering continuous across the seam", "[probes]")
+{
+    // This is the invariant the border exists for, and the structural test above
+    // cannot reach it: a mirrored-the-wrong-way rule still passes every "lands in
+    // the core" check while filtering against a direction from the far side of
+    // the sphere.
+    //
+    // So: fill a tile with the direction each texel stands for, filter it the way
+    // the GPU would, and measure the angle between the reconstructed direction
+    // and the real one. Then do the same with each wrong border for comparison,
+    // because an error bound with nothing to compare against says only that the
+    // number is small, not that the rule earned it.
+    for (const uint32_t core : {kProbeIrradianceResolution, kProbeDepthResolution}) {
+        const ProbeTile octahedralTile = makeProbeTile(core, BorderRule::Octahedral);
+        const ProbeTile clampTile = makeProbeTile(core, BorderRule::ClampToEdge);
+        const ProbeTile torusTile = makeProbeTile(core, BorderRule::TorusWrap);
+
+        float interiorMax = 0.0f;
+        float seamMax = 0.0f;
+        float clampSeamMax = 0.0f;
+        float torusSeamMax = 0.0f;
+
+        for (const glm::vec3& direction : sphereDirections()) {
+            const float error = reconstructionError(octahedralTile, direction);
+            if (onSeam(direction, core)) {
+                seamMax = std::max(seamMax, error);
+                clampSeamMax = std::max(clampSeamMax, reconstructionError(clampTile, direction));
+                torusSeamMax = std::max(torusSeamMax, reconstructionError(torusTile, direction));
+            } else {
+                interiorMax = std::max(interiorMax, error);
+            }
+        }
+
+        INFO("core " << core << " interior " << interiorMax << " seam " << seamMax << " clamped " << clampSeamMax
+                     << " torus " << torusSeamMax);
+
+        // Filtering at the seam is no worse than filtering anywhere else -- the
+        // tile behaves like an ordinary texture. Measured, the two maxima agree
+        // to five significant figures, so the margin here is slack, not fit.
+        CHECK(seamMax <= interiorMax * 1.1f);
+
+        // Padding instead of wrapping loses the filtering at every edge and
+        // biases the reconstruction by roughly half a texel. Modest -- which is
+        // exactly why it survives casual inspection.
+        CHECK(clampSeamMax > seamMax * 1.3f);
+
+        // Wrapping to the opposite edge instead of folding back onto the same one
+        // is off by a large angle. This is the failure the rule is really
+        // guarding against, and the one that would read as noise in the GI rather
+        // than as an addressing bug.
+        CHECK(torusSeamMax > 0.5f);
+    }
 }

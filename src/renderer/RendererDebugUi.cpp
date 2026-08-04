@@ -50,6 +50,7 @@ void Renderer::buildDebugUi()
         drawSkeletalAnimationDebugUi();
         drawGpuCullingDebugUi();
         drawMeshLodDebugUi();
+        drawIrradianceProbesDebugUi();
         drawEnvironmentDebugUi();
 
         if (debugUiSettings_.showRenderGraphPanel &&
@@ -252,6 +253,92 @@ void Renderer::drawVolumetricFogDebugUi()
                         renderer::kFogGridZ,
                         renderer::kFogNearPlane);
     ImGui::TextDisabled("Directional light only; punctual light shafts are not wired up yet.");
+}
+
+void Renderer::drawIrradianceProbesDebugUi()
+{
+    if (!ImGui::CollapsingHeader("Global Illumination (Irradiance Probes)", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+
+    if (!irradianceProbes_.available()) {
+        ImGui::TextDisabled("Irradiance probes unavailable; see the startup log.");
+        return;
+    }
+
+    ImGui::Checkbox("Enable irradiance probes", &giSettings_.enabled);
+    ImGui::SetItemTooltip("Off by default. The atlases are still built once at startup so nothing\n"
+                          "ever samples them out of an undefined layout; this controls whether\n"
+                          "they are rebuilt each frame.");
+
+    if (ImGui::Checkbox("Debug pattern", &giSettings_.debugPattern)) {
+        // Updates are off by default, so without this the atlases would keep
+        // whatever the last update wrote and the toggle would look inert.
+        irradianceProbes_.markDirty();
+    }
+    ImGui::SetItemTooltip("On: each tile holds the direction its texels stand for, which is what\n"
+                          "makes the tile addressing and the octahedral border visible.\n"
+                          "Off: the neutral state -- no irradiance, maximum distance -- that an\n"
+                          "atlas which has captured nothing should hold.");
+
+    ImGui::DragFloat3("Grid origin", giSettings_.gridOrigin, 0.1f);
+    ImGui::SetItemTooltip("World position of probe (0, 0, 0).");
+    ImGui::DragFloat3("Grid spacing", giSettings_.gridSpacing, 0.05f, 0.05f, renderer::kProbeMaxDistance);
+    ImGui::SetItemTooltip("Distance between adjacent probes on each axis.");
+
+    const renderer::ProbeGridBounds bounds = giGridBounds();
+    const glm::vec3 extent{bounds.spacing.x * static_cast<float>(renderer::kProbeGridX - 1),
+                           bounds.spacing.y * static_cast<float>(renderer::kProbeGridY - 1),
+                           bounds.spacing.z * static_cast<float>(renderer::kProbeGridZ - 1)};
+    ImGui::TextDisabled("Grid: %ux%ux%u probes covering %.1f x %.1f x %.1f world units.",
+                        renderer::kProbeGridX,
+                        renderer::kProbeGridY,
+                        renderer::kProbeGridZ,
+                        extent.x,
+                        extent.y,
+                        extent.z);
+    ImGui::TextDisabled("Tiles: %u core + %u border texels (irradiance), %u + %u (depth).",
+                        renderer::kProbeIrradianceResolution,
+                        renderer::kProbeBorderTexels,
+                        renderer::kProbeDepthResolution,
+                        renderer::kProbeBorderTexels);
+    ImGui::TextDisabled("Nothing samples these atlases yet; the shading lookup is a later phase.");
+
+    ImGui::SeparatorText("Atlas previews");
+
+    // Read the tile edges, not the overall colour. With the debug pattern the
+    // octahedral border is correct exactly when neighbouring tiles meet without
+    // a visible seam of their own -- a wrong border draws a one-texel frame
+    // around every tile, which is the single most legible check available before
+    // anything captures real radiance.
+    const float previewSize = 320.0f * std::clamp(debugUiSettings_.renderTargetPreviewScale, 0.25f, 2.0f);
+
+    ImGui::TextDisabled("Irradiance %ux%u (%u x %u tiles), direction as colour.",
+                        renderer::kProbeIrradianceAtlasWidth,
+                        renderer::kProbeIrradianceAtlasHeight,
+                        renderer::kProbeAtlasTilesX,
+                        renderer::kProbeAtlasTilesY);
+    drawRenderTargetPreview(irradianceProbes_.irradianceAtlas().imageView(),
+                            irradianceProbes_.sampler(),
+                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                            renderer::kProbeIrradianceAtlasWidth,
+                            renderer::kProbeIrradianceAtlasHeight,
+                            previewSize,
+                            1.0f);
+
+    // Scaled into [0,1] by the same bound the shader clamps distances to, since
+    // the preview tint cannot expand range the way it can compress it.
+    ImGui::TextDisabled("Depth %ux%u, mean distance scaled by 1/%.0f.",
+                        renderer::kProbeDepthAtlasWidth,
+                        renderer::kProbeDepthAtlasHeight,
+                        renderer::kProbeMaxDistance);
+    drawRenderTargetPreview(irradianceProbes_.depthAtlas().imageView(),
+                            irradianceProbes_.sampler(),
+                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                            renderer::kProbeDepthAtlasWidth,
+                            renderer::kProbeDepthAtlasHeight,
+                            previewSize,
+                            1.0f / renderer::kProbeMaxDistance);
 }
 
 void Renderer::drawShadowsDebugUi()

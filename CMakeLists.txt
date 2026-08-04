@@ -255,6 +255,7 @@ add_library(VulkanEngineRuntime STATIC
     src/renderer/PostProcessStack.cpp
     src/renderer/PunctualShadows.cpp
     src/renderer/VolumetricFogPass.cpp
+    src/renderer/IrradianceProbeVolume.cpp
     src/renderer/RenderGraph.cpp
     src/renderer/Renderer.cpp
     src/renderer/RendererDebugUi.cpp
@@ -370,6 +371,8 @@ set(SHADER_SOURCES
     "${SHADER_SOURCE_DIR}/punctual_shadow_cull.comp"
     "${SHADER_SOURCE_DIR}/fog_inject.comp"
     "${SHADER_SOURCE_DIR}/fog_integrate.comp"
+    "${SHADER_SOURCE_DIR}/probe_debug_fill.comp"
+    "${SHADER_SOURCE_DIR}/probe_border.comp"
     "${SHADER_SOURCE_DIR}/shadow_masked.frag"
     "${SHADER_SOURCE_DIR}/cull.comp"
     "${SHADER_SOURCE_DIR}/cluster_build.comp"

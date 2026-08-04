@@ -476,6 +476,29 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         };
     }
 
+    // Probe atlases. Sized by the probe grid rather than the window, so unlike
+    // every other target here their extent comes from the image itself. A failed
+    // probe subsystem leaves null handles, which importTexture turns into an
+    // invalid handle and every declaration then skips.
+    const auto probeAtlasResource = [](const char* name, const rhi::VulkanImage& image, VkImageLayout* layout) {
+        const VkExtent3D extent = image.extent();
+        return renderer::RenderGraphImageResource{
+            name,
+            image.image(),
+            image.imageView(),
+            VkExtent2D{extent.width, extent.height},
+            layout,
+            image.format(),
+            VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            1,
+            1,
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            VkClearValue{},
+            false,
+            true,
+        };
+    };
+
     return renderer::RenderGraphFrameResources{
         renderer::RenderGraphImageResource{
             "SceneColor",
@@ -607,6 +630,11 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             false,
             true,
         },
+        probeAtlasResource("ProbeIrradianceAtlas",
+                           irradianceProbes_.irradianceAtlas(),
+                           irradianceProbes_.irradianceAtlasLayoutPtr()),
+        probeAtlasResource(
+            "ProbeDepthAtlas", irradianceProbes_.depthAtlas(), irradianceProbes_.depthAtlasLayoutPtr()),
         bufferResource(
             "MainCullInput", gpuCulling_.cullInputBuffers(), currentFrame_, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
         bufferResource("MainCullIndirectOutput",
@@ -648,6 +676,7 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         // the layout it already has and no barrier is emitted for it.
         punctualShadowCacheHit_ ? 0u : punctualShadows_.slotCount(),
         isVolumetricFogActive(),
+        isIrradianceProbeUpdateActive(),
     };
 }
 
@@ -1012,6 +1041,20 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         volumetricFog_.recordCommands(commandBuffer, currentFrame_, fogPushConstants);
         renderGraph_.endVolumetricFogPass();
         if (fogProfileScope) {
+            gpuProfiler_.endScope(currentFrame_, commandBuffer);
+        }
+    }
+
+    // Probe atlas maintenance. Before the main pass, which declares a read on
+    // both atlases; after the shadow and cluster passes, which is what the
+    // capture phase will need to gather radiance from.
+    if (isIrradianceProbeUpdateActive()) {
+        const bool probeProfileScope =
+            gpuProfiler_.beginScope(currentFrame_, commandBuffer, "IrradianceProbeUpdate");
+        renderGraph_.beginIrradianceProbePass();
+        irradianceProbes_.recordUpdate(commandBuffer, giSettings_.debugPattern);
+        renderGraph_.endIrradianceProbePass();
+        if (probeProfileScope) {
             gpuProfiler_.endScope(currentFrame_, commandBuffer);
         }
     }

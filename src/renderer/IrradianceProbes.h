@@ -45,6 +45,48 @@ inline constexpr uint32_t kProbeIrradianceResolution = 8;
 // irradiance itself does.
 inline constexpr uint32_t kProbeDepthResolution = 16;
 
+// --- Atlas layout ---
+//
+// Every probe owns one square tile in each of two atlases, irradiance and depth.
+// A tile is that probe's octahedral square plus a one-texel border on all four
+// sides.
+//
+// The border is not padding. The octahedral square's edges are seams: texels on
+// opposite sides of an edge are neighbours on the sphere but far apart in the
+// image. Hardware bilinear filtering knows nothing about that, so a sample near
+// an edge would blend against a texel pointing somewhere else entirely. The
+// border holds the wrapped copy of the interior texels the seam actually joins
+// to, which turns the whole tile into something a plain linear sampler can read.
+//
+// Tiles run X then Y across an atlas row and Z down the rows, so the tile
+// coordinate follows from the linear probe index with the same X-fastest order
+// probeIndex uses. One atlas row is therefore one horizontal slab of the grid,
+// which is what makes the debug preview readable without counting texels.
+inline constexpr uint32_t kProbeBorderTexels = 1;
+inline constexpr uint32_t kProbeIrradianceTileSize = kProbeIrradianceResolution + 2 * kProbeBorderTexels;
+inline constexpr uint32_t kProbeDepthTileSize = kProbeDepthResolution + 2 * kProbeBorderTexels;
+
+inline constexpr uint32_t kProbeAtlasTilesX = kProbeGridX * kProbeGridY;
+inline constexpr uint32_t kProbeAtlasTilesY = kProbeGridZ;
+static_assert(kProbeAtlasTilesX * kProbeAtlasTilesY == kProbeCount,
+              "The atlas must hold exactly one tile per probe, or probeTileCoord aliases.");
+
+inline constexpr uint32_t kProbeIrradianceAtlasWidth = kProbeAtlasTilesX * kProbeIrradianceTileSize;
+inline constexpr uint32_t kProbeIrradianceAtlasHeight = kProbeAtlasTilesY * kProbeIrradianceTileSize;
+inline constexpr uint32_t kProbeDepthAtlasWidth = kProbeAtlasTilesX * kProbeDepthTileSize;
+inline constexpr uint32_t kProbeDepthAtlasHeight = kProbeAtlasTilesY * kProbeDepthTileSize;
+
+// Distances written into the depth atlas are clamped to this. Two reasons, and
+// only the first is about storage: the atlas keeps distance and distance
+// squared in a 16-bit float pair, and the squared channel is what runs out of
+// range first (this bound squared has to stay comfortably inside the half
+// float's ~65504 maximum). The second is that "nothing was hit in this
+// direction" needs a finite answer the visibility test can still reason about,
+// rather than an infinity that poisons the Chebyshev bound.
+inline constexpr float kProbeMaxDistance = 64.0f;
+static_assert(kProbeMaxDistance * kProbeMaxDistance < 65504.0f,
+              "Squared probe distance must stay representable in a 16-bit float.");
+
 // Where the grid sits in the world. Kept as data rather than constants so the
 // grid can be fitted to a scene later without touching the mapping code.
 struct ProbeGridBounds {
@@ -89,5 +131,48 @@ struct ProbeBlend {
 
 // Grid coordinate of one corner, clamped to the grid.
 [[nodiscard]] glm::uvec3 probeCornerCoord(const ProbeBlend& blend, uint32_t cornerIndex);
+
+// --- Atlas addressing ---
+//
+// coreResolution is the octahedral square's resolution *without* the border, so
+// callers pass kProbeIrradianceResolution or kProbeDepthResolution and the same
+// code serves both atlases. Tile size and atlas size follow from it.
+
+// Which tile in the atlas a probe owns, in tiles.
+[[nodiscard]] glm::uvec2 probeTileCoord(uint32_t index);
+
+// Top-left texel of a probe's tile, border included.
+[[nodiscard]] glm::uvec2 probeTileOrigin(uint32_t index, uint32_t coreResolution);
+
+// Atlas dimensions in texels for a given core resolution.
+[[nodiscard]] glm::uvec2 probeAtlasSize(uint32_t coreResolution);
+
+// Atlas UV to sample a probe along a direction.
+//
+// The result lands inside the probe's own core square, at least half a texel
+// away from the tile's outer edge, so a bilinear tap never reaches into the
+// neighbouring probe's tile -- it reaches into this tile's border, which is
+// exactly what the border was written for.
+[[nodiscard]] glm::vec2 probeAtlasUv(uint32_t index, const glm::vec3& direction, uint32_t coreResolution);
+
+// Direction stored at a tile-local texel. Coordinates are tile-local and include
+// the border, so the core spans [1, coreResolution] on both axes.
+//
+// Defined for core texels. A border texel has no direction of its own -- it is a
+// copy of one -- so resolve it through probeBorderSource first; passing one here
+// clamps into the core rather than inventing an answer.
+[[nodiscard]] glm::vec3 probeTexelDirection(uint32_t x, uint32_t y, uint32_t coreResolution);
+
+// The core texel a border texel copies, in tile-local coordinates.
+//
+// The octahedral square folds onto itself at its edges: crossing an edge
+// re-enters the square on the same edge, mirrored about that edge's midpoint.
+// So a border row or column is the adjacent core row or column *reversed*, and
+// a border corner is the diagonally opposite core corner.
+//
+// A coordinate that is already a core texel is returned unchanged, which makes
+// the function total and lets the border pass run over a whole tile without
+// branching on the caller's side.
+[[nodiscard]] glm::ivec2 probeBorderSource(int32_t x, int32_t y, uint32_t coreResolution);
 
 } // namespace ve::renderer

@@ -145,6 +145,28 @@ struct LodSettings {
     bool debugHeatmap = false;
 };
 
+// Irradiance-probe global illumination. A grid of probes stores incoming
+// radiance in small octahedral tiles, plus the distance to what it came from so
+// a probe behind a wall can be rejected rather than lighting through it.
+//
+// This device exposes no ray tracing, so probe radiance is gathered by
+// rasterising the scene from each probe rather than by tracing rays; the grid
+// therefore stays coarse and the cost goes into update rate. See
+// renderer/IrradianceProbes.h.
+struct GiSettings {
+    bool enabled = false;
+    // World position of probe (0, 0, 0), and the spacing between adjacent
+    // probes on each axis. Plain floats rather than a ProbeGridBounds so this
+    // header stays free of renderer and glm types, like every other struct here.
+    float gridOrigin[3] = {-14.0f, 0.5f, -14.0f};
+    float gridSpacing[3] = {4.0f, 3.0f, 4.0f};
+    // Fills the atlases with the direction each texel stands for instead of
+    // captured radiance. The only way to see whether probe *storage* is correct
+    // before anything captures into it, and a standing check on the octahedral
+    // border afterwards.
+    bool debugPattern = true;
+};
+
 struct RuntimeSettings {
     ToneMappingSettings toneMapping;
     BloomSettings bloom;
@@ -152,6 +174,7 @@ struct RuntimeSettings {
     SsrSettings ssr;
     CsmSettings csm;
     LodSettings lod;
+    GiSettings gi;
     DebugUiSettings debugUi;
     bool useGpuCulling = true;
     bool useGpuShadowCulling = true;
@@ -179,6 +202,7 @@ void clampRuntimeSettings(ToneMappingSettings& toneMapping,
                           SsrSettings& ssr,
                           CsmSettings& csm,
                           LodSettings& lod,
+                          GiSettings& gi,
                           DebugUiSettings& debugUi);
 
 enum class RuntimeSettingsLoadStatus {

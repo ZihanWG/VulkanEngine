@@ -170,6 +170,12 @@ Renderer::Renderer(Window& window) : window_(window)
                               static_cast<uint32_t>(frames_.size()),
                               shaderPath("cluster_build.comp.spv"),
                               shaderPath("light_cull.comp.spv"));
+    // Created once and kept across swapchain recreation: the probe atlases are
+    // sized by the probe grid, not the window, and their contents persist across
+    // frames by design.
+    irradianceProbes_.create(
+        context_, shaderPath("probe_debug_fill.comp.spv"), shaderPath("probe_border.comp.spv"));
+    irradianceProbes_.setBounds(giGridBounds());
     updateDemoLights(0.0f);
     // Prefer a rigged glTF if one is present; otherwise fall back to the
     // self-contained procedural bone chain.
@@ -1156,6 +1162,7 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
     taaSettings_ = settings.taa;
     ssrSettings_ = settings.ssr;
     lodSettings_ = settings.lod;
+    giSettings_ = settings.gi;
     debugUiSettings_ = settings.debugUi;
 
     csmSettings_.lambda = settings.csm.lambda;
@@ -1209,6 +1216,7 @@ RuntimeSettings Renderer::captureRuntimeSettings() const
     settings.taa = taaSettings_;
     settings.ssr = ssrSettings_;
     settings.lod = lodSettings_;
+    settings.gi = giSettings_;
     settings.csm = csmSettings_;
     settings.debugUi = debugUiSettings_;
     settings.useGpuCulling = useGpuCulling_;
@@ -1314,13 +1322,26 @@ bool Renderer::previousFrameDepthValidForOcclusion() const
            glm::distance(frameCameraPosition_, depthPyramid_.cameraPosition()) <= 0.01f;
 }
 
+renderer::ProbeGridBounds Renderer::giGridBounds() const
+{
+    renderer::ProbeGridBounds bounds{};
+    bounds.origin = glm::vec3{giSettings_.gridOrigin[0], giSettings_.gridOrigin[1], giSettings_.gridOrigin[2]};
+    bounds.spacing = glm::vec3{giSettings_.gridSpacing[0], giSettings_.gridSpacing[1], giSettings_.gridSpacing[2]};
+    return bounds;
+}
+
 void Renderer::clampRuntimeSettings()
 {
     // The settings-struct clamping is GPU-independent and lives in
     // RuntimeSettings.cpp (compiled into VulkanEngineCore) so it can be tested.
     ve::clampRuntimeSettings(
         toneMappingSettings_, bloomSettings_, taaSettings_, ssrSettings_, csmSettings_, lodSettings_,
-        debugUiSettings_);
+        giSettings_, debugUiSettings_);
+
+    // Pushed here rather than at each edit site: clampRuntimeSettings runs after
+    // every settings change (load, UI edit, reset), so the volume's copy of the
+    // grid placement cannot drift from the settings it came from.
+    irradianceProbes_.setBounds(giGridBounds());
 
     // GPU occlusion tuning is renderer state, not part of the settings structs,
     // so it stays here.

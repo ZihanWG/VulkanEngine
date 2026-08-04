@@ -138,4 +138,80 @@ glm::uvec3 probeCornerCoord(const ProbeBlend& blend, uint32_t cornerIndex)
         std::min(blend.baseCoord.z + ((corner & 4u) != 0u ? 1u : 0u), kProbeGridZ - 1)};
 }
 
+glm::uvec2 probeTileCoord(uint32_t index)
+{
+    const uint32_t clamped = std::min(index, kProbeCount - 1);
+    return glm::uvec2{clamped % kProbeAtlasTilesX, clamped / kProbeAtlasTilesX};
+}
+
+glm::uvec2 probeTileOrigin(uint32_t index, uint32_t coreResolution)
+{
+    const uint32_t tileSize = coreResolution + 2 * kProbeBorderTexels;
+    const glm::uvec2 tile = probeTileCoord(index);
+    return tile * tileSize;
+}
+
+glm::uvec2 probeAtlasSize(uint32_t coreResolution)
+{
+    const uint32_t tileSize = coreResolution + 2 * kProbeBorderTexels;
+    return glm::uvec2{kProbeAtlasTilesX * tileSize, kProbeAtlasTilesY * tileSize};
+}
+
+glm::vec2 probeAtlasUv(uint32_t index, const glm::vec3& direction, uint32_t coreResolution)
+{
+    const float core = static_cast<float>(std::max(coreResolution, 1u));
+    const glm::vec2 octant = octahedralEncode(direction);
+    const glm::uvec2 origin = probeTileOrigin(index, coreResolution);
+
+    // octant spans the core square's full extent, so texel centres land at
+    // (i + 0.5) / core and the two extremes sit exactly on the core's outer
+    // boundary -- half a texel inside the tile, with the border texel on the
+    // other side of the tap. That is the whole point: the widest bilinear
+    // footprint reaches the border and stops there.
+    const glm::vec2 texel = glm::vec2{origin} + glm::vec2{static_cast<float>(kProbeBorderTexels)} + octant * core;
+
+    return texel / glm::vec2{probeAtlasSize(coreResolution)};
+}
+
+glm::vec3 probeTexelDirection(uint32_t x, uint32_t y, uint32_t coreResolution)
+{
+    const uint32_t core = std::max(coreResolution, 1u);
+    const uint32_t coreX = std::clamp(x, kProbeBorderTexels, core);
+    const uint32_t coreY = std::clamp(y, kProbeBorderTexels, core);
+
+    const glm::vec2 octant{(static_cast<float>(coreX - kProbeBorderTexels) + 0.5f) / static_cast<float>(core),
+                           (static_cast<float>(coreY - kProbeBorderTexels) + 0.5f) / static_cast<float>(core)};
+    return octahedralDecode(octant);
+}
+
+glm::ivec2 probeBorderSource(int32_t x, int32_t y, uint32_t coreResolution)
+{
+    const auto core = static_cast<int32_t>(std::max(coreResolution, 1u));
+    const auto border = static_cast<int32_t>(kProbeBorderTexels);
+    const int32_t last = core + border - 1; // last core texel on either axis
+
+    const bool leftBorder = x < border;
+    const bool rightBorder = x > last;
+    const bool topBorder = y < border;
+    const bool bottomBorder = y > last;
+
+    if (leftBorder || rightBorder) {
+        if (topBorder || bottomBorder) {
+            // A corner texel lies diagonally across the seam from the core
+            // corner opposite it, not from the one it touches.
+            return glm::ivec2{leftBorder ? last : border, topBorder ? last : border};
+        }
+        // An edge re-enters the square on its own side, mirrored about the
+        // edge's midpoint, so the border column is the adjacent core column
+        // read bottom-to-top.
+        return glm::ivec2{leftBorder ? border : last, core + 2 * border - 1 - y};
+    }
+
+    if (topBorder || bottomBorder) {
+        return glm::ivec2{core + 2 * border - 1 - x, topBorder ? border : last};
+    }
+
+    return glm::ivec2{x, y};
+}
+
 } // namespace ve::renderer

@@ -4,6 +4,7 @@
 
 #include "core/Logger.h"
 #include "renderer/CascadeMath.h"
+#include "renderer/IrradianceProbes.h"
 
 #include <json.hpp>
 
@@ -36,6 +37,7 @@ void clampRuntimeSettings(ToneMappingSettings& toneMapping,
                           SsrSettings& ssr,
                           CsmSettings& csm,
                           LodSettings& lod,
+                          GiSettings& gi,
                           DebugUiSettings& debugUi)
 {
     toneMapping.operatorType = std::clamp(toneMapping.operatorType, 0, 1);
@@ -79,6 +81,15 @@ void clampRuntimeSettings(ToneMappingSettings& toneMapping,
     lod.bias = std::clamp(lod.bias, -4.0f, 4.0f);
     lod.shadowBias = std::clamp(lod.shadowBias, -4.0f, 4.0f);
     lod.forcedLod = std::clamp(lod.forcedLod, -1, static_cast<int>(renderer::kMaxMeshLods) - 1);
+
+    // Probe spacing is a divisor in the grid-space lookup, so a zero or negative
+    // value would fold the whole volume onto one probe. The upper bound keeps the
+    // grid from spanning further than the depth atlas can describe: a probe
+    // cannot report a distance past kProbeMaxDistance, so spacing beyond that
+    // range makes visibility meaningless rather than merely coarse.
+    for (float& spacing : gi.gridSpacing) {
+        spacing = std::clamp(spacing, 0.05f, renderer::kProbeMaxDistance);
+    }
 
     csm.cascadeCount = std::clamp(csm.cascadeCount, 1U, renderer::kMaxShadowCascades);
     csm.lambda = std::clamp(csm.lambda, 0.0f, 1.0f);
@@ -321,6 +332,17 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readBool(*csm, "enableCascadeDebugColors", settings.csm.enableCascadeDebugColors);
     }
 
+    if (const Json* gi = objectMember(json, "gi")) {
+        readBool(*gi, "enabled", settings.gi.enabled);
+        readBool(*gi, "debugPattern", settings.gi.debugPattern);
+        readFloat(*gi, "gridOriginX", settings.gi.gridOrigin[0]);
+        readFloat(*gi, "gridOriginY", settings.gi.gridOrigin[1]);
+        readFloat(*gi, "gridOriginZ", settings.gi.gridOrigin[2]);
+        readFloat(*gi, "gridSpacingX", settings.gi.gridSpacing[0]);
+        readFloat(*gi, "gridSpacingY", settings.gi.gridSpacing[1]);
+        readFloat(*gi, "gridSpacingZ", settings.gi.gridSpacing[2]);
+    }
+
     if (const Json* renderer = objectMember(json, "renderer")) {
         readBool(*renderer, "useGpuCulling", settings.useGpuCulling);
         readBool(*renderer, "useGpuShadowCulling", settings.useGpuShadowCulling);
@@ -398,6 +420,15 @@ Json toJson(const RuntimeSettings& settings)
               {"shadowDistance", settings.csm.shadowDistance},
               {"enableTexelSnapping", settings.csm.enableTexelSnapping},
               {"enableCascadeDebugColors", settings.csm.enableCascadeDebugColors}}},
+        {"gi",
+         Json{{"enabled", settings.gi.enabled},
+              {"debugPattern", settings.gi.debugPattern},
+              {"gridOriginX", settings.gi.gridOrigin[0]},
+              {"gridOriginY", settings.gi.gridOrigin[1]},
+              {"gridOriginZ", settings.gi.gridOrigin[2]},
+              {"gridSpacingX", settings.gi.gridSpacing[0]},
+              {"gridSpacingY", settings.gi.gridSpacing[1]},
+              {"gridSpacingZ", settings.gi.gridSpacing[2]}}},
         {"renderer",
          Json{{"useGpuCulling", settings.useGpuCulling},
               {"useGpuShadowCulling", settings.useGpuShadowCulling},

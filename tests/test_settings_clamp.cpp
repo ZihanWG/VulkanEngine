@@ -11,6 +11,7 @@ using ve::clampRuntimeSettings;
 using ve::CsmSettings;
 using ve::DebugUiSettings;
 using ve::ExposureMode;
+using ve::GiSettings;
 using ve::LodSettings;
 using ve::exposureModeValue;
 using ve::TaaSettings;
@@ -27,9 +28,10 @@ struct Settings {
     SsrSettings ssr;
     CsmSettings csm;
     LodSettings lod;
+    GiSettings gi;
     DebugUiSettings debugUi;
 
-    void clamp() { clampRuntimeSettings(toneMapping, bloom, taa, ssr, csm, lod, debugUi); }
+    void clamp() { clampRuntimeSettings(toneMapping, bloom, taa, ssr, csm, lod, gi, debugUi); }
 };
 
 } // namespace

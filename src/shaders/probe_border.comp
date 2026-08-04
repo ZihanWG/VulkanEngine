@@ -1,0 +1,96 @@
+#version 460
+
+// Probe atlas border pass: wraps the octahedral seam into the one-texel border
+// around every probe tile.
+//
+// Why the border exists: the octahedral square's edges are seams. Texels on
+// opposite sides of an edge are neighbours on the sphere but far apart in the
+// image, and hardware bilinear filtering knows nothing about that. Without the
+// border a lookup near a tile edge blends against whatever texel happens to sit
+// next to it, which for probe irradiance reads as faint discontinuities that
+// look like noise rather than like an addressing bug.
+//
+// The square folds onto *itself* at its edges rather than onto the opposite
+// edge: crossing an edge re-enters the square on the same side, mirrored about
+// that edge's midpoint. So a border row or column is the adjacent core row or
+// column reversed, and a border corner is the diagonally opposite core corner.
+// Wrapping to the opposite edge instead -- the way an equirectangular map wraps
+// -- is the plausible mistake, and it is wrong by most of a hemisphere.
+//
+// Hazard note: this dispatch reads core texels and writes only border texels, so
+// no invocation reads a texel another invocation in the same dispatch writes.
+// The core texels come from the preceding fill dispatch, which is separated from
+// this one by an explicit barrier.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// Must match ve::renderer::kProbeBorderTexels.
+const int kProbeBorderTexels = 1;
+// Must match ve::renderer::kProbeAtlasTilesX / kProbeAtlasTilesY.
+const int kProbeAtlasTilesX = 32;
+const int kProbeAtlasTilesY = 8;
+
+layout(set = 0, binding = 0, rgba16f) uniform image2D uIrradianceAtlas;
+layout(set = 0, binding = 1, rg16f) uniform image2D uDepthAtlas;
+
+layout(push_constant) uniform ProbeAtlasPush {
+    int coreResolution;
+    // 0 = irradiance atlas, 1 = depth atlas.
+    int target;
+    // Present so the block matches probe_debug_fill.comp and the two pipelines
+    // can share one push-constant range. Unused here: the border copies whatever
+    // the fill produced, whichever fill that was.
+    int debugPattern;
+} push;
+
+// Mirrors ve::renderer::probeBorderSource exactly, including returning a core
+// texel unchanged so the dispatch needs no classification on the caller's side.
+ivec2 probeBorderSource(ivec2 local, int core)
+{
+    int border = kProbeBorderTexels;
+    int last = core + border - 1;
+    int size = core + 2 * border;
+
+    bool leftBorder = local.x < border;
+    bool rightBorder = local.x > last;
+    bool topBorder = local.y < border;
+    bool bottomBorder = local.y > last;
+
+    if (leftBorder || rightBorder) {
+        if (topBorder || bottomBorder) {
+            return ivec2(leftBorder ? last : border, topBorder ? last : border);
+        }
+        return ivec2(leftBorder ? border : last, size - 1 - local.y);
+    }
+
+    if (topBorder || bottomBorder) {
+        return ivec2(size - 1 - local.x, topBorder ? border : last);
+    }
+
+    return local;
+}
+
+void main()
+{
+    int core = push.coreResolution;
+    int tileSize = core + 2 * kProbeBorderTexels;
+    ivec2 atlasSize = ivec2(kProbeAtlasTilesX, kProbeAtlasTilesY) * tileSize;
+
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(texel, atlasSize))) {
+        return;
+    }
+
+    ivec2 local = texel % tileSize;
+    ivec2 source = probeBorderSource(local, core);
+    if (source == local) {
+        return;
+    }
+
+    ivec2 sourceTexel = texel - local + source;
+    if (push.target == 0) {
+        imageStore(uIrradianceAtlas, texel, imageLoad(uIrradianceAtlas, sourceTexel));
+    } else {
+        imageStore(uDepthAtlas, texel, imageLoad(uDepthAtlas, sourceTexel));
+    }
+}

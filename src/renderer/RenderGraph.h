@@ -58,6 +58,7 @@ enum class RenderPassType {
     Shadow,
     ShadowGpuCulling,
     VolumetricFog,
+    IrradianceProbes,
     MainGpuCulling,
     DepthPyramid,
     MainHdr,
@@ -175,6 +176,8 @@ struct RenderGraphFrameResources {
     std::vector<RenderGraphImageResource> bloomDownsampleChain;
     std::vector<RenderGraphImageResource> bloomUpsampleChain;
     RenderGraphImageResource depthPyramid;
+    RenderGraphImageResource probeIrradianceAtlas;
+    RenderGraphImageResource probeDepthAtlas;
     RenderGraphBufferResource mainCullInput;
     RenderGraphBufferResource mainCullIndirectOutput;
     RenderGraphBufferResource mainCullVisibleCounts;
@@ -206,6 +209,11 @@ struct RenderGraphFrameResources {
     // before the injection dispatch reads it -- without it the fog runs while
     // the map is still a depth attachment.
     bool volumetricFogEnabled = false;
+    // Declares the probe-atlas update compute pass for this frame. The two
+    // atlases are imported and read by the main pass whenever they exist, the
+    // same asymmetry the punctual shadow atlas uses: a frame that updates no
+    // probe still has to leave the atlases in the layout their samplers claim.
+    bool irradianceProbeUpdateEnabled = false;
 };
 
 struct RenderGraphResourceDebugInfo {
@@ -297,6 +305,11 @@ public:
     // graph transitions the cascaded shadow map the injection pass samples.
     void beginVolumetricFogPass();
     void endVolumetricFogPass();
+    // Irradiance probe atlas maintenance. Compute, no rendering scope; the graph
+    // moves both atlases into GENERAL for the dispatches and back to a sampled
+    // layout for whoever reads them.
+    void beginIrradianceProbePass();
+    void endIrradianceProbePass();
     void beginMainGpuCullingPass();
     void endMainGpuCullingPass();
     void beginMainHdrPass();
@@ -398,6 +411,7 @@ private:
         Shadow,
         PunctualShadow,
         VolumetricFog,
+        IrradianceProbes,
         MainGpuCulling,
         MainHdr,
         MainGpuCullingPhase2,
@@ -452,6 +466,7 @@ private:
         uint32_t shadow = kInvalidRenderGraphHandle;
         uint32_t punctualShadow = kInvalidRenderGraphHandle;
         uint32_t volumetricFog = kInvalidRenderGraphHandle;
+        uint32_t irradianceProbes = kInvalidRenderGraphHandle;
         uint32_t mainGpuCulling = kInvalidRenderGraphHandle;
         uint32_t mainHdr = kInvalidRenderGraphHandle;
         uint32_t depthPyramidMid = kInvalidRenderGraphHandle;
@@ -505,6 +520,8 @@ private:
         std::vector<RGTextureHandle> bloomDownsampleChain;
         std::vector<RGTextureHandle> bloomUpsampleChain;
         RGTextureHandle depthPyramid{};
+        RGTextureHandle probeIrradianceAtlas{};
+        RGTextureHandle probeDepthAtlas{};
         RGBufferHandle mainCullInput{};
         RGBufferHandle mainCullIndirectOutput{};
         RGBufferHandle mainCullVisibleCounts{};
