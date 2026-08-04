@@ -135,6 +135,15 @@ inline constexpr float kProbeMinVisibility = 0.02f;
 // to a surface should fade, not vanish.
 inline constexpr float kProbeBackfaceFloor = 0.2f;
 
+// Fraction of a probe's previous value kept when it is re-captured.
+//
+// Lower than a per-frame accumulator like DDGI's would use, because a probe here
+// is re-captured once per round-robin cycle rather than every frame -- the same
+// hysteresis costs sixty times as much latency. This buys two things: the step
+// when a probe is re-captured after the lighting moved becomes a ramp, and the
+// sub-texel jitter above averages into extra angular resolution.
+inline constexpr float kProbeDefaultHysteresis = 0.7f;
+
 // Distances written into the depth atlas are clamped to this. Two reasons, and
 // only the first is about storage: the atlas keeps distance and distance
 // squared in a 16-bit float pair, and the squared channel is what runs out of
@@ -239,11 +248,34 @@ struct ProbeBlend {
 // View-projection a probe rasterises one cube face with. Thin wrapper over the
 // point-shadow cube projection so the two cannot drift apart; only the near and
 // far planes differ.
-[[nodiscard]] glm::mat4 probeCaptureFaceViewProjection(const glm::vec3& probePosition, uint32_t face);
+//
+// jitterTexels shifts the whole face by a sub-texel amount, in texels. It exists
+// because the capture is otherwise *deterministic*: the same fixed directions
+// every time, so re-capturing an unchanged scene reproduces the previous result
+// exactly and averaging successive captures would gain nothing at all. Moving
+// the sample grid between updates is what turns accumulation from a no-op into
+// a genuine increase in angular resolution.
+[[nodiscard]] glm::mat4 probeCaptureFaceViewProjection(const glm::vec3& probePosition,
+                                                       uint32_t face,
+                                                       const glm::vec2& jitterTexels = glm::vec2{0.0f});
 
-// World direction a capture texel looks along. Texel centres, so the (x, y)
-// range is [0, resolution).
-[[nodiscard]] glm::vec3 probeCubeTexelDirection(uint32_t face, uint32_t x, uint32_t y, uint32_t resolution);
+// World direction a capture texel looks along, under the same jitter the face
+// was rasterised with. Texel centres, so the (x, y) range is [0, resolution).
+//
+// The jitter has to be applied with the opposite sign to the projection's: a
+// projection that pushes the image right by j texels puts the direction that was
+// at x - j under texel x. Getting that backwards doubles the offset instead of
+// cancelling it, which shows up as a probe whose stored radiance is smeared
+// rather than as anything obviously wrong -- so a round-trip test pins it.
+[[nodiscard]] glm::vec3 probeCubeTexelDirection(uint32_t face,
+                                                uint32_t x,
+                                                uint32_t y,
+                                                uint32_t resolution,
+                                                const glm::vec2& jitterTexels = glm::vec2{0.0f});
+
+// Sub-texel offset for one update, from a low-discrepancy sequence so successive
+// captures spread over the texel instead of clustering the way random values do.
+[[nodiscard]] glm::vec2 probeCaptureJitter(uint32_t updateIndex);
 
 // Solid angle a capture texel subtends, in steradians.
 //

@@ -216,19 +216,47 @@ glm::ivec2 probeBorderSource(int32_t x, int32_t y, uint32_t coreResolution)
     return glm::ivec2{x, y};
 }
 
-glm::mat4 probeCaptureFaceViewProjection(const glm::vec3& probePosition, uint32_t face)
+glm::mat4 probeCaptureFaceViewProjection(const glm::vec3& probePosition, uint32_t face, const glm::vec2& jitterTexels)
 {
-    return computePointShadowFaceViewProjection(probePosition, face, kProbeMaxDistance, kProbeCaptureNearPlane);
+    const glm::mat4 viewProjection =
+        computePointShadowFaceViewProjection(probePosition, face, kProbeMaxDistance, kProbeCaptureNearPlane);
+    if (jitterTexels.x == 0.0f && jitterTexels.y == 0.0f) {
+        return viewProjection;
+    }
+
+    // A clip-space translation applied *after* the view-projection, not a term
+    // poked into it. Modifying column 2 of the combined matrix would scale the
+    // offset by world z rather than view z, so the shift would vary across the
+    // face instead of being the constant sub-texel slide this needs -- which is
+    // exactly what it did until the round-trip test said otherwise.
+    //
+    // Left-multiplying by a translation whose x and y ride w survives the
+    // perspective divide as a constant NDC offset. One texel spans 2/resolution
+    // of NDC.
+    const float scale = 2.0f / static_cast<float>(kProbeCaptureFaceResolution);
+    glm::mat4 clipTranslation{1.0f};
+    clipTranslation[3][0] = jitterTexels.x * scale;
+    clipTranslation[3][1] = jitterTexels.y * scale;
+    return clipTranslation * viewProjection;
 }
 
-glm::vec3 probeCubeTexelDirection(uint32_t face, uint32_t x, uint32_t y, uint32_t resolution)
+glm::vec3 probeCubeTexelDirection(uint32_t face,
+                                  uint32_t x,
+                                  uint32_t y,
+                                  uint32_t resolution,
+                                  const glm::vec2& jitterTexels)
 {
     const float size = static_cast<float>(std::max(resolution, 1u));
     // Texel centre in the face's [-1, 1] plane. The 90-degree projection puts
     // the face plane exactly one unit from the probe, so this doubles as the
     // unnormalised direction's tangential components.
-    const float u = (static_cast<float>(x) + 0.5f) / size * 2.0f - 1.0f;
-    const float v = (static_cast<float>(y) + 0.5f) / size * 2.0f - 1.0f;
+    //
+    // The jitter is subtracted, not added: the projection shifts the image, so
+    // the direction landing under texel x is the one that was at x minus the
+    // shift. Adding it would double the offset instead of cancelling it, which
+    // reads as a smeared probe rather than as anything obviously wrong.
+    const float u = (static_cast<float>(x) + 0.5f - jitterTexels.x) / size * 2.0f - 1.0f;
+    const float v = (static_cast<float>(y) + 0.5f - jitterTexels.y) / size * 2.0f - 1.0f;
 
     // The basis has to be the one glm::lookAt actually builds inside
     // computePointShadowFaceViewProjection, or the convolution reads every texel
@@ -314,6 +342,31 @@ glm::vec3 probeSamplePosition(const glm::vec3& worldPosition,
     // looks down, which is exactly where self-occlusion shows.
     const glm::vec3 offset = surfaceNormal * 0.2f + viewDirection * 0.8f;
     return worldPosition + offset * std::max(normalBias, 0.0f);
+}
+
+glm::vec2 probeCaptureJitter(uint32_t updateIndex)
+{
+    // Halton (2, 3), the sequence the TAA jitter already uses here. Successive
+    // captures land spread across the texel rather than clustering, which random
+    // offsets would do -- and clustering is what would leave the accumulated
+    // result still aliased after many updates.
+    const auto halton = [](uint32_t index, uint32_t base) {
+        float result = 0.0f;
+        float fraction = 1.0f;
+        uint32_t current = index;
+        while (current > 0) {
+            fraction /= static_cast<float>(base);
+            result += fraction * static_cast<float>(current % base);
+            current /= base;
+        }
+        return result;
+    };
+
+    // Index 0 of a Halton sequence is 0, which would make the first update
+    // unjittered and every cycle-length-th one identical to it; offsetting by
+    // one keeps the sequence moving from the very first capture.
+    const uint32_t index = updateIndex + 1;
+    return glm::vec2{halton(index, 2) - 0.5f, halton(index, 3) - 0.5f};
 }
 
 uint32_t probeUpdateBatch(uint32_t cursor, uint32_t probesPerFrame, std::vector<uint32_t>& outProbeIndices)

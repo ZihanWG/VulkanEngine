@@ -1351,6 +1351,7 @@ void Renderer::clampRuntimeSettings()
     // every settings change (load, UI edit, reset), so the volume's copy of the
     // grid placement cannot drift from the settings it came from.
     irradianceProbes_.setBounds(giGridBounds());
+    irradianceProbes_.setHysteresis(giSettings_.hysteresis);
 
     // GPU occlusion tuning is renderer state, not part of the settings structs,
     // so it stays here.

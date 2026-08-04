@@ -151,6 +151,11 @@ void Renderer::recordProbeCapturePass(VkCommandBuffer commandBuffer)
 
     const VkDeviceAddress objectFrameDataBaseAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
     const renderer::ProbeGridBounds bounds = irradianceProbes_.bounds();
+    // The same offset the convolution will subtract. Applied here as a
+    // sub-texel slide of every face so successive captures of an unchanged
+    // scene are not bit-identical -- without that, accumulating them averages
+    // the same numbers forever and buys nothing.
+    const glm::vec2 captureJitter = irradianceProbes_.captureJitter();
     const renderer::Mesh* boundMesh = nullptr;
     uint32_t recordedDraws = 0;
 
@@ -174,7 +179,8 @@ void Renderer::recordProbeCapturePass(VkCommandBuffer commandBuffer)
             scissor.extent = {renderer::kProbeCaptureFaceResolution, renderer::kProbeCaptureFaceResolution};
             vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-            const glm::mat4 faceViewProjection = renderer::probeCaptureFaceViewProjection(probePosition, face);
+            const glm::mat4 faceViewProjection =
+                renderer::probeCaptureFaceViewProjection(probePosition, face, captureJitter);
             // Reuses the spot-shadow frustum extractor: it takes any perspective
             // view-projection, and a cube face is one. Without this every probe
             // would submit every draw item six times over.

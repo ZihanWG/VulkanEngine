@@ -5,6 +5,7 @@
 #include "rhi/VulkanContext.h"
 #include "rhi/VulkanDebugUtils.h"
 
+#include <algorithm>
 #include <array>
 #include <exception>
 #include <span>
@@ -110,6 +111,13 @@ void IrradianceProbeVolume::create(rhi::VulkanContext& context,
 const std::vector<uint32_t>& IrradianceProbeVolume::beginCaptureBatch(uint32_t probesPerFrame)
 {
     updateCursor_ = probeUpdateBatch(updateCursor_, probesPerFrame, captureBatch_);
+    if (!captureBatch_.empty()) {
+        // One jitter per update, shared by every probe in the batch: they are
+        // captured in the same frame, and a per-probe offset would buy nothing
+        // that a per-update one does not.
+        captureJitter_ = probeCaptureJitter(updateIndex_);
+        ++updateIndex_;
+    }
     capturedProbeCount_ += captureBatch_.size();
     return captureBatch_;
 }
@@ -137,6 +145,9 @@ void IrradianceProbeVolume::reset()
     captureAtlasLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     captureDepthLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     updateCursor_ = 0;
+    updateIndex_ = 0;
+    captureJitter_ = glm::vec2{0.0f};
+    hysteresis_ = 0.0f;
     captureBatch_.clear();
     capturedProbeCount_ = 0;
     atlasesInitialized_ = false;
@@ -431,6 +442,11 @@ void IrradianceProbeVolume::recordConvolve(VkCommandBuffer commandBuffer)
 {
     ProbeConvolvePushConstants pushConstants{};
     pushConstants.probeCount = static_cast<int32_t>(captureBatch_.size());
+    // Zero until the grid has been round-robined through once. Every probe past
+    // the first batch is still holding its neutral seed, and blending against
+    // that would leave the whole grid permanently darker than the scene.
+    pushConstants.hysteresis = gridConverged() ? std::clamp(hysteresis_, 0.0f, 0.99f) : 0.0f;
+    pushConstants.jitter = captureJitter_;
     for (size_t slot = 0; slot < captureBatch_.size() && slot < kMaxProbesPerFrame; ++slot) {
         pushConstants.probeIndices[slot / 4][slot % 4] = static_cast<int32_t>(captureBatch_[slot]);
     }

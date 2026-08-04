@@ -303,6 +303,13 @@ void Renderer::drawIrradianceProbesDebugUi()
     ImGui::SetItemTooltip("How far off a surface the grid is sampled from, in world units.\n"
                           "Too small and flat surfaces self-occlude into darkness; too large\n"
                           "and light leaks through thin geometry.");
+    ImGui::SliderFloat("Hysteresis", &giSettings_.hysteresis, 0.0f, 0.99f, "%.2f");
+    ImGui::SetItemTooltip("How much of a probe's previous value survives a re-capture.\n"
+                          "Zero overwrites, which is the reference to compare against;\n"
+                          "higher smooths the step when lighting moves and averages the\n"
+                          "sub-texel capture jitter into extra angular detail, at the cost\n"
+                          "of taking longer to catch up.");
+
     ImGui::Checkbox("Debug: probe irradiance only", &giSettings_.debugIrradianceOnly);
     ImGui::SetItemTooltip("Outputs the gathered indirect term on its own. An indirect\n"
                           "contribution this subtle is easy to mistake for none at all.");
@@ -357,6 +364,15 @@ void Renderer::drawIrradianceProbesDebugUi()
                             irradianceProbes_.updateCursor(),
                             renderer::kProbeCount,
                             static_cast<unsigned long long>(irradianceProbes_.capturedProbeCount()));
+        // Hysteresis is forced to zero until every probe has been captured once,
+        // because a probe blending against its neutral seed would stay
+        // permanently dark. Worth showing rather than leaving the slider looking
+        // inert for the first cycle.
+        const glm::vec2 jitter = irradianceProbes_.captureJitter();
+        ImGui::TextDisabled("Accumulating: %s. Capture jitter (%.3f, %.3f) texels.",
+                            irradianceProbes_.gridConverged() ? "yes" : "no, first cycle still filling",
+                            jitter.x,
+                            jitter.y);
     }
 
 

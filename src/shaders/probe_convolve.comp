@@ -35,15 +35,24 @@ const int kProbeCaptureFaceResolution = 16;
 const float kProbeMaxDistance = 64.0;
 const float kProbeDepthLobeExponent = 20.0;
 
-layout(set = 0, binding = 0, rgba16f) uniform writeonly image2D uIrradianceAtlas;
-layout(set = 0, binding = 1, rg16f) uniform writeonly image2D uDepthAtlas;
+// Read-write, not write-only: each invocation blends its result against what the
+// tile already holds. Every invocation touches exactly one texel of each atlas
+// and no other invocation touches those texels, so there is no hazard inside the
+// dispatch to order.
+layout(set = 0, binding = 0, rgba16f) uniform image2D uIrradianceAtlas;
+layout(set = 0, binding = 1, rg16f) uniform image2D uDepthAtlas;
 layout(set = 0, binding = 2, rgba16f) uniform readonly image2D uCaptureAtlas;
 
 layout(push_constant) uniform ProbeConvolvePush {
     int probeCount;
-    int padding0;
-    int padding1;
-    int padding2;
+    // Fraction of the tile's previous contents kept. Zero overwrites, which is
+    // what a probe being seen for the first time needs -- blending against the
+    // neutral seed would leave every probe permanently too dark.
+    float hysteresis;
+    // Sub-texel offset the capture was rasterised with. The reconstruction has
+    // to move by the same amount or the accumulated result is smeared rather
+    // than sharpened.
+    vec2 jitter;
     // Grid index per capture slot, packed four to a vec4 because push-constant
     // arrays of scalars are padded to 16 bytes an element. Passed explicitly
     // rather than derived from a base index: the round-robin batch wraps at the
@@ -83,8 +92,11 @@ vec3 cubeFaceForward(int face)
 vec3 cubeTexelDirection(int face, vec2 texel)
 {
     float size = float(kProbeCaptureFaceResolution);
-    float u = (texel.x + 0.5) / size * 2.0 - 1.0;
-    float v = (texel.y + 0.5) / size * 2.0 - 1.0;
+    // Jitter subtracted, matching ve::renderer::probeCubeTexelDirection: the
+    // projection shifts the image, so the direction under texel x is the one
+    // that was at x minus the shift.
+    float u = (texel.x + 0.5 - push.jitter.x) / size * 2.0 - 1.0;
+    float v = (texel.y + 0.5 - push.jitter.y) / size * 2.0 - 1.0;
 
     vec3 forward = cubeFaceForward(face);
     vec3 worldUp = abs(forward.y) > 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
@@ -180,15 +192,17 @@ void main()
         }
     }
 
-    // No blend against what the tile already holds. A probe is re-captured on a
-    // fixed cycle and its value only moves when the scene does, so in a static
-    // scene there is nothing to smooth; when the scene does move the update
-    // steps rather than eases, which is what the temporal phase is for.
+    float blend = clamp(push.hysteresis, 0.0, 1.0);
+
     if (writesIrradiance) {
         vec3 irradiance = radianceWeight > 0.0 ? radianceSum / radianceWeight : vec3(0.0);
         ivec2 target = probeTileOrigin(probeIndex, kProbeIrradianceResolution) +
                        localTexel + ivec2(kProbeBorderTexels);
-        imageStore(uIrradianceAtlas, target, vec4(irradiance, 1.0));
+        // Blending turns the step a probe takes when the lighting has moved into
+        // a ramp, and averages the jittered captures into angular detail no
+        // single 16x16 capture holds.
+        vec3 previous = imageLoad(uIrradianceAtlas, target).rgb;
+        imageStore(uIrradianceAtlas, target, vec4(mix(irradiance, previous, blend), 1.0));
     }
 
     float meanDistance = distanceWeight > 0.0 ? distanceSum / distanceWeight : kProbeMaxDistance;
@@ -196,5 +210,7 @@ void main()
         distanceWeight > 0.0 ? distanceSquaredSum / distanceWeight : kProbeMaxDistance * kProbeMaxDistance;
     ivec2 depthTarget =
         probeTileOrigin(probeIndex, kProbeDepthResolution) + localTexel + ivec2(kProbeBorderTexels);
-    imageStore(uDepthAtlas, depthTarget, vec4(meanDistance, meanDistanceSquared, 0.0, 0.0));
+    vec2 previousMoments = imageLoad(uDepthAtlas, depthTarget).rg;
+    vec2 moments = mix(vec2(meanDistance, meanDistanceSquared), previousMoments, blend);
+    imageStore(uDepthAtlas, depthTarget, vec4(moments, 0.0, 0.0));
 }

@@ -31,6 +31,7 @@
 #include <filesystem>
 #include <vector>
 
+#include <glm/vec2.hpp>
 #include <glm/vec4.hpp>
 
 namespace ve::rhi {
@@ -89,9 +90,12 @@ enum class ProbeAtlasTarget : int32_t {
 // cycle, so a contiguous run is exactly what the batch is not on those frames.
 struct ProbeConvolvePushConstants {
     int32_t probeCount = 0;
-    int32_t padding0 = 0;
-    int32_t padding1 = 0;
-    int32_t padding2 = 0;
+    // Fraction of the previous tile kept. Zero on a probe's first capture, or
+    // the neutral seed would be blended in forever.
+    float hysteresis = 0.0f;
+    // Sub-texel offset this capture was rasterised with; the reconstruction has
+    // to move by the same amount.
+    glm::vec2 jitter{0.0f};
     // Four to a vector because a push-constant array of scalars pads each
     // element to 16 bytes.
     std::array<glm::ivec4, kMaxProbesPerFrame / 4> probeIndices{};
@@ -121,8 +125,30 @@ public:
     void reset();
 
     // Picks the probes to capture this frame and returns them. Advances the
-    // round-robin cursor, so it is called exactly once per frame that captures.
+    // round-robin cursor and the jitter sequence, so it is called exactly once
+    // per frame that captures.
     [[nodiscard]] const std::vector<uint32_t>& beginCaptureBatch(uint32_t probesPerFrame);
+
+    // Sub-texel offset the current batch is being captured with. The capture
+    // pass applies it to each face projection and the convolution subtracts it
+    // again; both must use this same value.
+    [[nodiscard]] glm::vec2 captureJitter() const
+    {
+        return captureJitter_;
+    }
+
+    // How much of a probe's previous value to keep. Held at zero until every
+    // probe has been captured at least once: a probe blending against its
+    // neutral seed would stay permanently too dark, and with a round-robin
+    // cursor that is most of the grid for the first full cycle.
+    void setHysteresis(float hysteresis)
+    {
+        hysteresis_ = hysteresis;
+    }
+    [[nodiscard]] bool gridConverged() const
+    {
+        return capturedProbeCount_ >= kProbeCount;
+    }
 
     // The batch chosen by the last beginCaptureBatch, which is what the capture
     // pass rasterises and the convolution then reads back out of the capture
@@ -302,6 +328,9 @@ private:
     // Round-robin state. The cursor is what bounds any one probe's staleness;
     // see probeUpdateBatch.
     uint32_t updateCursor_ = 0;
+    uint32_t updateIndex_ = 0;
+    glm::vec2 captureJitter_{0.0f};
+    float hysteresis_ = 0.0f;
     std::vector<uint32_t> captureBatch_;
     uint64_t capturedProbeCount_ = 0;
     // Owned by this class but driven by the render graph, which transitions both

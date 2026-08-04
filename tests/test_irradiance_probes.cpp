@@ -35,6 +35,7 @@ using ve::renderer::probeBorderSource;
 using ve::renderer::probeChebyshevVisibility;
 using ve::renderer::probeDirectionWeight;
 using ve::renderer::probeSamplePosition;
+using ve::renderer::probeCaptureJitter;
 using ve::renderer::probeCaptureAtlasSize;
 using ve::renderer::probeCaptureFaceViewProjection;
 using ve::renderer::probeCaptureTileOrigin;
@@ -985,4 +986,62 @@ TEST_CASE("The probe sample position leaves the surface it shades", "[probes]")
 
     // A negative bias must not pull the sample *into* the surface.
     CHECK(probeSamplePosition(position, normal, view, -1.0f) == position);
+}
+
+TEST_CASE("Jittered capture directions agree with the jittered projection", "[probes]")
+{
+    // The capture is deterministic -- the same fixed directions every update --
+    // so accumulating successive captures of an unchanged scene would gain
+    // exactly nothing. Sub-texel jitter is what makes accumulation worth doing,
+    // and it only works if the projection and the direction reconstruction move
+    // by the same amount in opposite directions. Get the sign wrong and the
+    // offset doubles instead of cancelling, which reads as a smeared probe
+    // rather than as anything obviously broken.
+    const glm::vec3 probePosition{-1.0f, 4.0f, 2.0f};
+    const auto resolution = static_cast<float>(kProbeCaptureFaceResolution);
+
+    for (const uint32_t update : {0u, 1u, 5u, 37u}) {
+        const glm::vec2 jitter = probeCaptureJitter(update);
+        // A sub-texel offset: larger would sample a neighbouring texel's cone
+        // and stop being an anti-aliasing device.
+        CHECK(std::abs(jitter.x) <= 0.5f);
+        CHECK(std::abs(jitter.y) <= 0.5f);
+
+        for (uint32_t face = 0; face < kProbeCaptureFaceCount; ++face) {
+            const glm::mat4 viewProjection = probeCaptureFaceViewProjection(probePosition, face, jitter);
+            for (const uint32_t texel : {0u, 3u, kProbeCaptureFaceResolution - 1u}) {
+                const glm::vec3 direction =
+                    probeCubeTexelDirection(face, texel, texel, kProbeCaptureFaceResolution, jitter);
+                const glm::vec4 clip = viewProjection * glm::vec4{probePosition + direction * 8.0f, 1.0f};
+                REQUIRE(clip.w > 0.0f);
+                const glm::vec2 pixel{((clip.x / clip.w) * 0.5f + 0.5f) * resolution,
+                                      ((clip.y / clip.w) * 0.5f + 0.5f) * resolution};
+                CHECK(pixel.x == Approx(static_cast<float>(texel) + 0.5f).margin(1.0e-3f));
+                CHECK(pixel.y == Approx(static_cast<float>(texel) + 0.5f).margin(1.0e-3f));
+            }
+        }
+    }
+
+    // Successive updates must actually move, or accumulation averages identical
+    // samples and buys nothing -- the exact failure this whole mechanism exists
+    // to avoid.
+    std::vector<glm::vec2> offsets;
+    for (uint32_t update = 0; update < 16; ++update) {
+        offsets.push_back(probeCaptureJitter(update));
+    }
+    for (size_t i = 0; i < offsets.size(); ++i) {
+        for (size_t j = i + 1; j < offsets.size(); ++j) {
+            CHECK(glm::length(offsets[i] - offsets[j]) > 1.0e-4f);
+        }
+    }
+
+    // Zero jitter is exactly the unjittered projection, so the default path is
+    // untouched by any of this.
+    for (uint32_t face = 0; face < kProbeCaptureFaceCount; ++face) {
+        const glm::mat4 plain = probeCaptureFaceViewProjection(probePosition, face);
+        const glm::mat4 zero = probeCaptureFaceViewProjection(probePosition, face, glm::vec2{0.0f});
+        CHECK(plain == zero);
+        CHECK(probeCubeTexelDirection(face, 2, 5, kProbeCaptureFaceResolution) ==
+              probeCubeTexelDirection(face, 2, 5, kProbeCaptureFaceResolution, glm::vec2{0.0f}));
+    }
 }

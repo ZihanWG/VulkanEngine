@@ -186,6 +186,10 @@ struct GiSettings {
     // and flat surfaces self-occlude into darkness; too large and light leaks
     // through thin geometry.
     float surfaceBias = 0.3f;
+    // Fraction of a probe's previous value kept when it is re-captured. Zero
+    // makes each capture overwrite, which is the reference the accumulated
+    // result is judged against.
+    float hysteresis = 0.7f;
     // Outputs probe irradiance alone instead of shaded colour.
     bool debugIrradianceOnly = false;
 };

@@ -100,6 +100,9 @@ void clampRuntimeSettings(ToneMappingSettings& toneMapping,
     // The upper bound is roughly one probe spacing: a bias past that samples a
     // different cell than the surface is in, which is worse than self-occlusion.
     gi.surfaceBias = std::clamp(gi.surfaceBias, 0.0f, 4.0f);
+    // Capped below 1: at exactly 1 a probe would keep its previous value
+    // forever and never take the capture it just paid for.
+    gi.hysteresis = std::clamp(gi.hysteresis, 0.0f, 0.99f);
 
     csm.cascadeCount = std::clamp(csm.cascadeCount, 1U, renderer::kMaxShadowCascades);
     csm.lambda = std::clamp(csm.lambda, 0.0f, 1.0f);
@@ -349,6 +352,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readFloat(*gi, "previewGain", settings.gi.previewGain);
         readFloat(*gi, "intensity", settings.gi.intensity);
         readFloat(*gi, "surfaceBias", settings.gi.surfaceBias);
+        readFloat(*gi, "hysteresis", settings.gi.hysteresis);
         readBool(*gi, "debugIrradianceOnly", settings.gi.debugIrradianceOnly);
         readFloat(*gi, "gridOriginX", settings.gi.gridOrigin[0]);
         readFloat(*gi, "gridOriginY", settings.gi.gridOrigin[1]);
@@ -443,6 +447,7 @@ Json toJson(const RuntimeSettings& settings)
               {"previewGain", settings.gi.previewGain},
               {"intensity", settings.gi.intensity},
               {"surfaceBias", settings.gi.surfaceBias},
+              {"hysteresis", settings.gi.hysteresis},
               {"debugIrradianceOnly", settings.gi.debugIrradianceOnly},
               {"gridOriginX", settings.gi.gridOrigin[0]},
               {"gridOriginY", settings.gi.gridOrigin[1]},
