@@ -359,25 +359,41 @@ void Renderer::drawIrradianceProbesDebugUi()
     // anything captures real radiance.
     const float previewSize = 320.0f * std::clamp(debugUiSettings_.renderTargetPreviewScale, 0.25f, 2.0f);
 
-    ImGui::TextDisabled("Irradiance %ux%u (%u x %u tiles), direction as colour.",
+    // Gathered irradiance in this scene measures roughly 0.05 to 0.25, so shown
+    // at 1:1 the whole atlas lands in the bottom quarter of the display range
+    // and reads as black however correct it is. Captured radiance is not a
+    // display value and there is no exposure applied to it here, so the preview
+    // needs its own gain the way the HDR render targets do.
+    ImGui::SliderFloat("Preview gain", &giSettings_.previewGain, 1.0f, 16.0f, "%.1fx");
+    ImGui::SetItemTooltip("Brightens the previews only. Probe values are linear radiance, not display\n"
+                          "colour, and are far below 1.0 in an ordinary scene.");
+
+    ImGui::TextDisabled("Irradiance %ux%u (%u x %u tiles), one tile per probe.",
                         renderer::kProbeIrradianceAtlasWidth,
                         renderer::kProbeIrradianceAtlasHeight,
                         renderer::kProbeAtlasTilesX,
                         renderer::kProbeAtlasTilesY);
+    ImGui::TextDisabled("Columns are (x, y) with x fastest, rows are z: the leftmost 8 columns are the "
+                        "lowest layer.");
     drawRenderTargetPreview(irradianceProbes_.irradianceAtlas().imageView(),
                             irradianceProbes_.sampler(),
                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                             renderer::kProbeIrradianceAtlasWidth,
                             renderer::kProbeIrradianceAtlasHeight,
                             previewSize,
-                            1.0f);
+                            giSettings_.previewGain);
 
-    // Scaled into [0,1] by the same bound the shader clamps distances to, since
-    // the preview tint cannot expand range the way it can compress it.
-    ImGui::TextDisabled("Depth %ux%u, mean distance scaled by 1/%.0f.",
+    // Red is mean distance over kProbeMaxDistance. Green is the *squared* mean
+    // over the same scale, so it saturates for anything past 8 units and is not
+    // worth reading -- the tint is one multiplier for every channel, and the two
+    // moments are orders of magnitude apart by construction. Saying so beats
+    // leaving a channel that always looks blown out.
+    ImGui::TextDisabled("Depth %ux%u. Red = mean distance / %.0f; green is its square and saturates.",
                         renderer::kProbeDepthAtlasWidth,
                         renderer::kProbeDepthAtlasHeight,
                         renderer::kProbeMaxDistance);
+    ImGui::TextDisabled("Saturated yellow means nothing was hit in that direction, which is expected for "
+                        "probes sitting in open air.");
     drawRenderTargetPreview(irradianceProbes_.depthAtlas().imageView(),
                             irradianceProbes_.sampler(),
                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,

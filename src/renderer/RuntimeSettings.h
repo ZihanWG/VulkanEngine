@@ -174,6 +174,10 @@ struct GiSettings {
     // independently of whether *capture* is, and a standing check on the
     // octahedral border.
     bool debugPattern = false;
+    // Display-only gain for the atlas previews. Probe values are linear radiance
+    // well below 1.0, so at 1:1 a correct atlas is indistinguishable from an
+    // empty one.
+    float previewGain = 6.0f;
 };
 
 struct RuntimeSettings {
