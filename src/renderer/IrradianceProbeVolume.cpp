@@ -131,6 +131,7 @@ void IrradianceProbeVolume::reset()
     depthAtlas_.reset();
     captureAtlas_.reset();
     captureDepth_.reset();
+    shadingParamsBuffer_.reset();
     irradianceAtlasLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     depthAtlasLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     captureAtlasLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -201,6 +202,48 @@ void IrradianceProbeVolume::createAtlases()
     captureDepthInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
     captureDepthInfo.debugName = "ProbeCaptureDepth";
     captureDepth_.create(*context_, captureDepthInfo);
+
+    // Device-local and refreshed by vkCmdUpdateBuffer inside the frame that
+    // reads it, rather than host-visible and written per frame. That is what
+    // makes one buffer enough: a host write would race the previous frame's
+    // fragment shader still reading it, and avoiding that would mean a buffer
+    // and a descriptor set per frame in flight.
+    rhi::VulkanBufferCreateInfo paramsInfo{};
+    paramsInfo.size = sizeof(ProbeShadingParams);
+    paramsInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    paramsInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
+    shadingParamsBuffer_.createBuffer(*context_, paramsInfo);
+    rhi::debug::setObjectName(
+        context_->vkDevice(), shadingParamsBuffer_.buffer(), VK_OBJECT_TYPE_BUFFER, "ProbeShadingParams");
+}
+
+void IrradianceProbeVolume::updateShadingParams(VkCommandBuffer commandBuffer, const ProbeShadingParams& params)
+{
+    if (shadingParamsBuffer_.buffer() == VK_NULL_HANDLE) {
+        return;
+    }
+
+    vkCmdUpdateBuffer(commandBuffer, shadingParamsBuffer_.buffer(), 0, sizeof(ProbeShadingParams), &params);
+
+    // The buffer is not a render-graph resource, so the barrier is written by
+    // hand the way VolumetricFogPass does for its own volumes.
+    VkBufferMemoryBarrier2 barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.buffer = shadingParamsBuffer_.buffer();
+    barrier.offset = 0;
+    barrier.size = sizeof(ProbeShadingParams);
+
+    VkDependencyInfo dependency{};
+    dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dependency.bufferMemoryBarrierCount = 1;
+    dependency.pBufferMemoryBarriers = &barrier;
+    vkCmdPipelineBarrier2(commandBuffer, &dependency);
 }
 
 void IrradianceProbeVolume::createSampler()

@@ -96,6 +96,10 @@ void clampRuntimeSettings(ToneMappingSettings& toneMapping,
     gi.probesPerFrame = std::clamp(gi.probesPerFrame, 0, static_cast<int>(renderer::kMaxProbesPerFrame));
     // Upper bound matches drawRenderTargetPreview, which clamps its tint at 16.
     gi.previewGain = std::clamp(gi.previewGain, 1.0f, 16.0f);
+    gi.intensity = std::clamp(gi.intensity, 0.0f, 4.0f);
+    // The upper bound is roughly one probe spacing: a bias past that samples a
+    // different cell than the surface is in, which is worse than self-occlusion.
+    gi.surfaceBias = std::clamp(gi.surfaceBias, 0.0f, 4.0f);
 
     csm.cascadeCount = std::clamp(csm.cascadeCount, 1U, renderer::kMaxShadowCascades);
     csm.lambda = std::clamp(csm.lambda, 0.0f, 1.0f);
@@ -343,6 +347,9 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readBool(*gi, "debugPattern", settings.gi.debugPattern);
         readInt(*gi, "probesPerFrame", settings.gi.probesPerFrame);
         readFloat(*gi, "previewGain", settings.gi.previewGain);
+        readFloat(*gi, "intensity", settings.gi.intensity);
+        readFloat(*gi, "surfaceBias", settings.gi.surfaceBias);
+        readBool(*gi, "debugIrradianceOnly", settings.gi.debugIrradianceOnly);
         readFloat(*gi, "gridOriginX", settings.gi.gridOrigin[0]);
         readFloat(*gi, "gridOriginY", settings.gi.gridOrigin[1]);
         readFloat(*gi, "gridOriginZ", settings.gi.gridOrigin[2]);
@@ -434,6 +441,9 @@ Json toJson(const RuntimeSettings& settings)
               {"debugPattern", settings.gi.debugPattern},
               {"probesPerFrame", settings.gi.probesPerFrame},
               {"previewGain", settings.gi.previewGain},
+              {"intensity", settings.gi.intensity},
+              {"surfaceBias", settings.gi.surfaceBias},
+              {"debugIrradianceOnly", settings.gi.debugIrradianceOnly},
               {"gridOriginX", settings.gi.gridOrigin[0]},
               {"gridOriginY", settings.gi.gridOrigin[1]},
               {"gridOriginZ", settings.gi.gridOrigin[2]},

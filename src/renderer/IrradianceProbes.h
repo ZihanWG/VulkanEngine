@@ -126,6 +126,15 @@ inline constexpr uint32_t kMaxProbesPerFrame = 16;
 // frame at 1536 samples.
 inline constexpr float kProbeDepthLobeExponent = 20.0f;
 
+// Floor under a probe's visibility weight. A hard zero puts a visible edge in
+// the shading wherever the weight crosses it, which reads as a crease that does
+// not correspond to any geometry.
+inline constexpr float kProbeMinVisibility = 0.02f;
+
+// Floor under the backface weight, for the same reason: a probe exactly edge-on
+// to a surface should fade, not vanish.
+inline constexpr float kProbeBackfaceFloor = 0.2f;
+
 // Distances written into the depth atlas are clamped to this. Two reasons, and
 // only the first is about storage: the atlas keeps distance and distance
 // squared in a 16-bit float pair, and the squared channel is what runs out of
@@ -262,5 +271,51 @@ struct ProbeBlend {
 [[nodiscard]] uint32_t probeUpdateBatch(uint32_t cursor,
                                         uint32_t probesPerFrame,
                                         std::vector<uint32_t>& outProbeIndices);
+
+// --- Shading weights ---
+
+// How much of a probe's irradiance survives the geometry between it and the
+// shading point, from the two distance moments stored in the depth atlas.
+//
+// This is the whole reason the depth atlas exists. Trilinear blending alone
+// happily takes light from a probe on the other side of a wall, and that failure
+// looks like a room being softly lit from nowhere rather than like an addressing
+// bug -- it is the single most characteristic artefact of probe GI.
+//
+// A Chebyshev bound on P(distance <= d) from the mean and mean square, cubed to
+// sharpen the falloff, and floored so a probe never contributes exactly nothing
+// (a hard zero puts a visible edge where the weight crosses it).
+//
+// The absolute value on the variance is load-bearing, not defensive: the moments
+// are read through a bilinear filter, and interpolating between two texels can
+// produce a mean square below the squared mean even though no single texel can.
+// The variance then goes negative and the weight comes back negative, which
+// subtracts light -- a black fringe that looks like an occlusion artefact.
+[[nodiscard]] float probeChebyshevVisibility(float meanDistance,
+                                             float meanSquaredDistance,
+                                             float distanceToProbe);
+
+// Smooth rejection of probes sitting behind the shading surface.
+//
+// A hard dot-product cutoff would drop probes discontinuously as a surface turns,
+// which shows up as a hard line across otherwise smooth shading. The wrapped
+// cosine falls off gradually instead, and the floor keeps a probe exactly edge-on
+// contributing a little rather than nothing at all.
+//
+// The result is a relative weight, normalised against the other seven probes by
+// the caller, so its absolute scale carries no meaning.
+[[nodiscard]] float probeDirectionWeight(const glm::vec3& surfaceNormal, const glm::vec3& directionToProbe);
+
+// World position to sample the probe grid from.
+//
+// Offset off the surface before looking up, or a surface samples probes whose
+// stored visibility says the surface itself is in the way, and every flat plane
+// self-occludes into darkness. Biased along both the normal and the view
+// direction: normal alone still fails at grazing angles, where the offset barely
+// clears the surface along the line the eye is actually looking down.
+[[nodiscard]] glm::vec3 probeSamplePosition(const glm::vec3& worldPosition,
+                                            const glm::vec3& surfaceNormal,
+                                            const glm::vec3& viewDirection,
+                                            float normalBias);
 
 } // namespace ve::renderer

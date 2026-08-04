@@ -58,7 +58,7 @@ namespace ve {
 
 void Renderer::createMaterialDescriptorSetLayout()
 {
-    std::array<VkDescriptorSetLayoutBinding, 9> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 12> bindings{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[0].descriptorCount = 1;
@@ -103,6 +103,25 @@ void Renderer::createMaterialDescriptorSetLayout()
     bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[8].descriptorCount = 1;
     bindings[8].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    // Irradiance-probe GI: the two octahedral atlases plus the grid parameters
+    // that address them. The parameters are a uniform buffer rather than push
+    // constants because the main pass's push block has 24 bytes left and this
+    // needs 32.
+    bindings[9].binding = 9;
+    bindings[9].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[9].descriptorCount = 1;
+    bindings[9].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    bindings[10].binding = 10;
+    bindings[10].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[10].descriptorCount = 1;
+    bindings[10].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    bindings[11].binding = 11;
+    bindings[11].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[11].descriptorCount = 1;
+    bindings[11].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     // Set 0 binding 0 is the base color texture, binding 1 is the cascaded
     // shadow-map array, binding 2 is the tangent-space normal map, and binding 3 is the
@@ -791,13 +810,17 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
         throw std::runtime_error("Cannot create a material descriptor set without a valid BRDF LUT texture.");
     }
 
-    VkDescriptorPoolSize poolSize{};
-    poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = kMaxMaterialDescriptorSets * 9;
+    // Eleven samplers and one uniform buffer per set.
+    std::array<VkDescriptorPoolSize, 2> poolSizes{};
+    poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSizes[0].descriptorCount = kMaxMaterialDescriptorSets * 11;
+    poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    poolSizes[1].descriptorCount = kMaxMaterialDescriptorSets;
 
     if (materialDescriptorPool_.handle() == VK_NULL_HANDLE) {
-        materialDescriptorPool_.create(
-            context_.vkDevice(), std::span<const VkDescriptorPoolSize>(&poolSize, 1), kMaxMaterialDescriptorSets);
+        materialDescriptorPool_.create(context_.vkDevice(),
+                                       std::span<const VkDescriptorPoolSize>(poolSizes.data(), poolSizes.size()),
+                                       kMaxMaterialDescriptorSets);
     }
 
     const VkDescriptorSetLayout descriptorSetLayout = materialDescriptorSetLayout_.handle();
@@ -862,6 +885,29 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     fogVolumeInfo.imageView = volumetricFog_.integratedVolume().imageView();
     fogVolumeInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
+    // Probe atlases. Bound whenever the volume allocated them, which it does even
+    // when its compute half failed -- the descriptor has to be complete and
+    // type-correct regardless, and nothing samples it while the intensity in the
+    // parameter buffer is zero.
+    if (!irradianceProbes_.hasAtlases() || irradianceProbes_.shadingParamsBuffer() == VK_NULL_HANDLE) {
+        throw std::runtime_error(
+            "Cannot create a material descriptor set without the probe atlases for bindings 9-11.");
+    }
+    VkDescriptorImageInfo probeIrradianceInfo{};
+    probeIrradianceInfo.sampler = irradianceProbes_.sampler();
+    probeIrradianceInfo.imageView = irradianceProbes_.irradianceAtlas().imageView();
+    probeIrradianceInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkDescriptorImageInfo probeDepthInfo{};
+    probeDepthInfo.sampler = irradianceProbes_.sampler();
+    probeDepthInfo.imageView = irradianceProbes_.depthAtlas().imageView();
+    probeDepthInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkDescriptorBufferInfo probeParamsInfo{};
+    probeParamsInfo.buffer = irradianceProbes_.shadingParamsBuffer();
+    probeParamsInfo.offset = 0;
+    probeParamsInfo.range = sizeof(renderer::ProbeShadingParams);
+
     const bool punctualAtlasAvailable = punctualShadows_.valid();
     VkDescriptorImageInfo punctualShadowInfo{};
     punctualShadowInfo.sampler =
@@ -870,7 +916,7 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
         punctualAtlasAvailable ? punctualShadows_.atlas().imageView() : shadowMap_.layerImageView(0);
     punctualShadowInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
 
-    std::array<VkWriteDescriptorSet, 9> writes{};
+    std::array<VkWriteDescriptorSet, 12> writes{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = material.descriptorSet;
     writes[0].dstBinding = 0;
@@ -943,11 +989,29 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     writes[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[8].pImageInfo = &fogVolumeInfo;
 
+    const auto makeWrite = [&](uint32_t index, uint32_t binding, VkDescriptorType type) {
+        writes[index].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[index].dstSet = material.descriptorSet;
+        writes[index].dstBinding = binding;
+        writes[index].dstArrayElement = 0;
+        writes[index].descriptorCount = 1;
+        writes[index].descriptorType = type;
+    };
+    makeWrite(9, 9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+    writes[9].pImageInfo = &probeIrradianceInfo;
+    makeWrite(10, 10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+    writes[10].pImageInfo = &probeDepthInfo;
+    makeWrite(11, 11, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+    writes[11].pBufferInfo = &probeParamsInfo;
+
     // The material descriptor stores sampled images only: base color at binding 0,
     // cascaded shadow-map array at binding 1, normal map at binding 2, and metallic-roughness
     // map at binding 3. Bindings 4-6 are diffuse irradiance, prefiltered specular
-    // environment, and the BRDF LUT; binding 7 is the punctual shadow atlas.
-    // Object data remains outside descriptors.
+    // environment, and the BRDF LUT; binding 7 is the punctual shadow atlas and
+    // binding 8 the integrated fog volume. Bindings 9 and 10 are the probe
+    // irradiance and visibility atlases, and binding 11 -- the one exception to
+    // "sampled images only" -- carries the probe grid parameters that address
+    // them. Object data remains outside descriptors.
     vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 

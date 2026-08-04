@@ -1240,6 +1240,25 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         }
     }
 
+    // Probe shading parameters, refreshed inside this frame's own command buffer
+    // so a single buffer serves every frame in flight. Recorded here because it
+    // must be outside a rendering scope and before the pass that reads it.
+    {
+        renderer::ProbeShadingParams probeParams{};
+        const renderer::ProbeGridBounds bounds = irradianceProbes_.bounds();
+        // Intensity carries the off state, so everything downstream needs no
+        // separate flag: no atlases, no capture pipeline, or the toggle off all
+        // collapse to zero here.
+        const bool probeShadingActive = giSettings_.enabled && irradianceProbes_.hasAtlases() &&
+                                        irradianceProbes_.convolveAvailable() && !giSettings_.debugPattern;
+        probeParams.gridOrigin =
+            glm::vec4{bounds.origin, probeShadingActive ? giSettings_.intensity : 0.0f};
+        probeParams.gridSpacing = glm::vec4{bounds.spacing, giSettings_.surfaceBias};
+        probeParams.debug.x =
+            (probeShadingActive && giSettings_.debugIrradianceOnly) ? 1.0f : 0.0f;
+        irradianceProbes_.updateShadingParams(commandBuffer, probeParams);
+    }
+
     const bool mainHdrProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "MainHDRPass");
     rhi::debug::beginLabel(commandBuffer, "MainHDRPass");
     renderGraph_.beginMainHdrPass();

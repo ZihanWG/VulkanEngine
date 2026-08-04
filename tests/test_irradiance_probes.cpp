@@ -7,7 +7,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <set>
+#include <utility>
 #include <vector>
 
 using Catch::Approx;
@@ -30,6 +32,9 @@ using ve::renderer::probeAtlasSize;
 using ve::renderer::probeAtlasUv;
 using ve::renderer::probeBlendAt;
 using ve::renderer::probeBorderSource;
+using ve::renderer::probeChebyshevVisibility;
+using ve::renderer::probeDirectionWeight;
+using ve::renderer::probeSamplePosition;
 using ve::renderer::probeCaptureAtlasSize;
 using ve::renderer::probeCaptureFaceViewProjection;
 using ve::renderer::probeCaptureTileOrigin;
@@ -858,4 +863,126 @@ TEST_CASE("Round-robin capture visits every probe once per cycle", "[probes]")
     CHECK(batch.size() <= kProbeCount);
     CHECK(std::set<uint32_t>(batch.begin(), batch.end()).size() == batch.size());
     CHECK(wrapped < kProbeCount);
+}
+
+TEST_CASE("Chebyshev visibility rejects probes behind an occluder", "[probes]")
+{
+    // The single most characteristic artefact of probe GI is light arriving
+    // through a wall, because trilinear blending on its own has no idea the wall
+    // is there. This weight is the only thing that stops it, and it fails
+    // quietly: too permissive and rooms glow from nowhere, too aggressive and
+    // everything self-occludes into darkness.
+    const auto moments = [](float distance) {
+        // What a probe records when everything it sees in a direction sits at
+        // exactly one distance: the two moments of a single sample.
+        return std::pair<float, float>{distance, distance * distance};
+    };
+
+    // A probe whose stored distance reaches the shading point is fully visible.
+    {
+        const auto [mean, meanSquared] = moments(10.0f);
+        CHECK(probeChebyshevVisibility(mean, meanSquared, 5.0f) == Approx(1.0f));
+        CHECK(probeChebyshevVisibility(mean, meanSquared, 10.0f) == Approx(1.0f));
+    }
+
+    // Past it, the weight falls and keeps falling -- monotonically, or the
+    // shading would brighten again further behind the occluder.
+    {
+        const auto [mean, meanSquared] = moments(10.0f);
+        float previous = 1.0f;
+        for (float distance = 10.0f; distance <= 30.0f; distance += 0.5f) {
+            const float visibility = probeChebyshevVisibility(mean, meanSquared, distance);
+            CHECK(visibility <= previous + 1.0e-6f);
+            CHECK(visibility >= 0.0f);
+            CHECK(visibility <= 1.0f);
+            previous = visibility;
+        }
+        // Well past a hard occluder the probe is effectively rejected.
+        CHECK(probeChebyshevVisibility(mean, meanSquared, 25.0f) < 0.05f);
+    }
+
+    // A blurry occluder -- high variance -- rejects far more gently than a sharp
+    // one at the same mean. That is the whole point of storing the second
+    // moment rather than just the distance.
+    {
+        const float sharp = probeChebyshevVisibility(10.0f, 100.0f, 14.0f);
+        const float blurry = probeChebyshevVisibility(10.0f, 160.0f, 14.0f);
+        INFO("sharp " << sharp << " blurry " << blurry);
+        CHECK(blurry > sharp);
+    }
+
+    // Bilinear filtering of the two moments can produce a mean square below the
+    // squared mean, which no single texel can. Without the absolute value the
+    // variance goes negative and the weight comes back negative -- light gets
+    // *subtracted*, showing up as a black fringe that reads as an occlusion
+    // artefact rather than as arithmetic.
+    for (const float meanSquared : {0.0f, 50.0f, 99.0f}) {
+        const float visibility = probeChebyshevVisibility(10.0f, meanSquared, 20.0f);
+        INFO("meanSquared " << meanSquared << " -> " << visibility);
+        CHECK(std::isfinite(visibility));
+        CHECK(visibility >= 0.0f);
+        CHECK(visibility <= 1.0f);
+    }
+
+    // Degenerate inputs must not produce NaN: a NaN weight propagates into the
+    // accumulated irradiance and never washes out.
+    CHECK(std::isfinite(probeChebyshevVisibility(0.0f, 0.0f, 0.0f)));
+    CHECK(std::isfinite(probeChebyshevVisibility(0.0f, 0.0f, 5.0f)));
+    CHECK(std::isfinite(probeChebyshevVisibility(-1.0f, -1.0f, 5.0f)));
+    // A NaN distance decodes to visible rather than sliding through the divide.
+    CHECK(probeChebyshevVisibility(10.0f, 100.0f, std::numeric_limits<float>::quiet_NaN()) == Approx(1.0f));
+}
+
+TEST_CASE("Probe direction weight falls off smoothly behind the surface", "[probes]")
+{
+    const glm::vec3 normal{0.0f, 1.0f, 0.0f};
+
+    // Directly above beats edge-on beats directly below, with no discontinuity
+    // in between -- a hard cutoff would draw a line across smooth shading where
+    // no geometry changes.
+    const float above = probeDirectionWeight(normal, glm::vec3{0.0f, 1.0f, 0.0f});
+    const float edge = probeDirectionWeight(normal, glm::vec3{1.0f, 0.0f, 0.0f});
+    const float below = probeDirectionWeight(normal, glm::vec3{0.0f, -1.0f, 0.0f});
+    CHECK(above > edge);
+    CHECK(edge > below);
+
+    // A probe fully behind the surface still contributes a little rather than
+    // vanishing, which is what keeps the falloff from having an edge of its own.
+    CHECK(below > 0.0f);
+
+    float previous = -1.0f;
+    for (int step = 0; step <= 64; ++step) {
+        const float angle = static_cast<float>(step) / 64.0f * 3.14159265f;
+        const glm::vec3 direction{std::sin(angle), std::cos(angle), 0.0f};
+        const float weight = probeDirectionWeight(normal, direction);
+        CHECK(std::isfinite(weight));
+        if (previous >= 0.0f) {
+            // Monotonic as the probe swings from overhead to underneath.
+            CHECK(weight <= previous + 1.0e-6f);
+        }
+        previous = weight;
+    }
+}
+
+TEST_CASE("The probe sample position leaves the surface it shades", "[probes]")
+{
+    const glm::vec3 position{2.0f, 1.0f, -3.0f};
+    const glm::vec3 normal{0.0f, 1.0f, 0.0f};
+    const glm::vec3 view{0.0f, 0.0f, 1.0f};
+
+    // Zero bias is the identity, so the offset is opt-in rather than baked in.
+    CHECK(probeSamplePosition(position, normal, view, 0.0f) == position);
+
+    // A head-on surface moves off itself along the normal.
+    const glm::vec3 biased = probeSamplePosition(position, normal, normal, 0.5f);
+    CHECK(glm::dot(biased - position, normal) > 0.0f);
+
+    // At a grazing angle the normal component alone barely clears the surface,
+    // which is exactly where self-occlusion shows; the view term is what carries
+    // the offset there.
+    const glm::vec3 grazing = probeSamplePosition(position, normal, view, 0.5f);
+    CHECK(glm::length(grazing - position) > 0.2f);
+
+    // A negative bias must not pull the sample *into* the surface.
+    CHECK(probeSamplePosition(position, normal, view, -1.0f) == position);
 }

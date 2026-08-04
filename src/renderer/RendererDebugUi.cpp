@@ -296,6 +296,17 @@ void Renderer::drawIrradianceProbesDebugUi()
                           "frame more expensive. Zero pauses capture without losing the cursor.");
     ImGui::EndDisabled();
 
+    ImGui::SliderFloat("Intensity", &giSettings_.intensity, 0.0f, 4.0f, "%.2f");
+    ImGui::SetItemTooltip("How strongly probe irradiance replaces the constant environment term.\n"
+                          "Zero disables the lookup entirely rather than scaling it to nothing.");
+    ImGui::SliderFloat("Surface bias", &giSettings_.surfaceBias, 0.0f, 4.0f, "%.2f");
+    ImGui::SetItemTooltip("How far off a surface the grid is sampled from, in world units.\n"
+                          "Too small and flat surfaces self-occlude into darkness; too large\n"
+                          "and light leaks through thin geometry.");
+    ImGui::Checkbox("Debug: probe irradiance only", &giSettings_.debugIrradianceOnly);
+    ImGui::SetItemTooltip("Outputs the gathered indirect term on its own. An indirect\n"
+                          "contribution this subtle is easy to mistake for none at all.");
+
     if (ImGui::Checkbox("Debug pattern", &giSettings_.debugPattern)) {
         // Updates are off by default, so without this the atlases would keep
         // whatever the last update wrote and the toggle would look inert.
@@ -348,7 +359,6 @@ void Renderer::drawIrradianceProbesDebugUi()
                             static_cast<unsigned long long>(irradianceProbes_.capturedProbeCount()));
     }
 
-    ImGui::TextDisabled("Nothing samples these atlases yet; the shading lookup is a later phase.");
 
     ImGui::SeparatorText("Atlas previews");
 

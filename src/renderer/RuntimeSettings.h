@@ -178,6 +178,16 @@ struct GiSettings {
     // well below 1.0, so at 1:1 a correct atlas is indistinguishable from an
     // empty one.
     float previewGain = 6.0f;
+    // How strongly probe irradiance replaces the constant environment term.
+    // Zero disables the lookup outright rather than scaling it to nothing, so
+    // the shader needs no separate flag.
+    float intensity = 1.0f;
+    // How far off a surface the grid is sampled from, in world units. Too small
+    // and flat surfaces self-occlude into darkness; too large and light leaks
+    // through thin geometry.
+    float surfaceBias = 0.3f;
+    // Outputs probe irradiance alone instead of shaded colour.
+    bool debugIrradianceOnly = false;
 };
 
 struct RuntimeSettings {

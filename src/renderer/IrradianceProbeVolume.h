@@ -20,6 +20,7 @@
 // and buys sharper occlusion where it matters.
 
 #include "renderer/IrradianceProbes.h"
+#include "rhi/VulkanBuffer.h"
 #include "rhi/VulkanComputePipeline.h"
 #include "rhi/VulkanDescriptor.h"
 #include "rhi/VulkanImage.h"
@@ -53,6 +54,28 @@ struct ProbeAtlasPushConstants {
 };
 
 static_assert(sizeof(ProbeAtlasPushConstants) == 12);
+
+// Mirrors the ProbeShadingParams block in simple_bindless.frag.
+//
+// A uniform buffer rather than push constants or ObjectFrameData. The main
+// pass's push-constant block has 24 bytes left and this needs 32; ObjectFrameData
+// would fit, but its layout is duplicated in six shaders and the array stride
+// depends on it, so a missed one reads every object past the first at the wrong
+// offset -- silently, and only for objects that are not the first.
+struct ProbeShadingParams {
+    // xyz = grid origin. w = intensity, where zero disables the lookup outright:
+    // the same "one value carries the off state" shape fogMaxDistance and the
+    // punctual shadow slot sentinel use, so the shader needs no separate flag.
+    glm::vec4 gridOrigin{0.0f};
+    // xyz = spacing between probes. w = how far off the surface to sample from.
+    glm::vec4 gridSpacing{1.0f, 1.0f, 1.0f, 0.0f};
+    // x != 0 outputs the probe irradiance on its own instead of shaded colour.
+    // A subtle indirect term is easy to mistake for no term at all, which is the
+    // same reason the punctual shadow path has a visibility-only view.
+    glm::vec4 debug{0.0f};
+};
+
+static_assert(sizeof(ProbeShadingParams) == 48);
 
 enum class ProbeAtlasTarget : int32_t {
     Irradiance = 0,
@@ -219,6 +242,19 @@ public:
         return sampler_;
     }
 
+    // Buffer the material descriptor sets bind at the shading-params binding.
+    // One buffer rather than one per frame: it is refreshed with a 48-byte
+    // vkCmdUpdateBuffer inside the frame's own command buffer, so there is no
+    // in-flight write for a descriptor to have to avoid.
+    [[nodiscard]] VkBuffer shadingParamsBuffer() const
+    {
+        return shadingParamsBuffer_.buffer();
+    }
+
+    // Records this frame's parameters and the barrier making them visible to the
+    // fragment stage. Must be called outside a rendering scope.
+    void updateShadingParams(VkCommandBuffer commandBuffer, const ProbeShadingParams& params);
+
     // Where the grid sits in the world. Held here rather than in the math header
     // so it can be fitted to a scene at runtime; the addressing code takes it as
     // a parameter and never reads it back.
@@ -283,6 +319,8 @@ private:
     rhi::VulkanComputePipeline debugFillPipeline_;
     rhi::VulkanComputePipeline borderPipeline_;
     rhi::VulkanComputePipeline convolvePipeline_;
+
+    rhi::VulkanBuffer shadingParamsBuffer_;
 
     ProbeGridBounds bounds_{};
 };

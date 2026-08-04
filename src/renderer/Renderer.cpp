@@ -164,20 +164,26 @@ Renderer::Renderer(Window& window) : window_(window)
     createPipeline();
     commandContext_.initialize(context_, frames_);
     asyncCompute_.initialize(context_, static_cast<uint32_t>(frames_.size()));
-    createScene();
-    createObjectFrameDataBuffers();
-    clusteredLighting_.create(context_,
-                              static_cast<uint32_t>(frames_.size()),
-                              shaderPath("cluster_build.comp.spv"),
-                              shaderPath("light_cull.comp.spv"));
-    // Created once and kept across swapchain recreation: the probe atlases are
-    // sized by the probe grid, not the window, and their contents persist across
+    // Before createScene, which builds the material descriptor sets: those sets
+    // bind the probe atlases and the probe parameter buffer, so the resources
+    // have to exist by then or every material would record null handles.
+    //
+    // Created once and kept across swapchain recreation -- the atlases are sized
+    // by the probe grid, not the window, and their contents persist across
     // frames by design.
     irradianceProbes_.create(context_,
                              shaderPath("probe_debug_fill.comp.spv"),
                              shaderPath("probe_border.comp.spv"),
                              shaderPath("probe_convolve.comp.spv"));
     irradianceProbes_.setBounds(giGridBounds());
+    createScene();
+    createObjectFrameDataBuffers();
+    clusteredLighting_.create(context_,
+                              static_cast<uint32_t>(frames_.size()),
+                              shaderPath("cluster_build.comp.spv"),
+                              shaderPath("light_cull.comp.spv"));
+    // After createScene: the capture pipeline needs the bindless heap populated
+    // with the scene's textures, and it shares the material set layout.
     createProbeCapturePipeline();
     updateDemoLights(0.0f);
     // Prefer a rigged glTF if one is present; otherwise fall back to the

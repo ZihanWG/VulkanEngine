@@ -278,6 +278,44 @@ glm::uvec2 probeCaptureAtlasSize()
                       kMaxProbesPerFrame * kProbeCaptureFaceResolution};
 }
 
+float probeChebyshevVisibility(float meanDistance, float meanSquaredDistance, float distanceToProbe)
+{
+    // Nothing between here and the probe: the stored mean already reaches at
+    // least this far.
+    if (!(distanceToProbe > meanDistance)) {
+        // Written as a negated compare so a NaN distance decodes to fully
+        // visible rather than falling through into the divide below.
+        return 1.0f;
+    }
+
+    const float variance = std::abs(meanDistance * meanDistance - meanSquaredDistance);
+    const float excess = distanceToProbe - meanDistance;
+    const float bound = variance / (variance + excess * excess);
+
+    // Cubed: the raw Chebyshev bound falls off far too gently to read as a wall,
+    // leaving light bleeding a long way past the occluder.
+    const float sharpened = bound * bound * bound;
+    return std::clamp(sharpened, kProbeMinVisibility, 1.0f);
+}
+
+float probeDirectionWeight(const glm::vec3& surfaceNormal, const glm::vec3& directionToProbe)
+{
+    const float wrapped = (glm::dot(surfaceNormal, directionToProbe) + 1.0f) * 0.5f;
+    return wrapped * wrapped + kProbeBackfaceFloor;
+}
+
+glm::vec3 probeSamplePosition(const glm::vec3& worldPosition,
+                              const glm::vec3& surfaceNormal,
+                              const glm::vec3& viewDirection,
+                              float normalBias)
+{
+    // Weighted toward the view direction rather than split evenly: at grazing
+    // angles the normal offset barely moves the sample along the line the eye
+    // looks down, which is exactly where self-occlusion shows.
+    const glm::vec3 offset = surfaceNormal * 0.2f + viewDirection * 0.8f;
+    return worldPosition + offset * std::max(normalBias, 0.0f);
+}
+
 uint32_t probeUpdateBatch(uint32_t cursor, uint32_t probesPerFrame, std::vector<uint32_t>& outProbeIndices)
 {
     outProbeIndices.clear();
