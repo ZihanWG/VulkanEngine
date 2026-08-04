@@ -319,7 +319,9 @@ void PostProcessStack::createExposureComputePipelines()
 // Composite pass (relocated from Renderer::recordRenderCommands). The jittered
 // projection is passed in (it is Renderer frame state); ssaoAvailable_ is a
 // borrowed reference written by createCompositeDescriptorSets.
-void PostProcessStack::recordCompositeCommands(VkCommandBuffer commandBuffer, const glm::mat4& jitteredProjection)
+void PostProcessStack::recordCompositeCommands(VkCommandBuffer commandBuffer,
+                                               const glm::mat4& jitteredProjection,
+                                               float debugRawGain)
 {
     rhi::debug::beginLabel(commandBuffer, "CompositePass");
     const bool compositeProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "CompositePass");
@@ -351,6 +353,7 @@ void PostProcessStack::recordCompositeCommands(VkCommandBuffer commandBuffer, co
     compositePushConstants.invProjection = glm::inverse(jitteredProjection);
     compositePushConstants.ssaoParams0 = glm::vec4(0.0f);
     compositePushConstants.ssaoParams1 = glm::vec4(ssaoActive ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+    compositePushConstants.debugRawGain = std::max(debugRawGain, 0.0f);
     vkCmdPushConstants(commandBuffer,
                        compositePipeline_.layout(),
                        VK_SHADER_STAGE_FRAGMENT_BIT,

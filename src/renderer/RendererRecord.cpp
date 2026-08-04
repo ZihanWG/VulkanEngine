@@ -1740,7 +1740,12 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     postProcess_.recordLuminanceCommands(commandBuffer);
     postProcess_.recordHistogramCommands(commandBuffer);
 
-    postProcess_.recordCompositeCommands(commandBuffer, frameJitteredProjection_);
+    // The probe-only view is a view of a linear radiance value, so it bypasses
+    // the display pipeline entirely. Auto-exposure would otherwise cancel
+    // exactly the brightness change the view exists to show.
+    const float probeDebugGain =
+        (giSettings_.enabled && giSettings_.debugIrradianceOnly) ? std::max(giSettings_.previewGain, 0.01f) : 0.0f;
+    postProcess_.recordCompositeCommands(commandBuffer, frameJitteredProjection_, probeDebugGain);
 
     recordPortfolioScreenshotCopy(commandBuffer, imageIndex);
 

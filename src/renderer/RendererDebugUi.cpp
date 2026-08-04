@@ -311,8 +311,9 @@ void Renderer::drawIrradianceProbesDebugUi()
                           "of taking longer to catch up.");
 
     ImGui::Checkbox("Debug: probe irradiance only", &giSettings_.debugIrradianceOnly);
-    ImGui::SetItemTooltip("Outputs the gathered indirect term on its own. An indirect\n"
-                          "contribution this subtle is easy to mistake for none at all.");
+    ImGui::SetItemTooltip("Outputs the gathered indirect term on its own, bypassing exposure\n"
+                          "and tone mapping -- auto-exposure would otherwise cancel exactly the\n"
+                          "brightness change this view exists to show. Scaled by Debug gain.");
 
     if (ImGui::Checkbox("Debug pattern", &giSettings_.debugPattern)) {
         // Updates are off by default, so without this the atlases would keep
@@ -390,9 +391,10 @@ void Renderer::drawIrradianceProbesDebugUi()
     // and reads as black however correct it is. Captured radiance is not a
     // display value and there is no exposure applied to it here, so the preview
     // needs its own gain the way the HDR render targets do.
-    ImGui::SliderFloat("Preview gain", &giSettings_.previewGain, 1.0f, 16.0f, "%.1fx");
-    ImGui::SetItemTooltip("Brightens the previews only. Probe values are linear radiance, not display\n"
-                          "colour, and are far below 1.0 in an ordinary scene.");
+    ImGui::SliderFloat("Debug gain", &giSettings_.previewGain, 1.0f, 16.0f, "%.1fx");
+    ImGui::SetItemTooltip("Scales the atlas previews and the probe-only view. Probe values are\n"
+                          "linear radiance, not display colour, and sit far below 1.0 in an\n"
+                          "ordinary scene, so at 1:1 a correct atlas reads as black.");
 
     ImGui::TextDisabled("Irradiance %ux%u (%u x %u tiles), one tile per probe.",
                         renderer::kProbeIrradianceAtlasWidth,

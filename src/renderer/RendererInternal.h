@@ -454,7 +454,15 @@ struct CompositePushConstants {
     uint32_t bloomEnabled = 1;
     uint32_t bloomMethod = 1;
     uint32_t useGpuExposure = 0;
-    uint32_t pad0 = 0;
+    // Non-zero outputs scene colour scaled by this and nothing else -- no
+    // ambient occlusion, no bloom, no exposure, no tone mapping.
+    //
+    // For debug views whose whole point is the raw value. Auto-exposure exists
+    // to cancel overall brightness changes, so with it on, a debug view of a
+    // term that *is* an overall brightness change shows almost nothing however
+    // correct it is. Zero carries the off state, the same shape fogMaxDistance
+    // and the probe intensity use.
+    float debugRawGain = 0.0f;
     uint32_t pad1 = 0;
     glm::mat4 invProjection{1.0f};
     glm::vec4 ssaoParams0{0.5f, 0.025f, 1.0f, 2.0f}; // radius, bias, intensity, power
@@ -467,6 +475,7 @@ static_assert(offsetof(CompositePushConstants, toneMappingOperator) == 8);
 static_assert(offsetof(CompositePushConstants, bloomEnabled) == 12);
 static_assert(offsetof(CompositePushConstants, bloomMethod) == 16);
 static_assert(offsetof(CompositePushConstants, useGpuExposure) == 20);
+static_assert(offsetof(CompositePushConstants, debugRawGain) == 24);
 static_assert(offsetof(CompositePushConstants, invProjection) == 32);
 static_assert(offsetof(CompositePushConstants, ssaoParams0) == 96);
 static_assert(offsetof(CompositePushConstants, ssaoParams1) == 112);
