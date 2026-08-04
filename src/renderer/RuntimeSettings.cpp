@@ -364,6 +364,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readBool(*debugUi, "showMaterialInspectorPanel", settings.debugUi.showMaterialInspectorPanel);
         readBool(*debugUi, "showTextureDebugPanel", settings.debugUi.showTextureDebugPanel);
         readBool(*debugUi, "showRenderTargetDebugPanel", settings.debugUi.showRenderTargetDebugPanel);
+        readBool(*debugUi, "showIrradianceProbePanel", settings.debugUi.showIrradianceProbePanel);
         readBool(*debugUi, "showGpuTimingGraphs", settings.debugUi.showGpuTimingGraphs);
         readBool(*debugUi, "showCullingStats", settings.debugUi.showCullingStats);
         readBool(*debugUi, "showExposureGraphs", settings.debugUi.showExposureGraphs);
@@ -449,6 +450,7 @@ Json toJson(const RuntimeSettings& settings)
               {"showMaterialInspectorPanel", settings.debugUi.showMaterialInspectorPanel},
               {"showTextureDebugPanel", settings.debugUi.showTextureDebugPanel},
               {"showRenderTargetDebugPanel", settings.debugUi.showRenderTargetDebugPanel},
+              {"showIrradianceProbePanel", settings.debugUi.showIrradianceProbePanel},
               {"showGpuTimingGraphs", settings.debugUi.showGpuTimingGraphs},
               {"showCullingStats", settings.debugUi.showCullingStats},
               {"showExposureGraphs", settings.debugUi.showExposureGraphs},

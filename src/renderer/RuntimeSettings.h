@@ -103,6 +103,10 @@ struct DebugUiSettings {
     bool showMaterialInspectorPanel = true;
     bool showTextureDebugPanel = true;
     bool showRenderTargetDebugPanel = true;
+    // Irradiance-probe controls and atlas previews. A window of its own because
+    // the main debug panel is taller than the display and its previews would be
+    // clipped rather than drawn.
+    bool showIrradianceProbePanel = true;
     bool showGpuTimingGraphs = true;
     bool showCullingStats = true;
     bool showExposureGraphs = true;

@@ -50,7 +50,6 @@ void Renderer::buildDebugUi()
         drawSkeletalAnimationDebugUi();
         drawGpuCullingDebugUi();
         drawMeshLodDebugUi();
-        drawIrradianceProbesDebugUi();
         drawEnvironmentDebugUi();
 
         if (debugUiSettings_.showRenderGraphPanel &&
@@ -72,6 +71,21 @@ void Renderer::buildDebugUi()
 
     // Side panels are controlled by the toggles under Advanced, so only surface them
     // in advanced mode (their show* flags default to true).
+    // Its own window rather than a section of the main panel, and not behind the
+    // advanced-mode gate.
+    //
+    // The main panel's sections are all default-open, so it is already taller
+    // than the display; anything appended to it lands below the fold, where ImGui
+    // clips it rather than drawing it. That is not merely inconvenient here --
+    // the atlas previews are how this subsystem is checked at all, and a preview
+    // that is never drawn cannot be looked at or reasoned about.
+    if (debugUiSettings_.showIrradianceProbePanel) {
+        if (ImGui::Begin("Irradiance Probes", &debugUiSettings_.showIrradianceProbePanel)) {
+            drawIrradianceProbesDebugUi();
+        }
+        ImGui::End();
+    }
+
     if (debugUiSettings_.advancedMode) {
         if (debugUiSettings_.showSceneHierarchyPanel) {
             if (ImGui::Begin("Scene Hierarchy", &debugUiSettings_.showSceneHierarchyPanel)) {
