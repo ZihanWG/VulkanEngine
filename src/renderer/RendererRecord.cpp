@@ -156,6 +156,16 @@ void Renderer::recordProbeCapturePass(VkCommandBuffer commandBuffer)
     // scene are not bit-identical -- without that, accumulating them averages
     // the same numbers forever and buys nothing.
     const glm::vec2 captureJitter = irradianceProbes_.captureJitter();
+
+    // Every punctual light, flat. The cluster lists cannot be used here: they
+    // index the camera's froxel grid, and a probe has no froxel. The slot
+    // address is zero when nothing got a shadow tile, which every light's
+    // negative slot sentinel already implies, so the shader needs no null test.
+    const VkDeviceAddress probeLightBufferAddress = clusteredLighting_.lightBufferAddress(currentFrame_);
+    const VkDeviceAddress probeShadowSlotAddress =
+        punctualShadows_.slotCount() > 0 ? punctualShadows_.slotBufferAddress(currentFrame_) : 0;
+    const uint32_t probeLightCount = probeLightBufferAddress != 0 ? clusteredLighting_.lightCount() : 0;
+
     const renderer::Mesh* boundMesh = nullptr;
     uint32_t recordedDraws = 0;
 
@@ -211,6 +221,9 @@ void Renderer::recordProbeCapturePass(VkCommandBuffer commandBuffer)
                 }
 
                 ProbeCapturePushConstants pushConstants{};
+                pushConstants.lightBufferAddress = probeLightBufferAddress;
+                pushConstants.punctualShadowSlotAddress = probeShadowSlotAddress;
+                pushConstants.lightCount = probeLightCount;
                 // Offset per draw so the vertex stage reads objects[0] with an
                 // instance index of zero, matching the direct-draw shadow path.
                 pushConstants.objectFrameDataAddress =

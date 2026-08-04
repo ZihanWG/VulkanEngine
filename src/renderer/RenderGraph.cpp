@@ -1715,6 +1715,14 @@ void RenderGraph::declareGeometryPasses()
                 builder.readTexture(frame_.shadowMapDepth,
                                     RGAccess::ShaderRead,
                                     "Samples the cascaded shadow map so captured radiance is shadowed.");
+                if (frame_.punctualShadowAtlas != nullptr) {
+                    // The capture evaluates punctual lights too, so the atlas has
+                    // to be out of its depth-attachment layout before this pass
+                    // rather than only before the main pass.
+                    builder.readTexture(frame_.punctualShadowAtlasDepth,
+                                        RGAccess::ShaderRead,
+                                        "Samples the punctual shadow atlas so captured radiance is shadowed.");
+                }
                 builder.writeTexture(frame_.probeCaptureAtlas,
                                      RGAccess::ColorAttachmentWrite,
                                      "Writes radiance and distance for every face of this frame's probes.");

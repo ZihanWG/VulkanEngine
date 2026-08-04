@@ -334,11 +334,24 @@ struct ProbeCapturePushConstants {
     // xyz = the capturing probe's world position; the fragment stage records
     // distance from it, which is what the depth atlas stores.
     glm::vec4 probePosition{0.0f};
+    // Punctual lights, read as a flat array rather than through the cluster
+    // light lists. Those lists are built for the camera's froxel grid and say
+    // nothing about where a probe is, so there is no froxel to look a probe up
+    // in; the capture is small enough that looping every light is affordable.
+    VkDeviceAddress lightBufferAddress = 0;
+    // Per-slot punctual shadow projections. Zero when no light got a tile, which
+    // the negative slot sentinel in each light already implies.
+    VkDeviceAddress punctualShadowSlotAddress = 0;
+    uint32_t lightCount = 0;
+    uint32_t padding2 = 0;
 };
 
 static_assert(offsetof(ProbeCapturePushConstants, faceViewProjection) == 16);
 static_assert(offsetof(ProbeCapturePushConstants, probePosition) == 80);
-static_assert(sizeof(ProbeCapturePushConstants) == 96);
+static_assert(offsetof(ProbeCapturePushConstants, lightBufferAddress) == 96);
+static_assert(offsetof(ProbeCapturePushConstants, punctualShadowSlotAddress) == 104);
+static_assert(offsetof(ProbeCapturePushConstants, lightCount) == 112);
+static_assert(sizeof(ProbeCapturePushConstants) == 120);
 static_assert(sizeof(ProbeCapturePushConstants) <= 128);
 
 struct GpuCullPushConstants {
