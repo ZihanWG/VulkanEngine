@@ -25,6 +25,7 @@ add_executable(VulkanEngineTests
     test_cascades.cpp
     test_cluster_grid.cpp
     test_punctual_shadow_atlas.cpp
+    test_irradiance_probes.cpp
     test_volumetric_fog.cpp
     test_material_asset.cpp
     test_material_alpha.cpp

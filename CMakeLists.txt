@@ -210,6 +210,7 @@ add_library(VulkanEngineCore STATIC
     src/renderer/CascadeMath.cpp
     src/renderer/EditorCamera.cpp
     src/renderer/GltfSkinnedImport.cpp
+    src/renderer/IrradianceProbes.cpp
     src/renderer/PunctualShadowAtlas.cpp
     src/renderer/RuntimeSettings.cpp
     src/renderer/VolumetricFog.cpp
