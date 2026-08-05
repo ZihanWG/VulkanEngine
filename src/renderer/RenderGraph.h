@@ -58,6 +58,8 @@ enum class RenderPassType {
     Shadow,
     ShadowGpuCulling,
     VolumetricFog,
+    ProbeCapture,
+    IrradianceProbes,
     MainGpuCulling,
     DepthPyramid,
     MainHdr,
@@ -175,6 +177,10 @@ struct RenderGraphFrameResources {
     std::vector<RenderGraphImageResource> bloomDownsampleChain;
     std::vector<RenderGraphImageResource> bloomUpsampleChain;
     RenderGraphImageResource depthPyramid;
+    RenderGraphImageResource probeIrradianceAtlas;
+    RenderGraphImageResource probeDepthAtlas;
+    RenderGraphImageResource probeCaptureAtlas;
+    RenderGraphImageResource probeCaptureDepth;
     RenderGraphBufferResource mainCullInput;
     RenderGraphBufferResource mainCullIndirectOutput;
     RenderGraphBufferResource mainCullVisibleCounts;
@@ -206,6 +212,16 @@ struct RenderGraphFrameResources {
     // before the injection dispatch reads it -- without it the fog runs while
     // the map is still a depth attachment.
     bool volumetricFogEnabled = false;
+    // Declares the probe-atlas update compute pass for this frame. The two
+    // atlases are imported and read by the main pass whenever they exist, the
+    // same asymmetry the punctual shadow atlas uses: a frame that updates no
+    // probe still has to leave the atlases in the layout their samplers claim.
+    bool irradianceProbeUpdateEnabled = false;
+    // Declares the probe capture pass: the scene rasterised from each probe in
+    // this frame's batch. Separate from the update flag because the update also
+    // runs on frames with nothing to capture -- the cold-start seed, and the
+    // debug-pattern path.
+    bool probeCaptureEnabled = false;
 };
 
 struct RenderGraphResourceDebugInfo {
@@ -297,6 +313,15 @@ public:
     // graph transitions the cascaded shadow map the injection pass samples.
     void beginVolumetricFogPass();
     void endVolumetricFogPass();
+    // Irradiance probe atlas maintenance. Compute, no rendering scope; the graph
+    // moves both atlases into GENERAL for the dispatches and back to a sampled
+    // layout for whoever reads them.
+    void beginIrradianceProbePass();
+    void endIrradianceProbePass();
+    // Probe capture. One rendering scope over the whole capture atlas; the
+    // caller sets a viewport per (probe, cube face) inside it.
+    void beginProbeCapturePass();
+    void endProbeCapturePass();
     void beginMainGpuCullingPass();
     void endMainGpuCullingPass();
     void beginMainHdrPass();
@@ -398,6 +423,8 @@ private:
         Shadow,
         PunctualShadow,
         VolumetricFog,
+        ProbeCapture,
+        IrradianceProbes,
         MainGpuCulling,
         MainHdr,
         MainGpuCullingPhase2,
@@ -452,6 +479,8 @@ private:
         uint32_t shadow = kInvalidRenderGraphHandle;
         uint32_t punctualShadow = kInvalidRenderGraphHandle;
         uint32_t volumetricFog = kInvalidRenderGraphHandle;
+        uint32_t probeCapture = kInvalidRenderGraphHandle;
+        uint32_t irradianceProbes = kInvalidRenderGraphHandle;
         uint32_t mainGpuCulling = kInvalidRenderGraphHandle;
         uint32_t mainHdr = kInvalidRenderGraphHandle;
         uint32_t depthPyramidMid = kInvalidRenderGraphHandle;
@@ -505,6 +534,10 @@ private:
         std::vector<RGTextureHandle> bloomDownsampleChain;
         std::vector<RGTextureHandle> bloomUpsampleChain;
         RGTextureHandle depthPyramid{};
+        RGTextureHandle probeIrradianceAtlas{};
+        RGTextureHandle probeDepthAtlas{};
+        RGTextureHandle probeCaptureAtlas{};
+        RGTextureHandle probeCaptureDepth{};
         RGBufferHandle mainCullInput{};
         RGBufferHandle mainCullIndirectOutput{};
         RGBufferHandle mainCullVisibleCounts{};

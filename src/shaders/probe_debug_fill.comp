@@ -1,0 +1,108 @@
+#version 460
+
+// Probe atlas debug fill: writes into every probe tile the value that the
+// direction the texel stands for would produce, for a synthetic scene.
+//
+// This exists because probe *storage* is otherwise unverifiable on the GPU. An
+// atlas cleared to a neutral value looks identical whether the tile addressing,
+// the octahedral mapping and the border rule are right or wrong. An atlas of
+// directions makes all three legible at once in the debug preview: tiles that
+// alias show as repeats, a folded mapping shows as a mirrored gradient, and a
+// wrong border shows as discontinuity at the tile edges.
+//
+// The capture pass replaces this; it stays behind a debug toggle afterwards.
+//
+// Only core texels are written. The border is left to probe_border.comp so that
+// pass can be judged on its own rather than looking right because the fill
+// happened to cover for it.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// Must match ve::renderer::kProbeBorderTexels.
+const int kProbeBorderTexels = 1;
+// Must match ve::renderer::kProbeAtlasTilesX / kProbeAtlasTilesY.
+const int kProbeAtlasTilesX = 32;
+const int kProbeAtlasTilesY = 8;
+// Must match ve::renderer::kProbeMaxDistance.
+const float kProbeMaxDistance = 64.0;
+
+// Half-extent of the synthetic box the debug depth is measured against. Well
+// inside kProbeMaxDistance so the clamp is not what shapes the preview.
+const float kDebugRoomHalfExtent = 6.0;
+
+layout(set = 0, binding = 0, rgba16f) uniform writeonly image2D uIrradianceAtlas;
+layout(set = 0, binding = 1, rg16f) uniform writeonly image2D uDepthAtlas;
+
+layout(push_constant) uniform ProbeAtlasPush {
+    // Octahedral square resolution, border excluded.
+    int coreResolution;
+    // 0 = irradiance atlas, 1 = depth atlas. Uniform across the dispatch, so the
+    // branch is free; one shader serves both because they differ only in
+    // resolution and format.
+    int target;
+    // Non-zero writes the direction pattern described above; zero writes the
+    // neutral state an atlas that has captured nothing should hold. Both are
+    // real contents -- until the capture pass lands they are the only two there
+    // are.
+    int debugPattern;
+} push;
+
+// The engine's octahedral decode, identical to simple.frag, ssr_trace.frag,
+// gtao.frag and ve::renderer::octahedralDecode. A second convention here would
+// light every probe through a folded basis -- wrong in a way that reads as a
+// shading bug rather than a mapping one.
+vec3 octDecode(vec2 e)
+{
+    e = e * 2.0 - 1.0;
+    vec3 n = vec3(e.x, e.y, 1.0 - abs(e.x) - abs(e.y));
+    if (n.z < 0.0) {
+        n.xy = (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
+    }
+    return normalize(n);
+}
+
+void main()
+{
+    int core = push.coreResolution;
+    int tileSize = core + 2 * kProbeBorderTexels;
+    ivec2 atlasSize = ivec2(kProbeAtlasTilesX, kProbeAtlasTilesY) * tileSize;
+
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(texel, atlasSize))) {
+        return;
+    }
+
+    ivec2 local = texel % tileSize;
+    if (local.x < kProbeBorderTexels || local.x >= core + kProbeBorderTexels ||
+        local.y < kProbeBorderTexels || local.y >= core + kProbeBorderTexels) {
+        return;
+    }
+
+    // Mirrors ve::renderer::probeTexelDirection.
+    vec2 octant = (vec2(local - kProbeBorderTexels) + 0.5) / float(core);
+    vec3 direction = octDecode(octant);
+
+    if (push.target == 0) {
+        // Direction as colour. Unsigned so the preview shows all six lobes
+        // rather than clipping the negative half to black. Neutral is black:
+        // a probe that has gathered nothing contributes no indirect light.
+        vec3 value = push.debugPattern != 0 ? direction * 0.5 + 0.5 : vec3(0.0);
+        imageStore(uIrradianceAtlas, texel, vec4(value, 1.0));
+    } else {
+        // Distance to the wall of an axis-aligned box centred on the probe. That
+        // is what a probe in a rectangular room actually measures, so the debug
+        // depth previews with the same structure real visibility data will, and
+        // the octahedral fold is visible in it.
+        //
+        // Neutral is the maximum distance rather than zero: "nothing was hit"
+        // has to read as open space, and a zero distance would instead make the
+        // visibility test reject every probe as occluded.
+        float largestAxis = max(max(abs(direction.x), abs(direction.y)), abs(direction.z));
+        float distance = push.debugPattern != 0
+                             ? min(kDebugRoomHalfExtent / max(largestAxis, 1.0e-4), kProbeMaxDistance)
+                             : kProbeMaxDistance;
+        // Mean and mean square, the two moments the Chebyshev visibility test
+        // needs. A single sample makes them distance and distance squared.
+        imageStore(uDepthAtlas, texel, vec4(distance, distance * distance, 0.0, 0.0));
+    }
+}

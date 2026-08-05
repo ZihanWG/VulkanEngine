@@ -103,6 +103,10 @@ struct DebugUiSettings {
     bool showMaterialInspectorPanel = true;
     bool showTextureDebugPanel = true;
     bool showRenderTargetDebugPanel = true;
+    // Irradiance-probe controls and atlas previews. A window of its own because
+    // the main debug panel is taller than the display and its previews would be
+    // clipped rather than drawn.
+    bool showIrradianceProbePanel = true;
     bool showGpuTimingGraphs = true;
     bool showCullingStats = true;
     bool showExposureGraphs = true;
@@ -145,6 +149,58 @@ struct LodSettings {
     bool debugHeatmap = false;
 };
 
+// Irradiance-probe global illumination. A grid of probes stores incoming
+// radiance in small octahedral tiles, plus the distance to what it came from so
+// a probe behind a wall can be rejected rather than lighting through it.
+//
+// This device exposes no ray tracing, so probe radiance is gathered by
+// rasterising the scene from each probe rather than by tracing rays; the grid
+// therefore stays coarse and the cost goes into update rate. See
+// renderer/IrradianceProbes.h.
+struct GiSettings {
+    bool enabled = false;
+    // World position of probe (0, 0, 0), and the spacing between adjacent
+    // probes on each axis. Plain floats rather than a ProbeGridBounds so this
+    // header stays free of renderer and glm types, like every other struct here.
+    float gridOrigin[3] = {-14.0f, 0.5f, -14.0f};
+    float gridSpacing[3] = {4.0f, 3.0f, 4.0f};
+    // Probes captured per frame, round robin. This is the whole cost control:
+    // the grid is 256 probes and each capture is six small rasterisations plus a
+    // convolution, so this sets both the per-frame cost and how many frames the
+    // grid takes to catch up with a change in the scene.
+    int probesPerFrame = 4;
+    // Fills the atlases with the direction each texel stands for instead of
+    // captured radiance. The way to see whether probe *storage* is correct
+    // independently of whether *capture* is, and a standing check on the
+    // octahedral border.
+    bool debugPattern = false;
+    // Display-only gain for the atlas previews and the probe-only view. Probe
+    // values are linear radiance well below 1.0, so at 1:1 a correct atlas is
+    // indistinguishable from an empty one. Three puts a typical gathered value
+    // (~0.26 here) in the upper half of the display range without clipping it,
+    // which six did.
+    float previewGain = 3.0f;
+    // How strongly probe irradiance replaces the constant environment term.
+    // Zero disables the lookup outright rather than scaling it to nothing, so
+    // the shader needs no separate flag.
+    float intensity = 1.0f;
+    // How far off a surface the grid is sampled from, in world units. Too small
+    // and flat surfaces self-occlude into darkness; too large and light leaks
+    // through thin geometry.
+    float surfaceBias = 0.3f;
+    // Fraction of a probe's previous value kept when it is re-captured. Zero
+    // makes each capture overwrite, which is the reference the accumulated
+    // result is judged against.
+    float hysteresis = 0.7f;
+    // Multi-bounce: how much of a captured surface's indirect light comes from
+    // the probe grid rather than the constant ambient. Zero is single bounce.
+    // Feedback gain is albedo * this, so the series settles at
+    // 1 / (1 - albedo * weight) -- see probeBounceAmplification.
+    float bounceWeight = 0.5f;
+    // Outputs probe irradiance alone instead of shaded colour.
+    bool debugIrradianceOnly = false;
+};
+
 struct RuntimeSettings {
     ToneMappingSettings toneMapping;
     BloomSettings bloom;
@@ -152,6 +208,7 @@ struct RuntimeSettings {
     SsrSettings ssr;
     CsmSettings csm;
     LodSettings lod;
+    GiSettings gi;
     DebugUiSettings debugUi;
     bool useGpuCulling = true;
     bool useGpuShadowCulling = true;
@@ -179,6 +236,7 @@ void clampRuntimeSettings(ToneMappingSettings& toneMapping,
                           SsrSettings& ssr,
                           CsmSettings& csm,
                           LodSettings& lod,
+                          GiSettings& gi,
                           DebugUiSettings& debugUi);
 
 enum class RuntimeSettingsLoadStatus {

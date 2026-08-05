@@ -19,7 +19,8 @@ layout(push_constant) uniform CompositePushConstants {
     uint bloomEnabled;
     uint bloomMethod;
     uint useGpuExposure;
-    uint pad0;
+    // Non-zero bypasses everything below and outputs scene colour scaled by it.
+    float debugRawGain;
     uint pad1;
     mat4 invProjection;
     vec4 ssaoParams0; // reserved
@@ -47,6 +48,17 @@ vec3 toneMapAces(vec3 color)
 void main()
 {
     vec3 sceneColor = texture(uSceneColor, vUV).rgb;
+
+    // Raw passthrough for debug views. Everything below this exists to turn a
+    // linear HDR scene into a display image, and every part of it works against
+    // reading an absolute value: auto-exposure actively cancels the brightness
+    // change a debug term is trying to show, and the tone curve compresses what
+    // survives. A view of the value itself has to skip all of it.
+    if (pc.debugRawGain > 0.0) {
+        outColor = vec4(sceneColor * pc.debugRawGain, 1.0);
+        return;
+    }
+
     if (pc.ssaoParams1.x != 0.0) {
         sceneColor *= texture(uAmbientOcclusion, vUV).r;
     }

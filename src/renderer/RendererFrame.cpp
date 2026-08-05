@@ -84,6 +84,23 @@ void Renderer::updateDemoLights(float elapsedSeconds)
 
     clusteredLighting_.clear();
 
+    if (cornellBoxSceneActive_) {
+        // One white light near the ceiling, and nothing else. The orbiting swarm
+        // would light every surface directly, which is precisely what has to not
+        // happen here: the floor between the blocks has to be lit by bounce
+        // alone or there is nothing to look at.
+        //
+        // A point light rather than a spot so it fills the room the way the
+        // original's area light does, and placed below the ceiling slab so the
+        // ceiling itself is lit by its own bounce rather than from inside solid
+        // geometry.
+        clusteredLighting_.addPointLight(glm::vec3{0.0f, renderer::kCornellBoxHalfExtent * 2.0f - 1.2f, 0.0f},
+                                         glm::vec3{1.0f, 0.96f, 0.90f},
+                                         60.0f,
+                                         26.0f);
+        return;
+    }
+
     const int lightCount = std::clamp(demoLightCount_, 0, 512);
     for (int lightIndex = 0; lightIndex < lightCount; ++lightIndex) {
         const float radius = 2.0f + 4.0f * hash01(lightIndex, 0.0f);
@@ -440,7 +457,10 @@ bool Renderer::isRenderObjectActive(const renderer::RenderObject& object) const
     if (object.sourceType == renderer::RenderObjectSourceType::OcclusionTest) {
         return occlusionTestSceneActive_ && !portfolioCaptureMode_;
     }
-    if (occlusionTestSceneActive_ && !portfolioCaptureMode_) {
+    if (object.sourceType == renderer::RenderObjectSourceType::CornellBox) {
+        return cornellBoxSceneActive_ && !portfolioCaptureMode_;
+    }
+    if ((occlusionTestSceneActive_ || cornellBoxSceneActive_) && !portfolioCaptureMode_) {
         return false;
     }
     if (portfolioCaptureMode_ && object.hideInPortfolio) {
@@ -1189,6 +1209,20 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         // depth the composite consumes, so it uses the jittered projection too.
         gtao_.uploadParams(frameIndex, view, frameJitteredProjection_, gtaoFrameCounter_++);
     }
+
+    // Latched here rather than recomputed at record time because the batch has
+    // to be chosen once: the graph declaration, the capture draws and the
+    // convolution all have to agree on which probes this frame is about, and
+    // beginCaptureBatch advances the round-robin cursor as a side effect.
+    frameProbeCaptureActive_ = isProbeCaptureActive();
+    if (frameProbeCaptureActive_) {
+        irradianceProbes_.beginCaptureBatch(static_cast<uint32_t>(giSettings_.probesPerFrame));
+        frameProbeCaptureActive_ = !irradianceProbes_.captureBatch().empty();
+    } else {
+        // Leaves the update pass with nothing to convolve, which is what makes
+        // it fall back to the fill.
+        irradianceProbes_.clearCaptureBatch();
+    }
 }
 
 // Called from drawFrame after command recording: both the object-data upload and
@@ -1220,6 +1254,8 @@ void Renderer::resetFrameStateForEmptyScene(uint32_t frameIndex)
     frameAsyncComputeActive_ = false;
     frameSsrActive_ = false;
     frameGtaoActive_ = false;
+    frameProbeCaptureActive_ = false;
+    irradianceProbes_.clearCaptureBatch();
     allDrawItems_.clear();
     visibleDrawItems_.clear();
     shadowDrawItems_.clear();

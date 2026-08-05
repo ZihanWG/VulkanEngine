@@ -14,7 +14,11 @@ enum class RenderObjectSourceType {
     BuiltInFallbackCube,
     ImportedGltf,
     PortfolioShowcase,
-    OcclusionTest
+    OcclusionTest,
+    // A closed, coloured room. The one scene here that can actually show
+    // indirect light: colour bleeding needs saturated walls, and a second
+    // bounce needs somewhere for light to be trapped.
+    CornellBox
 };
 
 struct RenderObject {

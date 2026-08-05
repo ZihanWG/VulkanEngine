@@ -167,6 +167,12 @@ constexpr VkFormat kNormalRoughnessFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 // Single-channel GTAO visibility term (1 = fully lit) written by the GTAO pass
 // and multiplied into scene color by the composite.
 constexpr VkFormat kAmbientOcclusionFormat = VK_FORMAT_R8_UNORM;
+// Irradiance-probe capture target: rgb = outgoing radiance seen from the probe,
+// a = distance to that surface. One attachment rather than two because the
+// convolution reads both for every texel it visits. Must match the format
+// IrradianceProbeVolume creates the capture atlas with.
+constexpr VkFormat kProbeCaptureColorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+constexpr VkFormat kProbeCaptureDepthFormat = VK_FORMAT_D32_SFLOAT;
 constexpr VkFormat kDepthPyramidFormat = VK_FORMAT_R32_SFLOAT;
 constexpr uint32_t kDepthPyramidLocalSizeX = 8;
 constexpr uint32_t kDepthPyramidLocalSizeY = 8;
@@ -313,6 +319,45 @@ static_assert(offsetof(PunctualShadowPushConstants, lightViewProjection) == 16);
 static_assert(sizeof(PunctualShadowPushConstants) == 80);
 static_assert(sizeof(PunctualShadowPushConstants) <= 128);
 
+// Mirrors the push constant block in probe_capture.vert / probe_capture.frag.
+// Same shape as PunctualShadowPushConstants, and the same padding for the same
+// reason: the mat4 rounds up to a 16-byte boundary after the buffer reference.
+//
+// The fragment stage declares the reference field as a uvec2 it never reads,
+// which is the same 8 bytes with the same alignment, so both stages agree on
+// where the members after it start -- one push fills the range for both.
+struct ProbeCapturePushConstants {
+    VkDeviceAddress objectFrameDataAddress = 0;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+    glm::mat4 faceViewProjection{1.0f};
+    // xyz = the capturing probe's world position; the fragment stage records
+    // distance from it, which is what the depth atlas stores.
+    glm::vec4 probePosition{0.0f};
+    // Punctual lights, read as a flat array rather than through the cluster
+    // light lists. Those lists are built for the camera's froxel grid and say
+    // nothing about where a probe is, so there is no froxel to look a probe up
+    // in; the capture is small enough that looping every light is affordable.
+    VkDeviceAddress lightBufferAddress = 0;
+    // Per-slot punctual shadow projections. Zero when no light got a tile, which
+    // the negative slot sentinel in each light already implies.
+    VkDeviceAddress punctualShadowSlotAddress = 0;
+    uint32_t lightCount = 0;
+    // How much of a captured surface's indirect light comes from the probe grid
+    // rather than the constant ambient term -- the multi-bounce feedback weight.
+    // Zero is single bounce and reproduces the behaviour before it existed.
+    float bounceWeight = 0.0f;
+};
+
+static_assert(offsetof(ProbeCapturePushConstants, bounceWeight) == 116);
+static_assert(offsetof(ProbeCapturePushConstants, faceViewProjection) == 16);
+static_assert(offsetof(ProbeCapturePushConstants, probePosition) == 80);
+static_assert(offsetof(ProbeCapturePushConstants, lightBufferAddress) == 96);
+static_assert(offsetof(ProbeCapturePushConstants, punctualShadowSlotAddress) == 104);
+static_assert(offsetof(ProbeCapturePushConstants, lightCount) == 112);
+static_assert(sizeof(ProbeCapturePushConstants) == 120);
+static_assert(sizeof(ProbeCapturePushConstants) <= 128);
+
 struct GpuCullPushConstants {
     std::array<glm::vec4, 6> frustumPlanes{};
     glm::uvec4 params{0, 0, 0, 0};
@@ -413,7 +458,15 @@ struct CompositePushConstants {
     uint32_t bloomEnabled = 1;
     uint32_t bloomMethod = 1;
     uint32_t useGpuExposure = 0;
-    uint32_t pad0 = 0;
+    // Non-zero outputs scene colour scaled by this and nothing else -- no
+    // ambient occlusion, no bloom, no exposure, no tone mapping.
+    //
+    // For debug views whose whole point is the raw value. Auto-exposure exists
+    // to cancel overall brightness changes, so with it on, a debug view of a
+    // term that *is* an overall brightness change shows almost nothing however
+    // correct it is. Zero carries the off state, the same shape fogMaxDistance
+    // and the probe intensity use.
+    float debugRawGain = 0.0f;
     uint32_t pad1 = 0;
     glm::mat4 invProjection{1.0f};
     glm::vec4 ssaoParams0{0.5f, 0.025f, 1.0f, 2.0f}; // radius, bias, intensity, power
@@ -426,6 +479,7 @@ static_assert(offsetof(CompositePushConstants, toneMappingOperator) == 8);
 static_assert(offsetof(CompositePushConstants, bloomEnabled) == 12);
 static_assert(offsetof(CompositePushConstants, bloomMethod) == 16);
 static_assert(offsetof(CompositePushConstants, useGpuExposure) == 20);
+static_assert(offsetof(CompositePushConstants, debugRawGain) == 24);
 static_assert(offsetof(CompositePushConstants, invProjection) == 32);
 static_assert(offsetof(CompositePushConstants, ssaoParams0) == 96);
 static_assert(offsetof(CompositePushConstants, ssaoParams1) == 112);

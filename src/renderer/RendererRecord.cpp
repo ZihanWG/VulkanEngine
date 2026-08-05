@@ -108,6 +108,166 @@ bool Renderer::isGpuPunctualShadowCullingActive() const
            !punctualShadowCacheHit_ && context_.device().drawIndirectFirstInstanceEnabled();
 }
 
+bool Renderer::isProbeCaptureActive() const
+{
+    return giSettings_.enabled && !giSettings_.debugPattern && irradianceProbes_.available() &&
+           irradianceProbes_.convolveAvailable() && probeCapturePipeline_.pipeline() != VK_NULL_HANDLE &&
+           giSettings_.probesPerFrame > 0 && !allDrawItems_.empty();
+}
+
+void Renderer::recordProbeCapturePass(VkCommandBuffer commandBuffer)
+{
+    const std::vector<uint32_t>& batch = irradianceProbes_.captureBatch();
+    if (batch.empty()) {
+        return;
+    }
+
+    const VkDescriptorSet globalDescriptorSet = globalMaterialDescriptorSet();
+    if (globalDescriptorSet == VK_NULL_HANDLE) {
+        return;
+    }
+
+    const bool profileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "ProbeCapture");
+    rhi::debug::beginLabel(commandBuffer, "ProbeCapture");
+
+    // One rendering scope over the whole capture atlas, with a viewport per
+    // (probe, face) inside it. Same reasoning as the punctual shadow atlas: the
+    // clear runs once for the image instead of once per tile, and the 96 tiles
+    // do not each pay for a render pass.
+    renderGraph_.beginProbeCapturePass();
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, probeCapturePipeline_.pipeline());
+
+    const std::array<VkDescriptorSet, 2> descriptorSets{globalDescriptorSet,
+                                                        bindlessTextureHeap_.descriptorSet()};
+    vkCmdBindDescriptorSets(commandBuffer,
+                            VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            probeCapturePipeline_.layout(),
+                            0,
+                            static_cast<uint32_t>(descriptorSets.size()),
+                            descriptorSets.data(),
+                            0,
+                            nullptr);
+
+    const VkDeviceAddress objectFrameDataBaseAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
+    const renderer::ProbeGridBounds bounds = irradianceProbes_.bounds();
+    // The same offset the convolution will subtract. Applied here as a
+    // sub-texel slide of every face so successive captures of an unchanged
+    // scene are not bit-identical -- without that, accumulating them averages
+    // the same numbers forever and buys nothing.
+    const glm::vec2 captureJitter = irradianceProbes_.captureJitter();
+
+    // Every punctual light, flat. The cluster lists cannot be used here: they
+    // index the camera's froxel grid, and a probe has no froxel. The slot
+    // address is zero when nothing got a shadow tile, which every light's
+    // negative slot sentinel already implies, so the shader needs no null test.
+    const VkDeviceAddress probeLightBufferAddress = clusteredLighting_.lightBufferAddress(currentFrame_);
+    const VkDeviceAddress probeShadowSlotAddress =
+        punctualShadows_.slotCount() > 0 ? punctualShadows_.slotBufferAddress(currentFrame_) : 0;
+    const uint32_t probeLightCount = probeLightBufferAddress != 0 ? clusteredLighting_.lightCount() : 0;
+
+    // Multi-bounce. Held at zero until every probe has been captured once: until
+    // then most of the grid still holds its neutral seed, and blending a surface
+    // toward that would make the scene darker rather than brighter -- the
+    // opposite of what another bounce is supposed to do. Same gate the
+    // accumulation hysteresis uses, for the same reason.
+    const float probeBounceWeight =
+        irradianceProbes_.gridConverged() ? std::clamp(giSettings_.bounceWeight, 0.0f, 1.0f) : 0.0f;
+
+    const renderer::Mesh* boundMesh = nullptr;
+    uint32_t recordedDraws = 0;
+
+    const auto captureCpuStart = std::chrono::high_resolution_clock::now();
+
+    for (uint32_t slot = 0; slot < batch.size(); ++slot) {
+        const glm::vec3 probePosition = renderer::probeWorldPosition(batch[slot], bounds);
+
+        for (uint32_t face = 0; face < renderer::kProbeCaptureFaceCount; ++face) {
+            const glm::uvec2 origin = renderer::probeCaptureTileOrigin(slot, face);
+
+            VkViewport viewport{};
+            viewport.x = static_cast<float>(origin.x);
+            viewport.y = static_cast<float>(origin.y);
+            viewport.width = static_cast<float>(renderer::kProbeCaptureFaceResolution);
+            viewport.height = static_cast<float>(renderer::kProbeCaptureFaceResolution);
+            viewport.minDepth = 0.0f;
+            viewport.maxDepth = 1.0f;
+            vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+
+            VkRect2D scissor{};
+            scissor.offset = {static_cast<int32_t>(origin.x), static_cast<int32_t>(origin.y)};
+            scissor.extent = {renderer::kProbeCaptureFaceResolution, renderer::kProbeCaptureFaceResolution};
+            vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+            const glm::mat4 faceViewProjection =
+                renderer::probeCaptureFaceViewProjection(probePosition, face, captureJitter);
+            // Reuses the spot-shadow frustum extractor: it takes any perspective
+            // view-projection, and a cube face is one. Without this every probe
+            // would submit every draw item six times over.
+            const renderer::Frustum faceFrustum = renderer::computeSpotShadowFrustum(faceViewProjection);
+
+            for (const DrawItem& drawItem : allDrawItems_) {
+                if (!drawItem.mesh || drawItem.frameDataIndex >= kMaxDrawItems || drawItem.indexCount == 0) {
+                    continue;
+                }
+                // Alpha-blended geometry is skipped for the same reason it does
+                // not cast shadows: it never wrote opaque depth, and treating it
+                // as an opaque occluder here would block light it should let
+                // through.
+                if (drawItem.bucket == RenderBucket::Blend) {
+                    continue;
+                }
+                if (drawItem.objectIndex < frameWorldBounds_.size() &&
+                    !faceFrustum.testAabb(frameWorldBounds_[drawItem.objectIndex])) {
+                    continue;
+                }
+
+                if (boundMesh != drawItem.mesh) {
+                    const VkBuffer vertexBuffers[] = {drawItem.mesh->vertexBuffer()};
+                    const VkDeviceSize vertexOffsets[] = {0};
+                    vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
+                    vkCmdBindIndexBuffer(commandBuffer, drawItem.mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+                    boundMesh = drawItem.mesh;
+                }
+
+                ProbeCapturePushConstants pushConstants{};
+                pushConstants.lightBufferAddress = probeLightBufferAddress;
+                pushConstants.punctualShadowSlotAddress = probeShadowSlotAddress;
+                pushConstants.lightCount = probeLightCount;
+                pushConstants.bounceWeight = probeBounceWeight;
+                // Offset per draw so the vertex stage reads objects[0] with an
+                // instance index of zero, matching the direct-draw shadow path.
+                pushConstants.objectFrameDataAddress =
+                    objectFrameDataBaseAddress +
+                    static_cast<VkDeviceAddress>(drawItem.frameDataIndex) * sizeof(ObjectFrameData);
+                pushConstants.faceViewProjection = faceViewProjection;
+                pushConstants.probePosition = glm::vec4{probePosition, 0.0f};
+                vkCmdPushConstants(commandBuffer,
+                                   probeCapturePipeline_.layout(),
+                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0,
+                                   static_cast<uint32_t>(sizeof(ProbeCapturePushConstants)),
+                                   &pushConstants);
+
+                vkCmdDrawIndexed(commandBuffer, drawItem.indexCount, 1, drawItem.firstIndex, 0, 0);
+                ++recordedDraws;
+            }
+        }
+    }
+
+    probeCaptureCpuMicroseconds_ = std::chrono::duration<float, std::micro>(
+                                       std::chrono::high_resolution_clock::now() - captureCpuStart)
+                                       .count();
+
+    renderGraph_.endProbeCapturePass();
+    probeCaptureDrawsRecorded_ = recordedDraws;
+
+    rhi::debug::endLabel(commandBuffer);
+    if (profileScope) {
+        gpuProfiler_.endScope(currentFrame_, commandBuffer);
+    }
+}
+
 void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuCullActive)
 {
     const uint32_t slotCount = punctualShadows_.slotCount();
@@ -476,6 +636,64 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         };
     }
 
+    // Probe atlases. Sized by the probe grid rather than the window, so unlike
+    // every other target here their extent comes from the image itself. A failed
+    // probe subsystem leaves null handles, which importTexture turns into an
+    // invalid handle and every declaration then skips.
+    // What a probe records in directions where nothing was drawn. The same
+    // ambient term the main pass adds to every surface, standing in for the sky:
+    // a probe that saw black there would be far too dark outdoors, and it would
+    // look like moody indirect light rather than like a missing term.
+    const glm::vec4 ambientSky = portfolioCaptureMode_ ? kPortfolioAmbientLightColor : kAmbientLightColor;
+    VkClearValue probeCaptureSkyClear{};
+    probeCaptureSkyClear.color.float32[0] = ambientSky.r;
+    probeCaptureSkyClear.color.float32[1] = ambientSky.g;
+    probeCaptureSkyClear.color.float32[2] = ambientSky.b;
+    probeCaptureSkyClear.color.float32[3] = renderer::kProbeMaxDistance;
+
+    const auto probeCaptureResource = [](const char* name,
+                                         const rhi::VulkanImage& image,
+                                         VkImageLayout* layout,
+                                         VkImageUsageFlags usage,
+                                         VkImageAspectFlags aspect,
+                                         VkClearValue clearValue = VkClearValue{}) {
+        const VkExtent3D extent = image.extent();
+        return renderer::RenderGraphImageResource{
+            name,
+            image.image(),
+            image.imageView(),
+            VkExtent2D{extent.width, extent.height},
+            layout,
+            image.format(),
+            usage,
+            1,
+            1,
+            aspect,
+            clearValue,
+            true,
+            true,
+        };
+    };
+
+    const auto probeAtlasResource = [](const char* name, const rhi::VulkanImage& image, VkImageLayout* layout) {
+        const VkExtent3D extent = image.extent();
+        return renderer::RenderGraphImageResource{
+            name,
+            image.image(),
+            image.imageView(),
+            VkExtent2D{extent.width, extent.height},
+            layout,
+            image.format(),
+            VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            1,
+            1,
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            VkClearValue{},
+            false,
+            true,
+        };
+    };
+
     return renderer::RenderGraphFrameResources{
         renderer::RenderGraphImageResource{
             "SceneColor",
@@ -607,6 +825,23 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             false,
             true,
         },
+        probeAtlasResource("ProbeIrradianceAtlas",
+                           irradianceProbes_.irradianceAtlas(),
+                           irradianceProbes_.irradianceAtlasLayoutPtr()),
+        probeAtlasResource(
+            "ProbeDepthAtlas", irradianceProbes_.depthAtlas(), irradianceProbes_.depthAtlasLayoutPtr()),
+        probeCaptureResource("ProbeCaptureAtlas",
+                             irradianceProbes_.captureAtlas(),
+                             irradianceProbes_.captureAtlasLayoutPtr(),
+                             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
+                                 VK_IMAGE_USAGE_SAMPLED_BIT,
+                             VK_IMAGE_ASPECT_COLOR_BIT,
+                             probeCaptureSkyClear),
+        probeCaptureResource("ProbeCaptureDepth",
+                             irradianceProbes_.captureDepth(),
+                             irradianceProbes_.captureDepthLayoutPtr(),
+                             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                             VK_IMAGE_ASPECT_DEPTH_BIT),
         bufferResource(
             "MainCullInput", gpuCulling_.cullInputBuffers(), currentFrame_, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
         bufferResource("MainCullIndirectOutput",
@@ -648,6 +883,8 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         // the layout it already has and no barrier is emitted for it.
         punctualShadowCacheHit_ ? 0u : punctualShadows_.slotCount(),
         isVolumetricFogActive(),
+        isIrradianceProbeUpdateActive(),
+        frameProbeCaptureActive_,
     };
 }
 
@@ -1015,6 +1252,51 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
             gpuProfiler_.endScope(currentFrame_, commandBuffer);
         }
     }
+
+    // Probe shading parameters, refreshed inside this frame's own command buffer
+    // so a single buffer serves every frame in flight.
+    //
+    // Before the capture pass, not just before the main pass: the capture reads
+    // these too, for the multi-bounce lookup. Updating after it would have the
+    // capture read the previous frame's grid placement -- and on the very first
+    // frame, a buffer nothing had written yet.
+    {
+        renderer::ProbeShadingParams probeParams{};
+        const renderer::ProbeGridBounds bounds = irradianceProbes_.bounds();
+        // Intensity carries the off state, so everything downstream needs no
+        // separate flag: no atlases, no capture pipeline, or the toggle off all
+        // collapse to zero here.
+        const bool probeShadingActive = giSettings_.enabled && irradianceProbes_.hasAtlases() &&
+                                        irradianceProbes_.convolveAvailable() && !giSettings_.debugPattern;
+        probeParams.gridOrigin =
+            glm::vec4{bounds.origin, probeShadingActive ? giSettings_.intensity : 0.0f};
+        probeParams.gridSpacing = glm::vec4{bounds.spacing, giSettings_.surfaceBias};
+        probeParams.debug.x =
+            (probeShadingActive && giSettings_.debugIrradianceOnly) ? 1.0f : 0.0f;
+        irradianceProbes_.updateShadingParams(commandBuffer, probeParams);
+    }
+
+    // Probe capture, then the convolution that turns it into probe tiles. Both
+    // sit after the shadow passes -- the capture samples the cascades so the
+    // radiance it records is shadowed -- and before the main pass, which
+    // declares a read on the probe atlases.
+    if (frameProbeCaptureActive_) {
+        recordProbeCapturePass(commandBuffer);
+    } else {
+        probeCaptureDrawsRecorded_ = 0;
+    }
+
+    if (isIrradianceProbeUpdateActive()) {
+        const bool probeProfileScope =
+            gpuProfiler_.beginScope(currentFrame_, commandBuffer, "IrradianceProbeUpdate");
+        renderGraph_.beginIrradianceProbePass();
+        irradianceProbes_.recordUpdate(commandBuffer, giSettings_.debugPattern);
+        renderGraph_.endIrradianceProbePass();
+        if (probeProfileScope) {
+            gpuProfiler_.endScope(currentFrame_, commandBuffer);
+        }
+    }
+
 
     const bool mainHdrProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "MainHDRPass");
     rhi::debug::beginLabel(commandBuffer, "MainHDRPass");
@@ -1478,7 +1760,12 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     postProcess_.recordLuminanceCommands(commandBuffer);
     postProcess_.recordHistogramCommands(commandBuffer);
 
-    postProcess_.recordCompositeCommands(commandBuffer, frameJitteredProjection_);
+    // The probe-only view is a view of a linear radiance value, so it bypasses
+    // the display pipeline entirely. Auto-exposure would otherwise cancel
+    // exactly the brightness change the view exists to show.
+    const float probeDebugGain =
+        (giSettings_.enabled && giSettings_.debugIrradianceOnly) ? std::max(giSettings_.previewGain, 0.01f) : 0.0f;
+    postProcess_.recordCompositeCommands(commandBuffer, frameJitteredProjection_, probeDebugGain);
 
     recordPortfolioScreenshotCopy(commandBuffer, imageIndex);
 

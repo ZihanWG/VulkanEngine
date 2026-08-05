@@ -9,6 +9,7 @@
 #include "renderer/Camera.h"
 #include "renderer/CascadeMath.h"
 #include "renderer/ClusteredLighting.h"
+#include "renderer/IrradianceProbeVolume.h"
 #include "renderer/PunctualShadows.h"
 #include "renderer/VolumetricFogPass.h"
 #include "renderer/DepthPyramid.h"
@@ -299,6 +300,11 @@ private:
     void resetOcclusionTestSceneToPreset();
     [[nodiscard]] uint32_t allocateRenderObjectDebugId();
     void createEnvironmentMap();
+    // Graphics pipeline the probe capture pass rasterises with. Owned here
+    // rather than by IrradianceProbeVolume because it needs the material and
+    // bindless descriptor set layouts, which Renderer owns -- the same split
+    // PunctualShadows uses for its caster draws.
+    void createProbeCapturePipeline();
     void createDiffuseIrradianceMap();
     void createPrefilteredEnvironmentMap();
     void createBrdfLutTexture();
@@ -441,6 +447,22 @@ private:
     {
         return volumetricFog_.available() && fogSettings_.enabled && fogSettings_.density > 0.0f;
     }
+    // The probe grid's world placement, as the math header wants it. GiSettings
+    // stores plain floats so RuntimeSettings.h stays free of renderer types;
+    // this is the one place the two representations meet.
+    [[nodiscard]] renderer::ProbeGridBounds giGridBounds() const;
+    // Whether the probe atlases have to be (re)built this frame. True on the
+    // first frame regardless of the toggle: the main pass declares a read on the
+    // atlases unconditionally, so they must never be sampled out of UNDEFINED.
+    [[nodiscard]] bool isIrradianceProbeUpdateActive() const
+    {
+        return irradianceProbes_.needsUpdate(giSettings_.enabled);
+    }
+    // Records the probe capture pass: one dynamic-rendering scope over the whole
+    // capture atlas, with a viewport per (probe, cube face) inside it -- the
+    // same arrangement the punctual shadow atlas uses for its slots.
+    void recordProbeCapturePass(VkCommandBuffer commandBuffer);
+    [[nodiscard]] bool isProbeCaptureActive() const;
     // Records the punctual shadow atlas pass: one dynamic-rendering pass over
     // the whole atlas, with a viewport/scissor per allocated slot.
     void recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuCullActive);
@@ -448,6 +470,9 @@ private:
     [[nodiscard]] glm::vec4 activeDirectionalLightDirection() const;
     [[nodiscard]] glm::vec4 activeDirectionalLightColor() const;
     void loadOcclusionTestScene();
+    // A closed, coloured room -- the one scene here that can show indirect light.
+    void loadCornellBoxScene();
+    void resetCornellBoxSceneToPreset();
     void enableOcclusionTestSettings();
     [[nodiscard]] bool previousFrameDepthValidForOcclusion() const;
     // Editor viewport interaction: free-fly/orbit camera, click-to-select picking,
@@ -465,6 +490,7 @@ private:
     void drawBloomDebugUi();
     void drawSsaoDebugUi();
     void drawVolumetricFogDebugUi();
+    void drawIrradianceProbesDebugUi();
     void drawShadowsDebugUi();
     void drawLightsDebugUi();
     void drawSkeletalAnimationDebugUi();
@@ -564,6 +590,7 @@ private:
     // shadowPipeline_ because its push-constant layout carries the slot's
     // view-projection instead of a cascade index.
     rhi::VulkanPipeline punctualShadowPipeline_;
+    rhi::VulkanPipeline probeCapturePipeline_;
     // glTF BLEND geometry: same shaders as the main pass, but "over" blending,
     // depth writes off, and a scene-color-only attachment set.
     rhi::VulkanPipeline transparentPipeline_;
@@ -602,6 +629,10 @@ private:
     // has to be recorded before that pass and after the CSM cascades it reads.
     renderer::VolumetricFogPass volumetricFog_;
     renderer::FogSettings fogSettings_{};
+    // Irradiance-probe GI. Owns the two octahedral probe atlases; the update
+    // compute pass runs before the main HDR pass, which declares a read on both
+    // atlases whether or not any probe updated this frame.
+    renderer::IrradianceProbeVolume irradianceProbes_;
     renderer::SkinnedMesh skinnedMesh_;
     rhi::VulkanDescriptorPool materialDescriptorPool_;
     rhi::VulkanDescriptorPool skyboxDescriptorPool_;
@@ -653,6 +684,7 @@ private:
     // uploaded in GpuCullFrameParams::lodSettings. renderer::MeshLod.h holds the
     // unit-tested reference copy of the selection math.
     LodSettings lodSettings_{};
+    GiSettings giSettings_{};
     // Flat per-frame LOD table uploaded to the cull pass, plus each draw item's
     // (base, count) range into it. Rebuilt every frame alongside the cull input
     // because scene edits add and remove meshes; deduped by mesh so a mesh's
@@ -822,6 +854,16 @@ private:
     // but perspective depth is compressed into the top few percent" -- both look
     // like a solid far-plane tile.
     uint32_t punctualShadowDrawsRecorded_ = 0;
+    // Draws the probe capture pass issued last frame. Zero with a non-empty
+    // batch means every face culled everything, which is the difference between
+    // "probes captured black" and "probes never captured".
+    uint32_t probeCaptureDrawsRecorded_ = 0;
+    // CPU cost of culling and recording that pass, in microseconds. The probe
+    // GPU passes are timestamp-queried and their shaders are identical in every
+    // build, so this is the one part of the subsystem whose cost a Debug build
+    // actually misrepresents -- and the one that scales with draw items rather
+    // than with probe resolution.
+    float probeCaptureCpuMicroseconds_ = 0.0f;
     bool showClusterHeatmap_ = false;
     // Procedural skinned bone-chain demo: draw it, and animate (vs hold bind pose).
     bool showSkinnedMesh_ = true;
@@ -846,6 +888,10 @@ private:
     bool frameAsyncComputeActive_ = false;
     bool frameSsrActive_ = false;
     bool frameGtaoActive_ = false;
+    // Whether this frame captures probes. Latched during frame prep alongside
+    // the batch it refers to, because the graph declaration and the recording
+    // have to agree and choosing the batch advances the round-robin cursor.
+    bool frameProbeCaptureActive_ = false;
     uint32_t ssrFrameCounter_ = 0;
     uint32_t gtaoFrameCounter_ = 0;
     bool useGpuShadowCulling_ = true;
@@ -854,6 +900,8 @@ private:
     bool gpuProfilerEnabled_ = true;
     bool portfolioCaptureMode_ = false;
     bool occlusionTestSceneActive_ = false;
+    bool cornellBoxSceneActive_ = false;
+    std::string cornellBoxSceneStatus_ = "Cornell box inactive.";
     bool portfolioScreenshotRequested_ = false;
     bool normalMapAssetLoaded_ = false;
     bool metallicRoughnessMapAssetLoaded_ = false;

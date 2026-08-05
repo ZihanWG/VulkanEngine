@@ -97,7 +97,13 @@ public:
     void recordMipChainBloomCommands(VkCommandBuffer commandBuffer);
     void recordLuminanceCommands(VkCommandBuffer commandBuffer);
     void recordHistogramCommands(VkCommandBuffer commandBuffer);
-    void recordCompositeCommands(VkCommandBuffer commandBuffer, const glm::mat4& jitteredProjection);
+    // debugRawGain non-zero makes the composite output scene colour scaled by
+    // it and skip ambient occlusion, bloom, exposure and tone mapping. Passed in
+    // rather than read from settings here because it is the caller's debug
+    // state, not a post-process one.
+    void recordCompositeCommands(VkCommandBuffer commandBuffer,
+                                 const glm::mat4& jitteredProjection,
+                                 float debugRawGain = 0.0f);
     void advanceTaaHistory();
 
     // State queries.

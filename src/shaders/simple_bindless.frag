@@ -78,6 +78,20 @@ layout(set = 0, binding = 7) uniform sampler2D uPunctualShadowAtlas;
 // a = how much of the background still shows through.
 layout(set = 0, binding = 8) uniform sampler3D uFogVolume;
 
+// Irradiance-probe GI. Two octahedral atlases, one tile per probe: incoming
+// radiance, and the two distance moments that say what is between the probe and
+// the surface asking.
+layout(set = 0, binding = 9) uniform sampler2D uProbeIrradianceAtlas;
+layout(set = 0, binding = 10) uniform sampler2D uProbeDepthAtlas;
+layout(set = 0, binding = 11) uniform ProbeShadingParams {
+    // xyz = grid origin, w = intensity (zero disables the lookup)
+    vec4 gridOrigin;
+    // xyz = spacing, w = surface bias
+    vec4 gridSpacing;
+    // x != 0 outputs probe irradiance alone instead of shaded colour
+    vec4 debug;
+} probeParams;
+
 layout(set = 1, binding = 0) uniform sampler2D uBaseColorTextures[];
 layout(set = 1, binding = 1) uniform sampler2D uNormalTextures[];
 layout(set = 1, binding = 2) uniform sampler2D uMetallicRoughnessTextures[];
@@ -244,6 +258,132 @@ float sampleShadowFactor(vec3 normal, int cascadeIndex)
     }
 
     return litSamples / float(sampleCount);
+}
+
+
+// --- Irradiance-probe lookup -------------------------------------------------
+//
+// Mirrors ve::renderer::IrradianceProbes. Every constant and every formula here
+// has a unit-tested twin on the CPU; the tests pin the two together because a
+// divergence produces lighting that is plausible and wrong rather than obviously
+// broken.
+
+// Must match ve::renderer::kProbeGrid* / kProbe*Resolution / kProbeAtlasTiles*.
+const uint kProbeGridX = 8u;
+const uint kProbeGridY = 4u;
+const uint kProbeGridZ = 8u;
+const int kProbeBorderTexels = 1;
+const int kProbeIrradianceResolution = 8;
+const int kProbeDepthResolution = 16;
+const int kProbeAtlasTilesX = 32;
+const int kProbeAtlasTilesY = 8;
+// Must match ve::renderer::kProbeMinVisibility / kProbeBackfaceFloor.
+const float kProbeMinVisibility = 0.02;
+const float kProbeBackfaceFloor = 0.2;
+
+// The engine's octahedral encode, identical to octEncode above; named separately
+// only to keep the probe block self-contained and easy to compare against the
+// CPU mirror.
+vec2 probeOctEncode(vec3 n)
+{
+    n /= (abs(n.x) + abs(n.y) + abs(n.z));
+    vec2 e = n.xy;
+    if (n.z < 0.0) {
+        e = (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
+    }
+    return e * 0.5 + 0.5;
+}
+
+// Mirrors ve::renderer::probeAtlasUv. The result sits inside the probe's own
+// core square, at least half a texel from the tile edge, so a bilinear tap
+// reaches this tile's border rather than the neighbouring probe.
+vec2 probeAtlasUv(uint probeIndex, vec3 direction, int coreResolution)
+{
+    int tileSize = coreResolution + 2 * kProbeBorderTexels;
+    ivec2 tile = ivec2(int(probeIndex) % kProbeAtlasTilesX, int(probeIndex) / kProbeAtlasTilesX);
+    vec2 texel = vec2(tile * tileSize) + float(kProbeBorderTexels) +
+                 probeOctEncode(direction) * float(coreResolution);
+    return texel / vec2(kProbeAtlasTilesX * tileSize, kProbeAtlasTilesY * tileSize);
+}
+
+// Mirrors ve::renderer::probeChebyshevVisibility. This is what stops light
+// arriving through a wall, which is the characteristic failure of probe GI and
+// looks like a room being softly lit from nowhere.
+float probeChebyshevVisibility(vec2 moments, float distanceToProbe)
+{
+    if (!(distanceToProbe > moments.x)) {
+        return 1.0;
+    }
+    // abs() because bilinear filtering of the two moments can put the mean square
+    // below the squared mean, which no single texel can; the variance would go
+    // negative and subtract light.
+    float variance = abs(moments.x * moments.x - moments.y);
+    float excess = distanceToProbe - moments.x;
+    float bound = variance / (variance + excess * excess);
+    return clamp(bound * bound * bound, kProbeMinVisibility, 1.0);
+}
+
+// Eight surrounding probes, trilinear in the grid, each weighted by how much of
+// it the surface can actually see.
+vec3 sampleProbeIrradiance(vec3 worldPosition, vec3 normal, vec3 viewDirection)
+{
+    vec3 spacing = max(probeParams.gridSpacing.xyz, vec3(1.0e-4));
+
+    // Offset off the surface before looking up, or a flat plane samples probes
+    // whose stored visibility says the plane itself is in the way and shades
+    // itself black. Weighted toward the view direction: a normal-only offset
+    // barely clears the surface at grazing angles, which is where it matters.
+    vec3 biased = worldPosition + (normal * 0.2 + viewDirection * 0.8) * max(probeParams.gridSpacing.w, 0.0);
+
+    vec3 gridSpace = (biased - probeParams.gridOrigin.xyz) / spacing;
+    vec3 floored = floor(gridSpace);
+    // Clamped rather than extrapolated, so a point outside the volume takes the
+    // edge probes instead of an invented value that grows with distance.
+    ivec3 baseCoord = clamp(ivec3(floored), ivec3(0), ivec3(kProbeGridX - 1u, kProbeGridY - 1u, kProbeGridZ - 1u));
+    vec3 fraction = clamp(gridSpace - floored, vec3(0.0), vec3(1.0));
+
+    vec3 total = vec3(0.0);
+    float totalWeight = 0.0;
+
+    for (int corner = 0; corner < 8; ++corner) {
+        ivec3 offset = ivec3(corner & 1, (corner >> 1) & 1, (corner >> 2) & 1);
+        ivec3 coord = min(baseCoord + offset,
+                          ivec3(kProbeGridX - 1u, kProbeGridY - 1u, kProbeGridZ - 1u));
+        uint probeIndex = uint(coord.x) + uint(coord.y) * kProbeGridX + uint(coord.z) * kProbeGridX * kProbeGridY;
+
+        vec3 probePosition = probeParams.gridOrigin.xyz + vec3(coord) * spacing;
+        vec3 toProbe = probePosition - biased;
+        float distanceToProbe = length(toProbe);
+        vec3 directionToProbe = distanceToProbe > 1.0e-6 ? toProbe / distanceToProbe : normal;
+
+        // Trilinear weight for this corner.
+        vec3 axisWeight = mix(1.0 - fraction, fraction, vec3(offset));
+        float weight = axisWeight.x * axisWeight.y * axisWeight.z;
+
+        // Smooth backface rejection: a hard cutoff would draw a line across
+        // otherwise smooth shading where no geometry changes.
+        float wrapped = (dot(normal, directionToProbe) + 1.0) * 0.5;
+        weight *= wrapped * wrapped + kProbeBackfaceFloor;
+
+        // Visibility from the probe's own stored depth.
+        vec2 moments = texture(uProbeDepthAtlas, probeAtlasUv(probeIndex, -directionToProbe,
+                                                              kProbeDepthResolution)).rg;
+        weight *= probeChebyshevVisibility(moments, distanceToProbe);
+
+        if (weight <= 0.0) {
+            continue;
+        }
+
+        total += texture(uProbeIrradianceAtlas, probeAtlasUv(probeIndex, normal,
+                                                             kProbeIrradianceResolution)).rgb * weight;
+        totalWeight += weight;
+    }
+
+    // Normalised by the accumulated weight rather than by the trilinear weights
+    // alone: visibility and backface terms remove probes unevenly, and without
+    // renormalising, a point next to a wall would simply go dark instead of
+    // taking its light from the probes it can still see.
+    return totalWeight > 0.0 ? total / totalWeight : vec3(0.0);
 }
 
 float distributionGGX(vec3 normal, vec3 halfVector, float roughness)
@@ -594,6 +734,19 @@ void main()
         prefilteredColor,
         brdf);
 
+    // Probe GI replaces the constant environment irradiance rather than adding to
+    // it: both answer "what diffuse light arrives here", and summing them would
+    // double-count. Zero intensity keeps the IBL term, which is what "off" has
+    // always meant.
+    // Kept unscaled by intensity: the debug view below reports what the probes
+    // actually hold, and folding a user-set multiplier into a diagnostic means
+    // its display gain has to be retuned every time that multiplier moves.
+    vec3 probeIrradiance = vec3(0.0);
+    if (probeParams.gridOrigin.w > 0.0) {
+        probeIrradiance = sampleProbeIrradiance(vWorldPosition, normal, viewDirection);
+        diffuseIbl = probeIrradiance * probeParams.gridOrigin.w * kD;
+    }
+
     vec3 ambient = diffuseIbl + specularIbl + vAmbientColor * baseColor * 0.05;
     vec3 direct = (diffuse + specular) * vLightColor * normalLight * shadowFactor;
 
@@ -684,6 +837,17 @@ void main()
     // fully lit, black fully shadowed, so a flat white frame means the atlas is
     // never being sampled while any structure means the lookup works and the
     // term is simply subtle in the shaded image.
+    // Probe irradiance on its own. An indirect term this subtle is easy to
+    // mistake for no term at all, which is the same reason the punctual shadow
+    // path has a visibility-only view: "I cannot see it" is not evidence either
+    // way without one.
+    if (probeParams.debug.x != 0.0) {
+        outColor = vec4(probeIrradiance, 1.0);
+        outVelocity = computeVelocity();
+        outNormalRoughness = vec4(octEncode(normal), roughness, metallic);
+        return;
+    }
+
     if (pc.debugPunctualShadows != 0u) {
         outColor = vec4(vec3(punctualVisibility), 1.0);
         outVelocity = computeVelocity();

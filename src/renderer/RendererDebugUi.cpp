@@ -71,6 +71,21 @@ void Renderer::buildDebugUi()
 
     // Side panels are controlled by the toggles under Advanced, so only surface them
     // in advanced mode (their show* flags default to true).
+    // Its own window rather than a section of the main panel, and not behind the
+    // advanced-mode gate.
+    //
+    // The main panel's sections are all default-open, so it is already taller
+    // than the display; anything appended to it lands below the fold, where ImGui
+    // clips it rather than drawing it. That is not merely inconvenient here --
+    // the atlas previews are how this subsystem is checked at all, and a preview
+    // that is never drawn cannot be looked at or reasoned about.
+    if (debugUiSettings_.showIrradianceProbePanel) {
+        if (ImGui::Begin("Irradiance Probes", &debugUiSettings_.showIrradianceProbePanel)) {
+            drawIrradianceProbesDebugUi();
+        }
+        ImGui::End();
+    }
+
     if (debugUiSettings_.advancedMode) {
         if (debugUiSettings_.showSceneHierarchyPanel) {
             if (ImGui::Begin("Scene Hierarchy", &debugUiSettings_.showSceneHierarchyPanel)) {
@@ -252,6 +267,187 @@ void Renderer::drawVolumetricFogDebugUi()
                         renderer::kFogGridZ,
                         renderer::kFogNearPlane);
     ImGui::TextDisabled("Directional light only; punctual light shafts are not wired up yet.");
+}
+
+
+
+void Renderer::drawIrradianceProbesDebugUi()
+{
+    if (!ImGui::CollapsingHeader("Global Illumination (Irradiance Probes)", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+
+    if (!irradianceProbes_.available()) {
+        ImGui::TextDisabled("Irradiance probes unavailable; see the startup log.");
+        return;
+    }
+
+    ImGui::Checkbox("Enable irradiance probes", &giSettings_.enabled);
+    ImGui::SetItemTooltip("Off by default. The atlases are still seeded once at startup so nothing\n"
+                          "ever samples them out of an undefined layout; this controls whether\n"
+                          "probes are captured and convolved each frame.");
+
+    ImGui::BeginDisabled(!giSettings_.enabled);
+    ImGui::SliderInt("Probes per frame",
+                     &giSettings_.probesPerFrame,
+                     0,
+                     static_cast<int>(renderer::kMaxProbesPerFrame));
+    ImGui::SetItemTooltip("Round robin over the grid. This is the whole cost control: raising it\n"
+                          "makes the grid catch up with a lighting change sooner and makes every\n"
+                          "frame more expensive. Zero pauses capture without losing the cursor.");
+    ImGui::EndDisabled();
+
+    ImGui::SliderFloat("Intensity", &giSettings_.intensity, 0.0f, 4.0f, "%.2f");
+    ImGui::SetItemTooltip("How strongly probe irradiance replaces the constant environment term.\n"
+                          "Zero disables the lookup entirely rather than scaling it to nothing.");
+    ImGui::SliderFloat("Surface bias", &giSettings_.surfaceBias, 0.0f, 4.0f, "%.2f");
+    ImGui::SetItemTooltip("How far off a surface the grid is sampled from, in world units.\n"
+                          "Too small and flat surfaces self-occlude into darkness; too large\n"
+                          "and light leaks through thin geometry.");
+    ImGui::SliderFloat("Hysteresis", &giSettings_.hysteresis, 0.0f, 0.99f, "%.2f");
+    ImGui::SetItemTooltip("How much of a probe's previous value survives a re-capture.\n"
+                          "Zero overwrites, which is the reference to compare against;\n"
+                          "higher smooths the step when lighting moves and averages the\n"
+                          "sub-texel capture jitter into extra angular detail, at the cost\n"
+                          "of taking longer to catch up.");
+
+    ImGui::SliderFloat("Bounce weight", &giSettings_.bounceWeight, 0.0f, 0.95f, "%.2f");
+    ImGui::SetItemTooltip("Multi-bounce. How much of a captured surface's indirect light comes\n"
+                          "from the grid rather than the constant ambient, so the next capture\n"
+                          "sees light that has bounced once more. Zero is single bounce, and is\n"
+                          "the reference to compare against.\n"
+                          "This is a feedback loop: each round multiplies by albedo * weight.");
+    // The number that says whether a chosen weight is safe, rather than leaving
+    // the reader to work out that a feedback loop is what they just enabled.
+    ImGui::TextDisabled("  Steady-state gain on an albedo-0.8 surface: %.2fx.",
+                        static_cast<double>(renderer::probeBounceAmplification(0.8f, giSettings_.bounceWeight)));
+
+    ImGui::Checkbox("Debug: probe irradiance only", &giSettings_.debugIrradianceOnly);
+    ImGui::SetItemTooltip("Outputs the gathered indirect term on its own, bypassing exposure\n"
+                          "and tone mapping -- auto-exposure would otherwise cancel exactly the\n"
+                          "brightness change this view exists to show.\n"
+                          "Shown before Intensity is applied, so that slider keeps its real\n"
+                          "meaning instead of doubling as a brightness knob; use Debug gain.\n"
+                          "The background is the skybox, not a probe value.");
+
+    if (ImGui::Checkbox("Debug pattern", &giSettings_.debugPattern)) {
+        // Updates are off by default, so without this the atlases would keep
+        // whatever the last update wrote and the toggle would look inert.
+        irradianceProbes_.markDirty();
+    }
+    ImGui::SetItemTooltip("On: each tile holds the direction its texels stand for, which is what\n"
+                          "makes the tile addressing and the octahedral border visible.\n"
+                          "Off: the neutral state -- no irradiance, maximum distance -- that an\n"
+                          "atlas which has captured nothing should hold.");
+
+    ImGui::DragFloat3("Grid origin", giSettings_.gridOrigin, 0.1f);
+    ImGui::SetItemTooltip("World position of probe (0, 0, 0).");
+    ImGui::DragFloat3("Grid spacing", giSettings_.gridSpacing, 0.05f, 0.05f, renderer::kProbeMaxDistance);
+    ImGui::SetItemTooltip("Distance between adjacent probes on each axis.");
+
+    const renderer::ProbeGridBounds bounds = giGridBounds();
+    const glm::vec3 extent{bounds.spacing.x * static_cast<float>(renderer::kProbeGridX - 1),
+                           bounds.spacing.y * static_cast<float>(renderer::kProbeGridY - 1),
+                           bounds.spacing.z * static_cast<float>(renderer::kProbeGridZ - 1)};
+    ImGui::TextDisabled("Grid: %ux%ux%u probes covering %.1f x %.1f x %.1f world units.",
+                        renderer::kProbeGridX,
+                        renderer::kProbeGridY,
+                        renderer::kProbeGridZ,
+                        extent.x,
+                        extent.y,
+                        extent.z);
+    ImGui::TextDisabled("Tiles: %u core + %u border texels (irradiance), %u + %u (depth).",
+                        renderer::kProbeIrradianceResolution,
+                        renderer::kProbeBorderTexels,
+                        renderer::kProbeDepthResolution,
+                        renderer::kProbeBorderTexels);
+    if (!irradianceProbes_.convolveAvailable() || probeCapturePipeline_.pipeline() == VK_NULL_HANDLE) {
+        ImGui::TextDisabled("Capture unavailable; probes hold the debug pattern. See the startup log.");
+    } else {
+        const int perFrame = std::max(giSettings_.probesPerFrame, 1);
+        ImGui::TextDisabled("Capture: %u faces per probe at %ux%u, %d probes per frame -> full grid every "
+                            "%d frames.",
+                            renderer::kProbeCaptureFaceCount,
+                            renderer::kProbeCaptureFaceResolution,
+                            renderer::kProbeCaptureFaceResolution,
+                            giSettings_.probesPerFrame,
+                            (static_cast<int>(renderer::kProbeCount) + perFrame - 1) / perFrame);
+        // Zero draws with a non-empty batch is the useful diagnostic: it
+        // separates "probes captured nothing" from "probes were never
+        // captured", which look identical in the atlas.
+        ImGui::TextDisabled("Capture CPU: %.0f us to cull and record.", probeCaptureCpuMicroseconds_);
+        ImGui::SetItemTooltip("The probe GPU passes are timestamp-queried over shaders that are\n"
+                              "byte-identical in every build, so this is the one probe cost a Debug\n"
+                              "build actually misrepresents.");
+        ImGui::TextDisabled("Capture draws last frame: %u. Cursor at probe %u of %u; %llu captured so far.",
+                            probeCaptureDrawsRecorded_,
+                            irradianceProbes_.updateCursor(),
+                            renderer::kProbeCount,
+                            static_cast<unsigned long long>(irradianceProbes_.capturedProbeCount()));
+        // Hysteresis is forced to zero until every probe has been captured once,
+        // because a probe blending against its neutral seed would stay
+        // permanently dark. Worth showing rather than leaving the slider looking
+        // inert for the first cycle.
+        const glm::vec2 jitter = irradianceProbes_.captureJitter();
+        ImGui::TextDisabled("Accumulating: %s. Capture jitter (%.3f, %.3f) texels.",
+                            irradianceProbes_.gridConverged() ? "yes" : "no, first cycle still filling",
+                            jitter.x,
+                            jitter.y);
+    }
+
+
+    ImGui::SeparatorText("Atlas previews");
+
+    // Read the tile edges, not the overall colour. With the debug pattern the
+    // octahedral border is correct exactly when neighbouring tiles meet without
+    // a visible seam of their own -- a wrong border draws a one-texel frame
+    // around every tile, which is the single most legible check available before
+    // anything captures real radiance.
+    const float previewSize = 320.0f * std::clamp(debugUiSettings_.renderTargetPreviewScale, 0.25f, 2.0f);
+
+    // Gathered irradiance in this scene measures roughly 0.05 to 0.25, so shown
+    // at 1:1 the whole atlas lands in the bottom quarter of the display range
+    // and reads as black however correct it is. Captured radiance is not a
+    // display value and there is no exposure applied to it here, so the preview
+    // needs its own gain the way the HDR render targets do.
+    ImGui::SliderFloat("Debug gain", &giSettings_.previewGain, 1.0f, 16.0f, "%.1fx");
+    ImGui::SetItemTooltip("Scales the atlas previews and the probe-only view. Probe values are\n"
+                          "linear radiance, not display colour, and sit far below 1.0 in an\n"
+                          "ordinary scene, so at 1:1 a correct atlas reads as black.");
+
+    ImGui::TextDisabled("Irradiance %ux%u (%u x %u tiles), one tile per probe.",
+                        renderer::kProbeIrradianceAtlasWidth,
+                        renderer::kProbeIrradianceAtlasHeight,
+                        renderer::kProbeAtlasTilesX,
+                        renderer::kProbeAtlasTilesY);
+    ImGui::TextDisabled("Columns are (x, y) with x fastest, rows are z: the leftmost 8 columns are the "
+                        "lowest layer.");
+    drawRenderTargetPreview(irradianceProbes_.irradianceAtlas().imageView(),
+                            irradianceProbes_.sampler(),
+                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                            renderer::kProbeIrradianceAtlasWidth,
+                            renderer::kProbeIrradianceAtlasHeight,
+                            previewSize,
+                            giSettings_.previewGain);
+
+    // Red is mean distance over kProbeMaxDistance. Green is the *squared* mean
+    // over the same scale, so it saturates for anything past 8 units and is not
+    // worth reading -- the tint is one multiplier for every channel, and the two
+    // moments are orders of magnitude apart by construction. Saying so beats
+    // leaving a channel that always looks blown out.
+    ImGui::TextDisabled("Depth %ux%u. Red = mean distance / %.0f; green is its square and saturates.",
+                        renderer::kProbeDepthAtlasWidth,
+                        renderer::kProbeDepthAtlasHeight,
+                        renderer::kProbeMaxDistance);
+    ImGui::TextDisabled("Saturated yellow means nothing was hit in that direction, which is expected for "
+                        "probes sitting in open air.");
+    drawRenderTargetPreview(irradianceProbes_.depthAtlas().imageView(),
+                            irradianceProbes_.sampler(),
+                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                            renderer::kProbeDepthAtlasWidth,
+                            renderer::kProbeDepthAtlasHeight,
+                            previewSize,
+                            1.0f / renderer::kProbeMaxDistance);
 }
 
 void Renderer::drawShadowsDebugUi()
@@ -647,6 +843,23 @@ void Renderer::drawScenePresetDebugUi()
     }
 
     ImGui::TextWrapped("Status: %s", occlusionTestSceneStatus_.c_str());
+
+    ImGui::SeparatorText("Cornell box");
+    ImGui::TextDisabled("A closed, coloured room. The only scene here that shows indirect light:");
+    ImGui::TextDisabled("colour bleeding needs saturated walls, and a second bounce needs");
+    ImGui::TextDisabled("somewhere for light to be trapped. Loading it switches the sun off,");
+    ImGui::TextDisabled("fits the probe grid to the interior, and turns probes on.");
+    if (ImGui::Button("Load Cornell Box")) {
+        loadCornellBoxScene();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Exit Cornell Box")) {
+        cornellBoxSceneActive_ = false;
+        resetCameraToDefault();
+        resetDirectionalLightToDefault();
+        cornellBoxSceneStatus_ = "Cornell box inactive; default scene and sun restored.";
+    }
+    ImGui::TextWrapped("Status: %s", cornellBoxSceneStatus_.c_str());
 }
 
 void Renderer::drawPortfolioCaptureDebugUi()

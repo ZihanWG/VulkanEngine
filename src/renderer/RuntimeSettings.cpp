@@ -4,6 +4,7 @@
 
 #include "core/Logger.h"
 #include "renderer/CascadeMath.h"
+#include "renderer/IrradianceProbes.h"
 
 #include <json.hpp>
 
@@ -36,6 +37,7 @@ void clampRuntimeSettings(ToneMappingSettings& toneMapping,
                           SsrSettings& ssr,
                           CsmSettings& csm,
                           LodSettings& lod,
+                          GiSettings& gi,
                           DebugUiSettings& debugUi)
 {
     toneMapping.operatorType = std::clamp(toneMapping.operatorType, 0, 1);
@@ -79,6 +81,31 @@ void clampRuntimeSettings(ToneMappingSettings& toneMapping,
     lod.bias = std::clamp(lod.bias, -4.0f, 4.0f);
     lod.shadowBias = std::clamp(lod.shadowBias, -4.0f, 4.0f);
     lod.forcedLod = std::clamp(lod.forcedLod, -1, static_cast<int>(renderer::kMaxMeshLods) - 1);
+
+    // Probe spacing is a divisor in the grid-space lookup, so a zero or negative
+    // value would fold the whole volume onto one probe. The upper bound keeps the
+    // grid from spanning further than the depth atlas can describe: a probe
+    // cannot report a distance past kProbeMaxDistance, so spacing beyond that
+    // range makes visibility meaningless rather than merely coarse.
+    for (float& spacing : gi.gridSpacing) {
+        spacing = std::clamp(spacing, 0.05f, renderer::kProbeMaxDistance);
+    }
+    // Zero is a legal setting: it pauses capture without losing the cursor, so
+    // resuming continues round-robin rather than restarting. The upper bound is
+    // what the capture atlas is sized for.
+    gi.probesPerFrame = std::clamp(gi.probesPerFrame, 0, static_cast<int>(renderer::kMaxProbesPerFrame));
+    // Upper bound matches drawRenderTargetPreview, which clamps its tint at 16.
+    gi.previewGain = std::clamp(gi.previewGain, 1.0f, 16.0f);
+    gi.intensity = std::clamp(gi.intensity, 0.0f, 4.0f);
+    // The upper bound is roughly one probe spacing: a bias past that samples a
+    // different cell than the surface is in, which is worse than self-occlusion.
+    gi.surfaceBias = std::clamp(gi.surfaceBias, 0.0f, 4.0f);
+    // Capped below 1: at exactly 1 a probe would keep its previous value
+    // forever and never take the capture it just paid for.
+    gi.hysteresis = std::clamp(gi.hysteresis, 0.0f, 0.99f);
+    // Capped below 1: at exactly 1 with a white surface the bounce series does
+    // not converge. probeBounceAmplification reports what a given value costs.
+    gi.bounceWeight = std::clamp(gi.bounceWeight, 0.0f, 0.95f);
 
     csm.cascadeCount = std::clamp(csm.cascadeCount, 1U, renderer::kMaxShadowCascades);
     csm.lambda = std::clamp(csm.lambda, 0.0f, 1.0f);
@@ -321,6 +348,24 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readBool(*csm, "enableCascadeDebugColors", settings.csm.enableCascadeDebugColors);
     }
 
+    if (const Json* gi = objectMember(json, "gi")) {
+        readBool(*gi, "enabled", settings.gi.enabled);
+        readBool(*gi, "debugPattern", settings.gi.debugPattern);
+        readInt(*gi, "probesPerFrame", settings.gi.probesPerFrame);
+        readFloat(*gi, "previewGain", settings.gi.previewGain);
+        readFloat(*gi, "intensity", settings.gi.intensity);
+        readFloat(*gi, "surfaceBias", settings.gi.surfaceBias);
+        readFloat(*gi, "hysteresis", settings.gi.hysteresis);
+        readFloat(*gi, "bounceWeight", settings.gi.bounceWeight);
+        readBool(*gi, "debugIrradianceOnly", settings.gi.debugIrradianceOnly);
+        readFloat(*gi, "gridOriginX", settings.gi.gridOrigin[0]);
+        readFloat(*gi, "gridOriginY", settings.gi.gridOrigin[1]);
+        readFloat(*gi, "gridOriginZ", settings.gi.gridOrigin[2]);
+        readFloat(*gi, "gridSpacingX", settings.gi.gridSpacing[0]);
+        readFloat(*gi, "gridSpacingY", settings.gi.gridSpacing[1]);
+        readFloat(*gi, "gridSpacingZ", settings.gi.gridSpacing[2]);
+    }
+
     if (const Json* renderer = objectMember(json, "renderer")) {
         readBool(*renderer, "useGpuCulling", settings.useGpuCulling);
         readBool(*renderer, "useGpuShadowCulling", settings.useGpuShadowCulling);
@@ -337,6 +382,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readBool(*debugUi, "showMaterialInspectorPanel", settings.debugUi.showMaterialInspectorPanel);
         readBool(*debugUi, "showTextureDebugPanel", settings.debugUi.showTextureDebugPanel);
         readBool(*debugUi, "showRenderTargetDebugPanel", settings.debugUi.showRenderTargetDebugPanel);
+        readBool(*debugUi, "showIrradianceProbePanel", settings.debugUi.showIrradianceProbePanel);
         readBool(*debugUi, "showGpuTimingGraphs", settings.debugUi.showGpuTimingGraphs);
         readBool(*debugUi, "showCullingStats", settings.debugUi.showCullingStats);
         readBool(*debugUi, "showExposureGraphs", settings.debugUi.showExposureGraphs);
@@ -398,6 +444,22 @@ Json toJson(const RuntimeSettings& settings)
               {"shadowDistance", settings.csm.shadowDistance},
               {"enableTexelSnapping", settings.csm.enableTexelSnapping},
               {"enableCascadeDebugColors", settings.csm.enableCascadeDebugColors}}},
+        {"gi",
+         Json{{"enabled", settings.gi.enabled},
+              {"debugPattern", settings.gi.debugPattern},
+              {"probesPerFrame", settings.gi.probesPerFrame},
+              {"previewGain", settings.gi.previewGain},
+              {"intensity", settings.gi.intensity},
+              {"surfaceBias", settings.gi.surfaceBias},
+              {"hysteresis", settings.gi.hysteresis},
+              {"bounceWeight", settings.gi.bounceWeight},
+              {"debugIrradianceOnly", settings.gi.debugIrradianceOnly},
+              {"gridOriginX", settings.gi.gridOrigin[0]},
+              {"gridOriginY", settings.gi.gridOrigin[1]},
+              {"gridOriginZ", settings.gi.gridOrigin[2]},
+              {"gridSpacingX", settings.gi.gridSpacing[0]},
+              {"gridSpacingY", settings.gi.gridSpacing[1]},
+              {"gridSpacingZ", settings.gi.gridSpacing[2]}}},
         {"renderer",
          Json{{"useGpuCulling", settings.useGpuCulling},
               {"useGpuShadowCulling", settings.useGpuShadowCulling},
@@ -412,6 +474,7 @@ Json toJson(const RuntimeSettings& settings)
               {"showMaterialInspectorPanel", settings.debugUi.showMaterialInspectorPanel},
               {"showTextureDebugPanel", settings.debugUi.showTextureDebugPanel},
               {"showRenderTargetDebugPanel", settings.debugUi.showRenderTargetDebugPanel},
+              {"showIrradianceProbePanel", settings.debugUi.showIrradianceProbePanel},
               {"showGpuTimingGraphs", settings.debugUi.showGpuTimingGraphs},
               {"showCullingStats", settings.debugUi.showCullingStats},
               {"showExposureGraphs", settings.debugUi.showExposureGraphs},

@@ -164,12 +164,27 @@ Renderer::Renderer(Window& window) : window_(window)
     createPipeline();
     commandContext_.initialize(context_, frames_);
     asyncCompute_.initialize(context_, static_cast<uint32_t>(frames_.size()));
+    // Before createScene, which builds the material descriptor sets: those sets
+    // bind the probe atlases and the probe parameter buffer, so the resources
+    // have to exist by then or every material would record null handles.
+    //
+    // Created once and kept across swapchain recreation -- the atlases are sized
+    // by the probe grid, not the window, and their contents persist across
+    // frames by design.
+    irradianceProbes_.create(context_,
+                             shaderPath("probe_debug_fill.comp.spv"),
+                             shaderPath("probe_border.comp.spv"),
+                             shaderPath("probe_convolve.comp.spv"));
+    irradianceProbes_.setBounds(giGridBounds());
     createScene();
     createObjectFrameDataBuffers();
     clusteredLighting_.create(context_,
                               static_cast<uint32_t>(frames_.size()),
                               shaderPath("cluster_build.comp.spv"),
                               shaderPath("light_cull.comp.spv"));
+    // After createScene: the capture pipeline needs the bindless heap populated
+    // with the scene's textures, and it shares the material set layout.
+    createProbeCapturePipeline();
     updateDemoLights(0.0f);
     // Prefer a rigged glTF if one is present; otherwise fall back to the
     // self-contained procedural bone chain.
@@ -866,6 +881,16 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
             << "  frames served from cache: " << punctualShadowCachedFrames_ << "\n"
             << "  assignment churn this frame: " << punctualShadowAssignmentChurn_
             << ", cumulative: " << punctualShadowAssignmentChurnTotal_ << "\n";
+    if (irradianceProbes_.available()) {
+        message << "Irradiance probes:\n"
+                << "  enabled: " << (giSettings_.enabled ? "yes" : "no") << "\n"
+                << "  probes per frame: " << giSettings_.probesPerFrame << "\n"
+                << "  capture draws recorded: " << probeCaptureDrawsRecorded_ << "\n"
+                << "  capture cull+record CPU: " << probeCaptureCpuMicroseconds_ << " us\n"
+                << "  cursor: " << irradianceProbes_.updateCursor() << "/" << renderer::kProbeCount
+                << ", captured: " << irradianceProbes_.capturedProbeCount() << "\n"
+                << "  accumulating: " << (irradianceProbes_.gridConverged() ? "yes" : "first cycle") << "\n";
+    }
     message << "Shadow culling:\n";
     message << "  cascade count: " << shadowCullingStats_.cascadeCount << "\n"
             << "  total shadow draw items across cascades: " << shadowCullingStats_.totalDrawItems << "\n"
@@ -1156,6 +1181,7 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
     taaSettings_ = settings.taa;
     ssrSettings_ = settings.ssr;
     lodSettings_ = settings.lod;
+    giSettings_ = settings.gi;
     debugUiSettings_ = settings.debugUi;
 
     csmSettings_.lambda = settings.csm.lambda;
@@ -1209,6 +1235,7 @@ RuntimeSettings Renderer::captureRuntimeSettings() const
     settings.taa = taaSettings_;
     settings.ssr = ssrSettings_;
     settings.lod = lodSettings_;
+    settings.gi = giSettings_;
     settings.csm = csmSettings_;
     settings.debugUi = debugUiSettings_;
     settings.useGpuCulling = useGpuCulling_;
@@ -1314,13 +1341,27 @@ bool Renderer::previousFrameDepthValidForOcclusion() const
            glm::distance(frameCameraPosition_, depthPyramid_.cameraPosition()) <= 0.01f;
 }
 
+renderer::ProbeGridBounds Renderer::giGridBounds() const
+{
+    renderer::ProbeGridBounds bounds{};
+    bounds.origin = glm::vec3{giSettings_.gridOrigin[0], giSettings_.gridOrigin[1], giSettings_.gridOrigin[2]};
+    bounds.spacing = glm::vec3{giSettings_.gridSpacing[0], giSettings_.gridSpacing[1], giSettings_.gridSpacing[2]};
+    return bounds;
+}
+
 void Renderer::clampRuntimeSettings()
 {
     // The settings-struct clamping is GPU-independent and lives in
     // RuntimeSettings.cpp (compiled into VulkanEngineCore) so it can be tested.
     ve::clampRuntimeSettings(
         toneMappingSettings_, bloomSettings_, taaSettings_, ssrSettings_, csmSettings_, lodSettings_,
-        debugUiSettings_);
+        giSettings_, debugUiSettings_);
+
+    // Pushed here rather than at each edit site: clampRuntimeSettings runs after
+    // every settings change (load, UI edit, reset), so the volume's copy of the
+    // grid placement cannot drift from the settings it came from.
+    irradianceProbes_.setBounds(giGridBounds());
+    irradianceProbes_.setHysteresis(giSettings_.hysteresis);
 
     // GPU occlusion tuning is renderer state, not part of the settings structs,
     // so it stays here.
