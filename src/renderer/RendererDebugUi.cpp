@@ -270,6 +270,7 @@ void Renderer::drawVolumetricFogDebugUi()
 }
 
 
+
 void Renderer::drawIrradianceProbesDebugUi()
 {
     if (!ImGui::CollapsingHeader("Global Illumination (Irradiance Probes)", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -842,6 +843,23 @@ void Renderer::drawScenePresetDebugUi()
     }
 
     ImGui::TextWrapped("Status: %s", occlusionTestSceneStatus_.c_str());
+
+    ImGui::SeparatorText("Cornell box");
+    ImGui::TextDisabled("A closed, coloured room. The only scene here that shows indirect light:");
+    ImGui::TextDisabled("colour bleeding needs saturated walls, and a second bounce needs");
+    ImGui::TextDisabled("somewhere for light to be trapped. Loading it switches the sun off,");
+    ImGui::TextDisabled("fits the probe grid to the interior, and turns probes on.");
+    if (ImGui::Button("Load Cornell Box")) {
+        loadCornellBoxScene();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Exit Cornell Box")) {
+        cornellBoxSceneActive_ = false;
+        resetCameraToDefault();
+        resetDirectionalLightToDefault();
+        cornellBoxSceneStatus_ = "Cornell box inactive; default scene and sun restored.";
+    }
+    ImGui::TextWrapped("Status: %s", cornellBoxSceneStatus_.c_str());
 }
 
 void Renderer::drawPortfolioCaptureDebugUi()

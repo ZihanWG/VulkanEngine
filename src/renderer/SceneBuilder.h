@@ -41,6 +41,17 @@ constexpr size_t kPortfolioCutoutLatticeMaterialIndex = 11;
 // glTF BLEND material for the transparency demo. Sorted back to front and drawn
 // in the dedicated transparent pass, after every screen-space effect.
 constexpr size_t kPortfolioGlassMaterialIndex = 12;
+// Cornell box surfaces. Saturated and matte on purpose: colour bleeding is
+// proportional to how saturated the bouncing surface is, and any specular would
+// be lost in a convolution over 8x8 directions anyway.
+constexpr size_t kCornellWhiteMaterialIndex = 13;
+constexpr size_t kCornellRedMaterialIndex = 14;
+constexpr size_t kCornellGreenMaterialIndex = 15;
+// Floor, ceiling, back wall, two coloured side walls, two blocks.
+constexpr int kCornellBoxObjectCount = 7;
+// Interior half-extent. The room spans [-half, half] in X and Z and [0, 2*half]
+// in Y, open toward +Z so a camera can see in.
+constexpr float kCornellBoxHalfExtent = 5.0f;
 constexpr int kOcclusionTestGridColumns = 12;
 constexpr int kOcclusionTestGridRows = 10;
 constexpr int kOcclusionTestOccluderCount = 5;
@@ -70,6 +81,11 @@ public:
     // mesh or runtime materials are unavailable.
     bool appendOcclusionTest(std::vector<RenderObject>& objects, std::string& status) const;
 
+    // Appends a closed Cornell-style room: white floor, ceiling and back wall,
+    // one red and one green side wall, and two blocks. Returns false and writes
+    // `status` when the cube mesh or the Cornell materials are unavailable.
+    bool appendCornellBox(std::vector<RenderObject>& objects, std::string& status) const;
+
     // Restores the showcase objects' transforms/visibility to their authored
     // preset. Pure operation on an existing object list (the caller is responsible
     // for any GPU-state invalidation that should follow).
@@ -77,6 +93,7 @@ public:
 
     [[nodiscard]] static bool hasPortfolioShowcase(const std::vector<RenderObject>& objects);
     [[nodiscard]] static bool hasOcclusionTest(const std::vector<RenderObject>& objects);
+    [[nodiscard]] static bool hasCornellBox(const std::vector<RenderObject>& objects);
 
 private:
     const Mesh& cubeMesh_;

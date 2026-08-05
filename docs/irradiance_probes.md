@@ -264,29 +264,32 @@ The weight is held at zero until every probe has been captured once. Before that
 most of the grid still holds its neutral seed, and blending a surface toward that
 would make the scene *darker* — the opposite of what another bounce should do.
 
-### Measured, and honestly small here
+### Measured, and the scene decides the answer
 
-Over 40-sample runs with the probe term rendered on its own:
+The same measurement on two scenes, with the probe term rendered on its own:
 
-| bounce weight | probe-only luminance |
-| --- | --- |
-| 0.0 (single bounce) | 0.2771 |
-| 0.95 (maximum) | 0.2833 |
+| scene | bounce 0 | bounce 0.95 | change |
+| --- | --- | --- | --- |
+| Open platform, strong sun | 0.2771 | 0.2833 | +2.2% |
+| Cornell box | 0.4517 | 0.5920 | **+31%** |
 
-That is +2.2%, about 2.6 sigma against the run-to-run spread. The loop is stable
-— the trajectory settles rather than climbing, at every weight tested — and the
-sign is right, but the magnitude on this scene is barely above noise.
+On the open scene the effect was barely above noise, and that is not a defect —
+most of what a probe there sees is either directly lit or sky, so the grid's
+irradiance is already close to the ambient constant it replaces. The closed room
+is where light has somewhere to be trapped, and there a second bounce is a third
+of the indirect term.
 
-That is explainable rather than mysterious, and it is the same limitation that
-runs through everything else here. On an open platform under strong sun, most of
-what a probe sees is either directly lit or sky, so the grid's irradiance (~0.27)
-is already close to the ambient constant it replaces (0.15), and the indirect
-term is a small share of a surface's radiance to begin with. Multi-bounce is what
-makes an enclosed, indirectly-lit room work; this scene is the opposite of that.
+It also strengthens the colour bleeding, which is the part a single bounce cannot
+do at all: light that has hit the red wall twice is redder than light that hit it
+once. Mean irradiance ratio of the probes on each side of the room:
 
-Reported as measured rather than claimed as a win: the mechanism is verified
-stable and correctly signed, and its value is unproven on any scene that would
-show it.
+| bounce weight | left (red wall) R/G | right (green wall) R/G | separation |
+| --- | --- | --- | --- |
+| 0.0 | 1.197 | 0.965 | 1.24x |
+| 0.95 | 1.370 | 0.923 | **1.48x** |
+
+The loop is stable at every weight tested — the trajectory settles rather than
+climbing.
 
 ## Amortised update
 
@@ -327,6 +330,48 @@ darker than the scene — an error that would look like the GI simply being weak
 It is also lower than a per-frame accumulator would use (0.7 against DDGI's
 ~0.97), because a probe here is re-captured once per *cycle* rather than every
 frame: the same hysteresis costs sixty times the latency.
+
+## The Cornell box scene
+
+Under **Scene Presets → Cornell box**. A closed room with white floor, ceiling
+and back wall, one red and one green side wall, two blocks, and a single light
+below the ceiling. Open toward the camera, because a sealed box has nothing to
+look through.
+
+It exists because the default scene cannot show this subsystem working. An open
+grey platform under strong sun has almost nothing to bleed and almost nothing to
+occlude, so every measurement taken on it lands near the noise floor however
+correct the implementation is. That is a property of the scene, and no amount of
+work on the probes fixes it.
+
+Loading it does four things beyond placing geometry, each of which the scene is
+useless without:
+
+- **Switches the sun off.** It would flood the room through the open side and
+  swamp the one thing the scene exists to show.
+- **Replaces the orbiting light swarm with one overhead light.** The swarm lights
+  every surface directly; the floor between the blocks has to be lit by bounce
+  alone or there is nothing to look at.
+- **Fits the probe grid to the interior**, inset so no probe lands inside a wall
+  — a probe in solid geometry sees only that geometry and hands it to everything
+  nearby.
+- **Turns probes on**, since that is the point.
+
+Surfaces are matte and the white is deliberately not 1.0: colour bleeding scales
+with saturation, specular would not survive the convolution anyway, and a
+perfectly white room is exactly the case where the bounce feedback series stops
+converging.
+
+What it demonstrates, measured rather than asserted — mean probe irradiance on
+each side of the room:
+
+| probes | R | G | R/G |
+| --- | --- | --- | --- |
+| Left half (red wall) | 1.067 | 0.841 | 1.269 |
+| Right half (green wall) | 0.963 | 1.019 | 0.946 |
+
+A 34% swing in the red/green ratio across the room, from walls the probes never
+see directly. That is indirect light carrying colour, which is the whole claim.
 
 ## Pass structure
 
@@ -543,9 +588,9 @@ brightness knob.
 
 - **Indirect diffuse only.** No indirect specular. A mirror still reflects only
   what SSR can find on screen.
-- **Multi-bounce is implemented but unproven.** It is stable and correctly
-  signed, and worth +2.2% on this scene, which is barely above the noise. No
-  scene that would actually exercise it has been built.
+- **Multi-bounce is a fixed weight, not an energy-exact solve.** It converges to
+  the right shape but the weight is a damping factor chosen for stability rather
+  than derived, so absolute indirect intensity is a tuning parameter.
 - **The grid is fixed and hand-placed.** Origin and spacing are settings. There
   is no fitting to scene bounds, no cascaded or nested volumes, and no probe
   relocation — a probe that lands inside geometry stays there and contributes
@@ -571,6 +616,10 @@ brightness knob.
   lights is a light load for a pass that loops every light for every capture
   fragment; the conclusion that the light loop is not what costs is specific to
   that.
-- **The demo scene does not show it well.** An open platform with grey materials
-  has little to bleed and little to occlude; the effect is real but subtle. A
-  closed, coloured room would demonstrate it far better and does not exist yet.
+- **The default scene does not show it well.** An open platform with grey
+  materials has little to bleed and little to occlude, so the effect there is
+  real but subtle. Use the Cornell box preset to see it, and treat any
+  measurement taken on the default scene as a lower bound.
+- **The Cornell box is a diagnostic, not a validation suite.** It has no
+  reference image and nothing compares against one, so it shows that light is
+  transported and coloured, not that the amount is right.

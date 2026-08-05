@@ -38,7 +38,8 @@ overview; these documents describe implementation details and limitations.
 - [Irradiance Probes](irradiance_probes.md): Real-time global illumination
   without ray tracing — the octahedral probe atlases and their seam border, the
   amortised cube capture and its convolution, Chebyshev visibility weighting,
-  and why temporal accumulation needs jitter to do anything at all.
+  and why temporal accumulation needs jitter to do anything at all. Includes the
+  Cornell box preset, which is the only scene here that shows indirect light.
 - [Skeletal Animation](skeletal_animation.md): GPU-free animation core (pose
   sampling + hierarchy flatten), GPU linear-blend skinning, the procedural demo,
   and the unit-tested bind-pose invariant.

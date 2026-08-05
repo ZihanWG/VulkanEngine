@@ -470,6 +470,9 @@ private:
     [[nodiscard]] glm::vec4 activeDirectionalLightDirection() const;
     [[nodiscard]] glm::vec4 activeDirectionalLightColor() const;
     void loadOcclusionTestScene();
+    // A closed, coloured room -- the one scene here that can show indirect light.
+    void loadCornellBoxScene();
+    void resetCornellBoxSceneToPreset();
     void enableOcclusionTestSettings();
     [[nodiscard]] bool previousFrameDepthValidForOcclusion() const;
     // Editor viewport interaction: free-fly/orbit camera, click-to-select picking,
@@ -897,6 +900,8 @@ private:
     bool gpuProfilerEnabled_ = true;
     bool portfolioCaptureMode_ = false;
     bool occlusionTestSceneActive_ = false;
+    bool cornellBoxSceneActive_ = false;
+    std::string cornellBoxSceneStatus_ = "Cornell box inactive.";
     bool portfolioScreenshotRequested_ = false;
     bool normalMapAssetLoaded_ = false;
     bool metallicRoughnessMapAssetLoaded_ = false;

@@ -358,6 +358,101 @@ bool SceneBuilder::hasPortfolioShowcase(const std::vector<RenderObject>& objects
     return hasFloor && hasBackdrop && hasHero && materialSampleCount >= 4;
 }
 
+bool SceneBuilder::appendCornellBox(std::vector<RenderObject>& objects, std::string& status) const
+{
+    if (!cubeMesh_.valid() || materials_.size() <= kCornellGreenMaterialIndex) {
+        status = "Cornell box is unavailable: cube mesh or Cornell materials are not initialized.";
+        Logger::warn(status);
+        return false;
+    }
+
+    const auto addSlab = [this, &objects](std::string debugName,
+                                          size_t materialIndex,
+                                          const glm::vec3& position,
+                                          const glm::vec3& rotationRadians,
+                                          const glm::vec3& scale) {
+        RenderObject slab{};
+        slab.debugId = allocateDebugId_();
+        slab.sceneObjectId = slab.debugId;
+        slab.mesh = &cubeMesh_;
+        slab.material = &materials_.at(materialIndex);
+        slab.debugName = std::move(debugName);
+        slab.sourceType = RenderObjectSourceType::CornellBox;
+        slab.transform.position = position;
+        slab.transform.rotationRadians = rotationRadians;
+        slab.transform.scale = scale;
+        slab.animateTransform = false;
+        slab.portfolioOnly = false;
+        slab.hideInPortfolio = true;
+        objects.push_back(std::move(slab));
+    };
+
+    constexpr float kHalf = kCornellBoxHalfExtent;
+    constexpr float kSize = kHalf * 2.0f;
+    // Thin enough to read as a surface, thick enough that the probe visibility
+    // moments see a wall rather than a plane they can average across.
+    constexpr float kWallThickness = 0.25f;
+    constexpr float kHalfThickness = kWallThickness * 0.5f;
+
+    objects.reserve(objects.size() + static_cast<size_t>(kCornellBoxObjectCount));
+
+    // The room. Walls sit just outside the interior so the interior really is
+    // kSize on a side, which is what the probe grid is fitted to.
+    addSlab("Cornell Floor", kCornellWhiteMaterialIndex, {0.0f, -kHalfThickness, 0.0f}, {}, {kSize, kWallThickness, kSize});
+    addSlab("Cornell Ceiling",
+            kCornellWhiteMaterialIndex,
+            {0.0f, kSize + kHalfThickness, 0.0f},
+            {},
+            {kSize, kWallThickness, kSize});
+    addSlab("Cornell Back Wall",
+            kCornellWhiteMaterialIndex,
+            {0.0f, kHalf, -kHalf - kHalfThickness},
+            {},
+            {kSize, kSize, kWallThickness});
+    // The two coloured walls are the whole point: everything white in this room
+    // picks up their colour from one bounce, and that tint is the most legible
+    // evidence that indirect light is being transported at all.
+    addSlab("Cornell Left Wall (red)",
+            kCornellRedMaterialIndex,
+            {-kHalf - kHalfThickness, kHalf, 0.0f},
+            {},
+            {kWallThickness, kSize, kSize});
+    addSlab("Cornell Right Wall (green)",
+            kCornellGreenMaterialIndex,
+            {kHalf + kHalfThickness, kHalf, 0.0f},
+            {},
+            {kWallThickness, kSize, kSize});
+    // Open toward +Z: without a missing wall there is nothing to look through,
+    // and a probe grid inside a sealed box would never see the camera's side.
+
+    // Two blocks, rotated off-axis the way the original has them, so the floor
+    // between them is lit almost entirely by bounce rather than directly.
+    addSlab("Cornell Tall Block",
+            kCornellWhiteMaterialIndex,
+            {-1.7f, 3.0f, -1.6f},
+            {0.0f, -0.30f, 0.0f},
+            {2.8f, 6.0f, 2.8f});
+    addSlab("Cornell Short Block",
+            kCornellWhiteMaterialIndex,
+            {1.9f, 1.5f, 1.1f},
+            {0.0f, 0.28f, 0.0f},
+            {2.8f, 3.0f, 2.8f});
+
+    status = "Cornell box active: closed room with red and green side walls, lit by one overhead light.";
+    return true;
+}
+
+bool SceneBuilder::hasCornellBox(const std::vector<RenderObject>& objects)
+{
+    size_t count = 0;
+    for (const RenderObject& object : objects) {
+        if (object.sourceType == RenderObjectSourceType::CornellBox && object.mesh != nullptr) {
+            ++count;
+        }
+    }
+    return count >= static_cast<size_t>(kCornellBoxObjectCount);
+}
+
 bool SceneBuilder::hasOcclusionTest(const std::vector<RenderObject>& objects)
 {
     size_t occlusionObjectCount = 0;

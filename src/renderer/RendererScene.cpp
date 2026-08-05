@@ -272,6 +272,25 @@ void Renderer::resetOcclusionTestSceneToPreset()
     invalidateTaaHistory();
 }
 
+void Renderer::resetCornellBoxSceneToPreset()
+{
+    const auto firstRemoved = std::remove_if(renderObjects_.begin(), renderObjects_.end(), [](const auto& object) {
+        return object.sourceType == renderer::RenderObjectSourceType::CornellBox;
+    });
+
+    if (firstRemoved != renderObjects_.end()) {
+        const size_t firstRemovedIndex = static_cast<size_t>(firstRemoved - renderObjects_.begin());
+        if (selectedRenderObjectIndex_ >= firstRemovedIndex) {
+            selectedRenderObjectIndex_ = kInvalidRenderObjectIndex;
+        }
+        renderObjects_.erase(firstRemoved, renderObjects_.end());
+    }
+
+    makeSceneBuilder().appendCornellBox(renderObjects_, cornellBoxSceneStatus_);
+    invalidateDepthPyramid();
+    invalidateTaaHistory();
+}
+
 const rhi::VulkanTexture* Renderer::loadMaterialAssetTextureOrFallback(
     const std::filesystem::path& materialPath,
     const std::filesystem::path& texturePath,
@@ -691,6 +710,17 @@ void Renderer::createPortfolioMaterialVariants()
     addPortfolioMaterial(
         "Portfolio_Glass", &portfolioBaseColorTexture_, {0.42f, 0.68f, 0.78f, 0.38f}, 0.0f, 0.08f, 0.0f);
 
+    // Cornell box surfaces. Matte and saturated: colour bleeding scales with how
+    // saturated the bouncing surface is, and specular would not survive the probe
+    // convolution anyway. The white is deliberately not 1.0 -- a perfectly white
+    // room is exactly the case where the bounce feedback series stops converging.
+    //
+    // portfolioBaseColorTexture_ is already a flat white 4x4, so the surface
+    // colour here is exactly the factor with nothing modulating it.
+    addPortfolioMaterial("Cornell_White", &portfolioBaseColorTexture_, {0.72f, 0.71f, 0.68f, 1.0f}, 0.0f, 0.95f, 0.0f);
+    addPortfolioMaterial("Cornell_Red", &portfolioBaseColorTexture_, {0.63f, 0.07f, 0.05f, 1.0f}, 0.0f, 0.95f, 0.0f);
+    addPortfolioMaterial("Cornell_Green", &portfolioBaseColorTexture_, {0.09f, 0.48f, 0.10f, 1.0f}, 0.0f, 0.95f, 0.0f);
+
     // Give the hero ceramic a soft warm emissive so factor-only emissive is
     // visible in the default scene and reads through bloom. Editable per material
     // from the Material Inspector.
@@ -1056,6 +1086,60 @@ void Renderer::loadOcclusionTestScene()
                                 std::to_string(renderer::kOcclusionTestObjectCount) +
                                 " procedural cube objects, including 5 occluder walls and 120 hidden/edge cubes.";
     Logger::info(occlusionTestSceneStatus_);
+}
+
+void Renderer::loadCornellBoxScene()
+{
+    if (portfolioCaptureMode_) {
+        setPortfolioCaptureMode(false);
+    }
+    occlusionTestSceneActive_ = false;
+
+    resetCornellBoxSceneToPreset();
+    if (!renderer::SceneBuilder::hasCornellBox(renderObjects_)) {
+        cornellBoxSceneActive_ = false;
+        cornellBoxSceneStatus_ = "Cornell box objects are unavailable; see the startup log.";
+        Logger::warn(cornellBoxSceneStatus_);
+        return;
+    }
+
+    cornellBoxSceneActive_ = true;
+
+    // Looking in through the open side. Far enough back that both blocks and
+    // both coloured walls are in frame, which is what makes the bleed readable.
+    camera_.position = {0.0f, 5.0f, 17.5f};
+    camera_.target = {0.0f, 4.6f, 0.0f};
+    camera_.up = {0.0f, 1.0f, 0.0f};
+    editorCamera_.syncFromCamera(camera_);
+
+    // The sun is switched off rather than dimmed. It would flood the room
+    // through the open side and swamp the one thing this scene exists to show.
+    directionalLightSettings_.color = glm::vec3{0.0f};
+    directionalLightSettings_.intensity = 0.0f;
+
+    // Fit the probe grid to the room's interior, inset so no probe lands inside
+    // a wall -- a probe in solid geometry sees nothing but that geometry and
+    // contributes it to everything nearby.
+    constexpr float kHalf = renderer::kCornellBoxHalfExtent;
+    constexpr float kInset = 0.8f;
+    const float spanXZ = (kHalf - kInset) * 2.0f;
+    const float spanY = kHalf * 2.0f - kInset * 2.0f;
+    giSettings_.gridOrigin[0] = -(kHalf - kInset);
+    giSettings_.gridOrigin[1] = kInset;
+    giSettings_.gridOrigin[2] = -(kHalf - kInset);
+    giSettings_.gridSpacing[0] = spanXZ / static_cast<float>(renderer::kProbeGridX - 1);
+    giSettings_.gridSpacing[1] = spanY / static_cast<float>(renderer::kProbeGridY - 1);
+    giSettings_.gridSpacing[2] = spanXZ / static_cast<float>(renderer::kProbeGridZ - 1);
+
+    // The whole point of the scene, so it arrives switched on.
+    giSettings_.enabled = true;
+    giSettings_.debugPattern = false;
+    debugUiSettings_.showIrradianceProbePanel = true;
+    clampRuntimeSettings();
+
+    cornellBoxSceneStatus_ =
+        "Cornell box active: closed room, one overhead light, sun disabled, probe grid fitted to the interior.";
+    Logger::info(cornellBoxSceneStatus_);
 }
 
 void Renderer::saveSceneFromUi()
