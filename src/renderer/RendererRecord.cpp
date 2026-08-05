@@ -169,6 +169,8 @@ void Renderer::recordProbeCapturePass(VkCommandBuffer commandBuffer)
     const renderer::Mesh* boundMesh = nullptr;
     uint32_t recordedDraws = 0;
 
+    const auto captureCpuStart = std::chrono::high_resolution_clock::now();
+
     for (uint32_t slot = 0; slot < batch.size(); ++slot) {
         const glm::vec3 probePosition = renderer::probeWorldPosition(batch[slot], bounds);
 
@@ -243,6 +245,10 @@ void Renderer::recordProbeCapturePass(VkCommandBuffer commandBuffer)
             }
         }
     }
+
+    probeCaptureCpuMicroseconds_ = std::chrono::duration<float, std::micro>(
+                                       std::chrono::high_resolution_clock::now() - captureCpuStart)
+                                       .count();
 
     renderGraph_.endProbeCapturePass();
     probeCaptureDrawsRecorded_ = recordedDraws;

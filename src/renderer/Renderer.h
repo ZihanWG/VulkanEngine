@@ -855,6 +855,12 @@ private:
     // batch means every face culled everything, which is the difference between
     // "probes captured black" and "probes never captured".
     uint32_t probeCaptureDrawsRecorded_ = 0;
+    // CPU cost of culling and recording that pass, in microseconds. The probe
+    // GPU passes are timestamp-queried and their shaders are identical in every
+    // build, so this is the one part of the subsystem whose cost a Debug build
+    // actually misrepresents -- and the one that scales with draw items rather
+    // than with probe resolution.
+    float probeCaptureCpuMicroseconds_ = 0.0f;
     bool showClusterHeatmap_ = false;
     // Procedural skinned bone-chain demo: draw it, and animate (vs hold bind pose).
     bool showSkinnedMesh_ = true;

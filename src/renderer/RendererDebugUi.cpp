@@ -363,6 +363,10 @@ void Renderer::drawIrradianceProbesDebugUi()
         // Zero draws with a non-empty batch is the useful diagnostic: it
         // separates "probes captured nothing" from "probes were never
         // captured", which look identical in the atlas.
+        ImGui::TextDisabled("Capture CPU: %.0f us to cull and record.", probeCaptureCpuMicroseconds_);
+        ImGui::SetItemTooltip("The probe GPU passes are timestamp-queried over shaders that are\n"
+                              "byte-identical in every build, so this is the one probe cost a Debug\n"
+                              "build actually misrepresents.");
         ImGui::TextDisabled("Capture draws last frame: %u. Cursor at probe %u of %u; %llu captured so far.",
                             probeCaptureDrawsRecorded_,
                             irradianceProbes_.updateCursor(),

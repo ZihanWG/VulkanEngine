@@ -881,6 +881,16 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
             << "  frames served from cache: " << punctualShadowCachedFrames_ << "\n"
             << "  assignment churn this frame: " << punctualShadowAssignmentChurn_
             << ", cumulative: " << punctualShadowAssignmentChurnTotal_ << "\n";
+    if (irradianceProbes_.available()) {
+        message << "Irradiance probes:\n"
+                << "  enabled: " << (giSettings_.enabled ? "yes" : "no") << "\n"
+                << "  probes per frame: " << giSettings_.probesPerFrame << "\n"
+                << "  capture draws recorded: " << probeCaptureDrawsRecorded_ << "\n"
+                << "  capture cull+record CPU: " << probeCaptureCpuMicroseconds_ << " us\n"
+                << "  cursor: " << irradianceProbes_.updateCursor() << "/" << renderer::kProbeCount
+                << ", captured: " << irradianceProbes_.capturedProbeCount() << "\n"
+                << "  accumulating: " << (irradianceProbes_.gridConverged() ? "yes" : "first cycle") << "\n";
+    }
     message << "Shadow culling:\n";
     message << "  cascade count: " << shadowCullingStats_.cascadeCount << "\n"
             << "  total shadow draw items across cascades: " << shadowCullingStats_.totalDrawItems << "\n"

@@ -317,21 +317,46 @@ Two subtleties are load-bearing:
 
 ## Measurements
 
-Demo scene, **Debug build** (Release timings not yet taken; Debug numbers here
-have run ~10x off Release elsewhere in this project and are not a basis for a
-performance claim).
+Demo scene, **Release build**, min and median over ~25 samples.
+
+### GPU
 
 | probes/frame | ProbeCapture | IrradianceProbeUpdate |
 | --- | --- | --- |
-| 4 (default) | 0.003 ms (at the timer floor) | 0.214 ms |
-| 16 (max) | 0.327 ms | 0.471 ms |
+| 4 (default) | 0.003 / 0.006 ms | 0.202 / 0.263 ms |
+| 16 (max) | 0.085 / 0.333 ms | 0.342 / 0.468 ms |
 
-**The convolution dominates, not the light loop.** Even with every punctual light
+**The convolution dominates, not the capture.** Even with every punctual light
 evaluated for every capture fragment, the capture is cheaper than the
 convolution's 1536-sample inner loop. Per-probe light culling is therefore not
-implemented — there is no measurement that justifies it.
+implemented — there is no measurement that justifies it. The lever that matters
+is the face resolution, which the convolution's cost is quadratic in.
 
-Effect on the image, from the engine's own scene-luminance readout:
+These numbers match the Debug build's almost exactly, and that is not an
+accident worth being suspicious of: the shaders are compiled by the same `glslc`
+invocation regardless of `CMAKE_BUILD_TYPE`, so the SPIR-V is **byte-identical**
+between builds, and these are timestamp queries over that identical binary. The
+usual caution about Debug timings applies to CPU work, not to this.
+
+### CPU
+
+Which is where it does apply. Culling and recording the capture pass is the one
+probe cost a build type actually changes, and it changes it by an order of
+magnitude:
+
+| probes/frame | Release | Debug |
+| --- | --- | --- |
+| 4 (default) | 25 / 45 us | 168 / 597 us |
+| 16 (max) | 50 / 158 us | — |
+
+At 16 probes the pass records 234 draws on this scene — six frustum-culled faces
+per probe, from a scene of 11 draw items. That is the number that scales with
+scene complexity rather than with probe resolution, and it is the one to watch on
+a heavier scene.
+
+### Effect on the image
+
+From the engine's own scene-luminance readout:
 
 | | average scene luminance |
 | --- | --- |
@@ -490,10 +515,14 @@ brightness knob.
   self-consistent rather than physically matched to the direct term.
 - **Cascaded shadows in the capture only work inside the CSM's range.** A probe
   beyond the cascade distance gathers unshadowed sunlight.
-- **The update is not budgeted in time**, only in probe count. A scene with far
-  more draw items would make each capture more expensive with no feedback.
-- **Release timings have not been taken.** Every number above is from a Debug
-  build.
+- **The update is not budgeted in time**, only in probe count. The debug panel
+  reports the capture's CPU cost, so the feedback exists, but nothing adapts the
+  batch size to it — a heavier scene makes each capture more expensive and the
+  count stays where it was set.
+- **Only this scene has been measured.** Eleven draw items and a handful of
+  lights is a light load for a pass that loops every light for every capture
+  fragment; the conclusion that the light loop is not what costs is specific to
+  that.
 - **The demo scene does not show it well.** An open platform with grey materials
   has little to bleed and little to occlude; the effect is real but subtle. A
   closed, coloured room would demonstrate it far better and does not exist yet.
