@@ -103,6 +103,9 @@ void clampRuntimeSettings(ToneMappingSettings& toneMapping,
     // Capped below 1: at exactly 1 a probe would keep its previous value
     // forever and never take the capture it just paid for.
     gi.hysteresis = std::clamp(gi.hysteresis, 0.0f, 0.99f);
+    // Capped below 1: at exactly 1 with a white surface the bounce series does
+    // not converge. probeBounceAmplification reports what a given value costs.
+    gi.bounceWeight = std::clamp(gi.bounceWeight, 0.0f, 0.95f);
 
     csm.cascadeCount = std::clamp(csm.cascadeCount, 1U, renderer::kMaxShadowCascades);
     csm.lambda = std::clamp(csm.lambda, 0.0f, 1.0f);
@@ -353,6 +356,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readFloat(*gi, "intensity", settings.gi.intensity);
         readFloat(*gi, "surfaceBias", settings.gi.surfaceBias);
         readFloat(*gi, "hysteresis", settings.gi.hysteresis);
+        readFloat(*gi, "bounceWeight", settings.gi.bounceWeight);
         readBool(*gi, "debugIrradianceOnly", settings.gi.debugIrradianceOnly);
         readFloat(*gi, "gridOriginX", settings.gi.gridOrigin[0]);
         readFloat(*gi, "gridOriginY", settings.gi.gridOrigin[1]);
@@ -448,6 +452,7 @@ Json toJson(const RuntimeSettings& settings)
               {"intensity", settings.gi.intensity},
               {"surfaceBias", settings.gi.surfaceBias},
               {"hysteresis", settings.gi.hysteresis},
+              {"bounceWeight", settings.gi.bounceWeight},
               {"debugIrradianceOnly", settings.gi.debugIrradianceOnly},
               {"gridOriginX", settings.gi.gridOrigin[0]},
               {"gridOriginY", settings.gi.gridOrigin[1]},

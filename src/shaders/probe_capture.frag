@@ -23,6 +23,18 @@
 
 layout(set = 0, binding = 1) uniform sampler2DArray uShadowMap;
 layout(set = 0, binding = 7) uniform sampler2D uPunctualShadowAtlas;
+// The probe atlases this pass is itself feeding. Reading them here is what makes
+// light bounce more than once: a surface a probe captures is lit partly by the
+// indirect light the grid already holds, so the next capture sees light that has
+// bounced one more time. Written by the update pass later in the same frame, so
+// what this reads is the previous frame's contents.
+layout(set = 0, binding = 9) uniform sampler2D uProbeIrradianceAtlas;
+layout(set = 0, binding = 10) uniform sampler2D uProbeDepthAtlas;
+layout(set = 0, binding = 11) uniform ProbeShadingParams {
+    vec4 gridOrigin;   // xyz = origin, w = intensity
+    vec4 gridSpacing;  // xyz = spacing, w = surface bias
+    vec4 debug;
+} probeParams;
 layout(set = 1, binding = 0) uniform sampler2D uBaseColorTextures[];
 
 layout(location = 0) in vec2 vUV;
@@ -75,6 +87,13 @@ layout(push_constant) uniform PushConstants {
     LightBuffer lights;
     ShadowSlotBuffer punctualShadowSlots;
     uint lightCount;
+    // How much of a captured surface's indirect light comes from the probe grid
+    // rather than the constant ambient. Zero is single-bounce -- exactly the
+    // behaviour before this existed, and the reference the result is judged
+    // against. Held at zero by the CPU until the grid has been captured once,
+    // because before that the probes hold their neutral seed and blending
+    // toward it would make the whole scene darker, not brighter.
+    float bounceWeight;
 } pc;
 
 // Must match ve::renderer::kProbeMaxDistance.
@@ -253,6 +272,102 @@ vec3 capturePunctualLight(GpuLight light, vec3 worldPosition, vec3 normal)
     return light.colorIntensity.rgb * light.colorIntensity.a * attenuation;
 }
 
+// --- Probe lookup, for multi-bounce -----------------------------------------
+//
+// Transcribed from simple_bindless.frag; the constants and the weighting are the
+// same ones, because a capture that gathered indirect light differently from the
+// way the camera gathers it would make probes disagree with the shading they
+// feed.
+
+const uint kProbeGridX = 8u;
+const uint kProbeGridY = 4u;
+const uint kProbeGridZ = 8u;
+const int kProbeBorderTexels = 1;
+const int kProbeIrradianceResolution = 8;
+const int kProbeDepthResolution = 16;
+const int kProbeAtlasTilesX = 32;
+const int kProbeAtlasTilesY = 8;
+const float kProbeMinVisibility = 0.02;
+const float kProbeBackfaceFloor = 0.2;
+
+vec2 probeOctEncode(vec3 n)
+{
+    n /= (abs(n.x) + abs(n.y) + abs(n.z));
+    vec2 e = n.xy;
+    if (n.z < 0.0) {
+        e = (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
+    }
+    return e * 0.5 + 0.5;
+}
+
+vec2 probeAtlasUv(uint probeIndex, vec3 direction, int coreResolution)
+{
+    int tileSize = coreResolution + 2 * kProbeBorderTexels;
+    ivec2 tile = ivec2(int(probeIndex) % kProbeAtlasTilesX, int(probeIndex) / kProbeAtlasTilesX);
+    vec2 texel = vec2(tile * tileSize) + float(kProbeBorderTexels) +
+                 probeOctEncode(direction) * float(coreResolution);
+    return texel / vec2(kProbeAtlasTilesX * tileSize, kProbeAtlasTilesY * tileSize);
+}
+
+float probeChebyshevVisibility(vec2 moments, float distanceToProbe)
+{
+    if (!(distanceToProbe > moments.x)) {
+        return 1.0;
+    }
+    float variance = abs(moments.x * moments.x - moments.y);
+    float excess = distanceToProbe - moments.x;
+    float bound = variance / (variance + excess * excess);
+    return clamp(bound * bound * bound, kProbeMinVisibility, 1.0);
+}
+
+vec3 sampleProbeIrradiance(vec3 worldPosition, vec3 normal, vec3 viewDirection)
+{
+    vec3 spacing = max(probeParams.gridSpacing.xyz, vec3(1.0e-4));
+    vec3 biased = worldPosition + (normal * 0.2 + viewDirection * 0.8) * max(probeParams.gridSpacing.w, 0.0);
+
+    vec3 gridSpace = (biased - probeParams.gridOrigin.xyz) / spacing;
+    vec3 floored = floor(gridSpace);
+    ivec3 baseCoord = clamp(ivec3(floored), ivec3(0),
+                            ivec3(kProbeGridX - 1u, kProbeGridY - 1u, kProbeGridZ - 1u));
+    vec3 fraction = clamp(gridSpace - floored, vec3(0.0), vec3(1.0));
+
+    vec3 total = vec3(0.0);
+    float totalWeight = 0.0;
+
+    for (int corner = 0; corner < 8; ++corner) {
+        ivec3 offset = ivec3(corner & 1, (corner >> 1) & 1, (corner >> 2) & 1);
+        ivec3 coord = min(baseCoord + offset,
+                          ivec3(kProbeGridX - 1u, kProbeGridY - 1u, kProbeGridZ - 1u));
+        uint probeIndex = uint(coord.x) + uint(coord.y) * kProbeGridX +
+                          uint(coord.z) * kProbeGridX * kProbeGridY;
+
+        vec3 probePosition = probeParams.gridOrigin.xyz + vec3(coord) * spacing;
+        vec3 toProbe = probePosition - biased;
+        float distanceToProbe = length(toProbe);
+        vec3 directionToProbe = distanceToProbe > 1.0e-6 ? toProbe / distanceToProbe : normal;
+
+        vec3 axisWeight = mix(1.0 - fraction, fraction, vec3(offset));
+        float weight = axisWeight.x * axisWeight.y * axisWeight.z;
+
+        float wrapped = (dot(normal, directionToProbe) + 1.0) * 0.5;
+        weight *= wrapped * wrapped + kProbeBackfaceFloor;
+
+        vec2 moments = texture(uProbeDepthAtlas,
+                               probeAtlasUv(probeIndex, -directionToProbe, kProbeDepthResolution)).rg;
+        weight *= probeChebyshevVisibility(moments, distanceToProbe);
+
+        if (weight <= 0.0) {
+            continue;
+        }
+
+        total += texture(uProbeIrradianceAtlas,
+                         probeAtlasUv(probeIndex, normal, kProbeIrradianceResolution)).rgb * weight;
+        totalWeight += weight;
+    }
+
+    return totalWeight > 0.0 ? total / totalWeight : vec3(0.0);
+}
+
 void main()
 {
     // Sampled unconditionally, like the main pass: materials with no base-color
@@ -291,7 +406,23 @@ void main()
     // Emissive rides the base-color heap in slot w, the same arrangement the
     // main pass uses.
     vec3 emissive = vEmissiveFactor.rgb * texture(uBaseColorTextures[nonuniformEXT(vTextureIndices.w)], vUV).rgb;
-    vec3 radiance = baseColor.rgb * (direct + vAmbientColor) + emissive;
+    // Indirect light on this surface. Interpolated between the constant ambient
+    // and what the grid already holds rather than summed, because both answer
+    // the same question -- summing them would count the sky twice, and it would
+    // also make the feedback unbounded instead of a convex combination.
+    //
+    // The weight is what bounds the loop: each round of feedback multiplies by
+    // albedo * weight, so the series settles at 1 / (1 - albedo * weight). See
+    // ve::renderer::probeBounceAmplification.
+    vec3 indirect = vAmbientColor;
+    if (pc.bounceWeight > 0.0) {
+        vec3 toProbeGrid = normalize(toProbe);
+        indirect = mix(vAmbientColor,
+                       sampleProbeIrradiance(vWorldPosition, normal, toProbeGrid),
+                       clamp(pc.bounceWeight, 0.0, 1.0));
+    }
+
+    vec3 radiance = baseColor.rgb * (direct + indirect) + emissive;
 
     // Clamped for the same reason the depth atlas is: the convolution sums this
     // in a 16-bit float, and one blown-out emissive texel would otherwise

@@ -192,6 +192,11 @@ struct GiSettings {
     // makes each capture overwrite, which is the reference the accumulated
     // result is judged against.
     float hysteresis = 0.7f;
+    // Multi-bounce: how much of a captured surface's indirect light comes from
+    // the probe grid rather than the constant ambient. Zero is single bounce.
+    // Feedback gain is albedo * this, so the series settles at
+    // 1 / (1 - albedo * weight) -- see probeBounceAmplification.
+    float bounceWeight = 0.5f;
     // Outputs probe irradiance alone instead of shaded colour.
     bool debugIrradianceOnly = false;
 };

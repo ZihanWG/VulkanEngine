@@ -144,6 +144,19 @@ inline constexpr float kProbeBackfaceFloor = 0.2f;
 // sub-texel jitter above averages into extra angular resolution.
 inline constexpr float kProbeDefaultHysteresis = 0.7f;
 
+// How much of a surface's indirect light comes from the probe grid rather than
+// from the constant ambient term, when a probe captures that surface.
+//
+// This is what turns one bounce into many: the capture reads the irradiance the
+// probes already hold, so the next capture sees light that has bounced once
+// more. It is a feedback loop, and the weight is what bounds it -- see
+// probeBounceAmplification.
+//
+// Below one on purpose. The physically exact answer is a full replacement, but
+// the grid is coarse and every term feeding it is approximate, so an exact
+// feedback gain compounds those approximations as fast as it compounds light.
+inline constexpr float kProbeDefaultBounceWeight = 0.5f;
+
 // Distances written into the depth atlas are clamped to this. Two reasons, and
 // only the first is about storage: the atlas keeps distance and distance
 // squared in a 16-bit float pair, and the squared channel is what runs out of
@@ -345,6 +358,19 @@ struct ProbeBlend {
 // self-occludes into darkness. Biased along both the normal and the view
 // direction: normal alone still fails at grazing angles, where the offset barely
 // clears the surface along the line the eye is actually looking down.
+// Steady-state amplification of the multi-bounce feedback loop.
+//
+// A captured surface emits albedo * (direct + weight * previousIndirect), and
+// that feeds the next capture, so the series is geometric in albedo * weight and
+// settles at 1 / (1 - albedo * weight). Worth having as a function rather than a
+// comment: it is the number that says whether a chosen weight is safe on a given
+// scene, and the one that goes to infinity at a perfectly white surface with
+// full feedback -- which is physically correct and useless as a renderer.
+//
+// Clamped rather than allowed to diverge, so a degenerate input produces a large
+// number instead of an infinity that would reach the shading as NaN.
+[[nodiscard]] float probeBounceAmplification(float albedo, float bounceWeight);
+
 [[nodiscard]] glm::vec3 probeSamplePosition(const glm::vec3& worldPosition,
                                             const glm::vec3& surfaceNormal,
                                             const glm::vec3& viewDirection,

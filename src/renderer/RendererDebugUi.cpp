@@ -310,6 +310,17 @@ void Renderer::drawIrradianceProbesDebugUi()
                           "sub-texel capture jitter into extra angular detail, at the cost\n"
                           "of taking longer to catch up.");
 
+    ImGui::SliderFloat("Bounce weight", &giSettings_.bounceWeight, 0.0f, 0.95f, "%.2f");
+    ImGui::SetItemTooltip("Multi-bounce. How much of a captured surface's indirect light comes\n"
+                          "from the grid rather than the constant ambient, so the next capture\n"
+                          "sees light that has bounced once more. Zero is single bounce, and is\n"
+                          "the reference to compare against.\n"
+                          "This is a feedback loop: each round multiplies by albedo * weight.");
+    // The number that says whether a chosen weight is safe, rather than leaving
+    // the reader to work out that a feedback loop is what they just enabled.
+    ImGui::TextDisabled("  Steady-state gain on an albedo-0.8 surface: %.2fx.",
+                        static_cast<double>(renderer::probeBounceAmplification(0.8f, giSettings_.bounceWeight)));
+
     ImGui::Checkbox("Debug: probe irradiance only", &giSettings_.debugIrradianceOnly);
     ImGui::SetItemTooltip("Outputs the gathered indirect term on its own, bypassing exposure\n"
                           "and tone mapping -- auto-exposure would otherwise cancel exactly the\n"

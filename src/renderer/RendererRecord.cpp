@@ -166,6 +166,14 @@ void Renderer::recordProbeCapturePass(VkCommandBuffer commandBuffer)
         punctualShadows_.slotCount() > 0 ? punctualShadows_.slotBufferAddress(currentFrame_) : 0;
     const uint32_t probeLightCount = probeLightBufferAddress != 0 ? clusteredLighting_.lightCount() : 0;
 
+    // Multi-bounce. Held at zero until every probe has been captured once: until
+    // then most of the grid still holds its neutral seed, and blending a surface
+    // toward that would make the scene darker rather than brighter -- the
+    // opposite of what another bounce is supposed to do. Same gate the
+    // accumulation hysteresis uses, for the same reason.
+    const float probeBounceWeight =
+        irradianceProbes_.gridConverged() ? std::clamp(giSettings_.bounceWeight, 0.0f, 1.0f) : 0.0f;
+
     const renderer::Mesh* boundMesh = nullptr;
     uint32_t recordedDraws = 0;
 
@@ -226,6 +234,7 @@ void Renderer::recordProbeCapturePass(VkCommandBuffer commandBuffer)
                 pushConstants.lightBufferAddress = probeLightBufferAddress;
                 pushConstants.punctualShadowSlotAddress = probeShadowSlotAddress;
                 pushConstants.lightCount = probeLightCount;
+                pushConstants.bounceWeight = probeBounceWeight;
                 // Offset per draw so the vertex stage reads objects[0] with an
                 // instance index of zero, matching the direct-draw shadow path.
                 pushConstants.objectFrameDataAddress =
@@ -1244,6 +1253,29 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         }
     }
 
+    // Probe shading parameters, refreshed inside this frame's own command buffer
+    // so a single buffer serves every frame in flight.
+    //
+    // Before the capture pass, not just before the main pass: the capture reads
+    // these too, for the multi-bounce lookup. Updating after it would have the
+    // capture read the previous frame's grid placement -- and on the very first
+    // frame, a buffer nothing had written yet.
+    {
+        renderer::ProbeShadingParams probeParams{};
+        const renderer::ProbeGridBounds bounds = irradianceProbes_.bounds();
+        // Intensity carries the off state, so everything downstream needs no
+        // separate flag: no atlases, no capture pipeline, or the toggle off all
+        // collapse to zero here.
+        const bool probeShadingActive = giSettings_.enabled && irradianceProbes_.hasAtlases() &&
+                                        irradianceProbes_.convolveAvailable() && !giSettings_.debugPattern;
+        probeParams.gridOrigin =
+            glm::vec4{bounds.origin, probeShadingActive ? giSettings_.intensity : 0.0f};
+        probeParams.gridSpacing = glm::vec4{bounds.spacing, giSettings_.surfaceBias};
+        probeParams.debug.x =
+            (probeShadingActive && giSettings_.debugIrradianceOnly) ? 1.0f : 0.0f;
+        irradianceProbes_.updateShadingParams(commandBuffer, probeParams);
+    }
+
     // Probe capture, then the convolution that turns it into probe tiles. Both
     // sit after the shadow passes -- the capture samples the cascades so the
     // radiance it records is shadowed -- and before the main pass, which
@@ -1265,24 +1297,6 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         }
     }
 
-    // Probe shading parameters, refreshed inside this frame's own command buffer
-    // so a single buffer serves every frame in flight. Recorded here because it
-    // must be outside a rendering scope and before the pass that reads it.
-    {
-        renderer::ProbeShadingParams probeParams{};
-        const renderer::ProbeGridBounds bounds = irradianceProbes_.bounds();
-        // Intensity carries the off state, so everything downstream needs no
-        // separate flag: no atlases, no capture pipeline, or the toggle off all
-        // collapse to zero here.
-        const bool probeShadingActive = giSettings_.enabled && irradianceProbes_.hasAtlases() &&
-                                        irradianceProbes_.convolveAvailable() && !giSettings_.debugPattern;
-        probeParams.gridOrigin =
-            glm::vec4{bounds.origin, probeShadingActive ? giSettings_.intensity : 0.0f};
-        probeParams.gridSpacing = glm::vec4{bounds.spacing, giSettings_.surfaceBias};
-        probeParams.debug.x =
-            (probeShadingActive && giSettings_.debugIrradianceOnly) ? 1.0f : 0.0f;
-        irradianceProbes_.updateShadingParams(commandBuffer, probeParams);
-    }
 
     const bool mainHdrProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "MainHDRPass");
     rhi::debug::beginLabel(commandBuffer, "MainHDRPass");

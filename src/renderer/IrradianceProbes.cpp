@@ -332,6 +332,17 @@ float probeDirectionWeight(const glm::vec3& surfaceNormal, const glm::vec3& dire
     return wrapped * wrapped + kProbeBackfaceFloor;
 }
 
+float probeBounceAmplification(float albedo, float bounceWeight)
+{
+    const float gain = std::clamp(albedo, 0.0f, 1.0f) * std::clamp(bounceWeight, 0.0f, 1.0f);
+    // A gain of exactly one is a perfectly white surface reflecting all of its
+    // own indirect light back at itself: the sum genuinely diverges. Capped at a
+    // ratio that is already far past useful, so callers get a number they can
+    // compare and display rather than an infinity.
+    constexpr float kMaxGain = 0.99f;
+    return 1.0f / (1.0f - std::min(gain, kMaxGain));
+}
+
 glm::vec3 probeSamplePosition(const glm::vec3& worldPosition,
                               const glm::vec3& surfaceNormal,
                               const glm::vec3& viewDirection,

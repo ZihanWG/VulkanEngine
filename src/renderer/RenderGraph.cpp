@@ -1723,6 +1723,19 @@ void RenderGraph::declareGeometryPasses()
                                         RGAccess::ShaderRead,
                                         "Samples the punctual shadow atlas so captured radiance is shadowed.");
                 }
+                if (frame_.probeIrradianceAtlas.valid() && frame_.probeDepthAtlas.valid()) {
+                    // Multi-bounce: the capture reads the irradiance the grid
+                    // already holds. The update pass writes those same images
+                    // later this frame, so what the capture sees is the previous
+                    // frame's contents -- which is exactly the feedback wanted,
+                    // and why the read has to be declared before that write.
+                    builder.readTexture(frame_.probeIrradianceAtlas,
+                                        RGAccess::ShaderRead,
+                                        "Reads the previous bounce's irradiance so light can bounce again.");
+                    builder.readTexture(frame_.probeDepthAtlas,
+                                        RGAccess::ShaderRead,
+                                        "Reads probe visibility to weight the previous bounce.");
+                }
                 builder.writeTexture(frame_.probeCaptureAtlas,
                                      RGAccess::ColorAttachmentWrite,
                                      "Writes radiance and distance for every face of this frame's probes.");

@@ -240,6 +240,54 @@ would double-count. Intensity carries the off state, so nothing downstream needs
 a separate flag — the same shape `fogMaxDistance` and the punctual shadow slot
 sentinel use.
 
+## Multi-bounce
+
+The capture reads the irradiance the grid already holds and uses it as the
+surface's indirect light. The next capture then sees light that has bounced one
+more time, so bounces accumulate over cycles rather than being computed in one
+pass. Nothing new is bound for it: the capture already binds the material
+descriptor set, which is where both probe atlases and the grid parameters live.
+
+Indirect light is **interpolated** between the constant ambient and the grid
+value rather than summed. Summing would count the sky twice — the atlas already
+contains it, having been captured against a sky-coloured clear — and it would
+make the feedback unbounded instead of a convex combination.
+
+It is a feedback loop, and the weight is what bounds it. Each round multiplies by
+`albedo * weight`, so the series settles at `1 / (1 - albedo * weight)`;
+`probeBounceAmplification` is that number, and the debug panel reports it for a
+bright surface so the knob is not just a slider with a shrug attached. The
+weight is capped below one because at exactly one a perfectly white surface does
+not converge — physically correct and useless as a renderer.
+
+The weight is held at zero until every probe has been captured once. Before that
+most of the grid still holds its neutral seed, and blending a surface toward that
+would make the scene *darker* — the opposite of what another bounce should do.
+
+### Measured, and honestly small here
+
+Over 40-sample runs with the probe term rendered on its own:
+
+| bounce weight | probe-only luminance |
+| --- | --- |
+| 0.0 (single bounce) | 0.2771 |
+| 0.95 (maximum) | 0.2833 |
+
+That is +2.2%, about 2.6 sigma against the run-to-run spread. The loop is stable
+— the trajectory settles rather than climbing, at every weight tested — and the
+sign is right, but the magnitude on this scene is barely above noise.
+
+That is explainable rather than mysterious, and it is the same limitation that
+runs through everything else here. On an open platform under strong sun, most of
+what a probe sees is either directly lit or sky, so the grid's irradiance (~0.27)
+is already close to the ambient constant it replaces (0.15), and the indirect
+term is a small share of a surface's radiance to begin with. Multi-bounce is what
+makes an enclosed, indirectly-lit room work; this scene is the opposite of that.
+
+Reported as measured rather than claimed as a win: the mechanism is verified
+stable and correctly signed, and its value is unproven on any scene that would
+show it.
+
 ## Amortised update
 
 Probes are captured round robin, a few per frame. That is the whole cost control,
@@ -286,7 +334,8 @@ frame: the same hysteresis costs sixty times the latency.
 CSMShadowPass            directional cascades
 PunctualShadowAtlasPass  spot/point tiles
 ClusterBuild / LightCull
-ProbeCapture             graphics: 6 faces x N probes into the capture atlas
+ProbeCapture             graphics: 6 faces x N probes into the capture atlas,
+                         reading last frame's probe atlas for the extra bounce
 IrradianceProbeUpdate    compute: convolve, then wrap the octahedral border
 MainHDRPass              samples both probe atlases
 ```
@@ -494,10 +543,9 @@ brightness knob.
 
 - **Indirect diffuse only.** No indirect specular. A mirror still reflects only
   what SSR can find on screen.
-- **Single bounce.** The capture evaluates direct lighting; it does not sample
-  the probe atlas itself, so light does not bounce twice. Feeding the previous
-  frame's irradiance back into the capture is the standard next step and is not
-  implemented.
+- **Multi-bounce is implemented but unproven.** It is stable and correctly
+  signed, and worth +2.2% on this scene, which is barely above the noise. No
+  scene that would actually exercise it has been built.
 - **The grid is fixed and hand-placed.** Origin and spacing are settings. There
   is no fitting to scene bounds, no cascaded or nested volumes, and no probe
   relocation — a probe that lands inside geometry stays there and contributes

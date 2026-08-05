@@ -343,9 +343,13 @@ struct ProbeCapturePushConstants {
     // the negative slot sentinel in each light already implies.
     VkDeviceAddress punctualShadowSlotAddress = 0;
     uint32_t lightCount = 0;
-    uint32_t padding2 = 0;
+    // How much of a captured surface's indirect light comes from the probe grid
+    // rather than the constant ambient term -- the multi-bounce feedback weight.
+    // Zero is single bounce and reproduces the behaviour before it existed.
+    float bounceWeight = 0.0f;
 };
 
+static_assert(offsetof(ProbeCapturePushConstants, bounceWeight) == 116);
 static_assert(offsetof(ProbeCapturePushConstants, faceViewProjection) == 16);
 static_assert(offsetof(ProbeCapturePushConstants, probePosition) == 80);
 static_assert(offsetof(ProbeCapturePushConstants, lightBufferAddress) == 96);

@@ -36,6 +36,7 @@ using ve::renderer::probeChebyshevVisibility;
 using ve::renderer::probeDirectionWeight;
 using ve::renderer::probeSamplePosition;
 using ve::renderer::probeCaptureJitter;
+using ve::renderer::probeBounceAmplification;
 using ve::renderer::probeCaptureAtlasSize;
 using ve::renderer::probeCaptureFaceViewProjection;
 using ve::renderer::probeCaptureTileOrigin;
@@ -1044,4 +1045,52 @@ TEST_CASE("Jittered capture directions agree with the jittered projection", "[pr
         CHECK(probeCubeTexelDirection(face, 2, 5, kProbeCaptureFaceResolution) ==
               probeCubeTexelDirection(face, 2, 5, kProbeCaptureFaceResolution, glm::vec2{0.0f}));
     }
+}
+
+TEST_CASE("Bounce feedback amplification stays finite", "[probes]")
+{
+    // Feeding the probe atlas back into the capture is a feedback loop: each
+    // round multiplies by albedo * weight. That is the intended behaviour --
+    // it is what makes a second bounce exist -- but it is also the one place in
+    // this subsystem where a bad parameter does not merely look wrong, it grows
+    // without bound. The exponent is what says whether a chosen weight is safe.
+
+    // No feedback is no amplification, which is the reference the multi-bounce
+    // result is judged against.
+    CHECK(probeBounceAmplification(0.8f, 0.0f) == Approx(1.0f));
+    CHECK(probeBounceAmplification(0.0f, 1.0f) == Approx(1.0f));
+
+    // The geometric series, spot-checked against the closed form.
+    CHECK(probeBounceAmplification(0.5f, 0.5f) == Approx(1.0f / (1.0f - 0.25f)));
+    CHECK(probeBounceAmplification(0.8f, 0.5f) == Approx(1.0f / (1.0f - 0.40f)));
+
+    // Monotonic in both, and never below one -- indirect light cannot make a
+    // surface darker than no indirect light at all.
+    float previous = 0.0f;
+    for (int step = 0; step <= 20; ++step) {
+        const float weight = static_cast<float>(step) / 20.0f;
+        const float gain = probeBounceAmplification(0.7f, weight);
+        CHECK(gain >= 1.0f);
+        CHECK(gain >= previous);
+        CHECK(std::isfinite(gain));
+        previous = gain;
+    }
+
+    // The degenerate corner: a perfectly white surface with full feedback
+    // genuinely diverges. It must come back as a large finite number rather than
+    // an infinity, which would reach the shading as a NaN and never wash out.
+    const float degenerate = probeBounceAmplification(1.0f, 1.0f);
+    CHECK(std::isfinite(degenerate));
+    CHECK(degenerate > 10.0f);
+
+    // Out-of-range inputs clamp rather than producing a negative denominator,
+    // which would return a *negative* gain -- light that subtracts.
+    CHECK(probeBounceAmplification(2.0f, 2.0f) == Approx(degenerate));
+    CHECK(probeBounceAmplification(-1.0f, 0.5f) == Approx(1.0f));
+    CHECK(probeBounceAmplification(0.5f, -1.0f) == Approx(1.0f));
+
+    // The default weight keeps a bright surface well inside a sane range.
+    const float defaultGain = probeBounceAmplification(0.8f, ve::renderer::kProbeDefaultBounceWeight);
+    INFO("albedo 0.8 at the default weight amplifies by " << defaultGain);
+    CHECK(defaultGain < 2.0f);
 }
