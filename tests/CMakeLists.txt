@@ -36,6 +36,7 @@ add_executable(VulkanEngineTests
     test_editor_camera.cpp
     test_scene_builder.cpp
     test_pipeline_cache_header.cpp
+    test_render_graph.cpp
 )
 
 target_compile_definitions(VulkanEngineTests PRIVATE
