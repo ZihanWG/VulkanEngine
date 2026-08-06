@@ -1,6 +1,15 @@
 #version 460
 
-layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+// One workgroup, dispatched (1,1,1). The luminance partials are the expensive
+// part -- there is one per 16x16 tile of the scene, so 14,400 of them at
+// 2560x1440 -- and a single invocation walking them serially is a chain of
+// dependent global reads with nothing to hide the latency behind. They are
+// reduced across the threads and combined in shared memory instead.
+//
+// The histogram percentile walk stays serial on thread 0: it is inherently
+// sequential (each bin's cumulative range depends on every bin before it) and
+// it is only `binCount` iterations out of shared memory, which is cheap.
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
 layout(std430, set = 0, binding = 0) readonly buffer LuminancePartials {
     vec4 partials[];
@@ -24,34 +33,23 @@ layout(push_constant) uniform ExposureReducePushConstants {
     vec4 histogramRange; // x = min log2 luminance, y = max log2 luminance, z = min luminance
 } pc;
 
-float readLogAverageLuminance()
+// Must equal local_size_x above.
+const uint kThreadCount = 256u;
+// Must cover kHistogramBinCount (src/renderer/ExposureTypes.h, which
+// static_asserts against it). A larger pushed bin count is clamped.
+const uint kMaxHistogramBins = 256u;
+
+shared float sSumLogLuminance[kThreadCount];
+shared float sSampleCount[kThreadCount];
+shared uint sBins[kMaxHistogramBins];
+
+// Reads the staged bins rather than the storage buffer: thread 0 touches every
+// bin twice, and shared memory makes that free relative to the global reads.
+float readHistogramLuminance(float fallbackLuminance, uint binCount)
 {
-    uint partialCount = pc.params.y;
-    float sumLogLuminance = 0.0;
-    float sampleCount = 0.0;
-
-    for (uint i = 0u; i < partialCount; ++i) {
-        vec4 partial = uLuminance.partials[i];
-        if (partial.y > 0.0 && !isnan(partial.x) && !isinf(partial.x) &&
-            !isnan(partial.y) && !isinf(partial.y)) {
-            sumLogLuminance += partial.x;
-            sampleCount += partial.y;
-        }
-    }
-
-    if (sampleCount <= 0.0) {
-        return max(uExposure.averageLuminance, pc.histogramRange.z);
-    }
-
-    return max(float(exp(sumLogLuminance / sampleCount)), pc.histogramRange.z);
-}
-
-float readHistogramLuminance(float fallbackLuminance)
-{
-    uint binCount = max(pc.params.z, 1u);
     uint totalSamples = 0u;
     for (uint i = 0u; i < binCount; ++i) {
-        totalSamples += uHistogram.bins[i];
+        totalSamples += sBins[i];
     }
     if (totalSamples == 0u) {
         return fallbackLuminance;
@@ -73,7 +71,7 @@ float readHistogramLuminance(float fallbackLuminance)
     uint weightedSamples = 0u;
     float weightedLuminanceSum = 0.0;
     for (uint binIndex = 0u; binIndex < binCount; ++binIndex) {
-        uint count = uHistogram.bins[binIndex];
+        uint count = sBins[binIndex];
         uint binStart = cumulative;
         uint binEnd = cumulative + count;
         cumulative = binEnd;
@@ -100,19 +98,70 @@ float readHistogramLuminance(float fallbackLuminance)
 
 void main()
 {
-    uint mode = pc.params.x;
-    float manualExposure = max(pc.exposureParams.x, 0.0);
-    float minExposure = max(pc.exposureParams.z, 0.0);
-    float maxExposure = max(pc.exposureParams.w, minExposure);
+    const uint localIndex = gl_LocalInvocationIndex;
+    const uint mode = pc.params.x;
+    const float manualExposure = max(pc.exposureParams.x, 0.0);
+    const float minExposure = max(pc.exposureParams.z, 0.0);
+    const float maxExposure = max(pc.exposureParams.w, minExposure);
 
     if (mode == 0u) {
-        uExposure.exposure = manualExposure;
-        uExposure.mode = mode;
+        // `mode` comes from a push constant, so this branch is uniform across
+        // the workgroup and returning before any barrier is safe.
+        if (localIndex == 0u) {
+            uExposure.exposure = manualExposure;
+            uExposure.mode = mode;
+        }
         return;
     }
 
-    float averageLuminance = readLogAverageLuminance();
-    float histogramLuminance = readHistogramLuminance(averageLuminance);
+    // Each thread strides through the partials, so the 14,400 dependent reads
+    // become ~57 per thread across 256 threads.
+    const uint partialCount = pc.params.y;
+    float sumLogLuminance = 0.0;
+    float sampleCount = 0.0;
+    for (uint i = localIndex; i < partialCount; i += kThreadCount) {
+        vec4 partial = uLuminance.partials[i];
+        if (partial.y > 0.0 && !isnan(partial.x) && !isinf(partial.x) &&
+            !isnan(partial.y) && !isinf(partial.y)) {
+            sumLogLuminance += partial.x;
+            sampleCount += partial.y;
+        }
+    }
+    sSumLogLuminance[localIndex] = sumLogLuminance;
+    sSampleCount[localIndex] = sampleCount;
+
+    // Staged in the same pass so the bins are resident before thread 0 needs
+    // them, and so this loop overlaps the partial reads above.
+    const uint binCount = min(max(pc.params.z, 1u), kMaxHistogramBins);
+    for (uint bin = localIndex; bin < binCount; bin += kThreadCount) {
+        sBins[bin] = uHistogram.bins[bin];
+    }
+
+    barrier();
+
+    // Threads past the partial count contributed 0.0, which is the identity for
+    // both sums, so no bounds handling is needed here.
+    for (uint stride = kThreadCount / 2u; stride > 0u; stride >>= 1u) {
+        if (localIndex < stride) {
+            sSumLogLuminance[localIndex] += sSumLogLuminance[localIndex + stride];
+            sSampleCount[localIndex] += sSampleCount[localIndex + stride];
+        }
+        barrier();
+    }
+
+    if (localIndex != 0u) {
+        return;
+    }
+
+    const float totalSampleCount = sSampleCount[0];
+    float averageLuminance;
+    if (totalSampleCount <= 0.0) {
+        averageLuminance = max(uExposure.averageLuminance, pc.histogramRange.z);
+    } else {
+        averageLuminance = max(float(exp(sSumLogLuminance[0] / totalSampleCount)), pc.histogramRange.z);
+    }
+
+    float histogramLuminance = readHistogramLuminance(averageLuminance, binCount);
     float exposureLuminance = mode == 2u ? histogramLuminance : averageLuminance;
     float targetExposure =
         clamp(pc.exposureParams.y / max(exposureLuminance, pc.histogramRange.z), minExposure, maxExposure);
