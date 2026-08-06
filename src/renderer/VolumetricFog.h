@@ -15,6 +15,8 @@
 // to the scene's far plane. What is shared is the addressing scheme, so a fog
 // froxel can find the light cluster covering it and reuse its light list.
 
+#include "renderer/RuntimeSettings.h"
+
 #include <cstdint>
 
 #include <glm/vec3.hpp>
@@ -38,7 +40,11 @@ inline constexpr float kFogNearPlane = 0.5f;
 // How far fog is evaluated. Past this the integration is clamped to its last
 // slice, so distant geometry keeps the fog colour it had at the volume's edge
 // instead of abruptly clearing.
-inline constexpr float kDefaultFogMaxDistance = 64.0f;
+//
+// Defined with FogSettings in RuntimeSettings.h, since it is that struct's
+// default, and re-exported here so the fog math reads with the rest of its
+// constants.
+using ve::kDefaultFogMaxDistance;
 
 // View-space depth at the near edge of a slice, and its inverse.
 //

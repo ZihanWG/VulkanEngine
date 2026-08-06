@@ -81,31 +81,10 @@ struct FogIntegrateParams {
 };
 
 // Runtime-tunable fog settings, surfaced in the debug panel.
-struct FogSettings {
-    bool enabled = false;
-    float density = 0.03f;
-    float maxDistance = kDefaultFogMaxDistance;
-    // Forward scattering; positive values give the halo when looking toward a
-    // light through fog.
-    float anisotropy = 0.35f;
-    float heightFalloff = 0.06f;
-    float baseHeight = 0.0f;
-    float ambientScale = 0.6f;
-    glm::vec3 scatteringColor{1.0f, 1.0f, 1.0f};
-    // Temporal reprojection. One sample per froxel per frame aliases badly
-    // under a high-frequency shadow; jittering the sample and blending against
-    // the reprojected previous volume converges it instead.
-    // Per-light importance cull. A froxel bounds what each light could still
-    // contribute -- brightest channel * intensity * attenuation * the phase
-    // peak -- and skips it before the shadow fetch when even that bound falls
-    // below this. Zero disables the cull entirely, which is the reference the
-    // culled result is judged against.
-    float lightCullThreshold = 0.05f;
-    bool temporalEnabled = true;
-    // Fraction of the previous frame kept. Higher is smoother but smears more
-    // when lights or the camera move.
-    float temporalBlend = 0.9f;
-};
+// FogSettings moved to renderer/RuntimeSettings.h so it could be serialized and
+// clamped without dragging Vulkan into the settings layer, the same move
+// SsaoSettings made. It is a `ve::` type; this header's users find it by
+// enclosing-namespace lookup.
 
 class VolumetricFogPass final {
 public:

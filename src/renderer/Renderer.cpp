@@ -1187,9 +1187,17 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
     bloomSettings_ = settings.bloom;
     taaSettings_ = settings.taa;
     ssrSettings_ = settings.ssr;
+    ssaoSettings_ = settings.ssao;
+    fogSettings_ = settings.fog;
     lodSettings_ = settings.lod;
     giSettings_ = settings.gi;
     debugUiSettings_ = settings.debugUi;
+
+    // Punctual shadows follow the culling toggles: honoured unconditionally at
+    // startup, but at runtime the GPU caster cull can only be turned on when the
+    // subsystem actually came up.
+    showPunctualShadowDebug_ = settings.punctualShadows.debugView;
+    usePunctualShadows_ = settings.punctualShadows.enabled;
 
     csmSettings_.lambda = settings.csm.lambda;
     csmSettings_.shadowDistance = settings.csm.shadowDistance;
@@ -1204,6 +1212,10 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
         useTwoPhaseOcclusion_ = settings.enableTwoPhaseOcclusion;
         useAsyncCompute_ = settings.enableAsyncCompute;
         useBindlessMaterialTextures_ = settings.enableBindlessMaterialTextures;
+        // Assigned unguarded here: this runs before the punctual shadow
+        // subsystem is created, so cullAvailable() has nothing to report yet.
+        // The record path re-checks it every frame regardless.
+        useGpuPunctualShadowCulling_ = settings.punctualShadows.gpuCasterCulling;
     } else {
         if (!settings.useGpuCulling || gpuCulling_.available()) {
             useGpuCulling_ = settings.useGpuCulling;
@@ -1214,6 +1226,9 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
         useGpuOcclusionCulling_ = settings.enableGpuOcclusionCulling;
         useTwoPhaseOcclusion_ = settings.enableTwoPhaseOcclusion;
         useAsyncCompute_ = settings.enableAsyncCompute;
+        if (!settings.punctualShadows.gpuCasterCulling || punctualShadows_.cullAvailable()) {
+            useGpuPunctualShadowCulling_ = settings.punctualShadows.gpuCasterCulling;
+        }
     }
 
     clampRuntimeSettings();
@@ -1241,6 +1256,11 @@ RuntimeSettings Renderer::captureRuntimeSettings() const
     settings.bloom = bloomSettings_;
     settings.taa = taaSettings_;
     settings.ssr = ssrSettings_;
+    settings.ssao = ssaoSettings_;
+    settings.fog = fogSettings_;
+    settings.punctualShadows.enabled = usePunctualShadows_;
+    settings.punctualShadows.gpuCasterCulling = useGpuPunctualShadowCulling_;
+    settings.punctualShadows.debugView = showPunctualShadowDebug_;
     settings.lod = lodSettings_;
     settings.gi = giSettings_;
     settings.csm = csmSettings_;
@@ -1361,8 +1381,8 @@ void Renderer::clampRuntimeSettings()
     // The settings-struct clamping is GPU-independent and lives in
     // RuntimeSettings.cpp (compiled into VulkanEngineCore) so it can be tested.
     ve::clampRuntimeSettings(
-        toneMappingSettings_, bloomSettings_, taaSettings_, ssrSettings_, csmSettings_, lodSettings_,
-        giSettings_, debugUiSettings_);
+        toneMappingSettings_, bloomSettings_, taaSettings_, ssrSettings_, ssaoSettings_, fogSettings_,
+        csmSettings_, lodSettings_, giSettings_, debugUiSettings_);
 
     // Pushed here rather than at each edit site: clampRuntimeSettings runs after
     // every settings change (load, UI edit, reset), so the volume's copy of the

@@ -5,6 +5,7 @@
 #include "core/Logger.h"
 #include "renderer/CascadeMath.h"
 #include "renderer/IrradianceProbes.h"
+#include "renderer/VolumetricFog.h"
 
 #include <json.hpp>
 
@@ -35,6 +36,8 @@ void clampRuntimeSettings(ToneMappingSettings& toneMapping,
                           BloomSettings& bloom,
                           TaaSettings& taa,
                           SsrSettings& ssr,
+                          SsaoSettings& ssao,
+                          FogSettings& fog,
                           CsmSettings& csm,
                           LodSettings& lod,
                           GiSettings& gi,
@@ -72,6 +75,37 @@ void clampRuntimeSettings(ToneMappingSettings& toneMapping,
     ssr.intensity = std::clamp(ssr.intensity, 0.0f, 4.0f);
     ssr.maxRoughness = std::clamp(ssr.maxRoughness, 0.05f, 1.0f);
     ssr.screenEdgeFade = std::clamp(ssr.screenEdgeFade, 0.01f, 0.49f);
+
+    // Ranges match the GTAO panel's sliders. Slice and step counts bound the
+    // shader's nested loops, so a large stored value is a performance cliff
+    // rather than a visual one; a zero radius would collapse the horizon search
+    // to a single point and report no occlusion at all.
+    ssao.radius = std::clamp(ssao.radius, 0.05f, 5.0f);
+    ssao.intensity = std::clamp(ssao.intensity, 0.0f, 4.0f);
+    ssao.power = std::clamp(ssao.power, 0.1f, 8.0f);
+    ssao.sliceCount = std::clamp(ssao.sliceCount, 1, 8);
+    ssao.stepsPerSlice = std::clamp(ssao.stepsPerSlice, 2, 16);
+    ssao.falloff = std::clamp(ssao.falloff, 0.05f, 1.0f);
+    ssao.thickness = std::clamp(ssao.thickness, 0.0f, 4.0f);
+
+    // Density and max distance are the two that break things outright: fog is
+    // off when either is zero (isVolumetricFogActive checks density, and the
+    // shader treats a zero max distance as "no fog"), and maxDistance is a
+    // divisor in the froxel slice distribution. Anisotropy must stay inside
+    // (-1, 1) or the Henyey-Greenstein phase function's denominator reaches
+    // zero. Temporal blend at 1.0 would keep the history forever and never
+    // converge.
+    fog.density = std::clamp(fog.density, 0.0f, 0.3f);
+    fog.maxDistance = std::clamp(fog.maxDistance, renderer::kFogNearPlane + 0.001f, 400.0f);
+    fog.anisotropy = std::clamp(fog.anisotropy, -0.9f, 0.9f);
+    fog.heightFalloff = std::clamp(fog.heightFalloff, 0.0f, 0.5f);
+    fog.baseHeight = std::clamp(fog.baseHeight, -100.0f, 100.0f);
+    fog.ambientScale = std::clamp(fog.ambientScale, 0.0f, 3.0f);
+    for (float& channel : fog.scatteringColor) {
+        channel = std::clamp(channel, 0.0f, 1.0f);
+    }
+    fog.lightCullThreshold = std::clamp(fog.lightCullThreshold, 0.0f, 1.0f);
+    fog.temporalBlend = std::clamp(fog.temporalBlend, 0.0f, 0.98f);
 
     // A reference radius at or below 1px would make every object select the
     // coarsest level; the bias range is what a user can meaningfully explore
@@ -340,6 +374,39 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readFloat(*ssr, "screenEdgeFade", settings.ssr.screenEdgeFade);
     }
 
+    if (const Json* ssao = objectMember(json, "ssao")) {
+        readBool(*ssao, "enabled", settings.ssao.enabled);
+        readFloat(*ssao, "radius", settings.ssao.radius);
+        readFloat(*ssao, "intensity", settings.ssao.intensity);
+        readFloat(*ssao, "power", settings.ssao.power);
+        readInt(*ssao, "sliceCount", settings.ssao.sliceCount);
+        readInt(*ssao, "stepsPerSlice", settings.ssao.stepsPerSlice);
+        readFloat(*ssao, "falloff", settings.ssao.falloff);
+        readFloat(*ssao, "thickness", settings.ssao.thickness);
+    }
+
+    if (const Json* fog = objectMember(json, "fog")) {
+        readBool(*fog, "enabled", settings.fog.enabled);
+        readFloat(*fog, "density", settings.fog.density);
+        readFloat(*fog, "maxDistance", settings.fog.maxDistance);
+        readFloat(*fog, "anisotropy", settings.fog.anisotropy);
+        readFloat(*fog, "heightFalloff", settings.fog.heightFalloff);
+        readFloat(*fog, "baseHeight", settings.fog.baseHeight);
+        readFloat(*fog, "ambientScale", settings.fog.ambientScale);
+        readFloat(*fog, "scatteringColorR", settings.fog.scatteringColor[0]);
+        readFloat(*fog, "scatteringColorG", settings.fog.scatteringColor[1]);
+        readFloat(*fog, "scatteringColorB", settings.fog.scatteringColor[2]);
+        readFloat(*fog, "lightCullThreshold", settings.fog.lightCullThreshold);
+        readBool(*fog, "temporalEnabled", settings.fog.temporalEnabled);
+        readFloat(*fog, "temporalBlend", settings.fog.temporalBlend);
+    }
+
+    if (const Json* punctual = objectMember(json, "punctualShadows")) {
+        readBool(*punctual, "enabled", settings.punctualShadows.enabled);
+        readBool(*punctual, "gpuCasterCulling", settings.punctualShadows.gpuCasterCulling);
+        readBool(*punctual, "debugView", settings.punctualShadows.debugView);
+    }
+
     if (const Json* csm = objectMember(json, "csm")) {
         readUint32(*csm, "cascadeCount", settings.csm.cascadeCount);
         readFloat(*csm, "lambda", settings.csm.lambda);
@@ -438,6 +505,33 @@ Json toJson(const RuntimeSettings& settings)
               {"intensity", settings.ssr.intensity},
               {"maxRoughness", settings.ssr.maxRoughness},
               {"screenEdgeFade", settings.ssr.screenEdgeFade}}},
+        {"ssao",
+         Json{{"enabled", settings.ssao.enabled},
+              {"radius", settings.ssao.radius},
+              {"intensity", settings.ssao.intensity},
+              {"power", settings.ssao.power},
+              {"sliceCount", settings.ssao.sliceCount},
+              {"stepsPerSlice", settings.ssao.stepsPerSlice},
+              {"falloff", settings.ssao.falloff},
+              {"thickness", settings.ssao.thickness}}},
+        {"fog",
+         Json{{"enabled", settings.fog.enabled},
+              {"density", settings.fog.density},
+              {"maxDistance", settings.fog.maxDistance},
+              {"anisotropy", settings.fog.anisotropy},
+              {"heightFalloff", settings.fog.heightFalloff},
+              {"baseHeight", settings.fog.baseHeight},
+              {"ambientScale", settings.fog.ambientScale},
+              {"scatteringColorR", settings.fog.scatteringColor[0]},
+              {"scatteringColorG", settings.fog.scatteringColor[1]},
+              {"scatteringColorB", settings.fog.scatteringColor[2]},
+              {"lightCullThreshold", settings.fog.lightCullThreshold},
+              {"temporalEnabled", settings.fog.temporalEnabled},
+              {"temporalBlend", settings.fog.temporalBlend}}},
+        {"punctualShadows",
+         Json{{"enabled", settings.punctualShadows.enabled},
+              {"gpuCasterCulling", settings.punctualShadows.gpuCasterCulling},
+              {"debugView", settings.punctualShadows.debugView}}},
         {"csm",
          Json{{"cascadeCount", settings.csm.cascadeCount},
               {"lambda", settings.csm.lambda},

@@ -162,7 +162,11 @@ void Renderer::updateVolumetricFogParams(uint32_t frameIndex, float aspectRatio)
                                  std::max(fogSettings_.ambientScale, 0.0f),
                                  std::max(fogSettings_.lightCullThreshold, 0.0f),
                                  0.0f);
-    params.scatteringColor = glm::vec4(glm::max(fogSettings_.scatteringColor, glm::vec3{0.0f}), 1.0f);
+    params.scatteringColor = glm::vec4(glm::max(glm::vec3{fogSettings_.scatteringColor[0],
+                                                          fogSettings_.scatteringColor[1],
+                                                          fogSettings_.scatteringColor[2]},
+                                                glm::vec3{0.0f}),
+                                       1.0f);
 
     // Temporal reprojection. The matrices come from the same previous-frame
     // state TAA already tracks, so fog and TAA cannot disagree about where the

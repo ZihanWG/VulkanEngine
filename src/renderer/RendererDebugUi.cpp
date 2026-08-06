@@ -258,7 +258,7 @@ void Renderer::drawVolumetricFogDebugUi()
     ImGui::SetItemTooltip("Zero is uniform density; larger values pull the fog into a ground layer.");
     ImGui::SliderFloat("Base height", &fogSettings_.baseHeight, -10.0f, 20.0f, "%.1f");
     ImGui::SliderFloat("Ambient scale", &fogSettings_.ambientScale, 0.0f, 3.0f, "%.2f");
-    ImGui::ColorEdit3("Scattering color", &fogSettings_.scatteringColor.x);
+    ImGui::ColorEdit3("Scattering color", fogSettings_.scatteringColor);
     ImGui::EndDisabled();
 
     ImGui::TextDisabled("Volume: %ux%ux%u froxels, exponential Z from %.1f.",

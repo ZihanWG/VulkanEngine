@@ -2,6 +2,7 @@
 
 #include "renderer/CascadeMath.h"
 #include "renderer/MeshLod.h"
+#include "renderer/VolumetricFog.h"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -11,9 +12,11 @@ using ve::clampRuntimeSettings;
 using ve::CsmSettings;
 using ve::DebugUiSettings;
 using ve::ExposureMode;
+using ve::FogSettings;
 using ve::GiSettings;
 using ve::LodSettings;
 using ve::exposureModeValue;
+using ve::SsaoSettings;
 using ve::TaaSettings;
 using ve::SsrSettings;
 using ve::ToneMappingSettings;
@@ -26,12 +29,14 @@ struct Settings {
     BloomSettings bloom;
     TaaSettings taa;
     SsrSettings ssr;
+    SsaoSettings ssao;
+    FogSettings fog;
     CsmSettings csm;
     LodSettings lod;
     GiSettings gi;
     DebugUiSettings debugUi;
 
-    void clamp() { clampRuntimeSettings(toneMapping, bloom, taa, ssr, csm, lod, gi, debugUi); }
+    void clamp() { clampRuntimeSettings(toneMapping, bloom, taa, ssr, ssao, fog, csm, lod, gi, debugUi); }
 };
 
 } // namespace
@@ -201,4 +206,83 @@ TEST_CASE("Forced LOD keeps its select-by-distance sentinel", "[settings][lod]")
     settings.lod.forcedLod = 99;
     settings.clamp();
     CHECK(settings.lod.forcedLod == static_cast<int>(ve::renderer::kMaxMeshLods) - 1);
+}
+
+TEST_CASE("GTAO loop counts stay inside the shader's bounds", "[settings][ssao]")
+{
+    Settings settings;
+
+    // Slices and steps bound nested loops in the GTAO shader, so an absurd
+    // stored value is a performance cliff rather than a visual artefact.
+    settings.ssao.sliceCount = 4096;
+    settings.ssao.stepsPerSlice = 4096;
+    settings.clamp();
+    CHECK(settings.ssao.sliceCount == 8);
+    CHECK(settings.ssao.stepsPerSlice == 16);
+
+    settings.ssao.sliceCount = 0;
+    settings.ssao.stepsPerSlice = 0;
+    settings.clamp();
+    CHECK(settings.ssao.sliceCount == 1);
+    CHECK(settings.ssao.stepsPerSlice == 2);
+
+    // A zero radius collapses the horizon search to a point, which reports no
+    // occlusion at all -- indistinguishable from the feature being broken.
+    settings.ssao.radius = 0.0f;
+    settings.clamp();
+    CHECK(settings.ssao.radius > 0.0f);
+}
+
+TEST_CASE("Fog max distance stays past the volume's near plane", "[settings][fog]")
+{
+    Settings settings;
+
+    // maxDistance is a divisor in the froxel slice distribution and must stay
+    // strictly greater than the fog volume's near plane.
+    settings.fog.maxDistance = 0.0f;
+    settings.clamp();
+    CHECK(settings.fog.maxDistance > ve::renderer::kFogNearPlane);
+
+    settings.fog.maxDistance = -1000.0f;
+    settings.clamp();
+    CHECK(settings.fog.maxDistance > ve::renderer::kFogNearPlane);
+}
+
+TEST_CASE("Fog anisotropy stays inside the phase function's domain", "[settings][fog]")
+{
+    Settings settings;
+
+    // The Henyey-Greenstein denominator reaches zero at |g| == 1, so the clamp
+    // has to stop short of it on both sides.
+    settings.fog.anisotropy = 1.0f;
+    settings.clamp();
+    CHECK(settings.fog.anisotropy < 1.0f);
+
+    settings.fog.anisotropy = -1.0f;
+    settings.clamp();
+    CHECK(settings.fog.anisotropy > -1.0f);
+}
+
+TEST_CASE("Fog temporal blend never keeps the whole history", "[settings][fog]")
+{
+    Settings settings;
+
+    // At 1.0 the reprojected volume would be all history and never converge.
+    settings.fog.temporalBlend = 1.0f;
+    settings.clamp();
+    CHECK(settings.fog.temporalBlend < 1.0f);
+}
+
+TEST_CASE("Fog scattering colour stays a valid albedo", "[settings][fog]")
+{
+    Settings settings;
+
+    settings.fog.scatteringColor[0] = 5.0f;
+    settings.fog.scatteringColor[1] = -5.0f;
+    settings.fog.scatteringColor[2] = 0.5f;
+    settings.clamp();
+
+    CHECK(settings.fog.scatteringColor[0] == Catch::Approx(1.0f));
+    CHECK(settings.fog.scatteringColor[1] == Catch::Approx(0.0f));
+    CHECK(settings.fog.scatteringColor[2] == Catch::Approx(0.5f));
 }
