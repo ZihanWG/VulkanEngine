@@ -123,6 +123,35 @@ struct RenderResourceUsage {
     std::string description;
 };
 
+// What a declared access means in barrier terms: the layout the image must be
+// in, and the stage/access scopes to synchronize against.
+struct TextureAccessState {
+    VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkPipelineStageFlags2 stage = VK_PIPELINE_STAGE_2_NONE;
+    VkAccessFlags2 access = VK_ACCESS_2_NONE;
+    RGAccess declaredAccess = RGAccess::Unknown;
+};
+
+struct BufferAccessState {
+    VkPipelineStageFlags2 stage = VK_PIPELINE_STAGE_2_NONE;
+    VkAccessFlags2 access = VK_ACCESS_2_NONE;
+    RGAccess declaredAccess = RGAccess::Unknown;
+};
+
+// Barrier derivation, split out of RenderGraph for the same reason
+// cullUnusedPasses was: pure mappings that need no device to exercise.
+//
+// The texture mapping depends on the image's aspect, because a depth image asks
+// for a depth layout where a colour image asks for the general shader-read one,
+// and the presence of stencil picks between the combined and depth-only layouts.
+// `currentLayout` is what an access that says nothing about layout falls back to;
+// the graph passes the resource's tracked layout.
+[[nodiscard]] TextureAccessState textureAccessState(VkImageAspectFlags aspectMask,
+                                                    RGAccess access,
+                                                    VkImageLayout currentLayout);
+
+[[nodiscard]] BufferAccessState bufferAccessState(RGAccess access);
+
 struct RenderPassNode {
     std::string name;
     RenderPassType type = RenderPassType::MainHdr;
@@ -404,18 +433,11 @@ public:
         return debugResources_;
     }
 
-    struct TextureAccessState {
-        VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
-        VkPipelineStageFlags2 stage = VK_PIPELINE_STAGE_2_NONE;
-        VkAccessFlags2 access = VK_ACCESS_2_NONE;
-        RGAccess declaredAccess = RGAccess::Unknown;
-    };
-
-    struct BufferAccessState {
-        VkPipelineStageFlags2 stage = VK_PIPELINE_STAGE_2_NONE;
-        VkAccessFlags2 access = VK_ACCESS_2_NONE;
-        RGAccess declaredAccess = RGAccess::Unknown;
-    };
+    // Aliases kept so existing RenderGraph::TextureAccessState spellings still
+    // compile; the types themselves live at namespace scope below so the pure
+    // derivation functions can return them.
+    using TextureAccessState = ve::renderer::TextureAccessState;
+    using BufferAccessState = ve::renderer::BufferAccessState;
 
 private:
     enum class ActivePass {

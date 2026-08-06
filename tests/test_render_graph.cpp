@@ -222,3 +222,191 @@ TEST_CASE("A live consumer revives a whole producer chain", "[rendergraph]")
         CHECK_FALSE(node.culled);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Barrier derivation: what a declared access means in layout/stage/access terms.
+//
+// The trap here is the image aspect. A depth image asks for a depth layout where
+// a colour image asks for the general shader-read one, and whether stencil is
+// present picks between the combined and depth-only variants. Getting it wrong
+// is a validation error at best and a driver-dependent correctness bug at worst.
+
+TEST_CASE("Shader-read layout depends on the image aspect", "[rendergraph][barriers]")
+{
+    using ve::renderer::RGAccess;
+    using ve::renderer::textureAccessState;
+
+    const auto colorState =
+        textureAccessState(VK_IMAGE_ASPECT_COLOR_BIT, RGAccess::ShaderRead, VK_IMAGE_LAYOUT_UNDEFINED);
+    CHECK(colorState.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+    // A depth image sampled as a texture (Hi-Z, SSR, GTAO all do this) must use a
+    // depth read-only layout, not the colour one.
+    const auto depthState =
+        textureAccessState(VK_IMAGE_ASPECT_DEPTH_BIT, RGAccess::ShaderRead, VK_IMAGE_LAYOUT_UNDEFINED);
+    CHECK(depthState.layout == VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL);
+
+    // With stencil present it is the combined layout instead.
+    const auto depthStencilState = textureAccessState(
+        VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, RGAccess::ShaderRead, VK_IMAGE_LAYOUT_UNDEFINED);
+    CHECK(depthStencilState.layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+
+    // The scopes are the same either way -- only the layout is aspect-dependent.
+    CHECK(colorState.access == VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    CHECK(depthState.access == VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+}
+
+TEST_CASE("Depth attachment layout depends on stencil presence", "[rendergraph][barriers]")
+{
+    using ve::renderer::RGAccess;
+    using ve::renderer::textureAccessState;
+
+    const auto depthOnly = textureAccessState(
+        VK_IMAGE_ASPECT_DEPTH_BIT, RGAccess::DepthStencilAttachmentWrite, VK_IMAGE_LAYOUT_UNDEFINED);
+    CHECK(depthOnly.layout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
+
+    const auto withStencil = textureAccessState(VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+                                                RGAccess::DepthStencilAttachmentWrite,
+                                                VK_IMAGE_LAYOUT_UNDEFINED);
+    CHECK(withStencil.layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+
+    // Depth is tested in both fragment-test stages, so both must be in scope or a
+    // write can race the early test of the next pass.
+    CHECK((depthOnly.stage & VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT) != 0);
+    CHECK((depthOnly.stage & VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT) != 0);
+}
+
+TEST_CASE("Storage image access always uses the general layout", "[rendergraph][barriers]")
+{
+    using ve::renderer::RGAccess;
+    using ve::renderer::textureAccessState;
+
+    for (const RGAccess access :
+         {RGAccess::StorageImageRead, RGAccess::StorageImageWrite, RGAccess::StorageImageReadWrite}) {
+        // Even for a depth-aspect image: storage access has no depth variant.
+        CHECK(textureAccessState(VK_IMAGE_ASPECT_COLOR_BIT, access, VK_IMAGE_LAYOUT_UNDEFINED).layout ==
+              VK_IMAGE_LAYOUT_GENERAL);
+        CHECK(textureAccessState(VK_IMAGE_ASPECT_DEPTH_BIT, access, VK_IMAGE_LAYOUT_UNDEFINED).layout ==
+              VK_IMAGE_LAYOUT_GENERAL);
+    }
+
+    const auto readWrite =
+        textureAccessState(VK_IMAGE_ASPECT_COLOR_BIT, RGAccess::StorageImageReadWrite, VK_IMAGE_LAYOUT_UNDEFINED);
+    CHECK((readWrite.access & VK_ACCESS_2_SHADER_STORAGE_READ_BIT) != 0);
+    CHECK((readWrite.access & VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT) != 0);
+}
+
+TEST_CASE("Present asks for the present layout and no scopes", "[rendergraph][barriers]")
+{
+    using ve::renderer::RGAccess;
+    using ve::renderer::textureAccessState;
+
+    // Presentation is synchronized by the semaphore, not by this barrier, so the
+    // transition must carry the layout without claiming a stage or access scope.
+    const auto state =
+        textureAccessState(VK_IMAGE_ASPECT_COLOR_BIT, RGAccess::Present, VK_IMAGE_LAYOUT_UNDEFINED);
+    CHECK(state.layout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    CHECK(state.stage == VK_PIPELINE_STAGE_2_NONE);
+    CHECK(state.access == VK_ACCESS_2_NONE);
+    CHECK(state.declaredAccess == RGAccess::Present);
+}
+
+TEST_CASE("A buffer access on a texture falls back to the current layout", "[rendergraph][barriers]")
+{
+    using ve::renderer::RGAccess;
+    using ve::renderer::textureAccessState;
+
+    // Buffer-shaped accesses say nothing about image layout, so the texture keeps
+    // whatever it already had rather than being transitioned to UNDEFINED, which
+    // would discard its contents.
+    const auto state = textureAccessState(
+        VK_IMAGE_ASPECT_COLOR_BIT, RGAccess::StorageBufferRead, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    CHECK(state.layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    CHECK(state.stage == VK_PIPELINE_STAGE_2_NONE);
+    CHECK(state.access == VK_ACCESS_2_NONE);
+}
+
+TEST_CASE("Transfer accesses map to their own layouts", "[rendergraph][barriers]")
+{
+    using ve::renderer::RGAccess;
+    using ve::renderer::textureAccessState;
+
+    const auto src =
+        textureAccessState(VK_IMAGE_ASPECT_COLOR_BIT, RGAccess::TransferSrc, VK_IMAGE_LAYOUT_UNDEFINED);
+    CHECK(src.layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    CHECK(src.access == VK_ACCESS_2_TRANSFER_READ_BIT);
+
+    const auto dst =
+        textureAccessState(VK_IMAGE_ASPECT_COLOR_BIT, RGAccess::TransferDst, VK_IMAGE_LAYOUT_UNDEFINED);
+    CHECK(dst.layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    CHECK(dst.access == VK_ACCESS_2_TRANSFER_WRITE_BIT);
+}
+
+TEST_CASE("Indirect buffer reads sync against the draw-indirect stage", "[rendergraph][barriers]")
+{
+    using ve::renderer::bufferAccessState;
+    using ve::renderer::RGAccess;
+
+    // GPU culling writes these and the draw consumes them; the wrong stage here
+    // races the command fetch, which reads as sporadically missing geometry.
+    const auto state = bufferAccessState(RGAccess::IndirectRead);
+    CHECK(state.stage == VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT);
+    CHECK(state.access == VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT);
+}
+
+TEST_CASE("Storage buffer stages cover every shader stage that binds them", "[rendergraph][barriers]")
+{
+    using ve::renderer::bufferAccessState;
+    using ve::renderer::RGAccess;
+
+    // These buffers are bound by vertex, fragment, and compute shaders alike, so
+    // omitting any one stage leaves a real hazard unsynchronized.
+    const auto state = bufferAccessState(RGAccess::StorageBufferReadWrite);
+    CHECK((state.stage & VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT) != 0);
+    CHECK((state.stage & VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT) != 0);
+    CHECK((state.stage & VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT) != 0);
+    CHECK((state.access & VK_ACCESS_2_SHADER_STORAGE_READ_BIT) != 0);
+    CHECK((state.access & VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT) != 0);
+}
+
+TEST_CASE("Host reads sync against the host stage", "[rendergraph][barriers]")
+{
+    using ve::renderer::bufferAccessState;
+    using ve::renderer::RGAccess;
+
+    // The readback path depends on this; without it the CPU can observe stale
+    // contents after the fence.
+    const auto state = bufferAccessState(RGAccess::HostRead);
+    CHECK(state.stage == VK_PIPELINE_STAGE_2_HOST_BIT);
+    CHECK(state.access == VK_ACCESS_2_HOST_READ_BIT);
+}
+
+TEST_CASE("An image access on a buffer emits no barrier", "[rendergraph][barriers]")
+{
+    using ve::renderer::bufferAccessState;
+    using ve::renderer::RGAccess;
+
+    // transitionBuffer skips when declaredAccess is Unknown or the stage is NONE.
+    // The buffer mapping resets declaredAccess as well as the scopes, so an
+    // image-shaped access on a buffer is dropped rather than emitting a barrier
+    // with empty scopes.
+    for (const RGAccess access : {RGAccess::ShaderRead,
+                                  RGAccess::ColorAttachmentWrite,
+                                  RGAccess::DepthStencilAttachmentWrite,
+                                  RGAccess::StorageImageReadWrite,
+                                  RGAccess::Present}) {
+        const auto state = bufferAccessState(access);
+        CHECK(state.declaredAccess == RGAccess::Unknown);
+        CHECK(state.stage == VK_PIPELINE_STAGE_2_NONE);
+        CHECK(state.access == VK_ACCESS_2_NONE);
+    }
+}
+
+TEST_CASE("Buffer transfer directions use distinct stages", "[rendergraph][barriers]")
+{
+    using ve::renderer::bufferAccessState;
+    using ve::renderer::RGAccess;
+
+    CHECK(bufferAccessState(RGAccess::TransferSrc).access == VK_ACCESS_2_TRANSFER_READ_BIT);
+    CHECK(bufferAccessState(RGAccess::TransferDst).access == VK_ACCESS_2_TRANSFER_WRITE_BIT);
+}

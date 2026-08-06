@@ -2434,13 +2434,18 @@ uint32_t RenderGraph::transitionBuffer(RGBufferHandle handle, RGAccess access)
 
 RenderGraph::TextureAccessState RenderGraph::accessStateForTexture(const TextureResource& resource, RGAccess access) const
 {
+    return textureAccessState(resource.desc.aspectMask, access, currentTextureLayout(resource));
+}
+
+TextureAccessState textureAccessState(VkImageAspectFlags aspectMask, RGAccess access, VkImageLayout currentLayout)
+{
     TextureAccessState state{};
     state.declaredAccess = access;
 
     switch (access) {
     case RGAccess::ShaderRead:
-        state.layout = isDepthAspect(resource.desc.aspectMask) ? depthReadOnlyLayout(resource.desc.aspectMask)
-                                                               : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        state.layout = isDepthAspect(aspectMask) ? depthReadOnlyLayout(aspectMask)
+                                                 : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         state.stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         state.access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
         break;
@@ -2450,7 +2455,7 @@ RenderGraph::TextureAccessState RenderGraph::accessStateForTexture(const Texture
         state.access = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
         break;
     case RGAccess::DepthStencilAttachmentWrite:
-        state.layout = depthAttachmentLayout(resource.desc.aspectMask);
+        state.layout = depthAttachmentLayout(aspectMask);
         state.stage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
         state.access = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
                        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
@@ -2491,7 +2496,7 @@ RenderGraph::TextureAccessState RenderGraph::accessStateForTexture(const Texture
     case RGAccess::StorageBufferReadWrite:
     case RGAccess::IndirectRead:
     case RGAccess::HostRead:
-        state.layout = currentTextureLayout(resource);
+        state.layout = currentLayout;
         state.stage = VK_PIPELINE_STAGE_2_NONE;
         state.access = VK_ACCESS_2_NONE;
         break;
@@ -2501,6 +2506,11 @@ RenderGraph::TextureAccessState RenderGraph::accessStateForTexture(const Texture
 }
 
 RenderGraph::BufferAccessState RenderGraph::accessStateForBuffer(RGAccess access) const
+{
+    return bufferAccessState(access);
+}
+
+BufferAccessState bufferAccessState(RGAccess access)
 {
     BufferAccessState state{};
     state.declaredAccess = access;
