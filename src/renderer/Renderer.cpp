@@ -160,8 +160,15 @@ Renderer::Renderer(Window& window) : window_(window)
     createDepthPyramidDescriptorSetLayout();
     postProcess_.createPostProcessSampler();
     createShadowMap();
-    recreatePostProcessResources();
+    // Pipelines first: SSR/GTAO resource creation binds descriptor sets against
+    // pipelines that must already exist, and bails out ("pipeline resources are
+    // missing") otherwise. Pipeline creation only needs the descriptor set
+    // layouts and swapchain formats built above, so this direction is the one
+    // that satisfies both. Resize takes the reverse order because the pipeline
+    // recreate decision there reads availability flags that resource creation
+    // sets, and by then the pipelines already exist.
     createPipeline();
+    recreatePostProcessResources();
     commandContext_.initialize(context_, frames_);
     asyncCompute_.initialize(context_, static_cast<uint32_t>(frames_.size()));
     // Before createScene, which builds the material descriptor sets: those sets
