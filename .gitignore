@@ -35,3 +35,8 @@ compile_commands.json
 
 # User-local runtime renderer settings are generated from the ImGui debug UI.
 config/runtime_settings.json
+
+# F12 writes a timestamped capture plus an overwritten `_latest` copy. Only the
+# latest one is referenced (docs/portfolio_capture.md), and these are 3-15 MB
+# each, so the timestamped ones stay local.
+/screenshots/vulkan_engine_portfolio_[0-9]*.png
