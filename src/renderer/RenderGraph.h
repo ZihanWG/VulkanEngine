@@ -605,6 +605,16 @@ private:
     friend class RenderGraphContext;
 };
 
+// Backward liveness sweep that marks passes whose declared writes nothing later
+// reads. A free function rather than a private method because it is the graph's
+// one piece of non-trivial pure logic and needs no device to exercise -- the same
+// split ClusterGrid.h, CascadeMath.h, and VolumetricFog.h use.
+//
+// `textureCount` and `bufferCount` bound the resource indices; a usage pointing
+// past either is ignored rather than treated as live, matching how the graph
+// tolerates handles it never imported.
+void cullUnusedPasses(std::vector<RenderPassNode>& passes, size_t textureCount, size_t bufferCount);
+
 [[nodiscard]] const char* renderPassTypeName(RenderPassType type);
 [[nodiscard]] const char* renderPassExecutionTypeName(RenderPassExecutionType executionType);
 [[nodiscard]] const char* renderResourceAccessName(RenderResourceAccess access);

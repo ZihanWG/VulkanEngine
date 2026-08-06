@@ -2233,10 +2233,15 @@ void RenderGraph::declareExposureCompositePasses()
 
 void RenderGraph::compilePassCulling()
 {
-    std::vector<uint8_t> neededTextures(textures_.size(), 0);
-    std::vector<uint8_t> neededBuffers(buffers_.size(), 0);
+    cullUnusedPasses(passes_, textures_.size(), buffers_.size());
+}
 
-    for (auto passIt = passes_.rbegin(); passIt != passes_.rend(); ++passIt) {
+void cullUnusedPasses(std::vector<RenderPassNode>& passes, size_t textureCount, size_t bufferCount)
+{
+    std::vector<uint8_t> neededTextures(textureCount, 0);
+    std::vector<uint8_t> neededBuffers(bufferCount, 0);
+
+    for (auto passIt = passes.rbegin(); passIt != passes.rend(); ++passIt) {
         RenderPassNode& pass = *passIt;
         bool hasWrite = false;
         bool writesNeededOutput = false;
