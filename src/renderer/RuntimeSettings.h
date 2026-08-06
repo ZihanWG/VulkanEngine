@@ -93,6 +93,58 @@ struct SsaoSettings {
     float thickness = 0.5f;   // view-space thickness heuristic (reserved for denoise)
 };
 
+// How far fog is evaluated. Past this the integration is clamped to its last
+// slice, so distant geometry keeps the fog colour it had at the volume's edge
+// instead of abruptly clearing. Lives here rather than with the other fog grid
+// constants because it is the default of a persisted setting; VolumetricFog.h
+// re-exports it so the fog math keeps its own vocabulary.
+inline constexpr float kDefaultFogMaxDistance = 64.0f;
+
+// Froxel volumetric fog. A 3D volume over the view frustum is filled with
+// in-scattered light and integrated front to back, then applied in the main
+// shading pass. Disabled by default. Like SsaoSettings this lives with the
+// settings rather than in VolumetricFogPass.h, so serialization and clamping can
+// see it without pulling in Vulkan -- which is also why the scattering colour is
+// three floats instead of a glm::vec3.
+struct FogSettings {
+    bool enabled = false;
+    float density = 0.03f;
+    float maxDistance = kDefaultFogMaxDistance;
+    // Forward scattering; positive values give the halo when looking toward a
+    // light through fog.
+    float anisotropy = 0.35f;
+    float heightFalloff = 0.06f;
+    float baseHeight = 0.0f;
+    float ambientScale = 0.6f;
+    float scatteringColor[3] = {1.0f, 1.0f, 1.0f};
+    // Per-light importance cull. A froxel bounds what each light could still
+    // contribute -- brightest channel * intensity * attenuation * the phase
+    // peak -- and skips it before the shadow fetch when even that bound falls
+    // below this. Zero disables the cull entirely, which is the reference the
+    // culled result is judged against.
+    float lightCullThreshold = 0.05f;
+    // Temporal reprojection. One sample per froxel per frame aliases badly
+    // under a high-frequency shadow; jittering the sample and blending against
+    // the reprojected previous volume converges it instead.
+    bool temporalEnabled = true;
+    // Fraction of the previous frame kept. Higher is smoother but smears more
+    // when lights or the camera move.
+    float temporalBlend = 0.9f;
+};
+
+// Spot/point shadows through a quadtree-packed atlas, with optional GPU caster
+// culling. These are renderer toggles rather than a tunable struct, so they sit
+// at the RuntimeSettings level alongside the culling flags.
+struct PunctualShadowSettings {
+    bool enabled = true;
+    // Measured slower than CPU-side caster culling on this device; off by
+    // default, kept because that result is scene-dependent.
+    bool gpuCasterCulling = false;
+    // Renders the punctual shadow visibility term alone. A render debug view,
+    // persisted for the same reason GiSettings::debugPattern is.
+    bool debugView = false;
+};
+
 struct DebugUiSettings {
     // Master toggle: when false the debug window shows only the common post-process
     // knobs (tone mapping, bloom, SSAO, TAA, exposure); when true it reveals the
@@ -206,6 +258,9 @@ struct RuntimeSettings {
     BloomSettings bloom;
     TaaSettings taa;
     SsrSettings ssr;
+    SsaoSettings ssao;
+    FogSettings fog;
+    PunctualShadowSettings punctualShadows;
     CsmSettings csm;
     LodSettings lod;
     GiSettings gi;
@@ -234,6 +289,8 @@ void clampRuntimeSettings(ToneMappingSettings& toneMapping,
                           BloomSettings& bloom,
                           TaaSettings& taa,
                           SsrSettings& ssr,
+                          SsaoSettings& ssao,
+                          FogSettings& fog,
                           CsmSettings& csm,
                           LodSettings& lod,
                           GiSettings& gi,

@@ -628,7 +628,7 @@ private:
     // Froxel volumetric fog. Its volume is sampled by the main HDR pass, so it
     // has to be recorded before that pass and after the CSM cascades it reads.
     renderer::VolumetricFogPass volumetricFog_;
-    renderer::FogSettings fogSettings_{};
+    FogSettings fogSettings_{};
     // Irradiance-probe GI. Owns the two octahedral probe atlases; the update
     // compute pass runs before the main HDR pass, which declares a read on both
     // atlases whether or not any probe updated this frame.

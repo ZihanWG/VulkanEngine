@@ -40,6 +40,7 @@ add_executable(VulkanEngineTests
 
 target_compile_definitions(VulkanEngineTests PRIVATE
     "VULKAN_ENGINE_ASSET_DIR=\"${VULKAN_ENGINE_ASSET_DIR}\""
+    "VULKAN_ENGINE_CONFIG_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/../config\""
 )
 
 # VulkanEngineRuntime PUBLIC-links VulkanEngineCore, so listing Core here too would
