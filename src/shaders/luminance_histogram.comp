@@ -12,23 +12,52 @@ layout(push_constant) uniform HistogramPushConstants {
     vec4 logLuminanceRange; // x = min log2 luminance, y = max log2 luminance, z = epsilon
 } pc;
 
+// Each group tallies into workgroup-shared bins first, so the pass costs one
+// global atomic per non-empty bin per group instead of one per pixel. A 16x16
+// tile of a real image lands in a handful of bins, so most groups skip most of
+// the flush entirely.
+//
+// The capacity must cover kHistogramBinCount (src/renderer/ExposureTypes.h,
+// which static_asserts against this value). A larger bin count is clamped
+// rather than allowed to run off the end of the shared array.
+const uint kSharedBinCapacity = 256u;
+shared uint sBins[kSharedBinCapacity];
+
 void main()
 {
-    const uvec2 pixel = gl_GlobalInvocationID.xy;
-    const uvec2 extent = pc.params.xy;
-    if (pixel.x >= extent.x || pixel.y >= extent.y) {
-        return;
+    const uint binCount = clamp(pc.params.z, 1u, kSharedBinCapacity);
+    const uint threadCount = gl_WorkGroupSize.x * gl_WorkGroupSize.y;
+    const uint localIndex = gl_LocalInvocationIndex;
+
+    for (uint bin = localIndex; bin < binCount; bin += threadCount) {
+        sBins[bin] = 0u;
     }
 
-    vec3 color = texelFetch(uSceneColor, ivec2(pixel), 0).rgb;
-    float luminance = dot(max(color, vec3(0.0)), vec3(0.2126, 0.7152, 0.0722));
-    float logLuminance = log2(max(luminance, max(pc.logLuminanceRange.z, 0.000001)));
+    barrier();
 
-    float minLogLuminance = pc.logLuminanceRange.x;
-    float maxLogLuminance = max(pc.logLuminanceRange.y, minLogLuminance + 0.001);
-    float normalized = clamp((logLuminance - minLogLuminance) / (maxLogLuminance - minLogLuminance), 0.0, 0.999999);
+    // Out-of-range invocations skip the tally but must still reach both
+    // barriers, so this is an `if` and not an early return.
+    const uvec2 pixel = gl_GlobalInvocationID.xy;
+    const uvec2 extent = pc.params.xy;
+    if (pixel.x < extent.x && pixel.y < extent.y) {
+        vec3 color = texelFetch(uSceneColor, ivec2(pixel), 0).rgb;
+        float luminance = dot(max(color, vec3(0.0)), vec3(0.2126, 0.7152, 0.0722));
+        float logLuminance = log2(max(luminance, max(pc.logLuminanceRange.z, 0.000001)));
 
-    uint binCount = max(pc.params.z, 1u);
-    uint binIndex = min(uint(normalized * float(binCount)), binCount - 1u);
-    atomicAdd(uHistogram.bins[binIndex], 1u);
+        float minLogLuminance = pc.logLuminanceRange.x;
+        float maxLogLuminance = max(pc.logLuminanceRange.y, minLogLuminance + 0.001);
+        float normalized = clamp((logLuminance - minLogLuminance) / (maxLogLuminance - minLogLuminance), 0.0, 0.999999);
+
+        uint binIndex = min(uint(normalized * float(binCount)), binCount - 1u);
+        atomicAdd(sBins[binIndex], 1u);
+    }
+
+    barrier();
+
+    for (uint bin = localIndex; bin < binCount; bin += threadCount) {
+        uint count = sBins[bin];
+        if (count != 0u) {
+            atomicAdd(uHistogram.bins[bin], count);
+        }
+    }
 }
