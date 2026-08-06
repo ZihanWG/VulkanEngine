@@ -21,6 +21,12 @@ inline constexpr uint32_t kLuminanceLocalSizeY = 16;
 inline constexpr uint32_t kHistogramBinCount = 256;
 inline constexpr uint32_t kHistogramLocalSizeX = 16;
 inline constexpr uint32_t kHistogramLocalSizeY = 16;
+// luminance_histogram.comp stages its tally in a fixed-size shared array and
+// clamps the pushed bin count to that capacity, so a larger bin count here would
+// silently drop the top bins instead of binning them.
+inline constexpr uint32_t kHistogramSharedBinCapacity = 256;
+static_assert(kHistogramBinCount <= kHistogramSharedBinCapacity,
+              "kHistogramBinCount exceeds the shared-memory staging capacity in luminance_histogram.comp.");
 inline constexpr float kDefaultHistogramMinLogLuminance = -10.0f;
 inline constexpr float kDefaultHistogramMaxLogLuminance = 4.0f;
 
