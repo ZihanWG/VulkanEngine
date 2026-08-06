@@ -774,9 +774,11 @@ void main()
         clusterLightCount = cell.count;
         for (uint i = 0u; i < cell.count; ++i) {
             uint lightIndex = pc.lightIndexList.indices[cell.offset + i];
-            punctualVisibility =
-                min(punctualVisibility,
-                    punctualShadowDebugFactor(pc.lightBuffer.lights[lightIndex], vWorldPosition, normal));
+            if (pc.debugPunctualShadows != 0u) {
+                punctualVisibility =
+                    min(punctualVisibility,
+                        punctualShadowDebugFactor(pc.lightBuffer.lights[lightIndex], vWorldPosition, normal));
+            }
             punctual += evaluatePunctualLight(pc.lightBuffer.lights[lightIndex],
                                               normal,
                                               viewDirection,
@@ -788,9 +790,11 @@ void main()
         }
     } else {
         for (uint lightIndex = 0u; lightIndex < pc.lightCount; ++lightIndex) {
-            punctualVisibility =
-                min(punctualVisibility,
-                    punctualShadowDebugFactor(pc.lightBuffer.lights[lightIndex], vWorldPosition, normal));
+            if (pc.debugPunctualShadows != 0u) {
+                punctualVisibility =
+                    min(punctualVisibility,
+                        punctualShadowDebugFactor(pc.lightBuffer.lights[lightIndex], vWorldPosition, normal));
+            }
             punctual += evaluatePunctualLight(pc.lightBuffer.lights[lightIndex],
                                               normal,
                                               viewDirection,
