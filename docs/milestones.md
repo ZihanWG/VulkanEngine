@@ -2,6 +2,142 @@
 
 _Moved out of the top-level README to keep it scannable. These notes preserve the incremental build history and design decisions behind the current renderer._
 
+## Milestone 65: Render Graph Test Coverage
+
+The render graph's two pieces of non-trivial CPU logic gained unit tests. Both were reachable only from private methods, so each had its body lifted into a pure free function with the method left as a one-line forwarder — the split the GPU-free cores (`ClusterGrid.h`, `CascadeMath.h`, `VolumetricFog.h`) already used.
+
+`compilePassCulling` became `cullUnusedPasses(passes, textureCount, bufferCount)`. The backward liveness sweep decides which declared passes actually run, and a mistake in it fails silently in both directions: dropping work that was needed, or keeping work that was not, with no validation error either way. Thirteen cases cover the parts that are subtle — a culled pass must not propagate its reads or a dead chain stays alive, a write must clear liveness so a value overwritten before any read culls its producer, `ReadWrite` must clear then set or a read-modify-write culls its own producer, and texture and buffer indices both start at zero and must not alias.
+
+`accessStateForTexture` became `textureAccessState(aspectMask, access, currentLayout)` and `accessStateForBuffer` became `bufferAccessState(access)`. This mapping is what every image transition and buffer barrier in the frame is built from. Eleven cases pin the aspect-dependent layouts — a sampled depth image needs a depth read-only layout and stencil presence selects the combined variant, which matters because Hi-Z, SSR, and GTAO all sample depth — along with both fragment-test stages being in scope for depth attachment writes, storage access being `GENERAL` regardless of aspect, present carrying a layout but no scopes, and a buffer-shaped access on a texture keeping the tracked layout rather than transitioning to `UNDEFINED` and discarding the image.
+
+Both sets were checked against deliberate mutations rather than trusted for passing on the first run. Suite total went from 150 to 180. The extractions are behaviour-preserving: the frame's profiler pass set is identical and validation runs stay clean.
+
+This milestone does not cover `currentTextureLayout`, which is owner-dependent, or the skip logic in `transitionTexture`/`transitionBuffer` that consumes these states.
+
+## Milestone 64: Runtime Settings Coverage for GTAO, Fog, and Punctual Shadows
+
+Tone mapping, bloom, TAA, SSR, CSM, LOD, GI, and the culling toggles all survived a restart. GTAO, volumetric fog, and punctual shadows did not — three shipped subsystems whose settings were lost every time the engine closed, including whether they were enabled at all.
+
+`FogSettings` moved from `VolumetricFogPass.h` to `RuntimeSettings.h`, the move `SsaoSettings` had already made, so serialization and clamping can see it without dragging Vulkan into the settings layer. Its `glm::vec3` scattering colour became three floats for the same reason `GiSettings` stores its grid origin that way, and `kDefaultFogMaxDistance` followed it with `VolumetricFog.h` re-exporting the name. Punctual shadows had no settings struct at all, only three loose booleans on `Renderer`, so `PunctualShadowSettings` is new; its GPU caster-culling toggle follows the culling flags' pattern of being assigned unguarded at startup and gated on availability at runtime.
+
+The clamps are load-bearing rather than cosmetic. Fog `maxDistance` is a divisor in the froxel slice distribution and must stay past the volume's near plane, anisotropy must stay inside the open interval where the Henyey-Greenstein denominator is non-zero, and a temporal blend of 1.0 would keep the history forever. GTAO's slice and step counts bound nested shader loops, so a bad stored value is a performance cliff rather than a visual artefact.
+
+The example settings file turned out to have silently lost its `gi` and `lod` sections entirely. Both were restored, and a test now loads the example over default-constructed settings and asserts nothing changes, which catches a missing section and a drifted value alike.
+
+## Milestone 63: Frame Cost Reduction in the Exposure and Shading Paths
+
+Three GPU costs turned out to be work that was computed and then discarded, rather than algorithms that needed improving. Together they took the frame from roughly 28 ms to 19.4 ms on the demo scene.
+
+`luminance_histogram.comp` ran one invocation per pixel, each doing a global `atomicAdd` into one of 256 bins — millions of atomics contending on 256 addresses. Staging the tally in workgroup-shared memory and flushing only the non-empty bins took the pass from 6.07 ms to 1.96 ms. `exposure_reduce.comp` was then the larger half of what remained: declared `local_size 1,1,1` and dispatched `(1,1,1)`, a single GPU thread walking one luminance partial per 16x16 tile, which at this drawable is 14,400 dependent global reads with nothing to hide the latency behind. Reducing them across a 256-thread workgroup through a shared-memory tree took it to 0.33 ms. The percentile walk stays serial, being inherently sequential over bins that are in shared memory by then.
+
+In the main shading pass, every fragment ran the punctual shadow atlas PCF twice per light: once inside `evaluatePunctualLight` for shading, and once through `punctualShadowDebugFactor` to accumulate a visibility term read only by a debug overlay that is off by default. Gating the accumulation on the flag that consumes it took `MainHDRPass` from 14.07 ms to 11.20 ms and `Transparent`, which reuses the same fragment shader, from 2.44 ms to 1.93 ms.
+
+`docs/profiling.md` was corrected alongside this. It had said only that parent scopes include child scope work, which invites reading `Skybox`/`RenderObjects`/`SkinnedMesh` as a breakdown of `MainHDRPass`. On tile-based deferred hardware the fragment work resolves at `vkCmdEndRendering`, so a scope recorded between draw calls inside a render pass measures command recording and vertex work only and reads near zero whatever it contains.
+
+## Milestone 62: Irradiance-Probe Global Illumination
+
+Lighting was IBL, SSR, and GTAO — all screen-space — so offscreen geometry contributed no indirect light. This milestone adds a grid of irradiance probes storing incoming radiance in small octahedral tiles, plus the distance to what it came from so a probe behind a wall can be rejected rather than lighting through it.
+
+The target exposes neither `VK_KHR_ray_query` nor `VK_KHR_acceleration_structure`, so probe radiance is gathered by rasterising the scene from each probe rather than by tracing rays. Six small cube faces per probe are captured into an atlas and convolved into octahedral tiles by a compute pass, round-robin at a configurable number of probes per frame. The main shading pass blends the eight surrounding probes with Chebyshev visibility and wrapped-cosine backface rejection, replacing the constant IBL irradiance rather than adding to it, since both answer the same question.
+
+Captures are accumulated over time with Halton sub-texel jitter, which is required rather than a refinement: the capture is deterministic, so accumulation without jitter is a no-op. Multi-bounce feeds the previous atlas back into the capture, interpolating between ambient and probe irradiance rather than summing, which would double-count the sky and leave the feedback unbounded.
+
+A Cornell box preset ships with it, because the open demo scene cannot show indirect light well enough to judge the implementation. Loading it disables the sun, replaces the orbiting lights with a single overhead one, and fits the probe grid to the room's interior. It measures a 34% swing in the red/green ratio across the room from walls the probes never see directly, and settles the multi-bounce question the open scene could not: probe-only luminance rises 31% between bounce weights of 0 and 0.95, against 2.2% on the demo scene.
+
+The subsystem is off by default. It does not add ray-traced probe updates, probe relocation, or runtime grid resizing.
+
+## Milestone 61: Renderer.cpp Split Into Focused Translation Units
+
+`Renderer.cpp` had reached 6,368 lines and 168 member definitions. It was split into five translation units — lifecycle and frame loop, resources, scene and materials, per-frame CPU preparation, and command recording — alongside the existing debug-UI unit.
+
+The split moves definitions only. `Renderer.h` is untouched and the class is still one large type. Two habits made a change of this size safe, given that the unit tests barely reach `Renderer` and "it compiles and runs" is otherwise the only signal: the file was partitioned into top-level definitions and reassembly was verified to reproduce the original byte for byte before anything moved, and every definition was verified to still exist exactly once afterwards.
+
+## Milestone 60: Volumetric Fog
+
+A froxel volume over the view frustum is filled with in-scattered light and integrated front to back, then applied in the main shading pass where the view depth needed to find the froxel is already a varying. The grid is 160x90x64 with an exponential depth distribution and its own near and far planes, deliberately not the clustered lighting grid, which is far too coarse for fog. What is shared is the addressing scheme, so a fog froxel can find the light cluster covering it and reuse its light list.
+
+Light shafts come from the same shadow data the shading pass uses: the cascaded shadow map for the sun and the punctual shadow atlas for spots and points. Temporal reprojection follows, because one sample per froxel per frame aliases badly under a high-frequency shadow; jittering the sample and blending against the reprojected previous volume converges it instead.
+
+A per-light importance cull bounds what each light could still contribute to a froxel — brightest channel times intensity times attenuation times the phase peak — and skips it before the shadow fetch when even that bound falls below a threshold. Zero disables the cull, which is the reference the culled result is judged against.
+
+Fog is off by default. The froxel distribution's round trip against the injection pass is pinned by a unit test.
+
+## Milestone 59: Punctual Shadows
+
+Spot and point lights cast shadows through a quadtree-packed atlas. Tiles are sized by projected screen size so a nearby light gets more resolution than a distant one, and lights are ranked so the ranking does not collapse when many lights compete for the atlas.
+
+Two bugs found here are worth preserving. PCF taps must be clamped inside their own atlas tile: neighbouring texels belong to a different tile, which for a cube face is the adjacent face and with the quadtree allocator can be an unrelated light, so a tap that walks out compares against unrelated depth. On a spot that only happened at the cone edge where falloff was already zero, which is why it went unnoticed; on a cube face the tile border is the middle of the lit scene and the mismatch draws hard seams. Separately, the cube face must be selected from the same biased position the projection uses — selecting from the unbiased direction lets the normal offset push a sample across a face boundary into a face whose frustum no longer contains it, and the bounds test then reports "outside the light" and returns fully lit, drawing a bright seam along every face boundary.
+
+The atlas is cached across frames with per-tile invalidation, so a static light's tile is not redrawn, and assignment churn is measured so shadows popping in and out is visible rather than inferred. Optional GPU caster culling exists and is off by default: on this scene it is a net loss, trading CPU frustum tests for a dispatch and its barriers, but the CPU cost scales with slots times draw items.
+
+A shadow-term-only debug view renders punctual visibility on its own, gated on lights actually reaching each fragment so out-of-range casters do not report occlusion they never contribute.
+
+## Milestone 58: Alpha Transparency
+
+glTF `MASK` materials cut out in the fragment shader against a per-material cutoff, before any lighting, shadow, or IBL work, which also keeps clipped fragments off the velocity and G-buffer attachments. The cutoff is carried as a negative value for `OPAQUE` and `BLEND`, so materials that never clip pay one comparison.
+
+Shadow casters are alpha-tested too, so a cutout material casts the shadow of its visible silhouette rather than of its quad.
+
+`BLEND` materials draw in a separate transparent pass after the opaque pass and the G-buffer writes, and before the TAA resolve so blended edges are still antialiased. It is recorded inline, reusing the main pass's push constants, descriptor sets, and viewport rather than rebuilding them, and reuses the same fragment shader.
+
+## Milestone 57: Mesh Level of Detail
+
+Discrete LOD chains are built at load time with meshoptimizer. Level selection runs per draw item inside the GPU cull dispatch, from the projected sphere radius in pixels, with each halving of on-screen radius stepping one level down. The chosen level travels to the fragment stage in the high bits of `gl_InstanceIndex`.
+
+Shadow-cascade dispatches take an additional bias on top of the main one, since shadows tolerate simplification far better than the main pass. A forced-level override pins every draw item to one level for comparison, with -1 kept as the select-by-distance sentinel, and a color-by-LOD debug view keeps the lighting term as luminance so silhouettes still read through the tint.
+
+## Milestone 56: Ground-Truth Ambient Occlusion
+
+The inline depth-only SSAO was replaced with a dedicated GTAO pass (Jimenez et al. 2016) that consumes the main depth buffer and the thin G-buffer normal and writes a visibility texture the composite pass multiplies into scene color.
+
+It arrived in three parts: the horizon-search trace itself, a depth-aware bilateral denoise with an AO debug preview, and finally a half-resolution trace with a joint-bilateral upsample. GTAO is off by default and its toggle is honoured only when the depth image supports sampling.
+
+## Milestone 55: Screen-Space Reflections and the Thin G-Buffer
+
+A view-space linear march with binary refinement against the main depth buffer, blended into scene color before TAA. Surfaces rougher than a threshold trace nothing, fading mirror to glossy, and reflections fade toward the screen edge where the march runs out of information.
+
+This milestone also introduced the thin G-buffer that later work depends on: a second attachment carrying octahedral-encoded normal plus roughness and metallic, written by the main pass. GTAO reads the same attachment.
+
+SSR is on by default and requires a samplable main depth image, the same gate SSAO uses.
+
+## Milestone 54: Async Compute for Clustered Lighting
+
+The `ClusterBuild` and `LightCull` compute passes move to a dedicated compute queue, overlapping the shadow passes rather than serializing behind them. Queue ownership and timeline synchronization are handled by an async-compute subsystem; when the device exposes no async-capable queue the passes fall back to the graphics queue and the toggle is ignored.
+
+On MoltenVK a separate compute queue family is only exposed with `MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES=1`, so the fallback is the default path there unless that is set.
+
+A related fix landed alongside: the bindless material texture heap needed update-after-bind to satisfy MoltenVK's validation, which had been reporting descriptor-limit errors.
+
+## Milestone 53: Two-Phase Hi-Z Occlusion Culling
+
+Hi-Z occlusion culling became the default by removing the reason it had been opt-in. Phase one tests against the previous frame's depth pyramid, which is fast but wrong wherever the camera moved; phase two rebuilds the pyramid mid-frame and re-tests only the candidates phase one rejected, so disocclusion false negatives are corrected within the same frame rather than popping in the next one.
+
+Turning the toggle off falls back to the conservative single-phase test that only runs while the camera holds still. MoltenVK does not expose `vkCmdDrawIndexedIndirectCount`, so the non-compacted fallback path is what runs on this target.
+
+## Milestone 52: Task-Parallel Frame Preparation
+
+CPU frame preparation moved onto the `JobSystem`. A `parallelFor` primitive was added, and the independent per-frame work — culling inputs, draw-item construction, shadow draw lists, and per-draw object data — now runs as parallel tasks rather than sequentially on the render thread.
+
+## Milestone 51: Motion-Vector TAA
+
+TAA gained real reprojection. The main pass writes a velocity buffer as a second render target from the unjittered current and previous clip positions, and the resolve reprojects the history sample along it, so object and camera motion no longer smear. Same-UV history sampling remains available as an A/B comparison, along with the neighborhood clamp.
+
+The render graph debug tables were also fixed here: they had been collapsing to a bare scrollbar, and their column sizing was wrong under horizontal scrolling.
+
+## Milestone 50: Disk-Backed Pipeline Cache and Built-In Texture Factory
+
+A `VkPipelineCache` is now persisted to disk between runs, cutting pipeline creation time on startup. The blob is keyed on a hash of the compiled SPIR-V, so a shader change invalidates it rather than feeding a stale cache to the driver — MoltenVK is unforgiving about that.
+
+Separately, the procedural built-in textures (checkerboard, flat normal, white, and the portfolio base colour) moved out of `Renderer` into a `BuiltinTextureFactory`.
+
+## Milestone 49: Subsystem Extraction and the Runtime-Library Test Seam
+
+Scene construction, the Hi-Z depth pyramid, and GPU-driven visibility culling were extracted from `Renderer` into `SceneBuilder`, `DepthPyramid`, and `GpuCulling`. Each subsystem owns its own GPU resources but borrows services and settings by reference under the same member names, so relocated bodies compile unchanged and the many call sites elsewhere stay untouched.
+
+Main and shadow culling could not be split from each other — they share one pipeline, one descriptor set layout, and a creation path where the shadow resources are built inside the main ones — so they were extracted as a single `GpuCulling` class. The extraction used a duplicate-then-switch sequence: one commit builds the new class as standalone compiling code, a second rewires `Renderer` and deletes the originals, so both commits are independently green despite the shared descriptor pool forcing the switch itself to be atomic.
+
+The more consequential change is that engine code now builds as a static library, `VulkanEngineRuntime`, which both the executable and the test binary link. That is what makes renderer-side code testable headlessly at all; every test added since depends on it.
+
 ## Milestone 48: Render Target Debug Views and CSM Cascade Visualization
 
 The ImGui debug UI now includes read-only `Render Target Debug Views`. HDR scene color, bloom extract/ping/pong targets, the BRDF LUT, the cascaded shadow map array, swapchain composite metadata, and major global cubemap resources expose debug name, dimensions, format, mip count, layer count, intended usage, previewability, and sampled-image type.
