@@ -127,7 +127,7 @@ The GPU profiler adds a `DepthPyramid` timestamp scope. Main GPU culling timing 
 ## Known Limitations
 
 - Single-phase mode (two-phase disabled) only runs occlusion while the camera holds still.
-- Occlusion uses previous-frame depth, not a current-frame prepass.
+- Phase 1 tests against the previous frame's depth. Phase 2 re-tests the rejects against a pyramid rebuilt from *this* frame's phase-1 depth, so the frame is not purely previous-frame -- but neither phase uses a dedicated depth prepass. With two-phase disabled, only the previous-frame test remains.
 - Animated transforms invalidate the pyramid, so moving scenes may get few or no occlusion rejections.
 - There is no HLOD, meshlet culling, mesh shader path, software occlusion rasterizer, ray tracing, or full GPU-built draw-list rewrite.
 - The test is AABB based and intentionally biased toward false negatives.

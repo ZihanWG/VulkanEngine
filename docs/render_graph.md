@@ -142,8 +142,11 @@ The ImGui Render Graph panel shows:
 
 ## Known Limitations
 
-- No async compute scheduling.
-- No multi-queue scheduling.
+- The graph does not schedule across queues. Async compute exists in the engine --
+  `ClusterBuild` and `LightCull` run on a dedicated compute queue overlapping the
+  shadow passes (see [async_compute.md](async_compute.md)) -- but the renderer
+  owns that submission and its semaphores, not the graph. The graph records those
+  passes as ordinary compute nodes.
 - No memory aliasing.
 - No resource pooling overhaul.
 - Transient scene/bloom resources and persistent TAA history resources are graph-described but still physically allocated by `Renderer`.
