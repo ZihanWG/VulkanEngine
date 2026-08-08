@@ -10,7 +10,9 @@ struct GpuLight {
     vec4 directionType;   // xyz = spot direction, w = type (0 point, 1 spot)
     // x = cos(outer), y = 1/(cos(inner)-cos(outer)),
     // z = punctual shadow atlas slot as a float (< 0 means this light does not
-    // cast this frame -- not a caster, culled, or the atlas ran out of tiles).
+    // cast this frame -- not a caster, culled, or the atlas ran out of tiles),
+    // w = shadow normal-offset bias, carried here so the shadow lookup can bias
+    // the position before it picks a cube face without reading the slot buffer.
     vec4 spotScaleOffset;
 };
 
@@ -490,15 +492,17 @@ float punctualShadowFactor(GpuLight light, vec3 worldPosition, vec3 normal)
     float normalLight = clamp(dot(normal, toLight), 0.0, 1.0);
     float grazing = sqrt(max(1.0 - normalLight * normalLight, 0.0));
 
-    // Bias before choosing a face. All six faces of a light carry identical
-    // params, so reading the base slot's normal bias here is exact rather than
-    // an approximation.
+    // Bias before choosing a face, which is why the bias cannot come from the
+    // slot: the face index is what selects the slot, so reading it there would
+    // mean touching the 96-byte slot buffer twice to reach one float. The bias
+    // is a single global value the CPU packs into every light instead, and
+    // GpuLight is already loaded here.
     //
     // Both biases scale with the grazing angle, the same shape shadowDepthBias
     // uses on the CSM path. Offsetting along the normal fixes acne more cheaply
     // than depth bias alone; keeping the head-on term small stops contact
     // shadows from detaching into peter panning.
-    float normalBias = pc.punctualShadowSlots.slots[baseSlotIndex].params.y;
+    float normalBias = light.spotScaleOffset.w;
     vec3 biasedPosition = worldPosition + normal * (normalBias * (0.2 + grazing));
 
     // Select the face from the *biased* position, the same one the projection

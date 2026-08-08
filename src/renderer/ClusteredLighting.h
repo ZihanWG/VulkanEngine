@@ -26,7 +26,12 @@ struct GpuLight {
     glm::vec4 positionRange{0.0f, 0.0f, 0.0f, 10.0f};   // xyz = world position, w = range
     glm::vec4 colorIntensity{1.0f, 1.0f, 1.0f, 1.0f};   // rgb = color, a = intensity
     glm::vec4 directionType{0.0f, -1.0f, 0.0f, 0.0f};   // xyz = spot direction, w = type
-    glm::vec4 spotScaleOffset{-1.0f, 1.0f, 0.0f, 0.0f}; // x = cos(outer), y = 1/(cos(inner)-cos(outer))
+    // x = cos(outer), y = 1/(cos(inner)-cos(outer)), z = punctual shadow atlas
+    // slot as a float (< 0 = not casting this frame), w = shadow normal-offset
+    // bias. The bias lives here rather than in GpuShadowSlot because the shadow
+    // lookup needs it to bias the position *before* it can pick a cube face,
+    // and reading it from the slot meant touching that 96-byte buffer twice.
+    glm::vec4 spotScaleOffset{-1.0f, 1.0f, 0.0f, 0.0f};
 };
 
 static_assert(sizeof(GpuLight) == 64);
