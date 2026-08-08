@@ -281,8 +281,16 @@ void Renderer::updatePunctualShadowSlots(uint32_t frameIndex, float aspectRatio)
     const bool atlasUsable = punctualShadows_.valid() && usePunctualShadows_;
 
     // Start every light unshadowed; the passes below only ever upgrade one.
+    //
+    // The normal bias rides along in .w so the shader can apply it without
+    // reading the shadow slot. It has to bias the position *before* it can pick
+    // a cube face, so taking it from the slot forced a second read of that
+    // buffer purely to reach one float. The bias is a single global value, and
+    // GpuLight is already in registers by then, so this costs nothing.
+    const float normalBias = punctualShadows_.normalBias();
     for (renderer::GpuLight& light : lights) {
         light.spotScaleOffset.z = renderer::punctualShadowSlotToFloat(renderer::kInvalidPunctualShadowSlot);
+        light.spotScaleOffset.w = normalBias;
     }
 
     if (!atlasUsable) {
