@@ -129,8 +129,9 @@ the renderer.
   to a cone test, so a spot is slightly over-included.
 - A froxel saturates at 64 lights; the index list is preallocated at full size rather
   than globally compacted.
-- No shadow-casting punctual lights (the directional light still owns the cascaded
-  shadow maps).
+- Punctual shadows are capped by the atlas, not by the light list. A light that
+  loses the tile ranking still lights the scene, it just stops casting; see
+  [punctual_shadows.md](punctual_shadows.md).
 - Froxel AABBs are rebuilt every frame; they could be rebuilt only on projection
   change.
 - Lights are world-space spheres; tighter culling (oriented bounds, cone tests, or a

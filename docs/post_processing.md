@@ -96,7 +96,7 @@ The ImGui debug UI exposes:
 
 ## Known Limitations
 
-- No TAA depth reprojection or disocclusion classification.
+- TAA reprojects along the velocity buffer (see [taa.md](taa.md)), but there is no depth-based disocclusion classification -- a disoccluded pixel is caught by the neighborhood clamp rather than identified and rejected outright.
 - No temporal upscaling.
 - No FSR/DLSS/XeSS.
 - No per-material reactive masks.

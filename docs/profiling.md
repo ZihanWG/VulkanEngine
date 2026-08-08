@@ -112,4 +112,5 @@ The same major ranges also use `VK_EXT_debug_utils` labels through the existing 
 - Parent scopes include child scope work, and on tile-based hardware a scope nested inside a render pass measures almost none of its own work. See the nested-scope section above.
 - Top-of-pipe and bottom-of-pipe markers are simple pass-range estimates, not detailed pipeline-stage attribution.
 - The profiler has a fixed per-frame query capacity. The UI reports query usage and warns if the frame exceeds the configured capacity.
-- Async compute scheduling, timeline lane visualization, and RenderDoc capture automation are future work.
+- Passes that run on the async compute queue are timestamped on that queue, so their rows are not directly comparable with graphics-queue rows on the same timeline. The debug UI notes this next to `ClusterBuild`/`LightCull`.
+- Timeline lane visualization and RenderDoc capture automation are future work.
