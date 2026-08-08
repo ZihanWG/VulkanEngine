@@ -69,6 +69,7 @@ layout(push_constant) uniform PushConstants {
     layout(offset = 88) ShadowSlotBuffer punctualShadowSlots;
     layout(offset = 96) uint debugPunctualShadows;
     layout(offset = 100) float fogMaxDistance;
+    layout(offset = 104) float aoAmbientStrength;
 } pc;
 
 layout(set = 0, binding = 1) uniform sampler2DArray uShadowMap;
@@ -93,6 +94,11 @@ layout(set = 0, binding = 11) uniform ProbeShadingParams {
     // x != 0 outputs probe irradiance alone instead of shaded colour
     vec4 debug;
 } probeParams;
+
+// Denoised ambient occlusion. The GTAO pass writes this later in the same
+// frame, so what is read here is the previous frame's result -- see the
+// reprojection below.
+layout(set = 0, binding = 12) uniform sampler2D uAmbientOcclusion;
 
 layout(set = 1, binding = 0) uniform sampler2D uBaseColorTextures[];
 layout(set = 1, binding = 1) uniform sampler2D uNormalTextures[];
@@ -752,6 +758,27 @@ void main()
     }
 
     vec3 ambient = diffuseIbl + specularIbl + vAmbientColor * baseColor * 0.05;
+
+    // Ambient occlusion belongs on the ambient term alone. Multiplying the
+    // composited scene colour by it, which is what the composite pass used to
+    // do, darkens direct lighting too -- a crease in full sunlight should not go
+    // dark because geometry occludes the *sky*.
+    //
+    // The AO image still holds the previous frame's result at this point, since
+    // the GTAO pass runs after this one, so the sample is reprojected along the
+    // motion vector this fragment already computes for TAA. A reprojection that
+    // lands off screen has no history to read and falls back to unoccluded --
+    // occlusion appearing a frame late is far less objectionable than sampling
+    // an unrelated pixel.
+    if (pc.aoAmbientStrength > 0.0) {
+        vec2 screenUv = gl_FragCoord.xy / vec2(pc.screenWidth, pc.screenHeight);
+        vec2 aoUv = screenUv - computeVelocity();
+        float occlusion = 1.0;
+        if (aoUv == clamp(aoUv, vec2(0.0), vec2(1.0))) {
+            occlusion = texture(uAmbientOcclusion, aoUv).r;
+        }
+        ambient *= mix(1.0, occlusion, clamp(pc.aoAmbientStrength, 0.0, 1.0));
+    }
     vec3 direct = (diffuse + specular) * vLightColor * normalLight * shadowFactor;
 
     // Punctual (point/spot) lights. When clustered culling ran this frame the

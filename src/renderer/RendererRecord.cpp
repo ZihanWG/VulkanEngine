@@ -1420,6 +1420,11 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     // Zero disables the fog fetch in the shader, so the off state needs no
     // separate flag.
     basePushConstants.fogMaxDistance = isVolumetricFogActive() ? fogSettings_.maxDistance : 0.0f;
+    // Likewise zero when GTAO is off, unavailable, or set to the composite
+    // reference path, so the shader skips the reprojected fetch entirely.
+    const bool aoOnAmbient = ssaoSettings_.enabled && ssaoAvailable_ && ssaoSettings_.ambientOnly &&
+                             postProcess_.ambientOcclusionHistoryValid();
+    basePushConstants.aoAmbientStrength = aoOnAmbient ? 1.0f : 0.0f;
     if (multiDrawIndirectActive) {
         if (bindlessDescriptorSetsBound) {
             const PushConstants pushConstants = basePushConstants;
@@ -1680,6 +1685,9 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
 
     if (frameGtaoActive_) {
         gtao_.recordCommands(commandBuffer, currentFrame_, extent);
+        // The target now holds a real result, so the next frame's main pass may
+        // sample it as history.
+        postProcess_.markAmbientOcclusionWritten();
     }
 
     // Transparent pass. After SSR and GTAO, which both need opaque-only depth and

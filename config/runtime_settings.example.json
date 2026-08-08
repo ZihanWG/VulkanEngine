@@ -54,7 +54,8 @@
         "sliceCount": 3,
         "stepsPerSlice": 6,
         "falloff": 0.6,
-        "thickness": 0.5
+        "thickness": 0.5,
+        "ambientOnly": true
     },
     "fog": {
         "enabled": false,

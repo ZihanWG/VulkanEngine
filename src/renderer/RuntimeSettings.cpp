@@ -383,6 +383,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readInt(*ssao, "stepsPerSlice", settings.ssao.stepsPerSlice);
         readFloat(*ssao, "falloff", settings.ssao.falloff);
         readFloat(*ssao, "thickness", settings.ssao.thickness);
+        readBool(*ssao, "ambientOnly", settings.ssao.ambientOnly);
     }
 
     if (const Json* fog = objectMember(json, "fog")) {
@@ -513,7 +514,8 @@ Json toJson(const RuntimeSettings& settings)
               {"sliceCount", settings.ssao.sliceCount},
               {"stepsPerSlice", settings.ssao.stepsPerSlice},
               {"falloff", settings.ssao.falloff},
-              {"thickness", settings.ssao.thickness}}},
+              {"thickness", settings.ssao.thickness},
+              {"ambientOnly", settings.ssao.ambientOnly}}},
         {"fog",
          Json{{"enabled", settings.fog.enabled},
               {"density", settings.fog.density},

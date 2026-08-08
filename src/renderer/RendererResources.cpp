@@ -58,7 +58,7 @@ namespace ve {
 
 void Renderer::createMaterialDescriptorSetLayout()
 {
-    std::array<VkDescriptorSetLayoutBinding, 12> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 13> bindings{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[0].descriptorCount = 1;
@@ -122,6 +122,15 @@ void Renderer::createMaterialDescriptorSetLayout()
     bindings[11].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[11].descriptorCount = 1;
     bindings[11].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    // Ambient occlusion, sampled by the main pass so it can darken the ambient
+    // term alone. The GTAO pass writes this image later in the same frame, so
+    // what the main pass reads here is the previous frame's result, reprojected
+    // per fragment along the motion vector the shader already computes for TAA.
+    bindings[12].binding = 12;
+    bindings[12].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[12].descriptorCount = 1;
+    bindings[12].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     // Set 0 binding 0 is the base color texture, binding 1 is the cascaded
     // shadow-map array, binding 2 is the tangent-space normal map, and binding 3 is the
@@ -785,6 +794,51 @@ void Renderer::createBrdfLutTexture()
     nameBrdfLutResources(brdfLutTexture_, "BrdfLut");
 }
 
+void Renderer::refreshMaterialAmbientOcclusionDescriptors()
+{
+    // Binding 12 is the only entry in the material set backed by a
+    // swapchain-sized image, so it is the only one that goes stale when the
+    // post-process targets are recreated. Every other binding here -- the
+    // shadow map, the punctual atlas, the fog volume, the probe atlases -- is
+    // sized by something other than the window and survives a resize.
+    //
+    // Only that one binding is rewritten. Re-running createMaterialDescriptorSet
+    // would allocate a fresh set per material out of a fixed-size pool, so
+    // resizing enough times would exhaust it.
+    const VkImageView ambientOcclusionView = postProcess_.ambientOcclusion().imageView();
+    if (ambientOcclusionView == VK_NULL_HANDLE) {
+        return;
+    }
+
+    VkDescriptorImageInfo ambientOcclusionInfo{};
+    ambientOcclusionInfo.sampler = postProcess_.sampler();
+    ambientOcclusionInfo.imageView = ambientOcclusionView;
+    ambientOcclusionInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    const auto rewrite = [&](renderer::Material& material) {
+        if (material.descriptorSet == VK_NULL_HANDLE) {
+            return;
+        }
+        VkWriteDescriptorSet write{};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = material.descriptorSet;
+        write.dstBinding = 12;
+        write.dstArrayElement = 0;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.pImageInfo = &ambientOcclusionInfo;
+        vkUpdateDescriptorSets(context_.vkDevice(), 1, &write, 0, nullptr);
+    };
+
+    rewrite(checkerboardMaterial_);
+    for (renderer::Material& material : materialVariants_) {
+        rewrite(material);
+    }
+    for (renderer::Material& material : importedMaterials_) {
+        rewrite(material);
+    }
+}
+
 void Renderer::createMaterialDescriptorSet(renderer::Material& material)
 {
     if (!material.baseColorTexture || !material.baseColorTexture->valid()) {
@@ -810,10 +864,10 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
         throw std::runtime_error("Cannot create a material descriptor set without a valid BRDF LUT texture.");
     }
 
-    // Eleven samplers and one uniform buffer per set.
+    // Twelve samplers and one uniform buffer per set.
     std::array<VkDescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[0].descriptorCount = kMaxMaterialDescriptorSets * 11;
+    poolSizes[0].descriptorCount = kMaxMaterialDescriptorSets * 12;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSizes[1].descriptorCount = kMaxMaterialDescriptorSets;
 
@@ -903,6 +957,14 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     probeDepthInfo.imageView = irradianceProbes_.depthAtlas().imageView();
     probeDepthInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
+    // The previous frame's denoised AO. Always bound, even when GTAO is off or
+    // unavailable: the shader gates on pc.aoAmbientStrength, and leaving a
+    // descriptor unwritten is a validation error rather than a no-op.
+    VkDescriptorImageInfo ambientOcclusionInfo{};
+    ambientOcclusionInfo.sampler = postProcess_.sampler();
+    ambientOcclusionInfo.imageView = postProcess_.ambientOcclusion().imageView();
+    ambientOcclusionInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
     VkDescriptorBufferInfo probeParamsInfo{};
     probeParamsInfo.buffer = irradianceProbes_.shadingParamsBuffer();
     probeParamsInfo.offset = 0;
@@ -916,7 +978,7 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
         punctualAtlasAvailable ? punctualShadows_.atlas().imageView() : shadowMap_.layerImageView(0);
     punctualShadowInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
 
-    std::array<VkWriteDescriptorSet, 12> writes{};
+    std::array<VkWriteDescriptorSet, 13> writes{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = material.descriptorSet;
     writes[0].dstBinding = 0;
@@ -1003,6 +1065,8 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     writes[10].pImageInfo = &probeDepthInfo;
     makeWrite(11, 11, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
     writes[11].pBufferInfo = &probeParamsInfo;
+    makeWrite(12, 12, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+    writes[12].pImageInfo = &ambientOcclusionInfo;
 
     // The material descriptor stores sampled images only: base color at binding 0,
     // cascaded shadow-map array at binding 1, normal map at binding 2, and metallic-roughness

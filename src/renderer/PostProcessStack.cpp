@@ -158,6 +158,10 @@ void PostProcessStack::createPostProcessResources(VkImageView depthFallbackView,
     ambientOcclusionInfo.debugName = "AmbientOcclusion";
     ambientOcclusion_.create(context_, ambientOcclusionInfo);
     ambientOcclusionLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+    // Contents are undefined until GTAO writes it, and the main pass samples it
+    // for the previous frame's occlusion, so it stays unusable for exactly one
+    // frame after every (re)creation -- including swapchain resize.
+    ambientOcclusionHistoryValid_ = false;
 
     createTaaResources();
 
@@ -349,7 +353,11 @@ void PostProcessStack::recordCompositeCommands(VkCommandBuffer commandBuffer,
     // precomputed visibility term, gated by this enable flag. invProjection is
     // retained in the push block (still fed from the jittered projection) for
     // future depth-driven composite effects.
-    const bool ssaoActive = ssaoSettings_.enabled && ssaoAvailable_;
+    // Only the reference path multiplies here. With ambientOnly set -- the
+    // default -- the main pass has already applied occlusion to the ambient
+    // term, and multiplying again would both double-apply it and put it back on
+    // the direct lighting this change exists to spare.
+    const bool ssaoActive = ssaoSettings_.enabled && ssaoAvailable_ && !ssaoSettings_.ambientOnly;
     compositePushConstants.invProjection = glm::inverse(jitteredProjection);
     compositePushConstants.ssaoParams0 = glm::vec4(0.0f);
     compositePushConstants.ssaoParams1 = glm::vec4(ssaoActive ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);

@@ -240,6 +240,10 @@ void Renderer::recreatePostProcessResources()
     ssr_.createResources(postProcess_.normalRoughness().imageView(), static_cast<uint32_t>(frames_.size()));
     gtao_.createResources(postProcess_.normalRoughness().imageView(), static_cast<uint32_t>(frames_.size()));
     createDepthPyramidResources();
+    // The material sets hold a view of the ambient-occlusion target, which was
+    // just recreated at the new size. No-op on the first call, before any
+    // material exists; createMaterialDescriptorSet writes the binding then.
+    refreshMaterialAmbientOcclusionDescriptors();
 }
 
 void Renderer::invalidateTaaHistory()

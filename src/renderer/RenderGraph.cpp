@@ -1834,6 +1834,17 @@ void RenderGraph::declareGeometryPasses()
                                     RGAccess::ShaderRead,
                                     "Samples probe visibility to reject leaked probe contributions.");
             }
+            if (frame_.ambientOcclusion.valid()) {
+                // Read before the GTAO pass writes it later this frame, so what
+                // lands here is the previous frame's occlusion, reprojected per
+                // fragment in the shader. Declared whenever the target exists,
+                // for the same reason as the atlases above: the declaration is
+                // what keeps it in a sampled layout rather than UNDEFINED, and
+                // the shader gates the fetch on a push constant anyway.
+                builder.readTexture(frame_.ambientOcclusion,
+                                    RGAccess::ShaderRead,
+                                    "Samples the previous frame's ambient occlusion for the ambient term.");
+            }
             builder.writeTexture(frame_.sceneColor,
                                  RGAccess::ColorAttachmentWrite,
                                  "Writes linear HDR skybox and mesh lighting.");
@@ -1901,6 +1912,11 @@ void RenderGraph::declareGeometryPasses()
                 builder.readTexture(frame_.shadowMapDepth,
                                     RGAccess::ShaderRead,
                                     "Samples the cascaded shadow-map array for lighting.");
+                if (frame_.ambientOcclusion.valid()) {
+                    builder.readTexture(frame_.ambientOcclusion,
+                                        RGAccess::ShaderRead,
+                                        "Samples ambient occlusion for the ambient term, as the main pass does.");
+                }
                 builder.writeTexture(frame_.sceneColor,
                                      RGAccess::ColorAttachmentWrite,
                                      "Draws rescued disoccluded objects into the existing HDR color.");
@@ -2008,6 +2024,17 @@ void RenderGraph::declareGeometryPasses()
                 builder.readTexture(frame_.mainDepth,
                                     RGAccess::DepthStencilAttachmentWrite,
                                     "Depth-tests blended geometry against the opaque depth buffer (no writes).");
+                if (frame_.ambientOcclusion.valid()) {
+                    // Same shared-shader reason as normalRoughness below: this
+                    // pass reuses the main fragment shader, so it samples the
+                    // occlusion binding whether or not blended surfaces need it.
+                    // GTAO already ran and left the image a colour attachment,
+                    // so without this declaration it would still be in that
+                    // layout when the descriptor is read.
+                    builder.readTexture(frame_.ambientOcclusion,
+                                        RGAccess::ShaderRead,
+                                        "Samples ambient occlusion through the shared main-pass fragment shader.");
+                }
                 // Read-modify-write, not a plain write: the "over" blend reads the
                 // destination. Declaring it write-only makes the pass culler treat
                 // every earlier write to scene color -- the main pass, and SSR's

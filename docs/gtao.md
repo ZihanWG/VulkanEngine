@@ -2,7 +2,7 @@
 
 Horizon-based ambient occlusion (Jimenez et al. 2016, *Practical Realtime
 Strategies for Accurate Indirect Occlusion*) computed from the main depth buffer
-and the thin G-buffer normal, then multiplied into scene color by the composite.
+and the thin G-buffer normal, then applied to the ambient term by the main pass.
 It replaces the earlier depth-only SSAO that ran inline in the composite shader.
 Implementation: [`src/renderer/GroundTruthAmbientOcclusion.*`](../src/renderer/GroundTruthAmbientOcclusion.h),
 [`src/shaders/gtao.frag`](../src/shaders/gtao.frag), and
@@ -41,8 +41,16 @@ gated on a samplable main depth image (`available()`), same as SSR.
    similarity measured against the full-res depth buffer. This removes the slice
    noise and upsamples in one pass without bleeding across depth edges. Output is
    the full-res `AmbientOcclusion` target (owned by PostProcessStack).
-3. **CompositePass** — samples the AO term at binding 4 and multiplies it into
-   scene color when GTAO is enabled (the former depth-for-SSAO binding).
+3. **MainHDRPass** (the *next* frame) — samples the AO target at set 0 binding 12
+   and multiplies it into the ambient term only. Because GTAO runs after the main
+   pass, what the main pass reads is the previous frame's result, so the sample is
+   reprojected along the motion vector the shader already computes for TAA. A
+   reprojection landing off screen has no history and falls back to unoccluded.
+   The transparent pass declares the same read, since it reuses this fragment
+   shader.
+
+   `CompositePass` still samples the term at binding 4 and multiplies it into the
+   whole scene colour, but only when `ambientOnly` is off — see below.
 
 Pass order: main HDR (± two-phase occlusion) → SSR → GTAO trace → GTAO upsample →
 depth pyramid → TAA → bloom/exposure/composite.
@@ -65,10 +73,14 @@ and the passes are skipped.
 
 ## Limitations
 
-- Applied as a scene-color multiply in the composite, so it darkens direct
-  lighting too. Physically AO should modulate only indirect/ambient (IBL); doing
-  that correctly needs the main pass to sample AO, which requires either a depth
-  prepass or previous-frame reprojection. Documented rather than hidden.
+- **Occlusion lags one frame.** The main pass reads the previous frame's AO,
+  because GTAO needs the depth and normals that pass produces. Static scenes are
+  unaffected; under fast camera motion contact shadows trail slightly, and newly
+  disoccluded pixels have no history and read as unoccluded until the next frame.
+  A depth prepass would avoid this at the cost of submitting all geometry twice.
+- `SsaoSettings::ambientOnly` (default on) selects this. Turning it off restores
+  the older whole-scene multiply in the composite, which also darkens direct
+  lighting -- physically wrong, but kept as an A/B reference.
 - No multi-bounce: the GTAO multi-bounce fit needs per-pixel albedo, which the
   thin G-buffer does not store. Future work alongside a fuller G-buffer.
 - Spatial denoise only — no temporal accumulation yet (the velocity buffer TAA
