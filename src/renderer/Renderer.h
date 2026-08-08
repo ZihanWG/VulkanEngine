@@ -322,6 +322,10 @@ private:
                                                              renderer::MaterialSource fallbackSource);
     void assignBindlessTextureIndices(renderer::Material& material);
     void createMaterialDescriptorSet(renderer::Material& material);
+    // Rewrites just the ambient-occlusion binding on every existing material
+    // set. Needed after the post-process targets are recreated, since that image
+    // is swapchain-sized and the sets would otherwise hold a destroyed view.
+    void refreshMaterialAmbientOcclusionDescriptors();
     [[nodiscard]] const rhi::VulkanTexture* loadMaterialAssetTextureOrFallback(
         const std::filesystem::path& materialPath,
         const std::filesystem::path& texturePath,

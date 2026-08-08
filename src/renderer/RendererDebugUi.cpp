@@ -211,9 +211,15 @@ void Renderer::drawSsaoDebugUi()
     ImGui::SliderInt("Slices", &ssaoSettings_.sliceCount, 1, 8);
     ImGui::SliderInt("Steps / slice", &ssaoSettings_.stepsPerSlice, 2, 16);
     ImGui::DragFloat("Falloff", &ssaoSettings_.falloff, 0.01f, 0.05f, 1.0f, "%.2f");
+    ImGui::Checkbox("Ambient only", &ssaoSettings_.ambientOnly);
+    ImGui::SetItemTooltip("On (default): the main pass applies occlusion to the ambient/indirect term only,\n"
+                          "sampling the previous frame's AO reprojected along the motion vector.\n"
+                          "Off: the composite multiplies the whole scene colour by it, which also darkens\n"
+                          "direct lighting. Kept for A/B comparison -- a crease in full sunlight going dark\n"
+                          "is the artefact the default avoids.");
     ImGui::TextWrapped(
         "Ground-truth ambient occlusion: a horizon-search pass reads the main depth buffer and the thin "
-        "G-buffer normal, and the composite multiplies the visibility term into scene color.");
+        "G-buffer normal, and the main pass multiplies the visibility term into the ambient term.");
     ImGui::EndDisabled();
 }
 

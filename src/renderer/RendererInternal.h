@@ -231,6 +231,11 @@ struct PushConstants {
     // no separate flag -- the same "one value carries the off state" shape the
     // punctual shadow slot sentinel uses.
     float fogMaxDistance = 0.0f;
+    // Ambient occlusion applied to the ambient term only, using the previous
+    // frame's AO reprojected along this fragment's motion vector. Zero disables
+    // it, carrying the off state in the value like fogMaxDistance above, and is
+    // what the composite-multiply reference path leaves it at.
+    float aoAmbientStrength = 0.0f;
 };
 
 static_assert(offsetof(PushConstants, objectFrameDataAddress) == 0);
@@ -254,6 +259,7 @@ static_assert(offsetof(PushConstants, debugLodHeatmap) == 80);
 static_assert(offsetof(PushConstants, punctualShadowSlotAddress) == 88);
 static_assert(offsetof(PushConstants, debugPunctualShadows) == 96);
 static_assert(offsetof(PushConstants, fogMaxDistance) == 100);
+static_assert(offsetof(PushConstants, aoAmbientStrength) == 104);
 static_assert(sizeof(PushConstants) <= 128);
 
 // Mirrors src/shaders/cull.comp. Main and shadow GPU culling both use this

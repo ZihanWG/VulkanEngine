@@ -209,6 +209,19 @@ public:
     {
         return taaHistoryValid_;
     }
+    // False until the GTAO pass has written the ambient-occlusion target at
+    // least once since it was created. The main pass samples that target for
+    // the *previous* frame's occlusion, and a freshly created image holds
+    // undefined contents -- reading them would darken the first frame by
+    // whatever garbage the allocation happened to contain.
+    [[nodiscard]] bool ambientOcclusionHistoryValid() const
+    {
+        return ambientOcclusionHistoryValid_;
+    }
+    void markAmbientOcclusionWritten()
+    {
+        ambientOcclusionHistoryValid_ = true;
+    }
     // TAA jitter debug readouts (shown in the debug UI).
     [[nodiscard]] uint32_t taaJitterIndex() const
     {
@@ -507,6 +520,7 @@ private:
     bool logAverageExposureWarningLogged_ = false;
     bool histogramExposureWarningLogged_ = false;
     bool taaHistoryValid_ = false;
+    bool ambientOcclusionHistoryValid_ = false;
 
     std::chrono::steady_clock::time_point lastAutoExposureUpdate_ = std::chrono::steady_clock::now();
 

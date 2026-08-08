@@ -71,6 +71,7 @@ RuntimeSettings makeNonDefaultSettings()
     settings.ssao.stepsPerSlice = 9;
     settings.ssao.falloff = 0.8f;
     settings.ssao.thickness = 0.75f;
+    settings.ssao.ambientOnly = false;
 
     settings.fog.enabled = true;
     settings.fog.density = 0.12f;
@@ -175,6 +176,7 @@ TEST_CASE("RuntimeSettings save -> load round-trips every persisted field", "[se
     CHECK(loaded.ssao.stepsPerSlice == original.ssao.stepsPerSlice);
     CHECK(loaded.ssao.falloff == Catch::Approx(original.ssao.falloff));
     CHECK(loaded.ssao.thickness == Catch::Approx(original.ssao.thickness));
+    CHECK(loaded.ssao.ambientOnly == original.ssao.ambientOnly);
 
     CHECK(loaded.fog.enabled == original.fog.enabled);
     CHECK(loaded.fog.density == Catch::Approx(original.fog.density));
@@ -282,6 +284,7 @@ TEST_CASE("The example settings file documents the current defaults", "[settings
     CHECK(loaded.ssao.stepsPerSlice == defaults.ssao.stepsPerSlice);
     CHECK(loaded.ssao.falloff == Catch::Approx(defaults.ssao.falloff));
     CHECK(loaded.ssao.thickness == Catch::Approx(defaults.ssao.thickness));
+    CHECK(loaded.ssao.ambientOnly == defaults.ssao.ambientOnly);
 
     CHECK(loaded.fog.enabled == defaults.fog.enabled);
     CHECK(loaded.fog.density == Catch::Approx(defaults.fog.density));

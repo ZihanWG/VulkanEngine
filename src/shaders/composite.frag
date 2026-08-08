@@ -59,6 +59,10 @@ void main()
         return;
     }
 
+    // Reference path only. Occlusion normally lands on the ambient term inside
+    // the main pass, where it can be applied without darkening direct lighting;
+    // this whole-scene multiply is kept so the two can be compared, and is
+    // enabled only when SsaoSettings::ambientOnly is off.
     if (pc.ssaoParams1.x != 0.0) {
         sceneColor *= texture(uAmbientOcclusion, vUV).r;
     }
