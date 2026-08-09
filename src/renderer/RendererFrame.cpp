@@ -1481,9 +1481,7 @@ void Renderer::uploadObjectFrameData(uint32_t frameIndex)
 
             const glm::mat4 model = object.transform.modelMatrix();
             ObjectFrameData& frameData = objectFrameData[drawIndex];
-            frameData.mvp = frameJitteredViewProjection_ * model;
             frameData.model = model;
-            frameData.currMvpNoJitter = frameViewProjection_ * model;
             frameData.prevMvpNoJitter =
                 previousFrameViewProjection_ * (object.previousModelValid ? object.previousModelMatrix : model);
             const renderer::Material* material = drawItem.material ? drawItem.material : object.material;
@@ -1513,9 +1511,7 @@ void Renderer::uploadObjectFrameData(uint32_t frameIndex)
     if (skinnedMesh_.valid()) {
         const glm::mat4 model = skinnedMesh_.modelMatrix();
         ObjectFrameData skinnedData{};
-        skinnedData.mvp = frameJitteredViewProjection_ * model;
         skinnedData.model = model;
-        skinnedData.currMvpNoJitter = frameViewProjection_ * model;
         skinnedData.prevMvpNoJitter =
             previousFrameViewProjection_ * (previousSkinnedModelValid_ ? previousSkinnedModelMatrix_ : model);
         skinnedData.baseColorFactor = glm::vec4(0.85f, 0.45f, 0.32f, 1.0f);
@@ -1539,6 +1535,8 @@ void Renderer::uploadFrameConstants(uint32_t frameIndex, uint32_t cascadeCount)
     }
 
     FrameConstants constants{};
+    constants.jitteredViewProjection = frameJitteredViewProjection_;
+    constants.viewProjection = frameViewProjection_;
     for (uint32_t cascade = 0; cascade < kMaxShadowCascades; ++cascade) {
         constants.cascadeViewProjection[cascade] = frameCascades_[cascade].lightViewProjection;
     }

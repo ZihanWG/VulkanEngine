@@ -76,7 +76,7 @@ void main()
     vec3 skinnedTangent = skinRotation * inTangent.xyz;
 
     vec4 worldPosition = objectData.model * skinnedPosition;
-    gl_Position = objectData.mvp * skinnedPosition;
+    gl_Position = pc.frameConstants.values.jitteredViewProjection * worldPosition;
     mat3 normalMatrix = transpose(inverse(mat3(objectData.model)));
     mat3 modelMatrix = mat3(objectData.model);
     vec3 normalWS = normalize(normalMatrix * skinnedNormal);
@@ -109,6 +109,6 @@ void main()
     // Motion vectors reuse this frame's skinned position for both projections,
     // so they capture camera + rigid object motion but not joint-space motion
     // (that would need the previous frame's joint palette).
-    vCurrClipPos = objectData.currMvpNoJitter * skinnedPosition;
+    vCurrClipPos = pc.frameConstants.values.viewProjection * worldPosition;
     vPrevClipPos = objectData.prevMvpNoJitter * skinnedPosition;
 }
