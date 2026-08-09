@@ -410,6 +410,12 @@ if(Vulkan_GLSLC_EXECUTABLE AND EXISTS "${Vulkan_GLSLC_EXECUTABLE}")
 else()
     find_program(GLSLC_EXECUTABLE glslc)
 endif()
+# Shared GLSL blocks. Not compiled on their own -- they are #included by the
+# shaders above and listed as build dependencies below.
+set(SHADER_INCLUDES
+    "${SHADER_SOURCE_DIR}/object_frame_data.glsl"
+)
+
 if(GLSLC_EXECUTABLE)
     file(MAKE_DIRECTORY "${SHADER_BINARY_DIR}")
     set(SHADER_OUTPUTS "")
@@ -417,10 +423,15 @@ if(GLSLC_EXECUTABLE)
     foreach(SHADER ${SHADER_SOURCES})
         get_filename_component(SHADER_NAME "${SHADER}" NAME)
         set(SHADER_OUTPUT "${SHADER_BINARY_DIR}/${SHADER_NAME}.spv")
+        # SHADER_INCLUDES is listed in DEPENDS so editing a shared block
+        # recompiles every shader that includes it. glslc resolves a quoted
+        # #include relative to the including file, so no -I is needed; without
+        # the dependency, though, a stale .spv would silently keep the old
+        # struct layout while the C++ side moved on.
         add_custom_command(
             OUTPUT "${SHADER_OUTPUT}"
             COMMAND "${GLSLC_EXECUTABLE}" "${SHADER}" -o "${SHADER_OUTPUT}" --target-env=vulkan1.3
-            DEPENDS "${SHADER}"
+            DEPENDS "${SHADER}" ${SHADER_INCLUDES}
             COMMENT "Compiling shader ${SHADER_NAME}"
             VERBATIM
         )

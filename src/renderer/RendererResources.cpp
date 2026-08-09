@@ -1133,6 +1133,7 @@ void Renderer::createSkyboxDescriptorSet()
 void Renderer::createObjectFrameDataBuffers()
 {
     frameObjectDataBuffers_.resize(frames_.size());
+    frameConstantsBuffers_.resize(frames_.size());
 
     for (size_t frameIndex = 0; frameIndex < frameObjectDataBuffers_.size(); ++frameIndex) {
         rhi::VulkanBuffer& frameObjectDataBuffer = frameObjectDataBuffers_[frameIndex];
@@ -1147,6 +1148,19 @@ void Renderer::createObjectFrameDataBuffers()
                                   frameObjectDataBuffer.buffer(),
                                   VK_OBJECT_TYPE_BUFFER,
                                   "ObjectFrameDataBuffer" + std::to_string(frameIndex));
+
+        rhi::VulkanBuffer& frameConstantsBuffer = frameConstantsBuffers_[frameIndex];
+        rhi::VulkanBufferCreateInfo constantsInfo{};
+        constantsInfo.size = static_cast<VkDeviceSize>(sizeof(FrameConstants));
+        constantsInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+        constantsInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
+        constantsInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+        constantsInfo.requestDeviceAddress = true;
+        frameConstantsBuffer.createBuffer(context_, constantsInfo);
+        rhi::debug::setObjectName(context_.vkDevice(),
+                                  frameConstantsBuffer.buffer(),
+                                  VK_OBJECT_TYPE_BUFFER,
+                                  "FrameConstantsBuffer" + std::to_string(frameIndex));
     }
 }
 

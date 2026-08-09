@@ -11,34 +11,14 @@
 // Unlike the shadow path this one also carries the shading inputs, because the
 // capture records radiance and not just depth.
 
-struct ObjectFrameData {
-    mat4 mvp;
-    mat4 model;
-    mat4 lightMvp[4];
-    vec4 lightDirection;
-    vec4 lightColor;
-    vec4 ambientColor;
-    vec4 cascadeSplits;
-    vec4 shadowSettings;
-    vec4 baseColorFactor;
-    vec4 materialParams;
-    vec4 cameraPosition;
-    vec4 cameraForward;
-    uvec4 textureIndices;
-    vec4 emissiveFactor;
-    mat4 currMvpNoJitter;
-    mat4 prevMvpNoJitter;
-};
-
-layout(buffer_reference, std430) readonly buffer ObjectFrameDataBuffer {
-    ObjectFrameData objects[];
-};
-
+#include "object_frame_data.glsl"
 // The mat4 sits at offset 16, not 8: push-constant layout rounds the 8-byte
 // buffer reference up to the matrix's 16-byte alignment. The C++
 // ProbeCapturePushConstants mirror carries explicit padding to match.
 layout(push_constant) uniform PushConstants {
     ObjectFrameDataBuffer objectFrameData;
+    // Occupies what used to be two padding words in ProbeCapturePushConstants.
+    FrameConstantsBuffer frameConstants;
     mat4 faceViewProjection;
     // xyz = the capturing probe's world position. The fragment stage needs it to
     // record how far away each surface is, which is what the depth atlas stores.
@@ -84,12 +64,12 @@ void main()
     vNormal = normalize(mat3(objectData.model) * inNormal);
     vUV = inUV;
 
-    vLightDirection = objectData.lightDirection.xyz;
-    vLightColor = objectData.lightColor.rgb;
-    vAmbientColor = objectData.ambientColor.rgb;
-    vShadowSettings = objectData.shadowSettings;
-    vCascadeSplits = objectData.cascadeSplits;
-    vCascadeCount = uint(objectData.cameraForward.w + 0.5);
+    vLightDirection = pc.frameConstants.values.lightDirection.xyz;
+    vLightColor = pc.frameConstants.values.lightColor.rgb;
+    vAmbientColor = pc.frameConstants.values.ambientColor.rgb;
+    vShadowSettings = pc.frameConstants.values.shadowSettings;
+    vCascadeSplits = pc.frameConstants.values.cascadeSplits;
+    vCascadeCount = uint(pc.frameConstants.values.cameraForward.w + 0.5);
     vBaseColorFactor = objectData.baseColorFactor;
     vTextureIndices = objectData.textureIndices;
     vEmissiveFactor = objectData.emissiveFactor;
@@ -99,7 +79,7 @@ void main()
         vLightSpacePosition[cascade] = objectData.lightMvp[cascade] * vec4(inPosition, 1.0);
     }
 
-    vCameraViewDepth = dot(worldPosition.xyz - objectData.cameraPosition.xyz, objectData.cameraForward.xyz);
+    vCameraViewDepth = dot(worldPosition.xyz - pc.frameConstants.values.cameraPosition.xyz, pc.frameConstants.values.cameraForward.xyz);
 
     gl_Position = pc.faceViewProjection * worldPosition;
 }

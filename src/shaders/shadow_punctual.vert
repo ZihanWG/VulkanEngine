@@ -11,29 +11,7 @@
 // a push constant -- one push per slot, not per slot per object -- and is
 // combined with the object's model matrix on the fly.
 
-struct ObjectFrameData {
-    mat4 mvp;
-    mat4 model;
-    mat4 lightMvp[4];
-    vec4 lightDirection;
-    vec4 lightColor;
-    vec4 ambientColor;
-    vec4 cascadeSplits;
-    vec4 shadowSettings;
-    vec4 baseColorFactor;
-    vec4 materialParams;
-    vec4 cameraPosition;
-    vec4 cameraForward;
-    uvec4 textureIndices;
-    vec4 emissiveFactor;
-    mat4 currMvpNoJitter;
-    mat4 prevMvpNoJitter;
-};
-
-layout(buffer_reference, std430) readonly buffer ObjectFrameDataBuffer {
-    ObjectFrameData objects[];
-};
-
+#include "object_frame_data.glsl"
 // The mat4 sits at offset 16, not 8: push-constant layout rules round the
 // 8-byte buffer reference up to the matrix's 16-byte alignment. The C++
 // PunctualShadowPushConstants mirror carries explicit padding to match.
