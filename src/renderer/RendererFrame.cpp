@@ -1486,9 +1486,6 @@ void Renderer::uploadObjectFrameData(uint32_t frameIndex)
             frameData.currMvpNoJitter = frameViewProjection_ * model;
             frameData.prevMvpNoJitter =
                 previousFrameViewProjection_ * (object.previousModelValid ? object.previousModelMatrix : model);
-            for (uint32_t cascadeIndex = 0; cascadeIndex < kMaxShadowCascades; ++cascadeIndex) {
-                frameData.lightMvp[cascadeIndex] = frameCascades_[cascadeIndex].lightViewProjection * model;
-            }
             const renderer::Material* material = drawItem.material ? drawItem.material : object.material;
             if (material) {
                 frameData.baseColorFactor = material->baseColorFactor;
@@ -1521,9 +1518,6 @@ void Renderer::uploadObjectFrameData(uint32_t frameIndex)
         skinnedData.currMvpNoJitter = frameViewProjection_ * model;
         skinnedData.prevMvpNoJitter =
             previousFrameViewProjection_ * (previousSkinnedModelValid_ ? previousSkinnedModelMatrix_ : model);
-        for (uint32_t cascade = 0; cascade < kMaxShadowCascades; ++cascade) {
-            skinnedData.lightMvp[cascade] = frameCascades_[cascade].lightViewProjection * model;
-        }
         skinnedData.baseColorFactor = glm::vec4(0.85f, 0.45f, 0.32f, 1.0f);
         skinnedData.materialParams = {0.1f, 0.55f, 1.0f, renderer::kNoAlphaTestCutoff};
         skinnedData.textureIndices = {bindlessBaseColorFallbackIndex_,
@@ -1545,6 +1539,9 @@ void Renderer::uploadFrameConstants(uint32_t frameIndex, uint32_t cascadeCount)
     }
 
     FrameConstants constants{};
+    for (uint32_t cascade = 0; cascade < kMaxShadowCascades; ++cascade) {
+        constants.cascadeViewProjection[cascade] = frameCascades_[cascade].lightViewProjection;
+    }
     constants.lightDirection = activeDirectionalLightDirection();
     constants.lightColor = activeDirectionalLightColor();
     constants.ambientColor = portfolioCaptureMode_ ? kPortfolioAmbientLightColor : kAmbientLightColor;

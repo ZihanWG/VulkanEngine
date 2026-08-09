@@ -76,7 +76,8 @@ void main()
     vMaterialParams = objectData.materialParams;
 
     for (int cascade = 0; cascade < 4; ++cascade) {
-        vLightSpacePosition[cascade] = objectData.lightMvp[cascade] * vec4(inPosition, 1.0);
+        vLightSpacePosition[cascade] =
+            pc.frameConstants.values.cascadeViewProjection[cascade] * worldPosition;
     }
 
     vCameraViewDepth = dot(worldPosition.xyz - pc.frameConstants.values.cameraPosition.xyz, pc.frameConstants.values.cameraForward.xyz);
