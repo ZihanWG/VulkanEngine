@@ -7,29 +7,7 @@
 // using the cheaper depth-only shadow.vert (no fragment shader at all), so the
 // extra varyings here are only paid by MASK materials.
 
-struct ObjectFrameData {
-    mat4 mvp;
-    mat4 model;
-    mat4 lightMvp[4];
-    vec4 lightDirection;
-    vec4 lightColor;
-    vec4 ambientColor;
-    vec4 cascadeSplits;
-    vec4 shadowSettings;
-    vec4 baseColorFactor;
-    vec4 materialParams;
-    vec4 cameraPosition;
-    vec4 cameraForward;
-    uvec4 textureIndices;
-    vec4 emissiveFactor;
-    mat4 currMvpNoJitter;
-    mat4 prevMvpNoJitter;
-};
-
-layout(buffer_reference, std430) readonly buffer ObjectFrameDataBuffer {
-    ObjectFrameData objects[];
-};
-
+#include "object_frame_data.glsl"
 layout(push_constant) uniform PushConstants {
     ObjectFrameDataBuffer objectFrameData;
     uint cascadeIndex;

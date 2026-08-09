@@ -2,32 +2,13 @@
 
 #extension GL_EXT_buffer_reference : require
 
-struct ObjectFrameData {
-    mat4 mvp;
-    mat4 model;
-    mat4 lightMvp[4];
-    vec4 lightDirection;
-    vec4 lightColor;
-    vec4 ambientColor;
-    vec4 cascadeSplits;
-    vec4 shadowSettings;
-    vec4 baseColorFactor;
-    vec4 materialParams;
-    vec4 cameraPosition;
-    vec4 cameraForward;
-    uvec4 textureIndices;
-    vec4 emissiveFactor;
-    mat4 currMvpNoJitter;
-    mat4 prevMvpNoJitter;
-};
-
-layout(buffer_reference, std430) readonly buffer ObjectFrameDataBuffer {
-    ObjectFrameData objects[];
-};
-
+#include "object_frame_data.glsl"
 layout(push_constant) uniform PushConstants {
     ObjectFrameDataBuffer objectFrameData;
     uint cascadeIndex;
+    // Explicit offset: this block declares only the leading fields, so the
+    // address has to be placed where ve::PushConstants actually keeps it.
+    layout(offset = 112) FrameConstantsBuffer frameConstants;
 } pc;
 
 // gl_InstanceIndex packs the object-data slot in the low 16 bits and the
@@ -81,22 +62,22 @@ void main()
     vNormal = normalWS;
     vTangent = tangentWS;
     vBitangent = bitangentWS;
-    vLightDirection = objectData.lightDirection.xyz;
-    vLightColor = objectData.lightColor.xyz;
-    vAmbientColor = objectData.ambientColor.xyz;
+    vLightDirection = pc.frameConstants.values.lightDirection.xyz;
+    vLightColor = pc.frameConstants.values.lightColor.xyz;
+    vAmbientColor = pc.frameConstants.values.ambientColor.xyz;
     for (uint cascade = 0; cascade < 4; ++cascade) {
         vLightSpacePosition[cascade] = objectData.lightMvp[cascade] * vec4(inPosition, 1.0);
     }
-    vShadowSettings = objectData.shadowSettings;
+    vShadowSettings = pc.frameConstants.values.shadowSettings;
     vWorldPosition = worldPosition.xyz;
-    vCameraPosition = objectData.cameraPosition.xyz;
+    vCameraPosition = pc.frameConstants.values.cameraPosition.xyz;
     vBaseColorFactor = objectData.baseColorFactor;
     vMaterialParams = objectData.materialParams;
     vTextureIndices = objectData.textureIndices;
-    vViewDepth = dot(objectData.cameraForward.xyz, worldPosition.xyz - objectData.cameraPosition.xyz);
-    vCascadeSplits = objectData.cascadeSplits;
-    vCascadeCount = uint(max(objectData.cameraForward.w, 1.0) + 0.5);
-    vCascadeDebugEnabled = objectData.cameraPosition.w;
+    vViewDepth = dot(pc.frameConstants.values.cameraForward.xyz, worldPosition.xyz - pc.frameConstants.values.cameraPosition.xyz);
+    vCascadeSplits = pc.frameConstants.values.cascadeSplits;
+    vCascadeCount = uint(max(pc.frameConstants.values.cameraForward.w, 1.0) + 0.5);
+    vCascadeDebugEnabled = pc.frameConstants.values.cameraPosition.w;
     vEmissiveFactor = objectData.emissiveFactor;
     vCurrClipPos = objectData.currMvpNoJitter * vec4(inPosition, 1.0);
     vPrevClipPos = objectData.prevMvpNoJitter * vec4(inPosition, 1.0);

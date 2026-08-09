@@ -1489,14 +1489,6 @@ void Renderer::uploadObjectFrameData(uint32_t frameIndex)
             for (uint32_t cascadeIndex = 0; cascadeIndex < kMaxShadowCascades; ++cascadeIndex) {
                 frameData.lightMvp[cascadeIndex] = frameCascades_[cascadeIndex].lightViewProjection * model;
             }
-            frameData.lightDirection = activeLightDirection;
-            frameData.lightColor = activeLightColor;
-            frameData.ambientColor = activeAmbientLightColor;
-            frameData.cascadeSplits = frameCascadeSplits_;
-            frameData.shadowSettings = {csmSettings_.depthBiasConstant,
-                                        csmSettings_.depthBiasSlope,
-                                        shadowSettings_.enablePcf ? 1.0f : 0.0f,
-                                        static_cast<float>(std::max(shadowSettings_.pcfRadius, 0))};
             const renderer::Material* material = drawItem.material ? drawItem.material : object.material;
             if (material) {
                 frameData.baseColorFactor = material->baseColorFactor;
@@ -1511,12 +1503,10 @@ void Renderer::uploadObjectFrameData(uint32_t frameIndex)
                 frameData.emissiveFactor =
                     glm::vec4(material->emissiveFactor, material->hasEmissiveTexture ? 1.0f : 0.0f);
             }
-            frameData.cameraPosition =
-                glm::vec4(camera_.position, csmSettings_.enableCascadeDebugColors ? 1.0f : 0.0f);
-            frameData.cameraForward =
-                glm::vec4(glm::normalize(camera_.target - camera_.position), static_cast<float>(cascadeCount));
         }
     });
+
+    uploadFrameConstants(frameIndex, cascadeCount);
 
     frameObjectDataBuffers_.at(frameIndex)
         .upload(std::as_bytes(std::span<const ObjectFrameData>(objectFrameData.data(), objectFrameData.size())));
@@ -1534,19 +1524,8 @@ void Renderer::uploadObjectFrameData(uint32_t frameIndex)
         for (uint32_t cascade = 0; cascade < kMaxShadowCascades; ++cascade) {
             skinnedData.lightMvp[cascade] = frameCascades_[cascade].lightViewProjection * model;
         }
-        skinnedData.lightDirection = activeLightDirection;
-        skinnedData.lightColor = activeLightColor;
-        skinnedData.ambientColor = activeAmbientLightColor;
-        skinnedData.cascadeSplits = frameCascadeSplits_;
-        skinnedData.shadowSettings = {csmSettings_.depthBiasConstant,
-                                      csmSettings_.depthBiasSlope,
-                                      shadowSettings_.enablePcf ? 1.0f : 0.0f,
-                                      static_cast<float>(std::max(shadowSettings_.pcfRadius, 0))};
         skinnedData.baseColorFactor = glm::vec4(0.85f, 0.45f, 0.32f, 1.0f);
         skinnedData.materialParams = {0.1f, 0.55f, 1.0f, renderer::kNoAlphaTestCutoff};
-        skinnedData.cameraPosition = glm::vec4(camera_.position, csmSettings_.enableCascadeDebugColors ? 1.0f : 0.0f);
-        skinnedData.cameraForward =
-            glm::vec4(glm::normalize(camera_.target - camera_.position), static_cast<float>(cascadeCount));
         skinnedData.textureIndices = {bindlessBaseColorFallbackIndex_,
                                       bindlessNormalFallbackIndex_,
                                       bindlessMetallicRoughnessFallbackIndex_,
@@ -1555,6 +1534,32 @@ void Renderer::uploadObjectFrameData(uint32_t frameIndex)
             .upload(std::as_bytes(std::span<const ObjectFrameData>(&skinnedData, 1)),
                     static_cast<VkDeviceSize>(kSkinnedObjectFrameSlot) * sizeof(ObjectFrameData));
     }
+}
+
+// The values every draw item shares. Written once per frame instead of into all
+// N object records, which is where 112 of the old 688-byte record went.
+void Renderer::uploadFrameConstants(uint32_t frameIndex, uint32_t cascadeCount)
+{
+    if (frameIndex >= frameConstantsBuffers_.size()) {
+        return;
+    }
+
+    FrameConstants constants{};
+    constants.lightDirection = activeDirectionalLightDirection();
+    constants.lightColor = activeDirectionalLightColor();
+    constants.ambientColor = portfolioCaptureMode_ ? kPortfolioAmbientLightColor : kAmbientLightColor;
+    constants.cascadeSplits = frameCascadeSplits_;
+    constants.shadowSettings = {csmSettings_.depthBiasConstant,
+                                csmSettings_.depthBiasSlope,
+                                shadowSettings_.enablePcf ? 1.0f : 0.0f,
+                                static_cast<float>(std::max(shadowSettings_.pcfRadius, 0))};
+    constants.cameraPosition =
+        glm::vec4(camera_.position, csmSettings_.enableCascadeDebugColors ? 1.0f : 0.0f);
+    constants.cameraForward =
+        glm::vec4(glm::normalize(camera_.target - camera_.position), static_cast<float>(cascadeCount));
+
+    frameConstantsBuffers_.at(frameIndex)
+        .upload(std::as_bytes(std::span<const FrameConstants>(&constants, 1)));
 }
 
 } // namespace ve

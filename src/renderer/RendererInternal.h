@@ -85,15 +85,8 @@ struct ObjectFrameData {
     glm::mat4 mvp{1.0f};
     glm::mat4 model{1.0f};
     glm::mat4 lightMvp[4]{{1.0f}, {1.0f}, {1.0f}, {1.0f}};
-    glm::vec4 lightDirection{0.35f, -0.65f, -0.55f, 0.0f};
-    glm::vec4 lightColor{0.85f, 0.85f, 0.85f, 1.0f};
-    glm::vec4 ambientColor{0.15f, 0.15f, 0.15f, 1.0f};
-    glm::vec4 cascadeSplits{40.0f};
-    glm::vec4 shadowSettings{0.002f, 0.005f, 1.0f, 1.0f};
     glm::vec4 baseColorFactor{1.0f};
     glm::vec4 materialParams{0.0f, 0.5f, 1.0f, 0.0f};
-    glm::vec4 cameraPosition{0.0f, 0.0f, 0.0f, 0.0f};
-    glm::vec4 cameraForward{0.0f, 0.0f, -1.0f, 4.0f};
     glm::uvec4 textureIndices{0, 0, 0, 0};
     glm::vec4 emissiveFactor{0.0f, 0.0f, 0.0f, 0.0f};
     glm::mat4 currMvpNoJitter{1.0f};
@@ -121,20 +114,40 @@ struct ObjectFrameData {
 static_assert(offsetof(ObjectFrameData, mvp) == 0);
 static_assert(offsetof(ObjectFrameData, model) == 64);
 static_assert(offsetof(ObjectFrameData, lightMvp) == 128);
-static_assert(offsetof(ObjectFrameData, lightDirection) == 384);
-static_assert(offsetof(ObjectFrameData, lightColor) == 400);
-static_assert(offsetof(ObjectFrameData, ambientColor) == 416);
-static_assert(offsetof(ObjectFrameData, cascadeSplits) == 432);
-static_assert(offsetof(ObjectFrameData, shadowSettings) == 448);
-static_assert(offsetof(ObjectFrameData, baseColorFactor) == 464);
-static_assert(offsetof(ObjectFrameData, materialParams) == 480);
-static_assert(offsetof(ObjectFrameData, cameraPosition) == 496);
-static_assert(offsetof(ObjectFrameData, cameraForward) == 512);
-static_assert(offsetof(ObjectFrameData, textureIndices) == 528);
-static_assert(offsetof(ObjectFrameData, emissiveFactor) == 544);
-static_assert(offsetof(ObjectFrameData, currMvpNoJitter) == 560);
-static_assert(offsetof(ObjectFrameData, prevMvpNoJitter) == 624);
-static_assert(sizeof(ObjectFrameData) == 688);
+static_assert(offsetof(ObjectFrameData, baseColorFactor) == 384);
+static_assert(offsetof(ObjectFrameData, materialParams) == 400);
+static_assert(offsetof(ObjectFrameData, textureIndices) == 416);
+static_assert(offsetof(ObjectFrameData, emissiveFactor) == 432);
+static_assert(offsetof(ObjectFrameData, currMvpNoJitter) == 448);
+static_assert(offsetof(ObjectFrameData, prevMvpNoJitter) == 512);
+static_assert(sizeof(ObjectFrameData) == 576);
+
+// Identical for every draw item in the frame. These used to be copied into all
+// N object records -- 112 of each record's 688 bytes were the same seven vec4s
+// repeated. Stored once and reached through its own address instead.
+//
+// Mirrors FrameConstants in src/shaders/object_frame_data.glsl.
+struct FrameConstants {
+    glm::vec4 lightDirection{0.35f, -0.65f, -0.55f, 0.0f};
+    glm::vec4 lightColor{0.85f, 0.85f, 0.85f, 1.0f};
+    glm::vec4 ambientColor{0.15f, 0.15f, 0.15f, 1.0f};
+    // Positive camera-view depths for cascades 0..3.
+    glm::vec4 cascadeSplits{40.0f};
+    glm::vec4 shadowSettings{0.002f, 0.005f, 1.0f, 1.0f};
+    // xyz = world-space camera position, w = cascade debug-colour toggle.
+    glm::vec4 cameraPosition{0.0f, 0.0f, 0.0f, 0.0f};
+    // xyz = camera forward, w = cascade count.
+    glm::vec4 cameraForward{0.0f, 0.0f, -1.0f, 4.0f};
+};
+
+static_assert(offsetof(FrameConstants, lightDirection) == 0);
+static_assert(offsetof(FrameConstants, lightColor) == 16);
+static_assert(offsetof(FrameConstants, ambientColor) == 32);
+static_assert(offsetof(FrameConstants, cascadeSplits) == 48);
+static_assert(offsetof(FrameConstants, shadowSettings) == 64);
+static_assert(offsetof(FrameConstants, cameraPosition) == 80);
+static_assert(offsetof(FrameConstants, cameraForward) == 96);
+static_assert(sizeof(FrameConstants) == 112);
 
 constexpr uint32_t kMaxFrameObjects = 1024;
 constexpr uint32_t kMaxDrawItems = 1024;
@@ -236,6 +249,11 @@ struct PushConstants {
     // it, carrying the off state in the value like fogMaxDistance above, and is
     // what the composite-multiply reference path leaves it at.
     float aoAmbientStrength = 0.0f;
+    // Frame constants shared by every draw item this frame (see FrameConstants
+    // above). A second buffer_reference rather than a descriptor, because the
+    // vertex stage binds no descriptor set at all -- everything it reads comes
+    // through push constants and BDA.
+    VkDeviceAddress frameConstantsAddress = 0;
 };
 
 static_assert(offsetof(PushConstants, objectFrameDataAddress) == 0);
@@ -260,6 +278,7 @@ static_assert(offsetof(PushConstants, punctualShadowSlotAddress) == 88);
 static_assert(offsetof(PushConstants, debugPunctualShadows) == 96);
 static_assert(offsetof(PushConstants, fogMaxDistance) == 100);
 static_assert(offsetof(PushConstants, aoAmbientStrength) == 104);
+static_assert(offsetof(PushConstants, frameConstantsAddress) == 112);
 static_assert(sizeof(PushConstants) <= 128);
 
 // Mirrors src/shaders/cull.comp. Main and shadow GPU culling both use this
@@ -334,8 +353,9 @@ static_assert(sizeof(PunctualShadowPushConstants) <= 128);
 // where the members after it start -- one push fills the range for both.
 struct ProbeCapturePushConstants {
     VkDeviceAddress objectFrameDataAddress = 0;
-    uint32_t padding0 = 0;
-    uint32_t padding1 = 0;
+    // Was two padding words: an 8-byte hole before the 16-byte-aligned mat4,
+    // which is exactly what a device address needs.
+    VkDeviceAddress frameConstantsAddress = 0;
     glm::mat4 faceViewProjection{1.0f};
     // xyz = the capturing probe's world position; the fragment stage records
     // distance from it, which is what the depth atlas stores.

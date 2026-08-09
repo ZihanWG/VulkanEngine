@@ -371,6 +371,7 @@ private:
     void buildShadowFrameData(uint32_t frameIndex);
     void buildMainCullingFrameData(uint32_t frameIndex, const renderer::Frustum& cameraFrustum);
     void uploadObjectFrameData(uint32_t frameIndex);
+    void uploadFrameConstants(uint32_t frameIndex, uint32_t cascadeCount);
     void buildDrawItems();
     void buildVisibleDrawItems(const renderer::Frustum& frustum);
     void buildMeshDrawBatches();
@@ -660,6 +661,9 @@ private:
     std::array<std::vector<MeshDrawBatch>, kMaxShadowCascades> shadowCascadeMeshDrawBatches_;
     std::vector<MeshDrawBatch> gpuShadowMeshDrawBatches_;
     std::vector<rhi::VulkanBuffer> frameObjectDataBuffers_;
+    // One FrameConstants record per frame in flight, holding the values every
+    // draw item shares. Reached by device address like the object data.
+    std::vector<rhi::VulkanBuffer> frameConstantsBuffers_;
     // Indirect-draw output buffers stay owned here (the main/shadow draw passes read
     // them); gpuCulling_ borrows them by reference to write the compacted commands.
     std::vector<rhi::VulkanBuffer> frameIndirectDrawBuffers_;

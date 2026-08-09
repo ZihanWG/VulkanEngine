@@ -150,6 +150,7 @@ void Renderer::recordProbeCapturePass(VkCommandBuffer commandBuffer)
                             nullptr);
 
     const VkDeviceAddress objectFrameDataBaseAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
+    const VkDeviceAddress frameConstantsBaseAddress = frameConstantsBuffers_.at(currentFrame_).deviceAddress();
     const renderer::ProbeGridBounds bounds = irradianceProbes_.bounds();
     // The same offset the convolution will subtract. Applied here as a
     // sub-texel slide of every face so successive captures of an unchanged
@@ -240,6 +241,7 @@ void Renderer::recordProbeCapturePass(VkCommandBuffer commandBuffer)
                 pushConstants.objectFrameDataAddress =
                     objectFrameDataBaseAddress +
                     static_cast<VkDeviceAddress>(drawItem.frameDataIndex) * sizeof(ObjectFrameData);
+                pushConstants.frameConstantsAddress = frameConstantsBaseAddress;
                 pushConstants.faceViewProjection = faceViewProjection;
                 pushConstants.probePosition = glm::vec4{probePosition, 0.0f};
                 vkCmdPushConstants(commandBuffer,
@@ -336,6 +338,7 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuC
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, punctualShadowPipeline_.pipeline());
 
     const VkDeviceAddress objectFrameDataBaseAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
+    const VkDeviceAddress frameConstantsBaseAddress = frameConstantsBuffers_.at(currentFrame_).deviceAddress();
     const renderer::Mesh* boundMesh = nullptr;
     uint32_t recordedDraws = 0;
 
@@ -923,6 +926,7 @@ void Renderer::recordDepthPyramidCommands(VkCommandBuffer commandBuffer, bool mi
 void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex)
 {
     const VkDeviceAddress objectFrameDataBaseAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
+    const VkDeviceAddress frameConstantsBaseAddress = frameConstantsBuffers_.at(currentFrame_).deviceAddress();
     const size_t mainDrawItemCount = visibleDrawItems_.size();
     const bool clusteredLightingActive = clusteredLighting_.available() && useClusteredLighting_ &&
                                          clusteredLighting_.lightCount() > 0 && !allDrawItems_.empty();
@@ -1396,6 +1400,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     // shader fall back to brute-force light evaluation.
     PushConstants basePushConstants{};
     basePushConstants.objectFrameDataAddress = objectFrameDataBaseAddress;
+    basePushConstants.frameConstantsAddress = frameConstantsBaseAddress;
     basePushConstants.cascadeIndex = 0;
     basePushConstants.toneMappingOperator = toneMappingOperator;
     basePushConstants.exposure = exposure;
@@ -1569,6 +1574,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                                 nullptr);
 
         PushConstants skinnedPush = basePushConstants;
+        skinnedPush.frameConstantsAddress = frameConstantsBaseAddress;
         skinnedPush.objectFrameDataAddress = objectFrameDataBaseAddress +
                                              static_cast<VkDeviceAddress>(kSkinnedObjectFrameSlot) *
                                                  sizeof(ObjectFrameData);
