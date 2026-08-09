@@ -881,7 +881,12 @@ private:
     bool animateLights_ = true;
     float demoLightIntensity_ = 10.0f;
     float demoLightRange_ = 8.0f;
-    bool useGpuOcclusionCulling_ = false;
+    // Hi-Z occlusion culling. The initializer here never survives construction:
+    // loadRuntimeSettingsAtStartup applies a default-constructed RuntimeSettings
+    // even when no settings file exists, so RuntimeSettings::enableGpuOcclusionCulling
+    // is the real default. It read `false` while that setting said `true`, which
+    // is the opposite of what the engine does.
+    bool useGpuOcclusionCulling_ = true;
     // Two-phase Hi-Z occlusion: phase 1 culls against the previous frame's
     // pyramid, phase 2 re-tests the occluded candidates against a mid-frame
     // rebuild so disocclusions never drop draws. Requires the indirect-count

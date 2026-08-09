@@ -101,6 +101,7 @@ RuntimeSettings makeNonDefaultSettings()
     settings.useGpuShadowCulling = false;
     settings.enableGpuOcclusionCulling = false;
     settings.enableTwoPhaseOcclusion = false;
+    settings.useClusteredLighting = false;
     settings.enableAsyncCompute = false;
     settings.enableBindlessMaterialTextures = false;
 
@@ -206,6 +207,7 @@ TEST_CASE("RuntimeSettings save -> load round-trips every persisted field", "[se
     CHECK(loaded.useGpuShadowCulling == original.useGpuShadowCulling);
     CHECK(loaded.enableGpuOcclusionCulling == original.enableGpuOcclusionCulling);
     CHECK(loaded.enableTwoPhaseOcclusion == original.enableTwoPhaseOcclusion);
+    CHECK(loaded.useClusteredLighting == original.useClusteredLighting);
     CHECK(loaded.enableAsyncCompute == original.enableAsyncCompute);
     CHECK(loaded.enableBindlessMaterialTextures == original.enableBindlessMaterialTextures);
 
@@ -303,6 +305,8 @@ TEST_CASE("The example settings file documents the current defaults", "[settings
     CHECK(loaded.punctualShadows.enabled == defaults.punctualShadows.enabled);
     CHECK(loaded.punctualShadows.gpuCasterCulling == defaults.punctualShadows.gpuCasterCulling);
     CHECK(loaded.punctualShadows.debugView == defaults.punctualShadows.debugView);
+
+    CHECK(loaded.useClusteredLighting == defaults.useClusteredLighting);
 
     CHECK(loaded.lod.enabled == defaults.lod.enabled);
     CHECK(loaded.lod.referenceRadiusPixels == Catch::Approx(defaults.lod.referenceRadiusPixels));

@@ -279,6 +279,11 @@ struct RuntimeSettings {
     // mid-frame rebuild. Off falls back to the conservative single-phase test
     // that only runs while the camera holds still.
     bool enableTwoPhaseOcclusion = true;
+    // Main pass walks the per-froxel light list instead of brute-forcing every
+    // light. Off is the brute-force reference the clustered result is judged
+    // against, so it is worth persisting. Every use site already ANDs this with
+    // ClusteredLighting::available(), so it needs no availability guard.
+    bool useClusteredLighting = true;
     // Runs ClusterBuild/LightCull on the async compute queue, overlapping the
     // shadow passes. Ignored (graphics-queue fallback) when the device exposes
     // no async-capable queue.

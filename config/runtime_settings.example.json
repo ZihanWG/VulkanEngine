@@ -106,6 +106,7 @@
         "useGpuShadowCulling": true,
         "enableGpuOcclusionCulling": true,
         "enableTwoPhaseOcclusion": true,
+        "useClusteredLighting": true,
         "enableAsyncCompute": true,
         "enableBindlessMaterialTextures": true
     },

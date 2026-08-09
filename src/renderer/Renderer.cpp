@@ -1202,6 +1202,10 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
     // subsystem actually came up.
     showPunctualShadowDebug_ = settings.punctualShadows.debugView;
     usePunctualShadows_ = settings.punctualShadows.enabled;
+    // Unconditional, unlike the culling toggles below: every use site already
+    // ANDs this with ClusteredLighting::available(), so there is nothing to
+    // guard against here.
+    useClusteredLighting_ = settings.useClusteredLighting;
 
     csmSettings_.lambda = settings.csm.lambda;
     csmSettings_.shadowDistance = settings.csm.shadowDistance;
@@ -1273,6 +1277,7 @@ RuntimeSettings Renderer::captureRuntimeSettings() const
     settings.useGpuShadowCulling = useGpuShadowCulling_;
     settings.enableGpuOcclusionCulling = useGpuOcclusionCulling_;
     settings.enableTwoPhaseOcclusion = useTwoPhaseOcclusion_;
+    settings.useClusteredLighting = useClusteredLighting_;
     settings.enableAsyncCompute = useAsyncCompute_;
     settings.enableBindlessMaterialTextures = useBindlessMaterialTextures_;
     return settings;
