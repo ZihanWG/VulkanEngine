@@ -82,13 +82,13 @@ namespace {
 using Json = nlohmann::json;
 
 struct ObjectFrameData {
-    glm::mat4 mvp{1.0f};
     glm::mat4 model{1.0f};
     glm::vec4 baseColorFactor{1.0f};
     glm::vec4 materialParams{0.0f, 0.5f, 1.0f, 0.0f};
     glm::uvec4 textureIndices{0, 0, 0, 0};
     glm::vec4 emissiveFactor{0.0f, 0.0f, 0.0f, 0.0f};
-    glm::mat4 currMvpNoJitter{1.0f};
+    // Cannot be derived from `model` like the others: it uses the *previous*
+    // frame's model matrix, which is genuinely per-object.
     glm::mat4 prevMvpNoJitter{1.0f};
 };
 
@@ -110,15 +110,13 @@ struct ObjectFrameData {
 // currMvpNoJitter/prevMvpNoJitter are the unjittered current/previous-frame MVP
 // matrices used to derive per-pixel motion vectors; rasterization keeps using the
 // jittered mvp so TAA jitter never leaks into the velocity buffer.
-static_assert(offsetof(ObjectFrameData, mvp) == 0);
-static_assert(offsetof(ObjectFrameData, model) == 64);
-static_assert(offsetof(ObjectFrameData, baseColorFactor) == 128);
-static_assert(offsetof(ObjectFrameData, materialParams) == 144);
-static_assert(offsetof(ObjectFrameData, textureIndices) == 160);
-static_assert(offsetof(ObjectFrameData, emissiveFactor) == 176);
-static_assert(offsetof(ObjectFrameData, currMvpNoJitter) == 192);
-static_assert(offsetof(ObjectFrameData, prevMvpNoJitter) == 256);
-static_assert(sizeof(ObjectFrameData) == 320);
+static_assert(offsetof(ObjectFrameData, model) == 0);
+static_assert(offsetof(ObjectFrameData, baseColorFactor) == 64);
+static_assert(offsetof(ObjectFrameData, materialParams) == 80);
+static_assert(offsetof(ObjectFrameData, textureIndices) == 96);
+static_assert(offsetof(ObjectFrameData, emissiveFactor) == 112);
+static_assert(offsetof(ObjectFrameData, prevMvpNoJitter) == 128);
+static_assert(sizeof(ObjectFrameData) == 192);
 
 // Identical for every draw item in the frame. These used to be copied into all
 // N object records -- 112 of each record's 688 bytes were the same seven vec4s
@@ -130,6 +128,9 @@ struct FrameConstants {
     // position instead of reading a per-object product of the two, which cost
     // 256 bytes in every object record.
     glm::mat4 cascadeViewProjection[4]{{1.0f}, {1.0f}, {1.0f}, {1.0f}};
+    // Rasterization uses the jittered one, velocity the unjittered one.
+    glm::mat4 jitteredViewProjection{1.0f};
+    glm::mat4 viewProjection{1.0f};
     glm::vec4 lightDirection{0.35f, -0.65f, -0.55f, 0.0f};
     glm::vec4 lightColor{0.85f, 0.85f, 0.85f, 1.0f};
     glm::vec4 ambientColor{0.15f, 0.15f, 0.15f, 1.0f};
@@ -143,14 +144,16 @@ struct FrameConstants {
 };
 
 static_assert(offsetof(FrameConstants, cascadeViewProjection) == 0);
-static_assert(offsetof(FrameConstants, lightDirection) == 256);
-static_assert(offsetof(FrameConstants, lightColor) == 272);
-static_assert(offsetof(FrameConstants, ambientColor) == 288);
-static_assert(offsetof(FrameConstants, cascadeSplits) == 304);
-static_assert(offsetof(FrameConstants, shadowSettings) == 320);
-static_assert(offsetof(FrameConstants, cameraPosition) == 336);
-static_assert(offsetof(FrameConstants, cameraForward) == 352);
-static_assert(sizeof(FrameConstants) == 368);
+static_assert(offsetof(FrameConstants, jitteredViewProjection) == 256);
+static_assert(offsetof(FrameConstants, viewProjection) == 320);
+static_assert(offsetof(FrameConstants, lightDirection) == 384);
+static_assert(offsetof(FrameConstants, lightColor) == 400);
+static_assert(offsetof(FrameConstants, ambientColor) == 416);
+static_assert(offsetof(FrameConstants, cascadeSplits) == 432);
+static_assert(offsetof(FrameConstants, shadowSettings) == 448);
+static_assert(offsetof(FrameConstants, cameraPosition) == 464);
+static_assert(offsetof(FrameConstants, cameraForward) == 480);
+static_assert(sizeof(FrameConstants) == 496);
 
 constexpr uint32_t kMaxFrameObjects = 1024;
 constexpr uint32_t kMaxDrawItems = 1024;

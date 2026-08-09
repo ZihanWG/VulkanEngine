@@ -50,7 +50,7 @@ void main()
     vLodIndex = gl_InstanceIndex >> 16;
 
     vec4 worldPosition = objectData.model * vec4(inPosition, 1.0);
-    gl_Position = objectData.mvp * vec4(inPosition, 1.0);
+    gl_Position = pc.frameConstants.values.jitteredViewProjection * worldPosition;
     mat3 normalMatrix = transpose(inverse(mat3(objectData.model)));
     mat3 modelMatrix = mat3(objectData.model);
     vec3 normalWS = normalize(normalMatrix * inNormal);
@@ -80,6 +80,6 @@ void main()
     vCascadeCount = uint(max(pc.frameConstants.values.cameraForward.w, 1.0) + 0.5);
     vCascadeDebugEnabled = pc.frameConstants.values.cameraPosition.w;
     vEmissiveFactor = objectData.emissiveFactor;
-    vCurrClipPos = objectData.currMvpNoJitter * vec4(inPosition, 1.0);
+    vCurrClipPos = pc.frameConstants.values.viewProjection * worldPosition;
     vPrevClipPos = objectData.prevMvpNoJitter * vec4(inPosition, 1.0);
 }

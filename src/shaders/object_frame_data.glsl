@@ -21,7 +21,6 @@
 #define VE_OBJECT_FRAME_DATA_GLSL
 
 struct ObjectFrameData {
-    mat4 mvp;
     mat4 model;
     vec4 baseColorFactor;
     // x = metallic, y = roughness, z = multiScatterStrength,
@@ -31,9 +30,10 @@ struct ObjectFrameData {
     uvec4 textureIndices;
     // rgb = emissive factor, w = 1.0 when an emissive texture is bound
     vec4 emissiveFactor;
-    // Unjittered current/previous MVP, for the velocity buffer. Rasterization
-    // keeps using the jittered mvp so TAA jitter never leaks into velocity.
-    mat4 currMvpNoJitter;
+    // Previous-frame unjittered MVP, for the velocity buffer. This one cannot
+    // be rebuilt from `model` and a frame matrix like the others: it uses the
+    // *previous* frame's model matrix, which is genuinely per-object. Storing
+    // that instead would cost the same 64 bytes and an extra multiply.
     mat4 prevMvpNoJitter;
 };
 
@@ -50,6 +50,11 @@ struct FrameConstants {
     // per-object cascadeViewProjection[i] * model product, which used to be
     // 256 of every object record's bytes.
     mat4 cascadeViewProjection[4];
+    // Rasterization uses the jittered one; velocity uses the unjittered one so
+    // TAA jitter never leaks into the motion vectors. Both were previously
+    // folded into per-object products (mvp, currMvpNoJitter).
+    mat4 jitteredViewProjection;
+    mat4 viewProjection;
     vec4 lightDirection;
     vec4 lightColor;
     vec4 ambientColor;
