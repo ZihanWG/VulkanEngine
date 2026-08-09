@@ -1031,7 +1031,8 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
 
         const renderer::Mesh* boundShadowMesh = nullptr;
         if (gpuShadowCullingActive && !activeShadowDrawItems.empty()) {
-            const PushConstants pushConstants{objectFrameDataBaseAddress, cascadeIndex, 0};
+            PushConstants pushConstants{objectFrameDataBaseAddress, cascadeIndex, 0};
+            pushConstants.frameConstantsAddress = frameConstantsBaseAddress;
             vkCmdPushConstants(commandBuffer,
                                boundShadowLayout,
                                VK_SHADER_STAGE_VERTEX_BIT,
@@ -1111,11 +1112,12 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
 
                 bindShadowPipelineForBucket(drawItem.bucket);
 
-                const PushConstants pushConstants{
+                PushConstants pushConstants{
                     objectFrameDataBaseAddress +
                         static_cast<VkDeviceAddress>(drawItem.frameDataIndex * sizeof(ObjectFrameData)),
                     cascadeIndex,
                     0};
+                pushConstants.frameConstantsAddress = frameConstantsBaseAddress;
 
                 vkCmdPushConstants(commandBuffer,
                                    boundShadowLayout,

@@ -84,7 +84,6 @@ using Json = nlohmann::json;
 struct ObjectFrameData {
     glm::mat4 mvp{1.0f};
     glm::mat4 model{1.0f};
-    glm::mat4 lightMvp[4]{{1.0f}, {1.0f}, {1.0f}, {1.0f}};
     glm::vec4 baseColorFactor{1.0f};
     glm::vec4 materialParams{0.0f, 0.5f, 1.0f, 0.0f};
     glm::uvec4 textureIndices{0, 0, 0, 0};
@@ -113,14 +112,13 @@ struct ObjectFrameData {
 // jittered mvp so TAA jitter never leaks into the velocity buffer.
 static_assert(offsetof(ObjectFrameData, mvp) == 0);
 static_assert(offsetof(ObjectFrameData, model) == 64);
-static_assert(offsetof(ObjectFrameData, lightMvp) == 128);
-static_assert(offsetof(ObjectFrameData, baseColorFactor) == 384);
-static_assert(offsetof(ObjectFrameData, materialParams) == 400);
-static_assert(offsetof(ObjectFrameData, textureIndices) == 416);
-static_assert(offsetof(ObjectFrameData, emissiveFactor) == 432);
-static_assert(offsetof(ObjectFrameData, currMvpNoJitter) == 448);
-static_assert(offsetof(ObjectFrameData, prevMvpNoJitter) == 512);
-static_assert(sizeof(ObjectFrameData) == 576);
+static_assert(offsetof(ObjectFrameData, baseColorFactor) == 128);
+static_assert(offsetof(ObjectFrameData, materialParams) == 144);
+static_assert(offsetof(ObjectFrameData, textureIndices) == 160);
+static_assert(offsetof(ObjectFrameData, emissiveFactor) == 176);
+static_assert(offsetof(ObjectFrameData, currMvpNoJitter) == 192);
+static_assert(offsetof(ObjectFrameData, prevMvpNoJitter) == 256);
+static_assert(sizeof(ObjectFrameData) == 320);
 
 // Identical for every draw item in the frame. These used to be copied into all
 // N object records -- 112 of each record's 688 bytes were the same seven vec4s
@@ -128,6 +126,10 @@ static_assert(sizeof(ObjectFrameData) == 576);
 //
 // Mirrors FrameConstants in src/shaders/object_frame_data.glsl.
 struct FrameConstants {
+    // Per-cascade light view-projection. Shaders multiply this by the world
+    // position instead of reading a per-object product of the two, which cost
+    // 256 bytes in every object record.
+    glm::mat4 cascadeViewProjection[4]{{1.0f}, {1.0f}, {1.0f}, {1.0f}};
     glm::vec4 lightDirection{0.35f, -0.65f, -0.55f, 0.0f};
     glm::vec4 lightColor{0.85f, 0.85f, 0.85f, 1.0f};
     glm::vec4 ambientColor{0.15f, 0.15f, 0.15f, 1.0f};
@@ -140,14 +142,15 @@ struct FrameConstants {
     glm::vec4 cameraForward{0.0f, 0.0f, -1.0f, 4.0f};
 };
 
-static_assert(offsetof(FrameConstants, lightDirection) == 0);
-static_assert(offsetof(FrameConstants, lightColor) == 16);
-static_assert(offsetof(FrameConstants, ambientColor) == 32);
-static_assert(offsetof(FrameConstants, cascadeSplits) == 48);
-static_assert(offsetof(FrameConstants, shadowSettings) == 64);
-static_assert(offsetof(FrameConstants, cameraPosition) == 80);
-static_assert(offsetof(FrameConstants, cameraForward) == 96);
-static_assert(sizeof(FrameConstants) == 112);
+static_assert(offsetof(FrameConstants, cascadeViewProjection) == 0);
+static_assert(offsetof(FrameConstants, lightDirection) == 256);
+static_assert(offsetof(FrameConstants, lightColor) == 272);
+static_assert(offsetof(FrameConstants, ambientColor) == 288);
+static_assert(offsetof(FrameConstants, cascadeSplits) == 304);
+static_assert(offsetof(FrameConstants, shadowSettings) == 320);
+static_assert(offsetof(FrameConstants, cameraPosition) == 336);
+static_assert(offsetof(FrameConstants, cameraForward) == 352);
+static_assert(sizeof(FrameConstants) == 368);
 
 constexpr uint32_t kMaxFrameObjects = 1024;
 constexpr uint32_t kMaxDrawItems = 1024;

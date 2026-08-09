@@ -66,7 +66,8 @@ void main()
     vLightColor = pc.frameConstants.values.lightColor.xyz;
     vAmbientColor = pc.frameConstants.values.ambientColor.xyz;
     for (uint cascade = 0; cascade < 4; ++cascade) {
-        vLightSpacePosition[cascade] = objectData.lightMvp[cascade] * vec4(inPosition, 1.0);
+        vLightSpacePosition[cascade] =
+            pc.frameConstants.values.cascadeViewProjection[cascade] * worldPosition;
     }
     vShadowSettings = pc.frameConstants.values.shadowSettings;
     vWorldPosition = worldPosition.xyz;

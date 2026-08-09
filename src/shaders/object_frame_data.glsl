@@ -23,7 +23,6 @@
 struct ObjectFrameData {
     mat4 mvp;
     mat4 model;
-    mat4 lightMvp[4];
     vec4 baseColorFactor;
     // x = metallic, y = roughness, z = multiScatterStrength,
     // w = alpha-test cutoff (>= 0 clips, < 0 disables)
@@ -46,6 +45,11 @@ layout(buffer_reference, std430) readonly buffer ObjectFrameDataBuffer {
 // through its own address rather than copied into all N object records; see
 // ve::FrameConstants in src/renderer/RendererInternal.h.
 struct FrameConstants {
+    // One per cascade. Shaders build the light-space position as
+    // cascadeViewProjection[i] * worldPosition rather than reading a
+    // per-object cascadeViewProjection[i] * model product, which used to be
+    // 256 of every object record's bytes.
+    mat4 cascadeViewProjection[4];
     vec4 lightDirection;
     vec4 lightColor;
     vec4 ambientColor;

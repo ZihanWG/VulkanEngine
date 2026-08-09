@@ -6,6 +6,9 @@
 layout(push_constant) uniform PushConstants {
     ObjectFrameDataBuffer objectFrameData;
     uint cascadeIndex;
+    // Explicit offset: this block declares only the leading fields, so the
+    // address has to land where ve::PushConstants actually keeps it.
+    layout(offset = 112) FrameConstantsBuffer frameConstants;
 } pc;
 
 // gl_InstanceIndex packs the object-data slot in the low 16 bits and the
@@ -19,5 +22,9 @@ void main()
 {
     ObjectFrameData objectData = pc.objectFrameData.objects[gl_InstanceIndex & kObjectIndexMask];
     uint cascade = min(pc.cascadeIndex, 3u);
-    gl_Position = objectData.lightMvp[cascade] * vec4(inPosition, 1.0);
+    // The model transform is applied here rather than folded into a per-object
+    // matrix on the CPU. That trades one extra mat4 multiply per vertex for 256
+    // bytes off every object record.
+    gl_Position = pc.frameConstants.values.cascadeViewProjection[cascade] *
+                  (objectData.model * vec4(inPosition, 1.0));
 }
