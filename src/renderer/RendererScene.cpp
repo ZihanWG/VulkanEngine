@@ -272,6 +272,32 @@ void Renderer::resetOcclusionTestSceneToPreset()
     invalidateTaaHistory();
 }
 
+void Renderer::removeStressSceneObjects()
+{
+    const auto firstRemoved = std::remove_if(renderObjects_.begin(), renderObjects_.end(), [](const auto& object) {
+        return object.sourceType == renderer::RenderObjectSourceType::Stress;
+    });
+
+    if (firstRemoved != renderObjects_.end()) {
+        const size_t firstRemovedIndex = static_cast<size_t>(firstRemoved - renderObjects_.begin());
+        if (selectedRenderObjectIndex_ >= firstRemovedIndex) {
+            selectedRenderObjectIndex_ = kInvalidRenderObjectIndex;
+        }
+        renderObjects_.erase(firstRemoved, renderObjects_.end());
+    }
+
+    invalidateDepthPyramid();
+    invalidateTaaHistory();
+}
+
+void Renderer::resetStressSceneToPreset()
+{
+    removeStressSceneObjects();
+    makeSceneBuilder().appendStressScene(renderObjects_, stressSceneStatus_);
+    invalidateDepthPyramid();
+    invalidateTaaHistory();
+}
+
 void Renderer::resetCornellBoxSceneToPreset()
 {
     const auto firstRemoved = std::remove_if(renderObjects_.begin(), renderObjects_.end(), [](const auto& object) {
@@ -1086,6 +1112,37 @@ void Renderer::loadOcclusionTestScene()
                                 std::to_string(renderer::kOcclusionTestObjectCount) +
                                 " procedural cube objects, including 5 occluder walls and 120 hidden/edge cubes.";
     Logger::info(occlusionTestSceneStatus_);
+}
+
+void Renderer::loadStressScene()
+{
+    if (portfolioCaptureMode_) {
+        setPortfolioCaptureMode(false);
+    }
+    occlusionTestSceneActive_ = false;
+    cornellBoxSceneActive_ = false;
+
+    resetStressSceneToPreset();
+    if (!renderer::SceneBuilder::hasStressScene(renderObjects_)) {
+        stressSceneActive_ = false;
+        stressSceneStatus_ = "Stress scene objects are unavailable; see the startup log.";
+        Logger::warn(stressSceneStatus_);
+        return;
+    }
+
+    stressSceneActive_ = true;
+
+    // In front of the occluder slabs and low to the ground, so a large part of
+    // the grid is behind them. A top-down view would defeat the purpose: nothing
+    // occludes anything and the Hi-Z test reports zero rejections.
+    camera_.position = {0.0f, 7.0f, 26.0f};
+    camera_.target = {0.0f, 3.0f, -20.0f};
+    camera_.up = {0.0f, 1.0f, 0.0f};
+    editorCamera_.syncFromCamera(camera_);
+
+    stressSceneStatus_ = "Stress scene active: " + std::to_string(renderer::kStressObjectCount) +
+                         " objects behind occluder slabs. Watch the GPU Culling panel.";
+    Logger::info(stressSceneStatus_);
 }
 
 void Renderer::loadCornellBoxScene()

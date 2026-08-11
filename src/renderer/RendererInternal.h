@@ -155,8 +155,23 @@ static_assert(offsetof(FrameConstants, cameraPosition) == 464);
 static_assert(offsetof(FrameConstants, cameraForward) == 480);
 static_assert(sizeof(FrameConstants) == 496);
 
-constexpr uint32_t kMaxFrameObjects = 1024;
-constexpr uint32_t kMaxDrawItems = 1024;
+// Draw-item capacity. The ceiling is 65535: cull.comp packs the object-data
+// slot into the low 16 bits of firstInstance (the high bits carry the selected
+// LOD), so an index past that would alias into the LOD field.
+//
+// Every per-item buffer scales with this -- object data (192 B), cull input
+// (64 B), phase results (4 B) -- so at 8192 the whole set is a few MB per frame
+// in flight, which is not worth economising on.
+constexpr uint32_t kMaxFrameObjects = 8192;
+constexpr uint32_t kMaxDrawItems = 8192;
+static_assert(kMaxDrawItems <= 0xFFFF, "firstInstance packs the object slot in 16 bits.");
+
+// Upper bound on the shadow cull *stats*, not on its input. Shadow culling
+// dispatches once per cascade over the same kMaxDrawItems records, but all four
+// dispatches accumulate into one set of counters, so the plausible total is the
+// product. Clamping those counters at kMaxDrawItems under-reports as soon as
+// draw items exceed kMaxDrawItems / cascadeCount.
+constexpr uint32_t kMaxShadowCullStatsDrawItems = kMaxDrawItems * renderer::kMaxShadowCascades;
 // The skinned demo mesh borrows the last object-data slot so it can reuse the
 // per-frame ObjectFrameData buffer without colliding with the scene draw items.
 constexpr uint32_t kSkinnedObjectFrameSlot = kMaxDrawItems - 1;
@@ -577,6 +592,10 @@ const char* renderObjectSourceTypeName(renderer::RenderObjectSourceType sourceTy
         return "portfolio showcase";
     case renderer::RenderObjectSourceType::OcclusionTest:
         return "occlusion test";
+    case renderer::RenderObjectSourceType::CornellBox:
+        return "Cornell box";
+    case renderer::RenderObjectSourceType::Stress:
+        return "stress";
     }
 
     return "unknown";

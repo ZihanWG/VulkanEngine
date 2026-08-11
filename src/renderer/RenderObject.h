@@ -18,7 +18,10 @@ enum class RenderObjectSourceType {
     // A closed, coloured room. The one scene here that can actually show
     // indirect light: colour bleeding needs saturated walls, and a second
     // bounce needs somewhere for light to be trapped.
-    CornellBox
+    CornellBox,
+    // Thousands of objects behind occluder slabs. Exists to give the culling,
+    // batching, LOD and frame-prep paths a load the default scene cannot.
+    Stress
 };
 
 struct RenderObject {

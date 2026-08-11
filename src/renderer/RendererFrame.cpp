@@ -1392,7 +1392,8 @@ void Renderer::buildShadowFrameData(uint32_t frameIndex)
 
         gpuCulling_.setShadowCullFrameInfo(
             frameIndex,
-            static_cast<uint32_t>(std::min(allDrawItems_.size() * cascadeCount, static_cast<size_t>(kMaxDrawItems))),
+            static_cast<uint32_t>(
+                std::min(allDrawItems_.size() * cascadeCount, static_cast<size_t>(kMaxShadowCullStatsDrawItems))),
             static_cast<uint32_t>(gpuShadowMeshDrawBatches_.size() * cascadeCount),
             shadowIndirectCountPathActive);
 

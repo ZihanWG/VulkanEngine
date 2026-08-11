@@ -240,3 +240,59 @@ TEST_CASE("SceneBuilder hands out unique debug ids across builds", "[scene]")
     }
     CHECK(seen.size() == objects.size());
 }
+
+TEST_CASE("Stress scene reports unavailable without valid meshes", "[scene][stress]")
+{
+    // Same boundary the occlusion-test case checks: building real geometry needs
+    // GPU meshes, so the headless test can only pin the refusal path.
+    Mesh cubeMesh;
+    Mesh sphereMesh;
+    std::vector<Material> materials(11);
+    IdAllocator ids;
+    SceneBuilder builder(cubeMesh, sphereMesh, materials, std::ref(ids));
+
+    std::vector<RenderObject> objects;
+    std::string status;
+    const bool built = builder.appendStressScene(objects, status);
+
+    CHECK_FALSE(built);
+    CHECK(objects.empty());
+    CHECK(status.find("unavailable") != std::string::npos);
+}
+
+TEST_CASE("hasStressScene only matches stress objects with a mesh", "[scene][stress]")
+{
+    Mesh mesh;
+    std::vector<RenderObject> objects;
+    CHECK_FALSE(SceneBuilder::hasStressScene(objects));
+
+    // Another preset's objects must not be mistaken for the stress scene, or
+    // loading one would silently skip rebuilding the other.
+    RenderObject cornell{};
+    cornell.sourceType = ve::renderer::RenderObjectSourceType::CornellBox;
+    cornell.mesh = &mesh;
+    objects.push_back(cornell);
+    CHECK_FALSE(SceneBuilder::hasStressScene(objects));
+
+    // A stress entry that never got a mesh is not a loaded scene either.
+    RenderObject meshless{};
+    meshless.sourceType = ve::renderer::RenderObjectSourceType::Stress;
+    objects.push_back(meshless);
+    CHECK_FALSE(SceneBuilder::hasStressScene(objects));
+
+    RenderObject stress{};
+    stress.sourceType = ve::renderer::RenderObjectSourceType::Stress;
+    stress.mesh = &mesh;
+    objects.push_back(stress);
+    CHECK(SceneBuilder::hasStressScene(objects));
+}
+
+TEST_CASE("Stress object count matches its grid arithmetic", "[scene][stress]")
+{
+    // reserve() uses this constant; if it drifts from the loops the vector
+    // reallocates mid-build, which is silent but defeats the point of reserving.
+    CHECK(ve::renderer::kStressObjectCount ==
+          1 + ve::renderer::kStressOccluderCount +
+              (ve::renderer::kStressGridColumns * ve::renderer::kStressGridRows));
+    CHECK(ve::renderer::kStressObjectCount > 2000);
+}

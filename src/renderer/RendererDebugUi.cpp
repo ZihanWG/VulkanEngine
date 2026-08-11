@@ -850,6 +850,22 @@ void Renderer::drawScenePresetDebugUi()
 
     ImGui::TextWrapped("Status: %s", occlusionTestSceneStatus_.c_str());
 
+    ImGui::SeparatorText("Stress scene");
+    ImGui::TextWrapped("%d objects behind occluder slabs. The default scene is eleven, which is too few for "
+                       "GPU culling, LOD selection, or the parallel frame-prep loops to do anything.",
+                       renderer::kStressObjectCount);
+    if (ImGui::Button("Load Stress Scene")) {
+        loadStressScene();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Exit Stress Scene")) {
+        removeStressSceneObjects();
+        stressSceneActive_ = false;
+        resetCameraToDefault();
+        stressSceneStatus_ = "Stress scene inactive; objects removed.";
+    }
+    ImGui::TextWrapped("Status: %s", stressSceneStatus_.c_str());
+
     ImGui::SeparatorText("Cornell box");
     ImGui::TextDisabled("A closed, coloured room. The only scene here that shows indirect light:");
     ImGui::TextDisabled("colour bleeding needs saturated walls, and a second bounce needs");

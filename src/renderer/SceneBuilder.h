@@ -58,6 +58,22 @@ constexpr int kOcclusionTestOccluderCount = 5;
 constexpr int kOcclusionTestObjectCount =
     1 + kOcclusionTestOccluderCount + (kOcclusionTestGridColumns * kOcclusionTestGridRows);
 
+// Stress scene. The default scene is eleven draw items, which is too few to
+// exercise anything this renderer was built for: GPU culling rejects nothing,
+// the parallel frame-prep loops never clear their 64-item chunk threshold, and
+// LOD selection has no distance range to select over.
+//
+// The grid alternates cube and sphere so both batches are non-trivial, and the
+// sphere carries the LOD chain. Occluder slabs stand between the camera and the
+// far half so occlusion culling has something real to reject -- without them a
+// large scene still reports zero rejections and proves nothing.
+constexpr int kStressGridColumns = 48;
+constexpr int kStressGridRows = 48;
+constexpr int kStressOccluderCount = 6;
+constexpr int kStressObjectCount =
+    1 + kStressOccluderCount + (kStressGridColumns * kStressGridRows);
+constexpr float kStressGridSpacing = 2.2f;
+
 class SceneBuilder {
 public:
     SceneBuilder(const Mesh& cubeMesh,
@@ -86,6 +102,10 @@ public:
     // `status` when the cube mesh or the Cornell materials are unavailable.
     bool appendCornellBox(std::vector<RenderObject>& objects, std::string& status) const;
 
+    // Appends the stress scene: a ground slab, a row of occluder slabs, and a
+    // kStressGridColumns x kStressGridRows grid alternating cube and sphere.
+    bool appendStressScene(std::vector<RenderObject>& objects, std::string& status) const;
+
     // Restores the showcase objects' transforms/visibility to their authored
     // preset. Pure operation on an existing object list (the caller is responsible
     // for any GPU-state invalidation that should follow).
@@ -94,6 +114,7 @@ public:
     [[nodiscard]] static bool hasPortfolioShowcase(const std::vector<RenderObject>& objects);
     [[nodiscard]] static bool hasOcclusionTest(const std::vector<RenderObject>& objects);
     [[nodiscard]] static bool hasCornellBox(const std::vector<RenderObject>& objects);
+    [[nodiscard]] static bool hasStressScene(const std::vector<RenderObject>& objects);
 
 private:
     const Mesh& cubeMesh_;
