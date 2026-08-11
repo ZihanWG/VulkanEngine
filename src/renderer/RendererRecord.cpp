@@ -1781,8 +1781,11 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     // exactly the brightness change the view exists to show.
     const float probeDebugGain =
         (giSettings_.enabled && giSettings_.debugIrradianceOnly) ? std::max(giSettings_.previewGain, 0.01f) : 0.0f;
-    postProcess_.recordCompositeCommands(
-        commandBuffer, frameJitteredProjection_, probeDebugGain, renderScaleSettings_.sharpness);
+    postProcess_.recordCompositeCommands(commandBuffer,
+                                         frameJitteredProjection_,
+                                         probeDebugGain,
+                                         renderScaleSettings_.sharpness,
+                                         showSharpenDelta_ ? sharpenDeltaGain_ : 0.0f);
 
     recordPortfolioScreenshotCopy(commandBuffer, imageIndex);
 

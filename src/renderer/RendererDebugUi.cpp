@@ -218,6 +218,18 @@ void Renderer::drawRenderScaleDebugUi()
         ImGui::TextDisabled("(inactive at 1.00)");
     }
 
+    ImGui::Checkbox("Show sharpen delta", &showSharpenDelta_);
+    ImGui::SetItemTooltip("Replaces the image with |sharpened - original|, amplified.\n"
+                          "Black means the filter changed nothing there. The correction is a rim\n"
+                          "one source texel wide, so a close-up of a smooth surface is exactly\n"
+                          "where it has least to do -- judge it at normal viewing distance,\n"
+                          "on a lit region with detail near the render-resolution scale.");
+    if (showSharpenDelta_) {
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(120.0f);
+        ImGui::SliderFloat("Gain##sharpenDelta", &sharpenDeltaGain_, 1.0f, 64.0f, "%.0fx");
+    }
+
     ImGui::TextDisabled("Shades the scene at a fraction of the window and upscales in the composite.");
     ImGui::TextDisabled("The frame is fragment-bound, so cost tracks the shaded-pixel count almost");
     ImGui::TextDisabled("linearly. The ImGui overlay stays native. Pairs with TAA, which recovers");
@@ -425,7 +437,7 @@ void Renderer::drawIrradianceProbesDebugUi()
                           "frame more expensive. Zero pauses capture without losing the cursor.");
     ImGui::EndDisabled();
 
-    ImGui::SliderFloat("Intensity", &giSettings_.intensity, 0.0f, 4.0f, "%.2f");
+    ImGui::SliderFloat("Intensity##gi", &giSettings_.intensity, 0.0f, 4.0f, "%.2f");
     ImGui::SetItemTooltip("How strongly probe irradiance replaces the constant environment term.\n"
                           "Zero disables the lookup entirely rather than scaling it to nothing.");
     ImGui::SliderFloat("Surface bias", &giSettings_.surfaceBias, 0.0f, 4.0f, "%.2f");
@@ -735,8 +747,8 @@ void Renderer::drawLightsDebugUi()
 
     ImGui::SeparatorText("Demo light swarm");
     ImGui::SliderInt("Light count", &demoLightCount_, 0, 512);
-    ImGui::Checkbox("Animate", &animateLights_);
-    ImGui::SliderFloat("Intensity", &demoLightIntensity_, 0.0f, 40.0f, "%.1f");
+    ImGui::Checkbox("Animate##demoLights", &animateLights_);
+    ImGui::SliderFloat("Intensity##demoLights", &demoLightIntensity_, 0.0f, 40.0f, "%.1f");
     ImGui::SliderFloat("Range", &demoLightRange_, 1.0f, 30.0f, "%.1f");
     ImGui::TextDisabled("Drive the count up to stress-test the clustered path.");
 }
@@ -758,7 +770,7 @@ void Renderer::drawSkeletalAnimationDebugUi()
     ImGui::Text("Animation: %s", skinnedMesh_.usesImportedClip() ? "imported glTF clip" : "procedural bend");
     ImGui::Checkbox("Show skinned mesh", &showSkinnedMesh_);
     ImGui::SameLine();
-    ImGui::Checkbox("Animate", &animateSkinnedMesh_);
+    ImGui::Checkbox("Animate##skinnedMesh", &animateSkinnedMesh_);
     ImGui::SliderFloat("Playback speed", &skinnedAnimationSpeed_, 0.0f, 4.0f, "%.2fx");
     if (ImGui::Button("Reset to bind pose")) {
         skinnedAnimationTime_ = 0.0f;
@@ -965,7 +977,7 @@ void Renderer::drawScenePresetDebugUi()
         occlusionTestSceneStatus_ = "Default scene active; occlusion test objects are hidden.";
     }
 
-    if (ImGui::Button("Reset Occlusion Test Camera")) {
+    if (ImGui::Button("Reset Occlusion Test Camera##culling")) {
         resetCameraToOcclusionTestPreset();
         occlusionTestSceneStatus_ = "Occlusion test camera preset reapplied.";
     }
@@ -1341,7 +1353,7 @@ void Renderer::drawCameraLightEditorDebugUi()
             resetCameraToPortfolioPreset();
         }
         ImGui::SameLine();
-        if (ImGui::Button("Reset Occlusion Test Camera")) {
+        if (ImGui::Button("Reset Occlusion Test Camera##scene")) {
             resetCameraToOcclusionTestPreset();
         }
 
@@ -1359,7 +1371,7 @@ void Renderer::drawCameraLightEditorDebugUi()
 
         ImGui::ColorEdit3("Color", &directionalLightSettings_.color.x);
         directionalLightSettings_.color = glm::max(directionalLightSettings_.color, glm::vec3{0.0f});
-        ImGui::DragFloat("Intensity", &directionalLightSettings_.intensity, 0.01f, 0.0f, 16.0f, "%.3f");
+        ImGui::DragFloat("Intensity##directional", &directionalLightSettings_.intensity, 0.01f, 0.0f, 16.0f, "%.3f");
         directionalLightSettings_.intensity = std::max(directionalLightSettings_.intensity, 0.0f);
 
         if (portfolioCaptureMode_) {

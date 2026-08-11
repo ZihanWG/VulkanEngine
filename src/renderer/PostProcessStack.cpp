@@ -330,7 +330,8 @@ void PostProcessStack::createExposureComputePipelines()
 void PostProcessStack::recordCompositeCommands(VkCommandBuffer commandBuffer,
                                                const glm::mat4& jitteredProjection,
                                                float debugRawGain,
-                                               float sharpness)
+                                               float sharpness,
+                                               float sharpenDebugGain)
 {
     rhi::debug::beginLabel(commandBuffer, "CompositePass");
     const bool compositeProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "CompositePass");
@@ -367,7 +368,7 @@ void PostProcessStack::recordCompositeCommands(VkCommandBuffer commandBuffer,
     // the direct lighting this change exists to spare.
     const bool ssaoActive = ssaoSettings_.enabled && ssaoAvailable_ && !ssaoSettings_.ambientOnly;
     compositePushConstants.invProjection = glm::inverse(jitteredProjection);
-    compositePushConstants.ssaoParams0 = glm::vec4(0.0f);
+    compositePushConstants.debugParams = glm::vec4(std::max(sharpenDebugGain, 0.0f), 0.0f, 0.0f, 0.0f);
     compositePushConstants.ssaoParams1 = glm::vec4(ssaoActive ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
     compositePushConstants.debugRawGain = std::max(debugRawGain, 0.0f);
     // Sharpening exists to undo the softness of the upscale, so a native frame

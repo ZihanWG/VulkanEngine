@@ -25,7 +25,7 @@ layout(push_constant) uniform CompositePushConstants {
     // whenever the frame is not upscaled, so a native frame is untouched.
     float sharpness;
     mat4 invProjection;
-    vec4 ssaoParams0; // reserved
+    vec4 debugParams; // x = sharpen delta view gain (0 = off)
     vec4 ssaoParams1; // x = ambient-occlusion enabled
 } pc;
 
@@ -135,7 +135,18 @@ void main()
 
         // Display-referred output, so the final range is the one the swapchain
         // can hold; the undershoot above can go below zero on a dark edge.
-        mappedColor = clamp(clamp(sharpened, lowest - slack, highest + slack), vec3(0.0), vec3(1.0));
+        vec3 limited = clamp(clamp(sharpened, lowest - slack, highest + slack), vec3(0.0), vec3(1.0));
+
+        // The correction this filter applies is a rim one source texel wide, and
+        // in a dark or smooth region it is a few display levels. That is small
+        // enough to argue about by eye, so this shows it directly instead:
+        // amplified |after - before|, black where the filter did nothing.
+        if (pc.debugParams.x > 0.0) {
+            outColor = vec4(abs(limited - mappedColor) * pc.debugParams.x, 1.0);
+            return;
+        }
+
+        mappedColor = limited;
     }
 
     outColor = vec4(mappedColor, 1.0);

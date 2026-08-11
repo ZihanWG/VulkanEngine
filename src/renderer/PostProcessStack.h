@@ -106,10 +106,14 @@ public:
     // sharpness is the raw RenderScaleSettings value; this gates it on the frame
     // actually being upscaled, which it can do and the caller cannot -- the
     // render resolution is borrowed here.
+    // sharpenDebugGain non-zero replaces the output with the sharpen filter's own
+    // correction, amplified -- the only way to see what a filter this fine-scale
+    // is actually doing without guessing from the final image.
     void recordCompositeCommands(VkCommandBuffer commandBuffer,
                                  const glm::mat4& jitteredProjection,
                                  float debugRawGain = 0.0f,
-                                 float sharpness = 0.0f);
+                                 float sharpness = 0.0f,
+                                 float sharpenDebugGain = 0.0f);
     void advanceTaaHistory();
 
     // State queries.

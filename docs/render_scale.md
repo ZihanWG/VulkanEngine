@@ -181,7 +181,26 @@ is 3.7 M pixels, and at scale 0.5 the taps sit two output pixels apart, so each
 one is its own cache line.
 
 Worth it in proportion: scale 0.5 saves about 10 ms and this spends under one of
-them. Not worth claiming as free, which an earlier single-run measurement of this
+them.
+
+### Seeing it, and where it has nothing to do
+
+The correction is a rim one *source* texel wide — two output pixels at scale 0.5
+— with magnitude roughly `sharpness × localContrast / 4`. That is deliberately
+conservative: on a bright edge of 50% display contrast at strength 0.5 it is
+about 16/255, plainly visible, while a dim 10% edge gets 3/255 and stays
+invisible. Not amplifying noise in the dark is the point, not a shortfall.
+
+The consequence is that **a close-up of a smooth surface is the worst possible
+place to judge it.** Magnify one panel until its features span a hundred pixels
+and there is nothing left at the source-texel scale for the filter to act on, so
+it correctly does almost nothing. Judge it at normal viewing distance, on a lit
+region with detail near the render-resolution scale.
+
+When that argument is not convincing, **Show sharpen delta** in the panel
+replaces the image with an amplified `|sharpened - original|`: black is "changed
+nothing here". It exists because a rim this fine is exactly the kind of thing
+two people can disagree about by eye indefinitely. Not worth claiming as free, which an earlier single-run measurement of this
 did — a reminder that a pass this small needs the back-to-back discipline the
 rest of the profiling work uses, not one run per configuration.
 
