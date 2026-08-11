@@ -23,9 +23,11 @@ namespace ve::renderer {
 
 DepthPyramid::DepthPyramid(rhi::VulkanContext& context,
                            rhi::VulkanSwapchain& swapchain,
+                           const RenderResolution& renderResolution,
                            RenderGraph& renderGraph,
                            GpuProfiler& gpuProfiler)
-    : context_(context), swapchain_(swapchain), renderGraph_(renderGraph), gpuProfiler_(gpuProfiler)
+    : context_(context), swapchain_(swapchain), renderResolution_(renderResolution), renderGraph_(renderGraph),
+      gpuProfiler_(gpuProfiler)
 {
 }
 
@@ -131,7 +133,7 @@ void DepthPyramid::createResources()
         return;
     }
 
-    const VkExtent2D extent = swapchain_.extent();
+    const VkExtent2D extent = renderResolution_.extent();
     buildAvailable_ = swapchain_.depthSupportsSampling() && storageFormatSupported;
     mipLevels_ = buildAvailable_ ? calculateDepthPyramidMipLevels(extent) : 1U;
 
@@ -298,7 +300,7 @@ void DepthPyramid::recordCommands(VkCommandBuffer commandBuffer,
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_.pipeline());
 
-    const VkExtent2D baseExtent = swapchain_.extent();
+    const VkExtent2D baseExtent = renderResolution_.extent();
     for (uint32_t mipLevel = 0; mipLevel < mipLevels_; ++mipLevel) {
         const VkExtent2D sourceExtent = mipLevel == 0 ? baseExtent : mipExtent(baseExtent, mipLevel - 1);
         const VkExtent2D destinationExtent = mipExtent(baseExtent, mipLevel);

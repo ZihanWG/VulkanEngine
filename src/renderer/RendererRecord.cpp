@@ -1308,7 +1308,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     rhi::debug::beginLabel(commandBuffer, "MainHDRPass");
     renderGraph_.beginMainHdrPass();
 
-    const VkExtent2D extent = swapchain_.extent();
+    const VkExtent2D extent = renderResolution_.extent();
     VkViewport viewport{};
     viewport.x = 0.0f;
     viewport.y = 0.0f;

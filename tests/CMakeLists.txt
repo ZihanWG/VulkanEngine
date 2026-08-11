@@ -37,6 +37,7 @@ add_executable(VulkanEngineTests
     test_scene_builder.cpp
     test_pipeline_cache_header.cpp
     test_render_graph.cpp
+    test_render_scale.cpp
 )
 
 target_compile_definitions(VulkanEngineTests PRIVATE

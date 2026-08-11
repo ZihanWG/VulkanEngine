@@ -212,6 +212,7 @@ add_library(VulkanEngineCore STATIC
     src/renderer/GltfSkinnedImport.cpp
     src/renderer/IrradianceProbes.cpp
     src/renderer/PunctualShadowAtlas.cpp
+    src/renderer/RenderScale.cpp
     src/renderer/RuntimeSettings.cpp
     src/renderer/VolumetricFog.cpp
     src/renderer/SkeletalAnimation.cpp

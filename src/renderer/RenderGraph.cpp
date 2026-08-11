@@ -421,7 +421,10 @@ void RenderGraph::importExternalFrameTargets(rhi::VulkanSwapchain& swapchain,
     mainDepth.name = "MainDepth";
     mainDepth.image = swapchain.depthImage();
     mainDepth.imageView = swapchain.depthImageView();
-    mainDepth.extent = swapchain.extent();
+    // Not swapchain.extent(): under render scale the depth image is smaller than
+    // the presentation images, and this extent becomes the renderArea of every
+    // pass that writes it.
+    mainDepth.extent = swapchain.depthExtent();
     mainDepth.format = swapchain.depthFormat();
     mainDepth.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
                       (swapchain.depthSupportsSampling() ? VK_IMAGE_USAGE_SAMPLED_BIT : 0);

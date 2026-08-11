@@ -5,6 +5,7 @@
 #include "core/Logger.h"
 #include "renderer/CascadeMath.h"
 #include "renderer/IrradianceProbes.h"
+#include "renderer/RenderScale.h"
 #include "renderer/VolumetricFog.h"
 
 #include <json.hpp>
@@ -32,7 +33,8 @@ ExposureMode exposureModeValue(int exposureMode)
     return ExposureMode::Histogram;
 }
 
-void clampRuntimeSettings(ToneMappingSettings& toneMapping,
+void clampRuntimeSettings(RenderScaleSettings& renderScale,
+                          ToneMappingSettings& toneMapping,
                           BloomSettings& bloom,
                           TaaSettings& taa,
                           SsrSettings& ssr,
@@ -43,6 +45,8 @@ void clampRuntimeSettings(ToneMappingSettings& toneMapping,
                           GiSettings& gi,
                           DebugUiSettings& debugUi)
 {
+    renderScale.scale = renderer::clampRenderScale(renderScale.scale);
+
     toneMapping.operatorType = std::clamp(toneMapping.operatorType, 0, 1);
     if (!toneMapping.enableAutoExposure) {
         toneMapping.exposureMode = static_cast<int>(ExposureMode::Manual);
@@ -323,6 +327,10 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         throw std::runtime_error("Runtime settings root must be a JSON object.");
     }
 
+    if (const Json* renderScale = objectMember(json, "renderScale")) {
+        readFloat(*renderScale, "scale", settings.renderScale.scale);
+    }
+
     if (const Json* toneMapping = objectMember(json, "toneMapping")) {
         readFloat(*toneMapping, "manualExposure", settings.toneMapping.manualExposure);
         readBool(*toneMapping, "enableAutoExposure", settings.toneMapping.enableAutoExposure);
@@ -465,6 +473,7 @@ Json toJson(const RuntimeSettings& settings)
 {
     return Json{
         {"schemaVersion", 1},
+        {"renderScale", Json{{"scale", settings.renderScale.scale}}},
         {"toneMapping",
          Json{{"manualExposure", settings.toneMapping.manualExposure},
               {"enableAutoExposure", settings.toneMapping.enableAutoExposure},

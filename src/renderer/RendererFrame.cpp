@@ -322,7 +322,7 @@ void Renderer::updatePunctualShadowSlots(uint32_t frameIndex, float aspectRatio)
     // times the resolution of one barely visible, and the old distance-only
     // ordering could not express that.
     const float projScaleY =
-        static_cast<float>(swapchain_.extent().height) * 0.5f * camera_.projectionMatrix(aspectRatio)[1][1];
+        static_cast<float>(renderResolution_.extent().height) * 0.5f * camera_.projectionMatrix(aspectRatio)[1][1];
 
     punctualShadowCandidates_.clear();
     for (size_t lightIndex = 0; lightIndex < lights.size(); ++lightIndex) {
@@ -895,7 +895,12 @@ void Renderer::buildFrameMeshLodTable()
 
 void Renderer::uploadGpuCullFrameParams(uint32_t frameIndex, bool occlusionEnabledThisFrame)
 {
-    const VkExtent2D extent = swapchain_.extent();
+    // Render extent: every threshold downstream of this is in rendered pixels --
+    // the Hi-Z pyramid's dimensions, the occlusion pass's minimum screen size,
+    // and the LOD reference radius. A half-scale frame genuinely does need less
+    // mesh detail, so letting LOD follow the scale is the correct behaviour, not
+    // a rounding artefact.
+    const VkExtent2D extent = renderResolution_.extent();
 
     GpuCullFrameParams frameParams{};
     frameParams.occlusionViewProjection = depthPyramid_.viewProjection();
@@ -1126,7 +1131,10 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     const auto now = std::chrono::steady_clock::now();
     const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
 
-    const VkExtent2D extent = swapchain_.extent();
+    // Render extent, not swapchain: this feeds the TAA jitter (an NDC offset of
+    // half a *render* pixel) and the cluster grid's screen dimensions. Aspect is
+    // the same either way, since the scale is uniform.
+    const VkExtent2D extent = renderResolution_.extent();
     const float aspect =
         extent.height == 0 ? 1.0f : static_cast<float>(extent.width) / static_cast<float>(extent.height);
     const glm::mat4 view = camera_.viewMatrix();

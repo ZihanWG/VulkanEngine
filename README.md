@@ -22,6 +22,7 @@ A **C++20 / Vulkan 1.3 real-time renderer** built as a graphics- and engine-prog
 | **Skeletal animation** | GPU linear-blend vertex skinning from a CPU joint-matrix palette, with a unit-tested animation core (keyframe sampling + hierarchy flatten) |
 | **PBR + IBL** | Cook-Torrance GGX, tangent-space normal mapping, prefiltered specular + diffuse irradiance + split-sum BRDF LUT, Kulla-Conty multi-scatter |
 | **Shadows** | PCF cascaded shadow maps with per-cascade GPU shadow-caster culling, an indirect shadow path, an alpha-tested pipeline so cutout casters throw perforated shadows, and a 4096px shadow atlas so spot and point lights cast too, with per-tile caching so only the tiles whose casters or light actually moved are redrawn |
+| **Render scale** | The scene shades at a fraction of the window and the composite upscales, trading fragment cost close to linearly for sharpness — the frame is 56-78% `MainHDRPass`, so this is the lever that is left |
 | **Post-processing** | HDR scene color, screen-space reflections, ground-truth ambient occlusion (GTAO), mip-chain bloom, histogram auto-exposure, ACES/Reinhard tonemap, motion-vector TAA with reprojected history |
 | **Architecture** | Render graph (logical handles + conservative barrier inference), RAII Vulkan RHI, task-parallel frame prep on a job system, per-pass GPU timestamp profiler, ImGui scene/material editor |
 | **Engineering** | C++20, Catch2 unit tests, Linux + Windows CI, AddressSanitizer/UBSan, clang-tidy/clang-format |
@@ -80,6 +81,7 @@ GPU linear-blend vertex skinning (`simple_skinned.vert`) driven by a per-frame j
 - GPU histogram auto-exposure: log-average + histogram luminance reduced into a GPU exposure-state buffer read directly by composite; manual exposure remains as a fallback.
 - Screen-space reflections, on by default: the main pass writes a thin G-buffer (octahedral world normal + roughness + metallic), a fullscreen trace marches the depth buffer (jittered start, binary refinement, thickness test) and additively blends fresnel- and confidence-weighted reflections into scene color before TAA.
 - Ground-truth ambient occlusion (GTAO), off by default: a half-resolution horizon-search pass reuses the thin G-buffer normal and the depth buffer to integrate the cosine-weighted visibility arc over several slices, a joint-bilateral pass denoises and upsamples it against full-res depth, and the composite multiplies the term into scene color — replacing the former depth-only inline SSAO.
+- Render scale, native by default: every screen-space target from main depth through the bloom chain is sized to an internal render extent, and the composite upscales to the swapchain while the ImGui overlay stays crisp. The frame is fragment-bound and its remaining cost is real shading work rather than waste, so pixel count is the lever that is left: 0.5 takes the default scene from 16.9 to 6.2 ms. TAA jitter and LOD selection follow the render extent, since both are defined in rendered pixels. See [docs/render_scale.md](docs/render_scale.md).
 - Reinhard/ACES tone mapping applied in the final composite before swapchain output.
 - PCF-filtered cascaded shadow maps (CSM) with texel snapping, optional cascade debug tinting, per-cascade GPU shadow-caster culling, and an indirect shadow draw path.
 - Froxel volumetric fog, off by default: a 160x90x64 volume over the view frustum, injected and lit in compute (shadowed by the CSM cascades), integrated front-to-back per column, and applied in the main HDR pass from a single trilinear fetch. Applied there rather than in composite because the view depth needed to find the froxel is already a varying, which also puts fog into scene colour before bloom and TAA. The integration uses the analytic slab integral so dense fog saturates at the medium's albedo instead of blowing out. Both the directional light and the punctual lights contribute, so shadowed spot and point lights cast visible shafts; froxels reuse the clustered light lists and the punctual shadow atlas rather than building their own. Temporally filtered: the froxel sample is jittered each frame and blended against the reprojected previous volume, which is what keeps shaft edges from crawling. The skybox samples the volume's far slice so the horizon fades into the medium rather than staying crisp. See [docs/volumetric_fog.md](docs/volumetric_fog.md).
@@ -112,6 +114,7 @@ Focused technical write-ups for each major subsystem (start with [docs/README.md
 
 | Topic | Doc |
 | --- | --- |
+| Render scale (internal resolution) | [render_scale.md](docs/render_scale.md) |
 | Architecture, frame flow, current status | [engine_upgrade_audit.md](docs/engine_upgrade_audit.md), [frame_flow.md](docs/frame_flow.md) |
 | Design trade-offs (clustered vs deferred, etc.) | [design_decisions.md](docs/design_decisions.md) |
 | Clustered (Forward+) lighting | [clustered_lighting.md](docs/clustered_lighting.md) |
@@ -186,7 +189,7 @@ This is a rendering/engine portfolio, not a full game engine — no physics, gam
 - CSM uses basic texel snapping, without stable crop matrices, cascade blending, or per-cascade resolution control.
 - Two-phase Hi-Z occlusion re-tests candidates against a mid-frame pyramid rebuild, but is object-granularity (AABB screen rects, no per-cluster/meshlet tests) and requires the bindless multi-draw-indirect path.
 - Upload paths use one-time command buffers + queue idle waits — fine for init, not ideal for runtime streaming.
-- TAA reprojects history along a main-pass velocity buffer, but skinned joint-space motion, disocclusion masks, temporal upscaling, and FSR/DLSS/XeSS are not implemented.
+- TAA reprojects history along a main-pass velocity buffer, but skinned joint-space motion, disocclusion masks, temporal upscaling, and FSR/DLSS/XeSS are not implemented. Render scale upscales with a plain bilinear stretch in the composite, and is static rather than driven by a frame-time target.
 - Screen-space reflections are linear-march (no Hi-Z acceleration or roughness-cone blur) and add on top of IBL specular; no ray tracing, planar reflections, or glass transmission.
 - GTAO is applied as a scene-color multiply in the composite (not restricted to indirect/ambient light), has no multi-bounce term (the thin G-buffer stores no albedo) and no temporal accumulation yet; it is spatial half-res + joint-bilateral upsample only.
 - glTF import covers static + skinned meshes and base color/normal/metallic-roughness/emissive textures; occlusion textures, morph targets, cameras, and scene lights are future work.

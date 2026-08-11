@@ -22,7 +22,7 @@ _Detailed per-frame pass ordering and the descriptor-set layout contract, moved 
 16. Run the mip-chain bloom downsample passes at 1/2, 1/4, 1/8, and 1/16 resolution when practical, then progressively upsample into the final mip-chain bloom target.
 17. Run `LuminancePass` to reduce log luminance from the active HDR scene source into per-frame GPU storage.
 18. Run `HistogramExposurePass` to bin HDR scene luminance, reduce the selected exposure mode into the GPU exposure state buffer, manually preserve host readback visibility, and let the graph make the exposure buffer visible to `CompositePass`.
-19. Run `CompositePass` to combine active HDR scene color + selected bloom * intensity, apply manual or GPU exposure, apply Reinhard or ACES tone mapping, and write the final color to the swapchain.
+19. Run `CompositePass` to combine active HDR scene color + selected bloom * intensity, apply manual or GPU exposure, apply Reinhard or ACES tone mapping, and write the final color to the swapchain. This is where a reduced render scale is upscaled: every step above runs at the internal render extent, and the composite is the first pass whose viewport is the swapchain (see [render_scale.md](render_scale.md)).
 20. If a portfolio screenshot was requested, transition the composited swapchain image to transfer source, copy it into a per-frame readback buffer, then return it to color-attachment layout.
 21. Run `ImGuiPass` to load the composited swapchain image as a color attachment and draw the debug UI overlay.
 22. Let the graph transition the swapchain image to present, submit with `vkQueueSubmit2`, and present.

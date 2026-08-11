@@ -258,7 +258,17 @@ struct GiSettings {
     bool debugIrradianceOnly = false;
 };
 
+// Internal render resolution as a fraction of the presentation resolution. The
+// scale itself and its bounds live in renderer/RenderScale.h, which this header
+// deliberately does not include -- the clamp is applied in RuntimeSettings.cpp,
+// which may pull in renderer headers, while this header stays a plain
+// description of what is persisted.
+struct RenderScaleSettings {
+    float scale = 1.0f;
+};
+
 struct RuntimeSettings {
+    RenderScaleSettings renderScale;
     ToneMappingSettings toneMapping;
     BloomSettings bloom;
     TaaSettings taa;
@@ -295,7 +305,8 @@ struct RuntimeSettings {
 // (tone-mapping, bloom, TAA, cascade, and debug-UI preview fields). Renderer
 // state that is not part of these structs (e.g. GPU occlusion tuning) is clamped
 // separately by the caller. Pure and unit-tested.
-void clampRuntimeSettings(ToneMappingSettings& toneMapping,
+void clampRuntimeSettings(RenderScaleSettings& renderScale,
+                          ToneMappingSettings& toneMapping,
                           BloomSettings& bloom,
                           TaaSettings& taa,
                           SsrSettings& ssr,

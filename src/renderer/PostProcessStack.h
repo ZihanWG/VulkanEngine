@@ -23,6 +23,7 @@
 // SceneColorHDR is created here (it was created in createPostProcessResources),
 // so the main HDR pass renders into PostProcessStack::sceneColor().
 
+#include "renderer/RenderResolution.h"
 #include "renderer/RuntimeSettings.h"
 #include "rhi/VulkanBuffer.h"
 #include "rhi/VulkanCommon.h"
@@ -57,6 +58,7 @@ public:
                      RenderGraph& renderGraph,
                      GpuProfiler& gpuProfiler,
                      rhi::VulkanSwapchain& swapchain,
+                     const RenderResolution& renderResolution,
                      ToneMappingSettings& toneMappingSettings,
                      BloomSettings& bloomSettings,
                      TaaSettings& taaSettings,
@@ -418,6 +420,7 @@ private:
     RenderGraph& renderGraph_;
     GpuProfiler& gpuProfiler_;
     rhi::VulkanSwapchain& swapchain_;
+    const RenderResolution& renderResolution_;
     ToneMappingSettings& toneMappingSettings_;
     BloomSettings& bloomSettings_;
     TaaSettings& taaSettings_;

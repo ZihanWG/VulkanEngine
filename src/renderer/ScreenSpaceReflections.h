@@ -16,6 +16,7 @@
 // non-samplable depth image disables the subsystem (available() == false) and
 // the renderer skips the passes.
 
+#include "renderer/RenderResolution.h"
 #include "renderer/RuntimeSettings.h"
 #include "rhi/VulkanBuffer.h"
 #include "rhi/VulkanCommon.h"
@@ -45,6 +46,7 @@ class ScreenSpaceReflections final {
 public:
     ScreenSpaceReflections(rhi::VulkanContext& context,
                            rhi::VulkanSwapchain& swapchain,
+                           const RenderResolution& renderResolution,
                            RenderGraph& renderGraph,
                            GpuProfiler& gpuProfiler,
                            SsrSettings& settings);
@@ -86,6 +88,7 @@ public:
 private:
     rhi::VulkanContext& context_;
     rhi::VulkanSwapchain& swapchain_;
+    const RenderResolution& renderResolution_;
     RenderGraph& renderGraph_;
     GpuProfiler& gpuProfiler_;
     SsrSettings& settings_;

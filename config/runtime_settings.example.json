@@ -1,5 +1,8 @@
 {
     "schemaVersion": 1,
+    "renderScale": {
+        "scale": 1.0
+    },
     "toneMapping": {
         "manualExposure": 1.0,
         "enableAutoExposure": true,

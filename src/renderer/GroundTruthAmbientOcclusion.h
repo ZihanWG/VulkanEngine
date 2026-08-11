@@ -17,6 +17,7 @@
 // the main depth buffer, so a non-samplable depth image disables the subsystem
 // (available() == false) and the renderer skips the pass.
 
+#include "renderer/RenderResolution.h"
 #include "renderer/RuntimeSettings.h"
 #include "rhi/VulkanBuffer.h"
 #include "rhi/VulkanCommon.h"
@@ -46,6 +47,7 @@ class GroundTruthAmbientOcclusion final {
 public:
     GroundTruthAmbientOcclusion(rhi::VulkanContext& context,
                                 rhi::VulkanSwapchain& swapchain,
+                                const RenderResolution& renderResolution,
                                 RenderGraph& renderGraph,
                                 GpuProfiler& gpuProfiler,
                                 SsaoSettings& settings);
@@ -88,6 +90,7 @@ public:
 private:
     rhi::VulkanContext& context_;
     rhi::VulkanSwapchain& swapchain_;
+    const RenderResolution& renderResolution_;
     RenderGraph& renderGraph_;
     GpuProfiler& gpuProfiler_;
     SsaoSettings& settings_;

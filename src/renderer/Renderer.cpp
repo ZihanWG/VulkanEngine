@@ -150,6 +150,9 @@ Renderer::Renderer(Window& window) : window_(window)
         context_, static_cast<uint32_t>(frames_.size()), portfolioScreenshotDirectory());
     gpuProfiler_.initialize(context_, static_cast<uint32_t>(frames_.size()));
     swapchain_.initialize(context_, window_.framebufferExtent());
+    // Before anything screen-sized is created below: every one of those targets
+    // reads its size from renderResolution_.
+    updateRenderResolution();
     imguiLayer_.initialize(window_, context_, swapchain_.colorFormat(), swapchain_.imageCount());
     createMaterialDescriptorSetLayout();
     createBindlessMaterialTextureHeap();
@@ -271,6 +274,12 @@ void Renderer::drawFrame()
     if (window_.wasResized()) {
         recreateSwapchain();
         window_.clearResizedFlag();
+    }
+    // A render-scale edit resizes exactly the same set of targets a window resize
+    // does, so it takes the same path -- here, at the top of the frame, rather
+    // than at the UI slider that requested it.
+    if (renderResolution_.scale() != renderScaleSettings_.scale) {
+        recreateSwapchain();
     }
 
     renderer::FrameResources& frame = frames_[currentFrame_];
@@ -1187,6 +1196,10 @@ void Renderer::loadRuntimeSettingsAtStartup()
 void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSettingsApplyMode mode)
 {
     const TaaSettings previousTaaSettings = taaSettings_;
+    // Assigned like any other setting; drawFrame notices renderResolution_ has
+    // gone stale against it and routes the resize through recreateSwapchain,
+    // which is the only point in the frame where destroying targets is safe.
+    renderScaleSettings_ = settings.renderScale;
     toneMappingSettings_ = settings.toneMapping;
     bloomSettings_ = settings.bloom;
     taaSettings_ = settings.taa;
@@ -1260,6 +1273,7 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
 RuntimeSettings Renderer::captureRuntimeSettings() const
 {
     RuntimeSettings settings{};
+    settings.renderScale = renderScaleSettings_;
     settings.toneMapping = toneMappingSettings_;
     settings.bloom = bloomSettings_;
     settings.taa = taaSettings_;
@@ -1390,8 +1404,8 @@ void Renderer::clampRuntimeSettings()
     // The settings-struct clamping is GPU-independent and lives in
     // RuntimeSettings.cpp (compiled into VulkanEngineCore) so it can be tested.
     ve::clampRuntimeSettings(
-        toneMappingSettings_, bloomSettings_, taaSettings_, ssrSettings_, ssaoSettings_, fogSettings_,
-        csmSettings_, lodSettings_, giSettings_, debugUiSettings_);
+        renderScaleSettings_, toneMappingSettings_, bloomSettings_, taaSettings_, ssrSettings_, ssaoSettings_,
+        fogSettings_, csmSettings_, lodSettings_, giSettings_, debugUiSettings_);
 
     // Pushed here rather than at each edit site: clampRuntimeSettings runs after
     // every settings change (load, UI edit, reset), so the volume's copy of the
@@ -1410,6 +1424,24 @@ void Renderer::clampRuntimeSettings()
     }
 }
 
+void Renderer::updateRenderResolution()
+{
+    renderResolution_.update(swapchain_.extent(), renderScaleSettings_.scale);
+    // The main depth buffer belongs to the swapchain but is sized with the other
+    // internal targets, so it is resized here rather than inside the swapchain's
+    // own (re)creation, which does not know the scale. A no-op at scale 1.0.
+    if (renderResolution_.extent().width > 0 && renderResolution_.extent().height > 0) {
+        swapchain_.resizeDepthImage(renderResolution_.extent());
+    }
+    if (!renderResolution_.isNative()) {
+        Logger::info("Render scale " + std::to_string(renderResolution_.scale()) + ": rendering at " +
+                     std::to_string(renderResolution_.extent().width) + "x" +
+                     std::to_string(renderResolution_.extent().height) + ", presenting at " +
+                     std::to_string(renderResolution_.outputExtent().width) + "x" +
+                     std::to_string(renderResolution_.outputExtent().height));
+    }
+}
+
 void Renderer::recreateSwapchain()
 {
     if (window_.isMinimized()) {
@@ -1418,6 +1450,10 @@ void Renderer::recreateSwapchain()
 
     context_.waitIdle();
     swapchain_.recreate(context_, window_.framebufferExtent());
+    // The render extent can only be derived once the swapchain has picked its
+    // actual size (surface capabilities may not grant the requested one), and
+    // everything below is sized off it -- so this is the first thing after.
+    updateRenderResolution();
     sync_.recreateRenderFinishedSemaphores(swapchain_.imageCount());
     imguiLayer_.onSwapchainRecreated(swapchain_.colorFormat(), swapchain_.imageCount());
     recreatePostProcessResources();

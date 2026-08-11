@@ -35,11 +35,12 @@ static_assert(sizeof(GtaoParams) == 224);
 
 GroundTruthAmbientOcclusion::GroundTruthAmbientOcclusion(rhi::VulkanContext& context,
                                                          rhi::VulkanSwapchain& swapchain,
+                                                         const RenderResolution& renderResolution,
                                                          RenderGraph& renderGraph,
                                                          GpuProfiler& gpuProfiler,
                                                          SsaoSettings& settings)
-    : context_(context), swapchain_(swapchain), renderGraph_(renderGraph), gpuProfiler_(gpuProfiler),
-      settings_(settings)
+    : context_(context), swapchain_(swapchain), renderResolution_(renderResolution), renderGraph_(renderGraph),
+      gpuProfiler_(gpuProfiler), settings_(settings)
 {
 }
 
@@ -121,7 +122,7 @@ void GroundTruthAmbientOcclusion::createResources(VkImageView normalRoughnessVie
         // reads. The horizon search runs at half resolution (4x fewer searches);
         // the joint-bilateral upsample restores full resolution from the full-res
         // depth buffer.
-        const VkExtent2D extent = swapchain_.extent();
+        const VkExtent2D extent = renderResolution_.extent();
         const VkExtent2D halfExtent{std::max(1u, extent.width / 2u), std::max(1u, extent.height / 2u)};
         rhi::VulkanImageCreateInfo rawAoInfo{};
         rawAoInfo.width = halfExtent.width;

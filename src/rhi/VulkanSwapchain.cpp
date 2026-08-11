@@ -73,6 +73,7 @@ void VulkanSwapchain::cleanup()
     imageUsage_ = 0;
     depthImageLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     extent_ = {};
+    depthExtent_ = {};
 }
 
 void VulkanSwapchain::create(WindowExtent desiredExtent)
@@ -132,6 +133,10 @@ void VulkanSwapchain::create(WindowExtent desiredExtent)
     }
 
     createImageViews();
+    // Reset first so a resize re-derives the default (match the swapchain) rather
+    // than reusing the previous frame's scaled size; Renderer follows up with
+    // resizeDepthImage once it has recomputed the render extent.
+    depthExtent_ = {};
     createDepthImage();
 }
 
@@ -159,8 +164,32 @@ void VulkanSwapchain::createImageViews()
     }
 }
 
+void VulkanSwapchain::resizeDepthImage(VkExtent2D extent)
+{
+    if (context_ == nullptr) {
+        throw std::runtime_error("VulkanSwapchain::resizeDepthImage called before initialization.");
+    }
+    if (extent.width == 0 || extent.height == 0) {
+        throw std::runtime_error("VulkanSwapchain::resizeDepthImage requires a non-zero extent.");
+    }
+    if (extent.width == depthExtent_.width && extent.height == depthExtent_.height) {
+        return;
+    }
+
+    // The caller is responsible for the device being idle -- this destroys an
+    // image the previous frame may still be reading. Renderer only calls it from
+    // recreateSwapchain, which waits first.
+    depthImage_.reset();
+    depthExtent_ = extent;
+    createDepthImage();
+}
+
 void VulkanSwapchain::createDepthImage()
 {
+    if (depthExtent_.width == 0 || depthExtent_.height == 0) {
+        depthExtent_ = extent_;
+    }
+
     depthFormat_ = findDepthFormat();
     VkFormatProperties depthProperties{};
     vkGetPhysicalDeviceFormatProperties(context_->physicalDevice(), depthFormat_, &depthProperties);
@@ -168,11 +197,12 @@ void VulkanSwapchain::createDepthImage()
         (depthProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
 
     Logger::info(std::string("Selected main depth format: ") + depthFormatName(depthFormat_) +
-                 (depthSupportsSampling_ ? " (sampled for Hi-Z)" : " (attachment-only; Hi-Z disabled)"));
+                 (depthSupportsSampling_ ? " (sampled for Hi-Z)" : " (attachment-only; Hi-Z disabled)") + " at " +
+                 std::to_string(depthExtent_.width) + "x" + std::to_string(depthExtent_.height));
 
     VulkanImageCreateInfo depthInfo{};
-    depthInfo.width = extent_.width;
-    depthInfo.height = extent_.height;
+    depthInfo.width = depthExtent_.width;
+    depthInfo.height = depthExtent_.height;
     depthInfo.format = depthFormat_;
     depthInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
                       (depthSupportsSampling_ ? VK_IMAGE_USAGE_SAMPLED_BIT : 0);

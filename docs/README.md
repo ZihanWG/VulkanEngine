@@ -47,6 +47,8 @@ overview; these documents describe implementation details and limitations.
   passes, march/refinement parameters, and current limitations.
 - [Ground-Truth Ambient Occlusion](gtao.md): Half-res horizon-search GTAO, the
   joint-bilateral upsample, controls, and limitations.
+- [Render Scale](render_scale.md): Shading the scene below presentation
+  resolution, what follows the render extent, why not deferred, and measurements.
 - [Post-Processing](post_processing.md): HDR scene color, mip-chain bloom, GPU
   exposure state, tone mapping, and active HDR source routing.
 - [Temporal AA Foundation](taa.md): Optional TAA pass, Halton jitter, HDR

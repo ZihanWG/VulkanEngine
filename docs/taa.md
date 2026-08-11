@@ -28,7 +28,7 @@ The ImGui panel also exposes current jitter, history validity, read/write histor
 ## Velocity Buffer
 
 The main HDR pass renders into two color attachments (MRT): `SceneColorHDR` plus a
-full-resolution `R16G16_SFLOAT` velocity buffer holding UV-space motion vectors
+render-extent `R16G16_SFLOAT` velocity buffer holding UV-space motion vectors
 (`currentUV - previousUV`).
 
 - **Meshes** (`simple.vert` / `simple_skinned.vert`): `ObjectFrameData` carries the
@@ -64,7 +64,7 @@ CPU frustum culling, CSM setup, depth-pyramid validity checks, and GPU culling i
 
 ## History Resources
 
-Two full-resolution `VK_FORMAT_R16G16B16A16_SFLOAT` images are recreated with the swapchain. Render Graph imports them as persistent resources:
+Two `VK_FORMAT_R16G16B16A16_SFLOAT` images at the render extent are recreated with the swapchain. Render Graph imports them as persistent resources:
 
 - `TAAHistoryRead`
 - `TAAHistoryWrite`
