@@ -62,15 +62,19 @@ descriptor binding, which is what makes a single indirect batch viable.
 fallbacks (legacy descriptor sets, direct draws) for drivers without indirect
 count or descriptor indexing.
 
-## Optional Hi-Z occlusion culling
+## Two-phase Hi-Z occlusion culling
 
 **Decision.** Build a max-depth pyramid and test object AABBs against the
-*previous* frame's pyramid; off by default.
+*previous* frame's pyramid, then re-test whatever that rejected against a
+pyramid rebuilt from this frame's own depth. On by default.
 
 **Why.** Same-frame occlusion is a chicken-and-egg problem (you need depth to cull
 the draws that produce depth). Reprojecting last frame's depth is the standard
-conservative compromise. It is opt-in because it only pays off in heavy-occlusion
-scenes and can cull popping artifacts on fast camera cuts.
+conservative compromise, but on its own it drops objects that became visible
+this frame -- they pop in a frame late, which is why it started out opt-in. The
+second phase re-tests exactly those candidates and rescues them within the same
+frame, which is what made it safe to enable by default. See
+[gpu_culling.md](gpu_culling.md).
 
 ## Render graph with barrier inference
 
