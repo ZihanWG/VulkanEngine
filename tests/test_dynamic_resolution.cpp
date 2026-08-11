@@ -6,6 +6,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cmath>
 
 using ve::DynamicResolutionSettings;
@@ -222,4 +223,68 @@ TEST_CASE("Dynamic resolution is off by default", "[dynamic-resolution][settings
     const ve::RuntimeSettings defaults{};
     CHECK_FALSE(defaults.dynamicResolution.enabled);
     CHECK(defaults.dynamicResolution.maxScale == Catch::Approx(kMaxRenderScale));
+}
+
+TEST_CASE("A target between two grid points does not oscillate", "[dynamic-resolution]")
+{
+    // The limit cycle this guards against was live in shipped code and the
+    // "converged controller stops" test above missed it, because that test
+    // happened to pick a target the grid could express.
+    //
+    // The deadband is a fraction of *time* while the step is a fraction of
+    // *scale*, and time goes as scale squared, so one step moves the frame time
+    // by roughly 2 * step / scale: 10% at scale 1.0, but 40% at 0.25. Below
+    // about half scale no grid point need land inside the deadband at all, and
+    // then every step up is over budget and every step down is under it.
+    //
+    // 100 ms at scale 1.0 puts 0.25 at 6.25 ms and 0.30 at 9.0 ms against an
+    // 8 ms target -- no grid point fits, which is exactly the case observed in
+    // practice as 640x360 <-> 768x432, sixty times in twenty seconds.
+    DynamicResolutionController controller;
+    DynamicResolutionSettings settings{};
+    settings.enabled = true;
+    settings.targetFrameMs = 8.0f;
+    settings.minScale = 0.25f;
+    settings.maxScale = 1.0f;
+
+    float scale = 1.0f;
+    for (int frame = 0; frame < 2000; ++frame) {
+        scale = controller.update(100.0f * scale * scale, scale, settings);
+    }
+
+    const unsigned int changesAfterSettling = controller.changeCount();
+    float lowest = scale;
+    float highest = scale;
+    for (int frame = 0; frame < 2000; ++frame) {
+        scale = controller.update(100.0f * scale * scale, scale, settings);
+        lowest = std::min(lowest, scale);
+        highest = std::max(highest, scale);
+    }
+
+    CHECK(controller.changeCount() == changesAfterSettling);
+    CHECK(lowest == Catch::Approx(highest));
+    // Settling under budget is the correct answer when the grid cannot express
+    // the right one. Settling *over* it would not be.
+    CHECK(100.0f * scale * scale <= 8.0f);
+}
+
+TEST_CASE("A raise that would land over budget is refused", "[dynamic-resolution]")
+{
+    // The rule in isolation: from 0.25, one step up to 0.30 multiplies the frame
+    // time by (0.30/0.25)^2 = 1.44. At 6.5 ms that predicts 9.4 ms against an
+    // 8 ms target, so the raise must not happen even though 6.5 is comfortably
+    // inside the "there is headroom" test that used to authorise it.
+    DynamicResolutionController controller;
+    DynamicResolutionSettings settings{};
+    settings.enabled = true;
+    settings.targetFrameMs = 8.0f;
+    settings.minScale = 0.25f;
+    settings.maxScale = 1.0f;
+
+    CHECK(run(controller, settings, 6.5f, 0.25f, 400) == Catch::Approx(0.25f));
+    CHECK(controller.changeCount() == 0u);
+
+    // And the rule is not simply "never raise": with real headroom it still does.
+    controller.reset();
+    CHECK(run(controller, settings, 3.0f, 0.25f, 400) > 0.25f);
 }
