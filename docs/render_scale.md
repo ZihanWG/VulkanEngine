@@ -183,26 +183,31 @@ one is its own cache line.
 Worth it in proportion: scale 0.5 saves about 10 ms and this spends under one of
 them.
 
-### Seeing it, and where it has nothing to do
+### The effect is content-dependent, and that is not a hedge
 
 The correction is a rim one *source* texel wide — two output pixels at scale 0.5
-— with magnitude roughly `sharpness × localContrast / 4`. That is deliberately
-conservative: on a bright edge of 50% display contrast at strength 0.5 it is
-about 16/255, plainly visible, while a dim 10% edge gets 3/255 and stays
-invisible. Not amplifying noise in the dark is the point, not a shortfall.
+— with magnitude roughly `sharpness × localContrast / 4`, where "local" means
+*within one source texel*. On a bright edge of 50% display contrast at strength
+0.5 that is about 16/255, plainly visible. On a dim 10% edge it is 3/255 and
+stays invisible, which is the point rather than a shortfall: amplifying
+low-contrast detail is amplifying noise.
 
-The consequence is that **a close-up of a smooth surface is the worst possible
-place to judge it.** Magnify one panel until its features span a hundred pixels
-and there is nothing left at the source-texel scale for the filter to act on, so
-it correctly does almost nothing. Judge it at normal viewing distance, on a lit
-region with detail near the render-resolution scale.
+**Verified by A/B on both kinds of content**, same camera, sharpness swept
+0.04 → 0.94:
 
-When that argument is not convincing, **Show sharpen delta** in the panel
-replaces the image with an amplified `|sharpened - original|`: black is "changed
-nothing here". It exists because a rim this fine is exactly the kind of thing
-two people can disagree about by eye indefinitely. Not worth claiming as free, which an earlier single-run measurement of this
-did — a reminder that a pass this small needs the back-to-back discipline the
-rest of the profiling work uses, not one run per configuration.
+| Scene | Visible? | Why |
+| --- | --- | --- |
+| Portfolio showcase | **No** — indistinguishable at any strength | Spheres, a panel with big holes, a gradient backdrop, all procedural solid colours. Almost nothing exists at the source-texel scale, so the filter correctly finds nothing to do. |
+| Geometry stress | **Yes** | 2311 small objects put silhouette density right at the render-resolution scale, which is the frequency band this operates in. |
+
+So judging it on the portfolio scene answers a different question than it looks
+like it answers. That scene is also where the *softness* the filter exists to
+fix is least visible, for exactly the same reason — the two cancel out and the
+whole comparison reads as "no change".
+
+**Show sharpen delta** in the panel settles it in one frame when the argument is
+not convincing: it replaces the image with an amplified `|sharpened - original|`,
+so black means the filter changed nothing there.
 
 ## Dynamic resolution
 
@@ -312,17 +317,23 @@ value from then on. The readouts are the median GPU frame time, the change
 count, a "settling" line while the controller is deliberately not acting, and
 the cost of the last apply.
 
-Turn TAA on with it. Render scale trades spatial detail for speed and TAA
-recovers some of that detail across frames, which is why the two ship together
-in every engine that has them. Judged on screenshots at 2560×1440: 0.5 without
-TAA is not usable (the cutout panel's hole grid breaks up and per-pixel noise
-magnifies into a visible quilt on the floor); 0.5 with TAA and sharpening is
-soft but usable.
+Turn TAA on with it, and note which artefact each one fixes — they are not the
+same and it is easy to conflate them. Judged on screenshots at 2560×1440, 0.5
+without TAA is not usable, but what makes it unusable is **aliasing**: the cutout
+panel's hole grid breaks into irregular blocks and per-pixel noise magnifies into
+a visible quilt on the floor. Aliasing is TAA's job, and sharpening makes it
+worse, not better. **Softness** is the artefact that remains once TAA is on, and
+that is the one sharpening addresses.
 
-Use the perforated cutout panel as the test pattern — it breaks long before the
-metal spheres or the glass. And note the demo lights orbit, so two screenshots
-taken at different moments differ in lighting as well as in scale; only sharpness
-is comparable between them.
+Reading the first as the second is a live trap — this document did it, and a
+sharpen filter got built on the strength of screenshots that were actually
+showing aliasing. The filter is still the right tool for softness; the ordering
+is TAA first, then sharpen what is left.
+
+Two notes on comparing screenshots at all: the demo lights orbit, so two shots
+taken at different moments differ in lighting as well as in setting, and only
+sharpness is comparable between them. And pick a scene with detail near the
+render-resolution scale, per the table above.
 
 ## Limitations
 
