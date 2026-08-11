@@ -47,9 +47,7 @@ layout(buffer_reference, std430) readonly buffer LightIndexBuffer {
     uint indices[];
 };
 
-const uint kClusterGridX = 16u;
-const uint kClusterGridY = 9u;
-const uint kClusterGridZ = 24u;
+#include "cluster_grid.glsl"
 
 // Matches ve::PushConstants. The vertex stage reads the leading object-data
 // address + cascade index; the fragment stage reads the punctual-light and
