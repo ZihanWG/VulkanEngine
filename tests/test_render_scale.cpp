@@ -111,3 +111,34 @@ TEST_CASE("Render scale defaults to native", "[render-scale][settings]")
     const ve::RuntimeSettings defaults{};
     CHECK(defaults.renderScale.scale == Catch::Approx(1.0f));
 }
+
+TEST_CASE("Sharpness is clamped and defaults to a usable value", "[render-scale][settings]")
+{
+    ve::RenderScaleSettings renderScale{};
+    ve::DynamicResolutionSettings dynamicResolution{};
+    ve::ToneMappingSettings toneMapping{};
+    ve::BloomSettings bloom{};
+    ve::TaaSettings taa{};
+    ve::SsrSettings ssr{};
+    ve::SsaoSettings ssao{};
+    ve::FogSettings fog{};
+    ve::CsmSettings csm{};
+    ve::LodSettings lod{};
+    ve::GiSettings gi{};
+    ve::DebugUiSettings debugUi{};
+
+    // Non-zero by default: a 0.5-scale frame without sharpening was judged too
+    // soft to use, and making the first feature usable must not need a second
+    // opt-in. It costs nothing at scale 1.0, where the renderer skips it.
+    CHECK(renderScale.sharpness > 0.0f);
+
+    renderScale.sharpness = 9.0f;
+    ve::clampRuntimeSettings(
+        renderScale, dynamicResolution, toneMapping, bloom, taa, ssr, ssao, fog, csm, lod, gi, debugUi);
+    CHECK(renderScale.sharpness == Catch::Approx(1.0f));
+
+    renderScale.sharpness = -1.0f;
+    ve::clampRuntimeSettings(
+        renderScale, dynamicResolution, toneMapping, bloom, taa, ssr, ssao, fog, csm, lod, gi, debugUi);
+    CHECK(renderScale.sharpness == Catch::Approx(0.0f));
+}

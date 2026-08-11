@@ -135,6 +135,56 @@ pyramid would reject visible geometry if it were trusted.
 The slider itself edits a pending value and commits on release, since each commit
 costs a rebuild.
 
+## Sharpening
+
+A bilinear stretch is a low-pass filter, and at 0.5 the result was judged too
+soft to use. `CompositePass` therefore ends with a contrast-adaptive sharpen,
+strength `renderScale.sharpness` (default 0.5).
+
+**It only runs when the frame is upscaled.** `PostProcessStack` zeroes the
+strength when `RenderResolution::isNative()`, so a native frame is bit-identical
+to what it produced before the filter existed and the default look is unchanged
+for anyone who never moves the scale. The panel says `(inactive at 1.00)` rather
+than pretending the slider does something.
+
+Three decisions in it are worth keeping:
+
+**Taps are one source texel apart, not one output pixel.** This is the whole
+trick. Between two source texels a bilinear magnification is a linear ramp, and
+the second difference of a linear ramp is zero — so output-pixel-spaced taps
+would find no contrast to restore anywhere except exactly at source texel
+centres, and the sharpening would come out modulated by the upscale grid. One
+source texel is the spacing at which real detail exists. The shader gets it from
+`textureSize(uSceneColor, 0)`, so no push constant carries it and it cannot go
+stale against a resize.
+
+**It sharpens the tone-mapped image, not linear HDR.** Same local contrast in a
+bright region and a dark one means very different linear magnitudes, so
+sharpening before the tone curve would boost highlights far more than shadows.
+`toneMapScene` was factored out of `main` so each tap can be mapped before the
+filter sees it. Bloom is deliberately shared across the taps rather than
+re-fetched — it is a heavily blurred mip chain, carries no detail worth
+sharpening, and reusing it keeps the whole thing to four extra fetches.
+
+**Anti-ringing clamp.** The result may not leave the range already present in
+the five taps. An unsharp mask without that bound overshoots into haloes at every
+high-contrast edge, which reads as worse than the softness it was fixing.
+
+Cost: **`CompositePass` roughly triples.** Back-to-back A/B/A/B at scale 0.5 on
+a 2560×1440 window gave 0.362 / 1.460 / 0.474 / 1.227 ms, so about +0.8 ms. The
+absolute values in that series are inflated — the machine had thermally degraded
+over a long run of GPU measurements, and the scale-0.5 control read 13-14 ms
+against the 6.2 ms measured cold — but the ratio held across both pairs.
+
+The tone-curve evaluations are free; the four extra fetches are not. The output
+is 3.7 M pixels, and at scale 0.5 the taps sit two output pixels apart, so each
+one is its own cache line.
+
+Worth it in proportion: scale 0.5 saves about 10 ms and this spends under one of
+them. Not worth claiming as free, which an earlier single-run measurement of this
+did — a reminder that a pass this small needs the back-to-back discipline the
+rest of the profiling work uses, not one run per configuration.
+
 ## Dynamic resolution
 
 Off by default, and that default is deliberate: a portfolio engine is usually
@@ -245,13 +295,22 @@ the cost of the last apply.
 
 Turn TAA on with it. Render scale trades spatial detail for speed and TAA
 recovers some of that detail across frames, which is why the two ship together
-in every engine that has them.
+in every engine that has them. Judged on screenshots at 2560×1440: 0.5 without
+TAA is not usable (the cutout panel's hole grid breaks up and per-pixel noise
+magnifies into a visible quilt on the floor); 0.5 with TAA and sharpening is
+soft but usable.
+
+Use the perforated cutout panel as the test pattern — it breaks long before the
+metal spheres or the glass. And note the demo lights orbit, so two screenshots
+taken at different moments differ in lighting as well as in scale; only sharpness
+is comparable between them.
 
 ## Limitations
 
-- The upscale is a plain bilinear stretch in the composite. There is no sharpen
-  pass and no temporal upscaling (FSR/DLSS/XeSS-style), so at 0.5 and below
-  edges are visibly soft.
+- The upscale is bilinear plus the sharpen above. There is no temporal
+  upscaling (FSR/DLSS/XeSS-style), which is what would actually reconstruct
+  detail rather than re-emphasise what survived; at 0.5 and below, run TAA with
+  it — spatial sharpening cannot invent the sub-pixel detail TAA accumulates.
 - Applying a scale rebuilds every screen-sized target and costs a one-frame CPU
   hitch (12-27 ms here). Dynamic resolution converges in a handful of steps and
   then holds still, so this is bounded rather than continuous — but the sub-rect

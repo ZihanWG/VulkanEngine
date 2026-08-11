@@ -265,6 +265,14 @@ struct GiSettings {
 // description of what is persisted.
 struct RenderScaleSettings {
     float scale = 1.0f;
+    // Contrast-adaptive sharpening applied in the composite, and only when the
+    // frame is actually upscaled -- at scale 1.0 it does nothing, so the default
+    // look is unchanged for anyone who never moves the scale.
+    //
+    // Non-zero by default because the measurement that motivated it was that a
+    // 0.5-scale frame without sharpening is too soft to use, and requiring a
+    // second opt-in to make the first feature usable is a bad default.
+    float sharpness = 0.5f;
 };
 
 // Drives RenderScaleSettings::scale from measured GPU frame time. Off by

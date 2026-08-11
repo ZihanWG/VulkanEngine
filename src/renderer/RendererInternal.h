@@ -514,7 +514,10 @@ struct CompositePushConstants {
     // correct it is. Zero carries the off state, the same shape fogMaxDistance
     // and the probe intensity use.
     float debugRawGain = 0.0f;
-    uint32_t pad1 = 0;
+    // Contrast-adaptive sharpening strength for the composite, 0 = off. Zeroed
+    // by the caller whenever the frame is not upscaled, so the shader needs no
+    // separate enable and a native frame is bit-identical to before.
+    float sharpness = 0.0f;
     glm::mat4 invProjection{1.0f};
     glm::vec4 ssaoParams0{0.5f, 0.025f, 1.0f, 2.0f}; // radius, bias, intensity, power
     glm::vec4 ssaoParams1{0.0f, 16.0f, 0.0f, 0.0f};  // enabled, sampleCount

@@ -207,6 +207,17 @@ void Renderer::drawRenderScaleDebugUi()
 
     ImGui::EndDisabled();
 
+    if (ImGui::SliderFloat("Sharpness", &renderScaleSettings_.sharpness, 0.0f, 1.0f, "%.2f")) {
+        clampRuntimeSettings();
+    }
+    ImGui::SetItemTooltip("Contrast-adaptive sharpening in the composite, applied to the tone-mapped\n"
+                          "image with an anti-ringing clamp. Only runs when the frame is upscaled --\n"
+                          "at scale 1.00 it is skipped entirely, whatever this says.");
+    if (renderResolution_.isNative() && renderScaleSettings_.sharpness > 0.0f) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(inactive at 1.00)");
+    }
+
     ImGui::TextDisabled("Shades the scene at a fraction of the window and upscales in the composite.");
     ImGui::TextDisabled("The frame is fragment-bound, so cost tracks the shaded-pixel count almost");
     ImGui::TextDisabled("linearly. The ImGui overlay stays native. Pairs with TAA, which recovers");

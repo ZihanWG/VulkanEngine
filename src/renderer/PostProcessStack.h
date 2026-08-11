@@ -103,9 +103,13 @@ public:
     // it and skip ambient occlusion, bloom, exposure and tone mapping. Passed in
     // rather than read from settings here because it is the caller's debug
     // state, not a post-process one.
+    // sharpness is the raw RenderScaleSettings value; this gates it on the frame
+    // actually being upscaled, which it can do and the caller cannot -- the
+    // render resolution is borrowed here.
     void recordCompositeCommands(VkCommandBuffer commandBuffer,
                                  const glm::mat4& jitteredProjection,
-                                 float debugRawGain = 0.0f);
+                                 float debugRawGain = 0.0f,
+                                 float sharpness = 0.0f);
     void advanceTaaHistory();
 
     // State queries.
