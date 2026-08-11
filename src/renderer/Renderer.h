@@ -623,6 +623,10 @@ private:
     // every screen-sized target, so the drag edits this and only writes through
     // to renderScaleSettings_ when it ends.
     float pendingRenderScale_ = 1.0f;
+    // Debug view of the sharpen filter's correction. Not persisted: it is a
+    // "is this doing anything" instrument, not a setting.
+    bool showSharpenDelta_ = false;
+    float sharpenDeltaGain_ = 8.0f;
     renderer::RenderGraph renderGraph_;
     assets::AssetManager assetManager_;
     ui::ImGuiLayer imguiLayer_;

@@ -514,9 +514,15 @@ struct CompositePushConstants {
     // correct it is. Zero carries the off state, the same shape fogMaxDistance
     // and the probe intensity use.
     float debugRawGain = 0.0f;
-    uint32_t pad1 = 0;
+    // Contrast-adaptive sharpening strength for the composite, 0 = off. Zeroed
+    // by the caller whenever the frame is not upscaled, so the shader needs no
+    // separate enable and a native frame is bit-identical to before.
+    float sharpness = 0.0f;
     glm::mat4 invProjection{1.0f};
-    glm::vec4 ssaoParams0{0.5f, 0.025f, 1.0f, 2.0f}; // radius, bias, intensity, power
+    // x = sharpen delta view gain (0 = off). Was ssaoParams0, dead since GTAO
+    // moved to its own pass; reused rather than grown because the block is
+    // already at the 128 bytes Vulkan guarantees.
+    glm::vec4 debugParams{0.0f, 0.0f, 0.0f, 0.0f};
     glm::vec4 ssaoParams1{0.0f, 16.0f, 0.0f, 0.0f};  // enabled, sampleCount
 };
 
@@ -527,8 +533,9 @@ static_assert(offsetof(CompositePushConstants, bloomEnabled) == 12);
 static_assert(offsetof(CompositePushConstants, bloomMethod) == 16);
 static_assert(offsetof(CompositePushConstants, useGpuExposure) == 20);
 static_assert(offsetof(CompositePushConstants, debugRawGain) == 24);
+static_assert(offsetof(CompositePushConstants, sharpness) == 28);
 static_assert(offsetof(CompositePushConstants, invProjection) == 32);
-static_assert(offsetof(CompositePushConstants, ssaoParams0) == 96);
+static_assert(offsetof(CompositePushConstants, debugParams) == 96);
 static_assert(offsetof(CompositePushConstants, ssaoParams1) == 112);
 static_assert(sizeof(CompositePushConstants) == 128);
 

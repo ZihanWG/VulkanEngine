@@ -48,6 +48,9 @@ void clampRuntimeSettings(RenderScaleSettings& renderScale,
                           DebugUiSettings& debugUi)
 {
     renderScale.scale = renderer::clampRenderScale(renderScale.scale);
+    // Past 1.0 the anti-ringing clamp is doing all the work and the result stops
+    // changing, so the range ends where the effect does.
+    renderScale.sharpness = std::clamp(renderScale.sharpness, 0.0f, 1.0f);
 
     // The bounds are clamped but deliberately not ordered: the controller treats
     // them as an unordered pair, so a hand-edited file with them swapped still
@@ -341,6 +344,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
 
     if (const Json* renderScale = objectMember(json, "renderScale")) {
         readFloat(*renderScale, "scale", settings.renderScale.scale);
+        readFloat(*renderScale, "sharpness", settings.renderScale.sharpness);
     }
 
     if (const Json* dynamicResolution = objectMember(json, "dynamicResolution")) {
@@ -492,7 +496,8 @@ Json toJson(const RuntimeSettings& settings)
 {
     return Json{
         {"schemaVersion", 1},
-        {"renderScale", Json{{"scale", settings.renderScale.scale}}},
+        {"renderScale",
+         Json{{"scale", settings.renderScale.scale}, {"sharpness", settings.renderScale.sharpness}}},
         {"dynamicResolution",
          Json{{"enabled", settings.dynamicResolution.enabled},
               {"targetFrameMs", settings.dynamicResolution.targetFrameMs},

@@ -329,7 +329,9 @@ void PostProcessStack::createExposureComputePipelines()
 // borrowed reference written by createCompositeDescriptorSets.
 void PostProcessStack::recordCompositeCommands(VkCommandBuffer commandBuffer,
                                                const glm::mat4& jitteredProjection,
-                                               float debugRawGain)
+                                               float debugRawGain,
+                                               float sharpness,
+                                               float sharpenDebugGain)
 {
     rhi::debug::beginLabel(commandBuffer, "CompositePass");
     const bool compositeProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "CompositePass");
@@ -366,9 +368,14 @@ void PostProcessStack::recordCompositeCommands(VkCommandBuffer commandBuffer,
     // the direct lighting this change exists to spare.
     const bool ssaoActive = ssaoSettings_.enabled && ssaoAvailable_ && !ssaoSettings_.ambientOnly;
     compositePushConstants.invProjection = glm::inverse(jitteredProjection);
-    compositePushConstants.ssaoParams0 = glm::vec4(0.0f);
+    compositePushConstants.debugParams = glm::vec4(std::max(sharpenDebugGain, 0.0f), 0.0f, 0.0f, 0.0f);
     compositePushConstants.ssaoParams1 = glm::vec4(ssaoActive ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
     compositePushConstants.debugRawGain = std::max(debugRawGain, 0.0f);
+    // Sharpening exists to undo the softness of the upscale, so a native frame
+    // gets none of it and stays bit-identical to what it rendered before the
+    // filter existed. The shader reads a zero here as "off" and skips the four
+    // extra taps entirely.
+    compositePushConstants.sharpness = renderResolution_.isNative() ? 0.0f : std::clamp(sharpness, 0.0f, 1.0f);
     vkCmdPushConstants(commandBuffer,
                        compositePipeline_.layout(),
                        VK_SHADER_STAGE_FRAGMENT_BIT,
