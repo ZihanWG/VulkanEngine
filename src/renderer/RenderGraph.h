@@ -152,6 +152,29 @@ struct BufferAccessState {
 
 [[nodiscard]] BufferAccessState bufferAccessState(RGAccess access);
 
+// Whether a transition has to emit a barrier, split out of transitionTexture /
+// transitionBuffer for the same reason cullUnusedPasses was: pure decisions that
+// need no device, and both are easy to get subtly wrong in ways nothing checks.
+//
+// `usedThisFrame` and `previousDeclared` together answer "has this resource been
+// touched yet". A resource on its first use with no recorded access needs no
+// ordering -- there is nothing to order against -- which is why the two are
+// OR'd rather than either being sufficient alone.
+[[nodiscard]] bool bufferBarrierRequired(bool usedThisFrame,
+                                         RGAccess previousDeclared,
+                                         VkAccessFlags2 previousAccess,
+                                         VkAccessFlags2 desiredAccess);
+
+// A layout change always needs a barrier. Otherwise the same rule as buffers,
+// plus: an UNDEFINED old layout means the contents are not being preserved, so
+// there is nothing to order against either.
+[[nodiscard]] bool textureBarrierRequired(VkImageLayout oldLayout,
+                                          VkImageLayout desiredLayout,
+                                          bool usedThisFrame,
+                                          RGAccess previousDeclared,
+                                          VkAccessFlags2 previousAccess,
+                                          VkAccessFlags2 desiredAccess);
+
 struct RenderPassNode {
     std::string name;
     RenderPassType type = RenderPassType::MainHdr;

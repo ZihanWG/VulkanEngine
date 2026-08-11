@@ -52,7 +52,7 @@ The PNG excludes:
 
 ## Reflection Scope
 
-Current reflections are environment-based specular IBL only. The renderer does not currently implement SSR, planar reflections, ray-traced reflections, local reflection probes, or real glass transmission/refraction. Smooth metallic objects sample the prefiltered environment cubemap through the split-sum BRDF path, so polished materials are kept small and secondary in the portfolio PBR material showcase.
+Reflections are environment-based specular IBL plus screen-space reflections (see [ssr.md](ssr.md)); SSR is on by default, so polished materials pick up scene detail the cubemap cannot supply. There are no planar reflections, ray-traced reflections, local reflection probes, or real glass transmission/refraction, and SSR only finds what is on screen. Smooth metallic objects sample the prefiltered environment cubemap through the split-sum BRDF path, so polished materials are kept small and secondary in the portfolio PBR material showcase.
 
 ## Readback Design
 

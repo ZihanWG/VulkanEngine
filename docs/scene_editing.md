@@ -142,7 +142,7 @@ Scene JSON does not currently serialize or restore:
 - object creation/deletion
 - hierarchy parenting
 - animation state beyond disabling demo animation on edit/load
-- camera movement speed, because there is no free-camera controller yet
+- editor camera state (position, orientation, movement speed)
 - ImGuizmo state
 
 ## glTF And Portfolio Mode

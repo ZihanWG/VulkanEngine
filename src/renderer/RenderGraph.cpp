@@ -2370,12 +2370,12 @@ uint32_t RenderGraph::transitionTexture(RGTextureHandle handle, RGAccess access)
         previous = accessStateFromLayout(oldLayout, resource.desc.aspectMask);
     }
 
-    const bool layoutChange = oldLayout != desired.layout;
-    const bool sameLayoutOrdering =
-        !layoutChange && oldLayout != VK_IMAGE_LAYOUT_UNDEFINED &&
-        (resource.usedThisFrame || previous.declaredAccess != RGAccess::Unknown) &&
-        (accessMaskWrites(previous.access) || accessMaskWrites(desired.access));
-    if (!layoutChange && !sameLayoutOrdering) {
+    if (!textureBarrierRequired(oldLayout,
+                                desired.layout,
+                                resource.usedThisFrame,
+                                previous.declaredAccess,
+                                previous.access,
+                                desired.access)) {
         resource.lastAccess = desired;
         resource.usedThisFrame = true;
         return 0;
@@ -2428,8 +2428,8 @@ uint32_t RenderGraph::transitionBuffer(RGBufferHandle handle, RGAccess access)
     }
 
     const BufferAccessState previous = resource.lastAccess;
-    const bool needsOrdering = (resource.usedThisFrame || previous.declaredAccess != RGAccess::Unknown) &&
-                               (accessMaskWrites(previous.access) || accessMaskWrites(desired.access));
+    const bool needsOrdering = bufferBarrierRequired(
+        resource.usedThisFrame, previous.declaredAccess, previous.access, desired.access);
     if (!needsOrdering) {
         resource.lastAccess = desired;
         resource.usedThisFrame = true;
@@ -2535,6 +2535,31 @@ TextureAccessState textureAccessState(VkImageAspectFlags aspectMask, RGAccess ac
 RenderGraph::BufferAccessState RenderGraph::accessStateForBuffer(RGAccess access) const
 {
     return bufferAccessState(access);
+}
+
+bool bufferBarrierRequired(bool usedThisFrame,
+                           RGAccess previousDeclared,
+                           VkAccessFlags2 previousAccess,
+                           VkAccessFlags2 desiredAccess)
+{
+    const bool touched = usedThisFrame || previousDeclared != RGAccess::Unknown;
+    return touched && (accessMaskWrites(previousAccess) || accessMaskWrites(desiredAccess));
+}
+
+bool textureBarrierRequired(VkImageLayout oldLayout,
+                            VkImageLayout desiredLayout,
+                            bool usedThisFrame,
+                            RGAccess previousDeclared,
+                            VkAccessFlags2 previousAccess,
+                            VkAccessFlags2 desiredAccess)
+{
+    if (oldLayout != desiredLayout) {
+        return true;
+    }
+    if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED) {
+        return false;
+    }
+    return bufferBarrierRequired(usedThisFrame, previousDeclared, previousAccess, desiredAccess);
 }
 
 BufferAccessState bufferAccessState(RGAccess access)

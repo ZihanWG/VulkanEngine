@@ -173,17 +173,23 @@ screenshots.
 
 - No full game engine, physics, gameplay scripting, full ECS, production editor,
   asset browser, material graph, or texture import pipeline.
-- Render Graph 2.0 is not an async compute scheduler, multi-queue scheduler,
-  memory aliasing allocator, or production transient-resource system.
-- Occlusion culling is optional, conservative, AABB based, and uses the previous
-  completed frame's depth pyramid.
-- TAA is a foundation pass only. It has no motion vectors, depth reprojection,
-  temporal upscaling, reactive masks, or broad camera-cut detection.
-- Reflections are environment-based IBL only. There is no SSR, ray tracing,
-  planar reflection, local reflection probe, or glass transmission/refraction.
-- glTF support is static and narrow: no animation, skinning, morph targets,
-  cameras, lights, alpha blend/mask pipelines, or occlusion maps. Emissive
-  factor + emissive maps are supported.
+- The render graph does not schedule across queues, alias memory, or manage
+  transient resources for production. Async compute exists, but the renderer
+  owns that submission rather than the graph (see async_compute.md).
+- Occlusion culling is conservative and AABB based, on by default. Phase 1 uses
+  the previous frame's depth pyramid; phase 2 re-tests its rejects against a
+  mid-frame rebuild, so disocclusions are rescued in the same frame rather than
+  popping in the next one.
+- TAA reprojects along a real velocity buffer. It has no depth-based
+  disocclusion classification, temporal upscaling, reactive masks, or broad
+  camera-cut detection.
+- Reflections are environment IBL plus screen-space reflections. There is no ray
+  tracing, planar reflection, local reflection probe, or glass
+  transmission/refraction, and SSR only finds what is on screen.
+- glTF support is narrow but no longer static: skinned meshes with skeletal
+  animation import, and `MASK`/`BLEND` alpha modes drive real cutout and
+  transparent passes. Still unsupported: morph targets, cameras, lights, and
+  occlusion maps. Emissive factor + emissive maps are supported.
 - Upload paths still use simple queue-idle one-time command buffers for
   initialization and are not a runtime streaming system.
 - GPU profiler timestamps are useful pass-duration estimates, not CPU/GPU
@@ -191,7 +197,11 @@ screenshots.
 - Portfolio screenshots use the current swapchain resolution rather than a
   separate high-resolution offline render path.
 
-## Phase 7 Result
+## Keeping this current
 
-Phase 7 is documentation, release polish, and user-facing missing-file handling.
-It does not add new rendering features or refactor unrelated renderer systems.
+This file is linked from the README three times, including as the full list of
+current limitations, so a stale claim here contradicts the feature table on the
+front page. It fell behind once already: it still described the engine as having
+no SSR, no motion vectors, no skinning and no alpha pipelines well after all four
+shipped. When a subsystem lands, the Accurate Limitations list above is part of
+the change, not follow-up work.

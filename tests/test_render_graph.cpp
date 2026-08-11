@@ -410,3 +410,111 @@ TEST_CASE("Buffer transfer directions use distinct stages", "[rendergraph][barri
     CHECK(bufferAccessState(RGAccess::TransferSrc).access == VK_ACCESS_2_TRANSFER_READ_BIT);
     CHECK(bufferAccessState(RGAccess::TransferDst).access == VK_ACCESS_2_TRANSFER_WRITE_BIT);
 }
+
+// ---------------------------------------------------------------------------
+// Barrier necessity: whether a transition emits anything at all.
+//
+// Emitting a barrier that was not needed only costs performance. Skipping one
+// that was needed is a race — and on tile-based hardware it often still renders
+// correctly on the machine it was written on, which is the worst failure mode
+// this file guards against.
+
+TEST_CASE("Read after read needs no buffer barrier", "[rendergraph][barriers]")
+{
+    using ve::renderer::bufferBarrierRequired;
+    using ve::renderer::RGAccess;
+
+    // Two reads cannot race, however many passes touch the buffer.
+    CHECK_FALSE(bufferBarrierRequired(/*usedThisFrame=*/true,
+                                      RGAccess::StorageBufferRead,
+                                      VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                                      VK_ACCESS_2_SHADER_STORAGE_READ_BIT));
+}
+
+TEST_CASE("Any write on either side needs a buffer barrier", "[rendergraph][barriers]")
+{
+    using ve::renderer::bufferBarrierRequired;
+    using ve::renderer::RGAccess;
+
+    // write -> read
+    CHECK(bufferBarrierRequired(
+        true, RGAccess::StorageBufferWrite, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT));
+    // read -> write
+    CHECK(bufferBarrierRequired(
+        true, RGAccess::StorageBufferRead, VK_ACCESS_2_SHADER_STORAGE_READ_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT));
+    // write -> write
+    CHECK(bufferBarrierRequired(
+        true, RGAccess::StorageBufferWrite, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT));
+}
+
+TEST_CASE("An untouched buffer needs no barrier on its first use", "[rendergraph][barriers]")
+{
+    using ve::renderer::bufferBarrierRequired;
+    using ve::renderer::RGAccess;
+
+    // Nothing has run against it yet, so there is nothing to order against even
+    // though the incoming access writes.
+    CHECK_FALSE(bufferBarrierRequired(
+        /*usedThisFrame=*/false, RGAccess::Unknown, VK_ACCESS_2_NONE, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT));
+
+    // But either half of "has been touched" is enough to require one: a
+    // resource carried over from a previous frame has usedThisFrame false while
+    // still holding a real last access.
+    CHECK(bufferBarrierRequired(
+        false, RGAccess::StorageBufferWrite, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT));
+    CHECK(bufferBarrierRequired(
+        true, RGAccess::Unknown, VK_ACCESS_2_NONE, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT));
+}
+
+TEST_CASE("A layout change always needs a texture barrier", "[rendergraph][barriers]")
+{
+    using ve::renderer::RGAccess;
+    using ve::renderer::textureBarrierRequired;
+
+    // Even read-to-read, and even untouched: the layout transition itself is the
+    // work, and nothing else performs it.
+    CHECK(textureBarrierRequired(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                 VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                 /*usedThisFrame=*/false,
+                                 RGAccess::Unknown,
+                                 VK_ACCESS_2_NONE,
+                                 VK_ACCESS_2_NONE));
+}
+
+TEST_CASE("Same layout falls back to the write rule", "[rendergraph][barriers]")
+{
+    using ve::renderer::RGAccess;
+    using ve::renderer::textureBarrierRequired;
+
+    CHECK_FALSE(textureBarrierRequired(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                       true,
+                                       RGAccess::ShaderRead,
+                                       VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                                       VK_ACCESS_2_SHADER_SAMPLED_READ_BIT));
+
+    // Two storage-image passes both sit in GENERAL, so the layout is unchanged
+    // and only the access rule separates them.
+    CHECK(textureBarrierRequired(VK_IMAGE_LAYOUT_GENERAL,
+                                 VK_IMAGE_LAYOUT_GENERAL,
+                                 true,
+                                 RGAccess::StorageImageWrite,
+                                 VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                                 VK_ACCESS_2_SHADER_STORAGE_READ_BIT));
+}
+
+TEST_CASE("An UNDEFINED old layout orders against nothing", "[rendergraph][barriers]")
+{
+    using ve::renderer::RGAccess;
+    using ve::renderer::textureBarrierRequired;
+
+    // UNDEFINED means the contents are not preserved, so there is no prior
+    // state to synchronize with. Reaching here at all means the desired layout
+    // is UNDEFINED too, since any real target would be a layout change above.
+    CHECK_FALSE(textureBarrierRequired(VK_IMAGE_LAYOUT_UNDEFINED,
+                                       VK_IMAGE_LAYOUT_UNDEFINED,
+                                       true,
+                                       RGAccess::ColorAttachmentWrite,
+                                       VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                                       VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT));
+}

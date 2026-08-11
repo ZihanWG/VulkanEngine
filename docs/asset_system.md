@@ -51,9 +51,11 @@ Supported fields are `name`, `shader`, `baseColorFactor`,
 `textures.normal`, `textures.metallicRoughness`, `alphaMode`,
 `alphaCutoff`, and `doubleSided`.
 
-`alphaMode`, `alphaCutoff`, and `doubleSided` are stored as metadata in this
-phase. The current renderer does not add alpha blend/mask pipelines or a shader
-permutation system.
+`alphaMode` and `alphaCutoff` now drive real rendering: `MASK` materials clip in
+the fragment shader and cast alpha-tested shadows, and `BLEND` materials draw in
+a separate transparent pass (see [transparency.md](transparency.md)). The cutoff
+is data, not a pipeline variant -- it rides in ObjectFrameData -- so there is
+still no shader permutation system. `doubleSided` remains metadata only.
 
 ## Runtime Mapping
 
