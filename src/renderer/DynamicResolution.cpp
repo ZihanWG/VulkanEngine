@@ -92,15 +92,36 @@ float DynamicResolutionController::update(float gpuFrameMs,
 
     float desired = currentScale;
     if (median > target) {
-        desired = snapDown(std::max(requested, currentScale - kDynamicResolutionMaxStepDown));
+        desired = std::clamp(snapDown(std::max(requested, currentScale - kDynamicResolutionMaxStepDown)),
+                             minScale,
+                             maxScale);
     } else if (median < target * (1.0f - kDynamicResolutionRaiseHeadroom)) {
-        desired = snapUp(std::min(requested, currentScale + kDynamicResolutionMaxStepUp));
+        desired = std::clamp(snapUp(std::min(requested, currentScale + kDynamicResolutionMaxStepUp)),
+                             minScale,
+                             maxScale);
+
+        // Veto a raise that would immediately have to be undone.
+        //
+        // The deadband is a fraction of *time*, but the step is a fraction of
+        // *scale*, and time goes as scale squared -- so one step changes the
+        // frame time by roughly 2 * step / scale. At scale 1.0 a 0.05 step is
+        // 10%, inside the 15% deadband, and the controller settles. At 0.25 the
+        // same step is 40%, far outside it, and the controller cannot help but
+        // oscillate: every step up lands over budget, every step down lands
+        // under it. Observed in practice as 640x360 <-> 768x432 sixty times in
+        // twenty seconds, with a target that simply has no grid point.
+        //
+        // So instead of asking "is there headroom", ask "would the scale I am
+        // about to move to still fit". Being a little under budget is the right
+        // answer when the grid cannot express the right one; thrashing is not.
+        const float scaleRatio = (desired * desired) / (currentScale * currentScale);
+        if (median * scaleRatio > target) {
+            return currentScale;
+        }
     } else {
         // Inside the deadband: on budget, nothing to do.
         return currentScale;
     }
-
-    desired = std::clamp(desired, minScale, maxScale);
     // Half a step of tolerance so a scale already sitting on the grid, or one
     // pinned at a bound while still over budget, does not report a change every
     // frame. The counters below are what the debug panel trusts.

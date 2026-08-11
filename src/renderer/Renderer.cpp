@@ -1462,8 +1462,10 @@ void Renderer::applyRenderScaleChange()
 
     // Everything below destroys images earlier frames may still be reading.
     context_.waitIdle();
+    const auto afterIdle = std::chrono::steady_clock::now();
     updateRenderResolution();
     recreatePostProcessResources();
+    const auto afterRebuild = std::chrono::steady_clock::now();
     // Both histories were written at the previous resolution, so neither can be
     // reprojected into the new one. The pyramid is a frame of occlusion data at
     // the old size and would reject visible geometry if it were trusted.
@@ -1471,9 +1473,12 @@ void Renderer::applyRenderScaleChange()
     invalidateDepthPyramid();
 
     lastRenderScaleApplyMs_ = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - begin).count();
+    const float idleMs = std::chrono::duration<float, std::milli>(afterIdle - begin).count();
+    const float rebuildMs = std::chrono::duration<float, std::milli>(afterRebuild - afterIdle).count();
     Logger::info("Render scale applied: " + std::to_string(renderResolution_.extent().width) + "x" +
                  std::to_string(renderResolution_.extent().height) + " in " +
-                 std::to_string(lastRenderScaleApplyMs_) + " ms");
+                 std::to_string(lastRenderScaleApplyMs_) + " ms (waitIdle " + std::to_string(idleMs) +
+                 " ms, rebuild " + std::to_string(rebuildMs) + " ms)");
 }
 
 void Renderer::updateDynamicResolution()
