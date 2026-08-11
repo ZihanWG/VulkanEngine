@@ -84,6 +84,22 @@ void Renderer::updateDemoLights(float elapsedSeconds)
 
     clusteredLighting_.clear();
 
+    if (fragmentStressSceneActive_) {
+        // Densely packed in the volume the slabs occupy, with a range far larger
+        // than their spacing, so froxels see many lights at once. That is the
+        // point: ablation put the per-fragment punctual loop at ~64% of
+        // MainHDRPass, and it scales with lights *per froxel*, not lights total.
+        for (int lightIndex = 0; lightIndex < renderer::kFragmentStressLightCount; ++lightIndex) {
+            const float u = hash01(lightIndex, 3.0f);
+            const float v = hash01(lightIndex, 17.0f);
+            const float w = hash01(lightIndex, 31.0f);
+            const glm::vec3 position{-12.0f + u * 24.0f, 0.5f + v * 8.0f, -2.0f - w * 20.0f};
+            clusteredLighting_.addPointLight(
+                position, hueColor(hash01(lightIndex, 41.0f)), 6.0f, renderer::kFragmentStressLightRange);
+        }
+        return;
+    }
+
     if (cornellBoxSceneActive_) {
         // One white light near the ceiling, and nothing else. The orbiting swarm
         // would light every surface directly, which is precisely what has to not

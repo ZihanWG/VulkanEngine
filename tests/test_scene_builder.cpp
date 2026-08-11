@@ -296,3 +296,42 @@ TEST_CASE("Stress object count matches its grid arithmetic", "[scene][stress]")
               (ve::renderer::kStressGridColumns * ve::renderer::kStressGridRows));
     CHECK(ve::renderer::kStressObjectCount > 2000);
 }
+
+TEST_CASE("Fragment stress scene reports unavailable without a valid mesh", "[scene][stress]")
+{
+    Mesh cubeMesh;
+    Mesh sphereMesh;
+    std::vector<Material> materials(11);
+    IdAllocator ids;
+    SceneBuilder builder(cubeMesh, sphereMesh, materials, std::ref(ids));
+
+    std::vector<RenderObject> objects;
+    std::string status;
+    CHECK_FALSE(builder.appendFragmentStressScene(objects, status));
+    CHECK(objects.empty());
+    CHECK(status.find("unavailable") != std::string::npos);
+}
+
+TEST_CASE("The two stress scenes are told apart by their source type", "[scene][stress]")
+{
+    // They are mutually exclusive at load time, so a has-check that matched both
+    // would make loading one skip rebuilding the other.
+    Mesh mesh;
+    std::vector<RenderObject> objects;
+
+    RenderObject geometry{};
+    geometry.sourceType = ve::renderer::RenderObjectSourceType::Stress;
+    geometry.mesh = &mesh;
+    objects.push_back(geometry);
+
+    CHECK(SceneBuilder::hasStressScene(objects));
+    CHECK_FALSE(SceneBuilder::hasFragmentStressScene(objects));
+
+    RenderObject fragment{};
+    fragment.sourceType = ve::renderer::RenderObjectSourceType::FragmentStress;
+    fragment.mesh = &mesh;
+    objects.push_back(fragment);
+
+    CHECK(SceneBuilder::hasStressScene(objects));
+    CHECK(SceneBuilder::hasFragmentStressScene(objects));
+}

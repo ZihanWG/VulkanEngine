@@ -21,7 +21,10 @@ enum class RenderObjectSourceType {
     CornellBox,
     // Thousands of objects behind occluder slabs. Exists to give the culling,
     // batching, LOD and frame-prep paths a load the default scene cannot.
-    Stress
+    Stress,
+    // Overlapping full-frame slabs. Loads the fragment path, which the geometry
+    // stress scene deliberately does not.
+    FragmentStress
 };
 
 struct RenderObject {

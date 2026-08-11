@@ -479,6 +479,9 @@ private:
     void loadCornellBoxScene();
     void resetCornellBoxSceneToPreset();
     void removeStressSceneObjects();
+    void removeFragmentStressSceneObjects();
+    void resetFragmentStressSceneToPreset();
+    void loadFragmentStressScene();
     void resetStressSceneToPreset();
     void loadStressScene();
     void enableOcclusionTestSettings();
@@ -920,6 +923,8 @@ private:
     std::string cornellBoxSceneStatus_ = "Cornell box inactive.";
     bool stressSceneActive_ = false;
     std::string stressSceneStatus_{"Stress scene inactive."};
+    bool fragmentStressSceneActive_ = false;
+    std::string fragmentStressSceneStatus_{"Fragment stress scene inactive."};
     bool portfolioScreenshotRequested_ = false;
     bool normalMapAssetLoaded_ = false;
     bool metallicRoughnessMapAssetLoaded_ = false;
