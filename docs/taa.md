@@ -97,6 +97,30 @@ Expected debug signals:
 - Toggling `Motion reprojection` off while orbiting the camera brings back the
   Phase 6B ghosting; on, moving objects and camera motion stay sharp.
 
+## TAA makes latent depth bugs visible
+
+Jitter moves the rasterized position a fraction of a pixel every frame, so the
+interpolated depth at each pixel centre moves with it. Any depth comparison that
+was *marginal* — coplanar surfaces, a bias that only just clears acne — stops
+being resolved the same way every frame and starts alternating.
+
+That turns a static, easily-missed seam into a visible flicker, and it means
+"this only flickers with TAA on" is usually **not** a TAA bug. Bisect it with the
+panel's three toggles, which separate the causes cleanly:
+
+| Symptom | Reading |
+| --- | --- |
+| Flicker stops with **jitter** off, frozen in one of two states | The current frame genuinely alternates. Look for marginal depth comparisons, not for a history bug. |
+| Flicker stops with **neighborhood clamp** off, settling on a blend | Same cause — history is now low-passing a real two-state signal instead of tracking it. |
+| Flicker stops with **motion reprojection** off | A history-path bug: velocity disagreeing with what the pixel actually shows. |
+
+The first two point at the scene, not the resolve. Found this way: the portfolio
+glass panes had their bottom face exactly on the floor's top plane, so their
+depth test against the floor flipped every frame and a strip along the floor line
+flickered. The fix was in `SceneBuilder` (see `kPortfolioFloorSinkDepth`), not
+here. Blended geometry shows it worst, since it only depth-tests — a flip decides
+whether the pixel has the surface on it at all.
+
 ## Limitations
 
 - Skinned joint-space motion is not captured (previous-palette velocity is future work).
