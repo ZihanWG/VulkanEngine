@@ -127,9 +127,11 @@ TEST_CASE("Sharpness is clamped and defaults to a usable value", "[render-scale]
     ve::GiSettings gi{};
     ve::DebugUiSettings debugUi{};
 
-    // Non-zero by default: a 0.5-scale frame without sharpening was judged too
-    // soft to use, and making the first feature usable must not need a second
-    // opt-in. It costs nothing at scale 1.0, where the renderer skips it.
+    // Non-zero by default: an A/B on the geometry stress scene, whose silhouette
+    // density sits at the render-resolution scale, showed the filter working, so
+    // the benefit is not hypothetical. It costs nothing at scale 1.0, where the
+    // renderer skips it. (Not justified by "0.5 is too soft" -- what makes 0.5
+    // bad without TAA is aliasing, which is TAA's job, not this filter's.)
     CHECK(renderScale.sharpness > 0.0f);
 
     renderScale.sharpness = 9.0f;
