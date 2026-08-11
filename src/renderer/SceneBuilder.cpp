@@ -442,6 +442,98 @@ bool SceneBuilder::appendCornellBox(std::vector<RenderObject>& objects, std::str
     return true;
 }
 
+bool SceneBuilder::appendStressScene(std::vector<RenderObject>& objects, std::string& status) const
+{
+    if (!cubeMesh_.valid() || !sphereMesh_.valid() || materials_.empty()) {
+        status = "Stress scene is unavailable: cube/sphere mesh or runtime materials are not initialized.";
+        Logger::warn(status);
+        return false;
+    }
+
+    const auto materialAt = [this](size_t materialIndex) -> const Material* {
+        return &materials_.at(materialIndex % materials_.size());
+    };
+
+    const auto add = [this, &objects](std::string debugName,
+                                      const Mesh& mesh,
+                                      const Material* material,
+                                      const glm::vec3& position,
+                                      const glm::vec3& scale) {
+        RenderObject object{};
+        object.debugId = allocateDebugId_();
+        object.sceneObjectId = object.debugId;
+        object.mesh = &mesh;
+        object.material = material;
+        object.debugName = std::move(debugName);
+        object.sourceType = RenderObjectSourceType::Stress;
+        object.transform.position = position;
+        object.transform.scale = scale;
+        // Static on purpose: an animated transform invalidates the depth
+        // pyramid every frame, which would leave occlusion culling with nothing
+        // to test against -- the opposite of what this scene is for.
+        object.animateTransform = false;
+        object.portfolioOnly = false;
+        object.hideInPortfolio = true;
+        objects.push_back(std::move(object));
+    };
+
+    objects.reserve(objects.size() + static_cast<size_t>(kStressObjectCount));
+
+    constexpr float kHalfSpanX = 0.5f * kStressGridSpacing * static_cast<float>(kStressGridColumns - 1);
+    constexpr float kHalfSpanZ = 0.5f * kStressGridSpacing * static_cast<float>(kStressGridRows - 1);
+
+    const size_t groundMaterial =
+        materials_.size() > kPortfolioGroundMaterialIndex ? kPortfolioGroundMaterialIndex : 0;
+    add("Stress Ground",
+        cubeMesh_,
+        materialAt(groundMaterial),
+        {0.0f, -0.6f, -kHalfSpanZ},
+        {kHalfSpanX * 2.4f, 0.4f, kHalfSpanZ * 2.4f});
+
+    // Slabs across the near half. The camera preset sits in front of them, so
+    // most of the grid behind is occluded and the Hi-Z test can reject it.
+    for (int occluder = 0; occluder < kStressOccluderCount; ++occluder) {
+        const float t = static_cast<float>(occluder) / static_cast<float>(kStressOccluderCount - 1);
+        const float x = -kHalfSpanX * 0.75f + t * kHalfSpanX * 1.5f;
+        add("Stress Occluder " + std::to_string(occluder),
+            cubeMesh_,
+            materialAt(static_cast<size_t>(occluder)),
+            {x, 6.0f, -kHalfSpanZ * 0.35f},
+            {kHalfSpanX * 0.22f, 12.0f, 1.2f});
+    }
+
+    for (int row = 0; row < kStressGridRows; ++row) {
+        for (int column = 0; column < kStressGridColumns; ++column) {
+            const float x = -kHalfSpanX + static_cast<float>(column) * kStressGridSpacing;
+            const float z = -static_cast<float>(row) * kStressGridSpacing;
+            const bool useSphere = ((row + column) % 2) == 0;
+            // Varied scale so LOD selection spans levels rather than pinning
+            // every item to one.
+            const float scale = 0.45f + 0.35f * static_cast<float>((row * 7 + column * 3) % 5) / 4.0f;
+
+            add("Stress " + std::string(useSphere ? "Sphere" : "Cube") + " r" + std::to_string(row) + " c" +
+                    std::to_string(column),
+                useSphere ? sphereMesh_ : cubeMesh_,
+                materialAt(static_cast<size_t>((row + column) % materials_.size())),
+                {x, scale, z},
+                {scale, scale, scale});
+        }
+    }
+
+    return true;
+}
+
+bool SceneBuilder::hasStressScene(const std::vector<RenderObject>& objects)
+{
+    for (const RenderObject& object : objects) {
+        if (object.sourceType == RenderObjectSourceType::Stress && object.mesh != nullptr) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 bool SceneBuilder::hasCornellBox(const std::vector<RenderObject>& objects)
 {
     size_t count = 0;

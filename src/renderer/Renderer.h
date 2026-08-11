@@ -478,6 +478,9 @@ private:
     // A closed, coloured room -- the one scene here that can show indirect light.
     void loadCornellBoxScene();
     void resetCornellBoxSceneToPreset();
+    void removeStressSceneObjects();
+    void resetStressSceneToPreset();
+    void loadStressScene();
     void enableOcclusionTestSettings();
     [[nodiscard]] bool previousFrameDepthValidForOcclusion() const;
     // Editor viewport interaction: free-fly/orbit camera, click-to-select picking,
@@ -915,6 +918,8 @@ private:
     bool occlusionTestSceneActive_ = false;
     bool cornellBoxSceneActive_ = false;
     std::string cornellBoxSceneStatus_ = "Cornell box inactive.";
+    bool stressSceneActive_ = false;
+    std::string stressSceneStatus_{"Stress scene inactive."};
     bool portfolioScreenshotRequested_ = false;
     bool normalMapAssetLoaded_ = false;
     bool metallicRoughnessMapAssetLoaded_ = false;
