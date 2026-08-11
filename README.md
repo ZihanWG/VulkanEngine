@@ -18,7 +18,7 @@ A **C++20 / Vulkan 1.3 real-time renderer** built as a graphics- and engine-prog
 | Area | What it does |
 | --- | --- |
 | **GPU-driven** | Bindless material textures, multi-draw indirect batching, compute frustum culling + two-phase Hi-Z occlusion culling (on by default), and per-draw-item discrete LOD selection in the same cull dispatch |
-| **Clustered lighting** | 16×9×24 froxel grid built in compute, per-cluster light culling, hundreds of dynamic point/spot lights via Forward+, cluster passes on an async compute queue overlapping the shadow passes |
+| **Clustered lighting** | 32×18×24 froxel grid built in compute, per-cluster light culling, hundreds of dynamic point/spot lights via Forward+, cluster passes on an async compute queue overlapping the shadow passes |
 | **Skeletal animation** | GPU linear-blend vertex skinning from a CPU joint-matrix palette, with a unit-tested animation core (keyframe sampling + hierarchy flatten) |
 | **PBR + IBL** | Cook-Torrance GGX, tangent-space normal mapping, prefiltered specular + diffuse irradiance + split-sum BRDF LUT, Kulla-Conty multi-scatter |
 | **Shadows** | PCF cascaded shadow maps with per-cascade GPU shadow-caster culling, an indirect shadow path, an alpha-tested pipeline so cutout casters throw perforated shadows, and a 4096px shadow atlas so spot and point lights cast too, with per-tile caching so only the tiles whose casters or light actually moved are redrawn |
@@ -51,7 +51,7 @@ Top-level ownership: `Application` → `Window` + `Renderer`; `Renderer` orchest
 
 The flagship subsystem ([`src/renderer/ClusteredLighting.*`](src/renderer/ClusteredLighting.h)) answers the classic "how do you handle a thousand lights?" question:
 
-1. **Froxel grid** — `cluster_build.comp` computes a per-cluster view-space AABB for a 16×9×24 grid (screen tiles × exponential depth slices), rebuilt from the inverse projection.
+1. **Froxel grid** — `cluster_build.comp` computes a per-cluster view-space AABB for a 32×18×24 grid (screen tiles × exponential depth slices), rebuilt from the inverse projection.
 2. **Light culling** — `light_cull.comp` transforms each light into view space and tests its bounding sphere against every froxel, writing a compact per-cluster light index list.
 3. **Shading** — the main HDR fragment shader resolves its froxel from `gl_FragCoord` + view depth and loops only the lights touching that cluster, reading the grid and index list through buffer-device-address pointers.
 
@@ -91,7 +91,7 @@ GPU linear-blend vertex skinning (`simple_skinned.vert`) driven by a per-frame j
 - Descriptor-indexing path for bindless material texture arrays, with a legacy descriptor-set fallback.
 - Render Graph 2.0: logical texture/buffer handles, pass read/write declarations, conservative automatic image transitions, selected buffer barrier inference, transient render targets, pass liveness metadata, and ImGui pass/resource visualization.
 - GPU frustum culling compute pass that compacts visible indirect draw commands, with two-phase Hi-Z occlusion culling on by default: phase 1 culls against the previous frame's depth pyramid, a mid-frame rebuild re-tests the occluded candidates, and rescued disocclusions draw in a second load-op main pass — no false negatives, no camera-still restriction.
-- Clustered (Forward+) lighting: compute-built 16×9×24 froxel grid, per-cluster GPU light culling, per-froxel point/spot evaluation, heatmap + brute-force toggle, unit-tested froxel math.
+- Clustered (Forward+) lighting: compute-built 32×18×24 froxel grid, per-cluster GPU light culling, per-froxel point/spot evaluation, heatmap + brute-force toggle, unit-tested froxel math.
 - Async compute: ClusterBuild/LightCull run on a dedicated compute queue overlapping the CSM shadow passes — submitted before graphics recording even starts, synchronized by a per-frame semaphore waited at the fragment stage, with concurrent-sharing buffers across queue families and a graphics-queue fallback when no async queue exists.
 - Skeletal animation: GPU linear-blend skinning from a per-frame joint-matrix palette, GPU-free unit-tested animation core, rigged/animated glTF import + procedural fallback.
 - Multi-draw indirect batching by mesh-compatible ranges on the bindless main path and shadow path.
@@ -215,7 +215,7 @@ One-line summary:
 Resume bullets:
 
 - Built a C++20 Vulkan 1.3 real-time renderer using Dynamic Rendering, Synchronization2, VMA, and Volk.
-- Implemented clustered (Forward+) lighting — a compute-built 16×9×24 froxel grid with GPU light culling — scaling to hundreds of dynamic point/spot lights, with a cluster heatmap debug view and unit-tested froxel math.
+- Implemented clustered (Forward+) lighting — a compute-built 32×18×24 froxel grid with GPU light culling — scaling to hundreds of dynamic point/spot lights, with a cluster heatmap debug view and unit-tested froxel math.
 - Implemented GPU skeletal animation: linear-blend vertex skinning from a per-frame joint-matrix palette, with a unit-tested, GPU-free animation core (keyframe sampling with slerp + skeleton hierarchy flatten).
 - Engineered a GPU-driven pipeline: bindless material textures, multi-draw indirect, GPU frustum culling, optional Hi-Z occlusion, and per-pass GPU timestamp profiling.
 - Implemented PBR/IBL shading, cascaded shadows, HDR post-processing, mip-chain bloom, and GPU histogram auto-exposure, organized behind a render graph with conservative barrier inference.

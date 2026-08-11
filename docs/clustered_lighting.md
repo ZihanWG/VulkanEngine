@@ -16,8 +16,8 @@ single source of truth for the grid dimensions and is unit-tested in
 
 ## Grid
 
-The grid is fixed at `kClusterGridX × kClusterGridY × kClusterGridZ` = 16×9×24 =
-3456 froxels. Tiles divide the screen in normalized space (`tile / dim`), and depth
+The grid is fixed at `kClusterGridX × kClusterGridY × kClusterGridZ` = 32×18×24 =
+13824 froxels. Tiles divide the screen in normalized space (`tile / dim`), and depth
 is sliced exponentially:
 
 ```
@@ -47,7 +47,7 @@ against the fragment lookup.
 
 The froxels depend only on the projection, so this pass is a candidate for
 rebuilding only on projection change. It currently runs each frame for simplicity;
-the cost is ~3456 invocations of cheap arithmetic.
+the cost is ~13824 invocations of cheap arithmetic.
 
 ## Light Assignment
 

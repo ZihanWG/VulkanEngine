@@ -6,7 +6,7 @@ is *decision → why → trade-offs → what I'd do with more time*.
 
 ## Clustered (Forward+) lighting
 
-**Decision.** Assign lights to a 16×9×24 view-space froxel grid in compute, then
+**Decision.** Assign lights to a 32×18×24 view-space froxel grid in compute, then
 shade each fragment against only the lights in its cluster.
 
 **Why.** A plain forward loop is `O(fragments × lights)` and collapses past a
