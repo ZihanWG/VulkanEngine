@@ -67,7 +67,7 @@ uses, so no separate flag is needed.
 The volume is addressed like the clustered lighting grid — screen tiles in XY,
 exponential slices in Z — but is deliberately *not* the same grid:
 
-- the light grid is 16x9x24, far too coarse to represent fog;
+- the light grid is 32x18x24, still far too coarse to represent fog;
 - fog wants its own, much nearer far plane (64 units by default, versus the
   scene's far plane) so its 64 slices land where fog is actually visible.
 
