@@ -7,11 +7,7 @@
 
 layout(local_size_x = 64) in;
 
-const uint kGridX = 16u;
-const uint kGridY = 9u;
-const uint kGridZ = 24u;
-const uint kClusterCount = kGridX * kGridY * kGridZ;
-const uint kMaxLightsPerCluster = 64u;
+#include "cluster_grid.glsl"
 
 struct GpuLight {
     vec4 positionRange;

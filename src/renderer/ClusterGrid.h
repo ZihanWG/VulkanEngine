@@ -18,11 +18,23 @@
 
 namespace ve::renderer {
 
-inline constexpr uint32_t kClusterGridX = 16;
-inline constexpr uint32_t kClusterGridY = 9;
+inline constexpr uint32_t kClusterGridX = 32;
+inline constexpr uint32_t kClusterGridY = 18;
 inline constexpr uint32_t kClusterGridZ = 24;
 inline constexpr uint32_t kClusterCount = kClusterGridX * kClusterGridY * kClusterGridZ;
 inline constexpr uint32_t kMaxLightsPerCluster = 64;
+
+// These four are mirrored in src/shaders/cluster_grid.glsl, which every shader
+// that addresses the grid includes. Nothing checks the two files agree, so they
+// have to be edited together -- a mismatch is silent, and shows up as fragments
+// reading a different froxel's light list than they belong to.
+//
+// Grid resolution is the main lever on the per-fragment light loop (~64% of
+// MainHDRPass by ablation): each XY tile covers drawable/kClusterGrid* pixels
+// and every fragment in it iterates every light assigned to the tile. Finer is
+// cheaper per fragment, but the light index list is preallocated at
+// kClusterCount * kMaxLightsPerCluster entries rather than compacted, so memory
+// grows linearly with the cluster count.
 
 // View-space depth slice for a positive linear depth, using the same exponential
 // distribution as the shaders: slice = log(z/zNear) / log(zFar/zNear) * gridZ.

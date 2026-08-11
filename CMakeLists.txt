@@ -414,6 +414,7 @@ endif()
 # shaders above and listed as build dependencies below.
 set(SHADER_INCLUDES
     "${SHADER_SOURCE_DIR}/object_frame_data.glsl"
+    "${SHADER_SOURCE_DIR}/cluster_grid.glsl"
 )
 
 if(GLSLC_EXECUTABLE)

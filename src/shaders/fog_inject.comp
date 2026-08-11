@@ -100,10 +100,7 @@ layout(buffer_reference, std430) readonly buffer ShadowSlotBuffer {
     GpuShadowSlot slots[];
 };
 
-// Cluster grid dimensions, matching ve::renderer::kClusterGrid*.
-const uint kClusterGridX = 16u;
-const uint kClusterGridY = 9u;
-const uint kClusterGridZ = 24u;
+#include "cluster_grid.glsl"
 
 layout(push_constant) uniform FogInjectPushConstants {
     LightBuffer lightBuffer;
