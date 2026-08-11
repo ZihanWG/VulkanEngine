@@ -4,6 +4,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <set>
 #include <string>
@@ -334,4 +335,77 @@ TEST_CASE("The two stress scenes are told apart by their source type", "[scene][
 
     CHECK(SceneBuilder::hasStressScene(objects));
     CHECK(SceneBuilder::hasFragmentStressScene(objects));
+}
+
+TEST_CASE("Portfolio objects standing on the floor intersect it rather than rest on it", "[scene]")
+{
+    // A bottom face landing exactly on the floor's top plane is coplanar
+    // z-fighting. It hid for a long time because a static camera resolves the
+    // depth test the same way every frame, so it read as a seam rather than a
+    // bug -- until TAA jitter started moving the rasterized position a fraction
+    // of a pixel per frame and the test began flipping, which showed up as a
+    // strip along the floor line flickering under the glass panes.
+    //
+    // Cheap to reintroduce (any new object authored with position.y =
+    // kPortfolioFloorTopY + scale.y * 0.5 has it) and expensive to notice, since
+    // nothing about the numbers looks wrong and it only manifests with TAA on.
+    Mesh cubeMesh;
+    Mesh sphereMesh;
+    std::vector<Material> materials = makePortfolioMaterials();
+    IdAllocator ids;
+    SceneBuilder builder(cubeMesh, sphereMesh, materials, std::ref(ids));
+
+    std::vector<RenderObject> objects;
+    builder.appendPortfolioShowcase(objects);
+
+    const auto bottomY = [](const RenderObject& object) {
+        // The cube mesh spans [-0.5, 0.5], so scale is the full extent.
+        return object.transform.position.y - object.transform.scale.y * 0.5f;
+    };
+
+    const std::array<const char*, 3> standingObjects{
+        "Portfolio Cutout Panel",
+        "Portfolio Glass Pane Near",
+        "Portfolio Glass Pane Far",
+    };
+
+    for (const char* name : standingObjects) {
+        const auto found = std::find_if(objects.begin(), objects.end(), [name](const RenderObject& object) {
+            return object.debugName == name;
+        });
+        REQUIRE(found != objects.end());
+
+        INFO("object: " << name);
+        // Strictly below the floor's top plane, by enough that no depth
+        // interpolation can make the comparison ambiguous.
+        CHECK(bottomY(*found) < ve::renderer::kPortfolioFloorTopY - 0.5f * ve::renderer::kPortfolioFloorSinkDepth);
+    }
+}
+
+TEST_CASE("Resetting the showcase does not restore the coplanar contact", "[scene]")
+{
+    // The reset preset is a second, independent copy of every transform, so it
+    // is its own opportunity to reintroduce the z-fight -- and pressing Reset is
+    // exactly what someone does after noticing the flicker.
+    Mesh cubeMesh;
+    Mesh sphereMesh;
+    std::vector<Material> materials = makePortfolioMaterials();
+    IdAllocator ids;
+    SceneBuilder builder(cubeMesh, sphereMesh, materials, std::ref(ids));
+
+    std::vector<RenderObject> objects;
+    builder.appendPortfolioShowcase(objects);
+
+    for (RenderObject& object : objects) {
+        object.transform.position.y = 3.0f;
+    }
+    SceneBuilder::resetPortfolioShowcaseToPreset(objects);
+
+    const auto found = std::find_if(objects.begin(), objects.end(), [](const RenderObject& object) {
+        return object.debugName == "Portfolio Glass Pane Near";
+    });
+    REQUIRE(found != objects.end());
+
+    const float bottom = found->transform.position.y - found->transform.scale.y * 0.5f;
+    CHECK(bottom < ve::renderer::kPortfolioFloorTopY - 0.5f * ve::renderer::kPortfolioFloorSinkDepth);
 }

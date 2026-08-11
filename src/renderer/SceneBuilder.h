@@ -41,6 +41,26 @@ constexpr size_t kPortfolioCutoutLatticeMaterialIndex = 11;
 // glTF BLEND material for the transparency demo. Sorted back to front and drawn
 // in the dedicated transparent pass, after every screen-space effect.
 constexpr size_t kPortfolioGlassMaterialIndex = 12;
+
+// Top surface of the portfolio studio floor: position -0.56 + half of its 0.08
+// thickness. The cube mesh spans [-0.5, 0.5], so an object's scale is its full
+// extent and its bottom face is position.y - scale.y * 0.5.
+constexpr float kPortfolioFloorTopY = -0.52f;
+
+// How far an object that "stands on" the floor is sunk into it.
+//
+// Landing a bottom face exactly on kPortfolioFloorTopY is coplanar z-fighting,
+// and TAA turns that from a cosmetic problem into a visible one: jitter moves
+// the rasterized position by a fraction of a pixel every frame, so the
+// interpolated depth at each pixel centre changes and the depth test flips
+// between frames. The glass panes showed it worst -- they only depth-test, so a
+// flip toggles whether the pixel has glass on it at all -- as a strip along the
+// floor line that flickered with TAA on and froze the moment jitter was
+// disabled.
+//
+// Intersecting rather than kissing removes the ambiguity: the bottom face ends
+// up inside the floor slab (which spans 0.08), so it is unambiguously occluded.
+constexpr float kPortfolioFloorSinkDepth = 0.02f;
 // Cornell box surfaces. Saturated and matte on purpose: colour bleeding is
 // proportional to how saturated the bouncing surface is, and any specular would
 // be lost in a convolution over 8x8 directions anyway.
