@@ -34,7 +34,16 @@ public:
     [[nodiscard]] VkImageLayout imageLayout(uint32_t index) const { return imageLayouts_.at(index); }
     void setImageLayout(uint32_t index, VkImageLayout layout) { imageLayouts_.at(index) = layout; }
 
+    // The main depth image is sized independently of the presentation images so
+    // the scene can be rendered at a reduced internal resolution (see
+    // renderer/RenderScale.h). (Re)creating the swapchain resets it to match
+    // extent(); Renderer then calls resizeDepthImage with the render extent once
+    // it knows the new swapchain size. The device must be idle -- this destroys
+    // an image in-flight frames may still reference.
+    void resizeDepthImage(VkExtent2D extent);
+
     [[nodiscard]] VkFormat depthFormat() const { return depthFormat_; }
+    [[nodiscard]] VkExtent2D depthExtent() const { return depthExtent_; }
     [[nodiscard]] bool depthSupportsSampling() const { return depthSupportsSampling_; }
     [[nodiscard]] VkImage depthImage() const { return depthImage_.image(); }
     [[nodiscard]] VkImageView depthImageView() const { return depthImage_.imageView(); }
@@ -69,7 +78,10 @@ private:
     std::vector<VkImageLayout> imageLayouts_;
 
     // Created now so triangle/depth work can use the same swapchain lifetime.
+    // depthExtent_ tracks its size separately from extent_ because render scale
+    // lets the two differ.
     VulkanImage depthImage_;
+    VkExtent2D depthExtent_{};
     VkImageLayout depthImageLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 };
 

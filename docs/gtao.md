@@ -63,6 +63,10 @@ full resolution using the full-res depth buffer to reject taps on other surfaces
 so silhouettes stay sharp. Measured on macOS/MoltenVK (Debug): the trace dropped
 from ~9.7 ms full-res to ~2.7 ms, plus ~0.6 ms for the upsample.
 
+"Full resolution" here means the internal render extent, not the window: under a
+render scale below 1.0 both targets shrink with everything else, and the trace
+stays half of whatever that is. See [render_scale.md](render_scale.md).
+
 ## Controls
 
 `Ambient Occlusion (GTAO)` panel / `SsaoSettings`: `enabled`, `radius` (view

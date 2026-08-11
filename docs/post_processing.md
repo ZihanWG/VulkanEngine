@@ -4,7 +4,7 @@ Phase 6A added mip-chain bloom and moved automatic exposure use into a GPU-reada
 
 ## HDR Scene Color
 
-`MainHDRPass` writes linear HDR skybox and mesh lighting to `SceneColorHDR`, a full-resolution `VK_FORMAT_R16G16B16A16_SFLOAT` image. The image is recreated with the swapchain and is sampled directly by post-processing when TAA is disabled.
+`MainHDRPass` writes linear HDR skybox and mesh lighting to `SceneColorHDR`, a `VK_FORMAT_R16G16B16A16_SFLOAT` image at the internal render extent (the swapchain extent unless render scale is below 1.0 -- see [render_scale.md](render_scale.md)). The image is recreated with the swapchain and is sampled directly by post-processing when TAA is disabled.
 
 When TAA is enabled, `TAAResolvePass` samples `SceneColorHDR` and the previous HDR history image, writes the resolved result to the current history image, and routes bloom, luminance, histogram exposure, composite, and render-target debug previews through that resolved history image.
 
@@ -14,7 +14,7 @@ TAA is disabled by default and is controlled from the `Temporal AA` ImGui panel 
 
 - Main skybox and mesh rendering use an 8-sample Halton jitter applied to the projection matrix.
 - CPU frustum culling, CSM setup, and depth-pyramid validity continue to use the unjittered view-projection matrix.
-- Two full-resolution `VK_FORMAT_R16G16B16A16_SFLOAT` history images ping-pong across frames.
+- Two `VK_FORMAT_R16G16B16A16_SFLOAT` history images at the render extent ping-pong across frames.
 - The first valid frame, resize, camera reset/edit, scene load, portfolio mode transition, material save/reload, and explicit UI reset invalidate history.
 - The resolve shader clamps previous history to the current frame's 3x3 color neighborhood before feedback blending.
 - Bloom, exposure, and composite descriptor variants select either `SceneColorHDR` or resolved TAA history as the active HDR source.

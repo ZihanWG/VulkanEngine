@@ -30,6 +30,7 @@ PostProcessStack::PostProcessStack(rhi::VulkanContext& context,
                                    RenderGraph& renderGraph,
                                    GpuProfiler& gpuProfiler,
                                    rhi::VulkanSwapchain& swapchain,
+                                   const RenderResolution& renderResolution,
                                    ToneMappingSettings& toneMappingSettings,
                                    BloomSettings& bloomSettings,
                                    TaaSettings& taaSettings,
@@ -39,7 +40,7 @@ PostProcessStack::PostProcessStack(rhi::VulkanContext& context,
                                    float& histogramClippedLuminance,
                                    bool& ssaoAvailable)
     : context_(context), renderGraph_(renderGraph), gpuProfiler_(gpuProfiler), swapchain_(swapchain),
-      toneMappingSettings_(toneMappingSettings), bloomSettings_(bloomSettings), taaSettings_(taaSettings),
+      renderResolution_(renderResolution), toneMappingSettings_(toneMappingSettings), bloomSettings_(bloomSettings), taaSettings_(taaSettings),
       ssaoSettings_(ssaoSettings), currentExposure_(currentExposure), averageLuminance_(averageLuminance),
       histogramClippedLuminance_(histogramClippedLuminance), ssaoAvailable_(ssaoAvailable)
 {}
@@ -93,9 +94,12 @@ void PostProcessStack::createPostProcessResources(VkImageView depthFallbackView,
     depthFallbackView_ = depthFallbackView;
     frameCount_ = frameCount;
 
-    const VkExtent2D extent = swapchain_.extent();
+    // Every target created here is an *internal* one, so all of them follow the
+    // render extent rather than the swapchain. The composite's output is the one
+    // exception and it writes straight to the swapchain image.
+    const VkExtent2D extent = renderResolution_.extent();
     if (extent.width == 0 || extent.height == 0) {
-        throw std::runtime_error("Cannot create post-process resources for a zero-sized swapchain extent.");
+        throw std::runtime_error("Cannot create post-process resources for a zero-sized render extent.");
     }
 
     postProcessDescriptorPool_.reset();
@@ -330,7 +334,10 @@ void PostProcessStack::recordCompositeCommands(VkCommandBuffer commandBuffer,
     rhi::debug::beginLabel(commandBuffer, "CompositePass");
     const bool compositeProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "CompositePass");
     renderGraph_.beginCompositePass();
-    setViewportAndScissor(commandBuffer, swapchain_.extent());
+    // The one pass that runs at presentation resolution: it samples the scene
+    // colour with a linear sampler over normalised UVs, so a reduced render
+    // extent upscales here for free.
+    setViewportAndScissor(commandBuffer, renderResolution_.outputExtent());
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, compositePipeline_.pipeline());
     const VkDescriptorSet compositeDescriptorSet = activeCompositeDescriptorSet();
     vkCmdBindDescriptorSets(commandBuffer,
@@ -523,9 +530,9 @@ void PostProcessStack::createTaaResources()
 {
     destroyTaaResources();
 
-    const VkExtent2D extent = swapchain_.extent();
+    const VkExtent2D extent = renderResolution_.extent();
     if (extent.width == 0 || extent.height == 0) {
-        throw std::runtime_error("Cannot create TAA history resources for a zero-sized swapchain extent.");
+        throw std::runtime_error("Cannot create TAA history resources for a zero-sized render extent.");
     }
 
     rhi::VulkanImageCreateInfo historyInfo{};
@@ -2229,7 +2236,7 @@ void PostProcessStack::recordMipChainBloomCommands(VkCommandBuffer commandBuffer
     const bool downsampleProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "Bloom Downsample Chain");
     rhi::debug::beginLabel(commandBuffer, "Bloom Downsample Chain");
     for (uint32_t level = 0; level < bloomMipDownsampleImages_.size(); ++level) {
-        const VkExtent2D sourceExtent = level == 0 ? swapchain_.extent()
+        const VkExtent2D sourceExtent = level == 0 ? renderResolution_.extent()
                                                    : VkExtent2D{bloomMipDownsampleImages_[level - 1].extent().width,
                                                                 bloomMipDownsampleImages_[level - 1].extent().height};
         const VkExtent3D outputExtent = bloomMipDownsampleImages_[level].extent();

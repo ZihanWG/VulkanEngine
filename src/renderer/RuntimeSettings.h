@@ -258,7 +258,33 @@ struct GiSettings {
     bool debugIrradianceOnly = false;
 };
 
+// Internal render resolution as a fraction of the presentation resolution. The
+// scale itself and its bounds live in renderer/RenderScale.h, which this header
+// deliberately does not include -- the clamp is applied in RuntimeSettings.cpp,
+// which may pull in renderer headers, while this header stays a plain
+// description of what is persisted.
+struct RenderScaleSettings {
+    float scale = 1.0f;
+};
+
+// Drives RenderScaleSettings::scale from measured GPU frame time. Off by
+// default: a portfolio engine is usually being *measured*, and a resolution that
+// moves under you invalidates every comparison. The controller itself lives in
+// renderer/DynamicResolution.h, which is where the tuning constants are too --
+// only the four values a user would actually want to set are persisted.
+struct DynamicResolutionSettings {
+    bool enabled = false;
+    // Ceiling on GPU frame total, not an average to hover on: the controller
+    // lowers the scale above this and only raises it once there is a clear
+    // margin below. 16.67 ms is the 60 Hz budget.
+    float targetFrameMs = 16.67f;
+    float minScale = 0.5f;
+    float maxScale = 1.0f;
+};
+
 struct RuntimeSettings {
+    RenderScaleSettings renderScale;
+    DynamicResolutionSettings dynamicResolution;
     ToneMappingSettings toneMapping;
     BloomSettings bloom;
     TaaSettings taa;
@@ -295,7 +321,9 @@ struct RuntimeSettings {
 // (tone-mapping, bloom, TAA, cascade, and debug-UI preview fields). Renderer
 // state that is not part of these structs (e.g. GPU occlusion tuning) is clamped
 // separately by the caller. Pure and unit-tested.
-void clampRuntimeSettings(ToneMappingSettings& toneMapping,
+void clampRuntimeSettings(RenderScaleSettings& renderScale,
+                          DynamicResolutionSettings& dynamicResolution,
+                          ToneMappingSettings& toneMapping,
                           BloomSettings& bloom,
                           TaaSettings& taa,
                           SsrSettings& ssr,

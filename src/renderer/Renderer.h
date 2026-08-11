@@ -13,6 +13,7 @@
 #include "renderer/PunctualShadows.h"
 #include "renderer/VolumetricFogPass.h"
 #include "renderer/DepthPyramid.h"
+#include "renderer/DynamicResolution.h"
 #include "renderer/GpuCulling.h"
 #include "renderer/FrameResources.h"
 #include "renderer/GpuProfiler.h"
@@ -21,6 +22,7 @@
 #include "renderer/PostProcessStack.h"
 #include "renderer/RenderGraph.h"
 #include "renderer/RenderObject.h"
+#include "renderer/RenderResolution.h"
 #include "renderer/RuntimeSettings.h"
 #include "renderer/SceneBuilder.h"
 #include "renderer/GroundTruthAmbientOcclusion.h"
@@ -390,6 +392,18 @@ private:
     [[nodiscard]] const renderer::Material* resolveMaterial(const renderer::RenderObject& object,
                                                             const renderer::MeshPrimitive* primitive) const;
     void recreateSwapchain();
+    // Rebuilds renderResolution_ from the current swapchain extent + scale, and
+    // resizes the main depth image to match. Called from recreateSwapchain, and
+    // once during initialization before any sized resource is created.
+    void updateRenderResolution();
+    // Resizes every screen-space target to a new render scale. Cheaper than
+    // recreateSwapchain: the swapchain, its semaphores and the ImGui backend are
+    // untouched, since only the internal resolution moved.
+    void applyRenderScaleChange();
+    // Feeds the dynamic-resolution controller and writes back the scale it asks
+    // for. Called once per frame after the GPU timing readback; the write is
+    // picked up by the same drawFrame check a UI edit goes through.
+    void updateDynamicResolution();
     void recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     void recordGpuCullingCommands(VkCommandBuffer commandBuffer);
     void recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer, uint32_t cascadeIndex);
@@ -497,6 +511,7 @@ private:
     // CollapsingHeader, matching the existing drawXxxDebugUi pattern.
     void drawDebugViewToggles();
     void drawControlsDebugUi();
+    void drawRenderScaleDebugUi();
     void drawToneMappingDebugUi();
     void drawBloomDebugUi();
     void drawSsaoDebugUi();
@@ -583,6 +598,31 @@ private:
     std::vector<renderer::FrameResources> frames_;
     renderer::GpuProfiler gpuProfiler_;
     rhi::VulkanSwapchain swapchain_;
+    // The internal render resolution, recomputed in recreateSwapchain and
+    // borrowed by every subsystem that sizes a screen-space target. Declared
+    // here, next to the swapchain it derives from and well before those
+    // subsystems, since they hold a reference to it.
+    renderer::RenderResolution renderResolution_;
+    // The persisted scale renderResolution_ is rebuilt from. Kept separate so a
+    // UI edit is just a settings change: drawFrame notices the two disagree and
+    // routes the resize through recreateSwapchain.
+    RenderScaleSettings renderScaleSettings_{};
+    DynamicResolutionSettings dynamicResolutionSettings_{};
+    // Decides the scale from measured GPU frame time; owns no GPU state, so it
+    // sits with the settings rather than with the subsystems.
+    renderer::DynamicResolutionController dynamicResolution_;
+    // Wall-clock cost of the last applyRenderScaleChange, in ms. This is the
+    // honest price of rebuilding targets on change rather than sub-rendering into
+    // max-sized ones, so it is measured and shown rather than assumed small.
+    float lastRenderScaleApplyMs_ = 0.0f;
+    // GPU frame total from a timestamp readback that landed this frame, zero when
+    // none did. Written by pushGpuTimingSample and consumed once by
+    // updateDynamicResolution.
+    float freshGpuFrameMs_ = 0.0f;
+    // In-progress value of the render-scale slider. Committing a scale rebuilds
+    // every screen-sized target, so the drag edits this and only writes through
+    // to renderScaleSettings_ when it ends.
+    float pendingRenderScale_ = 1.0f;
     renderer::RenderGraph renderGraph_;
     assets::AssetManager assetManager_;
     ui::ImGuiLayer imguiLayer_;
@@ -949,6 +989,7 @@ private:
                                             renderGraph_,
                                             gpuProfiler_,
                                             swapchain_,
+                                            renderResolution_,
                                             toneMappingSettings_,
                                             bloomSettings_,
                                             taaSettings_,
@@ -961,17 +1002,19 @@ private:
     // Screen-space reflections: view-space march against main depth using the
     // thin G-buffer, additively blended into scene color before TAA. Declared
     // after the services + settings it borrows.
-    renderer::ScreenSpaceReflections ssr_{context_, swapchain_, renderGraph_, gpuProfiler_, ssrSettings_};
+    renderer::ScreenSpaceReflections ssr_{context_, swapchain_, renderResolution_, renderGraph_, gpuProfiler_,
+                                          ssrSettings_};
 
     // Ground-truth ambient occlusion: horizon-search pass reading main depth +
     // the thin G-buffer normal, writing the visibility target the composite
     // multiplies into scene color. Borrows the same services + the SSAO settings.
-    renderer::GroundTruthAmbientOcclusion gtao_{context_, swapchain_, renderGraph_, gpuProfiler_, ssaoSettings_};
+    renderer::GroundTruthAmbientOcclusion gtao_{context_,       swapchain_,   renderResolution_,
+                                                renderGraph_, gpuProfiler_, ssaoSettings_};
 
     // Hi-Z depth pyramid subsystem. Like postProcess_, it owns its GPU resources
     // and borrows the rendering services by reference, so it is declared last to
     // guarantee those are constructed first.
-    renderer::DepthPyramid depthPyramid_{context_, swapchain_, renderGraph_, gpuProfiler_};
+    renderer::DepthPyramid depthPyramid_{context_, swapchain_, renderResolution_, renderGraph_, gpuProfiler_};
 
     // GPU-driven visibility culling (main frustum/occlusion + per-cascade shadow).
     // Owns its cull pipeline/descriptors/buffers; borrows the services, the depth

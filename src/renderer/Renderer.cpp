@@ -150,6 +150,9 @@ Renderer::Renderer(Window& window) : window_(window)
         context_, static_cast<uint32_t>(frames_.size()), portfolioScreenshotDirectory());
     gpuProfiler_.initialize(context_, static_cast<uint32_t>(frames_.size()));
     swapchain_.initialize(context_, window_.framebufferExtent());
+    // Before anything screen-sized is created below: every one of those targets
+    // reads its size from renderResolution_.
+    updateRenderResolution();
     imguiLayer_.initialize(window_, context_, swapchain_.colorFormat(), swapchain_.imageCount());
     createMaterialDescriptorSetLayout();
     createBindlessMaterialTextureHeap();
@@ -272,6 +275,12 @@ void Renderer::drawFrame()
         recreateSwapchain();
         window_.clearResizedFlag();
     }
+    // A render-scale change resizes the same targets a window resize does, so it
+    // is applied here at the top of the frame rather than wherever it was
+    // requested -- the UI slider, or the dynamic-resolution controller below.
+    if (renderResolution_.scale() != renderScaleSettings_.scale) {
+        applyRenderScaleChange();
+    }
 
     renderer::FrameResources& frame = frames_[currentFrame_];
     VK_CHECK(vkWaitForFences(context_.vkDevice(), 1, &frame.inFlightFence, VK_TRUE, UINT64_MAX));
@@ -279,6 +288,9 @@ void Renderer::drawFrame()
     postProcess_.updateAutoExposureFromReadback(currentFrame_);
     tryPrintExposureStats();
     tryPrintGpuTimings(currentFrame_);
+    // Straight after the readback that refreshes gpuFrameTimeHistory_, so the
+    // controller always sees the freshest GPU frame total available.
+    updateDynamicResolution();
     pushCullingHistorySample(currentFrame_);
     pushExposureHistorySample();
 
@@ -940,6 +952,11 @@ void Renderer::pushGpuTimingSample(const renderer::GpuProfiler::FrameResults& re
     }
 
     gpuFrameTimeHistory_.push(historyValue(results.totalGpuTimeMs));
+    // Flags this as a *new* reading for the dynamic-resolution controller, which
+    // must not see the same frame time twice: repeats would fill its median
+    // window with duplicates of one sample and defeat the outlier rejection.
+    // gpuFrameTimeHistory_.latest() cannot distinguish the two on its own.
+    freshGpuFrameMs_ = results.totalGpuTimeMs;
     for (const renderer::GpuProfiler::ScopeResult& scope : results.scopes) {
         if (DebugHistory* history = gpuTimingHistoryForPass(scope.name)) {
             history->push(historyValue(scope.elapsedMs));
@@ -1187,6 +1204,11 @@ void Renderer::loadRuntimeSettingsAtStartup()
 void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSettingsApplyMode mode)
 {
     const TaaSettings previousTaaSettings = taaSettings_;
+    // Assigned like any other setting; drawFrame notices renderResolution_ has
+    // gone stale against it and routes the resize through recreateSwapchain,
+    // which is the only point in the frame where destroying targets is safe.
+    renderScaleSettings_ = settings.renderScale;
+    dynamicResolutionSettings_ = settings.dynamicResolution;
     toneMappingSettings_ = settings.toneMapping;
     bloomSettings_ = settings.bloom;
     taaSettings_ = settings.taa;
@@ -1260,6 +1282,8 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
 RuntimeSettings Renderer::captureRuntimeSettings() const
 {
     RuntimeSettings settings{};
+    settings.renderScale = renderScaleSettings_;
+    settings.dynamicResolution = dynamicResolutionSettings_;
     settings.toneMapping = toneMappingSettings_;
     settings.bloom = bloomSettings_;
     settings.taa = taaSettings_;
@@ -1390,8 +1414,8 @@ void Renderer::clampRuntimeSettings()
     // The settings-struct clamping is GPU-independent and lives in
     // RuntimeSettings.cpp (compiled into VulkanEngineCore) so it can be tested.
     ve::clampRuntimeSettings(
-        toneMappingSettings_, bloomSettings_, taaSettings_, ssrSettings_, ssaoSettings_, fogSettings_,
-        csmSettings_, lodSettings_, giSettings_, debugUiSettings_);
+        renderScaleSettings_, dynamicResolutionSettings_, toneMappingSettings_, bloomSettings_, taaSettings_,
+        ssrSettings_, ssaoSettings_, fogSettings_, csmSettings_, lodSettings_, giSettings_, debugUiSettings_);
 
     // Pushed here rather than at each edit site: clampRuntimeSettings runs after
     // every settings change (load, UI edit, reset), so the volume's copy of the
@@ -1410,6 +1434,69 @@ void Renderer::clampRuntimeSettings()
     }
 }
 
+void Renderer::updateRenderResolution()
+{
+    renderResolution_.update(swapchain_.extent(), renderScaleSettings_.scale);
+    // The main depth buffer belongs to the swapchain but is sized with the other
+    // internal targets, so it is resized here rather than inside the swapchain's
+    // own (re)creation, which does not know the scale. A no-op at scale 1.0.
+    if (renderResolution_.extent().width > 0 && renderResolution_.extent().height > 0) {
+        swapchain_.resizeDepthImage(renderResolution_.extent());
+    }
+    if (!renderResolution_.isNative()) {
+        Logger::info("Render scale " + std::to_string(renderResolution_.scale()) + ": rendering at " +
+                     std::to_string(renderResolution_.extent().width) + "x" +
+                     std::to_string(renderResolution_.extent().height) + ", presenting at " +
+                     std::to_string(renderResolution_.outputExtent().width) + "x" +
+                     std::to_string(renderResolution_.outputExtent().height));
+    }
+}
+
+void Renderer::applyRenderScaleChange()
+{
+    if (window_.isMinimized()) {
+        return;
+    }
+
+    const auto begin = std::chrono::steady_clock::now();
+
+    // Everything below destroys images earlier frames may still be reading.
+    context_.waitIdle();
+    updateRenderResolution();
+    recreatePostProcessResources();
+    // Both histories were written at the previous resolution, so neither can be
+    // reprojected into the new one. The pyramid is a frame of occlusion data at
+    // the old size and would reject visible geometry if it were trusted.
+    invalidateTaaHistory();
+    invalidateDepthPyramid();
+
+    lastRenderScaleApplyMs_ = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - begin).count();
+    Logger::info("Render scale applied: " + std::to_string(renderResolution_.extent().width) + "x" +
+                 std::to_string(renderResolution_.extent().height) + " in " +
+                 std::to_string(lastRenderScaleApplyMs_) + " ms");
+}
+
+void Renderer::updateDynamicResolution()
+{
+    // Zero means "no new measurement", which is what the controller expects on
+    // the frames where no timestamp readback landed. Consumed here so the next
+    // frame does not see it again.
+    const float gpuFrameMs = freshGpuFrameMs_;
+    freshGpuFrameMs_ = 0.0f;
+
+    const float scale =
+        dynamicResolution_.update(gpuFrameMs, renderScaleSettings_.scale, dynamicResolutionSettings_);
+    if (scale == renderScaleSettings_.scale) {
+        return;
+    }
+
+    // Written into the setting, not applied here: this runs mid-frame, and the
+    // top-of-frame check is the only place a rebuild is safe. That also keeps the
+    // controller's output visible on the slider and in the saved settings.
+    renderScaleSettings_.scale = scale;
+    pendingRenderScale_ = scale;
+}
+
 void Renderer::recreateSwapchain()
 {
     if (window_.isMinimized()) {
@@ -1418,6 +1505,10 @@ void Renderer::recreateSwapchain()
 
     context_.waitIdle();
     swapchain_.recreate(context_, window_.framebufferExtent());
+    // The render extent can only be derived once the swapchain has picked its
+    // actual size (surface capabilities may not grant the requested one), and
+    // everything below is sized off it -- so this is the first thing after.
+    updateRenderResolution();
     sync_.recreateRenderFinishedSemaphores(swapchain_.imageCount());
     imguiLayer_.onSwapchainRecreated(swapchain_.colorFormat(), swapchain_.imageCount());
     recreatePostProcessResources();

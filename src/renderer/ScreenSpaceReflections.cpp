@@ -33,11 +33,12 @@ static_assert(sizeof(SsrParams) == 224);
 
 ScreenSpaceReflections::ScreenSpaceReflections(rhi::VulkanContext& context,
                                                rhi::VulkanSwapchain& swapchain,
+                                               const RenderResolution& renderResolution,
                                                RenderGraph& renderGraph,
                                                GpuProfiler& gpuProfiler,
                                                SsrSettings& settings)
-    : context_(context), swapchain_(swapchain), renderGraph_(renderGraph), gpuProfiler_(gpuProfiler),
-      settings_(settings)
+    : context_(context), swapchain_(swapchain), renderResolution_(renderResolution), renderGraph_(renderGraph),
+      gpuProfiler_(gpuProfiler), settings_(settings)
 {
 }
 
@@ -104,7 +105,7 @@ void ScreenSpaceReflections::createResources(VkImageView normalRoughnessView, ui
             throw std::runtime_error("SSR requires the thin G-buffer image view.");
         }
 
-        const VkExtent2D extent = swapchain_.extent();
+        const VkExtent2D extent = renderResolution_.extent();
         rhi::VulkanImageCreateInfo copyInfo{};
         copyInfo.width = extent.width;
         copyInfo.height = extent.height;

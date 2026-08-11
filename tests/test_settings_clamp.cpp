@@ -15,6 +15,8 @@ using ve::ExposureMode;
 using ve::FogSettings;
 using ve::GiSettings;
 using ve::LodSettings;
+using ve::DynamicResolutionSettings;
+using ve::RenderScaleSettings;
 using ve::exposureModeValue;
 using ve::SsaoSettings;
 using ve::TaaSettings;
@@ -25,6 +27,8 @@ namespace {
 
 // Run the clamp over fresh structs the caller can pre-mutate.
 struct Settings {
+    RenderScaleSettings renderScale;
+    DynamicResolutionSettings dynamicResolution;
     ToneMappingSettings toneMapping;
     BloomSettings bloom;
     TaaSettings taa;
@@ -36,7 +40,11 @@ struct Settings {
     GiSettings gi;
     DebugUiSettings debugUi;
 
-    void clamp() { clampRuntimeSettings(toneMapping, bloom, taa, ssr, ssao, fog, csm, lod, gi, debugUi); }
+    void clamp()
+    {
+        clampRuntimeSettings(
+            renderScale, dynamicResolution, toneMapping, bloom, taa, ssr, ssao, fog, csm, lod, gi, debugUi);
+    }
 };
 
 } // namespace

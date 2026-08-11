@@ -17,6 +17,7 @@
 // caller: createResources() reports capability through buildAvailable(), and the
 // Renderer flips its useGpuOcclusionCulling_ flag accordingly.
 
+#include "renderer/RenderResolution.h"
 #include "rhi/VulkanCommon.h"
 #include "rhi/VulkanComputePipeline.h"
 #include "rhi/VulkanDescriptor.h"
@@ -44,6 +45,7 @@ class DepthPyramid final {
 public:
     DepthPyramid(rhi::VulkanContext& context,
                  rhi::VulkanSwapchain& swapchain,
+                 const RenderResolution& renderResolution,
                  RenderGraph& renderGraph,
                  GpuProfiler& gpuProfiler);
     ~DepthPyramid();
@@ -100,6 +102,7 @@ public:
 private:
     rhi::VulkanContext& context_;
     rhi::VulkanSwapchain& swapchain_;
+    const RenderResolution& renderResolution_;
     RenderGraph& renderGraph_;
     GpuProfiler& gpuProfiler_;
 
