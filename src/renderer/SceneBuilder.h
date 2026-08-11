@@ -74,6 +74,20 @@ constexpr int kStressObjectCount =
     1 + kStressOccluderCount + (kStressGridColumns * kStressGridRows);
 constexpr float kStressGridSpacing = 2.2f;
 
+// Fragment stress. The geometry stress scene above loads culling and CPU frame
+// prep, but it runs *faster* than the default scene because its objects are
+// small on screen -- MainHDRPass is fragment-bound, so screen coverage is what
+// costs, not object count.
+//
+// This one is the opposite: a handful of large slabs stacked in depth, each
+// filling the frame, so every pixel is shaded several times over. Paired with a
+// dense light cluster (see updateDemoLights) it drives the per-fragment light
+// loop, which ablation put at ~64% of MainHDRPass.
+constexpr int kFragmentStressLayerCount = 6;
+constexpr int kFragmentStressObjectCount = kFragmentStressLayerCount + 1;
+constexpr int kFragmentStressLightCount = 192;
+constexpr float kFragmentStressLightRange = 14.0f;
+
 class SceneBuilder {
 public:
     SceneBuilder(const Mesh& cubeMesh,
@@ -106,6 +120,10 @@ public:
     // kStressGridColumns x kStressGridRows grid alternating cube and sphere.
     bool appendStressScene(std::vector<RenderObject>& objects, std::string& status) const;
 
+    // Appends the fragment stress scene: overlapping full-frame slabs whose
+    // whole purpose is overdraw and screen coverage.
+    bool appendFragmentStressScene(std::vector<RenderObject>& objects, std::string& status) const;
+
     // Restores the showcase objects' transforms/visibility to their authored
     // preset. Pure operation on an existing object list (the caller is responsible
     // for any GPU-state invalidation that should follow).
@@ -115,6 +133,7 @@ public:
     [[nodiscard]] static bool hasOcclusionTest(const std::vector<RenderObject>& objects);
     [[nodiscard]] static bool hasCornellBox(const std::vector<RenderObject>& objects);
     [[nodiscard]] static bool hasStressScene(const std::vector<RenderObject>& objects);
+    [[nodiscard]] static bool hasFragmentStressScene(const std::vector<RenderObject>& objects);
 
 private:
     const Mesh& cubeMesh_;

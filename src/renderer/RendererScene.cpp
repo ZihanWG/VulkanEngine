@@ -272,6 +272,63 @@ void Renderer::resetOcclusionTestSceneToPreset()
     invalidateTaaHistory();
 }
 
+void Renderer::removeFragmentStressSceneObjects()
+{
+    const auto firstRemoved = std::remove_if(renderObjects_.begin(), renderObjects_.end(), [](const auto& object) {
+        return object.sourceType == renderer::RenderObjectSourceType::FragmentStress;
+    });
+
+    if (firstRemoved != renderObjects_.end()) {
+        const size_t firstRemovedIndex = static_cast<size_t>(firstRemoved - renderObjects_.begin());
+        if (selectedRenderObjectIndex_ >= firstRemovedIndex) {
+            selectedRenderObjectIndex_ = kInvalidRenderObjectIndex;
+        }
+        renderObjects_.erase(firstRemoved, renderObjects_.end());
+    }
+
+    invalidateDepthPyramid();
+    invalidateTaaHistory();
+}
+
+void Renderer::resetFragmentStressSceneToPreset()
+{
+    removeFragmentStressSceneObjects();
+    makeSceneBuilder().appendFragmentStressScene(renderObjects_, fragmentStressSceneStatus_);
+}
+
+void Renderer::loadFragmentStressScene()
+{
+    if (portfolioCaptureMode_) {
+        setPortfolioCaptureMode(false);
+    }
+    occlusionTestSceneActive_ = false;
+    cornellBoxSceneActive_ = false;
+    stressSceneActive_ = false;
+    removeStressSceneObjects();
+
+    resetFragmentStressSceneToPreset();
+    if (!renderer::SceneBuilder::hasFragmentStressScene(renderObjects_)) {
+        fragmentStressSceneActive_ = false;
+        fragmentStressSceneStatus_ = "Fragment stress objects are unavailable; see the startup log.";
+        Logger::warn(fragmentStressSceneStatus_);
+        return;
+    }
+
+    fragmentStressSceneActive_ = true;
+
+    // Close in and low, so the slabs fill the frame. Backing off would defeat
+    // the scene: screen coverage is the whole cost being measured.
+    camera_.position = {0.0f, 3.5f, 6.0f};
+    camera_.target = {0.0f, 3.0f, -10.0f};
+    camera_.up = {0.0f, 1.0f, 0.0f};
+    editorCamera_.syncFromCamera(camera_);
+
+    fragmentStressSceneStatus_ =
+        "Fragment stress active: " + std::to_string(renderer::kFragmentStressLayerCount) +
+        " full-frame layers, " + std::to_string(renderer::kFragmentStressLightCount) + " dense point lights.";
+    Logger::info(fragmentStressSceneStatus_);
+}
+
 void Renderer::removeStressSceneObjects()
 {
     const auto firstRemoved = std::remove_if(renderObjects_.begin(), renderObjects_.end(), [](const auto& object) {
@@ -1121,6 +1178,8 @@ void Renderer::loadStressScene()
     }
     occlusionTestSceneActive_ = false;
     cornellBoxSceneActive_ = false;
+    fragmentStressSceneActive_ = false;
+    removeFragmentStressSceneObjects();
 
     resetStressSceneToPreset();
     if (!renderer::SceneBuilder::hasStressScene(renderObjects_)) {

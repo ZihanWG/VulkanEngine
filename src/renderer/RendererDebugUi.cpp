@@ -866,6 +866,24 @@ void Renderer::drawScenePresetDebugUi()
     }
     ImGui::TextWrapped("Status: %s", stressSceneStatus_.c_str());
 
+    ImGui::SeparatorText("Fragment stress scene");
+    ImGui::TextWrapped("%d full-frame layers and %d dense point lights. The geometry stress scene above runs "
+                       "faster than the default one because its objects are small on screen; this is the "
+                       "opposite test, loading screen coverage and the per-fragment light loop.",
+                       renderer::kFragmentStressLayerCount,
+                       renderer::kFragmentStressLightCount);
+    if (ImGui::Button("Load Fragment Stress")) {
+        loadFragmentStressScene();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Exit Fragment Stress")) {
+        removeFragmentStressSceneObjects();
+        fragmentStressSceneActive_ = false;
+        resetCameraToDefault();
+        fragmentStressSceneStatus_ = "Fragment stress inactive; objects removed.";
+    }
+    ImGui::TextWrapped("Status: %s", fragmentStressSceneStatus_.c_str());
+
     ImGui::SeparatorText("Cornell box");
     ImGui::TextDisabled("A closed, coloured room. The only scene here that shows indirect light:");
     ImGui::TextDisabled("colour bleeding needs saturated walls, and a second bounce needs");

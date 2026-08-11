@@ -596,6 +596,8 @@ const char* renderObjectSourceTypeName(renderer::RenderObjectSourceType sourceTy
         return "Cornell box";
     case renderer::RenderObjectSourceType::Stress:
         return "stress";
+    case renderer::RenderObjectSourceType::FragmentStress:
+        return "fragment stress";
     }
 
     return "unknown";

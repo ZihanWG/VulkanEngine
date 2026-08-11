@@ -523,6 +523,67 @@ bool SceneBuilder::appendStressScene(std::vector<RenderObject>& objects, std::st
     return true;
 }
 
+bool SceneBuilder::appendFragmentStressScene(std::vector<RenderObject>& objects, std::string& status) const
+{
+    if (!cubeMesh_.valid() || materials_.empty()) {
+        status = "Fragment stress scene is unavailable: cube mesh or runtime materials are not initialized.";
+        Logger::warn(status);
+        return false;
+    }
+
+    const auto materialAt = [this](size_t materialIndex) -> const Material* {
+        return &materials_.at(materialIndex % materials_.size());
+    };
+
+    const auto add = [this, &objects](std::string debugName,
+                                      const Material* material,
+                                      const glm::vec3& position,
+                                      const glm::vec3& scale) {
+        RenderObject object{};
+        object.debugId = allocateDebugId_();
+        object.sceneObjectId = object.debugId;
+        object.mesh = &cubeMesh_;
+        object.material = material;
+        object.debugName = std::move(debugName);
+        object.sourceType = RenderObjectSourceType::FragmentStress;
+        object.transform.position = position;
+        object.transform.scale = scale;
+        object.animateTransform = false;
+        object.portfolioOnly = false;
+        object.hideInPortfolio = true;
+        objects.push_back(std::move(object));
+    };
+
+    objects.reserve(objects.size() + static_cast<size_t>(kFragmentStressObjectCount));
+
+    add("Fragment Stress Floor", materialAt(kPortfolioGroundMaterialIndex), {0.0f, -1.0f, 0.0f}, {60.0f, 0.5f, 60.0f});
+
+    // Slabs stacked toward the camera, each wide enough to fill the frame. They
+    // are drawn front to back after the depth sort, but the fragment cost is
+    // paid regardless on a tile-based GPU: every layer that survives the depth
+    // test shades, and the near ones do not occlude enough to save the far ones.
+    for (int layer = 0; layer < kFragmentStressLayerCount; ++layer) {
+        const float t = static_cast<float>(layer) / static_cast<float>(kFragmentStressLayerCount);
+        add("Fragment Stress Layer " + std::to_string(layer),
+            materialAt(static_cast<size_t>(layer)),
+            {0.0f, 3.0f + t * 1.5f, -4.0f - static_cast<float>(layer) * 3.5f},
+            {26.0f, 9.0f, 0.35f});
+    }
+
+    return true;
+}
+
+bool SceneBuilder::hasFragmentStressScene(const std::vector<RenderObject>& objects)
+{
+    for (const RenderObject& object : objects) {
+        if (object.sourceType == RenderObjectSourceType::FragmentStress && object.mesh != nullptr) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 bool SceneBuilder::hasStressScene(const std::vector<RenderObject>& objects)
 {
     for (const RenderObject& object : objects) {
