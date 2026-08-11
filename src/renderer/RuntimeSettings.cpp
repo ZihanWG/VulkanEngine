@@ -4,6 +4,7 @@
 
 #include "core/Logger.h"
 #include "renderer/CascadeMath.h"
+#include "renderer/DynamicResolution.h"
 #include "renderer/IrradianceProbes.h"
 #include "renderer/RenderScale.h"
 #include "renderer/VolumetricFog.h"
@@ -34,6 +35,7 @@ ExposureMode exposureModeValue(int exposureMode)
 }
 
 void clampRuntimeSettings(RenderScaleSettings& renderScale,
+                          DynamicResolutionSettings& dynamicResolution,
                           ToneMappingSettings& toneMapping,
                           BloomSettings& bloom,
                           TaaSettings& taa,
@@ -46,6 +48,16 @@ void clampRuntimeSettings(RenderScaleSettings& renderScale,
                           DebugUiSettings& debugUi)
 {
     renderScale.scale = renderer::clampRenderScale(renderScale.scale);
+
+    // The bounds are clamped but deliberately not ordered: the controller treats
+    // them as an unordered pair, so a hand-edited file with them swapped still
+    // behaves, and "fixing" the order here would silently rewrite the user's file
+    // on the next save.
+    dynamicResolution.minScale = renderer::clampRenderScale(dynamicResolution.minScale);
+    dynamicResolution.maxScale = renderer::clampRenderScale(dynamicResolution.maxScale);
+    // Upper bound is 10 fps: past that the target stops being a frame budget.
+    dynamicResolution.targetFrameMs =
+        std::clamp(dynamicResolution.targetFrameMs, renderer::kDynamicResolutionMinTargetMs, 100.0f);
 
     toneMapping.operatorType = std::clamp(toneMapping.operatorType, 0, 1);
     if (!toneMapping.enableAutoExposure) {
@@ -331,6 +343,13 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readFloat(*renderScale, "scale", settings.renderScale.scale);
     }
 
+    if (const Json* dynamicResolution = objectMember(json, "dynamicResolution")) {
+        readBool(*dynamicResolution, "enabled", settings.dynamicResolution.enabled);
+        readFloat(*dynamicResolution, "targetFrameMs", settings.dynamicResolution.targetFrameMs);
+        readFloat(*dynamicResolution, "minScale", settings.dynamicResolution.minScale);
+        readFloat(*dynamicResolution, "maxScale", settings.dynamicResolution.maxScale);
+    }
+
     if (const Json* toneMapping = objectMember(json, "toneMapping")) {
         readFloat(*toneMapping, "manualExposure", settings.toneMapping.manualExposure);
         readBool(*toneMapping, "enableAutoExposure", settings.toneMapping.enableAutoExposure);
@@ -474,6 +493,11 @@ Json toJson(const RuntimeSettings& settings)
     return Json{
         {"schemaVersion", 1},
         {"renderScale", Json{{"scale", settings.renderScale.scale}}},
+        {"dynamicResolution",
+         Json{{"enabled", settings.dynamicResolution.enabled},
+              {"targetFrameMs", settings.dynamicResolution.targetFrameMs},
+              {"minScale", settings.dynamicResolution.minScale},
+              {"maxScale", settings.dynamicResolution.maxScale}}},
         {"toneMapping",
          Json{{"manualExposure", settings.toneMapping.manualExposure},
               {"enableAutoExposure", settings.toneMapping.enableAutoExposure},

@@ -80,6 +80,7 @@ TEST_CASE("A zero-sized surface passes through unchanged", "[render-scale]")
 TEST_CASE("Render scale is clamped by the runtime settings clamp", "[render-scale][settings]")
 {
     ve::RenderScaleSettings renderScale{};
+    ve::DynamicResolutionSettings dynamicResolution{};
     ve::ToneMappingSettings toneMapping{};
     ve::BloomSettings bloom{};
     ve::TaaSettings taa{};
@@ -92,11 +93,13 @@ TEST_CASE("Render scale is clamped by the runtime settings clamp", "[render-scal
     ve::DebugUiSettings debugUi{};
 
     renderScale.scale = 4.0f;
-    ve::clampRuntimeSettings(renderScale, toneMapping, bloom, taa, ssr, ssao, fog, csm, lod, gi, debugUi);
+    ve::clampRuntimeSettings(
+        renderScale, dynamicResolution, toneMapping, bloom, taa, ssr, ssao, fog, csm, lod, gi, debugUi);
     CHECK(renderScale.scale == Catch::Approx(kMaxRenderScale));
 
     renderScale.scale = 0.0f;
-    ve::clampRuntimeSettings(renderScale, toneMapping, bloom, taa, ssr, ssao, fog, csm, lod, gi, debugUi);
+    ve::clampRuntimeSettings(
+        renderScale, dynamicResolution, toneMapping, bloom, taa, ssr, ssao, fog, csm, lod, gi, debugUi);
     CHECK(renderScale.scale == Catch::Approx(kMinRenderScale));
 }
 

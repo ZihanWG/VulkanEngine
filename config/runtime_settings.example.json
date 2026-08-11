@@ -3,6 +3,12 @@
     "renderScale": {
         "scale": 1.0
     },
+    "dynamicResolution": {
+        "enabled": false,
+        "targetFrameMs": 16.67,
+        "minScale": 0.5,
+        "maxScale": 1.0
+    },
     "toneMapping": {
         "manualExposure": 1.0,
         "enableAutoExposure": true,

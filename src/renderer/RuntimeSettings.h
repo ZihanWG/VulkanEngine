@@ -267,8 +267,24 @@ struct RenderScaleSettings {
     float scale = 1.0f;
 };
 
+// Drives RenderScaleSettings::scale from measured GPU frame time. Off by
+// default: a portfolio engine is usually being *measured*, and a resolution that
+// moves under you invalidates every comparison. The controller itself lives in
+// renderer/DynamicResolution.h, which is where the tuning constants are too --
+// only the four values a user would actually want to set are persisted.
+struct DynamicResolutionSettings {
+    bool enabled = false;
+    // Ceiling on GPU frame total, not an average to hover on: the controller
+    // lowers the scale above this and only raises it once there is a clear
+    // margin below. 16.67 ms is the 60 Hz budget.
+    float targetFrameMs = 16.67f;
+    float minScale = 0.5f;
+    float maxScale = 1.0f;
+};
+
 struct RuntimeSettings {
     RenderScaleSettings renderScale;
+    DynamicResolutionSettings dynamicResolution;
     ToneMappingSettings toneMapping;
     BloomSettings bloom;
     TaaSettings taa;
@@ -306,6 +322,7 @@ struct RuntimeSettings {
 // state that is not part of these structs (e.g. GPU occlusion tuning) is clamped
 // separately by the caller. Pure and unit-tested.
 void clampRuntimeSettings(RenderScaleSettings& renderScale,
+                          DynamicResolutionSettings& dynamicResolution,
                           ToneMappingSettings& toneMapping,
                           BloomSettings& bloom,
                           TaaSettings& taa,

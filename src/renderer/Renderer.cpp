@@ -275,11 +275,11 @@ void Renderer::drawFrame()
         recreateSwapchain();
         window_.clearResizedFlag();
     }
-    // A render-scale edit resizes exactly the same set of targets a window resize
-    // does, so it takes the same path -- here, at the top of the frame, rather
-    // than at the UI slider that requested it.
+    // A render-scale change resizes the same targets a window resize does, so it
+    // is applied here at the top of the frame rather than wherever it was
+    // requested -- the UI slider, or the dynamic-resolution controller below.
     if (renderResolution_.scale() != renderScaleSettings_.scale) {
-        recreateSwapchain();
+        applyRenderScaleChange();
     }
 
     renderer::FrameResources& frame = frames_[currentFrame_];
@@ -288,6 +288,9 @@ void Renderer::drawFrame()
     postProcess_.updateAutoExposureFromReadback(currentFrame_);
     tryPrintExposureStats();
     tryPrintGpuTimings(currentFrame_);
+    // Straight after the readback that refreshes gpuFrameTimeHistory_, so the
+    // controller always sees the freshest GPU frame total available.
+    updateDynamicResolution();
     pushCullingHistorySample(currentFrame_);
     pushExposureHistorySample();
 
@@ -949,6 +952,11 @@ void Renderer::pushGpuTimingSample(const renderer::GpuProfiler::FrameResults& re
     }
 
     gpuFrameTimeHistory_.push(historyValue(results.totalGpuTimeMs));
+    // Flags this as a *new* reading for the dynamic-resolution controller, which
+    // must not see the same frame time twice: repeats would fill its median
+    // window with duplicates of one sample and defeat the outlier rejection.
+    // gpuFrameTimeHistory_.latest() cannot distinguish the two on its own.
+    freshGpuFrameMs_ = results.totalGpuTimeMs;
     for (const renderer::GpuProfiler::ScopeResult& scope : results.scopes) {
         if (DebugHistory* history = gpuTimingHistoryForPass(scope.name)) {
             history->push(historyValue(scope.elapsedMs));
@@ -1200,6 +1208,7 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
     // gone stale against it and routes the resize through recreateSwapchain,
     // which is the only point in the frame where destroying targets is safe.
     renderScaleSettings_ = settings.renderScale;
+    dynamicResolutionSettings_ = settings.dynamicResolution;
     toneMappingSettings_ = settings.toneMapping;
     bloomSettings_ = settings.bloom;
     taaSettings_ = settings.taa;
@@ -1274,6 +1283,7 @@ RuntimeSettings Renderer::captureRuntimeSettings() const
 {
     RuntimeSettings settings{};
     settings.renderScale = renderScaleSettings_;
+    settings.dynamicResolution = dynamicResolutionSettings_;
     settings.toneMapping = toneMappingSettings_;
     settings.bloom = bloomSettings_;
     settings.taa = taaSettings_;
@@ -1404,8 +1414,8 @@ void Renderer::clampRuntimeSettings()
     // The settings-struct clamping is GPU-independent and lives in
     // RuntimeSettings.cpp (compiled into VulkanEngineCore) so it can be tested.
     ve::clampRuntimeSettings(
-        renderScaleSettings_, toneMappingSettings_, bloomSettings_, taaSettings_, ssrSettings_, ssaoSettings_,
-        fogSettings_, csmSettings_, lodSettings_, giSettings_, debugUiSettings_);
+        renderScaleSettings_, dynamicResolutionSettings_, toneMappingSettings_, bloomSettings_, taaSettings_,
+        ssrSettings_, ssaoSettings_, fogSettings_, csmSettings_, lodSettings_, giSettings_, debugUiSettings_);
 
     // Pushed here rather than at each edit site: clampRuntimeSettings runs after
     // every settings change (load, UI edit, reset), so the volume's copy of the
@@ -1440,6 +1450,51 @@ void Renderer::updateRenderResolution()
                      std::to_string(renderResolution_.outputExtent().width) + "x" +
                      std::to_string(renderResolution_.outputExtent().height));
     }
+}
+
+void Renderer::applyRenderScaleChange()
+{
+    if (window_.isMinimized()) {
+        return;
+    }
+
+    const auto begin = std::chrono::steady_clock::now();
+
+    // Everything below destroys images earlier frames may still be reading.
+    context_.waitIdle();
+    updateRenderResolution();
+    recreatePostProcessResources();
+    // Both histories were written at the previous resolution, so neither can be
+    // reprojected into the new one. The pyramid is a frame of occlusion data at
+    // the old size and would reject visible geometry if it were trusted.
+    invalidateTaaHistory();
+    invalidateDepthPyramid();
+
+    lastRenderScaleApplyMs_ = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - begin).count();
+    Logger::info("Render scale applied: " + std::to_string(renderResolution_.extent().width) + "x" +
+                 std::to_string(renderResolution_.extent().height) + " in " +
+                 std::to_string(lastRenderScaleApplyMs_) + " ms");
+}
+
+void Renderer::updateDynamicResolution()
+{
+    // Zero means "no new measurement", which is what the controller expects on
+    // the frames where no timestamp readback landed. Consumed here so the next
+    // frame does not see it again.
+    const float gpuFrameMs = freshGpuFrameMs_;
+    freshGpuFrameMs_ = 0.0f;
+
+    const float scale =
+        dynamicResolution_.update(gpuFrameMs, renderScaleSettings_.scale, dynamicResolutionSettings_);
+    if (scale == renderScaleSettings_.scale) {
+        return;
+    }
+
+    // Written into the setting, not applied here: this runs mid-frame, and the
+    // top-of-frame check is the only place a rebuild is safe. That also keeps the
+    // controller's output visible on the slider and in the saved settings.
+    renderScaleSettings_.scale = scale;
+    pendingRenderScale_ = scale;
 }
 
 void Renderer::recreateSwapchain()

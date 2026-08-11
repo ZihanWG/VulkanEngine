@@ -176,6 +176,7 @@ void Renderer::drawRenderScaleDebugUi()
     // The slider edits a pending value and commits only when the drag ends.
     // Committing waits for the device to go idle and rebuilds every screen-sized
     // target, which is not something to do once per dragged frame.
+    ImGui::BeginDisabled(dynamicResolutionSettings_.enabled);
     ImGui::SliderFloat(
         "Scale", &pendingRenderScale_, renderer::kMinRenderScale, renderer::kMaxRenderScale, "%.2f");
     const bool sliderActive = ImGui::IsItemActive();
@@ -204,10 +205,66 @@ void Renderer::drawRenderScaleDebugUi()
         }
     }
 
+    ImGui::EndDisabled();
+
     ImGui::TextDisabled("Shades the scene at a fraction of the window and upscales in the composite.");
     ImGui::TextDisabled("The frame is fragment-bound, so cost tracks the shaded-pixel count almost");
     ImGui::TextDisabled("linearly. The ImGui overlay stays native. Pairs with TAA, which recovers");
     ImGui::TextDisabled("some of the lost detail across frames.");
+
+    ImGui::SeparatorText("Dynamic resolution");
+
+    ImGui::Checkbox("Enabled##dynres", &dynamicResolutionSettings_.enabled);
+    ImGui::SetItemTooltip("Drives the scale above from measured GPU frame time.\n"
+                          "Off by default: a resolution that moves under you invalidates\n"
+                          "any measurement you are trying to take.");
+
+    // Presented as an FPS target because that is how anyone thinks about it,
+    // while the stored value is the millisecond budget the controller compares
+    // against.
+    float targetFps = 1000.0f / std::max(dynamicResolutionSettings_.targetFrameMs, 0.001f);
+    if (ImGui::DragFloat("Target FPS", &targetFps, 1.0f, 10.0f, 240.0f, "%.0f")) {
+        dynamicResolutionSettings_.targetFrameMs = 1000.0f / std::max(targetFps, 1.0f);
+        clampRuntimeSettings();
+    }
+    ImGui::Text("Target GPU frame budget: %.2f ms", dynamicResolutionSettings_.targetFrameMs);
+
+    if (ImGui::SliderFloat("Min scale",
+                           &dynamicResolutionSettings_.minScale,
+                           renderer::kMinRenderScale,
+                           renderer::kMaxRenderScale,
+                           "%.2f")) {
+        clampRuntimeSettings();
+    }
+    if (ImGui::SliderFloat("Max scale",
+                           &dynamicResolutionSettings_.maxScale,
+                           renderer::kMinRenderScale,
+                           renderer::kMaxRenderScale,
+                           "%.2f")) {
+        clampRuntimeSettings();
+    }
+
+    if (dynamicResolution_.hasMeasurement()) {
+        ImGui::Text("Median GPU frame: %.2f ms (of %u samples)",
+                    static_cast<double>(dynamicResolution_.medianGpuFrameMs()),
+                    renderer::kDynamicResolutionSampleWindow);
+        ImGui::SetItemTooltip("Median, not average: one hitch must not drop the resolution.");
+    } else {
+        ImGui::TextDisabled("Median GPU frame: waiting for a timestamp readback");
+    }
+    ImGui::Text("Scale changes: %u", dynamicResolution_.changeCount());
+    if (dynamicResolutionSettings_.enabled &&
+        dynamicResolution_.measurementsSinceChange() < renderer::kDynamicResolutionSettleFrames) {
+        // Says "settling" rather than looking stuck: the controller ignores this
+        // window because the GPU timestamps still describe the old resolution.
+        ImGui::Text("Settling: %u / %u measurements",
+                    dynamicResolution_.measurementsSinceChange(),
+                    renderer::kDynamicResolutionSettleFrames);
+    }
+    ImGui::Text("Last apply cost: %.2f ms (CPU, one frame)", static_cast<double>(lastRenderScaleApplyMs_));
+    ImGui::SetItemTooltip("Applying a scale idles the device and rebuilds every screen-sized\n"
+                          "target. That is why the controller quantises to 0.05 steps, keeps a\n"
+                          "deadband, and ignores several frames after each change.");
 }
 
 void Renderer::drawToneMappingDebugUi()
