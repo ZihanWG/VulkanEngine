@@ -1,6 +1,6 @@
 # Post-Processing
 
-Phase 6A added mip-chain bloom and moved automatic exposure use into a GPU-readable exposure state buffer. Phase 6B added an optional Temporal AA foundation; the motion-vector upgrade later extended it with a main-pass velocity buffer and history reprojection (see taa.md). Temporal upscaling, reactive masks, FSR/DLSS/XeSS, and ray tracing remain out of scope.
+Phase 6A added mip-chain bloom and moved automatic exposure use into a GPU-readable exposure state buffer. Phase 6B added an optional Temporal AA foundation; the motion-vector upgrade later extended it with a main-pass velocity buffer and history reprojection, and it now also upsamples -- the resolve reconstructs at presentation resolution from the jittered low-resolution samples (see taa.md). Reactive masks, FSR2/DLSS/XeSS proper, and ray tracing remain out of scope.
 
 ## HDR Scene Color
 
@@ -97,8 +97,8 @@ The ImGui debug UI exposes:
 ## Known Limitations
 
 - TAA reprojects along the velocity buffer (see [taa.md](taa.md)), but there is no depth-based disocclusion classification -- a disoccluded pixel is caught by the neighborhood clamp rather than identified and rejected outright.
-- No temporal upscaling.
-- No FSR/DLSS/XeSS.
+- Not FSR2/DLSS/XeSS: the upsampling is reconstruction plus neighbourhood
+  rejection, without locks, reactive masks or disocclusion detection.
 - No per-material reactive masks.
 - No ray tracing.
 - No local exposure.
