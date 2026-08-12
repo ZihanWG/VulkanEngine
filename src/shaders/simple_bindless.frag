@@ -1,4 +1,5 @@
 #version 460
+#include "sub_rect.glsl"
 
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_buffer_reference : require
@@ -68,6 +69,9 @@ layout(push_constant) uniform PushConstants {
     layout(offset = 96) uint debugPunctualShadows;
     layout(offset = 100) float fogMaxDistance;
     layout(offset = 104) float aoAmbientStrength;
+    // The AO target is allocated at the maximum render resolution; only its
+    // sub-rect is written, so the reprojected lookup has to be scaled into it.
+    layout(offset = 120) vec2 aoUvScale;
 } pc;
 
 layout(set = 0, binding = 1) uniform sampler2DArray uShadowMap;
@@ -773,7 +777,8 @@ void main()
         vec2 aoUv = screenUv - computeVelocity();
         float occlusion = 1.0;
         if (aoUv == clamp(aoUv, vec2(0.0), vec2(1.0))) {
-            occlusion = texture(uAmbientOcclusion, aoUv).r;
+            occlusion =
+                texture(uAmbientOcclusion, veSubRectUv(aoUv, pc.aoUvScale, vec2(textureSize(uAmbientOcclusion, 0)))).r;
         }
         ambient *= mix(1.0, occlusion, clamp(pc.aoAmbientStrength, 0.0, 1.0));
     }

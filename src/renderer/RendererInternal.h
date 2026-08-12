@@ -275,6 +275,10 @@ struct PushConstants {
     // vertex stage binds no descriptor set at all -- everything it reads comes
     // through push constants and BDA.
     VkDeviceAddress frameConstantsAddress = 0;
+    // The ambient-occlusion target is allocated at the maximum render resolution
+    // and only its sub-rect is written, so the reprojected history lookup has to
+    // be scaled into it. 1.0 when nothing is upscaled.
+    glm::vec2 aoUvScale{1.0f, 1.0f};
 };
 
 static_assert(offsetof(PushConstants, objectFrameDataAddress) == 0);
@@ -300,6 +304,7 @@ static_assert(offsetof(PushConstants, debugPunctualShadows) == 96);
 static_assert(offsetof(PushConstants, fogMaxDistance) == 100);
 static_assert(offsetof(PushConstants, aoAmbientStrength) == 104);
 static_assert(offsetof(PushConstants, frameConstantsAddress) == 112);
+static_assert(offsetof(PushConstants, aoUvScale) == 120);
 static_assert(sizeof(PushConstants) <= 128);
 
 // Mirrors src/shaders/cull.comp. Main and shadow GPU culling both use this
@@ -463,9 +468,13 @@ static_assert(sizeof(SkyboxPushConstants) == 128);
 
 struct BloomExtractPushConstants {
     float threshold = 1.0f;
+    float padding = 0.0f;
+    // Scene colour is sub-rected; this target is not.
+    glm::vec2 sourceUvScale{1.0f, 1.0f};
 };
 
-static_assert(sizeof(BloomExtractPushConstants) == 4);
+static_assert(offsetof(BloomExtractPushConstants, sourceUvScale) == 8);
+static_assert(sizeof(BloomExtractPushConstants) == 16);
 
 struct BloomBlurPushConstants {
     glm::vec2 texelSize{1.0f, 1.0f};
@@ -481,12 +490,17 @@ struct BloomDownsamplePushConstants {
     glm::vec2 texelSize{1.0f, 1.0f};
     float threshold = 1.0f;
     uint32_t applyThreshold = 0;
+    // Only level 0 reads the sub-rected scene colour; every deeper level reads a
+    // mip that was written in full, and leaves this at 1.
+    glm::vec2 sourceUvScale{1.0f, 1.0f};
 };
+
+static_assert(offsetof(BloomDownsamplePushConstants, sourceUvScale) == 16);
 
 static_assert(offsetof(BloomDownsamplePushConstants, texelSize) == 0);
 static_assert(offsetof(BloomDownsamplePushConstants, threshold) == 8);
 static_assert(offsetof(BloomDownsamplePushConstants, applyThreshold) == 12);
-static_assert(sizeof(BloomDownsamplePushConstants) == 16);
+static_assert(sizeof(BloomDownsamplePushConstants) == 24);
 
 struct BloomUpsamplePushConstants {
     glm::vec2 texelSize{1.0f, 1.0f};
@@ -540,6 +554,8 @@ static_assert(offsetof(CompositePushConstants, ssaoParams1) == 112);
 static_assert(sizeof(CompositePushConstants) == 128);
 
 struct TaaResolvePushConstants {
+    // One texel of the ALLOCATED scene colour: the sub-rect changes how many
+    // texels are written, not how big one is.
     glm::vec2 texelSize{1.0f, 1.0f};
     float feedback = 0.88f;
     uint32_t historyValid = 0;
@@ -547,6 +563,11 @@ struct TaaResolvePushConstants {
     uint32_t reprojectionEnabled = 1;
     uint32_t depthDilationEnabled = 1;
     uint32_t padding = 0;
+    // Written/allocated for scene colour, velocity and the history. The depth
+    // buffer is still sized to what is written, so it needs neither -- which is
+    // exactly why its tap offsets get their own texel size below.
+    glm::vec2 uvScale{1.0f, 1.0f};
+    glm::vec2 depthTexelSize{1.0f, 1.0f};
 };
 
 static_assert(offsetof(TaaResolvePushConstants, texelSize) == 0);
@@ -555,7 +576,9 @@ static_assert(offsetof(TaaResolvePushConstants, historyValid) == 12);
 static_assert(offsetof(TaaResolvePushConstants, neighborhoodClampEnabled) == 16);
 static_assert(offsetof(TaaResolvePushConstants, reprojectionEnabled) == 20);
 static_assert(offsetof(TaaResolvePushConstants, depthDilationEnabled) == 24);
-static_assert(sizeof(TaaResolvePushConstants) == 32);
+static_assert(offsetof(TaaResolvePushConstants, uvScale) == 32);
+static_assert(offsetof(TaaResolvePushConstants, depthTexelSize) == 40);
+static_assert(sizeof(TaaResolvePushConstants) == 48);
 
 
 struct RenderTargetDebugMetadata {

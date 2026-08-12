@@ -1,4 +1,5 @@
 #version 460
+#include "sub_rect.glsl"
 
 // Ground-Truth Ambient Occlusion (Jimenez et al. 2016, "Practical Realtime
 // Strategies for Accurate Indirect Occlusion"). For each pixel this marches a
@@ -23,6 +24,9 @@ layout(set = 0, binding = 2, std430) readonly buffer GtaoParamsBuffer {
     vec4 params0;
     // x = intensity, y = power, z = thickness (view-space units), w = frame index (jitter).
     vec4 params1;
+    // xy = written/allocated for the thin G-buffer, which is sub-rected. Depth is
+    // sized to what is written, so it is sampled unscaled.
+    vec4 subRect;
 } params;
 
 layout(location = 0) in vec2 vUV;
@@ -66,7 +70,10 @@ void main()
     }
 
     const vec3 P = viewPositionFromDepth(vUV, depth);
-    const vec3 N = normalize(mat3(params.view) * octDecode(texture(uNormalRoughness, vUV).xy));
+    const vec3 N = normalize(mat3(params.view) *
+                             octDecode(texture(uNormalRoughness,
+                                               veSubRectUv(vUV, params.subRect.xy, vec2(textureSize(uNormalRoughness, 0))))
+                                           .xy));
     const vec3 V = normalize(-P); // view-space camera looks down -Z, so -P points at the eye
 
     const float radius = max(params.params0.x, 0.01);

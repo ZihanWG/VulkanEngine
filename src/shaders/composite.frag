@@ -1,4 +1,5 @@
 #version 460
+#include "sub_rect.glsl"
 
 layout(set = 0, binding = 0) uniform sampler2D uSceneColor;
 layout(set = 0, binding = 1) uniform sampler2D uLegacyBloomColor;
@@ -25,7 +26,7 @@ layout(push_constant) uniform CompositePushConstants {
     // whenever the frame is not upscaled, so a native frame is untouched.
     float sharpness;
     mat4 invProjection;
-    vec4 debugParams; // x = sharpen delta view gain (0 = off)
+    vec4 debugParams; // x = sharpen delta view gain (0 = off), zw = scene/AO uv scale
     vec4 ssaoParams1; // x = ambient-occlusion enabled
 } pc;
 
@@ -59,7 +60,12 @@ vec3 toneMapScene(vec3 scene, vec3 bloomColor, float exposure)
 
 void main()
 {
-    vec3 sceneColor = texture(uSceneColor, vUV).rgb;
+    // Scene colour and the AO target are allocated at the maximum render
+    // resolution and only their sub-rect is written; bloom is not, so it stays
+    // unscaled below.
+    const vec2 sceneUvScale = pc.debugParams.zw;
+    const vec2 sceneAllocatedSize = vec2(textureSize(uSceneColor, 0));
+    vec3 sceneColor = texture(uSceneColor, veSubRectUv(vUV, sceneUvScale, sceneAllocatedSize)).rgb;
 
     // Raw passthrough for debug views. Everything below this exists to turn a
     // linear HDR scene into a display image, and every part of it works against
@@ -76,7 +82,7 @@ void main()
     // this whole-scene multiply is kept so the two can be compared, and is
     // enabled only when SsaoSettings::ambientOnly is off.
     if (pc.ssaoParams1.x != 0.0) {
-        sceneColor *= texture(uAmbientOcclusion, vUV).r;
+        sceneColor *= texture(uAmbientOcclusion, veSubRectUv(vUV, sceneUvScale, vec2(textureSize(uAmbientOcclusion, 0)))).r;
     }
 
     vec3 legacyBloom = texture(uLegacyBloomColor, vUV).rgb;
@@ -96,11 +102,15 @@ void main()
         // restore anywhere except exactly at source texel centres, and the
         // sharpening would come out modulated by the upscale grid. One source
         // texel is the spacing at which real detail actually exists.
-        vec2 sourceTexel = 1.0 / vec2(textureSize(uSceneColor, 0));
-        vec3 up = texture(uSceneColor, vUV + vec2(0.0, -sourceTexel.y)).rgb;
-        vec3 down = texture(uSceneColor, vUV + vec2(0.0, sourceTexel.y)).rgb;
-        vec3 left = texture(uSceneColor, vUV + vec2(-sourceTexel.x, 0.0)).rgb;
-        vec3 right = texture(uSceneColor, vUV + vec2(sourceTexel.x, 0.0)).rgb;
+        vec2 sourceTexel = 1.0 / sceneAllocatedSize;
+        vec3 up = texture(uSceneColor,
+                          veSubRectUvOffset(vUV, vec2(0.0, -sourceTexel.y), sceneUvScale, sceneAllocatedSize)).rgb;
+        vec3 down = texture(uSceneColor,
+                            veSubRectUvOffset(vUV, vec2(0.0, sourceTexel.y), sceneUvScale, sceneAllocatedSize)).rgb;
+        vec3 left = texture(uSceneColor,
+                            veSubRectUvOffset(vUV, vec2(-sourceTexel.x, 0.0), sceneUvScale, sceneAllocatedSize)).rgb;
+        vec3 right = texture(uSceneColor,
+                             veSubRectUvOffset(vUV, vec2(sourceTexel.x, 0.0), sceneUvScale, sceneAllocatedSize)).rgb;
 
         // Bloom is deliberately shared across the taps rather than re-fetched:
         // it is a heavily blurred mip chain, so it carries no detail worth
