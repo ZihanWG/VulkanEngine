@@ -934,6 +934,9 @@ void Renderer::uploadGpuCullFrameParams(uint32_t frameIndex, bool occlusionEnabl
                                         forcedLod,
                                         lodSettings_.shadowBias);
     frameParams.counterAndFlags = glm::uvec4(kGpuCullStatsCounterOffset, occlusionEnabledThisFrame ? 1u : 0u, 0u, 0u);
+    const VkExtent2D pyramidAllocation = renderResolution_.allocationExtent();
+    frameParams.pyramidBaseSizes =
+        glm::uvec4(extent.width, extent.height, pyramidAllocation.width, pyramidAllocation.height);
     gpuCulling_.paramBuffer(frameIndex)
         .upload(std::as_bytes(std::span<const GpuCullFrameParams>(&frameParams, 1)));
 }

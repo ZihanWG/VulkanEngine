@@ -436,6 +436,11 @@ struct GpuCullFrameParams {
     glm::vec4 occlusionSettings{0.0f};
     glm::vec4 lodSettings{0.0f};
     glm::uvec4 counterAndFlags{0, 0, 0, 0};
+    // xy = the depth pyramid's written base size, zw = its allocated base size.
+    // The pyramid is sub-rected and every mip halves both independently, so the
+    // written fraction drifts per level and cull.comp recomputes it rather than
+    // being handed one ratio. Zero reads as 1:1, which is the un-sub-rected case.
+    glm::uvec4 pyramidBaseSizes{0, 0, 0, 0};
 };
 
 static_assert(offsetof(GpuCullFrameParams, occlusionViewProjection) == 0);
@@ -445,7 +450,8 @@ static_assert(offsetof(GpuCullFrameParams, viewportAndMipCount) == 144);
 static_assert(offsetof(GpuCullFrameParams, occlusionSettings) == 160);
 static_assert(offsetof(GpuCullFrameParams, lodSettings) == 176);
 static_assert(offsetof(GpuCullFrameParams, counterAndFlags) == 192);
-static_assert(sizeof(GpuCullFrameParams) == 208);
+static_assert(offsetof(GpuCullFrameParams, pyramidBaseSizes) == 208);
+static_assert(sizeof(GpuCullFrameParams) == 224);
 
 struct DepthPyramidPushConstants {
     glm::uvec4 sizes{0, 0, 0, 0};

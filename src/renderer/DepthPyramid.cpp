@@ -133,7 +133,10 @@ void DepthPyramid::createResources()
         return;
     }
 
-    const VkExtent2D extent = renderResolution_.extent();
+    // Allocated at the maximum render resolution, like the scene targets: the
+    // mip count has to come from the allocation too, or a scale change would need
+    // a different number of mip views and the whole point would be lost.
+    const VkExtent2D extent = renderResolution_.allocationExtent();
     buildAvailable_ = swapchain_.depthSupportsSampling() && storageFormatSupported;
     mipLevels_ = buildAvailable_ ? calculateDepthPyramidMipLevels(extent) : 1U;
 
@@ -300,6 +303,9 @@ void DepthPyramid::recordCommands(VkCommandBuffer commandBuffer,
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_.pipeline());
 
+    // Dispatch over what the frame writes. The images are bigger; the region past
+    // this is left holding the previous larger frame's pyramid, which is why
+    // cull.comp scales its lookups instead of trusting [0,1].
     const VkExtent2D baseExtent = renderResolution_.extent();
     for (uint32_t mipLevel = 0; mipLevel < mipLevels_; ++mipLevel) {
         const VkExtent2D sourceExtent = mipLevel == 0 ? baseExtent : mipExtent(baseExtent, mipLevel - 1);

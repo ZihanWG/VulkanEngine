@@ -19,9 +19,9 @@ layout(set = 0, binding = 3, std430) readonly buffer SsrParamsBuffer {
     vec4 marchParams;
     // x = intensity, y = max roughness, z = screen-edge fade start, w = frame index (jitter)
     vec4 weightParams;
-    // xy = written/allocated for the thin G-buffer, which is sub-rected. Depth
-    // and the scene-colour copy are sized to what is written, so they are
-    // sampled unscaled.
+    // xy = written/allocated for the thin G-buffer and the scene-colour copy,
+    // which share the scene allocation. Depth is still sized to what is written,
+    // so it is sampled unscaled. zw unused.
     vec4 subRect;
 } params;
 
@@ -155,7 +155,8 @@ void main()
         return;
     }
 
-    vec3 reflectedColor = texture(uSceneColorCopy, hitUV).rgb;
+    vec3 reflectedColor =
+        texture(uSceneColorCopy, veSubRectUv(hitUV, params.subRect.xy, vec2(textureSize(uSceneColorCopy, 0)))).rgb;
 
     // Fresnel with a grayscale F0 approximation (metal tint is not stored in
     // the thin G-buffer; documented limitation).

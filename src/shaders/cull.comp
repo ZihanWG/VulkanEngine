@@ -76,6 +76,7 @@ layout(set = 0, binding = 4, std430) readonly buffer CullFrameParamsBuffer {
     vec4 occlusionSettings; // x = normal-Z depth bias, y = near disable distance, z = max coverage, w = min pixels
     vec4 lodSettings; // x = reference radius px, y = bias, z = forced level (< 0 = off), w = shadow bias
     uvec4 counterAndFlags; // x = stats counter base, y bit 0 = occlusion enabled for this frame
+    uvec4 pyramidBaseSizes; // xy = pyramid written base size, zw = allocated base size
 } cullFrame;
 
 // Phase 1 writes one result code per draw item; phase 2 dispatches over the full
@@ -255,6 +256,22 @@ bool testOcclusion(vec3 boundsMin, vec3 boundsMax, mat4 occlusionViewProjection)
     vec2 uv0 = clamp(minUv + inset, vec2(0.0), vec2(1.0));
     vec2 uv1 = clamp(maxUv - inset, vec2(0.0), vec2(1.0));
     vec2 uvCenter = clamp((minUv + maxUv) * 0.5, vec2(0.0), vec2(1.0));
+
+    // The pyramid is allocated at the maximum render resolution and only its
+    // sub-rect is written. Each mip halves both sides independently, so the
+    // written fraction drifts per level and one ratio for the whole chain would
+    // be wrong everywhere but level 0. The sampler is mipmapMode NEAREST, so
+    // exactly one level is read and its own ratio is the right one -- with
+    // linear mip filtering this would have to blend two different scales and
+    // could not be done with a single uv at all.
+    //
+    // A zero base (nothing sub-rected) falls out as 1:1 through the max().
+    uint pyramidMip = uint(clamp(ceil(mipLevel + 0.5) - 1.0, 0.0, float(mipCount - 1u)));
+    vec2 pyramidUvScale = vec2(max(cullFrame.pyramidBaseSizes.xy >> pyramidMip, uvec2(1u))) /
+                          vec2(max(cullFrame.pyramidBaseSizes.zw >> pyramidMip, uvec2(1u)));
+    uv0 *= pyramidUvScale;
+    uv1 *= pyramidUvScale;
+    uvCenter *= pyramidUvScale;
 
     float hizDepth = 0.0;
     hizDepth = max(hizDepth, textureLod(depthPyramid, uv0, mipLevel).r);

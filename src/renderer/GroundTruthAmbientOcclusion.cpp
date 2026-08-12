@@ -125,8 +125,11 @@ void GroundTruthAmbientOcclusion::createResources(VkImageView normalRoughnessVie
         // reads. The horizon search runs at half resolution (4x fewer searches);
         // the joint-bilateral upsample restores full resolution from the full-res
         // depth buffer.
-        const VkExtent2D extent = renderResolution_.extent();
-        const VkExtent2D halfExtent{std::max(1u, extent.width / 2u), std::max(1u, extent.height / 2u)};
+        // Half of the *allocation*: the trace still writes only half of what the
+        // frame writes, and the two halves round independently, which is why the
+        // blur gets its own uv scale rather than reusing the scene's.
+        const VkExtent2D extent = renderResolution_.allocationExtent();
+        const VkExtent2D halfExtent = RenderResolution::halved(extent);
         rhi::VulkanImageCreateInfo rawAoInfo{};
         rawAoInfo.width = halfExtent.width;
         rawAoInfo.height = halfExtent.height;
@@ -278,7 +281,12 @@ void GroundTruthAmbientOcclusion::uploadParams(uint32_t frameIndex,
                       std::clamp(settings_.falloff, 0.01f, 1.0f),
                       static_cast<float>(std::max(settings_.sliceCount, 1)),
                       static_cast<float>(std::max(settings_.stepsPerSlice, 1))};
-    params.subRect = glm::vec4(renderResolution_.uvScale(), 0.0f, 0.0f);
+    // xy: the thin G-buffer, which shares the scene allocation. zw: the raw AO
+    // target, whose used and allocated halves round independently.
+    params.subRect = glm::vec4(renderResolution_.uvScale(),
+                               RenderResolution::subRectUvScale(
+                                   RenderResolution::halved(renderResolution_.extent()),
+                                   RenderResolution::halved(renderResolution_.allocationExtent())));
     params.params1 = {std::max(settings_.intensity, 0.0f),
                       std::max(settings_.power, 0.0001f),
                       std::max(settings_.thickness, 0.01f),
