@@ -18,11 +18,21 @@ layout(push_constant) uniform TaaResolvePushConstants {
     // written in full. Scene colour, velocity and depth are the low-resolution
     // sources and share one allocation, so one scale covers those three.
     vec2 sourceUvScale;
-    vec2 padding1;
+    // The current frame's jitter, in source pixels, range [-0.5, 0.5]. This is
+    // what makes reconstruction possible rather than just accumulation: it says
+    // where inside its texel each sample actually landed.
+    vec2 jitterPixels;
 } pc;
 
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 outColor;
+
+// Gaussian falloff of the reconstruction kernel, in source pixels squared. At
+// one texel away a sample keeps exp(-2.29) = 10% of the weight, at half a texel
+// 57%. Tighter than this and an output pixel that no sample landed near goes
+// noisy; looser and the reconstruction is a blur and there was no point undoing
+// the jitter at all.
+const float kReconstructionFalloff = 2.29;
 
 // One source texel, expressed in the output-normalised space vUV lives in.
 // texelSize is one texel of the source *allocation*; the sources are written
@@ -64,17 +74,56 @@ vec2 dilatedVelocityUV()
 
 void main()
 {
-    // vUV is normalised over the OUTPUT, which is what this pass's viewport now
-    // covers and what the history is written over. The low-resolution sources
-    // need it scaled by sourceUvScale.
+    // vUV is normalised over the OUTPUT, which is what this pass's viewport
+    // covers and what the history is written over.
     //
-    // Phase 1 still reads the current frame with a plain bilinear tap, so this is
-    // temporal accumulation *after* an upscale rather than an upscale driven by
-    // the accumulation. Correct, and not yet the point: reconstructing detail
-    // means weighting the jittered sample by where it actually landed inside this
-    // output pixel, which is the next step.
+    // The current frame is reconstructed rather than sampled. Each source texel
+    // holds the scene as seen through this frame's sub-pixel jitter, so the
+    // sample it represents does not sit at its own centre: the projection was
+    // shifted by +jitter, which means texel centre c holds what an unjittered
+    // frame would have at c - jitter. Weighting the nine nearest samples by how
+    // far their real positions land from this output pixel is what turns a
+    // sequence of jittered low-resolution frames into a high-resolution one.
+    // A plain bilinear tap throws that information away and can only ever
+    // accumulate an upscale of itself.
     const vec2 currentAllocatedSize = vec2(textureSize(uCurrentColor, 0));
-    vec3 currentColor = texture(uCurrentColor, veSubRectUv(vUV, pc.sourceUvScale, currentAllocatedSize)).rgb;
+    const vec2 sourceSize = max(currentAllocatedSize * pc.sourceUvScale, vec2(1.0));
+    const vec2 sourcePos = vUV * sourceSize;
+    const vec2 baseTexel = floor(sourcePos - 0.5);
+
+    vec3 weightedSum = vec3(0.0);
+    float weightTotal = 0.0;
+    vec3 minColor = vec3(1e30);
+    vec3 maxColor = vec3(-1e30);
+
+    for (int y = 0; y < 3; ++y) {
+        for (int x = 0; x < 3; ++x) {
+            // Clamped in texel space rather than UV space: the written region is
+            // an integer number of texels and this keeps the gather inside it
+            // without needing the sub-rect helper.
+            const vec2 texel = clamp(baseTexel + vec2(float(x), float(y)), vec2(0.0), sourceSize - 1.0);
+            const vec3 sampleColor = texture(uCurrentColor, (texel + 0.5) / currentAllocatedSize).rgb;
+
+            // Where this sample really is, in source pixels, undoing the jitter.
+            const vec2 offset = sourcePos - (texel + 0.5 - pc.jitterPixels);
+            const float weight = exp(-kReconstructionFalloff * dot(offset, offset));
+
+            weightedSum += sampleColor * weight;
+            weightTotal += weight;
+
+            // The rejection box comes from the same taps. It has to describe what
+            // the low-resolution frame actually contains -- a box measured in
+            // output texels would bound the history against an upscaled blur of
+            // itself and stop rejecting anything.
+            minColor = min(minColor, sampleColor);
+            maxColor = max(maxColor, sampleColor);
+        }
+    }
+
+    vec3 currentColor = weightTotal > 0.0 ? weightedSum / weightTotal
+                                          : texture(uCurrentColor,
+                                                    veSubRectUv(vUV, pc.sourceUvScale, currentAllocatedSize))
+                                                .rgb;
     vec3 resolvedColor = currentColor;
 
     if (pc.historyValid != 0u) {
@@ -98,24 +147,8 @@ void main()
             vec3 historyColor = texture(uHistoryColor, historyUV).rgb;
 
             if (pc.neighborhoodClampEnabled != 0u) {
-                vec3 minColor = currentColor;
-                vec3 maxColor = currentColor;
-                for (int y = -1; y <= 1; ++y) {
-                    for (int x = -1; x <= 1; ++x) {
-                        // One source texel apart in output space: the box has to
-                        // bound what the *low-resolution* frame contains, or it
-                        // would clamp the history against an upscaled blur of
-                        // itself and stop rejecting anything.
-                        vec3 sampleColor =
-                            texture(uCurrentColor,
-                                    veSubRectUv(clamp(vUV + vec2(x, y) * sourceTexelStep(), vec2(0.0), vec2(1.0)),
-                                                pc.sourceUvScale,
-                                                currentAllocatedSize))
-                                .rgb;
-                        minColor = min(minColor, sampleColor);
-                        maxColor = max(maxColor, sampleColor);
-                    }
-                }
+                // Box already gathered above, from the same nine taps the
+                // reconstruction used -- one gather, two jobs.
                 historyColor = clamp(historyColor, minColor, maxColor);
             }
 

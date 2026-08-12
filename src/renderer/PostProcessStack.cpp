@@ -2172,7 +2172,7 @@ void PostProcessStack::recordTaaResolveCommands(VkCommandBuffer commandBuffer)
         swapchain_.depthSupportsSampling() ? 1u : 0u,
         0u,
         sourceUvScale,
-        glm::vec2{0.0f, 0.0f}};
+        taaCurrentJitterPixels_};
     vkCmdPushConstants(commandBuffer,
                        taaResolvePipeline_.layout(),
                        VK_SHADER_STAGE_FRAGMENT_BIT,
