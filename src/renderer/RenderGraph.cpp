@@ -874,7 +874,7 @@ void RenderGraph::beginMainHdrRendering(bool loadExisting)
     VkRenderingInfo renderingInfo{};
     renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
     renderingInfo.renderArea.offset = {0, 0};
-    renderingInfo.renderArea.extent = sceneColor.desc.extent;
+    renderingInfo.renderArea.extent = sceneRenderArea(sceneColor.desc.extent);
     renderingInfo.layerCount = 1;
     renderingInfo.colorAttachmentCount = static_cast<uint32_t>(colorAttachments.size());
     renderingInfo.pColorAttachments = colorAttachments.data();
@@ -965,7 +965,7 @@ void RenderGraph::beginSsrTracePass()
     VkRenderingInfo renderingInfo{};
     renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
     renderingInfo.renderArea.offset = {0, 0};
-    renderingInfo.renderArea.extent = sceneColor.desc.extent;
+    renderingInfo.renderArea.extent = sceneRenderArea(sceneColor.desc.extent);
     renderingInfo.layerCount = 1;
     renderingInfo.colorAttachmentCount = 1;
     renderingInfo.pColorAttachments = &colorAttachment;
@@ -1049,7 +1049,7 @@ void RenderGraph::beginGtaoBlurPass()
     VkRenderingInfo renderingInfo{};
     renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
     renderingInfo.renderArea.offset = {0, 0};
-    renderingInfo.renderArea.extent = ambientOcclusion.desc.extent;
+    renderingInfo.renderArea.extent = sceneRenderArea(ambientOcclusion.desc.extent);
     renderingInfo.layerCount = 1;
     renderingInfo.colorAttachmentCount = 1;
     renderingInfo.pColorAttachments = &colorAttachment;
@@ -1123,7 +1123,7 @@ void RenderGraph::beginTransparentPass()
     VkRenderingInfo renderingInfo{};
     renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
     renderingInfo.renderArea.offset = {0, 0};
-    renderingInfo.renderArea.extent = sceneColor.desc.extent;
+    renderingInfo.renderArea.extent = sceneRenderArea(sceneColor.desc.extent);
     renderingInfo.layerCount = 1;
     renderingInfo.colorAttachmentCount = static_cast<uint32_t>(colorAttachments.size());
     renderingInfo.pColorAttachments = colorAttachments.data();
@@ -1236,7 +1236,9 @@ void RenderGraph::beginTaaResolvePass()
     clearColor.color.float32[1] = 0.0f;
     clearColor.color.float32[2] = 0.0f;
     clearColor.color.float32[3] = 1.0f;
-    beginColorRendering(textures_.at(frame_.taaHistoryWrite.index), clearColor);
+    // The history is a scene-sized target, so the resolve writes the same
+    // sub-rect the main pass did.
+    beginColorRendering(textures_.at(frame_.taaHistoryWrite.index), clearColor, frame_.resources.renderExtent);
     activePass_ = ActivePass::TaaResolve;
 }
 
@@ -2767,7 +2769,18 @@ void RenderGraph::refreshDebugResources()
     }
 }
 
-void RenderGraph::beginColorRendering(const TextureResource& resource, VkClearValue clearValue)
+VkExtent2D RenderGraph::sceneRenderArea(VkExtent2D resourceExtent) const
+{
+    if (frame_.resources.renderExtent.width == 0 || frame_.resources.renderExtent.height == 0) {
+        return resourceExtent;
+    }
+    return VkExtent2D{std::min(frame_.resources.renderExtent.width, resourceExtent.width),
+                      std::min(frame_.resources.renderExtent.height, resourceExtent.height)};
+}
+
+void RenderGraph::beginColorRendering(const TextureResource& resource,
+                                      VkClearValue clearValue,
+                                      VkExtent2D extentOverride)
 {
     VkRenderingAttachmentInfo colorAttachment{};
     colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
@@ -2780,7 +2793,10 @@ void RenderGraph::beginColorRendering(const TextureResource& resource, VkClearVa
     VkRenderingInfo renderingInfo{};
     renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
     renderingInfo.renderArea.offset = {0, 0};
-    renderingInfo.renderArea.extent = resource.desc.extent;
+    renderingInfo.renderArea.extent = extentOverride.width != 0 && extentOverride.height != 0
+                                          ? VkExtent2D{std::min(extentOverride.width, resource.desc.extent.width),
+                                                       std::min(extentOverride.height, resource.desc.extent.height)}
+                                          : resource.desc.extent;
     renderingInfo.layerCount = 1;
     renderingInfo.colorAttachmentCount = 1;
     renderingInfo.pColorAttachments = &colorAttachment;
