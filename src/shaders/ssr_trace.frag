@@ -1,4 +1,5 @@
 #version 460
+#include "sub_rect.glsl"
 
 // Screen-space reflections: view-space linear march against the main depth
 // buffer with binary refinement, sampling the pre-reflection scene-color copy
@@ -18,6 +19,10 @@ layout(set = 0, binding = 3, std430) readonly buffer SsrParamsBuffer {
     vec4 marchParams;
     // x = intensity, y = max roughness, z = screen-edge fade start, w = frame index (jitter)
     vec4 weightParams;
+    // xy = written/allocated for the thin G-buffer, which is sub-rected. Depth
+    // and the scene-colour copy are sized to what is written, so they are
+    // sampled unscaled.
+    vec4 subRect;
 } params;
 
 layout(location = 0) in vec2 vUV;
@@ -65,7 +70,7 @@ void main()
         return; // sky
     }
 
-    vec4 normalRoughness = texture(uNormalRoughness, vUV);
+    vec4 normalRoughness = texture(uNormalRoughness, veSubRectUv(vUV, params.subRect.xy, vec2(textureSize(uNormalRoughness, 0))));
     float roughness = normalRoughness.z;
     float metallic = normalRoughness.w;
     float maxRoughness = max(params.weightParams.y, 0.0001);

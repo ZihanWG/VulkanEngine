@@ -27,9 +27,12 @@ struct GtaoParams {
     glm::vec4 params0{0.5f, 0.6f, 3.0f, 6.0f};
     // x = intensity, y = power, z = thickness, w = frame index.
     glm::vec4 params1{1.0f, 2.0f, 0.5f, 0.0f};
+    // xy = written/allocated for the thin G-buffer, which is sub-rected. Depth
+    // is still sized to what is written. zw unused.
+    glm::vec4 subRect{1.0f, 1.0f, 0.0f, 0.0f};
 };
 
-static_assert(sizeof(GtaoParams) == 224);
+static_assert(sizeof(GtaoParams) == 240);
 
 } // namespace
 
@@ -275,6 +278,7 @@ void GroundTruthAmbientOcclusion::uploadParams(uint32_t frameIndex,
                       std::clamp(settings_.falloff, 0.01f, 1.0f),
                       static_cast<float>(std::max(settings_.sliceCount, 1)),
                       static_cast<float>(std::max(settings_.stepsPerSlice, 1))};
+    params.subRect = glm::vec4(renderResolution_.uvScale(), 0.0f, 0.0f);
     params.params1 = {std::max(settings_.intensity, 0.0f),
                       std::max(settings_.power, 0.0001f),
                       std::max(settings_.thickness, 0.01f),

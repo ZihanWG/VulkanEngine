@@ -25,9 +25,13 @@ struct SsrParams {
     glm::mat4 inverseProjection{1.0f};
     glm::vec4 marchParams{48.0f, 5.0f, 30.0f, 0.35f};
     glm::vec4 weightParams{1.0f, 0.6f, 0.1f, 0.0f};
+    // xy = written/allocated for the thin G-buffer, which is sub-rected. Depth
+    // and the scene-colour copy are still sized to what is written, so they are
+    // sampled unscaled. zw unused.
+    glm::vec4 subRect{1.0f, 1.0f, 0.0f, 0.0f};
 };
 
-static_assert(sizeof(SsrParams) == 224);
+static_assert(sizeof(SsrParams) == 240);
 
 } // namespace
 
@@ -240,6 +244,7 @@ void ScreenSpaceReflections::uploadParams(uint32_t frameIndex,
                           static_cast<float>(settings_.refinementSteps),
                           settings_.maxDistance,
                           settings_.thickness};
+    params.subRect = glm::vec4(renderResolution_.uvScale(), 0.0f, 0.0f);
     params.weightParams = {settings_.intensity,
                            settings_.maxRoughness,
                            settings_.screenEdgeFade,

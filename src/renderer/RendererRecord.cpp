@@ -1439,6 +1439,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     const bool aoOnAmbient = ssaoSettings_.enabled && ssaoAvailable_ && ssaoSettings_.ambientOnly &&
                              postProcess_.ambientOcclusionHistoryValid();
     basePushConstants.aoAmbientStrength = aoOnAmbient ? 1.0f : 0.0f;
+    basePushConstants.aoUvScale = renderResolution_.uvScale();
     if (multiDrawIndirectActive) {
         if (bindlessDescriptorSetsBound) {
             const PushConstants pushConstants = basePushConstants;

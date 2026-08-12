@@ -1,4 +1,5 @@
 #version 460
+#include "sub_rect.glsl"
 
 layout(set = 0, binding = 0) uniform sampler2D uCurrentColor;
 layout(set = 0, binding = 1) uniform sampler2D uHistoryColor;
@@ -13,6 +14,11 @@ layout(push_constant) uniform TaaResolvePushConstants {
     uint reprojectionEnabled;
     uint depthDilationEnabled;
     uint padding0;
+    // Scene colour, velocity and the history are allocated at the maximum render
+    // resolution and only their sub-rect is written. Depth is still sized to what
+    // is written, which is why its taps get their own texel size.
+    vec2 uvScale;
+    vec2 depthTexelSize;
 } pc;
 
 layout(location = 0) in vec2 vUV;
@@ -31,7 +37,7 @@ vec2 dilatedVelocityUV()
     vec2 closestUV = vUV;
     for (int y = -1; y <= 1; ++y) {
         for (int x = -1; x <= 1; ++x) {
-            vec2 sampleUV = vUV + vec2(x, y) * pc.texelSize;
+            vec2 sampleUV = clamp(vUV + vec2(x, y) * pc.depthTexelSize, vec2(0.0), vec2(1.0));
             float depth = texture(uDepth, sampleUV).r;
             if (depth < closestDepth) {
                 closestDepth = depth;
@@ -44,7 +50,12 @@ vec2 dilatedVelocityUV()
 
 void main()
 {
-    vec3 currentColor = texture(uCurrentColor, vUV).rgb;
+    // vUV is normalised over the written sub-rect, which is what this pass's own
+    // viewport covers; every sub-rected source needs it scaled into the
+    // allocation. dilatedVelocityUV works in this same unscaled space, since
+    // depth is not sub-rected.
+    const vec2 currentAllocatedSize = vec2(textureSize(uCurrentColor, 0));
+    vec3 currentColor = texture(uCurrentColor, veSubRectUv(vUV, pc.uvScale, currentAllocatedSize)).rgb;
     vec3 resolvedColor = currentColor;
 
     if (pc.historyValid != 0u) {
@@ -52,21 +63,27 @@ void main()
         bool historyUsable = true;
 
         if (pc.reprojectionEnabled != 0u) {
-            vec2 velocity = texture(uVelocity, dilatedVelocityUV()).rg;
+            vec2 velocity =
+                texture(uVelocity, veSubRectUv(dilatedVelocityUV(), pc.uvScale, vec2(textureSize(uVelocity, 0)))).rg;
             historyUV = vUV - velocity;
             historyUsable = all(greaterThanEqual(historyUV, vec2(0.0))) &&
                             all(lessThanEqual(historyUV, vec2(1.0)));
         }
 
         if (historyUsable) {
-            vec3 historyColor = texture(uHistoryColor, historyUV).rgb;
+            vec3 historyColor =
+                texture(uHistoryColor, veSubRectUv(historyUV, pc.uvScale, vec2(textureSize(uHistoryColor, 0)))).rgb;
 
             if (pc.neighborhoodClampEnabled != 0u) {
                 vec3 minColor = currentColor;
                 vec3 maxColor = currentColor;
                 for (int y = -1; y <= 1; ++y) {
                     for (int x = -1; x <= 1; ++x) {
-                        vec3 sampleColor = texture(uCurrentColor, vUV + vec2(x, y) * pc.texelSize).rgb;
+                        vec3 sampleColor =
+                            texture(uCurrentColor,
+                                    veSubRectUvOffset(
+                                        vUV, vec2(x, y) * pc.texelSize, pc.uvScale, currentAllocatedSize))
+                                .rgb;
                         minColor = min(minColor, sampleColor);
                         maxColor = max(maxColor, sampleColor);
                     }

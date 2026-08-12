@@ -94,11 +94,10 @@ void PostProcessStack::createPostProcessResources(VkImageView depthFallbackView,
     depthFallbackView_ = depthFallbackView;
     frameCount_ = frameCount;
 
-    // NOT sceneAllocatedExtent() yet. Flipping this is what makes the targets
-    // bigger than the sub-rect written into them, and every consumer has to scale
-    // its UVs in the same commit -- otherwise they sample texels the frame never
-    // wrote. The flip and the seven consumer shaders land together.
-    const VkExtent2D extent = sceneUsedExtent();
+    // Allocated at the maximum render resolution; only the top-left sub-rect is
+    // written. Every consumer scales its UVs by RenderResolution::uvScale and
+    // clamps inside the written region -- see sub_rect.glsl.
+    const VkExtent2D extent = sceneAllocatedExtent();
     if (extent.width == 0 || extent.height == 0) {
         throw std::runtime_error("Cannot create post-process resources for a zero-sized render extent.");
     }
@@ -371,7 +370,10 @@ void PostProcessStack::recordCompositeCommands(VkCommandBuffer commandBuffer,
     // the direct lighting this change exists to spare.
     const bool ssaoActive = ssaoSettings_.enabled && ssaoAvailable_ && !ssaoSettings_.ambientOnly;
     compositePushConstants.invProjection = glm::inverse(jitteredProjection);
-    compositePushConstants.debugParams = glm::vec4(std::max(sharpenDebugGain, 0.0f), 0.0f, 0.0f, 0.0f);
+    // zw is the scene/AO uv scale: both are sub-rected and share an allocation,
+    // so one pair covers them. Bloom is not sub-rected and is sampled unscaled.
+    compositePushConstants.debugParams =
+        glm::vec4(std::max(sharpenDebugGain, 0.0f), 0.0f, renderResolution_.uvScale());
     compositePushConstants.ssaoParams1 = glm::vec4(ssaoActive ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
     compositePushConstants.debugRawGain = std::max(debugRawGain, 0.0f);
     // Sharpening exists to undo the softness of the upscale, so a native frame
@@ -540,9 +542,8 @@ void PostProcessStack::createTaaResources()
 {
     destroyTaaResources();
 
-    // Follows the scene targets above: allocated at the used extent until the
-    // consumers can handle a sub-rect.
-    const VkExtent2D extent = sceneUsedExtent();
+    // Follows the scene targets above.
+    const VkExtent2D extent = sceneAllocatedExtent();
     if (extent.width == 0 || extent.height == 0) {
         throw std::runtime_error("Cannot create TAA history resources for a zero-sized render extent.");
     }
@@ -2117,6 +2118,7 @@ void PostProcessStack::recordTaaResolveCommands(VkCommandBuffer commandBuffer)
         return;
     }
     const VkExtent2D usedExtent = sceneUsedExtent();
+    const glm::vec2 sceneUvScale = renderResolution_.uvScale();
 
     rhi::debug::beginLabel(commandBuffer, "TAAResolvePass");
     const bool taaProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "TAAResolvePass");
@@ -2135,7 +2137,11 @@ void PostProcessStack::recordTaaResolveCommands(VkCommandBuffer commandBuffer)
         // Depth dilation needs a samplable main depth; otherwise binding 3 holds
         // the checkerboard fallback and the shader must skip the depth reads.
         swapchain_.depthSupportsSampling() ? 1u : 0u,
-        0u};
+        0u,
+        sceneUvScale,
+        // Depth is still sized to what the frame writes, so its taps step by its
+        // own texel, not scene colour's.
+        glm::vec2{1.0f / static_cast<float>(usedExtent.width), 1.0f / static_cast<float>(usedExtent.height)}};
     vkCmdPushConstants(commandBuffer,
                        taaResolvePipeline_.layout(),
                        VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -2166,7 +2172,8 @@ void PostProcessStack::recordLegacyBloomCommands(VkCommandBuffer commandBuffer)
                             &bloomExtractDescriptorSet,
                             0,
                             nullptr);
-    const BloomExtractPushConstants bloomExtractPushConstants{bloomSettings_.threshold};
+    const BloomExtractPushConstants bloomExtractPushConstants{
+        bloomSettings_.threshold, 0.0f, renderResolution_.uvScale()};
     vkCmdPushConstants(commandBuffer,
                        bloomExtractPipeline_.layout(),
                        VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -2256,9 +2263,15 @@ void PostProcessStack::recordMipChainBloomCommands(VkCommandBuffer commandBuffer
     const bool downsampleProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "Bloom Downsample Chain");
     rhi::debug::beginLabel(commandBuffer, "Bloom Downsample Chain");
     for (uint32_t level = 0; level < bloomMipDownsampleImages_.size(); ++level) {
-        const VkExtent2D sourceExtent = level == 0 ? renderResolution_.extent()
-                                                   : VkExtent2D{bloomMipDownsampleImages_[level - 1].extent().width,
-                                                                bloomMipDownsampleImages_[level - 1].extent().height};
+        // Level 0 reads the sub-rected scene colour, so its source texel is one
+        // texel of the *allocation* and its UVs need scaling; deeper levels read a
+        // mip that was written in full.
+        const bool readsSceneColor = level == 0;
+        const VkExtent2D sourceExtent = readsSceneColor
+                                            ? sceneAllocatedExtent()
+                                            : VkExtent2D{bloomMipDownsampleImages_[level - 1].extent().width,
+                                                         bloomMipDownsampleImages_[level - 1].extent().height};
+        const glm::vec2 sourceUvScale = readsSceneColor ? renderResolution_.uvScale() : glm::vec2(1.0f);
         const VkExtent3D outputExtent = bloomMipDownsampleImages_[level].extent();
         const VkExtent2D outputSize{outputExtent.width, outputExtent.height};
 
@@ -2283,7 +2296,8 @@ void PostProcessStack::recordMipChainBloomCommands(VkCommandBuffer commandBuffer
         const BloomDownsamplePushConstants pushConstants{
             glm::vec2{1.0f / static_cast<float>(sourceExtent.width), 1.0f / static_cast<float>(sourceExtent.height)},
             bloomSettings_.threshold,
-            level == 0 ? 1u : 0u};
+            level == 0 ? 1u : 0u,
+            sourceUvScale};
         vkCmdPushConstants(commandBuffer,
                            bloomDownsamplePipeline_.layout(),
                            VK_SHADER_STAGE_FRAGMENT_BIT,
