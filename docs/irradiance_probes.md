@@ -333,7 +333,7 @@ frame: the same hysteresis costs sixty times the latency.
 
 ## The Cornell box scene
 
-Under **Scene Presets → Cornell box**. A closed room with white floor, ceiling
+Under **Scene** tab → **Scene Presets → Cornell box**. A closed room with white floor, ceiling
 and back wall, one red and one green side wall, two blocks, and a single light
 below the ceiling. Open toward the camera, because a sealed box has nothing to
 look through.
@@ -476,10 +476,14 @@ Accumulation, over a 26-second run with the lights orbiting:
 ## Controls
 
 Its own window, **Irradiance Probes**, and not behind the advanced-mode gate.
-The main debug panel's sections are all default-open, so it is already taller
-than the display; anything appended lands below the fold where ImGui clips it
-rather than drawing it. That is not merely inconvenient — the atlas previews are
-how this subsystem is checked at all.
+The reason was that the main panel was one column of default-open sections and
+therefore taller than the display, so anything appended landed below the fold
+where ImGui clips it rather than drawing it — and the atlas previews are how this
+subsystem is checked at all.
+
+The main panel is tabbed now, so that particular argument no longer holds. The
+window stays separate anyway, because the previews want to be visible *while* the
+probe controls are being changed, which a tab cannot do.
 
 | Control | Effect |
 | --- | --- |

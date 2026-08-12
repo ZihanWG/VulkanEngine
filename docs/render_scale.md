@@ -306,7 +306,8 @@ that is the better trade until the sub-rect work is done properly.
 
 ## Using it
 
-Debug panel → **Render Scale** (visible in both simple and advanced mode). The
+Debug panel → **Performance** tab → **Render Scale** (visible in both simple and
+advanced mode). The
 slider and the 100/75/50/33% preset buttons both commit immediately on release;
 the panel reports the two extents and the resulting shaded-pixel percentage.
 

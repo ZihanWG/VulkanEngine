@@ -142,7 +142,7 @@ Focused technical write-ups for each major subsystem (start with [docs/README.md
 3. Run `.\build\Debug\VulkanEngine.exe` (or `./build/VulkanEngine` on macOS/Linux).
 4. In `VulkanEngine Debug`, open `Debug Views`, then show the `GPU Profiler`, `Render Graph`, `Scene Hierarchy`, and `Material Inspector` panels.
 5. Open the `Lights (Clustered)` panel: drive `Light count` up to a few hundred, toggle `Cluster heatmap`, and toggle `Use clustered culling` off to compare against the brute-force path. Watch the `ClusterBuild` and `LightCull` rows in the `GPU Profiler`.
-6. Use `Scene Presets` → `Load Occlusion Test Scene` and watch the `GPU Culling` panel: `Occlusion culled` counts phase-1 rejections and `Phase-2 rescued` counts disocclusions the re-test brought back (two-phase Hi-Z occlusion is on by default).
+6. Use the `Scene` tab → `Scene Presets` → `Load Occlusion Test Scene` and watch the `Performance` tab's `GPU Culling` section: `Occlusion culled` counts phase-1 rejections and `Phase-2 rescued` counts disocclusions the re-test brought back (two-phase Hi-Z occlusion is on by default).
 7. Press `F11` to enable portfolio mode; press `F12` only when intentionally updating the committed portfolio screenshots.
 
 ## Build

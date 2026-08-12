@@ -1,5 +1,8 @@
 #pragma once
 
+#include <filesystem>
+#include <string>
+
 #include "rhi/VulkanCommon.h"
 
 #include <cstdint>
@@ -29,7 +32,14 @@ public:
     ImGuiLayer(ImGuiLayer&&) = delete;
     ImGuiLayer& operator=(ImGuiLayer&&) = delete;
 
-    void initialize(Window& window, rhi::VulkanContext& context, VkFormat colorFormat, uint32_t imageCount);
+    // layoutFile is where ImGui persists window positions, sizes and open state.
+    // Without it every launch starts with the panels back at their defaults,
+    // which is a small thing that costs a few seconds every single run.
+    void initialize(Window& window,
+                    rhi::VulkanContext& context,
+                    VkFormat colorFormat,
+                    uint32_t imageCount,
+                    const std::filesystem::path& layoutFile = {});
     void shutdown();
 
     void handleEvent(const SDL_Event& event);
@@ -89,6 +99,9 @@ private:
     uint32_t imageCount_ = 0;
     std::unordered_map<TexturePreviewKey, VkDescriptorSet, TexturePreviewKeyHash> texturePreviewDescriptors_;
     std::unordered_map<TexturePreviewKey, VkDescriptorSet, TexturePreviewKeyHash> renderTargetPreviewDescriptors_;
+    // ImGui stores this as a raw pointer, so the string has to outlive the
+    // context rather than being a temporary at the call site.
+    std::string layoutFilePath_;
     bool contextInitialized_ = false;
     bool platformInitialized_ = false;
     bool rendererInitialized_ = false;

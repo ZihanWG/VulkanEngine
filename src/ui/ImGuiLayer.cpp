@@ -1,5 +1,7 @@
 #include "ui/ImGuiLayer.h"
 
+#include "core/Logger.h"
+
 #include "core/Window.h"
 #include "rhi/VulkanContext.h"
 #include "rhi/VulkanDebugUtils.h"
@@ -13,6 +15,7 @@
 #include <algorithm>
 #include <array>
 #include <stdexcept>
+#include <system_error>
 #include <string>
 
 namespace ve::ui {
@@ -29,7 +32,11 @@ ImGuiLayer::~ImGuiLayer()
     shutdown();
 }
 
-void ImGuiLayer::initialize(Window& window, rhi::VulkanContext& context, VkFormat colorFormat, uint32_t imageCount)
+void ImGuiLayer::initialize(Window& window,
+                            rhi::VulkanContext& context,
+                            VkFormat colorFormat,
+                            uint32_t imageCount,
+                            const std::filesystem::path& layoutFile)
 {
     if (initialized()) {
         return;
@@ -47,7 +54,22 @@ void ImGuiLayer::initialize(Window& window, rhi::VulkanContext& context, VkForma
 
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    io.IniFilename = nullptr;
+    // Persist window positions, sizes and section open state. ImGui keeps the
+    // raw pointer, so the string is a member rather than a local, and the
+    // directory has to exist because ImGui will not create it.
+    if (layoutFile.empty()) {
+        io.IniFilename = nullptr;
+    } else {
+        std::error_code directoryError;
+        std::filesystem::create_directories(layoutFile.parent_path(), directoryError);
+        if (directoryError) {
+            Logger::warn("Could not create the ImGui layout directory; window layout will not persist.");
+            io.IniFilename = nullptr;
+        } else {
+            layoutFilePath_ = layoutFile.string();
+            io.IniFilename = layoutFilePath_.c_str();
+        }
+    }
     ImGui::StyleColorsDark();
 
     if (!ImGui_ImplSDL3_InitForVulkan(window.nativeHandle())) {

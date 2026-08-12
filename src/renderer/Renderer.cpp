@@ -153,7 +153,8 @@ Renderer::Renderer(Window& window) : window_(window)
     // Before anything screen-sized is created below: every one of those targets
     // reads its size from renderResolution_.
     updateRenderResolution();
-    imguiLayer_.initialize(window_, context_, swapchain_.colorFormat(), swapchain_.imageCount());
+    imguiLayer_.initialize(
+        window_, context_, swapchain_.colorFormat(), swapchain_.imageCount(), defaultDebugUiLayoutPath());
     createMaterialDescriptorSetLayout();
     createBindlessMaterialTextureHeap();
     createSkyboxDescriptorSetLayout();
