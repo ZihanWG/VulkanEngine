@@ -382,7 +382,12 @@ void PostProcessStack::recordCompositeCommands(VkCommandBuffer commandBuffer,
     // gets none of it and stays bit-identical to what it rendered before the
     // filter existed. The shader reads a zero here as "off" and skips the four
     // extra taps entirely.
-    compositePushConstants.sharpness = renderResolution_.isNative() ? 0.0f : std::clamp(sharpness, 0.0f, 1.0f);
+    // The filter exists to undo the composite's own bilinear stretch, so it runs
+    // only when the composite is actually stretching. With temporal upsampling on
+    // the source already arrives at output resolution and there is nothing to
+    // undo -- sharpening that would be a separate decision, not this one.
+    const bool compositeUpscales = source.uvScale.x < 1.0f || source.uvScale.y < 1.0f;
+    compositePushConstants.sharpness = compositeUpscales ? std::clamp(sharpness, 0.0f, 1.0f) : 0.0f;
     vkCmdPushConstants(commandBuffer,
                        compositePipeline_.layout(),
                        VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -1827,9 +1832,13 @@ uint32_t PostProcessStack::taaHistoryWriteIndex() const
 
 PostProcessStack::ActivePostProcessSource PostProcessStack::activePostProcessSource() const
 {
-    // Both paths agree today: the TAA resolve writes its history into the same
-    // sub-rect the main pass writes SceneColorHDR into. Temporal upsampling is
-    // what will make the isTaaActive() branch return something different.
+    if (isTaaActive()) {
+        // The resolve runs at output resolution and writes the history in full,
+        // so everything downstream reads a fully written, full-resolution source
+        // -- no scale, no sub-rect, and no upscale left for the composite to do.
+        const VkExtent2D allocated = sceneAllocatedExtent();
+        return ActivePostProcessSource{allocated, allocated, glm::vec2(1.0f)};
+    }
     return ActivePostProcessSource{sceneAllocatedExtent(), sceneUsedExtent(), renderResolution_.uvScale()};
 }
 
@@ -2138,13 +2147,16 @@ void PostProcessStack::recordTaaResolveCommands(VkCommandBuffer commandBuffer)
     if (sceneExtent.width == 0 || sceneExtent.height == 0) {
         return;
     }
-    const VkExtent2D usedExtent = sceneUsedExtent();
-    const glm::vec2 sceneUvScale = renderResolution_.uvScale();
+    // The resolve writes the history in full at output resolution -- this is the
+    // upsampling step, so its viewport is the allocation, not the sub-rect the
+    // main pass wrote.
+    const VkExtent2D outputExtent = sceneAllocatedExtent();
+    const glm::vec2 sourceUvScale = renderResolution_.uvScale();
 
     rhi::debug::beginLabel(commandBuffer, "TAAResolvePass");
     const bool taaProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "TAAResolvePass");
     renderGraph_.beginTaaResolvePass();
-    setViewportAndScissor(commandBuffer, usedExtent);
+    setViewportAndScissor(commandBuffer, outputExtent);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, taaResolvePipeline_.pipeline());
     vkCmdBindDescriptorSets(
         commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, taaResolvePipeline_.layout(), 0, 1, &descriptorSet, 0, nullptr);
@@ -2159,7 +2171,7 @@ void PostProcessStack::recordTaaResolveCommands(VkCommandBuffer commandBuffer)
         // the checkerboard fallback and the shader must skip the depth reads.
         swapchain_.depthSupportsSampling() ? 1u : 0u,
         0u,
-        sceneUvScale,
+        sourceUvScale,
         glm::vec2{0.0f, 0.0f}};
     vkCmdPushConstants(commandBuffer,
                        taaResolvePipeline_.layout(),
@@ -2295,10 +2307,10 @@ void PostProcessStack::recordMipChainBloomCommands(VkCommandBuffer commandBuffer
                                                          bloomMipDownsampleImages_[level - 1].extent().height};
         const glm::vec2 sourceUvScale =
             readsSceneColor ? source.uvScale
-                            : RenderResolution::subRectUvScale(bloomMipExtent(sceneUsedExtent(), level - 1),
+                            : RenderResolution::subRectUvScale(bloomMipExtent(bloomChainSourceExtent(), level - 1),
                                                                bloomMipExtent(sceneAllocatedExtent(), level - 1));
         // Viewport is the level's *written* size; the image is the allocated one.
-        const VkExtent2D outputSize = bloomMipExtent(sceneUsedExtent(), level);
+        const VkExtent2D outputSize = bloomMipExtent(bloomChainSourceExtent(), level);
 
         rhi::debug::beginLabel(commandBuffer, "BloomDownsampleMip" + std::to_string(level));
         renderGraph_.beginBloomDownsamplePass(level);
@@ -2344,16 +2356,16 @@ void PostProcessStack::recordMipChainBloomCommands(VkCommandBuffer commandBuffer
         rhi::debug::beginLabel(commandBuffer, "Bloom Upsample Chain");
         for (uint32_t reverseIndex = 0; reverseIndex < bloomMipUpsampleImages_.size(); ++reverseIndex) {
             const uint32_t level = static_cast<uint32_t>(bloomMipUpsampleImages_.size() - 1u - reverseIndex);
-            const VkExtent2D outputSize = bloomMipExtent(sceneUsedExtent(), level);
+            const VkExtent2D outputSize = bloomMipExtent(bloomChainSourceExtent(), level);
             const VkExtent3D lowerExtent = level + 1u == bloomMipDownsampleImages_.size() - 1u
                                                ? bloomMipDownsampleImages_[level + 1u].extent()
                                                : bloomMipUpsampleImages_[level + 1u].extent();
             // The two sources are different mips, so different written fractions.
             const glm::vec2 currentUvScale =
-                RenderResolution::subRectUvScale(bloomMipExtent(sceneUsedExtent(), level),
+                RenderResolution::subRectUvScale(bloomMipExtent(bloomChainSourceExtent(), level),
                                                  bloomMipExtent(sceneAllocatedExtent(), level));
             const glm::vec2 lowerUvScale =
-                RenderResolution::subRectUvScale(bloomMipExtent(sceneUsedExtent(), level + 1u),
+                RenderResolution::subRectUvScale(bloomMipExtent(bloomChainSourceExtent(), level + 1u),
                                                  bloomMipExtent(sceneAllocatedExtent(), level + 1u));
 
             rhi::debug::beginLabel(commandBuffer, "BloomUpsampleMip" + std::to_string(level));

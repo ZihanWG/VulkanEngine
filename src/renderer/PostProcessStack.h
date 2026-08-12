@@ -476,7 +476,13 @@ private:
     // bloomExtent_ is the ALLOCATED bloom size; this is the half of what the
     // frame writes. Both halve their own base, so their ratio drifts from the
     // scene's uv scale and each bloom pass carries its own.
-    [[nodiscard]] VkExtent2D bloomWrittenExtent() const { return RenderResolution::halved(sceneUsedExtent()); }
+    // What the bloom chain's written region is derived from: whatever the chain
+    // is reading, which temporal upsampling makes full resolution.
+    [[nodiscard]] VkExtent2D bloomChainSourceExtent() const { return activePostProcessSource().writtenExtent; }
+    [[nodiscard]] VkExtent2D bloomWrittenExtent() const
+    {
+        return RenderResolution::halved(bloomChainSourceExtent());
+    }
     [[nodiscard]] glm::vec2 bloomUvScale() const
     {
         return RenderResolution::subRectUvScale(bloomWrittenExtent(), bloomExtent_);

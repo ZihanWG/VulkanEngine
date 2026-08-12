@@ -1236,9 +1236,9 @@ void RenderGraph::beginTaaResolvePass()
     clearColor.color.float32[1] = 0.0f;
     clearColor.color.float32[2] = 0.0f;
     clearColor.color.float32[3] = 1.0f;
-    // The history is a scene-sized target, so the resolve writes the same
-    // sub-rect the main pass did.
-    beginColorRendering(textures_.at(frame_.taaHistoryWrite.index), clearColor, frame_.resources.renderExtent);
+    // The resolve writes the history in FULL, not in the render sub-rect: it is
+    // the pass that turns a low-resolution frame into an output-resolution one.
+    beginColorRendering(textures_.at(frame_.taaHistoryWrite.index), clearColor);
     activePass_ = ActivePass::TaaResolve;
 }
 
