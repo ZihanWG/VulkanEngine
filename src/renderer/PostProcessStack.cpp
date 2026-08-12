@@ -1382,25 +1382,23 @@ void PostProcessStack::createLuminanceResources()
         throw std::runtime_error("missing luminance descriptor set layout");
     }
 
-    // USED, not allocated: the reduction covers exactly the texels the frame
-    // writes, and the partial buffer is sized to match. Both are recomputed on
-    // every recreate, which a scale change still triggers -- when it stops doing
-    // so, the buffer has to be sized for the allocation and the partial count
-    // recomputed per frame instead.
-    const VkExtent2D sceneExtent = sceneUsedExtent();
+    // ALLOCATION, not written: sizing this buffer from what the frame writes is
+    // what used to force a full rebuild on every render-scale change. A scaled
+    // frame simply uses a prefix of it, and the reduce pass is told how much.
+    const VkExtent2D sceneExtent = sceneAllocatedExtent();
     if (sceneExtent.width == 0 || sceneExtent.height == 0) {
         throw std::runtime_error("scene color extent is zero");
     }
 
-    luminanceGroupCountX_ = (sceneExtent.width + kLuminanceLocalSizeX - 1) / kLuminanceLocalSizeX;
-    luminanceGroupCountY_ = (sceneExtent.height + kLuminanceLocalSizeY - 1) / kLuminanceLocalSizeY;
-    luminancePartialCount_ = luminanceGroupCountX_ * luminanceGroupCountY_;
-    if (luminancePartialCount_ == 0) {
+    const uint32_t capacityGroupsX = (sceneExtent.width + kLuminanceLocalSizeX - 1) / kLuminanceLocalSizeX;
+    const uint32_t capacityGroupsY = (sceneExtent.height + kLuminanceLocalSizeY - 1) / kLuminanceLocalSizeY;
+    luminancePartialCapacity_ = capacityGroupsX * capacityGroupsY;
+    if (luminancePartialCapacity_ == 0) {
         throw std::runtime_error("luminance reduction produced zero workgroups");
     }
 
     const VkDeviceSize luminanceBufferSize =
-        static_cast<VkDeviceSize>(luminancePartialCount_) * sizeof(LuminancePartial);
+        static_cast<VkDeviceSize>(luminancePartialCapacity_) * sizeof(LuminancePartial);
 
     frameLuminanceBuffers_.resize(frameCount_);
     frameLuminanceReadbackBuffers_.clear();
@@ -1422,6 +1420,20 @@ void PostProcessStack::createLuminanceResources()
     lastAutoExposureUpdate_ = std::chrono::steady_clock::now();
 }
 
+PostProcessStack::LuminanceDispatch PostProcessStack::luminanceDispatch() const
+{
+    const VkExtent2D extent = sceneUsedExtent();
+    LuminanceDispatch dispatch{};
+    dispatch.groupCountX = (extent.width + kLuminanceLocalSizeX - 1) / kLuminanceLocalSizeX;
+    dispatch.groupCountY = (extent.height + kLuminanceLocalSizeY - 1) / kLuminanceLocalSizeY;
+    dispatch.partialCount = dispatch.groupCountX * dispatch.groupCountY;
+    // The buffer is sized for the allocation, so this is always a prefix of it --
+    // but clamp anyway: a render extent that has not caught up with a window
+    // resize would otherwise walk past the end in the reduce pass.
+    dispatch.partialCount = std::min(dispatch.partialCount, luminancePartialCapacity_);
+    return dispatch;
+}
+
 void PostProcessStack::destroyLuminanceResources()
 {
     autoExposureAvailable_ = false;
@@ -1429,9 +1441,7 @@ void PostProcessStack::destroyLuminanceResources()
     frameLuminanceReadbackReady_.clear();
     frameLuminanceReadbackBuffers_.clear();
     frameLuminanceBuffers_.clear();
-    luminancePartialCount_ = 0;
-    luminanceGroupCountX_ = 0;
-    luminanceGroupCountY_ = 0;
+    luminancePartialCapacity_ = 0;
 }
 
 void PostProcessStack::createHistogramResources()
@@ -1774,7 +1784,7 @@ bool PostProcessStack::isLogAverageExposureActive() const
     return toneMappingSettings_.enableAutoExposure && autoExposureAvailable_ &&
            luminancePipeline_.pipeline() != VK_NULL_HANDLE && luminancePipeline_.layout() != VK_NULL_HANDLE &&
            luminanceDescriptorSets_.size() == frameCount_ && frameLuminanceBuffers_.size() == frameCount_ &&
-           luminancePartialCount_ > 0 && luminanceGroupCountX_ > 0 && luminanceGroupCountY_ > 0;
+           luminancePartialCapacity_ > 0;
 }
 
 bool PostProcessStack::isHistogramExposureActive() const
@@ -1918,8 +1928,9 @@ void PostProcessStack::recordLuminanceCommands(VkCommandBuffer commandBuffer)
         commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, luminancePipeline_.layout(), 0, 1, &descriptorSet, 0, nullptr);
 
     const VkExtent2D sceneExtent = sceneUsedExtent();
+    const LuminanceDispatch dispatch = luminanceDispatch();
     const LuminancePushConstants pushConstants{
-        glm::uvec4(sceneExtent.width, sceneExtent.height, luminanceGroupCountX_, 0)};
+        glm::uvec4(sceneExtent.width, sceneExtent.height, dispatch.groupCountX, 0)};
     vkCmdPushConstants(commandBuffer,
                        luminancePipeline_.layout(),
                        VK_SHADER_STAGE_COMPUTE_BIT,
@@ -1928,7 +1939,7 @@ void PostProcessStack::recordLuminanceCommands(VkCommandBuffer commandBuffer)
                        &pushConstants);
 
     rhi::debug::beginLabel(commandBuffer, "AutoExposureCompute");
-    vkCmdDispatch(commandBuffer, luminanceGroupCountX_, luminanceGroupCountY_, 1);
+    vkCmdDispatch(commandBuffer, dispatch.groupCountX, dispatch.groupCountY, 1);
     rhi::debug::endLabel(commandBuffer);
 
     rhi::debug::endLabel(commandBuffer);
@@ -2059,7 +2070,7 @@ void PostProcessStack::recordExposureReduceCommands(VkCommandBuffer commandBuffe
             const float maxExposure = std::max(toneMappingSettings_.maxExposure, minExposure);
             const ExposureMode mode = exposureModeValue(toneMappingSettings_.exposureMode);
             const ExposureReducePushConstants exposurePushConstants{
-                glm::uvec4(static_cast<uint32_t>(mode), luminancePartialCount_, kHistogramBinCount, 0),
+                glm::uvec4(static_cast<uint32_t>(mode), luminanceDispatch().partialCount, kHistogramBinCount, 0),
                 glm::vec4(toneMappingExposureValue(toneMappingSettings_.manualExposure),
                           std::max(toneMappingSettings_.targetLuminance, kMinAverageLuminance),
                           minExposure,
@@ -2141,9 +2152,7 @@ void PostProcessStack::recordTaaResolveCommands(VkCommandBuffer commandBuffer)
         swapchain_.depthSupportsSampling() ? 1u : 0u,
         0u,
         sceneUvScale,
-        // Depth is still sized to what the frame writes, so its taps step by its
-        // own texel, not scene colour's.
-        glm::vec2{1.0f / static_cast<float>(usedExtent.width), 1.0f / static_cast<float>(usedExtent.height)}};
+        glm::vec2{0.0f, 0.0f}};
     vkCmdPushConstants(commandBuffer,
                        taaResolvePipeline_.layout(),
                        VK_SHADER_STAGE_FRAGMENT_BIT,

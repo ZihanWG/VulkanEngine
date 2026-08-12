@@ -24,8 +24,9 @@ layout(set = 0, binding = 2, std430) readonly buffer GtaoParamsBuffer {
     vec4 params0;
     // x = intensity, y = power, z = thickness (view-space units), w = frame index (jitter).
     vec4 params1;
-    // xy = written/allocated for the thin G-buffer, which is sub-rected. Depth is
-    // sized to what is written, so it is sampled unscaled.
+    // xy = written/allocated. The thin G-buffer and depth share the scene
+    // allocation. Only the fetches are scaled; UVs feeding the view-space
+    // reconstruction stay in written-region space.
     vec4 subRect;
 } params;
 
@@ -63,7 +64,7 @@ float interleavedGradientNoise(vec2 pixel, float frame)
 
 void main()
 {
-    float depth = textureLod(uDepth, vUV, 0.0).r;
+    float depth = textureLod(uDepth, veSubRectUv(vUV, params.subRect.xy, vec2(textureSize(uDepth, 0))), 0.0).r;
     if (depth >= 0.99999) {
         outAO = 1.0; // sky / background is never occluded
         return;
@@ -122,7 +123,9 @@ void main()
             {
                 const vec2 sampleUV = vUV + dirUV * t;
                 if (all(greaterThanEqual(sampleUV, vec2(0.0))) && all(lessThanEqual(sampleUV, vec2(1.0)))) {
-                    const float sampleDepth = textureLod(uDepth, sampleUV, 0.0).r;
+                    const float sampleDepth =
+                        textureLod(uDepth, veSubRectUv(sampleUV, params.subRect.xy, vec2(textureSize(uDepth, 0))), 0.0)
+                            .r;
                     if (sampleDepth < 0.99999) {
                         const vec3 delta = viewPositionFromDepth(sampleUV, sampleDepth) - P;
                         const float dist = length(delta);
@@ -139,7 +142,9 @@ void main()
             {
                 const vec2 sampleUV = vUV - dirUV * t;
                 if (all(greaterThanEqual(sampleUV, vec2(0.0))) && all(lessThanEqual(sampleUV, vec2(1.0)))) {
-                    const float sampleDepth = textureLod(uDepth, sampleUV, 0.0).r;
+                    const float sampleDepth =
+                        textureLod(uDepth, veSubRectUv(sampleUV, params.subRect.xy, vec2(textureSize(uDepth, 0))), 0.0)
+                            .r;
                     if (sampleDepth < 0.99999) {
                         const vec3 delta = viewPositionFromDepth(sampleUV, sampleDepth) - P;
                         const float dist = length(delta);

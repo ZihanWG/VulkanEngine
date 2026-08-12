@@ -574,11 +574,10 @@ struct TaaResolvePushConstants {
     uint32_t reprojectionEnabled = 1;
     uint32_t depthDilationEnabled = 1;
     uint32_t padding = 0;
-    // Written/allocated for scene colour, velocity and the history. The depth
-    // buffer is still sized to what is written, so it needs neither -- which is
-    // exactly why its tap offsets get their own texel size below.
+    // Written/allocated. Scene colour, velocity, the history and depth all share
+    // one allocation, so one scale covers every source this pass reads.
     glm::vec2 uvScale{1.0f, 1.0f};
-    glm::vec2 depthTexelSize{1.0f, 1.0f};
+    glm::vec2 padding1{0.0f, 0.0f};
 };
 
 static_assert(offsetof(TaaResolvePushConstants, texelSize) == 0);
@@ -588,7 +587,7 @@ static_assert(offsetof(TaaResolvePushConstants, neighborhoodClampEnabled) == 16)
 static_assert(offsetof(TaaResolvePushConstants, reprojectionEnabled) == 20);
 static_assert(offsetof(TaaResolvePushConstants, depthDilationEnabled) == 24);
 static_assert(offsetof(TaaResolvePushConstants, uvScale) == 32);
-static_assert(offsetof(TaaResolvePushConstants, depthTexelSize) == 40);
+static_assert(offsetof(TaaResolvePushConstants, padding1) == 40);
 static_assert(sizeof(TaaResolvePushConstants) == 48);
 
 

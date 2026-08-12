@@ -14,11 +14,11 @@ layout(push_constant) uniform TaaResolvePushConstants {
     uint reprojectionEnabled;
     uint depthDilationEnabled;
     uint padding0;
-    // Scene colour, velocity and the history are allocated at the maximum render
-    // resolution and only their sub-rect is written. Depth is still sized to what
-    // is written, which is why its taps get their own texel size.
+    // Every source here -- scene colour, velocity, the history and depth -- is
+    // allocated at the maximum render resolution and written only in its
+    // sub-rect, and they share one allocation, so one scale covers all of them.
     vec2 uvScale;
-    vec2 depthTexelSize;
+    vec2 padding1;
 } pc;
 
 layout(location = 0) in vec2 vUV;
@@ -37,8 +37,11 @@ vec2 dilatedVelocityUV()
     vec2 closestUV = vUV;
     for (int y = -1; y <= 1; ++y) {
         for (int x = -1; x <= 1; ++x) {
-            vec2 sampleUV = clamp(vUV + vec2(x, y) * pc.depthTexelSize, vec2(0.0), vec2(1.0));
-            float depth = texture(uDepth, sampleUV).r;
+            // Offsets are one allocated texel; the returned UV stays in
+            // written-region space, which is what the velocity fetch expects.
+            vec2 sampleUV = clamp(vUV + vec2(x, y) * pc.texelSize, vec2(0.0), vec2(1.0));
+            float depth =
+                texture(uDepth, veSubRectUv(sampleUV, pc.uvScale, vec2(textureSize(uDepth, 0)))).r;
             if (depth < closestDepth) {
                 closestDepth = depth;
                 closestUV = sampleUV;
