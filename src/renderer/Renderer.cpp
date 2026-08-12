@@ -1440,8 +1440,13 @@ void Renderer::updateRenderResolution()
     // The main depth buffer belongs to the swapchain but is sized with the other
     // internal targets, so it is resized here rather than inside the swapchain's
     // own (re)creation, which does not know the scale. A no-op at scale 1.0.
-    if (renderResolution_.extent().width > 0 && renderResolution_.extent().height > 0) {
-        swapchain_.resizeDepthImage(renderResolution_.extent());
+    // The ALLOCATION, like every other screen-space target. Sizing depth to what
+    // the frame writes was the last thing that reallocated on a scale change --
+    // and since that path no longer waits for the GPU, it was also destroying an
+    // image in flight.
+    const VkExtent2D depthExtent = renderResolution_.allocationExtent();
+    if (depthExtent.width > 0 && depthExtent.height > 0) {
+        swapchain_.resizeDepthImage(depthExtent);
     }
     if (!renderResolution_.isNative()) {
         Logger::info("Render scale " + std::to_string(renderResolution_.scale()) + ": rendering at " +
@@ -1460,17 +1465,34 @@ void Renderer::applyRenderScaleChange()
 
     const auto begin = std::chrono::steady_clock::now();
 
-    // Everything below destroys images earlier frames may still be reading.
-    context_.waitIdle();
+    // Every screen-space target is allocated at the maximum render resolution
+    // and only its sub-rect is written, so a scale change moves viewports and uv
+    // scales and touches no resource at all. The rebuild below is for the case
+    // where the *allocation* moved, which only a window resize does.
+    const VkExtent2D previousAllocation = renderResolution_.allocationExtent();
+    const bool allocationUnchanged = previousAllocation.width == swapchain_.extent().width &&
+                                     previousAllocation.height == swapchain_.extent().height;
+
+    if (!allocationUnchanged) {
+        // Destroys images earlier frames may still be reading. Measured at 10 ms
+        // of the ~15 ms this used to cost every time, and irreducible -- it is
+        // real in-flight GPU work, not driver overhead. Not paying it at all is
+        // the entire point of the sub-rect design.
+        context_.waitIdle();
+    }
     const auto afterIdle = std::chrono::steady_clock::now();
     updateRenderResolution();
-    recreatePostProcessResources();
+    if (!allocationUnchanged) {
+        recreatePostProcessResources();
+    }
     const auto afterRebuild = std::chrono::steady_clock::now();
-    // Both histories were written at the previous resolution, so neither can be
-    // reprojected into the new one. The pyramid is a frame of occlusion data at
-    // the old size and would reject visible geometry if it were trusted.
+    // Necessary either way: these three hold a frame of data in the previous
+    // sub-rect, and staleness has nothing to do with whether the storage moved.
+    // The pyramid in particular would reject visible geometry if it were
+    // trusted at the wrong scale.
     invalidateTaaHistory();
     invalidateDepthPyramid();
+    postProcess_.invalidateAmbientOcclusionHistory();
 
     lastRenderScaleApplyMs_ = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - begin).count();
     const float idleMs = std::chrono::duration<float, std::milli>(afterIdle - begin).count();
@@ -1478,7 +1500,8 @@ void Renderer::applyRenderScaleChange()
     Logger::info("Render scale applied: " + std::to_string(renderResolution_.extent().width) + "x" +
                  std::to_string(renderResolution_.extent().height) + " in " +
                  std::to_string(lastRenderScaleApplyMs_) + " ms (waitIdle " + std::to_string(idleMs) +
-                 " ms, rebuild " + std::to_string(rebuildMs) + " ms)");
+                 " ms, rebuild " + std::to_string(rebuildMs) + " ms" +
+                 (allocationUnchanged ? ", sub-rect only" : ", allocation moved") + ")");
 }
 
 void Renderer::updateDynamicResolution()

@@ -17,8 +17,9 @@ layout(set = 0, binding = 2, std430) readonly buffer GtaoParamsBuffer {
     mat4 inverseProjection;
     vec4 params0; // x = radius, y = falloff, z = slice count, w = steps per slice
     vec4 params1; // x = intensity, y = power, z = thickness, w = frame index
-    // zw = written/allocated for the half-resolution raw AO target. Depth is
-    // sized to what is written, so it is sampled unscaled.
+    // xy = written/allocated for depth (the scene allocation), zw for the
+    // half-resolution raw AO target. Only the fetches are scaled; the UVs feeding
+    // viewZFromDepth stay in written-region space.
     vec4 subRect;
 } params;
 
@@ -35,7 +36,8 @@ float viewZFromDepth(vec2 uv, float depth)
 
 void main()
 {
-    const float centerDepth = textureLod(uDepth, vUV, 0.0).r;
+    const float centerDepth =
+        textureLod(uDepth, veSubRectUv(vUV, params.subRect.xy, vec2(textureSize(uDepth, 0))), 0.0).r;
     if (centerDepth >= 0.99999) {
         outAO = 1.0; // sky stays fully lit
         return;
@@ -59,7 +61,8 @@ void main()
     for (int y = -1; y <= 1; ++y) {
         for (int x = -1; x <= 1; ++x) {
             const vec2 sampleUV = vUV + vec2(float(x), float(y)) * halfTexel;
-            const float sampleDepth = textureLod(uDepth, sampleUV, 0.0).r;
+            const float sampleDepth =
+                textureLod(uDepth, veSubRectUv(sampleUV, params.subRect.xy, vec2(textureSize(uDepth, 0))), 0.0).r;
             if (sampleDepth >= 0.99999) {
                 continue;
             }

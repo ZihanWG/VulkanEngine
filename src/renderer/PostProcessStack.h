@@ -115,6 +115,10 @@ public:
                                  float sharpness = 0.0f,
                                  float sharpenDebugGain = 0.0f);
     void advanceTaaHistory();
+    // The AO target holds the previous frame's occlusion in the previous
+    // sub-rect. A scale change makes it unusable without moving any storage, so
+    // this exists separately from recreating the resources.
+    void invalidateAmbientOcclusionHistory() { ambientOcclusionHistoryValid_ = false; }
 
     // State queries.
     [[nodiscard]] bool isAutoExposureActive() const;
@@ -547,9 +551,20 @@ private:
     std::vector<VkImageLayout> bloomMipDownsampleLayouts_;
     std::vector<VkImageLayout> bloomMipUpsampleLayouts_;
 
-    uint32_t luminanceGroupCountX_ = 0;
-    uint32_t luminanceGroupCountY_ = 0;
-    uint32_t luminancePartialCount_ = 0;
+    // Capacity, sized from the ALLOCATION so a render-scale change never has to
+    // resize the partial buffer -- which is the last thing that stood between a
+    // scale change and not rebuilding anything at all.
+    uint32_t luminancePartialCapacity_ = 0;
+
+    // How much of that capacity this frame uses. Derived from the written extent
+    // at record time rather than stored, because storing it is exactly the bake-in
+    // that forced a rebuild.
+    struct LuminanceDispatch {
+        uint32_t groupCountX = 0;
+        uint32_t groupCountY = 0;
+        uint32_t partialCount = 0;
+    };
+    [[nodiscard]] LuminanceDispatch luminanceDispatch() const;
     uint32_t currentFrame_ = 0;
     // Frames-in-flight count, formerly read via Renderer::frames_.size().
     uint32_t frameCount_ = 0;

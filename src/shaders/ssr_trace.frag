@@ -19,9 +19,10 @@ layout(set = 0, binding = 3, std430) readonly buffer SsrParamsBuffer {
     vec4 marchParams;
     // x = intensity, y = max roughness, z = screen-edge fade start, w = frame index (jitter)
     vec4 weightParams;
-    // xy = written/allocated for the thin G-buffer and the scene-colour copy,
-    // which share the scene allocation. Depth is still sized to what is written,
-    // so it is sampled unscaled. zw unused.
+    // xy = written/allocated. The thin G-buffer, the scene-colour copy and depth
+    // all share the scene allocation, so one scale covers every source. Only the
+    // texture fetches are scaled -- UVs feeding the view-space reconstruction
+    // must stay in written-region space. zw unused.
     vec4 subRect;
 } params;
 
@@ -65,7 +66,7 @@ void main()
 {
     outReflection = vec4(0.0);
 
-    float depth = texture(uDepth, vUV).r;
+    float depth = texture(uDepth, veSubRectUv(vUV, params.subRect.xy, vec2(textureSize(uDepth, 0)))).r;
     if (depth >= 0.99999) {
         return; // sky
     }
@@ -116,7 +117,7 @@ void main()
             break;
         }
 
-        float sceneDepth = texture(uDepth, uv).r;
+        float sceneDepth = texture(uDepth, veSubRectUv(uv, params.subRect.xy, vec2(textureSize(uDepth, 0)))).r;
         vec3 scenePos = viewPositionFromDepth(uv, sceneDepth);
 
         // Depth increases away from the camera along -Z in view space.
@@ -133,7 +134,8 @@ void main()
                 vec4 midClip = params.projection * vec4(midPos, 1.0);
                 vec3 midNdc = midClip.xyz / midClip.w;
                 vec2 midUV = midNdc.xy * 0.5 + 0.5;
-                float midSceneDepth = texture(uDepth, midUV).r;
+                float midSceneDepth =
+                    texture(uDepth, veSubRectUv(midUV, params.subRect.xy, vec2(textureSize(uDepth, 0)))).r;
                 vec3 midScenePos = viewPositionFromDepth(midUV, midSceneDepth);
                 if (-midPos.z > -midScenePos.z) {
                     hi = mid;
