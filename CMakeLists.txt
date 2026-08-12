@@ -417,6 +417,7 @@ endif()
 set(SHADER_INCLUDES
     "${SHADER_SOURCE_DIR}/object_frame_data.glsl"
     "${SHADER_SOURCE_DIR}/cluster_grid.glsl"
+    "${SHADER_SOURCE_DIR}/sub_rect.glsl"
 )
 
 if(GLSLC_EXECUTABLE)
