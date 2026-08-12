@@ -27,7 +27,7 @@ layout(push_constant) uniform CompositePushConstants {
     float sharpness;
     mat4 invProjection;
     vec4 debugParams; // x = sharpen delta view gain (0 = off), zw = scene/AO uv scale
-    vec4 ssaoParams1; // x = ambient-occlusion enabled
+    vec4 ssaoParams1; // x = ambient-occlusion enabled, zw = bloom uv scale
 } pc;
 
 layout(location = 0) in vec2 vUV;
@@ -85,8 +85,13 @@ void main()
         sceneColor *= texture(uAmbientOcclusion, veSubRectUv(vUV, sceneUvScale, vec2(textureSize(uAmbientOcclusion, 0)))).r;
     }
 
-    vec3 legacyBloom = texture(uLegacyBloomColor, vUV).rgb;
-    vec3 mipBloom = texture(uMipBloomColor, vUV).rgb;
+    // The bloom chain is sub-rected as well, and its halves round independently
+    // of the scene's, so it carries its own scale rather than reusing the one
+    // above.
+    const vec2 bloomUvScale = pc.ssaoParams1.zw;
+    vec3 legacyBloom =
+        texture(uLegacyBloomColor, veSubRectUv(vUV, bloomUvScale, vec2(textureSize(uLegacyBloomColor, 0)))).rgb;
+    vec3 mipBloom = texture(uMipBloomColor, veSubRectUv(vUV, bloomUvScale, vec2(textureSize(uMipBloomColor, 0)))).rgb;
     vec3 selectedBloom = pc.bloomMethod == 1u ? mipBloom : legacyBloom;
     vec3 bloomColor = selectedBloom * (pc.bloomEnabled != 0u ? pc.bloomIntensity : 0.0);
     float exposure = pc.useGpuExposure != 0u ? uExposure.exposure : pc.exposure;

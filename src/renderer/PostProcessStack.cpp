@@ -101,9 +101,6 @@ void PostProcessStack::createPostProcessResources(VkImageView depthFallbackView,
     if (extent.width == 0 || extent.height == 0) {
         throw std::runtime_error("Cannot create post-process resources for a zero-sized render extent.");
     }
-    // The bloom chain is not sub-rected yet, so it is still sized to what the
-    // frame writes and still has to be rebuilt when that changes.
-    const VkExtent2D bloomSourceExtent = sceneUsedExtent();
 
     postProcessDescriptorPool_.reset();
     bloomExtractDescriptorSet_ = VK_NULL_HANDLE;
@@ -172,7 +169,10 @@ void PostProcessStack::createPostProcessResources(VkImageView depthFallbackView,
 
     createTaaResources();
 
-    bloomExtent_ = RenderResolution::halved(bloomSourceExtent);
+    // Allocated half. bloomWrittenExtent() is the half of what the frame writes,
+    // and the two round independently -- which is why every bloom pass carries
+    // its own source uv scale rather than the scene's.
+    bloomExtent_ = RenderResolution::halved(sceneAllocatedExtent());
 
     rhi::VulkanImageCreateInfo bloomInfo{};
     bloomInfo.width = bloomExtent_.width;
@@ -193,11 +193,11 @@ void PostProcessStack::createPostProcessResources(VkImageView depthFallbackView,
     bloomPong_.create(context_, bloomInfo);
     bloomPongLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 
-    const uint32_t bloomMipCount = calculateBloomMipChainLevels(bloomSourceExtent);
+    const uint32_t bloomMipCount = calculateBloomMipChainLevels(sceneAllocatedExtent());
     bloomMipDownsampleImages_.resize(bloomMipCount);
     bloomMipDownsampleLayouts_.assign(bloomMipCount, VK_IMAGE_LAYOUT_UNDEFINED);
     for (uint32_t level = 0; level < bloomMipCount; ++level) {
-        const VkExtent2D mipSize = bloomMipExtent(bloomSourceExtent, level);
+        const VkExtent2D mipSize = bloomMipExtent(sceneAllocatedExtent(), level);
         bloomInfo.width = mipSize.width;
         bloomInfo.height = mipSize.height;
         bloomInfo.debugName = "BloomMipDownsample" + std::to_string(level);
@@ -208,7 +208,7 @@ void PostProcessStack::createPostProcessResources(VkImageView depthFallbackView,
     bloomMipUpsampleImages_.resize(bloomUpsampleCount);
     bloomMipUpsampleLayouts_.assign(bloomUpsampleCount, VK_IMAGE_LAYOUT_UNDEFINED);
     for (uint32_t level = 0; level < bloomUpsampleCount; ++level) {
-        const VkExtent2D mipSize = bloomMipExtent(bloomSourceExtent, level);
+        const VkExtent2D mipSize = bloomMipExtent(sceneAllocatedExtent(), level);
         bloomInfo.width = mipSize.width;
         bloomInfo.height = mipSize.height;
         bloomInfo.debugName = "BloomMipUpsample" + std::to_string(level);
@@ -374,7 +374,9 @@ void PostProcessStack::recordCompositeCommands(VkCommandBuffer commandBuffer,
     // so one pair covers them. Bloom is not sub-rected and is sampled unscaled.
     compositePushConstants.debugParams =
         glm::vec4(std::max(sharpenDebugGain, 0.0f), 0.0f, renderResolution_.uvScale());
-    compositePushConstants.ssaoParams1 = glm::vec4(ssaoActive ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+    // zw is the bloom uv scale: the bloom chain is sub-rected too, and its halves
+    // round independently of the scene's, so it cannot share debugParams.zw.
+    compositePushConstants.ssaoParams1 = glm::vec4(ssaoActive ? 1.0f : 0.0f, 0.0f, bloomUvScale());
     compositePushConstants.debugRawGain = std::max(debugRawGain, 0.0f);
     // Sharpening exists to undo the softness of the upscale, so a native frame
     // gets none of it and stays bit-identical to what it rendered before the
@@ -2161,7 +2163,7 @@ void PostProcessStack::recordLegacyBloomCommands(VkCommandBuffer commandBuffer)
     rhi::debug::beginLabel(commandBuffer, "BloomExtractPass");
     const bool bloomExtractProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "BloomExtractPass");
     renderGraph_.beginBloomExtractPass();
-    setViewportAndScissor(commandBuffer, bloomExtent_);
+    setViewportAndScissor(commandBuffer, bloomWrittenExtent());
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomExtractPipeline_.pipeline());
     const VkDescriptorSet bloomExtractDescriptorSet = activeBloomExtractDescriptorSet();
     vkCmdBindDescriptorSets(commandBuffer,
@@ -2190,12 +2192,13 @@ void PostProcessStack::recordLegacyBloomCommands(VkCommandBuffer commandBuffer)
     const BloomBlurPushConstants horizontalBlurPushConstants{
         glm::vec2{1.0f / static_cast<float>(bloomExtent_.width), 1.0f / static_cast<float>(bloomExtent_.height)},
         1u,
-        0u};
+        0u,
+        bloomUvScale()};
     rhi::debug::beginLabel(commandBuffer, "BloomBlurHorizontal");
     const bool bloomBlurHorizontalProfileScope =
         gpuProfiler_.beginScope(currentFrame_, commandBuffer, "BloomBlurHorizontal");
     renderGraph_.beginBloomBlurPass(true);
-    setViewportAndScissor(commandBuffer, bloomExtent_);
+    setViewportAndScissor(commandBuffer, bloomWrittenExtent());
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomBlurPipeline_.pipeline());
     vkCmdBindDescriptorSets(commandBuffer,
                             VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -2221,12 +2224,13 @@ void PostProcessStack::recordLegacyBloomCommands(VkCommandBuffer commandBuffer)
     const BloomBlurPushConstants verticalBlurPushConstants{
         glm::vec2{1.0f / static_cast<float>(bloomExtent_.width), 1.0f / static_cast<float>(bloomExtent_.height)},
         0u,
-        0u};
+        0u,
+        bloomUvScale()};
     rhi::debug::beginLabel(commandBuffer, "BloomBlurVertical");
     const bool bloomBlurVerticalProfileScope =
         gpuProfiler_.beginScope(currentFrame_, commandBuffer, "BloomBlurVertical");
     renderGraph_.beginBloomBlurPass(false);
-    setViewportAndScissor(commandBuffer, bloomExtent_);
+    setViewportAndScissor(commandBuffer, bloomWrittenExtent());
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomBlurPipeline_.pipeline());
     vkCmdBindDescriptorSets(commandBuffer,
                             VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -2271,9 +2275,12 @@ void PostProcessStack::recordMipChainBloomCommands(VkCommandBuffer commandBuffer
                                             ? sceneAllocatedExtent()
                                             : VkExtent2D{bloomMipDownsampleImages_[level - 1].extent().width,
                                                          bloomMipDownsampleImages_[level - 1].extent().height};
-        const glm::vec2 sourceUvScale = readsSceneColor ? renderResolution_.uvScale() : glm::vec2(1.0f);
-        const VkExtent3D outputExtent = bloomMipDownsampleImages_[level].extent();
-        const VkExtent2D outputSize{outputExtent.width, outputExtent.height};
+        const glm::vec2 sourceUvScale =
+            readsSceneColor ? renderResolution_.uvScale()
+                            : RenderResolution::subRectUvScale(bloomMipExtent(sceneUsedExtent(), level - 1),
+                                                               bloomMipExtent(sceneAllocatedExtent(), level - 1));
+        // Viewport is the level's *written* size; the image is the allocated one.
+        const VkExtent2D outputSize = bloomMipExtent(sceneUsedExtent(), level);
 
         rhi::debug::beginLabel(commandBuffer, "BloomDownsampleMip" + std::to_string(level));
         renderGraph_.beginBloomDownsamplePass(level);
@@ -2319,11 +2326,17 @@ void PostProcessStack::recordMipChainBloomCommands(VkCommandBuffer commandBuffer
         rhi::debug::beginLabel(commandBuffer, "Bloom Upsample Chain");
         for (uint32_t reverseIndex = 0; reverseIndex < bloomMipUpsampleImages_.size(); ++reverseIndex) {
             const uint32_t level = static_cast<uint32_t>(bloomMipUpsampleImages_.size() - 1u - reverseIndex);
-            const VkExtent3D outputExtent = bloomMipUpsampleImages_[level].extent();
-            const VkExtent2D outputSize{outputExtent.width, outputExtent.height};
+            const VkExtent2D outputSize = bloomMipExtent(sceneUsedExtent(), level);
             const VkExtent3D lowerExtent = level + 1u == bloomMipDownsampleImages_.size() - 1u
                                                ? bloomMipDownsampleImages_[level + 1u].extent()
                                                : bloomMipUpsampleImages_[level + 1u].extent();
+            // The two sources are different mips, so different written fractions.
+            const glm::vec2 currentUvScale =
+                RenderResolution::subRectUvScale(bloomMipExtent(sceneUsedExtent(), level),
+                                                 bloomMipExtent(sceneAllocatedExtent(), level));
+            const glm::vec2 lowerUvScale =
+                RenderResolution::subRectUvScale(bloomMipExtent(sceneUsedExtent(), level + 1u),
+                                                 bloomMipExtent(sceneAllocatedExtent(), level + 1u));
 
             rhi::debug::beginLabel(commandBuffer, "BloomUpsampleMip" + std::to_string(level));
             renderGraph_.beginBloomUpsamplePass(level);
@@ -2341,7 +2354,9 @@ void PostProcessStack::recordMipChainBloomCommands(VkCommandBuffer commandBuffer
             const BloomUpsamplePushConstants pushConstants{
                 glm::vec2{1.0f / static_cast<float>(lowerExtent.width), 1.0f / static_cast<float>(lowerExtent.height)},
                 bloomSettings_.radius,
-                0.0f};
+                0.0f,
+                currentUvScale,
+                lowerUvScale};
             vkCmdPushConstants(commandBuffer,
                                bloomUpsamplePipeline_.layout(),
                                VK_SHADER_STAGE_FRAGMENT_BIT,
