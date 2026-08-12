@@ -211,7 +211,7 @@ of the first.
 
 ## Controls
 
-Debug panel → **Volumetric Fog**:
+Debug panel → **Image** tab → **Volumetric Fog**:
 
 | Control | Effect |
 | --- | --- |

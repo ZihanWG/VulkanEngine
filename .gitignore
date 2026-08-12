@@ -35,6 +35,9 @@ compile_commands.json
 
 # User-local runtime renderer settings are generated from the ImGui debug UI.
 config/runtime_settings.json
+# Per-user ImGui window layout, written beside the runtime settings for the same
+# reason: it is local state, not something the repository should carry.
+config/imgui_layout.ini
 
 # F12 writes a timestamped capture plus an overwritten `_latest` copy. Only the
 # latest one is referenced (docs/portfolio_capture.md), and these are 3-15 MB

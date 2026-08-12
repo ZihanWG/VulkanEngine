@@ -17,55 +17,91 @@ void Renderer::buildDebugUi()
         return;
     }
 
+    // First run only: the layout file takes over from then on, so moving or
+    // resizing the panel sticks across restarts.
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + 16.0f, viewport->WorkPos.y + 16.0f),
+                            ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(460.0f, std::min(viewport->WorkSize.y - 32.0f, 780.0f)), ImGuiCond_FirstUseEver);
     ImGui::Begin("VulkanEngine Debug");
 
+    drawStatusStrip();
+
     ImGui::Checkbox("Advanced mode", &debugUiSettings_.advancedMode);
-    ImGui::SetItemTooltip(
-        "Off: only the common post-process knobs.\nOn: scene, GPU, diagnostics sections and side panels.");
-    ImGui::Separator();
+    ImGui::SetItemTooltip("Off: only the common look and render-scale knobs.\n"
+                          "On: reveals the Scene and Diagnostics tabs, the profiler and culling\n"
+                          "readouts, and the side panels.");
 
-    // Common post-process knobs: always visible in both simple and advanced modes.
-    drawRenderScaleDebugUi();
-    drawToneMappingDebugUi();
-    drawBloomDebugUi();
-    drawSsaoDebugUi();
-    drawTaaDebugUi();
-    drawSsrDebugUi();
-    drawVolumetricFogDebugUi();
-
-    if (debugUiSettings_.showExposureGraphs && ImGui::CollapsingHeader("Exposure", ImGuiTreeNodeFlags_DefaultOpen)) {
-        drawExposureDebugUi();
-    }
-
-    drawControlsDebugUi();
-
-    if (debugUiSettings_.advancedMode) {
-        ImGui::SeparatorText("Advanced");
-
-        drawRuntimeSettingsDebugUi();
-        drawScenePresetDebugUi();
-        drawPortfolioCaptureDebugUi();
-        drawDebugViewToggles();
-        drawShadowsDebugUi();
-        drawLightsDebugUi();
-        drawSkeletalAnimationDebugUi();
-        drawGpuCullingDebugUi();
-        drawMeshLodDebugUi();
-        drawEnvironmentDebugUi();
-
-        if (debugUiSettings_.showRenderGraphPanel &&
-            ImGui::CollapsingHeader("Render Graph", ImGuiTreeNodeFlags_DefaultOpen)) {
-            drawRenderGraphDebugUi();
+    // Tabs rather than one column of sections. There are twenty-seven of them and
+    // every one used to be default-open, so the window was taller than the display
+    // and anything you wanted was a long scroll away.
+    //
+    // Grouped by *task* rather than by subsystem, which is the part that matters:
+    // a render-scale experiment wants the scale, the profiler and the culling
+    // counts at once, and those were previously at the top, the bottom and the
+    // other bottom of the same scroll.
+    if (ImGui::BeginTabBar("VulkanEngineDebugTabs", ImGuiTabBarFlags_None)) {
+        if (ImGui::BeginTabItem("Performance")) {
+            drawRenderScaleDebugUi();
+            if (debugUiSettings_.advancedMode) {
+                if (debugUiSettings_.showGpuTimingGraphs &&
+                    ImGui::CollapsingHeader("GPU Profiler", ImGuiTreeNodeFlags_DefaultOpen)) {
+                    drawGpuTimingDebugUi();
+                }
+                if (debugUiSettings_.showCullingStats &&
+                    ImGui::CollapsingHeader("Culling", ImGuiTreeNodeFlags_DefaultOpen)) {
+                    drawCullingDebugUi();
+                }
+                drawGpuCullingDebugUi();
+                drawMeshLodDebugUi();
+            }
+            ImGui::EndTabItem();
         }
 
-        if (debugUiSettings_.showGpuTimingGraphs &&
-            ImGui::CollapsingHeader("GPU Profiler", ImGuiTreeNodeFlags_DefaultOpen)) {
-            drawGpuTimingDebugUi();
+        if (ImGui::BeginTabItem("Image")) {
+            drawToneMappingDebugUi();
+            if (debugUiSettings_.showExposureGraphs &&
+                ImGui::CollapsingHeader("Exposure", ImGuiTreeNodeFlags_DefaultOpen)) {
+                drawExposureDebugUi();
+            }
+            drawBloomDebugUi();
+            drawTaaDebugUi();
+            drawSsrDebugUi();
+            drawSsaoDebugUi();
+            drawVolumetricFogDebugUi();
+            ImGui::EndTabItem();
         }
 
-        if (debugUiSettings_.showCullingStats && ImGui::CollapsingHeader("Culling", ImGuiTreeNodeFlags_DefaultOpen)) {
-            drawCullingDebugUi();
+        // Scene and Diagnostics hold nothing outside advanced mode, so they are
+        // not created at all rather than opening onto an empty page.
+        if (debugUiSettings_.advancedMode && ImGui::BeginTabItem("Scene")) {
+            drawScenePresetDebugUi();
+            drawLightsDebugUi();
+            drawShadowsDebugUi();
+            drawEnvironmentDebugUi();
+            drawSkeletalAnimationDebugUi();
+            drawPortfolioCaptureDebugUi();
+            ImGui::EndTabItem();
         }
+
+        if (debugUiSettings_.advancedMode && ImGui::BeginTabItem("Diagnostics")) {
+            drawDebugViewToggles();
+            if (debugUiSettings_.showRenderGraphPanel &&
+                ImGui::CollapsingHeader("Render Graph", ImGuiTreeNodeFlags_DefaultOpen)) {
+                drawRenderGraphDebugUi();
+            }
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Settings")) {
+            drawControlsDebugUi();
+            if (debugUiSettings_.advancedMode) {
+                drawRuntimeSettingsDebugUi();
+            }
+            ImGui::EndTabItem();
+        }
+
+        ImGui::EndTabBar();
     }
 
     ImGui::End();
@@ -155,6 +191,43 @@ void Renderer::drawDebugViewToggles()
     ImGui::Checkbox("Show GPU Profiler panel", &debugUiSettings_.showGpuTimingGraphs);
     ImGui::Checkbox("Show Culling stats", &debugUiSettings_.showCullingStats);
     ImGui::Checkbox("Show Exposure graphs", &debugUiSettings_.showExposureGraphs);
+}
+
+// Always visible, above the tabs. Changing a parameter and then having to go
+// somewhere else to find out whether it did anything was its own kind of
+// friction, and these four readings are what almost every experiment here is
+// actually watching.
+void Renderer::drawStatusStrip()
+{
+    const float gpuFrameMs = gpuFrameTimeHistory_.empty() ? 0.0f : gpuFrameTimeHistory_.latest();
+    if (gpuFrameMs > 0.0f) {
+        ImGui::Text("GPU %.2f ms (%.0f fps)", static_cast<double>(gpuFrameMs), 1000.0 / gpuFrameMs);
+    } else {
+        ImGui::TextDisabled("GPU -- ms");
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("|");
+    ImGui::SameLine();
+    ImGui::Text("CPU %.2f ms", static_cast<double>(cpuFrameDeltaMs_));
+
+    const VkExtent2D renderExtent = renderResolution_.extent();
+    const VkExtent2D outputExtent = renderResolution_.outputExtent();
+    if (renderResolution_.isNative()) {
+        ImGui::Text("%u x %u native", renderExtent.width, renderExtent.height);
+    } else {
+        ImGui::Text("%u x %u -> %u x %u (%.0f%%)",
+                    renderExtent.width,
+                    renderExtent.height,
+                    outputExtent.width,
+                    outputExtent.height,
+                    static_cast<double>(renderResolution_.scale()) * 100.0);
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("|");
+    ImGui::SameLine();
+    ImGui::Text("%zu/%zu draws", cullingStats_.visibleObjects, cullingStats_.totalObjects);
+
+    ImGui::Separator();
 }
 
 void Renderer::drawRenderScaleDebugUi()

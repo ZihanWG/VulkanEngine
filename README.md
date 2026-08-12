@@ -142,7 +142,7 @@ Focused technical write-ups for each major subsystem (start with [docs/README.md
 3. Run `.\build\Debug\VulkanEngine.exe` (or `./build/VulkanEngine` on macOS/Linux).
 4. In `VulkanEngine Debug`, open `Debug Views`, then show the `GPU Profiler`, `Render Graph`, `Scene Hierarchy`, and `Material Inspector` panels.
 5. Open the `Lights (Clustered)` panel: drive `Light count` up to a few hundred, toggle `Cluster heatmap`, and toggle `Use clustered culling` off to compare against the brute-force path. Watch the `ClusterBuild` and `LightCull` rows in the `GPU Profiler`.
-6. Use `Scene Presets` → `Load Occlusion Test Scene` and watch the `GPU Culling` panel: `Occlusion culled` counts phase-1 rejections and `Phase-2 rescued` counts disocclusions the re-test brought back (two-phase Hi-Z occlusion is on by default).
+6. Use the `Scene` tab → `Scene Presets` → `Load Occlusion Test Scene` and watch the `Performance` tab's `GPU Culling` section: `Occlusion culled` counts phase-1 rejections and `Phase-2 rescued` counts disocclusions the re-test brought back (two-phase Hi-Z occlusion is on by default).
 7. Press `F11` to enable portfolio mode; press `F12` only when intentionally updating the committed portfolio screenshots.
 
 ## Build
@@ -191,7 +191,7 @@ This is a rendering/engine portfolio, not a full game engine — no physics, gam
 - CSM uses basic texel snapping, without stable crop matrices, cascade blending, or per-cascade resolution control.
 - Two-phase Hi-Z occlusion re-tests candidates against a mid-frame pyramid rebuild, but is object-granularity (AABB screen rects, no per-cluster/meshlet tests) and requires the bindless multi-draw-indirect path.
 - Upload paths use one-time command buffers + queue idle waits — fine for init, not ideal for runtime streaming.
-- TAA reprojects history along a main-pass velocity buffer, but skinned joint-space motion, disocclusion masks, temporal upscaling, and FSR/DLSS/XeSS are not implemented. Render scale upscales bilinearly plus a contrast-adaptive sharpen; there is no temporal upscaling, which is what would reconstruct sub-pixel detail rather than re-emphasise what survived.
+- TAA reprojects history along a main-pass velocity buffer, but skinned joint-space motion, disocclusion masks, temporal upscaling, and FSR/DLSS/XeSS are not implemented. Render scale upscales bilinearly plus a contrast-adaptive sharpen; there is no temporal upscaling, which is what would reconstruct sub-pixel detail rather than re-emphasise what survived. Sub-rect rendering makes a scale change free but costs memory: a 0.5-scale frame owns four times the texels it writes.
 - Screen-space reflections are linear-march (no Hi-Z acceleration or roughness-cone blur) and add on top of IBL specular; no ray tracing, planar reflections, or glass transmission.
 - GTAO is applied as a scene-color multiply in the composite (not restricted to indirect/ambient light), has no multi-bounce term (the thin G-buffer stores no albedo) and no temporal accumulation yet; it is spatial half-res + joint-bilateral upsample only.
 - glTF import covers static + skinned meshes and base color/normal/metallic-roughness/emissive textures; occlusion textures, morph targets, cameras, and scene lights are future work.

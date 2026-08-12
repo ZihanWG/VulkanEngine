@@ -56,7 +56,7 @@ The cull shader still writes the same indirect draw command and visible-count ou
 
 ## Occlusion Test Scene
 
-`VulkanEngine Debug` -> `Scene Presets` includes `Load Occlusion Test Scene`. The preset is procedural and uses the existing cube mesh and runtime materials, so it does not add large assets or replace the default glTF/fallback scene or portfolio showcase scene.
+`VulkanEngine Debug` -> `Scene` tab -> `Scene Presets` includes `Load Occlusion Test Scene`. The preset is procedural and uses the existing cube mesh and runtime materials, so it does not add large assets or replace the default glTF/fallback scene or portfolio showcase scene.
 
 The layout is intentionally static:
 

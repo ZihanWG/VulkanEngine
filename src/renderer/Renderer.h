@@ -511,6 +511,9 @@ private:
     // CollapsingHeader, matching the existing drawXxxDebugUi pattern.
     void drawDebugViewToggles();
     void drawControlsDebugUi();
+    // Frame time, resolution and draw counts, drawn above the tab bar so they
+    // stay visible whichever tab is open.
+    void drawStatusStrip();
     void drawRenderScaleDebugUi();
     void drawToneMappingDebugUi();
     void drawBloomDebugUi();

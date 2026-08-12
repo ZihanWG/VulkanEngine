@@ -953,6 +953,13 @@ std::filesystem::path defaultRuntimeSettingsPath()
     return configDirectory() / "runtime_settings.json";
 }
 
+// Beside the runtime settings, for the same reason: both are per-user state that
+// should survive a restart and neither belongs in the repository.
+std::filesystem::path defaultDebugUiLayoutPath()
+{
+    return configDirectory() / "imgui_layout.ini";
+}
+
 std::string_view colorSpaceName(rhi::TextureColorSpace colorSpace)
 {
     switch (colorSpace) {

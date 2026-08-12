@@ -60,6 +60,10 @@ Everything screen-space except the three things listed under "and what is not":
 - the legacy bloom targets and the whole mip chain
 - the luminance/histogram compute dispatch dimensions, which read scene colour
 
+Every one of those is *allocated* at the maximum render resolution and only
+**written** in its top-left sub-rect -- see "Sub-rect rendering" below. The list
+above is what the render extent decides gets written, not what gets created.
+
 ...and what is not:
 
 - **`CompositePass`** — its viewport is the swapchain. It samples scene colour
@@ -100,40 +104,74 @@ rather than truncating, treats NaN as native, and never returns a zero
 dimension — a zero-sized attachment is invalid and every caller would otherwise
 need its own guard.
 
-### The main depth image is the awkward one
-
-`MainDepth` is owned by `VulkanSwapchain` (it has always shared the swapchain's
-lifetime) but must now be sized like the *internal* targets. It cannot simply be
-created at the scaled size inside `VulkanSwapchain::create`, because the render
-extent can only be derived after the swapchain has picked its actual size — the
-surface may not grant the requested one.
-
-So creation stays two-step: the swapchain creates depth at its own extent, then
-`Renderer::updateRenderResolution` calls `VulkanSwapchain::resizeDepthImage`
-with the render extent. That call is a no-op when the sizes already match, so at
-scale 1.0 nothing is allocated twice. `depthExtent()` is what `RenderGraph`
-imports as the `MainDepth` resource extent, and that extent becomes the
-`renderArea` of every pass writing it.
-
 ### Changing the scale at runtime
 
 Requesting a change and applying one are deliberately separate. The UI slider —
 and the dynamic-resolution controller below — only write
 `renderScaleSettings_.scale`. `drawFrame` notices `renderResolution_` disagrees
-with it and calls `applyRenderScaleChange()` at the top of the frame, which is
-the only point where destroying in-flight targets is safe. One mechanism serves
-both requesters, and the controller's decision stays visible on the slider and in
-the saved settings rather than living somewhere private.
+with it and calls `applyRenderScaleChange()` at the top of the frame. One
+mechanism serves both requesters, and the controller's decision stays visible on
+the slider and in the saved settings rather than living somewhere private.
 
-`applyRenderScaleChange` is cheaper than the window-resize path it replaced:
-`recreateSwapchain` also rebuilds the swapchain, its semaphores and the ImGui
-backend, none of which a scale change touches. What it does do is idle the
-device, recreate every screen-sized target, and invalidate the TAA history and
-the depth pyramid — both hold a frame of data at the previous resolution, and the
-pyramid would reject visible geometry if it were trusted.
+**Applying a scale costs 0.008 ms** and reallocates nothing: it moves viewports
+and uv scales. `applyRenderScaleChange` only idles the device and rebuilds when
+the *allocation* extent moved, which is a window resize.
 
-The slider itself edits a pending value and commits on release, since each commit
-costs a rebuild.
+Three things are still invalidated on every change even though no storage moves
+— the TAA history, the depth pyramid and the ambient-occlusion history. All
+three hold a frame of data in the previous sub-rect, and staleness has nothing
+to do with whether the storage moved. That stops being obvious precisely when
+nothing is being reallocated any more.
+
+### Sub-rect rendering
+
+Every screen-space target is created at the maximum render resolution and only
+its top-left sub-rect is rendered into. The cost is memory — a 0.5-scale frame
+owns four times the texels it writes — and one obligation on every consumer:
+scale its UVs by the target's written/allocated ratio and stay inside. Past the
+written region lies whatever the last larger frame left there, which reads as a
+smear along the right and bottom edges and raises no validation error.
+
+The invariant that keeps the conversion honest, written into
+`PostProcessStack.h`, is that three quantities which used to be one number are
+not any more:
+
+| | |
+| --- | --- |
+| texel size | `1 / ALLOCATED` — a texel is physical; the sub-rect changes how many are written, not how big one is |
+| viewport, dispatch bounds | `USED` |
+| uv scale | `USED / ALLOCATED`, **per target** |
+
+Per target is load-bearing. Derived targets — half-resolution ones, mip chains —
+round each side independently, so their ratio drifts from the scene's and a
+single global uv scale is wrong everywhere except the top level.
+`src/shaders/sub_rect.glsl` holds the scale-and-clamp helpers.
+
+Three things in it are easy to get wrong and are commented where they live:
+
+- **Two offset conventions coexist and both are correct.** `composite` and
+  `taa_resolve` add tap offsets in *allocated* texels after scaling; the bloom
+  blur, downsample and upsample tent and `gtao_blur` add them before, so they
+  divide their texel size by the uv scale to express the same physical step.
+- **The depth pyramid needs a ratio per mip**, recomputed in `cull.comp` from the
+  written and allocated base sizes. It is exact because repeated `max(1, n/2)`
+  equals `max(1, n >> k)` — and it only works because the pyramid sampler is
+  `mipmapMode NEAREST`, so exactly one level is read. Linear mip filtering would
+  blend two levels with two different scales and could not be expressed as a
+  single uv at all.
+- **The clamp must be inert at scale 1.0.** Bounding the far edge at the last
+  texel's *centre* unconditionally discards the bilinear blend across the
+  outermost half-texel, and in the small bloom mips that ring is a large share of
+  the image: it moved average scene luminance by 2%. A fully written target gets
+  no bound, since `CLAMP_TO_EDGE` already does the right thing.
+
+Only the *fetches* are scaled. The same UVs also feed view-space reconstruction
+in SSR and both GTAO passes, and those stay in written-region space — they
+describe where the fragment is on screen, not where its data sits in an
+allocation.
+
+The slider commits on release rather than per dragged frame. That is now a
+courtesy rather than a necessity.
 
 ## Sharpening
 
@@ -283,30 +321,26 @@ Default scene, target 8 ms, min 0.25, Debug:
 holds ~7.0 ms against the 8 ms budget (deadband 6.8-8.0)
 ```
 
-Four changes to converge, then it stops — which is the behaviour that matters,
-since **each change costs a one-frame CPU hitch**: it idles the device and
-rebuilds every screen-sized target. Measured 27.4 / 18.0 / 13.8 / 11.6 ms for
-the four changes above (the first is highest — allocations and descriptor pools
-are cold).
+Four changes to converge, then it stops. **Applying each one costs 0.008 ms** —
+sub-rect rendering means nothing is reallocated, so a change moves viewports and
+uv scales and that is all. The debug panel still reports the last apply cost.
 
-That cost is the reason for the quantisation, the deadband and the settle
-window: converging in a handful of steps and then holding still is affordable,
-continuous adjustment would not be. The debug panel reports the last apply cost
-so the trade is visible rather than assumed.
+That was not always true, and the history is worth keeping because it shaped the
+controller. Each change used to cost a 12-27 ms CPU hitch, of which 60-75% was
+`vkDeviceWaitIdle` — and replacing that wait with waiting on the frame fences
+measured *slower*, because it is real in-flight GPU work rather than driver
+overhead. A wait cannot be made cheap; it can only be avoided.
 
-**The alternative, not built:** allocate every target once at the maximum scale
-and render into a sub-rect, so changing scale is only a viewport change and
-costs nothing. That is what makes continuous adjustment viable and it is the
-right end state — but it means every pass that samples a partially-filled target
-needs its UVs scaled to the valid region (composite, TAA, bloom, SSR, GTAO, the
-Hi-Z occlusion test in `cull.comp`), and per-mip rounding in the bloom chain
-makes reading past the valid region an easy mistake with visible consequences.
-Rebuild-on-change converges in four hitches and never lies about the result;
-that is the better trade until the sub-rect work is done properly.
+The quantisation, the deadband and the settle window were sized for that world,
+where converging in a handful of steps and then holding still was affordable and
+continuous adjustment was not. They stay: a controller that thrashes is still
+wrong even when thrashing is free, because every change invalidates the TAA
+history and the depth pyramid.
 
 ## Using it
 
-Debug panel → **Render Scale** (visible in both simple and advanced mode). The
+Debug panel → **Performance** tab → **Render Scale** (visible in both simple and
+advanced mode). The
 slider and the 100/75/50/33% preset buttons both commit immediately on release;
 the panel reports the two extents and the resulting shaded-pixel percentage.
 
@@ -341,10 +375,8 @@ render-resolution scale, per the table above.
   upscaling (FSR/DLSS/XeSS-style), which is what would actually reconstruct
   detail rather than re-emphasise what survived; at 0.5 and below, run TAA with
   it — spatial sharpening cannot invent the sub-pixel detail TAA accumulates.
-- Applying a scale rebuilds every screen-sized target and costs a one-frame CPU
-  hitch (12-27 ms here). Dynamic resolution converges in a handful of steps and
-  then holds still, so this is bounded rather than continuous — but the sub-rect
-  approach described above is what would remove it.
+- A 0.5-scale frame owns four times the texels it writes. That is the price of
+  the sub-rect design, and it is paid in memory rather than in time.
 - The controller only sees GPU frame time, so it cannot respond to a CPU-bound
   frame. Correct, but worth knowing when a target is not being met.
 - Non-uniform scaling (different X and Y) is not supported; the aspect ratio is
