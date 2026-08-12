@@ -22,8 +22,18 @@
 
 vec2 veSubRectClamp(vec2 scaledUv, vec2 uvScale, vec2 allocatedSize)
 {
+    // Only the far edge can reach unwritten texels. The near edge is always
+    // written, and CLAMP_TO_EDGE already handles negative UVs correctly, so
+    // there is deliberately no lower bound here.
+    //
+    // A fully written target gets no bound at all. That is not an optimisation:
+    // snapping to the last texel's *centre* discards the bilinear blend across
+    // the outermost half-texel, and in the small bloom mips -- where that ring
+    // is a large share of the image -- it moved average scene luminance by 2%
+    // at scale 1.0, where this file is supposed to be inert.
     const vec2 halfTexel = 0.5 / allocatedSize;
-    return clamp(scaledUv, halfTexel, uvScale - halfTexel);
+    const vec2 upperBound = mix(uvScale - halfTexel, vec2(1.0), step(vec2(1.0), uvScale));
+    return min(scaledUv, upperBound);
 }
 
 // The common case: scale a written-region UV into the allocation and clamp it.

@@ -436,6 +436,11 @@ struct GpuCullFrameParams {
     glm::vec4 occlusionSettings{0.0f};
     glm::vec4 lodSettings{0.0f};
     glm::uvec4 counterAndFlags{0, 0, 0, 0};
+    // xy = the depth pyramid's written base size, zw = its allocated base size.
+    // The pyramid is sub-rected and every mip halves both independently, so the
+    // written fraction drifts per level and cull.comp recomputes it rather than
+    // being handed one ratio. Zero reads as 1:1, which is the un-sub-rected case.
+    glm::uvec4 pyramidBaseSizes{0, 0, 0, 0};
 };
 
 static_assert(offsetof(GpuCullFrameParams, occlusionViewProjection) == 0);
@@ -445,7 +450,8 @@ static_assert(offsetof(GpuCullFrameParams, viewportAndMipCount) == 144);
 static_assert(offsetof(GpuCullFrameParams, occlusionSettings) == 160);
 static_assert(offsetof(GpuCullFrameParams, lodSettings) == 176);
 static_assert(offsetof(GpuCullFrameParams, counterAndFlags) == 192);
-static_assert(sizeof(GpuCullFrameParams) == 208);
+static_assert(offsetof(GpuCullFrameParams, pyramidBaseSizes) == 208);
+static_assert(sizeof(GpuCullFrameParams) == 224);
 
 struct DepthPyramidPushConstants {
     glm::uvec4 sizes{0, 0, 0, 0};
@@ -480,11 +486,12 @@ struct BloomBlurPushConstants {
     glm::vec2 texelSize{1.0f, 1.0f};
     uint32_t horizontal = 0;
     uint32_t padding = 0;
+    glm::vec2 sourceUvScale{1.0f, 1.0f};
 };
 
 static_assert(offsetof(BloomBlurPushConstants, texelSize) == 0);
 static_assert(offsetof(BloomBlurPushConstants, horizontal) == 8);
-static_assert(sizeof(BloomBlurPushConstants) == 16);
+static_assert(sizeof(BloomBlurPushConstants) == 24);
 
 struct BloomDownsamplePushConstants {
     glm::vec2 texelSize{1.0f, 1.0f};
@@ -506,11 +513,15 @@ struct BloomUpsamplePushConstants {
     glm::vec2 texelSize{1.0f, 1.0f};
     float radius = 1.0f;
     float padding = 0.0f;
+    // The two sources are different mips, so they are different fractions of
+    // their own allocations and cannot share one scale.
+    glm::vec2 currentUvScale{1.0f, 1.0f};
+    glm::vec2 lowerUvScale{1.0f, 1.0f};
 };
 
 static_assert(offsetof(BloomUpsamplePushConstants, texelSize) == 0);
 static_assert(offsetof(BloomUpsamplePushConstants, radius) == 8);
-static_assert(sizeof(BloomUpsamplePushConstants) == 16);
+static_assert(sizeof(BloomUpsamplePushConstants) == 32);
 
 struct CompositePushConstants {
     float exposure = 1.0f;

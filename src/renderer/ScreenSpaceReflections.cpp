@@ -109,7 +109,9 @@ void ScreenSpaceReflections::createResources(VkImageView normalRoughnessView, ui
             throw std::runtime_error("SSR requires the thin G-buffer image view.");
         }
 
-        const VkExtent2D extent = renderResolution_.extent();
+        // Allocated at the maximum like the scene colour it mirrors; the copy
+        // itself still transfers only the sub-rect the frame wrote.
+        const VkExtent2D extent = renderResolution_.allocationExtent();
         rhi::VulkanImageCreateInfo copyInfo{};
         copyInfo.width = extent.width;
         copyInfo.height = extent.height;

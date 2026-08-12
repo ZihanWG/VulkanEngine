@@ -451,8 +451,14 @@ private:
     // validation layers will say a word about it.
     [[nodiscard]] VkExtent2D sceneUsedExtent() const { return renderResolution_.extent(); }
     [[nodiscard]] VkExtent2D sceneAllocatedExtent() const { return renderResolution_.allocationExtent(); }
-    [[nodiscard]] VkExtent2D bloomUsedExtent() const { return RenderResolution::halved(sceneUsedExtent()); }
-    // bloomExtent_ is the *allocated* bloom size; bloomUsedExtent() is written.
+    // bloomExtent_ is the ALLOCATED bloom size; this is the half of what the
+    // frame writes. Both halve their own base, so their ratio drifts from the
+    // scene's uv scale and each bloom pass carries its own.
+    [[nodiscard]] VkExtent2D bloomWrittenExtent() const { return RenderResolution::halved(sceneUsedExtent()); }
+    [[nodiscard]] glm::vec2 bloomUvScale() const
+    {
+        return RenderResolution::subRectUvScale(bloomWrittenExtent(), bloomExtent_);
+    }
     ToneMappingSettings& toneMappingSettings_;
     BloomSettings& bloomSettings_;
     TaaSettings& taaSettings_;
