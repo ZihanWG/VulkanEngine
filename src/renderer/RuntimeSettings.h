@@ -73,6 +73,29 @@ struct TaaSettings {
     // motion). Off falls back to same-UV history sampling for A/B comparison.
     bool reprojectionEnabled = true;
     float feedback = 0.88f;
+    // Two stricter history-rejection mechanisms, BOTH OFF BY DEFAULT.
+    //
+    // They were built for ghosting that turned out not to exist in this scene,
+    // and every form of stricter rejection costs accumulated history -- which is
+    // the thing temporal upsampling exists to gather. With nothing wrong to
+    // reject, they are cost without benefit, so the default is the behaviour that
+    // was actually judged good rather than the one that sounds more advanced.
+    //
+    // They are kept because ghosting is real and this scene simply has almost no
+    // object motion to produce it. Turn them on when content does.
+
+    // Bounds the history by the neighbourhood's mean and standard deviation in
+    // YCoCg instead of its RGB extremes. An extremes box is set by its two most
+    // extreme samples, so one bright speck widens it enough for a ghost to sit
+    // inside.
+    bool varianceClipping = false;
+    // Half-width of that box in standard deviations. Lower rejects more history.
+    float varianceGamma = 1.0f;
+    // Lowers a pixel's feedback by how far its history had to be pulled to become
+    // acceptable. This is the one that actually removes a ghost -- clipping alone
+    // leaves it at the nearest plausible colour with most of the pixel -- and
+    // equally the one that costs most when there is no ghost.
+    bool rejectionFeedback = false;
 };
 
 // Ground-truth ambient occlusion (Jimenez et al. 2016): a dedicated horizon-

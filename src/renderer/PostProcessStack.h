@@ -453,12 +453,36 @@ private:
     // last larger frame left there. It is stale image data, so it produces a
     // plausible-looking edge rather than an obvious failure, and nothing in the
     // validation layers will say a word about it.
+    // What the post-process chain is currently reading, and how much of it is
+    // written. Today both paths -- SceneColorHDR and the resolved TAA history --
+    // are allocated at the maximum and written in the render sub-rect, so this is
+    // one answer either way.
+    //
+    // It exists as its own type because temporal upsampling changes that: the
+    // resolve would write the history at the *full* allocation, and everything
+    // downstream would then be reading a fully written source while a TAA-off
+    // frame still reads a sub-rected one. Threading the size and scale through
+    // here rather than deriving them from renderResolution_ at each of the five
+    // consumers is what makes that a local change instead of a hunt.
+    struct ActivePostProcessSource {
+        VkExtent2D allocatedExtent{};
+        VkExtent2D writtenExtent{};
+        glm::vec2 uvScale{1.0f, 1.0f};
+    };
+    [[nodiscard]] ActivePostProcessSource activePostProcessSource() const;
+
     [[nodiscard]] VkExtent2D sceneUsedExtent() const { return renderResolution_.extent(); }
     [[nodiscard]] VkExtent2D sceneAllocatedExtent() const { return renderResolution_.allocationExtent(); }
     // bloomExtent_ is the ALLOCATED bloom size; this is the half of what the
     // frame writes. Both halve their own base, so their ratio drifts from the
     // scene's uv scale and each bloom pass carries its own.
-    [[nodiscard]] VkExtent2D bloomWrittenExtent() const { return RenderResolution::halved(sceneUsedExtent()); }
+    // What the bloom chain's written region is derived from: whatever the chain
+    // is reading, which temporal upsampling makes full resolution.
+    [[nodiscard]] VkExtent2D bloomChainSourceExtent() const { return activePostProcessSource().writtenExtent; }
+    [[nodiscard]] VkExtent2D bloomWrittenExtent() const
+    {
+        return RenderResolution::halved(bloomChainSourceExtent());
+    }
     [[nodiscard]] glm::vec2 bloomUvScale() const
     {
         return RenderResolution::subRectUvScale(bloomWrittenExtent(), bloomExtent_);

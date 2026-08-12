@@ -1,9 +1,13 @@
 # Render Scale
 
 Decouples the resolution the scene is *shaded* at from the resolution it is
-*presented* at. Everything up to and including TAA and the bloom chain runs at
-the render extent; the composite pass upscales to the swapchain, and the ImGui
-overlay stays native.
+*presented* at. The main pass and the screen-space effects run at the render
+extent; the ImGui overlay stays native.
+
+Where the image returns to presentation resolution depends on TAA. With it off,
+the composite upscales. With it on, the **TAA resolve** does — it reconstructs at
+presentation resolution from the jittered low-resolution samples, and everything
+after it, bloom included, is already full size. See [taa.md](taa.md).
 
 Default is 1.0 (native) — this changes nothing unless the slider is moved.
 
@@ -28,8 +32,10 @@ is cheap to build and cheap to reverse:
   bandwidth is exactly what a tiler is worst at.
 - **Fewer or cheaper lights.** Already pushed: the cluster grid was refined to
   32×18×24 for a 19% `MainHDRPass` win, and per-light data was packed down.
-- **Temporal upscaling (FSR/DLSS-style).** The quality answer, and a natural
-  follow-on — but it needs this plumbing first regardless.
+- **Temporal upscaling (FSR/DLSS-style).** The quality answer, and it needed
+  this plumbing first regardless. Since built: the TAA resolve now reconstructs
+  at presentation resolution, so with TAA on the composite does no stretching at
+  all. See [taa.md](taa.md).
 
 ## Measured
 
@@ -56,9 +62,9 @@ Everything screen-space except the three things listed under "and what is not":
 - `SceneColorHDR`, the velocity buffer, the thin G-buffer (normal/roughness)
 - GTAO (its half-res trace target is half of *this*, not half of the window)
 - the SSR scene-colour copy
-- both TAA history images
-- the legacy bloom targets and the whole mip chain
-- the luminance/histogram compute dispatch dimensions, which read scene colour
+- the legacy bloom targets and the whole mip chain, and the luminance/histogram
+  dispatch dimensions — but only while TAA is off; with it on they follow the
+  resolved history and are full size
 
 Every one of those is *allocated* at the maximum render resolution and only
 **written** in its top-left sub-rect -- see "Sub-rect rendering" below. The list
@@ -69,6 +75,8 @@ above is what the render extent decides gets written, not what gets created.
 - **`CompositePass`** — its viewport is the swapchain. It samples scene colour
   through a `VK_FILTER_LINEAR` sampler with normalised UVs, so the upscale costs
   nothing extra and needed no shader change.
+- **The TAA history pair** — written in full at presentation resolution,
+  because they hold the upsampled result.
 - **`ImGuiPass`** — runs after the composite, so the debug UI and any text stay
   crisp at any scale.
 - **Portfolio screenshots** — captured from the composited swapchain image, so
@@ -371,10 +379,12 @@ render-resolution scale, per the table above.
 
 ## Limitations
 
-- The upscale is bilinear plus the sharpen above. There is no temporal
-  upscaling (FSR/DLSS/XeSS-style), which is what would actually reconstruct
-  detail rather than re-emphasise what survived; at 0.5 and below, run TAA with
-  it — spatial sharpening cannot invent the sub-pixel detail TAA accumulates.
+- With TAA **off**, the upscale is bilinear plus the sharpen above, and that is
+  all it can be: spatial sharpening re-emphasises what survived and cannot invent
+  sub-pixel detail. With TAA **on** the resolve reconstructs at presentation
+  resolution instead and the composite stops stretching, which is why the sharpen
+  gate is "is the composite stretching" rather than "is the frame native".
+  It is not FSR2 or DLSS -- no locks, reactive masks or disocclusion detection.
 - A 0.5-scale frame owns four times the texels it writes. That is the price of
   the sub-rect design, and it is paid in memory rather than in time.
 - The controller only sees GPU frame time, so it cannot respond to a CPU-bound

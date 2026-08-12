@@ -573,11 +573,17 @@ struct TaaResolvePushConstants {
     uint32_t neighborhoodClampEnabled = 1;
     uint32_t reprojectionEnabled = 1;
     uint32_t depthDilationEnabled = 1;
-    uint32_t padding = 0;
-    // Written/allocated. Scene colour, velocity, the history and depth all share
-    // one allocation, so one scale covers every source this pass reads.
-    glm::vec2 uvScale{1.0f, 1.0f};
-    glm::vec2 padding1{0.0f, 0.0f};
+    uint32_t varianceClippingEnabled = 1;
+    // Written/allocated for the LOW-RESOLUTION sources: scene colour, velocity
+    // and depth. The history is written in full at output resolution and needs
+    // no scale, which is the whole shape of temporal upsampling.
+    glm::vec2 sourceUvScale{1.0f, 1.0f};
+    // This frame's jitter in source pixels. The reconstruction needs it to know
+    // where inside its texel each sample actually landed; without it the resolve
+    // can only accumulate, not upsample.
+    glm::vec2 jitterPixels{0.0f, 0.0f};
+    float varianceGamma = 1.0f;
+    uint32_t rejectionFeedbackEnabled = 1;
 };
 
 static_assert(offsetof(TaaResolvePushConstants, texelSize) == 0);
@@ -586,9 +592,10 @@ static_assert(offsetof(TaaResolvePushConstants, historyValid) == 12);
 static_assert(offsetof(TaaResolvePushConstants, neighborhoodClampEnabled) == 16);
 static_assert(offsetof(TaaResolvePushConstants, reprojectionEnabled) == 20);
 static_assert(offsetof(TaaResolvePushConstants, depthDilationEnabled) == 24);
-static_assert(offsetof(TaaResolvePushConstants, uvScale) == 32);
-static_assert(offsetof(TaaResolvePushConstants, padding1) == 40);
-static_assert(sizeof(TaaResolvePushConstants) == 48);
+static_assert(offsetof(TaaResolvePushConstants, sourceUvScale) == 32);
+static_assert(offsetof(TaaResolvePushConstants, jitterPixels) == 40);
+static_assert(offsetof(TaaResolvePushConstants, varianceGamma) == 48);
+static_assert(sizeof(TaaResolvePushConstants) == 56);
 
 
 struct RenderTargetDebugMetadata {
