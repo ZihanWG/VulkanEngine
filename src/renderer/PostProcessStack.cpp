@@ -372,8 +372,8 @@ void PostProcessStack::recordCompositeCommands(VkCommandBuffer commandBuffer,
     compositePushConstants.invProjection = glm::inverse(jitteredProjection);
     // zw is the scene/AO uv scale: both are sub-rected and share an allocation,
     // so one pair covers them. Bloom is not sub-rected and is sampled unscaled.
-    compositePushConstants.debugParams =
-        glm::vec4(std::max(sharpenDebugGain, 0.0f), 0.0f, renderResolution_.uvScale());
+    const ActivePostProcessSource source = activePostProcessSource();
+    compositePushConstants.debugParams = glm::vec4(std::max(sharpenDebugGain, 0.0f), 0.0f, source.uvScale);
     // zw is the bloom uv scale: the bloom chain is sub-rected too, and its halves
     // round independently of the scene's, so it cannot share debugParams.zw.
     compositePushConstants.ssaoParams1 = glm::vec4(ssaoActive ? 1.0f : 0.0f, 0.0f, bloomUvScale());
@@ -1422,7 +1422,7 @@ void PostProcessStack::createLuminanceResources()
 
 PostProcessStack::LuminanceDispatch PostProcessStack::luminanceDispatch() const
 {
-    const VkExtent2D extent = sceneUsedExtent();
+    const VkExtent2D extent = activePostProcessSource().writtenExtent;
     LuminanceDispatch dispatch{};
     dispatch.groupCountX = (extent.width + kLuminanceLocalSizeX - 1) / kLuminanceLocalSizeX;
     dispatch.groupCountY = (extent.height + kLuminanceLocalSizeY - 1) / kLuminanceLocalSizeY;
@@ -1825,6 +1825,14 @@ uint32_t PostProcessStack::taaHistoryWriteIndex() const
     return taaHistoryWriteIndex_ % kTaaHistoryCount;
 }
 
+PostProcessStack::ActivePostProcessSource PostProcessStack::activePostProcessSource() const
+{
+    // Both paths agree today: the TAA resolve writes its history into the same
+    // sub-rect the main pass writes SceneColorHDR into. Temporal upsampling is
+    // what will make the isTaaActive() branch return something different.
+    return ActivePostProcessSource{sceneAllocatedExtent(), sceneUsedExtent(), renderResolution_.uvScale()};
+}
+
 VkDescriptorSet PostProcessStack::activeBloomExtractDescriptorSet() const
 {
     if (isTaaActive()) {
@@ -1927,7 +1935,7 @@ void PostProcessStack::recordLuminanceCommands(VkCommandBuffer commandBuffer)
     vkCmdBindDescriptorSets(
         commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, luminancePipeline_.layout(), 0, 1, &descriptorSet, 0, nullptr);
 
-    const VkExtent2D sceneExtent = sceneUsedExtent();
+    const VkExtent2D sceneExtent = activePostProcessSource().writtenExtent;
     const LuminanceDispatch dispatch = luminanceDispatch();
     const LuminancePushConstants pushConstants{
         glm::uvec4(sceneExtent.width, sceneExtent.height, dispatch.groupCountX, 0)};
@@ -1959,7 +1967,7 @@ void PostProcessStack::recordHistogramCommands(VkCommandBuffer commandBuffer)
         return;
     }
 
-    const VkExtent2D sceneExtent = sceneUsedExtent();
+    const VkExtent2D sceneExtent = activePostProcessSource().writtenExtent;
     const uint32_t groupCountX = (sceneExtent.width + kHistogramLocalSizeX - 1) / kHistogramLocalSizeX;
     const uint32_t groupCountY = (sceneExtent.height + kHistogramLocalSizeY - 1) / kHistogramLocalSizeY;
     if (groupCountX == 0 || groupCountY == 0) {
@@ -2184,7 +2192,7 @@ void PostProcessStack::recordLegacyBloomCommands(VkCommandBuffer commandBuffer)
                             0,
                             nullptr);
     const BloomExtractPushConstants bloomExtractPushConstants{
-        bloomSettings_.threshold, 0.0f, renderResolution_.uvScale()};
+        bloomSettings_.threshold, 0.0f, activePostProcessSource().uvScale};
     vkCmdPushConstants(commandBuffer,
                        bloomExtractPipeline_.layout(),
                        VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -2280,12 +2288,13 @@ void PostProcessStack::recordMipChainBloomCommands(VkCommandBuffer commandBuffer
         // texel of the *allocation* and its UVs need scaling; deeper levels read a
         // mip that was written in full.
         const bool readsSceneColor = level == 0;
+        const ActivePostProcessSource source = activePostProcessSource();
         const VkExtent2D sourceExtent = readsSceneColor
-                                            ? sceneAllocatedExtent()
+                                            ? source.allocatedExtent
                                             : VkExtent2D{bloomMipDownsampleImages_[level - 1].extent().width,
                                                          bloomMipDownsampleImages_[level - 1].extent().height};
         const glm::vec2 sourceUvScale =
-            readsSceneColor ? renderResolution_.uvScale()
+            readsSceneColor ? source.uvScale
                             : RenderResolution::subRectUvScale(bloomMipExtent(sceneUsedExtent(), level - 1),
                                                                bloomMipExtent(sceneAllocatedExtent(), level - 1));
         // Viewport is the level's *written* size; the image is the allocated one.
