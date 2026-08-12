@@ -2170,9 +2170,11 @@ void PostProcessStack::recordTaaResolveCommands(VkCommandBuffer commandBuffer)
         // Depth dilation needs a samplable main depth; otherwise binding 3 holds
         // the checkerboard fallback and the shader must skip the depth reads.
         swapchain_.depthSupportsSampling() ? 1u : 0u,
-        0u,
+        taaSettings_.varianceClipping ? 1u : 0u,
         sourceUvScale,
-        taaCurrentJitterPixels_};
+        taaCurrentJitterPixels_,
+        taaSettings_.varianceGamma,
+        taaSettings_.rejectionFeedback ? 1u : 0u};
     vkCmdPushConstants(commandBuffer,
                        taaResolvePipeline_.layout(),
                        VK_SHADER_STAGE_FRAGMENT_BIT,

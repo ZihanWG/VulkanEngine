@@ -1192,6 +1192,22 @@ void Renderer::drawTaaDebugUi()
     changed |= ImGui::Checkbox("Neighborhood clamp", &taaSettings_.neighborhoodClampEnabled);
     changed |= ImGui::Checkbox("Motion reprojection", &taaSettings_.reprojectionEnabled);
     changed |= ImGui::SliderFloat("History feedback", &taaSettings_.feedback, 0.0f, 0.98f, "%.3f");
+
+    ImGui::SeparatorText("Ghosting rejection");
+    ImGui::TextDisabled("Both off by default. Stricter rejection always costs accumulated");
+    ImGui::TextDisabled("history, so it is worth turning on only when ghosting is visible.");
+    changed |= ImGui::Checkbox("Variance clipping", &taaSettings_.varianceClipping);
+    ImGui::SetItemTooltip("Bounds the history by the neighbourhood's mean and standard deviation in\n"
+                          "YCoCg instead of its RGB extremes. An extremes box is set by its two most\n"
+                          "extreme samples, so one bright speck widens it enough for a ghost to sit\n"
+                          "inside. Off restores the extremes box for comparison.");
+    changed |= ImGui::SliderFloat("Variance gamma", &taaSettings_.varianceGamma, 0.25f, 3.0f, "%.2f");
+    ImGui::SetItemTooltip("Half-width of that box in standard deviations. Lower rejects more history:\n"
+                          "less ghosting, and less of the accumulated detail upsampling exists to gather.");
+    changed |= ImGui::Checkbox("Rejection feedback", &taaSettings_.rejectionFeedback);
+    ImGui::SetItemTooltip("Lowers a pixel's feedback by how far its history had to be pulled to become\n"
+                          "acceptable. Clipping alone leaves a ghost at the nearest plausible colour and\n"
+                          "still gives it most of the pixel; this is what actually removes it.");
     if (changed) {
         clampRuntimeSettings();
         invalidateTaaHistory();

@@ -86,6 +86,10 @@ void clampRuntimeSettings(RenderScaleSettings& renderScale,
     bloom.radius = std::clamp(bloom.radius, 0.25f, 4.0f);
 
     taa.feedback = std::clamp(taa.feedback, 0.0f, 0.98f);
+    // Below about a quarter of a standard deviation the box is narrower than the
+    // neighbourhood's own noise and rejects everything; past three it contains
+    // the whole neighbourhood and rejects nothing.
+    taa.varianceGamma = std::clamp(taa.varianceGamma, 0.25f, 3.0f);
 
     ssr.maxSteps = std::clamp(ssr.maxSteps, 8, 128);
     ssr.refinementSteps = std::clamp(ssr.refinementSteps, 0, 8);
@@ -382,6 +386,9 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readBool(*taa, "jitterEnabled", settings.taa.jitterEnabled);
         readBool(*taa, "neighborhoodClampEnabled", settings.taa.neighborhoodClampEnabled);
         readBool(*taa, "reprojectionEnabled", settings.taa.reprojectionEnabled);
+        readBool(*taa, "varianceClipping", settings.taa.varianceClipping);
+        readFloat(*taa, "varianceGamma", settings.taa.varianceGamma);
+        readBool(*taa, "rejectionFeedback", settings.taa.rejectionFeedback);
         readFloat(*taa, "feedback", settings.taa.feedback);
     }
 
@@ -528,6 +535,9 @@ Json toJson(const RuntimeSettings& settings)
               {"jitterEnabled", settings.taa.jitterEnabled},
               {"neighborhoodClampEnabled", settings.taa.neighborhoodClampEnabled},
               {"reprojectionEnabled", settings.taa.reprojectionEnabled},
+              {"varianceClipping", settings.taa.varianceClipping},
+              {"varianceGamma", settings.taa.varianceGamma},
+              {"rejectionFeedback", settings.taa.rejectionFeedback},
               {"feedback", settings.taa.feedback}}},
         {"lod",
          Json{{"enabled", settings.lod.enabled},

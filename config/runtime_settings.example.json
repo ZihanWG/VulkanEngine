@@ -36,7 +36,10 @@
         "jitterEnabled": true,
         "neighborhoodClampEnabled": true,
         "reprojectionEnabled": true,
-        "feedback": 0.88
+        "feedback": 0.88,
+        "varianceClipping": false,
+        "varianceGamma": 1.0,
+        "rejectionFeedback": false
     },
     "lod": {
         "enabled": true,

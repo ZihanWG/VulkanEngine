@@ -13,7 +13,9 @@ layout(push_constant) uniform TaaResolvePushConstants {
     uint neighborhoodClampEnabled;
     uint reprojectionEnabled;
     uint depthDilationEnabled;
-    uint padding0;
+    // Selects variance clipping in YCoCg over the RGB min/max box, so the two can
+    // be compared directly rather than argued about.
+    uint varianceClippingEnabled;
     // The resolve now runs at OUTPUT resolution: vUV spans the history, which is
     // written in full. Scene colour, velocity and depth are the low-resolution
     // sources and share one allocation, so one scale covers those three.
@@ -22,10 +24,45 @@ layout(push_constant) uniform TaaResolvePushConstants {
     // what makes reconstruction possible rather than just accumulation: it says
     // where inside its texel each sample actually landed.
     vec2 jitterPixels;
+    // Half-width of the variance box in standard deviations. Smaller rejects more
+    // history: less ghosting, more of the accumulated detail thrown away with it.
+    float varianceGamma;
+    // Lowers the feedback for a pixel in proportion to how far its history had to
+    // be pulled to become acceptable.
+    uint rejectionFeedbackEnabled;
 } pc;
 
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 outColor;
+
+// YCoCg for the rejection test. The point is not the colour space itself but
+// that luma ends up on one axis: a ghost almost always differs from its
+// neighbourhood in brightness, and in RGB that difference is spread across three
+// correlated channels where each one individually looks unremarkable.
+vec3 rgbToYCoCg(vec3 c)
+{
+    return vec3(0.25 * c.r + 0.5 * c.g + 0.25 * c.b, 0.5 * c.r - 0.5 * c.b, -0.25 * c.r + 0.5 * c.g - 0.25 * c.b);
+}
+
+vec3 yCoCgToRgb(vec3 c)
+{
+    const float t = c.x - c.z;
+    return vec3(t + c.y, c.x + c.z, t - c.y);
+}
+
+// How far outside the box the history sits, as a multiple of the box's own
+// half-extent: 0 inside, 1 exactly on the surface, more beyond.
+//
+// Clipping toward the centre rather than clamping per channel is the part that
+// matters. Per-channel clamping moves each axis independently, which shifts hue
+// -- a red ghost over a grey background clamps to a grey-red that was never in
+// the neighbourhood. Moving along the line to the centre can only produce a
+// colour the neighbourhood could have contained.
+float boxDistance(vec3 value, vec3 centre, vec3 halfExtent)
+{
+    const vec3 unit = abs(value - centre) / max(halfExtent, vec3(1e-5));
+    return max(unit.x, max(unit.y, unit.z));
+}
 
 // Gaussian falloff of the reconstruction kernel, in source pixels squared. At
 // one texel away a sample keeps exp(-2.29) = 10% of the weight, at half a texel
@@ -95,6 +132,11 @@ void main()
     float weightTotal = 0.0;
     vec3 minColor = vec3(1e30);
     vec3 maxColor = vec3(-1e30);
+    // First and second moments in YCoCg, for the variance box. Unweighted on
+    // purpose: the box describes what the neighbourhood *contains*, which has
+    // nothing to do with how much each sample contributes to this output pixel.
+    vec3 momentSum = vec3(0.0);
+    vec3 momentSquaredSum = vec3(0.0);
 
     for (int y = 0; y < 3; ++y) {
         for (int x = 0; x < 3; ++x) {
@@ -117,6 +159,10 @@ void main()
             // itself and stop rejecting anything.
             minColor = min(minColor, sampleColor);
             maxColor = max(maxColor, sampleColor);
+
+            const vec3 sampleYCoCg = rgbToYCoCg(sampleColor);
+            momentSum += sampleYCoCg;
+            momentSquaredSum += sampleYCoCg * sampleYCoCg;
         }
     }
 
@@ -146,13 +192,48 @@ void main()
             // is not low-resolution.
             vec3 historyColor = texture(uHistoryColor, historyUV).rgb;
 
+            // How far out of the neighbourhood the history was, before any
+            // correction. This is the ghosting signal: a ghost is precisely a
+            // history that no longer resembles what is there now.
+            float rejection = 0.0;
+
             if (pc.neighborhoodClampEnabled != 0u) {
-                // Box already gathered above, from the same nine taps the
-                // reconstruction used -- one gather, two jobs.
-                historyColor = clamp(historyColor, minColor, maxColor);
+                if (pc.varianceClippingEnabled != 0u) {
+                    // Box from the mean and standard deviation of the
+                    // neighbourhood rather than its extremes. A min/max box is
+                    // bounded by its two most extreme samples, so one bright
+                    // speck widens it enough for a ghost to live inside; the
+                    // variance box describes where the neighbourhood actually
+                    // is, and one outlier barely moves it.
+                    const vec3 mean = momentSum / 9.0;
+                    const vec3 sigma = sqrt(max(momentSquaredSum / 9.0 - mean * mean, vec3(0.0)));
+                    const vec3 halfExtent = max(sigma * max(pc.varianceGamma, 0.05), vec3(1e-5));
+
+                    const vec3 historyYCoCg = rgbToYCoCg(historyColor);
+                    rejection = boxDistance(historyYCoCg, mean, halfExtent);
+                    if (rejection > 1.0) {
+                        historyColor = yCoCgToRgb(mean + (historyYCoCg - mean) / rejection);
+                    }
+                } else {
+                    // The original RGB extremes box, kept so the two can be
+                    // compared on the same frame rather than from memory.
+                    const vec3 centre = 0.5 * (minColor + maxColor);
+                    rejection = boxDistance(historyColor, centre, 0.5 * (maxColor - minColor));
+                    historyColor = clamp(historyColor, minColor, maxColor);
+                }
             }
 
-            resolvedColor = mix(currentColor, historyColor, clamp(pc.feedback, 0.0, 0.98));
+            // Clipping alone only makes a ghost the nearest *plausible* colour;
+            // it still gets 88% of the pixel and still trails. Weighting the
+            // history down by how far it had to be moved is what actually
+            // removes it, and it costs nothing that was worth keeping: a history
+            // sitting inside the neighbourhood is untouched.
+            float feedback = clamp(pc.feedback, 0.0, 0.98);
+            if (pc.rejectionFeedbackEnabled != 0u) {
+                feedback = mix(feedback, 0.0, clamp(rejection - 1.0, 0.0, 1.0));
+            }
+
+            resolvedColor = mix(currentColor, historyColor, feedback);
         }
     }
 
