@@ -508,6 +508,9 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuC
 
 renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
 {
+    // sceneExtent is the *allocated* size of the scene targets; renderExtent
+    // below is the sub-rect this frame writes. They are the same until the
+    // render scale drops.
     const VkExtent3D sceneExtent = postProcess_.sceneColor().extent();
     const VkExtent3D depthPyramidExtent = depthPyramid_.extent();
     VkClearValue sceneClear{};
@@ -698,6 +701,10 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
     };
 
     return renderer::RenderGraphFrameResources{
+        // The sub-rect of the scene-sized targets this frame writes. Positional
+        // aggregate init, so this has to stay first -- matching the member order
+        // in RenderGraphFrameResources.
+        renderResolution_.extent(),
         renderer::RenderGraphImageResource{
             "SceneColor",
             postProcess_.sceneColor().image(),

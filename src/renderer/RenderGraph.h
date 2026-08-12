@@ -215,6 +215,12 @@ struct RenderGraphBufferResource {
 };
 
 struct RenderGraphFrameResources {
+    // How much of the scene-sized targets this frame writes. They are allocated
+    // at the maximum render resolution and only their top-left sub-rect is
+    // rendered into, so the renderArea of every pass that writes one is this,
+    // not the resource's own extent. Zero means "the whole resource", which is
+    // what the passes whose targets are not sub-rected still want.
+    VkExtent2D renderExtent{};
     RenderGraphImageResource sceneColor;
     RenderGraphImageResource velocity;
     RenderGraphImageResource normalRoughness;
@@ -631,7 +637,15 @@ private:
                         RGAccess declaredAccess,
                         std::string description);
     void refreshDebugResources();
-    void beginColorRendering(const TextureResource& resource, VkClearValue clearValue);
+    // extentOverride limits the renderArea to the sub-rect a scene-sized target
+    // is actually written in; zero means the whole resource.
+    void beginColorRendering(const TextureResource& resource,
+                             VkClearValue clearValue,
+                             VkExtent2D extentOverride = VkExtent2D{0, 0});
+    // renderArea for a pass writing a scene-sized target. Clamped to the
+    // resource so a render extent that has not caught up with a resize becomes a
+    // smaller area rather than an out-of-bounds one.
+    [[nodiscard]] VkExtent2D sceneRenderArea(VkExtent2D resourceExtent) const;
     // Shared main-HDR dynamic-rendering setup; loadExisting selects LOAD ops for
     // the phase-2 pass instead of the phase-1 clears.
     void beginMainHdrRendering(bool loadExisting);

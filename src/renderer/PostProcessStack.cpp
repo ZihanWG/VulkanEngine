@@ -94,13 +94,17 @@ void PostProcessStack::createPostProcessResources(VkImageView depthFallbackView,
     depthFallbackView_ = depthFallbackView;
     frameCount_ = frameCount;
 
-    // Every target created here is an *internal* one, so all of them follow the
-    // render extent rather than the swapchain. The composite's output is the one
-    // exception and it writes straight to the swapchain image.
-    const VkExtent2D extent = renderResolution_.extent();
+    // NOT sceneAllocatedExtent() yet. Flipping this is what makes the targets
+    // bigger than the sub-rect written into them, and every consumer has to scale
+    // its UVs in the same commit -- otherwise they sample texels the frame never
+    // wrote. The flip and the seven consumer shaders land together.
+    const VkExtent2D extent = sceneUsedExtent();
     if (extent.width == 0 || extent.height == 0) {
         throw std::runtime_error("Cannot create post-process resources for a zero-sized render extent.");
     }
+    // The bloom chain is not sub-rected yet, so it is still sized to what the
+    // frame writes and still has to be rebuilt when that changes.
+    const VkExtent2D bloomSourceExtent = sceneUsedExtent();
 
     postProcessDescriptorPool_.reset();
     bloomExtractDescriptorSet_ = VK_NULL_HANDLE;
@@ -169,8 +173,7 @@ void PostProcessStack::createPostProcessResources(VkImageView depthFallbackView,
 
     createTaaResources();
 
-    bloomExtent_.width = std::max(1u, extent.width / 2u);
-    bloomExtent_.height = std::max(1u, extent.height / 2u);
+    bloomExtent_ = RenderResolution::halved(bloomSourceExtent);
 
     rhi::VulkanImageCreateInfo bloomInfo{};
     bloomInfo.width = bloomExtent_.width;
@@ -191,11 +194,11 @@ void PostProcessStack::createPostProcessResources(VkImageView depthFallbackView,
     bloomPong_.create(context_, bloomInfo);
     bloomPongLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 
-    const uint32_t bloomMipCount = calculateBloomMipChainLevels(extent);
+    const uint32_t bloomMipCount = calculateBloomMipChainLevels(bloomSourceExtent);
     bloomMipDownsampleImages_.resize(bloomMipCount);
     bloomMipDownsampleLayouts_.assign(bloomMipCount, VK_IMAGE_LAYOUT_UNDEFINED);
     for (uint32_t level = 0; level < bloomMipCount; ++level) {
-        const VkExtent2D mipSize = bloomMipExtent(extent, level);
+        const VkExtent2D mipSize = bloomMipExtent(bloomSourceExtent, level);
         bloomInfo.width = mipSize.width;
         bloomInfo.height = mipSize.height;
         bloomInfo.debugName = "BloomMipDownsample" + std::to_string(level);
@@ -206,7 +209,7 @@ void PostProcessStack::createPostProcessResources(VkImageView depthFallbackView,
     bloomMipUpsampleImages_.resize(bloomUpsampleCount);
     bloomMipUpsampleLayouts_.assign(bloomUpsampleCount, VK_IMAGE_LAYOUT_UNDEFINED);
     for (uint32_t level = 0; level < bloomUpsampleCount; ++level) {
-        const VkExtent2D mipSize = bloomMipExtent(extent, level);
+        const VkExtent2D mipSize = bloomMipExtent(bloomSourceExtent, level);
         bloomInfo.width = mipSize.width;
         bloomInfo.height = mipSize.height;
         bloomInfo.debugName = "BloomMipUpsample" + std::to_string(level);
@@ -537,7 +540,9 @@ void PostProcessStack::createTaaResources()
 {
     destroyTaaResources();
 
-    const VkExtent2D extent = renderResolution_.extent();
+    // Follows the scene targets above: allocated at the used extent until the
+    // consumers can handle a sub-rect.
+    const VkExtent2D extent = sceneUsedExtent();
     if (extent.width == 0 || extent.height == 0) {
         throw std::runtime_error("Cannot create TAA history resources for a zero-sized render extent.");
     }
@@ -1374,7 +1379,12 @@ void PostProcessStack::createLuminanceResources()
         throw std::runtime_error("missing luminance descriptor set layout");
     }
 
-    const VkExtent3D sceneExtent = sceneColor_.extent();
+    // USED, not allocated: the reduction covers exactly the texels the frame
+    // writes, and the partial buffer is sized to match. Both are recomputed on
+    // every recreate, which a scale change still triggers -- when it stops doing
+    // so, the buffer has to be sized for the allocation and the partial count
+    // recomputed per frame instead.
+    const VkExtent2D sceneExtent = sceneUsedExtent();
     if (sceneExtent.width == 0 || sceneExtent.height == 0) {
         throw std::runtime_error("scene color extent is zero");
     }
@@ -1433,7 +1443,7 @@ void PostProcessStack::createHistogramResources()
         throw std::runtime_error("missing exposure descriptor set layout");
     }
 
-    const VkExtent3D sceneExtent = sceneColor_.extent();
+    const VkExtent2D sceneExtent = sceneUsedExtent();
     if (sceneExtent.width == 0 || sceneExtent.height == 0) {
         throw std::runtime_error("scene color extent is zero");
     }
@@ -1904,7 +1914,7 @@ void PostProcessStack::recordLuminanceCommands(VkCommandBuffer commandBuffer)
     vkCmdBindDescriptorSets(
         commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, luminancePipeline_.layout(), 0, 1, &descriptorSet, 0, nullptr);
 
-    const VkExtent3D sceneExtent = sceneColor_.extent();
+    const VkExtent2D sceneExtent = sceneUsedExtent();
     const LuminancePushConstants pushConstants{
         glm::uvec4(sceneExtent.width, sceneExtent.height, luminanceGroupCountX_, 0)};
     vkCmdPushConstants(commandBuffer,
@@ -1935,7 +1945,7 @@ void PostProcessStack::recordHistogramCommands(VkCommandBuffer commandBuffer)
         return;
     }
 
-    const VkExtent3D sceneExtent = sceneColor_.extent();
+    const VkExtent2D sceneExtent = sceneUsedExtent();
     const uint32_t groupCountX = (sceneExtent.width + kHistogramLocalSizeX - 1) / kHistogramLocalSizeX;
     const uint32_t groupCountY = (sceneExtent.height + kHistogramLocalSizeY - 1) / kHistogramLocalSizeY;
     if (groupCountX == 0 || groupCountY == 0) {
@@ -2100,15 +2110,18 @@ void PostProcessStack::recordTaaResolveCommands(VkCommandBuffer commandBuffer)
         return;
     }
 
+    // Allocated size: the resolve's tap offsets are one *texel*, and the
+    // sub-rect changes how many are written, not how big one is.
     const VkExtent3D sceneExtent = sceneColor_.extent();
     if (sceneExtent.width == 0 || sceneExtent.height == 0) {
         return;
     }
+    const VkExtent2D usedExtent = sceneUsedExtent();
 
     rhi::debug::beginLabel(commandBuffer, "TAAResolvePass");
     const bool taaProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "TAAResolvePass");
     renderGraph_.beginTaaResolvePass();
-    setViewportAndScissor(commandBuffer, VkExtent2D{sceneExtent.width, sceneExtent.height});
+    setViewportAndScissor(commandBuffer, usedExtent);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, taaResolvePipeline_.pipeline());
     vkCmdBindDescriptorSets(
         commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, taaResolvePipeline_.layout(), 0, 1, &descriptorSet, 0, nullptr);

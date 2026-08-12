@@ -429,6 +429,30 @@ private:
     GpuProfiler& gpuProfiler_;
     rhi::VulkanSwapchain& swapchain_;
     const RenderResolution& renderResolution_;
+
+    // ---- The sub-rect invariant --------------------------------------------
+    //
+    // Targets are allocated at RenderResolution::allocationExtent() and only
+    // their top-left extent() sub-rect is written, so three quantities that used
+    // to be the same number no longer are. Every bug this design can produce is
+    // a confusion between them:
+    //
+    //   texel size      = 1 / ALLOCATED. A texel is physical; the sub-rect does
+    //                     not change how big one is, only how many are written.
+    //   viewport,
+    //   dispatch bounds = USED. What the frame actually covers.
+    //   uv scale        = USED / ALLOCATED, per target. Derived targets (halves,
+    //                     mips) round each side independently, so their ratio
+    //                     drifts from the scene's and each needs its own.
+    //
+    // Sampling past uvScale reads texels this frame never wrote -- whatever the
+    // last larger frame left there. It is stale image data, so it produces a
+    // plausible-looking edge rather than an obvious failure, and nothing in the
+    // validation layers will say a word about it.
+    [[nodiscard]] VkExtent2D sceneUsedExtent() const { return renderResolution_.extent(); }
+    [[nodiscard]] VkExtent2D sceneAllocatedExtent() const { return renderResolution_.allocationExtent(); }
+    [[nodiscard]] VkExtent2D bloomUsedExtent() const { return RenderResolution::halved(sceneUsedExtent()); }
+    // bloomExtent_ is the *allocated* bloom size; bloomUsedExtent() is written.
     ToneMappingSettings& toneMappingSettings_;
     BloomSettings& bloomSettings_;
     TaaSettings& taaSettings_;
