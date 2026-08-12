@@ -39,20 +39,43 @@ is cheap to build and cheap to reverse:
 
 ## Measured
 
-Default scene, Debug build, 2560×1440, Apple M3. Medians of the last three
-GPU-timing prints per run; the 1.0 control was re-measured after the series and
-held (16.7 → 17.3 ms), so the deltas are not machine drift.
+Default scene, Debug build, 2560×1440, Apple M3. One series run back to back,
+medians per run, with the 1.0 control repeated at the end: it came back within
+**0.4%** (17.72 → 17.79 ms), which is what makes the series internally valid.
 
 | Scale | Render extent | Frame total | `MainHDRPass` |
 | --- | --- | --- | --- |
-| 1.00 | 2560×1440 | 16.9 ms | 9.2 ms |
-| 0.75 | 1920×1080 | 11.0 ms (−35%) | 5.4 ms (−41%) |
-| 0.50 | 1280×720 | 6.2 ms (−63%) | 2.4 ms (−74%) |
+| 1.00 | 2560×1440 | 17.75 ms | 9.7 ms |
+| 0.75 | 1920×1080 | 11.52 ms (−35%) | 5.78 ms (−40%) |
+| 0.50 | 1280×720 | 6.90 ms (−61%) | 2.66 ms (−73%) |
+| 0.25 | 640×360 | 5.39 ms (−70%) | 1.37 ms (−86%) |
 
-The saving is *more* than the pixel ratio at 0.5 (56% of the frame gone for 75%
+With temporal upsampling on, which is how a scaled frame should actually be run:
+
+| Scale | Frame total | `TAAResolvePass` |
+| --- | --- | --- |
+| 1.00 | 19.17 ms | 1.29 ms |
+| 0.50 | 8.90 ms (−50% against 1.00 native) | 1.19 ms |
+
+Upsampling spends about 2 ms of the 10.85 ms that scale 0.5 saves — the resolve
+itself, plus the post-process chain moving to full resolution behind it — and
+half the saving survives, with reconstructed detail instead of a bilinear
+stretch.
+
+The saving is *more* than the pixel ratio at 0.5 (61% of the frame gone for 75%
 of the pixels gone). Two reasons: `Transparent` shares the same fragment shader
-and falls with it (1.5 → 0.1 ms), and LOD selection is driven by projected pixel
-radius, so a smaller render target legitimately picks coarser meshes.
+and falls with it, and LOD selection is driven by projected pixel radius, so a
+smaller render target legitimately picks coarser meshes.
+
+**Below 0.5 the returns collapse**, and the per-pass breakdown says why. At 0.25
+the frame is 5.39 ms of which `MainHDRPass` is only 1.37; nearly all the rest is
+work that does not scale with render resolution. `CSMShadowPass` is 0.62 ms and
+`PunctualShadowAtlas` 0.21 ms — both render into fixed 2048 and 4096 maps — and
+GPU culling is another 0.46 ms, which scales with object count rather than
+pixels. That floor of roughly 4 ms is the argument for keeping the
+dynamic-resolution minimum at 0.5: past it the scale is trading image quality for
+almost nothing. Moving the floor would mean scaling the shadow maps with the
+render scale, which nobody has asked for.
 
 ## What is sized by the render extent
 
@@ -220,7 +243,7 @@ Cost: **`CompositePass` roughly triples.** Back-to-back A/B/A/B at scale 0.5 on
 a 2560×1440 window gave 0.362 / 1.460 / 0.474 / 1.227 ms, so about +0.8 ms. The
 absolute values in that series are inflated — the machine had thermally degraded
 over a long run of GPU measurements, and the scale-0.5 control read 13-14 ms
-against the 6.2 ms measured cold — but the ratio held across both pairs.
+against the 6.9 ms measured on a settled machine — but the ratio held across both pairs.
 
 The tone-curve evaluations are free; the four extra fetches are not. The output
 is 3.7 M pixels, and at scale 0.5 the taps sit two output pixels apart, so each
