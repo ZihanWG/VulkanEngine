@@ -406,7 +406,7 @@ private:
     void updateDynamicResolution();
     void recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     void recordGpuCullingCommands(VkCommandBuffer commandBuffer);
-    void recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer, uint32_t cascadeIndex);
+    void recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer);
     void ensureDepthPyramidShaderReadLayout(VkCommandBuffer commandBuffer);
     void recordDepthPyramidCommands(VkCommandBuffer commandBuffer, bool midFrame = false);
     [[nodiscard]] renderer::RenderGraphFrameResources renderGraphFrameResources();

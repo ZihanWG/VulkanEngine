@@ -122,13 +122,14 @@ public:
                               uint32_t drawItemCount,
                               const std::array<glm::vec4, 6>& frustumPlanes,
                               bool mainPassMultiDrawIndirect);
+    // One dispatch for every cascade. The visible set is the union of the
+    // cascade frusta (read from the frame-params buffer, not pushed), because a
+    // single indirect list feeds all of them.
     void recordShadowCull(VkCommandBuffer commandBuffer,
                           uint32_t frameIndex,
                           bool active,
-                          uint32_t cascadeIndex,
                           uint32_t cascadeCount,
-                          uint32_t drawItemCount,
-                          const std::array<glm::vec4, 6>& cascadeFrustumPlanes);
+                          uint32_t drawItemCount);
 
     // --- readback (results consumed by the debug UI / stats in Renderer) ---
     [[nodiscard]] bool readMainVisibleCount(bool active, uint32_t frameIndex, uint32_t& visibleCount);

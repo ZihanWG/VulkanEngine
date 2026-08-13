@@ -441,6 +441,14 @@ struct GpuCullFrameParams {
     // written fraction drifts per level and cull.comp recomputes it rather than
     // being handed one ratio. Zero reads as 1:1, which is the un-sub-rected case.
     glm::uvec4 pyramidBaseSizes{0, 0, 0, 0};
+    // Every active cascade's light frustum, six planes each, cascade-major.
+    //
+    // The shadow dispatch culls against the *union* of these rather than one
+    // cascade at a time, because all cascades are drawn from a single indirect
+    // list. They live here and not in the push constants for the obvious reason:
+    // four frusta is 384 bytes and the guaranteed push-constant block is 128.
+    // The main dispatch ignores them and keeps using pc.frustumPlanes.
+    std::array<glm::vec4, renderer::kMaxShadowCascades * 6> shadowCascadePlanes{};
 };
 
 static_assert(offsetof(GpuCullFrameParams, occlusionViewProjection) == 0);
@@ -451,7 +459,8 @@ static_assert(offsetof(GpuCullFrameParams, occlusionSettings) == 160);
 static_assert(offsetof(GpuCullFrameParams, lodSettings) == 176);
 static_assert(offsetof(GpuCullFrameParams, counterAndFlags) == 192);
 static_assert(offsetof(GpuCullFrameParams, pyramidBaseSizes) == 208);
-static_assert(sizeof(GpuCullFrameParams) == 224);
+static_assert(offsetof(GpuCullFrameParams, shadowCascadePlanes) == 224);
+static_assert(sizeof(GpuCullFrameParams) == 608);
 
 struct DepthPyramidPushConstants {
     glm::uvec4 sizes{0, 0, 0, 0};

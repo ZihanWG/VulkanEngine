@@ -933,7 +933,17 @@ void Renderer::uploadGpuCullFrameParams(uint32_t frameIndex, bool occlusionEnabl
                                         lodSettings_.bias,
                                         forcedLod,
                                         lodSettings_.shadowBias);
-    frameParams.counterAndFlags = glm::uvec4(kGpuCullStatsCounterOffset, occlusionEnabledThisFrame ? 1u : 0u, 0u, 0u);
+    const uint32_t cascadeCount = activeCascadeCount();
+    frameParams.counterAndFlags =
+        glm::uvec4(kGpuCullStatsCounterOffset, occlusionEnabledThisFrame ? 1u : 0u, cascadeCount, 0u);
+    // Cascade-major, active cascades only; the shader reads counterAndFlags.z of
+    // them. Inactive slots stay zeroed rather than carrying a stale frustum.
+    for (uint32_t cascadeIndex = 0; cascadeIndex < cascadeCount; ++cascadeIndex) {
+        for (size_t planeIndex = 0; planeIndex < 6; ++planeIndex) {
+            frameParams.shadowCascadePlanes[cascadeIndex * 6 + planeIndex] =
+                frameShadowCascadeFrustumPlanes_[cascadeIndex][planeIndex];
+        }
+    }
     const VkExtent2D pyramidAllocation = renderResolution_.allocationExtent();
     frameParams.pyramidBaseSizes =
         glm::uvec4(extent.width, extent.height, pyramidAllocation.width, pyramidAllocation.height);

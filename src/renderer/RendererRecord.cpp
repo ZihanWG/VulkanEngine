@@ -909,15 +909,13 @@ void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
                                /*copyReadback=*/!frameTwoPhaseOcclusionActive_);
 }
 
-void Renderer::recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer, uint32_t cascadeIndex)
+void Renderer::recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer)
 {
     gpuCulling_.recordShadowCull(commandBuffer,
                                  currentFrame_,
                                  isGpuShadowCullingActive(),
-                                 cascadeIndex,
                                  activeCascadeCount(),
-                                 static_cast<uint32_t>(allDrawItems_.size()),
-                                 frameShadowCascadeFrustumPlanes_[cascadeIndex]);
+                                 static_cast<uint32_t>(allDrawItems_.size()));
 }
 
 void Renderer::ensureDepthPyramidShaderReadLayout(VkCommandBuffer commandBuffer)
@@ -968,11 +966,13 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     shadowScissor.offset = {0, 0};
     shadowScissor.extent = shadowExtent;
 
-    for (uint32_t cascadeIndex = 0; cascadeIndex < cascadeCount; ++cascadeIndex) {
-        if (gpuShadowCullingActive) {
-            recordGpuShadowCullingCommands(commandBuffer, cascadeIndex);
-        }
+    // One cull for every cascade, hoisted out of the loop: the dispatch produces
+    // the union of the cascade frusta, so each cascade replays the same list.
+    if (gpuShadowCullingActive) {
+        recordGpuShadowCullingCommands(commandBuffer);
+    }
 
+    for (uint32_t cascadeIndex = 0; cascadeIndex < cascadeCount; ++cascadeIndex) {
         const std::vector<DrawItem>& activeShadowDrawItems =
             gpuShadowCullingActive ? allDrawItems_ : shadowCascadeDrawItems_[cascadeIndex];
         const std::vector<MeshDrawBatch>& activeShadowMeshDrawBatches =
