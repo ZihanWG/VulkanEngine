@@ -68,14 +68,43 @@ and falls with it, and LOD selection is driven by projected pixel radius, so a
 smaller render target legitimately picks coarser meshes.
 
 **Below 0.5 the returns collapse**, and the per-pass breakdown says why. At 0.25
-the frame is 5.39 ms of which `MainHDRPass` is only 1.37; nearly all the rest is
-work that does not scale with render resolution. `CSMShadowPass` is 0.62 ms and
-`PunctualShadowAtlas` 0.21 ms — both render into fixed 2048 and 4096 maps — and
-GPU culling is another 0.46 ms, which scales with object count rather than
-pixels. That floor of roughly 4 ms is the argument for keeping the
-dynamic-resolution minimum at 0.5: past it the scale is trading image quality for
-almost nothing. Moving the floor would mean scaling the shadow maps with the
-render scale, which nobody has asked for.
+the frame is 5.39 ms and `MainHDRPass` is only 1.37 of it. The largest single
+remaining pass is `CSMShadowPass` at 1.31 ms, which does not respond to render
+scale at all, and the shadow-cascade culling dispatches add ~0.4 ms on top.
+`PunctualShadowAtlas` (0.13 ms) and `CompositePass` (0.22 ms) are not factors.
+That floor is the argument for keeping the dynamic-resolution minimum at 0.5:
+past it the scale is trading image quality for almost nothing.
+
+### Shrinking the shadow map does not move that floor
+
+The obvious next lever looks like scaling the CSM resolution with the render
+scale. It was measured, and it buys nothing. Rebuilt at three fixed resolutions,
+render scale 1.0:
+
+| CSM resolution | Shadow texels | `CSMShadowPass` |
+| --- | --- | --- |
+| 2048 | 16.8 M (4 cascades) | 0.822 ms |
+| 1024 | 4.2 M | 0.775 ms |
+| 512 | 1.0 M | 0.812 ms |
+
+A **16x cut in shadow texels moves the pass by nothing**. The cost is not
+rasterisation. Sweeping cascade count instead, at a fixed 2048, control repeated
+and back within 5%:
+
+| Cascades | `CSMShadowPass` | Cascade culling total |
+| --- | --- | --- |
+| 4 | 0.817 ms | ~0.57 ms |
+| 2 | 0.399 ms | ~0.33 ms |
+| 1 | 0.250 ms | ~0.18 ms |
+
+Dead linear in cascade *count* and flat in cascade *size*: about 0.2 ms per
+cascade of fixed per-pass cost, plus its own culling dispatch. On MoltenVK each
+cascade is its own render pass and so its own Metal command encoder, and with 11
+shadow draw items per cascade the encoder setup is the whole bill. The lever on
+the shadow floor is therefore **fewer or merged cascade passes** -- layered
+rendering into the array in one pass, or simply dropping to 2 cascades -- not
+fewer shadow texels. Scaling shadow resolution with the render scale would spend
+shadow quality for a measured zero.
 
 ## What is sized by the render extent
 

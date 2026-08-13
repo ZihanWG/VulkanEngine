@@ -251,8 +251,14 @@ void Renderer::createShadowMap()
     // The CSM depth array is fixed-size for now and intentionally independent
     // of swapchain resize; only the main color/depth targets follow the window extent.
     imguiLayer_.clearRenderTargetPreviewDescriptors();
-    shadowMap_.create(
-        context_, shadowSettings_.resolution, shadowSettings_.resolution, activeCascadeCount(), "CascadedShadowMap");
+    // Array view unconditionally: the shader samples this as a sampler2DArray at
+    // every cascade count, so a single-cascade configuration still needs one.
+    shadowMap_.create(context_,
+                      shadowSettings_.resolution,
+                      shadowSettings_.resolution,
+                      activeCascadeCount(),
+                      rhi::VulkanShadowMap::ViewKind::Array,
+                      "CascadedShadowMap");
 
     // The punctual atlas is fixed-size and independent of the CSM resolution
     // setting: its tiles are sized by the atlas grid, not by shadowSettings_.

@@ -32,6 +32,7 @@ void PunctualShadows::create(rhi::VulkanContext& context, uint32_t frameCount)
                       kPunctualShadowAtlasSize,
                       kPunctualShadowAtlasSize,
                       /*layerCount=*/1,
+                      rhi::VulkanShadowMap::ViewKind::Single,
                       "PunctualShadowAtlas");
 
         slotBuffers_.resize(frameCount);

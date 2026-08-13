@@ -56,6 +56,7 @@ void VulkanShadowMap::create(VulkanContext& context,
                              uint32_t width,
                              uint32_t height,
                              uint32_t layerCount,
+                             ViewKind viewKind,
                              const std::string& debugName)
 {
     reset();
@@ -76,10 +77,11 @@ void VulkanShadowMap::create(VulkanContext& context,
     imageInfo.format = chooseShadowMapFormat(context.physicalDevice());
     imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     imageInfo.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    imageInfo.viewType = layerCount > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
+    const bool arrayView = viewKind == ViewKind::Array;
+    imageInfo.viewType = arrayView ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
     const std::string label =
-        debugName.empty() ? (layerCount > 1 ? "CascadedShadowMap" : "DirectionalShadowMap") : debugName;
-    imageInfo.debugName = layerCount > 1 ? label + "Array" : label;
+        debugName.empty() ? (arrayView ? "CascadedShadowMap" : "DirectionalShadowMap") : debugName;
+    imageInfo.debugName = arrayView ? label + "Array" : label;
     image_.create(context, imageInfo);
 
     createLayerImageViews(label);

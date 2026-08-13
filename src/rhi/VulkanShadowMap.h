@@ -20,6 +20,17 @@ public:
     VulkanShadowMap(VulkanShadowMap&& other) noexcept;
     VulkanShadowMap& operator=(VulkanShadowMap&& other) noexcept;
 
+    // How the sampled view is declared. This is deliberately NOT derived from
+    // layerCount: the cascaded shadow map is read as a sampler2DArray even when
+    // it is configured down to a single cascade, while the punctual atlas is one
+    // layer read as a plain sampler2D. Inferring `layerCount > 1` produced a
+    // non-array view at cascadeCount == 1, which the array-typed sampler in the
+    // shader rejects (VUID-vkCmdDrawIndexed-viewType-07752).
+    enum class ViewKind {
+        Single,
+        Array
+    };
+
     // debugName labels the image, its views, and its sampler. It defaults to the
     // cascaded-shadow naming this class was written for; the punctual shadow
     // atlas passes its own so RenderDoc captures stay readable.
@@ -27,6 +38,7 @@ public:
                 uint32_t width = 2048,
                 uint32_t height = 2048,
                 uint32_t layerCount = 1,
+                ViewKind viewKind = ViewKind::Single,
                 const std::string& debugName = {});
     void reset();
 
