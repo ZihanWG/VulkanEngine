@@ -21,7 +21,7 @@ Requirements: the bindless multi-draw-indirect path and a valid previous-frame p
 
 When GPU culling is enabled, `Renderer::updateGpuCullInputBuffer()` uploads those draw bounds into the per-frame cull input buffer. `src/shaders/cull.comp` tests each AABB against the current camera frustum planes, writes visible indirect draw commands, and increments per-batch visible counts. The main pass then reads the indirect command buffer and visible-count buffer as before. If GPU culling is unavailable, the renderer falls back to CPU frustum culling and CPU-written indirect commands.
 
-Shadow culling continues to use the same shared compute shader with occlusion disabled. It tests per-cascade light frustum planes and does not sample the depth pyramid.
+Shadow culling continues to use the same shared compute shader with occlusion disabled, and does not sample the depth pyramid. It runs **once for all cascades**: an object survives if any cascade's light frustum accepts it, and every cascade replays that one indirect list — a superset per cascade, which the cascade's own projection clips. The frusta arrive through the frame-params buffer rather than the push constants, because four of them are 384 bytes against a 128-byte guaranteed block. Collapsing the four dispatches into one is what moved `CSMShadowPass` from ~0.9 ms to ~0.45 ms; see [render_scale.md](render_scale.md) for the measurement.
 
 ## Depth Pyramid Generation
 

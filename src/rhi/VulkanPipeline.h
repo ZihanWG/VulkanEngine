@@ -39,6 +39,10 @@ struct VulkanPipelineCreateInfo {
     // blending all of them.
     bool independentBlendAvailable = false;
     bool enableDepth = false;
+    // Multiview mask. Non-zero makes every draw replicate into the listed array
+    // layers, with gl_ViewIndex telling the shader which one it is on. Must match
+    // the VkRenderingInfo the pipeline is used inside. Zero = single view.
+    uint32_t viewMask = 0;
     bool depthWriteEnable = true;
     bool enableDepthBias = false;
     VkCullModeFlags cullMode = VK_CULL_MODE_NONE;

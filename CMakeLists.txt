@@ -368,7 +368,9 @@ set(SHADER_SOURCES
     "${SHADER_SOURCE_DIR}/skybox.vert"
     "${SHADER_SOURCE_DIR}/skybox.frag"
     "${SHADER_SOURCE_DIR}/shadow.vert"
+    "${SHADER_SOURCE_DIR}/shadow_layered.vert"
     "${SHADER_SOURCE_DIR}/shadow_masked.vert"
+    "${SHADER_SOURCE_DIR}/shadow_masked_layered.vert"
     "${SHADER_SOURCE_DIR}/shadow_punctual.vert"
     "${SHADER_SOURCE_DIR}/punctual_shadow_cull.comp"
     "${SHADER_SOURCE_DIR}/fog_inject.comp"
@@ -418,6 +420,7 @@ set(SHADER_INCLUDES
     "${SHADER_SOURCE_DIR}/object_frame_data.glsl"
     "${SHADER_SOURCE_DIR}/cluster_grid.glsl"
     "${SHADER_SOURCE_DIR}/sub_rect.glsl"
+    "${SHADER_SOURCE_DIR}/shadow_cascade.glsl"
 )
 
 if(GLSLC_EXECUTABLE)

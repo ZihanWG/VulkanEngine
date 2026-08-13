@@ -1241,6 +1241,7 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
         useGpuShadowCulling_ = settings.useGpuShadowCulling;
         useGpuOcclusionCulling_ = settings.enableGpuOcclusionCulling && settings.useGpuCulling;
         useTwoPhaseOcclusion_ = settings.enableTwoPhaseOcclusion;
+        useLayeredCascades_ = settings.enableLayeredCascades;
         useAsyncCompute_ = settings.enableAsyncCompute;
         useBindlessMaterialTextures_ = settings.enableBindlessMaterialTextures;
         // Assigned unguarded here: this runs before the punctual shadow
@@ -1302,6 +1303,7 @@ RuntimeSettings Renderer::captureRuntimeSettings() const
     settings.useGpuShadowCulling = useGpuShadowCulling_;
     settings.enableGpuOcclusionCulling = useGpuOcclusionCulling_;
     settings.enableTwoPhaseOcclusion = useTwoPhaseOcclusion_;
+    settings.enableLayeredCascades = useLayeredCascades_;
     settings.useClusteredLighting = useClusteredLighting_;
     settings.enableAsyncCompute = useAsyncCompute_;
     settings.enableBindlessMaterialTextures = useBindlessMaterialTextures_;
@@ -1604,6 +1606,13 @@ bool Renderer::isGpuShadowCullingActive() const
 {
     return useGpuShadowCulling_ && isShadowIndirectActive() &&
            gpuCulling_.shadowResourcesReady(static_cast<uint32_t>(frames_.size()));
+}
+
+bool Renderer::isLayeredCascadeRenderingActive() const
+{
+    // Startup-fixed: the shadow pipelines bake the view mask, and the cascade
+    // count is already a restart-only setting, so this cannot change per frame.
+    return useLayeredCascades_ && context_.device().multiviewEnabled();
 }
 
 bool Renderer::isBindlessMaterialTextureActive() const

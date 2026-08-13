@@ -558,11 +558,32 @@ void RenderGraph::importFrameBuffers()
 
 void RenderGraph::beginShadowPass(uint32_t cascadeLayer)
 {
+    beginShadowPassInternal(cascadeLayer, /*viewMask=*/0);
+}
+
+void RenderGraph::beginLayeredShadowPass(uint32_t cascadeCount)
+{
+    if (cascadeCount == 0) {
+        throw std::invalid_argument("RenderGraph::beginLayeredShadowPass needs at least one cascade.");
+    }
+    // Every cascade is a view of the same pass, so the mask is the low
+    // cascadeCount bits and the attachment is the whole array view.
+    beginShadowPassInternal(0, (1u << cascadeCount) - 1u);
+}
+
+void RenderGraph::beginShadowPassInternal(uint32_t cascadeLayer, uint32_t viewMask)
+{
     requireFrameActive("RenderGraph::beginShadowPass");
     if (activePass_ != ActivePass::None) {
         throw std::logic_error("RenderGraph::beginShadowPass called while another pass is active.");
     }
-    if (cascadeLayer >= frame_.shadowMap->layerCount()) {
+    const bool layered = viewMask != 0;
+    if (layered) {
+        // Views index array layers directly, so the mask cannot outrun the array.
+        if (viewMask >= (1u << frame_.shadowMap->layerCount())) {
+            throw std::out_of_range("RenderGraph::beginLayeredShadowPass view mask exceeds the cascade array.");
+        }
+    } else if (cascadeLayer >= frame_.shadowMap->layerCount()) {
         throw std::out_of_range("RenderGraph::beginShadowPass cascade layer is out of range.");
     }
 
@@ -576,7 +597,10 @@ void RenderGraph::beginShadowPass(uint32_t cascadeLayer)
 
     VkRenderingAttachmentInfo shadowDepthAttachment{};
     shadowDepthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    shadowDepthAttachment.imageView = frame_.shadowMap->layerImageView(cascadeLayer);
+    // The layered pass attaches the array view and lets the view mask pick the
+    // layers; the per-cascade path attaches one layer's own view.
+    shadowDepthAttachment.imageView =
+        layered ? frame_.shadowMap->imageView() : frame_.shadowMap->layerImageView(cascadeLayer);
     shadowDepthAttachment.imageLayout = depthAttachmentLayout(VK_IMAGE_ASPECT_DEPTH_BIT);
     shadowDepthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     shadowDepthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -586,7 +610,10 @@ void RenderGraph::beginShadowPass(uint32_t cascadeLayer)
     shadowRenderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
     shadowRenderingInfo.renderArea.offset = {0, 0};
     shadowRenderingInfo.renderArea.extent = frame_.shadowMap->extent();
-    shadowRenderingInfo.layerCount = 1;
+    // layerCount must be 0 when a view mask is present -- the mask defines the
+    // layers instead, and a non-zero count alongside it is invalid.
+    shadowRenderingInfo.layerCount = layered ? 0 : 1;
+    shadowRenderingInfo.viewMask = viewMask;
     shadowRenderingInfo.colorAttachmentCount = 0;
     shadowRenderingInfo.pDepthAttachment = &shadowDepthAttachment;
 

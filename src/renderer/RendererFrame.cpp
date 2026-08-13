@@ -794,6 +794,45 @@ void Renderer::buildShadowDrawItems(uint32_t cascadeIndex, const renderer::Frust
     }
 }
 
+// Same object sweep as buildShadowDrawItems, but an object survives if ANY
+// active cascade wants it. Matches what the GPU shadow cull now computes, so
+// both paths feed the layered pass the same set.
+void Renderer::buildUnionShadowDrawItems(uint32_t cascadeCount)
+{
+    shadowDrawItems_.clear();
+    shadowDrawItems_.reserve(allDrawItems_.size());
+
+    const size_t objectCount = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
+    std::vector<uint8_t> objectVisible(objectCount, 0);
+    for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+        const renderer::RenderObject& object = renderObjects_[objectIndex];
+        if (!isRenderObjectActive(object)) {
+            continue;
+        }
+        if (!object.mesh || !object.mesh->valid()) {
+            continue;
+        }
+
+        const renderer::Aabb& worldBounds = frameWorldBounds_[objectIndex];
+        if (!worldBounds.valid()) {
+            objectVisible[objectIndex] = 1;
+            continue;
+        }
+        for (uint32_t cascadeIndex = 0; cascadeIndex < cascadeCount; ++cascadeIndex) {
+            if (frameCascades_[cascadeIndex].lightFrustum.testAabb(worldBounds)) {
+                objectVisible[objectIndex] = 1;
+                break;
+            }
+        }
+    }
+
+    for (const DrawItem& drawItem : allDrawItems_) {
+        if (drawItem.objectIndex < objectVisible.size() && objectVisible[drawItem.objectIndex] != 0) {
+            shadowDrawItems_.push_back(drawItem);
+        }
+    }
+}
+
 void Renderer::buildShadowMeshDrawBatches()
 {
     shadowMeshDrawBatches_.clear();
@@ -1399,6 +1438,13 @@ void Renderer::buildShadowFrameData(uint32_t frameIndex)
                                          shadowCascadeMeshDrawBatches_[cascadeIndex]);
         }
     }
+    // A layered pass draws one list for every cascade, so the CPU-culling
+    // fallback needs the union of the cascade frusta rather than a list each.
+    if (isLayeredCascadeRenderingActive() && !isGpuShadowCullingActive()) {
+        buildUnionShadowDrawItems(cascadeCount);
+        buildMeshDrawBatchesForItems(shadowDrawItems_, shadowMeshDrawBatches_);
+    }
+
     for (uint32_t cascadeIndex = 0; cascadeIndex < cascadeCount; ++cascadeIndex) {
         shadowVisibleDrawItemsPerCascade_[cascadeIndex] =
             static_cast<uint32_t>(shadowCascadeDrawItems_[cascadeIndex].size());

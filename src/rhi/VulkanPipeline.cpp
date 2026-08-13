@@ -195,6 +195,7 @@ void VulkanPipeline::create(VkDevice device, const VulkanPipelineCreateInfo& cre
     renderingInfo.colorAttachmentCount = static_cast<uint32_t>(colorFormats.size());
     renderingInfo.pColorAttachmentFormats = colorFormats.empty() ? nullptr : colorFormats.data();
     renderingInfo.depthAttachmentFormat = createInfo.enableDepth ? createInfo.depthFormat : VK_FORMAT_UNDEFINED;
+    renderingInfo.viewMask = createInfo.viewMask;
 
     // Dynamic Rendering has no VkRenderPass compatibility object, so the pipeline
     // declares the attachment formats it will render into through this pNext struct.

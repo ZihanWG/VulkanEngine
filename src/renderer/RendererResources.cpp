@@ -558,8 +558,16 @@ void Renderer::createShadowPipeline()
     const VkVertexInputBindingDescription binding = renderer::vertexBindingDescription();
     const std::array<VkVertexInputAttributeDescription, 5> attributes = renderer::vertexAttributeDescriptions();
 
+    // One pass for every cascade when multiview is available: the pipeline
+    // declares the same view mask the render pass will use, and the layered
+    // shader variant reads gl_ViewIndex instead of a pushed cascade index.
+    const bool layeredCascades = isLayeredCascadeRenderingActive();
+    const uint32_t cascadeViewMask = layeredCascades ? (1u << activeCascadeCount()) - 1u : 0u;
+
     rhi::VulkanPipelineCreateInfo shadowPipelineInfo{};
-    shadowPipelineInfo.vertexShaderPath = shaderPath("shadow.vert.spv");
+    shadowPipelineInfo.vertexShaderPath =
+        shaderPath(layeredCascades ? "shadow_layered.vert.spv" : "shadow.vert.spv");
+    shadowPipelineInfo.viewMask = cascadeViewMask;
     shadowPipelineInfo.depthFormat = shadowMap_.format();
     shadowPipelineInfo.vertexBindings = std::span<const VkVertexInputBindingDescription>(&binding, 1);
     shadowPipelineInfo.vertexAttributes = std::span<const VkVertexInputAttributeDescription>(attributes.data(), 1);
@@ -647,8 +655,13 @@ void Renderer::createMaskedShadowPipeline(const VkVertexInputBindingDescription&
     const VkPushConstantRange maskedPushConstantRange{
         VK_SHADER_STAGE_VERTEX_BIT, 0, static_cast<uint32_t>(sizeof(PushConstants))};
 
+    // Must match createShadowPipeline: both feed the same cascade pass.
+    const bool layeredMaskedCascades = isLayeredCascadeRenderingActive();
+
     rhi::VulkanPipelineCreateInfo maskedInfo{};
-    maskedInfo.vertexShaderPath = shaderPath("shadow_masked.vert.spv");
+    maskedInfo.vertexShaderPath =
+        shaderPath(layeredMaskedCascades ? "shadow_masked_layered.vert.spv" : "shadow_masked.vert.spv");
+    maskedInfo.viewMask = layeredMaskedCascades ? (1u << activeCascadeCount()) - 1u : 0u;
     maskedInfo.fragmentShaderPath = shaderPath("shadow_masked.frag.spv");
     maskedInfo.depthFormat = shadowMap_.format();
     maskedInfo.vertexBindings = std::span<const VkVertexInputBindingDescription>(&binding, 1);
