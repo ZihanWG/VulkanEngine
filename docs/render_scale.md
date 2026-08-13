@@ -99,8 +99,14 @@ and back within 5%:
 
 Dead linear in cascade *count* and flat in cascade *size*: about 0.2 ms per
 cascade of fixed per-pass cost, plus its own culling dispatch. On MoltenVK each
-cascade is its own render pass and so its own Metal command encoder, and with 11
-shadow draw items per cascade the encoder setup is the whole bill. The lever on
+cascade is its own render pass and so its own Metal command encoder, and the
+encoder setup is the whole bill.
+
+The trivial caster count is not the explanation. Re-run in the geometry stress
+scene, which raises shadow draws from 44 to **9288** across the cascades, the
+pass only goes 0.82 -> 1.11 ms, and cutting resolution there still buys almost
+nothing (512: 0.98 ms). Two hundred times the draws and a sixteenth of the texels
+both land inside a couple of tenths of a millisecond of the same number. The lever on
 the shadow floor is therefore **fewer or merged cascade passes** -- layered
 rendering into the array in one pass, or simply dropping to 2 cascades -- not
 fewer shadow texels. Scaling shadow resolution with the render scale would spend
