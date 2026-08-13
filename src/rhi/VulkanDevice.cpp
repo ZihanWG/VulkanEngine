@@ -296,9 +296,13 @@ void VulkanDevice::createLogicalDevice()
     VkPhysicalDeviceVulkan13Features supported13{};
     supported13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
 
+    VkPhysicalDeviceVulkan11Features supported11{};
+    supported11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+    supported11.pNext = &supported13;
+
     VkPhysicalDeviceVulkan12Features supported12{};
     supported12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
-    supported12.pNext = &supported13;
+    supported12.pNext = &supported11;
 
     VkPhysicalDeviceFeatures2 supportedFeatures{};
     supportedFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
@@ -315,6 +319,9 @@ void VulkanDevice::createLogicalDevice()
     // without this, all attachments must share one blend state.
     independentBlendEnabled_ = supportedFeatures.features.independentBlend == VK_TRUE;
     drawIndirectFirstInstanceEnabled_ = supportedFeatures.features.drawIndirectFirstInstance == VK_TRUE;
+    // Draws the whole cascade array in one render pass. Optional: without it the
+    // renderer falls back to one pass per cascade, which is what it always did.
+    multiviewEnabled_ = supported11.multiview == VK_TRUE;
 
     VkPhysicalDeviceFeatures enabledCore{};
     enabledCore.multiDrawIndirect = multiDrawIndirectEnabled_ ? VK_TRUE : VK_FALSE;
@@ -331,9 +338,14 @@ void VulkanDevice::createLogicalDevice()
     // and required by isDeviceSuitable, so it is always available here.
     enabled13.shaderDemoteToHelperInvocation = VK_TRUE;
 
+    VkPhysicalDeviceVulkan11Features enabled11{};
+    enabled11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+    enabled11.pNext = &enabled13;
+    enabled11.multiview = multiviewEnabled_ ? VK_TRUE : VK_FALSE;
+
     VkPhysicalDeviceVulkan12Features enabled12{};
     enabled12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
-    enabled12.pNext = &enabled13;
+    enabled12.pNext = &enabled11;
     enabled12.bufferDeviceAddress = VK_TRUE;
     enabled12.separateDepthStencilLayouts = VK_TRUE;
     enabled12.drawIndirectCount = supported12.drawIndirectCount;

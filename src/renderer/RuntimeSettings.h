@@ -336,6 +336,14 @@ struct RuntimeSettings {
     // mid-frame rebuild. Off falls back to the conservative single-phase test
     // that only runs while the camera holds still.
     bool enableTwoPhaseOcclusion = true;
+    // Render every shadow cascade in one multiview pass instead of one pass per
+    // cascade. Startup-only: the shadow pipelines bake the view mask.
+    //
+    // OFF because it was measured slower here, not because it is unfinished. The
+    // output is pixel-identical; MoltenVK just does not have hardware for four
+    // views (Apple vertex amplification tops out at two), so the emulation costs
+    // more than the three command encoders it removes. See docs/render_scale.md.
+    bool enableLayeredCascades = false;
     // Main pass walks the per-froxel light list instead of brute-forcing every
     // light. Off is the brute-force reference the clustered result is judged
     // against, so it is worth persisting. Every use site already ANDs this with

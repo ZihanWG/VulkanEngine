@@ -61,6 +61,9 @@ public:
     [[nodiscard]] bool bufferDeviceAddressEnabled() const { return bufferDeviceAddressEnabled_; }
     [[nodiscard]] bool multiDrawIndirectEnabled() const { return multiDrawIndirectEnabled_; }
     [[nodiscard]] bool drawIndirectFirstInstanceEnabled() const { return drawIndirectFirstInstanceEnabled_; }
+    // Multiview: one render pass renders into several array layers at once.
+    // Optional -- the shadow cascades fall back to a pass per cascade without it.
+    [[nodiscard]] bool multiviewEnabled() const { return multiviewEnabled_; }
     [[nodiscard]] bool drawIndexedIndirectCountAvailable() const { return drawIndexedIndirectCountAvailable_; }
     [[nodiscard]] uint32_t maxDrawIndirectCount() const { return maxDrawIndirectCount_; }
 
@@ -100,6 +103,7 @@ private:
     bool bufferDeviceAddressEnabled_ = false;
     bool multiDrawIndirectEnabled_ = false;
     bool drawIndirectFirstInstanceEnabled_ = false;
+    bool multiviewEnabled_ = false;
     bool drawIndexedIndirectCountAvailable_ = false;
     uint32_t maxDrawIndirectCount_ = 0;
 };

@@ -1,5 +1,10 @@
 #version 460
 
+// Layered variant: one multiview pass renders every cascade at once, and
+// gl_ViewIndex says which. Otherwise identical to shadow_masked.vert.
+#extension GL_EXT_multiview : require
+#define VE_SHADOW_MULTIVIEW 1
+
 #extension GL_EXT_buffer_reference : require
 
 // Alpha-tested shadow-caster vertex stage. Mirrors shadow.vert but also forwards

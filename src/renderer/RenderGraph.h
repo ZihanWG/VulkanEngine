@@ -356,6 +356,9 @@ public:
                     uint32_t imageIndex,
                     RenderGraphFrameResources frameResources);
     void beginShadowPass(uint32_t cascadeLayer);
+    // All cascades in one pass via multiview. Requires the shadow map's array
+    // view and a pipeline built with the matching view mask.
+    void beginLayeredShadowPass(uint32_t cascadeCount);
     void endShadowPass(bool finalCascade);
     // Punctual shadow atlas. One rendering scope covers the whole atlas; the
     // caller sets a viewport/scissor per slot inside it.
@@ -469,6 +472,9 @@ public:
     using BufferAccessState = ve::renderer::BufferAccessState;
 
 private:
+    // Shared body of the per-cascade and layered shadow passes; viewMask == 0
+    // selects the single-layer form.
+    void beginShadowPassInternal(uint32_t cascadeLayer, uint32_t viewMask);
     enum class ActivePass {
         None,
         Shadow,

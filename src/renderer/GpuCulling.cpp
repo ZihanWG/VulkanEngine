@@ -910,15 +910,13 @@ void GpuCulling::recordMainCullPhase2(VkCommandBuffer commandBuffer,
 void GpuCulling::recordShadowCull(VkCommandBuffer commandBuffer,
                                   uint32_t frameIndex,
                                   bool active,
-                                  uint32_t cascadeIndex,
                                   uint32_t cascadeCount,
-                                  uint32_t drawItemCount,
-                                  const std::array<glm::vec4, 6>& cascadeFrustumPlanes)
+                                  uint32_t drawItemCount)
 {
     if (!active || drawItemCount == 0) {
         return;
     }
-    if (cascadeIndex >= cascadeCount) {
+    if (cascadeCount == 0) {
         return;
     }
     if (frameIndex >= shadowCullDescriptorSets_.size() ||
@@ -944,9 +942,8 @@ void GpuCulling::recordShadowCull(VkCommandBuffer commandBuffer,
         return;
     }
 
-    const std::string profileName = "ShadowGpuCullingCascade" + std::to_string(cascadeIndex);
-    const renderer::GpuProfileScope profileScope(gpuProfiler_, frameIndex, commandBuffer, profileName);
-    rhi::debug::beginLabel(commandBuffer, "GpuShadowCullingCascade" + std::to_string(cascadeIndex));
+    const renderer::GpuProfileScope profileScope(gpuProfiler_, frameIndex, commandBuffer, "ShadowGpuCulling");
+    rhi::debug::beginLabel(commandBuffer, "GpuShadowCulling");
     depthPyramid_.ensureShaderReadLayout(commandBuffer);
     vkCmdFillBuffer(commandBuffer, visibleCountBuffer, 0, kGpuCullCountBufferSize, 0);
     vkCmdFillBuffer(commandBuffer, shadowIndirectDrawBuffer, 0, shadowIndirectBufferSize, 0);
@@ -987,10 +984,12 @@ void GpuCulling::recordShadowCull(VkCommandBuffer commandBuffer,
         commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, gpuCullPipeline_.layout(), 0, 1, &descriptorSet, 0, nullptr);
 
     GpuCullPushConstants pushConstants{};
-    pushConstants.frustumPlanes = cascadeFrustumPlanes;
-    // Bit 2 marks this as a shadow dispatch: cull.comp adds the shadow LOD bias
-    // on top of the shared one, since shadow-map resolution and PCF hide
-    // simplification far better than the main pass does.
+    // The frusta come from the frame-params buffer for this dispatch (four of
+    // them do not fit in a push-constant block), so pc.frustumPlanes goes unread.
+    // Bit 2 marks this as a shadow dispatch: cull.comp culls against the union of
+    // every cascade frustum, and adds the shadow LOD bias on top of the shared
+    // one, since shadow-map resolution and PCF hide simplification far better
+    // than the main pass does.
     pushConstants.params = glm::uvec4(drawItemCount, 1U, 1U, 4U);
     vkCmdPushConstants(commandBuffer,
                        gpuCullPipeline_.layout(),
@@ -999,7 +998,7 @@ void GpuCulling::recordShadowCull(VkCommandBuffer commandBuffer,
                        static_cast<uint32_t>(sizeof(GpuCullPushConstants)),
                        &pushConstants);
 
-    rhi::debug::beginLabel(commandBuffer, "ShadowCullDispatchCascade" + std::to_string(cascadeIndex));
+    rhi::debug::beginLabel(commandBuffer, "ShadowCullDispatch " + std::to_string(cascadeCount) + " cascades");
     const uint32_t groupCount = (drawItemCount + kGpuCullLocalSize - 1) / kGpuCullLocalSize;
     vkCmdDispatch(commandBuffer, groupCount, 1, 1);
     rhi::debug::endLabel(commandBuffer);

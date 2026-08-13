@@ -75,8 +75,11 @@ layout(set = 0, binding = 4, std430) readonly buffer CullFrameParamsBuffer {
     vec4 viewportAndMipCount; // x = width, y = height, z = mip count, w = projScaleY
     vec4 occlusionSettings; // x = normal-Z depth bias, y = near disable distance, z = max coverage, w = min pixels
     vec4 lodSettings; // x = reference radius px, y = bias, z = forced level (< 0 = off), w = shadow bias
-    uvec4 counterAndFlags; // x = stats counter base, y bit 0 = occlusion enabled for this frame
+    uvec4 counterAndFlags; // x = stats counter base, y bit 0 = occlusion enabled for this frame,
+                           // z = active shadow cascade count (shadow dispatch only)
     uvec4 pyramidBaseSizes; // xy = pyramid written base size, zw = allocated base size
+    // Six planes per cascade, cascade-major. Only the shadow dispatch reads them.
+    vec4 shadowCascadePlanes[4 * 6];
 } cullFrame;
 
 // Phase 1 writes one result code per draw item; phase 2 dispatches over the full
@@ -154,10 +157,10 @@ uint selectLodIndex(vec3 boundsMin, vec3 boundsMax, uint lodCount)
     return min(uint(level), maxLod);
 }
 
-bool testAabb(vec3 boundsMin, vec3 boundsMax)
+bool insideFrustum(vec4 planes[6], vec3 boundsMin, vec3 boundsMax)
 {
     for (uint planeIndex = 0; planeIndex < 6; ++planeIndex) {
-        vec4 plane = pc.frustumPlanes[planeIndex];
+        vec4 plane = planes[planeIndex];
         vec3 positiveVertex = vec3(
             plane.x >= 0.0 ? boundsMax.x : boundsMin.x,
             plane.y >= 0.0 ? boundsMax.y : boundsMin.y,
@@ -169,6 +172,37 @@ bool testAabb(vec3 boundsMin, vec3 boundsMax)
     }
 
     return true;
+}
+
+// One cascade's plane set, copied out of the cascade-major array. GLSL has no
+// slicing, and passing (array, base) into insideFrustum would duplicate the loop.
+void loadCascadePlanes(uint cascade, out vec4 planes[6])
+{
+    uint base = cascade * 6u;
+    for (uint planeIndex = 0; planeIndex < 6; ++planeIndex) {
+        planes[planeIndex] = cullFrame.shadowCascadePlanes[base + planeIndex];
+    }
+}
+
+bool testAabb(vec3 boundsMin, vec3 boundsMax)
+{
+    // Shadow dispatches feed every cascade from one indirect list, so an object
+    // survives if ANY cascade wants it. The cascade's own projection clips the
+    // ones it did not want, which makes a superset harmless -- and drawing the
+    // exact per-cascade union costs strictly fewer draws than skipping the test.
+    if ((pc.params.w & 4u) != 0u) {
+        uint cascadeCount = max(cullFrame.counterAndFlags.z, 1u);
+        vec4 planes[6];
+        for (uint cascade = 0; cascade < cascadeCount; ++cascade) {
+            loadCascadePlanes(cascade, planes);
+            if (insideFrustum(planes, boundsMin, boundsMax)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    return insideFrustum(pc.frustumPlanes, boundsMin, boundsMax);
 }
 
 bool validBounds(vec3 boundsMin, vec3 boundsMax)

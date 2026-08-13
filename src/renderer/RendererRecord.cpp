@@ -909,15 +909,13 @@ void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
                                /*copyReadback=*/!frameTwoPhaseOcclusionActive_);
 }
 
-void Renderer::recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer, uint32_t cascadeIndex)
+void Renderer::recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer)
 {
     gpuCulling_.recordShadowCull(commandBuffer,
                                  currentFrame_,
                                  isGpuShadowCullingActive(),
-                                 cascadeIndex,
                                  activeCascadeCount(),
-                                 static_cast<uint32_t>(allDrawItems_.size()),
-                                 frameShadowCascadeFrustumPlanes_[cascadeIndex]);
+                                 static_cast<uint32_t>(allDrawItems_.size()));
 }
 
 void Renderer::ensureDepthPyramidShaderReadLayout(VkCommandBuffer commandBuffer)
@@ -968,21 +966,41 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     shadowScissor.offset = {0, 0};
     shadowScissor.extent = shadowExtent;
 
-    for (uint32_t cascadeIndex = 0; cascadeIndex < cascadeCount; ++cascadeIndex) {
-        if (gpuShadowCullingActive) {
-            recordGpuShadowCullingCommands(commandBuffer, cascadeIndex);
-        }
+    // One cull for every cascade, hoisted out of the loop: the dispatch produces
+    // the union of the cascade frusta, so each cascade replays the same list.
+    if (gpuShadowCullingActive) {
+        recordGpuShadowCullingCommands(commandBuffer);
+    }
 
+    // Multiview collapses the cascades into a single pass -- and therefore a
+    // single command encoder, which is what this pass actually costs on a tiler.
+    // Without it the loop runs once per cascade, exactly as before.
+    const bool layeredCascades = isLayeredCascadeRenderingActive();
+    const uint32_t cascadePassCount = layeredCascades ? 1u : cascadeCount;
+
+    for (uint32_t cascadeIndex = 0; cascadeIndex < cascadePassCount; ++cascadeIndex) {
+        // The CPU-culling fallback keeps a list per cascade, but a layered pass
+        // draws once for all of them, so it takes the union list instead.
+        const std::vector<DrawItem>& cpuShadowDrawItems =
+            layeredCascades ? shadowDrawItems_ : shadowCascadeDrawItems_[cascadeIndex];
+        const std::vector<MeshDrawBatch>& cpuShadowMeshDrawBatches =
+            layeredCascades ? shadowMeshDrawBatches_ : shadowCascadeMeshDrawBatches_[cascadeIndex];
         const std::vector<DrawItem>& activeShadowDrawItems =
-            gpuShadowCullingActive ? allDrawItems_ : shadowCascadeDrawItems_[cascadeIndex];
+            gpuShadowCullingActive ? allDrawItems_ : cpuShadowDrawItems;
         const std::vector<MeshDrawBatch>& activeShadowMeshDrawBatches =
-            gpuShadowCullingActive ? gpuShadowMeshDrawBatches_ : shadowCascadeMeshDrawBatches_[cascadeIndex];
+            gpuShadowCullingActive ? gpuShadowMeshDrawBatches_ : cpuShadowMeshDrawBatches;
         const size_t shadowDrawItemCount = activeShadowDrawItems.size();
         const bool shadowIndirectCountPathActive =
             gpuShadowCullingActive && isShadowIndirectCountPathActive(currentFrame_);
 
-        rhi::debug::beginLabel(commandBuffer, "ShadowCascade" + std::to_string(cascadeIndex));
-        renderGraph_.beginShadowPass(cascadeIndex);
+        rhi::debug::beginLabel(commandBuffer,
+                               layeredCascades ? "ShadowCascadesLayered"
+                                               : "ShadowCascade" + std::to_string(cascadeIndex));
+        if (layeredCascades) {
+            renderGraph_.beginLayeredShadowPass(cascadeCount);
+        } else {
+            renderGraph_.beginShadowPass(cascadeIndex);
+        }
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline_.pipeline());
         vkCmdSetViewport(commandBuffer, 0, 1, &shadowViewport);
         vkCmdSetScissor(commandBuffer, 0, 1, &shadowScissor);
@@ -1150,7 +1168,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         }
         rhi::debug::endLabel(commandBuffer);
 
-        renderGraph_.endShadowPass(cascadeIndex + 1 == cascadeCount);
+        renderGraph_.endShadowPass(cascadeIndex + 1 == cascadePassCount);
         rhi::debug::endLabel(commandBuffer);
     }
 

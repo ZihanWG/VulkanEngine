@@ -382,6 +382,7 @@ private:
     void updateVisibleBucketRanges();
     void sortTransparentDrawItems();
     void buildShadowDrawItems(uint32_t cascadeIndex, const renderer::Frustum& lightFrustum);
+    void buildUnionShadowDrawItems(uint32_t cascadeCount);
     void buildShadowMeshDrawBatches();
     void buildMeshDrawBatchesForItems(const std::vector<DrawItem>& drawItems,
                                       std::vector<MeshDrawBatch>& batches) const;
@@ -406,7 +407,10 @@ private:
     void updateDynamicResolution();
     void recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     void recordGpuCullingCommands(VkCommandBuffer commandBuffer);
-    void recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer, uint32_t cascadeIndex);
+    void recordGpuShadowCullingCommands(VkCommandBuffer commandBuffer);
+    // True when the cascades render as one multiview pass rather than one pass
+    // each. Requires the device feature; the fallback is the original loop.
+    [[nodiscard]] bool isLayeredCascadeRenderingActive() const;
     void ensureDepthPyramidShaderReadLayout(VkCommandBuffer commandBuffer);
     void recordDepthPyramidCommands(VkCommandBuffer commandBuffer, bool midFrame = false);
     [[nodiscard]] renderer::RenderGraphFrameResources renderGraphFrameResources();
@@ -949,6 +953,7 @@ private:
     // rebuild so disocclusions never drop draws. Requires the indirect-count
     // path; frameTwoPhaseOcclusionActive_ is the per-frame resolved predicate.
     bool useTwoPhaseOcclusion_ = true;
+    bool useLayeredCascades_ = false;
     bool frameTwoPhaseOcclusionActive_ = false;
     bool useAsyncCompute_ = true;
     bool frameAsyncComputeActive_ = false;
