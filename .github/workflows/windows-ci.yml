@@ -155,6 +155,9 @@ jobs:
       # portability bug that GCC and AppleClang accept, so it is worth building
       # and running the suite here and not only on Linux. The tests create no
       # Vulkan device, so no GPU is required on the runner.
+      - name: Shader constant parity
+        run: python3 tools/check_shader_constants.py
+
       - name: Build tests
         run: cmake --build build --config Debug --target VulkanEngineTests --parallel
 

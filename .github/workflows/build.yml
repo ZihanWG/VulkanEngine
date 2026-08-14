@@ -76,6 +76,13 @@ jobs:
       - name: Run unit tests
         run: ctest --preset ci-debug
 
+      # Cheap, no GPU, and closes the one real hole in the CPU<->GLSL mirroring
+      # discipline: every mirrored constant is commented at both ends but nothing
+      # verified they were equal, and a mismatch neither fails the build nor trips
+      # validation -- it silently addresses the wrong froxel.
+      - name: Shader constant parity
+        run: python3 tools/check_shader_constants.py
+
       # Report-only static analysis over our own sources. Deliberately
       # non-blocking: .clang-tidy sets no WarningsAsErrors, so this surfaces
       # findings in the log rather than gating the build. Read the log; do not
