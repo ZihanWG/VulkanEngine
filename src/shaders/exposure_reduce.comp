@@ -96,6 +96,30 @@ float readHistogramLuminance(float fallbackLuminance, uint binCount)
     return max(weightedLuminanceSum / float(weightedSamples), pc.histogramRange.z);
 }
 
+// Geometric mean of the binned luminance: the average of log2 luminance over
+// every sample, exponentiated. Reads the same shared bins as the percentile walk
+// and must therefore be called after they are filled.
+float histogramAverageLuminance(uint binCount)
+{
+    float minLogLuminance = pc.histogramRange.x;
+    float maxLogLuminance = max(pc.histogramRange.y, minLogLuminance + 0.001);
+    float binWidth = (maxLogLuminance - minLogLuminance) / float(binCount);
+
+    float weightedLogSum = 0.0;
+    float totalCount = 0.0;
+    for (uint binIndex = 0u; binIndex < binCount; ++binIndex) {
+        float count = float(sBins[binIndex]);
+        float logLuminance = minLogLuminance + (float(binIndex) + 0.5) * binWidth;
+        weightedLogSum += logLuminance * count;
+        totalCount += count;
+    }
+
+    if (totalCount <= 0.0) {
+        return max(uExposure.averageLuminance, pc.histogramRange.z);
+    }
+    return max(exp2(weightedLogSum / totalCount), pc.histogramRange.z);
+}
+
 void main()
 {
     const uint localIndex = gl_LocalInvocationIndex;
@@ -155,7 +179,15 @@ void main()
 
     const float totalSampleCount = sSampleCount[0];
     float averageLuminance;
-    if (totalSampleCount <= 0.0) {
+    if (mode == 2u) {
+        // Histogram mode skips the log-average pass entirely: the bins already
+        // are the luminance distribution, so the geometric mean comes out of the
+        // same shared data the percentile walk below uses. Quantised to bin
+        // width -- 256 bins over the default range is ~0.05 stops, which is far
+        // finer than either consumer needs (an empty-histogram fallback and the
+        // debug readout).
+        averageLuminance = histogramAverageLuminance(binCount);
+    } else if (totalSampleCount <= 0.0) {
         averageLuminance = max(uExposure.averageLuminance, pc.histogramRange.z);
     } else {
         averageLuminance = max(float(exp(sSumLogLuminance[0] / totalSampleCount)), pc.histogramRange.z);
