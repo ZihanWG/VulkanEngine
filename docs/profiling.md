@@ -61,6 +61,35 @@ The `TOP_OF_PIPE` (begin) / `BOTTOM_OF_PIPE` (end) pairing was suspected of maki
 
 Single-frame numbers on this hardware swing wide enough to invert a comparison. The first frame captured after the marker experiment above looked twice as bad, purely as an outlier. Sample over at least a few seconds and compare medians — the once-per-second `GPU timings:` block in the log is the easiest source.
 
+## Scripted measurement harness
+
+`tools/dev/measure_gpu.py` automates the protocol this document requires for a performance claim, so a pass timing does not depend on remembering the rules by hand. The renderer has no command line interface, so the harness works through the two channels it does have: it patches named keys in `config/runtime_settings.json` and parses the once-per-second `GPU timings:` blocks from stdout.
+
+```bash
+# One configuration, absolute medians.
+python3 tools/dev/measure_gpu.py run --label baseline
+
+# Interleaved A/B/A/B; A is the unchanged persisted config.
+python3 tools/dev/measure_gpu.py ab --b-set ssr.enabled=true --repeat 2
+
+# Summarize a log captured by hand.
+python3 tools/dev/measure_gpu.py parse build/measurements/fragment-stress.log
+```
+
+What the harness enforces:
+
+- **Release only.** It refuses to run a Debug binary; `--build` builds the Release preset first.
+- **A fixed scene and camera.** Both are left at their launch defaults, which is what makes separate launches comparable.
+- **A discarded warm-up.** 10 seconds by default, out of a 30-second launch, leaving roughly 20 samples.
+- **Medians, with min and max reported** so a delta smaller than the run-to-run spread is visible as such.
+- **A repeated control.** `ab` runs A/B/A/B rather than AA/BB so a thermal ramp cannot land entirely on one configuration, then compares the first and last A run. Drift above 1% in `Frame total` marks the series unusable and exits non-zero.
+- **Typed, validated overrides.** An unknown dotted key or a value of the wrong type aborts, because a silently ignored override would measure the baseline twice and read as "no effect".
+- **Restoring the settings file.** `config/runtime_settings.json` is per-user state; the harness writes it during a run and restores the original afterwards, including on failure.
+
+Logs and a `summary.json` land in `build/measurements/`. Nested scopes are parsed but reported as unusable for attribution, for the reason in the previous section.
+
+Scene presets are ImGui actions and reset on every launch, so the harness cannot select them. Capture those runs by hand with stdout redirected, then use `parse`.
+
 ## Frame Latency
 
 The frame loop already waits the fence for `currentFrame_` before reusing that frame slot. The profiler reads timestamp results for that same completed slot immediately after the fence wait and before command-buffer reset:
