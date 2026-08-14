@@ -594,6 +594,8 @@ struct TaaResolvePushConstants {
     glm::vec2 jitterPixels{0.0f, 0.0f};
     float varianceGamma = 1.0f;
     uint32_t rejectionFeedbackEnabled = 1;
+    // Catmull-Rom history resampling instead of a single bilinear tap.
+    uint32_t catmullRomHistoryEnabled = 1;
 };
 
 static_assert(offsetof(TaaResolvePushConstants, texelSize) == 0);
@@ -605,7 +607,9 @@ static_assert(offsetof(TaaResolvePushConstants, depthDilationEnabled) == 24);
 static_assert(offsetof(TaaResolvePushConstants, sourceUvScale) == 32);
 static_assert(offsetof(TaaResolvePushConstants, jitterPixels) == 40);
 static_assert(offsetof(TaaResolvePushConstants, varianceGamma) == 48);
-static_assert(sizeof(TaaResolvePushConstants) == 56);
+static_assert(offsetof(TaaResolvePushConstants, rejectionFeedbackEnabled) == 52);
+static_assert(offsetof(TaaResolvePushConstants, catmullRomHistoryEnabled) == 56);
+static_assert(sizeof(TaaResolvePushConstants) == 60);
 
 
 struct RenderTargetDebugMetadata {

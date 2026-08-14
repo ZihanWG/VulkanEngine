@@ -30,7 +30,57 @@ layout(push_constant) uniform TaaResolvePushConstants {
     // Lowers the feedback for a pixel in proportion to how far its history had to
     // be pulled to become acceptable.
     uint rejectionFeedbackEnabled;
+    // Catmull-Rom history resampling instead of a single bilinear tap.
+    uint catmullRomHistoryEnabled;
 } pc;
+
+// Catmull-Rom history resampling.
+//
+// Every frame a pixel reprojects, its history is resampled. A bilinear tap is a
+// low-pass filter, so accumulating through one for N frames applies that filter
+// N times -- which is the dominant source of TAA blur, and precisely the detail
+// the temporal upsampler is trying to reconstruct. Catmull-Rom is interpolating
+// rather than smoothing: it passes the sample values through unchanged and only
+// reconstructs between them.
+//
+// Nine bilinear fetches emulate the 4x4 kernel: the middle two taps of each axis
+// are folded into one weighted fetch, which is exact for a separable filter.
+// The outer lobes are negative, so the result is clamped at zero -- and when
+// neighbourhood clamping is on, any remaining ringing is bounded by it anyway.
+vec3 sampleHistoryCatmullRom(vec2 uv, vec2 historySize)
+{
+    const vec2 samplePos = uv * historySize;
+    const vec2 texPos1 = floor(samplePos - 0.5) + 0.5;
+    const vec2 f = samplePos - texPos1;
+
+    const vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    const vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    const vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    const vec2 w3 = f * f * (-0.5 + 0.5 * f);
+
+    const vec2 w12 = w1 + w2;
+    const vec2 offset12 = w2 / max(w12, vec2(1e-5));
+
+    const vec2 invSize = 1.0 / historySize;
+    const vec2 uv0 = (texPos1 - 1.0) * invSize;
+    const vec2 uv3 = (texPos1 + 2.0) * invSize;
+    const vec2 uv12 = (texPos1 + offset12) * invSize;
+
+    vec3 result = vec3(0.0);
+    result += texture(uHistoryColor, vec2(uv0.x, uv0.y)).rgb * (w0.x * w0.y);
+    result += texture(uHistoryColor, vec2(uv12.x, uv0.y)).rgb * (w12.x * w0.y);
+    result += texture(uHistoryColor, vec2(uv3.x, uv0.y)).rgb * (w3.x * w0.y);
+
+    result += texture(uHistoryColor, vec2(uv0.x, uv12.y)).rgb * (w0.x * w12.y);
+    result += texture(uHistoryColor, vec2(uv12.x, uv12.y)).rgb * (w12.x * w12.y);
+    result += texture(uHistoryColor, vec2(uv3.x, uv12.y)).rgb * (w3.x * w12.y);
+
+    result += texture(uHistoryColor, vec2(uv0.x, uv3.y)).rgb * (w0.x * w3.y);
+    result += texture(uHistoryColor, vec2(uv12.x, uv3.y)).rgb * (w12.x * w3.y);
+    result += texture(uHistoryColor, vec2(uv3.x, uv3.y)).rgb * (w3.x * w3.y);
+
+    return max(result, vec3(0.0));
+}
 
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 outColor;
@@ -190,7 +240,10 @@ void main()
             // The history is written in full at output resolution, so it needs
             // no scaling and no sub-rect clamp -- it is the one source here that
             // is not low-resolution.
-            vec3 historyColor = texture(uHistoryColor, historyUV).rgb;
+            vec3 historyColor =
+                pc.catmullRomHistoryEnabled != 0u
+                    ? sampleHistoryCatmullRom(historyUV, vec2(textureSize(uHistoryColor, 0)))
+                    : texture(uHistoryColor, historyUV).rgb;
 
             // How far out of the neighbourhood the history was, before any
             // correction. This is the ghosting signal: a ghost is precisely a

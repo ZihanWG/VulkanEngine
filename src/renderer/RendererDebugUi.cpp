@@ -1205,6 +1205,11 @@ void Renderer::drawTaaDebugUi()
     ImGui::SetItemTooltip("Half-width of that box in standard deviations. Lower rejects more history:\n"
                           "less ghosting, and less of the accumulated detail upsampling exists to gather.");
     changed |= ImGui::Checkbox("Rejection feedback", &taaSettings_.rejectionFeedback);
+    changed |= ImGui::Checkbox("Catmull-Rom history", &taaSettings_.catmullRomHistory);
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Resample history with Catmull-Rom instead of one bilinear tap.\n"
+                          "Off reproduces the repeated-bilinear softening this replaces.");
+    }
     ImGui::SetItemTooltip("Lowers a pixel's feedback by how far its history had to be pulled to become\n"
                           "acceptable. Clipping alone leaves a ghost at the nearest plausible colour and\n"
                           "still gives it most of the pixel; this is what actually removes it.");

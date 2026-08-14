@@ -389,6 +389,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readBool(*taa, "varianceClipping", settings.taa.varianceClipping);
         readFloat(*taa, "varianceGamma", settings.taa.varianceGamma);
         readBool(*taa, "rejectionFeedback", settings.taa.rejectionFeedback);
+        readBool(*taa, "catmullRomHistory", settings.taa.catmullRomHistory);
         readFloat(*taa, "feedback", settings.taa.feedback);
     }
 
@@ -540,6 +541,7 @@ Json toJson(const RuntimeSettings& settings)
               {"varianceClipping", settings.taa.varianceClipping},
               {"varianceGamma", settings.taa.varianceGamma},
               {"rejectionFeedback", settings.taa.rejectionFeedback},
+          {"catmullRomHistory", settings.taa.catmullRomHistory},
               {"feedback", settings.taa.feedback}}},
         {"lod",
          Json{{"enabled", settings.lod.enabled},

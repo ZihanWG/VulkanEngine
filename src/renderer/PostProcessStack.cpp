@@ -2184,7 +2184,8 @@ void PostProcessStack::recordTaaResolveCommands(VkCommandBuffer commandBuffer)
         sourceUvScale,
         taaCurrentJitterPixels_,
         taaSettings_.varianceGamma,
-        taaSettings_.rejectionFeedback ? 1u : 0u};
+        taaSettings_.rejectionFeedback ? 1u : 0u,
+        taaSettings_.catmullRomHistory ? 1u : 0u};
     vkCmdPushConstants(commandBuffer,
                        taaResolvePipeline_.layout(),
                        VK_SHADER_STAGE_FRAGMENT_BIT,

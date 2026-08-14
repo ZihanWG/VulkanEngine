@@ -96,6 +96,12 @@ struct TaaSettings {
     // leaves it at the nearest plausible colour with most of the pixel -- and
     // equally the one that costs most when there is no ghost.
     bool rejectionFeedback = false;
+    // Resample the history with Catmull-Rom instead of one bilinear tap. A
+    // bilinear tap is a low-pass filter, and accumulating through one for N
+    // frames applies it N times -- the dominant source of TAA blur, and exactly
+    // the detail temporal upsampling is trying to reconstruct. On by default
+    // because it only affects how history is *read*; nothing else changes.
+    bool catmullRomHistory = true;
 };
 
 // Ground-truth ambient occlusion (Jimenez et al. 2016): a dedicated horizon-

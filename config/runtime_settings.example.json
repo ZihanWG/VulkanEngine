@@ -39,7 +39,8 @@
         "feedback": 0.88,
         "varianceClipping": false,
         "varianceGamma": 1.0,
-        "rejectionFeedback": false
+        "rejectionFeedback": false,
+        "catmullRomHistory": true
     },
     "lod": {
         "enabled": true,
