@@ -64,6 +64,16 @@ public:
     // sets for the current swapchain extent. normalRoughnessView is the thin
     // G-buffer written by the main pass (owned by PostProcessStack).
     void createResources(VkImageView normalRoughnessView, uint32_t frameCount);
+    // Bindings 4/5 (prefiltered environment + BRDF LUT) are written here rather
+    // than in createResources, because the IBL resources are built after it at
+    // startup. Safe to call repeatedly; a no-op until the handles are valid.
+    void updateIblDescriptors(VkImageView prefilteredEnvView,
+                              VkSampler prefilteredEnvSampler,
+                              VkImageView brdfLutView,
+                              VkSampler brdfLutSampler);
+    // False until updateIblDescriptors has landed. While false the trace cannot
+    // know what specular the main pass already wrote, so it stays purely additive.
+    [[nodiscard]] bool isIblBound() const { return iblBound_; }
     void destroyResources();
 
     // Host-visible write of this frame's matrices + march/weight parameters.
@@ -102,6 +112,7 @@ private:
     std::vector<VkDescriptorSet> descriptorSets_;
     std::vector<rhi::VulkanBuffer> frameParamsBuffers_;
     bool available_ = false;
+    bool iblBound_ = false;
 };
 
 } // namespace renderer

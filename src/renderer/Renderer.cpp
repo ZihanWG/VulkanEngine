@@ -248,6 +248,14 @@ void Renderer::recreatePostProcessResources()
     destroyDepthPyramidResources();
     postProcess_.createPostProcessResources(checkerboardTexture_.imageView(), static_cast<uint32_t>(frames_.size()));
     ssr_.createResources(postProcess_.normalRoughness().imageView(), static_cast<uint32_t>(frames_.size()));
+    // createResources reallocates the descriptor sets, so the IBL bindings have to
+    // be re-applied every time -- this runs more than once during startup alone,
+    // and the first version bound them only from the environment path and lost
+    // them to the second recreate.
+    ssr_.updateIblDescriptors(prefilteredEnvironmentMap_.imageView(),
+                              prefilteredEnvironmentMap_.sampler(),
+                              brdfLutTexture_.imageView(),
+                              brdfLutTexture_.sampler());
     gtao_.createResources(postProcess_.normalRoughness().imageView(), static_cast<uint32_t>(frames_.size()));
     createDepthPyramidResources();
     // The material sets hold a view of the ambient-occlusion target, which was

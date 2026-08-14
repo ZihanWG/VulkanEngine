@@ -1,15 +1,30 @@
 #version 460
 #include "sub_rect.glsl"
 
-// Screen-space reflections: view-space linear march against the main depth
-// buffer with binary refinement, sampling the pre-reflection scene-color copy
-// at the hit point. The output is the fresnel- and confidence-weighted
-// reflection contribution; the pipeline blends it additively (ONE + ONE) into
-// scene color, so this shader pre-multiplies every weight.
+// Screen-space reflections: march against the main depth buffer with binary
+// refinement, sampling the pre-reflection scene-color copy at the hit point.
+//
+// The pipeline blends additively (ONE + ONE) into scene colour, and scene colour
+// already contains the main pass's specular IBL for this pixel. Adding a
+// reflection on top of that double-counts the specular energy -- a mirror got its
+// highlight roughly twice. What this shader outputs is therefore a *difference*:
+//
+//   want:  mix(iblSpec, ssr, conf)  =  iblSpec + (ssr - iblSpec) * conf
+//   emit:  (ssrColour - prefilteredEnv) * specularWeight * conf
+//
+// Both terms carry the same specularWeight (F * brdf.x + brdf.y), so it factors
+// out of the difference -- which is why this needs no albedo, and why an
+// imprecise F0 cannot reintroduce the double-count. It only reweights the
+// swap. Where confidence is 0 the output is 0 and the IBL stands untouched;
+// where it is 1 the reflection fully replaces it.
 
 layout(set = 0, binding = 0) uniform sampler2D uDepth;
 layout(set = 0, binding = 1) uniform sampler2D uNormalRoughness;
 layout(set = 0, binding = 2) uniform sampler2D uSceneColorCopy;
+// The two the main pass used for specular IBL, so this pass can subtract exactly
+// what it is replacing. Bound late (see ScreenSpaceReflections::updateIblDescriptors).
+layout(set = 0, binding = 4) uniform samplerCube uPrefilteredEnvMap;
+layout(set = 0, binding = 5) uniform sampler2D uBrdfLut;
 
 layout(set = 0, binding = 3, std430) readonly buffer SsrParamsBuffer {
     mat4 view;
@@ -22,7 +37,9 @@ layout(set = 0, binding = 3, std430) readonly buffer SsrParamsBuffer {
     // xy = written/allocated. The thin G-buffer, the scene-colour copy and depth
     // all share the scene allocation, so one scale covers every source. Only the
     // texture fetches are scaled -- UVs feeding the view-space reconstruction
-    // must stay in written-region space. zw unused.
+    // must stay in written-region space. zw unused: whether the IBL bindings are
+    // valid is decided on the CPU, which simply does not run this pass until they
+    // are (see frameSsrActive_).
     vec4 subRect;
 } params;
 
@@ -170,5 +187,20 @@ void main()
     float confidence = screenEdgeFade(hitUV) * roughnessFade * towardCameraFade;
     float intensity = max(params.weightParams.x, 0.0);
 
-    outReflection = vec4(reflectedColor * fresnel * confidence * intensity, 0.0);
+    // The same split-sum weighting the main pass applied to its specular IBL.
+    // Reconstructed here so the two terms cancel rather than accumulate.
+    const vec2 brdf = texture(uBrdfLut, vec2(clamp(normalView, 0.0, 1.0), roughness)).rg;
+    const vec3 specularWeight = vec3(fresnel * brdf.x + brdf.y);
+
+    // What the main pass already put here, in world space: the cubemap is
+    // world-oriented, and params.view rotates world into view, so its transpose
+    // takes the view-space reflection ray back out.
+    const vec3 rayDirWS = normalize(transpose(mat3(params.view)) * rayDir);
+    const float maxPrefilterMip = max(float(textureQueryLevels(uPrefilteredEnvMap) - 1), 0.0);
+    const vec3 prefilteredColor = textureLod(uPrefilteredEnvMap, rayDirWS, roughness * maxPrefilterMip).rgb;
+
+    // Signed on purpose. Where the traced reflection is darker than the
+    // environment the correction is negative, which is what makes this a
+    // replacement rather than an addition.
+    outReflection = vec4((reflectedColor - prefilteredColor) * specularWeight * confidence * intensity, 0.0);
 }

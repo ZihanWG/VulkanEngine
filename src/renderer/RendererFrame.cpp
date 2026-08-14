@@ -1293,7 +1293,12 @@ void Renderer::updateFrameData(uint32_t frameIndex)
                                                   clusteredLighting_.lightCount() > 0 && !allDrawItems_.empty();
     frameAsyncComputeActive_ = clusteredLightingActiveThisFrame && useAsyncCompute_ && asyncCompute_.available();
 
-    frameSsrActive_ = ssrSettings_.enabled && ssr_.available() && !allDrawItems_.empty();
+    // isIblBound() is part of the gate, not an optimisation: the trace subtracts
+    // the specular IBL it replaces, so without those bindings it has no idea what
+    // scene colour already contains -- and the descriptors would be statically
+    // used while unwritten, which validation rejects outright.
+    frameSsrActive_ =
+        ssrSettings_.enabled && ssr_.available() && ssr_.isIblBound() && !allDrawItems_.empty();
     if (frameSsrActive_) {
         // The trace reconstructs positions from the jitter-rendered depth, so it
         // uses the same jittered projection the rasterizer used.

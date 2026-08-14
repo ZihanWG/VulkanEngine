@@ -56,7 +56,7 @@ ScreenSpaceReflections::~ScreenSpaceReflections()
 void ScreenSpaceReflections::createDescriptorSetLayout()
 {
     // 0 = main depth, 1 = thin G-buffer, 2 = scene-color copy, 3 = params SSBO.
-    std::array<VkDescriptorSetLayoutBinding, 4> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 6> bindings{};
     for (uint32_t bindingIndex = 0; bindingIndex < 3; ++bindingIndex) {
         bindings[bindingIndex].binding = bindingIndex;
         bindings[bindingIndex].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -67,6 +67,19 @@ void ScreenSpaceReflections::createDescriptorSetLayout()
     bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     bindings[3].descriptorCount = 1;
     bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    // The prefiltered environment cube and the split-sum BRDF LUT: the same two
+    // the main pass uses for specular IBL. This pass needs them to know what it
+    // is replacing, not to add anything -- see the shader.
+    bindings[4].binding = 4;
+    bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[4].descriptorCount = 1;
+    bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    bindings[5].binding = 5;
+    bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[5].descriptorCount = 1;
+    bindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     descriptorSetLayout_.create(context_.vkDevice(),
                                 std::span<const VkDescriptorSetLayoutBinding>(bindings.data(), bindings.size()));
@@ -149,7 +162,9 @@ void ScreenSpaceReflections::createResources(VkImageView normalRoughnessView, ui
 
         std::array<VkDescriptorPoolSize, 2> poolSizes{};
         poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        poolSizes[0].descriptorCount = frameCount * 3;
+        // 5 sampled images per set: depth, thin G-buffer, scene-colour copy, and
+        // the prefiltered environment + BRDF LUT written later.
+        poolSizes[0].descriptorCount = frameCount * 5;
         poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         poolSizes[1].descriptorCount = frameCount;
         descriptorPool_.create(
@@ -218,6 +233,7 @@ void ScreenSpaceReflections::createResources(VkImageView normalRoughnessView, ui
 void ScreenSpaceReflections::destroyResources()
 {
     available_ = false;
+    iblBound_ = false;
     descriptorSets_.clear();
     descriptorPool_.reset();
     frameParamsBuffers_.clear();
@@ -313,6 +329,56 @@ void ScreenSpaceReflections::recordCommands(VkCommandBuffer commandBuffer,
         renderGraph_.endSsrTracePass();
         rhi::debug::endLabel(commandBuffer);
     }
+}
+
+// Bindings 4 and 5 are written separately from the rest.
+//
+// The IBL resources are built in createSceneSharedResources, which runs after
+// createResources at startup, so they do not exist when the set is first
+// written. Rather than reorder initialisation -- an init-order bug in exactly
+// this pass has bitten before -- the Renderer calls this once the environment
+// exists, and again whenever it is reloaded. Until it lands, isIblBound() is
+// false and the pass falls back to its old additive behaviour.
+void ScreenSpaceReflections::updateIblDescriptors(VkImageView prefilteredEnvView,
+                                                  VkSampler prefilteredEnvSampler,
+                                                  VkImageView brdfLutView,
+                                                  VkSampler brdfLutSampler)
+{
+    if (descriptorSets_.empty() || prefilteredEnvView == VK_NULL_HANDLE || brdfLutView == VK_NULL_HANDLE ||
+        prefilteredEnvSampler == VK_NULL_HANDLE || brdfLutSampler == VK_NULL_HANDLE) {
+        return;
+    }
+
+    VkDescriptorImageInfo envInfo{};
+    envInfo.sampler = prefilteredEnvSampler;
+    envInfo.imageView = prefilteredEnvView;
+    envInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkDescriptorImageInfo lutInfo{};
+    lutInfo.sampler = brdfLutSampler;
+    lutInfo.imageView = brdfLutView;
+    lutInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    for (VkDescriptorSet descriptorSet : descriptorSets_) {
+        if (descriptorSet == VK_NULL_HANDLE) {
+            continue;
+        }
+        std::array<VkWriteDescriptorSet, 2> writes{};
+        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[0].dstSet = descriptorSet;
+        writes[0].dstBinding = 4;
+        writes[0].descriptorCount = 1;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[0].pImageInfo = &envInfo;
+
+        writes[1] = writes[0];
+        writes[1].dstBinding = 5;
+        writes[1].pImageInfo = &lutInfo;
+
+        vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    }
+
+    iblBound_ = true;
 }
 
 } // namespace ve::renderer

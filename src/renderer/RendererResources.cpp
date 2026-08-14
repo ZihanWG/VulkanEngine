@@ -811,6 +811,13 @@ void Renderer::createEnvironmentMap()
 
     createBrdfLutTexture();
     createSkyboxDescriptorSet();
+    // SSR subtracts the specular IBL it replaces, so rebind it here too: this path
+    // also runs when the environment is reloaded at runtime, which changes the
+    // cubemap out from under the descriptor.
+    ssr_.updateIblDescriptors(prefilteredEnvironmentMap_.imageView(),
+                              prefilteredEnvironmentMap_.sampler(),
+                              brdfLutTexture_.imageView(),
+                              brdfLutTexture_.sampler());
     Logger::info("Created BRDF LUT for split-sum specular IBL.");
 }
 
