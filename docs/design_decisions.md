@@ -31,6 +31,34 @@ though it only depends on the projection.
 **More time.** Shadow-casting point lights (cube/atlas), a global compacted index
 list, and only rebuilding froxel AABBs when the projection changes.
 
+**Measured and rejected: culling lights at an "effective" radius.** The cluster
+test uses each light's authored range, while the shader's windowed inverse-square
+falloff (`rangeFade = 1 - (d/range)^4`, squared) drives the contribution toward
+zero well before that. Shrinking the cull radius to where the contribution stops
+mattering should therefore shorten every cluster's light list for free -- the
+per-light slot load being the documented cost of the loop.
+
+It is not free. Scaling the cull radius uniformly, default scene, control
+repeated:
+
+| Cull radius | `MainHDRPass` | Average scene luminance |
+| --- | --- | --- |
+| 100% | 9.85 / 9.81 ms | 0.3129 / 0.3121 |
+| 85% | 9.39 ms | 0.3033 (-3.1%) |
+| 70% | 9.37 ms | 0.2651 (-15%) |
+| 50% | 8.55 ms | 0.2208 (-29%) |
+
+The image darkens faster than the pass shortens, and the saving stops improving
+between 85% and 70%. With two dozen overlapping lights, the aggregate of many
+individually-small contributions near the range boundary is a visible fraction of
+the image, so there is no threshold that is both worth having and invisible.
+
+The sweep also bounds the whole idea: even at a 50% radius -- throwing away 87%
+of the light volume -- `MainHDRPass` only falls 13%. The pass is not dominated by
+walking over lights that contribute nothing; it is dominated by shading lights
+that do. Fewer PCF taps and a back-face early-out were rejected earlier on the
+same grounds.
+
 ## Buffer-device-address for per-frame GPU data
 
 **Decision.** Deliver per-frame buffers (object data, the light list, the cluster
