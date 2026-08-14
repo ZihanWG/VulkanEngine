@@ -1923,6 +1923,16 @@ void PostProcessStack::recordLuminanceCommands(VkCommandBuffer commandBuffer)
         currentFrame_ >= frameLuminanceBuffers_.size()) {
         return;
     }
+    // Histogram mode does not read this pass's output. Its only consumers there
+    // were an empty-histogram fallback and the debug average-luminance readout,
+    // and the reduce stage now derives both from the histogram bins it already
+    // walks -- the bins ARE the luminance distribution. Skipping a second
+    // full-screen scan of the same image is worth 0.30 ms, 2% of the frame.
+    // LogAverage mode has no histogram pass and still needs this one.
+    if (exposureModeValue(toneMappingSettings_.exposureMode) == ExposureMode::Histogram &&
+        isHistogramExposureActive()) {
+        return;
+    }
 
     VkBuffer luminanceBuffer = frameLuminanceBuffers_[currentFrame_].buffer();
     if (luminanceBuffer == VK_NULL_HANDLE) {
