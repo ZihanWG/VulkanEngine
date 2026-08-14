@@ -94,6 +94,8 @@
     "csm": {
         "cascadeCount": 4,
         "lambda": 0.5,
+        "normalBias": 0.0,
+        "cascadeBlend": 0.0,
         "shadowDistance": 40.0,
         "enableTexelSnapping": true,
         "enableCascadeDebugColors": false

@@ -43,6 +43,9 @@ layout(location = 21) flat out vec4 vEmissiveFactor;
 layout(location = 22) out vec4 vCurrClipPos;
 layout(location = 23) out vec4 vPrevClipPos;
 layout(location = 24) flat out uint vLodIndex;
+// x = normal-offset bias (already consumed above), y = cascade blend band. The
+// fragment stage needs y to know how wide the cross-fade at each split is.
+layout(location = 25) flat out vec4 vShadowQuality;
 
 void main()
 {
@@ -65,11 +68,36 @@ void main()
     vLightDirection = pc.frameConstants.values.lightDirection.xyz;
     vLightColor = pc.frameConstants.values.lightColor.xyz;
     vAmbientColor = pc.frameConstants.values.ambientColor.xyz;
+    // Normal-offset shadow bias, applied here rather than in the fragment shader.
+    //
+    // Doing it per-cascade at this point costs four vector ops per vertex and
+    // nothing per pixel, and it gets the scaling right for free: the length of a
+    // cascade matrix's first column is 2/orthoWidth, so its reciprocal is that
+    // cascade's world half-extent. One unitless bias therefore produces a small
+    // offset in a tight near cascade and a proportionally larger one in a far
+    // cascade, which is what a single world-space number could never do.
+    //
+    // The interpolated vertex normal is the right normal to use: offsetting along
+    // the normal-mapped one would push the lookup around by texture detail that
+    // casts no shadow.
+    const float normalBias = pc.frameConstants.values.shadowQuality.x;
+    const vec3 lightToSurface = normalize(-pc.frameConstants.values.lightDirection.xyz);
+    const float grazing = 1.0 - max(dot(normalWS, lightToSurface), 0.0);
+
     for (uint cascade = 0; cascade < 4; ++cascade) {
+        vec4 shadowWorldPosition = worldPosition;
+        if (normalBias > 0.0) {
+            const float columnScale = length(pc.frameConstants.values.cascadeViewProjection[cascade][0].xyz);
+            const float cascadeExtent = columnScale > 1e-6 ? 1.0 / columnScale : 0.0;
+            // Keep a small head-on term so contact shadows do not detach, the
+            // same shape the punctual path uses.
+            shadowWorldPosition.xyz += normalWS * (normalBias * cascadeExtent * (0.2 + grazing));
+        }
         vLightSpacePosition[cascade] =
-            pc.frameConstants.values.cascadeViewProjection[cascade] * worldPosition;
+            pc.frameConstants.values.cascadeViewProjection[cascade] * shadowWorldPosition;
     }
     vShadowSettings = pc.frameConstants.values.shadowSettings;
+    vShadowQuality = pc.frameConstants.values.shadowQuality;
     vWorldPosition = worldPosition.xyz;
     vCameraPosition = pc.frameConstants.values.cameraPosition.xyz;
     vBaseColorFactor = objectData.baseColorFactor;

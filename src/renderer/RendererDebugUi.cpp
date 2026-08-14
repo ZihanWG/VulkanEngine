@@ -681,6 +681,18 @@ void Renderer::drawShadowsDebugUi()
     ImGui::DragFloat("Shadow distance", &csmSettings_.shadowDistance, 0.1f, 1.0f, csmSettings_.farPlane, "%.2f");
     ImGui::Checkbox("Texel snapping enabled", &csmSettings_.enableTexelSnapping);
     ImGui::Checkbox("Cascade debug colors enabled", &csmSettings_.enableCascadeDebugColors);
+    ImGui::SliderFloat("Normal-offset bias", &csmSettings_.normalBias, 0.0f, 0.02f, "%.4f");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Offsets the shadow lookup along the surface normal, as a fraction of\n"
+                          "each cascade's own extent. Lets the depth bias come down, which is\n"
+                          "what causes peter-panning. 0 = depth bias only.");
+    }
+    ImGui::SliderFloat("Cascade blend band", &csmSettings_.cascadeBlend, 0.0f, 0.5f, "%.2f");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Cross-fades each cascade into the next over this fraction of its\n"
+                          "depth range. 0 = hard split. Only fragments inside the band pay\n"
+                          "for the second shadow lookup.");
+    }
 
     ImGui::SeparatorText("Punctual (spot/point)");
     if (!punctualShadows_.valid()) {

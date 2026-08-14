@@ -1675,6 +1675,10 @@ void Renderer::uploadFrameConstants(uint32_t frameIndex, uint32_t cascadeCount)
                                 csmSettings_.depthBiasSlope,
                                 shadowSettings_.enablePcf ? 1.0f : 0.0f,
                                 static_cast<float>(std::max(shadowSettings_.pcfRadius, 0))};
+    constants.shadowQuality = {std::max(csmSettings_.normalBias, 0.0f),
+                               std::clamp(csmSettings_.cascadeBlend, 0.0f, 0.5f),
+                               0.0f,
+                               0.0f};
     constants.cameraPosition =
         glm::vec4(camera_.position, csmSettings_.enableCascadeDebugColors ? 1.0f : 0.0f);
     constants.cameraForward =

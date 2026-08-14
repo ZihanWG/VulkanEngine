@@ -16,6 +16,17 @@ struct CsmSettings {
     bool enableCascadeDebugColors = false;
     float depthBiasConstant = 0.002f;
     float depthBiasSlope = 0.005f;
+    // Offsets the shadow lookup along the surface normal instead of only along
+    // depth. Expressed as a fraction of the cascade's own world extent, so one
+    // value behaves across cascades whose sizes differ by an order of magnitude.
+    // The punctual atlas has done this since it shipped; the cascades never did,
+    // which is why they leaned harder on raster depth bias -- and depth bias is
+    // what buys peter-panning. Zero restores the old depth-bias-only behaviour.
+    float normalBias = 0.0f;
+    // Width of the cross-fade at each cascade split, as a fraction of that
+    // cascade's depth range. Without it the split is a hard line where filter
+    // width and texel density change at once. Zero restores the hard split.
+    float cascadeBlend = 0.0f;
 };
 
 struct ToneMappingSettings {

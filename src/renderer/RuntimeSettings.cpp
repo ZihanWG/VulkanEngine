@@ -165,6 +165,8 @@ void clampRuntimeSettings(RenderScaleSettings& renderScale,
     gi.bounceWeight = std::clamp(gi.bounceWeight, 0.0f, 0.95f);
 
     csm.cascadeCount = std::clamp(csm.cascadeCount, 1U, renderer::kMaxShadowCascades);
+    csm.normalBias = std::clamp(csm.normalBias, 0.0f, 0.05f);
+    csm.cascadeBlend = std::clamp(csm.cascadeBlend, 0.0f, 0.5f);
     csm.lambda = std::clamp(csm.lambda, 0.0f, 1.0f);
     csm.shadowDistance = std::clamp(csm.shadowDistance, csm.nearPlane + 0.001f, csm.farPlane);
 
@@ -453,6 +455,8 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readFloat(*csm, "shadowDistance", settings.csm.shadowDistance);
         readBool(*csm, "enableTexelSnapping", settings.csm.enableTexelSnapping);
         readBool(*csm, "enableCascadeDebugColors", settings.csm.enableCascadeDebugColors);
+        readFloat(*csm, "normalBias", settings.csm.normalBias);
+        readFloat(*csm, "cascadeBlend", settings.csm.cascadeBlend);
     }
 
     if (const Json* gi = objectMember(json, "gi")) {
@@ -590,6 +594,8 @@ Json toJson(const RuntimeSettings& settings)
         {"csm",
          Json{{"cascadeCount", settings.csm.cascadeCount},
               {"lambda", settings.csm.lambda},
+              {"normalBias", settings.csm.normalBias},
+              {"cascadeBlend", settings.csm.cascadeBlend},
               {"shadowDistance", settings.csm.shadowDistance},
               {"enableTexelSnapping", settings.csm.enableTexelSnapping},
               {"enableCascadeDebugColors", settings.csm.enableCascadeDebugColors}}},

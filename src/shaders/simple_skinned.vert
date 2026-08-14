@@ -58,6 +58,9 @@ layout(location = 23) out vec4 vPrevClipPos;
 // pass. The skinned demo does not go through the cull pass, so it has no
 // selected level and always reports 0.
 layout(location = 24) flat out uint vLodIndex;
+// Must match simple.vert: both feed simple_bindless.frag, so a varying added to
+// one and not the other fails pipeline creation on the interface check.
+layout(location = 25) flat out vec4 vShadowQuality;
 
 void main()
 {
@@ -91,11 +94,24 @@ void main()
     vLightDirection = pc.frameConstants.values.lightDirection.xyz;
     vLightColor = pc.frameConstants.values.lightColor.xyz;
     vAmbientColor = pc.frameConstants.values.ambientColor.xyz;
+    // Normal-offset shadow bias, identical to simple.vert -- see the reasoning
+    // there. Applied per cascade and scaled by that cascade's world extent.
+    const float normalBias = pc.frameConstants.values.shadowQuality.x;
+    const vec3 lightToSurface = normalize(-pc.frameConstants.values.lightDirection.xyz);
+    const float grazing = 1.0 - max(dot(normalWS, lightToSurface), 0.0);
+
     for (uint cascade = 0; cascade < 4; ++cascade) {
+        vec4 shadowWorldPosition = worldPosition;
+        if (normalBias > 0.0) {
+            const float columnScale = length(pc.frameConstants.values.cascadeViewProjection[cascade][0].xyz);
+            const float cascadeExtent = columnScale > 1e-6 ? 1.0 / columnScale : 0.0;
+            shadowWorldPosition.xyz += normalWS * (normalBias * cascadeExtent * (0.2 + grazing));
+        }
         vLightSpacePosition[cascade] =
-            pc.frameConstants.values.cascadeViewProjection[cascade] * worldPosition;
+            pc.frameConstants.values.cascadeViewProjection[cascade] * shadowWorldPosition;
     }
     vShadowSettings = pc.frameConstants.values.shadowSettings;
+    vShadowQuality = pc.frameConstants.values.shadowQuality;
     vWorldPosition = worldPosition.xyz;
     vCameraPosition = pc.frameConstants.values.cameraPosition.xyz;
     vBaseColorFactor = objectData.baseColorFactor;

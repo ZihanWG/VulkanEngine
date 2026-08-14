@@ -66,6 +66,9 @@ struct FrameConstants {
     vec4 cameraPosition;
     // xyz = camera forward, w = cascade count
     vec4 cameraForward;
+    // x = normal-offset bias as a fraction of the cascade's world extent,
+    // y = cascade blend band as a fraction of each cascade's depth range.
+    vec4 shadowQuality;
 };
 
 layout(buffer_reference, std430) readonly buffer FrameConstantsBuffer {

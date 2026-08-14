@@ -142,6 +142,11 @@ struct FrameConstants {
     glm::vec4 cameraPosition{0.0f, 0.0f, 0.0f, 0.0f};
     // xyz = camera forward, w = cascade count.
     glm::vec4 cameraForward{0.0f, 0.0f, -1.0f, 4.0f};
+    // x = normal-offset bias as a fraction of the cascade's own world extent, so
+    // one number stays sane across cascades that differ in size by an order of
+    // magnitude. y = cascade blend band, as a fraction of each cascade's depth
+    // range. Both zero disables. z, w spare.
+    glm::vec4 shadowQuality{0.0f, 0.0f, 0.0f, 0.0f};
 };
 
 static_assert(offsetof(FrameConstants, cascadeViewProjection) == 0);
@@ -154,7 +159,8 @@ static_assert(offsetof(FrameConstants, cascadeSplits) == 432);
 static_assert(offsetof(FrameConstants, shadowSettings) == 448);
 static_assert(offsetof(FrameConstants, cameraPosition) == 464);
 static_assert(offsetof(FrameConstants, cameraForward) == 480);
-static_assert(sizeof(FrameConstants) == 496);
+static_assert(offsetof(FrameConstants, shadowQuality) == 496);
+static_assert(sizeof(FrameConstants) == 512);
 
 // Draw-item capacity. The ceiling is 65535: cull.comp packs the object-data
 // slot into the low 16 bits of firstInstance (the high bits carry the selected
