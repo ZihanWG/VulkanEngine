@@ -12,11 +12,22 @@
 //   want:  mix(iblSpec, ssr, conf)  =  iblSpec + (ssr - iblSpec) * conf
 //   emit:  (ssrColour - prefilteredEnv) * specularWeight * conf
 //
-// Both terms carry the same specularWeight (F * brdf.x + brdf.y), so it factors
-// out of the difference -- which is why this needs no albedo, and why an
-// imprecise F0 cannot reintroduce the double-count. It only reweights the
-// swap. Where confidence is 0 the output is 0 and the IBL stands untouched;
+// Both terms carry a specularWeight (F * brdf.x + brdf.y). Where the two Fs
+// agree it factors out of the difference, which is what lets this work without
+// albedo. Where confidence is 0 the output is 0 and the IBL stands untouched;
 // where it is 1 the reflection fully replaces it.
+//
+// The two Fs do NOT agree here: this pass reconstructs a grayscale F0 (no albedo
+// in the thin G-buffer) while the main pass used an albedo-tinted one, so a
+// residual prefilteredEnv * (w_tinted - w_grayscale) survives. It is bounded and
+// one-directional -- base colour is at most 1 per channel, so the grayscale F0
+// is always the larger and this always over-subtracts, never adds energy back --
+// and it is exactly zero on dielectrics. The multi-scatter term the main pass
+// adds on top of specularIbl is likewise not subtracted, but it grows with
+// roughness^2 precisely where roughnessFade is killing confidence, so the two
+// hardly overlap. Both are measured and argued in docs/ssr.md; do not restore
+// the earlier claim here that an imprecise F0 "cannot reintroduce the
+// double-count", which overstated the factorisation.
 
 layout(set = 0, binding = 0) uniform sampler2D uDepth;
 layout(set = 0, binding = 1) uniform sampler2D uNormalRoughness;

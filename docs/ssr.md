@@ -65,10 +65,27 @@ reports unavailable and the passes are skipped.
 - Screen-space only: anything off-screen or occluded contributes nothing. This is
   now a graceful fallback rather than a hole: the pass emits a *correction* toward
   the traced colour, so no hit means the IBL specular simply stands.
-- The thin G-buffer stores no albedo, so metal reflections use a grayscale
-  F0 approximation (untinted). This no longer costs energy conservation — the
-  split-sum weight factors out of the correction (see below) — only the exact
-  weighting of the swap on tinted metals.
+- The thin G-buffer stores no albedo, so the trace weights the swap with a
+  grayscale F0 while the main pass used an albedo-tinted one. The two weights do
+  not cancel, and a residual `prefilteredEnv * (w_tinted - w_grayscale)` survives
+  the correction. It is one-directional: base colour is at most 1 per channel, so
+  the grayscale F0 is always the larger and SSR always *over*-subtracts the
+  environment specular, never under-subtracts — the benign direction, a slight
+  darkening rather than energy gain. Bounded per channel by
+  `(1 - baseColour) * brdf.x`, and exactly zero on dielectrics, whose F0 is 0.04
+  on both sides. In the default portfolio scene only `PolishedMetalSmall` is both
+  metallic and smooth enough to trace at all; its base colour (0.82, 0.85, 0.88)
+  makes the residual a near-uniform ~15% darkening of that sphere's environment
+  specular. Removing it needs tinted F0 in the G-buffer, which has no spare
+  channel — see [Why the exact fix is not worth it](#why-the-exact-fix-is-not-worth-it).
+- The multi-scatter compensation the main pass adds on top of `specularIbl` is
+  not subtracted either, so that part stays double-counted. It is structurally
+  self-limiting: the term scales with `roughness^2`, while SSR's `roughnessFade`
+  drives confidence to zero as roughness approaches `maxRoughness`, so the two
+  barely overlap. `RoughMetal` (roughness 0.60, strength 0.70), where the term is
+  large, is skipped outright by the `roughness >= maxRoughness` early-out;
+  `PolishedMetalSmall` (0.23, 0.40) contributes `0.23^2 * 0.40 ~= 2%`. The peak
+  across the whole band is ~5% of the environment term.
 - No Hi-Z acceleration (the existing pyramid is
   max-depth, built for occlusion; a min-depth pyramid is future work), no
   roughness-cone blur, no half-res trace.
@@ -87,11 +104,20 @@ want:  mix(iblSpec, ssr, conf)  =  iblSpec + (ssr - iblSpec) * conf
 emit:  (ssrColour - prefilteredEnv) * specularWeight * conf
 ```
 
-Both terms carry the same split-sum weight `F * brdf.x + brdf.y`, so it factors
-out of the difference. That is what makes this workable on a thin G-buffer: no
-albedo is required, and an imprecise F0 cannot reintroduce the double-count — it
-only reweights the swap. Confidence 0 leaves the IBL untouched; confidence 1
-replaces it entirely.
+Both terms carry a split-sum weight `F * brdf.x + brdf.y`. Where the two `F`s
+agree it factors out of the difference, and that is what carries the argument on
+a thin G-buffer. Confidence 0 leaves the IBL untouched; confidence 1 replaces it
+entirely.
+
+Where they disagree it does not factor out — and here they do disagree, because
+this pass reconstructs a grayscale F0 while the main pass used an albedo-tinted
+one. What survives is `prefilteredEnv * (w_tinted - w_grayscale)`. That is a
+residual, not a return of the double-count: it is bounded, always an
+over-subtraction rather than an addition, and zero on dielectrics. An earlier
+revision of this document (and of the shader header) claimed an imprecise F0
+"cannot reintroduce the double-count" and that the weight factors out
+unconditionally. That overstated the factorisation, which holds per channel only
+when both sides use the same `F`. See Limitations for the measured bound.
 
 Verified by what SSR does to average scene luminance, which is the bug's
 signature. Against the SSR-off baseline it added **+0.93%** before, and **-0.2%**
@@ -103,6 +129,32 @@ bound by a separate targeted write that is re-applied after every recreate —
 SSR resources are created twice during startup alone, and binding them once from
 the environment path silently lost them. `frameSsrActive_` requires
 `isIblBound()`, so the pass cannot run without knowing what it is replacing.
+
+### Why the exact fix is not worth it
+
+Both residuals above exist because the trace *reconstructs* what the main pass
+wrote instead of reading it. The exact fix is to stop reconstructing: have the
+main pass emit its `specularIbl` — tinted F0, multi-scatter and all — to a fourth
+render target, and have SSR subtract that texture verbatim. Both residuals go to
+zero at once, and the duplicated split-sum math disappears rather than being
+mirrored more faithfully.
+
+It is not worth what it costs here. The thin G-buffer is `R16G16B16A16_SFLOAT`
+with every channel already spoken for (octahedral normal `xy`, roughness `z`,
+metallic `w`), so this cannot be packed into what exists; it needs a new
+attachment. That is +4 bytes/pixel on `MainHDRPass`, which is 56–78% of the
+frame and the pass every other optimisation here has been fighting, plus a
+tile-memory cost on this TBDR that would have to be measured rather than assumed.
+The blast radius is four pipeline declarations (main, phase-2, transparent,
+skybox), `PostProcessStack`, the render graph, both `simple_bindless.frag` and
+the `simple.frag` fallback, and SSR's descriptor set.
+
+Against that: a one-directional ~15% darkening of one sphere's environment
+specular in the default scene, and a multi-scatter residual that is structurally
+capped near 5% because it grows with `roughness^2` exactly where SSR is fading
+out. Revisit if a strongly tinted metal (gold, copper) becomes a scene the engine
+is judged on — there the F0 residual reaches 30–65% per channel and the trade
+inverts.
 
 ## Marching in screen space
 
