@@ -82,11 +82,12 @@ What the harness enforces:
 - **A fixed scene and camera.** Both are left at their launch defaults, which is what makes separate launches comparable.
 - **A discarded warm-up.** 10 seconds by default, out of a 30-second launch, leaving roughly 20 samples.
 - **Medians, with min and max reported** so a delta smaller than the run-to-run spread is visible as such.
-- **A repeated control.** `ab` runs A/B/A/B rather than AA/BB so a thermal ramp cannot land entirely on one configuration, then compares the first and last A run. Drift above 1% in `Frame total` marks the series unusable and exits non-zero.
+- **A repeated control, checked per pass.** `ab` runs A/B/A/B rather than AA/BB so a thermal ramp cannot land entirely on one configuration, then compares the first and last A run. Drift above 1% in `Frame total` marks the whole series unusable and exits non-zero. Separately, every row carries its own control drift and an `Attributable` verdict: a pass whose control moved at least as much as the A/B delta is reported as inside the noise floor. Frame-level stability is not enough for a sub-millisecond pass — the composite sharpen filter once read 0.416 vs 0.424 ms at frame level while the pass itself tripled.
+- **No implied validation result.** Validation layers are compiled out of Release (`VULKAN_ENGINE_ENABLE_VALIDATION=0`), and the harness only runs Release, so every report says outright that it cannot show validation errors rather than letting silence read as a clean frame.
 - **Typed, validated overrides.** An unknown dotted key or a value of the wrong type aborts, because a silently ignored override would measure the baseline twice and read as "no effect".
 - **Restoring the settings file.** `config/runtime_settings.json` is per-user state; the harness writes it during a run and restores the original afterwards, including on failure.
 
-Logs and a `summary.json` land in `build/measurements/`. Nested scopes are parsed but reported as unusable for attribution, for the reason in the previous section.
+Logs and a `summary.json` land in `build/measurements/`. The summary records the full effective settings, not just the overrides, because configuration A is "whatever was persisted that day" and that file lives outside git. Nested scopes are parsed but reported as unusable for attribution, for the reason in the previous section.
 
 Scene presets are ImGui actions and reset on every launch, so the harness cannot select them. Capture those runs by hand with stdout redirected, then use `parse`.
 

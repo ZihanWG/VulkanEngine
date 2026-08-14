@@ -83,6 +83,7 @@ class Samples:
     block_count: int = 0
     query_limit_exceeded: bool = False
     validation_errors: list[str] = field(default_factory=list)
+    effective_settings: dict = field(default_factory=dict)
 
     def add(self, other: "Samples") -> None:
         for name, values in other.scopes.items():
@@ -90,6 +91,8 @@ class Samples:
         self.block_count += other.block_count
         self.query_limit_exceeded |= other.query_limit_exceeded
         self.validation_errors.extend(other.validation_errors)
+        if not self.effective_settings:
+            self.effective_settings = other.effective_settings
 
     def median(self, scope: str) -> float | None:
         values = self.scopes.get(scope)
@@ -285,6 +288,9 @@ def run_once(
             SETTINGS_PATH.write_bytes(original)
 
     samples = parse_log(log_path.read_text(errors="replace"), label, warmup)
+    # Recorded so the run can be reproduced later: configuration A is "whatever
+    # was persisted that day", and that file is per-user state outside git.
+    samples.effective_settings = settings
     if samples.block_count < MIN_SAMPLES:
         raise MeasureError(
             f"{label}: only {samples.block_count} timing blocks survived the warm-up "
@@ -322,7 +328,7 @@ def terminate(process: subprocess.Popen) -> None:
 # --------------------------------------------------------------------------
 
 
-def format_single(samples: Samples) -> str:
+def format_single(samples: Samples, release_run: bool = True) -> str:
     lines = [
         f"## {samples.label}",
         "",
@@ -338,40 +344,81 @@ def format_single(samples: Samples) -> str:
             f"| {name}{note} | {statistics.median(values):.3f} | "
             f"{min(values):.3f} | {max(values):.3f} |"
         )
-    lines.extend(caveats(samples))
+    lines.extend(caveats(samples, release_run))
     return "\n".join(lines)
 
 
-def format_comparison(a: Samples, b: Samples, drift: float | None) -> str:
+def scope_control_drift(first_a: Samples, last_a: Samples) -> dict[str, float]:
+    """Absolute median movement of each scope between the two control runs.
+
+    A frame-level control that returns says nothing about a sub-millisecond
+    pass: the composite sharpen filter once read 0.416 vs 0.424 ms at frame
+    level while the pass itself tripled. Each scope needs its own noise floor.
+    """
+    drift: dict[str, float] = {}
+    for name in first_a.scopes:
+        baseline = first_a.median(name)
+        repeated = last_a.median(name)
+        if baseline is not None and repeated is not None:
+            drift[name] = abs(repeated - baseline)
+    return drift
+
+
+def format_comparison(
+    a: Samples,
+    b: Samples,
+    drift: float | None,
+    scope_drift: dict[str, float] | None = None,
+) -> str:
+    scope_drift = scope_drift or {}
     lines = [
         f"## {a.label} vs {b.label}",
         "",
         f"Medians in ms over {a.block_count} and {b.block_count} samples.",
         "",
-        "| Pass | A | B | Delta | Delta % |",
-        "| --- | --- | --- | --- | --- |",
+        "| Pass | A | B | Delta | Delta % | Control drift | Attributable |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
     ]
     names = ordered_scopes({**a.scopes, **b.scopes})
+    buried: list[str] = []
     for name in names:
         median_a = a.median(name)
         median_b = b.median(name)
         if name in UNRELIABLE_SCOPES:
             lines.append(
                 f"| {name} *(nested: reads ~0, not a breakdown)* | "
-                f"{fmt(median_a)} | {fmt(median_b)} | - | - |"
+                f"{fmt(median_a)} | {fmt(median_b)} | - | - | - | no |"
             )
             continue
         if median_a is None or median_b is None:
             appeared = "B only" if median_a is None else "A only"
-            lines.append(f"| {name} | {fmt(median_a)} | {fmt(median_b)} | {appeared} | - |")
+            lines.append(
+                f"| {name} | {fmt(median_a)} | {fmt(median_b)} | {appeared} | - | - | - |"
+            )
             continue
         delta = median_b - median_a
         percent = (delta / median_a * 100.0) if median_a else 0.0
+        own_drift = scope_drift.get(name)
+        if own_drift is None:
+            drift_text, verdict = "-", "unchecked"
+        elif abs(delta) <= own_drift:
+            drift_text, verdict = f"{own_drift:.3f}", "**no**"
+            buried.append(name)
+        else:
+            drift_text, verdict = f"{own_drift:.3f}", "yes"
         lines.append(
-            f"| {name} | {median_a:.3f} | {median_b:.3f} | {delta:+.3f} | {percent:+.1f}% |"
+            f"| {name} | {median_a:.3f} | {median_b:.3f} | {delta:+.3f} | "
+            f"{percent:+.1f}% | {drift_text} | {verdict} |"
         )
 
     lines.append("")
+    if buried:
+        lines.append(
+            f"**Inside the noise floor:** {', '.join(buried)}. The control moved at "
+            "least as much as the change did, so these rows are not evidence of an "
+            "effect in either direction. Report them as not measured, not as no cost."
+        )
+        lines.append("")
     if drift is None:
         lines.append(
             "**Control not repeated.** Run with `--repeat 2` or higher to prove the "
@@ -392,12 +439,24 @@ def format_comparison(a: Samples, b: Samples, drift: float | None) -> str:
     merged = Samples(label="combined")
     merged.add(a)
     merged.add(b)
-    lines.extend(caveats(merged))
+    lines.extend(caveats(merged, release_run=True))
     return "\n".join(lines)
 
 
-def caveats(samples: Samples) -> list[str]:
+def caveats(samples: Samples, release_run: bool) -> list[str]:
     lines: list[str] = []
+    if release_run:
+        # CMakeLists.txt compiles VULKAN_ENGINE_ENABLE_VALIDATION=0 outside Debug,
+        # and this harness only runs Release. Silence here means the layers were
+        # absent, not that the frame was clean -- say so rather than let a reader
+        # infer a validation result the run could not produce.
+        lines.extend(
+            [
+                "",
+                "Validation layers are compiled out of Release, so this run cannot "
+                "report validation errors. It is not evidence of a clean frame.",
+            ]
+        )
     if samples.query_limit_exceeded:
         lines.extend(
             [
@@ -467,7 +526,15 @@ def cmd_run(args: argparse.Namespace) -> int:
     samples = run_once(args.label, args.set, args.warmup, args.duration, output_dir)
     print()
     print(format_single(samples))
-    summary = write_summary(output_dir, {"mode": "run", "runs": [samples_to_json(samples)]})
+    summary = write_summary(
+        output_dir,
+        {
+            "mode": "run",
+            "set": args.set,
+            "effective_settings": samples.effective_settings,
+            "runs": [samples_to_json(samples)],
+        },
+    )
     print(f"\nLogs: {output_dir}\nSummary: {summary}")
     return 0
 
@@ -499,14 +566,16 @@ def cmd_ab(args: argparse.Namespace) -> int:
         pooled_b.add(run_b)
 
     drift = None
+    scope_drift: dict[str, float] = {}
     if args.repeat >= 2 and first_a is not None and last_a is not None:
         baseline = first_a.median(FRAME_TOTAL)
         repeated = last_a.median(FRAME_TOTAL)
         if baseline and repeated:
             drift = abs(repeated - baseline) / baseline
+        scope_drift = scope_control_drift(first_a, last_a)
 
     print()
-    print(format_comparison(pooled_a, pooled_b, drift))
+    print(format_comparison(pooled_a, pooled_b, drift, scope_drift))
     summary = write_summary(
         output_dir,
         {
@@ -514,8 +583,11 @@ def cmd_ab(args: argparse.Namespace) -> int:
             "repeat": args.repeat,
             "control_drift": drift,
             "control_drift_limit": CONTROL_DRIFT_LIMIT,
+            "scope_control_drift_ms": {k: round(v, 4) for k, v in sorted(scope_drift.items())},
             "a_set": args.a_set,
             "b_set": args.b_set,
+            "effective_settings_a": pooled_a.effective_settings,
+            "effective_settings_b": pooled_b.effective_settings,
             "runs": [samples_to_json(pooled_a), samples_to_json(pooled_b)],
         },
     )
@@ -538,7 +610,9 @@ def cmd_parse(args: argparse.Namespace) -> int:
             f"(want at least {MIN_SAMPLES})",
             file=sys.stderr,
         )
-    print(format_single(pooled))
+    # A hand-captured log may come from a Debug build, where validation layers
+    # are compiled in, so the Release-only caveat would be wrong here.
+    print(format_single(pooled, release_run=False))
     return 0
 
 
