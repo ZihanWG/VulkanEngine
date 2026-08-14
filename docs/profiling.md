@@ -78,10 +78,12 @@ python3 tools/dev/measure_gpu.py parse build/measurements/fragment-stress.log
 
 What the harness enforces:
 
-- **Release only.** It refuses to run a Debug binary; `--build` builds the Release preset first.
+- **Release only, and not a stale one.** It refuses to run a Debug binary, and aborts when any file under `src/` or `CMakeLists.txt` is newer than the linked binary. This is a hard gate, not a warning: an SSR A/B once ran against a binary 17 commits behind and reported `SSRTrace` at 0.805 ms where the rebuilt binary read 0.158 ms.
+- **A settle period after `--build`.** A parallel build leaves the machine hot and the first control run would absorb all of it. The same series drifted 0.41% from a cold start and 28.5% when it began immediately after a build, so `--build` now idles 90 seconds first (`--settle`).
 - **A fixed scene and camera.** Both are left at their launch defaults, which is what makes separate launches comparable.
 - **A discarded warm-up.** 10 seconds by default, out of a 30-second launch, leaving roughly 20 samples.
 - **Medians, with min and max reported** so a delta smaller than the run-to-run spread is visible as such.
+- **Per-pass sample coverage.** Every row shows how many sampled frames actually contained that pass. A conditional pass is marked intermittent below 90% coverage, because its median is the cost of the frames that ran it rather than of the configuration. Without this, `DepthPyramid` — built in 1-2 frames out of 29 while occlusion culling is suspended — appeared as a clean `A only` row and read as a pass that one configuration had and the other did not.
 - **A repeated control, checked per pass.** `ab` runs A/B/A/B rather than AA/BB so a thermal ramp cannot land entirely on one configuration, then compares the first and last A run. Drift above 1% in `Frame total` marks the whole series unusable and exits non-zero. Separately, every row carries its own control drift and an `Attributable` verdict: a pass whose control moved at least as much as the A/B delta is reported as inside the noise floor. Frame-level stability is not enough for a sub-millisecond pass — the composite sharpen filter once read 0.416 vs 0.424 ms at frame level while the pass itself tripled.
 - **No implied validation result.** Validation layers are compiled out of Release (`VULKAN_ENGINE_ENABLE_VALIDATION=0`), and the harness only runs Release, so every report says outright that it cannot show validation errors rather than letting silence read as a clean frame.
 - **Typed, validated overrides.** An unknown dotted key or a value of the wrong type aborts, because a silently ignored override would measure the baseline twice and read as "no effect".
