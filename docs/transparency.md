@@ -182,9 +182,10 @@ treat every earlier write to scene color — the main pass, and SSR's additive b
 — as dead and cull them. That surfaced immediately as
 `RenderGraph::beginSsrCopyPass was culled but the renderer attempted to record it`.
 
-Worth noting that `SSRTracePass` still declares its own additive blend into scene
-color with `writeTexture`, which has the same modelling gap. It is currently
-harmless only because nothing wrote scene color after it until this pass existed.
+`SSRTracePass` had the same modelling gap and now declares `readWriteTexture`
+too. Its blend is additive and, since the reflection became an energy-conserving
+*correction*, signed -- so it genuinely reads what the main pass wrote rather
+than merely landing on top of it.
 
 ## Demo
 

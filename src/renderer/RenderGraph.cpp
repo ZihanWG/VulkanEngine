@@ -2000,9 +2000,16 @@ void RenderGraph::declareGeometryPasses()
                 builder.readTexture(frame_.mainDepth,
                                     RGAccess::ShaderRead,
                                     "Marches rays against the main depth buffer.");
-                builder.writeTexture(frame_.sceneColor,
-                                     RGAccess::ColorAttachmentWrite,
-                                     "Additively blends fresnel-weighted reflections into scene color.");
+                // Read-modify-write, like the transparent pass: an additive blend
+                // reads the destination. Declared write-only, the culler is free to
+                // treat the main pass's write to scene colour as dead -- harmless
+                // only for as long as nothing else writes scene colour in between.
+                // The transparent pass hit exactly this and the note in
+                // docs/transparency.md flagged this one as the same latent gap.
+                builder.readWriteTexture(frame_.sceneColor,
+                                        RGAccess::ColorAttachmentWrite,
+                                        "Blends the reflection correction into scene color; additive, and the "
+                                        "correction is signed, so it reads what the main pass already wrote.");
             });
     }
 

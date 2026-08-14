@@ -50,13 +50,64 @@ reports unavailable and the passes are skipped.
 
 ## Limitations
 
-- Screen-space only: anything off-screen or occluded contributes nothing
-  (edge fade hides most of it; no fallback blend to IBL by hit confidence yet).
-- Reflections add on top of the existing IBL specular rather than replacing it,
-  so mirror-like surfaces can read slightly bright (standard first-pass SSR
-  trade-off; documented rather than hidden).
+- Screen-space only: anything off-screen or occluded contributes nothing. This is
+  now a graceful fallback rather than a hole: the pass emits a *correction* toward
+  the traced colour, so no hit means the IBL specular simply stands.
 - The thin G-buffer stores no albedo, so metal reflections use a grayscale
-  F0 approximation (untinted).
-- Linear march with fixed steps — no Hi-Z acceleration (the existing pyramid is
+  F0 approximation (untinted). This no longer costs energy conservation — the
+  split-sum weight factors out of the correction (see below) — only the exact
+  weighting of the swap on tinted metals.
+- No Hi-Z acceleration (the existing pyramid is
   max-depth, built for occlusion; a min-depth pyramid is future work), no
   roughness-cone blur, no half-res trace.
+
+## Energy conservation
+
+The pass used to blend `reflection * fresnel * confidence` additively onto scene
+colour that **already contained the main pass's specular IBL** for that pixel, so
+a mirror received its specular roughly twice. That was described here as a
+standard first-pass trade-off, which understated a conservation bug.
+
+It now emits a signed difference instead, keeping the additive blend:
+
+```
+want:  mix(iblSpec, ssr, conf)  =  iblSpec + (ssr - iblSpec) * conf
+emit:  (ssrColour - prefilteredEnv) * specularWeight * conf
+```
+
+Both terms carry the same split-sum weight `F * brdf.x + brdf.y`, so it factors
+out of the difference. That is what makes this workable on a thin G-buffer: no
+albedo is required, and an imprecise F0 cannot reintroduce the double-count — it
+only reweights the swap. Confidence 0 leaves the IBL untouched; confidence 1
+replaces it entirely.
+
+Verified by what SSR does to average scene luminance, which is the bug's
+signature. Against the SSR-off baseline it added **+0.93%** before, and **-0.2%**
+after — a replacement redistributes specular rather than brightening the frame.
+
+The trace therefore needs the prefiltered environment cube and the BRDF LUT. Both
+are built *after* `ScreenSpaceReflections::createResources` runs, so they are
+bound by a separate targeted write that is re-applied after every recreate —
+SSR resources are created twice during startup alone, and binding them once from
+the environment path silently lost them. `frameSsrActive_` requires
+`isIblBound()`, so the pass cannot run without knowing what it is replacing.
+
+## Marching in screen space
+
+The march steps uniformly along the ray's **screen-space** projection, not by a
+fixed view-space distance. A fixed view-space step covers many pixels near the
+camera and a fraction of one far away, so it skipped geometry close up while
+spending most of its steps re-reading the same distant texel. Depth is carried as
+its reciprocal, which is what varies linearly across the screen, and inverted per
+step — exact, and independent of the projection's `w` row.
+
+`SSRTrace` fell from 0.627 ms to 0.502 ms: fewer wasted samples, and rays leave
+the screen sooner so the loop exits earlier.
+
+The ray origin is biased along the surface normal, scaled by view depth so the
+bias stays constant in pixels. The old march did not need this — its first sample
+sat half a fixed world-space step clear of the surface — but a screen-space step
+shrinks in world terms as the camera closes in, so without the bias the first
+sample lands on the originating surface and it reflects itself. That appeared as a
+brightening rather than as visible garbage, and was caught by the same luminance
+check.
