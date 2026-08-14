@@ -113,23 +113,67 @@ void main()
     uint maxSteps = uint(max(params.marchParams.x, 1.0));
     float maxDistance = max(params.marchParams.z, 0.01);
     float thickness = max(params.marchParams.w, 0.001);
-    float stepLength = maxDistance / float(maxSteps);
+
+    // March uniformly in SCREEN space, not in view space.
+    //
+    // A fixed view-space step covers many pixels near the camera and a fraction
+    // of one far away, so the old loop skipped geometry close up -- holes in
+    // reflections -- while spending most of its steps re-reading the same distant
+    // texel. Stepping uniformly along the ray's screen-space projection instead
+    // gives every step the same pixel stride at any distance, at the same step
+    // count.
+    //
+    // Depth cannot be interpolated linearly along that path: what varies linearly
+    // across the screen is its reciprocal. So the march carries 1/depth and
+    // inverts it per step, which is exact rather than an approximation, and does
+    // not assume anything about the projection's w row.
+    // Push the origin off the surface along its normal before projecting.
+    //
+    // The old view-space march got this for free: its first sample sat half a
+    // fixed world-space step away, which was always well clear of the surface.
+    // A screen-space step is a shrinking world-space distance as the camera
+    // closes in, so without a bias the first sample lands on the originating
+    // surface, passes the `rayDepth > surfaceDepth` test by a hair, and the
+    // surface reflects itself. It shows up as a brightening rather than as
+    // garbage, which is what makes it worth naming.
+    //
+    // Scaled by view depth so the bias stays roughly constant in pixels.
+    const vec3 rayOrigin = viewPos + normalVS * max(-viewPos.z * 0.002, 0.005);
+    vec3 rayEnd = rayOrigin + rayDir * maxDistance;
+    // Keep the far end in front of the near plane, or the projection wraps and the
+    // screen-space segment becomes meaningless.
+    const float kMinViewDepth = 0.01;
+    if (-rayEnd.z < kMinViewDepth) {
+        const float denom = rayDir.z;
+        if (abs(denom) > 1e-6) {
+            rayEnd = rayOrigin + rayDir * max((-kMinViewDepth - rayOrigin.z) / denom, 0.0);
+        }
+    }
+
+    const float startDepth = max(-rayOrigin.z, kMinViewDepth);
+    const float endDepth = max(-rayEnd.z, kMinViewDepth);
+
+    vec4 startClip = params.projection * vec4(rayOrigin, 1.0);
+    vec4 endClip = params.projection * vec4(rayEnd, 1.0);
+    if (startClip.w <= 0.0001 || endClip.w <= 0.0001) {
+        return;
+    }
+    const vec2 startUV = (startClip.xy / startClip.w) * 0.5 + 0.5;
+    const vec2 endUV = (endClip.xy / endClip.w) * 0.5 + 0.5;
+
+    const float invStartDepth = 1.0 / startDepth;
+    const float invEndDepth = 1.0 / endDepth;
 
     float jitter = interleavedGradientNoise(gl_FragCoord.xy);
-    float t = stepLength * (0.5 + jitter);
+    const float stepFraction = 1.0 / float(maxSteps);
+    float u = stepFraction * (0.5 + jitter);
 
     vec2 hitUV = vec2(-1.0);
     bool hit = false;
-    float previousT = 0.0;
+    float previousU = 0.0;
 
     for (uint stepIndex = 0u; stepIndex < maxSteps; ++stepIndex) {
-        vec3 samplePos = viewPos + rayDir * t;
-        vec4 clip = params.projection * vec4(samplePos, 1.0);
-        if (clip.w <= 0.0001) {
-            break;
-        }
-        vec3 ndc = clip.xyz / clip.w;
-        vec2 uv = ndc.xy * 0.5 + 0.5;
+        vec2 uv = mix(startUV, endUV, u);
         if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
             break;
         }
@@ -138,23 +182,22 @@ void main()
         vec3 scenePos = viewPositionFromDepth(uv, sceneDepth);
 
         // Depth increases away from the camera along -Z in view space.
-        float rayDepth = -samplePos.z;
+        float rayDepth = 1.0 / mix(invStartDepth, invEndDepth, u);
         float surfaceDepth = -scenePos.z;
         if (rayDepth > surfaceDepth && rayDepth - surfaceDepth < thickness) {
-            // Binary refinement between the previous miss and this hit.
-            float lo = previousT;
-            float hi = t;
+            // Binary refinement between the previous miss and this hit, bisecting
+            // the same screen-space parameter.
+            float lo = previousU;
+            float hi = u;
             uint refineSteps = uint(max(params.marchParams.y, 0.0));
             for (uint refineIndex = 0u; refineIndex < refineSteps; ++refineIndex) {
                 float mid = 0.5 * (lo + hi);
-                vec3 midPos = viewPos + rayDir * mid;
-                vec4 midClip = params.projection * vec4(midPos, 1.0);
-                vec3 midNdc = midClip.xyz / midClip.w;
-                vec2 midUV = midNdc.xy * 0.5 + 0.5;
+                vec2 midUV = mix(startUV, endUV, mid);
+                float midRayDepth = 1.0 / mix(invStartDepth, invEndDepth, mid);
                 float midSceneDepth =
                     texture(uDepth, veSubRectUv(midUV, params.subRect.xy, vec2(textureSize(uDepth, 0)))).r;
                 vec3 midScenePos = viewPositionFromDepth(midUV, midSceneDepth);
-                if (-midPos.z > -midScenePos.z) {
+                if (midRayDepth > -midScenePos.z) {
                     hi = mid;
                     uv = midUV;
                 } else {
@@ -166,8 +209,8 @@ void main()
             break;
         }
 
-        previousT = t;
-        t += stepLength;
+        previousU = u;
+        u += stepFraction;
     }
 
     if (!hit) {

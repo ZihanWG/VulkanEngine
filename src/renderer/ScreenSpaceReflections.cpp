@@ -223,7 +223,7 @@ void ScreenSpaceReflections::createResources(VkImageView normalRoughnessView, ui
         }
 
         available_ = true;
-        Logger::info("Screen-space reflections enabled (linear march + binary refinement).");
+        Logger::info("Screen-space reflections enabled (screen-space march + binary refinement).");
     } catch (const std::exception& error) {
         Logger::warn(std::string("Screen-space reflections unavailable: ") + error.what());
         destroyResources();
