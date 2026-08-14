@@ -102,6 +102,15 @@ layout(set = 0, binding = 11) uniform ProbeShadingParams {
 // reprojection below.
 layout(set = 0, binding = 12) uniform sampler2D uAmbientOcclusion;
 
+// The same cascade array as binding 1, through a depth-comparison sampler.
+//
+// A comparison sampler filters the *results* of the depth tests, not the depths:
+// one fetch returns the bilinear blend of four pass/fail outcomes, which is a
+// sub-texel gradient. The manual path could only average whole 0/1 outcomes,
+// so its edge was a staircase no matter how many taps went into it. Binding 1
+// stays a plain sampler2DArray because four other consumers want raw depth.
+layout(set = 0, binding = 13) uniform sampler2DArrayShadow uShadowMapCompare;
+
 layout(set = 1, binding = 0) uniform sampler2D uBaseColorTextures[];
 layout(set = 1, binding = 1) uniform sampler2D uNormalTextures[];
 layout(set = 1, binding = 2) uniform sampler2D uMetallicRoughnessTextures[];
@@ -123,6 +132,7 @@ layout(location = 16) flat in uvec4 vTextureIndices;
 layout(location = 17) in float vViewDepth;
 layout(location = 18) flat in vec4 vCascadeSplits;
 layout(location = 19) flat in uint vCascadeCount;
+layout(location = 25) flat in vec4 vShadowQuality;
 layout(location = 20) flat in float vCascadeDebugEnabled;
 layout(location = 21) flat in vec4 vEmissiveFactor;
 layout(location = 22) in vec4 vCurrClipPos;
@@ -192,6 +202,31 @@ int selectShadowCascade()
     return cascadeCount - 1;
 }
 
+// How far into the far edge of its cascade this fragment sits, 0 in the body of
+// the cascade and rising to 1 at the split. Drives the cross-fade below.
+//
+// Without a fade the split is a hard line where filter width and texel density
+// change together, which reads as a visible seam sweeping across the ground as
+// the camera moves -- the more so once the cascades are well stabilised, because
+// then the seam is the only thing still moving.
+float cascadeBlendWeight(int cascadeIndex)
+{
+    const float band = vShadowQuality.y;
+    if (band <= 0.0 || cascadeIndex < 0) {
+        return 0.0;
+    }
+
+    const float farSplit = vCascadeSplits[cascadeIndex];
+    const float nearSplit = cascadeIndex == 0 ? 0.0 : vCascadeSplits[cascadeIndex - 1];
+    const float range = max(farSplit - nearSplit, 1e-4);
+    const float bandStart = farSplit - range * band;
+    if (vViewDepth <= bandStart) {
+        return 0.0;
+    }
+
+    return clamp((vViewDepth - bandStart) / max(farSplit - bandStart, 1e-4), 0.0, 1.0);
+}
+
 // Green -> yellow -> orange -> red as detail drops, so a glance shows both the
 // spatial LOD distribution and any popping as the camera moves.
 vec3 lodDebugColor(uint lodIndex)
@@ -224,8 +259,9 @@ vec3 cascadeDebugColor(int cascadeIndex)
 
 float compareShadowDepth(vec2 shadowUV, float currentDepth, float bias, int cascadeIndex)
 {
-    float closestDepth = texture(uShadowMap, vec3(shadowUV, float(cascadeIndex))).r;
-    return currentDepth - bias <= closestDepth ? 1.0 : 0.0;
+    // The reference value rides in .w; the hardware does the compare and the
+    // bilinear weighting of its four results in one fetch.
+    return texture(uShadowMapCompare, vec4(shadowUV, float(cascadeIndex), currentDepth - bias));
 }
 
 float sampleShadowFactor(vec3 normal, int cascadeIndex)
@@ -256,9 +292,9 @@ float sampleShadowFactor(vec3 normal, int cascadeIndex)
     float litSamples = 0.0;
     int sampleCount = 0;
 
-    // PCF keeps manual depth comparisons but averages nearby texels. A 3x3
-    // kernel softens jagged shadow-map edges without changing descriptor layout
-    // or switching to sampler compare mode.
+    // Each tap is now a hardware 2x2 comparison fetch rather than a single
+    // point test, so a radius covers the same texels but returns a smooth
+    // gradient across each one instead of a 0/1 verdict.
     for (int y = -pcfRadius; y <= pcfRadius; ++y) {
         for (int x = -pcfRadius; x <= pcfRadius; ++x) {
             vec2 offset = vec2(float(x), float(y)) * texelSize;
@@ -727,6 +763,15 @@ void main()
 
     int cascadeIndex = selectShadowCascade();
     float shadowFactor = sampleShadowFactor(normal, cascadeIndex);
+    // Cross-fade into the next cascade over the last slice of this one. Only the
+    // fragments inside the band pay for the second lookup.
+    const int cascadeCount = clamp(int(vCascadeCount), 1, 4);
+    if (cascadeIndex >= 0 && cascadeIndex + 1 < cascadeCount) {
+        const float blend = cascadeBlendWeight(cascadeIndex);
+        if (blend > 0.0) {
+            shadowFactor = mix(shadowFactor, sampleShadowFactor(normal, cascadeIndex + 1), blend);
+        }
+    }
     vec3 irradiance = texture(uDiffuseIrradianceMap, normal).rgb;
     vec3 kD = (1.0 - metallic) * baseColor;
     vec3 diffuseIbl = irradiance * kD;

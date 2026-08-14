@@ -254,6 +254,8 @@ private:
         bool valid = false;
     };
 
+    void createShadowCompareSampler();
+    void destroyShadowCompareSampler();
     void createMaterialDescriptorSetLayout();
     void createBindlessMaterialTextureHeap();
     void createSkyboxDescriptorSetLayout();
@@ -649,6 +651,8 @@ private:
     rhi::VulkanPipeline pipeline_;
     rhi::VulkanPipeline skinnedPipeline_;
     rhi::VulkanPipeline skyboxPipeline_;
+    // Immutable in the material set layout; see createShadowCompareSampler.
+    VkSampler shadowCompareSampler_ = VK_NULL_HANDLE;
     rhi::VulkanPipeline shadowPipeline_;
     // Alpha-tested shadow casters. Separate from shadowPipeline_ because the
     // depth-only pipeline has no fragment stage at all; this one adds the cutout

@@ -56,9 +56,63 @@
 
 namespace ve {
 
+// The shadow comparison sampler lives here, not in VulkanShadowMap, because the
+// material descriptor set layout binds it *immutably* and that layout is created
+// once for the renderer's lifetime -- while the shadow map is destroyed and
+// recreated whenever the cascade count changes. A sampler owned by the image
+// would leave the layout holding a dangling handle after the first such change.
+//
+// Immutable is not a style choice either. Metal wants a comparison sampler to be
+// a compile-time constant, so MoltenVK only permits the general mutable form
+// when VkPhysicalDevicePortabilitySubsetFeaturesKHR::mutableComparisonSamplers
+// is requested at device creation -- and that struct is gated behind
+// VK_ENABLE_BETA_EXTENSIONS. Baking the sampler into the layout is both the
+// portable route and the one that matches how the hardware wants it.
+void Renderer::createShadowCompareSampler()
+{
+    if (shadowCompareSampler_ != VK_NULL_HANDLE) {
+        return;
+    }
+
+    VkSamplerCreateInfo samplerInfo{};
+    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    // LINEAR is the entire point: with compareEnable the filter interpolates the
+    // *results* of the four depth tests, so one fetch returns a sub-texel
+    // gradient where the manual path could only average whole 0/1 verdicts.
+    samplerInfo.magFilter = VK_FILTER_LINEAR;
+    samplerInfo.minFilter = VK_FILTER_LINEAR;
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    samplerInfo.anisotropyEnable = VK_FALSE;
+    samplerInfo.maxAnisotropy = 1.0f;
+    samplerInfo.compareEnable = VK_TRUE;
+    samplerInfo.compareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    samplerInfo.minLod = 0.0f;
+    samplerInfo.maxLod = 1.0f;
+    // Outside the cascade the comparison must report "lit", and with
+    // LESS_OR_EQUAL that is a border depth of 1.0 -- opaque white.
+    samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+    samplerInfo.unnormalizedCoordinates = VK_FALSE;
+
+    VK_CHECK(vkCreateSampler(context_.vkDevice(), &samplerInfo, nullptr, &shadowCompareSampler_));
+    rhi::debug::setObjectName(
+        context_.vkDevice(), shadowCompareSampler_, VK_OBJECT_TYPE_SAMPLER, "ShadowCompareSampler");
+}
+
+void Renderer::destroyShadowCompareSampler()
+{
+    if (shadowCompareSampler_ != VK_NULL_HANDLE) {
+        vkDestroySampler(context_.vkDevice(), shadowCompareSampler_, nullptr);
+        shadowCompareSampler_ = VK_NULL_HANDLE;
+    }
+}
+
 void Renderer::createMaterialDescriptorSetLayout()
 {
-    std::array<VkDescriptorSetLayoutBinding, 13> bindings{};
+    createShadowCompareSampler();
+    std::array<VkDescriptorSetLayoutBinding, 14> bindings{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[0].descriptorCount = 1;
@@ -131,6 +185,16 @@ void Renderer::createMaterialDescriptorSetLayout()
     bindings[12].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[12].descriptorCount = 1;
     bindings[12].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    // The cascaded shadow map again, through a depth-comparison sampler, for
+    // hardware PCF. Binding 1 stays a plain sampler2DArray because several
+    // consumers want the raw stored depth; only the bindless shading path reads
+    // this one, and only as a sampler2DArrayShadow.
+    bindings[13].binding = 13;
+    bindings[13].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[13].descriptorCount = 1;
+    bindings[13].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[13].pImmutableSamplers = &shadowCompareSampler_;
 
     // Set 0 binding 0 is the base color texture, binding 1 is the cascaded
     // shadow-map array, binding 2 is the tangent-space normal map, and binding 3 is the
@@ -886,7 +950,9 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     // Twelve samplers and one uniform buffer per set.
     std::array<VkDescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[0].descriptorCount = kMaxMaterialDescriptorSets * 12;
+    // 13 combined image samplers per set: bindings 0-10 and 12-13. Binding 11
+    // is the probe params uniform buffer and is counted below.
+    poolSizes[0].descriptorCount = kMaxMaterialDescriptorSets * 13;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSizes[1].descriptorCount = kMaxMaterialDescriptorSets;
 
@@ -913,6 +979,11 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     shadowInfo.sampler = shadowMap_.sampler();
     shadowInfo.imageView = shadowMap_.imageView();
     shadowInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+
+    // Same image and layout, binding 13. The sampler is immutable in the layout,
+    // so this field is ignored -- left null to say so rather than to save a line.
+    VkDescriptorImageInfo shadowCompareInfo = shadowInfo;
+    shadowCompareInfo.sampler = VK_NULL_HANDLE;
 
     VkDescriptorImageInfo normalInfo{};
     normalInfo.sampler = material.normalTexture->sampler();
@@ -997,7 +1068,7 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
         punctualAtlasAvailable ? punctualShadows_.atlas().imageView() : shadowMap_.layerImageView(0);
     punctualShadowInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
 
-    std::array<VkWriteDescriptorSet, 13> writes{};
+    std::array<VkWriteDescriptorSet, 14> writes{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = material.descriptorSet;
     writes[0].dstBinding = 0;
@@ -1086,6 +1157,8 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     writes[11].pBufferInfo = &probeParamsInfo;
     makeWrite(12, 12, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
     writes[12].pImageInfo = &ambientOcclusionInfo;
+    makeWrite(13, 13, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+    writes[13].pImageInfo = &shadowCompareInfo;
 
     // The material descriptor stores sampled images only: base color at binding 0,
     // cascaded shadow-map array at binding 1, normal map at binding 2, and metallic-roughness

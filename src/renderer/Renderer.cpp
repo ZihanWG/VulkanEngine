@@ -229,6 +229,11 @@ Renderer::~Renderer()
         // PostProcessStack owns the post-process sampler/pool/resources and frees
         // them in its destructor (RAII), so nothing post-process to free here.
     }
+    // Outside the initialized_ guard on purpose: this sampler is created while
+    // building the descriptor set layout, before initialization completes, so a
+    // failure during init would otherwise leak it -- which is exactly how it was
+    // found.
+    destroyShadowCompareSampler();
 }
 
 // Wrapper around PostProcessStack::createPostProcessResources that keeps the
