@@ -14,6 +14,7 @@
 #include "renderer/VolumetricFogPass.h"
 #include "renderer/DepthPyramid.h"
 #include "renderer/DynamicResolution.h"
+#include "renderer/OcclusionYield.h"
 #include "renderer/GpuCulling.h"
 #include "renderer/FrameResources.h"
 #include "renderer/GpuProfiler.h"
@@ -382,6 +383,7 @@ private:
     void updateVisibleBucketRanges();
     void sortTransparentDrawItems();
     void buildShadowDrawItems(uint32_t cascadeIndex, const renderer::Frustum& lightFrustum);
+    void updateOcclusionYield(uint32_t frameIndex);
     void buildUnionShadowDrawItems(uint32_t cascadeCount);
     void buildShadowMeshDrawBatches();
     void buildMeshDrawBatchesForItems(const std::vector<DrawItem>& drawItems,
@@ -411,6 +413,10 @@ private:
     // True when the cascades render as one multiview pass rather than one pass
     // each. Requires the device feature; the fallback is the original loop.
     [[nodiscard]] bool isLayeredCascadeRenderingActive() const;
+    // Whether anything will read the depth pyramid, i.e. whether building it
+    // this frame is worth anything.
+    [[nodiscard]] bool isDepthPyramidBuildRequired() const;
+    [[nodiscard]] const char* occlusionYieldStateName() const;
     void ensureDepthPyramidShaderReadLayout(VkCommandBuffer commandBuffer);
     void recordDepthPyramidCommands(VkCommandBuffer commandBuffer, bool midFrame = false);
     [[nodiscard]] renderer::RenderGraphFrameResources renderGraphFrameResources();
@@ -954,6 +960,11 @@ private:
     // path; frameTwoPhaseOcclusionActive_ is the per-frame resolved predicate.
     bool useTwoPhaseOcclusion_ = true;
     bool useLayeredCascades_ = false;
+    bool useAdaptiveOcclusion_ = true;
+    renderer::OcclusionYieldController occlusionYield_;
+    // Per frame slot: was occlusion culling running when this slot's cull
+    // counters were written? Sized with frames_.
+    std::vector<uint8_t> frameOcclusionTested_;
     bool frameTwoPhaseOcclusionActive_ = false;
     bool useAsyncCompute_ = true;
     bool frameAsyncComputeActive_ = false;

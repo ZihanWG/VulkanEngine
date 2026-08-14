@@ -146,6 +146,7 @@ Renderer::Renderer(Window& window) : window_(window)
     context_.initialize(window_, shaderDirectory());
 
     frames_.resize(rhi::kMaxFramesInFlight);
+    frameOcclusionTested_.assign(frames_.size(), 0u);
     screenshotCapture_.initialize(
         context_, static_cast<uint32_t>(frames_.size()), portfolioScreenshotDirectory());
     gpuProfiler_.initialize(context_, static_cast<uint32_t>(frames_.size()));
@@ -292,6 +293,8 @@ void Renderer::drawFrame()
     // Straight after the readback that refreshes gpuFrameTimeHistory_, so the
     // controller always sees the freshest GPU frame total available.
     updateDynamicResolution();
+    // Before resetGpuCullFrameCounters clears this slot's readback-ready flag.
+    updateOcclusionYield(currentFrame_);
     pushCullingHistorySample(currentFrame_);
     pushExposureHistorySample();
 
@@ -862,6 +865,10 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
             message << "\n"
                     << "  depth pyramid mips: " << depthPyramid_.mipLevels() << "\n"
                     << "  occlusion culling: " << (isGpuOcclusionCullingActive() ? "enabled" : "disabled") << "\n"
+                    << "  occlusion yield: " << occlusionYieldStateName()
+                    << " zero=" << occlusionYield_.zeroYieldFrames()
+                    << " sinceProbe=" << occlusionYield_.framesSinceProbe()
+                    << " pyramid=" << (isDepthPyramidBuildRequired() ? "building" : "skipped") << "\n"
                     << "  batches: " << batchCount << "\n"
                     << "  indirect count path: "
                     << (isFrameIndirectCountPathActive(frameIndex) ? "enabled" : "disabled");
@@ -1242,6 +1249,7 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
         useGpuOcclusionCulling_ = settings.enableGpuOcclusionCulling && settings.useGpuCulling;
         useTwoPhaseOcclusion_ = settings.enableTwoPhaseOcclusion;
         useLayeredCascades_ = settings.enableLayeredCascades;
+        useAdaptiveOcclusion_ = settings.enableAdaptiveOcclusion;
         useAsyncCompute_ = settings.enableAsyncCompute;
         useBindlessMaterialTextures_ = settings.enableBindlessMaterialTextures;
         // Assigned unguarded here: this runs before the punctual shadow
@@ -1257,6 +1265,7 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
         }
         useGpuOcclusionCulling_ = settings.enableGpuOcclusionCulling;
         useTwoPhaseOcclusion_ = settings.enableTwoPhaseOcclusion;
+        useAdaptiveOcclusion_ = settings.enableAdaptiveOcclusion;
         useAsyncCompute_ = settings.enableAsyncCompute;
         if (!settings.punctualShadows.gpuCasterCulling || punctualShadows_.cullAvailable()) {
             useGpuPunctualShadowCulling_ = settings.punctualShadows.gpuCasterCulling;
@@ -1304,6 +1313,7 @@ RuntimeSettings Renderer::captureRuntimeSettings() const
     settings.enableGpuOcclusionCulling = useGpuOcclusionCulling_;
     settings.enableTwoPhaseOcclusion = useTwoPhaseOcclusion_;
     settings.enableLayeredCascades = useLayeredCascades_;
+    settings.enableAdaptiveOcclusion = useAdaptiveOcclusion_;
     settings.useClusteredLighting = useClusteredLighting_;
     settings.enableAsyncCompute = useAsyncCompute_;
     settings.enableBindlessMaterialTextures = useBindlessMaterialTextures_;
@@ -1593,6 +1603,33 @@ bool Renderer::readGpuShadowVisibleCount(uint32_t frameIndex, uint32_t& visibleC
 bool Renderer::isGpuCullingActive() const
 {
     return useGpuCulling_ && gpuCulling_.mainResourcesReady(static_cast<uint32_t>(frames_.size()));
+}
+
+const char* Renderer::occlusionYieldStateName() const
+{
+    switch (occlusionYield_.state()) {
+    case renderer::OcclusionYieldController::State::Active:
+        return "active";
+    case renderer::OcclusionYieldController::State::Suspended:
+        return "suspended";
+    case renderer::OcclusionYieldController::State::Probing:
+        return "probing";
+    }
+    return "unknown";
+}
+
+bool Renderer::isDepthPyramidBuildRequired() const
+{
+    // GPU occlusion culling is the pyramid's only consumer -- nothing else reads
+    // it -- so with occlusion off the build is pure cost. Measured at 0.68 ms on
+    // the default scene, which it was paying every frame regardless.
+    //
+    // Deliberately does NOT test depthPyramid_.valid() the way
+    // isGpuOcclusionCullingActive does: validity is an *output* of the build, so
+    // gating the build on it would latch the pyramid off forever after one skip.
+    return useGpuOcclusionCulling_ && isGpuCullingActive() && depthPyramid_.buildAvailable() &&
+           depthPyramid_.image() != VK_NULL_HANDLE && depthPyramid_.mipLevels() > 0 &&
+           occlusionYield_.shouldBuildPyramid();
 }
 
 bool Renderer::isGpuOcclusionCullingActive() const

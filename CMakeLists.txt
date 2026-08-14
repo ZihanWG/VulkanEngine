@@ -209,6 +209,7 @@ add_library(VulkanEngineCore STATIC
     src/core/Logger.cpp
     src/renderer/CascadeMath.cpp
     src/renderer/DynamicResolution.cpp
+    src/renderer/OcclusionYield.cpp
     src/renderer/EditorCamera.cpp
     src/renderer/GltfSkinnedImport.cpp
     src/renderer/IrradianceProbes.cpp

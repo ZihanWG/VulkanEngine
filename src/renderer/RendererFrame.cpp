@@ -1006,6 +1006,12 @@ void Renderer::updateGpuCullInputBuffer(uint32_t frameIndex)
     const bool occlusionEnabledThisFrame =
         isGpuOcclusionCullingActive() &&
         (frameTwoPhaseOcclusionActive_ || previousFrameDepthValidForOcclusion());
+    // Remembered per frame SLOT, not per frame: the counters this slot produces
+    // are not read back until it comes round again, and the yield controller has
+    // to know whether occlusion was running when they were written.
+    if (frameIndex < frameOcclusionTested_.size()) {
+        frameOcclusionTested_[frameIndex] = occlusionEnabledThisFrame ? 1u : 0u;
+    }
     uploadGpuCullFrameParams(frameIndex, occlusionEnabledThisFrame);
 
     if (!frameMeshLodTable_.empty()) {
@@ -1075,6 +1081,9 @@ void Renderer::updateGpuShadowCullInputBuffer(uint32_t frameIndex)
 
     // Same params as the main dispatch (occlusion off): both read one buffer, so
     // writing identical values keeps the result independent of upload order.
+    if (frameIndex < frameOcclusionTested_.size()) {
+        frameOcclusionTested_[frameIndex] = 0u;
+    }
     uploadGpuCullFrameParams(frameIndex, /*occlusionEnabledThisFrame=*/false);
 
     if (!frameMeshLodTable_.empty()) {
@@ -1536,6 +1545,44 @@ void Renderer::buildMainCullingFrameData(uint32_t frameIndex, const renderer::Fr
         frameTwoPhaseOcclusionActive_ = false;
         updateIndirectDrawBuffer(frameIndex);
     }
+}
+
+// Feeds the yield controller the completed frame's occlusion result so it can
+// decide whether the next pyramid build is worth doing.
+//
+// Call site matters: this has to run after the fence wait and BEFORE
+// resetGpuCullFrameCounters, which zeroes the readback-ready flag for the slot
+// about to be reused. Called from frame prep instead, readMainCounters always
+// returns false and the controller sits in Active forever with zero==0.
+void Renderer::updateOcclusionYield(uint32_t frameIndex)
+{
+    if (!useAdaptiveOcclusion_) {
+        // Held active so that turning the setting back on does not inherit a
+        // suspension decided while nobody was acting on it.
+        occlusionYield_.reset();
+        return;
+    }
+
+    // Whether occlusion ran in the frame that WROTE these counters, which is two
+    // frames back, not whether it is enabled now. Reading the live state instead
+    // is the bug this replaced: a probe frame saw occlusionTestRan == true but
+    // counters from the suspended frame that last used the slot, so every probe
+    // read a yield of zero and re-suspended, and the controller could never
+    // recover once suspended.
+    const bool occlusionTestRan =
+        frameIndex < frameOcclusionTested_.size() && frameOcclusionTested_[frameIndex] != 0u;
+    renderer::GpuCullCounters counters{};
+    if (!occlusionTestRan || !readGpuCullCounters(frameIndex, counters)) {
+        occlusionYield_.update(0, /*occlusionTestRan=*/false);
+        return;
+    }
+
+    // Phase-2 rescues were occluded in phase 1 and drawn anyway, so they are not
+    // yield -- counting them would keep a scene alive on work it did not save.
+    const uint32_t culled = counters.occlusionCulledDrawItems > counters.phase2RescuedDrawItems
+                                ? counters.occlusionCulledDrawItems - counters.phase2RescuedDrawItems
+                                : 0;
+    occlusionYield_.update(culled, /*occlusionTestRan=*/true);
 }
 
 void Renderer::uploadObjectFrameData(uint32_t frameIndex)

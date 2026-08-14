@@ -120,6 +120,7 @@
         "enableGpuOcclusionCulling": true,
         "enableTwoPhaseOcclusion": true,
         "enableLayeredCascades": false,
+        "enableAdaptiveOcclusion": true,
         "useClusteredLighting": true,
         "enableAsyncCompute": true,
         "enableBindlessMaterialTextures": true

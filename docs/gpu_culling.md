@@ -134,3 +134,53 @@ The GPU profiler adds a `DepthPyramid` timestamp scope. Main GPU culling timing 
 - The default glTF/fallback scene may not show high occlusion rejection because it has too few draw items and little deliberate occluder coverage.
 - Main depth must be stored after `MainHDRPass`, which costs bandwidth compared with the previous discardable depth attachment.
 - Shadow caster culling does not use Hi-Z occlusion.
+
+## Occlusion culling that suspends itself
+
+Hi-Z occlusion culling earns its keep on a depth-complex scene and is dead weight
+on an open one, and which of those is on screen is not known until it has been
+tried. On the default portfolio scene it removed **0 draw items in every sampled
+frame** while the pyramid it needs cost 1.36 ms -- 8% of the frame.
+
+`OcclusionYieldController` (`renderer/OcclusionYield.h`, Vulkan-free and unit
+tested) watches the yield and stops paying for what it is not getting:
+
+- **Active** -- build the pyramid every frame. After 60 consecutive tested frames
+  of zero yield, suspend.
+- **Suspended** -- stop building. Occlusion culling switches itself off as a
+  consequence, because the test already requires a valid pyramid; nothing else
+  had to be gated.
+- **Probing** -- every 180 frames, build again for long enough to get one real
+  measurement. Yield above zero returns to Active; still zero re-suspends.
+
+Suspending is always safe: skipping occlusion culling can only draw *more* than
+necessary, never less, so a wrong decision costs frame time and never pixels.
+That is what lets the policy be this aggressive. `enableAdaptiveOcclusion`
+(default on) turns it off for A/B.
+
+Measured A/B/A/B at scale 1.0, default scene, control back within 0.14%:
+
+| | Frame total | `DepthPyramid` | `DepthPyramidMid` | Visible draw items |
+| --- | --- | --- | --- | --- |
+| always on | 16.494 / 16.517 ms | 0.683 / 0.681 | 0.637 / 0.635 | 11 |
+| adaptive | 15.024 / 14.923 ms | — | — | 11 |
+
+**-1.53 ms, -9.2%**, with the same draw count and the same average scene
+luminance. In the geometry stress scene, where occlusion culls 670 items, the
+controller stays Active and never suspends.
+
+### The counters lag, and that broke the probe once
+
+The cull counters come back through a per-frame-slot readback buffer, so the
+numbers read at the top of a frame were written two frames earlier. The first
+version asked "is occlusion culling enabled right now?" to decide whether the
+counters meant anything. On a probe frame that is true -- but the counters still
+belong to the suspended frame that last used the slot, so every probe read a
+yield of zero and immediately re-suspended. Once suspended, the controller could
+never recover, which is exactly the failure that matters: a depth-complex scene
+would silently lose occlusion culling.
+
+The flag is now recorded per frame *slot* when the cull is issued and read back
+alongside that slot's counters. Verified on the GPU by forcing the controller to
+start suspended and loading the stress scene: it probes at frame 180 and returns
+to Active. The unit tests cover the state machine; this part needed the device.
