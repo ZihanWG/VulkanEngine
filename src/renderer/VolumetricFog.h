@@ -9,8 +9,8 @@
 //
 // The fog volume is a 3D texture over the view frustum: XY are screen tiles and
 // Z is an exponential depth slicing, the same shape the clustered lighting grid
-// uses. It is deliberately *not* the same grid. The light grid is 16x9x24,
-// which is far too coarse for fog, and fog wants its own much nearer far plane
+// uses. It is deliberately *not* the same grid. The light grid is 32x18x24,
+// which is still far too coarse for fog, and fog wants its own much nearer far plane
 // so the slices land where fog is actually visible rather than being spread out
 // to the scene's far plane. What is shared is the addressing scheme, so a fog
 // froxel can find the light cluster covering it and reuse its light list.
