@@ -293,4 +293,48 @@ private:
 // that can actually write into the slot.
 [[nodiscard]] Frustum computeSpotShadowFrustum(const glm::mat4& viewProjection);
 
+// What the ranking needs to know about one light: enough to rank and size it,
+// and nothing about GPU state.
+struct PunctualShadowCandidateInput {
+    // Already-computed projected pixel radius (see punctualShadowProjectedRadius),
+    // so the ranking needs no camera or projection of its own.
+    float projectedRadius = 0.0f;
+    float range = 0.0f;
+    bool isSpot = false;
+};
+
+// --- Atlas assignment policy ------------------------------------------------
+//
+// Who gets a tile, and how big. This is the part of the punctual-shadow path that
+// is pure decision rather than GPU plumbing: it ranks the lights, picks a size
+// class each, and applies the point-light budget. The caller then walks the
+// result and does the Vulkan-side work (inserting into the atlas, writing the
+// slot back into GpuLight), which is why the two are separate.
+//
+// Extracted so the ranking can be tested. Assignment churn -- lights gaining and
+// losing shadows between frames -- is what reads as popping, and the tiebreak that
+// prevents it is exactly the kind of thing that gets refactored away by accident.
+
+// One light's ranking and the tile size it earned.
+struct PunctualShadowAssignment {
+    size_t lightIndex = 0;
+    float projectedRadius = 0.0f;
+    uint32_t sizeClass = 0;
+    bool isSpot = false;
+};
+
+// Rank candidates by projected size, largest first, and assign a size class to
+// each. Spots are returned in rank order; point lights beyond `pointLightBudget`
+// are dropped, because one point light costs six tiles of the 64 available and
+// would otherwise starve everything behind it.
+//
+// Ties break on ascending light index, deliberately: equally-ranked lights must
+// not shuffle between frames, or their shadows flicker.
+//
+// Appends to `assignments` after clearing it. Lights with a non-positive range
+// are skipped -- they illuminate nothing, so a tile spent on one is wasted.
+void rankPunctualShadowAssignments(const std::vector<PunctualShadowCandidateInput>& candidates,
+                                   uint32_t pointLightBudget,
+                                   std::vector<PunctualShadowAssignment>& assignments);
+
 } // namespace ve::renderer

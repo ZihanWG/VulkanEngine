@@ -325,45 +325,35 @@ void Renderer::updatePunctualShadowSlots(uint32_t frameIndex, float aspectRatio)
         static_cast<float>(renderResolution_.extent().height) * 0.5f * camera_.projectionMatrix(aspectRatio)[1][1];
 
     punctualShadowCandidates_.clear();
-    for (size_t lightIndex = 0; lightIndex < lights.size(); ++lightIndex) {
-        const renderer::GpuLight& light = lights[lightIndex];
-        const bool isSpot = light.directionType.w > 0.5f;
-
-        PunctualShadowCandidate candidate{};
-        candidate.lightIndex = lightIndex;
-        candidate.isSpot = isSpot;
+    punctualShadowCandidates_.reserve(lights.size());
+    for (const renderer::GpuLight& light : lights) {
+        renderer::PunctualShadowCandidateInput candidate{};
+        candidate.isSpot = light.directionType.w > 0.5f;
+        candidate.range = light.positionRange.w;
         candidate.projectedRadius = renderer::punctualShadowProjectedRadius(
             glm::vec3(light.positionRange), light.positionRange.w, camera_.position, std::abs(projScaleY));
         punctualShadowCandidates_.push_back(candidate);
     }
 
-    std::sort(punctualShadowCandidates_.begin(),
-              punctualShadowCandidates_.end(),
-              [](const PunctualShadowCandidate& left, const PunctualShadowCandidate& right) {
-                  if (left.projectedRadius != right.projectedRadius) {
-                      return left.projectedRadius > right.projectedRadius;
-                  }
-                  // Stable tiebreak so a frame's assignment does not shuffle
-                  // between equally-ranked lights and flicker their shadows.
-                  return left.lightIndex < right.lightIndex;
-              });
+    // Ranking, size classes and the point-light budget all live in
+    // renderer/PunctualShadowAtlas.h, where they are unit-tested. What stays here
+    // is the GPU-side half: inserting into the atlas and writing the resulting
+    // slot back into the light.
+    renderer::rankPunctualShadowAssignments(punctualShadowCandidates_,
+                                            static_cast<uint32_t>(std::max(maxShadowCastingPointLights_, 0)),
+                                            punctualShadowAssignments_);
 
-    const uint32_t pointLightBudget = static_cast<uint32_t>(std::max(maxShadowCastingPointLights_, 0));
-    uint32_t pointLightsShadowed = 0;
+    for (const renderer::PunctualShadowAssignment& assignment : punctualShadowAssignments_) {
+        renderer::GpuLight& light = lights[assignment.lightIndex];
 
-    for (const PunctualShadowCandidate& candidate : punctualShadowCandidates_) {
-        renderer::GpuLight& light = lights[candidate.lightIndex];
-        const uint32_t sizeClass =
-            renderer::punctualShadowSizeClassForRadius(candidate.projectedRadius, !candidate.isSpot);
-
-        if (candidate.isSpot) {
+        if (assignment.isSpot) {
             const float cosOuter = std::clamp(light.spotScaleOffset.x, -1.0f, 1.0f);
             const float outerAngle = std::acos(cosOuter);
             const uint32_t slot = punctualShadows_.addSpotLight(glm::vec3(light.positionRange),
                                                                 glm::vec3(light.directionType),
                                                                 outerAngle,
                                                                 light.positionRange.w,
-                                                                sizeClass);
+                                                                assignment.sizeClass);
             // A full atlas degrades to an unshadowed light rather than an error,
             // and lower-ranked lights may still fit in a smaller leftover tile,
             // so this keeps walking instead of breaking out.
@@ -371,18 +361,13 @@ void Renderer::updatePunctualShadowSlots(uint32_t frameIndex, float aspectRatio)
             continue;
         }
 
-        if (pointLightsShadowed >= pointLightBudget) {
-            continue;
-        }
-
-        const uint32_t baseSlot =
-            punctualShadows_.addPointLight(glm::vec3(light.positionRange), light.positionRange.w, sizeClass);
+        const uint32_t baseSlot = punctualShadows_.addPointLight(
+            glm::vec3(light.positionRange), light.positionRange.w, assignment.sizeClass);
         if (baseSlot == renderer::kInvalidPunctualShadowSlot) {
             continue;
         }
 
         light.spotScaleOffset.z = renderer::punctualShadowSlotToFloat(baseSlot);
-        ++pointLightsShadowed;
     }
 
     // Measure how much the assignment moved. Lights popping in and out of the

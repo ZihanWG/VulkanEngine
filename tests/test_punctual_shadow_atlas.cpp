@@ -635,3 +635,113 @@ TEST_CASE("The GPU slot record keeps its std430 layout", "[shadowatlas]")
     STATIC_REQUIRE(offsetof(GpuShadowSlot, atlasUvOffsetScale) == 64);
     STATIC_REQUIRE(offsetof(GpuShadowSlot, params) == 80);
 }
+
+// --- Assignment ranking -----------------------------------------------------
+
+namespace {
+
+ve::renderer::PunctualShadowCandidateInput candidate(float projectedRadius, float range = 10.0f, bool isSpot = true)
+{
+    ve::renderer::PunctualShadowCandidateInput input{};
+    input.projectedRadius = projectedRadius;
+    input.range = range;
+    input.isSpot = isSpot;
+    return input;
+}
+
+std::vector<ve::renderer::PunctualShadowAssignment> rank(
+    const std::vector<ve::renderer::PunctualShadowCandidateInput>& candidates, uint32_t pointBudget = 4)
+{
+    std::vector<ve::renderer::PunctualShadowAssignment> assignments;
+    ve::renderer::rankPunctualShadowAssignments(candidates, pointBudget, assignments);
+    return assignments;
+}
+
+} // namespace
+
+TEST_CASE("Assignment ranks larger projected radii first")
+{
+    const auto assignments = rank({candidate(10.0f), candidate(500.0f), candidate(100.0f)});
+
+    REQUIRE(assignments.size() == 3);
+    CHECK(assignments[0].lightIndex == 1);
+    CHECK(assignments[1].lightIndex == 2);
+    CHECK(assignments[2].lightIndex == 0);
+}
+
+TEST_CASE("Equal radii break on ascending light index so assignment cannot shuffle")
+{
+    // The tiebreak is what stops equally-ranked lights swapping between frames,
+    // which is what reads as their shadows flickering.
+    const auto assignments = rank({candidate(50.0f), candidate(50.0f), candidate(50.0f)});
+
+    REQUIRE(assignments.size() == 3);
+    CHECK(assignments[0].lightIndex == 0);
+    CHECK(assignments[1].lightIndex == 1);
+    CHECK(assignments[2].lightIndex == 2);
+}
+
+TEST_CASE("Lights with no range are not assigned a tile")
+{
+    const auto assignments = rank({candidate(100.0f, /*range=*/0.0f), candidate(10.0f, /*range=*/5.0f)});
+
+    REQUIRE(assignments.size() == 1);
+    CHECK(assignments[0].lightIndex == 1);
+}
+
+TEST_CASE("The point-light budget caps point lights without touching spots")
+{
+    const std::vector<ve::renderer::PunctualShadowCandidateInput> candidates{
+        candidate(400.0f, 10.0f, /*isSpot=*/false),
+        candidate(300.0f, 10.0f, /*isSpot=*/false),
+        candidate(200.0f, 10.0f, /*isSpot=*/false),
+        candidate(100.0f, 10.0f, /*isSpot=*/true),
+    };
+    const auto assignments = rank(candidates, /*pointBudget=*/2);
+
+    REQUIRE(assignments.size() == 3);
+    CHECK_FALSE(assignments[0].isSpot);
+    CHECK_FALSE(assignments[1].isSpot);
+    // The spot survives regardless of how many point lights were dropped.
+    CHECK(assignments[2].isSpot);
+}
+
+TEST_CASE("The budget keeps the largest point lights, not the first seen")
+{
+    const std::vector<ve::renderer::PunctualShadowCandidateInput> candidates{
+        candidate(10.0f, 10.0f, /*isSpot=*/false),
+        candidate(900.0f, 10.0f, /*isSpot=*/false),
+    };
+    const auto assignments = rank(candidates, /*pointBudget=*/1);
+
+    REQUIRE(assignments.size() == 1);
+    CHECK(assignments[0].lightIndex == 1);
+}
+
+TEST_CASE("A zero point-light budget drops every point light")
+{
+    const auto assignments = rank({candidate(400.0f, 10.0f, false), candidate(200.0f, 10.0f, false)},
+                                  /*pointBudget=*/0);
+    CHECK(assignments.empty());
+}
+
+TEST_CASE("A point light is demoted a size class against a spot of equal footprint")
+{
+    const auto spot = rank({candidate(1024.0f, 10.0f, /*isSpot=*/true)});
+    const auto point = rank({candidate(1024.0f, 10.0f, /*isSpot=*/false)});
+
+    REQUIRE(spot.size() == 1);
+    REQUIRE(point.size() == 1);
+    // Six tiles for a point light against one for a spot, and each cube face
+    // covers only 90 degrees, so equal footprints do not earn equal resolution.
+    CHECK(point[0].sizeClass > spot[0].sizeClass);
+}
+
+TEST_CASE("Ranking clears its output rather than appending across calls")
+{
+    std::vector<ve::renderer::PunctualShadowAssignment> assignments;
+    ve::renderer::rankPunctualShadowAssignments({candidate(10.0f), candidate(20.0f)}, 4, assignments);
+    REQUIRE(assignments.size() == 2);
+    ve::renderer::rankPunctualShadowAssignments({candidate(30.0f)}, 4, assignments);
+    CHECK(assignments.size() == 1);
+}

@@ -42,7 +42,13 @@ gated on a samplable main depth image (`available()`), same as SSR.
    noise and upsamples in one pass without bleeding across depth edges. Output is
    the full-res `AmbientOcclusion` target (owned by PostProcessStack).
 3. **MainHDRPass** (the *next* frame) — samples the AO target at set 0 binding 12
-   and multiplies it into the ambient term only. Because GTAO runs after the main
+   and multiplies it into the ambient *diffuse* term only. The specular IBL is
+   left unoccluded: AO answers the diffuse hemisphere-visibility question, and
+   reusing it for specular was always an approximation. It also has to stay off
+   the specular half for SSR to stay conservative — the trace subtracts the
+   specular IBL it replaces and cannot see a factor applied after the fact, so an
+   AO-attenuated `specularIbl` would be over-subtracted into negative scene
+   colour in exactly the creases AO darkens. Because GTAO runs after the main
    pass, what the main pass reads is the previous frame's result, so the sample is
    reprojected along the motion vector the shader already computes for TAA. A
    reprojection landing off screen has no history and falls back to unoccluded.

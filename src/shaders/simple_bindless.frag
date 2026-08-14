@@ -804,12 +804,23 @@ void main()
         diffuseIbl = probeIrradiance * probeParams.gridOrigin.w * kD;
     }
 
-    vec3 ambient = diffuseIbl + specularIbl + vAmbientColor * baseColor * 0.05;
-
     // Ambient occlusion belongs on the ambient term alone. Multiplying the
     // composited scene colour by it, which is what the composite pass used to
     // do, darkens direct lighting too -- a crease in full sunlight should not go
     // dark because geometry occludes the *sky*.
+    //
+    // Within ambient it lands on the diffuse half only. AO answers "how much of
+    // the hemisphere reaches this point", which is the diffuse question; the
+    // specular equivalent is specular occlusion, a different quantity this
+    // engine does not compute, and reusing the diffuse term for it was always an
+    // approximation.
+    //
+    // Keeping it off the specular half is also what makes SSR conservative. The
+    // trace subtracts the specular IBL it replaces (see ssr_trace.frag) and
+    // cannot see this factor, so an AO-attenuated specularIbl would be
+    // over-subtracted: the reflection would go negative in exactly the creases
+    // AO darkens, and scene colour is R16G16B16A16_SFLOAT, so that negative
+    // reaches bloom and the exposure histogram instead of clamping at the pixel.
     //
     // The AO image still holds the previous frame's result at this point, since
     // the GTAO pass runs after this one, so the sample is reprojected along the
@@ -817,6 +828,7 @@ void main()
     // lands off screen has no history to read and falls back to unoccluded --
     // occlusion appearing a frame late is far less objectionable than sampling
     // an unrelated pixel.
+    vec3 ambientDiffuse = diffuseIbl + vAmbientColor * baseColor * 0.05;
     if (pc.aoAmbientStrength > 0.0) {
         vec2 screenUv = gl_FragCoord.xy / vec2(pc.screenWidth, pc.screenHeight);
         vec2 aoUv = screenUv - computeVelocity();
@@ -825,8 +837,10 @@ void main()
             occlusion =
                 texture(uAmbientOcclusion, veSubRectUv(aoUv, pc.aoUvScale, vec2(textureSize(uAmbientOcclusion, 0)))).r;
         }
-        ambient *= mix(1.0, occlusion, clamp(pc.aoAmbientStrength, 0.0, 1.0));
+        ambientDiffuse *= mix(1.0, occlusion, clamp(pc.aoAmbientStrength, 0.0, 1.0));
     }
+
+    vec3 ambient = ambientDiffuse + specularIbl;
     vec3 direct = (diffuse + specular) * vLightColor * normalLight * shadowFactor;
 
     // Punctual (point/spot) lights. When clustered culling ran this frame the

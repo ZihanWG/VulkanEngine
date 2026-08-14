@@ -23,12 +23,17 @@ GTAO pass (see [gtao.md](gtao.md)), which reuses this normal.
    - reconstructs the view-space position from depth (inverse of the same
      jittered projection the rasterizer used), decodes the world-space normal,
      and reflects the view ray;
-   - marches up to `maxSteps` fixed view-space steps (start offset jittered by
-     interleaved gradient noise, which TAA integrates), comparing ray depth
-     against the depth buffer with a view-space `thickness` test;
-   - refines the hit with `refinementSteps` bisection iterations;
-   - samples the scene-color copy at the hit and outputs
-     `color * fresnel * confidence * intensity` with
+   - marches up to `maxSteps` steps of equal *screen-space* stride along the
+     ray's projected segment (start offset jittered by interleaved gradient
+     noise, which TAA integrates), carrying `1/depth` — which is what varies
+     linearly across the screen — and inverting it per step to compare against
+     the depth buffer with a view-space `thickness` test;
+   - refines the hit with `refinementSteps` bisection iterations on the same
+     screen-space parameter;
+   - samples the scene-color copy at the hit and outputs the signed correction
+     `(color - prefilteredEnv) * specularWeight * replacement` (see
+     [Energy conservation](#energy-conservation)), where
+     `replacement = clamp(confidence * intensity, 0, 1)` and
      `confidence = screenEdgeFade * roughnessFade * towardCameraFade`.
    The pipeline uses ONE + ONE additive blending into `SceneColorHDR` (LOAD),
    so the shader pre-multiplies every weight and a zero output is a no-op.
@@ -44,6 +49,13 @@ reflections neighborhood clamping and temporal accumulation for free.
 `intensity`, `maxRoughness` (surfaces rougher than this trace nothing — the
 roughness fade approaches zero there), `screenEdgeFade`. All clamped in
 `clampRuntimeSettings` (unit-tested) and persisted with the other settings.
+
+`intensity` scales how far the reflection *replaces* the IBL, and the combined
+weight saturates at 1. Its 0–4 range predates the conservation fix, when the
+output was purely additive and 4.0 just meant "brighter"; against a signed
+correction an unclamped 4.0 would subtract four times the specular IBL the main
+pass wrote, pushing scene colour negative into bloom and the exposure histogram.
+Above 1.0 it now means "reach full replacement at lower confidence".
 
 Requires a samplable main depth image (same gate as SSAO); otherwise the panel
 reports unavailable and the passes are skipped.

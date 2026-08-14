@@ -846,15 +846,10 @@ private:
     // Point lights cost six tiles each against 64 total, so how many may cast is
     // a budget the user can see and set rather than an implicit cap.
     int maxShadowCastingPointLights_ = 4;
-    // One punctual light ranked for atlas assignment.
-    struct PunctualShadowCandidate {
-        size_t lightIndex = 0;
-        float projectedRadius = 0.0f;
-        bool isSpot = false;
-    };
-    // Scratch: every punctual light ranked by projected size. Member so the
+    // Scratch for the ranking in renderer/PunctualShadowAtlas.h. Members so the
     // per-frame assignment does not reallocate every frame.
-    std::vector<PunctualShadowCandidate> punctualShadowCandidates_;
+    std::vector<renderer::PunctualShadowCandidateInput> punctualShadowCandidates_;
+    std::vector<renderer::PunctualShadowAssignment> punctualShadowAssignments_;
     // Per-light assignment state carried across frames, indexed by light index.
     // Light indices are stable frame to frame because updateDemoLights rebuilds
     // the swarm in a deterministic order; a scene with dynamic light lifetimes

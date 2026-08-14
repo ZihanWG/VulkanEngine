@@ -325,4 +325,49 @@ Frustum computeSpotShadowFrustum(const glm::mat4& viewProjection)
     return Frustum::fromViewProjection(viewProjection);
 }
 
+void rankPunctualShadowAssignments(const std::vector<PunctualShadowCandidateInput>& candidates,
+                                   uint32_t pointLightBudget,
+                                   std::vector<PunctualShadowAssignment>& assignments)
+{
+    assignments.clear();
+    assignments.reserve(candidates.size());
+
+    for (size_t lightIndex = 0; lightIndex < candidates.size(); ++lightIndex) {
+        const PunctualShadowCandidateInput& candidate = candidates[lightIndex];
+        if (!(candidate.range > 0.0f)) {
+            continue;
+        }
+        PunctualShadowAssignment assignment{};
+        assignment.lightIndex = lightIndex;
+        assignment.isSpot = candidate.isSpot;
+        assignment.projectedRadius = candidate.projectedRadius;
+        assignments.push_back(assignment);
+    }
+
+    std::sort(assignments.begin(),
+              assignments.end(),
+              [](const PunctualShadowAssignment& left, const PunctualShadowAssignment& right) {
+                  if (left.projectedRadius != right.projectedRadius) {
+                      return left.projectedRadius > right.projectedRadius;
+                  }
+                  // Stable tiebreak so a frame's assignment does not shuffle
+                  // between equally-ranked lights and flicker their shadows.
+                  return left.lightIndex < right.lightIndex;
+              });
+
+    uint32_t pointLightsAssigned = 0;
+    size_t kept = 0;
+    for (PunctualShadowAssignment& assignment : assignments) {
+        assignment.sizeClass = punctualShadowSizeClassForRadius(assignment.projectedRadius, !assignment.isSpot);
+        if (!assignment.isSpot) {
+            if (pointLightsAssigned >= pointLightBudget) {
+                continue;
+            }
+            ++pointLightsAssigned;
+        }
+        assignments[kept++] = assignment;
+    }
+    assignments.resize(kept);
+}
+
 } // namespace ve::renderer

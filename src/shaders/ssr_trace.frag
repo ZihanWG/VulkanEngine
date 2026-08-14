@@ -228,7 +228,16 @@ void main()
 
     float roughnessFade = 1.0 - clamp(roughness / maxRoughness, 0.0, 1.0);
     float confidence = screenEdgeFade(hitUV) * roughnessFade * towardCameraFade;
-    float intensity = max(params.weightParams.x, 0.0);
+
+    // Intensity scales how far the reflection *replaces* the IBL, so the combined
+    // weight has to saturate at 1. It used to scale a purely additive term, where
+    // the setting's 0..4 range simply meant "brighter"; against a signed
+    // correction the same 4.0 subtracts four times the specular IBL the main pass
+    // actually wrote. Scene colour goes negative, and it is R16G16B16A16_SFLOAT,
+    // so the negative survives into bloom and the exposure histogram rather than
+    // clamping at the pixel. Above 1.0 this now means "reach full replacement at
+    // lower confidence" instead of "over-subtract".
+    float replacement = clamp(confidence * max(params.weightParams.x, 0.0), 0.0, 1.0);
 
     // The same split-sum weighting the main pass applied to its specular IBL.
     // Reconstructed here so the two terms cancel rather than accumulate.
@@ -245,5 +254,5 @@ void main()
     // Signed on purpose. Where the traced reflection is darker than the
     // environment the correction is negative, which is what makes this a
     // replacement rather than an addition.
-    outReflection = vec4((reflectedColor - prefilteredColor) * specularWeight * confidence * intensity, 0.0);
+    outReflection = vec4((reflectedColor - prefilteredColor) * specularWeight * replacement, 0.0);
 }
