@@ -843,34 +843,7 @@ void Renderer::buildShadowMeshDrawBatches()
 void Renderer::buildMeshDrawBatchesForItems(const std::vector<DrawItem>& drawItems,
                                             std::vector<MeshDrawBatch>& batches) const
 {
-    const renderer::Mesh* currentMesh = nullptr;
-    RenderBucket currentBucket = RenderBucket::Opaque;
-    MeshDrawBatch* currentBatch = nullptr;
-    for (size_t drawItemIndex = 0; drawItemIndex < drawItems.size(); ++drawItemIndex) {
-        const DrawItem& drawItem = drawItems[drawItemIndex];
-        if (!drawItem.mesh || drawItem.frameDataIndex >= kMaxDrawItems) {
-            currentMesh = nullptr;
-            currentBatch = nullptr;
-            continue;
-        }
-
-        // A batch is one indirect draw with one pipeline bound, so it must not
-        // straddle a bucket boundary even when consecutive items share a mesh.
-        if (!currentBatch || currentMesh != drawItem.mesh || currentBucket != drawItem.bucket) {
-            MeshDrawBatch batch{};
-            batch.mesh = drawItem.mesh;
-            batch.beginDrawItem = static_cast<uint32_t>(drawItemIndex);
-            batch.compactedCommandOffset = static_cast<uint32_t>(drawItemIndex);
-            batch.visibleCountOffset = static_cast<uint32_t>(batches.size() * sizeof(uint32_t));
-            batch.bucket = drawItem.bucket;
-            batches.push_back(batch);
-            currentBatch = &batches.back();
-            currentMesh = drawItem.mesh;
-            currentBucket = drawItem.bucket;
-        }
-
-        ++currentBatch->drawItemCount;
-    }
+    renderer::buildMeshDrawBatches(drawItems, kMaxDrawItems, batches);
 }
 
 void Renderer::buildFrameMeshLodTable()

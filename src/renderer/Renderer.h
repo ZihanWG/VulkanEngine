@@ -13,6 +13,7 @@
 #include "renderer/PunctualShadows.h"
 #include "renderer/VolumetricFogPass.h"
 #include "renderer/DepthPyramid.h"
+#include "renderer/DrawItemBatching.h"
 #include "renderer/DynamicResolution.h"
 #include "renderer/OcclusionYield.h"
 #include "renderer/GpuCulling.h"
@@ -118,46 +119,19 @@ private:
     // ObjectFrameData::materialParams.w makes the alpha test data-driven) but need
     // different *shadow* pipelines; Blend additionally needs its own pass, sort
     // order, and blend state. The numeric order is also the render order.
-    enum class RenderBucket : uint8_t {
-        Opaque = 0,
-        Mask = 1,
-        Blend = 2,
-    };
-
-    static constexpr size_t kRenderBucketCount = 3;
+    // Bucketing, draw items, batches and the batching arithmetic all live in
+    // renderer/DrawItemBatching.h, which is Vulkan-free and unit-tested. Aliased
+    // here so the many existing usages read unchanged -- the same arrangement as
+    // CascadeFrameData below.
+    using RenderBucket = renderer::RenderBucket;
+    using RenderBucketRange = renderer::RenderBucketRange;
+    static constexpr size_t kRenderBucketCount = renderer::kRenderBucketCount;
 
     [[nodiscard]] static RenderBucket renderBucketForMaterial(const renderer::Material* material);
     [[nodiscard]] static const char* renderBucketName(RenderBucket bucket);
 
-    // Half-open [begin, end) range of draw items belonging to one bucket.
-    struct RenderBucketRange {
-        uint32_t begin = 0;
-        uint32_t end = 0;
-
-        [[nodiscard]] uint32_t count() const { return end - begin; }
-        [[nodiscard]] bool empty() const { return end <= begin; }
-    };
-
-    struct DrawItem {
-        const renderer::Mesh* mesh = nullptr;
-        const renderer::Material* material = nullptr;
-        uint32_t objectIndex = 0;
-        uint32_t submeshIndex = 0;
-        uint32_t firstIndex = 0;
-        uint32_t indexCount = 0;
-        int32_t vertexOffset = 0;
-        uint32_t frameDataIndex = 0;
-        RenderBucket bucket = RenderBucket::Opaque;
-    };
-
-    struct MeshDrawBatch {
-        const renderer::Mesh* mesh = nullptr;
-        uint32_t beginDrawItem = 0;
-        uint32_t drawItemCount = 0;
-        uint32_t compactedCommandOffset = 0;
-        uint32_t visibleCountOffset = 0;
-        RenderBucket bucket = RenderBucket::Opaque;
-    };
+    using DrawItem = renderer::DrawItem;
+    using MeshDrawBatch = renderer::MeshDrawBatch;
 
     // Filled by updateVisibleBucketRanges() from visibleDrawItems_.
     std::array<RenderBucketRange, kRenderBucketCount> frameVisibleBucketRanges_{};

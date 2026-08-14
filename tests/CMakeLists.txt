@@ -40,6 +40,7 @@ add_executable(VulkanEngineTests
     test_render_scale.cpp
     test_dynamic_resolution.cpp
     test_occlusion_yield.cpp
+    test_draw_batching.cpp
 )
 
 target_compile_definitions(VulkanEngineTests PRIVATE
