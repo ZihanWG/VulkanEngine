@@ -59,6 +59,40 @@ walking over lights that contribute nothing; it is dominated by shading lights
 that do. Fewer PCF taps and a back-face early-out were rejected earlier on the
 same grounds.
 
+## Back-face culling is off, and that is measured
+
+**Decision.** Every graphics pipeline uses `VK_CULL_MODE_NONE`.
+
+**Why.** Not an oversight — it was tested. The standard argument for enabling it
+is that closed geometry generates twice the fragments without it, and the main
+pass is the most expensive shader in the engine. That argument is about
+immediate-mode GPUs. This renderer's target is an Apple M3 through MoltenVK,
+where the tiler's hidden-surface removal already discards occluded fragments
+before the fragment shader runs — and the back faces of closed geometry are
+exactly that: occluded. There is nothing left for the cull to save.
+
+Measured on the default scene at render scale 1.0, A/B/A/B:
+
+| Main pipeline cull mode | Frame total | `MainHDRPass` |
+| --- | --- | --- |
+| `NONE` | 14.848 / 14.712 ms | 10.216 / 9.994 ms |
+| `BACK_BIT` | 14.730 / 14.829 ms | 10.058 / 10.098 ms |
+
+Both metrics land inside the control's own run-to-run spread. Scoped honestly:
+this is the default scene, which is geometry-light. On a vertex- or
+binning-bound scene the answer could differ, since culling removes primitives
+before rasterization regardless of HSR.
+
+**Trade-offs.** `Material::doubleSided` stays metadata-only as a consequence
+(`Material.h`), and single-sided geometry viewed from behind is shaded with a
+normal pointing away from the viewer. With no performance reason to enable
+culling, wiring `doubleSided` becomes a pure correctness change that can only
+make geometry disappear, so it is a deliberate decision rather than a cleanup.
+
+**More time.** Wire `doubleSided` to the cull mode for correctness on
+back-facing single-sided surfaces, and re-measure on a geometry-heavy scene
+where the primitive-rate saving, rather than the fragment saving, is the point.
+
 ## Buffer-device-address for per-frame GPU data
 
 **Decision.** Deliver per-frame buffers (object data, the light list, the cluster
