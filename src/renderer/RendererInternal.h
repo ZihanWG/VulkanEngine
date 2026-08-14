@@ -93,23 +93,24 @@ struct ObjectFrameData {
 };
 
 // Mirrors the shader's std430 buffer_reference block. std430 stores mat4 as
-// four 16-byte columns and vec4/uvec4 as 16 bytes. The four lightMvp matrices
-// intentionally duplicate cascade data per draw for this educational milestone;
-// a later scene/light buffer can remove that per-object cost.
+// four 16-byte columns and vec4/uvec4 as 16 bytes.
+//
+// Only genuinely per-object data lives here. Everything shared by the whole
+// frame -- the cascade matrices, the light and camera vectors, the splits --
+// moved to FrameConstants below, which is what took a record from 688 bytes to
+// 192. Fields documented there are not repeated here.
+//
 // materialParams.x = metallic, y = roughness, z = multiScatterStrength,
 // and w is the alpha-test cutoff: >= 0 clips fragments whose base-color alpha
 // falls below it (glTF MASK), < 0 disables the test (OPAQUE and BLEND). See
 // renderer::kNoAlphaTestCutoff.
-// cascadeSplits stores positive camera-view depths for cascades 0..3.
-// cameraPosition.xyz is the world-space camera position, and w stores the
-// cascade debug-color toggle as 0.0 or 1.0.
-// cameraForward.xyz is the camera forward vector, and w stores cascade count.
 // textureIndices.x = base color, y = normal, z = metallic-roughness, w = emissive.
 // emissiveFactor.rgb is the emissive color factor; emissiveFactor.w is 1.0 when an
 // emissive texture (sampled from the base-color array at textureIndices.w) is present.
-// currMvpNoJitter/prevMvpNoJitter are the unjittered current/previous-frame MVP
-// matrices used to derive per-pixel motion vectors; rasterization keeps using the
-// jittered mvp so TAA jitter never leaks into the velocity buffer.
+// prevMvpNoJitter is the unjittered previous-frame MVP used to derive per-pixel
+// motion vectors; the current-frame side comes from FrameConstants. Rasterization
+// keeps using the jittered matrix so TAA jitter never leaks into the velocity
+// buffer.
 static_assert(offsetof(ObjectFrameData, model) == 0);
 static_assert(offsetof(ObjectFrameData, baseColorFactor) == 64);
 static_assert(offsetof(ObjectFrameData, materialParams) == 80);

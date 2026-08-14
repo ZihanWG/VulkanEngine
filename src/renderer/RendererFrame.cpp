@@ -1313,8 +1313,8 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     // beginCaptureBatch advances the round-robin cursor as a side effect.
     frameProbeCaptureActive_ = isProbeCaptureActive();
     if (frameProbeCaptureActive_) {
-        irradianceProbes_.beginCaptureBatch(static_cast<uint32_t>(giSettings_.probesPerFrame));
-        frameProbeCaptureActive_ = !irradianceProbes_.captureBatch().empty();
+        frameProbeCaptureActive_ =
+            !irradianceProbes_.beginCaptureBatch(static_cast<uint32_t>(giSettings_.probesPerFrame)).empty();
     } else {
         // Leaves the update pass with nothing to convolve, which is what makes
         // it fall back to the fill.
@@ -1590,10 +1590,6 @@ void Renderer::uploadObjectFrameData(uint32_t frameIndex)
     const uint32_t cascadeCount = activeCascadeCount();
     const size_t objectFrameCount = std::min(allDrawItems_.size(), static_cast<size_t>(kMaxDrawItems));
     std::vector<ObjectFrameData> objectFrameData(objectFrameCount);
-    const glm::vec4 activeLightDirection = activeDirectionalLightDirection();
-    const glm::vec4 activeLightColor = activeDirectionalLightColor();
-    const glm::vec4 activeAmbientLightColor =
-        portfolioCaptureMode_ ? kPortfolioAmbientLightColor : kAmbientLightColor;
 
     // Per-item fill is the heaviest CPU loop of the frame (six mat4 multiplies
     // per draw item); every iteration writes only objectFrameData[drawIndex] and

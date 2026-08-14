@@ -1501,7 +1501,7 @@ void PostProcessStack::createExposureResources()
 {
     destroyExposureResources();
 
-    if ((frameCount_ == 0u)) {
+    if (frameCount_ == 0u) {
         return;
     }
 

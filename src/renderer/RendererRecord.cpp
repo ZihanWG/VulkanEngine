@@ -337,8 +337,9 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuC
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, punctualShadowPipeline_.pipeline());
 
+    // No frame-constants address here: shadow_punctual.vert projects with the
+    // slot's own matrix and never reads the cascade block.
     const VkDeviceAddress objectFrameDataBaseAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
-    const VkDeviceAddress frameConstantsBaseAddress = frameConstantsBuffers_.at(currentFrame_).deviceAddress();
     const renderer::Mesh* boundMesh = nullptr;
     uint32_t recordedDraws = 0;
 

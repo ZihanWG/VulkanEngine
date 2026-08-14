@@ -129,36 +129,6 @@ struct AccessorView {
     return view.data + index * stride;
 }
 
-glm::mat4 nodeLocalMatrix(const tinygltf::Node& node)
-{
-    if (node.matrix.size() == 16) {
-        glm::mat4 matrix(1.0f);
-        for (int column = 0; column < 4; ++column) {
-            for (int row = 0; row < 4; ++row) {
-                matrix[column][row] = static_cast<float>(node.matrix[static_cast<size_t>(column * 4 + row)]);
-            }
-        }
-        return matrix;
-    }
-    JointPose pose;
-    if (node.translation.size() == 3) {
-        pose.translation = glm::vec3(static_cast<float>(node.translation[0]),
-                                     static_cast<float>(node.translation[1]),
-                                     static_cast<float>(node.translation[2]));
-    }
-    if (node.rotation.size() == 4) {
-        pose.rotation = glm::quat(static_cast<float>(node.rotation[3]),
-                                  static_cast<float>(node.rotation[0]),
-                                  static_cast<float>(node.rotation[1]),
-                                  static_cast<float>(node.rotation[2]));
-    }
-    if (node.scale.size() == 3) {
-        pose.scale = glm::vec3(
-            static_cast<float>(node.scale[0]), static_cast<float>(node.scale[1]), static_cast<float>(node.scale[2]));
-    }
-    return pose.matrix();
-}
-
 JointPose nodeLocalPose(const tinygltf::Node& node)
 {
     JointPose pose;

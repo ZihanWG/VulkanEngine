@@ -18,11 +18,9 @@ namespace ve::renderer {
 
 namespace {
 
-constexpr uint32_t kBindingLights = 0;
-constexpr uint32_t kBindingClusterAabb = 1;
-constexpr uint32_t kBindingClusterGrid = 2;
-constexpr uint32_t kBindingLightIndex = 3;
-constexpr uint32_t kBindingParams = 4;
+// Bindings 0..4 are lights, cluster AABBs, the cluster grid, the light index
+// list and the params block, in that order -- see light_cull.comp. They are not
+// named individually here because every loop below indexes them positionally.
 constexpr uint32_t kBindingCount = 5;
 
 VkBufferMemoryBarrier2 storageBufferBarrier(VkBuffer buffer,
