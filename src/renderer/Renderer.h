@@ -411,6 +411,9 @@ private:
     // True when the cascades render as one multiview pass rather than one pass
     // each. Requires the device feature; the fallback is the original loop.
     [[nodiscard]] bool isLayeredCascadeRenderingActive() const;
+    // Whether anything will read the depth pyramid, i.e. whether building it
+    // this frame is worth anything.
+    [[nodiscard]] bool isDepthPyramidBuildRequired() const;
     void ensureDepthPyramidShaderReadLayout(VkCommandBuffer commandBuffer);
     void recordDepthPyramidCommands(VkCommandBuffer commandBuffer, bool midFrame = false);
     [[nodiscard]] renderer::RenderGraphFrameResources renderGraphFrameResources();

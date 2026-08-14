@@ -1595,6 +1595,19 @@ bool Renderer::isGpuCullingActive() const
     return useGpuCulling_ && gpuCulling_.mainResourcesReady(static_cast<uint32_t>(frames_.size()));
 }
 
+bool Renderer::isDepthPyramidBuildRequired() const
+{
+    // GPU occlusion culling is the pyramid's only consumer -- nothing else reads
+    // it -- so with occlusion off the build is pure cost. Measured at 0.68 ms on
+    // the default scene, which it was paying every frame regardless.
+    //
+    // Deliberately does NOT test depthPyramid_.valid() the way
+    // isGpuOcclusionCullingActive does: validity is an *output* of the build, so
+    // gating the build on it would latch the pyramid off forever after one skip.
+    return useGpuOcclusionCulling_ && isGpuCullingActive() && depthPyramid_.buildAvailable() &&
+           depthPyramid_.image() != VK_NULL_HANDLE && depthPyramid_.mipLevels() > 0;
+}
+
 bool Renderer::isGpuOcclusionCullingActive() const
 {
     return useGpuOcclusionCulling_ && isGpuCullingActive() && depthPyramid_.buildAvailable() && depthPyramid_.valid() &&

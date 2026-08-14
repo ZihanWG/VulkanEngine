@@ -1790,7 +1790,14 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         rhi::debug::endLabel(commandBuffer);
     }
 
-    recordDepthPyramidCommands(commandBuffer);
+    if (isDepthPyramidBuildRequired()) {
+        recordDepthPyramidCommands(commandBuffer);
+    } else {
+        // Skipped, so whatever is in the image is from an unknown frame. Mark it
+        // unusable rather than leaving a stale pyramid flagged valid -- that is
+        // what re-enabling occlusion culling at runtime would otherwise read.
+        depthPyramid_.invalidate();
+    }
 
     if (taaActiveThisFrame) {
         postProcess_.recordTaaResolveCommands(commandBuffer);
