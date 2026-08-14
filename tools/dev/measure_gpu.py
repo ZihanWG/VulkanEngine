@@ -49,6 +49,10 @@ DEFAULT_DURATION_SECONDS = 30
 # Minimum samples worth reporting a median over.
 MIN_SAMPLES = 8
 
+# Idle time after a build, before the first run. A parallel build leaves the
+# machine hot and the first control run would absorb all of it.
+DEFAULT_SETTLE_SECONDS = 90
+
 # Control drift above this fraction invalidates an A/B comparison: the machine
 # moved more than the effect being measured.
 CONTROL_DRIFT_LIMIT = 0.01
@@ -57,6 +61,12 @@ CONTROL_DRIFT_LIMIT = 0.01
 # vkCmdEndRendering read near zero on tile-based hardware regardless of the work
 # they contain. They are parsed so the log stays faithful, but never compared.
 UNRELIABLE_SCOPES = frozenset({"Skybox", "RenderObjects", "SkinnedMesh"})
+
+# A pass that runs every frame appears in every block. Anything below this is
+# conditional -- the depth pyramid, for instance, is built in 1-2 blocks out of
+# 29 while occlusion culling is suspended. Its median is the cost of a rare
+# frame, not of the configuration, and whether it appears at all is luck.
+INTERMITTENT_COVERAGE = 0.9
 
 FRAME_TOTAL = "Frame total"
 
@@ -67,6 +77,14 @@ QUERY_LIMIT_RE = re.compile(r"^ {2,}warning: timestamp query capacity was exceed
 
 class MeasureError(RuntimeError):
     """A protocol violation that must abort rather than produce a number."""
+
+
+def rel(path: Path) -> str:
+    """Repo-relative path for messages, falling back to the absolute path."""
+    try:
+        return str(path.relative_to(REPO_ROOT))
+    except ValueError:
+        return str(path)
 
 
 # --------------------------------------------------------------------------
@@ -221,7 +239,23 @@ def apply_settings(settings: dict, assignments: list[str]) -> dict[str, object]:
 # --------------------------------------------------------------------------
 
 
-def ensure_binary(build: bool) -> None:
+def newer_sources() -> list[Path]:
+    """Source files modified after the Release binary was linked."""
+    if not RELEASE_BINARY.exists():
+        return []
+    binary_mtime = RELEASE_BINARY.stat().st_mtime
+    stale: list[Path] = []
+    for pattern in ("*.cpp", "*.h", "*.vert", "*.frag", "*.comp", "*.glsl"):
+        for path in (REPO_ROOT / "src").rglob(pattern):
+            if path.stat().st_mtime > binary_mtime:
+                stale.append(path)
+    cmake_lists = REPO_ROOT / "CMakeLists.txt"
+    if cmake_lists.exists() and cmake_lists.stat().st_mtime > binary_mtime:
+        stale.append(cmake_lists)
+    return stale
+
+
+def ensure_binary(build: bool, settle: int) -> None:
     if build:
         print("[measure] build Release renderer", flush=True)
         subprocess.run(
@@ -229,10 +263,30 @@ def ensure_binary(build: bool) -> None:
             cwd=REPO_ROOT,
             check=True,
         )
+        if settle > 0:
+            # A parallel build heats the machine, and the first control run would
+            # absorb all of it. Measured: an identical series drifted 0.41% with a
+            # cold start and 28.5% when it began right after a build.
+            print(f"[measure] settle {settle}s after the build", flush=True)
+            time.sleep(settle)
+
     if not RELEASE_BINARY.exists():
         raise MeasureError(
-            f"missing {RELEASE_BINARY.relative_to(REPO_ROOT)}; run with --build "
+            f"missing {rel(RELEASE_BINARY)}; run with --build "
             "or 'cmake --build --preset release --parallel'. Debug timings are not evidence."
+        )
+
+    # A stale binary produces a clean number for the wrong code. This one already
+    # cost a series: SSRTrace read 0.805 ms on a binary 17 commits behind and
+    # 0.158 ms once rebuilt, so the stale answer was over three times too large.
+    stale = newer_sources()
+    if stale:
+        listed = "\n".join(f"  {rel(path)}" for path in sorted(stale)[:8])
+        more = f"\n  ... and {len(stale) - 8} more" if len(stale) > 8 else ""
+        raise MeasureError(
+            f"{len(stale)} source files are newer than "
+            f"{rel(RELEASE_BINARY)}:\n{listed}{more}\n"
+            "Rerun with --build. Measuring a stale binary answers the wrong question."
         )
 
 
@@ -281,7 +335,7 @@ def run_once(
         if exited is not None and exited != 0:
             raise MeasureError(
                 f"renderer exited early with code {exited} after less than {duration}s; "
-                f"see {log_path.relative_to(REPO_ROOT)}"
+                f"see {rel(log_path)}"
             )
     finally:
         if original is not None:
@@ -295,7 +349,7 @@ def run_once(
         raise MeasureError(
             f"{label}: only {samples.block_count} timing blocks survived the warm-up "
             f"(need {MIN_SAMPLES}). Is the GPU profiler available? "
-            f"See {log_path.relative_to(REPO_ROOT)}"
+            f"See {rel(log_path)}"
         )
     print(f"[measure]   {samples.block_count} samples", flush=True)
     return samples
@@ -328,21 +382,39 @@ def terminate(process: subprocess.Popen) -> None:
 # --------------------------------------------------------------------------
 
 
+def is_intermittent(count: int, total: int) -> bool:
+    return total > 0 and count < total * INTERMITTENT_COVERAGE
+
+
 def format_single(samples: Samples, release_run: bool = True) -> str:
     lines = [
         f"## {samples.label}",
         "",
         f"{samples.block_count} samples, medians in ms.",
         "",
-        "| Pass | Median | Min | Max |",
-        "| --- | --- | --- | --- |",
+        "| Pass | Median | Min | Max | Blocks |",
+        "| --- | --- | --- | --- | --- |",
     ]
+    intermittent: list[str] = []
     for name in ordered_scopes(samples.scopes):
         values = samples.scopes[name]
         note = "  *(nested: reads ~0, not a breakdown)*" if name in UNRELIABLE_SCOPES else ""
+        coverage = f"{len(values)}/{samples.block_count}"
+        if is_intermittent(len(values), samples.block_count):
+            coverage = f"**{coverage}**"
+            intermittent.append(name)
         lines.append(
             f"| {name}{note} | {statistics.median(values):.3f} | "
-            f"{min(values):.3f} | {max(values):.3f} |"
+            f"{min(values):.3f} | {max(values):.3f} | {coverage} |"
+        )
+    if intermittent:
+        lines.extend(
+            [
+                "",
+                f"**Intermittent passes:** {', '.join(intermittent)}. These did not run "
+                "in every sampled frame, so their median is the cost of the frames that "
+                "did run them, not a per-frame cost of this configuration.",
+            ]
         )
     lines.extend(caveats(samples, release_run))
     return "\n".join(lines)
@@ -376,24 +448,38 @@ def format_comparison(
         "",
         f"Medians in ms over {a.block_count} and {b.block_count} samples.",
         "",
-        "| Pass | A | B | Delta | Delta % | Control drift | Attributable |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| Pass | A | B | Delta | Delta % | Control drift | Attributable | Blocks |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     names = ordered_scopes({**a.scopes, **b.scopes})
     buried: list[str] = []
+    intermittent: list[str] = []
     for name in names:
         median_a = a.median(name)
         median_b = b.median(name)
+        count_a = a.sample_count(name)
+        count_b = b.sample_count(name)
+        coverage = f"{count_a}/{a.block_count} · {count_b}/{b.block_count}"
+        rare = is_intermittent(count_a, a.block_count) or is_intermittent(count_b, b.block_count)
+        if rare:
+            coverage = f"**{coverage}**"
+            intermittent.append(name)
+
         if name in UNRELIABLE_SCOPES:
             lines.append(
                 f"| {name} *(nested: reads ~0, not a breakdown)* | "
-                f"{fmt(median_a)} | {fmt(median_b)} | - | - | - | no |"
+                f"{fmt(median_a)} | {fmt(median_b)} | - | - | - | no | {coverage} |"
             )
             continue
         if median_a is None or median_b is None:
+            # "A only" reads as a real presence difference, but a pass that runs
+            # in 2 of 29 frames on both sides lands here purely by sampling luck.
             appeared = "B only" if median_a is None else "A only"
+            if rare:
+                appeared += ", intermittent"
             lines.append(
-                f"| {name} | {fmt(median_a)} | {fmt(median_b)} | {appeared} | - | - | - |"
+                f"| {name} | {fmt(median_a)} | {fmt(median_b)} | {appeared} | - | - | - "
+                f"| {coverage} |"
             )
             continue
         delta = median_b - median_a
@@ -406,12 +492,22 @@ def format_comparison(
             buried.append(name)
         else:
             drift_text, verdict = f"{own_drift:.3f}", "yes"
+        if rare:
+            verdict = "**no**"
         lines.append(
             f"| {name} | {median_a:.3f} | {median_b:.3f} | {delta:+.3f} | "
-            f"{percent:+.1f}% | {drift_text} | {verdict} |"
+            f"{percent:+.1f}% | {drift_text} | {verdict} | {coverage} |"
         )
 
     lines.append("")
+    if intermittent:
+        lines.append(
+            f"**Intermittent passes:** {', '.join(intermittent)}. These did not run in "
+            "every sampled frame, so an 'A only' label is sampling luck rather than a "
+            "presence difference, and the median is the cost of the frames that did run "
+            "them. Not comparable between configurations."
+        )
+        lines.append("")
     if buried:
         lines.append(
             f"**Inside the noise floor:** {', '.join(buried)}. The control moved at "
@@ -521,7 +617,7 @@ def samples_to_json(samples: Samples) -> dict:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    ensure_binary(args.build)
+    ensure_binary(args.build, args.settle)
     output_dir = Path(args.out)
     samples = run_once(args.label, args.set, args.warmup, args.duration, output_dir)
     print()
@@ -542,7 +638,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 def cmd_ab(args: argparse.Namespace) -> int:
     if not args.b_set:
         raise MeasureError("ab requires at least one --b-set; A is the unchanged control.")
-    ensure_binary(args.build)
+    ensure_binary(args.build, args.settle)
     output_dir = Path(args.out)
 
     pooled_a = Samples(label=args.a_label)
@@ -646,6 +742,16 @@ def build_parser() -> argparse.ArgumentParser:
             "--build",
             action="store_true",
             help="build the Release preset before measuring",
+        )
+        target.add_argument(
+            "--settle",
+            type=int,
+            default=DEFAULT_SETTLE_SECONDS,
+            help=(
+                "seconds to idle after --build before the first run "
+                f"(default {DEFAULT_SETTLE_SECONDS}); build heat otherwise lands "
+                "entirely on the first control run"
+            ),
         )
 
     run = sub.add_parser("run", help="measure one configuration")
