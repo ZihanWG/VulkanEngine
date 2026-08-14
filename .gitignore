@@ -43,3 +43,6 @@ config/imgui_layout.ini
 # latest one is referenced (docs/portfolio_capture.md), and these are 3-15 MB
 # each, so the timestamped ones stay local.
 /screenshots/vulkan_engine_portfolio_[0-9]*.png
+
+# Bytecode from the Python tooling under tools/.
+__pycache__/
