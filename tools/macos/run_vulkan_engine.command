@@ -5,9 +5,15 @@ set -u
 SCRIPT_PATH="${0:A}"
 SCRIPT_DIR="${SCRIPT_PATH:h}"
 REPO_ROOT="${SCRIPT_DIR:h:h}"
-BUILD_DIR="${REPO_ROOT}/build-mac"
-PLAIN_EXECUTABLE="${BUILD_DIR}/VulkanEngine"
-BUNDLE_EXECUTABLE="${BUILD_DIR}/VulkanEngine.app/Contents/MacOS/VulkanEngine"
+# Search order matches the CMake presets first, then the older build-mac layout
+# the macOS docs used to describe. Pinning a single directory is what made this
+# script fail for anyone who followed docs/build.md.
+BUILD_DIR_CANDIDATES=(
+    "${REPO_ROOT}/build/debug"
+    "${REPO_ROOT}/build/release"
+    "${REPO_ROOT}/build-mac"
+    "${REPO_ROOT}/build"
+)
 
 function wait_on_error() {
     local status="$1"
@@ -57,24 +63,35 @@ fi
 
 export SDL_VIDEODRIVER=cocoa
 
-if [[ -x "${PLAIN_EXECUTABLE}" ]]; then
-    EXECUTABLE="${PLAIN_EXECUTABLE}"
-elif [[ -x "${BUNDLE_EXECUTABLE}" ]]; then
-    EXECUTABLE="${BUNDLE_EXECUTABLE}"
-else
+EXECUTABLE=""
+BUILD_DIR=""
+for candidate in "${BUILD_DIR_CANDIDATES[@]}"; do
+    if [[ -x "${candidate}/VulkanEngine" ]]; then
+        BUILD_DIR="${candidate}"
+        EXECUTABLE="${candidate}/VulkanEngine"
+        break
+    fi
+    if [[ -x "${candidate}/VulkanEngine.app/Contents/MacOS/VulkanEngine" ]]; then
+        BUILD_DIR="${candidate}"
+        EXECUTABLE="${candidate}/VulkanEngine.app/Contents/MacOS/VulkanEngine"
+        break
+    fi
+done
+
+if [[ -z "${EXECUTABLE}" ]]; then
     echo "Could not find a built VulkanEngine executable."
-    echo "Expected one of:"
-    echo "  ${PLAIN_EXECUTABLE}"
-    echo "  ${BUNDLE_EXECUTABLE}"
+    echo "Looked under:"
+    for candidate in "${BUILD_DIR_CANDIDATES[@]}"; do
+        echo "  ${candidate}"
+    done
     echo
-    echo "Build first, for example:"
-    echo "  mkdir -p build-mac"
-    echo "  cd build-mac"
-    echo "  cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Debug"
-    echo "  ninja"
+    echo "Build first:"
+    echo "  cmake --preset debug"
+    echo "  cmake --build build/debug"
     wait_on_error 127
 fi
 
+echo "Running ${EXECUTABLE}"
 cd "${BUILD_DIR}" || wait_on_error $?
 "${EXECUTABLE}"
 wait_on_error $?

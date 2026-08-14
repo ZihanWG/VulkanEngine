@@ -13,10 +13,10 @@ GPU feature support.
 - Ninja.
 - SDL3.
 
-The verified local SDK is:
+The SDK installs under your home directory. The verified version is:
 
 ```sh
-/Users/zihanw/VulkanSDK/1.4.350.1
+$HOME/VulkanSDK/1.4.350.1
 ```
 
 ## Environment
@@ -24,7 +24,7 @@ The verified local SDK is:
 Set up the LunarG SDK before configuring or running:
 
 ```sh
-source /Users/zihanw/VulkanSDK/1.4.350.1/setup-env.sh
+source "$HOME/VulkanSDK/1.4.350.1/setup-env.sh"
 export SDL_VIDEODRIVER=cocoa
 ```
 
@@ -32,21 +32,24 @@ After sourcing, `VULKAN_SDK` should point at the SDK's macOS directory:
 
 ```sh
 echo "$VULKAN_SDK"
-# /Users/zihanw/VulkanSDK/1.4.350.1/macOS
+# $HOME/VulkanSDK/1.4.350.1/macOS
 ```
 
 ## Build
 
 ```sh
-mkdir -p build-mac
-cd build-mac
-cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Debug
-ninja
+cmake --preset debug
+cmake --build build/debug
 ```
+
+The presets in `CMakePresets.json` are the single source of truth for build
+directories: `debug` builds into `build/debug`, `release` into `build/release`.
+Earlier revisions of this document used a hand-rolled `build-mac`; the launcher
+still accepts it, but nothing else does.
 
 ## Run
 
-From `build-mac`:
+From `build/debug`:
 
 ```sh
 ./VulkanEngine
@@ -61,8 +64,8 @@ Vulkan SDK loader, Vulkan API version 1.3, Apple M3 or the local Apple GPU, and
 The direct developer workflow is:
 
 ```sh
-cd /Users/zihanw/Projects/VulkanEngine/build-mac
-source /Users/zihanw/VulkanSDK/1.4.350.1/setup-env.sh
+cd build/debug
+source "$HOME/VulkanSDK/1.4.350.1/setup-env.sh"
 export SDL_VIDEODRIVER=cocoa
 ./VulkanEngine
 ```
@@ -78,10 +81,11 @@ tools/macos/run_vulkan_engine.command
 ```
 
 From Finder, double-click `tools/macos/run_vulkan_engine.command`. The script
-resolves the repository root relative to itself, finds `build-mac/VulkanEngine`
-or `build-mac/VulkanEngine.app/Contents/MacOS/VulkanEngine`, sources a Vulkan
+resolves the repository root relative to itself, then looks for `VulkanEngine`
+(or `VulkanEngine.app/Contents/MacOS/VulkanEngine`) under `build/debug`,
+`build/release`, `build-mac`, and `build`, in that order. It sources a Vulkan
 SDK `setup-env.sh` when available, sets `SDL_VIDEODRIVER=cocoa`, and runs the
-renderer from `build-mac`.
+renderer from whichever directory it found.
 
 SDK lookup order:
 
@@ -104,16 +108,14 @@ chmod +x tools/macos/run_vulkan_engine.command
 The default build remains a plain executable. To build an app bundle:
 
 ```sh
-mkdir -p build-mac
-cd build-mac
-cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release -DVULKAN_ENGINE_BUILD_MACOS_BUNDLE=ON
-ninja
+cmake --preset release -DVULKAN_ENGINE_BUILD_MACOS_BUNDLE=ON
+cmake --build build/release
 ```
 
 The bundle is created at:
 
 ```sh
-build-mac/VulkanEngine.app
+build/release/VulkanEngine.app
 ```
 
 Run it from Finder by double-clicking `VulkanEngine.app`, or from Terminal:
@@ -192,7 +194,7 @@ without display access.
 Source the SDK root script:
 
 ```sh
-source /Users/zihanw/VulkanSDK/1.4.350.1/setup-env.sh
+source "$HOME/VulkanSDK/1.4.350.1/setup-env.sh"
 ```
 
 Do not hand-write `VULKAN_SDK` unless necessary. If runtime logs show SDL cannot

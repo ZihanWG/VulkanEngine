@@ -150,3 +150,13 @@ jobs:
 
       - name: Build renderer
         run: cmake --build build --config Debug --target VulkanEngine --parallel
+
+      # MSVC with /permissive- is the compiler most likely to catch a
+      # portability bug that GCC and AppleClang accept, so it is worth building
+      # and running the suite here and not only on Linux. The tests create no
+      # Vulkan device, so no GPU is required on the runner.
+      - name: Build tests
+        run: cmake --build build --config Debug --target VulkanEngineTests --parallel
+
+      - name: Run tests
+        run: ctest --test-dir build -C Debug --output-on-failure --no-tests=error

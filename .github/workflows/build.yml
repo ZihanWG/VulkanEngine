@@ -76,14 +76,20 @@ jobs:
       - name: Run unit tests
         run: ctest --preset ci-debug
 
-      # Report-only static analysis over our own sources. Non-blocking for now
-      # (WarningsAsErrors is empty in .clang-tidy); tighten once the tree is clean.
-      - name: Static analysis (clang-tidy)
+      # Report-only static analysis over our own sources. Deliberately
+      # non-blocking: .clang-tidy sets no WarningsAsErrors, so this surfaces
+      # findings in the log rather than gating the build. Read the log; do not
+      # read a green check here as "clang-tidy is clean".
+      #
+      # The previous `|| find src -name '*.cpp' | xargs clang-tidy` fallback is
+      # gone. It ran a second, slower analysis whenever the first one failed and
+      # then reported *that* command's status, so a genuine run-clang-tidy
+      # failure could be masked by the retry succeeding.
+      - name: Static analysis (clang-tidy, report-only)
         continue-on-error: true
         run: |
           sudo apt-get install -y --no-install-recommends clang-tidy
-          run-clang-tidy -p build/ci-debug -quiet 'src/.*' \
-            || find src -name '*.cpp' -print0 | xargs -0 -n1 clang-tidy -p build/ci-debug
+          run-clang-tidy -p build/ci-debug -quiet 'src/.*'
 
       # Re-build and run the headless tests under AddressSanitizer +
       # UndefinedBehaviorSanitizer so memory/UB regressions fail CI.

@@ -137,9 +137,9 @@ Focused technical write-ups for each major subsystem (start with [docs/README.md
 
 ## How to Demo
 
-1. Build shaders: `cmake --build build --config Debug --target VulkanEngineShaders`.
-2. Build the renderer: `cmake --build build --config Debug --target VulkanEngine`.
-3. Run `.\build\Debug\VulkanEngine.exe` (or `./build/VulkanEngine` on macOS/Linux).
+1. Configure once: `cmake --preset debug` (Visual Studio users see [docs/build.md](docs/build.md) for the multi-config generator).
+2. Build: `cmake --build build/debug`.
+3. Run `./build/debug/VulkanEngine`. On macOS you can instead double-click `tools/macos/run_vulkan_engine.command`, which sources the Vulkan SDK for you.
 4. In `VulkanEngine Debug`, open `Debug Views`, then show the `GPU Profiler`, `Render Graph`, `Scene Hierarchy`, and `Material Inspector` panels.
 5. Open the `Lights (Clustered)` panel: drive `Light count` up to a few hundred, toggle `Cluster heatmap`, and toggle `Use clustered culling` off to compare against the brute-force path. Watch the `ClusterBuild` and `LightCull` rows in the `GPU Profiler`.
 6. Use the `Scene` tab → `Scene Presets` → `Load Occlusion Test Scene` and watch the `Performance` tab's `GPU Culling` section: `Occlusion culled` counts phase-1 rejections and `Phase-2 rescued` counts disocclusions the re-test brought back (two-phase Hi-Z occlusion is on by default).
@@ -169,9 +169,9 @@ cmake --build build --config Debug
 # macOS / MoltenVK
 source "$VULKAN_SDK/setup-env.sh"
 export SDL_VIDEODRIVER=cocoa
-cmake -S . -B build-mac -G Ninja -DCMAKE_BUILD_TYPE=Debug
-cmake --build build-mac
-./build-mac/VulkanEngine
+cmake --preset debug
+cmake --build build/debug
+./build/debug/VulkanEngine
 ```
 
 macOS is supported through the LunarG Vulkan SDK + MoltenVK for portability and basic validation; the primary showcase platform is RTX/NVIDIA, and some advanced GPU features may be disabled depending on Apple GPU / MoltenVK support. See [docs/build_macos.md](docs/build_macos.md) for the app-bundle target and launcher.
@@ -180,7 +180,7 @@ Runtime settings load from `config/runtime_settings.json` when present (user-loc
 
 ## Validated Environment
 
-Validated locally on Windows + Visual Studio 2022 MSVC x64, Vulkan SDK 1.4.328.1, NVIDIA GeForce RTX 3080 Ti Laptop GPU. CI builds on `windows-2022` and `ubuntu-24.04`: it configures CMake, compiles the GLSL shader target through `glslc`, and builds the renderer, but does not run the executable because GPU/display availability is not guaranteed.
+Validated locally on Windows + Visual Studio 2022 MSVC x64, Vulkan SDK 1.4.328.1, NVIDIA GeForce RTX 3080 Ti Laptop GPU. CI builds on `windows-2022` and `ubuntu-24.04`: it configures CMake, compiles the GLSL shader target through `glslc`, builds the renderer, and runs the full unit-test suite — on Linux twice, the second time under ASan/UBSan with leak detection — plus clang-tidy. The tests need no GPU by design. CI does not run the renderer itself, because GPU/display availability is not guaranteed.
 
 ## Scope and Known Limitations
 
@@ -193,7 +193,7 @@ This is a rendering/engine portfolio, not a full game engine — no physics, gam
 - Upload paths use one-time command buffers + queue idle waits — fine for init, not ideal for runtime streaming.
 - The TAA resolve doubles as the upsampler, reconstructing at presentation resolution from the jittered low-resolution samples, but it is not FSR2 or DLSS: no locks, no reactive masks, and no disocclusion detection (which needs the previous frame's depth, not kept). Skinned joint-space motion is still not captured. With TAA off, render scale upscales bilinearly plus a contrast-adaptive sharpen, which can only re-emphasise what survived. Sub-rect rendering makes a scale change free but costs memory: a 0.5-scale frame owns four times the texels it writes.
 - Screen-space reflections are linear-march (no Hi-Z acceleration or roughness-cone blur) and add on top of IBL specular; no ray tracing, planar reflections, or glass transmission.
-- GTAO is applied as a scene-color multiply in the composite (not restricted to indirect/ambient light), has no multi-bounce term (the thin G-buffer stores no albedo) and no temporal accumulation yet; it is spatial half-res + joint-bilateral upsample only.
+- GTAO modulates the ambient term only, reprojected along the motion vector from the previous frame; the whole-scene composite multiply remains as an A/B reference path, off by default. It has no multi-bounce term (the thin G-buffer stores no albedo), no specular occlusion (the same term is applied to ambient diffuse and specular alike), and no temporal accumulation; it is spatial half-res + joint-bilateral upsample only.
 - glTF import covers static + skinned meshes and base color/normal/metallic-roughness/emissive textures; occlusion textures, morph targets, cameras, and scene lights are future work.
 - ImGui is a debug UI only (no docking/editor layout); scene editing is limited to existing runtime objects.
 - HDR swapchain output, local exposure, and high-resolution offline capture are not implemented.
@@ -201,11 +201,11 @@ This is a rendering/engine portfolio, not a full game engine — no physics, gam
 ## Future Work
 
 - Build mesh batches fully on the GPU and broaden the GPU-driven object/material layout.
-- GPU-built shadow batches, alpha-tested shadow casters, shadow LOD, and stronger CSM stabilization.
+- GPU-built shadow batches, and stronger CSM stabilization (bounding-sphere fit, cascade blending). Alpha-tested shadow casters and shadow LOD have since shipped.
 - BVH/spatial partitioning, LOD, and mesh/task shader experiments.
 - Improved HDR environment prefiltering, color-management policy, local exposure, and HDR swapchain output.
 - Expanded scene editing (object creation/deletion, hierarchy editing, picking, per-scene settings) and asset tooling (texture import/reload, asset browser, material graph, render graph node view).
-- Broader glTF support (alpha modes, occlusion/emissive handling, tangent generation, morph targets, cameras, lights).
+- Broader glTF support: occlusion textures, tangent generation, morph targets, cameras, and scene lights. Alpha modes and emissive handling have since shipped.
 
 ## Portfolio and Resume Copy
 
