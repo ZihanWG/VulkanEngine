@@ -39,6 +39,7 @@ add_executable(VulkanEngineTests
     test_render_graph.cpp
     test_render_scale.cpp
     test_dynamic_resolution.cpp
+    test_occlusion_yield.cpp
 )
 
 target_compile_definitions(VulkanEngineTests PRIVATE

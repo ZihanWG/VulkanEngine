@@ -344,6 +344,10 @@ struct RuntimeSettings {
     // views (Apple vertex amplification tops out at two), so the emulation costs
     // more than the three command encoders it removes. See docs/render_scale.md.
     bool enableLayeredCascades = false;
+    // Suspend Hi-Z occlusion culling (and the pyramid build that feeds it) while
+    // it is culling nothing, re-probing periodically. Never changes the image --
+    // skipping occlusion culling can only draw more, never less.
+    bool enableAdaptiveOcclusion = true;
     // Main pass walks the per-froxel light list instead of brute-forcing every
     // light. Off is the brute-force reference the clustered result is judged
     // against, so it is worth persisting. Every use site already ANDs this with
