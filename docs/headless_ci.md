@@ -85,6 +85,53 @@ stating explicitly, because they cut in opposite directions:
   on the graphics queue here, so the async-compute submission path is *not*
   covered by CI and remains verifiable only on the development machine.
 
+## Deterministic mode
+
+`--deterministic` makes what gets rendered a function of the frame number rather
+than of how fast the machine is. It is a prerequisite for any frame-to-frame
+image comparison, and it is not enabled by default.
+
+`renderer::FrameClock` (GPU-free, unit tested) is the frame path's only source
+of time. Real mode tracks the wall clock; fixed mode advances by a constant
+1/60 s per frame and ignores the wall-clock reading entirely. `Renderer` reads
+the steady clock once, in `updateCpuFrameTime`, and hands the value to the
+clock; every downstream consumer reads the clock instead of taking its own
+reading.
+
+What `--deterministic` pins:
+
+- **Animation.** `updateFrameData`'s elapsed seconds drives the demo light orbit,
+  the skeletal animation delta, and every animated object transform.
+- **Exposure adaptation.** `PostProcessStack` used to take its own
+  `steady_clock` reading inside the exposure-reduce recording; it now receives
+  frame-clock seconds. That removed a second, independent time source.
+- **The editor camera**, via `cpuFrameDeltaMs_`.
+- **Dynamic resolution**, forced off. It feeds measured GPU frame time back into
+  the render extent, so it would let machine speed change the image even with a
+  fixed timestep. It defaults off, but a persisted `config/runtime_settings.json`
+  can have enabled it.
+- **The periodic diagnostic logs.** The exposure and GPU-timing prints were
+  gated on a one-second wall-clock interval, so two otherwise-identical runs
+  sampled *different frame numbers* and the log looked nondeterministic when it
+  was not. They are frame-clock gated now.
+
+Audited and found already deterministic, so deliberately untouched: there is no
+RNG anywhere in the engine; `JobSystem::parallelFor` partitions by index and
+performs no float reduction, so worker scheduling cannot change a result; and
+the TAA jitter is a frame-indexed Halton sequence.
+
+### Evidence
+
+Three runs of `--deterministic --exit-after-frames 90` produce byte-identical
+logs once ASLR pointers and CPU/GPU timings are filtered out. Three runs without
+the flag do not: they diverge on scene luminance and the exposure derived from
+it, which is exactly the wall-clock-driven animation showing through. The
+control is what makes the result meaningful.
+
+This evidence is CPU-observable state read back from the GPU, not pixels. It
+shows the frame *inputs* are reproducible. Proving the rendered *image* is
+reproducible needs frame capture, which is separate future work.
+
 ## Limitations
 
 - Ten frames at default settings. Swapchain recreation/resize, screenshot

@@ -27,6 +27,11 @@ public:
         // reader has to notice. Only meaningful in a build that enables the
         // validation layer at all (NDEBUG undefined).
         bool failOnValidationError = false;
+
+        // Fixed-timestep frame clock plus dynamic resolution pinned off, so what
+        // gets rendered depends on the frame number and not on machine speed.
+        // Required for any frame-to-frame image comparison.
+        bool deterministic = false;
     };
 
     // Distinct from the -1 an exception returns, so CI can tell "the renderer

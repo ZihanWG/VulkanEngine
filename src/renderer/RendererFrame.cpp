@@ -1147,8 +1147,10 @@ void Renderer::updateShadowIndirectDrawBuffer(uint32_t frameIndex)
 
 void Renderer::updateFrameData(uint32_t frameIndex)
 {
-    const auto now = std::chrono::steady_clock::now();
-    const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
+    // From the frame clock, not the steady clock: this value drives the demo
+    // light orbit, the skeletal animation delta, and every animated object
+    // transform, so it is the single biggest determinism lever in the renderer.
+    const float elapsedSeconds = static_cast<float>(frameClock_.elapsedSeconds());
 
     // Render extent, not swapchain: this feeds the TAA jitter (an NDC offset of
     // half a *render* pixel) and the cluster grid's screen dimensions. Aspect is

@@ -217,7 +217,6 @@ Renderer::Renderer(Window& window) : window_(window)
     currentExposure_ = toneMappingExposureValue(toneMappingSettings_.manualExposure);
     averageLuminance_ = toneMappingSettings_.targetLuminance;
     histogramClippedLuminance_ = toneMappingSettings_.targetLuminance;
-    lastExposureLogPrint_ = std::chrono::steady_clock::now();
 
     initialized_ = true;
 }
@@ -844,12 +843,15 @@ void Renderer::restorePortfolioCaptureSettings()
 
 void Renderer::tryPrintExposureStats()
 {
-    const auto now = std::chrono::steady_clock::now();
-    if (now - lastExposureLogPrint_ < std::chrono::seconds(1)) {
+    // Frame clock, not steady_clock: with a wall-clock cadence two deterministic
+    // runs sample *different frame numbers*, which makes the log look
+    // nondeterministic even when every frame is identical.
+    const double now = frameClock_.elapsedSeconds();
+    if (now - lastExposureLogPrintSeconds_ < 1.0) {
         return;
     }
 
-    lastExposureLogPrint_ = now;
+    lastExposureLogPrintSeconds_ = now;
     const ExposureMode mode = exposureModeValue(toneMappingSettings_.exposureMode);
     const auto [lowPercentile, highPercentile] =
         sanitizedPercentileRange(toneMappingSettings_.lowPercentile, toneMappingSettings_.highPercentile);
@@ -874,12 +876,12 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
     latestGpuProfilerResults_ = results;
     pushGpuTimingSample(results);
 
-    const auto now = std::chrono::steady_clock::now();
-    if (now - lastGpuTimingPrint_ < std::chrono::seconds(1)) {
+    const double now = frameClock_.elapsedSeconds();
+    if (now - lastGpuTimingPrintSeconds_ < 1.0) {
         return;
     }
 
-    lastGpuTimingPrint_ = now;
+    lastGpuTimingPrintSeconds_ = now;
 
     std::ostringstream message;
     message << std::fixed << std::setprecision(3) << "GPU timings:\n"
@@ -1000,10 +1002,36 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
 
 void Renderer::updateCpuFrameTime()
 {
+    // The one place the frame clock is advanced. Everything downstream in this
+    // frame -- animation, exposure adaptation, the editor camera -- reads the
+    // clock rather than taking its own reading, so all of them stay consistent
+    // with each other and all of them become reproducible together.
     const auto now = std::chrono::steady_clock::now();
-    cpuFrameDeltaMs_ = std::chrono::duration<float, std::milli>(now - lastFrameStartTime_).count();
+    frameClock_.advance(std::chrono::duration<double>(now - startTime_).count());
+
+    cpuFrameDeltaMs_ = static_cast<float>(frameClock_.deltaSeconds() * 1000.0);
     lastFrameStartTime_ = now;
     cpuFps_ = cpuFrameDeltaMs_ > 0.0f ? 1000.0f / cpuFrameDeltaMs_ : 0.0f;
+
+    // Exposure adaptation used to take its own steady_clock reading inside the
+    // exposure-reduce recording. Pushing the frame time in instead removes that
+    // second, independent time source.
+    postProcess_.setFrameTimeSeconds(static_cast<float>(frameClock_.elapsedSeconds()));
+}
+
+void Renderer::useDeterministicFrameClock(double stepSeconds)
+{
+    frameClock_.useFixedStep(stepSeconds);
+
+    // Dynamic resolution feeds measured GPU frame time back into the render
+    // extent, so leaving it on would let machine speed change the image even
+    // with a fixed timestep. It defaults off, but a persisted
+    // config/runtime_settings.json can have turned it on.
+    dynamicResolutionSettings_.enabled = false;
+
+    Logger::info("Deterministic frame clock enabled: fixed " +
+                 std::to_string(frameClock_.fixedStepSeconds() * 1000.0) +
+                 " ms timestep, dynamic resolution pinned off.");
 }
 
 void Renderer::pushGpuTimingSample(const renderer::GpuProfiler::FrameResults& results)

@@ -30,6 +30,11 @@ bool Application::parseArguments(int argc, char** argv, Config& config)
             continue;
         }
 
+        if (argument == "--deterministic") {
+            config.deterministic = true;
+            continue;
+        }
+
         if (argument == "--exit-after-frames") {
             if (index + 1 >= argc) {
                 Logger::error("--exit-after-frames requires a frame count.");
@@ -94,6 +99,11 @@ void Application::initialize()
     renderer_ = std::make_unique<Renderer>(*window_);
     rendererInitMs_ =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - rendererInitStart).count();
+
+    // Before the first drawFrame, which is where the clock first advances.
+    if (config_.deterministic) {
+        renderer_->useDeterministicFrameClock();
+    }
 
     window_->setEventCallback([this](const SDL_Event& event) {
         if (renderer_) {

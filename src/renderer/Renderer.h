@@ -16,6 +16,7 @@
 #include "renderer/DepthPyramid.h"
 #include "renderer/DrawItemBatching.h"
 #include "renderer/DynamicResolution.h"
+#include "renderer/FrameClock.h"
 #include "renderer/OcclusionYield.h"
 #include "renderer/GpuCulling.h"
 #include "renderer/FrameResources.h"
@@ -90,6 +91,13 @@ public:
     // Load-time measurement only -- nothing here participates in frame rendering.
     void finalizeAssetLoadStats(double rendererInitMs, double firstFrameMs);
     [[nodiscard]] const renderer::AssetLoadStats& assetLoadStats() const { return assetLoadStats_; }
+
+    // Makes the frame path advance by a fixed step per frame instead of by
+    // measured wall-clock time, so a rendered frame is a function of the frame
+    // number rather than of machine speed. Also pins off dynamic resolution,
+    // which is the one other setting that feeds measured performance back into
+    // what gets rendered. Call before the first drawFrame().
+    void useDeterministicFrameClock(double stepSeconds = renderer::FrameClock::kDefaultFixedStepSeconds);
 
 private:
     static constexpr uint32_t kMaxShadowCascades = renderer::kMaxShadowCascades;
@@ -595,6 +603,11 @@ private:
     // Startup-only measurement state. Written during construction and by
     // finalizeAssetLoadStats; never read by the frame path.
     renderer::AssetLoadStats assetLoadStats_;
+
+    // The frame path's only source of time. Advanced once per drawFrame; every
+    // time-driven consumer reads it rather than the steady clock, which is what
+    // makes deterministic mode possible at all.
+    renderer::FrameClock frameClock_;
     rhi::VulkanContext context_;
     std::vector<renderer::FrameResources> frames_;
     renderer::GpuProfiler gpuProfiler_;
@@ -737,8 +750,10 @@ private:
     uint32_t bindlessNormalFallbackIndex_ = 0;
     uint32_t bindlessMetallicRoughnessFallbackIndex_ = 0;
     std::chrono::steady_clock::time_point startTime_ = std::chrono::steady_clock::now();
-    std::chrono::steady_clock::time_point lastGpuTimingPrint_ = std::chrono::steady_clock::now();
-    std::chrono::steady_clock::time_point lastExposureLogPrint_ = std::chrono::steady_clock::now();
+    // Frame-clock seconds, so the periodic diagnostics sample the same frame
+    // numbers on every deterministic run instead of drifting with machine speed.
+    double lastGpuTimingPrintSeconds_ = 0.0;
+    double lastExposureLogPrintSeconds_ = 0.0;
     std::chrono::steady_clock::time_point lastFrameStartTime_ = std::chrono::steady_clock::now();
     std::array<glm::vec4, 6> frameFrustumPlanes_{};
     // Discrete-LOD selection knobs. Selection itself runs in cull.comp; these are

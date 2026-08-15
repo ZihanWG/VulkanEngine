@@ -33,7 +33,6 @@
 #include "rhi/VulkanPipeline.h"
 
 #include <array>
-#include <chrono>
 #include <cstdint>
 #include <vector>
 
@@ -366,12 +365,14 @@ public:
         return frameExposureBuffers_;
     }
 
+    // The frame clock's elapsed time, pushed in by Renderer once per frame.
+    // Exposure adaptation used to read steady_clock here, which made it a second
+    // independent time source and defeated any attempt at a reproducible frame.
+    void setFrameTimeSeconds(float seconds) { frameTimeSeconds_ = seconds; }
+
     // Resets the auto-exposure adaptation timer (called when settings change to
     // avoid a large delta-time spike on the next exposure reduce).
-    void resetAutoExposureTimer()
-    {
-        lastAutoExposureUpdate_ = std::chrono::steady_clock::now();
-    }
+    void resetAutoExposureTimer() { lastAutoExposureUpdateSeconds_ = frameTimeSeconds_; }
 
 private:
     // Per-frame descriptor-set counts + which optional groups to create, computed
@@ -602,7 +603,9 @@ private:
     bool taaHistoryValid_ = false;
     bool ambientOcclusionHistoryValid_ = false;
 
-    std::chrono::steady_clock::time_point lastAutoExposureUpdate_ = std::chrono::steady_clock::now();
+    // Both in frame-clock seconds, never wall-clock seconds.
+    float frameTimeSeconds_ = 0.0f;
+    float lastAutoExposureUpdateSeconds_ = 0.0f;
 
     glm::vec2 taaCurrentJitterPixels_{0.0f, 0.0f};
     glm::vec2 taaPreviousJitterPixels_{0.0f, 0.0f};

@@ -210,6 +210,7 @@ add_library(VulkanEngineCore STATIC
     src/renderer/AssetLoadStats.cpp
     src/renderer/CascadeMath.cpp
     src/renderer/DrawItemBatching.cpp
+    src/renderer/FrameClock.cpp
     src/renderer/DynamicResolution.cpp
     src/renderer/OcclusionYield.cpp
     src/renderer/EditorCamera.cpp
