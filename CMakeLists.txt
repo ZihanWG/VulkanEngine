@@ -205,6 +205,7 @@ find_package(Threads REQUIRED)
 
 add_library(VulkanEngineCore STATIC
     src/assets/AssetManager.cpp
+    src/core/CommandLine.cpp
     src/core/JobSystem.cpp
     src/core/Logger.cpp
     src/core/PngWriter.cpp

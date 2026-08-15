@@ -5,6 +5,19 @@
 # member is an RAII Vulkan buffer), so the binary links -- but never calls into --
 # the Vulkan loader / VMA. Linking is symbol-driven, so only the objects
 # SceneBuilder actually references are pulled in.
+#
+# That property is load-bearing on Windows, not just tidy. Vulkan is reached
+# through volk and is loaded on demand, but SDL3 is a real DLL import: the moment
+# a test references anything that pulls Application.cpp or Window.cpp, this
+# executable gains a startup dependency on SDL3.dll, which does not sit beside it
+# in the build tree. Catch2's catch_discover_tests runs this binary at build time
+# to enumerate cases, so the failure appears as a build error --
+# "Result: Exit code 0xc0000135" (STATUS_DLL_NOT_FOUND) -- and never as a test
+# failure. macOS does not reproduce it, because dylib rpaths resolve.
+#
+# If you need to cover logic that currently lives beside Vulkan or SDL code,
+# lift that logic into VulkanEngineCore rather than copying DLLs next to this
+# target: a copy would make this whole class of layering mistake silent again.
 include(FetchContent)
 
 set(VULKAN_ENGINE_CATCH2_TAG "v3.7.1")
@@ -43,7 +56,7 @@ add_executable(VulkanEngineTests
     test_draw_batching.cpp
     test_asset_load_stats.cpp
     test_frame_clock.cpp
-    test_application_arguments.cpp
+    test_command_line.cpp
     test_image_compare.cpp
 )
 

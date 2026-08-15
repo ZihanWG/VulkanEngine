@@ -1,17 +1,22 @@
-#include "core/Application.h"
+#include "core/CommandLine.h"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <string>
 #include <vector>
 
-using ve::Application;
+using ve::LaunchOptions;
+using ve::parseLaunchOptions;
 
 namespace {
 
-// parseArguments takes the C main() signature, so tests build one. argv[0] is
-// the program name and is always skipped, exactly as it is in a real run.
-bool parse(const std::vector<std::string>& arguments, Application::Config& config)
+// parseLaunchOptions takes the C main() signature, so tests build one. argv[0]
+// is the program name and is always skipped, exactly as it is in a real run.
+//
+// This deliberately calls the core/CommandLine entry point rather than anything
+// on Application: reaching into Application.cpp would pull Window, and with it
+// an SDL3 import that breaks this executable's startup on Windows.
+bool parse(const std::vector<std::string>& arguments, LaunchOptions& config)
 {
     std::vector<std::string> owned;
     owned.reserve(arguments.size() + 1);
@@ -24,14 +29,14 @@ bool parse(const std::vector<std::string>& arguments, Application::Config& confi
         argv.push_back(argument.data());
     }
 
-    return Application::parseArguments(static_cast<int>(argv.size()), argv.data(), config);
+    return parseLaunchOptions(static_cast<int>(argv.size()), argv.data(), config);
 }
 
 } // namespace
 
 TEST_CASE("No arguments leaves every default in place")
 {
-    Application::Config config{};
+    LaunchOptions config{};
     REQUIRE(parse({}, config));
 
     REQUIRE_FALSE(config.assetLoadStats);
@@ -44,7 +49,7 @@ TEST_CASE("No arguments leaves every default in place")
 
 TEST_CASE("The boolean flags are recognized")
 {
-    Application::Config config{};
+    LaunchOptions config{};
     REQUIRE(parse({"--asset-load-stats", "--fail-on-validation-error", "--deterministic"}, config));
 
     REQUIRE(config.assetLoadStats);
@@ -54,7 +59,7 @@ TEST_CASE("The boolean flags are recognized")
 
 TEST_CASE("An unrecognized argument is rejected rather than ignored")
 {
-    Application::Config config{};
+    LaunchOptions config{};
 
     // Silently ignoring a typo would mean a CI run measuring something other
     // than what the workflow asked for.
@@ -63,17 +68,17 @@ TEST_CASE("An unrecognized argument is rejected rather than ignored")
 
 TEST_CASE("Frame counts must be positive integers")
 {
-    Application::Config valid{};
+    LaunchOptions valid{};
     REQUIRE(parse({"--exit-after-frames", "10"}, valid));
     REQUIRE(valid.exitAfterFrames == 10);
 
     for (const std::string& bad : {std::string("0"), std::string("-1"), std::string("abc"), std::string("10x")}) {
-        Application::Config rejected{};
+        LaunchOptions rejected{};
         // Trailing garbage ("10x") must not be accepted as a valid prefix.
         REQUIRE_FALSE(parse({"--exit-after-frames", bad}, rejected));
     }
 
-    Application::Config missingValue{};
+    LaunchOptions missingValue{};
     REQUIRE_FALSE(parse({"--exit-after-frames"}, missingValue));
 }
 
@@ -83,40 +88,40 @@ TEST_CASE("Capture requires both a frame and an output path")
     // resetting it -- which is exactly how main() calls it. Sharing one here
     // would let an earlier case's --capture-output satisfy a later case's
     // pairing check and hide the failure being tested.
-    Application::Config bothConfig{};
+    LaunchOptions bothConfig{};
     REQUIRE(parse({"--capture-frame", "30", "--capture-output", "out.png"}, bothConfig));
     REQUIRE(bothConfig.captureFrame == 30);
     REQUIRE(bothConfig.captureOutput == "out.png");
 
-    Application::Config frameOnly{};
+    LaunchOptions frameOnly{};
     REQUIRE_FALSE(parse({"--capture-frame", "30"}, frameOnly));
 
-    Application::Config outputOnly{};
+    LaunchOptions outputOnly{};
     REQUIRE_FALSE(parse({"--capture-output", "out.png"}, outputOnly));
 }
 
 TEST_CASE("A capture frame beyond the frame budget is rejected")
 {
-    Application::Config config{};
+    LaunchOptions config{};
 
     // Otherwise the loop has to choose between dropping the capture and running
     // far past the budget waiting for a frame that never arrives.
     REQUIRE_FALSE(parse({"--capture-frame", "100", "--capture-output", "out.png", "--exit-after-frames", "10"}, config));
 
     // Equal is fine: the readback grace window covers the lag.
-    Application::Config equalConfig{};
+    LaunchOptions equalConfig{};
     REQUIRE(parse({"--capture-frame", "10", "--capture-output", "out.png", "--exit-after-frames", "10"}, equalConfig));
     REQUIRE(equalConfig.captureFrame == 10);
 
     // As is a capture comfortably inside the budget.
-    Application::Config insideConfig{};
+    LaunchOptions insideConfig{};
     REQUIRE(parse({"--capture-frame", "5", "--capture-output", "out.png", "--exit-after-frames", "60"}, insideConfig));
     REQUIRE(insideConfig.captureFrame == 5);
 }
 
 TEST_CASE("A capture frame without a frame budget is unconstrained")
 {
-    Application::Config config{};
+    LaunchOptions config{};
 
     // With no --exit-after-frames the loop runs until the capture lands, so any
     // frame number is answerable.
