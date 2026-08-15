@@ -155,17 +155,27 @@ jobs:
             exit 1
           }
 
-      # Zero tolerance is measured, not assumed: two independent CI runs of the
-      # same commit produced byte-identical captures on this driver. A tolerance
-      # would not help with the realistic failure anyway -- a Mesa/LLVM update
-      # shifts far more than a couple of least-significant bits -- and it would
-      # weaken the gate against the regressions this exists to catch.
+      # A one-unit channel tolerance, and the reason is measured rather than
+      # assumed -- it also corrects an earlier claim in this file that zero
+      # tolerance was measured.
+      #
+      # Commit 1e90f23 was rendered three times by this job with no change in
+      # between: 0 pixels differing, then 433 differing, then 0 again. Every
+      # differing pixel was off by exactly 1. The CPU-side logs of those runs are
+      # byte-identical and llvmpipe reports the same version and vector width, so
+      # the divergence is in rasterization, not in anything the engine decided.
+      #
+      # Tolerating 1 absorbs exactly that noise and gives up almost nothing: a
+      # pixel now has to be off by 2 or more to count. The half-resolution SSR
+      # change, the last real rendering change to pass through here, moved pixels
+      # by up to 14 and would still fail this gate. The differing-pixel budget
+      # stays at zero, so anything that clears the tolerance still goes red.
       - name: Compare against the golden image
         run: |
           set +e
           ./build/ci-debug/compare_images \
             "$CAPTURE_PATH" "$GOLDEN_PATH" \
-            --channel-tolerance 0 \
+            --channel-tolerance 1 \
             --max-differing-fraction 0 \
             --diff-output "$DIFF_PATH"
           status=$?

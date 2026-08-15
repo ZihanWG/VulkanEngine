@@ -165,6 +165,13 @@ Measured on macOS/MoltenVK. Goldens are driver-specific and must be captured on
 the driver that will be compared against — a lavapipe run will not match an M3
 capture, and should not be expected to.
 
+**This result is driver-specific in a second way, which is easy to over-read.**
+Byte-identical repeats hold on MoltenVK. They do not hold on lavapipe, where the
+same commit rendered three times produced 0, then 433, then 0 differing pixels,
+every one off by a single unit. Determinism here means the engine's inputs are a
+function of the frame number; it does not mean every driver rasterizes those
+inputs bit-identically every time. See [Why a tolerance of one](#why-a-tolerance-of-one).
+
 ## Golden-image regression
 
 The job renders 30 deterministic frames, captures frame 30, and compares it
@@ -181,17 +188,32 @@ Comparison policy lives in `renderer::ImageCompare` (GPU-free, unit tested);
 
 Exit codes: 0 match, 1 mismatch, 2 usage or IO error.
 
-### Why zero tolerance
+### Why a tolerance of one
 
-Measured, not assumed. Two independent CI runs of the same commit produced
-**byte-identical** captures on lavapipe, so the tolerance that the evidence
-supports is zero.
+**This corrects an earlier claim.** This page previously said zero tolerance was
+measured, on the evidence of two independent runs producing byte-identical
+captures. More runs falsified that.
 
-A small tolerance would not help with the realistic failure anyway. The thing
-that will eventually break this is a Mesa or LLVM update on the runner image,
-and a codegen change shifts far more than a couple of least-significant bits. A
-loose threshold would buy nothing against that while blunting the gate against
-the regressions it exists to catch.
+Commit `1e90f23` was rendered three times by this job with no change in between:
+0 pixels differing, then 433 differing, then 0 again. Every differing pixel was
+off by exactly 1. The CPU-side logs of those runs are byte-identical, and
+llvmpipe reports the same version and the same vector width in each, so the
+divergence is in rasterization rather than in anything the engine decided.
+
+So the gate was flaky, and a flaky gate is worse than a loose one: it is the
+failure mode this page already warns about for warnings, where red stops meaning
+anything and people learn to re-run until green.
+
+Tolerating a delta of 1 absorbs exactly that noise and gives up very little. A
+pixel now has to be off by 2 or more to count as differing, and the
+differing-pixel budget stays at zero, so anything clearing the tolerance still
+fails. For calibration, the half-resolution SSR copy — the last real rendering
+change to pass through this gate — moved pixels by up to 14, and would still be
+caught.
+
+What this does not cover is a real regression that only ever moves a pixel by a
+single unit. Nothing seen so far looks like that: rendering changes here have
+moved pixels by double digits, and aliasing corruption moves them further still.
 
 ### Re-baselining
 
