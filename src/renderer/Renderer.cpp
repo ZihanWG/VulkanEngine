@@ -15,6 +15,10 @@
 //   RendererDebugUi.cpp    ImGui panels
 //
 #include "renderer/Renderer.h"
+
+#include "rhi/VulkanAliasingProbe.h"
+
+#include <cstdio>
 #include "renderer/RendererInternal.h"
 
 #include "core/Logger.h"
@@ -1045,6 +1049,97 @@ void Renderer::updateCpuFrameTime()
     // exposure-reduce recording. Pushing the frame time in instead removes that
     // second, independent time source.
     postProcess_.setFrameTimeSeconds(static_cast<float>(frameClock_.elapsedSeconds()));
+}
+
+void Renderer::logTransientPoolReport()
+{
+    const std::vector<renderer::RenderGraph::TransientTextureRecord> transients = renderGraph_.transientTextures();
+    if (transients.empty()) {
+        Logger::warn("Transient pool report: the graph recorded no transient textures.");
+        return;
+    }
+
+    struct Entry {
+        std::string name;
+        VkDeviceSize bytes = 0;
+        VkDeviceSize alignment = 0;
+        uint32_t memoryTypeBits = 0;
+    };
+
+    std::vector<Entry> entries;
+    entries.reserve(transients.size());
+    VkDeviceSize totalBytes = 0;
+    uint32_t commonMemoryTypeBits = ~0u;
+
+    for (const renderer::RenderGraph::TransientTextureRecord& record : transients) {
+        VkMemoryRequirements requirements{};
+        vkGetImageMemoryRequirements(context_.vkDevice(), record.image, &requirements);
+        entries.push_back(Entry{record.name, requirements.size, requirements.alignment, requirements.memoryTypeBits});
+        totalBytes += requirements.size;
+        commonMemoryTypeBits &= requirements.memoryTypeBits;
+    }
+
+    std::sort(entries.begin(), entries.end(), [](const Entry& lhs, const Entry& rhs) {
+        if (lhs.bytes != rhs.bytes) {
+            return lhs.bytes > rhs.bytes;
+        }
+        return lhs.name < rhs.name;
+    });
+
+    const auto mib = [](VkDeviceSize bytes) {
+        char buffer[32] = {};
+        std::snprintf(buffer, sizeof(buffer), "%8.2f", static_cast<double>(bytes) / (1024.0 * 1024.0));
+        return std::string(buffer);
+    };
+
+    std::string message = "\n=== Transient pool (no aliasing) ===\n";
+    for (const Entry& entry : entries) {
+        message += "  " + mib(entry.bytes) + " MiB  align " + std::to_string(entry.alignment) + "  " + entry.name + "\n";
+    }
+    message += "  ----\n";
+    message += "  " + mib(totalBytes) + " MiB  total across " + std::to_string(entries.size()) + " transient textures\n";
+
+    char bitsBuffer[16] = {};
+    std::snprintf(bitsBuffer, sizeof(bitsBuffer), "0x%x", commonMemoryTypeBits);
+    message += std::string("  common memoryTypeBits: ") + bitsBuffer;
+    if (commonMemoryTypeBits == 0) {
+        // The one case the pool must fall back from rather than treat as a bug.
+        message += "  (EMPTY -- a single shared pool is impossible here)";
+    }
+    message += "\n  render extent: " + std::to_string(renderResolution_.extent().width) + "x" +
+               std::to_string(renderResolution_.extent().height);
+    message += "\n=== end transient pool ===";
+
+    Logger::info(message);
+}
+
+void Renderer::logImageMemoryAliasingProbe()
+{
+    const rhi::AliasingProbeResult probe = rhi::probeImageMemoryAliasing(context_);
+
+    const auto mib = [](VkDeviceSize bytes) {
+        return std::to_string(static_cast<double>(bytes) / (1024.0 * 1024.0));
+    };
+
+    std::string message = "Image memory aliasing probe: ";
+    message += probe.supported ? "SUPPORTED" : "UNSUPPORTED";
+    message += " (" + probe.detail + ")";
+    message += "\n  first image (RGBA16F 512x512):  " + mib(probe.firstImageBytes) + " MiB";
+    message += "\n  second image (R8 256x256):      " + mib(probe.secondImageBytes) + " MiB";
+    message += "\n  shared allocation:              " + mib(probe.sharedAllocationBytes) + " MiB";
+    message += "\n  second image offset:            " + std::to_string(probe.secondImageOffset);
+    message += "\n  common memoryTypeBits:          0x";
+    {
+        char buffer[16] = {};
+        std::snprintf(buffer, sizeof(buffer), "%x", probe.commonMemoryTypeBits);
+        message += buffer;
+    }
+
+    if (probe.supported) {
+        Logger::info(message);
+    } else {
+        Logger::warn(message);
+    }
 }
 
 void Renderer::useDeterministicFrameClock(double stepSeconds)

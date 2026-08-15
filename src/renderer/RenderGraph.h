@@ -460,6 +460,15 @@ public:
         return passes_;
     }
 
+    // Graph-transient textures of the frame just recorded, for the transient
+    // memory allocator. Only the name and image handle: RenderGraph holds no
+    // VkDevice by design, so querying memory requirements is the caller's job.
+    struct TransientTextureRecord {
+        std::string name;
+        VkImage image = VK_NULL_HANDLE;
+    };
+    [[nodiscard]] std::vector<TransientTextureRecord> transientTextures() const;
+
     [[nodiscard]] const std::vector<RenderGraphResourceDebugInfo>& debugResources() const
     {
         return debugResources_;

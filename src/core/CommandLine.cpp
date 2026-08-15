@@ -24,6 +24,11 @@ bool parseLaunchOptions(int argc, char** argv, LaunchOptions& options)
             continue;
         }
 
+        if (argument == "--probe-aliasing") {
+            options.probeAliasing = true;
+            continue;
+        }
+
         if (argument == "--deterministic") {
             options.deterministic = true;
             continue;

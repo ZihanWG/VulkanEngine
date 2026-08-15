@@ -99,6 +99,19 @@ public:
     // what gets rendered. Call before the first drawFrame().
     void useDeterministicFrameClock(double stepSeconds = renderer::FrameClock::kDefaultFixedStepSeconds);
 
+    // Phase 1 probe for the render graph transient allocator: reports whether
+    // this driver can bind two images into one allocation. Logs and returns;
+    // changes no renderer state. Throwaway, superseded by the pool's own
+    // capability check.
+    void logImageMemoryAliasingProbe();
+
+    // Phase 1 "before" number for the transient allocator: the real device size
+    // of every graph-transient texture, queried from the driver rather than
+    // computed from width*height*bpp, so tiling and padding are included. Must
+    // run after a frame has been recorded, because the graph builds its
+    // transient resources during beginFrame.
+    void logTransientPoolReport();
+
     // Captures the swapchain image of frame `frameNumber` (1-based, matching the
     // frame clock) to exactly one PNG at `outputPath`.
     //

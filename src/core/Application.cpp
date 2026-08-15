@@ -61,6 +61,9 @@ void Application::initialize()
     if (config_.deterministic) {
         renderer_->useDeterministicFrameClock();
     }
+    if (config_.probeAliasing) {
+        renderer_->logImageMemoryAliasingProbe();
+    }
     if (config_.captureFrame != 0) {
         renderer_->requestFrameCaptureAt(config_.captureFrame, config_.captureOutput);
     }
@@ -92,6 +95,12 @@ void Application::mainLoop()
             renderer_->drawFrame();
         }
         ++framesDrawn;
+
+        // After the first frame, not at init: the graph builds its transient
+        // resources during beginFrame, so before then there is nothing to report.
+        if (config_.probeAliasing && framesDrawn == 1) {
+            renderer_->logTransientPoolReport();
+        }
 
         const bool captureRequested = renderer_->frameCaptureRequested();
         const bool captureOutstanding = captureRequested && !renderer_->frameCaptureComplete();

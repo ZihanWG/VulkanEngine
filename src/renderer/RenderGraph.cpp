@@ -2759,6 +2759,21 @@ void RenderGraph::addBufferUsage(RenderPassNode& pass,
     });
 }
 
+std::vector<RenderGraph::TransientTextureRecord> RenderGraph::transientTextures() const
+{
+    std::vector<TransientTextureRecord> records;
+    records.reserve(textures_.size());
+    for (const TextureResource& texture : textures_) {
+        // Imported resources are owned outside the graph and are not candidates
+        // for the transient pool, whatever their lifetime looks like.
+        if (texture.desc.imported || texture.image == VK_NULL_HANDLE) {
+            continue;
+        }
+        records.push_back(TransientTextureRecord{texture.desc.name, texture.image});
+    }
+    return records;
+}
+
 void RenderGraph::refreshDebugResources()
 {
     debugResources_.clear();

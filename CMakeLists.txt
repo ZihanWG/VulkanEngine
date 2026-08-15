@@ -276,6 +276,7 @@ add_library(VulkanEngineRuntime STATIC
     src/renderer/ScreenshotCapture.cpp
     src/ui/ImGuiLayer.cpp
     src/rhi/ValidationTally.cpp
+    src/rhi/VulkanAliasingProbe.cpp
     src/rhi/VulkanBuffer.cpp
     src/rhi/VulkanBrdfLut.cpp
     src/rhi/VulkanAsyncCompute.cpp
