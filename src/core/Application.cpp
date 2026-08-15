@@ -35,6 +35,31 @@ bool Application::parseArguments(int argc, char** argv, Config& config)
             continue;
         }
 
+        if (argument == "--capture-frame") {
+            if (index + 1 >= argc) {
+                Logger::error("--capture-frame requires a frame number.");
+                return false;
+            }
+            const std::string_view value(argv[++index]);
+            uint64_t frame = 0;
+            const auto result = std::from_chars(value.data(), value.data() + value.size(), frame);
+            if (result.ec != std::errc{} || result.ptr != value.data() + value.size() || frame == 0) {
+                Logger::error("--capture-frame expects a positive integer, got: " + std::string(value));
+                return false;
+            }
+            config.captureFrame = frame;
+            continue;
+        }
+
+        if (argument == "--capture-output") {
+            if (index + 1 >= argc) {
+                Logger::error("--capture-output requires a file path.");
+                return false;
+            }
+            config.captureOutput = argv[++index];
+            continue;
+        }
+
         if (argument == "--exit-after-frames") {
             if (index + 1 >= argc) {
                 Logger::error("--exit-after-frames requires a frame count.");
@@ -52,6 +77,21 @@ bool Application::parseArguments(int argc, char** argv, Config& config)
         }
 
         Logger::error("Unrecognized argument: " + std::string(argument));
+        return false;
+    }
+
+    if ((config.captureFrame != 0) != !config.captureOutput.empty()) {
+        Logger::error("--capture-frame and --capture-output must be given together.");
+        return false;
+    }
+
+    // Without this the loop would have to choose between honouring the budget
+    // (and dropping the capture) or honouring the capture (and running a million
+    // frames). A request that cannot be satisfied is rejected instead.
+    if (config.captureFrame != 0 && config.exitAfterFrames != 0 &&
+        config.captureFrame > config.exitAfterFrames) {
+        Logger::error("--capture-frame (" + std::to_string(config.captureFrame) +
+                      ") must not exceed --exit-after-frames (" + std::to_string(config.exitAfterFrames) + ").");
         return false;
     }
 
@@ -104,6 +144,9 @@ void Application::initialize()
     if (config_.deterministic) {
         renderer_->useDeterministicFrameClock();
     }
+    if (config_.captureFrame != 0) {
+        renderer_->requestFrameCaptureAt(config_.captureFrame, config_.captureOutput);
+    }
 
     window_->setEventCallback([this](const SDL_Event& event) {
         if (renderer_) {
@@ -133,12 +176,34 @@ void Application::mainLoop()
         }
         ++framesDrawn;
 
-        if (config_.exitAfterFrames != 0 && framesDrawn >= config_.exitAfterFrames) {
+        const bool captureRequested = renderer_->frameCaptureRequested();
+        const bool captureOutstanding = captureRequested && !renderer_->frameCaptureComplete();
+
+        // The capture is done and nothing else was asked for.
+        if (captureRequested && !captureOutstanding && config_.exitAfterFrames == 0) {
+            break;
+        }
+
+        // A pending capture outranks the frame budget, because exiting at exactly
+        // the capture frame would drop the readback -- it lands a few frames
+        // later. parseArguments guarantees captureFrame <= exitAfterFrames, so
+        // this can only ever extend the run by the grace window below.
+        if (config_.exitAfterFrames != 0 && framesDrawn >= config_.exitAfterFrames && !captureOutstanding) {
+            break;
+        }
+
+        // Bounds that extension. Without it, a capture that can never be
+        // recorded (an unsupported swapchain format, say) would spin.
+        if (captureOutstanding && framesDrawn >= config_.captureFrame + kCaptureReadbackGraceFrames) {
+            Logger::error("Frame capture never completed; giving up after " + std::to_string(framesDrawn) +
+                          " frames.");
             break;
         }
     }
 
     renderer_->waitIdle();
+
+    captureCompleted_ = renderer_->frameCaptureComplete();
 
     if (config_.assetLoadStats) {
         renderer_->finalizeAssetLoadStats(rendererInitMs_, firstFrameMs);
@@ -154,6 +219,14 @@ void Application::shutdown()
 
 int Application::reportValidationTally() const
 {
+    // Checked before validation: a run that never produced the image it was
+    // asked for has not passed, whatever validation thought of it.
+    if (config_.captureFrame != 0 && !captureCompleted_) {
+        Logger::error("Failing because the requested frame capture was never written to " + config_.captureOutput +
+                      ".");
+        return kCaptureFailureExitCode;
+    }
+
     if (!config_.failOnValidationError) {
         return 0;
     }

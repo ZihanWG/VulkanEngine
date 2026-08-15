@@ -43,6 +43,7 @@ add_executable(VulkanEngineTests
     test_draw_batching.cpp
     test_asset_load_stats.cpp
     test_frame_clock.cpp
+    test_application_arguments.cpp
 )
 
 target_compile_definitions(VulkanEngineTests PRIVATE

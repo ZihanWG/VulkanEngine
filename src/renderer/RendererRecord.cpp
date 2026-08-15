@@ -101,6 +101,33 @@ void Renderer::recordPortfolioScreenshotCopy(VkCommandBuffer commandBuffer, uint
     screenshotCapture_.recordCopy(commandBuffer, currentFrame_, swapchain_, imageIndex);
 }
 
+void Renderer::recordFrameCaptureCopy(VkCommandBuffer commandBuffer, uint32_t imageIndex)
+{
+    if (!frameCapturePending_) {
+        return;
+    }
+
+    // Consumed whether or not the copy is possible: retrying on a later frame
+    // would silently capture a different frame than the one that was asked for,
+    // which is worse than failing loudly for a regression capture.
+    frameCapturePending_ = false;
+
+    if (!swapchain_.supportsTransferSrc()) {
+        Logger::error("Frame capture failed: swapchain transfer-source usage is unsupported.");
+        return;
+    }
+
+    const VkExtent2D extent = swapchain_.extent();
+    const VkFormat format = swapchain_.colorFormat();
+    if (extent.width == 0 || extent.height == 0 || !supportedScreenshotFormat(format)) {
+        Logger::error(std::string("Frame capture failed: unsupported extent or format ") + vkFormatName(format) + ".");
+        return;
+    }
+
+    screenshotCapture_.recordCopy(commandBuffer, currentFrame_, swapchain_, imageIndex, frameCaptureOutputPath_);
+    frameCaptureRecorded_ = true;
+}
+
 bool Renderer::isGpuPunctualShadowCullingActive() const
 {
     return useGpuPunctualShadowCulling_ && punctualShadows_.cullAvailable() && punctualShadows_.valid() &&
@@ -1822,6 +1849,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                                          showSharpenDelta_ ? sharpenDeltaGain_ : 0.0f);
 
     recordPortfolioScreenshotCopy(commandBuffer, imageIndex);
+    recordFrameCaptureCopy(commandBuffer, imageIndex);
 
     rhi::debug::beginLabel(commandBuffer, "ImGuiPass");
     const bool imguiProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "ImGuiPass");

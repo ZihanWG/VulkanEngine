@@ -99,6 +99,21 @@ public:
     // what gets rendered. Call before the first drawFrame().
     void useDeterministicFrameClock(double stepSeconds = renderer::FrameClock::kDefaultFixedStepSeconds);
 
+    // Captures the swapchain image of frame `frameNumber` (1-based, matching the
+    // frame clock) to exactly one PNG at `outputPath`.
+    //
+    // Deliberately not the portfolio screenshot path: that one switches to the
+    // showcase scene preset and writes a timestamped file plus the tracked
+    // "_latest" alias. A regression capture wants the scene as configured, one
+    // named file, and no timestamp -- a timestamp would defeat comparing runs.
+    void requestFrameCaptureAt(uint64_t frameNumber, std::filesystem::path outputPath);
+
+    // True once the requested capture has been read back and written. The
+    // readback lags the recorded frame by the in-flight frame count, so a caller
+    // must keep drawing until this goes true rather than exiting at frameNumber.
+    [[nodiscard]] bool frameCaptureComplete() const { return frameCaptureComplete_; }
+    [[nodiscard]] bool frameCaptureRequested() const { return frameCaptureTargetFrame_ != 0; }
+
 private:
     static constexpr uint32_t kMaxShadowCascades = renderer::kMaxShadowCascades;
     static constexpr size_t kDebugHistoryCapacity = 240;
@@ -608,6 +623,16 @@ private:
     // time-driven consumer reads it rather than the steady clock, which is what
     // makes deterministic mode possible at all.
     renderer::FrameClock frameClock_;
+
+    // Regression frame capture. Separate from the portfolio screenshot state
+    // above because it deliberately skips the showcase-preset policy.
+    std::filesystem::path frameCaptureOutputPath_;
+    uint64_t frameCaptureTargetFrame_ = 0;
+    bool frameCapturePending_ = false;
+    bool frameCaptureRecorded_ = false;
+    bool frameCaptureComplete_ = false;
+
+    void recordFrameCaptureCopy(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     rhi::VulkanContext context_;
     std::vector<renderer::FrameResources> frames_;
     renderer::GpuProfiler gpuProfiler_;

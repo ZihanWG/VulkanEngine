@@ -32,7 +32,19 @@ public:
         // gets rendered depends on the frame number and not on machine speed.
         // Required for any frame-to-frame image comparison.
         bool deterministic = false;
+
+        // Capture the swapchain image of this frame (1-based) to captureOutput.
+        // The loop keeps drawing past it until the readback lands, then exits.
+        uint64_t captureFrame = 0;
+        std::string captureOutput;
     };
+
+    // A capture was requested but never written: the run must not report success.
+    static constexpr int kCaptureFailureExitCode = 3;
+
+    // How far past the capture frame to keep drawing before declaring the
+    // readback lost. Comfortably above the in-flight frame count.
+    static constexpr uint64_t kCaptureReadbackGraceFrames = 16;
 
     // Distinct from the -1 an exception returns, so CI can tell "the renderer
     // produced validation errors" apart from "the renderer crashed".
@@ -69,6 +81,10 @@ private:
     // Measured in initialize(), consumed in mainLoop() once the first frame has
     // also been timed. Meaningless unless config_.assetLoadStats is set.
     double rendererInitMs_ = 0.0;
+
+    // Latched in mainLoop, because reportValidationTally runs after the renderer
+    // has already been destroyed.
+    bool captureCompleted_ = false;
 };
 
 } // namespace ve

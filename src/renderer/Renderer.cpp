@@ -764,7 +764,28 @@ bool Renderer::hasPendingPortfolioScreenshotReadback() const
 
 void Renderer::processPortfolioScreenshotReadback(uint32_t frameIndex)
 {
+    const bool wasPending = screenshotCapture_.hasPending();
     screenshotCapture_.processReadback(frameIndex);
+
+    // The readback lags the recorded frame by the in-flight frame count, so
+    // completion is detected here rather than assumed at the recorded frame.
+    if (frameCaptureRecorded_ && wasPending && !screenshotCapture_.hasPending()) {
+        frameCaptureComplete_ = true;
+        Logger::info("Frame capture written: " + frameCaptureOutputPath_.string());
+    }
+}
+
+void Renderer::requestFrameCaptureAt(uint64_t frameNumber, std::filesystem::path outputPath)
+{
+    if (frameNumber == 0 || outputPath.empty()) {
+        Logger::error("Frame capture needs a frame number of at least 1 and a non-empty output path.");
+        return;
+    }
+
+    frameCaptureTargetFrame_ = frameNumber;
+    frameCaptureOutputPath_ = std::move(outputPath);
+    Logger::info("Frame capture requested at frame " + std::to_string(frameNumber) + " -> " +
+                 frameCaptureOutputPath_.string());
 }
 
 void Renderer::setPortfolioCaptureMode(bool enabled)
@@ -1008,6 +1029,13 @@ void Renderer::updateCpuFrameTime()
     // with each other and all of them become reproducible together.
     const auto now = std::chrono::steady_clock::now();
     frameClock_.advance(std::chrono::duration<double>(now - startTime_).count());
+
+    // Armed here because the clock has just advanced, so frameCount() is this
+    // frame's number -- the same number the caller asked for.
+    if (frameCaptureTargetFrame_ != 0 && !frameCaptureRecorded_ &&
+        frameClock_.frameCount() == frameCaptureTargetFrame_) {
+        frameCapturePending_ = true;
+    }
 
     cpuFrameDeltaMs_ = static_cast<float>(frameClock_.deltaSeconds() * 1000.0);
     lastFrameStartTime_ = now;

@@ -128,9 +128,42 @@ the flag do not: they diverge on scene luminance and the exposure derived from
 it, which is exactly the wall-clock-driven animation showing through. The
 control is what makes the result meaningful.
 
-This evidence is CPU-observable state read back from the GPU, not pixels. It
-shows the frame *inputs* are reproducible. Proving the rendered *image* is
-reproducible needs frame capture, which is separate future work.
+## Frame capture
+
+`--capture-frame N --capture-output PATH` captures the swapchain image of frame
+N (1-based, matching the frame clock) to exactly one PNG.
+
+```
+./build/debug/VulkanEngine --deterministic --capture-frame 60 --capture-output /tmp/frame60.png
+```
+
+This is deliberately *not* the portfolio screenshot path (F12). That one
+switches to the showcase scene preset and writes a timestamped file plus the
+tracked `screenshots/..._latest.png` alias. A regression capture wants the scene
+as configured, one named file, and no timestamp — a timestamp would defeat
+comparing runs, and writing the tracked alias from CI would clobber a committed
+screenshot.
+
+The readback lags the recorded frame by the in-flight frame count, so the loop
+keeps drawing past frame N until the capture lands rather than exiting at N.
+That extension is bounded: `--capture-frame` may not exceed
+`--exit-after-frames` (rejected at parse time), and the run gives up after a
+16-frame grace window. A capture that was requested but never written exits 3,
+checked before the validation tally — a run that did not produce the image it was
+asked for has not passed, whatever validation thought of it.
+
+### Pixel determinism
+
+Three runs of `--deterministic --capture-frame 60` produce **byte-identical
+PNGs**. Three runs without `--deterministic` produce three different images.
+
+That is the claim Phase 2's log evidence could not make: not just that the frame
+*inputs* reproduce, but that the rendered *image* does. It is what makes a
+golden-image comparison possible.
+
+Measured on macOS/MoltenVK. Goldens are driver-specific and must be captured on
+the driver that will be compared against — a lavapipe run will not match an M3
+capture, and should not be expected to.
 
 ## Limitations
 
