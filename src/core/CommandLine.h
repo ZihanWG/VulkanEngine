@@ -42,6 +42,10 @@ struct LaunchOptions {
     // loop keeps drawing past it until the readback lands, then exits.
     uint64_t captureFrame = 0;
     std::string captureOutput;
+
+    // Phase 1 render-graph allocator probe: report whether this driver can bind
+    // two images into one allocation, then continue as normal. Throwaway.
+    bool probeAliasing = false;
 };
 
 // Parses the recognized flags and leaves defaults in place otherwise. Returns

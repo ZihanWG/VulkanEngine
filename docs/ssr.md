@@ -38,6 +38,33 @@ GTAO pass (see [gtao.md](gtao.md)), which reuses this normal.
    The pipeline uses ONE + ONE additive blending into `SceneColorHDR` (LOAD),
    so the shader pre-multiplies every weight and a zero output is a no-op.
 
+### Why the copy exists, and why it is half size
+
+The trace samples scene colour at the hit and additively blends its result back
+into that same image, so it cannot read the image it writes. `SSRCopyPass`
+breaks that loop.
+
+The copy is allocated at **half** the scene's allocation extent and produced
+with `vkCmdBlitImage` (linear filter) rather than `vkCmdCopyImage`, which cannot
+rescale. The trace takes exactly one point sample from it, so the full-size copy
+was buying sharpness nothing asked for: at 2560x1440 it cost 28.38 MiB and a
+full-resolution image transfer every frame, against 7.25 MiB and a quarter of the
+transfer now.
+
+Measured visual cost on the default portfolio scene at 2560x1440: 0.23% of pixels
+differ, worst channel delta 15/255, and the differences are one-pixel lines along
+reflected silhouette edges. Flat reflective areas are unchanged, which is the
+linear filter doing its job.
+
+A driver whose scene-colour format lacks `BLIT_SRC` / `BLIT_DST` /
+`SAMPLED_IMAGE_FILTER_LINEAR` keeps the full-size `vkCmdCopyImage` path;
+`ScreenSpaceReflections::halfResolutionSceneColorCopy()` reports which is active.
+
+The copy carries **its own** sub-rect UV scale, in `SsrParams::subRect.zw`, because
+halving rounds each side independently and its written/allocated ratio drifts
+from the full-size sources in `.xy`. The full-size sources -- depth and the thin
+G-buffer -- keep using `.xy`.
+
 Pass order: main HDR (± two-phase occlusion) → SSR copy → SSR trace → final
 depth pyramid → TAA → bloom/exposure/composite. Running before TAA gives the
 reflections neighborhood clamping and temporal accumulation for free.

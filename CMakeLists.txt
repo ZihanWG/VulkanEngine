@@ -221,6 +221,7 @@ add_library(VulkanEngineCore STATIC
     src/renderer/IrradianceProbes.cpp
     src/renderer/PunctualShadowAtlas.cpp
     src/renderer/RenderScale.cpp
+    src/renderer/TransientMemoryPlan.cpp
     src/renderer/RuntimeSettings.cpp
     src/renderer/VolumetricFog.cpp
     src/renderer/SkeletalAnimation.cpp
@@ -276,6 +277,7 @@ add_library(VulkanEngineRuntime STATIC
     src/renderer/ScreenshotCapture.cpp
     src/ui/ImGuiLayer.cpp
     src/rhi/ValidationTally.cpp
+    src/rhi/VulkanAliasingProbe.cpp
     src/rhi/VulkanBuffer.cpp
     src/rhi/VulkanBrdfLut.cpp
     src/rhi/VulkanAsyncCompute.cpp

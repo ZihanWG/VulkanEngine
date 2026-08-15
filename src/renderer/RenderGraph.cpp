@@ -2302,6 +2302,39 @@ void RenderGraph::compilePassCulling()
     cullUnusedPasses(passes_, textures_.size(), buffers_.size());
 }
 
+std::vector<RenderGraphResourceLifetime> computeTextureLifetimes(const std::vector<RenderPassNode>& passes,
+                                                                   size_t textureCount)
+{
+    std::vector<RenderGraphResourceLifetime> lifetimes(textureCount);
+
+    for (uint32_t passIndex = 0; passIndex < passes.size(); ++passIndex) {
+        const RenderPassNode& pass = passes[passIndex];
+        if (pass.culled) {
+            continue;
+        }
+
+        for (const RenderResourceUsage& usage : pass.resourceUsages) {
+            if (usage.resource.kind != RGResourceKind::Texture || usage.resource.index >= lifetimes.size()) {
+                // Same tolerance cullUnusedPasses applies: a handle the graph
+                // never imported is ignored rather than treated as live.
+                continue;
+            }
+
+            RenderGraphResourceLifetime& lifetime = lifetimes[usage.resource.index];
+            if (!lifetime.used) {
+                lifetime.used = true;
+                lifetime.firstPass = passIndex;
+                lifetime.lastPass = passIndex;
+                continue;
+            }
+            lifetime.firstPass = std::min(lifetime.firstPass, passIndex);
+            lifetime.lastPass = std::max(lifetime.lastPass, passIndex);
+        }
+    }
+
+    return lifetimes;
+}
+
 void cullUnusedPasses(std::vector<RenderPassNode>& passes, size_t textureCount, size_t bufferCount)
 {
     std::vector<uint8_t> neededTextures(textureCount, 0);
@@ -2757,6 +2790,22 @@ void RenderGraph::addBufferUsage(RenderPassNode& pass,
         declaredAccess,
         std::move(description),
     });
+}
+
+std::vector<RenderGraph::TransientTextureRecord> RenderGraph::transientTextures() const
+{
+    std::vector<TransientTextureRecord> records;
+    records.reserve(textures_.size());
+    for (uint32_t index = 0; index < textures_.size(); ++index) {
+        const TextureResource& texture = textures_[index];
+        // Imported resources are owned outside the graph and are not candidates
+        // for the transient pool, whatever their lifetime looks like.
+        if (texture.desc.imported || texture.image == VK_NULL_HANDLE) {
+            continue;
+        }
+        records.push_back(TransientTextureRecord{texture.desc.name, texture.image, index});
+    }
+    return records;
 }
 
 void RenderGraph::refreshDebugResources()
