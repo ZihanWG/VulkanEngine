@@ -22,7 +22,16 @@ public:
         // makes a measurement run scriptable and repeatable.
         bool assetLoadStats = false;
         uint32_t exitAfterFrames = 0;
+
+        // Makes validation-layer output a failure rather than a log line the
+        // reader has to notice. Only meaningful in a build that enables the
+        // validation layer at all (NDEBUG undefined).
+        bool failOnValidationError = false;
     };
+
+    // Distinct from the -1 an exception returns, so CI can tell "the renderer
+    // produced validation errors" apart from "the renderer crashed".
+    static constexpr int kValidationFailureExitCode = 2;
 
     // Parses the recognized flags and leaves config defaults in place otherwise.
     // Returns false when an argument is malformed, so main can fail loudly rather
@@ -44,6 +53,9 @@ private:
     void initialize();
     void mainLoop();
     void shutdown();
+
+    // Called after shutdown so teardown-time validation messages are included.
+    [[nodiscard]] int reportValidationTally() const;
 
     Config config_;
     std::unique_ptr<Window> window_;

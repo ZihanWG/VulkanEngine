@@ -4,9 +4,11 @@
 #include "core/Window.h"
 #include "renderer/AssetLoadStats.h"
 #include "renderer/Renderer.h"
+#include "rhi/ValidationTally.h"
 
 #include <charconv>
 #include <chrono>
+#include <cstdint>
 #include <exception>
 #include <string_view>
 #include <utility>
@@ -20,6 +22,11 @@ bool Application::parseArguments(int argc, char** argv, Config& config)
 
         if (argument == "--asset-load-stats") {
             config.assetLoadStats = true;
+            continue;
+        }
+
+        if (argument == "--fail-on-validation-error") {
+            config.failOnValidationError = true;
             continue;
         }
 
@@ -67,7 +74,7 @@ int Application::run()
         initialize();
         mainLoop();
         shutdown();
-        return 0;
+        return reportValidationTally();
     } catch (const std::exception& exception) {
         Logger::error(exception.what());
         shutdown();
@@ -133,6 +140,29 @@ void Application::shutdown()
 {
     renderer_.reset();
     window_.reset();
+}
+
+int Application::reportValidationTally() const
+{
+    if (!config_.failOnValidationError) {
+        return 0;
+    }
+
+    const uint64_t errors = rhi::ValidationTally::errorCount();
+    const uint64_t warnings = rhi::ValidationTally::warningCount();
+
+    Logger::info("Validation tally: " + std::to_string(errors) + " error(s), " + std::to_string(warnings) +
+                 " warning(s).");
+
+    // Warnings are reported but do not fail. They move with layer and loader
+    // versions, and a CI that goes red because the validation layer was updated
+    // teaches people to ignore it.
+    if (errors > 0) {
+        Logger::error("Failing because the validation layer reported " + std::to_string(errors) + " error(s).");
+        return kValidationFailureExitCode;
+    }
+
+    return 0;
 }
 
 } // namespace ve

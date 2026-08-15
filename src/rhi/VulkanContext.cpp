@@ -2,6 +2,7 @@
 
 #include "core/Logger.h"
 #include "core/Window.h"
+#include "rhi/ValidationTally.h"
 
 #include <algorithm>
 #include <array>
@@ -81,9 +82,14 @@ VKAPI_ATTR VkBool32 VKAPI_CALL validationCallback(VkDebugUtilsMessageSeverityFla
     const char* message =
         callbackData && callbackData->pMessage ? callbackData->pMessage : "Unknown validation message";
 
+    // Tally before logging so a message is counted even if logging is filtered.
+    // Counting is unconditional; whether a non-zero tally fails the process is
+    // Application's policy (--fail-on-validation-error).
     if ((severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) {
+        ValidationTally::recordError();
         Logger::error(message);
     } else if ((severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) != 0) {
+        ValidationTally::recordWarning();
         Logger::warn(message);
     } else {
         Logger::trace(message);

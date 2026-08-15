@@ -58,6 +58,9 @@ overview; these documents describe implementation details and limitations.
   scene save/load, missing saved-scene behavior, and serialization scope.
 - [Asset Manager And Material Assets](asset_system.md): Material JSON schema,
   path-based handles, runtime mapping, scene metadata, and non-goals.
+- [Headless Render CI](headless_ci.md): The lavapipe + Xvfb job that actually
+  runs frames, the validation-error gate, and exactly which renderer paths CI
+  does and does not cover.
 - [Asset Load Baseline](asset_load_baseline.md): Measured startup asset load
   cost, the `--asset-load-stats` instrumentation, and why the asset cook /
   async upload work is blocked on content rather than code.
