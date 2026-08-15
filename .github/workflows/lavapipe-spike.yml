@@ -27,11 +27,6 @@ jobs:
     timeout-minutes: 45
 
     env:
-      # Both spellings: VK_DRIVER_FILES is the current loader variable,
-      # VK_ICD_FILENAMES the legacy one. Setting both avoids a silent fallback
-      # to some other ICD if the runner image ships one.
-      VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
-      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
       VK_LOADER_DEBUG: warn
 
     steps:
@@ -70,17 +65,28 @@ jobs:
             xorg-dev \
             xvfb
 
-      - name: Record the driver the loader will actually pick
+      # The ICD filename is not stable across Mesa releases -- it is lvp_icd.json
+      # on Mesa 25.x here and lvp_icd.<arch>.json on older packages -- so it is
+      # discovered rather than hardcoded, and pinned into the environment for
+      # every later step. Without the pin the loader would happily enumerate the
+      # other eight ICDs the runner ships and answer a different question.
+      - name: Select the lavapipe ICD
         run: |
           echo "--- installed ICDs ---"
           ls -la /usr/share/vulkan/icd.d/ || true
-          echo "--- mesa version ---"
+          echo "--- versions ---"
           dpkg -l | grep -E "mesa-vulkan|libvulkan" || true
-          test -f "$VK_DRIVER_FILES" || {
-            echo "lavapipe ICD not found at $VK_DRIVER_FILES; mesa-vulkan-drivers layout changed." >&2
+
+          icd=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json 2>/dev/null | head -1)
+          if [ -z "$icd" ]; then
+            echo "No lavapipe ICD found; mesa-vulkan-drivers did not ship one." >&2
             ls -la /usr/share/vulkan/icd.d/ >&2
             exit 1
-          }
+          fi
+          echo "selected lavapipe ICD: $icd"
+          cat "$icd"
+          echo "VK_DRIVER_FILES=$icd" >> "$GITHUB_ENV"
+          echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
 
       # The actual payload of this spike. Whatever the engine does later, this
       # capability dump is what tells us which renderer paths can even be
