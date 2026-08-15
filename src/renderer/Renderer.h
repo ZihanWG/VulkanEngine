@@ -2,6 +2,7 @@
 
 #include "assets/AssetManager.h"
 #include "core/JobSystem.h"
+#include "renderer/AssetLoadStats.h"
 #include "renderer/BindlessTextureHeap.h"
 #include "renderer/BuiltinTextureFactory.h"
 #include "renderer/EditorCamera.h"
@@ -82,6 +83,13 @@ public:
     void drawFrame();
     void handleEvent(const SDL_Event& event);
     void waitIdle();
+
+    // Startup asset-load instrumentation (renderer/AssetLoadStats.h). Populated
+    // during construction; the caller stamps the timings it owns (renderer init
+    // wall clock, first frame) and queries VMA usage through finalize below.
+    // Load-time measurement only -- nothing here participates in frame rendering.
+    void finalizeAssetLoadStats(double rendererInitMs, double firstFrameMs);
+    [[nodiscard]] const renderer::AssetLoadStats& assetLoadStats() const { return assetLoadStats_; }
 
 private:
     static constexpr uint32_t kMaxShadowCascades = renderer::kMaxShadowCascades;
@@ -583,6 +591,10 @@ private:
 
     Window& window_;
     JobSystem jobSystem_;
+
+    // Startup-only measurement state. Written during construction and by
+    // finalizeAssetLoadStats; never read by the frame path.
+    renderer::AssetLoadStats assetLoadStats_;
     rhi::VulkanContext context_;
     std::vector<renderer::FrameResources> frames_;
     renderer::GpuProfiler gpuProfiler_;

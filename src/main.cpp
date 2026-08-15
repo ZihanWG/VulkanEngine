@@ -2,9 +2,11 @@
 
 int main(int argc, char** argv)
 {
-    (void)argc;
-    (void)argv;
+    ve::Application::Config config{};
+    if (!ve::Application::parseArguments(argc, argv, config)) {
+        return -1;
+    }
 
-    ve::Application app;
+    ve::Application app(std::move(config));
     return app.run();
 }

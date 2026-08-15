@@ -207,6 +207,7 @@ add_library(VulkanEngineCore STATIC
     src/assets/AssetManager.cpp
     src/core/JobSystem.cpp
     src/core/Logger.cpp
+    src/renderer/AssetLoadStats.cpp
     src/renderer/CascadeMath.cpp
     src/renderer/DrawItemBatching.cpp
     src/renderer/DynamicResolution.cpp

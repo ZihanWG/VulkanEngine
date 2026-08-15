@@ -188,7 +188,10 @@ Renderer::Renderer(Window& window) : window_(window)
                              shaderPath("probe_border.comp.spv"),
                              shaderPath("probe_convolve.comp.spv"));
     irradianceProbes_.setBounds(giGridBounds());
+    const auto sceneCreateStart = std::chrono::steady_clock::now();
     createScene();
+    assetLoadStats_.timings.sceneCreateMs =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - sceneCreateStart).count();
     createObjectFrameDataBuffers();
     clusteredLighting_.create(context_,
                               static_cast<uint32_t>(frames_.size()),
@@ -217,6 +220,43 @@ Renderer::Renderer(Window& window) : window_(window)
     lastExposureLogPrint_ = std::chrono::steady_clock::now();
 
     initialized_ = true;
+}
+
+void Renderer::finalizeAssetLoadStats(double rendererInitMs, double firstFrameMs)
+{
+    assetLoadStats_.timings.rendererInitMs = rendererInitMs;
+    assetLoadStats_.timings.firstFrameMs = firstFrameMs;
+    assetLoadStats_.textures = renderer::AssetLoadStatsRecorder::snapshotTextures();
+
+    const VmaAllocator allocator = context_.allocator();
+    if (allocator == VK_NULL_HANDLE) {
+        return;
+    }
+
+    // vmaGetHeapBudgets reports per-heap; only device-local heaps are the VRAM
+    // budget this baseline is about. On a unified-memory device every heap is
+    // device-local, which is the honest answer there rather than a special case.
+    const VkPhysicalDeviceMemoryProperties* memoryProperties = nullptr;
+    vmaGetMemoryProperties(allocator, &memoryProperties);
+    if (memoryProperties == nullptr) {
+        return;
+    }
+
+    std::array<VmaBudget, VK_MAX_MEMORY_HEAPS> budgets{};
+    vmaGetHeapBudgets(allocator, budgets.data());
+
+    renderer::DeviceMemoryUsage usage{};
+    for (uint32_t heap = 0; heap < memoryProperties->memoryHeapCount; ++heap) {
+        if ((memoryProperties->memoryHeaps[heap].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) == 0) {
+            continue;
+        }
+        usage.deviceLocalUsedBytes += budgets[heap].usage;
+        usage.deviceLocalBudgetBytes += budgets[heap].budget;
+        usage.deviceLocalAllocatedBytes += budgets[heap].statistics.allocationBytes;
+        usage.allocationCount += budgets[heap].statistics.allocationCount;
+    }
+    usage.valid = true;
+    assetLoadStats_.memory = usage;
 }
 
 Renderer::~Renderer()
