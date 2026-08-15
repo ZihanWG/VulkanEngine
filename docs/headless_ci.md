@@ -165,6 +165,57 @@ Measured on macOS/MoltenVK. Goldens are driver-specific and must be captured on
 the driver that will be compared against — a lavapipe run will not match an M3
 capture, and should not be expected to.
 
+## Golden-image regression
+
+The job renders 30 deterministic frames, captures frame 30, and compares it
+pixel-for-pixel against `tests/golden/lavapipe_frame30.png`. A mismatch fails
+the job and uploads both the new capture and a difference image.
+
+Comparison policy lives in `renderer::ImageCompare` (GPU-free, unit tested);
+`tools/compare_images` decodes the PNGs and applies it. The tool links only
+`VulkanEngineCore`, so it runs anywhere a downloaded artifact lands:
+
+```
+./build/debug/compare_images capture.png tests/golden/lavapipe_frame30.png --diff-output diff.png
+```
+
+Exit codes: 0 match, 1 mismatch, 2 usage or IO error.
+
+### Why zero tolerance
+
+Measured, not assumed. Two independent CI runs of the same commit produced
+**byte-identical** captures on lavapipe, so the tolerance that the evidence
+supports is zero.
+
+A small tolerance would not help with the realistic failure anyway. The thing
+that will eventually break this is a Mesa or LLVM update on the runner image,
+and a codegen change shifts far more than a couple of least-significant bits. A
+loose threshold would buy nothing against that while blunting the gate against
+the regressions it exists to catch.
+
+### Re-baselining
+
+When the change is intended, or when the runner's Mesa version moved:
+
+1. Take `artifacts/lavapipe_frame30.png` from the failed run's
+   `headless-render-logs` artifact.
+2. Replace `tests/golden/lavapipe_frame30.png` with it.
+3. Say in the commit message which of the two it was.
+
+The failure output prints the driver version to make that distinction possible.
+
+The committed golden is re-encoded with real deflate compression (305 KB rather
+than the 3.6 MB the engine's stored-block PNG writer emits). Only the encoding
+differs; the comparison decodes both sides, so pixels are what is compared.
+
+**Goldens are driver-specific.** This one was captured on lavapipe and is only
+meaningful against lavapipe. A capture from the macOS/MoltenVK development
+machine will not match it and is not expected to.
+
+Note for repo hygiene: `tests/golden/` is the second category of tracked binary
+in this repository, after `screenshots/`. A capture run writes only where
+`--capture-output` points, so it cannot clobber either.
+
 ## Limitations
 
 - Ten frames at default settings. Swapchain recreation/resize, screenshot
