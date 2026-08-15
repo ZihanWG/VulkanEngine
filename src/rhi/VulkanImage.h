@@ -2,11 +2,13 @@
 
 #include "rhi/VulkanMemory.h"
 
+#include <cstdint>
 #include <string>
 
 namespace ve::rhi {
 
 class VulkanContext;
+class VulkanTransientMemoryPool;
 
 struct VulkanImageCreateInfo {
     uint32_t width = 0;
@@ -36,6 +38,28 @@ public:
     VulkanImage& operator=(VulkanImage&& other) noexcept;
 
     void create(VulkanContext& context, const VulkanImageCreateInfo& createInfo);
+
+    // Creates the image bound into `pool` at `offset` instead of giving it a
+    // private allocation. The pool owns the memory: reset() destroys this image
+    // and its view but must never free what it did not allocate.
+    //
+    // The caller is responsible for the offset being one no lifetime-overlapping
+    // image also occupies (renderer::planTransientMemory guarantees that), and
+    // for destroying every aliased image before the pool it came from.
+    //
+    // Returns false when the pool is unavailable or the driver rejects the
+    // binding, leaving the image empty so the caller can fall back to create().
+    [[nodiscard]] bool createAliased(VulkanContext& context,
+                                     const VulkanImageCreateInfo& createInfo,
+                                     VulkanTransientMemoryPool& pool,
+                                     VkDeviceSize offset);
+
+    // Memory the driver wants for this description, without allocating any. Used
+    // to build the plan before a single image exists.
+    [[nodiscard]] static bool queryMemoryRequirements(VulkanContext& context,
+                                                      const VulkanImageCreateInfo& createInfo,
+                                                      VkMemoryRequirements& requirements);
+
     void reset();
 
     [[nodiscard]] VkImage image() const { return image_; }
@@ -45,13 +69,17 @@ public:
     [[nodiscard]] uint32_t mipLevels() const { return mipLevels_; }
 
 private:
+    void createImageViewForCreateInfo(const VulkanImageCreateInfo& createInfo);
     void moveFrom(VulkanImage& other) noexcept;
 
     VulkanContext* context_ = nullptr;
 
     // VkImage and its VMA allocation are destroyed together; the view is destroyed first.
     VkImage image_ = VK_NULL_HANDLE;
+    // Null when the image is bound into a transient pool: the memory belongs to
+    // the pool and this object must not free it.
     VmaAllocation allocation_ = VK_NULL_HANDLE;
+    bool aliased_ = false;
     VkImageView imageView_ = VK_NULL_HANDLE;
     VkFormat format_ = VK_FORMAT_UNDEFINED;
     VkExtent3D extent_{};

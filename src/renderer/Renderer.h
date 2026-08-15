@@ -637,6 +637,15 @@ private:
     // makes deterministic mode possible at all.
     renderer::FrameClock frameClock_;
 
+    // Transient memory aliasing. The plan needs lifetimes, which only exist once
+    // a frame has been recorded, so the pool is applied after the first frame
+    // rather than at resource-creation time. Until then -- and whenever the
+    // setting is off -- every image keeps its own allocation.
+    bool useTransientAliasing_ = false;
+    bool transientAliasingApplied_ = false;
+    VkExtent2D transientAliasingPlanExtent_{};
+    void applyTransientAliasingPlan();
+
     // Regression frame capture. Separate from the portfolio screenshot state
     // above because it deliberately skips the showcase-preset policy.
     std::filesystem::path frameCaptureOutputPath_;

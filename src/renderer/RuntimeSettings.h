@@ -344,6 +344,12 @@ struct RuntimeSettings {
     LodSettings lod;
     GiSettings gi;
     DebugUiSettings debugUi;
+    // Bind the bloom chain into one shared transient allocation, so resources
+    // whose lifetimes do not overlap share bytes. OFF by default until the frame
+    // cost of the alias-handoff barriers has been measured -- the memory it
+    // saves is not scarce here, so an unmeasured cost is not worth paying by
+    // default. Startup/resize applied: it changes how images are allocated.
+    bool enableTransientAliasing = false;
     bool useGpuCulling = true;
     bool useGpuShadowCulling = true;
     // Hi-Z occlusion defaults ON now that two-phase re-testing removes the

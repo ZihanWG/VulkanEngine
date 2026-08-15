@@ -296,6 +296,7 @@ add_library(VulkanEngineRuntime STATIC
     src/rhi/VulkanSwapchain.cpp
     src/rhi/VulkanSync.cpp
     src/rhi/VulkanTimestampQuery.cpp
+    src/rhi/VulkanTransientMemoryPool.cpp
     src/rhi/VulkanTexture.cpp
 )
 

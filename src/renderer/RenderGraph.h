@@ -101,6 +101,9 @@ struct RGTextureDesc {
     VkClearValue clearValue{};
     bool hasClearValue = false;
     bool imported = true;
+    // Pool-bound: see RenderGraphImageResource::aliased. Drives the first-use
+    // barrier in transitionTexture.
+    bool aliased = false;
 };
 
 struct RGBufferDesc {
@@ -204,6 +207,9 @@ struct RenderGraphImageResource {
     VkClearValue clearValue{};
     bool hasClearValue = false;
     bool imported = true;
+    // True when this image is bound into the shared transient pool, so its bytes
+    // belonged to a different resource earlier in the frame.
+    bool aliased = false;
 };
 
 struct RenderGraphBufferResource {

@@ -487,6 +487,7 @@ void RenderGraph::createTransientFrameTextures()
         desc.clearValue = resource.clearValue;
         desc.hasClearValue = resource.hasClearValue;
         desc.imported = false;
+        desc.aliased = resource.aliased;
         return desc;
     };
 
@@ -2436,13 +2437,36 @@ uint32_t RenderGraph::transitionTexture(RGTextureHandle handle, RGAccess access)
     }
 
     const TextureAccessState desired = accessStateForTexture(resource, access);
-    const VkImageLayout oldLayout = currentTextureLayout(resource);
+    VkImageLayout oldLayout = currentTextureLayout(resource);
     TextureAccessState previous = resource.lastAccess;
     if (previous.declaredAccess == RGAccess::Unknown && oldLayout != VK_IMAGE_LAYOUT_UNDEFINED) {
         previous = accessStateFromLayout(oldLayout, resource.desc.aspectMask);
     }
 
-    if (!textureBarrierRequired(oldLayout,
+    // Alias handoff. The first use of a pool-bound resource in a frame inherits
+    // bytes that another resource owned earlier, so two things must hold that do
+    // not for a privately allocated image:
+    //
+    //   - its contents are genuinely undefined, hence UNDEFINED as the old
+    //     layout, regardless of what layout this resource was left in last frame;
+    //   - the barrier must wait for whatever wrote those bytes, which is not
+    //     tracked in this resource's own lastAccess.
+    //
+    // The source scope is deliberately conservative rather than the exact union
+    // of overlapping predecessors. This graph already documents its barriers as
+    // conservative and not heavily optimised, tracking predecessors would mean
+    // threading the memory plan through the barrier path, and the cost is what
+    // Phase 4 measures. Tightening it is a measurement-driven change, not a
+    // correctness one.
+    const bool aliasHandoff = resource.desc.aliased && !resource.usedThisFrame;
+    if (aliasHandoff) {
+        oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        previous.stage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        previous.access = VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT;
+        previous.declaredAccess = RGAccess::Unknown;
+    }
+
+    if (!aliasHandoff && !textureBarrierRequired(oldLayout,
                                 desired.layout,
                                 resource.usedThisFrame,
                                 previous.declaredAccess,

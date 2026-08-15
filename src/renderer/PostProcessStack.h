@@ -30,10 +30,12 @@
 #include "rhi/VulkanComputePipeline.h"
 #include "rhi/VulkanDescriptor.h"
 #include "rhi/VulkanImage.h"
+#include "rhi/VulkanTransientMemoryPool.h"
 #include "rhi/VulkanPipeline.h"
 
 #include <array>
 #include <cstdint>
+#include <unordered_map>
 #include <vector>
 
 #include <glm/mat4x4.hpp>
@@ -210,6 +212,18 @@ public:
     {
         return postProcessSampler_;
     }
+    // Rebuilds the bloom chain into `pool` at these offsets on the next resource
+    // creation. Pass an empty map to go back to private allocations.
+    void setBloomAliasPlan(std::unordered_map<std::string, VkDeviceSize> offsets,
+                           VkDeviceSize poolBytes,
+                           uint32_t memoryTypeBits,
+                           VkDeviceSize alignment);
+
+    // True when the bloom images currently share pool memory. Drives the graph's
+    // alias-handoff barrier, so it must reflect reality, not intent.
+    [[nodiscard]] bool bloomImagesAreAliased() const { return bloomAliased_; }
+    [[nodiscard]] VkDeviceSize bloomPoolBytes() const { return bloomPool_.size(); }
+
     [[nodiscard]] VkExtent2D bloomExtent() const
     {
         return bloomExtent_;
@@ -509,6 +523,21 @@ private:
     rhi::VulkanDescriptorSetLayout postProcessLuminanceDescriptorSetLayout_;
     rhi::VulkanDescriptorSetLayout postProcessExposureReduceDescriptorSetLayout_;
     rhi::VulkanDescriptorPool postProcessDescriptorPool_;
+
+    // Offsets for the bloom chain inside the shared transient pool, keyed by the
+    // name the render graph uses. Empty means "give every bloom image its own
+    // allocation", which is what this did before the pool existed and remains
+    // the fallback whenever the pool is unavailable.
+    //
+    // Applied by createPostProcessResources, so the images and the descriptor
+    // writes that reference their views are rebuilt together by the one path
+    // that already knows how to do both.
+    rhi::VulkanTransientMemoryPool bloomPool_;
+    std::unordered_map<std::string, VkDeviceSize> bloomAliasOffsets_;
+    // The allocation extent the offsets were computed for. A resize invalidates
+    // them: offsets and pool size are both extent-dependent.
+    VkExtent2D bloomAliasPlanExtent_{};
+    bool bloomAliased_ = false;
 
     rhi::VulkanImage sceneColor_;
     rhi::VulkanImage velocity_;

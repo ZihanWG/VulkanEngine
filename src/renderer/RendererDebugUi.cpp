@@ -976,6 +976,33 @@ void Renderer::drawGpuCullingDebugUi()
     if (!ImGui::CollapsingHeader("GPU Culling", ImGuiTreeNodeFlags_DefaultOpen)) {
         return;
     }
+    // Completes the settings path for enableTransientAliasing: field, clamp, JSON
+    // read, JSON write, control, consumer. Toggling it takes effect on the next
+    // plan application rather than immediately, because the pool is rebuilt with
+    // the post-process resources, so the state is spelled out rather than left
+    // to look broken for a frame.
+    if (ImGui::Checkbox("Transient memory aliasing (bloom)", &useTransientAliasing_)) {
+        // Re-apply from scratch either way: turning it off has to hand the bloom
+        // chain back its private allocations, not just stop planning.
+        transientAliasingApplied_ = false;
+        if (!useTransientAliasing_) {
+            waitIdle();
+            postProcess_.setBloomAliasPlan({}, 0, 0, 0);
+            recreatePostProcessResources();
+        }
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Binds the bloom chain into one shared allocation. Applied after the next recorded\n"
+                          "frame, because the offsets come from measured resource lifetimes.");
+    }
+    if (postProcess_.bloomImagesAreAliased()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(active, %.2f MiB pool)", static_cast<double>(postProcess_.bloomPoolBytes()) / (1024.0 * 1024.0));
+    } else if (useTransientAliasing_) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(pending)");
+    }
+
     if (!gpuCulling_.available()) {
         ImGui::BeginDisabled();
     }

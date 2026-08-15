@@ -180,16 +180,60 @@ void PostProcessStack::createPostProcessResources(VkImageView depthFallbackView,
     bloomInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     bloomInfo.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 
+    // The plan is keyed to the allocation extent it was computed for. A resize
+    // recreates these images at a new size, and binding those into offsets and a
+    // pool sized for the old extent would overlap live ranges or run past the
+    // allocation. Dropping the plan here makes the chain private again, and
+    // Renderer replans against the new extent after the next recorded frame.
+    if (!bloomAliasOffsets_.empty() && (bloomAliasPlanExtent_.width != sceneAllocatedExtent().width ||
+                                        bloomAliasPlanExtent_.height != sceneAllocatedExtent().height)) {
+        bloomAliasOffsets_.clear();
+        bloomPool_.reset();
+    }
+
+    // Binding is all-or-nothing. A partially bound chain is the dangerous state:
+    // the graph decides the alias-handoff barrier for the resource set as a
+    // whole, so images left pool-bound while the set is marked private would
+    // share memory with no ordering between them. Every image is therefore
+    // attempted first, and any failure tears the whole attempt down before
+    // anything is created privately.
+    struct BloomImageBinding {
+        rhi::VulkanImage* image = nullptr;
+        rhi::VulkanImageCreateInfo info;
+    };
+    std::vector<BloomImageBinding> chain;
+    const auto attemptAliasedChain = [this, &chain]() {
+        if (bloomAliasOffsets_.empty() || !bloomPool_.available()) {
+            return false;
+        }
+        for (BloomImageBinding& binding : chain) {
+            const auto offset = bloomAliasOffsets_.find(binding.info.debugName);
+            if (offset == bloomAliasOffsets_.end() ||
+                !binding.image->createAliased(context_, binding.info, bloomPool_, offset->second)) {
+                Logger::warn("Bloom image '" + binding.info.debugName +
+                             "' could not be bound into the transient pool; the whole chain falls back to "
+                             "private allocations.");
+                // Undo every binding made so far, so nothing is left sharing pool
+                // memory without the barrier that would make it safe.
+                for (BloomImageBinding& bound : chain) {
+                    bound.image->reset();
+                }
+                return false;
+            }
+        }
+        return true;
+    };
+
     bloomInfo.debugName = "BloomExtract";
-    bloomExtract_.create(context_, bloomInfo);
+    chain.push_back({&bloomExtract_, bloomInfo});
     bloomExtractLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 
     bloomInfo.debugName = "BloomPing";
-    bloomPing_.create(context_, bloomInfo);
+    chain.push_back({&bloomPing_, bloomInfo});
     bloomPingLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 
     bloomInfo.debugName = "BloomPong";
-    bloomPong_.create(context_, bloomInfo);
+    chain.push_back({&bloomPong_, bloomInfo});
     bloomPongLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 
     const uint32_t bloomMipCount = calculateBloomMipChainLevels(sceneAllocatedExtent());
@@ -200,7 +244,7 @@ void PostProcessStack::createPostProcessResources(VkImageView depthFallbackView,
         bloomInfo.width = mipSize.width;
         bloomInfo.height = mipSize.height;
         bloomInfo.debugName = "BloomMipDownsample" + std::to_string(level);
-        bloomMipDownsampleImages_[level].create(context_, bloomInfo);
+        chain.push_back({&bloomMipDownsampleImages_[level], bloomInfo});
     }
 
     const uint32_t bloomUpsampleCount = bloomMipCount > 1u ? bloomMipCount - 1u : 0u;
@@ -211,7 +255,14 @@ void PostProcessStack::createPostProcessResources(VkImageView depthFallbackView,
         bloomInfo.width = mipSize.width;
         bloomInfo.height = mipSize.height;
         bloomInfo.debugName = "BloomMipUpsample" + std::to_string(level);
-        bloomMipUpsampleImages_[level].create(context_, bloomInfo);
+        chain.push_back({&bloomMipUpsampleImages_[level], bloomInfo});
+    }
+
+    bloomAliased_ = attemptAliasedChain();
+    if (!bloomAliased_) {
+        for (BloomImageBinding& binding : chain) {
+            binding.image->create(context_, binding.info);
+        }
     }
 
     try {
@@ -1422,6 +1473,30 @@ void PostProcessStack::createLuminanceResources()
 
     autoExposureAvailable_ = true;
     lastAutoExposureUpdateSeconds_ = frameTimeSeconds_;
+}
+
+void PostProcessStack::setBloomAliasPlan(std::unordered_map<std::string, VkDeviceSize> offsets,
+                                         VkDeviceSize poolBytes,
+                                         uint32_t memoryTypeBits,
+                                         VkDeviceSize alignment)
+{
+    bloomAliasOffsets_ = std::move(offsets);
+    bloomAliasPlanExtent_ = sceneAllocatedExtent();
+
+    if (bloomAliasOffsets_.empty() || poolBytes == 0) {
+        // Images bound into the old pool must be gone before its memory is, and
+        // the caller destroys them by recreating resources after this returns.
+        bloomPool_.reset();
+        bloomAliased_ = false;
+        return;
+    }
+
+    if (!bloomPool_.create(context_, poolBytes, memoryTypeBits, alignment)) {
+        Logger::warn(std::string("Bloom transient pool unavailable (") + bloomPool_.unavailableReason() +
+                     "); bloom keeps private allocations.");
+        bloomAliasOffsets_.clear();
+        bloomAliased_ = false;
+    }
 }
 
 PostProcessStack::LuminanceDispatch PostProcessStack::luminanceDispatch() const
