@@ -1,0 +1,146 @@
+# Throwaway probe: can this renderer run at all on Mesa's lavapipe software
+# Vulkan driver, under a virtual X server, with validation layers on?
+#
+# This workflow is not a gate and is not meant to survive. It answers three
+# questions and then should be deleted or replaced by a real headless-CI job:
+#
+#   1. What Vulkan version, features, and extensions does lavapipe expose here?
+#      (descriptor indexing, dynamic rendering, Synchronization2, timeline
+#      semaphores, multiDrawIndirect, draw-indirect-count, a compute queue)
+#   2. Does the engine reach a first frame, or does device selection reject the
+#      driver outright?
+#   3. Does a real run produce validation errors that MoltenVK never surfaced?
+#
+# Every step that can fail is allowed to continue so the logs are always
+# uploaded -- a red X with no artifact would answer nothing.
+name: Lavapipe spike
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [spike/lavapipe]
+
+jobs:
+  probe:
+    name: lavapipe software Vulkan probe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      # Both spellings: VK_DRIVER_FILES is the current loader variable,
+      # VK_ICD_FILENAMES the legacy one. Setting both avoids a silent fallback
+      # to some other ICD if the runner image ships one.
+      VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+      VK_LOADER_DEBUG: warn
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install the Vulkan SDK (glslc, headers, loader, validation layers)
+        run: |
+          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc \
+            | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc > /dev/null
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-noble.list \
+            https://packages.lunarg.com/vulkan/lunarg-vulkan-noble.list
+          sudo apt-get update
+          sudo apt-get install -y vulkan-sdk
+
+      - name: Install build, windowing, and software-rasterizer dependencies
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            git \
+            libegl-dev \
+            libibus-1.0-dev \
+            libwayland-dev \
+            libx11-dev \
+            libx11-xcb-dev \
+            libxext-dev \
+            libxfixes-dev \
+            libxi-dev \
+            libxkbcommon-dev \
+            libxrandr-dev \
+            mesa-vulkan-drivers \
+            ninja-build \
+            pkg-config \
+            wayland-protocols \
+            xorg-dev \
+            xvfb
+
+      - name: Record the driver the loader will actually pick
+        run: |
+          echo "--- installed ICDs ---"
+          ls -la /usr/share/vulkan/icd.d/ || true
+          echo "--- mesa version ---"
+          dpkg -l | grep -E "mesa-vulkan|libvulkan" || true
+          test -f "$VK_DRIVER_FILES" || {
+            echo "lavapipe ICD not found at $VK_DRIVER_FILES; mesa-vulkan-drivers layout changed." >&2
+            ls -la /usr/share/vulkan/icd.d/ >&2
+            exit 1
+          }
+
+      # The actual payload of this spike. Whatever the engine does later, this
+      # capability dump is what tells us which renderer paths can even be
+      # exercised in CI and which need a documented fallback.
+      - name: Dump lavapipe capabilities
+        continue-on-error: true
+        run: |
+          xvfb-run -a vulkaninfo --summary 2>&1 | tee lavapipe-summary.txt
+          echo "=== full capability dump (features + extensions) ==="
+          xvfb-run -a vulkaninfo 2>&1 | tee lavapipe-full.txt | \
+            grep -iE "apiVersion|descriptorIndexing|runtimeDescriptorArray|descriptorBindingPartiallyBound|shaderSampledImageArrayNonUniformIndexing|dynamicRendering|synchronization2|timelineSemaphore|multiDrawIndirect|drawIndirectFirstInstance|drawIndirectCount|independentBlend|samplerAnisotropy|textureCompressionBC|textureCompressionASTC|queueFlags|queueCount" \
+            || true
+
+      - name: Configure CMake
+        run: cmake --preset ci-debug -DVULKAN_ENGINE_FETCH_DEPS=ON
+
+      - name: Compile GLSL shaders
+        run: cmake --build --preset ci-debug-shaders --parallel
+
+      # ci-debug leaves NDEBUG undefined, so the engine enables the validation
+      # layer itself and routes messages into its own logger. No extra env needed.
+      - name: Build renderer
+        run: cmake --build --preset ci-debug --parallel
+
+      # Ten frames only. Software rasterization of this scene is slow and the
+      # question here is "does it survive", not "how fast is it". `timeout` is a
+      # hard backstop so a hang costs minutes rather than the job's whole budget.
+      - name: Run the renderer on lavapipe under Xvfb
+        continue-on-error: true
+        run: |
+          # No `set -e` abort here on purpose: the exit status is the result we
+          # came for, so it has to be captured and reported rather than thrown.
+          set +e
+          timeout 900 xvfb-run -a --server-args="-screen 0 1280x720x24" \
+            ./build/ci-debug/VulkanEngine --asset-load-stats --exit-after-frames 10 \
+            > lavapipe-run.log 2>&1
+          status=$?
+          cat lavapipe-run.log
+          echo "=== engine exit status: $status ==="
+          if [ "$status" -eq 124 ]; then
+            echo "The engine hit the 900s timeout rather than exiting on its own."
+          fi
+          exit 0
+
+      - name: Summarize validation output
+        continue-on-error: true
+        run: |
+          echo "=== validation / error lines ==="
+          grep -iE "\[Error\]|\[Warn|validation|VUID" lavapipe-run.log || echo "(none found)"
+          echo
+          echo "=== did it reach a frame? ==="
+          grep -iE "asset load baseline|first frame|GPU timestamp|MainHDRPass" lavapipe-run.log || echo "(no frame evidence)"
+
+      - name: Upload probe logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lavapipe-spike-logs
+          path: |
+            lavapipe-summary.txt
+            lavapipe-full.txt
+            lavapipe-run.log
+          if-no-files-found: warn
