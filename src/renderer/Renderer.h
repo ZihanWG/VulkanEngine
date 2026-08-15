@@ -2,6 +2,7 @@
 
 #include "assets/AssetManager.h"
 #include "core/JobSystem.h"
+#include "renderer/AssetLoadStats.h"
 #include "renderer/BindlessTextureHeap.h"
 #include "renderer/BuiltinTextureFactory.h"
 #include "renderer/EditorCamera.h"
@@ -15,6 +16,7 @@
 #include "renderer/DepthPyramid.h"
 #include "renderer/DrawItemBatching.h"
 #include "renderer/DynamicResolution.h"
+#include "renderer/FrameClock.h"
 #include "renderer/OcclusionYield.h"
 #include "renderer/GpuCulling.h"
 #include "renderer/FrameResources.h"
@@ -82,6 +84,35 @@ public:
     void drawFrame();
     void handleEvent(const SDL_Event& event);
     void waitIdle();
+
+    // Startup asset-load instrumentation (renderer/AssetLoadStats.h). Populated
+    // during construction; the caller stamps the timings it owns (renderer init
+    // wall clock, first frame) and queries VMA usage through finalize below.
+    // Load-time measurement only -- nothing here participates in frame rendering.
+    void finalizeAssetLoadStats(double rendererInitMs, double firstFrameMs);
+    [[nodiscard]] const renderer::AssetLoadStats& assetLoadStats() const { return assetLoadStats_; }
+
+    // Makes the frame path advance by a fixed step per frame instead of by
+    // measured wall-clock time, so a rendered frame is a function of the frame
+    // number rather than of machine speed. Also pins off dynamic resolution,
+    // which is the one other setting that feeds measured performance back into
+    // what gets rendered. Call before the first drawFrame().
+    void useDeterministicFrameClock(double stepSeconds = renderer::FrameClock::kDefaultFixedStepSeconds);
+
+    // Captures the swapchain image of frame `frameNumber` (1-based, matching the
+    // frame clock) to exactly one PNG at `outputPath`.
+    //
+    // Deliberately not the portfolio screenshot path: that one switches to the
+    // showcase scene preset and writes a timestamped file plus the tracked
+    // "_latest" alias. A regression capture wants the scene as configured, one
+    // named file, and no timestamp -- a timestamp would defeat comparing runs.
+    void requestFrameCaptureAt(uint64_t frameNumber, std::filesystem::path outputPath);
+
+    // True once the requested capture has been read back and written. The
+    // readback lags the recorded frame by the in-flight frame count, so a caller
+    // must keep drawing until this goes true rather than exiting at frameNumber.
+    [[nodiscard]] bool frameCaptureComplete() const { return frameCaptureComplete_; }
+    [[nodiscard]] bool frameCaptureRequested() const { return frameCaptureTargetFrame_ != 0; }
 
 private:
     static constexpr uint32_t kMaxShadowCascades = renderer::kMaxShadowCascades;
@@ -583,6 +614,25 @@ private:
 
     Window& window_;
     JobSystem jobSystem_;
+
+    // Startup-only measurement state. Written during construction and by
+    // finalizeAssetLoadStats; never read by the frame path.
+    renderer::AssetLoadStats assetLoadStats_;
+
+    // The frame path's only source of time. Advanced once per drawFrame; every
+    // time-driven consumer reads it rather than the steady clock, which is what
+    // makes deterministic mode possible at all.
+    renderer::FrameClock frameClock_;
+
+    // Regression frame capture. Separate from the portfolio screenshot state
+    // above because it deliberately skips the showcase-preset policy.
+    std::filesystem::path frameCaptureOutputPath_;
+    uint64_t frameCaptureTargetFrame_ = 0;
+    bool frameCapturePending_ = false;
+    bool frameCaptureRecorded_ = false;
+    bool frameCaptureComplete_ = false;
+
+    void recordFrameCaptureCopy(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     rhi::VulkanContext context_;
     std::vector<renderer::FrameResources> frames_;
     renderer::GpuProfiler gpuProfiler_;
@@ -725,8 +775,10 @@ private:
     uint32_t bindlessNormalFallbackIndex_ = 0;
     uint32_t bindlessMetallicRoughnessFallbackIndex_ = 0;
     std::chrono::steady_clock::time_point startTime_ = std::chrono::steady_clock::now();
-    std::chrono::steady_clock::time_point lastGpuTimingPrint_ = std::chrono::steady_clock::now();
-    std::chrono::steady_clock::time_point lastExposureLogPrint_ = std::chrono::steady_clock::now();
+    // Frame-clock seconds, so the periodic diagnostics sample the same frame
+    // numbers on every deterministic run instead of drifting with machine speed.
+    double lastGpuTimingPrintSeconds_ = 0.0;
+    double lastExposureLogPrintSeconds_ = 0.0;
     std::chrono::steady_clock::time_point lastFrameStartTime_ = std::chrono::steady_clock::now();
     std::array<glm::vec4, 6> frameFrustumPlanes_{};
     // Discrete-LOD selection knobs. Selection itself runs in cull.comp; these are

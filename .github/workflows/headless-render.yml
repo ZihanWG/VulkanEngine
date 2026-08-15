@@ -1,0 +1,200 @@
+# Runs the renderer for real, on CPU, with the validation layer on, and fails if
+# validation reports anything.
+#
+# The existing Linux and Windows jobs compile the renderer and run the headless
+# unit tests; neither ever executes a frame. This one does, on Mesa's lavapipe
+# software Vulkan driver under a virtual X server, so the swapchain and present
+# path are the same ones a real run takes.
+#
+# Coverage notes, measured rather than assumed (see docs/headless_ci.md):
+#   - lavapipe exposes drawIndirectCount, so this job exercises the compacted
+#     per-cascade indirect-count shadow path that MoltenVK cannot run at all.
+#   - lavapipe exposes no async compute queue, so ClusterBuild/LightCull stay on
+#     the graphics queue here. The async path is NOT covered by this job.
+name: Headless render
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  headless-render:
+    name: lavapipe render + validation gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      VK_LOADER_DEBUG: warn
+      # Frames to render. Ten is enough to get past first-frame resource setup
+      # and into a steady loop; software rasterization makes each one expensive,
+      # and this job gates on validation, not on convergence.
+      RENDER_FRAMES: 30
+      # Captured near the end of the run so TAA history and exposure have
+      # settled. Determinism does not require a converged frame, but a converged
+      # one exercises more of the pipeline.
+      CAPTURE_FRAME: 30
+      CAPTURE_PATH: artifacts/lavapipe_frame30.png
+      GOLDEN_PATH: tests/golden/lavapipe_frame30.png
+      DIFF_PATH: artifacts/lavapipe_frame30_diff.png
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install the Vulkan SDK (glslc, headers, loader, validation layers)
+        run: |
+          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc \
+            | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc > /dev/null
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-noble.list \
+            https://packages.lunarg.com/vulkan/lunarg-vulkan-noble.list
+          sudo apt-get update
+          sudo apt-get install -y vulkan-sdk
+
+      - name: Install build, windowing, and software-rasterizer dependencies
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            git \
+            libegl-dev \
+            libibus-1.0-dev \
+            libwayland-dev \
+            libx11-dev \
+            libx11-xcb-dev \
+            libxext-dev \
+            libxfixes-dev \
+            libxi-dev \
+            libxkbcommon-dev \
+            libxrandr-dev \
+            mesa-vulkan-drivers \
+            ninja-build \
+            pkg-config \
+            wayland-protocols \
+            xorg-dev \
+            xvfb
+
+      # The ICD filename is not stable across Mesa releases (lvp_icd.json on
+      # Mesa 25.x, lvp_icd.<arch>.json on older packages), so discover it and
+      # pin it. The runner ships eight other ICDs; an unpinned loader would
+      # silently test a different driver than this job claims to.
+      - name: Select the lavapipe ICD
+        run: |
+          icd=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json 2>/dev/null | head -1)
+          if [ -z "$icd" ]; then
+            echo "No lavapipe ICD found; mesa-vulkan-drivers did not ship one." >&2
+            ls -la /usr/share/vulkan/icd.d/ >&2
+            exit 1
+          fi
+          echo "lavapipe ICD: $icd"
+          echo "VK_DRIVER_FILES=$icd" >> "$GITHUB_ENV"
+          echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
+
+      - name: Record driver capabilities
+        run: |
+          xvfb-run -a vulkaninfo --summary 2>&1 | tee lavapipe-summary.txt | \
+            grep -E "apiVersion|driverName|driverInfo|deviceName|deviceType" || true
+
+      - name: Configure CMake
+        run: cmake --preset ci-debug -DVULKAN_ENGINE_FETCH_DEPS=ON
+
+      - name: Compile GLSL shaders
+        run: cmake --build --preset ci-debug-shaders --parallel
+
+      # Must be a Debug-config preset. CMakeLists gates
+      # VULKAN_ENGINE_ENABLE_VALIDATION on $<CONFIG:Debug>, so a Release build
+      # would compile the validation layer out and silently turn this job into a
+      # much weaker smoke test that can never fail its own gate.
+      - name: Build renderer
+        run: cmake --build --preset ci-debug --parallel
+
+      - name: Build the image comparison tool
+        run: cmake --build --preset ci-debug --target compare_images --parallel
+
+      # The gate. --fail-on-validation-error makes the engine exit 2 when the
+      # validation layer reported any error, including during teardown; the log
+      # is captured either way. `timeout` bounds a hang.
+      - name: Render and gate on validation
+        run: |
+          set +e
+          timeout 1500 xvfb-run -a --server-args="-screen 0 1280x720x24" \
+            ./build/ci-debug/VulkanEngine \
+              --deterministic \
+              --exit-after-frames "$RENDER_FRAMES" \
+              --capture-frame "$CAPTURE_FRAME" \
+              --capture-output "$CAPTURE_PATH" \
+              --fail-on-validation-error \
+              --asset-load-stats \
+            > headless-render.log 2>&1
+          status=$?
+          cat headless-render.log
+          echo "=== engine exit status: $status ==="
+
+          if [ "$status" -eq 124 ]; then
+            echo "::error::The renderer hit the 1500s timeout instead of exiting after $RENDER_FRAMES frames."
+            exit 1
+          fi
+          if [ "$status" -eq 2 ]; then
+            echo "::error::The validation layer reported errors. See the [Error] lines above."
+            exit 1
+          fi
+          if [ "$status" -eq 3 ]; then
+            echo "::error::The requested frame capture was never written."
+            exit 1
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "::error::The renderer exited with status $status before completing $RENDER_FRAMES frames."
+            exit 1
+          fi
+
+          # Belt and braces: a zero exit with no frame evidence would mean the
+          # run silently did nothing, which must not read as a pass.
+          grep -q "Validation tally:" headless-render.log || {
+            echo "::error::No validation tally in the log; the run did not reach a clean shutdown."
+            exit 1
+          }
+
+      # Zero tolerance is measured, not assumed: two independent CI runs of the
+      # same commit produced byte-identical captures on this driver. A tolerance
+      # would not help with the realistic failure anyway -- a Mesa/LLVM update
+      # shifts far more than a couple of least-significant bits -- and it would
+      # weaken the gate against the regressions this exists to catch.
+      - name: Compare against the golden image
+        run: |
+          set +e
+          ./build/ci-debug/compare_images \
+            "$CAPTURE_PATH" "$GOLDEN_PATH" \
+            --channel-tolerance 0 \
+            --max-differing-fraction 0 \
+            --diff-output "$DIFF_PATH"
+          status=$?
+          if [ "$status" -eq 0 ]; then
+            exit 0
+          fi
+          if [ "$status" -eq 2 ]; then
+            echo "::error::compare_images could not read the capture or the golden."
+            exit 1
+          fi
+
+          echo "::error::The rendered frame no longer matches tests/golden/. Download the"
+          echo "::error::headless-render-logs artifact: it holds the new capture and a"
+          echo "::error::difference image marking every changed pixel."
+          echo ""
+          echo "If this change is intended -- or if the Mesa version on the runner moved,"
+          echo "which re-renders the scene differently for reasons unrelated to this repo --"
+          echo "re-baseline by replacing the golden with the captured PNG from the artifact."
+          echo "Driver version in this run:"
+          grep -E "driverInfo|deviceName" lavapipe-summary.txt || true
+          exit 1
+
+      - name: Upload render logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: headless-render-logs
+          path: |
+            lavapipe-summary.txt
+            headless-render.log
+            artifacts/
+          if-no-files-found: warn

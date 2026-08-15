@@ -116,7 +116,14 @@ public:
     [[nodiscard]] const TextureDebugMetadata& debugMetadata() const { return debugMetadata_; }
     [[nodiscard]] bool valid() const { return image_ != VK_NULL_HANDLE; }
 
-    void setDebugMetadata(TextureDebugMetadata metadata) { debugMetadata_ = std::move(metadata); }
+    // Size of the VMA allocation backing the whole mip chain, or 0 when there is
+    // no allocation. Queried rather than computed so block-compressed formats
+    // and driver padding are reflected honestly.
+    [[nodiscard]] VkDeviceSize deviceSizeBytes() const;
+
+    // Also amends this texture's asset-load record, which is created during
+    // upload -- before the owner has a name for it.
+    void setDebugMetadata(TextureDebugMetadata metadata);
 
 private:
     void uploadPixels(
@@ -124,6 +131,8 @@ private:
         const VulkanCommandContext& commandContext,
         std::span<const std::byte> pixels);
     void generateMipmaps(VkCommandBuffer commandBuffer);
+    // Load-time instrumentation only; a no-op unless recording is enabled.
+    void recordLoadStats();
     void createImageView();
     void createSampler();
     void moveFrom(VulkanTexture& other) noexcept;
@@ -143,6 +152,10 @@ private:
     uint32_t mipLevels_ = 0;
     VkFormat format_ = VK_FORMAT_UNDEFINED;
     TextureDebugMetadata debugMetadata_{};
+
+    // Load-time instrumentation only (see renderer/AssetLoadStats.h). Zero means
+    // this texture was never recorded.
+    uint64_t loadStatsId_ = 0;
 };
 
 } // namespace ve::rhi

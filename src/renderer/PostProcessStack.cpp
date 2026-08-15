@@ -12,7 +12,6 @@
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <span>
@@ -1422,7 +1421,7 @@ void PostProcessStack::createLuminanceResources()
     }
 
     autoExposureAvailable_ = true;
-    lastAutoExposureUpdate_ = std::chrono::steady_clock::now();
+    lastAutoExposureUpdateSeconds_ = frameTimeSeconds_;
 }
 
 PostProcessStack::LuminanceDispatch PostProcessStack::luminanceDispatch() const
@@ -1485,7 +1484,7 @@ void PostProcessStack::createHistogramResources()
     }
 
     histogramExposureAvailable_ = true;
-    lastAutoExposureUpdate_ = std::chrono::steady_clock::now();
+    lastAutoExposureUpdateSeconds_ = frameTimeSeconds_;
 }
 
 void PostProcessStack::destroyHistogramResources()
@@ -2086,9 +2085,8 @@ void PostProcessStack::recordExposureReduceCommands(VkCommandBuffer commandBuffe
                                     0,
                                     nullptr);
 
-            const auto now = std::chrono::steady_clock::now();
-            const float deltaTime = std::max(0.0f, std::chrono::duration<float>(now - lastAutoExposureUpdate_).count());
-            lastAutoExposureUpdate_ = now;
+            const float deltaTime = std::max(0.0f, frameTimeSeconds_ - lastAutoExposureUpdateSeconds_);
+            lastAutoExposureUpdateSeconds_ = frameTimeSeconds_;
             const auto [lowPercentile, highPercentile] =
                 sanitizedPercentileRange(toneMappingSettings_.lowPercentile, toneMappingSettings_.highPercentile);
             const auto [reduceMinLogLuminance, reduceMaxLogLuminance] = sanitizedHistogramLogRange(

@@ -41,10 +41,15 @@ public:
     // into a host-visible readback buffer and queues it for CPU readback. Callers
     // must have validated that the swapchain supports transfer-src and that its
     // format/extent are screenshot-capable (Renderer does this in its policy gate).
+    //
+    // explicitOutputPath overrides the timestamped + "_latest" pair with a single
+    // named file. Regression capture uses it so a CI run cannot clobber the one
+    // tracked portfolio screenshot.
     void recordCopy(VkCommandBuffer commandBuffer,
                     uint32_t frameIndex,
                     rhi::VulkanSwapchain& swapchain,
-                    uint32_t imageIndex);
+                    uint32_t imageIndex,
+                    const std::filesystem::path& explicitOutputPath = {});
 
     // Downloads a previously queued readback (if ready) and writes it to PNG.
     void processReadback(uint32_t frameIndex);

@@ -156,8 +156,14 @@ bool Renderer::tryLoadGltfScene()
         }
 
         try {
+            // Parse plus mesh buffer upload -- Mesh::createFromGltf does both, so
+            // this is deliberately reported as one "import" number rather than
+            // split into a parse figure the boundary cannot actually support.
+            const auto gltfImportStart = std::chrono::steady_clock::now();
             renderer::LoadedGltfAsset loadedAsset =
                 renderer::Mesh::createFromGltf(context_, commandContext_, modelPath);
+            assetLoadStats_.timings.gltfImportMs +=
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - gltfImportStart).count();
             createImportedGltfTextures(loadedAsset.textures, loadedAsset.materials);
             createImportedGltfMaterials(loadedAsset.materials);
             importedMeshes_ = std::move(loadedAsset.meshes);
@@ -958,7 +964,16 @@ void Renderer::createImportedGltfTextures(const std::vector<renderer::GltfTextur
         std::vector<rhi::VulkanTexture>& textures = *pending.textures;
         const renderer::GltfTextureInfo& textureInfo = *pending.info;
         try {
+            // Decode is already dispatched to the JobSystem, so the wait below is
+            // whatever the workers have not finished yet; the upload that follows
+            // is unconditionally serial. Timing them apart is the whole point --
+            // it is the evidence for which half is worth attacking.
+            const auto decodeWaitStart = std::chrono::steady_clock::now();
             const rhi::DecodedImage decoded = pending.decode.get();
+            const auto uploadStart = std::chrono::steady_clock::now();
+            assetLoadStats_.timings.textureDecodeWaitMs +=
+                std::chrono::duration<double, std::milli>(uploadStart - decodeWaitStart).count();
+
             textures[pending.textureIndex].createFromRgba8(context_,
                                                            commandContext_,
                                                            decoded.width,
@@ -966,6 +981,8 @@ void Renderer::createImportedGltfTextures(const std::vector<renderer::GltfTextur
                                                            decoded.pixels,
                                                            rhi::rgba8FormatForColorSpace(pending.colorSpace),
                                                            true);
+            assetLoadStats_.timings.textureUploadMs +=
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - uploadStart).count();
             if (!textureInfo.path.empty()) {
                 Logger::info("Loaded glTF " + std::string(pending.slotName) + " texture as " +
                              std::string(colorSpaceName(pending.colorSpace)) + ": " + textureInfo.path.string());

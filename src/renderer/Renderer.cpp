@@ -188,7 +188,10 @@ Renderer::Renderer(Window& window) : window_(window)
                              shaderPath("probe_border.comp.spv"),
                              shaderPath("probe_convolve.comp.spv"));
     irradianceProbes_.setBounds(giGridBounds());
+    const auto sceneCreateStart = std::chrono::steady_clock::now();
     createScene();
+    assetLoadStats_.timings.sceneCreateMs =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - sceneCreateStart).count();
     createObjectFrameDataBuffers();
     clusteredLighting_.create(context_,
                               static_cast<uint32_t>(frames_.size()),
@@ -214,9 +217,45 @@ Renderer::Renderer(Window& window) : window_(window)
     currentExposure_ = toneMappingExposureValue(toneMappingSettings_.manualExposure);
     averageLuminance_ = toneMappingSettings_.targetLuminance;
     histogramClippedLuminance_ = toneMappingSettings_.targetLuminance;
-    lastExposureLogPrint_ = std::chrono::steady_clock::now();
 
     initialized_ = true;
+}
+
+void Renderer::finalizeAssetLoadStats(double rendererInitMs, double firstFrameMs)
+{
+    assetLoadStats_.timings.rendererInitMs = rendererInitMs;
+    assetLoadStats_.timings.firstFrameMs = firstFrameMs;
+    assetLoadStats_.textures = renderer::AssetLoadStatsRecorder::snapshotTextures();
+
+    const VmaAllocator allocator = context_.allocator();
+    if (allocator == VK_NULL_HANDLE) {
+        return;
+    }
+
+    // vmaGetHeapBudgets reports per-heap; only device-local heaps are the VRAM
+    // budget this baseline is about. On a unified-memory device every heap is
+    // device-local, which is the honest answer there rather than a special case.
+    const VkPhysicalDeviceMemoryProperties* memoryProperties = nullptr;
+    vmaGetMemoryProperties(allocator, &memoryProperties);
+    if (memoryProperties == nullptr) {
+        return;
+    }
+
+    std::array<VmaBudget, VK_MAX_MEMORY_HEAPS> budgets{};
+    vmaGetHeapBudgets(allocator, budgets.data());
+
+    renderer::DeviceMemoryUsage usage{};
+    for (uint32_t heap = 0; heap < memoryProperties->memoryHeapCount; ++heap) {
+        if ((memoryProperties->memoryHeaps[heap].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) == 0) {
+            continue;
+        }
+        usage.deviceLocalUsedBytes += budgets[heap].usage;
+        usage.deviceLocalBudgetBytes += budgets[heap].budget;
+        usage.deviceLocalAllocatedBytes += budgets[heap].statistics.allocationBytes;
+        usage.allocationCount += budgets[heap].statistics.allocationCount;
+    }
+    usage.valid = true;
+    assetLoadStats_.memory = usage;
 }
 
 Renderer::~Renderer()
@@ -725,7 +764,28 @@ bool Renderer::hasPendingPortfolioScreenshotReadback() const
 
 void Renderer::processPortfolioScreenshotReadback(uint32_t frameIndex)
 {
+    const bool wasPending = screenshotCapture_.hasPending();
     screenshotCapture_.processReadback(frameIndex);
+
+    // The readback lags the recorded frame by the in-flight frame count, so
+    // completion is detected here rather than assumed at the recorded frame.
+    if (frameCaptureRecorded_ && wasPending && !screenshotCapture_.hasPending()) {
+        frameCaptureComplete_ = true;
+        Logger::info("Frame capture written: " + frameCaptureOutputPath_.string());
+    }
+}
+
+void Renderer::requestFrameCaptureAt(uint64_t frameNumber, std::filesystem::path outputPath)
+{
+    if (frameNumber == 0 || outputPath.empty()) {
+        Logger::error("Frame capture needs a frame number of at least 1 and a non-empty output path.");
+        return;
+    }
+
+    frameCaptureTargetFrame_ = frameNumber;
+    frameCaptureOutputPath_ = std::move(outputPath);
+    Logger::info("Frame capture requested at frame " + std::to_string(frameNumber) + " -> " +
+                 frameCaptureOutputPath_.string());
 }
 
 void Renderer::setPortfolioCaptureMode(bool enabled)
@@ -804,12 +864,15 @@ void Renderer::restorePortfolioCaptureSettings()
 
 void Renderer::tryPrintExposureStats()
 {
-    const auto now = std::chrono::steady_clock::now();
-    if (now - lastExposureLogPrint_ < std::chrono::seconds(1)) {
+    // Frame clock, not steady_clock: with a wall-clock cadence two deterministic
+    // runs sample *different frame numbers*, which makes the log look
+    // nondeterministic even when every frame is identical.
+    const double now = frameClock_.elapsedSeconds();
+    if (now - lastExposureLogPrintSeconds_ < 1.0) {
         return;
     }
 
-    lastExposureLogPrint_ = now;
+    lastExposureLogPrintSeconds_ = now;
     const ExposureMode mode = exposureModeValue(toneMappingSettings_.exposureMode);
     const auto [lowPercentile, highPercentile] =
         sanitizedPercentileRange(toneMappingSettings_.lowPercentile, toneMappingSettings_.highPercentile);
@@ -834,12 +897,12 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
     latestGpuProfilerResults_ = results;
     pushGpuTimingSample(results);
 
-    const auto now = std::chrono::steady_clock::now();
-    if (now - lastGpuTimingPrint_ < std::chrono::seconds(1)) {
+    const double now = frameClock_.elapsedSeconds();
+    if (now - lastGpuTimingPrintSeconds_ < 1.0) {
         return;
     }
 
-    lastGpuTimingPrint_ = now;
+    lastGpuTimingPrintSeconds_ = now;
 
     std::ostringstream message;
     message << std::fixed << std::setprecision(3) << "GPU timings:\n"
@@ -960,10 +1023,43 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
 
 void Renderer::updateCpuFrameTime()
 {
+    // The one place the frame clock is advanced. Everything downstream in this
+    // frame -- animation, exposure adaptation, the editor camera -- reads the
+    // clock rather than taking its own reading, so all of them stay consistent
+    // with each other and all of them become reproducible together.
     const auto now = std::chrono::steady_clock::now();
-    cpuFrameDeltaMs_ = std::chrono::duration<float, std::milli>(now - lastFrameStartTime_).count();
+    frameClock_.advance(std::chrono::duration<double>(now - startTime_).count());
+
+    // Armed here because the clock has just advanced, so frameCount() is this
+    // frame's number -- the same number the caller asked for.
+    if (frameCaptureTargetFrame_ != 0 && !frameCaptureRecorded_ &&
+        frameClock_.frameCount() == frameCaptureTargetFrame_) {
+        frameCapturePending_ = true;
+    }
+
+    cpuFrameDeltaMs_ = static_cast<float>(frameClock_.deltaSeconds() * 1000.0);
     lastFrameStartTime_ = now;
     cpuFps_ = cpuFrameDeltaMs_ > 0.0f ? 1000.0f / cpuFrameDeltaMs_ : 0.0f;
+
+    // Exposure adaptation used to take its own steady_clock reading inside the
+    // exposure-reduce recording. Pushing the frame time in instead removes that
+    // second, independent time source.
+    postProcess_.setFrameTimeSeconds(static_cast<float>(frameClock_.elapsedSeconds()));
+}
+
+void Renderer::useDeterministicFrameClock(double stepSeconds)
+{
+    frameClock_.useFixedStep(stepSeconds);
+
+    // Dynamic resolution feeds measured GPU frame time back into the render
+    // extent, so leaving it on would let machine speed change the image even
+    // with a fixed timestep. It defaults off, but a persisted
+    // config/runtime_settings.json can have turned it on.
+    dynamicResolutionSettings_.enabled = false;
+
+    Logger::info("Deterministic frame clock enabled: fixed " +
+                 std::to_string(frameClock_.fixedStepSeconds() * 1000.0) +
+                 " ms timestep, dynamic resolution pinned off.");
 }
 
 void Renderer::pushGpuTimingSample(const renderer::GpuProfiler::FrameResults& results)

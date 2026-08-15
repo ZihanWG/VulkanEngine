@@ -1,5 +1,6 @@
 #include "rhi/VulkanTexture.h"
 
+#include "renderer/AssetLoadStats.h"
 #include "rhi/VulkanBuffer.h"
 #include "rhi/VulkanCommandContext.h"
 #include "rhi/VulkanContext.h"
@@ -27,6 +28,41 @@ namespace ve::rhi {
 namespace {
 
 constexpr uint32_t kRgbaChannels = 4;
+
+// Covers the formats this class actually creates today. Anything else falls back
+// to the numeric value rather than pretending to know the name -- the asset-load
+// baseline is evidence, so an unknown format must read as unknown.
+std::string textureFormatName(VkFormat format)
+{
+    switch (format) {
+    case VK_FORMAT_R8G8B8A8_UNORM:
+        return "VK_FORMAT_R8G8B8A8_UNORM";
+    case VK_FORMAT_R8G8B8A8_SRGB:
+        return "VK_FORMAT_R8G8B8A8_SRGB";
+    case VK_FORMAT_R8G8_UNORM:
+        return "VK_FORMAT_R8G8_UNORM";
+    case VK_FORMAT_R8_UNORM:
+        return "VK_FORMAT_R8_UNORM";
+    case VK_FORMAT_UNDEFINED:
+        return "VK_FORMAT_UNDEFINED";
+    default:
+        return "VkFormat(" + std::to_string(static_cast<int>(format)) + ")";
+    }
+}
+
+// True for the BC/ETC/ASTC ranges. Always false today -- that is exactly the
+// baseline fact this instrumentation exists to record.
+bool isBlockCompressedFormat(VkFormat format)
+{
+    const int value = static_cast<int>(format);
+    const bool bc = value >= static_cast<int>(VK_FORMAT_BC1_RGB_UNORM_BLOCK) &&
+                    value <= static_cast<int>(VK_FORMAT_BC7_SRGB_BLOCK);
+    const bool etcOrEac = value >= static_cast<int>(VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK) &&
+                          value <= static_cast<int>(VK_FORMAT_EAC_R11G11_SNORM_BLOCK);
+    const bool astc = value >= static_cast<int>(VK_FORMAT_ASTC_4x4_UNORM_BLOCK) &&
+                      value <= static_cast<int>(VK_FORMAT_ASTC_12x12_SRGB_BLOCK);
+    return bc || etcOrEac || astc;
+}
 
 struct StbiImageDeleter {
     void operator()(stbi_uc* pixels) const
@@ -403,6 +439,25 @@ void VulkanTexture::reset()
     mipLevels_ = 0;
     format_ = VK_FORMAT_UNDEFINED;
     debugMetadata_ = {};
+    loadStatsId_ = 0;
+}
+
+VkDeviceSize VulkanTexture::deviceSizeBytes() const
+{
+    if (!context_ || allocation_ == VK_NULL_HANDLE) {
+        return 0;
+    }
+
+    VmaAllocationInfo allocationInfo{};
+    vmaGetAllocationInfo(context_->allocator(), allocation_, &allocationInfo);
+    return allocationInfo.size;
+}
+
+void VulkanTexture::setDebugMetadata(TextureDebugMetadata metadata)
+{
+    debugMetadata_ = std::move(metadata);
+    renderer::AssetLoadStatsRecorder::amendTextureName(
+        loadStatsId_, debugMetadata_.debugName, debugMetadata_.sourcePath);
 }
 
 void VulkanTexture::uploadPixels(VulkanContext& context,
@@ -489,6 +544,33 @@ void VulkanTexture::uploadPixels(VulkanContext& context,
     VK_CHECK(vkQueueSubmit2(context.graphicsQueue(), 1, &submitInfo, VK_NULL_HANDLE));
     VK_CHECK(vkQueueWaitIdle(context.graphicsQueue()));
     vkFreeCommandBuffers(context.vkDevice(), commandContext.commandPool(), 1, &commandBuffer);
+
+    recordLoadStats();
+}
+
+void VulkanTexture::recordLoadStats()
+{
+    if (!renderer::AssetLoadStatsRecorder::enabled()) {
+        return;
+    }
+
+    loadStatsId_ = renderer::AssetLoadStatsRecorder::nextTextureId();
+
+    renderer::TextureLoadRecord record{};
+    record.textureId = loadStatsId_;
+    // The owner names the texture after construction; amendTextureName fills this
+    // in then. Until it does, the placeholder keeps the report readable.
+    record.debugName = debugMetadata_.debugName.empty() ? "unnamed#" + std::to_string(loadStatsId_)
+                                                        : debugMetadata_.debugName;
+    record.sourcePath = debugMetadata_.sourcePath;
+    record.formatName = textureFormatName(format_);
+    record.width = width_;
+    record.height = height_;
+    record.mipLevels = mipLevels_;
+    record.deviceBytes = static_cast<uint64_t>(deviceSizeBytes());
+    record.blockCompressed = isBlockCompressedFormat(format_);
+
+    renderer::AssetLoadStatsRecorder::recordTexture(std::move(record));
 }
 
 void VulkanTexture::generateMipmaps(VkCommandBuffer commandBuffer)
@@ -615,6 +697,7 @@ void VulkanTexture::moveFrom(VulkanTexture& other) noexcept
     mipLevels_ = std::exchange(other.mipLevels_, 0);
     format_ = std::exchange(other.format_, VK_FORMAT_UNDEFINED);
     debugMetadata_ = std::exchange(other.debugMetadata_, {});
+    loadStatsId_ = std::exchange(other.loadStatsId_, 0);
 }
 
 } // namespace ve::rhi

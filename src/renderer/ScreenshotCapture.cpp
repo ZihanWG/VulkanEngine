@@ -2,6 +2,8 @@
 
 #include "core/Logger.h"
 #include "core/PngWriter.h"
+
+#include <filesystem>
 #include "rhi/VulkanContext.h"
 #include "rhi/VulkanDebugUtils.h"
 #include "rhi/VulkanSwapchain.h"
@@ -106,7 +108,8 @@ bool ScreenshotCapture::hasPending() const
 void ScreenshotCapture::recordCopy(VkCommandBuffer commandBuffer,
                                    uint32_t frameIndex,
                                    rhi::VulkanSwapchain& swapchain,
-                                   uint32_t imageIndex)
+                                   uint32_t imageIndex,
+                                   const std::filesystem::path& explicitOutputPath)
 {
     if (frameIndex >= readbacks_.size()) {
         status_ = "Screenshot failed: frame readback slots are not initialized.";
@@ -220,8 +223,16 @@ void ScreenshotCapture::recordCopy(VkCommandBuffer commandBuffer,
 
     readback.extent = extent;
     readback.format = format;
-    readback.timestampedPath = outputDirectory_ / ("vulkan_engine_portfolio_" + portfolioTimestamp() + ".png");
-    readback.latestPath = outputDirectory_ / "vulkan_engine_portfolio_latest.png";
+    if (explicitOutputPath.empty()) {
+        readback.timestampedPath = outputDirectory_ / ("vulkan_engine_portfolio_" + portfolioTimestamp() + ".png");
+        readback.latestPath = outputDirectory_ / "vulkan_engine_portfolio_latest.png";
+    } else {
+        // Exactly one file, exactly where the caller asked. No timestamp (it
+        // would defeat comparing runs) and no "_latest" alias (it is a tracked
+        // file that a regression run must never overwrite).
+        readback.timestampedPath = explicitOutputPath;
+        readback.latestPath.clear();
+    }
     readback.pending = true;
     status_ = "Screenshot readback queued from final composite before ImGui overlay.";
 }
@@ -243,11 +254,16 @@ void ScreenshotCapture::processReadback(uint32_t frameIndex)
 
         const std::vector<uint8_t> rgba = convertScreenshotToRgba8(pixels, readback.extent, readback.format);
         const uint32_t rowStride = readback.extent.width * 4U;
+        if (readback.timestampedPath.has_parent_path()) {
+            std::filesystem::create_directories(readback.timestampedPath.parent_path());
+        }
         writePngRgba8(readback.timestampedPath, readback.extent.width, readback.extent.height, rgba, rowStride);
-        writePngRgba8(readback.latestPath, readback.extent.width, readback.extent.height, rgba, rowStride);
+        if (!readback.latestPath.empty()) {
+            writePngRgba8(readback.latestPath, readback.extent.width, readback.extent.height, rgba, rowStride);
+        }
 
         lastSavedPath_ = readback.timestampedPath;
-        status_ = "Saved portfolio screenshot: " + readback.timestampedPath.string();
+        status_ = "Saved screenshot: " + readback.timestampedPath.string();
         Logger::info(status_);
     } catch (const std::exception& error) {
         status_ = std::string("Screenshot save failed: ") + error.what();
