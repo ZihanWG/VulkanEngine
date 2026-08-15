@@ -44,6 +44,7 @@ add_executable(VulkanEngineTests
     test_asset_load_stats.cpp
     test_frame_clock.cpp
     test_application_arguments.cpp
+    test_image_compare.cpp
 )
 
 target_compile_definitions(VulkanEngineTests PRIVATE

@@ -32,7 +32,12 @@ jobs:
       # Frames to render. Ten is enough to get past first-frame resource setup
       # and into a steady loop; software rasterization makes each one expensive,
       # and this job gates on validation, not on convergence.
-      RENDER_FRAMES: 10
+      RENDER_FRAMES: 30
+      # Captured near the end of the run so TAA history and exposure have
+      # settled. Determinism does not require a converged frame, but a converged
+      # one exercises more of the pipeline.
+      CAPTURE_FRAME: 30
+      CAPTURE_PATH: artifacts/lavapipe_frame30.png
 
     steps:
       - name: Checkout
@@ -112,7 +117,10 @@ jobs:
           set +e
           timeout 1500 xvfb-run -a --server-args="-screen 0 1280x720x24" \
             ./build/ci-debug/VulkanEngine \
+              --deterministic \
               --exit-after-frames "$RENDER_FRAMES" \
+              --capture-frame "$CAPTURE_FRAME" \
+              --capture-output "$CAPTURE_PATH" \
               --fail-on-validation-error \
               --asset-load-stats \
             > headless-render.log 2>&1
@@ -126,6 +134,10 @@ jobs:
           fi
           if [ "$status" -eq 2 ]; then
             echo "::error::The validation layer reported errors. See the [Error] lines above."
+            exit 1
+          fi
+          if [ "$status" -eq 3 ]; then
+            echo "::error::The requested frame capture was never written."
             exit 1
           fi
           if [ "$status" -ne 0 ]; then
@@ -148,4 +160,5 @@ jobs:
           path: |
             lavapipe-summary.txt
             headless-render.log
+            artifacts/
           if-no-files-found: warn

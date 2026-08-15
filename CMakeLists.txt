@@ -207,7 +207,9 @@ add_library(VulkanEngineCore STATIC
     src/assets/AssetManager.cpp
     src/core/JobSystem.cpp
     src/core/Logger.cpp
+    src/core/PngWriter.cpp
     src/renderer/AssetLoadStats.cpp
+    src/renderer/ImageCompare.cpp
     src/renderer/CascadeMath.cpp
     src/renderer/DrawItemBatching.cpp
     src/renderer/FrameClock.cpp
@@ -246,7 +248,6 @@ endif()
 # main.cpp stays in the thin executable below.
 add_library(VulkanEngineRuntime STATIC
     src/core/Application.cpp
-    src/core/PngWriter.cpp
     src/core/Window.cpp
     src/renderer/BindlessTextureHeap.cpp
     src/renderer/BuiltinTextureFactory.cpp
@@ -298,6 +299,22 @@ add_library(VulkanEngineRuntime STATIC
 add_executable(VulkanEngine
     src/main.cpp
 )
+
+# Golden-image comparison for headless CI (docs/headless_ci.md). Links only
+# VulkanEngineCore: the comparison policy is GPU-free, and keeping Vulkan off
+# this target means the tool builds and runs anywhere the goldens land -- a
+# developer's laptop, a CI runner, wherever an artifact was downloaded to.
+add_executable(compare_images
+    tools/compare_images/main.cpp
+)
+target_link_libraries(compare_images PRIVATE VulkanEngineCore)
+target_include_directories(compare_images SYSTEM PRIVATE external)
+
+if(MSVC)
+    target_compile_options(compare_images PRIVATE /W4 /permissive- /EHsc /utf-8)
+else()
+    target_compile_options(compare_images PRIVATE -Wall -Wextra -Wpedantic)
+endif()
 
 if(APPLE AND VULKAN_ENGINE_BUILD_MACOS_BUNDLE)
     set_target_properties(VulkanEngine PROPERTIES
