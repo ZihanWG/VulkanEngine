@@ -68,6 +68,13 @@ UNRELIABLE_SCOPES = frozenset({"Skybox", "RenderObjects", "SkinnedMesh"})
 # frame, not of the configuration, and whether it appears at all is luck.
 INTERMITTENT_COVERAGE = 0.9
 
+# A pass present in only one configuration has no A/B delta to test its control
+# drift against, so the drift is compared with the pass's own median instead.
+# Above this fraction the value is not stable enough to quote: SSRTrace once
+# reported 0.158 ms as an "A only" row while moving 0.137 ms between the two
+# control runs, and it was read as a real cost for an hour.
+UNSTABLE_DRIFT_FRACTION = 0.25
+
 FRAME_TOTAL = "Frame total"
 
 BLOCK_START_RE = re.compile(r"^(?:\[\w+\s*\]\s+)?GPU timings:\s*$")
@@ -454,13 +461,24 @@ def format_comparison(
     names = ordered_scopes({**a.scopes, **b.scopes})
     buried: list[str] = []
     intermittent: list[str] = []
+    unstable: list[str] = []
     for name in names:
         median_a = a.median(name)
         median_b = b.median(name)
         count_a = a.sample_count(name)
         count_b = b.sample_count(name)
         coverage = f"{count_a}/{a.block_count} · {count_b}/{b.block_count}"
-        rare = is_intermittent(count_a, a.block_count) or is_intermittent(count_b, b.block_count)
+        # Judge coverage only on the sides where the pass runs at all. A pass that
+        # is genuinely absent from one configuration -- SSRTrace with SSR off --
+        # scores 0 there, and counting that as low coverage would label a real
+        # presence difference as sampling luck, the opposite of the mistake this
+        # check exists to prevent.
+        coverages = [
+            (count, total)
+            for count, total in ((count_a, a.block_count), (count_b, b.block_count))
+            if count > 0
+        ]
+        rare = any(is_intermittent(count, total) for count, total in coverages)
         if rare:
             coverage = f"**{coverage}**"
             intermittent.append(name)
@@ -477,9 +495,23 @@ def format_comparison(
             appeared = "B only" if median_a is None else "A only"
             if rare:
                 appeared += ", intermittent"
+            # There is no delta to test the drift against, so test it against the
+            # pass's own median. Hiding the drift here is what let a 0.158 ms row
+            # be quoted while its control moved 0.137 ms between runs.
+            own_drift = scope_drift.get(name)
+            present = median_a if median_b is None else median_b
+            if own_drift is None:
+                drift_text, verdict = "no control", "-"
+            else:
+                drift_text = f"{own_drift:.3f}"
+                if present and own_drift > present * UNSTABLE_DRIFT_FRACTION:
+                    verdict = "**unstable**"
+                    unstable.append(name)
+                else:
+                    verdict = "-"
             lines.append(
-                f"| {name} | {fmt(median_a)} | {fmt(median_b)} | {appeared} | - | - | - "
-                f"| {coverage} |"
+                f"| {name} | {fmt(median_a)} | {fmt(median_b)} | {appeared} | - "
+                f"| {drift_text} | {verdict} | {coverage} |"
             )
             continue
         delta = median_b - median_a
@@ -500,6 +532,15 @@ def format_comparison(
         )
 
     lines.append("")
+    if unstable:
+        lines.append(
+            f"**Unstable values:** {', '.join(unstable)}. These run in only one "
+            "configuration, so there is no delta to check; instead their own median "
+            "moved more than a quarter of itself between the two control runs. The "
+            "number is not reproducible from one run to the next -- do not quote it "
+            "as the pass's cost."
+        )
+        lines.append("")
     if intermittent:
         lines.append(
             f"**Intermittent passes:** {', '.join(intermittent)}. These did not run in "
