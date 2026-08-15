@@ -15,7 +15,9 @@ name: Headless render
 
 on:
   push:
-    branches: [main]
+    # ci/headless-render is temporary: it is how this workflow gets verified
+    # before it has ever run on main. Remove that entry once it is merged.
+    branches: [main, ci/headless-render]
   pull_request:
   workflow_dispatch:
 
