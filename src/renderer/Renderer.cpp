@@ -16,6 +16,7 @@
 //
 #include "renderer/Renderer.h"
 
+#include "renderer/TransientMemoryPlan.h"
 #include "rhi/VulkanAliasingProbe.h"
 
 #include <cstdio>
@@ -1108,6 +1109,56 @@ void Renderer::logTransientPoolReport()
     }
     message += "\n  render extent: " + std::to_string(renderResolution_.extent().width) + "x" +
                std::to_string(renderResolution_.extent().height);
+
+    // What the packer would achieve on this frame. Reported before anything is
+    // wired up, so the decision to build the pool rests on a number rather than
+    // on the hope that aliasing helps.
+    const std::vector<renderer::RenderPassNode>& passes = renderGraph_.debugPasses();
+    const std::vector<renderer::RenderGraphResourceLifetime> lifetimes =
+        renderer::computeTextureLifetimes(passes, renderGraph_.textureCount());
+
+    std::vector<renderer::TransientAllocationRequest> requests;
+    requests.reserve(transients.size());
+    for (const renderer::RenderGraph::TransientTextureRecord& record : transients) {
+        VkMemoryRequirements requirements{};
+        vkGetImageMemoryRequirements(context_.vkDevice(), record.image, &requirements);
+
+        renderer::TransientAllocationRequest request{};
+        request.name = record.name;
+        request.size = requirements.size;
+        request.alignment = requirements.alignment;
+        if (record.resourceIndex < lifetimes.size() && lifetimes[record.resourceIndex].used) {
+            request.firstPass = lifetimes[record.resourceIndex].firstPass;
+            request.lastPass = lifetimes[record.resourceIndex].lastPass;
+        } else {
+            // Empty-lifetime convention: dropped rather than packed.
+            request.firstPass = 1;
+            request.lastPass = 0;
+        }
+        requests.push_back(std::move(request));
+    }
+
+    const renderer::TransientMemoryPlan plan = renderer::planTransientMemory(requests);
+
+    message += "\n--- with aliasing (planned, not yet applied) ---";
+    for (const renderer::TransientAllocation& allocation : plan.allocations) {
+        if (!allocation.placed) {
+            message += "\n  " + std::string(11, ' ') + "(dropped: no surviving pass)  " + allocation.name;
+            continue;
+        }
+        message += "\n  offset " + mib(allocation.offset) + " MiB  passes " + std::to_string(allocation.firstPass) +
+                   "-" + std::to_string(allocation.lastPass) + "  " + allocation.name;
+    }
+    message += "\n  ----";
+    message += "\n  " + mib(plan.unaliasedBytes) + " MiB  without aliasing";
+    message += "\n  " + mib(plan.poolBytes) + " MiB  pool with aliasing";
+    message += "\n  " + mib(plan.savedBytes()) + " MiB  saved";
+    {
+        char ratioBuffer[32] = {};
+        std::snprintf(ratioBuffer, sizeof(ratioBuffer), "%.1f%%", plan.reuseRatio() * 100.0);
+        message += std::string("  (") + ratioBuffer + " reuse)";
+    }
+    message += "\n  passes recorded: " + std::to_string(passes.size());
     message += "\n=== end transient pool ===";
 
     Logger::info(message);

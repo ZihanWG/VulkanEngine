@@ -466,8 +466,15 @@ public:
     struct TransientTextureRecord {
         std::string name;
         VkImage image = VK_NULL_HANDLE;
+        // Index into the graph's texture table, so the caller can line this up
+        // with computeTextureLifetimes' output.
+        uint32_t resourceIndex = 0;
     };
     [[nodiscard]] std::vector<TransientTextureRecord> transientTextures() const;
+
+    // Bounds the resource indices computeTextureLifetimes needs; the graph's
+    // texture table is rebuilt every frame, so this is a per-frame value.
+    [[nodiscard]] size_t textureCount() const { return textures_.size(); }
 
     [[nodiscard]] const std::vector<RenderGraphResourceDebugInfo>& debugResources() const
     {
@@ -688,6 +695,28 @@ private:
 // past either is ignored rather than treated as live, matching how the graph
 // tolerates handles it never imported.
 void cullUnusedPasses(std::vector<RenderPassNode>& passes, size_t textureCount, size_t bufferCount);
+
+// Inclusive first/last pass index each texture is live across, for the transient
+// memory allocator (see TransientMemoryPlan.h). A free function next to
+// cullUnusedPasses for the same reason: it is pure logic over declarations and
+// needs no device to exercise.
+//
+// Culled passes are skipped. Running this before culling would stretch intervals
+// over passes that never execute, which does not break anything visibly -- it
+// just silently prevents resources from sharing memory, which is the entire
+// point of computing them.
+//
+// A texture no surviving pass touches comes back with used == false and
+// firstPass > lastPass, matching the empty-lifetime convention
+// TransientAllocationRequest uses to drop a resource.
+struct RenderGraphResourceLifetime {
+    uint32_t firstPass = 1;
+    uint32_t lastPass = 0;
+    bool used = false;
+};
+
+[[nodiscard]] std::vector<RenderGraphResourceLifetime> computeTextureLifetimes(
+    const std::vector<RenderPassNode>& passes, size_t textureCount);
 
 [[nodiscard]] const char* renderPassTypeName(RenderPassType type);
 [[nodiscard]] const char* renderPassExecutionTypeName(RenderPassExecutionType executionType);

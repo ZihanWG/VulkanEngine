@@ -518,3 +518,110 @@ TEST_CASE("An UNDEFINED old layout orders against nothing", "[rendergraph][barri
                                        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                                        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT));
 }
+
+// ---------------------------------------------------------------------------
+// Resource lifetimes for the transient memory allocator. An interval that is too
+// short lets two live resources share bytes, which corrupts the frame; one that
+// is too long is safe but silently prevents the sharing the allocator exists to
+// do. Neither shows up as a validation error.
+
+TEST_CASE("A texture used by one pass has a single-pass lifetime")
+{
+    std::vector<RenderPassNode> passes = {
+        pass("write", {texture(0, RenderResourceAccess::Write)}, /*sideEffect=*/true),
+    };
+
+    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, 1);
+
+    REQUIRE(lifetimes.size() == 1);
+    REQUIRE(lifetimes[0].used);
+    REQUIRE(lifetimes[0].firstPass == 0);
+    REQUIRE(lifetimes[0].lastPass == 0);
+}
+
+TEST_CASE("A lifetime spans the first and last pass that touch a texture")
+{
+    std::vector<RenderPassNode> passes = {
+        pass("produce", {texture(0, RenderResourceAccess::Write)}),
+        pass("unrelated", {texture(1, RenderResourceAccess::Write)}, /*sideEffect=*/true),
+        pass("consume", {texture(0, RenderResourceAccess::Read)}, /*sideEffect=*/true),
+    };
+
+    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, 2);
+
+    REQUIRE(lifetimes[0].firstPass == 0);
+    REQUIRE(lifetimes[0].lastPass == 2);
+    REQUIRE(lifetimes[1].firstPass == 1);
+    REQUIRE(lifetimes[1].lastPass == 1);
+}
+
+TEST_CASE("An untouched texture reports an empty lifetime")
+{
+    std::vector<RenderPassNode> passes = {
+        pass("write", {texture(0, RenderResourceAccess::Write)}, /*sideEffect=*/true),
+    };
+
+    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, 3);
+
+    REQUIRE_FALSE(lifetimes[1].used);
+    // The convention TransientAllocationRequest uses to drop a resource.
+    REQUIRE(lifetimes[1].firstPass > lifetimes[1].lastPass);
+}
+
+TEST_CASE("Culled passes do not extend a lifetime")
+{
+    std::vector<RenderPassNode> passes = {
+        pass("live", {texture(0, RenderResourceAccess::Write)}, /*sideEffect=*/true),
+        pass("dead", {texture(0, RenderResourceAccess::Read)}),
+        pass("tail", {texture(1, RenderResourceAccess::Write)}, /*sideEffect=*/true),
+    };
+    passes[1].culled = true;
+
+    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, 2);
+
+    // Counting the culled pass would stretch texture0 to pass 1 and stop it
+    // sharing bytes with anything that starts there.
+    REQUIRE(lifetimes[0].lastPass == 0);
+}
+
+TEST_CASE("Lifetimes ignore handles past the texture count")
+{
+    std::vector<RenderPassNode> passes = {
+        pass("write", {texture(0, RenderResourceAccess::Write), texture(9, RenderResourceAccess::Read)},
+             /*sideEffect=*/true),
+    };
+
+    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, 1);
+
+    REQUIRE(lifetimes.size() == 1);
+    REQUIRE(lifetimes[0].used);
+}
+
+TEST_CASE("Buffer usages never appear in texture lifetimes")
+{
+    std::vector<RenderPassNode> passes = {
+        pass("compute", {buffer(0, RenderResourceAccess::Write)}, /*sideEffect=*/true),
+        pass("draw", {texture(0, RenderResourceAccess::Write)}, /*sideEffect=*/true),
+    };
+
+    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, 1);
+
+    REQUIRE(lifetimes[0].firstPass == 1);
+    REQUIRE(lifetimes[0].lastPass == 1);
+}
+
+TEST_CASE("Lifetimes run after culling, matching how the graph will call them")
+{
+    std::vector<RenderPassNode> passes = {
+        pass("orphan", {texture(0, RenderResourceAccess::Write)}),
+        pass("present", {texture(1, RenderResourceAccess::Write)}, /*sideEffect=*/true),
+    };
+
+    cullUnusedPasses(passes, 2, 0);
+    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, 2);
+
+    // texture0's only writer was culled, so nothing is live for it at all.
+    REQUIRE(passes[0].culled);
+    REQUIRE_FALSE(lifetimes[0].used);
+    REQUIRE(lifetimes[1].used);
+}

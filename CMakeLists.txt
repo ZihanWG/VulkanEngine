@@ -221,6 +221,7 @@ add_library(VulkanEngineCore STATIC
     src/renderer/IrradianceProbes.cpp
     src/renderer/PunctualShadowAtlas.cpp
     src/renderer/RenderScale.cpp
+    src/renderer/TransientMemoryPlan.cpp
     src/renderer/RuntimeSettings.cpp
     src/renderer/VolumetricFog.cpp
     src/renderer/SkeletalAnimation.cpp
