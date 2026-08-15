@@ -18,6 +18,24 @@ namespace ve::renderer {
 
 namespace {
 
+constexpr VkFormat kSceneColorCopyFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+
+// A half-size copy is a filtered downscale, which vkCmdCopyImage cannot do --
+// it requires matching extents. vkCmdBlitImage can, but only if the format
+// advertises the blit and linear-filter features on both ends. Without them the
+// subsystem keeps the full-size copy rather than silently producing a
+// point-sampled, aliased reflection source.
+[[nodiscard]] bool supportsFilteredBlit(VkPhysicalDevice physicalDevice, VkFormat format)
+{
+    VkFormatProperties properties{};
+    vkGetPhysicalDeviceFormatProperties(physicalDevice, format, &properties);
+
+    constexpr VkFormatFeatureFlags required = VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT |
+                                              VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+    return (properties.optimalTilingFeatures & required) == required;
+}
+
+
 // std430 mirror of the SsrParamsBuffer block in ssr_trace.frag.
 struct SsrParams {
     glm::mat4 view{1.0f};
@@ -124,11 +142,22 @@ void ScreenSpaceReflections::createResources(VkImageView normalRoughnessView, ui
 
         // Allocated at the maximum like the scene colour it mirrors; the copy
         // itself still transfers only the sub-rect the frame wrote.
-        const VkExtent2D extent = renderResolution_.allocationExtent();
+        //
+        // Half resolution when the format can be blitted with linear filtering:
+        // the trace takes one point sample from this image, so the full-size
+        // copy was buying sharpness nothing asked for, at four times the bytes
+        // and four times the per-frame transfer. A driver without the blit
+        // features falls back to the full-size vkCmdCopyImage path.
+        const VkExtent2D sceneAllocation = renderResolution_.allocationExtent();
+        halfResolutionSceneColorCopy_ = supportsFilteredBlit(context_.physicalDevice(), kSceneColorCopyFormat);
+        const VkExtent2D extent =
+            halfResolutionSceneColorCopy_ ? RenderResolution::halved(sceneAllocation) : sceneAllocation;
+        sceneColorCopyAllocationExtent_ = extent;
+
         rhi::VulkanImageCreateInfo copyInfo{};
         copyInfo.width = extent.width;
         copyInfo.height = extent.height;
-        copyInfo.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+        copyInfo.format = kSceneColorCopyFormat;
         copyInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         copyInfo.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         copyInfo.debugName = "SsrSceneColorCopy";
@@ -262,7 +291,15 @@ void ScreenSpaceReflections::uploadParams(uint32_t frameIndex,
                           static_cast<float>(settings_.refinementSteps),
                           settings_.maxDistance,
                           settings_.thickness};
-    params.subRect = glm::vec4(renderResolution_.uvScale(), 0.0f, 0.0f);
+    // xy: the full-size sources (depth, thin G-buffer). zw: the scene-colour
+    // copy, which halves and rounds independently and so carries its own --
+    // exactly the drift RenderResolution::subRectUvScale exists to warn about.
+    const glm::vec2 copyUvScale =
+        halfResolutionSceneColorCopy_
+            ? RenderResolution::subRectUvScale(RenderResolution::halved(renderResolution_.extent()),
+                                               sceneColorCopyAllocationExtent_)
+            : renderResolution_.uvScale();
+    params.subRect = glm::vec4(renderResolution_.uvScale(), copyUvScale);
     params.weightParams = {settings_.intensity,
                            settings_.maxRoughness,
                            settings_.screenEdgeFade,
@@ -284,17 +321,41 @@ void ScreenSpaceReflections::recordCommands(VkCommandBuffer commandBuffer,
         rhi::debug::beginLabel(commandBuffer, "SSRCopyPass");
         renderGraph_.beginSsrCopyPass();
 
-        VkImageCopy copyRegion{};
-        copyRegion.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        copyRegion.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        copyRegion.extent = {extent.width, extent.height, 1};
-        vkCmdCopyImage(commandBuffer,
-                       sceneColorImage,
-                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                       sceneColorCopy_.image(),
-                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                       1,
-                       &copyRegion);
+        if (halfResolutionSceneColorCopy_) {
+            // Source is the sub-rect the frame actually wrote; destination is
+            // half of that, which is the sub-rect of the half-size copy. Both
+            // sides use RenderResolution::halved so the used and allocated
+            // halves cannot round apart.
+            const VkExtent2D destination = RenderResolution::halved(extent);
+            VkImageBlit blitRegion{};
+            blitRegion.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            blitRegion.srcOffsets[0] = {0, 0, 0};
+            blitRegion.srcOffsets[1] = {static_cast<int32_t>(extent.width), static_cast<int32_t>(extent.height), 1};
+            blitRegion.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            blitRegion.dstOffsets[0] = {0, 0, 0};
+            blitRegion.dstOffsets[1] = {
+                static_cast<int32_t>(destination.width), static_cast<int32_t>(destination.height), 1};
+            vkCmdBlitImage(commandBuffer,
+                           sceneColorImage,
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           sceneColorCopy_.image(),
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           1,
+                           &blitRegion,
+                           VK_FILTER_LINEAR);
+        } else {
+            VkImageCopy copyRegion{};
+            copyRegion.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            copyRegion.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            copyRegion.extent = {extent.width, extent.height, 1};
+            vkCmdCopyImage(commandBuffer,
+                           sceneColorImage,
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           sceneColorCopy_.image(),
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           1,
+                           &copyRegion);
+        }
 
         renderGraph_.endSsrCopyPass();
         rhi::debug::endLabel(commandBuffer);

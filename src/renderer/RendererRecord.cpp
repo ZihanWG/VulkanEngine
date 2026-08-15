@@ -657,7 +657,9 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             "SsrSceneColorCopy",
             ssr_.sceneColorCopy().image(),
             ssr_.sceneColorCopy().imageView(),
-            VkExtent2D{sceneExtent.width, sceneExtent.height},
+            // Its own allocation, not the scene's: the copy is half size when
+            // the driver supports a filtered blit.
+            ssr_.sceneColorCopyAllocationExtent(),
             ssr_.sceneColorCopyLayoutPtr(),
             ssr_.sceneColorCopy().format(),
             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,

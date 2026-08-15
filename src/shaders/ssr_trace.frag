@@ -229,7 +229,9 @@ void main()
     }
 
     vec3 reflectedColor =
-        texture(uSceneColorCopy, veSubRectUv(hitUV, params.subRect.xy, vec2(textureSize(uSceneColorCopy, 0)))).rgb;
+        // .zw, not .xy: the scene-colour copy is half size and rounds its own
+        // way, so its written/allocated ratio drifts from the full-size sources.
+        texture(uSceneColorCopy, veSubRectUv(hitUV, params.subRect.zw, vec2(textureSize(uSceneColorCopy, 0)))).rgb;
 
     // Fresnel with a grayscale F0 approximation (metal tint is not stored in
     // the thin G-buffer; documented limitation).

@@ -95,6 +95,14 @@ public:
     [[nodiscard]] const rhi::VulkanImage& sceneColorCopy() const { return sceneColorCopy_; }
     [[nodiscard]] VkImageLayout* sceneColorCopyLayoutPtr() { return &sceneColorCopyLayout_; }
 
+    // The copy is allocated at half the scene's allocation when the format
+    // supports a filtered blit. The trace takes a single point sample from it,
+    // and SSR is an approximation to begin with, so quarter the bytes and
+    // quarter the per-frame transfer bandwidth is a good trade -- but it is a
+    // visible one, so it is reported rather than silent.
+    [[nodiscard]] bool halfResolutionSceneColorCopy() const { return halfResolutionSceneColorCopy_; }
+    [[nodiscard]] VkExtent2D sceneColorCopyAllocationExtent() const { return sceneColorCopyAllocationExtent_; }
+
 private:
     rhi::VulkanContext& context_;
     rhi::VulkanSwapchain& swapchain_;
@@ -108,6 +116,11 @@ private:
     rhi::VulkanPipeline pipeline_;
     rhi::VulkanImage sceneColorCopy_;
     VkImageLayout sceneColorCopyLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    // False falls back to a full-resolution vkCmdCopyImage, which is what this
+    // did before and needs no format features beyond transfer.
+    bool halfResolutionSceneColorCopy_ = false;
+    VkExtent2D sceneColorCopyAllocationExtent_{};
     VkSampler sampler_ = VK_NULL_HANDLE;
     std::vector<VkDescriptorSet> descriptorSets_;
     std::vector<rhi::VulkanBuffer> frameParamsBuffers_;
