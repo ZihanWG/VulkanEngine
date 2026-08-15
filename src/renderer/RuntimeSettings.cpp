@@ -478,6 +478,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
     }
 
     if (const Json* renderer = objectMember(json, "renderer")) {
+        readBool(*renderer, "enableTransientAliasing", settings.enableTransientAliasing);
         readBool(*renderer, "useGpuCulling", settings.useGpuCulling);
         readBool(*renderer, "useGpuShadowCulling", settings.useGpuShadowCulling);
         readBool(*renderer, "enableGpuOcclusionCulling", settings.enableGpuOcclusionCulling);
@@ -616,7 +617,8 @@ Json toJson(const RuntimeSettings& settings)
               {"gridSpacingY", settings.gi.gridSpacing[1]},
               {"gridSpacingZ", settings.gi.gridSpacing[2]}}},
         {"renderer",
-         Json{{"useGpuCulling", settings.useGpuCulling},
+         Json{{"enableTransientAliasing", settings.enableTransientAliasing},
+               {"useGpuCulling", settings.useGpuCulling},
               {"useGpuShadowCulling", settings.useGpuShadowCulling},
               {"enableGpuOcclusionCulling", settings.enableGpuOcclusionCulling},
               {"enableTwoPhaseOcclusion", settings.enableTwoPhaseOcclusion},

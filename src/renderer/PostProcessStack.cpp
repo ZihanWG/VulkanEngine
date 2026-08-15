@@ -180,16 +180,39 @@ void PostProcessStack::createPostProcessResources(VkImageView depthFallbackView,
     bloomInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     bloomInfo.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 
+    // Every bloom image goes through this: pool-bound when the plan has an offset
+    // for its name and the pool is live, private otherwise. bloomAliased_ ends up
+    // true only if *all* of them are pool-bound, because the graph's
+    // alias-handoff barrier is decided per resource set, and a half-aliased chain
+    // would be a correctness question nobody asked.
+    bloomAliased_ = !bloomAliasOffsets_.empty() && bloomPool_.available();
+    const auto createBloomImage = [this](rhi::VulkanImage& image, const rhi::VulkanImageCreateInfo& info) {
+        if (bloomAliased_) {
+            const auto offset = bloomAliasOffsets_.find(info.debugName);
+            if (offset != bloomAliasOffsets_.end() &&
+                image.createAliased(context_, info, bloomPool_, offset->second)) {
+                return;
+            }
+            // One failure demotes the whole chain: mixing pool-bound and private
+            // images would leave some resources carrying an alias barrier they do
+            // not need and others missing one they do.
+            Logger::warn("Bloom image '" + info.debugName +
+                         "' could not be bound into the transient pool; falling back to private allocations.");
+            bloomAliased_ = false;
+        }
+        image.create(context_, info);
+    };
+
     bloomInfo.debugName = "BloomExtract";
-    bloomExtract_.create(context_, bloomInfo);
+    createBloomImage(bloomExtract_, bloomInfo);
     bloomExtractLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 
     bloomInfo.debugName = "BloomPing";
-    bloomPing_.create(context_, bloomInfo);
+    createBloomImage(bloomPing_, bloomInfo);
     bloomPingLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 
     bloomInfo.debugName = "BloomPong";
-    bloomPong_.create(context_, bloomInfo);
+    createBloomImage(bloomPong_, bloomInfo);
     bloomPongLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 
     const uint32_t bloomMipCount = calculateBloomMipChainLevels(sceneAllocatedExtent());
@@ -200,7 +223,7 @@ void PostProcessStack::createPostProcessResources(VkImageView depthFallbackView,
         bloomInfo.width = mipSize.width;
         bloomInfo.height = mipSize.height;
         bloomInfo.debugName = "BloomMipDownsample" + std::to_string(level);
-        bloomMipDownsampleImages_[level].create(context_, bloomInfo);
+        createBloomImage(bloomMipDownsampleImages_[level], bloomInfo);
     }
 
     const uint32_t bloomUpsampleCount = bloomMipCount > 1u ? bloomMipCount - 1u : 0u;
@@ -211,7 +234,7 @@ void PostProcessStack::createPostProcessResources(VkImageView depthFallbackView,
         bloomInfo.width = mipSize.width;
         bloomInfo.height = mipSize.height;
         bloomInfo.debugName = "BloomMipUpsample" + std::to_string(level);
-        bloomMipUpsampleImages_[level].create(context_, bloomInfo);
+        createBloomImage(bloomMipUpsampleImages_[level], bloomInfo);
     }
 
     try {
@@ -1422,6 +1445,29 @@ void PostProcessStack::createLuminanceResources()
 
     autoExposureAvailable_ = true;
     lastAutoExposureUpdateSeconds_ = frameTimeSeconds_;
+}
+
+void PostProcessStack::setBloomAliasPlan(std::unordered_map<std::string, VkDeviceSize> offsets,
+                                         VkDeviceSize poolBytes,
+                                         uint32_t memoryTypeBits,
+                                         VkDeviceSize alignment)
+{
+    bloomAliasOffsets_ = std::move(offsets);
+
+    if (bloomAliasOffsets_.empty() || poolBytes == 0) {
+        // Images bound into the old pool must be gone before its memory is, and
+        // the caller destroys them by recreating resources after this returns.
+        bloomPool_.reset();
+        bloomAliased_ = false;
+        return;
+    }
+
+    if (!bloomPool_.create(context_, poolBytes, memoryTypeBits, alignment)) {
+        Logger::warn(std::string("Bloom transient pool unavailable (") + bloomPool_.unavailableReason() +
+                     "); bloom keeps private allocations.");
+        bloomAliasOffsets_.clear();
+        bloomAliased_ = false;
+    }
 }
 
 PostProcessStack::LuminanceDispatch PostProcessStack::luminanceDispatch() const

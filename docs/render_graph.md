@@ -140,6 +140,58 @@ The ImGui Render Graph panel shows:
 - generated image and buffer barrier count/summary
 - resource name, kind, lifetime, extent/size, format, mip/layer count, initial layout, and final layout
 
+## Transient Memory Aliasing
+
+Resources whose lifetimes do not overlap can share bytes in one allocation.
+`renderer::planTransientMemory` (GPU-free, unit tested) assigns offsets by greedy
+interval packing, `computeTextureLifetimes` supplies the intervals from the
+declared passes after culling, and `rhi::VulkanTransientMemoryPool` owns the
+allocation that `VulkanImage::createAliased` binds images into.
+
+Measured at 2560x1440: the whole transient set is 123.74 MiB and would pack into
+82.62 MiB. Only the bloom chain is wired so far -- 41.12 MiB of images into a
+23.64 MiB pool, **17.48 MiB saved**.
+
+Scope is memory only. Every subsystem still creates, owns, views, and describes
+its own images; just the backing memory moves. The pool declines rather than
+fails when no memory type accepts every image, and a single failed binding demotes
+the whole chain back to private allocations rather than leaving it half aliased.
+
+### The alias-handoff barrier
+
+The first use of a pool-bound resource in a frame inherits bytes another resource
+owned earlier, so two things hold that do not for a private image: its contents
+are genuinely undefined (hence `VK_IMAGE_LAYOUT_UNDEFINED` as the old layout,
+whatever layout it was left in last frame), and the barrier must wait for
+whatever wrote those bytes, which its own `lastAccess` does not track.
+
+The source scope is deliberately conservative -- `ALL_COMMANDS` /
+`MEMORY_READ|WRITE` -- rather than the exact union of overlapping predecessors.
+Tracking predecessors would mean threading the memory plan through the barrier
+path, this graph's barriers are already documented as conservative, and the cost
+is a measurement question. Tightening it is measurement-driven, not a correctness
+fix.
+
+### Why it is off by default, and a known wart
+
+The plan needs resource lifetimes, which only exist once a frame has been
+recorded, so the pool is applied *after the first frame* rather than at
+resource-creation time. Applying it recreates the post-process resources, which
+resets the auto-exposure accumulator.
+
+The consequence is measurable and worth stating plainly. With aliasing on, the
+rendered HDR content is provably identical -- average scene luminance and
+histogram-clipped luminance match the non-aliased run to four decimal places --
+but the exposure accumulator converges from a different starting point. At frame
+60 that shows up as 68% of pixels differing by exactly one LSB; by frame 400 it
+is 2%, still one LSB, and shrinking. It is a startup transient, not corruption:
+two aliased runs are byte-identical to each other.
+
+Removing it means applying the plan before the first frame, which needs a cached
+plan from a previous run rather than a measured one. Until then the setting stays
+off by default, and the golden-image job is unaffected because it renders with
+the default.
+
 ## Known Limitations
 
 - The graph does not schedule across queues. Async compute exists in the engine --
@@ -147,7 +199,8 @@ The ImGui Render Graph panel shows:
   shadow passes (see [async_compute.md](async_compute.md)) -- but the renderer
   owns that submission and its semaphores, not the graph. The graph records those
   passes as ordinary compute nodes.
-- No memory aliasing.
+- Memory aliasing is implemented for the bloom chain only, and is **off by
+  default** (`enableTransientAliasing`). See "Transient memory aliasing" below.
 - No resource pooling overhaul.
 - Transient scene/bloom resources and persistent TAA history resources are graph-described but still physically allocated by `Renderer`.
 - Shadow GPU culling buffers are not graph-declared yet, so their reset/dispatch/draw/readback barriers remain manual.

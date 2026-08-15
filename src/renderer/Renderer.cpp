@@ -330,6 +330,10 @@ void Renderer::drawFrame()
     updateCpuFrameTime();
     updateEditorCamera(cpuFrameDeltaMs_ * 0.001f);
 
+    // Needs a recorded frame to know resource lifetimes, so it lands after frame
+    // one and then never again unless resources are rebuilt.
+    applyTransientAliasingPlan();
+
     if (window_.wasResized()) {
         recreateSwapchain();
         window_.clearResizedFlag();
@@ -1052,6 +1056,87 @@ void Renderer::updateCpuFrameTime()
     postProcess_.setFrameTimeSeconds(static_cast<float>(frameClock_.elapsedSeconds()));
 }
 
+void Renderer::applyTransientAliasingPlan()
+{
+    if (!useTransientAliasing_ || transientAliasingApplied_) {
+        return;
+    }
+
+    // Only the bloom chain for now. Its resources are created and described in
+    // one place, and its descriptors are rewritten by the same path that creates
+    // the images, so nothing outside PostProcessStack has to change.
+    const std::vector<renderer::RenderGraph::TransientTextureRecord> transients = renderGraph_.transientTextures();
+    if (transients.empty()) {
+        // No frame recorded yet; try again after the next one.
+        return;
+    }
+
+    const std::vector<renderer::RenderGraphResourceLifetime> lifetimes =
+        renderer::computeTextureLifetimes(renderGraph_.debugPasses(), renderGraph_.textureCount());
+
+    std::vector<renderer::TransientAllocationRequest> requests;
+    uint32_t commonMemoryTypeBits = ~0u;
+    VkDeviceSize alignment = 1;
+    for (const renderer::RenderGraph::TransientTextureRecord& record : transients) {
+        if (record.name.rfind("Bloom", 0) != 0) {
+            continue;
+        }
+        if (record.resourceIndex >= lifetimes.size() || !lifetimes[record.resourceIndex].used) {
+            continue;
+        }
+
+        VkMemoryRequirements requirements{};
+        vkGetImageMemoryRequirements(context_.vkDevice(), record.image, &requirements);
+
+        renderer::TransientAllocationRequest request{};
+        request.name = record.name;
+        request.size = requirements.size;
+        request.alignment = requirements.alignment;
+        request.firstPass = lifetimes[record.resourceIndex].firstPass;
+        request.lastPass = lifetimes[record.resourceIndex].lastPass;
+        requests.push_back(std::move(request));
+
+        commonMemoryTypeBits &= requirements.memoryTypeBits;
+        alignment = std::max(alignment, requirements.alignment);
+    }
+
+    if (requests.empty()) {
+        transientAliasingApplied_ = true;
+        return;
+    }
+
+    const renderer::TransientMemoryPlan plan = renderer::planTransientMemory(requests);
+
+    std::unordered_map<std::string, VkDeviceSize> offsets;
+    offsets.reserve(plan.allocations.size());
+    for (const renderer::TransientAllocation& allocation : plan.allocations) {
+        if (allocation.placed) {
+            offsets.emplace(allocation.name, allocation.offset);
+        }
+    }
+
+    // Images bound into the old pool must be destroyed before its memory is
+    // freed, and recreatePostProcessResources destroys them. A one-time idle at
+    // startup, on the same path a resize already takes -- never in the steady
+    // frame loop.
+    waitIdle();
+    postProcess_.setBloomAliasPlan(std::move(offsets), plan.poolBytes, commonMemoryTypeBits, alignment);
+    recreatePostProcessResources();
+    transientAliasingApplied_ = true;
+
+    const auto mib = [](VkDeviceSize bytes) {
+        char buffer[32] = {};
+        std::snprintf(buffer, sizeof(buffer), "%.2f", static_cast<double>(bytes) / (1024.0 * 1024.0));
+        return std::string(buffer);
+    };
+    if (postProcess_.bloomImagesAreAliased()) {
+        Logger::info("Bloom transient aliasing active: " + mib(plan.unaliasedBytes) + " MiB of images in a " +
+                     mib(postProcess_.bloomPoolBytes()) + " MiB pool (" + mib(plan.savedBytes()) + " MiB saved).");
+    } else {
+        Logger::info("Bloom transient aliasing requested but not active; images keep private allocations.");
+    }
+}
+
 void Renderer::logTransientPoolReport()
 {
     const std::vector<renderer::RenderGraph::TransientTextureRecord> transients = renderGraph_.transientTextures();
@@ -1502,6 +1587,7 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
 
     if (mode == RuntimeSettingsApplyMode::Startup) {
         csmSettings_.cascadeCount = settings.csm.cascadeCount;
+        useTransientAliasing_ = settings.enableTransientAliasing;
         useGpuCulling_ = settings.useGpuCulling;
         useGpuShadowCulling_ = settings.useGpuShadowCulling;
         useGpuOcclusionCulling_ = settings.enableGpuOcclusionCulling && settings.useGpuCulling;
@@ -1566,6 +1652,7 @@ RuntimeSettings Renderer::captureRuntimeSettings() const
     settings.gi = giSettings_;
     settings.csm = csmSettings_;
     settings.debugUi = debugUiSettings_;
+    settings.enableTransientAliasing = useTransientAliasing_;
     settings.useGpuCulling = useGpuCulling_;
     settings.useGpuShadowCulling = useGpuShadowCulling_;
     settings.enableGpuOcclusionCulling = useGpuOcclusionCulling_;

@@ -570,7 +570,8 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         };
     };
 
-    const auto bloomResource = [&bloomClear](const char* name, const rhi::VulkanImage& image, VkImageLayout& layout) {
+    const auto bloomResource = [&bloomClear, this](
+                                   const char* name, const rhi::VulkanImage& image, VkImageLayout& layout) {
         const VkExtent3D extent = image.extent();
         return renderer::RenderGraphImageResource{
             name,
@@ -586,6 +587,7 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             bloomClear,
             true,
             false,
+            postProcess_.bloomImagesAreAliased(),
         };
     };
 
@@ -817,6 +819,7 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             bloomClear,
             true,
             false,
+            postProcess_.bloomImagesAreAliased(),
         },
         renderer::RenderGraphImageResource{
             "BloomPing",
@@ -832,6 +835,7 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             bloomClear,
             true,
             false,
+            postProcess_.bloomImagesAreAliased(),
         },
         renderer::RenderGraphImageResource{
             "BloomPong",
@@ -847,6 +851,7 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             bloomClear,
             true,
             false,
+            postProcess_.bloomImagesAreAliased(),
         },
         std::move(bloomDownsampleResources),
         std::move(bloomUpsampleResources),
