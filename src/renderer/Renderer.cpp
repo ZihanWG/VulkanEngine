@@ -1166,7 +1166,7 @@ void Renderer::logTransientPoolReport()
 
 void Renderer::logImageMemoryAliasingProbe()
 {
-    const rhi::AliasingProbeResult probe = rhi::probeImageMemoryAliasing(context_);
+    const rhi::AliasingProbeResult probe = rhi::probeImageMemoryAliasing(context_, commandContext_);
 
     const auto mib = [](VkDeviceSize bytes) {
         return std::to_string(static_cast<double>(bytes) / (1024.0 * 1024.0));
@@ -1179,6 +1179,9 @@ void Renderer::logImageMemoryAliasingProbe()
     message += "\n  second image (R8 256x256):      " + mib(probe.secondImageBytes) + " MiB";
     message += "\n  shared allocation:              " + mib(probe.sharedAllocationBytes) + " MiB";
     message += "\n  second image offset:            " + std::to_string(probe.secondImageOffset);
+    message += std::string("\n  aliased write observed:         ") +
+               (probe.aliasedWriteObserved ? "yes (the two images provably share bytes)"
+                                           : "no (inconclusive -- see AliasingProbeResult)");
     message += "\n  common memoryTypeBits:          0x";
     {
         char buffer[16] = {};

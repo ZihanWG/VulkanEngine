@@ -18,9 +18,21 @@
 namespace ve::rhi {
 
 class VulkanContext;
+class VulkanCommandContext;
 
 struct AliasingProbeResult {
     bool supported = false;
+
+    // Clears one alias and reads the other back. vmaCreateAliasingImage2
+    // returning VK_SUCCESS only proves the API accepted the binding; a driver
+    // that quietly handed each image private memory would look identical until a
+    // transient resource silently stopped being overwritten.
+    //
+    // Asymmetric evidence, deliberately: true proves the two images share bytes.
+    // False does NOT prove they do not -- reading an alias requires transitioning
+    // it from VK_IMAGE_LAYOUT_UNDEFINED, which the spec licenses to discard
+    // contents. So false is reported as "not observable", never as a failure.
+    bool aliasedWriteObserved = false;
 
     // Memory the driver wanted for each image, and what the shared allocation
     // ended up costing. Aliasing is only worth anything if these differ.
@@ -38,6 +50,7 @@ struct AliasingProbeResult {
 
 // Allocates, binds, and immediately destroys. Records nothing and leaves no
 // state behind; safe to call once at startup.
-[[nodiscard]] AliasingProbeResult probeImageMemoryAliasing(VulkanContext& context);
+[[nodiscard]] AliasingProbeResult probeImageMemoryAliasing(VulkanContext& context,
+                                                          const VulkanCommandContext& commandContext);
 
 } // namespace ve::rhi

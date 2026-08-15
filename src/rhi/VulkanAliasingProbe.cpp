@@ -1,9 +1,13 @@
 #include "rhi/VulkanAliasingProbe.h"
 
 #include "core/Logger.h"
+#include "rhi/VulkanBuffer.h"
+#include "rhi/VulkanCommandContext.h"
 #include "rhi/VulkanContext.h"
 
 #include <algorithm>
+#include <array>
+#include <span>
 #include <string>
 
 namespace ve::rhi {
@@ -38,9 +42,144 @@ VkDeviceSize alignUp(VkDeviceSize value, VkDeviceSize alignment)
     return (value + alignment - 1) / alignment * alignment;
 }
 
+
+// Clears one alias, reads the other back, and reports whether the second saw the
+// first's bytes. See AliasingProbeResult::aliasedWriteObserved for why a false
+// result is inconclusive rather than a failure.
+bool observeAliasedWrite(VulkanContext& context,
+                         const VulkanCommandContext& commandContext,
+                         VmaAllocation allocation,
+                         const VkImageCreateInfo& baseInfo,
+                         std::string& detail)
+{
+    // Identical descriptions at the same offset: the strongest form of the
+    // question, and the only one where a driver could reasonably preserve the
+    // bytes across the alias.
+    VkImageCreateInfo info = baseInfo;
+    info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+
+    const VkDevice device = context.vkDevice();
+    VkImage writer = VK_NULL_HANDLE;
+    VkImage reader = VK_NULL_HANDLE;
+    if (vmaCreateAliasingImage2(context.allocator(), allocation, 0, &info, &writer) != VK_SUCCESS ||
+        vmaCreateAliasingImage2(context.allocator(), allocation, 0, &info, &reader) != VK_SUCCESS) {
+        detail += "; readback skipped (transfer-usage aliases refused)";
+        if (writer != VK_NULL_HANDLE) {
+            vkDestroyImage(device, writer, nullptr);
+        }
+        return false;
+    }
+
+    VulkanBuffer readback;
+    VulkanBufferCreateInfo bufferInfo{};
+    bufferInfo.size = 4u * sizeof(uint16_t) * 4u; // a few RGBA16F texels is plenty
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    bufferInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
+    bufferInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+    readback.createBuffer(context, bufferInfo);
+
+    VkCommandBufferAllocateInfo allocateInfo{};
+    allocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocateInfo.commandPool = commandContext.commandPool();
+    allocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocateInfo.commandBufferCount = 1;
+    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+    VK_CHECK(vkAllocateCommandBuffers(device, &allocateInfo, &commandBuffer));
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    VK_CHECK(vkBeginCommandBuffer(commandBuffer, &beginInfo));
+
+    const auto transition = [&](VkImage image,
+                                VkImageLayout oldLayout,
+                                VkImageLayout newLayout,
+                                VkPipelineStageFlags2 srcStage,
+                                VkAccessFlags2 srcAccess,
+                                VkPipelineStageFlags2 dstStage,
+                                VkAccessFlags2 dstAccess) {
+        VkImageMemoryBarrier2 barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        barrier.srcStageMask = srcStage;
+        barrier.srcAccessMask = srcAccess;
+        barrier.dstStageMask = dstStage;
+        barrier.dstAccessMask = dstAccess;
+        barrier.oldLayout = oldLayout;
+        barrier.newLayout = newLayout;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = image;
+        barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        VkDependencyInfo dependency{};
+        dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dependency.imageMemoryBarrierCount = 1;
+        dependency.pImageMemoryBarriers = &barrier;
+        vkCmdPipelineBarrier2(commandBuffer, &dependency);
+    };
+
+    transition(writer,
+               VK_IMAGE_LAYOUT_UNDEFINED,
+               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+               VK_PIPELINE_STAGE_2_NONE,
+               VK_ACCESS_2_NONE,
+               VK_PIPELINE_STAGE_2_CLEAR_BIT,
+               VK_ACCESS_2_TRANSFER_WRITE_BIT);
+
+    VkClearColorValue clearColor{};
+    clearColor.float32[0] = 0.5f;
+    clearColor.float32[1] = 0.25f;
+    clearColor.float32[2] = 0.75f;
+    clearColor.float32[3] = 1.0f;
+    const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdClearColorImage(commandBuffer, writer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clearColor, 1, &range);
+
+    // The alias handoff: the write through `writer` must be visible before
+    // `reader` touches the same bytes. This is the barrier shape the real
+    // allocator will emit at every handoff.
+    transition(reader,
+               VK_IMAGE_LAYOUT_UNDEFINED,
+               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+               VK_PIPELINE_STAGE_2_CLEAR_BIT,
+               VK_ACCESS_2_TRANSFER_WRITE_BIT,
+               VK_PIPELINE_STAGE_2_COPY_BIT,
+               VK_ACCESS_2_TRANSFER_READ_BIT);
+
+    VkBufferImageCopy region{};
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageExtent = {2, 2, 1};
+    vkCmdCopyImageToBuffer(
+        commandBuffer, reader, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback.buffer(), 1, &region);
+
+    VK_CHECK(vkEndCommandBuffer(commandBuffer));
+
+    VkCommandBufferSubmitInfo commandBufferInfo{};
+    commandBufferInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+    commandBufferInfo.commandBuffer = commandBuffer;
+    VkSubmitInfo2 submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+    submitInfo.commandBufferInfoCount = 1;
+    submitInfo.pCommandBufferInfos = &commandBufferInfo;
+    VK_CHECK(vkQueueSubmit2(context.graphicsQueue(), 1, &submitInfo, VK_NULL_HANDLE));
+    VK_CHECK(vkQueueWaitIdle(context.graphicsQueue()));
+
+    std::array<uint16_t, 4> texel{};
+    readback.download(std::as_writable_bytes(std::span<uint16_t>(texel.data(), texel.size())));
+
+    vkFreeCommandBuffers(device, commandContext.commandPool(), 1, &commandBuffer);
+    vkDestroyImage(device, reader, nullptr);
+    vkDestroyImage(device, writer, nullptr);
+
+    // Half-float 0.5 is 0x3800; anything non-zero means the reader saw the
+    // writer's clear rather than untouched memory.
+    const bool observed = texel[0] != 0 || texel[1] != 0 || texel[2] != 0;
+    detail += observed ? "; a write through one alias was read back through the other"
+                       : "; readback did not observe the write (inconclusive, not a failure)";
+    return observed;
+}
+
 } // namespace
 
-AliasingProbeResult probeImageMemoryAliasing(VulkanContext& context)
+AliasingProbeResult probeImageMemoryAliasing(VulkanContext& context, const VulkanCommandContext& commandContext)
 {
     AliasingProbeResult result{};
 
@@ -126,6 +265,8 @@ AliasingProbeResult probeImageMemoryAliasing(VulkanContext& context)
                         ", second=" + std::to_string(static_cast<int>(secondBind)) + ")";
     } else {
         result.detail = "two images bound into one allocation";
+        result.aliasedWriteObserved =
+            observeAliasedWrite(context, commandContext, allocation, firstInfo, result.detail);
     }
 
     if (secondAliased != VK_NULL_HANDLE) {
