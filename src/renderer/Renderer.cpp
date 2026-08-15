@@ -1058,6 +1058,17 @@ void Renderer::updateCpuFrameTime()
 
 void Renderer::applyTransientAliasingPlan()
 {
+    // Replan when the allocation extent moves. A resize recreates the bloom
+    // images at a new size, and a plan computed for the old extent would place
+    // them at offsets that overlap or run past the pool. PostProcessStack drops
+    // the stale plan on its side; this is what makes a new one get computed
+    // rather than the chain staying private forever after the first resize.
+    const VkExtent2D allocationExtent = renderResolution_.allocationExtent();
+    if (transientAliasingApplied_ && (allocationExtent.width != transientAliasingPlanExtent_.width ||
+                                      allocationExtent.height != transientAliasingPlanExtent_.height)) {
+        transientAliasingApplied_ = false;
+    }
+
     if (!useTransientAliasing_ || transientAliasingApplied_) {
         return;
     }
@@ -1123,6 +1134,7 @@ void Renderer::applyTransientAliasingPlan()
     postProcess_.setBloomAliasPlan(std::move(offsets), plan.poolBytes, commonMemoryTypeBits, alignment);
     recreatePostProcessResources();
     transientAliasingApplied_ = true;
+    transientAliasingPlanExtent_ = allocationExtent;
 
     const auto mib = [](VkDeviceSize bytes) {
         char buffer[32] = {};

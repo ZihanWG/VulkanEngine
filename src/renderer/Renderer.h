@@ -643,6 +643,7 @@ private:
     // setting is off -- every image keeps its own allocation.
     bool useTransientAliasing_ = false;
     bool transientAliasingApplied_ = false;
+    VkExtent2D transientAliasingPlanExtent_{};
     void applyTransientAliasingPlan();
 
     // Regression frame capture. Separate from the portfolio screenshot state

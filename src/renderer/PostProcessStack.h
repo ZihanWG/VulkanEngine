@@ -534,6 +534,9 @@ private:
     // that already knows how to do both.
     rhi::VulkanTransientMemoryPool bloomPool_;
     std::unordered_map<std::string, VkDeviceSize> bloomAliasOffsets_;
+    // The allocation extent the offsets were computed for. A resize invalidates
+    // them: offsets and pool size are both extent-dependent.
+    VkExtent2D bloomAliasPlanExtent_{};
     bool bloomAliased_ = false;
 
     rhi::VulkanImage sceneColor_;
