@@ -70,26 +70,55 @@ but has no caller; the default portfolio scene is procedural geometry. The only
 glTF touched at startup is `assets/models/skinned_rig.gltf` (3.8 KiB) through
 `SkinnedMesh::createFromGltf`, a separate path.
 
+## With a production-scale scene
+
+`-DVULKAN_ENGINE_FETCH_SAMPLE_SCENE=ON` downloads Sponza at configure time (see
+`cmake/FetchSampleScene.cmake`) and makes it the startup scene. The same one
+command then measures a completely different engine:
+
+| | procedural default | Sponza |
+| --- | --- | --- |
+| renderer init | 191.30 ms | **7105.61 ms** |
+| — scene create | 168.07 ms | 7057.06 ms |
+| — — glTF import | 0.00 ms | **3944.06 ms** |
+| — — texture decode wait | 0.00 ms | 104.72 ms |
+| — — texture upload | 0.00 ms | **141.12 ms** |
+| textures | 8 | **77** |
+| texture device bytes | 0.45 MiB | **365.98 MiB** |
+| block compressed | 0 of 8 | **0 of 77** |
+| device-local used | 493.68 MiB | **877.68 MiB** |
+
+Every pathology the asset-cook work was proposed to fix is now visible and
+measurable:
+
+- **365.98 MiB of uncompressed RGBA8**, none block-compressed. BC7/BC5 would cut
+  that by roughly four.
+- **3.9 seconds of glTF import**, which is tinygltf parsing plus mesh buffer
+  upload behind one boundary. Cooking meshes offline removes most of it.
+- **141 ms of texture upload**, serial by construction: every
+  `VulkanTexture::uploadPixels` ends in `vkQueueWaitIdle`. This is the transfer
+  queue's target.
+- **A seven-second startup.**
+
 ## Consequence for the initiative
 
-The cook + async upload plan targets texture decode cost, VRAM occupancy from
-uncompressed RGBA8, runtime mip generation, and the per-texture
-`vkQueueWaitIdle` in `VulkanTexture::uploadPixels`. Every one of those is real in
-the code. None of them is measurable on the scenes this repository ships, because
-there is no content to load.
+The earlier version of this page concluded that the asset cook and async upload
+work was blocked on content rather than code, because on the shipped scenes there
+was nothing to optimise. **That blocker is now removable at will**: turning the
+fetch on produces a scene where all four costs above are real.
 
-The blocking dependency is therefore content, not code:
-
-- A production-scale glTF scene (Sponza, Bistro, or similar) with real
-  multi-megabyte textures, wired into a scene the renderer actually loads.
-- Re-run this baseline against it.
-
-Only if that re-baseline shows meaningful load time and VRAM does Phase 1 have a
-target. The instrumentation added here is what makes that re-baseline a
-one-command operation.
+The fetch stays off by default so CI stays fast and the committed golden image
+keeps comparing against the small deterministic scene it was captured from. It is
+a measurement and screenshot facility, not a change to what the engine renders by
+default.
 
 ## Limitations
 
+- The fetched scene is one glTF node holding one mesh of 103 primitives, so it
+  presents as a **single render object**. It exercises materials, textures, and
+  draw submission at scale, but not object-level frustum culling, which has one
+  thing to cull. The camera is still the portfolio preset, framed for the sphere
+  showcase rather than for Sponza.
 - `--asset-load-stats` covers `VulkanTexture` only. `VulkanEnvironmentMap`
   cubemaps and the BRDF LUT have their own allocations and their own
   `vkQueueWaitIdle` calls; they are visible in the VMA totals but not itemized.

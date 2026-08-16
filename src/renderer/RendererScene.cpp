@@ -76,6 +76,20 @@ void Renderer::createScene()
     resetSceneState();
     createSceneSharedResources();
 
+#if defined(VULKAN_ENGINE_SAMPLE_SCENE)
+    // A fetched production-scale scene is the reason someone turned the fetch on,
+    // so it becomes the startup scene when present. tryLoadGltfScene appends the
+    // portfolio showcase itself, and returns false without disturbing anything if
+    // the import fails, in which case the normal default below still runs.
+    if (tryLoadGltfScene()) {
+        camera_ = portfolioCameraPreset();
+        csmSettings_.nearPlane = camera_.nearPlane;
+        csmSettings_.farPlane = camera_.farPlane;
+        return;
+    }
+    Logger::warn("Fetched sample scene failed to import; falling back to the portfolio showcase.");
+#endif
+
     // The portfolio sphere showcase is the default editor scene. The glTF import
     // (tryLoadGltfScene) and the cube fallback remain available through the
     // scene-loading UI; they are just no longer the startup default.
@@ -145,10 +159,16 @@ void Renderer::createSceneSharedResources()
 
 bool Renderer::tryLoadGltfScene()
 {
-    const std::array<std::filesystem::path, 2> modelCandidates = {
-        assetPath("models/test_mesh.gltf"),
-        assetPath("models/test_mesh.glb"),
-    };
+    // The optionally fetched production-scale scene first, then the committed
+    // test mesh. VULKAN_ENGINE_SAMPLE_SCENE is only defined when the configure-time
+    // fetch produced a complete scene (see cmake/FetchSampleScene.cmake), so an
+    // ordinary build behaves exactly as before.
+    std::vector<std::filesystem::path> modelCandidates;
+#if defined(VULKAN_ENGINE_SAMPLE_SCENE)
+    modelCandidates.emplace_back(VULKAN_ENGINE_SAMPLE_SCENE);
+#endif
+    modelCandidates.emplace_back(assetPath("models/test_mesh.gltf"));
+    modelCandidates.emplace_back(assetPath("models/test_mesh.glb"));
 
     for (const std::filesystem::path& modelPath : modelCandidates) {
         if (!std::filesystem::exists(modelPath)) {
