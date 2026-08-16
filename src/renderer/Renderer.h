@@ -99,10 +99,11 @@ public:
     // what gets rendered. Call before the first drawFrame().
     void useDeterministicFrameClock(double stepSeconds = renderer::FrameClock::kDefaultFixedStepSeconds);
 
-    // Phase 1 probe for the render graph transient allocator: reports whether
-    // this driver can bind two images into one allocation. Logs and returns;
-    // changes no renderer state. Throwaway, superseded by the pool's own
-    // capability check.
+    // Reports whether this driver can bind two images into one allocation and
+    // whether they provably share bytes. Logs and returns; changes no renderer
+    // state. Kept rather than retired with Phase 1: the pool's capability check
+    // cannot tell a real alias from a driver quietly handing out private
+    // memory, and this can.
     void logImageMemoryAliasingProbe();
 
     // Phase 1 "before" number for the transient allocator: the real device size

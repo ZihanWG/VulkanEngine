@@ -43,8 +43,9 @@ struct LaunchOptions {
     uint64_t captureFrame = 0;
     std::string captureOutput;
 
-    // Phase 1 render-graph allocator probe: report whether this driver can bind
-    // two images into one allocation, then continue as normal. Throwaway.
+    // Reports whether this driver can bind two images into one allocation, and
+    // whether they provably share bytes, then continues as normal. Kept as the
+    // standing check for that -- see rhi/VulkanAliasingProbe.h.
     bool probeAliasing = false;
 };
 

@@ -7,8 +7,12 @@
 // the validation layer quiet? MoltenVK reaches Vulkan memory through Metal
 // placement heaps, and nothing in the engine has exercised that path before.
 //
-// Throwaway. Once VulkanTransientMemoryPool exists this probe is superseded by
-// the pool's own capability check and should be deleted along with its flag.
+// Kept after VulkanTransientMemoryPool landed, deliberately. The pool's own
+// capability check only establishes that the driver accepted a binding; this is
+// the only thing in the tree that establishes the two images genuinely share
+// bytes, by writing through one and reading back through the other. A driver
+// that quietly handed each image private memory would satisfy the pool and fail
+// here.
 
 #include "rhi/VulkanCommon.h"
 

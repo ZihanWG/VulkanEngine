@@ -187,6 +187,21 @@ its own images; just the backing memory moves. The pool declines rather than
 fails when no memory type accepts every image, and a single failed binding demotes
 the whole chain back to private allocations rather than leaving it half aliased.
 
+### Proving the memory is actually shared
+
+`vmaCreateAliasingImage2` returning `VK_SUCCESS` only establishes that the driver
+accepted the binding. A driver that quietly gave each image private memory would
+look identical, until a transient resource silently stopped being overwritten.
+
+`--probe-aliasing` settles it: it clears one alias and reads the other back
+through a second image, using the same barrier shape the allocator emits at every
+handoff. On MoltenVK the write is observed and validation stays clean.
+
+The evidence is asymmetric on purpose. A positive proves sharing; a negative does
+not disprove it, because reading an alias requires transitioning it from
+`VK_IMAGE_LAYOUT_UNDEFINED`, which the spec licenses to discard contents. The
+probe reports that case as "not observable" rather than as a failure.
+
 ### The alias-handoff barrier
 
 The first use of a pool-bound resource in a frame inherits bytes another resource
