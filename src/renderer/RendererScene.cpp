@@ -82,7 +82,26 @@ void Renderer::createScene()
     // portfolio showcase itself, and returns false without disturbing anything if
     // the import fails, in which case the normal default below still runs.
     if (tryLoadGltfScene()) {
-        camera_ = portfolioCameraPreset();
+        // Framed from the scene's own bounds, not from the portfolio preset. That
+        // preset is positioned for the sphere showcase, and pointing it at a
+        // fetched scene puts the near plane inside the geometry.
+        renderer::Aabb sceneBounds{};
+        for (const renderer::RenderObject& object : renderObjects_) {
+            if (object.sourceType == renderer::RenderObjectSourceType::ImportedGltf) {
+                sceneBounds.merge(object.worldBounds());
+            }
+        }
+
+        const VkExtent2D extent = renderResolution_.extent();
+        const float aspect =
+            extent.height == 0 ? 1.0f : static_cast<float>(extent.width) / static_cast<float>(extent.height);
+        // A starting point that guarantees the scene is visible, not a composed
+        // shot. Framing the whole volume of an interior scene shows it from
+        // outside; an attempt to place the camera inside instead put it in the
+        // masonry, because Sponza's bounds include its own outer walls. Bounds
+        // alone cannot compose an interior view, so this stops at "you can see
+        // it" and leaves composition to the editor camera.
+        camera_ = renderer::framedCamera(sceneBounds, aspect, glm::vec3(0.55f, -0.28f, -1.0f));
         csmSettings_.nearPlane = camera_.nearPlane;
         csmSettings_.farPlane = camera_.farPlane;
         return;

@@ -117,8 +117,13 @@ default.
 - The fetched scene is one glTF node holding one mesh of 103 primitives, so it
   presents as a **single render object**. It exercises materials, textures, and
   draw submission at scale, but not object-level frustum culling, which has one
-  thing to cull. The camera is still the portfolio preset, framed for the sphere
-  showcase rather than for Sponza.
+  thing to cull.
+- The startup camera is framed from the scene's bounds
+  (`renderer::framedCamera`), which guarantees the scene is on screen but does
+  not compose a shot. For an interior scene that means viewing the building from
+  outside. Placing the camera inside from bounds alone was tried and abandoned:
+  Sponza's bounds include its own outer walls, so an inset from the edge lands in
+  masonry. Use the editor camera to compose a screenshot.
 - `--asset-load-stats` covers `VulkanTexture` only. `VulkanEnvironmentMap`
   cubemaps and the BRDF LUT have their own allocations and their own
   `vkQueueWaitIdle` calls; they are visible in the VMA totals but not itemized.
