@@ -149,8 +149,38 @@ declared passes after culling, and `rhi::VulkanTransientMemoryPool` owns the
 allocation that `VulkanImage::createAliased` binds images into.
 
 Measured at 2560x1440: the whole transient set is 123.74 MiB and would pack into
-82.62 MiB. Only the bloom chain is wired so far -- 41.12 MiB of images into a
-23.64 MiB pool, **17.48 MiB saved**.
+82.62 MiB. Only the bloom chain is wired -- 41.12 MiB of images into a 23.64 MiB
+pool, **17.48 MiB saved**.
+
+### What it costs, and why it stays off
+
+Measured A/B, interleaved with a repeated control (drift 0.48%, limit 1%):
+
+| | Frame total |
+| --- | --- |
+| aliasing off | 15.236 ms |
+| aliasing on | 15.412 ms |
+| delta | **+0.176 ms (+1.2%)** |
+
+**Quote the frame total and nothing else from that series.** Several per-pass
+rows clear their own noise floor and are still not believable: `PunctualShadowAtlas`
+and `ImGuiPass` moved, and aliasing the bloom chain cannot plausibly touch either.
+`Bloom Downsample Chain` moved -0.050 ms while the frame moved +0.176 ms, and two
+passes moving opposite ways on this tile-based target means work shifted across a
+pass boundary rather than appearing or vanishing. The decomposition is not
+trustworthy here; the frame total is.
+
+So the trade is 17.48 MiB for 1.2% of frame time, on a machine reporting a
+13 GiB device-local budget. That is a bad trade, and it is why
+`enableTransientAliasing` **defaults off** and why the remaining transients were
+not wired up: more aliased resources means more handoffs, so the cost would grow
+while the memory it buys stays unscarce.
+
+The conservative source scope on the handoff barrier is the prime suspect -- it
+waits on `ALL_COMMANDS`/`MEMORY` rather than the union of the predecessors that
+actually own the overlapping bytes. Tightening it is the only change that could
+plausibly move this verdict, and it should be measured the same way before
+anything else is aliased.
 
 Scope is memory only. Every subsystem still creates, owns, views, and describes
 its own images; just the backing memory moves. The pool declines rather than

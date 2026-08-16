@@ -992,8 +992,10 @@ void Renderer::drawGpuCullingDebugUi()
         }
     }
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Binds the bloom chain into one shared allocation. Applied after the next recorded\n"
-                          "frame, because the offsets come from measured resource lifetimes.");
+        ImGui::SetTooltip("Binds the bloom chain into one shared allocation: 17.48 MiB saved, and a\n"
+                          "measured +0.176 ms (+1.2%%) of frame time, which is why it defaults off.\n"
+                          "Applied after the next recorded frame, because the offsets come from\n"
+                          "measured resource lifetimes.");
     }
     if (postProcess_.bloomImagesAreAliased()) {
         ImGui::SameLine();
