@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/JobSystem.h"
 #include "renderer/Bounds.h"
 #include "renderer/MeshLod.h"
 #include "rhi/VulkanBuffer.h"
@@ -92,10 +93,19 @@ public:
         uint32_t segments = 48,
         uint32_t rings = 24);
 
+    // `jobSystem` parallelises LOD chain construction, which is the dominant cost
+    // of importing a real scene -- 87% of Sponza's import time is
+    // meshopt_simplify, and a scene's primitives simplify independently. Pass
+    // nullptr to build them serially; the resulting index buffer is identical
+    // either way, because only the serial append decides layout.
+    //
+    // Must not be called from a JobSystem worker: parallelFor would block on
+    // chunks that need the (occupied) pool to progress.
     [[nodiscard]] static LoadedGltfAsset createFromGltf(
         rhi::VulkanContext& context,
         const rhi::VulkanCommandContext& commandContext,
-        const std::filesystem::path& path);
+        const std::filesystem::path& path,
+        JobSystem* jobSystem = nullptr);
 
     [[nodiscard]] VkBuffer vertexBuffer() const { return vertexBuffer_.buffer(); }
     [[nodiscard]] VkBuffer indexBuffer() const { return indexBuffer_.buffer(); }

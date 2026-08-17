@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <future>
 #include <glm/ext/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/mat4x4.hpp>
@@ -790,7 +791,8 @@ Mesh Mesh::createUvSphere(
 LoadedGltfAsset Mesh::createFromGltf(
     rhi::VulkanContext& context,
     const rhi::VulkanCommandContext& commandContext,
-    const std::filesystem::path& path)
+    const std::filesystem::path& path,
+    JobSystem* jobSystem)
 {
     tinygltf::TinyGLTF loader;
     loader.SetImageLoader(copyEncodedImageData, nullptr);
@@ -967,18 +969,56 @@ LoadedGltfAsset Mesh::createFromGltf(
         // One chain per primitive, since primitives are drawn independently and
         // each needs its own (firstIndex, indexCount) per level. They all share
         // the mesh's flat LOD table, addressed through lodBase/lodCount.
-        for (MeshPrimitive& primitive : subMeshes) {
-            const std::vector<MeshLod> primitiveLods =
-                buildLodChain(indices,
-                              primitive.firstIndex,
-                              primitive.indexCount,
-                              &vertices[0].position.x,
-                              vertices.size(),
-                              sizeof(Vertex),
-                              mesh.debugName_);
+        //
+        // Simplification is the dominant cost of importing a real scene -- 87% of
+        // Sponza's import time -- and the primitives are independent, so it runs
+        // across the pool. The phase below only reads `indices` and the position
+        // stream and writes to its own slot, so the jobs need no locking.
+        std::vector<LodChainBuild> lodBuilds(subMeshes.size());
+        const auto buildOne = [&](size_t primitiveIndex) {
+            const MeshPrimitive& primitive = subMeshes[primitiveIndex];
+            lodBuilds[primitiveIndex] = buildLodChainDetached(
+                std::span<const uint32_t>(indices.data() + primitive.firstIndex, primitive.indexCount),
+                &vertices[0].position.x,
+                vertices.size(),
+                sizeof(Vertex),
+                mesh.debugName_);
+        };
+
+        if (jobSystem != nullptr && subMeshes.size() > 1) {
+            // Enqueued one primitive at a time rather than through parallelFor,
+            // which splits into equal contiguous chunks: primitives differ by
+            // orders of magnitude in triangle count, so a static split leaves the
+            // chunk holding the heavy ones straggling long after the rest are
+            // idle. The shared queue schedules them dynamically instead.
+            std::vector<std::future<void>> pending;
+            pending.reserve(subMeshes.size());
+            for (size_t primitiveIndex = 0; primitiveIndex < subMeshes.size(); ++primitiveIndex) {
+                pending.push_back(jobSystem->enqueue(buildOne, primitiveIndex));
+            }
+            for (std::future<void>& job : pending) {
+                job.get();
+            }
+        } else {
+            for (size_t primitiveIndex = 0; primitiveIndex < subMeshes.size(); ++primitiveIndex) {
+                buildOne(primitiveIndex);
+            }
+        }
+
+        // Serial, and in primitive order. This is the only step that decides
+        // layout, so the index buffer comes out byte-identical to the serial path
+        // no matter how the pool scheduled the work above. Logging lives here too:
+        // Logger has no mutex, so a worker must not print.
+        for (size_t primitiveIndex = 0; primitiveIndex < subMeshes.size(); ++primitiveIndex) {
+            MeshPrimitive& primitive = subMeshes[primitiveIndex];
+            const LodChainBuild& build = lodBuilds[primitiveIndex];
+            const std::vector<MeshLod> primitiveLods = appendLodChain(indices, primitive.firstIndex, build);
             primitive.lodBase = static_cast<uint32_t>(mesh.lods_.size());
             primitive.lodCount = static_cast<uint32_t>(primitiveLods.size());
             mesh.lods_.insert(mesh.lods_.end(), primitiveLods.begin(), primitiveLods.end());
+            if (!build.logMessage.empty()) {
+                Logger::info(build.logMessage);
+            }
         }
 
         mesh.indexBuffer_.createDeviceLocal(

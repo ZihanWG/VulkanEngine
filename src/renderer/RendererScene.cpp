@@ -195,12 +195,14 @@ bool Renderer::tryLoadGltfScene()
         }
 
         try {
-            // Parse plus mesh buffer upload -- Mesh::createFromGltf does both, so
-            // this is deliberately reported as one "import" number rather than
-            // split into a parse figure the boundary cannot actually support.
+            // Parse, LOD construction, and mesh buffer upload -- Mesh::createFromGltf
+            // does all three, so this is deliberately reported as one "import"
+            // number rather than split into a parse figure the boundary cannot
+            // actually support. A profile says LOD construction dominates it, which
+            // is why the job system is handed in here.
             const auto gltfImportStart = std::chrono::steady_clock::now();
             renderer::LoadedGltfAsset loadedAsset =
-                renderer::Mesh::createFromGltf(context_, commandContext_, modelPath);
+                renderer::Mesh::createFromGltf(context_, commandContext_, modelPath, &jobSystem_);
             assetLoadStats_.timings.gltfImportMs +=
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - gltfImportStart).count();
             createImportedGltfTextures(loadedAsset.textures, loadedAsset.materials);
