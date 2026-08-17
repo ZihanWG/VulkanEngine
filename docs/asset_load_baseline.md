@@ -88,6 +88,47 @@ command then measures a completely different engine:
 | block compressed | 0 of 8 | **0 of 77** |
 | device-local used | 493.68 MiB | **877.68 MiB** |
 
+## After the texture cook
+
+P1 landed, so the Sponza column above is now the *uncooked* control rather than
+the only measurement. Cooking every texture Sponza references
+(`tools/cook_textures.py`, 69 cooks, 5.2 s wall) and re-running the same binary
+on the same scene:
+
+| Segment | Uncooked | Cooked | Delta |
+| --- | --- | --- | --- |
+| renderer init (total) | 1379.51 ms | 1300.20 ms | −5.7% |
+| — — glTF import | 1037.42 ms | 1053.93 ms | unchanged |
+| — — texture decode wait | 58.88 ms | **0.00 ms** | no decode happens |
+| — — texture upload | 89.90 ms | **48.70 ms** | −46% |
+| texture device bytes | 365.98 MiB | **91.06 MiB** | **−274.92 MiB, 4.02x** |
+| block compressed | 0 of 77 | **72 of 77** | |
+| device-local used | 877.68 MiB | **621.68 MiB** | −256.00 MiB |
+
+Release build, Apple M3, same scene and camera, A/B/A with the control repeated:
+three uncooked runs and two cooked ones. The control returned to 1379.51 ms init
+and 92.34 ms upload on its third run, inside the project's 1% / 3% spread, so the
+gaps above are the cook and not drift. Byte counts are deterministic and identical
+across every run of a configuration.
+
+**4.02x is the honest whole-chain number.** Both columns include mip chains — the
+uncooked path generates them with `vkCmdBlitImage`, the cooked path ships them
+baked — so this is not the same figure as `vecook`'s per-file "3.00x with mips",
+which compares a cooked chain against an uncompressed *base level* only.
+
+Decode wait going to exactly zero is categorical, not a speedup: a cooked texture
+is never handed to stb_image, so the JobSystem decode is not dispatched at all.
+The 5 of 77 textures that stay uncompressed are the procedurally generated ones
+(fallbacks, the backdrop gradient, the cutout lattice), which have no source file
+to cook from.
+
+**Do not compare these absolute timings against the uncooked column further up.**
+That column was captured in an earlier session and reports 7105.61 ms init and
+3944.06 ms glTF import for byte-for-byte the same scene — almost certainly a cold
+file cache on the run right after the fetch. The texture counts and byte totals
+agree exactly, so it is the same content; only the wall clock disagrees. Compare
+within a series, never across sessions.
+
 Every pathology the asset-cook work was proposed to fix is now visible and
 measurable:
 
