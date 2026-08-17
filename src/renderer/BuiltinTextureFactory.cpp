@@ -21,6 +21,40 @@
 
 namespace ve::renderer {
 
+namespace {
+
+// The builtin textures are real files in real material slots, so they take the
+// cooked sidecar when one is there. Same rule as the material-asset and glTF
+// paths: any problem with the cooked file loses to the uncompressed source
+// rather than failing the texture, so a scene never goes untextured over it.
+void loadPreferringCooked(rhi::VulkanContext& context,
+                          const rhi::VulkanCommandContext& commandContext,
+                          const std::filesystem::path& texturePath,
+                          assets::TextureUsage usage,
+                          rhi::VulkanTexture& out)
+{
+    if (rhi::cookedTextureAvailable(context.physicalDevice(), texturePath, usage)) {
+        const std::filesystem::path cookedPath = assets::ktx2SidecarPath(texturePath, usage);
+        try {
+            out.createFromKtx2(context, commandContext, cookedPath, usage);
+            Logger::info("Loaded cooked builtin texture: " + cookedPath.string());
+            return;
+        } catch (const std::exception& error) {
+            Logger::warn("Cooked builtin texture '" + cookedPath.string() +
+                         "' could not be used; loading the uncompressed source instead: " + error.what());
+        }
+    }
+
+    out.createFromFile(context,
+                       commandContext,
+                       texturePath,
+                       assets::textureUsageIsSrgb(usage) ? rhi::TextureColorSpace::SRGB
+                                                         : rhi::TextureColorSpace::Linear,
+                       true);
+}
+
+} // namespace
+
 void BuiltinTextureFactory::createCheckerboardBaseColor(rhi::VulkanContext& context,
                                                         const rhi::VulkanCommandContext& commandContext,
                                                         const std::filesystem::path& assetDirectory,
@@ -29,7 +63,7 @@ void BuiltinTextureFactory::createCheckerboardBaseColor(rhi::VulkanContext& cont
     const std::filesystem::path texturePath = assetDirectory / "textures/checker.png";
     if (std::filesystem::exists(texturePath)) {
         try {
-            out.createFromFile(context, commandContext, texturePath, rhi::TextureColorSpace::SRGB, true);
+            loadPreferringCooked(context, commandContext, texturePath, assets::TextureUsage::BaseColor, out);
             out.setDebugMetadata(rhi::TextureDebugMetadata{
                 "Checkerboard base color",
                 texturePath.string(),
@@ -198,7 +232,7 @@ void BuiltinTextureFactory::createNormal(rhi::VulkanContext& context,
     const std::filesystem::path texturePath = assetDirectory / "textures/checker_normal.png";
     if (std::filesystem::exists(texturePath)) {
         try {
-            out.createFromFile(context, commandContext, texturePath, rhi::TextureColorSpace::Linear, true);
+            loadPreferringCooked(context, commandContext, texturePath, assets::TextureUsage::NormalMap, out);
             out.setDebugMetadata(rhi::TextureDebugMetadata{
                 "Checker normal map",
                 texturePath.string(),
@@ -293,7 +327,8 @@ void BuiltinTextureFactory::createMetallicRoughness(rhi::VulkanContext& context,
     const std::filesystem::path texturePath = assetDirectory / "textures/checker_mr.png";
     if (std::filesystem::exists(texturePath)) {
         try {
-            out.createFromFile(context, commandContext, texturePath, rhi::TextureColorSpace::Linear, true);
+            loadPreferringCooked(
+                context, commandContext, texturePath, assets::TextureUsage::MetallicRoughness, out);
             out.setDebugMetadata(rhi::TextureDebugMetadata{
                 "Checker metallic-roughness map",
                 texturePath.string(),

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "assets/Ktx2.h"
+#include "assets/TextureCook.h"
 #include "rhi/VulkanMemory.h"
 
 #include <cstddef>
@@ -48,6 +50,23 @@ struct TextureDebugMetadata {
 };
 
 [[nodiscard]] VkFormat rgba8FormatForColorSpace(TextureColorSpace colorSpace);
+
+// Which block-compressed formats this device can actually sample with linear
+// filtering. Queried from optimalTilingFeatures rather than inferred from the
+// textureCompressionBC feature bit: that bit does not promise a filterable
+// sampled image, and a texture that cannot be filtered is not usable here.
+//
+// Result is cached per physical device -- the caps cannot change under a running
+// device, and the cook consults them once per texture load.
+[[nodiscard]] assets::BlockCompressionCaps queryBlockCompressionCaps(VkPhysicalDevice physicalDevice);
+
+// True when `source` has a cooked sidecar for `usage` that this device can use:
+// the file exists, is not older than its source, and holds the format this slot
+// expects. Everything else -- a missing cook, a stale cook, an unsupported
+// format -- is a normal miss, not an error.
+[[nodiscard]] bool cookedTextureAvailable(VkPhysicalDevice physicalDevice,
+                                          const std::filesystem::path& source,
+                                          assets::TextureUsage usage);
 
 class VulkanTexture final {
 public:
@@ -103,6 +122,22 @@ public:
         std::span<const uint8_t> pixels,
         VkFormat format = VK_FORMAT_R8G8B8A8_UNORM,
         bool generateMipmaps = true);
+
+    // Uploads a cooked block-compressed KTX2 (docs/asset_system.md). The file's
+    // own format and level count are used as-is, and the mip chain is copied
+    // rather than generated -- there is no vkCmdBlitImage on this path, which is
+    // what later makes a transfer-only queue legal. `usage` is the material slot
+    // the texture is being loaded for; a file cooked for a different slot is
+    // rejected rather than sampled with the wrong colour space.
+    //
+    // Throws std::runtime_error on a missing, malformed, or unusable file, so the
+    // caller can fall back to the uncompressed source image.
+    void createFromKtx2(
+        VulkanContext& context,
+        const VulkanCommandContext& commandContext,
+        const std::filesystem::path& path,
+        assets::TextureUsage usage);
+
     void reset();
     void destroy() { reset(); }
 
@@ -130,6 +165,14 @@ private:
         VulkanContext& context,
         const VulkanCommandContext& commandContext,
         std::span<const std::byte> pixels);
+    // Copies one region per mip level out of a staging buffer holding the whole
+    // cooked file, then transitions every level to SHADER_READ_ONLY in one
+    // barrier. Two barriers total, against 2 + 2*(N-1) for the blit path.
+    void uploadCookedLevels(
+        VulkanContext& context,
+        const VulkanCommandContext& commandContext,
+        std::span<const std::byte> fileBytes,
+        const std::vector<assets::Ktx2CopyRegion>& regions);
     void generateMipmaps(VkCommandBuffer commandBuffer);
     // Load-time instrumentation only; a no-op unless recording is enabled.
     void recordLoadStats();
