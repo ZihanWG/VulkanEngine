@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <filesystem>
 #include <span>
 #include <stdexcept>
 #include <vector>
@@ -64,6 +65,41 @@ TEST_CASE("Cooked format follows the material slot, not the file", "[texture-coo
                                TextureUsage::MetallicRoughness, TextureUsage::Occlusion}) {
         CHECK(ve::assets::ktx2FormatSupported(cookedFormatForUsage(usage)));
     }
+}
+
+TEST_CASE("The sidecar path carries the slot, not just the source name", "[texture-cook]")
+{
+    using ve::assets::ktx2SidecarPath;
+    using ve::assets::parseTextureUsage;
+    using ve::assets::textureUsageName;
+
+    // One image legitimately used in two slots must cook to two different files:
+    // the formats and the mip filtering differ, so a single foo.ktx2 would
+    // silently serve whichever slot cooked it last.
+    const std::filesystem::path source = "/assets/sponza/fabric.png";
+    CHECK(ktx2SidecarPath(source, TextureUsage::BaseColor) == "/assets/sponza/fabric.base-color.ktx2");
+    CHECK(ktx2SidecarPath(source, TextureUsage::NormalMap) == "/assets/sponza/fabric.normal.ktx2");
+    CHECK(ktx2SidecarPath(source, TextureUsage::MetallicRoughness)
+          == "/assets/sponza/fabric.metallic-roughness.ktx2");
+
+    // The sidecar sits beside its source, whatever the source extension was.
+    CHECK(ktx2SidecarPath("/assets/a.jpg", TextureUsage::Emissive) == "/assets/a.emissive.ktx2");
+    CHECK(ktx2SidecarPath("relative/b.jpeg", TextureUsage::Occlusion) == "relative/b.occlusion.ktx2");
+    // A dotted stem keeps its dots; only the final extension is replaced.
+    CHECK(ktx2SidecarPath("/assets/c.v2.png", TextureUsage::BaseColor) == "/assets/c.v2.base-color.ktx2");
+
+    // The name is the contract between vecook, the cook driver, and the runtime
+    // lookup, so it has to round-trip.
+    for (TextureUsage usage : {TextureUsage::BaseColor, TextureUsage::Emissive, TextureUsage::NormalMap,
+                               TextureUsage::MetallicRoughness, TextureUsage::Occlusion}) {
+        TextureUsage parsed = TextureUsage::Occlusion;
+        REQUIRE(parseTextureUsage(textureUsageName(usage), parsed));
+        CHECK(parsed == usage);
+    }
+
+    TextureUsage ignored = TextureUsage::BaseColor;
+    CHECK_FALSE(parseTextureUsage("baseColor", ignored));
+    CHECK_FALSE(parseTextureUsage("", ignored));
 }
 
 TEST_CASE("A device without block compression falls back to RGBA8", "[texture-cook]")

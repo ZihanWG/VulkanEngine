@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstddef>
 #include <stdexcept>
+#include <string>
 
 namespace ve::assets {
 
@@ -67,6 +68,58 @@ bool textureUsageIsSrgb(TextureUsage usage)
     }
 
     return false;
+}
+
+std::string_view textureUsageName(TextureUsage usage)
+{
+    switch (usage) {
+    case TextureUsage::BaseColor:
+        return "base-color";
+    case TextureUsage::Emissive:
+        return "emissive";
+    case TextureUsage::NormalMap:
+        return "normal";
+    case TextureUsage::MetallicRoughness:
+        return "metallic-roughness";
+    case TextureUsage::Occlusion:
+        return "occlusion";
+    }
+
+    return "base-color";
+}
+
+bool parseTextureUsage(std::string_view name, TextureUsage& usage)
+{
+    constexpr TextureUsage kUsages[] = {
+        TextureUsage::BaseColor,
+        TextureUsage::Emissive,
+        TextureUsage::NormalMap,
+        TextureUsage::MetallicRoughness,
+        TextureUsage::Occlusion,
+    };
+
+    for (TextureUsage candidate : kUsages) {
+        if (textureUsageName(candidate) == name) {
+            usage = candidate;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::filesystem::path ktx2SidecarPath(const std::filesystem::path& source, TextureUsage usage)
+{
+    // Replacing the extension rather than appending to the whole filename keeps
+    // `foo.png` and `foo.jpg` from colliding only when they are the same texture
+    // in the same slot -- which is the case where they would be interchangeable
+    // anyway.
+    std::filesystem::path sidecar = source;
+    sidecar.replace_extension();
+    sidecar += ".";
+    sidecar += std::string(textureUsageName(usage));
+    sidecar += ".ktx2";
+    return sidecar;
 }
 
 uint32_t cookedFormatForUsage(TextureUsage usage)
