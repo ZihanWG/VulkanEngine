@@ -9,6 +9,7 @@
 #include "core/Logger.h"
 #include "renderer/Bounds.h"
 #include "rhi/VulkanDebugUtils.h"
+#include "rhi/VulkanUploadBatch.h"
 
 #include <json.hpp>
 
@@ -974,9 +975,11 @@ void Renderer::createImportedGltfTextures(const std::vector<renderer::GltfTextur
         std::vector<rhi::VulkanTexture>* textures = nullptr;
         const renderer::GltfTextureInfo* info = nullptr;
         // A cooked sidecar has nothing to decode, so `decode` stays invalid on
-        // that path -- the mip chain is already built and block compressed.
+        // that path -- the mip chain is already built and block compressed. Its
+        // file is read ahead into `cookedBytes` instead, off the device thread.
         bool cooked = false;
         std::future<rhi::DecodedImage> decode;
+        std::vector<uint8_t> cookedBytes;
     };
 
     std::vector<PendingTextureUpload> pendingUploads;
@@ -1038,7 +1041,73 @@ void Renderer::createImportedGltfTextures(const std::vector<renderer::GltfTextur
         }
     }
 
-    for (PendingTextureUpload& pending : pendingUploads) {
+    // One batch for the whole set. Every texture used to submit its own command
+    // buffer and drain the queue before the next one started; that was half the
+    // upload time across 77 textures. The batch flushes on its own staging budget,
+    // so peak memory stays bounded no matter how large the scene is.
+    rhi::VulkanUploadBatch uploadBatch;
+    uploadBatch.begin(context_, commandContext_);
+
+    // Cooked files are read on the job system rather than one at a time on this
+    // thread, where they were about a third of upload time. The reads run a
+    // window at a time, sized by the same staging budget the batch uses, so the
+    // prefetch cannot outrun the uploads and leave the whole scene's file bytes
+    // resident at once.
+    size_t prefetchedEnd = 0;
+    const auto prefetchWindow = [&](size_t from) {
+        std::vector<std::future<void>> reads;
+        VkDeviceSize windowBytes = 0;
+        size_t index = from;
+        for (; index < pendingUploads.size(); ++index) {
+            PendingTextureUpload& pending = pendingUploads[index];
+            if (!pending.cooked) {
+                continue;
+            }
+
+            const std::filesystem::path cookedPath =
+                assets::ktx2SidecarPath(pending.info->path, pending.usage);
+            std::error_code sizeError;
+            const auto fileBytes = std::filesystem::file_size(cookedPath, sizeError);
+            const VkDeviceSize cost = sizeError ? 0 : static_cast<VkDeviceSize>(fileBytes);
+            if (!reads.empty() && windowBytes + cost > rhi::kUploadBatchStagingBudgetBytes) {
+                break;
+            }
+
+            windowBytes += cost;
+            reads.push_back(jobSystem_.enqueue([&pending, cookedPath]() {
+                std::ifstream input(cookedPath, std::ios::binary | std::ios::ate);
+                if (!input) {
+                    return;
+                }
+                const std::streamsize size = input.tellg();
+                if (size <= 0) {
+                    return;
+                }
+                input.seekg(0);
+                pending.cookedBytes.resize(static_cast<size_t>(size));
+                input.read(reinterpret_cast<char*>(pending.cookedBytes.data()), size);
+                // A short read leaves the buffer inconsistent, so drop it and let
+                // createFromKtx2 read the file itself and report the real error.
+                if (!input) {
+                    pending.cookedBytes.clear();
+                }
+            }));
+        }
+
+        for (std::future<void>& read : reads) {
+            read.get();
+        }
+
+        return index;
+    };
+
+    prefetchedEnd = prefetchWindow(0);
+
+    for (size_t pendingIndex = 0; pendingIndex < pendingUploads.size(); ++pendingIndex) {
+        PendingTextureUpload& pending = pendingUploads[pendingIndex];
+        if (pendingIndex >= prefetchedEnd) {
+            prefetchedEnd = prefetchWindow(pendingIndex);
+        }
         std::vector<rhi::VulkanTexture>& textures = *pending.textures;
         const renderer::GltfTextureInfo& textureInfo = *pending.info;
         const rhi::TextureColorSpace colorSpace = assets::textureUsageIsSrgb(pending.usage)
@@ -1052,7 +1121,9 @@ void Renderer::createImportedGltfTextures(const std::vector<renderer::GltfTextur
                 const std::filesystem::path cookedPath = assets::ktx2SidecarPath(textureInfo.path, pending.usage);
                 try {
                     textures[pending.textureIndex].createFromKtx2(
-                        context_, commandContext_, cookedPath, pending.usage);
+                        context_, commandContext_, cookedPath, pending.usage, &uploadBatch, pending.cookedBytes);
+                    // The staging copy has been made; the file bytes are dead.
+                    pending.cookedBytes = {};
                     loadedCooked = true;
                     assetLoadStats_.timings.textureUploadMs +=
                         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - cookedUploadStart)
@@ -1087,7 +1158,8 @@ void Renderer::createImportedGltfTextures(const std::vector<renderer::GltfTextur
                                                                decoded.height,
                                                                decoded.pixels,
                                                                rhi::rgba8FormatForColorSpace(colorSpace),
-                                                               true);
+                                                               true,
+                                                               &uploadBatch);
                 assetLoadStats_.timings.textureUploadMs +=
                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - uploadStart).count();
                 if (!textureInfo.path.empty()) {
@@ -1117,6 +1189,13 @@ void Renderer::createImportedGltfTextures(const std::vector<renderer::GltfTextur
                          "'; material fallback will be used: " + error.what());
         }
     }
+
+    // Nothing may sample these until the copies have run, and the staging buffers
+    // the batch is holding cannot be freed before then either.
+    uploadBatch.submitAndWait();
+    Logger::info("Uploaded " + std::to_string(pendingUploads.size()) + " glTF texture(s) in " +
+                 std::to_string(uploadBatch.submitCount()) + " submit(s), peak staging " +
+                 std::to_string(uploadBatch.peakStagingBytes() / (1024 * 1024)) + " MiB.");
 }
 
 void Renderer::createImportedGltfMaterials(const std::vector<renderer::GltfMaterialInfo>& materialInfos)

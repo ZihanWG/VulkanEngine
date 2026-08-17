@@ -218,6 +218,32 @@ Three load paths consume sidecars, each of which already knows its slot:
 the glTF import loop in `RendererScene.cpp` (which skips the JobSystem decode
 entirely for a cooked texture, since there is nothing to decode).
 
+### Batched upload
+
+`rhi::VulkanUploadBatch` records many textures into one command buffer and waits
+once on a fence. Before it, every texture submitted its own command buffer and
+called `vkQueueWaitIdle` — draining the entire queue, 69 times on Sponza, which
+was about half of texture upload time.
+
+Two properties are load-bearing:
+
+- **The staging buffers are retained by the batch**, not by the caller's scope. A
+  queued copy still reads them after the recording function returns, so freeing
+  them early would corrupt texels rather than crash. The batch's destructor
+  submits, so an exception mid-load cannot drop them either.
+- **The batch is bounded, not unbounded.** It flushes when retained staging
+  crosses `kUploadBatchStagingBudgetBytes` (64 MiB), so peak staging stops
+  depending on scene size — Sponza uploads in 2 submits at 62 MiB peak. The
+  cooked-file prefetch uses the same budget as its window.
+
+A batch is optional: `createFromKtx2()` and `createFromRgba8()` take one or
+`nullptr`, and without it they keep their own submit-and-wait. Only the glTF
+import loop batches today; `BuiltinTextureFactory`, the material-asset path, the
+BRDF LUT, and cubemaps are unchanged.
+
+This is also step one of moving uploads to a transfer queue. Batching has to come
+first: 69 serialised waits are 69 serialised waits whichever queue they are on.
+
 ### Every failure falls back, none is fatal
 
 A cooked file is used only when it exists, is **not older than its source**, and
@@ -245,6 +271,12 @@ compressed, decode wait goes to zero, and upload halves.
 
 ### Limitations
 
+- **Uploads still run on the graphics queue.** Batching made a transfer queue
+  worth doing, but on this machine a TRANSFER-only queue family does not exist by
+  default: MoltenVK exposes four identical GRAPHICS|COMPUTE|TRANSFER families and
+  only reveals a dedicated family 3 under
+  `MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES=1`, the same gate the async compute path
+  documents.
 - No visual A/B has been composed yet. The Sponza startup camera frames the
   building from outside (see the limitations above), and the default portfolio
   scene *loads* the checker textures but does not sample them in the composed
