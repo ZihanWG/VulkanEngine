@@ -16,6 +16,7 @@ namespace ve::rhi {
 
 class VulkanCommandContext;
 class VulkanContext;
+class VulkanUploadBatch;
 
 // CPU-side decoded image (tightly packed RGBA8). Decoding does not touch Vulkan,
 // so it can run on worker threads; the resulting pixels are uploaded later on the
@@ -121,7 +122,8 @@ public:
         uint32_t height,
         std::span<const uint8_t> pixels,
         VkFormat format = VK_FORMAT_R8G8B8A8_UNORM,
-        bool generateMipmaps = true);
+        bool generateMipmaps = true,
+        VulkanUploadBatch* batch = nullptr);
 
     // Uploads a cooked block-compressed KTX2 (docs/asset_system.md). The file's
     // own format and level count are used as-is, and the mip chain is copied
@@ -132,11 +134,16 @@ public:
     //
     // Throws std::runtime_error on a missing, malformed, or unusable file, so the
     // caller can fall back to the uncompressed source image.
+    // `preloadedBytes`, when non-empty, is the file's contents already read --
+    // the reads are worth doing off the device thread, and `path` is then used
+    // only for diagnostics.
     void createFromKtx2(
         VulkanContext& context,
         const VulkanCommandContext& commandContext,
         const std::filesystem::path& path,
-        assets::TextureUsage usage);
+        assets::TextureUsage usage,
+        VulkanUploadBatch* batch = nullptr,
+        std::span<const uint8_t> preloadedBytes = {});
 
     void reset();
     void destroy() { reset(); }
@@ -164,7 +171,8 @@ private:
     void uploadPixels(
         VulkanContext& context,
         const VulkanCommandContext& commandContext,
-        std::span<const std::byte> pixels);
+        std::span<const std::byte> pixels,
+        VulkanUploadBatch* batch);
     // Copies one region per mip level out of a staging buffer holding the whole
     // cooked file, then transitions every level to SHADER_READ_ONLY in one
     // barrier. Two barriers total, against 2 + 2*(N-1) for the blit path.
@@ -172,7 +180,8 @@ private:
         VulkanContext& context,
         const VulkanCommandContext& commandContext,
         std::span<const std::byte> fileBytes,
-        const std::vector<assets::Ktx2CopyRegion>& regions);
+        const std::vector<assets::Ktx2CopyRegion>& regions,
+        VulkanUploadBatch* batch);
     void generateMipmaps(VkCommandBuffer commandBuffer);
     // Load-time instrumentation only; a no-op unless recording is enabled.
     void recordLoadStats();

@@ -122,6 +122,44 @@ The 5 of 77 textures that stay uncompressed are the procedurally generated ones
 (fallbacks, the backdrop gradient, the cutout lattice), which have no source file
 to cook from.
 
+## After batching texture uploads
+
+With glTF import parallelised, texture upload was the next measurable item at
+~51 ms. A profile split it as roughly half `vkQueueWaitIdle` — every texture
+submitted its own command buffer and then **drained the whole queue** before the
+next one started, 69 times — and about a third reading the cooked KTX2 files one
+at a time on the device thread.
+
+`rhi::VulkanUploadBatch` records many textures into one command buffer and waits
+on a fence, and the file reads moved to the `JobSystem`:
+
+| | serial | batched | |
+| --- | --- | --- | --- |
+| texture upload | 50.11 / 52.07 ms | **14.42 / 15.37 ms** | **−71%** |
+| submits for 69 textures | 69 | **2** | |
+| texture device bytes | 91.06 MiB | 91.06 MiB | unchanged |
+| device-local used | 621.68 MiB | 621.68 MiB | unchanged |
+
+Release, Apple M3, warm runs; the first run of any series is discarded as
+cold-file-cache warm-up (it measures 100-150 ms in both configurations).
+
+The batch flushes when retained staging crosses a 64 MiB budget, so peak staging
+does not scale with the scene: Sponza's 91 MiB of cooked texture data uploads in
+2 submits with **62 MiB peak staging**, and the uncompressed path would simply
+flush more often rather than spike. The prefetch window is bounded by the same
+budget, so file bytes and staging together stay near 128 MiB transient host
+memory instead of the whole scene.
+
+Re-profiling confirms the mechanism: `vkQueueWaitIdle` no longer appears anywhere
+under `createFromKtx2`. The call sites that remain are mesh buffer uploads
+(`VulkanBuffer::copyBuffer`), the BRDF LUT, and the non-batched builtin textures —
+all deliberately unchanged.
+
+Verified with validation layers **on the Sponza path specifically**, not just the
+default scene: batching means many textures share one command buffer and one
+fence, and a staging buffer freed before its copy ran is exactly what the layers
+catch. 0 errors, 0 warnings.
+
 ## After parallel LOD construction
 
 The texture cook did not touch glTF import, which then became the largest startup

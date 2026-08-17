@@ -6,6 +6,7 @@
 #include "rhi/VulkanBuffer.h"
 #include "rhi/VulkanCommandContext.h"
 #include "rhi/VulkanContext.h"
+#include "rhi/VulkanUploadBatch.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 // Make stb_image's failure-reason string thread-local so concurrent decode jobs
@@ -509,7 +510,8 @@ void VulkanTexture::createFromRgba8(VulkanContext& context,
                                     uint32_t height,
                                     std::span<const uint8_t> pixels,
                                     VkFormat format,
-                                    bool generateMipmaps)
+                                    bool generateMipmaps,
+                                    VulkanUploadBatch* batch)
 {
     reset();
 
@@ -560,7 +562,7 @@ void VulkanTexture::createFromRgba8(VulkanContext& context,
 
     VK_CHECK(vmaCreateImage(context.allocator(), &imageInfo, &allocationInfo, &image_, &allocation_, nullptr));
 
-    uploadPixels(context, commandContext, std::as_bytes(pixels));
+    uploadPixels(context, commandContext, std::as_bytes(pixels), batch);
     createImageView();
     createSampler();
     debugMetadata_ = TextureDebugMetadata{
@@ -575,11 +577,18 @@ void VulkanTexture::createFromRgba8(VulkanContext& context,
 void VulkanTexture::createFromKtx2(VulkanContext& context,
                                    const VulkanCommandContext& commandContext,
                                    const std::filesystem::path& path,
-                                   assets::TextureUsage usage)
+                                   assets::TextureUsage usage,
+                                   VulkanUploadBatch* batch,
+                                   std::span<const uint8_t> preloadedBytes)
 {
     reset();
 
-    const std::vector<uint8_t> fileBytes = readFileBytes(path);
+    // Reading off the device thread is worth ~a third of upload time on a real
+    // scene, so the caller may have done it already.
+    const std::vector<uint8_t> ownedBytes = preloadedBytes.empty() ? readFileBytes(path) : std::vector<uint8_t>{};
+    const std::span<const uint8_t> fileBytes = preloadedBytes.empty()
+                                                   ? std::span<const uint8_t>(ownedBytes)
+                                                   : preloadedBytes;
     const assets::Ktx2Info info = assets::parseKtx2(fileBytes);
 
     // Re-checked here and not only at the call site: this is the last point
@@ -628,7 +637,7 @@ void VulkanTexture::createFromKtx2(VulkanContext& context,
 
     VK_CHECK(vmaCreateImage(context.allocator(), &imageInfo, &allocationInfo, &image_, &allocation_, nullptr));
 
-    uploadCookedLevels(context, commandContext, std::as_bytes(std::span<const uint8_t>(fileBytes)), regions);
+    uploadCookedLevels(context, commandContext, std::as_bytes(fileBytes), regions, batch);
     createImageView();
     createSampler();
 
@@ -692,18 +701,26 @@ void VulkanTexture::setDebugMetadata(TextureDebugMetadata metadata)
 
 void VulkanTexture::uploadPixels(VulkanContext& context,
                                  const VulkanCommandContext& commandContext,
-                                 std::span<const std::byte> pixels)
+                                 std::span<const std::byte> pixels,
+                                 VulkanUploadBatch* batch)
 {
+    const auto stagingSize = static_cast<VkDeviceSize>(pixels.size_bytes());
+    const bool batched = batch != nullptr && batch->recording();
+
+    if (batched) {
+        batch->flushIfOverBudget(stagingSize);
+    }
+
     VulkanBuffer stagingBuffer;
     VulkanBufferCreateInfo stagingInfo{};
-    stagingInfo.size = static_cast<VkDeviceSize>(pixels.size_bytes());
+    stagingInfo.size = stagingSize;
     stagingInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     stagingInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
     stagingInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
     stagingBuffer.createBuffer(context, stagingInfo);
     stagingBuffer.upload(pixels);
 
-    VkCommandBuffer commandBuffer = beginOneTimeUpload(context, commandContext);
+    VkCommandBuffer commandBuffer = batched ? batch->commandBuffer() : beginOneTimeUpload(context, commandContext);
 
     // The upload starts from UNDEFINED because the texture image has no useful contents yet.
     // All mip levels become transfer destinations before level 0 is copied and later blits run.
@@ -748,7 +765,11 @@ void VulkanTexture::uploadPixels(VulkanContext& context,
         recordImageBarrier(commandBuffer, toShaderRead);
     }
 
-    endOneTimeUpload(context, commandContext, commandBuffer);
+    if (batched) {
+        batch->retainStaging(std::move(stagingBuffer), stagingSize);
+    } else {
+        endOneTimeUpload(context, commandContext, commandBuffer);
+    }
 
     recordLoadStats();
 }
@@ -756,21 +777,34 @@ void VulkanTexture::uploadPixels(VulkanContext& context,
 void VulkanTexture::uploadCookedLevels(VulkanContext& context,
                                        const VulkanCommandContext& commandContext,
                                        std::span<const std::byte> fileBytes,
-                                       const std::vector<assets::Ktx2CopyRegion>& regions)
+                                       const std::vector<assets::Ktx2CopyRegion>& regions,
+                                       VulkanUploadBatch* batch)
 {
+    const auto stagingSize = static_cast<VkDeviceSize>(fileBytes.size_bytes());
+    const bool batched = batch != nullptr && batch->recording();
+
+    // Asked before the allocation exists, so the peak never counts both the
+    // batch being flushed and the upload that forced the flush.
+    if (batched) {
+        batch->flushIfOverBudget(stagingSize);
+    }
+
     // The whole file goes into staging, header and all. The few hundred bytes of
     // metadata are wasted, but it buys copying straight from the file's own
     // level offsets, which are already texel-block aligned.
     VulkanBuffer stagingBuffer;
     VulkanBufferCreateInfo stagingInfo{};
-    stagingInfo.size = static_cast<VkDeviceSize>(fileBytes.size_bytes());
+    stagingInfo.size = stagingSize;
     stagingInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     stagingInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
     stagingInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
     stagingBuffer.createBuffer(context, stagingInfo);
     stagingBuffer.upload(fileBytes);
 
-    VkCommandBuffer commandBuffer = beginOneTimeUpload(context, commandContext);
+    // A batch owns the command buffer and submits many textures at once; without
+    // one this texture keeps its own submit-and-wait, which is what every caller
+    // outside the glTF import loop still does.
+    VkCommandBuffer commandBuffer = batched ? batch->commandBuffer() : beginOneTimeUpload(context, commandContext);
 
     const VkImageMemoryBarrier2 toTransfer = textureBarrier(image_,
                                                             VK_IMAGE_LAYOUT_UNDEFINED,
@@ -824,7 +858,13 @@ void VulkanTexture::uploadCookedLevels(VulkanContext& context,
                                                               mipLevels_);
     recordImageBarrier(commandBuffer, toShaderRead);
 
-    endOneTimeUpload(context, commandContext, commandBuffer);
+    if (batched) {
+        // The copy above reads this staging buffer on the GPU, so it has to
+        // outlive the submit rather than this scope.
+        batch->retainStaging(std::move(stagingBuffer), stagingSize);
+    } else {
+        endOneTimeUpload(context, commandContext, commandBuffer);
+    }
 
     recordLoadStats();
 }
