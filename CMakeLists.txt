@@ -199,6 +199,20 @@ target_link_libraries(imgui PUBLIC
     ${VOLK_TARGET}
 )
 
+# Block-compression encoder for the offline texture cook (docs/asset_system.md).
+# Vendored rather than fetched: it is two translation units with no build system
+# worth inheriting, and the 450 KB of it that is a lookup table would otherwise be
+# re-downloaded per clean configure. Third-party source, so the project's
+# -Wall -Wextra -Wpedantic policy deliberately does not apply -- same treatment as
+# the imgui target above. Only the `vecook` host tool links this; the runtime
+# consumes the cook's output and never encodes.
+add_library(bc7enc STATIC
+    external/bc7enc/bc7enc.cpp
+    external/bc7enc/rgbcx.cpp
+)
+
+target_include_directories(bc7enc SYSTEM PUBLIC external/bc7enc)
+
 # GPU-independent engine logic (serialization, logging, math helpers). Kept as a
 # separate static library so the unit tests can link it without pulling in Vulkan.
 find_package(Threads REQUIRED)
