@@ -3,8 +3,10 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <span>
 #include <stdexcept>
 #include <vector>
 
@@ -211,6 +213,94 @@ TEST_CASE("A partial texel block clamps instead of reading past the edge", "[tex
     for (size_t texel = 0; texel < 16U; ++texel) {
         CHECK(static_cast<int>(block[texel * 4U + 0]) == 4);
         CHECK(static_cast<int>(block[texel * 4U + 1]) == 4);
+    }
+}
+
+TEST_CASE("A level is encoded in row-major block order", "[texture-cook]")
+{
+    // Block order is invisible to every validation layer: getting it wrong just
+    // scrambles the texture. A fake encoder that stamps each block with its
+    // top-left texel is enough to pin the order and the output offsets down.
+    constexpr uint32_t kWidth = 9; // 3 block columns, the last one partial
+    constexpr uint32_t kHeight = 5; // 2 block rows, the last one partial
+    constexpr uint32_t kBlockSize = 16;
+
+    std::vector<uint8_t> pixels(static_cast<size_t>(kWidth) * kHeight * 4U);
+    for (uint32_t y = 0; y < kHeight; ++y) {
+        for (uint32_t x = 0; x < kWidth; ++x) {
+            const size_t texel = (static_cast<size_t>(y) * kWidth + x) * 4U;
+            pixels[texel + 0] = static_cast<uint8_t>(x);
+            pixels[texel + 1] = static_cast<uint8_t>(y);
+        }
+    }
+
+    const auto stampTopLeft = [](std::span<const uint8_t, 64> block, std::span<uint8_t> out) {
+        out[0] = block[0];
+        out[1] = block[1];
+        for (size_t byte = 2; byte < out.size(); ++byte) {
+            out[byte] = 0xEE;
+        }
+    };
+
+    const uint32_t blockColumns = ve::assets::rgba8BlockColumnCount(kWidth);
+    const uint32_t blockRows = ve::assets::rgba8BlockRowCount(kHeight);
+    REQUIRE(blockColumns == 3);
+    REQUIRE(blockRows == 2);
+
+    std::vector<uint8_t> level(static_cast<size_t>(blockColumns) * blockRows * kBlockSize);
+    ve::assets::encodeRgba8BlockRows(pixels, kWidth, kHeight, kBlockSize, 0, blockRows, stampTopLeft, level);
+
+    for (uint32_t blockY = 0; blockY < blockRows; ++blockY) {
+        for (uint32_t blockX = 0; blockX < blockColumns; ++blockX) {
+            const size_t offset = (static_cast<size_t>(blockY) * blockColumns + blockX) * kBlockSize;
+            CHECK(static_cast<int>(level[offset + 0]) == static_cast<int>(blockX * 4U));
+            CHECK(static_cast<int>(level[offset + 1]) == static_cast<int>(blockY * 4U));
+        }
+    }
+
+    // Encoding row ranges separately -- which is how the cook spreads a level
+    // across the thread pool -- must land the same bytes as one pass.
+    std::vector<uint8_t> split(level.size());
+    ve::assets::encodeRgba8BlockRows(pixels, kWidth, kHeight, kBlockSize, 0, 1, stampTopLeft, split);
+    ve::assets::encodeRgba8BlockRows(pixels, kWidth, kHeight, kBlockSize, 1, 2, stampTopLeft, split);
+    CHECK(split == level);
+
+    // An empty range is legal and touches nothing: the pool hands out empty
+    // chunks when a tail level has fewer block rows than workers.
+    std::vector<uint8_t> untouched(level.size(), 0x11);
+    ve::assets::encodeRgba8BlockRows(pixels, kWidth, kHeight, kBlockSize, 1, 1, stampTopLeft, untouched);
+    CHECK(untouched == std::vector<uint8_t>(level.size(), 0x11));
+
+    // A level buffer that does not match the block count would silently write
+    // past a level boundary once the caller concatenates them.
+    std::vector<uint8_t> wrongSize(level.size() - 1);
+    CHECK_THROWS_AS(
+        ve::assets::encodeRgba8BlockRows(pixels, kWidth, kHeight, kBlockSize, 0, blockRows, stampTopLeft, wrongSize),
+        std::runtime_error);
+    CHECK_THROWS_AS(
+        ve::assets::encodeRgba8BlockRows(pixels, kWidth, kHeight, kBlockSize, 0, blockRows + 1, stampTopLeft, level),
+        std::runtime_error);
+}
+
+TEST_CASE("Encoded level sizes agree with the KTX2 level index", "[texture-cook]")
+{
+    // The cook builds a mip chain, encodes each level, and hands the results to
+    // writeKtx2, which rejects any level whose size disagrees with its extent.
+    // This is the seam between the two, checked without running an encoder.
+    constexpr uint32_t kWidth = 100;
+    constexpr uint32_t kHeight = 60;
+
+    const std::vector<uint8_t> base = solidImage(kWidth, kHeight, {1, 2, 3, 4});
+    const std::vector<std::vector<uint8_t>> mipChain = generateMipChainRgba8(base, kWidth, kHeight, true);
+
+    for (size_t level = 0; level < mipChain.size(); ++level) {
+        const uint32_t levelWidth = std::max(1U, kWidth >> level);
+        const uint32_t levelHeight = std::max(1U, kHeight >> level);
+        const size_t blockBytes = static_cast<size_t>(ve::assets::rgba8BlockColumnCount(levelWidth))
+                                  * ve::assets::rgba8BlockRowCount(levelHeight) * 16U;
+
+        CHECK(blockBytes
+              == ve::assets::ktx2LevelSizeBytes(kVkFormatBc7SrgbBlock, kWidth, kHeight, static_cast<uint32_t>(level)));
     }
 }
 

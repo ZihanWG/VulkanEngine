@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <vector>
 
@@ -76,5 +77,31 @@ void extractRgba8Block(std::span<const uint8_t> pixels,
                        uint32_t blockX,
                        uint32_t blockY,
                        std::span<uint8_t, 64> block);
+
+// How many 4x4 blocks cover an extent, rounding a partial block up.
+[[nodiscard]] uint32_t rgba8BlockColumnCount(uint32_t width);
+[[nodiscard]] uint32_t rgba8BlockRowCount(uint32_t height);
+
+// Receives one padded 4x4 RGBA8 block and writes its compressed bytes. Called
+// from several threads at once, so an encoder with global setup must be
+// initialized before the first call.
+using BlockEncodeFn = std::function<void(std::span<const uint8_t, 64> rgbaBlock, std::span<uint8_t> blockOut)>;
+
+// Encodes block rows [beginBlockRow, endBlockRow) of one mip level into
+// `levelOut`, which must be sized for the whole level. Blocks are walked in the
+// row-major order every BC format and the KTX2 level layout assume; getting that
+// order wrong scrambles a texture without tripping any validation.
+//
+// Taking a row range rather than the whole level is what lets the caller spread
+// one level across a thread pool without the encoder knowing about threads:
+// distinct row ranges write to disjoint bytes of `levelOut`.
+void encodeRgba8BlockRows(std::span<const uint8_t> pixels,
+                          uint32_t width,
+                          uint32_t height,
+                          uint32_t blockSizeBytes,
+                          uint32_t beginBlockRow,
+                          uint32_t endBlockRow,
+                          const BlockEncodeFn& encodeBlock,
+                          std::span<uint8_t> levelOut);
 
 } // namespace ve::assets

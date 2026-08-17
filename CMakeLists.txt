@@ -209,6 +209,7 @@ target_link_libraries(imgui PUBLIC
 add_library(bc7enc STATIC
     external/bc7enc/bc7enc.cpp
     external/bc7enc/rgbcx.cpp
+    external/bc7enc/bc7decomp.cpp
 )
 
 target_include_directories(bc7enc SYSTEM PUBLIC external/bc7enc)
@@ -334,6 +335,22 @@ if(MSVC)
     target_compile_options(compare_images PRIVATE /W4 /permissive- /EHsc /utf-8)
 else()
     target_compile_options(compare_images PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+# Offline texture cook (docs/asset_system.md). Links VulkanEngineCore for the cook
+# policy and the KTX2 container, plus the vendored encoder. Deliberately no
+# Vulkan: the cook has no device, and keeping the loader off this target means it
+# runs on a build machine that has no GPU at all.
+add_executable(vecook
+    tools/vecook/main.cpp
+)
+target_link_libraries(vecook PRIVATE VulkanEngineCore bc7enc)
+target_include_directories(vecook SYSTEM PRIVATE external)
+
+if(MSVC)
+    target_compile_options(vecook PRIVATE /W4 /permissive- /EHsc /utf-8)
+else()
+    target_compile_options(vecook PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 if(APPLE AND VULKAN_ENGINE_BUILD_MACOS_BUNDLE)

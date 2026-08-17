@@ -199,4 +199,47 @@ void extractRgba8Block(std::span<const uint8_t> pixels,
     }
 }
 
+uint32_t rgba8BlockColumnCount(uint32_t width)
+{
+    return (width + kBlockExtent - 1U) / kBlockExtent;
+}
+
+uint32_t rgba8BlockRowCount(uint32_t height)
+{
+    return (height + kBlockExtent - 1U) / kBlockExtent;
+}
+
+void encodeRgba8BlockRows(std::span<const uint8_t> pixels,
+                          uint32_t width,
+                          uint32_t height,
+                          uint32_t blockSizeBytes,
+                          uint32_t beginBlockRow,
+                          uint32_t endBlockRow,
+                          const BlockEncodeFn& encodeBlock,
+                          std::span<uint8_t> levelOut)
+{
+    if (blockSizeBytes == 0) {
+        throw std::runtime_error("Texture cook: cannot encode blocks of zero bytes.");
+    }
+
+    const uint32_t blockColumns = rgba8BlockColumnCount(width);
+    const uint32_t blockRows = rgba8BlockRowCount(height);
+    if (endBlockRow > blockRows || beginBlockRow > endBlockRow) {
+        throw std::runtime_error("Texture cook: block row range is outside the level.");
+    }
+    if (levelOut.size() != static_cast<size_t>(blockColumns) * blockRows * blockSizeBytes) {
+        throw std::runtime_error("Texture cook: output buffer does not match the level's block count.");
+    }
+
+    std::array<uint8_t, 64> block{};
+    for (uint32_t blockY = beginBlockRow; blockY < endBlockRow; ++blockY) {
+        for (uint32_t blockX = 0; blockX < blockColumns; ++blockX) {
+            extractRgba8Block(pixels, width, height, blockX, blockY, block);
+
+            const size_t offset = (static_cast<size_t>(blockY) * blockColumns + blockX) * blockSizeBytes;
+            encodeBlock(block, levelOut.subspan(offset, blockSizeBytes));
+        }
+    }
+}
+
 } // namespace ve::assets
