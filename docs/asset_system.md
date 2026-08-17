@@ -108,11 +108,92 @@ runtime material with a source asset path. Load restores simple
 current runtime scene. Mesh references and glTF material-table assignments
 remain metadata-only.
 
+## Texture Cook (`vecook`)
+
+`vecook` is an offline host tool that turns one PNG/JPG into a block-compressed
+KTX2 with a baked mip chain. It exists because the asset-load baseline measured
+Sponza at 365.98 MiB of textures with **0 of 77 block compressed**
+([asset_load_baseline.md](asset_load_baseline.md)).
+
+```
+vecook <input.png> -o <output.ktx2> --usage <slot> [--no-mips] [--force] [--threads N] [--verify]
+```
+
+It links `VulkanEngineCore` and the vendored encoder, and deliberately does not
+link Vulkan: the cook has no device, so it runs on a build machine with no GPU.
+
+### Format policy
+
+Format follows the **material slot**, not the file. The same PNG cooked as a base
+colour and as a roughness map gets different formats and different mip filtering.
+
+| Slot | Cooked format | Colour space |
+| --- | --- | --- |
+| `base-color`, `emissive` | `BC7_SRGB_BLOCK` | sRGB |
+| `metallic-roughness`, `occlusion` | `BC7_UNORM_BLOCK` | linear |
+| `normal` | `BC5_UNORM_BLOCK` | linear |
+
+BC5 for normals spends the same 16 bytes per block on XY that BC7 would spend on
+RGBA, and the shader reconstructs Z. BC7 and BC5 device support is reported
+separately (`BlockCompressionCaps`), because a device can have one without the
+other; when a slot's format is unsupported, `chooseTextureFormat()` returns
+RGBA8 and the caller loads the original image instead of the cooked file. The
+RGBA8 fallback keeps the sRGB decode -- losing compression must not also wash out
+every base colour.
+
+### Contracts worth knowing
+
+- **Mip levels are averaged in linear light for sRGB textures.** Filtering sRGB
+  code values directly darkens every level and the error compounds down the
+  chain. Alpha is always linear.
+- **Extents need not be multiples of four.** A trailing partial 4x4 block repeats
+  its last real row and column. Zero-fill would bleed a dark edge into the
+  block's endpoints; rejecting or resizing the image would be worse.
+- **KTX2 stores mip data smallest level first**, which is the reverse of the level
+  index and of everything Vulkan calls a mip level. Every level starts on a
+  16-byte texel-block boundary.
+- **Cook caching is mtime-based.** A full Sponza cook is tens of seconds of
+  encoding, so re-encoding on every build is not acceptable. `--force` overrides.
+- Encoding is spread across a `JobSystem` pool by block row; disjoint row ranges
+  write to disjoint bytes, so the chunks need no synchronization.
+
+### Verification
+
+A malformed KTX2 fails *silently* in tools rather than loudly, so the container
+is covered three ways:
+
+1. Byte-level unit tests (`tests/test_ktx2.cpp`) read the written header, level
+   index and data format descriptor directly rather than trusting a round trip
+   to agree with a writer that got the layout wrong.
+2. Policy unit tests (`tests/test_texture_cook.cpp`) pin the format choice, the
+   linear-light mip filter, the partial-block padding, and the row-major block
+   order.
+3. `--verify` reads the written file back off disk, decodes **every** level with
+   the vendored BC7/BC5 decoders, and reports PSNR against the source mip chain.
+   It fails below 20 dB. That floor is a structural-corruption gate, not a
+   quality bar: a correct BC7 encode of real content lands around 24-45 dB, while
+   a deliberately transposed block order measured 7.5 dB.
+
+Measured on an Apple M3, Release build, on a synthetic 1024x1024 image:
+base level exactly **4.00x** (4.00 MiB RGBA8 -> 1.00 MiB BC7), and 3.00x once the
+mip chain is included, since baked mips add about a third. A full BC7 chain took
+about 100 ms across the default thread pool; BC5 took under 10 ms.
+
+### Not wired to the runtime yet
+
+`VulkanTexture` still decodes RGBA8 and builds mips with `vkCmdBlitImage`.
+Consuming cooked files needs a `createFromKtx2()` doing per-mip
+`vkCmdCopyBufferToImage` with **no** `generateMipmaps`, and a sampler `maxLod`
+that follows the baked `mipLevels`. Dropping the runtime blit is what later makes
+a transfer-only queue legal, which is why the cook comes before the async upload
+work. Five `static_assert`s in `rhi/VulkanTexture.cpp` already hold the cook's raw
+format numbers to the real `VkFormat` enumerators.
+
 ## Not Implemented
 
 - asset browser
-- asset cooker
-- texture compression pipeline
+- mesh/geometry cooker
+- runtime consumption of cooked KTX2 textures (see above)
 - shader permutation system
 - material graph
 - full texture or descriptor hot reload

@@ -40,6 +40,8 @@ add_executable(VulkanEngineTests
     test_punctual_shadow_atlas.cpp
     test_irradiance_probes.cpp
     test_volumetric_fog.cpp
+    test_ktx2.cpp
+    test_texture_cook.cpp
     test_material_asset.cpp
     test_material_alpha.cpp
     test_mesh_lod.cpp

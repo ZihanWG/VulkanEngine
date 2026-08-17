@@ -1,5 +1,7 @@
 #include "rhi/VulkanTexture.h"
 
+#include "assets/Ktx2.h"
+#include "assets/TextureCook.h"
 #include "renderer/AssetLoadStats.h"
 #include "rhi/VulkanBuffer.h"
 #include "rhi/VulkanCommandContext.h"
@@ -26,6 +28,17 @@
 namespace ve::rhi {
 
 namespace {
+
+// The texture cook is GPU-free, so it spells its formats as the raw numbers KTX2
+// stores rather than including a Vulkan header. This is where those numbers are
+// held to the real enumerators: a mismatch would produce a KTX2 file that
+// declares one format and is decoded as another, which no validation layer can
+// see. Same reasoning as the layout static_asserts on the GPU structs.
+static_assert(assets::kVkFormatBc5UnormBlock == VK_FORMAT_BC5_UNORM_BLOCK);
+static_assert(assets::kVkFormatBc7UnormBlock == VK_FORMAT_BC7_UNORM_BLOCK);
+static_assert(assets::kVkFormatBc7SrgbBlock == VK_FORMAT_BC7_SRGB_BLOCK);
+static_assert(assets::kVkFormatR8G8B8A8Unorm == VK_FORMAT_R8G8B8A8_UNORM);
+static_assert(assets::kVkFormatR8G8B8A8Srgb == VK_FORMAT_R8G8B8A8_SRGB);
 
 constexpr uint32_t kRgbaChannels = 4;
 
