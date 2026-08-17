@@ -4,10 +4,15 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdint>
+#include <span>
+#include <string>
 #include <vector>
 
+using ve::renderer::appendLodChain;
 using ve::renderer::buildLodChain;
+using ve::renderer::buildLodChainDetached;
 using ve::renderer::kMaxMeshLods;
+using ve::renderer::LodChainBuild;
 using ve::renderer::kMinLodIndexCount;
 using ve::renderer::LodBuildSettings;
 using ve::renderer::LodSelectionSettings;
@@ -218,6 +223,169 @@ TEST_CASE("A null position stream degrades to a level-0-only chain", "[mesh][lod
 
     CHECK(lods.size() == 1);
     CHECK(grid.indices.size() == indicesBefore);
+}
+
+// --- detached construction -----------------------------------------------
+// These are the safety argument for building chains on worker threads: the
+// detached path must produce exactly what the serial path does, and the layout
+// must depend only on the order the appends happen in, never on when the
+// expensive half ran.
+
+TEST_CASE("Detached build plus append equals the serial chain", "[mesh][lod]")
+{
+    Grid serialGrid = makeGrid(24);
+    Grid detachedGrid = makeGrid(24);
+    const uint32_t indexCount = static_cast<uint32_t>(serialGrid.indices.size());
+
+    const std::vector<MeshLod> serialLods = buildLodChain(serialGrid.indices,
+                                                          0,
+                                                          indexCount,
+                                                          serialGrid.positions.data(),
+                                                          serialGrid.positions.size() / 3,
+                                                          3 * sizeof(float));
+
+    const LodChainBuild build =
+        buildLodChainDetached(std::span<const uint32_t>(detachedGrid.indices.data(), indexCount),
+                              detachedGrid.positions.data(),
+                              detachedGrid.positions.size() / 3,
+                              3 * sizeof(float));
+    const std::vector<MeshLod> detachedLods = appendLodChain(detachedGrid.indices, 0, build);
+
+    REQUIRE(serialLods.size() == detachedLods.size());
+    REQUIRE(serialLods.size() > 1); // otherwise this proves nothing
+    for (size_t level = 0; level < serialLods.size(); ++level) {
+        CHECK(serialLods[level].firstIndex == detachedLods[level].firstIndex);
+        CHECK(serialLods[level].indexCount == detachedLods[level].indexCount);
+    }
+
+    // The index buffer itself must come out byte-identical, not merely the same
+    // size: a rebasing bug would keep the ranges plausible and scramble geometry.
+    CHECK(serialGrid.indices == detachedGrid.indices);
+}
+
+TEST_CASE("Appending in a fixed order is what fixes the layout", "[mesh][lod]")
+{
+    // Simulates what the parallel path does: build every primitive's chain first,
+    // in whatever order the pool happened to run them, then append in primitive
+    // order. The result must match building and appending one at a time.
+    Grid grid = makeGrid(20);
+    const uint32_t primitiveIndexCount = static_cast<uint32_t>(grid.indices.size());
+    constexpr uint32_t kPrimitives = 3;
+
+    std::vector<uint32_t> serialIndices;
+    for (uint32_t primitive = 0; primitive < kPrimitives; ++primitive) {
+        serialIndices.insert(serialIndices.end(), grid.indices.begin(), grid.indices.end());
+    }
+    std::vector<uint32_t> batchedIndices = serialIndices;
+
+    std::vector<std::vector<MeshLod>> serialLods;
+    for (uint32_t primitive = 0; primitive < kPrimitives; ++primitive) {
+        serialLods.push_back(buildLodChain(serialIndices,
+                                           primitive * primitiveIndexCount,
+                                           primitiveIndexCount,
+                                           grid.positions.data(),
+                                           grid.positions.size() / 3,
+                                           3 * sizeof(float)));
+    }
+
+    // Build all of them before appending any -- the ordering the pool imposes.
+    std::vector<LodChainBuild> builds;
+    for (uint32_t primitive = 0; primitive < kPrimitives; ++primitive) {
+        builds.push_back(buildLodChainDetached(
+            std::span<const uint32_t>(batchedIndices.data() + primitive * primitiveIndexCount, primitiveIndexCount),
+            grid.positions.data(),
+            grid.positions.size() / 3,
+            3 * sizeof(float)));
+    }
+
+    std::vector<std::vector<MeshLod>> batchedLods;
+    for (uint32_t primitive = 0; primitive < kPrimitives; ++primitive) {
+        batchedLods.push_back(appendLodChain(batchedIndices, primitive * primitiveIndexCount, builds[primitive]));
+    }
+
+    CHECK(serialIndices == batchedIndices);
+    REQUIRE(serialLods.size() == batchedLods.size());
+    for (size_t primitive = 0; primitive < serialLods.size(); ++primitive) {
+        REQUIRE(serialLods[primitive].size() == batchedLods[primitive].size());
+        for (size_t level = 0; level < serialLods[primitive].size(); ++level) {
+            CHECK(serialLods[primitive][level].firstIndex == batchedLods[primitive][level].firstIndex);
+            CHECK(serialLods[primitive][level].indexCount == batchedLods[primitive][level].indexCount);
+        }
+    }
+}
+
+TEST_CASE("A detached build carries its own relative offsets", "[mesh][lod]")
+{
+    Grid grid = makeGrid(24);
+    const LodChainBuild build =
+        buildLodChainDetached(std::span<const uint32_t>(grid.indices.data(), grid.indices.size()),
+                              grid.positions.data(),
+                              grid.positions.size() / 3,
+                              3 * sizeof(float));
+
+    REQUIRE(!build.simplifiedLods.empty());
+    CHECK(build.sourceIndexCount == static_cast<uint32_t>(grid.indices.size()));
+
+    // Levels are packed back to back inside the build's own buffer, so the first
+    // starts at zero regardless of where the primitive lives in a mesh.
+    uint32_t expectedOffset = 0;
+    for (const MeshLod& level : build.simplifiedLods) {
+        CHECK(level.firstIndex == expectedOffset);
+        expectedOffset += level.indexCount;
+    }
+    CHECK(expectedOffset == static_cast<uint32_t>(build.simplifiedIndices.size()));
+
+    // Appending into a buffer that already holds something must offset by exactly
+    // that much and nothing more.
+    std::vector<uint32_t> destination(1000, 7);
+    const std::vector<MeshLod> lods = appendLodChain(destination, 0, build);
+    REQUIRE(lods.size() == build.simplifiedLods.size() + 1);
+    for (size_t level = 1; level < lods.size(); ++level) {
+        CHECK(lods[level].firstIndex == 1000 + build.simplifiedLods[level - 1].firstIndex);
+    }
+    CHECK(destination.size() == 1000 + build.simplifiedIndices.size());
+}
+
+TEST_CASE("A detached build never logs from the worker", "[mesh][lod]")
+{
+    // Logger has no mutex, so the message is composed and handed back rather than
+    // printed. An empty debug name still means no message at all.
+    Grid grid = makeGrid(24);
+    const std::span<const uint32_t> source(grid.indices.data(), grid.indices.size());
+    const size_t vertexCount = grid.positions.size() / 3;
+
+    const LodChainBuild unnamed =
+        buildLodChainDetached(source, grid.positions.data(), vertexCount, 3 * sizeof(float));
+    CHECK(unnamed.logMessage.empty());
+
+    const LodChainBuild named =
+        buildLodChainDetached(source, grid.positions.data(), vertexCount, 3 * sizeof(float), "GridMesh");
+    REQUIRE(!named.simplifiedLods.empty());
+    CHECK(named.logMessage.find("GridMesh") != std::string::npos);
+    CHECK(named.logMessage.find("L0=") != std::string::npos);
+    CHECK(named.logMessage.find("L1=") != std::string::npos);
+
+    // A chain with nothing to simplify has nothing worth saying.
+    std::vector<uint32_t> tiny(3, 0);
+    const std::vector<float> position(9, 0.0f);
+    const LodChainBuild trivial = buildLodChainDetached(
+        std::span<const uint32_t>(tiny.data(), tiny.size()), position.data(), 3, 3 * sizeof(float), "Tiny");
+    CHECK(trivial.logMessage.empty());
+    CHECK(trivial.simplifiedLods.empty());
+    CHECK(trivial.sourceIndexCount == 3);
+}
+
+TEST_CASE("An empty source range produces no chain at all", "[mesh][lod]")
+{
+    const LodChainBuild build = buildLodChainDetached(std::span<const uint32_t>{}, nullptr, 0, 0);
+    CHECK(build.sourceIndexCount == 0);
+    CHECK(build.simplifiedLods.empty());
+
+    // No level 0 either, matching buildLodChain's zero-count behaviour.
+    std::vector<uint32_t> indices(10, 1);
+    const std::vector<MeshLod> lods = appendLodChain(indices, 0, build);
+    CHECK(lods.empty());
+    CHECK(indices.size() == 10);
 }
 
 // --- selection -----------------------------------------------------------

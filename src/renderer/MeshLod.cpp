@@ -11,31 +11,23 @@
 
 namespace ve::renderer {
 
-std::vector<MeshLod> buildLodChain(std::vector<uint32_t>& indices,
-                                   uint32_t firstIndex,
-                                   uint32_t indexCount,
-                                   const float* vertexPositions,
-                                   size_t vertexCount,
-                                   size_t vertexStride,
-                                   std::string_view debugName,
-                                   const LodBuildSettings& settings)
+LodChainBuild buildLodChainDetached(std::span<const uint32_t> sourceIndices,
+                                    const float* vertexPositions,
+                                    size_t vertexCount,
+                                    size_t vertexStride,
+                                    std::string_view debugName,
+                                    const LodBuildSettings& settings)
 {
-    std::vector<MeshLod> lods;
-    if (indexCount == 0) {
-        return lods;
+    LodChainBuild build;
+    if (sourceIndices.empty()) {
+        return build;
     }
 
-    lods.push_back({firstIndex, indexCount});
-
-    const size_t rangeEnd = static_cast<size_t>(firstIndex) + indexCount;
-    if (indexCount < settings.minIndexCount || vertexCount == 0 || vertexPositions == nullptr ||
-        rangeEnd > indices.size()) {
-        return lods;
+    build.sourceIndexCount = static_cast<uint32_t>(sourceIndices.size());
+    if (sourceIndices.size() < settings.minIndexCount || vertexCount == 0 || vertexPositions == nullptr) {
+        return build;
     }
 
-    // The simplified levels are appended to the very buffer the source range
-    // lives in, so copy the source out first — appending can reallocate.
-    const std::vector<uint32_t> sourceIndices(indices.begin() + firstIndex, indices.begin() + rangeEnd);
     std::vector<uint32_t> simplified;
     size_t previousCount = sourceIndices.size();
 
@@ -74,17 +66,78 @@ std::vector<MeshLod> buildLodChain(std::vector<uint32_t>& indices,
 
         meshopt_optimizeVertexCache(simplified.data(), simplified.data(), resultCount, vertexCount);
 
-        lods.push_back({static_cast<uint32_t>(indices.size()), static_cast<uint32_t>(resultCount)});
-        indices.insert(indices.end(), simplified.begin(), simplified.end());
+        // Relative to this build's own buffer. appendLodChain rebases it.
+        build.simplifiedLods.push_back(
+            {static_cast<uint32_t>(build.simplifiedIndices.size()), static_cast<uint32_t>(resultCount)});
+        build.simplifiedIndices.insert(build.simplifiedIndices.end(), simplified.begin(), simplified.end());
         previousCount = resultCount;
     }
 
-    if (lods.size() > 1 && !debugName.empty()) {
-        std::string message = "LOD chain for '" + std::string(debugName) + "':";
-        for (size_t level = 0; level < lods.size(); ++level) {
-            message += " L" + std::to_string(level) + "=" + std::to_string(lods[level].indexCount / 3) + "tri";
+    // Composed, not printed: this can run on a worker and Logger has no mutex.
+    if (!build.simplifiedLods.empty() && !debugName.empty()) {
+        build.logMessage = "LOD chain for '" + std::string(debugName) +
+                           "': L0=" + std::to_string(build.sourceIndexCount / 3) + "tri";
+        for (size_t level = 0; level < build.simplifiedLods.size(); ++level) {
+            build.logMessage += " L" + std::to_string(level + 1) + "=" +
+                                std::to_string(build.simplifiedLods[level].indexCount / 3) + "tri";
         }
-        Logger::info(message);
+    }
+
+    return build;
+}
+
+std::vector<MeshLod> appendLodChain(std::vector<uint32_t>& indices, uint32_t firstIndex, const LodChainBuild& build)
+{
+    std::vector<MeshLod> lods;
+    if (build.sourceIndexCount == 0) {
+        return lods;
+    }
+
+    lods.reserve(build.simplifiedLods.size() + 1);
+    lods.push_back({firstIndex, build.sourceIndexCount});
+
+    // Captured before the insert: every simplified level is offset from where this
+    // build's block starts, and appending would move the end.
+    const auto base = static_cast<uint32_t>(indices.size());
+    for (const MeshLod& level : build.simplifiedLods) {
+        lods.push_back({base + level.firstIndex, level.indexCount});
+    }
+
+    indices.insert(indices.end(), build.simplifiedIndices.begin(), build.simplifiedIndices.end());
+    return lods;
+}
+
+std::vector<MeshLod> buildLodChain(std::vector<uint32_t>& indices,
+                                   uint32_t firstIndex,
+                                   uint32_t indexCount,
+                                   const float* vertexPositions,
+                                   size_t vertexCount,
+                                   size_t vertexStride,
+                                   std::string_view debugName,
+                                   const LodBuildSettings& settings)
+{
+    if (indexCount == 0) {
+        return {};
+    }
+
+    // A range that runs past the buffer cannot be simplified, but level 0 is still
+    // what the caller asked for.
+    const size_t rangeEnd = static_cast<size_t>(firstIndex) + indexCount;
+    if (rangeEnd > indices.size()) {
+        return {{firstIndex, indexCount}};
+    }
+
+    const LodChainBuild build = buildLodChainDetached(
+        std::span<const uint32_t>(indices.data() + firstIndex, indexCount),
+        vertexPositions,
+        vertexCount,
+        vertexStride,
+        debugName,
+        settings);
+
+    std::vector<MeshLod> lods = appendLodChain(indices, firstIndex, build);
+    if (!build.logMessage.empty()) {
+        Logger::info(build.logMessage);
     }
 
     return lods;

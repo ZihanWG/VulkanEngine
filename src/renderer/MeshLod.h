@@ -11,6 +11,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -65,6 +67,50 @@ struct LodBuildSettings {
                                                  size_t vertexStride,
                                                  std::string_view debugName = {},
                                                  const LodBuildSettings& settings = {});
+
+// --- Parallel construction ----------------------------------------------
+//
+// Simplification dominates glTF import -- on Sponza it is 87% of it, since every
+// level is simplified from the authored geometry and a scene is hundreds of
+// independent primitives. The two functions below are the same algorithm split
+// so those primitives can be simplified concurrently: the expensive half touches
+// nothing shared, and the half that mutates the mesh's index buffer is trivial
+// and stays serial.
+
+// One primitive's simplified levels, built without touching the mesh's shared
+// index buffer.
+struct LodChainBuild {
+    // Simplified levels only. Level 0 is the authored range, which already lives
+    // in the shared buffer and is re-derived by appendLodChain. Each firstIndex
+    // here is relative to `simplifiedIndices`, not to any mesh buffer.
+    std::vector<MeshLod> simplifiedLods;
+    std::vector<uint32_t> simplifiedIndices;
+    // Zero means the source range was empty, so there is no level 0 either.
+    uint32_t sourceIndexCount = 0;
+    // Composed here and printed by the serial caller. Logger has no mutex, so a
+    // worker thread must not log: concurrent calls interleave characters.
+    std::string logMessage;
+};
+
+// Pure and thread-safe: reads `sourceIndices` and the position stream, writes
+// only into the returned value. Safe to run on a JobSystem worker.
+[[nodiscard]] LodChainBuild buildLodChainDetached(std::span<const uint32_t> sourceIndices,
+                                                  const float* vertexPositions,
+                                                  size_t vertexCount,
+                                                  size_t vertexStride,
+                                                  std::string_view debugName = {},
+                                                  const LodBuildSettings& settings = {});
+
+// Concatenates a build's simplified indices onto `indices` and returns the full
+// LOD table, level 0 first, rebased onto that buffer. `firstIndex` is where the
+// primitive's authored range already sits.
+//
+// Calling this in a fixed order over the primitives is what makes the parallel
+// path produce a byte-identical index buffer to the serial one: the expensive
+// work is order-independent, and only this append decides layout.
+[[nodiscard]] std::vector<MeshLod> appendLodChain(std::vector<uint32_t>& indices,
+                                                  uint32_t firstIndex,
+                                                  const LodChainBuild& build);
 
 // --- LOD selection -------------------------------------------------------
 //

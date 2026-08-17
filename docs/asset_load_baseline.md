@@ -122,6 +122,41 @@ The 5 of 77 textures that stay uncompressed are the procedurally generated ones
 (fallbacks, the backdrop gradient, the cutout lattice), which have no source file
 to cook from.
 
+## After parallel LOD construction
+
+The texture cook did not touch glTF import, which then became the largest startup
+cost at ~1035 ms. A sampling profile (`sample -wait`) found that **87% of it was
+`meshopt_simplify`** — 823 of 942 main-thread samples inside
+`Mesh::createFromGltf` — while tinygltf's JSON parse was **3 samples**. Every LOD
+level is simplified from the authored geometry rather than the previous one
+(`MeshLod.h`), so Sponza's 103 primitives cost 309 full-geometry simplifications,
+all on one thread.
+
+Running them across the `JobSystem`:
+
+| Segment | Serial | Parallel | Delta |
+| --- | --- | --- | --- |
+| glTF import | 1014.61 ms | **307.39 ms** | **3.30x, −707 ms** |
+| renderer init (total) | ~1270 ms | **~534 ms** | −58% |
+
+Release, Apple M3 (7 pool workers), medians of three runs each. The two
+configurations differ by one argument at the call site, so this is as close to a
+controlled A/B as the code allows; an independent pre-change series measured
+1036.92 ms, agreeing with the serial column within 2%.
+
+Re-profiling confirms the mechanism rather than inferring it from the clock:
+main-thread `meshopt_simplify` frames went from **823 to 2**, and the seven
+workers carry 42–49 frames each — an even spread, which is why the jobs are
+enqueued per primitive instead of through `parallelFor`'s equal contiguous
+chunks (primitives differ by orders of magnitude in triangle count).
+
+**The geometry is unchanged, and that was checked rather than assumed.** The
+serial and parallel paths emit byte-identical LOD chain logs — 84 chains, same
+order, same per-level triangle counts — because only the serial append decides
+index-buffer layout. A pixel comparison is *not* a usable gate here: this scene
+has pre-existing capture nondeterminism of exactly one pixel at (816, 850) with a
+channel delta of 37, reproducible between runs of the *same* binary.
+
 **Do not compare these absolute timings against the uncooked column further up.**
 That column was captured in an earlier session and reports 7105.61 ms init and
 3944.06 ms glTF import for byte-for-byte the same scene — almost certainly a cold

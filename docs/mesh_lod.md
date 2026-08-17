@@ -118,8 +118,46 @@ Draws that never go through the cull pass (the skinned demo, the CPU fallback
 path) leave the high bits zero and report level 0, which is accurate: they have no
 selected level.
 
+## Build cost, and why it is parallel
+
+Simplification is expensive, and deliberately so: every level is simplified from
+the *authored* geometry rather than from the previous level, because chaining
+simplifications compounds error. That makes an N-level chain N-1 full-geometry
+passes. On Sponza, 103 primitives × 3 levels came to **87% of the entire glTF
+import time** — 823 of 942 main-thread profile samples, against 3 samples for
+JSON parsing.
+
+Primitives simplify independently, so `buildLodChain` is split in two:
+
+- `buildLodChainDetached()` does the expensive part. It reads the source indices
+  and the position stream, writes only into its own result, and touches nothing
+  shared — safe on a `JobSystem` worker. It also *composes* its log line instead
+  of printing it, because `Logger` has no mutex.
+- `appendLodChain()` concatenates a build onto the mesh's shared index buffer and
+  rebases the level offsets. Trivial, and stays serial.
+
+`Mesh::createFromGltf` enqueues one job per primitive and appends the results **in
+primitive order** after the barrier. That ordering is the correctness argument:
+only the append decides layout, so the index buffer is byte-identical to the
+serial path no matter how the pool scheduled the work. The serial and parallel
+paths emit identical LOD chain logs on Sponza, which is how that is checked.
+
+Jobs are enqueued individually rather than through `JobSystem::parallelFor`
+because `parallelFor` splits into equal contiguous chunks, and primitives differ
+by orders of magnitude in triangle count — a static split leaves the chunk holding
+the heavy primitives straggling. Measured spread across seven workers is 42–49
+profile samples each.
+
+Result: glTF import **1014.61 ms → 307.39 ms (3.30x)**, main-thread
+`meshopt_simplify` frames 823 → 2. See
+[asset_load_baseline.md](asset_load_baseline.md).
+
 ## Limitations
 
+- **LOD construction still happens at load time.** It is parallel now, not
+  precomputed; a mesh cook that bakes the chains offline would remove it
+  entirely. The profile says what is left to win: roughly 300 ms, of which about
+  50 ms is vertex assembly and buffer upload rather than simplification.
 - **Selection is per draw item, not per cluster.** Large meshes switch as a whole,
   so a big object popping between levels is visible at the silhouette. Meshlet-
   granular selection is the direction modern engines went.
