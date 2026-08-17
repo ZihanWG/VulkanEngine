@@ -76,6 +76,39 @@ void Renderer::createScene()
     resetSceneState();
     createSceneSharedResources();
 
+#if defined(VULKAN_ENGINE_SAMPLE_SCENE)
+    // A fetched production-scale scene is the reason someone turned the fetch on,
+    // so it becomes the startup scene when present. tryLoadGltfScene appends the
+    // portfolio showcase itself, and returns false without disturbing anything if
+    // the import fails, in which case the normal default below still runs.
+    if (tryLoadGltfScene()) {
+        // Framed from the scene's own bounds, not from the portfolio preset. That
+        // preset is positioned for the sphere showcase, and pointing it at a
+        // fetched scene puts the near plane inside the geometry.
+        renderer::Aabb sceneBounds{};
+        for (const renderer::RenderObject& object : renderObjects_) {
+            if (object.sourceType == renderer::RenderObjectSourceType::ImportedGltf) {
+                sceneBounds.merge(object.worldBounds());
+            }
+        }
+
+        const VkExtent2D extent = renderResolution_.extent();
+        const float aspect =
+            extent.height == 0 ? 1.0f : static_cast<float>(extent.width) / static_cast<float>(extent.height);
+        // A starting point that guarantees the scene is visible, not a composed
+        // shot. Framing the whole volume of an interior scene shows it from
+        // outside; an attempt to place the camera inside instead put it in the
+        // masonry, because Sponza's bounds include its own outer walls. Bounds
+        // alone cannot compose an interior view, so this stops at "you can see
+        // it" and leaves composition to the editor camera.
+        camera_ = renderer::framedCamera(sceneBounds, aspect, glm::vec3(0.55f, -0.28f, -1.0f));
+        csmSettings_.nearPlane = camera_.nearPlane;
+        csmSettings_.farPlane = camera_.farPlane;
+        return;
+    }
+    Logger::warn("Fetched sample scene failed to import; falling back to the portfolio showcase.");
+#endif
+
     // The portfolio sphere showcase is the default editor scene. The glTF import
     // (tryLoadGltfScene) and the cube fallback remain available through the
     // scene-loading UI; they are just no longer the startup default.
@@ -145,10 +178,16 @@ void Renderer::createSceneSharedResources()
 
 bool Renderer::tryLoadGltfScene()
 {
-    const std::array<std::filesystem::path, 2> modelCandidates = {
-        assetPath("models/test_mesh.gltf"),
-        assetPath("models/test_mesh.glb"),
-    };
+    // The optionally fetched production-scale scene first, then the committed
+    // test mesh. VULKAN_ENGINE_SAMPLE_SCENE is only defined when the configure-time
+    // fetch produced a complete scene (see cmake/FetchSampleScene.cmake), so an
+    // ordinary build behaves exactly as before.
+    std::vector<std::filesystem::path> modelCandidates;
+#if defined(VULKAN_ENGINE_SAMPLE_SCENE)
+    modelCandidates.emplace_back(VULKAN_ENGINE_SAMPLE_SCENE);
+#endif
+    modelCandidates.emplace_back(assetPath("models/test_mesh.gltf"));
+    modelCandidates.emplace_back(assetPath("models/test_mesh.glb"));
 
     for (const std::filesystem::path& modelPath : modelCandidates) {
         if (!std::filesystem::exists(modelPath)) {

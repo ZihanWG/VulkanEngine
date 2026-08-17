@@ -386,6 +386,10 @@ set(CONFIG_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/config")
 cmake_path(CONVERT "${SHADER_BINARY_DIR}" TO_CMAKE_PATH_LIST VULKAN_ENGINE_SHADER_DIR NORMALIZE)
 cmake_path(CONVERT "${ASSET_SOURCE_DIR}" TO_CMAKE_PATH_LIST VULKAN_ENGINE_ASSET_DIR NORMALIZE)
 cmake_path(CONVERT "${CONFIG_SOURCE_DIR}" TO_CMAKE_PATH_LIST VULKAN_ENGINE_CONFIG_DIR NORMALIZE)
+
+# Optional production-scale scene. Off by default; see cmake/FetchSampleScene.cmake.
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/FetchSampleScene.cmake")
+ve_fetch_sample_scene(VULKAN_ENGINE_SAMPLE_SCENE_FILE)
 set(SHADER_SOURCES
     "${SHADER_SOURCE_DIR}/simple.vert"
     "${SHADER_SOURCE_DIR}/simple_skinned.vert"
@@ -433,6 +437,15 @@ target_compile_definitions(VulkanEngineRuntime PRIVATE
     "VULKAN_ENGINE_ASSET_DIR=\"${VULKAN_ENGINE_ASSET_DIR}\""
     "VULKAN_ENGINE_CONFIG_DIR=\"${VULKAN_ENGINE_CONFIG_DIR}\""
 )
+
+# Only defined when the fetch actually produced a complete scene, so the renderer
+# can test for the macro rather than for a path that might not exist.
+if(VULKAN_ENGINE_SAMPLE_SCENE_FILE)
+    cmake_path(CONVERT "${VULKAN_ENGINE_SAMPLE_SCENE_FILE}" TO_CMAKE_PATH_LIST VULKAN_ENGINE_SAMPLE_SCENE NORMALIZE)
+    target_compile_definitions(VulkanEngineRuntime PRIVATE
+        "VULKAN_ENGINE_SAMPLE_SCENE=\"${VULKAN_ENGINE_SAMPLE_SCENE}\""
+    )
+endif()
 
 set(GLSLC_EXECUTABLE "")
 if(Vulkan_GLSLC_EXECUTABLE AND EXISTS "${Vulkan_GLSLC_EXECUTABLE}")

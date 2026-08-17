@@ -59,6 +59,7 @@ add_executable(VulkanEngineTests
     test_command_line.cpp
     test_image_compare.cpp
     test_transient_memory_plan.cpp
+    test_camera_framing.cpp
 )
 
 target_compile_definitions(VulkanEngineTests PRIVATE
