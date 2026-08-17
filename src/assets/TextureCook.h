@@ -1,8 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <span>
+#include <string_view>
 #include <vector>
 
 // Policy and CPU-side work for the offline texture cook (docs/asset_system.md):
@@ -40,6 +42,21 @@ struct BlockCompressionCaps {
 };
 
 [[nodiscard]] bool textureUsageIsSrgb(TextureUsage usage);
+
+// The stable spelling of a usage, shared by `vecook --usage`, the cook driver
+// script, and the sidecar file name. One spelling so a renamed slot cannot make
+// the tool and the runtime disagree about which file belongs to which slot.
+[[nodiscard]] std::string_view textureUsageName(TextureUsage usage);
+[[nodiscard]] bool parseTextureUsage(std::string_view name, TextureUsage& usage);
+
+// Where the cook writes, and where the runtime looks: `foo.png` used as a base
+// colour becomes `foo.base-color.ktx2` beside the source.
+//
+// The slot is in the name rather than only inside the file because one image can
+// legitimately be used in two slots and must then be cooked twice, to different
+// formats and different mip filtering. A single `foo.ktx2` would silently serve
+// whichever slot cooked it last.
+[[nodiscard]] std::filesystem::path ktx2SidecarPath(const std::filesystem::path& source, TextureUsage usage);
 
 // The format the cook writes, ignoring device support -- the cook runs offline and
 // has no device. A file cooked for a device that cannot sample it is still a

@@ -79,43 +79,6 @@ struct Options {
     std::exit(2);
 }
 
-bool parseUsage(std::string_view text, TextureUsage& value)
-{
-    if (text == "base-color") {
-        value = TextureUsage::BaseColor;
-    } else if (text == "emissive") {
-        value = TextureUsage::Emissive;
-    } else if (text == "normal") {
-        value = TextureUsage::NormalMap;
-    } else if (text == "metallic-roughness") {
-        value = TextureUsage::MetallicRoughness;
-    } else if (text == "occlusion") {
-        value = TextureUsage::Occlusion;
-    } else {
-        return false;
-    }
-
-    return true;
-}
-
-const char* usageName(TextureUsage value)
-{
-    switch (value) {
-    case TextureUsage::BaseColor:
-        return "base-color";
-    case TextureUsage::Emissive:
-        return "emissive";
-    case TextureUsage::NormalMap:
-        return "normal";
-    case TextureUsage::MetallicRoughness:
-        return "metallic-roughness";
-    case TextureUsage::Occlusion:
-        return "occlusion";
-    }
-
-    return "unknown";
-}
-
 Options parseArguments(int argc, char** argv)
 {
     Options options{};
@@ -133,7 +96,9 @@ Options parseArguments(int argc, char** argv)
         if (argument == "-o" || argument == "--output") {
             options.output = std::filesystem::path(next());
         } else if (argument == "--usage") {
-            if (!parseUsage(next(), options.usage)) {
+            // The spelling lives in assets/TextureCook so this tool, the cook
+            // driver, and the runtime's sidecar lookup cannot drift apart.
+            if (!ve::assets::parseTextureUsage(next(), options.usage)) {
                 usage();
             }
             options.usageGiven = true;
@@ -484,7 +449,7 @@ int main(int argc, char** argv)
         std::printf("vecook: %ux%u %s, %zu level%s, %lld ms\n",
                     source.width,
                     source.height,
-                    usageName(options.usage),
+                    std::string(ve::assets::textureUsageName(options.usage)).c_str(),
                     cooked.levels.size(),
                     cooked.levels.size() == 1 ? "" : "s",
                     static_cast<long long>(elapsedMs));

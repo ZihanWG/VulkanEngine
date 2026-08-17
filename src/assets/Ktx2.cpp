@@ -376,4 +376,39 @@ Ktx2Info parseKtx2(std::span<const uint8_t> bytes)
     return parsed;
 }
 
+std::vector<Ktx2CopyRegion> ktx2CopyPlan(const Ktx2Info& info)
+{
+    const Ktx2FormatInfo formatInfo = ktx2FormatInfo(info.vkFormat);
+    if (formatInfo.blockSizeBytes == 0) {
+        throw std::runtime_error("KTX2: cannot plan copies for vkFormat " + std::to_string(info.vkFormat));
+    }
+    if (info.levels.empty() || info.pixelWidth == 0 || info.pixelHeight == 0) {
+        throw std::runtime_error("KTX2: cannot plan copies for an empty image.");
+    }
+
+    const size_t alignment = mipAlignment(formatInfo);
+
+    std::vector<Ktx2CopyRegion> regions;
+    regions.reserve(info.levels.size());
+    for (uint32_t level = 0; level < info.levels.size(); ++level) {
+        const Ktx2LevelView& view = info.levels[level];
+        if (view.byteOffset % alignment != 0) {
+            throw std::runtime_error("KTX2: level " + std::to_string(level)
+                                     + " is not aligned to the texel block size.");
+        }
+        if (view.byteLength != ktx2LevelSizeBytes(info.vkFormat, info.pixelWidth, info.pixelHeight, level)) {
+            throw std::runtime_error("KTX2: level " + std::to_string(level) + " has the wrong size for its extent.");
+        }
+
+        regions.push_back(Ktx2CopyRegion{
+            view.byteOffset,
+            level,
+            levelExtent(info.pixelWidth, level),
+            levelExtent(info.pixelHeight, level),
+        });
+    }
+
+    return regions;
+}
+
 } // namespace ve::assets

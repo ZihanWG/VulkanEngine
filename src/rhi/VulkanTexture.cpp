@@ -17,11 +17,14 @@
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -56,6 +59,14 @@ std::string textureFormatName(VkFormat format)
         return "VK_FORMAT_R8G8_UNORM";
     case VK_FORMAT_R8_UNORM:
         return "VK_FORMAT_R8_UNORM";
+    // The cooked formats. Named so --asset-load-stats reads as evidence of the
+    // texture cook rather than as an unexplained VkFormat(146).
+    case VK_FORMAT_BC5_UNORM_BLOCK:
+        return "VK_FORMAT_BC5_UNORM_BLOCK";
+    case VK_FORMAT_BC7_UNORM_BLOCK:
+        return "VK_FORMAT_BC7_UNORM_BLOCK";
+    case VK_FORMAT_BC7_SRGB_BLOCK:
+        return "VK_FORMAT_BC7_SRGB_BLOCK";
     case VK_FORMAT_UNDEFINED:
         return "VK_FORMAT_UNDEFINED";
     default:
@@ -188,6 +199,69 @@ void recordImageBarrier(VkCommandBuffer commandBuffer, const VkImageMemoryBarrie
     vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
 }
 
+// Shared by both upload paths so the one-time command buffer, the submit, and the
+// wait exist in one place rather than two. The vkQueueWaitIdle here is the
+// load-time serialization the async transfer-queue work exists to remove; it is
+// startup only and never on the frame path.
+VkCommandBuffer beginOneTimeUpload(VulkanContext& context, const VulkanCommandContext& commandContext)
+{
+    VkCommandBufferAllocateInfo allocateInfo{};
+    allocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocateInfo.commandPool = commandContext.commandPool();
+    allocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocateInfo.commandBufferCount = 1;
+
+    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+    VK_CHECK(vkAllocateCommandBuffers(context.vkDevice(), &allocateInfo, &commandBuffer));
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    VK_CHECK(vkBeginCommandBuffer(commandBuffer, &beginInfo));
+
+    return commandBuffer;
+}
+
+void endOneTimeUpload(VulkanContext& context, const VulkanCommandContext& commandContext, VkCommandBuffer commandBuffer)
+{
+    VK_CHECK(vkEndCommandBuffer(commandBuffer));
+
+    VkCommandBufferSubmitInfo commandBufferInfo{};
+    commandBufferInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+    commandBufferInfo.commandBuffer = commandBuffer;
+
+    VkSubmitInfo2 submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+    submitInfo.commandBufferInfoCount = 1;
+    submitInfo.pCommandBufferInfos = &commandBufferInfo;
+
+    VK_CHECK(vkQueueSubmit2(context.graphicsQueue(), 1, &submitInfo, VK_NULL_HANDLE));
+    VK_CHECK(vkQueueWaitIdle(context.graphicsQueue()));
+    vkFreeCommandBuffers(context.vkDevice(), commandContext.commandPool(), 1, &commandBuffer);
+}
+
+std::vector<uint8_t> readFileBytes(const std::filesystem::path& path)
+{
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    if (!input) {
+        throw std::runtime_error("Failed to open cooked texture: " + path.string());
+    }
+
+    const std::streamsize size = input.tellg();
+    if (size <= 0) {
+        throw std::runtime_error("Cooked texture is empty: " + path.string());
+    }
+
+    input.seekg(0);
+    std::vector<uint8_t> bytes(static_cast<size_t>(size));
+    input.read(reinterpret_cast<char*>(bytes.data()), size);
+    if (!input) {
+        throw std::runtime_error("Failed to read cooked texture: " + path.string());
+    }
+
+    return bytes;
+}
+
 } // namespace
 
 VkFormat rgba8FormatForColorSpace(TextureColorSpace colorSpace)
@@ -200,6 +274,80 @@ VkFormat rgba8FormatForColorSpace(TextureColorSpace colorSpace)
     }
 
     throw std::runtime_error("Unsupported texture color space.");
+}
+
+assets::BlockCompressionCaps queryBlockCompressionCaps(VkPhysicalDevice physicalDevice)
+{
+    // Cached because the caps cannot change under a running device and every
+    // texture load consults them. Keyed by handle so a second device (there is
+    // only ever one today) cannot silently inherit the first one's answer.
+    static std::mutex cacheMutex;
+    static std::unordered_map<VkPhysicalDevice, assets::BlockCompressionCaps> cache;
+
+    const std::lock_guard<std::mutex> lock(cacheMutex);
+    if (const auto found = cache.find(physicalDevice); found != cache.end()) {
+        return found->second;
+    }
+
+    // Sampling and linear filtering and transfer-dst. The textureCompressionBC
+    // feature bit is not enough on its own: it does not promise a filterable
+    // sampled image, and an unfilterable texture is no use to a mip chain.
+    const auto samplable = [physicalDevice](VkFormat format) {
+        constexpr VkFormatFeatureFlags required = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT
+                                                  | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT
+                                                  | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+        VkFormatProperties properties{};
+        vkGetPhysicalDeviceFormatProperties(physicalDevice, format, &properties);
+        return (properties.optimalTilingFeatures & required) == required;
+    };
+
+    assets::BlockCompressionCaps caps{};
+    // Both BC7 spellings must work: the cook emits sRGB for colour and UNORM for
+    // data maps, and reporting BC7 support while one of them is missing would
+    // send half the textures down a path the device cannot sample.
+    caps.bc7 = samplable(VK_FORMAT_BC7_SRGB_BLOCK) && samplable(VK_FORMAT_BC7_UNORM_BLOCK);
+    caps.bc5 = samplable(VK_FORMAT_BC5_UNORM_BLOCK);
+
+    cache.emplace(physicalDevice, caps);
+    return caps;
+}
+
+bool cookedTextureAvailable(VkPhysicalDevice physicalDevice,
+                            const std::filesystem::path& source,
+                            assets::TextureUsage usage)
+{
+    if (source.empty()) {
+        return false;
+    }
+
+    const assets::BlockCompressionCaps caps = queryBlockCompressionCaps(physicalDevice);
+    if (!assets::cookedFormatUsable(caps, assets::cookedFormatForUsage(usage), usage)) {
+        return false;
+    }
+
+    const std::filesystem::path sidecar = assets::ktx2SidecarPath(source, usage);
+
+    std::error_code error;
+    if (!std::filesystem::exists(sidecar, error) || error) {
+        return false;
+    }
+
+    const auto sidecarTime = std::filesystem::last_write_time(sidecar, error);
+    if (error) {
+        return false;
+    }
+
+    const auto sourceTime = std::filesystem::last_write_time(source, error);
+    if (error) {
+        // No source to compare against (an embedded or generated image). The
+        // cooked file is all there is, so trust it.
+        return true;
+    }
+
+    // A cook older than its source is stale. Rendering an edited PNG as its
+    // previous cooked version is the kind of wrong that survives a whole session
+    // unnoticed, so it loses to the source rather than winning by being faster.
+    return sidecarTime >= sourceTime;
 }
 
 VulkanTexture::~VulkanTexture()
@@ -424,6 +572,75 @@ void VulkanTexture::createFromRgba8(VulkanContext& context,
     };
 }
 
+void VulkanTexture::createFromKtx2(VulkanContext& context,
+                                   const VulkanCommandContext& commandContext,
+                                   const std::filesystem::path& path,
+                                   assets::TextureUsage usage)
+{
+    reset();
+
+    const std::vector<uint8_t> fileBytes = readFileBytes(path);
+    const assets::Ktx2Info info = assets::parseKtx2(fileBytes);
+
+    // Re-checked here and not only at the call site: this is the last point
+    // before the format reaches a descriptor, and a file cooked for a different
+    // slot would otherwise be sampled with the wrong colour space -- a wrong
+    // image that still renders, which is the worst kind.
+    const assets::BlockCompressionCaps caps = queryBlockCompressionCaps(context.physicalDevice());
+    if (!assets::cookedFormatUsable(caps, info.vkFormat, usage)) {
+        throw std::runtime_error("Cooked texture '" + path.string() + "' holds vkFormat "
+                                 + std::to_string(info.vkFormat) + ", which this device cannot sample for the "
+                                 + std::string(assets::textureUsageName(usage)) + " slot.");
+    }
+
+    const std::vector<assets::Ktx2CopyRegion> regions = assets::ktx2CopyPlan(info);
+
+    context_ = &context;
+    width_ = info.pixelWidth;
+    height_ = info.pixelHeight;
+    format_ = static_cast<VkFormat>(info.vkFormat);
+    // The baked chain is the chain. Nothing is generated, so this is also what
+    // createSampler() derives maxLod from -- a file cooked with --no-mips gets a
+    // sampler that stops at level 0 rather than sampling levels that do not exist.
+    mipLevels_ = static_cast<uint32_t>(regions.size());
+
+    // No TRANSFER_SRC: nothing blits out of this image. Dropping that usage is
+    // what later makes a transfer-only queue legal for texture upload.
+    const VkImageUsageFlags imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    validateTextureFormatSupport(context.physicalDevice(), format_, imageUsage);
+
+    VkImageCreateInfo imageInfo{};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.format = format_;
+    imageInfo.extent = {width_, height_, 1};
+    imageInfo.mipLevels = mipLevels_;
+    imageInfo.arrayLayers = 1;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.usage = imageUsage;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VmaAllocationCreateInfo allocationInfo{};
+    allocationInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+    allocationInfo.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+
+    VK_CHECK(vmaCreateImage(context.allocator(), &imageInfo, &allocationInfo, &image_, &allocation_, nullptr));
+
+    uploadCookedLevels(context, commandContext, std::as_bytes(std::span<const uint8_t>(fileBytes)), regions);
+    createImageView();
+    createSampler();
+
+    debugMetadata_ = TextureDebugMetadata{
+        path.filename().string(),
+        path.string(),
+        assets::textureUsageIsSrgb(usage) ? TextureColorSpace::SRGB : TextureColorSpace::Linear,
+        TextureDebugSource::LoadedFromDisk,
+        false,
+    };
+}
+
 void VulkanTexture::reset()
 {
     if (!context_) {
@@ -486,19 +703,7 @@ void VulkanTexture::uploadPixels(VulkanContext& context,
     stagingBuffer.createBuffer(context, stagingInfo);
     stagingBuffer.upload(pixels);
 
-    VkCommandBufferAllocateInfo allocateInfo{};
-    allocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    allocateInfo.commandPool = commandContext.commandPool();
-    allocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocateInfo.commandBufferCount = 1;
-
-    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
-    VK_CHECK(vkAllocateCommandBuffers(context.vkDevice(), &allocateInfo, &commandBuffer));
-
-    VkCommandBufferBeginInfo beginInfo{};
-    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    VK_CHECK(vkBeginCommandBuffer(commandBuffer, &beginInfo));
+    VkCommandBuffer commandBuffer = beginOneTimeUpload(context, commandContext);
 
     // The upload starts from UNDEFINED because the texture image has no useful contents yet.
     // All mip levels become transfer destinations before level 0 is copied and later blits run.
@@ -543,20 +748,83 @@ void VulkanTexture::uploadPixels(VulkanContext& context,
         recordImageBarrier(commandBuffer, toShaderRead);
     }
 
-    VK_CHECK(vkEndCommandBuffer(commandBuffer));
+    endOneTimeUpload(context, commandContext, commandBuffer);
 
-    VkCommandBufferSubmitInfo commandBufferInfo{};
-    commandBufferInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
-    commandBufferInfo.commandBuffer = commandBuffer;
+    recordLoadStats();
+}
 
-    VkSubmitInfo2 submitInfo{};
-    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
-    submitInfo.commandBufferInfoCount = 1;
-    submitInfo.pCommandBufferInfos = &commandBufferInfo;
+void VulkanTexture::uploadCookedLevels(VulkanContext& context,
+                                       const VulkanCommandContext& commandContext,
+                                       std::span<const std::byte> fileBytes,
+                                       const std::vector<assets::Ktx2CopyRegion>& regions)
+{
+    // The whole file goes into staging, header and all. The few hundred bytes of
+    // metadata are wasted, but it buys copying straight from the file's own
+    // level offsets, which are already texel-block aligned.
+    VulkanBuffer stagingBuffer;
+    VulkanBufferCreateInfo stagingInfo{};
+    stagingInfo.size = static_cast<VkDeviceSize>(fileBytes.size_bytes());
+    stagingInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    stagingInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
+    stagingInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+    stagingBuffer.createBuffer(context, stagingInfo);
+    stagingBuffer.upload(fileBytes);
 
-    VK_CHECK(vkQueueSubmit2(context.graphicsQueue(), 1, &submitInfo, VK_NULL_HANDLE));
-    VK_CHECK(vkQueueWaitIdle(context.graphicsQueue()));
-    vkFreeCommandBuffers(context.vkDevice(), commandContext.commandPool(), 1, &commandBuffer);
+    VkCommandBuffer commandBuffer = beginOneTimeUpload(context, commandContext);
+
+    const VkImageMemoryBarrier2 toTransfer = textureBarrier(image_,
+                                                            VK_IMAGE_LAYOUT_UNDEFINED,
+                                                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                                            VK_PIPELINE_STAGE_2_NONE,
+                                                            VK_ACCESS_2_NONE,
+                                                            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                                                            VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                                            0,
+                                                            mipLevels_);
+    recordImageBarrier(commandBuffer, toTransfer);
+
+    std::vector<VkBufferImageCopy> copyRegions;
+    copyRegions.reserve(regions.size());
+    for (const assets::Ktx2CopyRegion& region : regions) {
+        VkBufferImageCopy copy{};
+        copy.bufferOffset = static_cast<VkDeviceSize>(region.bufferOffset);
+        // Zero means tightly packed, which cooked block rows are.
+        copy.bufferRowLength = 0;
+        copy.bufferImageHeight = 0;
+        copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copy.imageSubresource.mipLevel = region.mipLevel;
+        copy.imageSubresource.baseArrayLayer = 0;
+        copy.imageSubresource.layerCount = 1;
+        copy.imageOffset = {0, 0, 0};
+        // The level's own extent, not its extent rounded up to a whole block. A
+        // 2x2 or 1x1 tail level is legal precisely because it equals the mip
+        // level's extent; rounding it to 4x4 would read past the level.
+        copy.imageExtent = {region.width, region.height, 1};
+        copyRegions.push_back(copy);
+    }
+
+    vkCmdCopyBufferToImage(commandBuffer,
+                           stagingBuffer.buffer(),
+                           image_,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           static_cast<uint32_t>(copyRegions.size()),
+                           copyRegions.data());
+
+    // Every level was written by the same copy, so one barrier covers the whole
+    // chain. The blit path needs a barrier per level only because each level is
+    // read back as a blit source; nothing here reads the image at all.
+    const VkImageMemoryBarrier2 toShaderRead = textureBarrier(image_,
+                                                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                                              VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                                                              VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                                              VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                                              VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                                                              0,
+                                                              mipLevels_);
+    recordImageBarrier(commandBuffer, toShaderRead);
+
+    endOneTimeUpload(context, commandContext, commandBuffer);
 
     recordLoadStats();
 }

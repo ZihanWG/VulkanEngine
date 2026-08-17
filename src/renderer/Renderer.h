@@ -350,10 +350,13 @@ private:
     // set. Needed after the post-process targets are recreated, since that image
     // is swapchain-sized and the sets would otherwise hold a destroyed view.
     void refreshMaterialAmbientOcclusionDescriptors();
+    // `usage` carries the colour space rather than taking it as a second
+    // parameter: the two cannot then disagree, and it is also what selects the
+    // cooked sidecar for this slot.
     [[nodiscard]] const rhi::VulkanTexture* loadMaterialAssetTextureOrFallback(
         const std::filesystem::path& materialPath,
         const std::filesystem::path& texturePath,
-        rhi::TextureColorSpace colorSpace,
+        assets::TextureUsage usage,
         std::string_view slotName,
         const rhi::VulkanTexture& fallbackTexture,
         bool& fallbackUsed);

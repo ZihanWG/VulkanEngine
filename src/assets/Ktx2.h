@@ -72,4 +72,28 @@ void writeKtx2File(const std::filesystem::path& path, const Ktx2Image& image);
 // Views point into `bytes`; the caller keeps that buffer alive.
 [[nodiscard]] Ktx2Info parseKtx2(std::span<const uint8_t> bytes);
 
+// One buffer-to-image copy: where a level's blocks start in a staging buffer
+// holding the whole KTX2 file, and the image extent they cover.
+struct Ktx2CopyRegion {
+    uint64_t bufferOffset = 0;
+    uint32_t mipLevel = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+};
+
+// Turns a parsed file into the copy list a per-mip upload needs, base level
+// first. Kept here, GPU-free and tested, because this is where block-compressed
+// uploads go wrong in ways validation layers only sometimes catch:
+//
+//   - `bufferOffset` must be a multiple of the texel block size. The writer
+//     already pads every level to that, so a staging buffer holding the raw file
+//     can be copied from directly -- which is why parseKtx2 hands out offsets
+//     rather than copies.
+//   - the extent is the *level's* extent, down to 2x2 and 1x1, and must NOT be
+//     rounded up to a whole 4x4 block. Rounding up is the classic BC upload bug:
+//     it reads past the level and trips a validation error only sometimes.
+//
+// Throws std::runtime_error if the parsed info is not self-consistent.
+[[nodiscard]] std::vector<Ktx2CopyRegion> ktx2CopyPlan(const Ktx2Info& info);
+
 } // namespace ve::assets

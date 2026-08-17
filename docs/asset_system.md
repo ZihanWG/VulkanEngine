@@ -179,21 +179,88 @@ base level exactly **4.00x** (4.00 MiB RGBA8 -> 1.00 MiB BC7), and 3.00x once th
 mip chain is included, since baked mips add about a third. A full BC7 chain took
 about 100 ms across the default thread pool; BC5 took under 10 ms.
 
-### Not wired to the runtime yet
+### Cooking a whole scene
 
-`VulkanTexture` still decodes RGBA8 and builds mips with `vkCmdBlitImage`.
-Consuming cooked files needs a `createFromKtx2()` doing per-mip
-`vkCmdCopyBufferToImage` with **no** `generateMipmaps`, and a sampler `maxLod`
-that follows the baked `mipLevels`. Dropping the runtime blit is what later makes
-a transfer-only queue legal, which is why the cook comes before the async upload
-work. Five `static_assert`s in `rhi/VulkanTexture.cpp` already hold the cook's raw
-format numbers to the real `VkFormat` enumerators.
+```
+tools/cook_textures.py <scene.gltf>
+```
+
+Runs `vecook` once per (image, material slot). It reads a glTF rather than
+walking a directory because the cooked format is decided by the **slot**, and a
+directory listing carries no slot information — guessing it from a file name is
+the silent-corruption case the pipeline refuses to risk. Sponza is 69 cooks and
+takes about 5 s.
+
+## Runtime consumption
+
+`VulkanTexture::createFromKtx2()` uploads a cooked file with one
+`vkCmdCopyBufferToImage` carrying one region per level, straight out of a staging
+buffer holding the whole file — the level offsets are already texel-block
+aligned, so nothing is repacked.
+
+The synchronization is *simpler* than the uncompressed path, not more complex:
+
+| | RGBA8 + blit | cooked KTX2 |
+| --- | --- | --- |
+| barriers | 2 + 2×(N−1) | **2** |
+| layouts | UNDEFINED → TRANSFER_DST → (per level TRANSFER_SRC) → SHADER_READ | UNDEFINED → TRANSFER_DST → SHADER_READ |
+| image usage | TRANSFER_DST \| SAMPLED \| **TRANSFER_SRC** | TRANSFER_DST \| SAMPLED |
+
+The blit path needs a barrier per level only because each level is read back as a
+blit source; the cooked path never reads the image. Dropping `TRANSFER_SRC` is
+the point beyond the memory win: `vkCmdBlitImage` requires a graphics queue and
+`vkCmdCopyBufferToImage` does not, so this is what makes an async transfer queue
+legal later. Sampler `maxLod` follows the baked `mipLevels`, so a `--no-mips`
+file gets a sampler that stops at level 0.
+
+Three load paths consume sidecars, each of which already knows its slot:
+`BuiltinTextureFactory`, `Renderer::loadMaterialAssetTextureOrFallback()`, and
+the glTF import loop in `RendererScene.cpp` (which skips the JobSystem decode
+entirely for a cooked texture, since there is nothing to decode).
+
+### Every failure falls back, none is fatal
+
+A cooked file is used only when it exists, is **not older than its source**, and
+holds the format that slot expects. Otherwise the uncompressed source loads and a
+warning is logged. All three failure modes were exercised on the GPU:
+
+| Broken how | Result |
+| --- | --- |
+| source edited after the cook | stale, falls back; 3 of 8 block compressed became 2 of 8 |
+| BC7 sRGB file planted where the BC5 normal map belongs | refused by format, falls back |
+| truncated file | refused by the parser, falls back |
+
+The format is re-checked inside `createFromKtx2()` and not only at the call site,
+because a mis-slotted file is a *wrong image that still renders* — worse than one
+that does not.
+
+Sidecars are gitignored. They are lossy build artifacts, and committing them
+would make the golden image depend on whether a cook had been run.
+
+### Measured
+
+See [asset_load_baseline.md](asset_load_baseline.md): on Sponza, texture memory
+drops **365.98 MiB → 91.06 MiB (4.02x)**, 72 of 77 textures become block
+compressed, decode wait goes to zero, and upload halves.
+
+### Limitations
+
+- No visual A/B has been composed yet. The Sponza startup camera frames the
+  building from outside (see the limitations above), and the default portfolio
+  scene *loads* the checker textures but does not sample them in the composed
+  shot — cooking them changes exactly zero pixels there. That last fact is why
+  the committed golden image is unaffected by whether a cook has been run, but it
+  also means judging BC7 quality needs the editor camera inside Sponza.
+- `VulkanEnvironmentMap` cubemaps and the BRDF LUT keep their own upload paths
+  and are not cooked.
+- The cook is never run from CMake. A clean configure must not silently spend a
+  minute encoding, so `tools/cook_textures.py` is run deliberately.
 
 ## Not Implemented
 
 - asset browser
 - mesh/geometry cooker
-- runtime consumption of cooked KTX2 textures (see above)
+- async transfer-queue upload (now legal, see above, but not done)
 - shader permutation system
 - material graph
 - full texture or descriptor hot reload

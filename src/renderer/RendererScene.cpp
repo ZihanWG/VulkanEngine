@@ -422,11 +422,14 @@ void Renderer::resetCornellBoxSceneToPreset()
 const rhi::VulkanTexture* Renderer::loadMaterialAssetTextureOrFallback(
     const std::filesystem::path& materialPath,
     const std::filesystem::path& texturePath,
-    rhi::TextureColorSpace colorSpace,
+    assets::TextureUsage usage,
     std::string_view slotName,
     const rhi::VulkanTexture& fallbackTexture,
     bool& fallbackUsed)
 {
+    const rhi::TextureColorSpace colorSpace =
+        assets::textureUsageIsSrgb(usage) ? rhi::TextureColorSpace::SRGB : rhi::TextureColorSpace::Linear;
+
     fallbackUsed = false;
     if (texturePath.empty()) {
         return &fallbackTexture;
@@ -442,7 +445,28 @@ const rhi::VulkanTexture* Renderer::loadMaterialAssetTextureOrFallback(
 
     auto texture = std::make_unique<rhi::VulkanTexture>();
     try {
-        texture->createFromFile(context_, commandContext_, resolvedTexturePath, colorSpace, true);
+        // Prefer a cooked sidecar: block compressed, mips already baked, no
+        // runtime blit. Any problem with it -- missing, stale, cooked for another
+        // slot, unsupported here -- falls back to the source image rather than
+        // failing the material.
+        bool loadedCooked = false;
+        if (rhi::cookedTextureAvailable(context_.physicalDevice(), resolvedTexturePath, usage)) {
+            const std::filesystem::path cookedPath = assets::ktx2SidecarPath(resolvedTexturePath, usage);
+            try {
+                texture->createFromKtx2(context_, commandContext_, cookedPath, usage);
+                loadedCooked = true;
+                Logger::info("Loaded cooked material asset " + std::string(slotName) + " texture: " +
+                             cookedPath.string());
+            } catch (const std::exception& error) {
+                Logger::warn("Cooked material asset " + std::string(slotName) + " texture '" + cookedPath.string() +
+                             "' could not be used; loading the uncompressed source instead: " + error.what());
+            }
+        }
+
+        if (!loadedCooked) {
+            texture->createFromFile(context_, commandContext_, resolvedTexturePath, colorSpace, true);
+        }
+
         texture->setDebugMetadata(rhi::TextureDebugMetadata{
             "Material asset " + std::string(slotName) + " texture",
             resolvedTexturePath.string(),
@@ -454,8 +478,10 @@ const rhi::VulkanTexture* Renderer::loadMaterialAssetTextureOrFallback(
         (void)assetManager_.registerTextureAsset(resolvedTexturePath, std::string(slotName));
         const rhi::VulkanTexture* texturePointer = texture.get();
         materialAssetTextures_.push_back(std::move(texture));
-        Logger::info("Loaded material asset " + std::string(slotName) + " texture as " +
-                     std::string(colorSpaceName(colorSpace)) + ": " + resolvedTexturePath.string());
+        if (!loadedCooked) {
+            Logger::info("Loaded material asset " + std::string(slotName) + " texture as " +
+                         std::string(colorSpaceName(colorSpace)) + ": " + resolvedTexturePath.string());
+        }
         return texturePointer;
     } catch (const std::exception& error) {
         fallbackUsed = true;
@@ -487,20 +513,20 @@ renderer::Material Renderer::createMaterialFromAsset(const assets::MaterialAsset
     material.alphaMode = materialAsset.alphaMode.empty() ? "OPAQUE" : materialAsset.alphaMode;
     material.baseColorTexture = loadMaterialAssetTextureOrFallback(materialAsset.sourcePath,
                                                                    materialAsset.textures.baseColor,
-                                                                   rhi::TextureColorSpace::SRGB,
+                                                                   assets::TextureUsage::BaseColor,
                                                                    "base color",
                                                                    baseColorFallback,
                                                                    baseColorLoadFallback);
     material.normalTexture = loadMaterialAssetTextureOrFallback(materialAsset.sourcePath,
                                                                 materialAsset.textures.normal,
-                                                                rhi::TextureColorSpace::Linear,
+                                                                assets::TextureUsage::NormalMap,
                                                                 "normal",
                                                                 normalFallback,
                                                                 normalLoadFallback);
     material.metallicRoughnessTexture =
         loadMaterialAssetTextureOrFallback(materialAsset.sourcePath,
                                            materialAsset.textures.metallicRoughness,
-                                           rhi::TextureColorSpace::Linear,
+                                           assets::TextureUsage::MetallicRoughness,
                                            "metallic-roughness",
                                            metallicRoughnessFallback,
                                            metallicRoughnessLoadFallback);
@@ -940,18 +966,21 @@ void Renderer::createImportedGltfTextures(const std::vector<renderer::GltfTextur
     // parallelize; the Vulkan uploads stay serial on this thread.
     struct PendingTextureUpload {
         size_t textureIndex = 0;
-        rhi::TextureColorSpace colorSpace = rhi::TextureColorSpace::Linear;
+        assets::TextureUsage usage = assets::TextureUsage::BaseColor;
         std::string_view slotName;
         std::string debugPrefix;
         std::vector<rhi::VulkanTexture>* textures = nullptr;
         const renderer::GltfTextureInfo* info = nullptr;
+        // A cooked sidecar has nothing to decode, so `decode` stays invalid on
+        // that path -- the mip chain is already built and block compressed.
+        bool cooked = false;
         std::future<rhi::DecodedImage> decode;
     };
 
     std::vector<PendingTextureUpload> pendingUploads;
 
     const auto enqueueDecode = [this, &textureInfos, &pendingUploads](size_t textureIndex,
-                                                                      rhi::TextureColorSpace colorSpace,
+                                                                      assets::TextureUsage usage,
                                                                       std::string_view slotName,
                                                                       std::string_view debugPrefix,
                                                                       std::vector<rhi::VulkanTexture>& textures) {
@@ -965,34 +994,42 @@ void Renderer::createImportedGltfTextures(const std::vector<renderer::GltfTextur
             return;
         }
 
+        // Only external images can have a cooked sidecar; an image embedded in
+        // the glTF has no path to hang one off.
+        const bool cooked = !textureInfo.path.empty()
+                            && rhi::cookedTextureAvailable(context_.physicalDevice(), textureInfo.path, usage);
+
         const renderer::GltfTextureInfo* infoPtr = &textureInfo;
-        std::future<rhi::DecodedImage> decode = jobSystem_.enqueue([infoPtr]() -> rhi::DecodedImage {
-            if (!infoPtr->path.empty()) {
-                return rhi::VulkanTexture::decodeImageFile(infoPtr->path);
-            }
-            return rhi::VulkanTexture::decodeImageBytes(
-                std::span<const uint8_t>(infoPtr->encodedData.data(), infoPtr->encodedData.size()));
-        });
+        std::future<rhi::DecodedImage> decode;
+        if (!cooked) {
+            decode = jobSystem_.enqueue([infoPtr]() -> rhi::DecodedImage {
+                if (!infoPtr->path.empty()) {
+                    return rhi::VulkanTexture::decodeImageFile(infoPtr->path);
+                }
+                return rhi::VulkanTexture::decodeImageBytes(
+                    std::span<const uint8_t>(infoPtr->encodedData.data(), infoPtr->encodedData.size()));
+            });
+        }
 
         pendingUploads.push_back(PendingTextureUpload{
-            textureIndex, colorSpace, slotName, std::string(debugPrefix), &textures, infoPtr, std::move(decode)});
+            textureIndex, usage, slotName, std::string(debugPrefix), &textures, infoPtr, cooked, std::move(decode)});
     };
 
     for (size_t textureIndex = 0; textureIndex < textureInfos.size(); ++textureIndex) {
         if (baseColorNeeded[textureIndex] != 0) {
             enqueueDecode(textureIndex,
-                          rhi::TextureColorSpace::SRGB,
+                          assets::TextureUsage::BaseColor,
                           "base color",
                           "GltfBaseColorTexture",
                           importedBaseColorTextures_);
         }
         if (normalNeeded[textureIndex] != 0) {
             enqueueDecode(
-                textureIndex, rhi::TextureColorSpace::Linear, "normal", "GltfNormalTexture", importedNormalTextures_);
+                textureIndex, assets::TextureUsage::NormalMap, "normal", "GltfNormalTexture", importedNormalTextures_);
         }
         if (metallicRoughnessNeeded[textureIndex] != 0) {
             enqueueDecode(textureIndex,
-                          rhi::TextureColorSpace::Linear,
+                          assets::TextureUsage::MetallicRoughness,
                           "metallic-roughness",
                           "GltfMetallicRoughnessTexture",
                           importedMetallicRoughnessTextures_);
@@ -1002,39 +1039,69 @@ void Renderer::createImportedGltfTextures(const std::vector<renderer::GltfTextur
     for (PendingTextureUpload& pending : pendingUploads) {
         std::vector<rhi::VulkanTexture>& textures = *pending.textures;
         const renderer::GltfTextureInfo& textureInfo = *pending.info;
+        const rhi::TextureColorSpace colorSpace = assets::textureUsageIsSrgb(pending.usage)
+                                                     ? rhi::TextureColorSpace::SRGB
+                                                     : rhi::TextureColorSpace::Linear;
         try {
-            // Decode is already dispatched to the JobSystem, so the wait below is
-            // whatever the workers have not finished yet; the upload that follows
-            // is unconditionally serial. Timing them apart is the whole point --
-            // it is the evidence for which half is worth attacking.
-            const auto decodeWaitStart = std::chrono::steady_clock::now();
-            const rhi::DecodedImage decoded = pending.decode.get();
-            const auto uploadStart = std::chrono::steady_clock::now();
-            assetLoadStats_.timings.textureDecodeWaitMs +=
-                std::chrono::duration<double, std::milli>(uploadStart - decodeWaitStart).count();
+            bool loadedCooked = false;
+            if (pending.cooked) {
+                // No decode wait to account for: there was nothing to decode.
+                const auto cookedUploadStart = std::chrono::steady_clock::now();
+                const std::filesystem::path cookedPath = assets::ktx2SidecarPath(textureInfo.path, pending.usage);
+                try {
+                    textures[pending.textureIndex].createFromKtx2(
+                        context_, commandContext_, cookedPath, pending.usage);
+                    loadedCooked = true;
+                    assetLoadStats_.timings.textureUploadMs +=
+                        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - cookedUploadStart)
+                            .count();
+                    Logger::info("Loaded cooked glTF " + std::string(pending.slotName) + " texture: " +
+                                 cookedPath.string());
+                } catch (const std::exception& error) {
+                    Logger::warn("Cooked glTF " + std::string(pending.slotName) + " texture '" + cookedPath.string() +
+                                 "' could not be used; decoding the uncompressed source instead: " + error.what());
+                }
+            }
 
-            textures[pending.textureIndex].createFromRgba8(context_,
-                                                           commandContext_,
-                                                           decoded.width,
-                                                           decoded.height,
-                                                           decoded.pixels,
-                                                           rhi::rgba8FormatForColorSpace(pending.colorSpace),
-                                                           true);
-            assetLoadStats_.timings.textureUploadMs +=
-                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - uploadStart).count();
-            if (!textureInfo.path.empty()) {
-                Logger::info("Loaded glTF " + std::string(pending.slotName) + " texture as " +
-                             std::string(colorSpaceName(pending.colorSpace)) + ": " + textureInfo.path.string());
-            } else {
-                Logger::info("Loaded embedded glTF " + std::string(pending.slotName) + " texture as " +
-                             std::string(colorSpaceName(pending.colorSpace)) + ": " + textureInfo.debugName);
+            if (!loadedCooked) {
+                // Decode is already dispatched to the JobSystem, so the wait below is
+                // whatever the workers have not finished yet; the upload that follows
+                // is unconditionally serial. Timing them apart is the whole point --
+                // it is the evidence for which half is worth attacking.
+                //
+                // The future is invalid only when a cooked upload was attempted and
+                // failed, in which case the decode never ran and happens inline here.
+                const auto decodeWaitStart = std::chrono::steady_clock::now();
+                const rhi::DecodedImage decoded = pending.decode.valid()
+                                                      ? pending.decode.get()
+                                                      : rhi::VulkanTexture::decodeImageFile(textureInfo.path);
+                const auto uploadStart = std::chrono::steady_clock::now();
+                assetLoadStats_.timings.textureDecodeWaitMs +=
+                    std::chrono::duration<double, std::milli>(uploadStart - decodeWaitStart).count();
+
+                textures[pending.textureIndex].createFromRgba8(context_,
+                                                               commandContext_,
+                                                               decoded.width,
+                                                               decoded.height,
+                                                               decoded.pixels,
+                                                               rhi::rgba8FormatForColorSpace(colorSpace),
+                                                               true);
+                assetLoadStats_.timings.textureUploadMs +=
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - uploadStart).count();
+                if (!textureInfo.path.empty()) {
+                    Logger::info("Loaded glTF " + std::string(pending.slotName) + " texture as " +
+                                 std::string(colorSpaceName(colorSpace)) + ": " + textureInfo.path.string());
+                } else {
+                    Logger::info("Loaded embedded glTF " + std::string(pending.slotName) + " texture as " +
+                                 std::string(colorSpaceName(colorSpace)) + ": " + textureInfo.debugName);
+                }
             }
 
             textures[pending.textureIndex].setDebugMetadata(rhi::TextureDebugMetadata{
                 textureInfo.debugName.empty() ? pending.debugPrefix + std::to_string(pending.textureIndex)
                                               : textureInfo.debugName,
                 textureInfo.path.empty() ? std::string{} : textureInfo.path.string(),
-                pending.colorSpace,
+                colorSpace,
                 textureInfo.embedded ? rhi::TextureDebugSource::GltfEmbeddedData
                                      : rhi::TextureDebugSource::GltfExternalFile,
                 false,

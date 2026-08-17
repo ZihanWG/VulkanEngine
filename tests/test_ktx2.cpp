@@ -8,6 +8,7 @@
 #include <numeric>
 #include <span>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 using ve::assets::Ktx2Image;
@@ -251,6 +252,84 @@ TEST_CASE("KTX2 data format descriptor matches the format", "[ktx2]")
         }
         CHECK(expectedBitOffset == 128U);
     }
+}
+
+TEST_CASE("The copy plan uses level extents, not block-rounded ones", "[ktx2]")
+{
+    // 100x60 is deliberately awkward: neither edge is a multiple of four, and the
+    // chain bottoms out at 1x1. Rounding an extent up to a whole 4x4 block is the
+    // classic BC upload bug, and validation only sometimes catches it.
+    const Ktx2Image image = makeImage(kVkFormatBc7SrgbBlock, 100, 60, 7);
+    const std::vector<uint8_t> bytes = writeKtx2(image);
+    const std::vector<ve::assets::Ktx2CopyRegion> plan = ve::assets::ktx2CopyPlan(parseKtx2(bytes));
+
+    REQUIRE(plan.size() == 7);
+
+    const std::array<std::pair<uint32_t, uint32_t>, 7> expectedExtents = {
+        std::pair<uint32_t, uint32_t>{100, 60}, {50, 30}, {25, 15}, {12, 7}, {6, 3}, {3, 1}, {1, 1},
+    };
+
+    for (uint32_t level = 0; level < plan.size(); ++level) {
+        // Base level first, matching Vulkan's mip numbering, even though the file
+        // stores the levels in the opposite order.
+        CHECK(plan[level].mipLevel == level);
+        CHECK(plan[level].width == expectedExtents[level].first);
+        CHECK(plan[level].height == expectedExtents[level].second);
+
+        // Every offset is directly usable as a VkBufferImageCopy::bufferOffset,
+        // which must be a multiple of the 16-byte texel block size.
+        CHECK(plan[level].bufferOffset % 16U == 0);
+
+        // And it points at the level's real bytes in the file.
+        const uint8_t* stored = bytes.data() + plan[level].bufferOffset;
+        CHECK(std::equal(image.levels[level].begin(), image.levels[level].end(), stored));
+    }
+}
+
+TEST_CASE("The copy plan covers a single level and a BC5 image", "[ktx2]")
+{
+    const Ktx2Image single = makeImage(kVkFormatBc7UnormBlock, 64, 64, 1);
+    const std::vector<uint8_t> singleBytes = writeKtx2(single);
+    const std::vector<ve::assets::Ktx2CopyRegion> singlePlan = ve::assets::ktx2CopyPlan(parseKtx2(singleBytes));
+    REQUIRE(singlePlan.size() == 1);
+    CHECK(singlePlan[0].mipLevel == 0);
+    CHECK(singlePlan[0].width == 64);
+    CHECK(singlePlan[0].height == 64);
+
+    const Ktx2Image normal = makeImage(kVkFormatBc5UnormBlock, 32, 8, 6);
+    const std::vector<ve::assets::Ktx2CopyRegion> normalPlan =
+        ve::assets::ktx2CopyPlan(parseKtx2(writeKtx2(normal)));
+    REQUIRE(normalPlan.size() == 6);
+    // The short edge clamps at 1 while the long one keeps halving.
+    CHECK(normalPlan[5].width == 1);
+    CHECK(normalPlan[5].height == 1);
+    CHECK(normalPlan[3].width == 4);
+    CHECK(normalPlan[3].height == 1);
+}
+
+TEST_CASE("The copy plan rejects info it cannot trust", "[ktx2]")
+{
+    const Ktx2Image image = makeImage(kVkFormatBc7SrgbBlock, 32, 32, 6);
+    ve::assets::Ktx2Info info = parseKtx2(writeKtx2(image));
+    CHECK_NOTHROW(ve::assets::ktx2CopyPlan(info));
+
+    // An offset off the block boundary would be rejected by the driver as an
+    // invalid bufferOffset; catching it here names the actual problem.
+    ve::assets::Ktx2Info misaligned = info;
+    misaligned.levels[2].byteOffset += 4;
+    CHECK_THROWS_AS(ve::assets::ktx2CopyPlan(misaligned), std::runtime_error);
+
+    ve::assets::Ktx2Info wrongLength = info;
+    wrongLength.levels[1].byteLength += 16;
+    CHECK_THROWS_AS(ve::assets::ktx2CopyPlan(wrongLength), std::runtime_error);
+
+    ve::assets::Ktx2Info unsupported = info;
+    unsupported.vkFormat = 37; // VK_FORMAT_R8G8B8A8_UNORM
+    CHECK_THROWS_AS(ve::assets::ktx2CopyPlan(unsupported), std::runtime_error);
+
+    ve::assets::Ktx2Info empty = info;
+    empty.levels.clear();
+    CHECK_THROWS_AS(ve::assets::ktx2CopyPlan(empty), std::runtime_error);
 }
 
 TEST_CASE("KTX2 writer rejects images it cannot describe", "[ktx2]")
