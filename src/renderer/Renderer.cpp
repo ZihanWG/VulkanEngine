@@ -1592,13 +1592,12 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
     // guard against here.
     useClusteredLighting_ = settings.useClusteredLighting;
 
-    csmSettings_.lambda = settings.csm.lambda;
-    csmSettings_.shadowDistance = settings.csm.shadowDistance;
-    csmSettings_.enableTexelSnapping = settings.csm.enableTexelSnapping;
-    csmSettings_.enableCascadeDebugColors = settings.csm.enableCascadeDebugColors;
+    // Whole-struct, like every other settings group above, and in RuntimeSettings.h
+    // so it is testable -- see applyCsmSettings for what the field-by-field copy
+    // that used to live here silently dropped.
+    applyCsmSettings(settings.csm, csmSettings_, mode == RuntimeSettingsApplyMode::Startup);
 
     if (mode == RuntimeSettingsApplyMode::Startup) {
-        csmSettings_.cascadeCount = settings.csm.cascadeCount;
         useTransientAliasing_ = settings.enableTransientAliasing;
         useGpuCulling_ = settings.useGpuCulling;
         useGpuShadowCulling_ = settings.useGpuShadowCulling;

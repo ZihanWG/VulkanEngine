@@ -337,6 +337,10 @@ void Renderer::createShadowMap()
     // express: the key could match the previous atlas exactly while the memory
     // behind it no longer holds that render.
     invalidatePunctualShadowCache();
+    // Same for the cascades, and for the same reason: this is the one place the
+    // CSM image is created, so it is the one place its contents stop being
+    // whatever the resident hashes claim they are.
+    invalidateCascadeShadowCache();
 
     // The fog injection pass samples the cascaded shadow map, so it is created
     // here alongside it -- a cascade-count change recreates the shadow map, and

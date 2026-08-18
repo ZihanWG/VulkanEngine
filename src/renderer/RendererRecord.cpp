@@ -985,6 +985,28 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     const bool gpuShadowCullingActive = isGpuShadowCullingActive() && !allDrawItems_.empty();
     const uint32_t cascadeCount = activeCascadeCount();
 
+    // A cascade whose content hash still matches what its image layer holds is
+    // skipped outright: no rendering scope, so no clear, no draws, and no
+    // layout transition. Each cascade renders into its own layer view, so
+    // skipping one cannot disturb another -- which is why this needs no
+    // LOAD-vs-CLEAR handling the way the shared punctual atlas does.
+    //
+    // The multiview path collapses every cascade into one pass and therefore one
+    // encoder, so there is no per-cascade decision to make there: it is all or
+    // nothing, and it only skips when every cascade is clean.
+    const bool layeredCascades = isLayeredCascadeRenderingActive();
+    const bool cascadeCacheActive = csmSettings_.enableCascadeCache;
+    const auto cascadeNeedsRedraw = [&](uint32_t cascadeIndex) {
+        if (!cascadeCacheActive) {
+            return true;
+        }
+        if (layeredCascades) {
+            return cascadeShadowCascadesRedrawn_ > 0;
+        }
+        return cascadeIndex < cascadeShadowDirty_.size() && cascadeShadowDirty_[cascadeIndex];
+    };
+    const bool anyCascadeNeedsRedraw = !cascadeCacheActive || cascadeShadowCascadesRedrawn_ > 0;
+
     const bool csmProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "CSMShadowPass");
     rhi::debug::beginLabel(commandBuffer, "CSMShadowPass");
 
@@ -1003,17 +1025,23 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
 
     // One cull for every cascade, hoisted out of the loop: the dispatch produces
     // the union of the cascade frusta, so each cascade replays the same list.
-    if (gpuShadowCullingActive) {
+    // A cascade that is partially cached still replays the full union list --
+    // the union is a superset that each cascade's own projection clips, so a
+    // dirty cascade drawing it produces exactly what it would have drawn alone.
+    if (gpuShadowCullingActive && anyCascadeNeedsRedraw) {
         recordGpuShadowCullingCommands(commandBuffer);
     }
 
     // Multiview collapses the cascades into a single pass -- and therefore a
     // single command encoder, which is what this pass actually costs on a tiler.
     // Without it the loop runs once per cascade, exactly as before.
-    const bool layeredCascades = isLayeredCascadeRenderingActive();
     const uint32_t cascadePassCount = layeredCascades ? 1u : cascadeCount;
 
     for (uint32_t cascadeIndex = 0; cascadeIndex < cascadePassCount; ++cascadeIndex) {
+        if (!cascadeNeedsRedraw(cascadeIndex)) {
+            continue;
+        }
+
         // The CPU-culling fallback keeps a list per cascade, but a layered pass
         // draws once for all of them, so it takes the union list instead.
         const std::vector<DrawItem>& cpuShadowDrawItems =
@@ -1205,6 +1233,32 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
 
         renderGraph_.endShadowPass(cascadeIndex + 1 == cascadePassCount);
         rhi::debug::endLabel(commandBuffer);
+    }
+
+    // What the image now holds. Recorded here rather than where the hashes are
+    // computed, because until the draws are actually in the command buffer the
+    // resident state is still the previous frame's -- and an early write would
+    // mark a cascade resident that a later return or exception never drew.
+    //
+    // A cascade that was skipped keeps its existing resident key: it still holds
+    // exactly what that key describes. With the cache off every cascade is
+    // drawn, so every key becomes resident and toggling the cache back on does
+    // not force a redraw of work that just happened.
+    uint32_t cascadesRedrawnThisFrame = 0;
+    for (uint32_t cascadeIndex = 0; cascadeIndex < cascadeCount; ++cascadeIndex) {
+        if (cascadeNeedsRedraw(cascadeIndex)) {
+            cascadeShadowResidentKeys_[cascadeIndex] = cascadeShadowKeys_[cascadeIndex];
+            ++cascadesRedrawnThisFrame;
+        }
+    }
+    // Cleared only once every active cascade has actually been drawn, which is
+    // exactly the invariant the flag encodes: the image is untrusted until each
+    // layer has been written at least once since it was created. Clearing it
+    // unconditionally would drop the guarantee on any frame that recorded
+    // nothing -- an empty scene reaches here with no cascade dirty and the image
+    // still in its undefined initial state.
+    if (cascadesRedrawnThisFrame == cascadeCount) {
+        cascadeShadowNeedsFullRedraw_ = false;
     }
 
     rhi::debug::endLabel(commandBuffer);

@@ -143,6 +143,23 @@ void Renderer::resetSceneState()
     shadowBatchCountPerCascade_.fill(0);
     cullingStats_ = {};
     shadowCullingStats_ = {};
+    // Both shadow caches key casters by Mesh and Material *pointer*, and the
+    // clears below destroy exactly those objects. The next scene pushes fresh
+    // ones into the same vectors, which will happily reuse the addresses that
+    // were just freed -- so a caster in the new scene can present the same mesh
+    // pointer, the same (firstIndex, indexCount) and the same transform as one
+    // in the old scene while the geometry behind it is different. The hash would
+    // match, the cached image would not, and the result is a stale shadow with
+    // no visible cause.
+    //
+    // The pointer-identity comment in ShadowCacheKey argues a reallocation would
+    // have changed the geometry hashed alongside the address. That holds within
+    // a scene, where an index range names geometry in that mesh's own buffer; it
+    // does not survive the buffer itself being replaced. Dropping both caches
+    // here costs one redraw per scene switch.
+    invalidatePunctualShadowCache();
+    invalidateCascadeShadowCache();
+
     importedMeshes_.clear();
     importedMaterials_.clear();
     importedBaseColorTextures_.clear();

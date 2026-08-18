@@ -37,6 +37,7 @@ add_executable(VulkanEngineTests
     test_bounds.cpp
     test_brdf_integration.cpp
     test_cascades.cpp
+    test_cascade_shadow_cache.cpp
     test_cluster_grid.cpp
     test_punctual_shadow_atlas.cpp
     test_irradiance_probes.cpp

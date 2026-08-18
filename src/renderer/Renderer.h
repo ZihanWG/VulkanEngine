@@ -9,6 +9,7 @@
 #include "renderer/Bounds.h"
 #include "renderer/Camera.h"
 #include "renderer/CascadeMath.h"
+#include "renderer/CascadeShadowCache.h"
 #include "renderer/ClusteredLighting.h"
 #include "renderer/IrradianceProbeVolume.h"
 #include "renderer/PunctualShadows.h"
@@ -23,6 +24,7 @@
 #include "renderer/GpuProfiler.h"
 #include "renderer/Material.h"
 #include "renderer/Mesh.h"
+#include "renderer/MeshLod.h"
 #include "renderer/PostProcessStack.h"
 #include "renderer/RenderGraph.h"
 #include "renderer/RenderObject.h"
@@ -492,6 +494,21 @@ private:
     // Drops the cache; the next frame re-renders. Called when the atlas image
     // itself stops being trustworthy, which no input hash can express.
     void invalidatePunctualShadowCache();
+    // Same idea for the cascaded shadow map: hashes each cascade's own inputs
+    // and decides which cascades this frame would draw differently from what
+    // the image already holds. Per cascade rather than per pass, because the
+    // cascades cover different volumes and a caster moving in one says nothing
+    // about the others.
+    void updateCascadeShadowCacheState();
+    // The LOD level cull.comp would select for one caster on a shadow dispatch.
+    // Part of the cascade hash: on the GPU-culled path the drawn index range is
+    // chosen there, not by the CPU draw item.
+    [[nodiscard]] uint32_t selectedShadowLodLevel(const DrawItem& drawItem,
+                                                  float projScaleY,
+                                                  const renderer::LodSelectionSettings& settings) const;
+    // Drops the cascade cache; the next frame redraws every cascade. Called
+    // when the shadow image itself stops being trustworthy.
+    void invalidateCascadeShadowCache();
     // Fills the fog volume's per-frame parameters from camera, light, and
     // cascade state. Runs after updateCascades so the cascade matrices it hands
     // the injection pass are this frame's.
@@ -965,6 +982,29 @@ private:
     // Frames the atlas pass was skipped entirely, and tiles redrawn last frame.
     uint32_t punctualShadowCachedFrames_ = 0;
     uint32_t punctualShadowSlotsRedrawn_ = 0;
+
+    // Cascaded-shadow-map caching, mirroring the atlas above. A cascade is
+    // redrawn only when the hash of what it draws moves, so a static scene
+    // under a static light costs nothing after the first frame.
+    renderer::ShadowCacheKey cascadeShadowCacheKey_;
+    // This frame's content hash per cascade, and what the image currently
+    // holds. Keyed by cascade index rather than by rect, because unlike atlas
+    // tiles a cascade owns a fixed image layer for the life of the shadow map.
+    std::array<uint64_t, renderer::kMaxShadowCascades> cascadeShadowKeys_{};
+    std::array<uint64_t, renderer::kMaxShadowCascades> cascadeShadowResidentKeys_{};
+    std::array<bool, renderer::kMaxShadowCascades> cascadeShadowDirty_{};
+    // Set when the shadow image itself cannot be trusted (freshly created,
+    // resized, or reconfigured), which no per-cascade hash can express.
+    bool cascadeShadowNeedsFullRedraw_ = true;
+    // Whole pass skipped this frame, and how many consecutive frames that has
+    // held. Surfaced in the debug panel: the hit rate is the only way to tell
+    // "the cache is working" from "the cache never fires".
+    bool cascadeShadowCacheHit_ = false;
+    uint32_t cascadeShadowCachedFrames_ = 0;
+    uint32_t cascadeShadowCascadesRedrawn_ = 0;
+    // Scratch for the per-cascade key build, kept alive across frames so the
+    // per-frame hash does not reallocate.
+    std::vector<renderer::CascadeShadowCaster> cascadeShadowCasterScratch_;
     long long punctualShadowCpuMicros_ = 0;
     // Scratch for the per-tile partial clear.
     std::vector<VkClearRect> punctualShadowClearRects_;

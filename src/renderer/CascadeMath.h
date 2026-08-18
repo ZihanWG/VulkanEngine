@@ -37,6 +37,22 @@ struct CascadeBuildInput {
     float shadowDistance = 40.0f;
     float lambda = 0.5f;
     bool enableTexelSnapping = true;
+    // Fits each cascade to the bounding sphere of its frustum slice instead of
+    // to the slice's own light-space AABB.
+    //
+    // The AABB fit is rotation-dependent: the extents come from corners that
+    // have been rotated into light space, so turning the camera on the spot
+    // changes the ortho width, the world-units-per-texel that follows from it,
+    // and therefore the snapping grid itself. A sphere's radius depends only on
+    // near/far/fov/aspect, so the projection is constant for a given cascade and
+    // only the view translates -- in whole-texel steps. That is what makes a
+    // cascade's matrix reproduce exactly across frames, and therefore what makes
+    // the cascade cache able to hit while the camera is moving.
+    //
+    // The cost is real and one-directional: a sphere circumscribing the slice is
+    // wider than the slice, so the same shadow texels cover more world, which is
+    // why this is a setting rather than a replacement.
+    bool enableStableFit = false;
     uint32_t shadowResolution = 2048;
 
     glm::vec3 cameraPosition{0.0f, 0.0f, 0.0f};

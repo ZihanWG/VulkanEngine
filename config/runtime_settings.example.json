@@ -96,6 +96,8 @@
         "lambda": 0.5,
         "normalBias": 0.0,
         "cascadeBlend": 0.0,
+        "enableCascadeCache": true,
+        "enableStableCascadeFit": false,
         "shadowDistance": 40.0,
         "enableTexelSnapping": true,
         "enableCascadeDebugColors": false

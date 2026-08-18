@@ -694,6 +694,52 @@ void Renderer::drawShadowsDebugUi()
                           "for the second shadow lookup.");
     }
 
+    ImGui::Checkbox("Stable (sphere) cascade fit", &csmSettings_.enableStableCascadeFit);
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Fits each cascade to its slice's bounding sphere rather than the\n"
+                          "slice's light-space AABB, so the ortho extent stops breathing as\n"
+                          "the camera turns. Removes rotation shimmer; costs sharpness, since\n"
+                          "a sphere around the slice is wider than the slice.\n\n"
+                          "It does NOT help the cascade cache below: the slice centre orbits\n"
+                          "the camera, so any visible rotation still moves it many texels.");
+    }
+
+    ImGui::Checkbox("Cascade caching enabled", &csmSettings_.enableCascadeCache);
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Redraws a cascade only when a hash of what it draws moves: the\n"
+                          "cascade's fitted matrix, the raster depth bias, and every caster's\n"
+                          "geometry, LOD level, transform and alpha cutoff. Off redraws all\n"
+                          "cascades unconditionally, which is the A/B reference the cached\n"
+                          "path must match pixel for pixel.");
+    }
+
+    // The hit rate, not just the on/off state. The cascades are fitted to the
+    // camera, so this number is the thing to read before assuming the cache
+    // ever fires: a fit that moves with the camera dirties every cascade on any
+    // camera motion, and only a measurement says how often that is.
+    {
+        const uint32_t activeCascades = activeCascadeCount();
+        ImGui::Text("Cascades: %s, %u/%u redrawn (%u frames fully cached)",
+                    cascadeShadowCacheHit_ ? "reused" : (cascadeShadowCascadesRedrawn_ >= activeCascades ? "all redrawn" : "partial"),
+                    cascadeShadowCascadesRedrawn_,
+                    activeCascades,
+                    cascadeShadowCachedFrames_);
+        ImGui::SetItemTooltip("A fully cached frame skips the pass outright: no clear, no draws,\n"
+                              "and no caster cull dispatch. Per cascade rather than per pass,\n"
+                              "because a caster moving inside cascade 0 says nothing about the rest.");
+
+        std::string cascadeStates;
+        for (uint32_t cascadeIndex = 0; cascadeIndex < activeCascades; ++cascadeIndex) {
+            if (cascadeIndex > 0) {
+                cascadeStates += "  ";
+            }
+            cascadeStates += std::to_string(cascadeIndex);
+            cascadeStates += ": ";
+            cascadeStates += cascadeShadowDirty_[cascadeIndex] ? "redraw" : "cached";
+        }
+        ImGui::TextUnformatted(cascadeStates.c_str());
+    }
+
     ImGui::SeparatorText("Punctual (spot/point)");
     if (!punctualShadows_.valid()) {
         ImGui::TextDisabled("Shadow atlas unavailable; point/spot lights do not cast.");

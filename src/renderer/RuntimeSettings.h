@@ -27,7 +27,38 @@ struct CsmSettings {
     // cascade's depth range. Without it the split is a hard line where filter
     // width and texel density change at once. Zero restores the hard split.
     float cascadeBlend = 0.0f;
+    // Redraw a cascade only when the hash of what it draws moves. The punctual
+    // atlas has cached this way since it shipped; the cascades cleared and
+    // redrew unconditionally until now. Off restores that, and is the A/B
+    // reference the cached path has to match pixel for pixel.
+    bool enableCascadeCache = true;
+    // Fits cascades to their slice's bounding sphere instead of its light-space
+    // AABB. Off by default: it removes the rotation-driven shimmer the AABB fit
+    // has, but a sphere circumscribing the slice is wider than the slice, so the
+    // same texels cover more world. MEASURED: it does NOT help the cascade cache
+    // -- see CascadeMath.h. Its value is stability, not cache hits.
+    bool enableStableCascadeFit = false;
+
+    // Defaulted rather than written out: a hand-written comparison would have to
+    // be extended for every new field, which is exactly the failure that made
+    // applyCsmSettings necessary in the first place.
+    [[nodiscard]] bool operator==(const CsmSettings&) const = default;
 };
+
+// Applies persisted cascade settings onto the live ones.
+//
+// This exists as a free function so it can be tested: it used to be a
+// field-by-field copy inside Renderer::applyRuntimeSettings, where nothing
+// GPU-free could reach it, and it silently dropped `normalBias` and
+// `cascadeBlend` for as long as both had existed -- they were clamped, saved and
+// re-read, then thrown away on the way into the renderer. A copy that has to be
+// extended per field fails by doing nothing, which is the failure mode that hid
+// it.
+//
+// `cascadeCount` is the one field that cannot follow at runtime: it sizes the
+// shadow-map image, and only shadow-map creation can change that. At startup it
+// follows like everything else.
+void applyCsmSettings(const CsmSettings& incoming, CsmSettings& current, bool startup);
 
 struct ToneMappingSettings {
     float manualExposure = 1.0f;

@@ -289,6 +289,143 @@ void Renderer::invalidatePunctualShadowCache()
     punctualShadowCacheHit_ = false;
 }
 
+// Computes a content hash per cascade and works out which cascades this frame
+// would draw differently from what the shadow map already holds.
+//
+// Per cascade rather than per pass: the cascades cover nested but different
+// volumes, so a caster moving inside cascade 0 says nothing about cascade 3.
+// Each cascade also owns its own image layer for the life of the shadow map,
+// which is why this keys by cascade index where the atlas has to key by tile
+// rect -- a cascade's storage never migrates the way an atlas slot's does.
+//
+// As with the atlas, the enumeration below is the load-bearing part: anything
+// that can change a cascade's image and is not hashed here becomes a stale
+// shadow, which surfaces far from its cause.
+void Renderer::updateCascadeShadowCacheState()
+{
+    const uint32_t cascadeCount = activeCascadeCount();
+    cascadeShadowKeys_.fill(0);
+    cascadeShadowDirty_.fill(false);
+    cascadeShadowCascadesRedrawn_ = 0;
+
+    // The GPU cull picks a LOD level per draw item from the projected screen
+    // radius, so on that path the level -- not the CPU draw item's index range
+    // -- is what decides the geometry a cascade rasterizes. Mirror the same
+    // selection here. The mirror is renderer/MeshLod.h, which cull.comp is
+    // written against and which the LOD tests cover.
+    const bool gpuLodSelectionActive = isGpuShadowCullingActive() && !allDrawItems_.empty();
+    const VkExtent2D renderExtent = renderResolution_.extent();
+    const float projScaleY =
+        0.5f * static_cast<float>(renderExtent.height) * std::abs(frameJitteredProjection_[1][1]);
+    renderer::LodSelectionSettings lodSelection{};
+    lodSelection.referenceRadiusPixels = lodSettings_.referenceRadiusPixels;
+    // Shadow dispatches add the shadow bias on top of the shared one, matching
+    // the `pc.params.w & 4` branch in cull.comp.
+    lodSelection.bias = lodSettings_.bias + lodSettings_.shadowBias;
+    lodSelection.forcedLod = lodSettings_.enabled ? lodSettings_.forcedLod : 0;
+
+    for (uint32_t cascadeIndex = 0; cascadeIndex < cascadeCount; ++cascadeIndex) {
+        renderer::CascadeShadowPassState state{};
+        state.lightViewProjection = frameCascades_[cascadeIndex].lightViewProjection;
+        state.rasterDepthBiasConstantFactor = shadowSettings_.rasterDepthBiasConstantFactor;
+        state.rasterDepthBiasSlopeFactor = shadowSettings_.rasterDepthBiasSlopeFactor;
+        state.shadowResolution = shadowSettings_.resolution;
+        state.gpuLodSelectionActive = gpuLodSelectionActive;
+
+        // shadowCascadeDrawItems_ is already this cascade's frustum-culled
+        // caster list, built by buildShadowDrawItems against the very frustum
+        // the pass renders with. Reusing it rather than re-culling here is what
+        // keeps the hash describing what actually gets drawn: there is only one
+        // cull to keep correct, not two that can drift apart.
+        const std::vector<DrawItem>& cascadeDrawItems = shadowCascadeDrawItems_[cascadeIndex];
+        cascadeShadowCasterScratch_.clear();
+        cascadeShadowCasterScratch_.reserve(cascadeDrawItems.size());
+
+        for (const DrawItem& drawItem : cascadeDrawItems) {
+            // Same three rejections the shadow recording applies, so an item the
+            // pass never draws never enters the hash.
+            if (!drawItem.mesh || drawItem.frameDataIndex >= kMaxDrawItems || drawItem.indexCount == 0) {
+                continue;
+            }
+            if (drawItem.bucket == RenderBucket::Blend) {
+                continue;
+            }
+
+            renderer::CascadeShadowCaster caster{};
+            caster.mesh = static_cast<const void*>(drawItem.mesh);
+            caster.material = static_cast<const void*>(drawItem.material);
+            caster.firstIndex = drawItem.firstIndex;
+            caster.indexCount = drawItem.indexCount;
+            caster.bucket = static_cast<uint32_t>(drawItem.bucket);
+            caster.alphaCutoff =
+                drawItem.material != nullptr ? drawItem.material->alphaTestCutoff()
+                                             : renderer::kNoAlphaTestCutoff;
+            if (drawItem.objectIndex < renderObjects_.size()) {
+                caster.modelMatrix = renderObjects_[drawItem.objectIndex].transform.modelMatrix();
+            }
+            caster.lodLevel = gpuLodSelectionActive ? selectedShadowLodLevel(drawItem, projScaleY, lodSelection) : 0u;
+
+            cascadeShadowCasterScratch_.push_back(caster);
+        }
+
+        const uint64_t key = renderer::computeCascadeShadowKey(
+            state,
+            std::span<const renderer::CascadeShadowCaster>(cascadeShadowCasterScratch_.data(),
+                                                           cascadeShadowCasterScratch_.size()));
+        cascadeShadowKeys_[cascadeIndex] = key;
+
+        if (cascadeShadowNeedsFullRedraw_ || cascadeShadowResidentKeys_[cascadeIndex] != key) {
+            cascadeShadowDirty_[cascadeIndex] = true;
+            ++cascadeShadowCascadesRedrawn_;
+        }
+    }
+
+    // Inactive cascades hold whatever they last held. Marking them clean keeps
+    // them out of the redraw count; raising the cascade count invalidates the
+    // whole map anyway, since it reconfigures the image.
+    cascadeShadowCacheHit_ = cascadeShadowCascadesRedrawn_ == 0 && cascadeCount > 0;
+    cascadeShadowCachedFrames_ = cascadeShadowCacheHit_ ? cascadeShadowCachedFrames_ + 1 : 0;
+}
+
+// The level cull.comp would pick for this item on a shadow dispatch. Kept
+// beside the hash rather than in the shared LOD header because it needs the
+// renderer's per-frame world bounds, which the GPU-free header cannot see.
+uint32_t Renderer::selectedShadowLodLevel(const DrawItem& drawItem,
+                                          float projScaleY,
+                                          const renderer::LodSelectionSettings& settings) const
+{
+    const size_t drawIndex = static_cast<size_t>(&drawItem - allDrawItems_.data());
+    if (drawIndex >= frameDrawItemLodRanges_.size()) {
+        return 0;
+    }
+    const uint32_t lodCount = frameDrawItemLodRanges_[drawIndex].y;
+    if (lodCount <= 1) {
+        return 0;
+    }
+    if (drawItem.objectIndex >= frameWorldBounds_.size()) {
+        return 0;
+    }
+
+    const renderer::Aabb& worldBounds = frameWorldBounds_[drawItem.objectIndex];
+    if (!worldBounds.valid()) {
+        return 0;
+    }
+
+    const glm::vec3 center = (worldBounds.min + worldBounds.max) * 0.5f;
+    const float radius = glm::length(worldBounds.max - center);
+    const float distanceToCamera = glm::length(center - frameCameraPosition_);
+    return renderer::selectLodIndex(
+        renderer::projectedScreenRadius(radius, distanceToCamera, projScaleY), lodCount, settings);
+}
+
+void Renderer::invalidateCascadeShadowCache()
+{
+    cascadeShadowResidentKeys_.fill(0);
+    cascadeShadowNeedsFullRedraw_ = true;
+    cascadeShadowCacheHit_ = false;
+    cascadeShadowCachedFrames_ = 0;
+}
+
 void Renderer::updatePunctualShadowSlots(uint32_t frameIndex, float aspectRatio)
 {
     punctualShadows_.beginFrame();
@@ -428,6 +565,7 @@ void Renderer::updateCascades(float aspectRatio)
     cascadeInput.shadowDistance = csmSettings_.shadowDistance;
     cascadeInput.lambda = csmSettings_.lambda;
     cascadeInput.enableTexelSnapping = csmSettings_.enableTexelSnapping;
+    cascadeInput.enableStableFit = csmSettings_.enableStableCascadeFit;
     cascadeInput.shadowResolution = shadowSettings_.resolution;
     cascadeInput.cameraPosition = camera_.position;
     cascadeInput.cameraTarget = camera_.target;
@@ -1243,6 +1381,10 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     }
 
     buildShadowFrameData(frameIndex);
+    // After buildShadowFrameData, which is what fills the per-cascade caster
+    // lists the hash reads, and after buildFrameMeshLodTable above, which fills
+    // the LOD ranges the mirrored level selection needs.
+    updateCascadeShadowCacheState();
     buildMainCullingFrameData(frameIndex, cameraFrustum);
     uploadObjectFrameData(frameIndex);
     clusteredLighting_.upload(frameIndex);
@@ -1312,6 +1454,9 @@ void Renderer::resetFrameStateForEmptyScene(uint32_t frameIndex)
     // otherwise keep the previous frame's answer and suppress a pass that has
     // no business being suppressed.
     punctualShadowCacheHit_ = false;
+    cascadeShadowCacheHit_ = false;
+    cascadeShadowDirty_.fill(false);
+    cascadeShadowCascadesRedrawn_ = 0;
     frameTwoPhaseOcclusionActive_ = false;
     frameAsyncComputeActive_ = false;
     frameSsrActive_ = false;

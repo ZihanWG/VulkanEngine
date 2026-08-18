@@ -34,6 +34,15 @@ ExposureMode exposureModeValue(int exposureMode)
     return ExposureMode::Histogram;
 }
 
+void applyCsmSettings(const CsmSettings& incoming, CsmSettings& current, bool startup)
+{
+    const uint32_t previousCascadeCount = current.cascadeCount;
+    current = incoming;
+    if (!startup) {
+        current.cascadeCount = previousCascadeCount;
+    }
+}
+
 void clampRuntimeSettings(RenderScaleSettings& renderScale,
                           DynamicResolutionSettings& dynamicResolution,
                           ToneMappingSettings& toneMapping,
@@ -457,6 +466,8 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readBool(*csm, "enableCascadeDebugColors", settings.csm.enableCascadeDebugColors);
         readFloat(*csm, "normalBias", settings.csm.normalBias);
         readFloat(*csm, "cascadeBlend", settings.csm.cascadeBlend);
+        readBool(*csm, "enableCascadeCache", settings.csm.enableCascadeCache);
+        readBool(*csm, "enableStableCascadeFit", settings.csm.enableStableCascadeFit);
     }
 
     if (const Json* gi = objectMember(json, "gi")) {
@@ -597,6 +608,8 @@ Json toJson(const RuntimeSettings& settings)
               {"lambda", settings.csm.lambda},
               {"normalBias", settings.csm.normalBias},
               {"cascadeBlend", settings.csm.cascadeBlend},
+              {"enableCascadeCache", settings.csm.enableCascadeCache},
+              {"enableStableCascadeFit", settings.csm.enableStableCascadeFit},
               {"shadowDistance", settings.csm.shadowDistance},
               {"enableTexelSnapping", settings.csm.enableTexelSnapping},
               {"enableCascadeDebugColors", settings.csm.enableCascadeDebugColors}}},
