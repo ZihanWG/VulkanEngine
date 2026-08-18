@@ -32,16 +32,6 @@ uint64_t packShadowAtlasRect(const ShadowAtlasRect& rect)
            static_cast<uint64_t>(rect.size);
 }
 
-void PunctualShadowCacheKey::addBytes(const void* data, size_t size)
-{
-    const auto* bytes = static_cast<const unsigned char*>(data);
-    for (size_t i = 0; i < size; ++i) {
-        hash_ ^= bytes[i];
-        // FNV-1a 64-bit prime.
-        hash_ *= 1099511628211ULL;
-    }
-}
-
 uint32_t punctualShadowTileSizeForClass(uint32_t sizeClass)
 {
     const uint32_t clamped = std::min(sizeClass, kPunctualShadowSizeClassCount - 1);

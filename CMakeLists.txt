@@ -230,6 +230,7 @@ add_library(VulkanEngineCore STATIC
     src/renderer/BrdfIntegration.cpp
     src/renderer/ImageCompare.cpp
     src/renderer/CascadeMath.cpp
+    src/renderer/CascadeShadowCache.cpp
     src/renderer/DrawItemBatching.cpp
     src/renderer/FrameClock.cpp
     src/renderer/DynamicResolution.cpp
