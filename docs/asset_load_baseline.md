@@ -62,8 +62,14 @@ screen-sized and scene-sized resources — not assets.
 
 **The 168 ms in scene create is not asset loading either.** The default scene
 finds no HDR environment and generates the skybox, diffuse IBL, and specular IBL
-cubemaps plus the BRDF LUT procedurally. That is GPU compute at startup, and it
-is what the segment actually measures.
+cubemaps plus the BRDF LUT procedurally, and that is what the segment actually
+measures.
+
+An earlier version of this page called that "GPU compute at startup". **That was
+wrong**, and a profile later corrected it: it is CPU work -- 8.4 million sin/cos/pow
+integration steps for the BRDF table alone, on one thread. See
+[After parallel IBL precompute](#after-parallel-ibl-precompute) below, which took
+it from 166 ms to 60 ms without touching the GPU.
 
 **The glTF import path does not run.** `Renderer::tryLoadGltfScene()` is defined
 but has no caller; the default portfolio scene is procedural geometry. The only
@@ -121,6 +127,45 @@ is never handed to stb_image, so the JobSystem decode is not dispatched at all.
 The 5 of 77 textures that stay uncompressed are the procedurally generated ones
 (fallbacks, the backdrop gradient, the cutout lattice), which have no source file
 to cook from.
+
+## After parallel IBL precompute
+
+With import and upload dealt with, what was left in scene creation was a fixed
+cost every scene pays -- including the empty procedural one. On the default scene,
+where `glTF import` and `texture upload` are both 0.00 ms, `scene create` measured
+**165.88 ms of pure CPU precompute**, and the Sponza scene paid the same amount on
+top of its own work.
+
+A profile attributed it: `VulkanBrdfLut::create` was 75 of the 128 samples in
+`createScene` (~59%), and `createProceduralPrefilteredSpecular` another 19 (~15%).
+The BRDF table is 256x256 texels at 128 integration samples each -- **8.4 million
+steps of sin/cos/pow on one thread** -- and `integrateBrdf` is a pure function of
+its two coordinates, so every texel is independent.
+
+Both now run across the `JobSystem`:
+
+| Configuration | scene create | renderer init |
+| --- | --- | --- |
+| serial (control) | 166.15 ms | ~194 ms |
+| BRDF table parallel | 74.37 ms | ~99 ms |
+| BRDF + prefiltered specular parallel | **60.38 ms** | **~86 ms** |
+
+Release, Apple M3, medians of three warm runs; the first run of each series is
+discarded. **−64% overall.** The control was re-run afterwards and returned
+166.15 ms against the original 165.88 ms -- 0.16% drift -- so the gap is the
+change, not the machine.
+
+**The output is byte-identical, and that was checked rather than argued.** Unlike
+the LOD chains there is no ordering to preserve: each texel writes only its own
+bytes and reads nothing another texel wrote. A deterministic capture of the
+default scene compares at **0 differing pixels** between the serial and parallel
+builds -- and unlike Sponza, that scene really is pixel-reproducible, so the gate
+means something here.
+
+The split-sum table depends on nothing but its size and sample count, so it is
+identical on every run and every machine. That leaves precomputing it offline as a
+future option worth roughly the remaining 6 ms, and makes a GPU compute pass hard
+to justify on performance grounds alone.
 
 ## After batching texture uploads
 

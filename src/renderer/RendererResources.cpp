@@ -852,7 +852,7 @@ void Renderer::createDiffuseIrradianceMap()
 void Renderer::createPrefilteredEnvironmentMap()
 {
     try {
-        prefilteredEnvironmentMap_.createProceduralPrefilteredSpecular(context_, commandContext_, 64);
+        prefilteredEnvironmentMap_.createProceduralPrefilteredSpecular(context_, commandContext_, 64, &jobSystem_);
         nameEnvironmentMapResources(prefilteredEnvironmentMap_, "PrefilteredSpecularCubemap");
         return;
     } catch (const std::exception& error) {
@@ -880,7 +880,7 @@ void Renderer::createPrefilteredEnvironmentMap()
 
 void Renderer::createBrdfLutTexture()
 {
-    brdfLutTexture_.create(context_, commandContext_, 256);
+    brdfLutTexture_.create(context_, commandContext_, 256, &jobSystem_);
     nameBrdfLutResources(brdfLutTexture_, "BrdfLut");
 }
 
