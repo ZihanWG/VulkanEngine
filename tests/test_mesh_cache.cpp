@@ -170,6 +170,49 @@ TEST_CASE("Foreign, truncated and empty blobs are refused before parsing", "[mes
     CHECK(meshCacheStatus(futureVersion, expectation) == MeshCacheStatus::VersionMismatch);
 }
 
+TEST_CASE("Ranges that would reach the GPU are validated", "[mesh-cache]")
+{
+    // Primitive ranges and LOD ranges become indexed indirect draws, and index
+    // values become vertex fetches. A cook that passes every header check can
+    // still be internally inconsistent, and a fallback cannot undo an
+    // out-of-bounds fetch that already happened.
+    const MeshCacheExpectation expectation = makeExpectation();
+
+    CpuMeshData pastIndices = makeMesh("M", 4, 6);
+    pastIndices.primitives[0].indexCount = 99;
+    CHECK_THROWS_AS(readMeshCache(writeMeshCache(std::vector<CpuMeshData>{pastIndices}, expectation)),
+                    std::runtime_error);
+
+    CpuMeshData pastLods = makeMesh("M", 4, 6);
+    pastLods.primitives[0].lodBase = 5;
+    CHECK_THROWS_AS(readMeshCache(writeMeshCache(std::vector<CpuMeshData>{pastLods}, expectation)),
+                    std::runtime_error);
+
+    CpuMeshData badIndex = makeMesh("M", 4, 6);
+    badIndex.indices[3] = 99;
+    CHECK_THROWS_AS(readMeshCache(writeMeshCache(std::vector<CpuMeshData>{badIndex}, expectation)),
+                    std::runtime_error);
+
+    // The valid mesh those were derived from still round-trips, so the checks
+    // are not rejecting everything.
+    CHECK_NOTHROW(readMeshCache(writeMeshCache(std::vector<CpuMeshData>{makeMesh("M", 4, 6)}, expectation)));
+}
+
+TEST_CASE("A replaced external buffer invalidates the cook", "[mesh-cache]")
+{
+    // An ASCII glTF holds no vertex data of its own. Fingerprinting only the
+    // .gltf would call the cook fresh after its .bin had been replaced, and the
+    // runtime would upload the old geometry while parsing the new scene.
+    MeshCacheExpectation cooked = makeExpectation();
+    cooked.bufferHash = 0x1111'2222'3333'4444ULL;
+    const std::vector<std::byte> blob = writeMeshCache(std::vector<CpuMeshData>{makeMesh("M", 4, 6)}, cooked);
+    REQUIRE(meshCacheStatus(blob, cooked) == MeshCacheStatus::Usable);
+
+    MeshCacheExpectation binChanged = cooked;
+    binChanged.bufferHash = 0x5555'6666'7777'8888ULL;
+    CHECK(meshCacheStatus(blob, binChanged) == MeshCacheStatus::SourceChanged);
+}
+
 TEST_CASE("An implausible mesh count is refused before allocating", "[mesh-cache]")
 {
     // meshCount is read from the file and sizes a vector. A corrupt value has to

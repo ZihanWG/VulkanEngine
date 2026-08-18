@@ -357,12 +357,23 @@ LoadedGltfAsset Mesh::createFromGltf(rhi::VulkanContext& context,
     GltfGeometry geometry = loadGltfGeometry(path, jobSystem, haveCooked ? &cookedMeshes : nullptr);
 
     LoadedGltfAsset loadedAsset{};
-    loadedAsset.meshes.reserve(geometry.meshes.size());
+    loadedAsset.meshes.resize(geometry.meshes.size());
     for (size_t meshIndex = 0; meshIndex < geometry.meshes.size(); ++meshIndex) {
-        loadedAsset.meshes.push_back(createFromGeometry(context,
-                                                        commandContext,
-                                                        std::move(geometry.meshes[meshIndex]),
-                                                        path.stem().string() + "Mesh" + std::to_string(meshIndex)));
+        CpuMeshData& meshData = geometry.meshes[meshIndex];
+        // A mesh the importer skipped -- non-triangle, or with no usable
+        // geometry -- is left as an empty slot so node references keep indexing
+        // by position. Uploading one would throw in createDeviceLocal and take
+        // the whole import down with it, where previously only that mesh was
+        // lost. The slot keeps a default-constructed, invalid Mesh.
+        if (meshData.vertices.empty() || meshData.indices.empty()) {
+            continue;
+        }
+
+        loadedAsset.meshes[meshIndex] =
+            createFromGeometry(context,
+                               commandContext,
+                               std::move(meshData),
+                               path.stem().string() + "Mesh" + std::to_string(meshIndex));
     }
 
     loadedAsset.nodeMeshInstances = std::move(geometry.nodeMeshInstances);

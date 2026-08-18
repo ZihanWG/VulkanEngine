@@ -135,11 +135,11 @@ Baking LOD chains and geometry offline (`tools/vemeshcook`, see
 
 | | uncooked | cooked |
 | --- | --- | --- |
-| glTF import | 369.07 ms | **14.05 ms (26x)** |
+| glTF import | 331.49 ms | **15.50 ms (21x)** |
 | renderer init (total) | ~466 ms | **~129 ms** |
 | scene create | ~441 ms | ~104 ms |
 
-Interleaved A/B, five warm runs each, spreads of 4.5% and 8.6%.
+Interleaved A/B, four warm runs each, spreads of 1.3% and 9.4%.
 
 Cooking Sponza takes ~410 ms and writes a 16.54 MiB `.vemesh` -- larger than the
 source `.bin` because every simplified LOD level is stored alongside the authored

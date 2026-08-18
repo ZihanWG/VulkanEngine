@@ -1,6 +1,9 @@
 #include "renderer/MeshCache.h"
 
+#include <json.hpp>
+
 #include <cstring>
+#include <fstream>
 #include <system_error>
 #include <stdexcept>
 #include <string>
@@ -15,6 +18,10 @@ namespace {
 // buy nothing.
 constexpr uint64_t kFnvOffsetBasis = 14695981039346656037ULL;
 constexpr uint64_t kFnvPrime = 1099511628211ULL;
+
+// Distinct from any digest hashBytes produces from real input, so a buffer
+// that cannot be read reads as changed rather than as absent.
+constexpr uint64_t kUnreadableBufferHash = 0xFFFFFFFFFFFFFFFFULL;
 
 uint64_t hashBytes(const void* data, size_t size, uint64_t seed = kFnvOffsetBasis)
 {
@@ -85,6 +92,61 @@ private:
     size_t offset_ = 0;
 };
 
+// Every external buffer an ASCII glTF references, folded into one value. Embedded
+// (data: URI) and GLB-internal buffers contribute nothing because they are part
+// of the file already covered by sourceSizeBytes/sourceWriteTime.
+uint64_t hashGltfBufferFiles(const std::filesystem::path& gltfPath)
+{
+    std::ifstream input(gltfPath);
+    if (!input) {
+        return kUnreadableBufferHash;
+    }
+
+    nlohmann::json document;
+    try {
+        input >> document;
+    } catch (const std::exception&) {
+        // A .glb is not JSON. Its buffers live inside the file itself, which the
+        // size and write time already cover.
+        return 0;
+    }
+
+    const auto buffers = document.find("buffers");
+    if (buffers == document.end() || !buffers->is_array()) {
+        return 0;
+    }
+
+    uint64_t hash = kFnvOffsetBasis;
+    for (const nlohmann::json& buffer : *buffers) {
+        const auto uri = buffer.find("uri");
+        if (uri == buffer.end() || !uri->is_string()) {
+            continue;
+        }
+
+        const std::string value = uri->get<std::string>();
+        if (value.rfind("data:", 0) == 0) {
+            continue;
+        }
+
+        const std::filesystem::path resolved = gltfPath.parent_path() / std::filesystem::path(value);
+        std::error_code error;
+        const auto size = std::filesystem::file_size(resolved, error);
+        const auto writeTime = std::filesystem::last_write_time(resolved, error);
+        if (error) {
+            // A referenced buffer that cannot be stat'd must never look unchanged.
+            return kUnreadableBufferHash;
+        }
+
+        hash = hashBytes(value.data(), value.size(), hash);
+        const auto sizeValue = static_cast<uint64_t>(size);
+        const auto timeValue = static_cast<int64_t>(writeTime.time_since_epoch().count());
+        hash = hashBytes(&sizeValue, sizeof(sizeValue), hash);
+        hash = hashBytes(&timeValue, sizeof(timeValue), hash);
+    }
+
+    return hash;
+}
+
 } // namespace
 
 std::string_view meshCacheStatusName(MeshCacheStatus status)
@@ -133,6 +195,11 @@ bool makeMeshCacheExpectation(const std::filesystem::path& gltfPath, MeshCacheEx
     expectation.lodSettingsHash = hashLodBuildSettings(LodBuildSettings{});
     expectation.sourceSizeBytes = static_cast<uint64_t>(size);
     expectation.sourceWriteTime = writeTime.time_since_epoch().count();
+    // An ASCII glTF holds no vertex data of its own -- Sponza's lives in
+    // Sponza.bin. Fingerprinting only the .gltf would call a cook fresh after its
+    // geometry had been replaced, and the runtime would upload the old vertices
+    // while parsing the new scene metadata.
+    expectation.bufferHash = hashGltfBufferFiles(gltfPath);
     return true;
 }
 
@@ -176,7 +243,8 @@ MeshCacheStatus meshCacheStatus(std::span<const std::byte> blob, const MeshCache
     if (header.lodSettingsHash != expected.lodSettingsHash) {
         return MeshCacheStatus::LodSettingsMismatch;
     }
-    if (header.sourceSizeBytes != expected.sourceSizeBytes || header.sourceWriteTime != expected.sourceWriteTime) {
+    if (header.sourceSizeBytes != expected.sourceSizeBytes || header.sourceWriteTime != expected.sourceWriteTime
+        || header.bufferHash != expected.bufferHash) {
         return MeshCacheStatus::SourceChanged;
     }
 
@@ -193,6 +261,7 @@ std::vector<std::byte> writeMeshCache(std::span<const CpuMeshData> meshes, const
     header.lodSettingsHash = expectation.lodSettingsHash;
     header.sourceSizeBytes = expectation.sourceSizeBytes;
     header.sourceWriteTime = expectation.sourceWriteTime;
+    header.bufferHash = expectation.bufferHash;
 
     std::vector<std::byte> blob;
     append(blob, header);
@@ -260,14 +329,35 @@ std::vector<CpuMeshData> readMeshCache(std::span<const std::byte> blob)
 
         mesh.localBounds = reader.read<Aabb>();
 
-        // The LOD table indexes the index buffer, so a file that passed every
-        // header check can still be internally inconsistent.
+        // A file can pass every header check and still be internally inconsistent,
+        // and these fields do not stay on the CPU: primitive ranges and LOD ranges
+        // become indexed indirect draws, and the index values become vertex
+        // fetches. A corrupt cook must fail here and fall back to the glTF rather
+        // than reach the GPU.
         if (mesh.indexCount > mesh.indices.size()) {
             throw std::runtime_error("Cooked mesh declares more authored indices than it stores.");
         }
         for (const MeshLod& lod : mesh.lods) {
             if (static_cast<size_t>(lod.firstIndex) + lod.indexCount > mesh.indices.size()) {
                 throw std::runtime_error("Cooked mesh has a LOD level pointing past its index buffer.");
+            }
+        }
+        for (const MeshPrimitive& primitive : mesh.primitives) {
+            if (static_cast<size_t>(primitive.firstIndex) + primitive.indexCount > mesh.indices.size()) {
+                throw std::runtime_error("Cooked mesh has a primitive pointing past its index buffer.");
+            }
+            if (static_cast<size_t>(primitive.lodBase) + primitive.lodCount > mesh.lods.size()) {
+                throw std::runtime_error("Cooked mesh has a primitive pointing past its LOD table.");
+            }
+        }
+
+        // One pass over the indices. It costs a few ms on a scene the size of
+        // Sponza and is what stops a corrupt cook from issuing out-of-bounds
+        // vertex fetches, which is not something a fallback can undo later.
+        const auto vertexCount = static_cast<uint32_t>(mesh.vertices.size());
+        for (uint32_t index : mesh.indices) {
+            if (index >= vertexCount) {
+                throw std::runtime_error("Cooked mesh has an index outside its vertex buffer.");
             }
         }
     }

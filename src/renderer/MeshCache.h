@@ -36,6 +36,10 @@ struct MeshCacheExpectation {
     uint64_t lodSettingsHash = 0;
     uint64_t sourceSizeBytes = 0;
     int64_t sourceWriteTime = 0;
+    // Size and write time of every external buffer the glTF references. An ASCII
+    // glTF holds no vertex data itself, so without this a replaced .bin leaves
+    // the cook looking fresh.
+    uint64_t bufferHash = 0;
 };
 
 struct MeshCacheHeader {
@@ -48,6 +52,7 @@ struct MeshCacheHeader {
     uint64_t lodSettingsHash = 0;
     uint64_t sourceSizeBytes = 0;
     int64_t sourceWriteTime = 0;
+    uint64_t bufferHash = 0;
 };
 
 // Why a cooked file was or was not used. Everything but Usable means "load the

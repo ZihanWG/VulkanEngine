@@ -177,10 +177,16 @@ parse, vertex assembly and LOD construction all live in Core
 
 | | median | spread |
 | --- | --- | --- |
-| uncooked | 369.07 ms | 4.5% |
-| cooked | **14.05 ms** | 8.6% |
+| uncooked | 331.49 ms | 1.3% |
+| cooked | **15.50 ms** | 9.4% |
 
-**26x, −355 ms.** Renderer init on Sponza drops to ~129 ms.
+**21x, −316 ms.** Renderer init on Sponza drops to ~129 ms.
+
+The cooked path validates every primitive range, LOD range and index value
+against the buffers they address before uploading -- those become indexed
+indirect draws and vertex fetches, and a fallback cannot undo an out-of-bounds
+fetch that already happened. The index scan is the ~1.5 ms difference from an
+earlier unvalidated measurement, and it is worth it.
 
 ### The header is what keeps a stale cook from rendering wrong
 
@@ -189,7 +195,11 @@ just bytes: if `Vertex` gains a field or a LOD threshold changes, an old file
 still parses cleanly and hands back **wrong geometry from a valid-looking
 header**. So `renderer/MeshCache.h` records `sizeof(Vertex)`,
 `sizeof(MeshPrimitive)`, `sizeof(MeshLod)`, a fingerprint of the
-`LodBuildSettings` that produced it, and the source glTF's size and write time.
+`LodBuildSettings` that produced it, the source glTF's size and write time, **and
+a digest of every external buffer it references**. That last one matters because
+an ASCII glTF holds no vertex data of its own -- Sponza's lives in `Sponza.bin`,
+and fingerprinting only the `.gltf` would call a cook fresh after its geometry
+had been replaced.
 
 `meshCacheStatus()` returns a **reason**, not a bool, so a rejection reads as
 "the source glTF changed since the cook. Re-run vemeshcook." rather than as an
