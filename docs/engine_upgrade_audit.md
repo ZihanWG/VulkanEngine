@@ -176,6 +176,11 @@ screenshots.
 - The render graph does not schedule across queues, alias memory, or manage
   transient resources for production. Async compute exists, but the renderer
   owns that submission rather than the graph (see async_compute.md).
+- Both shadow paths cache: the punctual atlas per tile and the cascades per
+  cascade, each redrawing only when a content hash of its own inputs moves. The
+  cascades are fitted to the camera, so camera motion dirties every cascade;
+  what the cache buys under a moving camera is a measurement, not an assumption,
+  and the debug panel reports it.
 - Occlusion culling is conservative and AABB based, on by default. Phase 1 uses
   the previous frame's depth pyramid; phase 2 re-tests its rejects against a
   mid-frame rebuild, so disocclusions are rescued in the same frame rather than
