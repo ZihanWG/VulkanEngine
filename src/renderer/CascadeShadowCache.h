@@ -49,8 +49,12 @@ public:
         addBytes(&value, sizeof(value));
     }
     // Pointer identity stands in for "which mesh", which is what the draw
-    // actually selects. Hashing the address is safe because a reallocation that
-    // reused an address would have changed the geometry hashed alongside it.
+    // actually selects. Within one scene that is exact: an index range names
+    // geometry in that mesh's own buffer, so a reallocation reusing an address
+    // would have changed the range hashed alongside it. Across a scene switch it
+    // is not -- the buffer behind the address is replaced wholesale -- which is
+    // why Renderer::resetSceneState drops the caches outright rather than
+    // trusting this.
     void add(const void* pointer)
     {
         addBytes(&pointer, sizeof(pointer));
