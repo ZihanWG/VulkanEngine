@@ -32,6 +32,12 @@ struct CsmSettings {
     // redrew unconditionally until now. Off restores that, and is the A/B
     // reference the cached path has to match pixel for pixel.
     bool enableCascadeCache = true;
+    // Fits cascades to their slice's bounding sphere instead of its light-space
+    // AABB. Off by default: it removes the rotation-driven shimmer the AABB fit
+    // has, but a sphere circumscribing the slice is wider than the slice, so the
+    // same texels cover more world. MEASURED: it does NOT help the cascade cache
+    // -- see CascadeMath.h. Its value is stability, not cache hits.
+    bool enableStableCascadeFit = false;
 
     // Defaulted rather than written out: a hand-written comparison would have to
     // be extended for every new field, which is exactly the failure that made

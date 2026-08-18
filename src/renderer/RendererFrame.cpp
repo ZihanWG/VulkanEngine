@@ -565,6 +565,7 @@ void Renderer::updateCascades(float aspectRatio)
     cascadeInput.shadowDistance = csmSettings_.shadowDistance;
     cascadeInput.lambda = csmSettings_.lambda;
     cascadeInput.enableTexelSnapping = csmSettings_.enableTexelSnapping;
+    cascadeInput.enableStableFit = csmSettings_.enableStableCascadeFit;
     cascadeInput.shadowResolution = shadowSettings_.resolution;
     cascadeInput.cameraPosition = camera_.position;
     cascadeInput.cameraTarget = camera_.target;

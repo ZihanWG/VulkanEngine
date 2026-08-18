@@ -178,9 +178,14 @@ screenshots.
   owns that submission rather than the graph (see async_compute.md).
 - Both shadow paths cache: the punctual atlas per tile and the cascades per
   cascade, each redrawing only when a content hash of its own inputs moves. The
-  cascades are fitted to the camera, so camera motion dirties every cascade;
-  what the cache buys under a moving camera is a measurement, not an assumption,
-  and the debug panel reports it.
+  cascade cache is a static-scene win and, as measured, nothing else: the
+  cascades are fitted to the camera, so any camera motion dirties all of them.
+  The optional bounding-sphere fit does not change that -- it makes the ortho
+  extent rotation-invariant, but the slice centre still orbits the camera, and
+  the matrix survives only 0.0025-0.041 degrees of yaw. Making cascades cacheable
+  under a moving camera needs the cascade anchored to the camera position rather
+  than to the frustum slice, which is a different and lossier trade and is not
+  implemented.
 - Occlusion culling is conservative and AABB based, on by default. Phase 1 uses
   the previous frame's depth pyramid; phase 2 re-tests its rejects against a
   mid-frame rebuild, so disocclusions are rescued in the same frame rather than

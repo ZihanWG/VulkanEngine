@@ -10,6 +10,82 @@
 
 namespace ve::renderer {
 
+namespace {
+
+// Fits one cascade to the bounding sphere of its frustum slice.
+//
+// Three things have to be invariant for a cascade matrix to reproduce bit for
+// bit across frames, and the AABB fit gets none of them right:
+//
+//  * the ortho extent. Here it is the sphere radius, which depends only on the
+//    slice's near/far and the camera's fov/aspect -- not on where the camera is
+//    pointing. The AABB fit measures rotated corners, so it breathes as the
+//    camera turns.
+//  * the snapping grid. It follows from the extent, so a breathing extent means
+//    a grid that never lands on the same lattice twice.
+//  * the depth range. Deriving it from rotated bounds makes it breathe too, so
+//    it is pinned to the radius instead, which leaves the projection matrix
+//    fully constant for a given cascade. Only the view translates, and it does
+//    so in whole-texel steps because the centre is snapped on all three light
+//    axes rather than only the two lateral ones.
+//
+// The radius is measured from the corners rather than derived in closed form:
+// the closed form needs a separate case for a centre that falls beyond the far
+// plane (reachable at wide fields of view), and this is called four times a
+// frame.
+ShadowCascade fitStableCascade(const std::array<glm::vec3, 8>& corners,
+                               const glm::vec3& sliceCenter,
+                               const glm::vec3& lightDirection,
+                               const glm::vec3& lightUp,
+                               const glm::vec3& lightRight,
+                               const glm::vec3& lightBasisUp,
+                               uint32_t shadowResolution,
+                               float cascadeNear,
+                               float cascadeFar)
+{
+    float radius = 0.0f;
+    for (const glm::vec3& corner : corners) {
+        radius = std::max(radius, glm::length(corner - sliceCenter));
+    }
+    // A zero radius would divide by zero below and produce a degenerate
+    // projection; a hair of extent costs nothing and keeps the matrix finite.
+    radius = std::max(radius, 0.001f);
+
+    const float resolution = static_cast<float>(std::max(shadowResolution, 1U));
+    const float worldUnitsPerTexel = (radius * 2.0f) / resolution;
+
+    // Snapped on all three light axes. The lateral two are the classic
+    // anti-shimmer snap; the third is what keeps the near/far planes -- and so
+    // the whole view matrix -- from sliding continuously as the camera moves
+    // toward or away from the light.
+    const float centerX = std::round(glm::dot(sliceCenter, lightRight) / worldUnitsPerTexel) * worldUnitsPerTexel;
+    const float centerY = std::round(glm::dot(sliceCenter, lightBasisUp) / worldUnitsPerTexel) * worldUnitsPerTexel;
+    const float centerZ = std::round(glm::dot(sliceCenter, lightDirection) / worldUnitsPerTexel) * worldUnitsPerTexel;
+    const glm::vec3 snappedCenter = lightRight * centerX + lightBasisUp * centerY + lightDirection * centerZ;
+
+    // How far back along the light the view sits, and therefore how much space
+    // there is for casters between the light and the sphere. Constant for a
+    // given cascade, because it is a function of the radius alone -- a
+    // scene-dependent term here would put the projection back in play.
+    const float casterExtent = std::max(radius * 4.0f, 10.0f);
+
+    const glm::mat4 lightView =
+        glm::lookAt(snappedCenter - lightDirection * casterExtent, snappedCenter, lightUp);
+
+    glm::mat4 lightProjection = glm::ortho(-radius, radius, -radius, radius, 0.0f, casterExtent + radius);
+    lightProjection[1][1] *= -1.0f;
+
+    ShadowCascade cascade{};
+    cascade.lightViewProjection = lightProjection * lightView;
+    cascade.lightFrustum = Frustum::fromViewProjection(cascade.lightViewProjection);
+    cascade.splitDepth = cascadeFar;
+    cascade.nearDepth = cascadeNear;
+    cascade.farDepth = cascadeFar;
+    return cascade;
+}
+
+} // namespace
+
 CascadeBuildOutput computeShadowCascades(const CascadeBuildInput& input)
 {
     CascadeBuildOutput output{};
@@ -65,6 +141,20 @@ CascadeBuildOutput computeShadowCascades(const CascadeBuildInput& input)
             cascadeCenter += corner;
         }
         cascadeCenter /= static_cast<float>(corners.size());
+
+        if (input.enableStableFit) {
+            output.cascades[cascadeIndex] = fitStableCascade(corners,
+                                                             cascadeCenter,
+                                                             lightDirection,
+                                                             lightUp,
+                                                             lightRight,
+                                                             lightBasisUp,
+                                                             input.shadowResolution,
+                                                             cascadeNear,
+                                                             cascadeFar);
+            cascadeNear = cascadeFar;
+            continue;
+        }
 
         const glm::mat4 fitLightView = glm::lookAt(cascadeCenter - lightDirection, cascadeCenter, lightUp);
         glm::vec3 minBounds{std::numeric_limits<float>::infinity()};

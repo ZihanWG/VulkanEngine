@@ -694,6 +694,16 @@ void Renderer::drawShadowsDebugUi()
                           "for the second shadow lookup.");
     }
 
+    ImGui::Checkbox("Stable (sphere) cascade fit", &csmSettings_.enableStableCascadeFit);
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Fits each cascade to its slice's bounding sphere rather than the\n"
+                          "slice's light-space AABB, so the ortho extent stops breathing as\n"
+                          "the camera turns. Removes rotation shimmer; costs sharpness, since\n"
+                          "a sphere around the slice is wider than the slice.\n\n"
+                          "It does NOT help the cascade cache below: the slice centre orbits\n"
+                          "the camera, so any visible rotation still moves it many texels.");
+    }
+
     ImGui::Checkbox("Cascade caching enabled", &csmSettings_.enableCascadeCache);
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Redraws a cascade only when a hash of what it draws moves: the\n"

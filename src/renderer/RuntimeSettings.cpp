@@ -467,6 +467,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readFloat(*csm, "normalBias", settings.csm.normalBias);
         readFloat(*csm, "cascadeBlend", settings.csm.cascadeBlend);
         readBool(*csm, "enableCascadeCache", settings.csm.enableCascadeCache);
+        readBool(*csm, "enableStableCascadeFit", settings.csm.enableStableCascadeFit);
     }
 
     if (const Json* gi = objectMember(json, "gi")) {
@@ -608,6 +609,7 @@ Json toJson(const RuntimeSettings& settings)
               {"normalBias", settings.csm.normalBias},
               {"cascadeBlend", settings.csm.cascadeBlend},
               {"enableCascadeCache", settings.csm.enableCascadeCache},
+              {"enableStableCascadeFit", settings.csm.enableStableCascadeFit},
               {"shadowDistance", settings.csm.shadowDistance},
               {"enableTexelSnapping", settings.csm.enableTexelSnapping},
               {"enableCascadeDebugColors", settings.csm.enableCascadeDebugColors}}},
