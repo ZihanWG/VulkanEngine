@@ -1596,6 +1596,7 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
     csmSettings_.shadowDistance = settings.csm.shadowDistance;
     csmSettings_.enableTexelSnapping = settings.csm.enableTexelSnapping;
     csmSettings_.enableCascadeDebugColors = settings.csm.enableCascadeDebugColors;
+    csmSettings_.enableCascadeCache = settings.csm.enableCascadeCache;
 
     if (mode == RuntimeSettingsApplyMode::Startup) {
         csmSettings_.cascadeCount = settings.csm.cascadeCount;

@@ -27,6 +27,11 @@ struct CsmSettings {
     // cascade's depth range. Without it the split is a hard line where filter
     // width and texel density change at once. Zero restores the hard split.
     float cascadeBlend = 0.0f;
+    // Redraw a cascade only when the hash of what it draws moves. The punctual
+    // atlas has cached this way since it shipped; the cascades cleared and
+    // redrew unconditionally until now. Off restores that, and is the A/B
+    // reference the cached path has to match pixel for pixel.
+    bool enableCascadeCache = true;
 };
 
 struct ToneMappingSettings {
