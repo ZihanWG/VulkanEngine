@@ -16,6 +16,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -63,6 +64,18 @@ enum class MeshCacheStatus {
 };
 
 [[nodiscard]] std::string_view meshCacheStatusName(MeshCacheStatus status);
+
+// Where the cook writes and the runtime looks: `Sponza.gltf` -> `Sponza.vemesh`,
+// beside the source. Unlike a cooked texture there is no material slot, so one
+// glTF has exactly one cooked file.
+[[nodiscard]] std::filesystem::path meshCacheSidecarPath(const std::filesystem::path& gltfPath);
+
+// Builds the expectation for `gltfPath` from the running engine's own types and
+// the file on disk. Both the cook and the runtime go through this so they cannot
+// disagree about what a match means. Returns false when the source cannot be
+// stat'd.
+[[nodiscard]] bool makeMeshCacheExpectation(const std::filesystem::path& gltfPath,
+                                            MeshCacheExpectation& expectation);
 
 // Fingerprint of the settings that decide what the LOD chains contain. Changing
 // any of them changes the correct output, so it has to invalidate the cook.

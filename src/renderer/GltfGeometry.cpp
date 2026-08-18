@@ -558,7 +558,9 @@ bool copyEncodedImageData(tinygltf::Image* image,
 
 } // namespace
 
-GltfGeometry loadGltfGeometry(const std::filesystem::path& path, JobSystem* jobSystem)
+GltfGeometry loadGltfGeometry(const std::filesystem::path& path,
+                              JobSystem* jobSystem,
+                              std::vector<CpuMeshData>* cookedMeshes)
 {
     tinygltf::TinyGLTF loader;
     loader.SetImageLoader(copyEncodedImageData, nullptr);
@@ -789,17 +791,42 @@ GltfGeometry loadGltfGeometry(const std::filesystem::path& path, JobSystem* jobS
         return mesh;
     };
 
-    std::vector<CpuMeshData> meshes(model.meshes.size());
+    std::vector<CpuMeshData> meshes;
     std::vector<bool> meshLoaded(model.meshes.size(), false);
     size_t loadedMeshCount = 0;
-    for (size_t meshIndex = 0; meshIndex < model.meshes.size(); ++meshIndex) {
-        try {
-            meshes[meshIndex] = createMeshFromSource(meshIndex);
-            meshLoaded[meshIndex] = true;
-            ++loadedMeshCount;
-        } catch (const std::exception& error) {
-            Logger::warn("Skipping glTF mesh " + std::to_string(meshIndex) + " (" +
-                         meshDebugName(model.meshes[meshIndex], meshIndex) + "): " + error.what());
+
+    if (cookedMeshes != nullptr) {
+        // Node references index meshes by position, so a cooked file built from a
+        // different glTF would silently attach the wrong geometry to the wrong
+        // node. The cache header already guards that by source size and write
+        // time; this is the cheap second check on the one thing that would still
+        // render.
+        if (cookedMeshes->size() != model.meshes.size()) {
+            throw std::runtime_error("Cooked mesh geometry has " + std::to_string(cookedMeshes->size())
+                                     + " mesh(es) but " + filename + " has " + std::to_string(model.meshes.size())
+                                     + ".");
+        }
+
+        meshes = std::move(*cookedMeshes);
+        for (size_t meshIndex = 0; meshIndex < meshes.size(); ++meshIndex) {
+            // An entry the original import skipped was written out empty, so this
+            // reproduces the same meshLoaded pattern the node traversal expects.
+            meshLoaded[meshIndex] = !meshes[meshIndex].indices.empty();
+            if (meshLoaded[meshIndex]) {
+                ++loadedMeshCount;
+            }
+        }
+    } else {
+        meshes.resize(model.meshes.size());
+        for (size_t meshIndex = 0; meshIndex < model.meshes.size(); ++meshIndex) {
+            try {
+                meshes[meshIndex] = createMeshFromSource(meshIndex);
+                meshLoaded[meshIndex] = true;
+                ++loadedMeshCount;
+            } catch (const std::exception& error) {
+                Logger::warn("Skipping glTF mesh " + std::to_string(meshIndex) + " (" +
+                             meshDebugName(model.meshes[meshIndex], meshIndex) + "): " + error.what());
+            }
         }
     }
 

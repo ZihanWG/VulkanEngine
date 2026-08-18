@@ -1,6 +1,7 @@
 #include "renderer/Mesh.h"
 
 #include "core/Logger.h"
+#include "renderer/MeshCache.h"
 #include "rhi/VulkanCommandContext.h"
 #include "rhi/VulkanContext.h"
 #include "rhi/VulkanDebugUtils.h"
@@ -18,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <future>
 #include <glm/ext/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -33,6 +35,30 @@
 namespace ve::renderer {
 
 namespace {
+
+// Returns empty on any problem: a missing cook is a normal miss, and
+// meshCacheStatus() reports an empty blob as Missing.
+std::vector<std::byte> readFileBytes(const std::filesystem::path& path)
+{
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    if (!input) {
+        return {};
+    }
+
+    const std::streamsize size = input.tellg();
+    if (size <= 0) {
+        return {};
+    }
+
+    input.seekg(0);
+    std::vector<std::byte> bytes(static_cast<size_t>(size));
+    input.read(reinterpret_cast<char*>(bytes.data()), size);
+    if (!input) {
+        return {};
+    }
+
+    return bytes;
+}
 
 constexpr float kPi = 3.14159265358979323846f;
 
@@ -300,8 +326,35 @@ LoadedGltfAsset Mesh::createFromGltf(rhi::VulkanContext& context,
                                      const std::filesystem::path& path,
                                      JobSystem* jobSystem)
 {
+    // A cooked sidecar removes assembly and LOD construction -- ~333 ms of a
+    // ~349 ms Sponza import. Any reason it does not match falls back to the glTF
+    // and says why: "your cook is stale, re-run it" and an unexplained slow
+    // startup must not look the same in a log.
+    std::vector<CpuMeshData> cookedMeshes;
+    bool haveCooked = false;
+
+    MeshCacheExpectation expectation{};
+    if (makeMeshCacheExpectation(path, expectation)) {
+        const std::filesystem::path cookedPath = meshCacheSidecarPath(path);
+        const std::vector<std::byte> blob = readFileBytes(cookedPath);
+        const MeshCacheStatus status = meshCacheStatus(blob, expectation);
+        if (status == MeshCacheStatus::Usable) {
+            try {
+                cookedMeshes = readMeshCache(blob);
+                haveCooked = true;
+                Logger::info("Using cooked mesh geometry: " + cookedPath.string());
+            } catch (const std::exception& error) {
+                Logger::warn("Cooked mesh geometry '" + cookedPath.string()
+                             + "' could not be read; loading the glTF instead: " + error.what());
+            }
+        } else if (status != MeshCacheStatus::Missing) {
+            Logger::warn("Ignoring cooked mesh geometry '" + cookedPath.string()
+                         + "': " + std::string(meshCacheStatusName(status)) + ". Re-run vemeshcook.");
+        }
+    }
+
     // Everything expensive happens without a device; this is only the upload.
-    GltfGeometry geometry = loadGltfGeometry(path, jobSystem);
+    GltfGeometry geometry = loadGltfGeometry(path, jobSystem, haveCooked ? &cookedMeshes : nullptr);
 
     LoadedGltfAsset loadedAsset{};
     loadedAsset.meshes.reserve(geometry.meshes.size());

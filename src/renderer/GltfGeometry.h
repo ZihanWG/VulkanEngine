@@ -107,8 +107,17 @@ struct GltfGeometry {
 // serial and produces a byte-identical index buffer either way, because only the
 // serial append decides layout.
 //
+// `cookedMeshes`, when non-null, supplies geometry that was built earlier and
+// skips assembly and simplification entirely -- ~333 ms of a ~349 ms Sponza
+// import. The glTF is still parsed either way: materials, textures and node
+// transforms come from it and cost ~2 ms, so cooking them too would buy nothing
+// and add a second staleness surface. The vector is consumed.
+//
 // Must not be called from a JobSystem worker. Throws std::runtime_error when the
-// file cannot be read or holds no supported triangle geometry.
-[[nodiscard]] GltfGeometry loadGltfGeometry(const std::filesystem::path& path, JobSystem* jobSystem = nullptr);
+// file cannot be read, holds no supported triangle geometry, or (with
+// `cookedMeshes`) disagrees with the cooked data about how many meshes it has.
+[[nodiscard]] GltfGeometry loadGltfGeometry(const std::filesystem::path& path,
+                                            JobSystem* jobSystem = nullptr,
+                                            std::vector<CpuMeshData>* cookedMeshes = nullptr);
 
 } // namespace ve::renderer

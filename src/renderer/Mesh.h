@@ -53,6 +53,10 @@ public:
     //
     // Must not be called from a JobSystem worker: parallelFor would block on
     // chunks that need the (occupied) pool to progress.
+    // Prefers the cooked .vemesh sidecar beside `path` when one matches this
+    // build (renderer/MeshCache.h), which skips assembly and LOD construction
+    // entirely. Any mismatch falls back to loading the glTF and logs the reason,
+    // so a stale cook is never fatal and never silent.
     [[nodiscard]] static LoadedGltfAsset createFromGltf(
         rhi::VulkanContext& context,
         const rhi::VulkanCommandContext& commandContext,

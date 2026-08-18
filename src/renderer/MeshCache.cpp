@@ -1,6 +1,7 @@
 #include "renderer/MeshCache.h"
 
 #include <cstring>
+#include <system_error>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -106,6 +107,33 @@ std::string_view meshCacheStatusName(MeshCacheStatus status)
     }
 
     return "unknown";
+}
+
+std::filesystem::path meshCacheSidecarPath(const std::filesystem::path& gltfPath)
+{
+    std::filesystem::path sidecar = gltfPath;
+    sidecar.replace_extension(".vemesh");
+    return sidecar;
+}
+
+bool makeMeshCacheExpectation(const std::filesystem::path& gltfPath, MeshCacheExpectation& expectation)
+{
+    std::error_code error;
+    const auto size = std::filesystem::file_size(gltfPath, error);
+    if (error) {
+        return false;
+    }
+
+    const auto writeTime = std::filesystem::last_write_time(gltfPath, error);
+    if (error) {
+        return false;
+    }
+
+    expectation = MeshCacheExpectation{};
+    expectation.lodSettingsHash = hashLodBuildSettings(LodBuildSettings{});
+    expectation.sourceSizeBytes = static_cast<uint64_t>(size);
+    expectation.sourceWriteTime = writeTime.time_since_epoch().count();
+    return true;
 }
 
 uint64_t hashLodBuildSettings(const LodBuildSettings& settings)

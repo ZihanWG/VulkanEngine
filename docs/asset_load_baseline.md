@@ -128,6 +128,23 @@ The 5 of 77 textures that stay uncompressed are the procedurally generated ones
 (fallbacks, the backdrop gradient, the cutout lattice), which have no source file
 to cook from.
 
+## After the mesh cook
+
+Baking LOD chains and geometry offline (`tools/vemeshcook`, see
+[mesh_lod.md](mesh_lod.md)) removes what parallelisation could only spread:
+
+| | uncooked | cooked |
+| --- | --- | --- |
+| glTF import | 369.07 ms | **14.05 ms (26x)** |
+| renderer init (total) | ~466 ms | **~129 ms** |
+| scene create | ~441 ms | ~104 ms |
+
+Interleaved A/B, five warm runs each, spreads of 4.5% and 8.6%.
+
+Cooking Sponza takes ~410 ms and writes a 16.54 MiB `.vemesh` -- larger than the
+source `.bin` because every simplified LOD level is stored alongside the authored
+geometry. Cooked files are gitignored build artifacts, like the `.ktx2` sidecars.
+
 ## After parallel IBL precompute
 
 With import and upload dealt with, what was left in scene creation was a fixed

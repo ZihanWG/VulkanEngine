@@ -362,6 +362,20 @@ else()
     target_compile_options(vecook PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+# Offline mesh cook (docs/mesh_lod.md). Like vecook it links VulkanEngineCore
+# alone: parse, vertex assembly and LOD construction all live in Core precisely so
+# this tool never pulls in Vulkan or SDL3.
+add_executable(vemeshcook
+    tools/vemeshcook/main.cpp
+)
+target_link_libraries(vemeshcook PRIVATE VulkanEngineCore)
+
+if(MSVC)
+    target_compile_options(vemeshcook PRIVATE /W4 /permissive- /EHsc /utf-8)
+else()
+    target_compile_options(vemeshcook PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 if(APPLE AND VULKAN_ENGINE_BUILD_MACOS_BUNDLE)
     set_target_properties(VulkanEngine PROPERTIES
         MACOSX_BUNDLE TRUE
