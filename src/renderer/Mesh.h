@@ -2,6 +2,7 @@
 
 #include "core/JobSystem.h"
 #include "renderer/Bounds.h"
+#include "renderer/GltfGeometry.h"
 #include "renderer/MeshLod.h"
 #include "rhi/VulkanBuffer.h"
 
@@ -14,59 +15,10 @@
 #include <glm/vec4.hpp>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace ve::renderer {
-
-struct Vertex {
-    glm::vec3 position;
-    glm::vec3 color;
-    glm::vec2 uv;
-    glm::vec3 normal;
-    glm::vec4 tangent;
-};
-
-struct MeshPrimitive {
-    uint32_t firstIndex = 0;
-    uint32_t indexCount = 0;
-    uint32_t materialIndex = 0;
-    // Half-open range inside Mesh::lods(). lodCount is at least 1 for any
-    // primitive that produced geometry, because level 0 always exists.
-    uint32_t lodBase = 0;
-    uint32_t lodCount = 0;
-};
-
-struct GltfTextureInfo {
-    std::string debugName;
-    std::filesystem::path path;
-    std::vector<uint8_t> encodedData;
-    bool embedded = false;
-};
-
-struct GltfMaterialInfo {
-    std::string debugName;
-    glm::vec4 baseColorFactor = glm::vec4(1.0f);
-    glm::vec3 emissiveFactor = glm::vec3(0.0f);
-    float metallic = 1.0f;
-    float roughness = 1.0f;
-    int baseColorTextureIndex = -1;
-    int normalTextureIndex = -1;
-    int metallicRoughnessTextureIndex = -1;
-    int emissiveTextureIndex = -1;
-    // glTF alphaMode / alphaCutoff / doubleSided, kept in the source spelling so
-    // Material can round-trip them. They decide the render bucket, so importing a
-    // cutout or transparent glTF without them would silently render it opaque.
-    std::string alphaMode = "OPAQUE";
-    float alphaCutoff = 0.5f;
-    bool doubleSided = false;
-    bool fallback = false;
-};
-
-struct GltfNodeMeshInstance {
-    uint32_t meshIndex = 0;
-    glm::mat4 transform{1.0f};
-    std::string debugName;
-};
 
 struct LoadedGltfAsset;
 
@@ -106,6 +58,15 @@ public:
         const rhi::VulkanCommandContext& commandContext,
         const std::filesystem::path& path,
         JobSystem* jobSystem = nullptr);
+
+    // Uploads already-built geometry. This is the only Vulkan step in glTF
+    // import, which is what lets the rest of it run offline or on a worker --
+    // see renderer/GltfGeometry.h. `geometry` is consumed.
+    [[nodiscard]] static Mesh createFromGeometry(
+        rhi::VulkanContext& context,
+        const rhi::VulkanCommandContext& commandContext,
+        CpuMeshData&& geometry,
+        std::string_view debugNamePrefix);
 
     [[nodiscard]] VkBuffer vertexBuffer() const { return vertexBuffer_.buffer(); }
     [[nodiscard]] VkBuffer indexBuffer() const { return indexBuffer_.buffer(); }
