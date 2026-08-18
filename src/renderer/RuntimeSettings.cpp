@@ -34,6 +34,15 @@ ExposureMode exposureModeValue(int exposureMode)
     return ExposureMode::Histogram;
 }
 
+void applyCsmSettings(const CsmSettings& incoming, CsmSettings& current, bool startup)
+{
+    const uint32_t previousCascadeCount = current.cascadeCount;
+    current = incoming;
+    if (!startup) {
+        current.cascadeCount = previousCascadeCount;
+    }
+}
+
 void clampRuntimeSettings(RenderScaleSettings& renderScale,
                           DynamicResolutionSettings& dynamicResolution,
                           ToneMappingSettings& toneMapping,

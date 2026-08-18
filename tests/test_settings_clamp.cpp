@@ -294,3 +294,67 @@ TEST_CASE("Fog scattering colour stays a valid albedo", "[settings][fog]")
     CHECK(settings.fog.scatteringColor[1] == Catch::Approx(0.0f));
     CHECK(settings.fog.scatteringColor[2] == Catch::Approx(0.5f));
 }
+
+// --- CSM settings apply ---------------------------------------------------
+//
+// applyCsmSettings was extracted from Renderer::applyRuntimeSettings after that
+// function was found to be dropping `normalBias` and `cascadeBlend` on every
+// load: both were clamped, written to JSON and read back, then discarded on the
+// way into the renderer, because the copy there listed fields by hand and those
+// two were never added to the list. The whole point of the extraction is that
+// the case below fails for any future field that goes the same way.
+
+TEST_CASE("Applying CSM settings at startup transfers every field", "[settings-apply]")
+{
+    ve::CsmSettings incoming{};
+    // Every field set away from its default, so a dropped one shows up as a
+    // mismatch rather than coinciding with the value already there.
+    incoming.cascadeCount = 3;
+    incoming.lambda = 0.75f;
+    incoming.nearPlane = 0.25f;
+    incoming.farPlane = 250.0f;
+    incoming.shadowDistance = 55.0f;
+    incoming.enableTexelSnapping = false;
+    incoming.enableCascadeDebugColors = true;
+    incoming.depthBiasConstant = 0.004f;
+    incoming.depthBiasSlope = 0.009f;
+    incoming.normalBias = 0.0075f;
+    incoming.cascadeBlend = 0.25f;
+    incoming.enableCascadeCache = false;
+
+    // Defaults, so nothing below can pass by already holding the right value.
+    ve::CsmSettings current{};
+    REQUIRE_FALSE(current == incoming);
+
+    ve::applyCsmSettings(incoming, current, /*startup=*/true);
+
+    // Whole-struct comparison on purpose: a field-by-field check here would
+    // need extending for each new field, which is the bug this guards against.
+    REQUIRE(current == incoming);
+}
+
+TEST_CASE("Applying CSM settings at runtime holds the cascade count", "[settings-apply]")
+{
+    // cascadeCount sizes the shadow-map image, so only shadow-map creation may
+    // change it. Every other field still has to follow.
+    ve::CsmSettings incoming{};
+    incoming.cascadeCount = 1;
+    incoming.normalBias = 0.0075f;
+    incoming.cascadeBlend = 0.25f;
+    incoming.lambda = 0.75f;
+
+    ve::CsmSettings current{};
+    current.cascadeCount = 4;
+
+    ve::applyCsmSettings(incoming, current, /*startup=*/false);
+
+    REQUIRE(current.cascadeCount == 4);
+    REQUIRE(current.normalBias == incoming.normalBias);
+    REQUIRE(current.cascadeBlend == incoming.cascadeBlend);
+    REQUIRE(current.lambda == incoming.lambda);
+
+    // And it differs from `incoming` in exactly that one field.
+    ve::CsmSettings expected = incoming;
+    expected.cascadeCount = 4;
+    REQUIRE(current == expected);
+}
