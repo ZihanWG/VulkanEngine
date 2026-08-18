@@ -237,6 +237,7 @@ add_library(VulkanEngineCore STATIC
     src/renderer/EditorCamera.cpp
     src/renderer/GltfGeometry.cpp
     src/renderer/GltfSkinnedImport.cpp
+    src/renderer/MeshCache.cpp
     src/renderer/MeshLod.cpp
     src/renderer/IrradianceProbes.cpp
     src/renderer/PunctualShadowAtlas.cpp
