@@ -705,7 +705,17 @@ void VulkanTexture::uploadPixels(VulkanContext& context,
                                  VulkanUploadBatch* batch)
 {
     const auto stagingSize = static_cast<VkDeviceSize>(pixels.size_bytes());
-    const bool batched = batch != nullptr && batch->recording();
+
+    // Generating a mip chain means vkCmdBlitImage, which requires a graphics
+    // queue. When the batch is running on a transfer queue this texture cannot
+    // join it, so it falls back to its own submit-and-wait rather than recording
+    // a blit the queue cannot execute.
+    //
+    // This is the same constraint from the other direction that made the texture
+    // cook worth doing first: cooked textures ship their mips and never blit.
+    const bool blitsMips = mipLevels_ > 1;
+    const bool batched =
+        batch != nullptr && batch->recording() && !(blitsMips && batch->usingTransferQueue());
 
     if (batched) {
         batch->flushIfOverBudget(stagingSize);
@@ -750,6 +760,10 @@ void VulkanTexture::uploadPixels(VulkanContext& context,
 
     if (mipLevels_ > 1) {
         generateMipmaps(commandBuffer);
+    } else if (batched) {
+        // No mips to blit, so this one can ride the batch -- and its transfer
+        // queue, when there is one.
+        batch->releaseImageToGraphics(image_, 1);
     } else {
         // Transfer writes must be visible to fragment shader texture sampling.
         // The descriptor will always refer to the final shader-read-only layout.
@@ -844,19 +858,27 @@ void VulkanTexture::uploadCookedLevels(VulkanContext& context,
                            static_cast<uint32_t>(copyRegions.size()),
                            copyRegions.data());
 
-    // Every level was written by the same copy, so one barrier covers the whole
+    // Every level was written by the same copy, so one transition covers the whole
     // chain. The blit path needs a barrier per level only because each level is
     // read back as a blit source; nothing here reads the image at all.
-    const VkImageMemoryBarrier2 toShaderRead = textureBarrier(image_,
-                                                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                                              VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                                                              VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                                                              VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                                                              VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                                                              0,
-                                                              mipLevels_);
-    recordImageBarrier(commandBuffer, toShaderRead);
+    //
+    // The batch owns this transition because on a transfer queue it is half of a
+    // queue family ownership transfer, and the other half has to be recorded on
+    // the graphics queue after a semaphore wait.
+    if (batched) {
+        batch->releaseImageToGraphics(image_, mipLevels_);
+    } else {
+        const VkImageMemoryBarrier2 toShaderRead = textureBarrier(image_,
+                                                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                                                  VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                                                                  VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                                                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                                                  VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                                                                  0,
+                                                                  mipLevels_);
+        recordImageBarrier(commandBuffer, toShaderRead);
+    }
 
     if (batched) {
         // The copy above reads this staging buffer on the GPU, so it has to

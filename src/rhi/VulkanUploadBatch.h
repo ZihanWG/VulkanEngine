@@ -13,6 +13,13 @@
 // Sponza that was half the texture upload time across 77 textures. This batches
 // the copies into one command buffer and waits once on a fence.
 //
+// When the device exposes a dedicated transfer (DMA) queue the copies run there
+// instead, and each image is handed to the graphics queue with a queue family
+// ownership transfer. That path is unavailable on most drivers -- including
+// MoltenVK unless MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES=1 -- and the batch falls
+// back to a single graphics submit, which is what CI and the default dev machine
+// actually run.
+//
 // Load time only. The steady-state frame path has its own command buffers and
 // its own synchronization, and must not go through here.
 namespace ve::rhi {
@@ -64,6 +71,20 @@ public:
     // is the whole reason the batch exists.
     void retainStaging(VulkanBuffer&& staging, VkDeviceSize sizeBytes);
 
+    // Ends an image's upload: it becomes SHADER_READ_ONLY_OPTIMAL and readable by
+    // the fragment stage.
+    //
+    // On the single-queue path this is one ordinary barrier. On the transfer-queue
+    // path it is a queue family ownership transfer, so it records the *release*
+    // half here and remembers the matching *acquire* half for the graphics
+    // command buffer at submit time -- the two must name identical layouts and
+    // identical family indices, and are meaningless apart.
+    void releaseImageToGraphics(VkImage image, uint32_t mipLevels);
+
+    // Which queue the copies actually ran on, for the asset-load report: a run's
+    // evidence should say which path it took rather than leaving it inferred.
+    [[nodiscard]] bool usingTransferQueue() const { return transferQueueFamily_ != graphicsQueueFamily_; }
+
     // Submits whatever has been recorded and waits for it. Safe to call on an
     // empty batch. The destructor calls this, so an exception mid-load cannot
     // leave GPU work referencing freed staging.
@@ -76,6 +97,11 @@ public:
     [[nodiscard]] VkDeviceSize peakStagingBytes() const { return peakStagingBytes_; }
 
 private:
+    struct PendingAcquire {
+        VkImage image = VK_NULL_HANDLE;
+        uint32_t mipLevels = 0;
+    };
+
     void openCommandBuffer();
     void releaseCommandBuffer();
     // Submits and waits for what is recorded, then releases the staging it read.
@@ -85,8 +111,18 @@ private:
     VulkanContext* context_ = nullptr;
     const VulkanCommandContext* commandContext_ = nullptr;
 
+    // The pool the copies are recorded into: the transfer family's when one
+    // exists, otherwise the caller's graphics pool.
+    VkCommandPool transferPool_ = VK_NULL_HANDLE;
     VkCommandBuffer commandBuffer_ = VK_NULL_HANDLE;
+    // Barriers only, and only on the ownership-transfer path.
+    VkCommandBuffer acquireCommandBuffer_ = VK_NULL_HANDLE;
+    VkSemaphore transferComplete_ = VK_NULL_HANDLE;
     VkFence fence_ = VK_NULL_HANDLE;
+
+    uint32_t graphicsQueueFamily_ = 0;
+    uint32_t transferQueueFamily_ = 0;
+    std::vector<PendingAcquire> pendingAcquires_;
 
     std::vector<VulkanBuffer> retainedStaging_;
     VkDeviceSize retainedStagingBytes_ = 0;
