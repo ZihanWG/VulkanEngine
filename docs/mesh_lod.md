@@ -152,12 +152,76 @@ Result: glTF import **1014.61 ms → 307.39 ms (3.30x)**, main-thread
 `meshopt_simplify` frames 823 → 2. See
 [asset_load_baseline.md](asset_load_baseline.md).
 
+## Baking the chains: `vemeshcook`
+
+Parallelising construction spread the cost across cores; it did not remove it. A
+direct probe -- forcing `kMaxMeshLods = 1` -- shows how much is left:
+
+| Sponza glTF import | median |
+| --- | --- |
+| with LOD generation | 349.44 ms |
+| with simplification disabled | 53.46 ms |
+| **simplification** | **~296 ms, 85% of import** |
+
+So the chains are baked offline instead:
+
+```
+tools/vemeshcook <scene.gltf> [--force] [--threads N] [--verify]
+```
+
+It writes `Sponza.vemesh` beside the source and links `VulkanEngineCore` alone --
+parse, vertex assembly and LOD construction all live in Core
+(`renderer/GltfGeometry.h`) precisely so the tool never pulls in Vulkan or SDL3.
+
+**Measured, interleaved A/B, five warm runs each:**
+
+| | median | spread |
+| --- | --- | --- |
+| uncooked | 331.49 ms | 1.3% |
+| cooked | **15.50 ms** | 9.4% |
+
+**21x, −316 ms.** Renderer init on Sponza drops to ~129 ms.
+
+The cooked path validates every primitive range, LOD range and index value
+against the buffers they address before uploading -- those become indexed
+indirect draws and vertex fetches, and a fallback cannot undo an out-of-bounds
+fetch that already happened. The index scan is the ~1.5 ms difference from an
+earlier unvalidated measurement, and it is worth it.
+
+### The header is what keeps a stale cook from rendering wrong
+
+A cooked KTX2 states its own format, so a stale one is visible. A cooked mesh is
+just bytes: if `Vertex` gains a field or a LOD threshold changes, an old file
+still parses cleanly and hands back **wrong geometry from a valid-looking
+header**. So `renderer/MeshCache.h` records `sizeof(Vertex)`,
+`sizeof(MeshPrimitive)`, `sizeof(MeshLod)`, a fingerprint of the
+`LodBuildSettings` that produced it, the source glTF's size and write time, **and
+a digest of every external buffer it references**. That last one matters because
+an ASCII glTF holds no vertex data of its own -- Sponza's lives in `Sponza.bin`,
+and fingerprinting only the `.gltf` would call a cook fresh after its geometry
+had been replaced.
+
+`meshCacheStatus()` returns a **reason**, not a bool, so a rejection reads as
+"the source glTF changed since the cook. Re-run vemeshcook." rather than as an
+unexplained slow startup. Every rejection path falls back to loading the glTF and
+is never fatal.
+
+**The glTF is still parsed either way.** Parsing costs ~2 ms, so materials,
+textures and node transforms are not cooked -- that would add a large
+serialization surface and a second staleness surface for nothing.
+
+### Verification, and why it is not the LOD chain log
+
+The check that verified the parallel LOD change -- comparing LOD chain logs --
+**cannot work here**: once geometry is cooked the chains are never rebuilt, so
+there is nothing to compare against. `vemeshcook --verify` replaces it, reading
+the file back off disk and matching it field by field against what was just
+built. It earned its place immediately by catching a bug in the tool: the output
+stream was still buffered when verification read the file.
+
 ## Limitations
 
-- **LOD construction still happens at load time.** It is parallel now, not
-  precomputed; a mesh cook that bakes the chains offline would remove it
-  entirely. The profile says what is left to win: roughly 300 ms, of which about
-  50 ms is vertex assembly and buffer upload rather than simplification.
+- **Transparent draws bypass LOD selection entirely** (see below).
 - **Selection is per draw item, not per cluster.** Large meshes switch as a whole,
   so a big object popping between levels is visible at the silhouette. Meshlet-
   granular selection is the direction modern engines went.

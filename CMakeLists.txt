@@ -235,7 +235,10 @@ add_library(VulkanEngineCore STATIC
     src/renderer/DynamicResolution.cpp
     src/renderer/OcclusionYield.cpp
     src/renderer/EditorCamera.cpp
+    src/renderer/GltfGeometry.cpp
     src/renderer/GltfSkinnedImport.cpp
+    src/renderer/MeshCache.cpp
+    src/renderer/MeshLod.cpp
     src/renderer/IrradianceProbes.cpp
     src/renderer/PunctualShadowAtlas.cpp
     src/renderer/RenderScale.cpp
@@ -248,7 +251,11 @@ add_library(VulkanEngineCore STATIC
 target_include_directories(VulkanEngineCore PUBLIC src)
 target_include_directories(VulkanEngineCore SYSTEM PUBLIC external)
 
+# meshoptimizer follows MeshLod/GltfGeometry into Core: LOD construction is
+# GPU-free, and keeping it here is what lets the mesh cook tool link Core alone
+# instead of dragging in Vulkan and SDL3.
 target_link_libraries(VulkanEngineCore PUBLIC glm::glm Threads::Threads)
+target_link_libraries(VulkanEngineCore PRIVATE ${MESHOPTIMIZER_TARGET})
 
 target_compile_definitions(VulkanEngineCore PUBLIC
     GLM_FORCE_RADIANS
@@ -278,7 +285,6 @@ add_library(VulkanEngineRuntime STATIC
     src/renderer/GroundTruthAmbientOcclusion.cpp
     src/renderer/SkinnedMesh.cpp
     src/renderer/Mesh.cpp
-    src/renderer/MeshLod.cpp
     src/renderer/PostProcessStack.cpp
     src/renderer/PunctualShadows.cpp
     src/renderer/VolumetricFogPass.cpp
@@ -356,6 +362,20 @@ else()
     target_compile_options(vecook PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+# Offline mesh cook (docs/mesh_lod.md). Like vecook it links VulkanEngineCore
+# alone: parse, vertex assembly and LOD construction all live in Core precisely so
+# this tool never pulls in Vulkan or SDL3.
+add_executable(vemeshcook
+    tools/vemeshcook/main.cpp
+)
+target_link_libraries(vemeshcook PRIVATE VulkanEngineCore)
+
+if(MSVC)
+    target_compile_options(vemeshcook PRIVATE /W4 /permissive- /EHsc /utf-8)
+else()
+    target_compile_options(vemeshcook PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 if(APPLE AND VULKAN_ENGINE_BUILD_MACOS_BUNDLE)
     set_target_properties(VulkanEngine PROPERTIES
         MACOSX_BUNDLE TRUE
@@ -382,10 +402,6 @@ target_link_libraries(VulkanEngineRuntime PUBLIC
     glm::glm
     imgui
 )
-
-# Only Mesh.cpp calls into meshoptimizer, and MeshLod (the type the rest of the
-# engine sees) is a plain struct, so this stays PRIVATE.
-target_link_libraries(VulkanEngineRuntime PRIVATE ${MESHOPTIMIZER_TARGET})
 
 if(TARGET Vulkan::Headers)
     target_link_libraries(VulkanEngineRuntime PUBLIC Vulkan::Headers)
