@@ -241,8 +241,56 @@ A batch is optional: `createFromKtx2()` and `createFromRgba8()` take one or
 import loop batches today; `BuiltinTextureFactory`, the material-asset path, the
 BRDF LUT, and cubemaps are unchanged.
 
-This is also step one of moving uploads to a transfer queue. Batching has to come
-first: 69 serialised waits are 69 serialised waits whichever queue they are on.
+Batching had to come before the transfer queue below: 69 serialised waits are 69
+serialised waits whichever queue they are on.
+
+### Dedicated transfer queue
+
+When the device exposes a **DMA family** -- transfer-capable, neither graphics nor
+compute -- the copies run there and each image is handed to the graphics queue
+with a queue family ownership transfer. `rhi/TransferQueueSelection.h` holds the
+policy as a pure function; there is deliberately no "second queue in the graphics
+family" fallback, unlike async compute, because a second graphics queue is still
+the graphics ring and would add ownership-transfer machinery for no overlap.
+
+Images stay `VK_SHARING_MODE_EXCLUSIVE`, so this is a real ownership transfer, not
+the `VK_SHARING_MODE_CONCURRENT` shortcut the clustered-lighting buffers use
+(`async_compute.md`) -- right for buffers, but concurrent sharing can cost image
+compression.
+
+| | src family | dst family | oldLayout | newLayout | src stage/access | dst stage/access |
+| --- | --- | --- | --- | --- | --- | --- |
+| pre-copy (transfer) | IGNORED | IGNORED | UNDEFINED | TRANSFER_DST | NONE / NONE | TRANSFER / TRANSFER_WRITE |
+| release (transfer) | transfer | graphics | TRANSFER_DST | SHADER_READ_ONLY | TRANSFER / TRANSFER_WRITE | NONE / NONE |
+| acquire (graphics) | transfer | graphics | TRANSFER_DST | SHADER_READ_ONLY | NONE / NONE | FRAGMENT_SHADER / SHADER_SAMPLED_READ |
+
+Three things this depends on:
+
+- **Release and acquire must name identical layouts and identical family
+  indices.** They are halves of one operation, and a mismatch is a VUID violation
+  that can simply skip the transition. They are built by one helper for that
+  reason.
+- **The semaphore is not optional.** Ownership transfer needs an execution
+  dependency between the two submissions or the acquire may run before the
+  release.
+- **A texture that generates its own mips cannot use this path**, because
+  `vkCmdBlitImage` requires a graphics queue. Those fall back to their own
+  submit-and-wait. This is the same constraint that made the texture cook worth
+  doing first: cooked textures ship their mips and never blit.
+
+A TRANSFER-only queue does not list `SHADER_READ_ONLY_OPTIMAL` among its
+supported layouts, and the release barrier above names it anyway, on the grounds
+that the transition belongs to the ownership transfer rather than to the source
+queue. **That was verified, not assumed** -- validation layers accept this form on
+MoltenVK. The contingency, had they not, was to transfer ownership at
+`TRANSFER_DST → TRANSFER_DST` and add a third graphics-side barrier.
+
+**Measured effect on wall clock: none that this machine can resolve.** Interleaved
+A/B, seven warm runs each on Sponza: 21.99 ms with the queue off, 21.13 ms with it
+on -- against a 42.6% spread within the off configuration alone. The change is a
+capability, not a speedup: the serial load flow still waits for the upload before
+continuing, so the win would have to come from overlapping upload with mesh
+building, which is not done. Do not quote the 0.86 ms.
 
 ### Every failure falls back, none is fatal
 
@@ -271,12 +319,16 @@ compressed, decode wait goes to zero, and upload halves.
 
 ### Limitations
 
-- **Uploads still run on the graphics queue.** Batching made a transfer queue
-  worth doing, but on this machine a TRANSFER-only queue family does not exist by
-  default: MoltenVK exposes four identical GRAPHICS|COMPUTE|TRANSFER families and
-  only reveals a dedicated family 3 under
-  `MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES=1`, the same gate the async compute path
-  documents.
+- **The transfer queue is inert by default and CI never runs it.** On this
+  machine a TRANSFER-only family does not exist unless
+  `MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES=1` is set -- MoltenVK otherwise exposes
+  four identical GRAPHICS|COMPUTE|TRANSFER families -- which is the same gate the
+  async compute path documents. Everything above about ownership transfer is
+  therefore exercised only under that environment variable, and was verified by
+  hand with validation layers rather than by CI.
+- **Upload is not overlapped with anything.** The load flow still waits for the
+  copies before continuing, so the transfer queue buys the capability and frees
+  the graphics queue without shortening startup.
 - No visual A/B has been composed yet. The Sponza startup camera frames the
   building from outside (see the limitations above), and the default portfolio
   scene *loads* the checker textures but does not sample them in the composed

@@ -43,6 +43,7 @@ add_executable(VulkanEngineTests
     test_ktx2.cpp
     test_texture_cook.cpp
     test_upload_batch.cpp
+    test_transfer_queue_selection.cpp
     test_material_asset.cpp
     test_material_alpha.cpp
     test_mesh_lod.cpp

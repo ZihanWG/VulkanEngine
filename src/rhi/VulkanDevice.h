@@ -54,6 +54,14 @@ public:
     [[nodiscard]] uint32_t asyncComputeQueueFamily() const { return asyncComputeQueueFamily_; }
     [[nodiscard]] bool asyncComputeAvailable() const { return asyncComputeAvailable_; }
     [[nodiscard]] bool asyncComputeDedicatedFamily() const { return asyncComputeDedicatedFamily_; }
+    // Dedicated transfer queue for load-time uploads (docs/asset_system.md).
+    // Only a DMA family qualifies -- transfer-capable, neither graphics nor
+    // compute -- so this is unavailable on most drivers, including MoltenVK
+    // unless MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES=1 is set. When unavailable,
+    // uploads stay on the graphics queue.
+    [[nodiscard]] VkQueue transferQueue() const { return transferQueue_; }
+    [[nodiscard]] uint32_t transferQueueFamily() const { return transferQueueFamily_; }
+    [[nodiscard]] bool transferQueueAvailable() const { return transferQueueAvailable_; }
     [[nodiscard]] const QueueFamilyIndices& queueFamilies() const { return queueFamilies_; }
     [[nodiscard]] bool descriptorIndexingEnabled() const { return descriptorIndexingEnabled_; }
     [[nodiscard]] bool independentBlendEnabled() const { return independentBlendEnabled_; }
@@ -96,6 +104,9 @@ private:
     uint32_t asyncComputeQueueFamily_ = UINT32_MAX;
     bool asyncComputeAvailable_ = false;
     bool asyncComputeDedicatedFamily_ = false;
+    VkQueue transferQueue_ = VK_NULL_HANDLE;
+    uint32_t transferQueueFamily_ = UINT32_MAX;
+    bool transferQueueAvailable_ = false;
     QueueFamilyIndices queueFamilies_{};
     bool descriptorIndexingEnabled_ = false;
     bool independentBlendEnabled_ = false;

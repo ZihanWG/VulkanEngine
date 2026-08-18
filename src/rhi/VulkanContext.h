@@ -38,6 +38,9 @@ public:
     [[nodiscard]] VkQueue asyncComputeQueue() const { return device_.asyncComputeQueue(); }
     [[nodiscard]] uint32_t asyncComputeQueueFamily() const { return device_.asyncComputeQueueFamily(); }
     [[nodiscard]] bool asyncComputeAvailable() const { return device_.asyncComputeAvailable(); }
+    [[nodiscard]] VkQueue transferQueue() const { return device_.transferQueue(); }
+    [[nodiscard]] uint32_t transferQueueFamily() const { return device_.transferQueueFamily(); }
+    [[nodiscard]] bool transferQueueAvailable() const { return device_.transferQueueAvailable(); }
     [[nodiscard]] VmaAllocator allocator() const { return allocator_; }
     [[nodiscard]] const VulkanDevice& device() const { return device_; }
     [[nodiscard]] const QueueFamilyIndices& queueFamilies() const { return device_.queueFamilies(); }

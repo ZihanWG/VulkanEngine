@@ -1,5 +1,7 @@
 #include "rhi/VulkanDevice.h"
 
+#include "rhi/TransferQueueSelection.h"
+
 #include "core/Logger.h"
 #include "rhi/VulkanDebugUtils.h"
 #include "rhi/VulkanPipelineCache.h"
@@ -135,6 +137,9 @@ void VulkanDevice::cleanup()
     asyncComputeQueueFamily_ = UINT32_MAX;
     asyncComputeAvailable_ = false;
     asyncComputeDedicatedFamily_ = false;
+    transferQueue_ = VK_NULL_HANDLE;
+    transferQueueFamily_ = kNoQueueFamily;
+    transferQueueAvailable_ = false;
     queueFamilies_ = {};
     descriptorIndexingEnabled_ = false;
     descriptorUpdateAfterBindEnabled_ = false;
@@ -270,6 +275,22 @@ void VulkanDevice::createLogicalDevice()
         asyncComputeQueueIndex = 1;
     }
 
+    // Load-time uploads want a DMA family, not just any transfer-capable one.
+    // The policy is a pure function so it can be unit tested; see
+    // rhi/TransferQueueSelection.h for why there is no graphics-family fallback.
+    std::vector<QueueFamilyCapabilities> transferCandidates;
+    transferCandidates.reserve(queueFamilyCount);
+    for (uint32_t family = 0; family < queueFamilyCount; ++family) {
+        const VkQueueFlags flags = familyProperties[family].queueFlags;
+        transferCandidates.push_back(QueueFamilyCapabilities{
+            (flags & VK_QUEUE_GRAPHICS_BIT) != 0,
+            (flags & VK_QUEUE_COMPUTE_BIT) != 0,
+            (flags & VK_QUEUE_TRANSFER_BIT) != 0,
+            familyProperties[family].queueCount,
+        });
+    }
+    transferQueueFamily_ = selectTransferQueueFamily(transferCandidates);
+
     std::map<uint32_t, uint32_t> familyQueueCounts;
     familyQueueCounts[graphicsFamily] = 1;
     familyQueueCounts[queueFamilies_.presentFamily.value()] =
@@ -277,6 +298,9 @@ void VulkanDevice::createLogicalDevice()
     if (asyncComputeQueueFamily_ != UINT32_MAX) {
         familyQueueCounts[asyncComputeQueueFamily_] =
             std::max(familyQueueCounts[asyncComputeQueueFamily_], asyncComputeQueueIndex + 1);
+    }
+    if (transferQueueFamily_ != kNoQueueFamily) {
+        familyQueueCounts[transferQueueFamily_] = std::max(familyQueueCounts[transferQueueFamily_], 1u);
     }
 
     // The async compute queue gets a lower priority so it never starves the
@@ -390,6 +414,17 @@ void VulkanDevice::createLogicalDevice()
     if (asyncComputeQueueFamily_ != UINT32_MAX) {
         vkGetDeviceQueue(device_, asyncComputeQueueFamily_, asyncComputeQueueIndex, &asyncComputeQueue_);
         asyncComputeAvailable_ = asyncComputeQueue_ != VK_NULL_HANDLE;
+    }
+    if (transferQueueFamily_ != kNoQueueFamily) {
+        vkGetDeviceQueue(device_, transferQueueFamily_, 0, &transferQueue_);
+        transferQueueAvailable_ = transferQueue_ != VK_NULL_HANDLE;
+    }
+    if (transferQueueAvailable_) {
+        Logger::info("Dedicated transfer queue available (family " + std::to_string(transferQueueFamily_) +
+                     "); load-time texture uploads use it.");
+    } else {
+        Logger::info("No dedicated transfer queue; texture uploads stay on the graphics queue. "
+                     "(On MoltenVK, set MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES=1 to expose one.)");
     }
     if (asyncComputeAvailable_) {
         Logger::info(std::string("Async compute queue available (") +
