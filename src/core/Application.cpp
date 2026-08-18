@@ -64,6 +64,11 @@ void Application::initialize()
     if (config_.probeAliasing) {
         renderer_->logImageMemoryAliasingProbe();
     }
+    // Before the capture request and the first frame, so a preset's own camera is
+    // in place for every frame that gets measured or captured.
+    if (config_.scene != ScenePreset::Default) {
+        renderer_->loadScenePreset(config_.scene);
+    }
     if (config_.captureFrame != 0) {
         renderer_->requestFrameCaptureAt(config_.captureFrame, config_.captureOutput);
     }

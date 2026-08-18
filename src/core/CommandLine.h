@@ -12,8 +12,31 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 namespace ve {
+
+// Which scene the renderer builds at startup.
+//
+// The presets were reachable only through ImGui buttons, which reset on every
+// launch and therefore could not be scripted -- so the one scene that actually
+// loads the CPU frame path (geometry stress, 2311 objects) was unmeasurable
+// without a human driving the UI. Each loader already pins its own camera, so
+// selecting one here yields a fully reproducible configuration.
+enum class ScenePreset {
+    Default,
+    Stress,
+    FragmentStress,
+    Occlusion,
+    CornellBox,
+};
+
+// Parses a --scene value. Returns false for an unknown name rather than
+// silently falling back to the default, which would measure the wrong scene.
+[[nodiscard]] bool parseScenePreset(std::string_view name, ScenePreset& preset);
+
+// The spelling accepted on the command line, for error messages and tests.
+[[nodiscard]] std::string_view scenePresetName(ScenePreset preset);
 
 struct LaunchOptions {
     std::string title = "VulkanEngine";
@@ -47,6 +70,9 @@ struct LaunchOptions {
     // whether they provably share bytes, then continues as normal. Kept as the
     // standing check for that -- see rhi/VulkanAliasingProbe.h.
     bool probeAliasing = false;
+
+    // Startup scene. Default keeps whatever createScene() builds on its own.
+    ScenePreset scene = ScenePreset::Default;
 };
 
 // Parses the recognized flags and leaves defaults in place otherwise. Returns
