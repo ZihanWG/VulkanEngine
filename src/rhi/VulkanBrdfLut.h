@@ -5,6 +5,10 @@
 #include <cstdint>
 #include <vector>
 
+namespace ve {
+class JobSystem;
+}
+
 namespace ve::rhi {
 
 class VulkanCommandContext;
@@ -20,10 +24,18 @@ public:
     VulkanBrdfLut(VulkanBrdfLut&& other) noexcept;
     VulkanBrdfLut& operator=(VulkanBrdfLut&& other) noexcept;
 
+    // The split-sum table is 8.4 million integration steps at the default size
+    // and was ~97 ms on one thread -- 59% of scene creation, paid by every scene.
+    // `jobSystem` spreads its rows; nullptr keeps it serial. The bytes are the
+    // same either way, since every texel is an independent pure function of its
+    // coordinates (renderer/BrdfIntegration.h).
+    //
+    // Must not be called from a JobSystem worker.
     void create(
         VulkanContext& context,
         const VulkanCommandContext& commandContext,
-        uint32_t size = 256);
+        uint32_t size = 256,
+        JobSystem* jobSystem = nullptr);
     void reset();
     void destroy() { reset(); }
 

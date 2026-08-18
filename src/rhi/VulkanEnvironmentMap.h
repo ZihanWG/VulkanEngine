@@ -8,6 +8,10 @@
 #include <span>
 #include <vector>
 
+namespace ve {
+class JobSystem;
+}
+
 namespace ve::rhi {
 
 class VulkanCommandContext;
@@ -43,7 +47,8 @@ public:
     void createProceduralPrefilteredSpecular(
         VulkanContext& context,
         const VulkanCommandContext& commandContext,
-        uint32_t faceSize = 64);
+        uint32_t faceSize = 64,
+        JobSystem* jobSystem = nullptr);
     void createFromRgba8Faces(
         VulkanContext& context,
         const VulkanCommandContext& commandContext,

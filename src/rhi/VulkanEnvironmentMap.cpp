@@ -1,5 +1,7 @@
 #include "rhi/VulkanEnvironmentMap.h"
 
+#include "core/JobSystem.h"
+
 #include "rhi/VulkanBuffer.h"
 #include "rhi/VulkanCommandContext.h"
 #include "rhi/VulkanContext.h"
@@ -629,7 +631,7 @@ Vec3 prefilterSpecularDirection(Vec3 reflectionDirection, float roughness, Sampl
     return sampleEnvironment(normal);
 }
 
-std::vector<uint8_t> makeProceduralPrefilteredSpecularFaces(uint32_t faceSize)
+std::vector<uint8_t> makeProceduralPrefilteredSpecularFaces(uint32_t faceSize, JobSystem* jobSystem)
 {
     if (faceSize == 0) {
         throw std::runtime_error("Cannot create a zero-sized procedural prefiltered environment map.");
@@ -645,21 +647,37 @@ std::vector<uint8_t> makeProceduralPrefilteredSpecularFaces(uint32_t faceSize)
         const float roughness =
             mipLevels == 1 ? 0.0f : static_cast<float>(mipLevel) / static_cast<float>(mipLevels - 1);
 
-        for (uint32_t face = 0; face < kCubeFaceCount; ++face) {
-            for (uint32_t y = 0; y < size; ++y) {
-                const float v = size == 1 ? 0.5f : static_cast<float>(y) / static_cast<float>(size - 1);
-                for (uint32_t x = 0; x < size; ++x) {
-                    const float u = size == 1 ? 0.5f : static_cast<float>(x) / static_cast<float>(size - 1);
-                    const Vec3 direction = cubemapTexelDirection(face, u, v);
-                    const Vec3 color = prefilterSpecularDirection(
-                        direction,
-                        roughness,
-                        [](Vec3 sampleDirection) { return sampleProceduralEnvironment(sampleDirection); });
-                    const size_t offset =
-                        mipOffset + ((static_cast<size_t>(face) * size * size) + (static_cast<size_t>(y) * size + x)) *
-                                        kRgbaChannels;
-                    writeRgba(pixels, offset, color);
+        // One row of one face. Every texel writes only its own bytes, so rows can
+        // run in any order and the output is byte-identical either way; the mip
+        // loop stays serial only because `mipOffset` walks the chain.
+        const auto integrateRow = [&](size_t rowIndex) {
+            const auto face = static_cast<uint32_t>(rowIndex / size);
+            const auto y = static_cast<uint32_t>(rowIndex % size);
+            const float v = size == 1 ? 0.5f : static_cast<float>(y) / static_cast<float>(size - 1);
+            for (uint32_t x = 0; x < size; ++x) {
+                const float u = size == 1 ? 0.5f : static_cast<float>(x) / static_cast<float>(size - 1);
+                const Vec3 direction = cubemapTexelDirection(face, u, v);
+                const Vec3 color = prefilterSpecularDirection(
+                    direction,
+                    roughness,
+                    [](Vec3 sampleDirection) { return sampleProceduralEnvironment(sampleDirection); });
+                const size_t offset =
+                    mipOffset + ((static_cast<size_t>(face) * size * size) + (static_cast<size_t>(y) * size + x)) *
+                                    kRgbaChannels;
+                writeRgba(pixels, offset, color);
+            }
+        };
+
+        const size_t rowCount = static_cast<size_t>(kCubeFaceCount) * size;
+        if (jobSystem != nullptr && rowCount > 1) {
+            jobSystem->parallelFor(rowCount, 1, [&integrateRow](size_t begin, size_t end) {
+                for (size_t row = begin; row < end; ++row) {
+                    integrateRow(row);
                 }
+            });
+        } else {
+            for (size_t row = 0; row < rowCount; ++row) {
+                integrateRow(row);
             }
         }
 
@@ -932,9 +950,10 @@ void VulkanEnvironmentMap::createProceduralDiffuseIrradiance(VulkanContext& cont
 
 void VulkanEnvironmentMap::createProceduralPrefilteredSpecular(VulkanContext& context,
                                                                const VulkanCommandContext& commandContext,
-                                                               uint32_t faceSize)
+                                                               uint32_t faceSize,
+                                                               JobSystem* jobSystem)
 {
-    const std::vector<uint8_t> pixels = makeProceduralPrefilteredSpecularFaces(faceSize);
+    const std::vector<uint8_t> pixels = makeProceduralPrefilteredSpecularFaces(faceSize, jobSystem);
     createFromRgba8MipFaces(context,
                             commandContext,
                             faceSize,

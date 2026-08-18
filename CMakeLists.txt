@@ -227,6 +227,7 @@ add_library(VulkanEngineCore STATIC
     src/core/Logger.cpp
     src/core/PngWriter.cpp
     src/renderer/AssetLoadStats.cpp
+    src/renderer/BrdfIntegration.cpp
     src/renderer/ImageCompare.cpp
     src/renderer/CascadeMath.cpp
     src/renderer/DrawItemBatching.cpp
