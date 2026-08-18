@@ -201,7 +201,7 @@ This is a rendering/engine portfolio, not a full game engine — no physics, gam
 ## Future Work
 
 - Build mesh batches fully on the GPU and broaden the GPU-driven object/material layout.
-- GPU-built shadow batches, and stronger CSM stabilization (bounding-sphere fit, cascade blending). Alpha-tested shadow casters and shadow LOD have since shipped.
+- GPU-built shadow batches, and per-cascade shadow resolution control. The bounding-sphere cascade fit and cascade blending have since shipped, alongside alpha-tested shadow casters and shadow LOD — the sphere fit off by default, since it is measured to remove rotation shimmer but not to make the cascade cache hit under camera motion.
 - BVH/spatial partitioning, LOD, and mesh/task shader experiments.
 - Improved HDR environment prefiltering, color-management policy, local exposure, and HDR swapchain output.
 - Expanded scene editing (object creation/deletion, hierarchy editing, picking, per-scene settings) and asset tooling (texture import/reload, asset browser, material graph, render graph node view).
