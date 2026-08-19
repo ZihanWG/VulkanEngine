@@ -1383,6 +1383,10 @@ Renderer::CullingDebugSnapshot Renderer::cullingDebugSnapshot(uint32_t frameInde
     snapshot.depthPyramidMipCount = depthPyramid_.mipLevels();
     snapshot.totalDrawItems = static_cast<uint32_t>(
         std::min<size_t>(cullingStats_.totalDrawItems, std::numeric_limits<uint32_t>::max()));
+    // Straight from the CPU-side budget, not from GPU counters: these count
+    // geometry that never reached the GPU at all, so no readback can see them.
+    snapshot.droppedObjects = frameCapacityBudget_.droppedObjects();
+    snapshot.droppedDrawItems = frameCapacityBudget_.droppedDrawItems();
     if (cullingStats_.gpuCulling && gpuCulling_.available()) {
         snapshot.totalDrawItems = gpuCulling_.mainTotalDrawItems(frameIndex);
     }

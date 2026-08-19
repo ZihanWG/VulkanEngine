@@ -17,6 +17,7 @@
 #include "renderer/VolumetricFogPass.h"
 #include "renderer/DepthPyramid.h"
 #include "renderer/DrawItemBatching.h"
+#include "renderer/FrameCapacity.h"
 #include "renderer/DynamicResolution.h"
 #include "renderer/FrameClock.h"
 #include "renderer/OcclusionYield.h"
@@ -256,6 +257,10 @@ private:
         uint32_t depthPyramidMipCount = 0;
         uint32_t phase2RescuedDrawItems = 0;
         bool twoPhaseOcclusion = false;
+        // Geometry this frame's fixed caps refused. Nonzero means the scene is
+        // being drawn incompletely; see kMaxFrameObjects / kMaxDrawItems.
+        uint32_t droppedObjects = 0;
+        uint32_t droppedDrawItems = 0;
     };
 
     struct ObjectDrawDebugInfo {
@@ -421,7 +426,19 @@ private:
     void buildShadowMeshDrawBatches();
     void buildMeshDrawBatchesForItems(const std::vector<DrawItem>& drawItems,
                                       std::vector<MeshDrawBatch>& batches) const;
-    bool appendDrawItemsForObject(uint32_t objectIndex, std::vector<DrawItem>& drawItems) const;
+    // Appends every draw item this object wants, charging each one to `budget`.
+    // Returns nothing: an object that does not fit is not an error to propagate
+    // but a loss to count, and the budget is what counts it.
+    void appendDrawItemsForObject(uint32_t objectIndex,
+                                  renderer::FrameCapacityBudget& budget,
+                                  std::vector<DrawItem>& drawItems) const;
+    // How many render objects the per-object sweeps may visit. Every sweep is
+    // bounded by the same cap, so they share one accessor rather than repeating
+    // the clamp -- five copies of a silent truncation is how it stayed invisible.
+    [[nodiscard]] size_t sweptObjectCount() const;
+    // Emits a warning when this frame's caps refused geometry. Logs on change
+    // rather than per frame; an overflowing scene overflows every frame.
+    void reportFrameCapacityOverflow();
     [[nodiscard]] bool isRenderObjectActive(const renderer::RenderObject& object) const;
     void updateIndirectDrawBuffer(uint32_t frameIndex);
     void updateShadowIndirectDrawBuffer(uint32_t frameIndex);
@@ -874,6 +891,11 @@ private:
     std::array<uint32_t, kMaxShadowCascades> shadowVisibleDrawItemsPerCascade_{};
     std::array<uint32_t, kMaxShadowCascades> shadowBatchCountPerCascade_{};
     CullingStats cullingStats_{};
+    // Rebuilt every frame by buildDrawItems; read by the debug UI and the
+    // once-per-change overflow log.
+    renderer::FrameCapacityBudget frameCapacityBudget_{};
+    uint32_t loggedDroppedObjects_ = 0;
+    uint32_t loggedDroppedDrawItems_ = 0;
     ShadowCullingStats shadowCullingStats_{};
     ToneMappingSettings toneMappingSettings_{};
     BloomSettings bloomSettings_{};

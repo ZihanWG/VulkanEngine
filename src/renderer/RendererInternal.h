@@ -169,6 +169,22 @@ static_assert(sizeof(FrameConstants) == 512);
 // Every per-item buffer scales with this -- object data (192 B), cull input
 // (64 B), phase results (4 B) -- so at 8192 the whole set is a few MB per frame
 // in flight, which is not worth economising on.
+//
+// These are fixed, not grown on demand, and that is deliberate. Raising the cap
+// at runtime means resizing several device buffers that are created once at init
+// (RendererResources object-data and indirect-command buffers, GpuCulling's cull
+// input and phase-result buffers) and are already bound into descriptor sets and
+// referenced by in-flight command buffers. Growing them mid-frame needs either a
+// device-idle wait -- banned on the steady-state frame path -- or a deferred
+// destroy queue plus a descriptor rewrite for every frame in flight. That resize
+// path does not exist, so the caps clamp instead.
+//
+// Clamping is now *reported* rather than silent: renderer::FrameCapacityBudget
+// counts what did not fit, buildDrawItems logs it once per change, and the
+// culling debug UI shows it beside the culling counters. If a scene starts
+// tripping these routinely, raising the numbers here is cheap (up to the 65535
+// ceiling above) and is the right answer -- the overflow counters are how you
+// find out that it is needed, not a substitute for doing it.
 constexpr uint32_t kMaxFrameObjects = 8192;
 constexpr uint32_t kMaxDrawItems = 8192;
 static_assert(kMaxDrawItems <= 0xFFFF, "firstInstance packs the object slot in 16 bits.");

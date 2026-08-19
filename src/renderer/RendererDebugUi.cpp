@@ -2876,6 +2876,20 @@ void Renderer::drawCullingDebugUi()
     ImGui::Text("Total objects: %u", snapshot.totalObjects);
     ImGui::Text("Total draw items: %u", snapshot.totalDrawItems);
 
+    // Sits directly under the totals it contradicts: when this line is present,
+    // every count below it describes a subset of the scene. Same amber as the
+    // profiler's query-capacity warning, for the same reason -- a capacity that
+    // was exceeded is a degraded result, not a failure.
+    if (snapshot.droppedObjects > 0 || snapshot.droppedDrawItems > 0) {
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.25f, 1.0f),
+                           "Warning: frame capacity exceeded -- %u object(s) and %u draw item(s) dropped.",
+                           snapshot.droppedObjects,
+                           snapshot.droppedDrawItems);
+        ImGui::TextDisabled("Caps are %u objects / %u draw items (renderer/RendererInternal.h).",
+                            kMaxFrameObjects,
+                            kMaxDrawItems);
+    }
+
     // Render-bucket split. Opaque and Mask share the main pipeline (the alpha test
     // is data-driven through ObjectFrameData::materialParams.w) but take different
     // shadow pipelines, and batches never straddle a bucket, so this line also
