@@ -9,6 +9,46 @@
 
 namespace ve {
 
+namespace {
+
+// One table, read by both directions, so a name can never parse to one preset
+// and print back as another.
+struct ScenePresetName {
+    std::string_view name;
+    ScenePreset preset;
+};
+
+constexpr ScenePresetName kScenePresetNames[] = {
+    {"default", ScenePreset::Default},
+    {"stress", ScenePreset::Stress},
+    {"fragment-stress", ScenePreset::FragmentStress},
+    {"occlusion", ScenePreset::Occlusion},
+    {"cornell", ScenePreset::CornellBox},
+};
+
+} // namespace
+
+bool parseScenePreset(std::string_view name, ScenePreset& preset)
+{
+    for (const ScenePresetName& entry : kScenePresetNames) {
+        if (entry.name == name) {
+            preset = entry.preset;
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string_view scenePresetName(ScenePreset preset)
+{
+    for (const ScenePresetName& entry : kScenePresetNames) {
+        if (entry.preset == preset) {
+            return entry.name;
+        }
+    }
+    return "default";
+}
+
 bool parseLaunchOptions(int argc, char** argv, LaunchOptions& options)
 {
     for (int index = 1; index < argc; ++index) {
@@ -26,6 +66,26 @@ bool parseLaunchOptions(int argc, char** argv, LaunchOptions& options)
 
         if (argument == "--probe-aliasing") {
             options.probeAliasing = true;
+            continue;
+        }
+
+        if (argument == "--scene") {
+            if (index + 1 >= argc) {
+                Logger::error("--scene requires a preset name.");
+                return false;
+            }
+            const std::string_view value(argv[++index]);
+            if (!parseScenePreset(value, options.scene)) {
+                std::string known;
+                for (const ScenePresetName& entry : kScenePresetNames) {
+                    if (!known.empty()) {
+                        known += ", ";
+                    }
+                    known += entry.name;
+                }
+                Logger::error("--scene expects one of: " + known + "; got: " + std::string(value));
+                return false;
+            }
             continue;
         }
 

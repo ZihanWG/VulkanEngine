@@ -128,3 +128,69 @@ TEST_CASE("A capture frame without a frame budget is unconstrained")
     REQUIRE(parse({"--capture-frame", "100000", "--capture-output", "out.png"}, config));
     REQUIRE(config.captureFrame == 100000);
 }
+
+// --- Scene preset selection -----------------------------------------------
+//
+// The presets were previously reachable only from ImGui buttons, so the one
+// scene that loads the CPU frame path could not be measured without a human
+// driving the UI. An unknown name has to fail rather than fall back: silently
+// running the default scene would report timings for the wrong workload, which
+// is worse than not running at all.
+
+TEST_CASE("Scene preset defaults to the built-in scene", "[command-line][scene]")
+{
+    LaunchOptions config{};
+    REQUIRE(parse({}, config));
+    REQUIRE(config.scene == ve::ScenePreset::Default);
+}
+
+TEST_CASE("Every scene preset name parses", "[command-line][scene]")
+{
+    struct Case {
+        const char* name;
+        ve::ScenePreset preset;
+    };
+
+    const Case cases[] = {
+        {"default", ve::ScenePreset::Default},
+        {"stress", ve::ScenePreset::Stress},
+        {"fragment-stress", ve::ScenePreset::FragmentStress},
+        {"occlusion", ve::ScenePreset::Occlusion},
+        {"cornell", ve::ScenePreset::CornellBox},
+    };
+
+    for (const Case& testCase : cases) {
+        LaunchOptions config{};
+        REQUIRE(parse({"--scene", testCase.name}, config));
+        REQUIRE(config.scene == testCase.preset);
+
+        // Round trip: the name a preset reports must parse back to that preset,
+        // or an error message would name a different scene than the one running.
+        REQUIRE(ve::scenePresetName(testCase.preset) == testCase.name);
+    }
+}
+
+TEST_CASE("An unknown scene name is rejected", "[command-line][scene]")
+{
+    LaunchOptions config{};
+    REQUIRE_FALSE(parse({"--scene", "stres"}, config));
+
+    // And it must not have half-applied anything on the way out.
+    REQUIRE(config.scene == ve::ScenePreset::Default);
+}
+
+TEST_CASE("A scene flag with no value is rejected", "[command-line][scene]")
+{
+    LaunchOptions config{};
+    REQUIRE_FALSE(parse({"--scene"}, config));
+}
+
+TEST_CASE("Scene selection composes with the measurement flags", "[command-line][scene]")
+{
+    // The combination a scripted measurement actually uses.
+    LaunchOptions config{};
+    REQUIRE(parse({"--scene", "stress", "--deterministic", "--exit-after-frames", "120"}, config));
+    REQUIRE(config.scene == ve::ScenePreset::Stress);
+    REQUIRE(config.deterministic);
+    REQUIRE(config.exitAfterFrames == 120);
+}

@@ -915,7 +915,17 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
 
     std::ostringstream message;
     message << std::fixed << std::setprecision(3) << "GPU timings:\n"
-            << "  Frame total: " << results.totalGpuTimeMs << " ms\n"
+            << "  Frame total: " << results.totalGpuTimeMs << " ms\n";
+    // CPU frame preparation next to the GPU frame total, because the pair is the
+    // question -- prep that is comfortably inside the GPU frame is hidden, and
+    // removing it would buy no frame time. It was previously visible only in the
+    // ImGui panel, which made it unmeasurable in a headless or scripted run.
+    if (!framePrepCpuHistory_.empty()) {
+        message << "  Frame prep CPU: " << framePrepCpuHistory_.latest()
+                << " ms (avg " << framePrepCpuHistory_.average() << ", max " << framePrepCpuHistory_.max()
+                << ")\n";
+    }
+    message << "  draw items: " << allDrawItems_.size() << ", objects: " << renderObjects_.size() << "\n"
             << "  timestamp queries: " << results.queryCount << "/" << results.maxQueryCount << "\n";
     if (results.queryLimitExceeded) {
         message << "  warning: timestamp query capacity was exceeded\n";

@@ -1392,6 +1392,27 @@ void Renderer::loadOcclusionTestScene()
     Logger::info(occlusionTestSceneStatus_);
 }
 
+void Renderer::loadScenePreset(ScenePreset preset)
+{
+    switch (preset) {
+    case ScenePreset::Stress:
+        loadStressScene();
+        return;
+    case ScenePreset::FragmentStress:
+        loadFragmentStressScene();
+        return;
+    case ScenePreset::Occlusion:
+        loadOcclusionTestScene();
+        return;
+    case ScenePreset::CornellBox:
+        loadCornellBoxScene();
+        return;
+    case ScenePreset::Default:
+        break;
+    }
+    // Default is whatever createScene() already built; nothing to do.
+}
+
 void Renderer::loadStressScene()
 {
     if (portfolioCaptureMode_) {

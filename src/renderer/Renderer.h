@@ -2,6 +2,7 @@
 
 #include "assets/AssetManager.h"
 #include "core/JobSystem.h"
+#include "core/CommandLine.h"
 #include "renderer/AssetLoadStats.h"
 #include "renderer/BindlessTextureHeap.h"
 #include "renderer/BuiltinTextureFactory.h"
@@ -86,6 +87,12 @@ public:
     void drawFrame();
     void handleEvent(const SDL_Event& event);
     void waitIdle();
+
+    // Builds one of the startup scene presets. The individual loaders are
+    // private because they are ImGui button handlers; this is the one entry
+    // point that exists so a preset can be selected from the command line, which
+    // is what makes the heavier scenes measurable without a human driving the UI.
+    void loadScenePreset(ScenePreset preset);
 
     // Startup asset-load instrumentation (renderer/AssetLoadStats.h). Populated
     // during construction; the caller stamps the timings it owns (renderer init
