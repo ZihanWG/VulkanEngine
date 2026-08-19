@@ -124,6 +124,39 @@ ImGui exposes:
 
 The GPU profiler adds a `DepthPyramid` timestamp scope. Main GPU culling timing remains under `MainGpuCullingPass`, and the render graph panel lists `DepthPyramidPass` with its main-depth read and pyramid write metadata when resources are available.
 
+### Frame capacity overflow
+
+Every counter above describes the draw items that *reached* culling. Two fixed
+caps decide which ones do: `kMaxFrameObjects` and `kMaxDrawItems`, both 8192, in
+`src/renderer/RendererInternal.h`. Objects past the object cap are skipped by
+every per-object sweep, so they are invisible to frustum culling, to the shadow
+cascades, and to the GPU-cull input; draw items past the draw-item cap are never
+emitted.
+
+Exceeding either cap used to be silent -- the scene simply lost geometry with no
+log line, no counter, and no indicator, which is the hardest possible shape for a
+missing-mesh report to have. `renderer::FrameCapacityBudget` now counts both
+losses as `buildDrawItems` runs, so the counts come from the same calls that make
+the decision rather than from a separate model of it. When either is nonzero:
+
+- the culling debug panel shows an amber `frame capacity exceeded` line directly
+  under the totals it contradicts, with both drop counts and the caps in force;
+- `Renderer::reportFrameCapacityOverflow` logs a warning naming the counts and
+  the constants to raise. It logs when the counts *change*, not every frame, and
+  logs an info line when the scene comes back under the caps.
+
+The caps clamp rather than grow because several device buffers are sized from
+them at init and are already bound into descriptor sets and referenced by
+in-flight command buffers; raising them at runtime would need a device-idle wait
+(banned on the steady-state frame path) or a deferred-destroy plus descriptor
+rewrite that does not exist. The overflow counters exist to reveal that the
+constants need raising -- up to the 65535 ceiling that `cull.comp`'s
+`firstInstance` packing imposes -- not to substitute for raising them.
+
+Nothing in the shipped scenes reaches either cap today: the geometry stress
+scene is the largest at `1 + 6 + 48*48 = 2311` objects. This is reachable by
+scaling that grid up or importing a large glTF.
+
 ## Known Limitations
 
 - Single-phase mode (two-phase disabled) only runs occlusion while the camera holds still.

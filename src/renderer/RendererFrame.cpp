@@ -650,31 +650,37 @@ const char* Renderer::renderBucketName(RenderBucket bucket)
     return "Opaque";
 }
 
-bool Renderer::appendDrawItemsForObject(uint32_t objectIndex, std::vector<DrawItem>& drawItems) const
+void Renderer::appendDrawItemsForObject(uint32_t objectIndex,
+                                        renderer::FrameCapacityBudget& budget,
+                                        std::vector<DrawItem>& drawItems) const
 {
     if (objectIndex >= renderObjects_.size()) {
-        return true;
+        return;
     }
 
     const renderer::RenderObject& object = renderObjects_[objectIndex];
     if (!isRenderObjectActive(object)) {
-        return true;
+        return;
     }
 
     const renderer::Mesh* mesh = object.mesh;
     if (!mesh || !mesh->valid()) {
-        return true;
+        return;
     }
 
     if (mesh->hasSubMeshes()) {
         const std::span<const renderer::MeshPrimitive> primitives = mesh->primitives();
         for (size_t primitiveIndex = 0; primitiveIndex < primitives.size(); ++primitiveIndex) {
-            if (drawItems.size() >= kMaxDrawItems) {
-                return false;
-            }
-
             const renderer::MeshPrimitive& primitive = primitives[primitiveIndex];
+            // Order matters: an empty primitive is charged to nothing, so it can
+            // neither consume a slot nor be reported as dropped geometry.
             if (primitive.indexCount == 0) {
+                continue;
+            }
+            // `continue`, not `return`: the remaining primitives still have to be
+            // offered so the drop count is a real total. The old early return made
+            // the size of the loss unknowable, which is what this replaces.
+            if (!budget.admitDrawItem()) {
                 continue;
             }
 
@@ -689,14 +695,14 @@ bool Renderer::appendDrawItemsForObject(uint32_t objectIndex, std::vector<DrawIt
             drawItem.bucket = renderBucketForMaterial(drawItem.material);
             drawItems.push_back(drawItem);
         }
-        return true;
+        return;
     }
 
     if (mesh->indexCount() == 0) {
-        return true;
+        return;
     }
-    if (drawItems.size() >= kMaxDrawItems) {
-        return false;
+    if (!budget.admitDrawItem()) {
+        return;
     }
 
     DrawItem drawItem{};
@@ -707,7 +713,6 @@ bool Renderer::appendDrawItemsForObject(uint32_t objectIndex, std::vector<DrawIt
     drawItem.frameDataIndex = static_cast<uint32_t>(drawItems.size());
     drawItem.bucket = renderBucketForMaterial(drawItem.material);
     drawItems.push_back(drawItem);
-    return true;
 }
 
 void Renderer::framePrepParallelFor(size_t count, const std::function<void(size_t, size_t)>& body)
@@ -732,17 +737,63 @@ void Renderer::updateFrameWorldBounds()
     });
 }
 
+void Renderer::reportFrameCapacityOverflow()
+{
+    const uint32_t droppedObjects = frameCapacityBudget_.droppedObjects();
+    const uint32_t droppedDrawItems = frameCapacityBudget_.droppedDrawItems();
+
+    // Log on change, not per frame. A scene that overflows overflows on every
+    // frame, and a per-frame line would bury the log it is meant to make useful.
+    // Latching on the counts rather than on a bool also reports a scene that
+    // grows further past the cap, which a plain "already warned" flag would hide.
+    if (droppedObjects == loggedDroppedObjects_ && droppedDrawItems == loggedDroppedDrawItems_) {
+        return;
+    }
+    const bool wasOverflowing = loggedDroppedObjects_ != 0 || loggedDroppedDrawItems_ != 0;
+    loggedDroppedObjects_ = droppedObjects;
+    loggedDroppedDrawItems_ = droppedDrawItems;
+
+    if (!frameCapacityBudget_.overflowed()) {
+        if (wasOverflowing) {
+            Logger::info("Frame capacity is back under its caps; all geometry is being submitted again.");
+        }
+        return;
+    }
+
+    std::ostringstream message;
+    message << "Frame capacity exceeded -- geometry is missing from this frame.";
+    if (droppedObjects > 0) {
+        message << " " << droppedObjects << " render object(s) past the " << kMaxFrameObjects
+                << "-object cap were skipped entirely (invisible to culling, shadows, and GPU-cull input).";
+    }
+    if (droppedDrawItems > 0) {
+        message << " " << droppedDrawItems << " draw item(s) past the " << kMaxDrawItems
+                << "-draw-item cap were dropped.";
+    }
+    message << " Raise kMaxFrameObjects / kMaxDrawItems in renderer/RendererInternal.h (ceiling 65535).";
+    Logger::warn(message.str());
+}
+
+size_t Renderer::sweptObjectCount() const
+{
+    return std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
+}
+
 void Renderer::buildDrawItems()
 {
     allDrawItems_.clear();
     allDrawItems_.reserve(renderObjects_.size());
 
-    const size_t objectCount = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
+    frameCapacityBudget_ = renderer::FrameCapacityBudget(kMaxFrameObjects, kMaxDrawItems);
+    const size_t objectCount = frameCapacityBudget_.admitObjects(renderObjects_.size());
+    // No early break once the draw-item cap fills. The loop keeps offering items
+    // so the budget can report how many were actually lost, which costs a walk of
+    // the remaining objects -- but only in a scene that is already being drawn
+    // incompletely, and a wrong number there is worse than a slow one.
     for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
-        if (!appendDrawItemsForObject(static_cast<uint32_t>(objectIndex), allDrawItems_)) {
-            break;
-        }
+        appendDrawItemsForObject(static_cast<uint32_t>(objectIndex), frameCapacityBudget_, allDrawItems_);
     }
+    reportFrameCapacityOverflow();
 
     // Bucket is the primary key so each bucket is one contiguous range (the pass
     // and pipeline split reduces to a range walk); mesh stays the secondary key so
@@ -771,7 +822,7 @@ void Renderer::buildVisibleDrawItems(const renderer::Frustum& frustum)
     cullingStats_ = {};
     cullingStats_.totalDrawItems = allDrawItems_.size();
 
-    const size_t objectCount = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
+    const size_t objectCount = sweptObjectCount();
     // uint8_t instead of vector<bool>: parallel chunks write disjoint indices,
     // which vector<bool>'s packed bits would turn into data races.
     std::vector<uint8_t> objectVisible(objectCount, 0);
@@ -891,7 +942,7 @@ void Renderer::buildShadowDrawItems(uint32_t cascadeIndex, const renderer::Frust
 
     // Serial on purpose: this runs inside the per-cascade parallel loop in
     // buildShadowFrameData, and framePrepParallelFor must not nest.
-    const size_t objectCount = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
+    const size_t objectCount = sweptObjectCount();
     std::vector<uint8_t> objectVisible(objectCount, 0);
     for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
         const renderer::RenderObject& object = renderObjects_[objectIndex];
@@ -925,7 +976,7 @@ void Renderer::buildUnionShadowDrawItems(uint32_t cascadeCount)
     shadowDrawItems_.clear();
     shadowDrawItems_.reserve(allDrawItems_.size());
 
-    const size_t objectCount = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
+    const size_t objectCount = sweptObjectCount();
     std::vector<uint8_t> objectVisible(objectCount, 0);
     for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
         const renderer::RenderObject& object = renderObjects_[objectIndex];
@@ -1463,6 +1514,10 @@ void Renderer::resetFrameStateForEmptyScene(uint32_t frameIndex)
     frameGtaoActive_ = false;
     frameProbeCaptureActive_ = false;
     irradianceProbes_.clearCaptureBatch();
+    // Same reasoning as the cache flags above: this path never runs buildDrawItems,
+    // so the budget would keep reporting the previous scene's overflow forever.
+    frameCapacityBudget_ = renderer::FrameCapacityBudget(kMaxFrameObjects, kMaxDrawItems);
+    reportFrameCapacityOverflow();
     allDrawItems_.clear();
     visibleDrawItems_.clear();
     shadowDrawItems_.clear();
@@ -1614,7 +1669,7 @@ void Renderer::buildMainCullingFrameData(uint32_t frameIndex, const renderer::Fr
         visibleDrawItems_ = allDrawItems_;
         cullingStats_ = {};
         cullingStats_.gpuCulling = true;
-        const size_t objectCount = std::min(renderObjects_.size(), static_cast<size_t>(kMaxFrameObjects));
+        const size_t objectCount = sweptObjectCount();
         for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
             const renderer::RenderObject& object = renderObjects_[objectIndex];
             if (isRenderObjectActive(object) && object.mesh && object.mesh->valid()) {

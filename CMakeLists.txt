@@ -232,6 +232,7 @@ add_library(VulkanEngineCore STATIC
     src/renderer/CascadeMath.cpp
     src/renderer/CascadeShadowCache.cpp
     src/renderer/DrawItemBatching.cpp
+    src/renderer/FrameCapacity.cpp
     src/renderer/FrameClock.cpp
     src/renderer/DynamicResolution.cpp
     src/renderer/OcclusionYield.cpp
