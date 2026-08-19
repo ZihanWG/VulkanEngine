@@ -927,10 +927,47 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         // pass at all. The main pass still declares its read, so the image keeps
         // the layout it already has and no barrier is emitted for it.
         punctualShadowCacheHit_ ? 0u : punctualShadows_.slotCount(),
+        isVsmPageMarkingActive(),
         isVolumetricFogActive(),
         isIrradianceProbeUpdateActive(),
         frameProbeCaptureActive_,
     };
+}
+
+void Renderer::recordVsmPageMarkPass(VkCommandBuffer commandBuffer)
+{
+    if (!isVsmPageMarkingActive()) {
+        return;
+    }
+
+    const VkExtent2D extent = renderResolution_.extent();
+
+    renderer::VsmMarkFrameInput input{};
+    // The pyramid's OWN matrices, not this frame's: the depth it holds was
+    // rendered with those, and reconstructing world positions through anything
+    // else puts every surface in the wrong place. This is the same pairing the
+    // phase-1 occlusion test relies on.
+    input.depthViewProjection = depthPyramid_.viewProjection();
+    input.depthCameraPosition = depthPyramid_.cameraPosition();
+    // Same projScaleY the cull pass and mesh LOD selection use, abs() included
+    // for the same Vulkan Y-flip reason; see uploadGpuCullFrameParams.
+    input.projScaleY = 0.5f * static_cast<float>(extent.height) * std::abs(frameJitteredProjection_[1][1]);
+    // THIS frame's camera: it decides which pages are addressable, which is a
+    // different question from where the depth came from.
+    input.cameraPosition = frameCameraPosition_;
+    input.lightDirection = directionalLightSettings_.direction;
+    input.clipmap = vsmClipmapSettings();
+    input.depthExtent = extent;
+    input.blockStride = vsmSettings_.markBlockStride;
+    // Deliberately NOT previousFrameDepthValidForOcclusion(): that gate demands a
+    // still camera because the single-phase occlusion test projects with the
+    // current view-projection. This pass projects with the pyramid's own, so a
+    // moving camera is fine -- only an absent or invalidated pyramid is not.
+    input.depthValid = depthPyramid_.valid();
+
+    renderGraph_.beginVsmPageMarkPass();
+    virtualShadowMap_.recordMarkPass(commandBuffer, currentFrame_, input);
+    renderGraph_.endVsmPageMarkPass();
 }
 
 void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
@@ -981,6 +1018,10 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                             renderGraphFrameResources());
     rhi::debug::beginLabel(commandBuffer, "Frame");
     gpuProfiler_.beginFrame(currentFrame_, commandBuffer);
+
+    // First recorded pass of the frame: it reads the depth pyramid the previous
+    // frame left behind, so it has to run before anything this frame writes.
+    recordVsmPageMarkPass(commandBuffer);
 
     const bool gpuShadowCullingActive = isGpuShadowCullingActive() && !allDrawItems_.empty();
     const uint32_t cascadeCount = activeCascadeCount();

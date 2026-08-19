@@ -292,6 +292,16 @@ void Renderer::createDepthPyramidResources()
         useGpuOcclusionCulling_ = false;
     }
     updateGpuCullingDepthPyramidDescriptors();
+
+    // The VSM marking dispatch samples the pyramid, so its descriptors name an
+    // image view that resize replaces. Created on the first pyramid that exists,
+    // rebound on every later one -- the request/params buffers are resolution
+    // independent and are not worth reallocating for a resize.
+    if (virtualShadowMap_.available()) {
+        virtualShadowMap_.refreshDepthPyramidBinding();
+    } else {
+        virtualShadowMap_.createResources(static_cast<uint32_t>(frames_.size()));
+    }
 }
 
 void Renderer::updateGpuCullingDepthPyramidDescriptors()

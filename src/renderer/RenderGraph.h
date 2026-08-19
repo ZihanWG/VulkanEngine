@@ -57,6 +57,7 @@ enum class RGAccess {
 enum class RenderPassType {
     Shadow,
     ShadowGpuCulling,
+    VsmPageMark,
     VolumetricFog,
     ProbeCapture,
     IrradianceProbes,
@@ -271,6 +272,11 @@ struct RenderGraphFrameResources {
     // descriptors claim -- otherwise a frame that casts nothing would leave the
     // image in whatever layout it happened to be in.
     uint32_t punctualShadowSlotCount = 0;
+    // Declares the virtual-shadow-map page marking compute pass. It reads the
+    // previous frame's depth pyramid, so it only exists so the graph has that
+    // texture in a sampled layout before the dispatch -- the request buffers it
+    // writes are not graph resources and carry their own explicit barriers.
+    bool vsmPageMarkEnabled = false;
     // Declares the volumetric fog compute pass for this frame. It only needs to
     // exist so the graph moves the cascaded shadow map into a sampled layout
     // before the injection dispatch reads it -- without it the fog runs while
@@ -361,6 +367,10 @@ public:
                     rhi::VulkanShadowMap* punctualShadowAtlas,
                     uint32_t imageIndex,
                     RenderGraphFrameResources frameResources);
+    // Virtual shadow map page marking. Compute, no rendering scope; this exists
+    // so the graph transitions the depth pyramid the marking dispatch samples.
+    void beginVsmPageMarkPass();
+    void endVsmPageMarkPass();
     void beginShadowPass(uint32_t cascadeLayer);
     // All cascades in one pass via multiview. Requires the shadow map's array
     // view and a pipeline built with the matching view mask.
@@ -499,6 +509,7 @@ private:
     void beginShadowPassInternal(uint32_t cascadeLayer, uint32_t viewMask);
     enum class ActivePass {
         None,
+        VsmPageMark,
         Shadow,
         PunctualShadow,
         VolumetricFog,
@@ -555,6 +566,7 @@ private:
     };
 
     struct BuiltinPassIndices {
+        uint32_t vsmPageMark = kInvalidRenderGraphHandle;
         uint32_t shadow = kInvalidRenderGraphHandle;
         uint32_t punctualShadow = kInvalidRenderGraphHandle;
         uint32_t volumetricFog = kInvalidRenderGraphHandle;

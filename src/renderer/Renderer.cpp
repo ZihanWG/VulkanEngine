@@ -356,6 +356,11 @@ void Renderer::drawFrame()
     updateDynamicResolution();
     // Before resetGpuCullFrameCounters clears this slot's readback-ready flag.
     updateOcclusionYield(currentFrame_);
+    // Same reason as the line above: this slot's page-request buffer is about to
+    // be cleared and rewritten during recording, so the only chance to read what
+    // it produced last time round is here, after its fence proved the copy
+    // retired.
+    updateVsmPageRequestStats(currentFrame_);
     pushCullingHistorySample(currentFrame_);
     pushExposureHistorySample();
 
@@ -995,6 +1000,31 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
             << "  cascades: " << activeCascadeCount() << "\n"
             << "  texel snapping: " << (csmSettings_.enableTexelSnapping ? "enabled" : "disabled") << "\n"
             << "  debug colors: " << (csmSettings_.enableCascadeDebugColors ? "enabled" : "disabled") << "\n";
+    // Page-request measurement. Printed rather than left in the debug panel
+    // because --capture-frame excludes ImGui, so a GPU-derived number that only
+    // exists on screen cannot be checked from a headless or scripted run.
+    if (isVsmPageMarkingActive()) {
+        const renderer::VsmClipmapSettings clipmap = vsmClipmapSettings();
+        message << "VSM page marking:\n"
+                << "  levels: " << clipmap.levelCount << ", level0 extent: " << clipmap.level0Extent
+                << " m, texel0: " << renderer::vsmTexelWorldSize(clipmap, 0) << " m\n"
+                << "  mark threads: " << virtualShadowMap_.lastMarkThreadCount()
+                << " (stride " << vsmSettings_.markBlockStride << ")\n";
+        if (vsmPageRequestStatsValid_) {
+            message << "  requested pages: " << vsmPageRequestStats_.requestedPages << "/"
+                    << renderer::kVsmMaxVirtualPages << " (peak " << vsmPeakRequestedPages_ << ", pool holds "
+                    << renderer::kVsmPagePoolPageCount << ")\n"
+                    << "  levels touched: " << vsmPageRequestStats_.lowestRequestedLevel << ".."
+                    << vsmPageRequestStats_.highestRequestedLevel << "\n"
+                    << "  per level:";
+            for (uint32_t level = 0; level < clipmap.levelCount; ++level) {
+                message << " L" << level << "=" << vsmPageRequestStats_.requestedPerLevel[level];
+            }
+            message << "\n";
+        } else {
+            message << "  requested pages: pending first readback\n";
+        }
+    }
     message << "Punctual shadows:\n"
             << "  atlas: " << (punctualShadows_.valid() ? "available" : "unavailable") << "\n"
             << "  casting: " << (usePunctualShadows_ ? "enabled" : "disabled") << "\n"
@@ -1611,6 +1641,16 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
     // that used to live here silently dropped.
     applyCsmSettings(settings.csm, csmSettings_, mode == RuntimeSettingsApplyMode::Startup);
 
+    // Whole-struct too, and safe to follow at runtime: every field feeds the
+    // marking dispatch's per-frame parameter upload, none of them size a
+    // resource. Changing them invalidates the peak, which describes a clipmap
+    // that no longer exists.
+    if (vsmSettings_ != settings.vsm) {
+        vsmSettings_ = settings.vsm;
+        vsmPeakRequestedPages_ = 0;
+        vsmPageRequestStatsValid_ = false;
+    }
+
     if (mode == RuntimeSettingsApplyMode::Startup) {
         useTransientAliasing_ = settings.enableTransientAliasing;
         useGpuCulling_ = settings.useGpuCulling;
@@ -1676,6 +1716,7 @@ RuntimeSettings Renderer::captureRuntimeSettings() const
     settings.lod = lodSettings_;
     settings.gi = giSettings_;
     settings.csm = csmSettings_;
+    settings.vsm = vsmSettings_;
     settings.debugUi = debugUiSettings_;
     settings.enableTransientAliasing = useTransientAliasing_;
     settings.useGpuCulling = useGpuCulling_;
@@ -1777,6 +1818,25 @@ void Renderer::enableOcclusionTestSettings()
             : "Occlusion test settings requested, but GPU culling or depth pyramid resources are unavailable.";
 }
 
+void Renderer::updateVsmPageRequestStats(uint32_t frameIndex)
+{
+    if (!isVsmPageMarkingActive()) {
+        // Left as it was rather than zeroed: turning marking off should freeze
+        // the last measurement on screen, not replace it with a zero that reads
+        // like "no pages needed".
+        return;
+    }
+
+    renderer::VsmPageRequestStats stats{};
+    if (!virtualShadowMap_.readRequestStats(frameIndex, vsmSettings_.clipmapLevels, stats)) {
+        return;
+    }
+
+    vsmPageRequestStats_ = stats;
+    vsmPageRequestStatsValid_ = true;
+    vsmPeakRequestedPages_ = std::max(vsmPeakRequestedPages_, stats.requestedPages);
+}
+
 bool Renderer::previousFrameDepthValidForOcclusion() const
 {
     return depthPyramid_.valid() &&
@@ -1798,7 +1858,8 @@ void Renderer::clampRuntimeSettings()
     // RuntimeSettings.cpp (compiled into VulkanEngineCore) so it can be tested.
     ve::clampRuntimeSettings(
         renderScaleSettings_, dynamicResolutionSettings_, toneMappingSettings_, bloomSettings_, taaSettings_,
-        ssrSettings_, ssaoSettings_, fogSettings_, csmSettings_, lodSettings_, giSettings_, debugUiSettings_);
+        ssrSettings_, ssaoSettings_, fogSettings_, csmSettings_, vsmSettings_, lodSettings_, giSettings_,
+        debugUiSettings_);
 
     // Pushed here rather than at each edit site: clampRuntimeSettings runs after
     // every settings change (load, UI edit, reset), so the volume's copy of the
@@ -1990,16 +2051,30 @@ const char* Renderer::occlusionYieldStateName() const
 
 bool Renderer::isDepthPyramidBuildRequired() const
 {
-    // GPU occlusion culling is the pyramid's only consumer -- nothing else reads
-    // it -- so with occlusion off the build is pure cost. Measured at 0.68 ms on
-    // the default scene, which it was paying every frame regardless.
-    //
     // Deliberately does NOT test depthPyramid_.valid() the way
     // isGpuOcclusionCullingActive does: validity is an *output* of the build, so
     // gating the build on it would latch the pyramid off forever after one skip.
-    return useGpuOcclusionCulling_ && isGpuCullingActive() && depthPyramid_.buildAvailable() &&
-           depthPyramid_.image() != VK_NULL_HANDLE && depthPyramid_.mipLevels() > 0 &&
-           occlusionYield_.shouldBuildPyramid();
+    const bool pyramidUsable = depthPyramid_.buildAvailable() && depthPyramid_.image() != VK_NULL_HANDLE &&
+                               depthPyramid_.mipLevels() > 0;
+    if (!pyramidUsable) {
+        return false;
+    }
+
+    // GPU occlusion culling used to be the pyramid's only consumer, so with
+    // occlusion off the build was pure cost (0.68 ms on the default scene) and
+    // the yield controller was free to suspend it.
+    //
+    // VSM page marking is the second consumer, and it is not covered by the
+    // yield decision at all: that controller suspends the build when occlusion
+    // culls nothing, which says nothing about whether the marking pass still
+    // needs depth. Left out, the skip calls depthPyramid_.invalidate() and page
+    // marking measures one frame and then reports zero forever -- which is
+    // exactly what it did before this branch existed.
+    if (isVsmPageMarkingActive()) {
+        return true;
+    }
+
+    return useGpuOcclusionCulling_ && isGpuCullingActive() && occlusionYield_.shouldBuildPyramid();
 }
 
 bool Renderer::isGpuOcclusionCullingActive() const

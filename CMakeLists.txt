@@ -246,6 +246,7 @@ add_library(VulkanEngineCore STATIC
     src/renderer/RenderScale.cpp
     src/renderer/TransientMemoryPlan.cpp
     src/renderer/RuntimeSettings.cpp
+    src/renderer/VirtualShadowMap.cpp
     src/renderer/VolumetricFog.cpp
     src/renderer/SkeletalAnimation.cpp
 )
@@ -301,6 +302,7 @@ add_library(VulkanEngineRuntime STATIC
     src/renderer/SceneBuilder.cpp
     src/renderer/ScreenSpaceReflections.cpp
     src/renderer/ScreenshotCapture.cpp
+    src/renderer/VirtualShadowMapPass.cpp
     src/ui/ImGuiLayer.cpp
     src/rhi/ValidationTally.cpp
     src/rhi/VulkanAliasingProbe.cpp
@@ -457,6 +459,7 @@ set(SHADER_SOURCES
     "${SHADER_SOURCE_DIR}/shadow_masked_layered.vert"
     "${SHADER_SOURCE_DIR}/shadow_punctual.vert"
     "${SHADER_SOURCE_DIR}/punctual_shadow_cull.comp"
+    "${SHADER_SOURCE_DIR}/vsm_page_mark.comp"
     "${SHADER_SOURCE_DIR}/fog_inject.comp"
     "${SHADER_SOURCE_DIR}/fog_integrate.comp"
     "${SHADER_SOURCE_DIR}/probe_debug_fill.comp"
@@ -514,6 +517,7 @@ set(SHADER_INCLUDES
     "${SHADER_SOURCE_DIR}/cluster_grid.glsl"
     "${SHADER_SOURCE_DIR}/sub_rect.glsl"
     "${SHADER_SOURCE_DIR}/shadow_cascade.glsl"
+    "${SHADER_SOURCE_DIR}/virtual_shadow_map.glsl"
 )
 
 if(GLSLC_EXECUTABLE)

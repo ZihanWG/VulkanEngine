@@ -88,18 +88,19 @@ TEST_CASE("Render scale is clamped by the runtime settings clamp", "[render-scal
     ve::SsaoSettings ssao{};
     ve::FogSettings fog{};
     ve::CsmSettings csm{};
+    ve::VsmSettings vsm{};
     ve::LodSettings lod{};
     ve::GiSettings gi{};
     ve::DebugUiSettings debugUi{};
 
     renderScale.scale = 4.0f;
     ve::clampRuntimeSettings(
-        renderScale, dynamicResolution, toneMapping, bloom, taa, ssr, ssao, fog, csm, lod, gi, debugUi);
+        renderScale, dynamicResolution, toneMapping, bloom, taa, ssr, ssao, fog, csm, vsm, lod, gi, debugUi);
     CHECK(renderScale.scale == Catch::Approx(kMaxRenderScale));
 
     renderScale.scale = 0.0f;
     ve::clampRuntimeSettings(
-        renderScale, dynamicResolution, toneMapping, bloom, taa, ssr, ssao, fog, csm, lod, gi, debugUi);
+        renderScale, dynamicResolution, toneMapping, bloom, taa, ssr, ssao, fog, csm, vsm, lod, gi, debugUi);
     CHECK(renderScale.scale == Catch::Approx(kMinRenderScale));
 }
 
@@ -123,6 +124,7 @@ TEST_CASE("Sharpness is clamped and defaults to a usable value", "[render-scale]
     ve::SsaoSettings ssao{};
     ve::FogSettings fog{};
     ve::CsmSettings csm{};
+    ve::VsmSettings vsm{};
     ve::LodSettings lod{};
     ve::GiSettings gi{};
     ve::DebugUiSettings debugUi{};
@@ -136,11 +138,11 @@ TEST_CASE("Sharpness is clamped and defaults to a usable value", "[render-scale]
 
     renderScale.sharpness = 9.0f;
     ve::clampRuntimeSettings(
-        renderScale, dynamicResolution, toneMapping, bloom, taa, ssr, ssao, fog, csm, lod, gi, debugUi);
+        renderScale, dynamicResolution, toneMapping, bloom, taa, ssr, ssao, fog, csm, vsm, lod, gi, debugUi);
     CHECK(renderScale.sharpness == Catch::Approx(1.0f));
 
     renderScale.sharpness = -1.0f;
     ve::clampRuntimeSettings(
-        renderScale, dynamicResolution, toneMapping, bloom, taa, ssr, ssao, fog, csm, lod, gi, debugUi);
+        renderScale, dynamicResolution, toneMapping, bloom, taa, ssr, ssao, fog, csm, vsm, lod, gi, debugUi);
     CHECK(renderScale.sharpness == Catch::Approx(0.0f));
 }

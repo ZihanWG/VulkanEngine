@@ -37,6 +37,7 @@
 #include "renderer/ScreenSpaceReflections.h"
 #include "renderer/ScreenshotCapture.h"
 #include "renderer/SkinnedMesh.h"
+#include "renderer/VirtualShadowMapPass.h"
 #include "rhi/VulkanAsyncCompute.h"
 #include "rhi/VulkanBuffer.h"
 #include "rhi/VulkanBrdfLut.h"
@@ -541,6 +542,27 @@ private:
     {
         return volumetricFog_.available() && fogSettings_.enabled && fogSettings_.density > 0.0f;
     }
+    // Whether the VSM page-marking dispatch runs this frame. Phase 1: this only
+    // gates a measurement pass -- no shadow the renderer draws depends on it.
+    [[nodiscard]] bool isVsmPageMarkingActive() const
+    {
+        return virtualShadowMap_.available() && vsmSettings_.enableMarking;
+    }
+    // The persisted scalar settings as the GPU-free clipmap math wants them.
+    // VsmSettings stores plain scalars so RuntimeSettings.h stays free of
+    // renderer types; this is the one place the two representations meet, the
+    // same split giGridBounds() uses.
+    [[nodiscard]] renderer::VsmClipmapSettings vsmClipmapSettings() const
+    {
+        return renderer::clampVsmClipmapSettings({vsmSettings_.clipmapLevels,
+                                                  vsmSettings_.level0Extent,
+                                                  vsmSettings_.texelsPerPixel,
+                                                  vsmSettings_.depthRange});
+    }
+    // Records the page-marking dispatch inside the graph's declared pass.
+    void recordVsmPageMarkPass(VkCommandBuffer commandBuffer);
+    // Reads the page-request bitmask this frame slot wrote the last time round.
+    void updateVsmPageRequestStats(uint32_t frameIndex);
     // The probe grid's world placement, as the math header wants it. GiSettings
     // stores plain floats so RuntimeSettings.h stays free of renderer types;
     // this is the one place the two representations meet.
@@ -827,6 +849,16 @@ private:
     std::vector<rhi::VulkanBuffer> frameIndirectDrawBuffers_;
     std::vector<rhi::VulkanBuffer> frameShadowIndirectDrawBuffers_;
     CsmSettings csmSettings_{};
+    VsmSettings vsmSettings_{};
+    // Page-request stats read back from the frame slot that has just come round
+    // again, so they lag by the number of frames in flight -- the same latency
+    // the GPU culling counters carry, and for the same reason.
+    renderer::VsmPageRequestStats vsmPageRequestStats_{};
+    bool vsmPageRequestStatsValid_ = false;
+    // Highest request count seen since the counter was last reset, which is the
+    // number that actually sizes a page pool: an average would hide the peak
+    // that overflows it.
+    uint32_t vsmPeakRequestedPages_ = 0;
     std::vector<VkFence> imagesInFlight_;
     ShadowSettings shadowSettings_{};
     SsaoSettings ssaoSettings_{};
@@ -1169,6 +1201,10 @@ private:
                                      gpuProfiler_,
                                      frameIndirectDrawBuffers_,
                                      frameShadowIndirectDrawBuffers_};
+
+    // Virtual shadow map page marking. Reads the depth pyramid, so it follows it
+    // in declaration order for the same reason gpuCulling_ does.
+    renderer::VirtualShadowMapPass virtualShadowMap_{context_, depthPyramid_, gpuProfiler_};
 };
 
 } // namespace ve

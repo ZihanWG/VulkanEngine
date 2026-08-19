@@ -361,6 +361,34 @@ struct DynamicResolutionSettings {
     float maxScale = 1.0f;
 };
 
+// Virtual shadow map (docs/virtual_shadow_maps.md).
+//
+// Phase 1 scope: enableMarking only turns on the page-MARKING measurement pass.
+// It changes nothing the renderer draws -- directional shadows still come
+// entirely from the cascades. The point of the phase is to find out how many
+// pages a real frame asks for before a physical pool, a per-frame page budget,
+// or a sampling path is committed to.
+//
+// The numeric fields mirror renderer::VsmClipmapSettings, which is where they
+// are clamped and unit-tested; this header stays glm-free by design, so the
+// struct is duplicated as plain scalars rather than included.
+struct VsmSettings {
+    bool enableMarking = false;
+    uint32_t clipmapLevels = 8;
+    // World units spanned by the finest level's whole virtual texel grid.
+    float level0Extent = 4.0f;
+    // Above 1.0 asks for coarser levels (cheaper, blurrier); below, finer.
+    float texelsPerPixel = 1.0f;
+    // Half-thickness of every level's ortho depth range, in world units.
+    float depthRange = 250.0f;
+    // Pixels per marking thread along each axis. Higher is cheaper and coarser:
+    // a block that straddles a page seam only marks the page its centre lands
+    // in, which the coarser-level mark then covers.
+    uint32_t markBlockStride = 4;
+
+    [[nodiscard]] bool operator==(const VsmSettings&) const = default;
+};
+
 struct RuntimeSettings {
     RenderScaleSettings renderScale;
     DynamicResolutionSettings dynamicResolution;
@@ -372,6 +400,7 @@ struct RuntimeSettings {
     FogSettings fog;
     PunctualShadowSettings punctualShadows;
     CsmSettings csm;
+    VsmSettings vsm;
     LodSettings lod;
     GiSettings gi;
     DebugUiSettings debugUi;
@@ -427,6 +456,7 @@ void clampRuntimeSettings(RenderScaleSettings& renderScale,
                           SsaoSettings& ssao,
                           FogSettings& fog,
                           CsmSettings& csm,
+                          VsmSettings& vsm,
                           LodSettings& lod,
                           GiSettings& gi,
                           DebugUiSettings& debugUi);

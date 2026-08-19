@@ -740,6 +740,99 @@ void Renderer::drawShadowsDebugUi()
         ImGui::TextUnformatted(cascadeStates.c_str());
     }
 
+    ImGui::SeparatorText("Virtual (clipmap) -- measurement only");
+    if (!virtualShadowMap_.available()) {
+        ImGui::TextDisabled("Page marking unavailable; needs a depth pyramid to mark from.");
+    } else {
+        if (ImGui::Checkbox("Page marking enabled", &vsmSettings_.enableMarking)) {
+            vsmPeakRequestedPages_ = 0;
+            vsmPageRequestStatsValid_ = false;
+        }
+        ImGui::SetItemTooltip("Phase 1: works out which clipmap pages this frame's visible surfaces\n"
+                              "would need, and counts them. It changes NOTHING that is drawn --\n"
+                              "directional shadows still come entirely from the cascades above.\n\n"
+                              "The point is to size a page pool and a per-frame page budget from a\n"
+                              "measurement instead of a guess.");
+
+        ImGui::BeginDisabled(!vsmSettings_.enableMarking);
+        int levels = static_cast<int>(vsmSettings_.clipmapLevels);
+        if (ImGui::SliderInt("Clipmap levels", &levels, 1, static_cast<int>(renderer::kVsmMaxClipmapLevels))) {
+            vsmSettings_.clipmapLevels = static_cast<uint32_t>(levels);
+            clampRuntimeSettings();
+            vsmPeakRequestedPages_ = 0;
+        }
+        if (ImGui::DragFloat("Level 0 extent (m)", &vsmSettings_.level0Extent, 0.05f, 0.25f, 1024.0f, "%.2f")) {
+            clampRuntimeSettings();
+            vsmPeakRequestedPages_ = 0;
+        }
+        ImGui::SetItemTooltip("World size of the finest level's whole virtual texel grid. Divided by\n"
+                              "its 1024 texels, this is the finest shadow texel the clipmap can offer.");
+        if (ImGui::SliderFloat("Texels per pixel", &vsmSettings_.texelsPerPixel, 0.25f, 8.0f, "%.2f")) {
+            clampRuntimeSettings();
+            vsmPeakRequestedPages_ = 0;
+        }
+        ImGui::SetItemTooltip("Above 1 asks for coarser levels (fewer, larger pages); below 1 asks\n"
+                              "for finer ones. This is the single biggest lever on the page count.");
+        int stride = static_cast<int>(vsmSettings_.markBlockStride);
+        if (ImGui::SliderInt("Mark block stride (px)", &stride, 1, 32)) {
+            vsmSettings_.markBlockStride = static_cast<uint32_t>(stride);
+            clampRuntimeSettings();
+        }
+        ImGui::SetItemTooltip("Pixels per marking thread along each axis. Higher is cheaper and\n"
+                              "coarser: a block straddling a page seam only marks the page its\n"
+                              "centre lands in, which the coarser-level mark then covers.");
+        ImGui::EndDisabled();
+
+        const renderer::VsmClipmapSettings clipmap = vsmClipmapSettings();
+        ImGui::Text("Pages: %upx, %ux%u per level, %u virtual max (pool would hold %u)",
+                    renderer::kVsmPageSize,
+                    renderer::kVsmPagesPerLevelAxis,
+                    renderer::kVsmPagesPerLevelAxis,
+                    renderer::kVsmMaxVirtualPages,
+                    renderer::kVsmPagePoolPageCount);
+        ImGui::Text("Finest texel: %.4f m   coarsest level spans %.1f m",
+                    static_cast<double>(renderer::vsmTexelWorldSize(clipmap, 0)),
+                    static_cast<double>(renderer::vsmPageWorldSize(clipmap, clipmap.levelCount - 1u)) *
+                        renderer::kVsmPagesPerLevelAxis);
+
+        if (!vsmPageRequestStatsValid_) {
+            ImGui::TextDisabled("Requested pages: waiting for the first readback.");
+        } else {
+            // The peak, not the average: an average hides exactly the frame that
+            // would overflow a pool sized from it.
+            ImGui::Text("Requested pages: %u  (peak %u since last change)",
+                        vsmPageRequestStats_.requestedPages,
+                        vsmPeakRequestedPages_);
+            ImGui::SetItemTooltip("Lags by the frames in flight -- this slot's bitmask is read back\n"
+                                  "the next time the slot comes round, the same latency the GPU\n"
+                                  "culling counters carry.");
+            ImGui::Text("Levels touched: %u..%u",
+                        vsmPageRequestStats_.lowestRequestedLevel,
+                        vsmPageRequestStats_.highestRequestedLevel);
+
+            std::string perLevel;
+            for (uint32_t level = 0; level < clipmap.levelCount; ++level) {
+                if (level > 0) {
+                    perLevel += "  ";
+                }
+                perLevel += "L" + std::to_string(level) + "=" +
+                            std::to_string(vsmPageRequestStats_.requestedPerLevel[level]);
+            }
+            ImGui::TextUnformatted(perLevel.c_str());
+
+            if (vsmPeakRequestedPages_ > renderer::kMaxVsmPagesPerFrame) {
+                // Not a failure: the per-frame budget bounds pages REDRAWN, and
+                // caching is what is meant to keep that far below the resident
+                // set. Surfaced because if it were ever close to the request
+                // count, the phase-2 budget would be the wrong shape.
+                ImGui::TextDisabled("Peak request exceeds the %u-page per-frame draw budget; caching has to "
+                                    "cover the difference.",
+                                    renderer::kMaxVsmPagesPerFrame);
+            }
+        }
+        ImGui::Text("Mark threads: %u", virtualShadowMap_.lastMarkThreadCount());
+    }
+
     ImGui::SeparatorText("Punctual (spot/point)");
     if (!punctualShadows_.valid()) {
         ImGui::TextDisabled("Shadow atlas unavailable; point/spot lights do not cast.");

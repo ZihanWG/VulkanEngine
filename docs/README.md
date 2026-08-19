@@ -35,6 +35,10 @@ overview; these documents describe implementation details and limitations.
 - [Punctual Shadows](punctual_shadows.md): The spot/point shadow atlas, its tile
   allocator and slot encoding, the dedicated caster vertex shader, cube-face
   point lights, and the tile budget.
+- [Virtual Shadow Maps](virtual_shadow_maps.md): The clipmap page model, why the
+  page grid is absolute rather than camera-centred, page marking from the
+  previous frame's depth pyramid, and the coverage bound a measurement forced.
+  **Measurement only so far — it renders and samples nothing.**
 - [Irradiance Probes](irradiance_probes.md): Real-time global illumination
   without ray tracing — the octahedral probe atlases and their seam border, the
   amortised cube capture and its convolution, Chebyshev visibility weighting,

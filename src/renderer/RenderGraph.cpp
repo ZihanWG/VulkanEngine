@@ -220,6 +220,8 @@ const char* renderPassTypeName(RenderPassType type)
         return "Shadow";
     case RenderPassType::ShadowGpuCulling:
         return "Shadow GPU Culling";
+    case RenderPassType::VsmPageMark:
+        return "VSM Page Mark";
     case RenderPassType::VolumetricFog:
         return "Volumetric Fog";
     case RenderPassType::ProbeCapture:
@@ -555,6 +557,30 @@ void RenderGraph::importFrameBuffers()
     frame_.luminanceHistogram = importBuffer(frame_.resources.luminanceHistogram);
     frame_.histogramReadback = importBuffer(frame_.resources.histogramReadback);
     frame_.exposureState = importBuffer(frame_.resources.exposureState);
+}
+
+void RenderGraph::beginVsmPageMarkPass()
+{
+    requireFrameActive("RenderGraph::beginVsmPageMarkPass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginVsmPageMarkPass called while another pass is active.");
+    }
+    if (!beginDeclaredPass(frame_.passIndices.vsmPageMark)) {
+        throw std::logic_error(
+            "RenderGraph::beginVsmPageMarkPass was culled but the renderer attempted to record it.");
+    }
+
+    activePass_ = ActivePass::VsmPageMark;
+}
+
+void RenderGraph::endVsmPageMarkPass()
+{
+    requireFrameActive("RenderGraph::endVsmPageMarkPass");
+    if (activePass_ != ActivePass::VsmPageMark) {
+        throw std::logic_error("RenderGraph::endVsmPageMarkPass called without an active page-mark pass.");
+    }
+
+    activePass_ = ActivePass::None;
 }
 
 void RenderGraph::beginShadowPass(uint32_t cascadeLayer)
@@ -1686,6 +1712,25 @@ void RenderGraph::buildFrameGraphDeclarations()
 
 void RenderGraph::declareGeometryPasses()
 {
+    // First pass of the frame: it reads the depth pyramid the PREVIOUS frame
+    // left behind, so it has to be declared before anything this frame writes.
+    if (frame_.resources.vsmPageMarkEnabled) {
+        frame_.passIndices.vsmPageMark = addPass(
+            "VsmPageMarkPass",
+            RenderPassType::VsmPageMark,
+            RenderPassExecutionType::Compute,
+            // Side effect: the page-request bitmask it writes is not a graph
+            // resource, so nothing downstream declares a read and liveness
+            // analysis would cull the pass away.
+            true,
+            [this](RenderGraphBuilder& builder) {
+                builder.readTexture(frame_.depthPyramid,
+                                    RGAccess::ShaderRead,
+                                    "Samples the previous frame's Hi-Z depth to work out which shadow pages "
+                                    "this frame's visible surfaces need.");
+            });
+    }
+
     frame_.passIndices.shadow = addPass(
         "CSMShadowPass",
         RenderPassType::Shadow,
