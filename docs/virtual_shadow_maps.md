@@ -9,7 +9,7 @@ A/B point:
 
 | stage | setting | what it does |
 | --- | --- | --- |
-| marking | `enableMarking` | works out which pages the frame needs, and counts them |
+| marking | `enableMarking` | **startup-only** — allocates the subsystem, and counts the pages the frame needs |
 | rendering | `enablePageRendering` | allocates a physical page per request and draws it |
 | sampling | `enableShadows` | samples the pool instead of the cascades |
 
@@ -265,6 +265,21 @@ thin nearby surface and pick one level coarser; that is the same graceful
 degradation an unresident page already falls back to, and it loses resolution
 rather than correctness.
 
+## Everything is allocated only if it was on at startup
+
+The page pool is 4096x4096 D32 = **64 MiB**, plus ~2 MiB of per-frame cull
+buffers and a 144 KB page table. Holding that for a subsystem that is off by
+default would be a worse trade than the 17.48 MiB of bloom aliasing this project
+already [measured and rejected](design_decisions.md) as a default.
+
+So `enableMarking` is startup-only, like `CsmSettings::cascadeCount` and
+`enableLayeredCascades`, and for the same kind of reason: allocating the pool on
+a runtime toggle would mean recreating the page pipeline (it bakes the pool's
+depth format), and there is no device-idle wait available in the steady-state
+frame path. With it off, none of the pool, the cull buffers, the page table or
+the marking resources exist — measured: no VSM log lines, no allocations, no
+behaviour change at all. The two toggles below it stay live.
+
 ## Sampling: walk up until something is resident
 
 `vsmShadowFactor` in
@@ -396,7 +411,7 @@ is the shader-side duplicate, the same arrangement `ClusterGrid.h` /
 
 | field | default | effect |
 | --- | --- | --- |
-| `enableMarking` | `false` | runs the marking pass; draws nothing |
+| `enableMarking` | `false` | **startup-only**; allocates the subsystem and runs the marking pass |
 | `enableShadows` | `false` | samples the pool instead of the cascades |
 | `clipmapLevels` | 8 | active levels |
 | `level0Extent` | 4.0 m | world span of the finest level's grid |
@@ -418,6 +433,15 @@ or scripted run.
 
 - **Visual correctness is unverified**, and no pixel gate is possible on this
   scene (above).
+- **Moving casters keep stale shadows.** A page is redrawn when it is newly
+  allocated, when its slot scrolls to a different absolute page, or when the
+  light or clipmap settings move — but nothing notices a caster moving *inside*
+  a resident page, so its shadow stays where the object was. The cascades do not
+  have this problem because `CascadeShadowCaster` hashes every caster's model
+  matrix. **This makes the current state static-geometry-only**, and it is why
+  the default scene's A/B looks clean: only the lights animate there, and lights
+  are not casters. Fixing it is per-page content hashing, reusing
+  `ShadowCacheKey` the way the cascades already do.
 - **Bindless path only.** `simple.frag`, the fallback for devices without
   descriptor indexing, still uses the cascades. Adding VSM there means a second
   descriptor layout for a path that only exists on hardware this feature is not

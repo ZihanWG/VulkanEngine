@@ -376,6 +376,13 @@ struct VsmSettings {
     // Nested on purpose, each an A/B point: marking measures which pages a frame
     // needs and changes nothing drawn; page rendering additionally allocates and
     // draws them into the pool. Neither replaces the cascades.
+    //
+    // enableMarking is STARTUP-ONLY, like CsmSettings::cascadeCount: it decides
+    // whether the page pool (4096x4096 D32 = 64 MiB) and its per-frame buffers
+    // are allocated at all, and nothing but startup can answer that. Off means
+    // the whole subsystem costs nothing, which is the point -- an off-by-default
+    // feature holding 64 MiB would be a worse trade than the one this project
+    // already measured and rejected for bloom aliasing.
     bool enableMarking = false;
     bool enablePageRendering = false;
     // Samples the page pool instead of the cascades for the directional light.

@@ -742,17 +742,27 @@ void Renderer::drawShadowsDebugUi()
 
     ImGui::SeparatorText("Virtual (clipmap)");
     if (!virtualShadowMap_.available()) {
-        ImGui::TextDisabled("Page marking unavailable; needs a depth pyramid to mark from.");
-    } else {
-        if (ImGui::Checkbox("Page marking enabled", &vsmSettings_.enableMarking)) {
-            vsmPeakRequestedPages_ = 0;
-            vsmPageRequestStatsValid_ = false;
+        // Startup-only, so the checkbox writes the setting for the next launch
+        // rather than doing nothing: with marking off at startup the pool, the
+        // cull buffers and the marking resources were never allocated.
+        if (ImGui::Checkbox("Enable at next launch", &vsmSettings_.enableMarking)) {
+            saveRuntimeSettingsFromUi();
         }
-        ImGui::SetItemTooltip("Phase 1: works out which clipmap pages this frame's visible surfaces\n"
-                              "would need, and counts them. It changes NOTHING that is drawn --\n"
-                              "directional shadows still come entirely from the cascades above.\n\n"
-                              "The point is to size a page pool and a per-frame page budget from a\n"
-                              "measurement instead of a guess.");
+        ImGui::TextDisabled("Virtual shadow maps are not allocated this run.");
+        ImGui::SetItemTooltip("The page pool is 4096x4096 D32 (64 MiB) plus ~2 MiB of per-frame cull\n"
+                              "buffers, so it is only created when this was set at startup -- an\n"
+                              "off-by-default feature holding 64 MiB is a worse trade than the bloom\n"
+                              "aliasing this engine already measured and rejected as a default.\n\n"
+                              "Ticking this saves the setting; restart to allocate.");
+    } else {
+        ImGui::BeginDisabled();
+        bool markingEnabled = vsmSettings_.enableMarking;
+        ImGui::Checkbox("Page marking enabled (startup)", &markingEnabled);
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip("Works out which clipmap pages this frame's visible surfaces would\n"
+                              "need, and counts them. On its own it changes NOTHING that is drawn.\n\n"
+                              "Startup-only because it decides whether the 64 MiB page pool exists;\n"
+                              "the two toggles below are live.");
 
         ImGui::BeginDisabled(!vsmSettings_.enableMarking);
         int levels = static_cast<int>(vsmSettings_.clipmapLevels);

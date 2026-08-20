@@ -308,10 +308,14 @@ void Renderer::createDepthPyramidResources()
     // image view that resize replaces. Created on the first pyramid that exists,
     // rebound on every later one -- the request/params buffers are resolution
     // independent and are not worth reallocating for a resize.
-    if (virtualShadowMap_.available()) {
-        virtualShadowMap_.refreshDepthPyramidBinding();
-    } else {
-        virtualShadowMap_.createResources(static_cast<uint32_t>(frames_.size()));
+    // Gated on the same startup switch as the pool: with marking off there is no
+    // pool to mark for, and the marking resources would be dead weight.
+    if (vsmSettings_.enableMarking) {
+        if (virtualShadowMap_.available()) {
+            virtualShadowMap_.refreshDepthPyramidBinding();
+        } else {
+            virtualShadowMap_.createResources(static_cast<uint32_t>(frames_.size()));
+        }
     }
 }
 

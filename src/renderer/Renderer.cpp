@@ -175,8 +175,19 @@ Renderer::Renderer(Window& window) : window_(window)
     // the window. It has to be before createPipeline(), because the page
     // pipeline bakes the pool's depth format -- created after, the pipeline is
     // silently skipped and page rendering never turns on.
-    virtualShadowMap_.createPagePoolResources(static_cast<uint32_t>(frames_.size()));
-    virtualShadowMap_.createCullResources(static_cast<uint32_t>(frames_.size()), kMaxDrawItems);
+    //
+    // Gated on the startup setting because it is not cheap: the pool alone is
+    // 4096x4096 D32 = 64 MiB, plus ~2 MiB of per-frame cull buffers. Paying that
+    // for a subsystem that is off by default would be a worse trade than the
+    // 17.48 MiB of bloom aliasing this project already measured and rejected as
+    // a default (docs/design_decisions.md). Startup-only for the same reason
+    // cascadeCount and enableLayeredCascades are: allocating it on a runtime
+    // toggle means recreating the page pipeline, and there is no device-idle
+    // wait available in the steady-state frame path.
+    if (vsmSettings_.enableMarking) {
+        virtualShadowMap_.createPagePoolResources(static_cast<uint32_t>(frames_.size()));
+        virtualShadowMap_.createCullResources(static_cast<uint32_t>(frames_.size()), kMaxDrawItems);
+    }
     // Pipelines first: SSR/GTAO resource creation binds descriptor sets against
     // pipelines that must already exist, and bails out ("pipeline resources are
     // missing") otherwise. Pipeline creation only needs the descriptor set
@@ -1671,8 +1682,15 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
     // marking dispatch's per-frame parameter upload, none of them size a
     // resource. Changing them invalidates the peak, which describes a clipmap
     // that no longer exists.
+    // enableMarking is the one field that cannot follow at runtime: it decides
+    // whether the 64 MiB page pool and its buffers exist at all, and only
+    // startup can answer that. Everything else follows immediately.
+    const bool markingWasEnabled = vsmSettings_.enableMarking;
     if (vsmSettings_ != settings.vsm) {
         vsmSettings_ = settings.vsm;
+        if (mode != RuntimeSettingsApplyMode::Startup) {
+            vsmSettings_.enableMarking = markingWasEnabled;
+        }
         vsmPeakRequestedPages_ = 0;
         vsmPageRequestStatsValid_ = false;
         // A clipmap settings change moves every page's world rect, so nothing in
