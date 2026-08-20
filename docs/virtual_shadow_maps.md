@@ -17,9 +17,11 @@ Building it in that order is what let three design errors surface before anythin
 downstream depended on them — see
 [What the measurement changed](#what-the-measurement-changed).
 
-> **Visual correctness is unverified.** The sampling path runs with zero
-> validation errors, but whether the image is *right* has not been checked, and
-> could not be: see [Why there is no pixel gate](#why-there-is-no-pixel-gate).
+> **Spot-checked by eye, not gated.** A side-by-side A/B on the default scene
+> showed no obvious breakage — no holes, no seams, no acne — and the residency
+> counters read as designed. That is a spot check on one static camera with much
+> of the shadowed ground hidden behind the debug window, not a verification: see
+> [Why there is no pixel gate](#why-there-is-no-pixel-gate).
 
 ## Why, given the cascades already cache
 
@@ -199,6 +201,14 @@ Two things fall out of this table.
 pages than 11 do — the stress camera is simply further back. This is the expected
 behaviour of a screen-driven page set, and it is now measured rather than assumed.
 
+**Level 0 is unreachable at ordinary camera distances, and that is the same
+finding.** The default scene reports `L0=0`, `Levels touched: 1..5`: at a 4 m
+level-0 extent, that level's window reaches only 7 x 0.25 = 1.75 m from the
+camera, so the coverage bound rules it out before quality is consulted. The
+`Finest texel: 0.0020 m` the panel advertises is real but unusable unless
+something is within 1.75 m. Turning `level0Extent` down makes that worse, not
+better.
+
 **Requesting finer than the window can deliver changes nothing.** Stress at 0.25
 and at 1.0 return identical counts because coverage binds at every pixel there.
 Substituting the coverage relation, the level it forces still delivers about
@@ -306,9 +316,15 @@ it is smaller than the control's own noise in max-delta terms and larger in pixe
 count, and neither number is trustworthy. **Any pixel gate for this feature needs
 a fixed timestep or a scene with no animation**, and neither exists yet.
 
-What *is* verified: the pass runs with zero validation errors on MoltenVK, the
-page pool fills with real depth, and the residency counters behave as designed.
-Whether the shadow looks correct needs a human to look at it.
+What *is* checked: the pass runs with zero validation errors on MoltenVK, the
+page pool fills with real depth, the residency counters behave as designed, and a
+human has eyeballed the A/B on the default scene without finding anything wrong.
+
+One trap that A/B sets, worth knowing before anyone repeats it: the two captures
+differ in overall tone, and that difference is **not** the shadows. The sky
+changes too, and the sky samples no shadow — it is the animated light swarm at a
+different phase, the same thing that makes the pixel gate impossible. Toggling
+`enableShadows` back and forth within a second isolates the shadow term from it.
 
 ## Where it sits in the frame
 

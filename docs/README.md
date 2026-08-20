@@ -40,7 +40,7 @@ overview; these documents describe implementation details and limitations.
   identity rather than just residency, page marking from the previous frame's
   depth pyramid, and the coverage bound a measurement forced.
   **Complete through sampling and off by default; the cascades keep rendering
-  underneath, so the A/B is one checkbox. Visual correctness is unverified — the
+  underneath, so the A/B is one checkbox. Spot-checked by eye, not gated — the
   doc explains why no pixel gate is possible on this scene.**
 - [Irradiance Probes](irradiance_probes.md): Real-time global illumination
   without ray tracing — the octahedral probe atlases and their seam border, the
