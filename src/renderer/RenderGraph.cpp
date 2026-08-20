@@ -222,6 +222,8 @@ const char* renderPassTypeName(RenderPassType type)
         return "Shadow GPU Culling";
     case RenderPassType::VsmPageMark:
         return "VSM Page Mark";
+    case RenderPassType::VsmPage:
+        return "VSM Pages";
     case RenderPassType::VolumetricFog:
         return "Volumetric Fog";
     case RenderPassType::ProbeCapture:
@@ -347,6 +349,7 @@ void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
                              rhi::VulkanSwapchain& swapchain,
                              rhi::VulkanShadowMap& shadowMap,
                              rhi::VulkanShadowMap* punctualShadowAtlas,
+                             rhi::VulkanShadowMap* vsmPagePool,
                              uint32_t imageIndex,
                              RenderGraphFrameResources frameResources)
 {
@@ -378,11 +381,12 @@ void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
     // allocation leaves the pointer non-null but invalid.
     frame_.punctualShadowAtlas =
         (punctualShadowAtlas != nullptr && punctualShadowAtlas->valid()) ? punctualShadowAtlas : nullptr;
+    frame_.vsmPagePool = (vsmPagePool != nullptr && vsmPagePool->valid()) ? vsmPagePool : nullptr;
     frame_.resources = std::move(frameResources);
     frame_.imageIndex = imageIndex;
     frame_.swapchainImage = swapchain.image(imageIndex);
 
-    importExternalFrameTargets(swapchain, shadowMap, frame_.punctualShadowAtlas, imageIndex);
+    importExternalFrameTargets(swapchain, shadowMap, frame_.punctualShadowAtlas, frame_.vsmPagePool, imageIndex);
     createTransientFrameTextures();
     importFrameBuffers();
 
@@ -402,6 +406,7 @@ void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
 void RenderGraph::importExternalFrameTargets(rhi::VulkanSwapchain& swapchain,
                                              rhi::VulkanShadowMap& shadowMap,
                                              rhi::VulkanShadowMap* punctualShadowAtlas,
+                                             rhi::VulkanShadowMap* vsmPagePool,
                                              uint32_t imageIndex)
 {
     RenderGraphImageResource swapchainColor{};
@@ -453,6 +458,24 @@ void RenderGraph::importExternalFrameTargets(rhi::VulkanSwapchain& swapchain,
     textures_.at(frame_.shadowMapDepth.index).initialLayout = shadowMap.layout();
     textures_.at(frame_.shadowMapDepth.index).lastAccess =
         accessStateFromLayout(shadowMap.layout(), VK_IMAGE_ASPECT_DEPTH_BIT);
+
+    if (vsmPagePool != nullptr) {
+        RenderGraphImageResource poolDepth{};
+        poolDepth.name = "VsmPagePool";
+        poolDepth.image = vsmPagePool->image();
+        poolDepth.imageView = vsmPagePool->imageView();
+        poolDepth.extent = vsmPagePool->extent();
+        poolDepth.format = vsmPagePool->format();
+        poolDepth.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        poolDepth.arrayLayers = 1;
+        poolDepth.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        poolDepth.imported = true;
+        frame_.vsmPagePoolDepth = importTexture(poolDepth);
+        textures_.at(frame_.vsmPagePoolDepth.index).owner = TextureOwner::VsmPagePool;
+        textures_.at(frame_.vsmPagePoolDepth.index).initialLayout = vsmPagePool->layout();
+        textures_.at(frame_.vsmPagePoolDepth.index).lastAccess =
+            accessStateFromLayout(vsmPagePool->layout(), VK_IMAGE_ASPECT_DEPTH_BIT);
+    }
 
     if (punctualShadowAtlas == nullptr) {
         return;
@@ -580,6 +603,58 @@ void RenderGraph::endVsmPageMarkPass()
         throw std::logic_error("RenderGraph::endVsmPageMarkPass called without an active page-mark pass.");
     }
 
+    activePass_ = ActivePass::None;
+}
+
+void RenderGraph::beginVsmPagePass(bool clearWholePool)
+{
+    requireFrameActive("RenderGraph::beginVsmPagePass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginVsmPagePass called while another pass is active.");
+    }
+    if (frame_.vsmPagePool == nullptr) {
+        throw std::logic_error("RenderGraph::beginVsmPagePass requires an imported page pool.");
+    }
+    if (!beginDeclaredPass(frame_.passIndices.vsmPage)) {
+        throw std::logic_error("RenderGraph::beginVsmPagePass was culled but the renderer attempted to record it.");
+    }
+
+    VkClearValue poolDepthClear{};
+    poolDepthClear.depthStencil.depth = 1.0f;
+    poolDepthClear.depthStencil.stencil = 0;
+
+    VkRenderingAttachmentInfo poolDepthAttachment{};
+    poolDepthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    poolDepthAttachment.imageView = frame_.vsmPagePool->imageView();
+    poolDepthAttachment.imageLayout = depthAttachmentLayout(VK_IMAGE_ASPECT_DEPTH_BIT);
+    // Same reasoning as the punctual atlas: CLEAR wipes every page, which is
+    // only correct when nothing in the pool can be trusted. Otherwise LOAD keeps
+    // the cached pages -- which is the entire point of the page grid being
+    // absolute -- and the caller clears just the ones it is about to redraw.
+    poolDepthAttachment.loadOp = clearWholePool ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
+    poolDepthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    poolDepthAttachment.clearValue = poolDepthClear;
+
+    VkRenderingInfo poolRenderingInfo{};
+    poolRenderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    poolRenderingInfo.renderArea.offset = {0, 0};
+    poolRenderingInfo.renderArea.extent = frame_.vsmPagePool->extent();
+    poolRenderingInfo.layerCount = 1;
+    poolRenderingInfo.colorAttachmentCount = 0;
+    poolRenderingInfo.pDepthAttachment = &poolDepthAttachment;
+
+    vkCmdBeginRendering(frame_.commandBuffer, &poolRenderingInfo);
+    activePass_ = ActivePass::VsmPage;
+}
+
+void RenderGraph::endVsmPagePass()
+{
+    requireFrameActive("RenderGraph::endVsmPagePass");
+    if (activePass_ != ActivePass::VsmPage) {
+        throw std::logic_error("RenderGraph::endVsmPagePass called without an active page pass.");
+    }
+
+    vkCmdEndRendering(frame_.commandBuffer);
     activePass_ = ActivePass::None;
 }
 
@@ -1731,6 +1806,23 @@ void RenderGraph::declareGeometryPasses()
             });
     }
 
+    // Only declared when the residency update actually queued pages. The pool is
+    // still imported and still read by the main pass below, so a frame that
+    // redraws nothing gets the read-layout transition without the write pass --
+    // the same asymmetry the punctual shadow atlas uses.
+    if (frame_.vsmPagePool != nullptr && frame_.resources.vsmDirtyPageCount > 0) {
+        frame_.passIndices.vsmPage = addPass(
+            "VsmPagePass",
+            RenderPassType::VsmPage,
+            RenderPassExecutionType::Graphics,
+            false,
+            [this](RenderGraphBuilder& builder) {
+                builder.writeTexture(frame_.vsmPagePoolDepth,
+                                     RGAccess::DepthStencilAttachmentWrite,
+                                     "Draws this frame's dirty clipmap pages into the virtual shadow page pool.");
+            });
+    }
+
     frame_.passIndices.shadow = addPass(
         "CSMShadowPass",
         RenderPassType::Shadow,
@@ -1898,6 +1990,14 @@ void RenderGraph::declareGeometryPasses()
                 builder.readTexture(frame_.punctualShadowAtlasDepth,
                                     RGAccess::ShaderRead,
                                     "Samples the punctual shadow atlas for spot-light visibility.");
+            }
+            if (frame_.vsmPagePool != nullptr) {
+                // Unconditional for the same reason as the atlas above: the pool
+                // has to reach the layout its sampler claims even on a frame
+                // that redrew no page at all.
+                builder.readTexture(frame_.vsmPagePoolDepth,
+                                    RGAccess::ShaderRead,
+                                    "Samples the virtual shadow page pool for directional visibility.");
             }
             if (frame_.probeIrradianceAtlas.valid() && frame_.probeDepthAtlas.valid()) {
                 // Same asymmetry as the punctual atlas above, for the same
@@ -2771,6 +2871,8 @@ VkImageLayout RenderGraph::currentTextureLayout(const TextureResource& resource)
         return frame_.shadowMap ? frame_.shadowMap->layout() : VK_IMAGE_LAYOUT_UNDEFINED;
     case TextureOwner::PunctualShadowAtlas:
         return frame_.punctualShadowAtlas ? frame_.punctualShadowAtlas->layout() : VK_IMAGE_LAYOUT_UNDEFINED;
+    case TextureOwner::VsmPagePool:
+        return frame_.vsmPagePool ? frame_.vsmPagePool->layout() : VK_IMAGE_LAYOUT_UNDEFINED;
     }
 
     return VK_IMAGE_LAYOUT_UNDEFINED;
@@ -2802,6 +2904,11 @@ void RenderGraph::setTextureLayout(TextureResource& resource, VkImageLayout layo
     case TextureOwner::PunctualShadowAtlas:
         if (frame_.punctualShadowAtlas) {
             frame_.punctualShadowAtlas->setLayout(layout);
+        }
+        break;
+    case TextureOwner::VsmPagePool:
+        if (frame_.vsmPagePool) {
+            frame_.vsmPagePool->setLayout(layout);
         }
         break;
     }

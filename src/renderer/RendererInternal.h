@@ -381,6 +381,9 @@ constexpr VkDeviceSize kMeshLodBufferSize = kMaxMeshLodEntries * sizeof(renderer
 // The explicit padding is load-bearing: GLSL push-constant layout rounds the
 // mat4 up to its 16-byte alignment, so the matrix lands at offset 16 rather
 // than packing against the 8-byte buffer address.
+// Also pushed by the virtual shadow map page pass, which renders one page per
+// clipmap slot exactly the way the atlas renders one tile per light slot -- same
+// shader (shadow_punctual.vert), same block.
 struct PunctualShadowPushConstants {
     VkDeviceAddress objectFrameDataAddress = 0;
     uint32_t padding0 = 0;

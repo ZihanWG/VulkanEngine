@@ -672,6 +672,7 @@ void Renderer::createShadowPipeline()
 
     createMaskedShadowPipeline(binding, attributes);
     createPunctualShadowPipeline(binding, attributes);
+    createVsmPagePipeline(binding, attributes);
 }
 
 void Renderer::createPunctualShadowPipeline(const VkVertexInputBindingDescription& binding,
@@ -712,6 +713,43 @@ void Renderer::createPunctualShadowPipeline(const VkVertexInputBindingDescriptio
                               VK_OBJECT_TYPE_PIPELINE_LAYOUT,
                               "PunctualShadowPipelineLayout");
     punctualShadowPipelineDepthFormat_ = info.depthFormat;
+}
+
+void Renderer::createVsmPagePipeline(const VkVertexInputBindingDescription& binding,
+                                     const std::array<VkVertexInputAttributeDescription, 5>& attributes)
+{
+    if (!virtualShadowMap_.pagePoolValid()) {
+        vsmPagePipeline_.reset();
+        return;
+    }
+
+    // Same shader and same push block as the punctual atlas: a VSM page and an
+    // atlas tile are the same operation -- one depth-only draw per rect with
+    // that rect's own projection pushed. The pipeline is separate only because
+    // the pool has its own depth format and its own bias.
+    rhi::VulkanPipelineCreateInfo info{};
+    info.vertexShaderPath = shaderPath("shadow_punctual.vert.spv");
+    info.depthFormat = virtualShadowMap_.pagePool().format();
+    info.vertexBindings = std::span<const VkVertexInputBindingDescription>(&binding, 1);
+    // Depth-only, so position (location 0) is the only attribute consumed.
+    info.vertexAttributes = std::span<const VkVertexInputAttributeDescription>(attributes.data(), 1);
+    const VkPushConstantRange pushConstantRange{
+        VK_SHADER_STAGE_VERTEX_BIT, 0, static_cast<uint32_t>(sizeof(PunctualShadowPushConstants))};
+    info.pushConstantRanges = std::span<const VkPushConstantRange>(&pushConstantRange, 1);
+    info.enableColorAttachment = false;
+    info.enableDepth = true;
+    info.depthWriteEnable = true;
+    info.enableDepthBias = true;
+    info.cullMode = VK_CULL_MODE_NONE;
+    info.depthBiasConstantFactor = shadowSettings_.rasterDepthBiasConstantFactor;
+    info.depthBiasSlopeFactor = shadowSettings_.rasterDepthBiasSlopeFactor;
+    info.pipelineCache = context_.pipelineCache();
+
+    vsmPagePipeline_.create(context_.vkDevice(), info);
+    rhi::debug::setObjectName(
+        context_.vkDevice(), vsmPagePipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "VsmPagePipeline");
+    rhi::debug::setObjectName(
+        context_.vkDevice(), vsmPagePipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "VsmPagePipelineLayout");
 }
 
 void Renderer::createMaskedShadowPipeline(const VkVertexInputBindingDescription& binding,

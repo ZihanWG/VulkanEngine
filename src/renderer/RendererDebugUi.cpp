@@ -780,7 +780,10 @@ void Renderer::drawShadowsDebugUi()
         }
         ImGui::SetItemTooltip("Pixels per marking thread along each axis. Higher is cheaper and\n"
                               "coarser: a block straddling a page seam only marks the page its\n"
-                              "centre lands in, which the coarser-level mark then covers.");
+                              "centre lands in, which the coarser-level mark then covers.\n\n"
+                              "The pass takes at most 2x2 taps per block, so this genuinely changes\n"
+                              "the fetch count. Measured: 8 returns the same page count as 4 on both\n"
+                              "the default and geometry-stress scenes for roughly half the cost.");
         ImGui::EndDisabled();
 
         const renderer::VsmClipmapSettings clipmap = vsmClipmapSettings();
@@ -831,6 +834,55 @@ void Renderer::drawShadowsDebugUi()
             }
         }
         ImGui::Text("Mark threads: %u", virtualShadowMap_.lastMarkThreadCount());
+
+        ImGui::BeginDisabled(!vsmSettings_.enableMarking || !virtualShadowMap_.pagePoolValid());
+        if (ImGui::Checkbox("Render pages into the pool", &vsmSettings_.enablePageRendering)) {
+            clampRuntimeSettings();
+        }
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip("Allocates a physical page per requested page and draws it. Still nothing\n"
+                              "samples the pool -- the cascades above remain the only directional shadow\n"
+                              "source -- so this is the page pass in isolation, which is what makes its\n"
+                              "cost measurable on its own.");
+
+        if (isVsmPageRenderingActive()) {
+            ImGui::Text("Addressable now: %u/%u",
+                        vsmResidencyStats_.addressablePages,
+                        vsmResidencyStats_.requestedPages);
+            ImGui::SetItemTooltip("Requested pages still inside this frame's window. The shortfall is the\n"
+                                  "cost of the readback latency under camera motion: a page that scrolled\n"
+                                  "out between being asked for and being allocated is not worth drawing.");
+            ImGui::Text("Resident: %u/%u   cached this frame: %u",
+                        vsmResidencyStats_.residentPages,
+                        renderer::kVsmPagePoolPageCount,
+                        vsmResidencyStats_.cachedPages);
+            ImGui::SetItemTooltip("Cached means the page already holds depth for exactly those absolute\n"
+                                  "coordinates. That number staying high while the camera moves is the\n"
+                                  "whole point of the page grid being absolute rather than camera-centred.");
+            ImGui::Text("Drawn this frame: %u/%u  (%llu since start)",
+                        vsmPageDrawsRecorded_,
+                        renderer::kMaxVsmPagesPerFrame,
+                        static_cast<unsigned long long>(vsmPageDrawsTotal_));
+            ImGui::SetItemTooltip("The cumulative count matters: a warmed-up clipmap draws nothing, so\n"
+                                  "\"0 this frame\" alone cannot tell a working cache from a page pass\n"
+                                  "that never ran.");
+            ImGui::Text("Over budget: %u   refused: %u   evicted: %u",
+                        vsmResidencyStats_.overBudgetPages,
+                        vsmResidencyStats_.refusedPages,
+                        vsmResidencyStats_.evictions);
+            ImGui::SetItemTooltip("Over budget: needed drawing but hit the per-frame page cap; they stay\n"
+                                  "allocated and are picked up next frame.\n"
+                                  "Refused: the allocator had nothing left to give, which means the pool\n"
+                                  "is genuinely too small.\n"
+                                  "Evicted: a page lost its space to another. Persistently non-zero with a\n"
+                                  "still camera would mean the working set does not fit.");
+            ImGui::Text("Casters over the per-page cap: %u", vsmPageCullOverflow_);
+            ImGui::SetItemTooltip("Counted, not silently dropped. Non-zero means a page had more than\n"
+                                  "%u casters and some of them are missing from its depth.",
+                                  renderer::kMaxVsmCastersPerPage);
+        } else if (!virtualShadowMap_.pagePoolValid()) {
+            ImGui::TextDisabled("Page pool unavailable.");
+        }
     }
 
     ImGui::SeparatorText("Punctual (spot/point)");

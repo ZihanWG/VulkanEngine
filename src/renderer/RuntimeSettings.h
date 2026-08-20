@@ -373,7 +373,11 @@ struct DynamicResolutionSettings {
 // are clamped and unit-tested; this header stays glm-free by design, so the
 // struct is duplicated as plain scalars rather than included.
 struct VsmSettings {
+    // Nested on purpose, each an A/B point: marking measures which pages a frame
+    // needs and changes nothing drawn; page rendering additionally allocates and
+    // draws them into the pool. Neither replaces the cascades.
     bool enableMarking = false;
+    bool enablePageRendering = false;
     uint32_t clipmapLevels = 8;
     // World units spanned by the finest level's whole virtual texel grid.
     float level0Extent = 4.0f;
@@ -384,7 +388,12 @@ struct VsmSettings {
     // Pixels per marking thread along each axis. Higher is cheaper and coarser:
     // a block that straddles a page seam only marks the page its centre lands
     // in, which the coarser-level mark then covers.
-    uint32_t markBlockStride = 4;
+    //
+    // 8 rather than 4 because it was measured: the marking pass takes at most
+    // 2x2 taps per block, so a wider block is genuinely fewer fetches, and 8
+    // returned an identical page count on both the default and geometry-stress
+    // scenes at roughly half the cost. See docs/virtual_shadow_maps.md.
+    uint32_t markBlockStride = 8;
 
     [[nodiscard]] bool operator==(const VsmSettings&) const = default;
 };

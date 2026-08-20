@@ -58,6 +58,7 @@ enum class RenderPassType {
     Shadow,
     ShadowGpuCulling,
     VsmPageMark,
+    VsmPage,
     VolumetricFog,
     ProbeCapture,
     IrradianceProbes,
@@ -277,6 +278,11 @@ struct RenderGraphFrameResources {
     // texture in a sampled layout before the dispatch -- the request buffers it
     // writes are not graph resources and carry their own explicit barriers.
     bool vsmPageMarkEnabled = false;
+    // Pages the residency update queued for drawing. Zero skips declaring the
+    // page pass, but the pool is still imported and still read by the main pass,
+    // so a frame that redraws nothing keeps the layout its sampler claims -- the
+    // same asymmetry the punctual shadow atlas uses.
+    uint32_t vsmDirtyPageCount = 0;
     // Declares the volumetric fog compute pass for this frame. It only needs to
     // exist so the graph moves the cascaded shadow map into a sampled layout
     // before the injection dispatch reads it -- without it the fog runs while
@@ -359,18 +365,30 @@ public:
 
     RenderGraph();
 
-    // punctualShadowAtlas is nullable: the atlas is an optional subsystem, and a
-    // null pointer simply leaves its texture and pass out of this frame's graph.
+    // punctualShadowAtlas and vsmPagePool are nullable: both are optional
+    // subsystems, and a null pointer simply leaves that texture and its pass out
+    // of this frame's graph.
     void beginFrame(VkCommandBuffer commandBuffer,
                     rhi::VulkanSwapchain& swapchain,
                     rhi::VulkanShadowMap& shadowMap,
                     rhi::VulkanShadowMap* punctualShadowAtlas,
+                    rhi::VulkanShadowMap* vsmPagePool,
                     uint32_t imageIndex,
                     RenderGraphFrameResources frameResources);
     // Virtual shadow map page marking. Compute, no rendering scope; this exists
     // so the graph transitions the depth pyramid the marking dispatch samples.
     void beginVsmPageMarkPass();
     void endVsmPageMarkPass();
+    // Virtual shadow map page rendering. One rendering scope covers the whole
+    // physical page pool; the caller sets a viewport/scissor per dirty page
+    // inside it, exactly as the punctual atlas does per slot.
+    //
+    // clearWholePool selects the load op, and for the same reason: false
+    // preserves the pages already in the pool so cached ones survive, and the
+    // caller clears only the pages it is about to redraw. True is for the first
+    // frame after the image is created, when nothing in it can be trusted.
+    void beginVsmPagePass(bool clearWholePool);
+    void endVsmPagePass();
     void beginShadowPass(uint32_t cascadeLayer);
     // All cascades in one pass via multiview. Requires the shadow map's array
     // view and a pipeline built with the matching view mask.
@@ -510,6 +528,7 @@ private:
     enum class ActivePass {
         None,
         VsmPageMark,
+        VsmPage,
         Shadow,
         PunctualShadow,
         VolumetricFog,
@@ -538,6 +557,7 @@ private:
     };
 
     enum class TextureOwner {
+        VsmPagePool,
         ExternalLayoutPointer,
         SwapchainColor,
         SwapchainDepth,
@@ -567,6 +587,7 @@ private:
 
     struct BuiltinPassIndices {
         uint32_t vsmPageMark = kInvalidRenderGraphHandle;
+        uint32_t vsmPage = kInvalidRenderGraphHandle;
         uint32_t shadow = kInvalidRenderGraphHandle;
         uint32_t punctualShadow = kInvalidRenderGraphHandle;
         uint32_t volumetricFog = kInvalidRenderGraphHandle;
@@ -602,6 +623,8 @@ private:
         // Null when the punctual atlas failed to allocate; every use is guarded,
         // and the pass is simply never declared in that case.
         rhi::VulkanShadowMap* punctualShadowAtlas = nullptr;
+        // Null when the page pool failed to allocate or the subsystem is off.
+        rhi::VulkanShadowMap* vsmPagePool = nullptr;
         RenderGraphFrameResources resources{};
         BuiltinPassIndices passIndices{};
         uint32_t imageIndex = 0;
@@ -610,6 +633,7 @@ private:
         RGTextureHandle mainDepth{};
         RGTextureHandle shadowMapDepth{};
         RGTextureHandle punctualShadowAtlasDepth{};
+        RGTextureHandle vsmPagePoolDepth{};
         RGTextureHandle sceneColor{};
         RGTextureHandle velocity{};
         RGTextureHandle normalRoughness{};
@@ -647,6 +671,7 @@ private:
     void importExternalFrameTargets(rhi::VulkanSwapchain& swapchain,
                                     rhi::VulkanShadowMap& shadowMap,
                                     rhi::VulkanShadowMap* punctualShadowAtlas,
+                                    rhi::VulkanShadowMap* vsmPagePool,
                                     uint32_t imageIndex);
     void createTransientFrameTextures();
     void importFrameBuffers();

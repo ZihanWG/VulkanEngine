@@ -170,6 +170,13 @@ Renderer::Renderer(Window& window) : window_(window)
     createDepthPyramidDescriptorSetLayout();
     postProcess_.createPostProcessSampler();
     createShadowMap();
+    // The VSM page pool goes here, next to the cascaded shadow map and for the
+    // same reason: both are fixed-size light-space resources that do not follow
+    // the window. It has to be before createPipeline(), because the page
+    // pipeline bakes the pool's depth format -- created after, the pipeline is
+    // silently skipped and page rendering never turns on.
+    virtualShadowMap_.createPagePoolResources(static_cast<uint32_t>(frames_.size()));
+    virtualShadowMap_.createCullResources(static_cast<uint32_t>(frames_.size()), kMaxDrawItems);
     // Pipelines first: SSR/GTAO resource creation binds descriptor sets against
     // pipelines that must already exist, and bails out ("pipeline resources are
     // missing") otherwise. Pipeline creation only needs the descriptor set
@@ -361,6 +368,9 @@ void Renderer::drawFrame()
     // it produced last time round is here, after its fence proved the copy
     // retired.
     updateVsmPageRequestStats(currentFrame_);
+    // After the readback above, because it consumes the same request set, and
+    // before recording, because the page pass draws what it decides.
+    updateVsmResidency(currentFrame_);
     pushCullingHistorySample(currentFrame_);
     pushExposureHistorySample();
 
@@ -1024,6 +1034,19 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
         } else {
             message << "  requested pages: pending first readback\n";
         }
+        if (isVsmPageRenderingActive()) {
+            message << "  addressable now: " << vsmResidencyStats_.addressablePages << "/"
+                    << vsmResidencyStats_.requestedPages << "\n"
+                    << "  resident: " << vsmResidencyStats_.residentPages << "/"
+                    << renderer::kVsmPagePoolPageCount << ", cached " << vsmResidencyStats_.cachedPages << "\n"
+                    << "  drawn this frame: " << vsmPageDrawsRecorded_ << "/" << renderer::kMaxVsmPagesPerFrame
+                    << " (" << vsmPageDrawsTotal_ << " since start)" 
+                    << ", over budget " << vsmResidencyStats_.overBudgetPages << ", refused "
+                    << vsmResidencyStats_.refusedPages << ", evicted " << vsmResidencyStats_.evictions << "\n"
+                    << "  casters over the per-page cap: " << vsmPageCullOverflow_ << "\n";
+        } else {
+            message << "  page rendering: disabled\n";
+        }
     }
     message << "Punctual shadows:\n"
             << "  atlas: " << (punctualShadows_.valid() ? "available" : "unavailable") << "\n"
@@ -1649,6 +1672,9 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
         vsmSettings_ = settings.vsm;
         vsmPeakRequestedPages_ = 0;
         vsmPageRequestStatsValid_ = false;
+        // A clipmap settings change moves every page's world rect, so nothing in
+        // the pool describes what its entry claims any more.
+        virtualShadowMap_.invalidateResidency();
     }
 
     if (mode == RuntimeSettingsApplyMode::Startup) {
@@ -1835,6 +1861,35 @@ void Renderer::updateVsmPageRequestStats(uint32_t frameIndex)
     vsmPageRequestStats_ = stats;
     vsmPageRequestStatsValid_ = true;
     vsmPeakRequestedPages_ = std::max(vsmPeakRequestedPages_, stats.requestedPages);
+}
+
+void Renderer::updateVsmResidency(uint32_t frameIndex)
+{
+    if (!isVsmPageRenderingActive()) {
+        vsmResidencyStats_ = {};
+        vsmPageCullOverflow_ = 0;
+        // Residency is left standing rather than dropped: the pages in the pool
+        // are still correct for their absolute coordinates, and turning the
+        // toggle back on should not have to redraw all of them.
+        return;
+    }
+
+    ++vsmFrameCounter_;
+
+    // Over-cap casters from the frame that last used this slot, read before the
+    // dispatch below overwrites the counters.
+    uint32_t overflow = 0;
+    if (virtualShadowMap_.readPageCullOverflow(frameIndex, overflow)) {
+        vsmPageCullOverflow_ = overflow;
+    }
+
+    const glm::mat4 lightView = renderer::vsmLightView(directionalLightSettings_.direction);
+    const glm::vec2 cameraLightSpaceXy = glm::vec2(lightView * glm::vec4(frameCameraPosition_, 1.0f));
+    vsmResidencyStats_ = virtualShadowMap_.updateResidency(frameIndex,
+                                                           vsmClipmapSettings(),
+                                                           cameraLightSpaceXy,
+                                                           directionalLightSettings_.direction,
+                                                           vsmFrameCounter_);
 }
 
 bool Renderer::previousFrameDepthValidForOcclusion() const

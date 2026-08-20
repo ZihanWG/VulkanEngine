@@ -27,7 +27,11 @@ using ve::renderer::kVsmPageSize;
 using ve::renderer::kVsmPagesPerLevel;
 using ve::renderer::kVsmPagesPerLevelAxis;
 using ve::renderer::VsmClipmapSettings;
+using ve::renderer::kVsmInvalidPhysicalPage;
 using ve::renderer::vsmAbsolutePageCoords;
+using ve::renderer::vsmAbsolutePageForSlot;
+using ve::renderer::VsmPageAllocator;
+using ve::renderer::VsmPageTableEntry;
 using ve::renderer::vsmDecodeRequestStats;
 using ve::renderer::vsmLightView;
 using ve::renderer::vsmPageId;
@@ -560,4 +564,183 @@ TEST_CASE("An empty request set decodes to zero rather than a stale level", "[vs
     const auto nullStats = vsmDecodeRequestStats(nullptr, 8);
     REQUIRE(nullStats.requestedPages == 0u);
     REQUIRE(nullStats.lowestRequestedLevel == 0u);
+}
+
+
+TEST_CASE("A slot plus its window names exactly one absolute page", "[vsm]")
+{
+    // The inverse of vsmSlotIndex within a window, and the reason the request
+    // bitmask carries no coordinates: the slot and the window it was marked
+    // against are enough to recover the page.
+    const VsmClipmapSettings settings = defaultSettings();
+    for (const glm::vec2 camera : {glm::vec2{0.0f, 0.0f}, glm::vec2{137.0f, -998.0f}, glm::vec2{-4.5f, 3.25f}}) {
+        const glm::ivec2 origin = vsmWindowOrigin(settings, 2, camera);
+        for (int32_t y = origin.y; y < origin.y + static_cast<int32_t>(kVsmPagesPerLevelAxis); ++y) {
+            for (int32_t x = origin.x; x < origin.x + static_cast<int32_t>(kVsmPagesPerLevelAxis); ++x) {
+                const glm::ivec2 page{x, y};
+                REQUIRE(vsmAbsolutePageForSlot(origin, vsmSlotIndex(page)) == page);
+            }
+        }
+    }
+}
+
+TEST_CASE("A freshly acquired page owns space but holds no depth", "[vsm]")
+{
+    VsmPageAllocator allocator;
+    allocator.beginFrame(1);
+
+    const auto result = allocator.acquire(vsmPageId(2, 5), glm::ivec2{3, -4});
+    REQUIRE(result.physicalPage != kVsmInvalidPhysicalPage);
+    REQUIRE_FALSE(result.alreadyRendered);
+    REQUIRE_FALSE(result.evicted);
+    REQUIRE(allocator.residentPages() == 1u);
+
+    // Allocation and rendering are separate steps, so the entry must not claim
+    // depth that has not been drawn.
+    const VsmPageTableEntry& entry = allocator.entries()[vsmPageId(2, 5)];
+    REQUIRE(entry.rendered == 0u);
+    REQUIRE(entry.absoluteX == 3);
+    REQUIRE(entry.absoluteY == -4);
+}
+
+TEST_CASE("Re-acquiring the same page at the same place is a hit", "[vsm]")
+{
+    VsmPageAllocator allocator;
+    const uint32_t pageId = vsmPageId(1, 9);
+
+    allocator.beginFrame(1);
+    const uint32_t physical = allocator.acquire(pageId, glm::ivec2{7, 7}).physicalPage;
+    allocator.markRendered(pageId);
+
+    allocator.beginFrame(2);
+    const auto second = allocator.acquire(pageId, glm::ivec2{7, 7});
+    REQUIRE(second.physicalPage == physical);
+    REQUIRE(second.alreadyRendered);
+    REQUIRE(allocator.residentPages() == 1u);
+}
+
+TEST_CASE("A scrolled slot keeps its page but loses its depth", "[vsm]")
+{
+    // The failure this prevents is the quiet one: the slot is still resident and
+    // still has depth, but that depth was rendered for somewhere else.
+    VsmPageAllocator allocator;
+    const uint32_t pageId = vsmPageId(0, 12);
+
+    allocator.beginFrame(1);
+    const uint32_t physical = allocator.acquire(pageId, glm::ivec2{0, 0}).physicalPage;
+    allocator.markRendered(pageId);
+    REQUIRE(allocator.entries()[pageId].rendered == 1u);
+
+    allocator.beginFrame(2);
+    const auto scrolled = allocator.acquire(pageId, glm::ivec2{16, 0});
+    REQUIRE(scrolled.physicalPage == physical);
+    REQUIRE_FALSE(scrolled.alreadyRendered);
+    REQUIRE(allocator.entries()[pageId].rendered == 0u);
+    REQUIRE(allocator.entries()[pageId].absoluteX == 16);
+    // Reusing the slot's own page is not an eviction; nothing else lost anything.
+    REQUIRE_FALSE(scrolled.evicted);
+    REQUIRE(allocator.residentPages() == 1u);
+}
+
+TEST_CASE("Distinct virtual pages never share a physical page", "[vsm]")
+{
+    VsmPageAllocator allocator;
+    allocator.beginFrame(1);
+
+    std::set<uint32_t> physicalPages;
+    for (uint32_t slot = 0; slot < 64u; ++slot) {
+        const uint32_t pageId = vsmPageId(3, slot);
+        const auto result = allocator.acquire(pageId, glm::ivec2{static_cast<int32_t>(slot), 0});
+        REQUIRE(result.physicalPage != kVsmInvalidPhysicalPage);
+        REQUIRE(physicalPages.insert(result.physicalPage).second);
+    }
+    REQUIRE(allocator.residentPages() == 64u);
+}
+
+TEST_CASE("A full pool evicts the least recently used page", "[vsm]")
+{
+    VsmPageAllocator allocator;
+
+    // Fill the pool, one virtual page per physical page, each on its own frame
+    // so the use order is unambiguous.
+    for (uint32_t page = 0; page < kVsmPagePoolPageCount; ++page) {
+        allocator.beginFrame(page + 1u);
+        const auto result = allocator.acquire(page, glm::ivec2{static_cast<int32_t>(page), 0});
+        REQUIRE(result.physicalPage != kVsmInvalidPhysicalPage);
+        REQUIRE_FALSE(result.evicted);
+        allocator.markRendered(page);
+    }
+    REQUIRE(allocator.residentPages() == kVsmPagePoolPageCount);
+
+    // One more page has to take someone's space, and it must be page 0's -- the
+    // one used longest ago.
+    allocator.beginFrame(kVsmPagePoolPageCount + 1u);
+    const auto overflow = allocator.acquire(kVsmPagePoolPageCount, glm::ivec2{0, 1});
+    REQUIRE(overflow.physicalPage != kVsmInvalidPhysicalPage);
+    REQUIRE(overflow.evicted);
+    REQUIRE(allocator.evictionsThisFrame() == 1u);
+    REQUIRE(allocator.entries()[0].physicalPage == kVsmInvalidPhysicalPage);
+    REQUIRE(allocator.entries()[1].physicalPage != kVsmInvalidPhysicalPage);
+    REQUIRE(allocator.residentPages() == kVsmPagePoolPageCount);
+}
+
+TEST_CASE("A frame never evicts a page it acquired itself", "[vsm]")
+{
+    // Without this a frame whose request set exceeds the pool would evict pages
+    // it is still about to draw, and thrash instead of degrading.
+    VsmPageAllocator allocator;
+    allocator.beginFrame(1);
+
+    for (uint32_t page = 0; page < kVsmPagePoolPageCount; ++page) {
+        REQUIRE(allocator.acquire(page, glm::ivec2{static_cast<int32_t>(page), 0}).physicalPage !=
+                kVsmInvalidPhysicalPage);
+    }
+
+    // Everything is spoken for by this same frame, so the extra request is
+    // refused rather than granted at another live page's expense. The caller
+    // reads that as "not resident" and falls back to a coarser level.
+    const auto refused = allocator.acquire(kVsmPagePoolPageCount, glm::ivec2{0, 1});
+    REQUIRE(refused.physicalPage == kVsmInvalidPhysicalPage);
+    REQUIRE(allocator.evictionsThisFrame() == 0u);
+    REQUIRE(allocator.residentPages() == kVsmPagePoolPageCount);
+}
+
+TEST_CASE("Resetting the allocator drops every page", "[vsm]")
+{
+    VsmPageAllocator allocator;
+    allocator.beginFrame(1);
+    allocator.acquire(vsmPageId(0, 0), glm::ivec2{0, 0});
+    allocator.markRendered(vsmPageId(0, 0));
+    REQUIRE(allocator.residentPages() == 1u);
+
+    allocator.reset();
+    REQUIRE(allocator.residentPages() == 0u);
+    REQUIRE(allocator.entries()[vsmPageId(0, 0)].physicalPage == kVsmInvalidPhysicalPage);
+    REQUIRE(allocator.entries()[vsmPageId(0, 0)].rendered == 0u);
+
+    // And the pool is genuinely free again rather than merely unreferenced.
+    allocator.beginFrame(2);
+    REQUIRE(allocator.acquire(vsmPageId(5, 5), glm::ivec2{1, 1}).physicalPage != kVsmInvalidPhysicalPage);
+}
+
+TEST_CASE("markRendered does nothing for a page that owns no space", "[vsm]")
+{
+    VsmPageAllocator allocator;
+    allocator.beginFrame(1);
+    allocator.markRendered(vsmPageId(4, 4));
+    REQUIRE(allocator.entries()[vsmPageId(4, 4)].rendered == 0u);
+
+    // Out of range is a no-op rather than a write past the table.
+    allocator.markRendered(kVsmMaxVirtualPages + 100u);
+    REQUIRE(allocator.residentPages() == 0u);
+}
+
+TEST_CASE("Every page table entry starts unbound", "[vsm]")
+{
+    const VsmPageAllocator allocator;
+    REQUIRE(allocator.entries().size() == kVsmMaxVirtualPages);
+    for (const VsmPageTableEntry& entry : allocator.entries()) {
+        REQUIRE(entry.physicalPage == kVsmInvalidPhysicalPage);
+        REQUIRE(entry.rendered == 0u);
+    }
 }

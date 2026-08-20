@@ -36,9 +36,11 @@ overview; these documents describe implementation details and limitations.
   allocator and slot encoding, the dedicated caster vertex shader, cube-face
   point lights, and the tile budget.
 - [Virtual Shadow Maps](virtual_shadow_maps.md): The clipmap page model, why the
-  page grid is absolute rather than camera-centred, page marking from the
-  previous frame's depth pyramid, and the coverage bound a measurement forced.
-  **Measurement only so far — it renders and samples nothing.**
+  page grid is absolute rather than camera-centred, why the page table stores
+  identity rather than just residency, page marking from the previous frame's
+  depth pyramid, and the coverage bound a measurement forced.
+  **Pages are marked, allocated and rendered; nothing samples them yet, so no
+  pixel changes.**
 - [Irradiance Probes](irradiance_probes.md): Real-time global illumination
   without ray tracing — the octahedral probe atlases and their seam border, the
   amortised cube capture and its convolution, Chebyshev visibility weighting,

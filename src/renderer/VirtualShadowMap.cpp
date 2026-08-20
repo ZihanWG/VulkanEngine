@@ -171,6 +171,18 @@ bool vsmPageInWindow(const glm::ivec2& absolutePage, const glm::ivec2& windowOri
     return offset.x >= 0 && offset.x < axis && offset.y >= 0 && offset.y < axis;
 }
 
+glm::ivec2 vsmAbsolutePageForSlot(const glm::ivec2& windowOrigin, uint32_t slot)
+{
+    const int32_t axis = static_cast<int32_t>(kVsmPagesPerLevelAxis);
+    const int32_t slotX = static_cast<int32_t>(slot % kVsmPagesPerLevelAxis);
+    const int32_t slotY = static_cast<int32_t>((slot / kVsmPagesPerLevelAxis) % kVsmPagesPerLevelAxis);
+
+    // The unique page in [origin, origin + axis) congruent to the slot mod axis.
+    const int32_t offsetX = ((slotX - windowOrigin.x) % axis + axis) % axis;
+    const int32_t offsetY = ((slotY - windowOrigin.y) % axis + axis) % axis;
+    return windowOrigin + glm::ivec2{offsetX, offsetY};
+}
+
 uint32_t vsmSlotIndex(const glm::ivec2& absolutePage)
 {
     const uint32_t x = wrapToAxis(absolutePage.x);
@@ -193,6 +205,125 @@ uint32_t vsmPageLevel(uint32_t pageId)
 uint32_t vsmPageSlot(uint32_t pageId)
 {
     return std::min(pageId, kVsmMaxVirtualPages - 1u) % kVsmPagesPerLevel;
+}
+
+VsmPageAllocator::VsmPageAllocator()
+{
+    entries_.assign(kVsmMaxVirtualPages, VsmPageTableEntry{});
+    physicalOwner_.assign(kVsmPagePoolPageCount, kVsmInvalidPhysicalPage);
+    physicalLastUsed_.assign(kVsmPagePoolPageCount, 0);
+}
+
+void VsmPageAllocator::reset()
+{
+    entries_.assign(kVsmMaxVirtualPages, VsmPageTableEntry{});
+    physicalOwner_.assign(kVsmPagePoolPageCount, kVsmInvalidPhysicalPage);
+    physicalLastUsed_.assign(kVsmPagePoolPageCount, 0);
+    frameCounter_ = 0;
+    residentPages_ = 0;
+    evictionsThisFrame_ = 0;
+}
+
+void VsmPageAllocator::beginFrame(uint64_t frameCounter)
+{
+    frameCounter_ = frameCounter;
+    evictionsThisFrame_ = 0;
+}
+
+uint32_t VsmPageAllocator::allocatePhysicalPage()
+{
+    // Free page first. Scanning is fine: the pool is 1024 entries and this runs
+    // only for pages that were not already resident, which the measurement puts
+    // at a handful per frame once the clipmap has warmed up.
+    for (uint32_t physical = 0; physical < physicalOwner_.size(); ++physical) {
+        if (physicalOwner_[physical] == kVsmInvalidPhysicalPage) {
+            return physical;
+        }
+    }
+
+    // Full: evict the least recently used page that was not acquired this frame.
+    // Excluding this frame's own pages is what stops a frame whose request set
+    // exceeds the pool from evicting pages it is still using and thrashing.
+    uint32_t victim = kVsmInvalidPhysicalPage;
+    uint64_t oldest = 0;
+    for (uint32_t physical = 0; physical < physicalOwner_.size(); ++physical) {
+        if (physicalLastUsed_[physical] >= frameCounter_) {
+            continue;
+        }
+        if (victim == kVsmInvalidPhysicalPage || physicalLastUsed_[physical] < oldest) {
+            victim = physical;
+            oldest = physicalLastUsed_[physical];
+        }
+    }
+    return victim;
+}
+
+VsmPageAcquireResult VsmPageAllocator::acquire(uint32_t pageId, const glm::ivec2& absolutePage)
+{
+    VsmPageAcquireResult result{};
+    if (pageId >= entries_.size()) {
+        return result;
+    }
+
+    VsmPageTableEntry& entry = entries_[pageId];
+
+    // Already bound. Two cases: same absolute page (a real hit), or the window
+    // scrolled and this slot now names somewhere else. The second keeps the
+    // physical page -- it belongs to this slot either way -- but its depth is
+    // for the old location, so it drops back to unrendered.
+    if (entry.physicalPage != kVsmInvalidPhysicalPage && entry.physicalPage < physicalOwner_.size() &&
+        physicalOwner_[entry.physicalPage] == pageId) {
+        physicalLastUsed_[entry.physicalPage] = frameCounter_;
+        if (entry.absoluteX == absolutePage.x && entry.absoluteY == absolutePage.y) {
+            result.physicalPage = entry.physicalPage;
+            result.alreadyRendered = entry.rendered != 0;
+            return result;
+        }
+
+        entry.absoluteX = absolutePage.x;
+        entry.absoluteY = absolutePage.y;
+        entry.rendered = 0;
+        result.physicalPage = entry.physicalPage;
+        return result;
+    }
+
+    const uint32_t physical = allocatePhysicalPage();
+    if (physical == kVsmInvalidPhysicalPage) {
+        // Nothing evictable: every physical page is spoken for by this same
+        // frame. The caller sees an invalid page and leaves this one to the
+        // coarser-level fallback rather than stealing depth still in use.
+        return result;
+    }
+
+    const uint32_t previousOwner = physicalOwner_[physical];
+    if (previousOwner != kVsmInvalidPhysicalPage && previousOwner < entries_.size()) {
+        entries_[previousOwner] = VsmPageTableEntry{};
+        ++evictionsThisFrame_;
+        result.evicted = true;
+        --residentPages_;
+    }
+
+    physicalOwner_[physical] = pageId;
+    physicalLastUsed_[physical] = frameCounter_;
+    entry.physicalPage = physical;
+    entry.absoluteX = absolutePage.x;
+    entry.absoluteY = absolutePage.y;
+    entry.rendered = 0;
+    ++residentPages_;
+
+    result.physicalPage = physical;
+    return result;
+}
+
+void VsmPageAllocator::markRendered(uint32_t pageId)
+{
+    if (pageId >= entries_.size()) {
+        return;
+    }
+    if (entries_[pageId].physicalPage == kVsmInvalidPhysicalPage) {
+        return;
+    }
+    entries_[pageId].rendered = 1;
 }
 
 VsmPageRect vsmPagePoolRect(uint32_t physicalPage)

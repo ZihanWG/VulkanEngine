@@ -460,6 +460,7 @@ set(SHADER_SOURCES
     "${SHADER_SOURCE_DIR}/shadow_punctual.vert"
     "${SHADER_SOURCE_DIR}/punctual_shadow_cull.comp"
     "${SHADER_SOURCE_DIR}/vsm_page_mark.comp"
+    "${SHADER_SOURCE_DIR}/vsm_page_cull.comp"
     "${SHADER_SOURCE_DIR}/fog_inject.comp"
     "${SHADER_SOURCE_DIR}/fog_integrate.comp"
     "${SHADER_SOURCE_DIR}/probe_debug_fill.comp"

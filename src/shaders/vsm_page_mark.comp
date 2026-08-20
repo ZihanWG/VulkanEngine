@@ -76,13 +76,23 @@ void main()
         return;
     }
 
-    // Nearest surface in the block. One thread per block rather than per pixel
-    // keeps the atomic traffic on 24 words down by the square of the stride,
-    // and a page spans far more than one block anyway.
+    // Nearest surface in the block, from at most kMarkTapsPerAxis^2 taps spread
+    // across it rather than every pixel.
+    //
+    // Reading the whole block makes the pass cost proportional to the frame's
+    // pixel count no matter what the stride is, which is measurably most of what
+    // it costs. Capping the taps decouples the two. It weakens "the nearest
+    // surface in this block" to "the nearest of a few samples", which can miss a
+    // thin nearby surface and pick a level one coarser -- the same graceful
+    // degradation an unresident page already falls back to, and the direction
+    // that loses resolution rather than correctness.
+    const uint kMarkTapsPerAxis = 2u;
     float nearestDepth = 1.0;
     uvec2 blockEnd = min(blockOrigin + uvec2(stride), depthSize);
-    for (uint y = blockOrigin.y; y < blockEnd.y; ++y) {
-        for (uint x = blockOrigin.x; x < blockEnd.x; ++x) {
+    uvec2 blockSize = max(blockEnd - blockOrigin, uvec2(1u));
+    uvec2 tapStep = max(blockSize / kMarkTapsPerAxis, uvec2(1u));
+    for (uint y = blockOrigin.y; y < blockEnd.y; y += tapStep.y) {
+        for (uint x = blockOrigin.x; x < blockEnd.x; x += tapStep.x) {
             nearestDepth = min(nearestDepth, texelFetch(depthPyramid, ivec2(x, y), 0).r);
         }
     }

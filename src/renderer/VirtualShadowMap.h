@@ -22,7 +22,9 @@
 // stays addressable (and its contents remain exactly correct) or scrolls out of
 // the window entirely.
 
+#include <cstddef>
 #include <cstdint>
+#include <vector>
 
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
@@ -197,6 +199,13 @@ struct VsmClipmapSettings {
 // makes the sampler fall back to a coarser level.
 [[nodiscard]] bool vsmPageInWindow(const glm::ivec2& absolutePage, const glm::ivec2& windowOrigin);
 
+// The one absolute page inside `windowOrigin`'s window that occupies `slot`.
+//
+// The inverse of vsmSlotIndex within a window, and the reason the page-request
+// bitmask needs no absolute coordinates of its own: a slot plus the window it
+// was marked against names exactly one page.
+[[nodiscard]] glm::ivec2 vsmAbsolutePageForSlot(const glm::ivec2& windowOrigin, uint32_t slot);
+
 // Slot of an absolute page inside its level, as a toroidal wrap rather than a
 // window-relative offset.
 //
@@ -226,6 +235,102 @@ struct VsmPageRect {
 // UV offset/scale of a physical page inside the pool, the pair the sampling
 // path maps page-local UV through. Mirrors shadowAtlasRectUvOffsetScale.
 [[nodiscard]] glm::vec4 vsmPagePoolUvOffsetScale(const VsmPageRect& rect);
+
+// --- Page table and residency --------------------------------------------
+
+// No physical page is bound to this virtual page.
+inline constexpr uint32_t kVsmInvalidPhysicalPage = 0xFFFFFFFFu;
+
+// One virtual page's entry, as both the allocator and the shaders read it.
+//
+// The absolute coordinates are the load-bearing field. A slot is a toroidal
+// wrap, so when the window scrolls the same slot comes to name a *different*
+// absolute page -- and an entry that recorded only "resident" would then hand
+// the sampler depth rendered for somewhere else. Storing the identity lets every
+// reader check it, which is what makes scroll invalidation free rather than a
+// CPU-side sweep that has to be kept in step with the window.
+//
+// std430: four 4-byte scalars, so the runtime-array stride is 16 with no
+// padding, and the GLSL mirror is the same four fields in the same order.
+struct VsmPageTableEntry {
+    uint32_t physicalPage = kVsmInvalidPhysicalPage;
+    // Absolute page this physical page currently holds. Meaningless when
+    // physicalPage is invalid.
+    int32_t absoluteX = 0;
+    int32_t absoluteY = 0;
+    // 1 once the page has actually been rendered. Allocation and rendering are
+    // separate steps -- a page can own physical space for a frame before its
+    // depth exists -- and sampling an allocated-but-undrawn page is sampling
+    // whatever the previous occupant left there.
+    uint32_t rendered = 0;
+};
+
+static_assert(sizeof(VsmPageTableEntry) == 16);
+static_assert(offsetof(VsmPageTableEntry, physicalPage) == 0);
+static_assert(offsetof(VsmPageTableEntry, absoluteX) == 4);
+static_assert(offsetof(VsmPageTableEntry, absoluteY) == 8);
+static_assert(offsetof(VsmPageTableEntry, rendered) == 12);
+
+// What one acquire() did, so the caller can tell a cache hit from work.
+struct VsmPageAcquireResult {
+    uint32_t physicalPage = kVsmInvalidPhysicalPage;
+    // The page already holds depth for exactly these absolute coordinates.
+    bool alreadyRendered = false;
+    // A different virtual page lost its physical page to this one.
+    bool evicted = false;
+};
+
+// Residency for the physical page pool: which virtual page owns which physical
+// page, and what to throw out when the pool is full.
+//
+// GPU-free and unit-tested, like the rest of this header. The pool is 1024 pages
+// and the measured resident set is around 100, so eviction is a correctness
+// backstop rather than a hot path -- but it has to exist, because the virtual
+// page set (kVsmMaxVirtualPages) is deliberately larger than the pool.
+class VsmPageAllocator final {
+public:
+    VsmPageAllocator();
+
+    // Drops all residency. For anything that changes what a page's depth would
+    // contain but is not visible in a page's identity: a scene switch, the light
+    // direction moving, a clipmap settings change.
+    void reset();
+
+    // Starts a frame. `frameCounter` only has to increase; it is what makes
+    // "least recently used" mean something.
+    void beginFrame(uint64_t frameCounter);
+
+    // Binds a physical page to this virtual page, evicting the least recently
+    // used one if the pool is full. A page acquired earlier this frame is never
+    // evicted, so a frame can never starve itself.
+    //
+    // Returns the physical page and whether its depth is already correct for
+    // these absolute coordinates. A hit needs no rendering; anything else does.
+    VsmPageAcquireResult acquire(uint32_t pageId, const glm::ivec2& absolutePage);
+
+    // Records that this page's depth has been drawn. Separate from acquire so a
+    // frame that runs out of its per-frame draw budget leaves the page allocated
+    // but unrendered rather than claiming depth that was never written.
+    void markRendered(uint32_t pageId);
+
+    // The table, indexed by virtual page id. Uploaded verbatim.
+    [[nodiscard]] const std::vector<VsmPageTableEntry>& entries() const { return entries_; }
+
+    [[nodiscard]] uint32_t residentPages() const { return residentPages_; }
+    [[nodiscard]] uint32_t evictionsThisFrame() const { return evictionsThisFrame_; }
+
+private:
+    [[nodiscard]] uint32_t allocatePhysicalPage();
+
+    std::vector<VsmPageTableEntry> entries_;
+    // Virtual page that owns each physical page, or kVsmInvalidPhysicalPage.
+    std::vector<uint32_t> physicalOwner_;
+    // Frame each physical page was last acquired on.
+    std::vector<uint64_t> physicalLastUsed_;
+    uint64_t frameCounter_ = 0;
+    uint32_t residentPages_ = 0;
+    uint32_t evictionsThisFrame_ = 0;
+};
 
 // --- Page projection ------------------------------------------------------
 

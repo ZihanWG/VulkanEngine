@@ -27,11 +27,15 @@
 #include "rhi/VulkanCommon.h"
 #include "rhi/VulkanComputePipeline.h"
 #include "rhi/VulkanDescriptor.h"
+#include "rhi/VulkanShadowMap.h"
 
+#include <array>
 #include <cstdint>
+#include <span>
 #include <vector>
 
 #include <glm/mat4x4.hpp>
+#include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 
 namespace ve {
@@ -72,6 +76,40 @@ struct VsmMarkFrameInput {
     bool depthValid = false;
 };
 
+// One page the residency update decided has to be drawn this frame.
+struct VsmDirtyPage {
+    uint32_t pageId = 0;
+    uint32_t physicalPage = 0;
+    uint32_t level = 0;
+    glm::ivec2 absolutePage{0, 0};
+};
+
+// What one residency update did. Every one of these is surfaced, because the
+// interesting failures here are quiet: pages refused, pages over budget, and
+// pages that scrolled out between being requested and being allocated all look
+// identical in the image (a coarser shadow) and identical to each other.
+struct VsmResidencyStats {
+    // Pages the marking pass asked for, some frames ago.
+    uint32_t requestedPages = 0;
+    // Of those, the ones still inside this frame's window. The difference is the
+    // cost of the readback latency under camera motion.
+    uint32_t addressablePages = 0;
+    // Pages holding physical space after the update.
+    uint32_t residentPages = 0;
+    // Pages whose depth is already correct -- the whole point of the page grid
+    // being absolute.
+    uint32_t cachedPages = 0;
+    // Pages queued for drawing this frame.
+    uint32_t dirtyPages = 0;
+    // Needed drawing but hit kMaxVsmPagesPerFrame. They stay allocated and
+    // unrendered, and are picked up next frame.
+    uint32_t overBudgetPages = 0;
+    // The allocator had nothing to give: every physical page was already claimed
+    // by this same frame. Non-zero means the pool is genuinely too small.
+    uint32_t refusedPages = 0;
+    uint32_t evictions = 0;
+};
+
 class VirtualShadowMapPass final {
 public:
     VirtualShadowMapPass(rhi::VulkanContext& context, DepthPyramid& depthPyramid, GpuProfiler& gpuProfiler);
@@ -80,10 +118,18 @@ public:
     VirtualShadowMapPass(const VirtualShadowMapPass&) = delete;
     VirtualShadowMapPass& operator=(const VirtualShadowMapPass&) = delete;
 
-    // (Re)creates the marking pipeline and the per-frame buffers/descriptors.
-    // Safe to call again: existing resources are torn down first. Capability is
-    // reported afterwards through available(); a failure leaves the subsystem
-    // inert rather than throwing, so the renderer keeps running on CSM.
+    // The page pool and its page table. Fixed-size and independent of both the
+    // swapchain and the depth pyramid -- pages are a light-space quantity -- so
+    // this is created once alongside the cascaded shadow map and, critically,
+    // BEFORE the graphics pipelines, which need the pool's depth format.
+    void createPagePoolResources(uint32_t frameCount);
+
+    // (Re)creates the marking pipeline and its per-frame buffers/descriptors.
+    // Separate from the pool because this half needs the depth pyramid, which is
+    // swapchain-sized and recreated on resize. Safe to call again; it leaves the
+    // pool and the pages in it alone. Capability is reported through
+    // available(); a failure leaves the subsystem inert rather than throwing, so
+    // the renderer keeps running on CSM.
     void createResources(uint32_t frameCount);
     void destroyResources();
 
@@ -107,11 +153,91 @@ public:
     // Threads the last dispatch covered, for the debug UI. Purely informational.
     [[nodiscard]] uint32_t lastMarkThreadCount() const { return lastMarkThreadCount_; }
 
+    // --- residency ---------------------------------------------------------
+
+    // Runs the allocator over the request set this frame slot read back, binds
+    // physical pages, and uploads the page table. Returns what it did.
+    //
+    // `cameraLightSpaceXy` is THIS frame's camera, which decides what is still
+    // addressable; the request set was marked against an older window, whose
+    // origins are remembered per frame slot so a requested slot can be turned
+    // back into the absolute page it meant.
+    //
+    // `lightDirection` is not used to place anything -- the caller has already
+    // folded it into cameraLightSpaceXy -- but it is checked. Moving the light
+    // changes every page's world rect while leaving every page's identity
+    // untouched, which is precisely the case the identity check cannot catch, and
+    // there is no single edit site to hook: the debug UI drags the direction
+    // every frame. So residency hashes its own inputs and drops itself when they
+    // move, the same way the cascade cache does rather than tracking dirty flags.
+    VsmResidencyStats updateResidency(uint32_t frameIndex,
+                                      const VsmClipmapSettings& clipmap,
+                                      const glm::vec2& cameraLightSpaceXy,
+                                      const glm::vec3& lightDirection,
+                                      uint64_t frameCounter);
+
+    // Pages the last updateResidency queued for drawing.
+    [[nodiscard]] const std::vector<VsmDirtyPage>& dirtyPages() const { return dirtyPages_; }
+
+    // Records that every queued page has been drawn. Called after the page pass
+    // actually recorded them, not when they were queued -- until the draws are
+    // in the command buffer the pool still holds the previous occupant's depth.
+    void markDirtyPagesRendered(uint32_t frameIndex);
+
+    // Drops all residency. For anything that changes what a page would contain
+    // without changing its identity: a scene switch, the light moving, a clipmap
+    // settings change.
+    void invalidateResidency();
+
+    [[nodiscard]] const rhi::VulkanShadowMap& pagePool() const { return pagePool_; }
+    [[nodiscard]] rhi::VulkanShadowMap& pagePool() { return pagePool_; }
+    [[nodiscard]] bool pagePoolValid() const { return pagePool_.valid(); }
+    // First frame after the pool is created: its contents are undefined, so the
+    // whole image is cleared rather than only the pages being drawn.
+    [[nodiscard]] bool pagePoolNeedsFullClear() const { return pagePoolNeedsFullClear_; }
+    void setPagePoolFullClearDone() { pagePoolNeedsFullClear_ = false; }
+    [[nodiscard]] VkDeviceAddress pageTableAddress(uint32_t frameIndex) const;
+
+    // --- per-page caster culling ------------------------------------------
+
+    // (Re)creates the cull pipeline and its per-frame buffers. Separate again
+    // because it needs the draw-item capacity, which the renderer owns. Requires
+    // the page pool. Reports capability through cullAvailable().
+    void createCullResources(uint32_t frameCount, uint32_t maxDrawItems);
+    [[nodiscard]] bool cullAvailable() const { return cullAvailable_; }
+    [[nodiscard]] uint32_t pageCommandStride() const { return kMaxVsmCastersPerPage; }
+    [[nodiscard]] VkBuffer cullIndirectBuffer(uint32_t frameIndex) const;
+
+    // One dispatch over every (dirty page, draw item) pair, recorded before the
+    // page pass opens its rendering scope -- compute cannot run inside one, and
+    // the scope has to stay single so untouched pages keep their depth.
+    //
+    // `casterFlags` is 1 for draw items that cast. The shared cull input carries
+    // no bucket and an indirect per-page draw cannot skip blended geometry at
+    // replay time, so the filter has to happen in the dispatch.
+    void recordPageCull(VkCommandBuffer commandBuffer,
+                        uint32_t frameIndex,
+                        VkBuffer cullInputBuffer,
+                        VkDeviceSize cullInputSize,
+                        uint32_t drawItemCount,
+                        const VsmClipmapSettings& clipmap,
+                        const glm::mat4& lightView,
+                        std::span<const uint32_t> casterFlags);
+
+    // Casters the per-page command cap refused, read back a frame later. Counted
+    // rather than silently dropped, matching the FrameCapacity contract.
+    [[nodiscard]] bool readPageCullOverflow(uint32_t frameIndex, uint32_t& overflowCount);
+
 private:
     void createDescriptorSetLayout();
     void createPipeline();
     void createBuffers(uint32_t frameCount);
     void createDescriptorSets(uint32_t frameCount);
+    void createPagePool();
+    void destroyMarkResources();
+    [[nodiscard]] bool readRequestWords(uint32_t frameIndex, std::array<uint32_t, kVsmPageRequestWordCount>& words);
+    void uploadPageTable(uint32_t frameIndex);
+    void destroyCullResources();
 
     rhi::VulkanContext& context_;
     DepthPyramid& depthPyramid_;
@@ -126,9 +252,42 @@ private:
     std::vector<rhi::VulkanBuffer> requestBuffers_;
     std::vector<rhi::VulkanBuffer> requestReadbackBuffers_;
     std::vector<rhi::VulkanBuffer> paramsBuffers_;
+    std::vector<rhi::VulkanBuffer> pageTableBuffers_;
     std::vector<uint8_t> readbackReady_;
+    // Window origin per level that each frame slot's request set was marked
+    // against. Without it a read-back slot index is ambiguous -- the same slot
+    // names a different absolute page once the window has scrolled.
+    std::vector<std::array<glm::ivec2, kVsmMaxClipmapLevels>> markWindowOrigins_;
+
+    rhi::VulkanShadowMap pagePool_;
+    VsmPageAllocator allocator_;
+    std::vector<VsmDirtyPage> dirtyPages_;
+    std::vector<uint32_t> requestedPageIds_;
+    // Inputs the current residency was built against. Compared by exact bit
+    // pattern, so this is a strict "identical inputs" test and never an
+    // approximate one -- same rule as ShadowCacheKey.
+    glm::vec3 residencyLightDirection_{0.0f};
+    VsmClipmapSettings residencyClipmap_{};
+    bool residencyValid_ = false;
+
+    // Per-page caster culling. Modelled on PunctualShadows: same one-dispatch,
+    // one-region-per-slot shape, and the same reason for it.
+    rhi::VulkanDescriptorSetLayout cullSetLayout_;
+    rhi::VulkanComputePipeline cullPipeline_;
+    rhi::VulkanDescriptorPool cullDescriptorPool_;
+    std::vector<VkDescriptorSet> cullSets_;
+    std::vector<rhi::VulkanBuffer> pageFrustumBuffers_;
+    std::vector<rhi::VulkanBuffer> cullIndirectBuffers_;
+    std::vector<rhi::VulkanBuffer> cullVisibleCountBuffers_;
+    std::vector<rhi::VulkanBuffer> cullOverflowReadbackBuffers_;
+    std::vector<rhi::VulkanBuffer> casterFlagBuffers_;
+    std::vector<uint8_t> cullReadbackReady_;
+    std::vector<glm::vec4> pageFrustumPlanes_;
+    uint32_t cullDrawItemCapacity_ = 0;
+    bool cullAvailable_ = false;
 
     bool available_ = false;
+    bool pagePoolNeedsFullClear_ = true;
     uint32_t lastMarkThreadCount_ = 0;
 };
 

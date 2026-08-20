@@ -17,6 +17,11 @@ _Detailed per-frame pass ordering and the descriptor-set layout contract, moved 
    page-request bitmask copied to a host-readable buffer. Recorded first because
    it reads what the previous frame left behind, and it changes nothing that is
    drawn -- see [virtual_shadow_maps.md](virtual_shadow_maps.md). Off by default.
+   With page rendering also enabled, this is followed by `VsmPageCull` (one
+   dispatch over every (dirty page, draw item) pair, compacting per-page indirect
+   commands) and `VsmPagePass` (one rendering scope over the whole page pool, with
+   a clear rect, a viewport, a scissor and one indirect draw per dirty page). The
+   pool is still sampled by nothing.
 8. Reset shadow batch counts and shadow indirect commands, dispatch **one** GPU shadow cull for all cascades (an object survives if any cascade's light frustum wants it; the planes come from the frame-params buffer, since four frusta do not fit in a push-constant block), and barrier its writes for indirect/count reads.
 9. Let the graph transition the cascaded shadow-map array, then for each cascade begin depth-only Dynamic Rendering against that layer's view and replay the shared caster list. With `enableLayeredCascades` the loop collapses into one multiview pass over the whole array view, and the shader reads `gl_ViewIndex` instead of a pushed cascade index -- correct but measured slower under MoltenVK, so it is off by default.
 10. If any punctual light was assigned an atlas tile, run `PunctualShadowAtlasPass`: let the graph transition the punctual shadow atlas, open one depth-only Dynamic Rendering scope over the whole atlas, and draw each slot's casters under that slot's viewport/scissor.
@@ -105,5 +110,17 @@ Virtual shadow map page-marking compute descriptor set (see
 - binding 0 = Hi-Z depth pyramid combined image sampler (mip 0 is read)
 - binding 1 = page-request bitmask storage buffer
 - binding 2 = per-frame marking parameter storage buffer
+
+Virtual shadow map page-cull compute descriptor set:
+
+- binding 0 = shared per-frame cull input storage buffer
+- binding 1 = per-page compacted indirect command storage buffer
+- binding 2 = per-page visible counts plus a trailing over-cap counter
+- binding 3 = six frustum planes per dirty page
+- binding 4 = per-draw-item caster flags
+
+The virtual shadow page pass reuses `shadow_punctual.vert` and its push block:
+one depth-only draw of a rect with that rect's own projection pushed is the same
+operation for an atlas tile and for a clipmap page.
 
 ImGui uses its own descriptor pool and backend-owned descriptor layouts. It does not change the material, bindless texture, post-process, shadow, IBL, BRDF LUT, or ObjectFrameData descriptor contracts above.

@@ -2,7 +2,13 @@
 
 #extension GL_EXT_buffer_reference : require
 
-// Depth-only vertex stage for the punctual (spot/point) shadow atlas.
+// Depth-only vertex stage for rendering one rect with its own projection.
+//
+// Two passes use it, because they are the same operation: the punctual
+// (spot/point) shadow atlas draws one tile per light slot, and the virtual
+// shadow map page pass draws one page per clipmap slot. Both open a single
+// rendering scope, set a viewport and scissor per rect, and push that rect's
+// view-projection.
 //
 // The CSM path precomputes a per-object light MVP for each of its four cascades
 // and indexes that array (shadow.vert). That does not scale here: the atlas

@@ -318,6 +318,8 @@ private:
     void createSkyboxPipeline();
     void createTransparentPipeline();
     void createShadowPipeline();
+    void createVsmPagePipeline(const VkVertexInputBindingDescription& binding,
+                               const std::array<VkVertexInputAttributeDescription, 5>& attributes);
     void createPunctualShadowPipeline(const VkVertexInputBindingDescription& binding,
                                       const std::array<VkVertexInputAttributeDescription, 5>& attributes);
     void createMaskedShadowPipeline(const VkVertexInputBindingDescription& binding,
@@ -548,6 +550,13 @@ private:
     {
         return virtualShadowMap_.available() && vsmSettings_.enableMarking;
     }
+    // Whether pages are allocated and drawn this frame. Still nothing samples
+    // them -- the cascades remain the only directional shadow source.
+    [[nodiscard]] bool isVsmPageRenderingActive() const
+    {
+        return isVsmPageMarkingActive() && vsmSettings_.enablePageRendering && virtualShadowMap_.pagePoolValid() &&
+               vsmPagePipeline_.pipeline() != VK_NULL_HANDLE;
+    }
     // The persisted scalar settings as the GPU-free clipmap math wants them.
     // VsmSettings stores plain scalars so RuntimeSettings.h stays free of
     // renderer types; this is the one place the two representations meet, the
@@ -561,6 +570,14 @@ private:
     }
     // Records the page-marking dispatch inside the graph's declared pass.
     void recordVsmPageMarkPass(VkCommandBuffer commandBuffer);
+    // Runs the allocator over the page set the marking pass produced, which
+    // decides what the page pass has to draw. CPU-side; called from frame prep.
+    void updateVsmResidency(uint32_t frameIndex);
+    // Per-page caster culling, recorded before the page pass opens its scope.
+    void recordVsmPageCull(VkCommandBuffer commandBuffer);
+    // The page pass itself: one rendering scope, one viewport/scissor/draw per
+    // dirty page, mirroring recordPunctualShadowPass.
+    void recordVsmPagePass(VkCommandBuffer commandBuffer);
     // Reads the page-request bitmask this frame slot wrote the last time round.
     void updateVsmPageRequestStats(uint32_t frameIndex);
     // The probe grid's world placement, as the math header wants it. GiSettings
@@ -855,6 +872,20 @@ private:
     // the GPU culling counters carry, and for the same reason.
     renderer::VsmPageRequestStats vsmPageRequestStats_{};
     bool vsmPageRequestStatsValid_ = false;
+    renderer::VsmResidencyStats vsmResidencyStats_{};
+    // Only has to increase; it is what makes the allocator's "least recently
+    // used" mean something.
+    uint64_t vsmFrameCounter_ = 0;
+    uint32_t vsmPageDrawsRecorded_ = 0;
+    // Cumulative, because the cold start finishes long before the first
+    // once-per-second report: a steady state of "0 drawn, all cached" is
+    // indistinguishable from "the page pass never ran" without it.
+    uint64_t vsmPageDrawsTotal_ = 0;
+    uint32_t vsmPageCullOverflow_ = 0;
+    // Reused per frame so the caster-flag upload does not allocate.
+    std::vector<uint32_t> vsmCasterFlags_;
+    std::vector<VkClearRect> vsmPageClearRects_;
+    rhi::VulkanPipeline vsmPagePipeline_;
     // Highest request count seen since the counter was last reset, which is the
     // number that actually sizes a page pool: an average would hide the peak
     // that overflows it.
