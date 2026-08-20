@@ -740,7 +740,7 @@ void Renderer::drawShadowsDebugUi()
         ImGui::TextUnformatted(cascadeStates.c_str());
     }
 
-    ImGui::SeparatorText("Virtual (clipmap) -- measurement only");
+    ImGui::SeparatorText("Virtual (clipmap)");
     if (!virtualShadowMap_.available()) {
         ImGui::TextDisabled("Page marking unavailable; needs a depth pyramid to mark from.");
     } else {
