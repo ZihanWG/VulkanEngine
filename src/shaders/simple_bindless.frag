@@ -4,6 +4,12 @@
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_buffer_reference : require
 
+// FrameConstants and its buffer reference, needed by the push block below and by
+// the virtual shadow map lookup. The fragment stage reads the same block the
+// vertex stage does; see the note on the frameConstants push field.
+#include "object_frame_data.glsl"
+#include "virtual_shadow_map.glsl"
+
 // Punctual light record. Mirrors ve::renderer::GpuLight (64-byte std430 stride).
 struct GpuLight {
     vec4 positionRange;   // xyz = world position, w = range
@@ -69,6 +75,12 @@ layout(push_constant) uniform PushConstants {
     layout(offset = 96) uint debugPunctualShadows;
     layout(offset = 100) float fogMaxDistance;
     layout(offset = 104) float aoAmbientStrength;
+    // Read directly rather than forwarded as varyings: the virtual shadow map
+    // lookup needs a mat4 and three vec4s, which would be seven more flat
+    // locations for data identical across every fragment in the frame. The main
+    // pipeline already pushes the whole block to both stages, so the address is
+    // here for the taking.
+    layout(offset = 112) FrameConstantsBuffer frameConstants;
     // The AO target is allocated at the maximum render resolution; only its
     // sub-rect is written, so the reprojected lookup has to be scaled into it.
     layout(offset = 120) vec2 aoUvScale;
@@ -110,6 +122,9 @@ layout(set = 0, binding = 12) uniform sampler2D uAmbientOcclusion;
 // so its edge was a staircase no matter how many taps went into it. Binding 1
 // stays a plain sampler2DArray because four other consumers want raw depth.
 layout(set = 0, binding = 13) uniform sampler2DArrayShadow uShadowMapCompare;
+// The virtual shadow map page pool, sampled through the page table rather than
+// with a direct UV. Shares the cascades' immutable compare sampler.
+layout(set = 0, binding = 14) uniform sampler2DShadow uVsmPagePool;
 
 layout(set = 1, binding = 0) uniform sampler2D uBaseColorTextures[];
 layout(set = 1, binding = 1) uniform sampler2D uNormalTextures[];
@@ -761,15 +776,30 @@ void main()
     vec3 specular =
         distribution * geometry * fresnel / max(4.0 * normalView * normalLight, EPSILON);
 
-    int cascadeIndex = selectShadowCascade();
-    float shadowFactor = sampleShadowFactor(normal, cascadeIndex);
-    // Cross-fade into the next cascade over the last slice of this one. Only the
-    // fragments inside the band pay for the second lookup.
-    const int cascadeCount = clamp(int(vCascadeCount), 1, 4);
-    if (cascadeIndex >= 0 && cascadeIndex + 1 < cascadeCount) {
-        const float blend = cascadeBlendWeight(cascadeIndex);
-        if (blend > 0.0) {
-            shadowFactor = mix(shadowFactor, sampleShadowFactor(normal, cascadeIndex + 1), blend);
+    // Declared outside the branch: the cascade debug overlay below reads it, and
+    // -1 is exactly what it should see on the VSM path, which has no cascades.
+    int cascadeIndex = -1;
+    float shadowFactor;
+    if (pc.frameConstants.values.vsmPageTable.w != 0u) {
+        // Virtual shadow maps replace the cascades outright rather than blending
+        // with them: the two disagree about texel size everywhere, so mixing
+        // them would show the disagreement as a seam instead of hiding it.
+        shadowFactor = vsmShadowFactor(pc.frameConstants.values,
+                                       uVsmPagePool,
+                                       vWorldPosition,
+                                       normal,
+                                       clamp(int(vShadowSettings.w + 0.5), 0, 4));
+    } else {
+        cascadeIndex = selectShadowCascade();
+        shadowFactor = sampleShadowFactor(normal, cascadeIndex);
+        // Cross-fade into the next cascade over the last slice of this one. Only
+        // the fragments inside the band pay for the second lookup.
+        const int cascadeCount = clamp(int(vCascadeCount), 1, 4);
+        if (cascadeIndex >= 0 && cascadeIndex + 1 < cascadeCount) {
+            const float blend = cascadeBlendWeight(cascadeIndex);
+            if (blend > 0.0) {
+                shadowFactor = mix(shadowFactor, sampleShadowFactor(normal, cascadeIndex + 1), blend);
+            }
         }
     }
     vec3 irradiance = texture(uDiffuseIrradianceMap, normal).rgb;

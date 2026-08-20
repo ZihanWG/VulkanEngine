@@ -39,8 +39,9 @@ overview; these documents describe implementation details and limitations.
   page grid is absolute rather than camera-centred, why the page table stores
   identity rather than just residency, page marking from the previous frame's
   depth pyramid, and the coverage bound a measurement forced.
-  **Pages are marked, allocated and rendered; nothing samples them yet, so no
-  pixel changes.**
+  **Complete through sampling and off by default; the cascades keep rendering
+  underneath, so the A/B is one checkbox. Visual correctness is unverified — the
+  doc explains why no pixel gate is possible on this scene.**
 - [Irradiance Probes](irradiance_probes.md): Real-time global illumination
   without ray tracing — the octahedral probe atlases and their seam border, the
   amortised cube capture and its convolution, Chebyshev visibility weighting,

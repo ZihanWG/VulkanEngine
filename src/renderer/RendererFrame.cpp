@@ -1849,6 +1849,37 @@ void Renderer::uploadFrameConstants(uint32_t frameIndex, uint32_t cascadeCount)
     constants.cameraForward =
         glm::vec4(glm::normalize(camera_.target - camera_.position), static_cast<float>(cascadeCount));
 
+    // Virtual shadow maps. The enable flag is the only thing the shader branches
+    // on, so leaving the rest at zero when the subsystem is off is safe -- and
+    // the page-pool descriptor stays bound either way, because an unwritten
+    // descriptor is a validation error rather than a no-op.
+    if (isVsmDirectionalShadowActive()) {
+        const renderer::VsmClipmapSettings clipmap = vsmClipmapSettings();
+        const glm::mat4 lightView = renderer::vsmLightView(directionalLightSettings_.direction);
+        const glm::vec2 cameraLightSpaceXy = glm::vec2(lightView * glm::vec4(frameCameraPosition_, 1.0f));
+        const VkDeviceAddress pageTableAddress = virtualShadowMap_.pageTableAddress(frameIndex);
+
+        constants.vsmLightView = lightView;
+        constants.vsmPageTable = glm::uvec4(static_cast<uint32_t>(pageTableAddress & 0xFFFFFFFFull),
+                                            static_cast<uint32_t>(pageTableAddress >> 32),
+                                            clipmap.levelCount,
+                                            pageTableAddress != 0 ? 1u : 0u);
+        constants.vsmParams = glm::vec4(clipmap.level0Extent,
+                                        clipmap.texelsPerPixel,
+                                        clipmap.depthRange,
+                                        1.0f / static_cast<float>(renderer::kVsmPagePoolSize));
+        // The normal offset is in world units here, not a fraction of a cascade
+        // extent: a clipmap level's texel size varies by a factor of 2^levels, so
+        // there is no single extent to be a fraction of. Scaled by the finest
+        // texel so the default reads the same way the cascade setting does.
+        constants.vsmCamera = glm::vec4(cameraLightSpaceXy.x,
+                                        cameraLightSpaceXy.y,
+                                        std::max(csmSettings_.normalBias, 0.0f) *
+                                            renderer::vsmTexelWorldSize(clipmap, 0) *
+                                            static_cast<float>(renderer::kVsmPageSize),
+                                        std::max(csmSettings_.depthBiasConstant, 0.0f));
+    }
+
     frameConstantsBuffers_.at(frameIndex)
         .upload(std::as_bytes(std::span<const FrameConstants>(&constants, 1)));
 }

@@ -3,21 +3,23 @@
 Directional-light shadows as a clipmap of fixed-size pages, rendered on demand
 and cached per page, instead of four camera-fitted cascades.
 
-**Nothing here samples the pool yet, so no pixel on screen changes.**
-Directional shadows still come entirely from the cascades
-([`CascadeMath.h`](../src/renderer/CascadeMath.h)), and the whole subsystem is
-off by default. What exists is everything up to and including rendering:
+**Off by default, and the cascades keep rendering underneath even when it is
+on**, so the fallback is always one frame away. Three nested toggles, each an
+A/B point:
 
 | stage | setting | what it does |
 | --- | --- | --- |
 | marking | `enableMarking` | works out which pages the frame needs, and counts them |
 | rendering | `enablePageRendering` | allocates a physical page per request and draws it |
-| sampling | — | not implemented |
+| sampling | `enableShadows` | samples the pool instead of the cascades |
 
-The toggles nest, each an A/B point, so the page pass can be measured on its own
-without anything downstream depending on it. Building it in this order is what
-let two design errors surface before the expensive parts were written — see
+Building it in that order is what let three design errors surface before anything
+downstream depended on them — see
 [What the measurement changed](#what-the-measurement-changed).
+
+> **Visual correctness is unverified.** The sampling path runs with zero
+> validation errors, but whether the image is *right* has not been checked, and
+> could not be: see [Why there is no pixel gate](#why-there-is-no-pixel-gate).
 
 ## Why, given the cascades already cache
 
@@ -253,6 +255,61 @@ thin nearby surface and pick one level coarser; that is the same graceful
 degradation an unresident page already falls back to, and it loses resolution
 rather than correctness.
 
+## Sampling: walk up until something is resident
+
+`vsmShadowFactor` in
+[`virtual_shadow_map.glsl`](../src/shaders/virtual_shadow_map.glsl) takes a world
+position, applies the normal offset, projects into light space, and then walks
+from the finest plausible level up to the coarsest, taking the first level that
+is all three of: inside this frame's window, marked `rendered`, and holding the
+absolute page it claims to. The walk **is** the fallback that makes the request
+latency survivable — a fine page may not be resident yet, but clipmap levels
+nest, so a coarser one covering the same world is. The result degrades to a
+blurrier shadow, never to a hole. Nothing resident at all returns fully lit,
+which is what the cascades do outside their range.
+
+The starting level is `vsmMinLevelForCoverage`, not the full selection. It only
+has to be a lower bound: the walk finds the level the marking pass actually
+chose, so a start that is too fine costs a few failed table reads and never a
+wrong answer — and it saves carrying `projScaleY` into the fragment stage.
+
+Every PCF tap is clamped inside its own page before it reaches the sampler.
+Neighbouring pool texels belong to a different page — a different world location,
+possibly a different clipmap level — so a tap that walks out compares against
+unrelated depth. The punctual atlas learned this the same way, and its
+[notes](punctual_shadows.md) describe the seams it drew.
+
+VSM **replaces** the cascades rather than blending with them. The two disagree
+about texel size everywhere, so a cross-fade would show the disagreement as a
+seam instead of hiding it.
+
+The fragment shader reads `FrameConstants` directly through the push block's
+`frameConstantsAddress`, at the offset the vertex stage already uses. The
+alternative was seven more `flat` varyings carrying a mat4 and three vec4s that
+are identical for every fragment in the frame.
+
+## Why there is no pixel gate
+
+The obvious check — capture a frame with cascades, capture one with VSM, compare
+— does not work on this scene, and the reason is worth recording because it
+invalidates the control, not just the experiment.
+
+Two captures of the **same** configuration at the same frame number differ by
+8.5% of pixels (max channel delta 85). The cause is
+`updateDemoLights(elapsedSeconds)`: the animated light swarm advances on
+wall-clock time, so frame 240 of two runs is at two different animation phases.
+Turning auto-exposure off does not help; it makes the mismatch worse, because the
+manual exposure is a different constant.
+
+So the 53% difference measured between the cascade and VSM captures says nothing:
+it is smaller than the control's own noise in max-delta terms and larger in pixel
+count, and neither number is trustworthy. **Any pixel gate for this feature needs
+a fixed timestep or a scene with no animation**, and neither exists yet.
+
+What *is* verified: the pass runs with zero validation errors on MoltenVK, the
+page pool fills with real depth, and the residency counters behave as designed.
+Whether the shadow looks correct needs a human to look at it.
+
 ## Where it sits in the frame
 
 `VsmPageMarkPass` is declared first in `declareGeometryPasses()`, before
@@ -324,6 +381,7 @@ is the shader-side duplicate, the same arrangement `ClusterGrid.h` /
 | field | default | effect |
 | --- | --- | --- |
 | `enableMarking` | `false` | runs the marking pass; draws nothing |
+| `enableShadows` | `false` | samples the pool instead of the cascades |
 | `clipmapLevels` | 8 | active levels |
 | `level0Extent` | 4.0 m | world span of the finest level's grid |
 | `texelsPerPixel` | 1.0 | above 1 selects coarser levels; below, finer |
@@ -342,8 +400,12 @@ or scripted run.
 
 ## Limitations
 
-- **Nothing samples the pool.** Directional shadows are still entirely the
-  cascades'. The pool fills with correct depth and is then read by nobody.
+- **Visual correctness is unverified**, and no pixel gate is possible on this
+  scene (above).
+- **Bindless path only.** `simple.frag`, the fallback for devices without
+  descriptor indexing, still uses the cascades. Adding VSM there means a second
+  descriptor layout for a path that only exists on hardware this feature is not
+  aimed at.
 - **Page casters draw at authored detail.** The page cull emits no LOD level, so
   a page draws level 0 where the cascades would have picked a simplified one.
   Matches the punctual atlas, which does the same; worth revisiting once the

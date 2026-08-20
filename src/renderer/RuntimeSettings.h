@@ -378,6 +378,10 @@ struct VsmSettings {
     // draws them into the pool. Neither replaces the cascades.
     bool enableMarking = false;
     bool enablePageRendering = false;
+    // Samples the page pool instead of the cascades for the directional light.
+    // Requires the two above; the cascades keep running underneath so the A/B is
+    // a single checkbox and the fallback is always one frame away.
+    bool enableShadows = false;
     uint32_t clipmapLevels = 8;
     // World units spanned by the finest level's whole virtual texel grid.
     float level0Extent = 4.0f;

@@ -883,6 +883,19 @@ void Renderer::drawShadowsDebugUi()
         } else if (!virtualShadowMap_.pagePoolValid()) {
             ImGui::TextDisabled("Page pool unavailable.");
         }
+
+        ImGui::BeginDisabled(!isVsmPageRenderingActive());
+        if (ImGui::Checkbox("Use for directional shadows", &vsmSettings_.enableShadows)) {
+            clampRuntimeSettings();
+        }
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip("Samples the page pool instead of the cascades. The cascades keep\n"
+                              "rendering underneath, so this is a one-click A/B and the fallback is\n"
+                              "always a frame away.\n\n"
+                              "The two are not blended: they disagree about texel size everywhere,\n"
+                              "so mixing them would show the disagreement as a seam rather than\n"
+                              "hide it. Bindless path only -- the legacy fallback shader still uses\n"
+                              "the cascades.");
     }
 
     ImGui::SeparatorText("Punctual (spot/point)");

@@ -490,6 +490,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
     if (const Json* vsm = objectMember(json, "vsm")) {
         readBool(*vsm, "enableMarking", settings.vsm.enableMarking);
         readBool(*vsm, "enablePageRendering", settings.vsm.enablePageRendering);
+        readBool(*vsm, "enableShadows", settings.vsm.enableShadows);
         readUint32(*vsm, "clipmapLevels", settings.vsm.clipmapLevels);
         readFloat(*vsm, "level0Extent", settings.vsm.level0Extent);
         readFloat(*vsm, "texelsPerPixel", settings.vsm.texelsPerPixel);
@@ -643,6 +644,7 @@ Json toJson(const RuntimeSettings& settings)
         {"vsm",
          Json{{"enableMarking", settings.vsm.enableMarking},
               {"enablePageRendering", settings.vsm.enablePageRendering},
+              {"enableShadows", settings.vsm.enableShadows},
               {"clipmapLevels", settings.vsm.clipmapLevels},
               {"level0Extent", settings.vsm.level0Extent},
               {"texelsPerPixel", settings.vsm.texelsPerPixel},

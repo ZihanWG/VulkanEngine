@@ -1044,6 +1044,9 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
                     << ", over budget " << vsmResidencyStats_.overBudgetPages << ", refused "
                     << vsmResidencyStats_.refusedPages << ", evicted " << vsmResidencyStats_.evictions << "\n"
                     << "  casters over the per-page cap: " << vsmPageCullOverflow_ << "\n";
+            message << "  directional shadows: "
+                    << (isVsmDirectionalShadowActive() ? "sampled from the page pool" : "cascades")
+                    << "\n";
         } else {
             message << "  page rendering: disabled\n";
         }

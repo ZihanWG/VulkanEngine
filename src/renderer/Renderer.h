@@ -568,6 +568,13 @@ private:
                                                   vsmSettings_.texelsPerPixel,
                                                   vsmSettings_.depthRange});
     }
+    // Whether the main pass samples the page pool instead of the cascades. The
+    // cascades still render underneath, so the A/B is one checkbox and the
+    // fallback is always a frame away.
+    [[nodiscard]] bool isVsmDirectionalShadowActive() const
+    {
+        return isVsmPageRenderingActive() && vsmSettings_.enableShadows;
+    }
     // Records the page-marking dispatch inside the graph's declared pass.
     void recordVsmPageMarkPass(VkCommandBuffer commandBuffer);
     // Runs the allocator over the page set the marking pass produced, which

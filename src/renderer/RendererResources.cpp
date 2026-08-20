@@ -112,7 +112,7 @@ void Renderer::destroyShadowCompareSampler()
 void Renderer::createMaterialDescriptorSetLayout()
 {
     createShadowCompareSampler();
-    std::array<VkDescriptorSetLayoutBinding, 14> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 15> bindings{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[0].descriptorCount = 1;
@@ -195,6 +195,17 @@ void Renderer::createMaterialDescriptorSetLayout()
     bindings[13].descriptorCount = 1;
     bindings[13].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     bindings[13].pImmutableSamplers = &shadowCompareSampler_;
+
+    // Virtual shadow map page pool, sampled as a sampler2DShadow. It reuses the
+    // cascades' immutable compare sampler: a sampler carries no per-image state,
+    // and the two want the same LINEAR compare with the same LESS_OR_EQUAL op.
+    // Its border mode never comes into play here -- every VSM tap is clamped
+    // inside its own page before it reaches the sampler.
+    bindings[14].binding = 14;
+    bindings[14].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[14].descriptorCount = 1;
+    bindings[14].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[14].pImmutableSamplers = &shadowCompareSampler_;
 
     // Set 0 binding 0 is the base color texture, binding 1 is the cascaded
     // shadow-map array, binding 2 is the tangent-space normal map, and binding 3 is the
@@ -1114,6 +1125,23 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     ambientOcclusionInfo.imageView = postProcess_.ambientOcclusion().imageView();
     ambientOcclusionInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
+    // The VSM page pool, always bound for the same reason as the AO target: the
+    // shader gates on a FrameConstants flag, and an unwritten descriptor is a
+    // validation error rather than a no-op.
+    //
+    // The fallback is the cascade array's LAYER 0 view, not its array view.
+    // Binding 14 is a sampler2DShadow, and an array view under a non-array
+    // sampler is VUID-vkCmdDrawIndexed-viewType-07752 -- the same trap
+    // VulkanShadowMap::ViewKind exists to document. It is never sampled, because
+    // the flag that would read it is off whenever the pool is missing.
+    VkDescriptorImageInfo vsmPagePoolInfo{};
+    vsmPagePoolInfo.sampler = VK_NULL_HANDLE;
+    vsmPagePoolInfo.imageView =
+        virtualShadowMap_.pagePoolValid() ? virtualShadowMap_.pagePool().imageView() : shadowMap_.layerImageView(0);
+    // DEPTH_READ_ONLY_OPTIMAL, matching what the graph actually transitions a
+    // depth texture to for a ShaderRead -- and matching bindings 1, 7 and 13.
+    vsmPagePoolInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+
     VkDescriptorBufferInfo probeParamsInfo{};
     probeParamsInfo.buffer = irradianceProbes_.shadingParamsBuffer();
     probeParamsInfo.offset = 0;
@@ -1127,7 +1155,7 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
         punctualAtlasAvailable ? punctualShadows_.atlas().imageView() : shadowMap_.layerImageView(0);
     punctualShadowInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
 
-    std::array<VkWriteDescriptorSet, 14> writes{};
+    std::array<VkWriteDescriptorSet, 15> writes{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = material.descriptorSet;
     writes[0].dstBinding = 0;
@@ -1218,6 +1246,8 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     writes[12].pImageInfo = &ambientOcclusionInfo;
     makeWrite(13, 13, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
     writes[13].pImageInfo = &shadowCompareInfo;
+    makeWrite(14, 14, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+    writes[14].pImageInfo = &vsmPagePoolInfo;
 
     // The material descriptor stores sampled images only: base color at binding 0,
     // cascaded shadow-map array at binding 1, normal map at binding 2, and metallic-roughness

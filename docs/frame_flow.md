@@ -49,6 +49,12 @@ Bindless main-pass global resource descriptor set 0:
 - binding 5 = prefiltered specular cubemap combined image sampler
 - binding 6 = BRDF LUT combined image sampler
 - binding 7 = punctual (spot/point) shadow atlas combined image sampler, sampled as `sampler2D`
+- binding 13 = cascaded shadow map compare sampler, sampled as `sampler2DArrayShadow`
+- binding 14 = virtual shadow map page pool, sampled as `sampler2DShadow` through
+  the page table rather than with a direct UV; shares binding 13's immutable
+  compare sampler, and is always bound (the cascade array's *layer 0* view stands
+  in when the pool does not exist, because an array view under a non-array
+  sampler is VUID-vkCmdDrawIndexed-viewType-07752)
 
 Bindless material texture descriptor set 1:
 
