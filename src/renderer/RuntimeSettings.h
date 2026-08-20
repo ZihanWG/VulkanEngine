@@ -361,6 +361,54 @@ struct DynamicResolutionSettings {
     float maxScale = 1.0f;
 };
 
+// Virtual shadow map (docs/virtual_shadow_maps.md).
+//
+// Phase 1 scope: enableMarking only turns on the page-MARKING measurement pass.
+// It changes nothing the renderer draws -- directional shadows still come
+// entirely from the cascades. The point of the phase is to find out how many
+// pages a real frame asks for before a physical pool, a per-frame page budget,
+// or a sampling path is committed to.
+//
+// The numeric fields mirror renderer::VsmClipmapSettings, which is where they
+// are clamped and unit-tested; this header stays glm-free by design, so the
+// struct is duplicated as plain scalars rather than included.
+struct VsmSettings {
+    // Nested on purpose, each an A/B point: marking measures which pages a frame
+    // needs and changes nothing drawn; page rendering additionally allocates and
+    // draws them into the pool. Neither replaces the cascades.
+    //
+    // enableMarking is STARTUP-ONLY, like CsmSettings::cascadeCount: it decides
+    // whether the page pool (4096x4096 D32 = 64 MiB) and its per-frame buffers
+    // are allocated at all, and nothing but startup can answer that. Off means
+    // the whole subsystem costs nothing, which is the point -- an off-by-default
+    // feature holding 64 MiB would be a worse trade than the one this project
+    // already measured and rejected for bloom aliasing.
+    bool enableMarking = false;
+    bool enablePageRendering = false;
+    // Samples the page pool instead of the cascades for the directional light.
+    // Requires the two above; the cascades keep running underneath so the A/B is
+    // a single checkbox and the fallback is always one frame away.
+    bool enableShadows = false;
+    uint32_t clipmapLevels = 8;
+    // World units spanned by the finest level's whole virtual texel grid.
+    float level0Extent = 4.0f;
+    // Above 1.0 asks for coarser levels (cheaper, blurrier); below, finer.
+    float texelsPerPixel = 1.0f;
+    // Half-thickness of every level's ortho depth range, in world units.
+    float depthRange = 250.0f;
+    // Pixels per marking thread along each axis. Higher is cheaper and coarser:
+    // a block that straddles a page seam only marks the page its centre lands
+    // in, which the coarser-level mark then covers.
+    //
+    // 8 rather than 4 because it was measured: the marking pass takes at most
+    // 2x2 taps per block, so a wider block is genuinely fewer fetches, and 8
+    // returned an identical page count on both the default and geometry-stress
+    // scenes at roughly half the cost. See docs/virtual_shadow_maps.md.
+    uint32_t markBlockStride = 8;
+
+    [[nodiscard]] bool operator==(const VsmSettings&) const = default;
+};
+
 struct RuntimeSettings {
     RenderScaleSettings renderScale;
     DynamicResolutionSettings dynamicResolution;
@@ -372,6 +420,7 @@ struct RuntimeSettings {
     FogSettings fog;
     PunctualShadowSettings punctualShadows;
     CsmSettings csm;
+    VsmSettings vsm;
     LodSettings lod;
     GiSettings gi;
     DebugUiSettings debugUi;
@@ -427,6 +476,7 @@ void clampRuntimeSettings(RenderScaleSettings& renderScale,
                           SsaoSettings& ssao,
                           FogSettings& fog,
                           CsmSettings& csm,
+                          VsmSettings& vsm,
                           LodSettings& lod,
                           GiSettings& gi,
                           DebugUiSettings& debugUi);

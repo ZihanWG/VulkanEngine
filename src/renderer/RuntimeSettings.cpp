@@ -7,6 +7,7 @@
 #include "renderer/DynamicResolution.h"
 #include "renderer/IrradianceProbes.h"
 #include "renderer/RenderScale.h"
+#include "renderer/VirtualShadowMap.h"
 #include "renderer/VolumetricFog.h"
 
 #include <json.hpp>
@@ -52,6 +53,7 @@ void clampRuntimeSettings(RenderScaleSettings& renderScale,
                           SsaoSettings& ssao,
                           FogSettings& fog,
                           CsmSettings& csm,
+                          VsmSettings& vsm,
                           LodSettings& lod,
                           GiSettings& gi,
                           DebugUiSettings& debugUi)
@@ -184,6 +186,21 @@ void clampRuntimeSettings(RenderScaleSettings& renderScale,
     // activeCascadeCount() == clamp(cascadeCount, 1, max); after the clamp above
     // that is just csm.cascadeCount, which is >= 1 so the subtraction is safe.
     debugUi.selectedCsmCascade = std::min(debugUi.selectedCsmCascade, csm.cascadeCount - 1U);
+
+    // Delegated rather than repeated: renderer::clampVsmClipmapSettings is the
+    // unit-tested definition of these ranges, and the GPU-free clipmap math
+    // applies it defensively on every call. A second copy of the bounds here
+    // could drift from that one and would be invisible until a page landed
+    // somewhere impossible.
+    const renderer::VsmClipmapSettings clampedVsm =
+        renderer::clampVsmClipmapSettings({vsm.clipmapLevels, vsm.level0Extent, vsm.texelsPerPixel, vsm.depthRange});
+    vsm.clipmapLevels = clampedVsm.levelCount;
+    vsm.level0Extent = clampedVsm.level0Extent;
+    vsm.texelsPerPixel = clampedVsm.texelsPerPixel;
+    vsm.depthRange = clampedVsm.depthRange;
+    // Above 32 a marking thread covers more screen than a page does and starts
+    // missing pages outright; 1 is one thread per pixel.
+    vsm.markBlockStride = std::clamp(vsm.markBlockStride, 1U, 32U);
 }
 
 namespace {
@@ -470,6 +487,17 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readBool(*csm, "enableStableCascadeFit", settings.csm.enableStableCascadeFit);
     }
 
+    if (const Json* vsm = objectMember(json, "vsm")) {
+        readBool(*vsm, "enableMarking", settings.vsm.enableMarking);
+        readBool(*vsm, "enablePageRendering", settings.vsm.enablePageRendering);
+        readBool(*vsm, "enableShadows", settings.vsm.enableShadows);
+        readUint32(*vsm, "clipmapLevels", settings.vsm.clipmapLevels);
+        readFloat(*vsm, "level0Extent", settings.vsm.level0Extent);
+        readFloat(*vsm, "texelsPerPixel", settings.vsm.texelsPerPixel);
+        readFloat(*vsm, "depthRange", settings.vsm.depthRange);
+        readUint32(*vsm, "markBlockStride", settings.vsm.markBlockStride);
+    }
+
     if (const Json* gi = objectMember(json, "gi")) {
         readBool(*gi, "enabled", settings.gi.enabled);
         readBool(*gi, "debugPattern", settings.gi.debugPattern);
@@ -613,6 +641,15 @@ Json toJson(const RuntimeSettings& settings)
               {"shadowDistance", settings.csm.shadowDistance},
               {"enableTexelSnapping", settings.csm.enableTexelSnapping},
               {"enableCascadeDebugColors", settings.csm.enableCascadeDebugColors}}},
+        {"vsm",
+         Json{{"enableMarking", settings.vsm.enableMarking},
+              {"enablePageRendering", settings.vsm.enablePageRendering},
+              {"enableShadows", settings.vsm.enableShadows},
+              {"clipmapLevels", settings.vsm.clipmapLevels},
+              {"level0Extent", settings.vsm.level0Extent},
+              {"texelsPerPixel", settings.vsm.texelsPerPixel},
+              {"depthRange", settings.vsm.depthRange},
+              {"markBlockStride", settings.vsm.markBlockStride}}},
         {"gi",
          Json{{"enabled", settings.gi.enabled},
               {"debugPattern", settings.gi.debugPattern},

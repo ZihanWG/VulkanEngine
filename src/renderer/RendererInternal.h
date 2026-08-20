@@ -147,6 +147,25 @@ struct FrameConstants {
     // magnitude. y = cascade blend band, as a fraction of each cascade's depth
     // range. Both zero disables. z, w spare.
     glm::vec4 shadowQuality{0.0f, 0.0f, 0.0f, 0.0f};
+    // --- virtual shadow maps (docs/virtual_shadow_maps.md) ---
+    //
+    // These live here rather than in PushConstants for one hard reason:
+    // sizeof(PushConstants) is exactly 128, the guaranteed maximum, with nothing
+    // spare. FrameConstants is a device-address buffer and can grow.
+    //
+    // World -> light space for the clipmap. Translation-free: the page grid is
+    // absolute, so the basis must not move with anything.
+    glm::mat4 vsmLightView{1.0f};
+    // xy = page-table buffer device address as a uvec2 (GLSL constructs the
+    // buffer reference from it), z = active clipmap levels, w != 0 enables the
+    // VSM lookup in place of the cascades.
+    glm::uvec4 vsmPageTable{0u};
+    // x = level 0 world extent, y = texels per pixel, z = ortho half depth
+    // range, w = one pool texel in pool UV (the PCF step).
+    glm::vec4 vsmParams{0.0f};
+    // xy = camera in light space, which decides which pages are addressable,
+    // z = normal-offset bias in world units, w = constant depth bias.
+    glm::vec4 vsmCamera{0.0f};
 };
 
 static_assert(offsetof(FrameConstants, cascadeViewProjection) == 0);
@@ -160,7 +179,14 @@ static_assert(offsetof(FrameConstants, shadowSettings) == 448);
 static_assert(offsetof(FrameConstants, cameraPosition) == 464);
 static_assert(offsetof(FrameConstants, cameraForward) == 480);
 static_assert(offsetof(FrameConstants, shadowQuality) == 496);
-static_assert(sizeof(FrameConstants) == 512);
+static_assert(offsetof(FrameConstants, vsmLightView) == 512);
+static_assert(offsetof(FrameConstants, vsmPageTable) == 576);
+static_assert(offsetof(FrameConstants, vsmParams) == 592);
+static_assert(offsetof(FrameConstants, vsmCamera) == 608);
+// Every member is a multiple of 16 bytes, which is what makes the C++ and std430
+// layouts agree -- see the note in object_frame_data.glsl. A bare float or vec3
+// added here breaks that silently.
+static_assert(sizeof(FrameConstants) == 624);
 
 // Draw-item capacity. The ceiling is 65535: cull.comp packs the object-data
 // slot into the low 16 bits of firstInstance (the high bits carry the selected
@@ -381,6 +407,9 @@ constexpr VkDeviceSize kMeshLodBufferSize = kMaxMeshLodEntries * sizeof(renderer
 // The explicit padding is load-bearing: GLSL push-constant layout rounds the
 // mat4 up to its 16-byte alignment, so the matrix lands at offset 16 rather
 // than packing against the 8-byte buffer address.
+// Also pushed by the virtual shadow map page pass, which renders one page per
+// clipmap slot exactly the way the atlas renders one tile per light slot -- same
+// shader (shadow_punctual.vert), same block.
 struct PunctualShadowPushConstants {
     VkDeviceAddress objectFrameDataAddress = 0;
     uint32_t padding0 = 0;

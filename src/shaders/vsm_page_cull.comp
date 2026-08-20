@@ -1,0 +1,141 @@
+#version 460
+
+// GPU caster culling for the virtual shadow map page pass.
+//
+// One dispatch covers every (dirty page, draw item) pair, for the same reason
+// punctual_shadow_cull.comp does: compute cannot be recorded inside a
+// dynamic-rendering scope, and the page pass is a single scope so the pages it
+// does not touch keep their cached depth. All culling therefore happens before
+// the scope opens.
+//
+// Each page writes its surviving commands into its own region of the output
+// buffer, so the pass afterwards is one indirect call per page.
+
+layout(local_size_x = 64) in;
+
+// Mirrors GpuCullDrawItem in cull.comp and ve::GpuCullDrawItem (64-byte stride).
+// Shared with the main, CSM and punctual cull paths, so the same per-frame input
+// buffer feeds all of them.
+struct GpuCullDrawItem {
+    vec4 boundsMin;
+    vec4 boundsMax;
+    uint indexCount;
+    uint firstIndex;
+    int vertexOffset;
+    uint objectFrameDataIndex;
+    uint batchIndex;
+    uint batchOutputBase;
+    uint lodBase;
+    uint lodCount;
+};
+
+// Matches VkDrawIndexedIndirectCommand (20-byte std430 stride).
+struct DrawIndexedIndirectCommand {
+    uint indexCount;
+    uint instanceCount;
+    uint firstIndex;
+    int vertexOffset;
+    uint firstInstance;
+};
+
+layout(set = 0, binding = 0, std430) readonly buffer CullInputBuffer {
+    GpuCullDrawItem drawItems[];
+} cullInput;
+
+layout(set = 0, binding = 1, std430) writeonly buffer IndirectOutputBuffer {
+    DrawIndexedIndirectCommand commands[];
+} indirectOutput;
+
+// Per page, and one trailing counter the renderer reads back to find out how
+// much geometry the per-page command cap refused. Counting rather than silently
+// dropping is the same contract FrameCapacity uses for over-cap draw items.
+layout(set = 0, binding = 2, std430) buffer PageVisibleCountBuffer {
+    uint visibleCounts[];
+} pageVisibleCounts;
+
+// Six planes per page, laid out consecutively. A page's projection is an
+// orthographic box, so these are the six faces of that box.
+layout(set = 0, binding = 3, std430) readonly buffer PageFrustumBuffer {
+    vec4 planes[];
+} pageFrustums;
+
+// 1 for draw items that cast, 0 otherwise. The shared cull input carries no
+// bucket, and an indirect per-page draw cannot skip blended geometry at replay
+// time the way the CSM path can -- by then the commands are compacted. So the
+// filter has to happen here, or alpha-blended geometry throws opaque shadows.
+layout(set = 0, binding = 4, std430) readonly buffer CasterFlagBuffer {
+    uint flags[];
+} casterFlags;
+
+layout(push_constant) uniform VsmPageCullPushConstants {
+    uint pageCount;
+    uint drawItemCount;
+    // Stride between pages in the output buffer, in commands. Constant rather
+    // than drawItemCount so a frame with fewer draw items still writes where the
+    // draw side expects to read.
+    uint pageCommandStride;
+    // Index of the trailing over-cap counter in pageVisibleCounts.
+    uint overflowCounterIndex;
+} pc;
+
+// Same conservative AABB test the other cull paths use: outside only when the
+// box's most-positive corner along the plane normal is still behind it.
+bool aabbOutsidePlane(vec3 boundsMin, vec3 boundsMax, vec4 plane)
+{
+    vec3 positive = vec3(plane.x >= 0.0 ? boundsMax.x : boundsMin.x,
+                         plane.y >= 0.0 ? boundsMax.y : boundsMin.y,
+                         plane.z >= 0.0 ? boundsMax.z : boundsMin.z);
+    return dot(plane.xyz, positive) + plane.w < 0.0;
+}
+
+void main()
+{
+    uint globalIndex = gl_GlobalInvocationID.x;
+    uint drawItemCount = max(pc.drawItemCount, 1u);
+
+    uint page = globalIndex / drawItemCount;
+    uint item = globalIndex - page * drawItemCount;
+    if (page >= pc.pageCount || item >= pc.drawItemCount) {
+        return;
+    }
+
+    if (casterFlags.flags[item] == 0u) {
+        return;
+    }
+
+    GpuCullDrawItem drawItem = cullInput.drawItems[item];
+    if (drawItem.indexCount == 0u) {
+        return;
+    }
+
+    uint planeBase = page * 6u;
+    for (uint planeIndex = 0u; planeIndex < 6u; ++planeIndex) {
+        if (aabbOutsidePlane(drawItem.boundsMin.xyz, drawItem.boundsMax.xyz, pageFrustums.planes[planeBase + planeIndex])) {
+            return;
+        }
+    }
+
+    // Compact into this page's region. The order within a page is whatever the
+    // atomics produce, which is fine for a depth-only pass: every surviving
+    // caster writes depth and the result is order-independent.
+    uint localIndex = atomicAdd(pageVisibleCounts.visibleCounts[page], 1u);
+    if (localIndex >= pc.pageCommandStride) {
+        // Over the per-page cap. The count above keeps climbing, so the renderer
+        // can read back what the cap actually refused rather than reporting a
+        // page that merely looks full.
+        atomicAdd(pageVisibleCounts.visibleCounts[pc.overflowCounterIndex], 1u);
+        return;
+    }
+
+    DrawIndexedIndirectCommand command;
+    command.indexCount = drawItem.indexCount;
+    command.instanceCount = 1u;
+    command.firstIndex = drawItem.firstIndex;
+    command.vertexOffset = drawItem.vertexOffset;
+    // The vertex stage recovers its object-data slot from the instance index,
+    // exactly as the CSM and punctual indirect paths do. No LOD level is packed
+    // in: this path draws the authored geometry, see docs/virtual_shadow_maps.md.
+    command.firstInstance = drawItem.objectFrameDataIndex;
+
+    indirectOutput.commands[page * pc.pageCommandStride + localIndex] = command;
+}

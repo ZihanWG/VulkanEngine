@@ -927,10 +927,197 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         // pass at all. The main pass still declares its read, so the image keeps
         // the layout it already has and no barrier is emitted for it.
         punctualShadowCacheHit_ ? 0u : punctualShadows_.slotCount(),
+        isVsmPageMarkingActive(),
+        isVsmPageRenderingActive() ? static_cast<uint32_t>(virtualShadowMap_.dirtyPages().size()) : 0u,
         isVolumetricFogActive(),
         isIrradianceProbeUpdateActive(),
         frameProbeCaptureActive_,
     };
+}
+
+void Renderer::recordVsmPageMarkPass(VkCommandBuffer commandBuffer)
+{
+    if (!isVsmPageMarkingActive()) {
+        return;
+    }
+
+    const VkExtent2D extent = renderResolution_.extent();
+
+    renderer::VsmMarkFrameInput input{};
+    // The pyramid's OWN matrices, not this frame's: the depth it holds was
+    // rendered with those, and reconstructing world positions through anything
+    // else puts every surface in the wrong place. This is the same pairing the
+    // phase-1 occlusion test relies on.
+    input.depthViewProjection = depthPyramid_.viewProjection();
+    input.depthCameraPosition = depthPyramid_.cameraPosition();
+    // Same projScaleY the cull pass and mesh LOD selection use, abs() included
+    // for the same Vulkan Y-flip reason; see uploadGpuCullFrameParams.
+    input.projScaleY = 0.5f * static_cast<float>(extent.height) * std::abs(frameJitteredProjection_[1][1]);
+    // THIS frame's camera: it decides which pages are addressable, which is a
+    // different question from where the depth came from.
+    input.cameraPosition = frameCameraPosition_;
+    input.lightDirection = directionalLightSettings_.direction;
+    input.clipmap = vsmClipmapSettings();
+    input.depthExtent = extent;
+    input.blockStride = vsmSettings_.markBlockStride;
+    // Deliberately NOT previousFrameDepthValidForOcclusion(): that gate demands a
+    // still camera because the single-phase occlusion test projects with the
+    // current view-projection. This pass projects with the pyramid's own, so a
+    // moving camera is fine -- only an absent or invalidated pyramid is not.
+    input.depthValid = depthPyramid_.valid();
+
+    renderGraph_.beginVsmPageMarkPass();
+    virtualShadowMap_.recordMarkPass(commandBuffer, currentFrame_, input);
+    renderGraph_.endVsmPageMarkPass();
+}
+
+void Renderer::recordVsmPageCull(VkCommandBuffer commandBuffer)
+{
+    if (!isVsmPageRenderingActive() || !virtualShadowMap_.cullAvailable() ||
+        virtualShadowMap_.dirtyPages().empty() || allDrawItems_.empty()) {
+        return;
+    }
+
+    // The shared cull input carries no bucket, so "does this cast" travels
+    // beside it -- exactly as it does for the punctual atlas. Blended geometry
+    // only depth-tests in the main pass; letting it cast would put an opaque
+    // silhouette into the pool.
+    vsmCasterFlags_.assign(allDrawItems_.size(), 1u);
+    for (size_t drawIndex = 0; drawIndex < allDrawItems_.size(); ++drawIndex) {
+        const DrawItem& drawItem = allDrawItems_[drawIndex];
+        if (drawItem.bucket == RenderBucket::Blend || drawItem.mesh == nullptr || drawItem.indexCount == 0) {
+            vsmCasterFlags_[drawIndex] = 0u;
+        }
+    }
+
+    rhi::VulkanBuffer& cullInput = gpuCulling_.shadowCullInputBuffer(currentFrame_);
+    virtualShadowMap_.recordPageCull(commandBuffer,
+                                     currentFrame_,
+                                     cullInput.buffer(),
+                                     cullInput.size(),
+                                     static_cast<uint32_t>(allDrawItems_.size()),
+                                     vsmClipmapSettings(),
+                                     renderer::vsmLightView(directionalLightSettings_.direction),
+                                     std::span<const uint32_t>(vsmCasterFlags_.data(), vsmCasterFlags_.size()));
+}
+
+void Renderer::recordVsmPagePass(VkCommandBuffer commandBuffer)
+{
+    vsmPageDrawsRecorded_ = 0;
+    const std::vector<renderer::VsmDirtyPage>& dirtyPages = virtualShadowMap_.dirtyPages();
+    if (!isVsmPageRenderingActive() || dirtyPages.empty() || !virtualShadowMap_.cullAvailable() ||
+        allDrawItems_.empty()) {
+        return;
+    }
+
+    const VkBuffer indirectBuffer = virtualShadowMap_.cullIndirectBuffer(currentFrame_);
+    const renderer::Mesh* indirectMesh = allDrawItems_.front().mesh;
+    if (indirectBuffer == VK_NULL_HANDLE || indirectMesh == nullptr) {
+        return;
+    }
+
+    const renderer::GpuProfileScope profileScope(gpuProfiler_, currentFrame_, commandBuffer, "VsmPagePass");
+    rhi::debug::beginLabel(commandBuffer, "VsmPagePass");
+
+    // Layout transitions come from the graph: the pass declares a depth write on
+    // the imported pool and the main pass declares the matching sampled read.
+    //
+    // The clear does not. A full-image clear would wipe the cached pages this
+    // whole mechanism exists to keep, so only the first frame after the image is
+    // created clears everything; after that the attachment loads and the dirty
+    // pages are cleared individually below.
+    const bool clearWholePool = virtualShadowMap_.pagePoolNeedsFullClear();
+    renderGraph_.beginVsmPagePass(clearWholePool);
+
+    if (!clearWholePool) {
+        // One vkCmdClearAttachments with a rect per dirty page, batched for the
+        // same reason the atlas batches its tiles: the clear is a draw-time
+        // operation, and issuing it per page would serialise them for nothing.
+        vsmPageClearRects_.clear();
+        vsmPageClearRects_.reserve(dirtyPages.size());
+        for (const renderer::VsmDirtyPage& page : dirtyPages) {
+            const renderer::VsmPageRect rect = renderer::vsmPagePoolRect(page.physicalPage);
+            VkClearRect clearRect{};
+            clearRect.rect.offset = {static_cast<int32_t>(rect.x), static_cast<int32_t>(rect.y)};
+            clearRect.rect.extent = {rect.size, rect.size};
+            clearRect.baseArrayLayer = 0;
+            clearRect.layerCount = 1;
+            vsmPageClearRects_.push_back(clearRect);
+        }
+
+        if (!vsmPageClearRects_.empty()) {
+            VkClearAttachment clearAttachment{};
+            clearAttachment.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+            clearAttachment.clearValue.depthStencil = {1.0f, 0};
+            vkCmdClearAttachments(commandBuffer,
+                                  1,
+                                  &clearAttachment,
+                                  static_cast<uint32_t>(vsmPageClearRects_.size()),
+                                  vsmPageClearRects_.data());
+        }
+    }
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vsmPagePipeline_.pipeline());
+
+    const VkBuffer vertexBuffers[] = {indirectMesh->vertexBuffer()};
+    const VkDeviceSize vertexOffsets[] = {0};
+    vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
+    vkCmdBindIndexBuffer(commandBuffer, indirectMesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+
+    const VkDeviceAddress objectFrameDataBaseAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
+    const renderer::VsmClipmapSettings clipmap = vsmClipmapSettings();
+    const glm::mat4 lightView = renderer::vsmLightView(directionalLightSettings_.direction);
+    const uint32_t pageCommandStride = virtualShadowMap_.pageCommandStride();
+
+    for (size_t pageIndex = 0; pageIndex < dirtyPages.size(); ++pageIndex) {
+        const renderer::VsmDirtyPage& page = dirtyPages[pageIndex];
+        const renderer::VsmPageRect rect = renderer::vsmPagePoolRect(page.physicalPage);
+
+        VkViewport viewport{};
+        viewport.x = static_cast<float>(rect.x);
+        viewport.y = static_cast<float>(rect.y);
+        viewport.width = static_cast<float>(rect.size);
+        viewport.height = static_cast<float>(rect.size);
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+        vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+
+        VkRect2D scissor{};
+        scissor.offset = {static_cast<int32_t>(rect.x), static_cast<int32_t>(rect.y)};
+        scissor.extent = {rect.size, rect.size};
+        vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+        PunctualShadowPushConstants pushConstants{};
+        pushConstants.objectFrameDataAddress = objectFrameDataBaseAddress;
+        pushConstants.lightViewProjection =
+            renderer::vsmPageViewProjection(clipmap, lightView, page.level, page.absolutePage);
+        vkCmdPushConstants(commandBuffer,
+                           vsmPagePipeline_.layout(),
+                           VK_SHADER_STAGE_VERTEX_BIT,
+                           0,
+                           static_cast<uint32_t>(sizeof(pushConstants)),
+                           &pushConstants);
+
+        // The cull dispatch compacted this page's surviving casters into its own
+        // region, so the whole page is one draw call. There is no indirect-count
+        // on this platform, so the full per-page stride is submitted and the
+        // zeroed commands the dispatch left behind are no-ops.
+        const VkDeviceSize indirectOffset =
+            static_cast<VkDeviceSize>(pageIndex) * pageCommandStride * sizeof(VkDrawIndexedIndirectCommand);
+        vkCmdDrawIndexedIndirect(
+            commandBuffer, indirectBuffer, indirectOffset, pageCommandStride, sizeof(VkDrawIndexedIndirectCommand));
+        ++vsmPageDrawsRecorded_;
+        ++vsmPageDrawsTotal_;
+    }
+
+    renderGraph_.endVsmPagePass();
+    rhi::debug::endLabel(commandBuffer);
+
+    // Recorded here rather than where the pages were queued: until the draws are
+    // actually in the command buffer the pool still holds the previous
+    // occupant's depth, and an early mark would advertise depth never written.
+    virtualShadowMap_.markDirtyPagesRendered(currentFrame_);
+    virtualShadowMap_.setPagePoolFullClearDone();
 }
 
 void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
@@ -977,10 +1164,20 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                             swapchain_,
                             shadowMap_,
                             punctualShadows_.valid() ? &punctualShadows_.atlas() : nullptr,
+                            isVsmPageRenderingActive() ? &virtualShadowMap_.pagePool() : nullptr,
                             imageIndex,
                             renderGraphFrameResources());
     rhi::debug::beginLabel(commandBuffer, "Frame");
     gpuProfiler_.beginFrame(currentFrame_, commandBuffer);
+
+    // First recorded pass of the frame: it reads the depth pyramid the previous
+    // frame left behind, so it has to run before anything this frame writes.
+    recordVsmPageMarkPass(commandBuffer);
+    // Culling before the page pass, not inside it: compute cannot be recorded
+    // inside a dynamic-rendering scope, and that scope has to stay single so the
+    // pages this frame does not touch keep their cached depth.
+    recordVsmPageCull(commandBuffer);
+    recordVsmPagePass(commandBuffer);
 
     const bool gpuShadowCullingActive = isGpuShadowCullingActive() && !allDrawItems_.empty();
     const uint32_t cascadeCount = activeCascadeCount();

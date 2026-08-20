@@ -740,6 +740,174 @@ void Renderer::drawShadowsDebugUi()
         ImGui::TextUnformatted(cascadeStates.c_str());
     }
 
+    ImGui::SeparatorText("Virtual (clipmap)");
+    if (!virtualShadowMap_.available()) {
+        // Startup-only, so the checkbox writes the setting for the next launch
+        // rather than doing nothing: with marking off at startup the pool, the
+        // cull buffers and the marking resources were never allocated.
+        if (ImGui::Checkbox("Enable at next launch", &vsmSettings_.enableMarking)) {
+            saveRuntimeSettingsFromUi();
+        }
+        ImGui::TextDisabled("Virtual shadow maps are not allocated this run.");
+        ImGui::SetItemTooltip("The page pool is 4096x4096 D32 (64 MiB) plus ~2 MiB of per-frame cull\n"
+                              "buffers, so it is only created when this was set at startup -- an\n"
+                              "off-by-default feature holding 64 MiB is a worse trade than the bloom\n"
+                              "aliasing this engine already measured and rejected as a default.\n\n"
+                              "Ticking this saves the setting; restart to allocate.");
+    } else {
+        ImGui::BeginDisabled();
+        bool markingEnabled = vsmSettings_.enableMarking;
+        ImGui::Checkbox("Page marking enabled (startup)", &markingEnabled);
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip("Works out which clipmap pages this frame's visible surfaces would\n"
+                              "need, and counts them. On its own it changes NOTHING that is drawn.\n\n"
+                              "Startup-only because it decides whether the 64 MiB page pool exists;\n"
+                              "the two toggles below are live.");
+
+        ImGui::BeginDisabled(!vsmSettings_.enableMarking);
+        int levels = static_cast<int>(vsmSettings_.clipmapLevels);
+        if (ImGui::SliderInt("Clipmap levels", &levels, 1, static_cast<int>(renderer::kVsmMaxClipmapLevels))) {
+            vsmSettings_.clipmapLevels = static_cast<uint32_t>(levels);
+            clampRuntimeSettings();
+            vsmPeakRequestedPages_ = 0;
+        }
+        if (ImGui::DragFloat("Level 0 extent (m)", &vsmSettings_.level0Extent, 0.05f, 0.25f, 1024.0f, "%.2f")) {
+            clampRuntimeSettings();
+            vsmPeakRequestedPages_ = 0;
+        }
+        ImGui::SetItemTooltip("World size of the finest level's whole virtual texel grid. Divided by\n"
+                              "its 1024 texels, this is the finest shadow texel the clipmap can offer.");
+        if (ImGui::SliderFloat("Texels per pixel", &vsmSettings_.texelsPerPixel, 0.25f, 8.0f, "%.2f")) {
+            clampRuntimeSettings();
+            vsmPeakRequestedPages_ = 0;
+        }
+        ImGui::SetItemTooltip("Above 1 asks for coarser levels (fewer, larger pages); below 1 asks\n"
+                              "for finer ones. This is the single biggest lever on the page count.");
+        int stride = static_cast<int>(vsmSettings_.markBlockStride);
+        if (ImGui::SliderInt("Mark block stride (px)", &stride, 1, 32)) {
+            vsmSettings_.markBlockStride = static_cast<uint32_t>(stride);
+            clampRuntimeSettings();
+        }
+        ImGui::SetItemTooltip("Pixels per marking thread along each axis. Higher is cheaper and\n"
+                              "coarser: a block straddling a page seam only marks the page its\n"
+                              "centre lands in, which the coarser-level mark then covers.\n\n"
+                              "The pass takes at most 2x2 taps per block, so this genuinely changes\n"
+                              "the fetch count. Measured: 8 returns the same page count as 4 on both\n"
+                              "the default and geometry-stress scenes for roughly half the cost.");
+        ImGui::EndDisabled();
+
+        const renderer::VsmClipmapSettings clipmap = vsmClipmapSettings();
+        ImGui::Text("Pages: %upx, %ux%u per level, %u virtual max (pool would hold %u)",
+                    renderer::kVsmPageSize,
+                    renderer::kVsmPagesPerLevelAxis,
+                    renderer::kVsmPagesPerLevelAxis,
+                    renderer::kVsmMaxVirtualPages,
+                    renderer::kVsmPagePoolPageCount);
+        ImGui::Text("Finest texel: %.4f m   coarsest level spans %.1f m",
+                    static_cast<double>(renderer::vsmTexelWorldSize(clipmap, 0)),
+                    static_cast<double>(renderer::vsmPageWorldSize(clipmap, clipmap.levelCount - 1u)) *
+                        renderer::kVsmPagesPerLevelAxis);
+
+        if (!vsmPageRequestStatsValid_) {
+            ImGui::TextDisabled("Requested pages: waiting for the first readback.");
+        } else {
+            // The peak, not the average: an average hides exactly the frame that
+            // would overflow a pool sized from it.
+            ImGui::Text("Requested pages: %u  (peak %u since last change)",
+                        vsmPageRequestStats_.requestedPages,
+                        vsmPeakRequestedPages_);
+            ImGui::SetItemTooltip("Lags by the frames in flight -- this slot's bitmask is read back\n"
+                                  "the next time the slot comes round, the same latency the GPU\n"
+                                  "culling counters carry.");
+            ImGui::Text("Levels touched: %u..%u",
+                        vsmPageRequestStats_.lowestRequestedLevel,
+                        vsmPageRequestStats_.highestRequestedLevel);
+
+            std::string perLevel;
+            for (uint32_t level = 0; level < clipmap.levelCount; ++level) {
+                if (level > 0) {
+                    perLevel += "  ";
+                }
+                perLevel += "L" + std::to_string(level) + "=" +
+                            std::to_string(vsmPageRequestStats_.requestedPerLevel[level]);
+            }
+            ImGui::TextUnformatted(perLevel.c_str());
+
+            if (vsmPeakRequestedPages_ > renderer::kMaxVsmPagesPerFrame) {
+                // Not a failure: the per-frame budget bounds pages REDRAWN, and
+                // caching is what is meant to keep that far below the resident
+                // set. Surfaced because if it were ever close to the request
+                // count, the phase-2 budget would be the wrong shape.
+                ImGui::TextDisabled("Peak request exceeds the %u-page per-frame draw budget; caching has to "
+                                    "cover the difference.",
+                                    renderer::kMaxVsmPagesPerFrame);
+            }
+        }
+        ImGui::Text("Mark threads: %u", virtualShadowMap_.lastMarkThreadCount());
+
+        ImGui::BeginDisabled(!vsmSettings_.enableMarking || !virtualShadowMap_.pagePoolValid());
+        if (ImGui::Checkbox("Render pages into the pool", &vsmSettings_.enablePageRendering)) {
+            clampRuntimeSettings();
+        }
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip("Allocates a physical page per requested page and draws it. Still nothing\n"
+                              "samples the pool -- the cascades above remain the only directional shadow\n"
+                              "source -- so this is the page pass in isolation, which is what makes its\n"
+                              "cost measurable on its own.");
+
+        if (isVsmPageRenderingActive()) {
+            ImGui::Text("Addressable now: %u/%u",
+                        vsmResidencyStats_.addressablePages,
+                        vsmResidencyStats_.requestedPages);
+            ImGui::SetItemTooltip("Requested pages still inside this frame's window. The shortfall is the\n"
+                                  "cost of the readback latency under camera motion: a page that scrolled\n"
+                                  "out between being asked for and being allocated is not worth drawing.");
+            ImGui::Text("Resident: %u/%u   cached this frame: %u",
+                        vsmResidencyStats_.residentPages,
+                        renderer::kVsmPagePoolPageCount,
+                        vsmResidencyStats_.cachedPages);
+            ImGui::SetItemTooltip("Cached means the page already holds depth for exactly those absolute\n"
+                                  "coordinates. That number staying high while the camera moves is the\n"
+                                  "whole point of the page grid being absolute rather than camera-centred.");
+            ImGui::Text("Drawn this frame: %u/%u  (%llu since start)",
+                        vsmPageDrawsRecorded_,
+                        renderer::kMaxVsmPagesPerFrame,
+                        static_cast<unsigned long long>(vsmPageDrawsTotal_));
+            ImGui::SetItemTooltip("The cumulative count matters: a warmed-up clipmap draws nothing, so\n"
+                                  "\"0 this frame\" alone cannot tell a working cache from a page pass\n"
+                                  "that never ran.");
+            ImGui::Text("Over budget: %u   refused: %u   evicted: %u",
+                        vsmResidencyStats_.overBudgetPages,
+                        vsmResidencyStats_.refusedPages,
+                        vsmResidencyStats_.evictions);
+            ImGui::SetItemTooltip("Over budget: needed drawing but hit the per-frame page cap; they stay\n"
+                                  "allocated and are picked up next frame.\n"
+                                  "Refused: the allocator had nothing left to give, which means the pool\n"
+                                  "is genuinely too small.\n"
+                                  "Evicted: a page lost its space to another. Persistently non-zero with a\n"
+                                  "still camera would mean the working set does not fit.");
+            ImGui::Text("Casters over the per-page cap: %u", vsmPageCullOverflow_);
+            ImGui::SetItemTooltip("Counted, not silently dropped. Non-zero means a page had more than\n"
+                                  "%u casters and some of them are missing from its depth.",
+                                  renderer::kMaxVsmCastersPerPage);
+        } else if (!virtualShadowMap_.pagePoolValid()) {
+            ImGui::TextDisabled("Page pool unavailable.");
+        }
+
+        ImGui::BeginDisabled(!isVsmPageRenderingActive());
+        if (ImGui::Checkbox("Use for directional shadows", &vsmSettings_.enableShadows)) {
+            clampRuntimeSettings();
+        }
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip("Samples the page pool instead of the cascades. The cascades keep\n"
+                              "rendering underneath, so this is a one-click A/B and the fallback is\n"
+                              "always a frame away.\n\n"
+                              "The two are not blended: they disagree about texel size everywhere,\n"
+                              "so mixing them would show the disagreement as a seam rather than\n"
+                              "hide it. Bindless path only -- the legacy fallback shader still uses\n"
+                              "the cascades.");
+    }
+
     ImGui::SeparatorText("Punctual (spot/point)");
     if (!punctualShadows_.valid()) {
         ImGui::TextDisabled("Shadow atlas unavailable; point/spot lights do not cast.");

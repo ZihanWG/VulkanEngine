@@ -22,6 +22,7 @@ using ve::SsaoSettings;
 using ve::TaaSettings;
 using ve::SsrSettings;
 using ve::ToneMappingSettings;
+using ve::VsmSettings;
 
 namespace {
 
@@ -36,6 +37,7 @@ struct Settings {
     SsaoSettings ssao;
     FogSettings fog;
     CsmSettings csm;
+    VsmSettings vsm;
     LodSettings lod;
     GiSettings gi;
     DebugUiSettings debugUi;
@@ -43,7 +45,7 @@ struct Settings {
     void clamp()
     {
         clampRuntimeSettings(
-            renderScale, dynamicResolution, toneMapping, bloom, taa, ssr, ssao, fog, csm, lod, gi, debugUi);
+            renderScale, dynamicResolution, toneMapping, bloom, taa, ssr, ssao, fog, csm, vsm, lod, gi, debugUi);
     }
 };
 

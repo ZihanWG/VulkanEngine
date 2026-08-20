@@ -69,6 +69,18 @@ struct FrameConstants {
     // x = normal-offset bias as a fraction of the cascade's world extent,
     // y = cascade blend band as a fraction of each cascade's depth range.
     vec4 shadowQuality;
+    // --- virtual shadow maps ---
+    // Here rather than in the push block because sizeof(ve::PushConstants) is
+    // already exactly 128, the guaranteed maximum, with nothing spare.
+    mat4 vsmLightView;
+    // xy = page-table buffer device address, z = active clipmap levels,
+    // w != 0 uses the VSM lookup instead of the cascades.
+    uvec4 vsmPageTable;
+    // x = level 0 world extent, y = texels per pixel, z = ortho half depth
+    // range, w = one pool texel in pool UV.
+    vec4 vsmParams;
+    // xy = camera in light space, z = normal-offset bias, w = depth bias.
+    vec4 vsmCamera;
 };
 
 layout(buffer_reference, std430) readonly buffer FrameConstantsBuffer {

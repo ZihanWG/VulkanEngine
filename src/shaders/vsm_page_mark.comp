@@ -1,0 +1,139 @@
+#version 460
+
+// Virtual shadow map page marking.
+//
+// Works out which clipmap pages this frame's visible surfaces actually need, so
+// the page pass can render those and only those. The answer is a bitmask, one
+// bit per virtual page, atomicOr'd from every covered screen block.
+//
+// The depth it reads is the PREVIOUS frame's, because shadows have to be
+// rendered before the main pass and this renderer has no depth prepass. That is
+// the same previous-frame depth the Hi-Z occlusion test already trusts, read
+// through the same pyramid and paired with the view-projection stored when the
+// pyramid was built (params.depthViewProjectionInverse inverts exactly that
+// matrix). The cost is that the request set lags the camera by a frame; the
+// sampling side absorbs that by falling back to a coarser resident level rather
+// than by leaving a hole, which is possible only because clipmap levels nest.
+
+#include "virtual_shadow_map.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Mip 0 of the Hi-Z pyramid, which is a 1:1 copy of the main depth buffer (its
+// max-reduction footprint is a single texel at that level). Mip 0 rather than a
+// reduced level on purpose: the deeper mips store the MAXIMUM depth of their
+// footprint, and a farther depth reconstructs to a farther surface, which
+// selects a COARSER level than the nearest surface in that footprint actually
+// needs. Under-requesting resolution is the one error this pass must not make,
+// so the block minimum is taken from exact depths instead.
+layout(set = 0, binding = 0) uniform sampler2D depthPyramid;
+
+layout(set = 0, binding = 1, std430) buffer VsmPageRequestBuffer {
+    uint words[];
+} pageRequests;
+
+layout(set = 0, binding = 2, std430) readonly buffer VsmMarkParamsBuffer {
+    // Inverse of the view-projection the depth pyramid was built with.
+    mat4 depthViewProjectionInverse;
+    // World -> light space. Translation-free: the page grid is absolute.
+    mat4 lightView;
+    // xyz = camera position that produced the depth, w = projScaleY.
+    vec4 depthCameraPosition;
+    // xy = THIS frame's camera in light space (which decides which pages are
+    // addressable), z = level0Extent, w = texelsPerPixel.
+    vec4 clipmapParams;
+    // x = active level count, y = block stride in pixels, z = depth width,
+    // w = depth height. Sizes are the written sub-rect, not the allocation.
+    uvec4 sizesAndFlags;
+} params;
+
+// Marks a page if it is addressable this frame. Returns nothing: a page outside
+// the window has no slot, which is exactly the condition the sampling path turns
+// into a coarser-level fallback.
+void markPage(uint level, vec2 lightSpaceXy, float level0Extent, vec2 cameraLightSpaceXy)
+{
+    ivec2 absolutePage = vsmAbsolutePageCoords(level0Extent, level, lightSpaceXy);
+    ivec2 windowOrigin = vsmWindowOrigin(level0Extent, level, cameraLightSpaceXy);
+    if (!vsmPageInWindow(absolutePage, windowOrigin)) {
+        return;
+    }
+
+    uint pageId = vsmPageId(level, vsmSlotIndex(absolutePage));
+    atomicOr(pageRequests.words[vsmRequestWordIndex(pageId)], vsmRequestBitMask(pageId));
+}
+
+void main()
+{
+    uint levelCount = max(params.sizesAndFlags.x, 1u);
+    uint stride = max(params.sizesAndFlags.y, 1u);
+    uvec2 depthSize = params.sizesAndFlags.zw;
+    if (depthSize.x == 0u || depthSize.y == 0u) {
+        return;
+    }
+
+    uvec2 blockOrigin = gl_GlobalInvocationID.xy * stride;
+    if (blockOrigin.x >= depthSize.x || blockOrigin.y >= depthSize.y) {
+        return;
+    }
+
+    // Nearest surface in the block, from at most kMarkTapsPerAxis^2 taps spread
+    // across it rather than every pixel.
+    //
+    // Reading the whole block makes the pass cost proportional to the frame's
+    // pixel count no matter what the stride is, which is measurably most of what
+    // it costs. Capping the taps decouples the two. It weakens "the nearest
+    // surface in this block" to "the nearest of a few samples", which can miss a
+    // thin nearby surface and pick a level one coarser -- the same graceful
+    // degradation an unresident page already falls back to, and the direction
+    // that loses resolution rather than correctness.
+    const uint kMarkTapsPerAxis = 2u;
+    float nearestDepth = 1.0;
+    uvec2 blockEnd = min(blockOrigin + uvec2(stride), depthSize);
+    uvec2 blockSize = max(blockEnd - blockOrigin, uvec2(1u));
+    uvec2 tapStep = max(blockSize / kMarkTapsPerAxis, uvec2(1u));
+    for (uint y = blockOrigin.y; y < blockEnd.y; y += tapStep.y) {
+        for (uint x = blockOrigin.x; x < blockEnd.x; x += tapStep.x) {
+            nearestDepth = min(nearestDepth, texelFetch(depthPyramid, ivec2(x, y), 0).r);
+        }
+    }
+
+    // Cleared depth: nothing was drawn anywhere in the block, so it receives no
+    // shadow and asks for no page.
+    if (!(nearestDepth < 1.0) || !(nearestDepth > 0.0)) {
+        return;
+    }
+
+    // Reconstruct through the matrix the depth was rendered with. The block
+    // centre stands in for the whole block; at the level this depth selects, a
+    // page is far wider than a block, so the centre lands in the same page as
+    // its neighbours except at a page seam -- which the coarser-level mark below
+    // covers.
+    vec2 blockCentre = (vec2(blockOrigin) + vec2(blockEnd)) * 0.5;
+    vec2 ndcXy = blockCentre / vec2(depthSize) * 2.0 - 1.0;
+    vec4 worldPosition = params.depthViewProjectionInverse * vec4(ndcXy, nearestDepth, 1.0);
+    if (!(abs(worldPosition.w) > 1.0e-6)) {
+        return;
+    }
+    vec3 world = worldPosition.xyz / worldPosition.w;
+    if (any(isnan(world)) || any(isinf(world))) {
+        return;
+    }
+
+    float level0Extent = params.clipmapParams.z;
+    float texelsPerPixel = params.clipmapParams.w;
+    vec2 cameraLightSpaceXy = params.clipmapParams.xy;
+
+    float distanceToCamera = length(world - params.depthCameraPosition.xyz);
+    uint level = vsmSelectLevel(level0Extent, texelsPerPixel, levelCount, distanceToCamera, params.depthCameraPosition.w);
+
+    vec2 lightSpaceXy = (params.lightView * vec4(world, 1.0)).xy;
+    markPage(level, lightSpaceXy, level0Extent, cameraLightSpaceXy);
+
+    // One coarser level as well. This is what makes the frame of request latency
+    // survivable: if a fine page has not been rendered yet, the sampler walks up
+    // until it finds a resident level, and that level is only guaranteed to be
+    // there because it was requested here.
+    if (level + 1u < levelCount) {
+        markPage(level + 1u, lightSpaceXy, level0Extent, cameraLightSpaceXy);
+    }
+}

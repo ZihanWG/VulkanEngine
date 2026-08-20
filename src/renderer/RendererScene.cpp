@@ -159,6 +159,10 @@ void Renderer::resetSceneState()
     // here costs one redraw per scene switch.
     invalidatePunctualShadowCache();
     invalidateCascadeShadowCache();
+    // The page grid is absolute, so a page's identity survives a scene switch
+    // even though its contents cannot -- which is exactly the case the identity
+    // check cannot catch. Dropped here for the same reason as the two above.
+    virtualShadowMap_.invalidateResidency();
 
     importedMeshes_.clear();
     importedMaterials_.clear();

@@ -10,23 +10,35 @@ _Detailed per-frame pass ordering and the descriptor-set layout contract, moved 
 4. Build CPU fallback shadow draw items/batches for each cascade, and build main-pass mesh-compatible draw batches for GPU culling or the CPU fallback.
 5. Upload per-object MVP/model/light/material data into the current frame's Buffer Device Address object-data buffer.
 6. Begin `RenderGraph` recording, import swapchain/depth/shadow resources, register transient scene/bloom targets, and declare pass read/write usage.
-7. Reset shadow batch counts and shadow indirect commands, dispatch **one** GPU shadow cull for all cascades (an object survives if any cascade's light frustum wants it; the planes come from the frame-params buffer, since four frusta do not fit in a push-constant block), and barrier its writes for indirect/count reads.
-8. Let the graph transition the cascaded shadow-map array, then for each cascade begin depth-only Dynamic Rendering against that layer's view and replay the shared caster list. With `enableLayeredCascades` the loop collapses into one multiview pass over the whole array view, and the shader reads `gl_ViewIndex` instead of a pushed cascade index -- correct but measured slower under MoltenVK, so it is off by default.
-9. If any punctual light was assigned an atlas tile, run `PunctualShadowAtlasPass`: let the graph transition the punctual shadow atlas, open one depth-only Dynamic Rendering scope over the whole atlas, and draw each slot's casters under that slot's viewport/scissor.
-10. Reset the main-pass batch visible-count buffer, dispatch the camera-frustum compute culling pass, optionally sample the previous completed Hi-Z depth pyramid for conservative occlusion, manually barrier visible counts for the immediate readback copy, and let the graph barrier culling outputs for later indirect/count reads in `MainHDRPass`.
-11. Let the graph transition the HDR scene color image, cascaded shadow map, punctual shadow atlas, and main depth image for `MainHDRPass`.
-12. Begin `MainHDRPass`, draw the skybox, bind global and bindless material descriptors when available, and issue indirect indexed mesh draws into `sceneColor_`.
-13. Run `DepthPyramidPass` to sample the stored normal-Z main depth image and write the max-depth Hi-Z pyramid for later-frame culling.
-14. If TAA is enabled, run `TAAResolvePass` to resolve jittered `sceneColor_` into the current HDR history target; otherwise keep `sceneColor_` as the active post-process source.
-15. Run the legacy bloom extract/blur fallback into `BloomPong`.
-16. Run the mip-chain bloom downsample passes at 1/2, 1/4, 1/8, and 1/16 resolution when practical, then progressively upsample into the final mip-chain bloom target.
-17. Run `LuminancePass` to reduce log luminance from the active HDR scene source into per-frame GPU storage.
-18. Run `HistogramExposurePass` to bin HDR scene luminance, reduce the selected exposure mode into the GPU exposure state buffer, manually preserve host readback visibility, and let the graph make the exposure buffer visible to `CompositePass`.
-19. Run `CompositePass` to combine active HDR scene color + selected bloom * intensity, apply manual or GPU exposure, apply Reinhard or ACES tone mapping, and write the final color to the swapchain. This is where a reduced render scale is upscaled: every step above runs at the internal render extent, and the composite is the first pass whose viewport is the swapchain (see [render_scale.md](render_scale.md)).
-20. If a portfolio screenshot was requested, transition the composited swapchain image to transfer source, copy it into a per-frame readback buffer, then return it to color-attachment layout.
-21. Run `ImGuiPass` to load the composited swapchain image as a color attachment and draw the debug UI overlay.
-22. Let the graph transition the swapchain image to present, submit with `vkQueueSubmit2`, and present.
-23. Recreate the swapchain, post-process images, TAA history, depth pyramid resources, and ImGui swapchain-dependent backend state if presentation reports an out-of-date or resized surface.
+7. If virtual-shadow-map page marking is enabled, record `VsmPageMarkPass`: a
+   compute dispatch reading the **previous** frame's Hi-Z depth pyramid, paired
+   with the view-projection stored when that pyramid was built, which works out
+   which clipmap pages this frame's visible surfaces would need and atomicOr's a
+   page-request bitmask copied to a host-readable buffer. Recorded first because
+   it reads what the previous frame left behind, and it changes nothing that is
+   drawn -- see [virtual_shadow_maps.md](virtual_shadow_maps.md). Off by default.
+   With page rendering also enabled, this is followed by `VsmPageCull` (one
+   dispatch over every (dirty page, draw item) pair, compacting per-page indirect
+   commands) and `VsmPagePass` (one rendering scope over the whole page pool, with
+   a clear rect, a viewport, a scissor and one indirect draw per dirty page). The
+   pool is still sampled by nothing.
+8. Reset shadow batch counts and shadow indirect commands, dispatch **one** GPU shadow cull for all cascades (an object survives if any cascade's light frustum wants it; the planes come from the frame-params buffer, since four frusta do not fit in a push-constant block), and barrier its writes for indirect/count reads.
+9. Let the graph transition the cascaded shadow-map array, then for each cascade begin depth-only Dynamic Rendering against that layer's view and replay the shared caster list. With `enableLayeredCascades` the loop collapses into one multiview pass over the whole array view, and the shader reads `gl_ViewIndex` instead of a pushed cascade index -- correct but measured slower under MoltenVK, so it is off by default.
+10. If any punctual light was assigned an atlas tile, run `PunctualShadowAtlasPass`: let the graph transition the punctual shadow atlas, open one depth-only Dynamic Rendering scope over the whole atlas, and draw each slot's casters under that slot's viewport/scissor.
+11. Reset the main-pass batch visible-count buffer, dispatch the camera-frustum compute culling pass, optionally sample the previous completed Hi-Z depth pyramid for conservative occlusion, manually barrier visible counts for the immediate readback copy, and let the graph barrier culling outputs for later indirect/count reads in `MainHDRPass`.
+12. Let the graph transition the HDR scene color image, cascaded shadow map, punctual shadow atlas, and main depth image for `MainHDRPass`.
+13. Begin `MainHDRPass`, draw the skybox, bind global and bindless material descriptors when available, and issue indirect indexed mesh draws into `sceneColor_`.
+14. Run `DepthPyramidPass` to sample the stored normal-Z main depth image and write the max-depth Hi-Z pyramid for later-frame culling.
+15. If TAA is enabled, run `TAAResolvePass` to resolve jittered `sceneColor_` into the current HDR history target; otherwise keep `sceneColor_` as the active post-process source.
+16. Run the legacy bloom extract/blur fallback into `BloomPong`.
+17. Run the mip-chain bloom downsample passes at 1/2, 1/4, 1/8, and 1/16 resolution when practical, then progressively upsample into the final mip-chain bloom target.
+18. Run `LuminancePass` to reduce log luminance from the active HDR scene source into per-frame GPU storage.
+19. Run `HistogramExposurePass` to bin HDR scene luminance, reduce the selected exposure mode into the GPU exposure state buffer, manually preserve host readback visibility, and let the graph make the exposure buffer visible to `CompositePass`.
+20. Run `CompositePass` to combine active HDR scene color + selected bloom * intensity, apply manual or GPU exposure, apply Reinhard or ACES tone mapping, and write the final color to the swapchain. This is where a reduced render scale is upscaled: every step above runs at the internal render extent, and the composite is the first pass whose viewport is the swapchain (see [render_scale.md](render_scale.md)).
+21. If a portfolio screenshot was requested, transition the composited swapchain image to transfer source, copy it into a per-frame readback buffer, then return it to color-attachment layout.
+22. Run `ImGuiPass` to load the composited swapchain image as a color attachment and draw the debug UI overlay.
+23. Let the graph transition the swapchain image to present, submit with `vkQueueSubmit2`, and present.
+24. Recreate the swapchain, post-process images, TAA history, depth pyramid resources, and ImGui swapchain-dependent backend state if presentation reports an out-of-date or resized surface.
 
 ## Current Descriptor Contract
 
@@ -37,6 +49,12 @@ Bindless main-pass global resource descriptor set 0:
 - binding 5 = prefiltered specular cubemap combined image sampler
 - binding 6 = BRDF LUT combined image sampler
 - binding 7 = punctual (spot/point) shadow atlas combined image sampler, sampled as `sampler2D`
+- binding 13 = cascaded shadow map compare sampler, sampled as `sampler2DArrayShadow`
+- binding 14 = virtual shadow map page pool, sampled as `sampler2DShadow` through
+  the page table rather than with a direct UV; shares binding 13's immutable
+  compare sampler, and is always bound (the cascade array's *layer 0* view stands
+  in when the pool does not exist, because an array view under a non-array
+  sampler is VUID-vkCmdDrawIndexed-viewType-07752)
 
 Bindless material texture descriptor set 1:
 
@@ -91,5 +109,24 @@ Shadow GPU culling compute descriptor set:
 - binding 2 = per-frame shadow batch visible draw count storage buffer
 
 Object and material scalar data still use Buffer Device Address plus a vertex-stage push constant. On the bindless main multi-draw path and the shadow indirect path, the pushed address is the base of the current frame's `ObjectFrameData` array, and indirect `firstInstance` selects the object-data entry. The shadow pass also pushes the current cascade index. Fallback paths still push one per-draw object-data address with `firstInstance = 0`.
+
+Virtual shadow map page-marking compute descriptor set (see
+[virtual_shadow_maps.md](virtual_shadow_maps.md)):
+
+- binding 0 = Hi-Z depth pyramid combined image sampler (mip 0 is read)
+- binding 1 = page-request bitmask storage buffer
+- binding 2 = per-frame marking parameter storage buffer
+
+Virtual shadow map page-cull compute descriptor set:
+
+- binding 0 = shared per-frame cull input storage buffer
+- binding 1 = per-page compacted indirect command storage buffer
+- binding 2 = per-page visible counts plus a trailing over-cap counter
+- binding 3 = six frustum planes per dirty page
+- binding 4 = per-draw-item caster flags
+
+The virtual shadow page pass reuses `shadow_punctual.vert` and its push block:
+one depth-only draw of a rect with that rect's own projection pushed is the same
+operation for an atlas tile and for a clipmap page.
 
 ImGui uses its own descriptor pool and backend-owned descriptor layouts. It does not change the material, bindless texture, post-process, shadow, IBL, BRDF LUT, or ObjectFrameData descriptor contracts above.
