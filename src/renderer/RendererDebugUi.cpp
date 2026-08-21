@@ -905,6 +905,10 @@ void Renderer::drawShadowsDebugUi()
             ImGui::TextDisabled("Page pool unavailable.");
         }
 
+        if (isVsmPageRenderingActive()) {
+            drawVsmPageResidency();
+        }
+
         ImGui::BeginDisabled(!isVsmPageRenderingActive());
         if (ImGui::Checkbox("Use for directional shadows", &vsmSettings_.enableShadows)) {
             clampRuntimeSettings();
@@ -2228,6 +2232,126 @@ void Renderer::drawTexturePreview(const rhi::VulkanTexture& texture, float size)
     }
 
     ImGui::Image((ImTextureID)descriptorSet, imageSize);
+}
+
+// A grid per clipmap level showing what the sampler will actually find there.
+//
+// The counters above say how many pages are resident and how many were cached;
+// they cannot say WHERE, and "where" is the whole question when the camera
+// scrolls the window or a caster dirties a footprint. This reads the same page
+// table the GPU reads, so it cannot drift from what is really being sampled.
+void Renderer::drawVsmPageResidency()
+{
+    if (!ImGui::TreeNodeEx("Page residency", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+
+    const renderer::VsmClipmapSettings clipmap = vsmClipmapSettings();
+    const std::span<const renderer::VsmPageTableEntry> pageTable = virtualShadowMap_.pageTable();
+
+    int level = std::clamp(static_cast<int>(vsmDebugLevel_), 0, static_cast<int>(clipmap.levelCount) - 1);
+    if (ImGui::SliderInt("Level", &level, 0, static_cast<int>(clipmap.levelCount) - 1)) {
+        vsmDebugLevel_ = static_cast<uint32_t>(level);
+    }
+    ImGui::SetItemTooltip("Level 0 is the finest. A level with nothing resident is normal: the\n"
+                          "coverage bound rules out levels whose window cannot reach the geometry.");
+
+    const glm::mat4 lightView = renderer::vsmLightView(directionalLightSettings_.direction);
+    const glm::vec2 cameraLightSpaceXy = glm::vec2(lightView * glm::vec4(frameCameraPosition_, 1.0f));
+    const glm::ivec2 windowOrigin =
+        renderer::vsmWindowOrigin(clipmap, static_cast<uint32_t>(level), cameraLightSpaceXy);
+    const glm::ivec2 cameraPage =
+        renderer::vsmAbsolutePageCoords(clipmap, static_cast<uint32_t>(level), cameraLightSpaceXy);
+
+    // Colours match the states the residency counters name, so the grid and the
+    // numbers above can be read against each other.
+    const ImU32 emptyColor = IM_COL32(38, 40, 48, 255);
+    const ImU32 allocatedColor = IM_COL32(60, 110, 200, 255);
+    const ImU32 renderedColor = IM_COL32(70, 170, 90, 255);
+    const ImU32 gridColor = IM_COL32(20, 20, 24, 255);
+    const ImU32 cameraColor = IM_COL32(240, 200, 60, 255);
+
+    const float cellSize = std::clamp(14.0f * debugUiSettings_.renderTargetPreviewScale, 6.0f, 28.0f);
+    const float gridSize = cellSize * static_cast<float>(renderer::kVsmPagesPerLevelAxis);
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+
+    uint32_t residentHere = 0;
+    uint32_t renderedHere = 0;
+    for (uint32_t y = 0; y < renderer::kVsmPagesPerLevelAxis; ++y) {
+        for (uint32_t x = 0; x < renderer::kVsmPagesPerLevelAxis; ++x) {
+            const glm::ivec2 absolutePage =
+                windowOrigin + glm::ivec2{static_cast<int32_t>(x), static_cast<int32_t>(y)};
+            const uint32_t pageId =
+                renderer::vsmPageId(static_cast<uint32_t>(level), renderer::vsmSlotIndex(absolutePage));
+
+            ImU32 color = emptyColor;
+            if (pageId < pageTable.size()) {
+                const renderer::VsmPageTableEntry& entry = pageTable[pageId];
+                // The identity check, exactly as the sampler does it: a slot can
+                // hold a page that scrolled away, and that page is not usable
+                // here even though it is resident.
+                const bool matchesIdentity =
+                    entry.physicalPage != renderer::kVsmInvalidPhysicalPage &&
+                    entry.absoluteX == absolutePage.x && entry.absoluteY == absolutePage.y;
+                if (matchesIdentity) {
+                    ++residentHere;
+                    if (entry.rendered != 0) {
+                        ++renderedHere;
+                        color = renderedColor;
+                    } else {
+                        color = allocatedColor;
+                    }
+                }
+            }
+
+            // Rows are drawn top-down while light-space Y grows upward, so the
+            // grid is flipped to read the way the world does.
+            const float cellY =
+                origin.y + static_cast<float>(renderer::kVsmPagesPerLevelAxis - 1u - y) * cellSize;
+            const ImVec2 min{origin.x + static_cast<float>(x) * cellSize, cellY};
+            const ImVec2 max{min.x + cellSize - 1.0f, min.y + cellSize - 1.0f};
+            drawList->AddRectFilled(min, max, color);
+            if (absolutePage == cameraPage) {
+                drawList->AddRect(min, max, cameraColor, 0.0f, 0, 2.0f);
+            }
+        }
+    }
+    drawList->AddRect(origin, ImVec2{origin.x + gridSize, origin.y + gridSize}, gridColor);
+    ImGui::Dummy(ImVec2{gridSize, gridSize});
+
+    ImGui::Text("Level %d: %u resident, %u drawn   page = %.2f m",
+                level,
+                residentHere,
+                renderedHere,
+                static_cast<double>(renderer::vsmPageWorldSize(clipmap, static_cast<uint32_t>(level))));
+    ImGui::TextDisabled("green = holds depth   blue = allocated, not drawn yet   yellow = camera");
+    ImGui::SetItemTooltip("Blue is not an error: allocation and drawing are separate steps, so a\n"
+                          "page can own space for a frame before the page pass fills it.\n\n"
+                          "A slot holding a page that scrolled away reads as empty here, because\n"
+                          "that is what the sampler's identity check makes of it.");
+
+    if (virtualShadowMap_.pagePoolValid() && ImGui::TreeNode("Pool depth")) {
+        const VkExtent2D poolExtent = virtualShadowMap_.pagePool().extent();
+        // Unlike the punctual atlas, this preview is worth trusting: pages are
+        // rendered with an ORTHOGRAPHIC projection, so their depth is linear and
+        // does not pile up against 1.0 the way perspective depth does.
+        drawRenderTargetPreview(virtualShadowMap_.pagePool().imageView(),
+                                virtualShadowMap_.pagePool().sampler(),
+                                VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                                poolExtent.width,
+                                poolExtent.height,
+                                200.0f * std::clamp(debugUiSettings_.renderTargetPreviewScale, 0.25f, 2.0f),
+                                1.0f);
+        ImGui::TextDisabled("Physical pages, %ux%u of %upx. Position in here is allocation order,",
+                            renderer::kVsmPagePoolPagesPerAxis,
+                            renderer::kVsmPagePoolPagesPerAxis,
+                            renderer::kVsmPageSize);
+        ImGui::TextDisabled("not world position -- the grid above is the spatial view.");
+        ImGui::TreePop();
+    }
+
+    ImGui::TreePop();
 }
 
 void Renderer::drawRenderTargetPreview(VkImageView imageView,

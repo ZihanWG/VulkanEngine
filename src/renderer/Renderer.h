@@ -665,6 +665,9 @@ private:
     // drawRenderTargetDebugUi() sections (see RendererDebugUi.cpp).
     void drawRenderTargetMetadataTable();
     void drawRenderTargetPreviews();
+    // Per-level grid of what the sampler will find, read from the same page
+    // table the GPU reads.
+    void drawVsmPageResidency();
     void drawMaterialDebugSection(const renderer::Material* material,
                                   bool includeTextureSummary,
                                   renderer::Material* editableMaterial = nullptr);
@@ -905,6 +908,7 @@ private:
     // Per-object content keys for this frame, accumulated over the draw items.
     std::vector<renderer::ShadowCacheKey> vsmCasterKeys_;
     uint32_t vsmCastersChangedThisFrame_ = 0;
+    uint32_t vsmDebugLevel_ = 0;
     // Reused per frame so the caster-flag upload does not allocate.
     std::vector<uint32_t> vsmCasterFlags_;
     std::vector<VkClearRect> vsmPageClearRects_;

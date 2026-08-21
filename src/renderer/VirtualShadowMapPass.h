@@ -223,6 +223,12 @@ public:
     void setPagePoolFullClearDone() { pagePoolNeedsFullClear_ = false; }
     [[nodiscard]] VkDeviceAddress pageTableAddress(uint32_t frameIndex) const;
 
+    // The page table as the allocator holds it, for the residency overlay. CPU
+    // side: it is the same data the GPU reads, so the overlay shows what the
+    // sampler will actually find rather than a separate bookkeeping copy that
+    // could drift from it.
+    [[nodiscard]] std::span<const VsmPageTableEntry> pageTable() const { return allocator_.entries(); }
+
     // --- per-page caster culling ------------------------------------------
 
     // (Re)creates the cull pipeline and its per-frame buffers. Separate again
