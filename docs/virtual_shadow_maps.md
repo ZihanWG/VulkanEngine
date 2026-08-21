@@ -134,6 +134,22 @@ Three details that are load-bearing:
 Blended geometry is skipped: the page cull filters it out before anything is
 drawn, so a change to it cannot change any page.
 
+### What the key deliberately leaves out
+
+Each omission is only safe because the feature it would cover does not exist
+here yet, and each becomes a stale-shadow bug on the day it lands:
+
+| omitted | why it is safe today | add it when |
+| --- | --- | --- |
+| `alphaCutoff` | the page pass has no alpha-tested pipeline, so cutout casters throw a solid silhouette regardless | a masked page pipeline lands |
+| cull-selected LOD level | the page cull emits no level; pages always draw authored geometry | page LOD lands |
+| raster depth bias | a compile-time constant in `ShadowSettings`, no UI, cannot move | it becomes a setting |
+
+The cascades hash all three, which is why `CascadeShadowCaster` looks richer than
+the per-object key here. The light direction, the clipmap settings and a scene
+switch are covered, but elsewhere — the first two by `updateResidency` hashing
+its own inputs, the third by `resetSceneState`.
+
 ## Rendering the dirty pages
 
 `VsmPagePass` is shaped exactly like the punctual shadow atlas pass, because it

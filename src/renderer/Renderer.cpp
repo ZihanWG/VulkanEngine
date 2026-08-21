@@ -1911,6 +1911,26 @@ void Renderer::updateVsmCasterInvalidation()
     // Hashing the model matrix rather than the world bounds is deliberate:
     // rotating a symmetric object leaves its AABB identical while changing every
     // shadow it casts.
+    //
+    // What this key deliberately omits, and why -- the list matters because each
+    // omission becomes a stale-shadow bug the moment the feature it depends on
+    // lands, and a stale shadow shows up far from its cause:
+    //
+    //   * alphaCutoff. CascadeShadowCaster hashes it because the cascades have an
+    //     alpha-tested pipeline and the material inspector can edit it live. The
+    //     VSM page pass has no masked variant, so cutout casters throw a solid
+    //     silhouette and the cutoff changes nothing here. ADD IT with that pipeline.
+    //   * The cull-selected LOD level. Same shape: the page cull emits no level,
+    //     so pages always draw the authored geometry. ADD IT with page LOD.
+    //   * The raster depth bias. The cascades hash it; here it is a compile-time
+    //     constant in ShadowSettings with no UI, so it cannot move. ADD IT if it
+    //     ever becomes a setting, because it is baked into the page pipeline and
+    //     a change would leave every cached page rendered with the old value.
+    //
+    // Covered elsewhere rather than here: the light direction and the clipmap
+    // settings (hashed by updateResidency, which drops residency wholesale), and
+    // a scene switch (resetSceneState clears these keys, because mesh and
+    // material are hashed by pointer and only unique within one scene).
     vsmCasterKeys_.assign(objectCount, renderer::ShadowCacheKey{});
     for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
         vsmCasterKeys_[objectIndex].reset();
