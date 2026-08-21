@@ -688,6 +688,7 @@ void Renderer::createShadowPipeline()
     createMaskedShadowPipeline(binding, attributes);
     createPunctualShadowPipeline(binding, attributes);
     createVsmPagePipeline(binding, attributes);
+    createVsmMaskedPagePipeline(binding, attributes);
 }
 
 void Renderer::createPunctualShadowPipeline(const VkVertexInputBindingDescription& binding,
@@ -765,6 +766,53 @@ void Renderer::createVsmPagePipeline(const VkVertexInputBindingDescription& bind
         context_.vkDevice(), vsmPagePipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "VsmPagePipeline");
     rhi::debug::setObjectName(
         context_.vkDevice(), vsmPagePipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "VsmPagePipelineLayout");
+}
+
+void Renderer::createVsmMaskedPagePipeline(const VkVertexInputBindingDescription& binding,
+                                           const std::array<VkVertexInputAttributeDescription, 5>& attributes)
+{
+    // Same precondition as the cascades' masked variant: the alpha test needs the
+    // bindless base-color array. Without it the page cull routes cutout casters
+    // into the opaque bucket instead, and they throw a solid silhouette.
+    if (!virtualShadowMap_.pagePoolValid() || !isBindlessMaterialTextureActive() ||
+        bindlessTextureHeap_.descriptorSetLayout() == VK_NULL_HANDLE) {
+        vsmMaskedPagePipeline_.reset();
+        return;
+    }
+
+    // Position (location 0) drives the depth write; UV (location 2) feeds the
+    // cutout sample. The attributes between them are skipped, so this cannot be
+    // a prefix subspan of the shared list.
+    const std::array<VkVertexInputAttributeDescription, 2> maskedAttributes{attributes[0], attributes[2]};
+    const VkDescriptorSetLayout bindlessLayout = bindlessTextureHeap_.descriptorSetLayout();
+    const VkPushConstantRange pushConstantRange{
+        VK_SHADER_STAGE_VERTEX_BIT, 0, static_cast<uint32_t>(sizeof(PunctualShadowPushConstants))};
+
+    rhi::VulkanPipelineCreateInfo info{};
+    info.vertexShaderPath = shaderPath("shadow_vsm_masked.vert.spv");
+    info.fragmentShaderPath = shaderPath("shadow_masked.frag.spv");
+    info.depthFormat = virtualShadowMap_.pagePool().format();
+    info.vertexBindings = std::span<const VkVertexInputBindingDescription>(&binding, 1);
+    info.vertexAttributes =
+        std::span<const VkVertexInputAttributeDescription>(maskedAttributes.data(), maskedAttributes.size());
+    info.descriptorSetLayouts = std::span<const VkDescriptorSetLayout>(&bindlessLayout, 1);
+    info.pushConstantRanges = std::span<const VkPushConstantRange>(&pushConstantRange, 1);
+    info.enableColorAttachment = false;
+    info.enableDepth = true;
+    info.depthWriteEnable = true;
+    info.enableDepthBias = true;
+    info.cullMode = VK_CULL_MODE_NONE;
+    info.depthBiasConstantFactor = shadowSettings_.rasterDepthBiasConstantFactor;
+    info.depthBiasSlopeFactor = shadowSettings_.rasterDepthBiasSlopeFactor;
+    info.pipelineCache = context_.pipelineCache();
+
+    vsmMaskedPagePipeline_.create(context_.vkDevice(), info);
+    rhi::debug::setObjectName(
+        context_.vkDevice(), vsmMaskedPagePipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "VsmMaskedPagePipeline");
+    rhi::debug::setObjectName(context_.vkDevice(),
+                              vsmMaskedPagePipeline_.layout(),
+                              VK_OBJECT_TYPE_PIPELINE_LAYOUT,
+                              "VsmMaskedPagePipelineLayout");
 }
 
 void Renderer::createMaskedShadowPipeline(const VkVertexInputBindingDescription& binding,

@@ -46,9 +46,10 @@ layout(set = 0, binding = 1, std430) writeonly buffer IndirectOutputBuffer {
     DrawIndexedIndirectCommand commands[];
 } indirectOutput;
 
-// Per page, and one trailing counter the renderer reads back to find out how
-// much geometry the per-page command cap refused. Counting rather than silently
-// dropping is the same contract FrameCapacity uses for over-cap draw items.
+// One counter per (page, bucket), and one trailing counter the renderer reads
+// back to find out how much geometry the per-page command cap refused. Counting
+// rather than silently dropping is the same contract FrameCapacity uses for
+// over-cap draw items.
 layout(set = 0, binding = 2, std430) buffer PageVisibleCountBuffer {
     uint visibleCounts[];
 } pageVisibleCounts;
@@ -59,20 +60,27 @@ layout(set = 0, binding = 3, std430) readonly buffer PageFrustumBuffer {
     vec4 planes[];
 } pageFrustums;
 
-// 1 for draw items that cast, 0 otherwise. The shared cull input carries no
-// bucket, and an indirect per-page draw cannot skip blended geometry at replay
-// time the way the CSM path can -- by then the commands are compacted. So the
-// filter has to happen here, or alpha-blended geometry throws opaque shadows.
+// Per draw item: 0 = does not cast, 1 = opaque caster, 2 = alpha-tested caster.
+//
+// The shared cull input carries no bucket, and an indirect per-page draw cannot
+// skip or re-pipeline geometry at replay time the way the CSM path can -- by
+// then the commands are compacted. So both the "does this cast" filter and the
+// opaque/cutout split have to happen here, or alpha-blended geometry throws
+// opaque shadows and perforated geometry throws solid ones.
 layout(set = 0, binding = 4, std430) readonly buffer CasterFlagBuffer {
     uint flags[];
 } casterFlags;
 
+const uint kCasterNone = 0u;
+const uint kCasterOpaque = 1u;
+const uint kCasterMasked = 2u;
+
 layout(push_constant) uniform VsmPageCullPushConstants {
     uint pageCount;
     uint drawItemCount;
-    // Stride between pages in the output buffer, in commands. Constant rather
-    // than drawItemCount so a frame with fewer draw items still writes where the
-    // draw side expects to read.
+    // Stride between (page, bucket) regions in the output buffer, in commands.
+    // Constant rather than drawItemCount so a frame with fewer draw items still
+    // writes where the draw side expects to read.
     uint pageCommandStride;
     // Index of the trailing over-cap counter in pageVisibleCounts.
     uint overflowCounterIndex;
@@ -99,9 +107,11 @@ void main()
         return;
     }
 
-    if (casterFlags.flags[item] == 0u) {
+    uint casterKind = casterFlags.flags[item];
+    if (casterKind == kCasterNone) {
         return;
     }
+    uint bucket = casterKind == kCasterMasked ? 1u : 0u;
 
     GpuCullDrawItem drawItem = cullInput.drawItems[item];
     if (drawItem.indexCount == 0u) {
@@ -115,10 +125,11 @@ void main()
         }
     }
 
-    // Compact into this page's region. The order within a page is whatever the
-    // atomics produce, which is fine for a depth-only pass: every surviving
-    // caster writes depth and the result is order-independent.
-    uint localIndex = atomicAdd(pageVisibleCounts.visibleCounts[page], 1u);
+    // Compact into this (page, bucket) region. The order within a region is
+    // whatever the atomics produce, which is fine for a depth-only pass: every
+    // surviving caster writes depth and the result is order-independent.
+    uint regionIndex = page * 2u + bucket;
+    uint localIndex = atomicAdd(pageVisibleCounts.visibleCounts[regionIndex], 1u);
     if (localIndex >= pc.pageCommandStride) {
         // Over the per-page cap. The count above keeps climbing, so the renderer
         // can read back what the cap actually refused rather than reporting a
@@ -137,5 +148,5 @@ void main()
     // in: this path draws the authored geometry, see docs/virtual_shadow_maps.md.
     command.firstInstance = drawItem.objectFrameDataIndex;
 
-    indirectOutput.commands[page * pc.pageCommandStride + localIndex] = command;
+    indirectOutput.commands[regionIndex * pc.pageCommandStride + localIndex] = command;
 }

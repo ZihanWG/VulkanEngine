@@ -1916,12 +1916,13 @@ void Renderer::updateVsmCasterInvalidation()
     // omission becomes a stale-shadow bug the moment the feature it depends on
     // lands, and a stale shadow shows up far from its cause:
     //
-    //   * alphaCutoff. CascadeShadowCaster hashes it because the cascades have an
-    //     alpha-tested pipeline and the material inspector can edit it live. The
-    //     VSM page pass has no masked variant, so cutout casters throw a solid
-    //     silhouette and the cutoff changes nothing here. ADD IT with that pipeline.
-    //   * The cull-selected LOD level. Same shape: the page cull emits no level,
-    //     so pages always draw the authored geometry. ADD IT with page LOD.
+    //   * alphaCutoff. Covered only indirectly: promoting a material to or from
+    //     MASK changes the draw item's bucket, which IS hashed. A cutoff edited
+    //     within MASK leaves a stale cutout shadow. CascadeShadowCaster hashes
+    //     the value outright; do the same if that slider is ever used in anger.
+    //   * The cull-selected LOD level. The page cull emits no level, so pages
+    //     always draw the authored geometry -- deliberately, see
+    //     docs/virtual_shadow_maps.md. ADD IT if page LOD ever lands.
     //   * The raster depth bias. The cascades hash it; here it is a compile-time
     //     constant in ShadowSettings with no UI, so it cannot move. ADD IT if it
     //     ever becomes a setting, because it is baked into the page pipeline and

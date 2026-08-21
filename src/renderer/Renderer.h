@@ -320,6 +320,8 @@ private:
     void createShadowPipeline();
     void createVsmPagePipeline(const VkVertexInputBindingDescription& binding,
                                const std::array<VkVertexInputAttributeDescription, 5>& attributes);
+    void createVsmMaskedPagePipeline(const VkVertexInputBindingDescription& binding,
+                                     const std::array<VkVertexInputAttributeDescription, 5>& attributes);
     void createPunctualShadowPipeline(const VkVertexInputBindingDescription& binding,
                                       const std::array<VkVertexInputAttributeDescription, 5>& attributes);
     void createMaskedShadowPipeline(const VkVertexInputBindingDescription& binding,
@@ -913,6 +915,7 @@ private:
     std::vector<uint32_t> vsmCasterFlags_;
     std::vector<VkClearRect> vsmPageClearRects_;
     rhi::VulkanPipeline vsmPagePipeline_;
+    rhi::VulkanPipeline vsmMaskedPagePipeline_;
     // Highest request count seen since the counter was last reset, which is the
     // number that actually sizes a page pool: an average would hide the peak
     // that overflows it.
