@@ -577,6 +577,10 @@ private:
     }
     // Records the page-marking dispatch inside the graph's declared pass.
     void recordVsmPageMarkPass(VkCommandBuffer commandBuffer);
+    // Drops the depth of pages whose casters moved, before residency decides
+    // what to draw. Without it a moved object leaves its shadow behind: the page
+    // keeps its identity and its physical page, so nothing else notices.
+    void updateVsmCasterInvalidation();
     // Runs the allocator over the page set the marking pass produced, which
     // decides what the page pass has to draw. CPU-side; called from frame prep.
     void updateVsmResidency(uint32_t frameIndex);
@@ -889,6 +893,18 @@ private:
     // indistinguishable from "the page pass never ran" without it.
     uint64_t vsmPageDrawsTotal_ = 0;
     uint32_t vsmPageCullOverflow_ = 0;
+    // What each object contributed to the pool last time it was drawn, so a
+    // change can be detected without asking every page what is in it. Indexed by
+    // objectIndex, which is stable inside a scene.
+    struct VsmCasterState {
+        uint64_t key = 0;
+        renderer::Aabb bounds{};
+        bool valid = false;
+    };
+    std::vector<VsmCasterState> vsmCasterStates_;
+    // Per-object content keys for this frame, accumulated over the draw items.
+    std::vector<renderer::ShadowCacheKey> vsmCasterKeys_;
+    uint32_t vsmCastersChangedThisFrame_ = 0;
     // Reused per frame so the caster-flag upload does not allocate.
     std::vector<uint32_t> vsmCasterFlags_;
     std::vector<VkClearRect> vsmPageClearRects_;

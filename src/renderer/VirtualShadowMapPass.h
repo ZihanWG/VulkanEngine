@@ -108,6 +108,10 @@ struct VsmResidencyStats {
     // by this same frame. Non-zero means the pool is genuinely too small.
     uint32_t refusedPages = 0;
     uint32_t evictions = 0;
+    // Pages whose depth a moved caster dropped since the last update. Distinct
+    // from dirtyPages: these are redraws caused by the scene changing, not by
+    // the camera reaching somewhere new.
+    uint32_t casterInvalidatedPages = 0;
 };
 
 class VirtualShadowMapPass final {
@@ -178,6 +182,27 @@ public:
 
     // Pages the last updateResidency queued for drawing.
     [[nodiscard]] const std::vector<VsmDirtyPage>& dirtyPages() const { return dirtyPages_; }
+
+    // Drops the depth of every addressable page a world AABB touches, at every
+    // active level, so the next residency update redraws them in place.
+    //
+    // This is how a caster that MOVED dirties its pages. The page table's
+    // identity check cannot see that: the object moved, the page kept both its
+    // coordinates and its physical page, and its depth silently still describes
+    // where the object used to be. The caller invalidates both where the object
+    // was and where it now is.
+    //
+    // Returns the number of pages that actually held depth, so repeated requests
+    // and never-drawn pages do not inflate the counter.
+    uint32_t invalidatePagesForBounds(const VsmClipmapSettings& clipmap,
+                                      const glm::mat4& lightView,
+                                      const glm::vec2& cameraLightSpaceXy,
+                                      const glm::vec3& boundsMin,
+                                      const glm::vec3& boundsMax);
+
+    // Pages invalidated by moved casters since the last residency update, and
+    // the running total. Reset by updateResidency, which consumes them.
+    [[nodiscard]] uint32_t pagesInvalidatedByCasters() const { return pagesInvalidatedByCasters_; }
 
     // Records that every queued page has been drawn. Called after the page pass
     // actually recorded them, not when they were queued -- until the draws are
@@ -263,6 +288,9 @@ private:
     VsmPageAllocator allocator_;
     std::vector<VsmDirtyPage> dirtyPages_;
     std::vector<uint32_t> requestedPageIds_;
+    // Reused across calls so per-object invalidation does not allocate.
+    std::vector<uint32_t> scratchPageIds_;
+    uint32_t pagesInvalidatedByCasters_ = 0;
     // Inputs the current residency was built against. Compared by exact bit
     // pattern, so this is a strict "identical inputs" test and never an
     // approximate one -- same rule as ShadowCacheKey.

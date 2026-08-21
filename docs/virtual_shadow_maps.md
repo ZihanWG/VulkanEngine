@@ -96,6 +96,44 @@ hook for the first of those — the debug UI drags the light direction every fra
 — so `updateResidency` hashes its own inputs and drops residency when they move,
 the same way the cascade cache does rather than tracking dirty flags.
 
+## A caster that moves has to dirty its own pages
+
+The same blind spot, one level down and worse: an object moves, and every page
+its shadow is in keeps both its coordinates and its physical page. Nothing about
+the page changed, so nothing invalidates it, and its depth silently goes on
+describing where the object used to be.
+
+The cascades never had this problem — `CascadeShadowCaster` hashes every caster's
+model matrix into the cascade key, so any movement re-renders the cascade. Doing
+the same per page would mean a per-page caster list on the CPU, which is 100
+pages times the draw-item count every frame.
+
+Instead the renderer works from the objects. Each frame it builds one
+`ShadowCacheKey` per object — the model matrix, then the mesh, material, index
+range and bucket of every draw item belonging to it — and compares it against
+what that object contributed last time. For each object whose key moved, it drops
+the depth of every addressable page overlapping **both** its previous and its
+current world bounds: the old pages still hold its shadow, and the new ones do
+not hold it yet. Cost is proportional to what actually changed, which on a static
+scene is nothing at all.
+
+Three details that are load-bearing:
+
+- **The model matrix is hashed, not the world bounds.** Rotating a symmetric
+  object leaves its AABB identical while changing every shadow it casts.
+- **Every level is invalidated, not just the object's own.** The marking pass
+  requests one level coarser as a fallback, so an object's shadow can be resident
+  at more than one level at once; dropping only the finest would leave a stale
+  coarse copy for the sampling walk to find.
+- **Mesh and material are hashed by pointer**, which is unique only inside one
+  scene. `resetSceneState` clears the per-object keys for the same reason it
+  clears the cascade and atlas caches — the buffers behind those addresses are
+  replaced wholesale, so a reused address would compare equal to something
+  unrelated.
+
+Blended geometry is skipped: the page cull filters it out before anything is
+drawn, so a change to it cannot change any page.
+
 ## Rendering the dirty pages
 
 `VsmPagePass` is shaped exactly like the punctual shadow atlas pass, because it
@@ -242,6 +280,41 @@ clipmap draws nothing, so `drawn this frame: 0` on its own cannot distinguish a
 working cache from a page pass that never ran at all — which is exactly the state
 the first version of this was accidentally in, because the page pipeline was
 created before the pool existed and was silently skipped.
+
+### Invalidation, and the first real page-pass cost
+
+No scriptable scene animates a caster — only the demo lights move, and lights are
+not casters — so the path was exercised by temporarily patching one object to
+drift a hundredth of a unit per frame. That object turned out to be the ground
+plane, which makes it close to a worst case: its footprint covers most of the
+resident set.
+
+```
+casters changed: 1     pages they invalidated: 84
+resident: 100/1024     cached this frame: 14
+drawn this frame: 84/128     over budget 0, refused 0, evicted 0
+```
+
+84 invalidated, 84 redrawn, the remaining 14 still cached. The numbers matching
+exactly is the check: every page the object dropped is a page the next update
+queued, and nothing else moved.
+
+That run is also the first time the page pass had real work, so it is the first
+cost figure for it — from a deliberately pathological load, one run, n=6 report
+blocks, **no A/B and no repeated control**, so treat it as an order of magnitude
+and not as a measurement:
+
+| pass | median |
+| --- | --- |
+| `VsmPageMark` | 0.32 ms |
+| `VsmPageCull` | 0.04 ms |
+| `VsmPagePass` (84 pages) | 0.70 ms |
+| `CSMShadowPass` (4 cascades, same frame) | 0.19 ms |
+
+The designed steady state is the other end of that range: zero pages redrawn, so
+only the marking pass runs at all. What the experiment bounds is the cost when
+the scene fights the cache — a ground plane moving every frame invalidates its
+whole footprint, and there is no cache design that avoids that.
 
 ### The marking pass was reading every pixel
 
@@ -433,15 +506,11 @@ or scripted run.
 
 - **Visual correctness is unverified**, and no pixel gate is possible on this
   scene (above).
-- **Moving casters keep stale shadows.** A page is redrawn when it is newly
-  allocated, when its slot scrolls to a different absolute page, or when the
-  light or clipmap settings move — but nothing notices a caster moving *inside*
-  a resident page, so its shadow stays where the object was. The cascades do not
-  have this problem because `CascadeShadowCaster` hashes every caster's model
-  matrix. **This makes the current state static-geometry-only**, and it is why
-  the default scene's A/B looks clean: only the lights animate there, and lights
-  are not casters. Fixing it is per-page content hashing, reusing
-  `ShadowCacheKey` the way the cascades already do.
+- **Skinned geometry is not a caster at all.** The skinned demo mesh is drawn
+  directly rather than as a `RenderObject`, so it is absent from the draw-item
+  list every shadow path walks — VSM and cascades alike. Skinning would also
+  defeat the invalidation above on its own terms: it moves vertices without
+  touching the model matrix, so the key would not change.
 - **Bindless path only.** `simple.frag`, the fallback for devices without
   descriptor indexing, still uses the cascades. Adding VSM there means a second
   descriptor layout for a path that only exists on hardware this feature is not

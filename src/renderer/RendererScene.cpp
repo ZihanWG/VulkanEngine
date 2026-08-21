@@ -163,6 +163,11 @@ void Renderer::resetSceneState()
     // even though its contents cannot -- which is exactly the case the identity
     // check cannot catch. Dropped here for the same reason as the two above.
     virtualShadowMap_.invalidateResidency();
+    // And the per-object caster keys, which hash mesh and material POINTERS.
+    // Those are only unique within a scene: the buffers behind them are replaced
+    // wholesale here, so a reused address would compare equal to something it
+    // has nothing to do with. Same reasoning as ShadowCacheKey::add(const void*).
+    vsmCasterStates_.clear();
 
     importedMeshes_.clear();
     importedMaterials_.clear();

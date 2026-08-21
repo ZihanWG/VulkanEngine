@@ -30,6 +30,8 @@ using ve::renderer::VsmClipmapSettings;
 using ve::renderer::kVsmInvalidPhysicalPage;
 using ve::renderer::vsmAbsolutePageCoords;
 using ve::renderer::vsmAbsolutePageForSlot;
+using ve::renderer::vsmLightSpaceBoundsXy;
+using ve::renderer::vsmPagesOverlappingBounds;
 using ve::renderer::VsmPageAllocator;
 using ve::renderer::VsmPageTableEntry;
 using ve::renderer::vsmDecodeRequestStats;
@@ -743,4 +745,165 @@ TEST_CASE("Every page table entry starts unbound", "[vsm]")
         REQUIRE(entry.physicalPage == kVsmInvalidPhysicalPage);
         REQUIRE(entry.rendered == 0u);
     }
+}
+
+
+TEST_CASE("A world box projects to the light-space rect of all eight corners", "[vsm]")
+{
+    // Two corners are not enough: the light basis is a rotation, so a world
+    // axis-aligned box is not axis-aligned in light space.
+    const glm::mat4 lightView = vsmLightView(glm::vec3{0.35f, -0.65f, -0.55f});
+    const glm::vec3 boundsMin{-1.0f, -2.0f, -3.0f};
+    const glm::vec3 boundsMax{4.0f, 5.0f, 6.0f};
+
+    glm::vec2 lightMin{0.0f};
+    glm::vec2 lightMax{0.0f};
+    REQUIRE(vsmLightSpaceBoundsXy(lightView, boundsMin, boundsMax, lightMin, lightMax));
+    REQUIRE(lightMin.x <= lightMax.x);
+    REQUIRE(lightMin.y <= lightMax.y);
+
+    for (int corner = 0; corner < 8; ++corner) {
+        const glm::vec3 world{(corner & 1) != 0 ? boundsMax.x : boundsMin.x,
+                              (corner & 2) != 0 ? boundsMax.y : boundsMin.y,
+                              (corner & 4) != 0 ? boundsMax.z : boundsMin.z};
+        const glm::vec2 lightSpace = glm::vec2(lightView * glm::vec4(world, 1.0f));
+        REQUIRE(lightSpace.x >= lightMin.x - 1e-4f);
+        REQUIRE(lightSpace.x <= lightMax.x + 1e-4f);
+        REQUIRE(lightSpace.y >= lightMin.y - 1e-4f);
+        REQUIRE(lightSpace.y <= lightMax.y + 1e-4f);
+    }
+
+    // An inverted box is rejected rather than producing a flipped rect.
+    REQUIRE_FALSE(vsmLightSpaceBoundsXy(lightView, boundsMax, boundsMin, lightMin, lightMax));
+}
+
+TEST_CASE("Overlapping pages cover the box and stop at the window", "[vsm]")
+{
+    const VsmClipmapSettings settings = defaultSettings();
+    const glm::mat4 lightView = vsmLightView(glm::vec3{0.0f, -1.0f, 0.0f});
+    const uint32_t level = 3;
+    const glm::ivec2 origin = vsmWindowOrigin(settings, level, glm::vec2{0.0f, 0.0f});
+    const float pageWorldSize = vsmPageWorldSize(settings, level);
+
+    // A box a little over two pages across in light space. With this light the
+    // basis maps world XZ onto light XY, so the box spans pages either way.
+    const glm::vec3 boundsMin{-pageWorldSize * 1.1f, -1.0f, -pageWorldSize * 1.1f};
+    const glm::vec3 boundsMax{pageWorldSize * 1.1f, 1.0f, pageWorldSize * 1.1f};
+
+    std::vector<uint32_t> pageIds;
+    vsmPagesOverlappingBounds(settings, lightView, level, origin, boundsMin, boundsMax, pageIds);
+
+    REQUIRE_FALSE(pageIds.empty());
+    // Every returned page belongs to the requested level and is a real page.
+    for (const uint32_t pageId : pageIds) {
+        REQUIRE(pageId < kVsmMaxVirtualPages);
+        REQUIRE(vsmPageLevel(pageId) == level);
+    }
+    // No duplicates: each page in the rect is emitted once.
+    const std::set<uint32_t> unique(pageIds.begin(), pageIds.end());
+    REQUIRE(unique.size() == pageIds.size());
+
+    // The page containing the box centre must be in there -- that is the one
+    // whose depth definitely changed.
+    const glm::vec2 centreLightSpace = glm::vec2(lightView * glm::vec4(0.0f, 0.0f, 0.0f, 1.0f));
+    const uint32_t centrePage =
+        vsmPageId(level, vsmSlotIndex(vsmAbsolutePageCoords(settings, level, centreLightSpace)));
+    REQUIRE(unique.count(centrePage) == 1u);
+}
+
+TEST_CASE("A caster outside the window invalidates nothing", "[vsm]")
+{
+    // The clip has to happen before the walk, or a distant caster would iterate
+    // an unbounded rect to produce an empty result.
+    const VsmClipmapSettings settings = defaultSettings();
+    const glm::mat4 lightView = vsmLightView(glm::vec3{0.0f, -1.0f, 0.0f});
+    const uint32_t level = 0;
+    const glm::ivec2 origin = vsmWindowOrigin(settings, level, glm::vec2{0.0f, 0.0f});
+
+    const float far = vsmPageWorldSize(settings, level) * 1000.0f;
+    std::vector<uint32_t> pageIds;
+    vsmPagesOverlappingBounds(settings,
+                              lightView,
+                              level,
+                              origin,
+                              glm::vec3{far, -1.0f, far},
+                              glm::vec3{far + 1.0f, 1.0f, far + 1.0f},
+                              pageIds);
+    REQUIRE(pageIds.empty());
+}
+
+TEST_CASE("A caster spanning the level dirties the whole window, and no more", "[vsm]")
+{
+    const VsmClipmapSettings settings = defaultSettings();
+    const glm::mat4 lightView = vsmLightView(glm::vec3{0.0f, -1.0f, 0.0f});
+    const uint32_t level = 2;
+    const glm::ivec2 origin = vsmWindowOrigin(settings, level, glm::vec2{0.0f, 0.0f});
+
+    const float huge = vsmPageWorldSize(settings, level) * 1000.0f;
+    std::vector<uint32_t> pageIds;
+    vsmPagesOverlappingBounds(
+        settings, lightView, level, origin, glm::vec3{-huge, -1.0f, -huge}, glm::vec3{huge, 1.0f, huge}, pageIds);
+
+    // Bounded by the window: a ground plane that moves legitimately dirties its
+    // whole level, but it can never ask for more pages than exist there.
+    REQUIRE(pageIds.size() == kVsmPagesPerLevel);
+    const std::set<uint32_t> unique(pageIds.begin(), pageIds.end());
+    REQUIRE(unique.size() == kVsmPagesPerLevel);
+}
+
+TEST_CASE("A level past the active count yields nothing", "[vsm]")
+{
+    VsmClipmapSettings settings = defaultSettings();
+    settings.levelCount = 4;
+    const glm::mat4 lightView = vsmLightView(glm::vec3{0.0f, -1.0f, 0.0f});
+    const glm::ivec2 origin = vsmWindowOrigin(settings, 4, glm::vec2{0.0f, 0.0f});
+
+    std::vector<uint32_t> pageIds;
+    vsmPagesOverlappingBounds(
+        settings, lightView, 4, origin, glm::vec3{-1.0f}, glm::vec3{1.0f}, pageIds);
+    REQUIRE(pageIds.empty());
+}
+
+TEST_CASE("Invalidating a page keeps its space but drops its depth", "[vsm]")
+{
+    VsmPageAllocator allocator;
+    const uint32_t pageId = vsmPageId(2, 7);
+
+    allocator.beginFrame(1);
+    const uint32_t physical = allocator.acquire(pageId, glm::ivec2{1, 1}).physicalPage;
+    allocator.markRendered(pageId);
+
+    REQUIRE(allocator.invalidate(pageId));
+    REQUIRE(allocator.entries()[pageId].rendered == 0u);
+    // The page keeps its physical space and its identity -- only the depth is
+    // stale, so the next frame redraws in place rather than reallocating.
+    REQUIRE(allocator.entries()[pageId].physicalPage == physical);
+    REQUIRE(allocator.entries()[pageId].absoluteX == 1);
+    REQUIRE(allocator.residentPages() == 1u);
+
+    // Re-acquiring now reports it as needing a draw.
+    allocator.beginFrame(2);
+    const auto reacquired = allocator.acquire(pageId, glm::ivec2{1, 1});
+    REQUIRE(reacquired.physicalPage == physical);
+    REQUIRE_FALSE(reacquired.alreadyRendered);
+}
+
+TEST_CASE("Invalidating reports only pages that actually held depth", "[vsm]")
+{
+    // The counter this feeds is meant to say how much work a moving caster
+    // caused, so repeated requests and never-drawn pages must not inflate it.
+    VsmPageAllocator allocator;
+    const uint32_t pageId = vsmPageId(0, 3);
+
+    allocator.beginFrame(1);
+    REQUIRE_FALSE(allocator.invalidate(pageId));  // owns nothing yet
+
+    allocator.acquire(pageId, glm::ivec2{0, 0});
+    REQUIRE_FALSE(allocator.invalidate(pageId));  // allocated but never drawn
+
+    allocator.markRendered(pageId);
+    REQUIRE(allocator.invalidate(pageId));
+    REQUIRE_FALSE(allocator.invalidate(pageId));  // already invalidated
+
+    REQUIRE_FALSE(allocator.invalidate(kVsmMaxVirtualPages + 5u));
 }
