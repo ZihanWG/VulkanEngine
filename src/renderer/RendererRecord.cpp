@@ -978,15 +978,21 @@ void Renderer::recordVsmPageCull(VkCommandBuffer commandBuffer)
         return;
     }
 
-    // The shared cull input carries no bucket, so "does this cast" travels
-    // beside it -- exactly as it does for the punctual atlas. Blended geometry
-    // only depth-tests in the main pass; letting it cast would put an opaque
-    // silhouette into the pool.
-    vsmCasterFlags_.assign(allDrawItems_.size(), 1u);
+    // The shared cull input carries no bucket, so both "does this cast" and
+    // "which pipeline draws it" travel beside it. Blended geometry only
+    // depth-tests in the main pass; letting it cast would put an opaque
+    // silhouette into the pool. Cutout geometry needs the alpha-tested pipeline,
+    // and without one it falls back to the opaque bucket and throws a solid
+    // silhouette -- the same fallback the cascades use when the bindless heap is
+    // missing.
+    const bool maskedPagesAvailable = vsmMaskedPagePipeline_.pipeline() != VK_NULL_HANDLE;
+    vsmCasterFlags_.assign(allDrawItems_.size(), renderer::kVsmOpaqueCasterBucket + 1u);
     for (size_t drawIndex = 0; drawIndex < allDrawItems_.size(); ++drawIndex) {
         const DrawItem& drawItem = allDrawItems_[drawIndex];
         if (drawItem.bucket == RenderBucket::Blend || drawItem.mesh == nullptr || drawItem.indexCount == 0) {
             vsmCasterFlags_[drawIndex] = 0u;
+        } else if (drawItem.bucket == RenderBucket::Mask && maskedPagesAvailable) {
+            vsmCasterFlags_[drawIndex] = renderer::kVsmMaskedCasterBucket + 1u;
         }
     }
 
@@ -1057,58 +1063,87 @@ void Renderer::recordVsmPagePass(VkCommandBuffer commandBuffer)
         }
     }
 
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vsmPagePipeline_.pipeline());
-
     const VkBuffer vertexBuffers[] = {indirectMesh->vertexBuffer()};
     const VkDeviceSize vertexOffsets[] = {0};
     vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
     vkCmdBindIndexBuffer(commandBuffer, indirectMesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+
+    // Two passes over the dirty pages rather than two draws interleaved per
+    // page: the pipeline switch is the expensive part, and the masked one also
+    // rebinds a descriptor set. Every page's viewport is set again in the second
+    // sweep, which is cheap next to a pipeline bind.
+    const bool maskedPagesAvailable = vsmMaskedPagePipeline_.pipeline() != VK_NULL_HANDLE;
 
     const VkDeviceAddress objectFrameDataBaseAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
     const renderer::VsmClipmapSettings clipmap = vsmClipmapSettings();
     const glm::mat4 lightView = renderer::vsmLightView(directionalLightSettings_.direction);
     const uint32_t pageCommandStride = virtualShadowMap_.pageCommandStride();
 
-    for (size_t pageIndex = 0; pageIndex < dirtyPages.size(); ++pageIndex) {
-        const renderer::VsmDirtyPage& page = dirtyPages[pageIndex];
-        const renderer::VsmPageRect rect = renderer::vsmPagePoolRect(page.physicalPage);
+    const auto drawPages = [&](uint32_t bucket, const rhi::VulkanPipeline& pipeline) {
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline());
+        if (bucket == renderer::kVsmMaskedCasterBucket) {
+            const VkDescriptorSet bindlessSet = bindlessTextureHeap_.descriptorSet();
+            vkCmdBindDescriptorSets(
+                commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout(), 0, 1, &bindlessSet, 0, nullptr);
+        }
 
-        VkViewport viewport{};
-        viewport.x = static_cast<float>(rect.x);
-        viewport.y = static_cast<float>(rect.y);
-        viewport.width = static_cast<float>(rect.size);
-        viewport.height = static_cast<float>(rect.size);
-        viewport.minDepth = 0.0f;
-        viewport.maxDepth = 1.0f;
-        vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+        for (size_t pageIndex = 0; pageIndex < dirtyPages.size(); ++pageIndex) {
+            const renderer::VsmDirtyPage& page = dirtyPages[pageIndex];
+            const renderer::VsmPageRect rect = renderer::vsmPagePoolRect(page.physicalPage);
 
-        VkRect2D scissor{};
-        scissor.offset = {static_cast<int32_t>(rect.x), static_cast<int32_t>(rect.y)};
-        scissor.extent = {rect.size, rect.size};
-        vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+            VkViewport viewport{};
+            viewport.x = static_cast<float>(rect.x);
+            viewport.y = static_cast<float>(rect.y);
+            viewport.width = static_cast<float>(rect.size);
+            viewport.height = static_cast<float>(rect.size);
+            viewport.minDepth = 0.0f;
+            viewport.maxDepth = 1.0f;
+            vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
 
-        PunctualShadowPushConstants pushConstants{};
-        pushConstants.objectFrameDataAddress = objectFrameDataBaseAddress;
-        pushConstants.lightViewProjection =
-            renderer::vsmPageViewProjection(clipmap, lightView, page.level, page.absolutePage);
-        vkCmdPushConstants(commandBuffer,
-                           vsmPagePipeline_.layout(),
-                           VK_SHADER_STAGE_VERTEX_BIT,
-                           0,
-                           static_cast<uint32_t>(sizeof(pushConstants)),
-                           &pushConstants);
+            VkRect2D scissor{};
+            scissor.offset = {static_cast<int32_t>(rect.x), static_cast<int32_t>(rect.y)};
+            scissor.extent = {rect.size, rect.size};
+            vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-        // The cull dispatch compacted this page's surviving casters into its own
-        // region, so the whole page is one draw call. There is no indirect-count
-        // on this platform, so the full per-page stride is submitted and the
-        // zeroed commands the dispatch left behind are no-ops.
-        const VkDeviceSize indirectOffset =
-            static_cast<VkDeviceSize>(pageIndex) * pageCommandStride * sizeof(VkDrawIndexedIndirectCommand);
-        vkCmdDrawIndexedIndirect(
-            commandBuffer, indirectBuffer, indirectOffset, pageCommandStride, sizeof(VkDrawIndexedIndirectCommand));
-        ++vsmPageDrawsRecorded_;
-        ++vsmPageDrawsTotal_;
+            PunctualShadowPushConstants pushConstants{};
+            pushConstants.objectFrameDataAddress = objectFrameDataBaseAddress;
+            pushConstants.lightViewProjection =
+                renderer::vsmPageViewProjection(clipmap, lightView, page.level, page.absolutePage);
+            vkCmdPushConstants(commandBuffer,
+                               pipeline.layout(),
+                               VK_SHADER_STAGE_VERTEX_BIT,
+                               0,
+                               static_cast<uint32_t>(sizeof(pushConstants)),
+                               &pushConstants);
+
+            // The cull dispatch compacted this (page, bucket) pair's surviving
+            // casters into its own region, so it is one draw call. There is no
+            // indirect-count on this platform, so the full region stride is
+            // submitted and the zeroed commands the dispatch left behind are
+            // no-ops -- which is exactly why the two buckets cannot share a
+            // region: the opaque draw would run the cutout commands too.
+            const VkDeviceSize indirectOffset =
+                static_cast<VkDeviceSize>(renderer::vsmPageCommandBase(static_cast<uint32_t>(pageIndex), bucket)) *
+                sizeof(VkDrawIndexedIndirectCommand);
+            vkCmdDrawIndexedIndirect(commandBuffer,
+                                     indirectBuffer,
+                                     indirectOffset,
+                                     pageCommandStride,
+                                     sizeof(VkDrawIndexedIndirectCommand));
+        }
+    };
+
+    drawPages(renderer::kVsmOpaqueCasterBucket, vsmPagePipeline_);
+    if (maskedPagesAvailable) {
+        drawPages(renderer::kVsmMaskedCasterBucket, vsmMaskedPagePipeline_);
     }
+
+    // Counted once per PAGE, not once per draw. Each page now issues one draw
+    // per caster bucket, and the counter is read against the per-frame page
+    // budget -- reporting draw calls there would show a page count that can
+    // never be reached.
+    vsmPageDrawsRecorded_ = static_cast<uint32_t>(dirtyPages.size());
+    vsmPageDrawsTotal_ += dirtyPages.size();
 
     renderGraph_.endVsmPagePass();
     rhi::debug::endLabel(commandBuffer);

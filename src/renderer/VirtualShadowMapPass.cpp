@@ -53,9 +53,9 @@ constexpr uint32_t kMarkWorkgroupSize = 8;
 // set to interpret either.
 const std::array<glm::ivec2, kVsmMaxClipmapLevels> kZeroOrigins{};
 
-// One counter per page plus a trailing over-cap counter.
-constexpr uint32_t kCullCounterCount = kMaxVsmPagesPerFrame + 1u;
-constexpr uint32_t kCullOverflowCounterIndex = kMaxVsmPagesPerFrame;
+// One counter per (page, bucket) plus a trailing over-cap counter.
+constexpr uint32_t kCullCounterCount = kMaxVsmPagesPerFrame * kVsmCasterBucketCount + 1u;
+constexpr uint32_t kCullOverflowCounterIndex = kMaxVsmPagesPerFrame * kVsmCasterBucketCount;
 constexpr VkDeviceSize kCullCounterBufferSize = static_cast<VkDeviceSize>(kCullCounterCount) * sizeof(uint32_t);
 constexpr uint32_t kCullWorkgroupSize = 64;
 
@@ -794,8 +794,8 @@ void VirtualShadowMapPass::createCullResources(uint32_t frameCount, uint32_t max
             // frame in flight; a page covers a small world rect, so the cap is
             // generous, and going over is counted rather than hidden.
             rhi::VulkanBufferCreateInfo indirectInfo{};
-            indirectInfo.size = static_cast<VkDeviceSize>(kMaxVsmPagesPerFrame) * kMaxVsmCastersPerPage *
-                                sizeof(VkDrawIndexedIndirectCommand);
+            indirectInfo.size = static_cast<VkDeviceSize>(kMaxVsmPagesPerFrame) * kVsmCasterBucketCount *
+                                kMaxVsmCastersPerPage * sizeof(VkDrawIndexedIndirectCommand);
             indirectInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
                                  VK_BUFFER_USAGE_TRANSFER_DST_BIT;
             indirectInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
@@ -921,8 +921,8 @@ void VirtualShadowMapPass::recordPageCull(VkCommandBuffer commandBuffer,
     // Only the command regions this frame's pages will draw from are cleared.
     // The counters are zeroed in full, because the over-cap counter lives past
     // the per-page ones.
-    const VkDeviceSize clearedCommandBytes =
-        static_cast<VkDeviceSize>(pageCount) * kMaxVsmCastersPerPage * sizeof(VkDrawIndexedIndirectCommand);
+    const VkDeviceSize clearedCommandBytes = static_cast<VkDeviceSize>(pageCount) * kVsmCasterBucketCount *
+                                             kMaxVsmCastersPerPage * sizeof(VkDrawIndexedIndirectCommand);
     vkCmdFillBuffer(commandBuffer, cullVisibleCountBuffers_[frameIndex].buffer(), 0, kCullCounterBufferSize, 0);
     vkCmdFillBuffer(commandBuffer, cullIndirectBuffers_[frameIndex].buffer(), 0, clearedCommandBytes, 0);
 

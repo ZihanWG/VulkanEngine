@@ -107,6 +107,22 @@ inline constexpr uint32_t kMaxVsmPagesPerFrame = 128;
 // contract FrameCapacity uses for over-cap geometry.
 inline constexpr uint32_t kMaxVsmCastersPerPage = 256;
 
+// Opaque and alpha-tested casters go in separate regions, because they are drawn
+// with different pipelines and this platform has no indirect-count: each draw
+// submits its region's full stride and relies on the zeroed commands the cull
+// left behind being no-ops. One shared region would run the cutout commands
+// through the opaque pipeline as well.
+inline constexpr uint32_t kVsmCasterBucketCount = 2;
+inline constexpr uint32_t kVsmOpaqueCasterBucket = 0;
+inline constexpr uint32_t kVsmMaskedCasterBucket = 1;
+
+// Region index of one (page, bucket) pair in the compacted indirect buffer, in
+// commands. Shared by the dispatch that writes it and the pass that draws it.
+[[nodiscard]] constexpr uint32_t vsmPageCommandBase(uint32_t pageIndex, uint32_t bucket)
+{
+    return (pageIndex * kVsmCasterBucketCount + bucket) * kMaxVsmCastersPerPage;
+}
+
 // --- Settings -------------------------------------------------------------
 
 struct VsmClipmapSettings {

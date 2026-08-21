@@ -141,9 +141,15 @@ here yet, and each becomes a stale-shadow bug on the day it lands:
 
 | omitted | why it is safe today | add it when |
 | --- | --- | --- |
-| `alphaCutoff` | the page pass has no alpha-tested pipeline, so cutout casters throw a solid silhouette regardless | a masked page pipeline lands |
-| cull-selected LOD level | the page cull emits no level; pages always draw authored geometry | page LOD lands |
+| cull-selected LOD level | the page cull emits no level; pages always draw authored geometry | page LOD lands, which it should not — see below |
 | raster depth bias | a compile-time constant in `ShadowSettings`, no UI, cannot move | it becomes a setting |
+
+`alphaCutoff` **is** hashed now, indirectly and by accident of the bucket: a
+material promoted to or from `MASK` changes the draw item's bucket, which the key
+does hash. A cutoff edited *within* `MASK` does not change the key and will leave
+a stale cutout shadow. That is a narrower hole than the one the cascades close by
+hashing the value outright, and it is worth closing the same way if the material
+inspector's cutoff slider ever gets used in anger.
 
 The cascades hash all three, which is why `CascadeShadowCaster` looks richer than
 the per-object key here. The light direction, the clipmap settings and a scene
@@ -166,11 +172,29 @@ pool's own depth format and bias.
 
 Caster culling is one compute dispatch over every (dirty page, draw item) pair,
 recorded before the scope opens: compute cannot run inside a rendering scope, and
-the scope has to stay single. Each page compacts its survivors into its own
-region of the indirect buffer, capped at `kMaxVsmCastersPerPage`. Going over the
-cap is **counted and reported**, not silently dropped — the counter keeps
-climbing past the cap so the readback shows real demand rather than a page that
-merely looks full.
+the scope has to stay single. Going over the per-page cap is **counted and
+reported**, not silently dropped — the counter keeps climbing past the cap so the
+readback shows real demand rather than a page that merely looks full.
+
+### Opaque and cutout casters get separate regions
+
+A page compacts its survivors into a region per **caster bucket**, not one region
+per page, and the pass draws each page twice — opaque with the depth-only
+pipeline, alpha-tested with `shadow_vsm_masked.vert` + `shadow_masked.frag`.
+
+That split is forced by the platform. With no indirect-count, each draw submits
+its region's whole stride and relies on the commands the cull zeroed being
+no-ops; a shared region would therefore run the cutout commands through the
+opaque pipeline as well, and a perforated panel would go back to throwing a solid
+rectangle. The two sweeps are ordered by bucket rather than interleaved per page
+because the pipeline switch is the expensive part and the masked one also rebinds
+a descriptor set.
+
+Which bucket a caster lands in travels beside the shared cull input, in the same
+per-draw-item flag array that already carried "does this cast" — the input record
+is exactly 64 bytes with no spare field. When the bindless heap is missing there
+is no masked pipeline, and the flag routes cutout casters into the opaque bucket
+so they still cast, solidly. That is the same fallback the cascades use.
 
 ## Page marking reads the *previous* frame's depth
 
@@ -425,6 +449,34 @@ atlas preview — which [warns you not to trust it](punctual_shadows.md) because
 perspective depth piles up against 1.0 — this one is worth reading: pages are
 rendered with an orthographic projection, so their depth is linear.
 
+## Page LOD was considered and rejected
+
+The page cull emits no LOD level, so a page draws authored geometry where a
+cascade would have drawn a simplified chain. That looks like an obvious gap. It
+is not worth closing, for two measured reasons.
+
+**There is no time to save.** In the steady state the page pass does not run at
+all — every page is cached, nothing is redrawn, and `VsmPagePass` never even
+appears in the profiler. The only run where it had work was the deliberately
+pathological one (a ground plane moving every frame): 0.70 ms for 84 pages.
+Optimising the triangle count of a pass that costs nothing on a scene that is not
+fighting its own cache is the same trade this project already rejected for
+[bloom aliasing and effective-radius light culling](design_decisions.md).
+
+**The saving would land where the pages are cheapest.** LOD selection is driven
+by distance to camera, and so is the clipmap level. A page fine enough for
+simplification to be visible is a page whose casters are near the camera, which
+selects level 0 anyway; the pages that would actually simplify are the coarse,
+far ones — of which there are few, and whose casters are small on screen.
+
+It also costs more than it looks: the LOD table has to reach the page cull, the
+level has to be packed into `firstInstance` the way `cull.comp` does, and the
+per-object caster key has to start hashing the selected level or a level change
+alone would leave a stale page.
+
+If the page pass ever shows up in a real frame's profile, this is the first thing
+to revisit — with a measurement, not on principle.
+
 ## Why there is no pixel gate
 
 The obvious check — capture a frame with cascades, capture one with VSM, compare
@@ -545,6 +597,12 @@ or scripted run.
 
 - **Visual correctness is unverified**, and no pixel gate is possible on this
   scene (above).
+- **Cutout page shadows are unverified.** The only cutout geometry in the engine
+  is the portfolio showcase's perforated panel, which is reachable through an
+  ImGui preset rather than `--scene`, so the path has been exercised (both
+  bucket sweeps issue draws, zero validation errors) but the resulting shadow has
+  not been looked at.
+- **Page casters draw authored geometry.** No LOD, deliberately — see above.
 - **Skinned geometry is not a caster at all.** The skinned demo mesh is drawn
   directly rather than as a `RenderObject`, so it is absent from the draw-item
   list every shadow path walks — VSM and cascades alike. Skinning would also
@@ -554,13 +612,6 @@ or scripted run.
   descriptor indexing, still uses the cascades. Adding VSM there means a second
   descriptor layout for a path that only exists on hardware this feature is not
   aimed at.
-- **Page casters draw at authored detail.** The page cull emits no LOD level, so
-  a page draws level 0 where the cascades would have picked a simplified one.
-  Matches the punctual atlas, which does the same; worth revisiting once the
-  pass has a cost worth attributing.
-- **Cutout casters throw a solid silhouette.** The page pipeline has no
-  alpha-tested variant, so `MASK` geometry casts as if opaque — the same
-  fallback the cascades use when the bindless heap is missing.
 - **The request set lags by the frames in flight**, both because it is derived
   from the previous frame's depth and because the bitmask is read back when its
   frame slot comes round again.
