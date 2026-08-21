@@ -134,6 +134,22 @@ Three details that are load-bearing:
 Blended geometry is skipped: the page cull filters it out before anything is
 drawn, so a change to it cannot change any page.
 
+### What the key deliberately leaves out
+
+Each omission is only safe because the feature it would cover does not exist
+here yet, and each becomes a stale-shadow bug on the day it lands:
+
+| omitted | why it is safe today | add it when |
+| --- | --- | --- |
+| `alphaCutoff` | the page pass has no alpha-tested pipeline, so cutout casters throw a solid silhouette regardless | a masked page pipeline lands |
+| cull-selected LOD level | the page cull emits no level; pages always draw authored geometry | page LOD lands |
+| raster depth bias | a compile-time constant in `ShadowSettings`, no UI, cannot move | it becomes a setting |
+
+The cascades hash all three, which is why `CascadeShadowCaster` looks richer than
+the per-object key here. The light direction, the clipmap settings and a scene
+switch are covered, but elsewhere — the first two by `updateResidency` hashing
+its own inputs, the third by `resetSceneState`.
+
 ## Rendering the dirty pages
 
 `VsmPagePass` is shaped exactly like the punctual shadow atlas pass, because it
@@ -385,6 +401,29 @@ The fragment shader reads `FrameConstants` directly through the push block's
 `frameConstantsAddress`, at the offset the vertex stage already uses. The
 alternative was seven more `flat` varyings carrying a mat4 and three vec4s that
 are identical for every fragment in the frame.
+
+## Reading what the clipmap is actually doing
+
+The counters say how many pages are resident and how many were cached. They
+cannot say **where**, and where is the whole question once the camera scrolls the
+window or a caster dirties a footprint.
+
+**Shadows → Virtual (clipmap) → Page residency** draws one grid per clipmap
+level: 16x16 cells, one per slot in that level's window, green where the page
+holds depth, blue where it is allocated but not drawn yet, dark where there is
+nothing, and the camera's own page outlined. It reads the same page table the
+GPU reads, so it cannot drift from what the sampler will really find — including
+the identity check: a slot holding a page that has scrolled away shows as empty,
+because that is exactly what the sampler makes of it.
+
+Blue is not an error. Allocation and drawing are separate steps, so a page can
+own space for a frame before the page pass fills it.
+
+The **pool depth preview** underneath is the physical view: 32x32 pages of the
+4096² image, in allocation order rather than world order. Unlike the punctual
+atlas preview — which [warns you not to trust it](punctual_shadows.md) because
+perspective depth piles up against 1.0 — this one is worth reading: pages are
+rendered with an orthographic projection, so their depth is linear.
 
 ## Why there is no pixel gate
 
