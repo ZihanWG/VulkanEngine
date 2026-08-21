@@ -1054,7 +1054,9 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
                     << " (" << vsmPageDrawsTotal_ << " since start)" 
                     << ", over budget " << vsmResidencyStats_.overBudgetPages << ", refused "
                     << vsmResidencyStats_.refusedPages << ", evicted " << vsmResidencyStats_.evictions << "\n"
-                    << "  casters over the per-page cap: " << vsmPageCullOverflow_ << "\n";
+                    << "  casters over the per-page cap: " << vsmPageCullOverflow_ << "\n"
+                    << "  casters changed: " << vsmCastersChangedThisFrame_ << ", pages they invalidated: "
+                    << vsmResidencyStats_.casterInvalidatedPages << "\n";
             message << "  directional shadows: "
                     << (isVsmDirectionalShadowActive() ? "sampled from the page pool" : "cascades")
                     << "\n";
@@ -1884,6 +1886,84 @@ void Renderer::updateVsmPageRequestStats(uint32_t frameIndex)
     vsmPeakRequestedPages_ = std::max(vsmPeakRequestedPages_, stats.requestedPages);
 }
 
+void Renderer::updateVsmCasterInvalidation()
+{
+    vsmCastersChangedThisFrame_ = 0;
+    if (!isVsmPageRenderingActive()) {
+        // Residency is not being maintained, so there is nothing to keep in step
+        // with. The states are dropped so that re-enabling starts from a clean
+        // comparison rather than against a scene that has moved since.
+        vsmCasterStates_.clear();
+        return;
+    }
+
+    const size_t objectCount = frameWorldBounds_.size();
+
+    // An object count change means indices no longer name the same objects, so
+    // every remembered key is meaningless. Rare (scene edits, spawns) and cheap
+    // to handle bluntly.
+    if (vsmCasterStates_.size() != objectCount) {
+        vsmCasterStates_.assign(objectCount, VsmCasterState{});
+        virtualShadowMap_.invalidateResidency();
+    }
+
+    // One key per object, accumulated over the draw items that belong to it.
+    // Hashing the model matrix rather than the world bounds is deliberate:
+    // rotating a symmetric object leaves its AABB identical while changing every
+    // shadow it casts.
+    vsmCasterKeys_.assign(objectCount, renderer::ShadowCacheKey{});
+    for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+        vsmCasterKeys_[objectIndex].reset();
+        vsmCasterKeys_[objectIndex].add(renderObjects_[objectIndex].transform.modelMatrix());
+    }
+    for (const DrawItem& drawItem : allDrawItems_) {
+        if (drawItem.objectIndex >= objectCount) {
+            continue;
+        }
+        // Blended geometry is not a caster, so a change to it cannot change any
+        // page -- the page cull filters it out before anything is drawn.
+        if (drawItem.bucket == RenderBucket::Blend) {
+            continue;
+        }
+        renderer::ShadowCacheKey& key = vsmCasterKeys_[drawItem.objectIndex];
+        key.add(drawItem.mesh);
+        key.add(drawItem.material);
+        key.add(drawItem.firstIndex);
+        key.add(drawItem.indexCount);
+        key.add(static_cast<uint32_t>(drawItem.bucket));
+    }
+
+    const renderer::VsmClipmapSettings clipmap = vsmClipmapSettings();
+    const glm::mat4 lightView = renderer::vsmLightView(directionalLightSettings_.direction);
+    const glm::vec2 cameraLightSpaceXy = glm::vec2(lightView * glm::vec4(frameCameraPosition_, 1.0f));
+
+    for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+        VsmCasterState& state = vsmCasterStates_[objectIndex];
+        const uint64_t key = vsmCasterKeys_[objectIndex].value();
+        const renderer::Aabb& bounds = frameWorldBounds_[objectIndex];
+
+        if (state.valid && state.key == key) {
+            continue;
+        }
+        ++vsmCastersChangedThisFrame_;
+
+        // Where it was, then where it is. Both matter: the old pages still hold
+        // its depth, and the new ones do not hold it yet.
+        if (state.valid && state.bounds.valid()) {
+            virtualShadowMap_.invalidatePagesForBounds(
+                clipmap, lightView, cameraLightSpaceXy, state.bounds.min, state.bounds.max);
+        }
+        if (bounds.valid()) {
+            virtualShadowMap_.invalidatePagesForBounds(
+                clipmap, lightView, cameraLightSpaceXy, bounds.min, bounds.max);
+        }
+
+        state.key = key;
+        state.bounds = bounds;
+        state.valid = true;
+    }
+}
+
 void Renderer::updateVsmResidency(uint32_t frameIndex)
 {
     if (!isVsmPageRenderingActive()) {
@@ -1903,6 +1983,10 @@ void Renderer::updateVsmResidency(uint32_t frameIndex)
     if (virtualShadowMap_.readPageCullOverflow(frameIndex, overflow)) {
         vsmPageCullOverflow_ = overflow;
     }
+
+    // Before residency, so the pages a moved caster dirtied are queued by this
+    // same update rather than a frame later.
+    updateVsmCasterInvalidation();
 
     const glm::mat4 lightView = renderer::vsmLightView(directionalLightSettings_.direction);
     const glm::vec2 cameraLightSpaceXy = glm::vec2(lightView * glm::vec4(frameCameraPosition_, 1.0f));

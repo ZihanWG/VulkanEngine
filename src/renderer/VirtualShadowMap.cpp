@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -315,6 +316,24 @@ VsmPageAcquireResult VsmPageAllocator::acquire(uint32_t pageId, const glm::ivec2
     return result;
 }
 
+bool VsmPageAllocator::invalidate(uint32_t pageId)
+{
+    if (pageId >= entries_.size()) {
+        return false;
+    }
+
+    VsmPageTableEntry& entry = entries_[pageId];
+    // Only pages that actually hold depth count. An unrendered page is already
+    // queued, and a page owning no physical space has nothing to drop -- both
+    // would otherwise inflate the invalidation counter with no-ops.
+    if (entry.physicalPage == kVsmInvalidPhysicalPage || entry.rendered == 0) {
+        return false;
+    }
+
+    entry.rendered = 0;
+    return true;
+}
+
 void VsmPageAllocator::markRendered(uint32_t pageId)
 {
     if (pageId >= entries_.size()) {
@@ -324,6 +343,74 @@ void VsmPageAllocator::markRendered(uint32_t pageId)
         return;
     }
     entries_[pageId].rendered = 1;
+}
+
+bool vsmLightSpaceBoundsXy(const glm::mat4& lightView,
+                           const glm::vec3& boundsMin,
+                           const glm::vec3& boundsMax,
+                           glm::vec2& outMin,
+                           glm::vec2& outMax)
+{
+    if (!glm::all(glm::lessThanEqual(boundsMin, boundsMax))) {
+        return false;
+    }
+
+    outMin = glm::vec2(std::numeric_limits<float>::max());
+    outMax = glm::vec2(std::numeric_limits<float>::lowest());
+
+    // All eight corners: the light basis is a rotation, so an axis-aligned box in
+    // world space is not axis-aligned in light space and its extent cannot be
+    // taken from two corners.
+    for (uint32_t cornerIndex = 0; cornerIndex < 8u; ++cornerIndex) {
+        const glm::vec3 corner{(cornerIndex & 1u) != 0u ? boundsMax.x : boundsMin.x,
+                               (cornerIndex & 2u) != 0u ? boundsMax.y : boundsMin.y,
+                               (cornerIndex & 4u) != 0u ? boundsMax.z : boundsMin.z};
+        const glm::vec2 lightSpace = glm::vec2(lightView * glm::vec4(corner, 1.0f));
+        if (!std::isfinite(lightSpace.x) || !std::isfinite(lightSpace.y)) {
+            return false;
+        }
+        outMin = glm::min(outMin, lightSpace);
+        outMax = glm::max(outMax, lightSpace);
+    }
+
+    return true;
+}
+
+void vsmPagesOverlappingBounds(const VsmClipmapSettings& settings,
+                               const glm::mat4& lightView,
+                               uint32_t level,
+                               const glm::ivec2& windowOrigin,
+                               const glm::vec3& boundsMin,
+                               const glm::vec3& boundsMax,
+                               std::vector<uint32_t>& pageIds)
+{
+    const VsmClipmapSettings clamped = clampVsmClipmapSettings(settings);
+    if (level >= clamped.levelCount) {
+        return;
+    }
+
+    glm::vec2 lightMin{0.0f};
+    glm::vec2 lightMax{0.0f};
+    if (!vsmLightSpaceBoundsXy(lightView, boundsMin, boundsMax, lightMin, lightMax)) {
+        return;
+    }
+
+    const glm::ivec2 firstPage = vsmAbsolutePageCoords(clamped, level, lightMin);
+    const glm::ivec2 lastPage = vsmAbsolutePageCoords(clamped, level, lightMax);
+
+    // Clipped to the window before iterating, not after: a caster far outside it
+    // would otherwise walk an unbounded rect to produce nothing.
+    const int32_t axis = static_cast<int32_t>(kVsmPagesPerLevelAxis);
+    const int32_t beginX = std::max(firstPage.x, windowOrigin.x);
+    const int32_t beginY = std::max(firstPage.y, windowOrigin.y);
+    const int32_t endX = std::min(lastPage.x, windowOrigin.x + axis - 1);
+    const int32_t endY = std::min(lastPage.y, windowOrigin.y + axis - 1);
+
+    for (int32_t y = beginY; y <= endY; ++y) {
+        for (int32_t x = beginX; x <= endX; ++x) {
+            pageIds.push_back(vsmPageId(level, vsmSlotIndex(glm::ivec2{x, y})));
+        }
+    }
 }
 
 VsmPageRect vsmPagePoolRect(uint32_t physicalPage)

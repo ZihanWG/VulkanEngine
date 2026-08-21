@@ -886,6 +886,17 @@ void Renderer::drawShadowsDebugUi()
                                   "is genuinely too small.\n"
                                   "Evicted: a page lost its space to another. Persistently non-zero with a\n"
                                   "still camera would mean the working set does not fit.");
+            ImGui::Text("Casters changed: %u   pages they invalidated: %u",
+                        vsmCastersChangedThisFrame_,
+                        vsmResidencyStats_.casterInvalidatedPages);
+            ImGui::SetItemTooltip("A caster that MOVES keeps its pages' identity and physical space, so\n"
+                                  "nothing else notices it -- its depth would silently still describe\n"
+                                  "where it used to be. Objects whose model matrix, mesh or material\n"
+                                  "changed drop the depth of every page they covered before and cover\n"
+                                  "now.\n\n"
+                                  "Both numbers zero on a static scene is correct. Persistently high\n"
+                                  "means the redraw is being driven by the scene rather than by the\n"
+                                  "camera, which is what the per-page cost should be judged against.");
             ImGui::Text("Casters over the per-page cap: %u", vsmPageCullOverflow_);
             ImGui::SetItemTooltip("Counted, not silently dropped. Non-zero means a page had more than\n"
                                   "%u casters and some of them are missing from its depth.",

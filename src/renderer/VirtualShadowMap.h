@@ -313,6 +313,15 @@ public:
     // but unrendered rather than claiming depth that was never written.
     void markRendered(uint32_t pageId);
 
+    // Drops this page's depth while keeping its physical page and identity, so
+    // the next residency update queues it for redrawing. This is how a moved
+    // caster dirties the pages it was in and is now in -- a change the identity
+    // check cannot see, because neither the page nor its coordinates moved.
+    //
+    // Returns true when the page actually held depth, so the caller can count
+    // real invalidations rather than repeated requests for the same page.
+    bool invalidate(uint32_t pageId);
+
     // The table, indexed by virtual page id. Uploaded verbatim.
     [[nodiscard]] const std::vector<VsmPageTableEntry>& entries() const { return entries_; }
 
@@ -331,6 +340,37 @@ private:
     uint32_t residentPages_ = 0;
     uint32_t evictionsThisFrame_ = 0;
 };
+
+// --- Invalidation by moved geometry --------------------------------------
+
+// Every addressable page at `level` that a world-space AABB touches, appended to
+// `pageIds`.
+//
+// This is what makes a moving caster dirty the pages its shadow is in. The page
+// table's identity check cannot see it: the object moves, the page keeps both
+// its coordinates and its physical page, and the depth in it silently describes
+// where the object used to be. So the renderer walks the objects that changed
+// and invalidates what they covered before and cover now.
+//
+// The result is bounded by the window (kVsmPagesPerLevel entries), because a
+// page outside it has no slot to invalidate. A caster spanning the whole level
+// legitimately dirties all of it.
+void vsmPagesOverlappingBounds(const VsmClipmapSettings& settings,
+                               const glm::mat4& lightView,
+                               uint32_t level,
+                               const glm::ivec2& windowOrigin,
+                               const glm::vec3& boundsMin,
+                               const glm::vec3& boundsMax,
+                               std::vector<uint32_t>& pageIds);
+
+// The light-space XY rect a world AABB projects to. Exposed because the page
+// walk above needs it per level and the caller needs it to skip levels the AABB
+// cannot reach; returns false for a degenerate or non-finite box.
+[[nodiscard]] bool vsmLightSpaceBoundsXy(const glm::mat4& lightView,
+                                         const glm::vec3& boundsMin,
+                                         const glm::vec3& boundsMax,
+                                         glm::vec2& outMin,
+                                         glm::vec2& outMax);
 
 // --- Page projection ------------------------------------------------------
 

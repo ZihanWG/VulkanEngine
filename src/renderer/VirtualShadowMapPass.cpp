@@ -669,6 +669,10 @@ VsmResidencyStats VirtualShadowMapPass::updateResidency(uint32_t frameIndex,
 
     stats.residentPages = allocator_.residentPages();
     stats.dirtyPages = static_cast<uint32_t>(dirtyPages_.size());
+    // Consumed here: the count belongs to the update that acts on it, and the
+    // caller invalidates before calling this.
+    stats.casterInvalidatedPages = pagesInvalidatedByCasters_;
+    pagesInvalidatedByCasters_ = 0;
 
     uploadPageTable(frameIndex);
     return stats;
@@ -683,6 +687,39 @@ void VirtualShadowMapPass::uploadPageTable(uint32_t frameIndex)
     const std::vector<VsmPageTableEntry>& entries = allocator_.entries();
     pageTableBuffers_[frameIndex].upload(
         std::as_bytes(std::span<const VsmPageTableEntry>(entries.data(), entries.size())));
+}
+
+uint32_t VirtualShadowMapPass::invalidatePagesForBounds(const VsmClipmapSettings& clipmap,
+                                                        const glm::mat4& lightView,
+                                                        const glm::vec2& cameraLightSpaceXy,
+                                                        const glm::vec3& boundsMin,
+                                                        const glm::vec3& boundsMax)
+{
+    if (!available_) {
+        return 0;
+    }
+
+    const VsmClipmapSettings clamped = clampVsmClipmapSettings(clipmap);
+    uint32_t invalidated = 0;
+
+    // Every level, not just the one the object's distance would select: the
+    // marking pass requests one level coarser as a fallback, so an object's
+    // shadow can be resident at more than one level at once and dropping only
+    // the finest would leave a stale coarse copy for the walk to find.
+    for (uint32_t level = 0; level < clamped.levelCount; ++level) {
+        scratchPageIds_.clear();
+        const glm::ivec2 windowOrigin = vsmWindowOrigin(clamped, level, cameraLightSpaceXy);
+        vsmPagesOverlappingBounds(
+            clamped, lightView, level, windowOrigin, boundsMin, boundsMax, scratchPageIds_);
+        for (const uint32_t pageId : scratchPageIds_) {
+            if (allocator_.invalidate(pageId)) {
+                ++invalidated;
+            }
+        }
+    }
+
+    pagesInvalidatedByCasters_ += invalidated;
+    return invalidated;
 }
 
 void VirtualShadowMapPass::markDirtyPagesRendered(uint32_t frameIndex)
