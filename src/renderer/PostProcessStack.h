@@ -124,6 +124,24 @@ public:
     // State queries.
     [[nodiscard]] bool isAutoExposureActive() const;
     [[nodiscard]] bool isLogAverageExposureActive() const;
+    // Whether recordLuminanceCommands will record anything this frame. The graph
+    // declares LuminancePass only when this is true, and the recorder early-outs
+    // on the same call, so the declaration and the recording cannot disagree
+    // about whether the pass exists.
+    [[nodiscard]] bool willRecordLuminancePass() const;
+    // Which bloom chain this frame uses. The composite shader samples both
+    // bindings and selects one, so the chain that loses the selection is work
+    // thrown away; the graph declares the loser's output as a layout-only read,
+    // culling removes its passes, and the recorders below return early. The
+    // composite's bloomMethod push constant reads the same call, so the shader
+    // cannot select a chain that was never filled.
+    // Whether recordHistogramCommands will record anything this frame. The graph
+    // declares HistogramExposurePass only when this is true, and the recorder
+    // early-outs on the same call: manual and log-average exposure both return
+    // before the pass begins, and declaring it anyway makes the endFrame backstop
+    // report a mismatch on a frame where the renderer is behaving correctly.
+    [[nodiscard]] bool willRecordHistogramPass() const;
+    [[nodiscard]] bool willRecordMipChainBloom() const;
     [[nodiscard]] bool isHistogramExposureActive() const;
     [[nodiscard]] bool isGpuExposureActive() const;
     [[nodiscard]] bool isTaaActive() const;

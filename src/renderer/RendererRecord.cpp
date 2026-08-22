@@ -534,6 +534,11 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuC
     }
 }
 
+bool Renderer::anyCascadeShadowRedrawRequired() const
+{
+    return !csmSettings_.enableCascadeCache || cascadeShadowCascadesRedrawn_ > 0;
+}
+
 renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
 {
     // sceneExtent is the *allocated* size of the scene targets; renderExtent
@@ -562,11 +567,11 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         }
 
         return renderer::RenderGraphBufferResource{
-            name,
-            buffers[frameIndex].buffer(),
-            buffers[frameIndex].size(),
-            usage,
-            true,
+            .name = name,
+            .buffer = buffers[frameIndex].buffer(),
+            .size = buffers[frameIndex].size(),
+            .usage = usage,
+            .imported = true,
         };
     };
 
@@ -574,20 +579,20 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
                                    const char* name, const rhi::VulkanImage& image, VkImageLayout& layout) {
         const VkExtent3D extent = image.extent();
         return renderer::RenderGraphImageResource{
-            name,
-            image.image(),
-            image.imageView(),
-            VkExtent2D{extent.width, extent.height},
-            &layout,
-            image.format(),
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            1,
-            1,
-            VK_IMAGE_ASPECT_COLOR_BIT,
-            bloomClear,
-            true,
-            false,
-            postProcess_.bloomImagesAreAliased(),
+            .name = name,
+            .image = image.image(),
+            .imageView = image.imageView(),
+            .extent = VkExtent2D{extent.width, extent.height},
+            .layout = &layout,
+            .format = image.format(),
+            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .clearValue = bloomClear,
+            .hasClearValue = true,
+            .imported = false,
+            .aliased = postProcess_.bloomImagesAreAliased(),
         };
     };
 
@@ -595,19 +600,19 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
                                         const char* name, const rhi::VulkanImage& image, VkImageLayout& layout) {
         const VkExtent3D extent = image.extent();
         return renderer::RenderGraphImageResource{
-            name,
-            image.image(),
-            image.imageView(),
-            VkExtent2D{extent.width, extent.height},
-            &layout,
-            image.format(),
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            1,
-            1,
-            VK_IMAGE_ASPECT_COLOR_BIT,
-            bloomClear,
-            true,
-            true,
+            .name = name,
+            .image = image.image(),
+            .imageView = image.imageView(),
+            .extent = VkExtent2D{extent.width, extent.height},
+            .layout = &layout,
+            .format = image.format(),
+            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .clearValue = bloomClear,
+            .hasClearValue = true,
+            .imported = true,
         };
     };
 
@@ -637,40 +642,40 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         // Raw AO is half resolution; import its actual extent, not the scene's.
         const VkExtent3D gtaoRawExtent = gtao_.rawAmbientOcclusion().extent();
         gtaoRawResource = renderer::RenderGraphImageResource{
-            "GtaoRawAmbientOcclusion",
-            gtao_.rawAmbientOcclusion().image(),
-            gtao_.rawAmbientOcclusion().imageView(),
-            VkExtent2D{gtaoRawExtent.width, gtaoRawExtent.height},
-            gtao_.rawAmbientOcclusionLayoutPtr(),
-            gtao_.rawAmbientOcclusion().format(),
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            1,
-            1,
-            VK_IMAGE_ASPECT_COLOR_BIT,
-            VkClearValue{},
-            false,
-            false,
+            .name = "GtaoRawAmbientOcclusion",
+            .image = gtao_.rawAmbientOcclusion().image(),
+            .imageView = gtao_.rawAmbientOcclusion().imageView(),
+            .extent = VkExtent2D{gtaoRawExtent.width, gtaoRawExtent.height},
+            .layout = gtao_.rawAmbientOcclusionLayoutPtr(),
+            .format = gtao_.rawAmbientOcclusion().format(),
+            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .clearValue = VkClearValue{},
+            .hasClearValue = false,
+            .imported = false,
         };
     }
 
     renderer::RenderGraphImageResource ssrSceneColorCopyResource{};
     if (ssr_.available()) {
         ssrSceneColorCopyResource = renderer::RenderGraphImageResource{
-            "SsrSceneColorCopy",
-            ssr_.sceneColorCopy().image(),
-            ssr_.sceneColorCopy().imageView(),
+            .name = "SsrSceneColorCopy",
+            .image = ssr_.sceneColorCopy().image(),
+            .imageView = ssr_.sceneColorCopy().imageView(),
             // Its own allocation, not the scene's: the copy is half size when
             // the driver supports a filtered blit.
-            ssr_.sceneColorCopyAllocationExtent(),
-            ssr_.sceneColorCopyLayoutPtr(),
-            ssr_.sceneColorCopy().format(),
-            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            1,
-            1,
-            VK_IMAGE_ASPECT_COLOR_BIT,
-            VkClearValue{},
-            false,
-            false,
+            .extent = ssr_.sceneColorCopyAllocationExtent(),
+            .layout = ssr_.sceneColorCopyLayoutPtr(),
+            .format = ssr_.sceneColorCopy().format(),
+            .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .clearValue = VkClearValue{},
+            .hasClearValue = false,
+            .imported = false,
         };
     }
 
@@ -697,241 +702,254 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
                                          VkClearValue clearValue = VkClearValue{}) {
         const VkExtent3D extent = image.extent();
         return renderer::RenderGraphImageResource{
-            name,
-            image.image(),
-            image.imageView(),
-            VkExtent2D{extent.width, extent.height},
-            layout,
-            image.format(),
-            usage,
-            1,
-            1,
-            aspect,
-            clearValue,
-            true,
-            true,
+            .name = name,
+            .image = image.image(),
+            .imageView = image.imageView(),
+            .extent = VkExtent2D{extent.width, extent.height},
+            .layout = layout,
+            .format = image.format(),
+            .usage = usage,
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .aspectMask = aspect,
+            .clearValue = clearValue,
+            .hasClearValue = true,
+            .imported = true,
         };
     };
 
     const auto probeAtlasResource = [](const char* name, const rhi::VulkanImage& image, VkImageLayout* layout) {
         const VkExtent3D extent = image.extent();
         return renderer::RenderGraphImageResource{
-            name,
-            image.image(),
-            image.imageView(),
-            VkExtent2D{extent.width, extent.height},
-            layout,
-            image.format(),
-            VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            1,
-            1,
-            VK_IMAGE_ASPECT_COLOR_BIT,
-            VkClearValue{},
-            false,
-            true,
+            .name = name,
+            .image = image.image(),
+            .imageView = image.imageView(),
+            .extent = VkExtent2D{extent.width, extent.height},
+            .layout = layout,
+            .format = image.format(),
+            .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .clearValue = VkClearValue{},
+            .hasClearValue = false,
+            .imported = true,
         };
     };
 
     return renderer::RenderGraphFrameResources{
-        // The sub-rect of the scene-sized targets this frame writes. Positional
-        // aggregate init, so this has to stay first -- matching the member order
-        // in RenderGraphFrameResources.
-        renderResolution_.extent(),
-        renderer::RenderGraphImageResource{
-            "SceneColor",
-            postProcess_.sceneColor().image(),
-            postProcess_.sceneColor().imageView(),
-            VkExtent2D{sceneExtent.width, sceneExtent.height},
-            &postProcess_.sceneColorLayout(),
-            postProcess_.sceneColor().format(),
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-            1,
-            1,
-            VK_IMAGE_ASPECT_COLOR_BIT,
-            sceneClear,
-            true,
-            false,
-        },
-        renderer::RenderGraphImageResource{
-            "VelocityBuffer",
-            postProcess_.velocity().image(),
-            postProcess_.velocity().imageView(),
-            VkExtent2D{sceneExtent.width, sceneExtent.height},
-            &postProcess_.velocityLayout(),
-            postProcess_.velocity().format(),
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            1,
-            1,
-            VK_IMAGE_ASPECT_COLOR_BIT,
-            VkClearValue{},
-            true,
-            false,
-        },
-        renderer::RenderGraphImageResource{
-            "NormalRoughnessGBuffer",
-            postProcess_.normalRoughness().image(),
-            postProcess_.normalRoughness().imageView(),
-            VkExtent2D{sceneExtent.width, sceneExtent.height},
-            &postProcess_.normalRoughnessLayout(),
-            postProcess_.normalRoughness().format(),
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            1,
-            1,
-            VK_IMAGE_ASPECT_COLOR_BIT,
-            VkClearValue{},
-            true,
-            false,
-        },
-        renderer::RenderGraphImageResource{
-            "AmbientOcclusion",
-            postProcess_.ambientOcclusion().image(),
-            postProcess_.ambientOcclusion().imageView(),
-            VkExtent2D{sceneExtent.width, sceneExtent.height},
-            &postProcess_.ambientOcclusionLayout(),
-            postProcess_.ambientOcclusion().format(),
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            1,
-            1,
-            VK_IMAGE_ASPECT_COLOR_BIT,
-            VkClearValue{},
-            true,
-            false,
-        },
-        gtaoRawResource,
-        ssrSceneColorCopyResource,
-        taaHistoryResource("TAAHistoryRead",
-                           postProcess_.taaHistoryImages()[postProcess_.taaHistoryReadIndex()],
-                           postProcess_.taaHistoryLayouts()[postProcess_.taaHistoryReadIndex()]),
-        taaHistoryResource("TAAHistoryWrite",
-                           postProcess_.taaHistoryImages()[postProcess_.taaHistoryWriteIndex()],
-                           postProcess_.taaHistoryLayouts()[postProcess_.taaHistoryWriteIndex()]),
-        renderer::RenderGraphImageResource{
-            "BloomExtract",
-            postProcess_.bloomExtract().image(),
-            postProcess_.bloomExtract().imageView(),
-            postProcess_.bloomExtent(),
-            &postProcess_.bloomExtractLayout(),
-            postProcess_.bloomExtract().format(),
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            1,
-            1,
-            VK_IMAGE_ASPECT_COLOR_BIT,
-            bloomClear,
-            true,
-            false,
-            postProcess_.bloomImagesAreAliased(),
-        },
-        renderer::RenderGraphImageResource{
-            "BloomPing",
-            postProcess_.bloomPing().image(),
-            postProcess_.bloomPing().imageView(),
-            postProcess_.bloomExtent(),
-            &postProcess_.bloomPingLayout(),
-            postProcess_.bloomPing().format(),
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            1,
-            1,
-            VK_IMAGE_ASPECT_COLOR_BIT,
-            bloomClear,
-            true,
-            false,
-            postProcess_.bloomImagesAreAliased(),
-        },
-        renderer::RenderGraphImageResource{
-            "BloomPong",
-            postProcess_.bloomPong().image(),
-            postProcess_.bloomPong().imageView(),
-            postProcess_.bloomExtent(),
-            &postProcess_.bloomPongLayout(),
-            postProcess_.bloomPong().format(),
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            1,
-            1,
-            VK_IMAGE_ASPECT_COLOR_BIT,
-            bloomClear,
-            true,
-            false,
-            postProcess_.bloomImagesAreAliased(),
-        },
-        std::move(bloomDownsampleResources),
-        std::move(bloomUpsampleResources),
-        renderer::RenderGraphImageResource{
-            "DepthPyramidHiZ",
-            depthPyramid_.image(),
-            depthPyramid_.imageView(),
-            VkExtent2D{depthPyramidExtent.width, depthPyramidExtent.height},
-            depthPyramid_.layoutPtr(),
-            depthPyramid_.format(),
-            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
-            depthPyramid_.mipLevels(),
-            1,
-            VK_IMAGE_ASPECT_COLOR_BIT,
-            {},
-            false,
-            true,
-        },
-        probeAtlasResource("ProbeIrradianceAtlas",
-                           irradianceProbes_.irradianceAtlas(),
-                           irradianceProbes_.irradianceAtlasLayoutPtr()),
-        probeAtlasResource(
+        // The sub-rect of the scene-sized targets this frame writes.
+        .renderExtent = renderResolution_.extent(),
+        .sceneColor =
+            renderer::RenderGraphImageResource{
+                .name = "SceneColor",
+                .image = postProcess_.sceneColor().image(),
+                .imageView = postProcess_.sceneColor().imageView(),
+                .extent = VkExtent2D{sceneExtent.width, sceneExtent.height},
+                .layout = &postProcess_.sceneColorLayout(),
+                .format = postProcess_.sceneColor().format(),
+                .usage =
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                .mipLevels = 1,
+                .arrayLayers = 1,
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .clearValue = sceneClear,
+                .hasClearValue = true,
+                .imported = false,
+            },
+        .velocity =
+            renderer::RenderGraphImageResource{
+                .name = "VelocityBuffer",
+                .image = postProcess_.velocity().image(),
+                .imageView = postProcess_.velocity().imageView(),
+                .extent = VkExtent2D{sceneExtent.width, sceneExtent.height},
+                .layout = &postProcess_.velocityLayout(),
+                .format = postProcess_.velocity().format(),
+                .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                .mipLevels = 1,
+                .arrayLayers = 1,
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .clearValue = VkClearValue{},
+                .hasClearValue = true,
+                .imported = false,
+            },
+        .normalRoughness =
+            renderer::RenderGraphImageResource{
+                .name = "NormalRoughnessGBuffer",
+                .image = postProcess_.normalRoughness().image(),
+                .imageView = postProcess_.normalRoughness().imageView(),
+                .extent = VkExtent2D{sceneExtent.width, sceneExtent.height},
+                .layout = &postProcess_.normalRoughnessLayout(),
+                .format = postProcess_.normalRoughness().format(),
+                .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                .mipLevels = 1,
+                .arrayLayers = 1,
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .clearValue = VkClearValue{},
+                .hasClearValue = true,
+                .imported = false,
+            },
+        .ambientOcclusion =
+            renderer::RenderGraphImageResource{
+                .name = "AmbientOcclusion",
+                .image = postProcess_.ambientOcclusion().image(),
+                .imageView = postProcess_.ambientOcclusion().imageView(),
+                .extent = VkExtent2D{sceneExtent.width, sceneExtent.height},
+                .layout = &postProcess_.ambientOcclusionLayout(),
+                .format = postProcess_.ambientOcclusion().format(),
+                .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                .mipLevels = 1,
+                .arrayLayers = 1,
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .clearValue = VkClearValue{},
+                .hasClearValue = true,
+                .imported = false,
+            },
+        .ambientOcclusionRaw = gtaoRawResource,
+        .ssrSceneColorCopy = ssrSceneColorCopyResource,
+        .taaHistoryRead = taaHistoryResource("TAAHistoryRead",
+                                             postProcess_.taaHistoryImages()[postProcess_.taaHistoryReadIndex()],
+                                             postProcess_.taaHistoryLayouts()[postProcess_.taaHistoryReadIndex()]),
+        .taaHistoryWrite = taaHistoryResource("TAAHistoryWrite",
+                                              postProcess_.taaHistoryImages()[postProcess_.taaHistoryWriteIndex()],
+                                              postProcess_.taaHistoryLayouts()[postProcess_.taaHistoryWriteIndex()]),
+        .bloomExtract =
+            renderer::RenderGraphImageResource{
+                .name = "BloomExtract",
+                .image = postProcess_.bloomExtract().image(),
+                .imageView = postProcess_.bloomExtract().imageView(),
+                .extent = postProcess_.bloomExtent(),
+                .layout = &postProcess_.bloomExtractLayout(),
+                .format = postProcess_.bloomExtract().format(),
+                .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                .mipLevels = 1,
+                .arrayLayers = 1,
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .clearValue = bloomClear,
+                .hasClearValue = true,
+                .imported = false,
+                .aliased = postProcess_.bloomImagesAreAliased(),
+            },
+        .bloomPing =
+            renderer::RenderGraphImageResource{
+                .name = "BloomPing",
+                .image = postProcess_.bloomPing().image(),
+                .imageView = postProcess_.bloomPing().imageView(),
+                .extent = postProcess_.bloomExtent(),
+                .layout = &postProcess_.bloomPingLayout(),
+                .format = postProcess_.bloomPing().format(),
+                .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                .mipLevels = 1,
+                .arrayLayers = 1,
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .clearValue = bloomClear,
+                .hasClearValue = true,
+                .imported = false,
+                .aliased = postProcess_.bloomImagesAreAliased(),
+            },
+        .bloomPong =
+            renderer::RenderGraphImageResource{
+                .name = "BloomPong",
+                .image = postProcess_.bloomPong().image(),
+                .imageView = postProcess_.bloomPong().imageView(),
+                .extent = postProcess_.bloomExtent(),
+                .layout = &postProcess_.bloomPongLayout(),
+                .format = postProcess_.bloomPong().format(),
+                .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                .mipLevels = 1,
+                .arrayLayers = 1,
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .clearValue = bloomClear,
+                .hasClearValue = true,
+                .imported = false,
+                .aliased = postProcess_.bloomImagesAreAliased(),
+            },
+        .bloomDownsampleChain = std::move(bloomDownsampleResources),
+        .bloomUpsampleChain = std::move(bloomUpsampleResources),
+        .depthPyramid =
+            renderer::RenderGraphImageResource{
+                .name = "DepthPyramidHiZ",
+                .image = depthPyramid_.image(),
+                .imageView = depthPyramid_.imageView(),
+                .extent = VkExtent2D{depthPyramidExtent.width, depthPyramidExtent.height},
+                .layout = depthPyramid_.layoutPtr(),
+                .format = depthPyramid_.format(),
+                .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+                .mipLevels = depthPyramid_.mipLevels(),
+                .arrayLayers = 1,
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .clearValue = {},
+                .hasClearValue = false,
+                .imported = true,
+            },
+        .probeIrradianceAtlas = probeAtlasResource(
+            "ProbeIrradianceAtlas", irradianceProbes_.irradianceAtlas(), irradianceProbes_.irradianceAtlasLayoutPtr()),
+        .probeDepthAtlas = probeAtlasResource(
             "ProbeDepthAtlas", irradianceProbes_.depthAtlas(), irradianceProbes_.depthAtlasLayoutPtr()),
-        probeCaptureResource("ProbeCaptureAtlas",
-                             irradianceProbes_.captureAtlas(),
-                             irradianceProbes_.captureAtlasLayoutPtr(),
-                             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
-                                 VK_IMAGE_USAGE_SAMPLED_BIT,
-                             VK_IMAGE_ASPECT_COLOR_BIT,
-                             probeCaptureSkyClear),
-        probeCaptureResource("ProbeCaptureDepth",
-                             irradianceProbes_.captureDepth(),
-                             irradianceProbes_.captureDepthLayoutPtr(),
-                             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                             VK_IMAGE_ASPECT_DEPTH_BIT),
-        bufferResource(
+        .probeCaptureAtlas = probeCaptureResource("ProbeCaptureAtlas",
+                                                  irradianceProbes_.captureAtlas(),
+                                                  irradianceProbes_.captureAtlasLayoutPtr(),
+                                                  VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
+                                                      VK_IMAGE_USAGE_SAMPLED_BIT,
+                                                  VK_IMAGE_ASPECT_COLOR_BIT,
+                                                  probeCaptureSkyClear),
+        .probeCaptureDepth = probeCaptureResource("ProbeCaptureDepth",
+                                                  irradianceProbes_.captureDepth(),
+                                                  irradianceProbes_.captureDepthLayoutPtr(),
+                                                  VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                                                  VK_IMAGE_ASPECT_DEPTH_BIT),
+        .mainCullInput = bufferResource(
             "MainCullInput", gpuCulling_.cullInputBuffers(), currentFrame_, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
-        bufferResource("MainCullIndirectOutput",
-                       frameIndirectDrawBuffers_,
-                       currentFrame_,
-                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT),
-        bufferResource("MainCullVisibleCounts",
-                       gpuCulling_.visibleCountBuffers(),
-                       currentFrame_,
-                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                           VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT),
-        bufferResource("MainCullReadback",
-                       gpuCulling_.visibleCountReadbackBuffers(),
-                       currentFrame_,
-                       VK_BUFFER_USAGE_TRANSFER_DST_BIT),
-        bufferResource(
+        .mainCullIndirectOutput =
+            bufferResource("MainCullIndirectOutput",
+                           frameIndirectDrawBuffers_,
+                           currentFrame_,
+                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT),
+        .mainCullVisibleCounts =
+            bufferResource("MainCullVisibleCounts",
+                           gpuCulling_.visibleCountBuffers(),
+                           currentFrame_,
+                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                               VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT),
+        .mainCullReadback = bufferResource("MainCullReadback",
+                                           gpuCulling_.visibleCountReadbackBuffers(),
+                                           currentFrame_,
+                                           VK_BUFFER_USAGE_TRANSFER_DST_BIT),
+        .luminancePartials = bufferResource(
             "LuminancePartials", postProcess_.luminanceBuffers(), currentFrame_, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
-        bufferResource("LuminanceReadback",
-                       postProcess_.luminanceReadbackBuffers(),
-                       currentFrame_,
-                       VK_BUFFER_USAGE_TRANSFER_DST_BIT),
-        bufferResource("LuminanceHistogram",
-                       postProcess_.histogramBuffers(),
-                       currentFrame_,
-                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT),
-        bufferResource("HistogramReadback",
-                       postProcess_.histogramReadbackBuffers(),
-                       currentFrame_,
-                       VK_BUFFER_USAGE_TRANSFER_DST_BIT),
-        bufferResource(
+        .luminanceReadback = bufferResource("LuminanceReadback",
+                                            postProcess_.luminanceReadbackBuffers(),
+                                            currentFrame_,
+                                            VK_BUFFER_USAGE_TRANSFER_DST_BIT),
+        .luminanceHistogram = bufferResource("LuminanceHistogram",
+                                             postProcess_.histogramBuffers(),
+                                             currentFrame_,
+                                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT),
+        .histogramReadback = bufferResource("HistogramReadback",
+                                            postProcess_.histogramReadbackBuffers(),
+                                            currentFrame_,
+                                            VK_BUFFER_USAGE_TRANSFER_DST_BIT),
+        .exposureState = bufferResource(
             "ExposureState", postProcess_.exposureBuffers(), currentFrame_, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
-        postProcess_.isTaaActive(),
-        frameTwoPhaseOcclusionActive_,
-        frameSsrActive_,
-        frameGtaoActive_,
-        frameVisibleBucketRanges_[static_cast<size_t>(RenderBucket::Blend)].count(),
+        .taaEnabled = postProcess_.isTaaActive(),
+        .twoPhaseOcclusionEnabled = frameTwoPhaseOcclusionActive_,
+        .ssrEnabled = frameSsrActive_,
+        .gtaoEnabled = frameGtaoActive_,
+        .transparentDrawCount = frameVisibleBucketRanges_[static_cast<size_t>(RenderBucket::Blend)].count(),
         // Zero on a cache hit, which stops the graph declaring the atlas write
         // pass at all. The main pass still declares its read, so the image keeps
         // the layout it already has and no barrier is emitted for it.
-        punctualShadowCacheHit_ ? 0u : punctualShadows_.slotCount(),
-        isVsmPageMarkingActive(),
-        isVsmPageRenderingActive() ? static_cast<uint32_t>(virtualShadowMap_.dirtyPages().size()) : 0u,
-        isVolumetricFogActive(),
-        isIrradianceProbeUpdateActive(),
-        frameProbeCaptureActive_,
+        .punctualShadowSlotCount = punctualShadowCacheHit_ ? 0u : punctualShadows_.slotCount(),
+        .vsmPageMarkEnabled = isVsmPageMarkingActive(),
+        .vsmDirtyPageCount =
+            isVsmPageRenderingActive() ? static_cast<uint32_t>(virtualShadowMap_.dirtyPages().size()) : 0u,
+        .volumetricFogEnabled = isVolumetricFogActive(),
+        .irradianceProbeUpdateEnabled = isIrradianceProbeUpdateActive(),
+        .probeCaptureEnabled = frameProbeCaptureActive_,
+        .cascadeShadowRedrawRequired = anyCascadeShadowRedrawRequired(),
+        .luminancePassEnabled = postProcess_.willRecordLuminancePass(),
+        .mipChainBloomSelected = postProcess_.willRecordMipChainBloom(),
+        .histogramPassEnabled = postProcess_.willRecordHistogramPass(),
     };
 }
 
@@ -1185,34 +1203,10 @@ void Renderer::recordDepthPyramidCommands(VkCommandBuffer commandBuffer, bool mi
     depthPyramid_.recordCommands(commandBuffer, currentFrame_, frameViewProjection_, frameCameraPosition_, midFrame);
 }
 
-void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex)
+void Renderer::recordCascadeShadowPass(VkCommandBuffer commandBuffer)
 {
     const VkDeviceAddress objectFrameDataBaseAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
     const VkDeviceAddress frameConstantsBaseAddress = frameConstantsBuffers_.at(currentFrame_).deviceAddress();
-    const size_t mainDrawItemCount = visibleDrawItems_.size();
-    const bool clusteredLightingActive = clusteredLighting_.available() && useClusteredLighting_ &&
-                                         clusteredLighting_.lightCount() > 0 && !allDrawItems_.empty();
-    const bool taaActiveThisFrame = postProcess_.isTaaActive();
-    postProcess_.beginFrame(currentFrame_, taaActiveThisFrame);
-
-    renderGraph_.beginFrame(commandBuffer,
-                            swapchain_,
-                            shadowMap_,
-                            punctualShadows_.valid() ? &punctualShadows_.atlas() : nullptr,
-                            isVsmPageRenderingActive() ? &virtualShadowMap_.pagePool() : nullptr,
-                            imageIndex,
-                            renderGraphFrameResources());
-    rhi::debug::beginLabel(commandBuffer, "Frame");
-    gpuProfiler_.beginFrame(currentFrame_, commandBuffer);
-
-    // First recorded pass of the frame: it reads the depth pyramid the previous
-    // frame left behind, so it has to run before anything this frame writes.
-    recordVsmPageMarkPass(commandBuffer);
-    // Culling before the page pass, not inside it: compute cannot be recorded
-    // inside a dynamic-rendering scope, and that scope has to stay single so the
-    // pages this frame does not touch keep their cached depth.
-    recordVsmPageCull(commandBuffer);
-    recordVsmPagePass(commandBuffer);
 
     const bool gpuShadowCullingActive = isGpuShadowCullingActive() && !allDrawItems_.empty();
     const uint32_t cascadeCount = activeCascadeCount();
@@ -1237,7 +1231,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         }
         return cascadeIndex < cascadeShadowDirty_.size() && cascadeShadowDirty_[cascadeIndex];
     };
-    const bool anyCascadeNeedsRedraw = !cascadeCacheActive || cascadeShadowCascadesRedrawn_ > 0;
+    const bool anyCascadeNeedsRedraw = anyCascadeShadowRedrawRequired();
 
     const bool csmProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "CSMShadowPass");
     rhi::debug::beginLabel(commandBuffer, "CSMShadowPass");
@@ -1497,158 +1491,26 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     if (csmProfileScope) {
         gpuProfiler_.endScope(currentFrame_, commandBuffer);
     }
+}
 
-    // GPU caster culling for the atlas, when enabled. Recorded here rather than
-    // inside recordPunctualShadowPass because compute cannot run inside a
-    // dynamic-rendering scope, and that pass is one scope so its cached tiles
-    // survive a partial clear. Every slot is therefore culled up front.
-    const bool gpuPunctualCullActive = isGpuPunctualShadowCullingActive();
-    if (gpuPunctualCullActive) {
-        const renderer::GpuProfileScope cullScope(
-            gpuProfiler_, currentFrame_, commandBuffer, "PunctualShadowGpuCull");
-        rhi::debug::beginLabel(commandBuffer, "PunctualShadowGpuCull");
-        punctualShadows_.uploadSlotFrustums(currentFrame_);
-
-        // The shared cull input carries no bucket, so the "does this cast" test
-        // travels beside it. Blended geometry only depth-tests in the main pass;
-        // letting it cast would put an opaque silhouette back into the atlas.
-        punctualShadowCasterFlags_.assign(allDrawItems_.size(), 1u);
-        for (size_t drawIndex = 0; drawIndex < allDrawItems_.size(); ++drawIndex) {
-            const DrawItem& drawItem = allDrawItems_[drawIndex];
-            if (drawItem.bucket == RenderBucket::Blend || drawItem.mesh == nullptr ||
-                drawItem.indexCount == 0) {
-                punctualShadowCasterFlags_[drawIndex] = 0u;
-            }
-        }
-
-        rhi::VulkanBuffer& cullInput = gpuCulling_.shadowCullInputBuffer(currentFrame_);
-        punctualShadows_.recordCull(
-            commandBuffer,
-            currentFrame_,
-            cullInput.buffer(),
-            cullInput.size(),
-            static_cast<uint32_t>(allDrawItems_.size()),
-            std::span<const uint32_t>(punctualShadowCasterFlags_.data(), punctualShadowCasterFlags_.size()));
-        rhi::debug::endLabel(commandBuffer);
-    }
-
-    // Punctual casters go into the atlas right after the directional cascades,
-    // so both shadow sources are resident before the main HDR pass samples them.
-    recordPunctualShadowPass(commandBuffer, gpuPunctualCullActive);
-
-    // Fog injection samples the cascaded shadow map, so it has to follow the
-    // shadow passes; the main HDR pass samples the integrated volume, so it has
-    // to precede that.
-    // Runs whether or not fog is on: binding 8 claims a sampled layout
-    // unconditionally, so the volume has to reach it even on a cold start with
-    // fog disabled. No-op after the first frame.
-    // Fog switching off has to leave a neutral volume behind, because the
-    // skybox samples it unconditionally. Detected here rather than in the UI so
-    // any path that disables fog -- settings load, preset, toggle -- is covered.
-    const bool fogActiveThisFrame = isVolumetricFogActive();
-    if (fogWasActive_ && !fogActiveThisFrame) {
-        volumetricFog_.markVolumeNeedsClear();
-    }
-    fogWasActive_ = fogActiveThisFrame;
-
-    volumetricFog_.ensureVolumeInitialized(commandBuffer);
-
-    recordGpuCullingCommands(commandBuffer);
-
-    // Clustered (Forward+) light assignment: rebuild the froxel AABBs, then cull
-    // every light into its froxels. Both write buffers the main HDR fragment
-    // shader reads, so the assignment pass barriers into the fragment stage.
-    if (clusteredLightingActive && !frameAsyncComputeActive_) {
-        {
-            const renderer::GpuProfileScope buildScope(gpuProfiler_, currentFrame_, commandBuffer, "ClusterBuild");
-            rhi::debug::beginLabel(commandBuffer, "ClusterBuild");
-            clusteredLighting_.recordClusterBuild(commandBuffer, currentFrame_);
-            rhi::debug::endLabel(commandBuffer);
-        }
-        {
-            const renderer::GpuProfileScope cullScope(gpuProfiler_, currentFrame_, commandBuffer, "LightCull");
-            rhi::debug::beginLabel(commandBuffer, "LightCull");
-            clusteredLighting_.recordLightCull(commandBuffer, currentFrame_);
-            rhi::debug::endLabel(commandBuffer);
-        }
-    }
-
-    // Fog runs here, not with the shadow passes: injection walks the per-cluster
-    // light lists, so it has to follow the cluster build and light cull above.
-    // It still has to precede the main HDR pass, which samples the volume.
-    if (isVolumetricFogActive()) {
-        const bool fogProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "VolumetricFog");
-        // The graph pass carries no rendering scope; it exists so the cascaded
-        // shadow map is transitioned out of its depth-attachment layout before
-        // the injection dispatch samples it.
-        // Fog reuses the light lists the cluster passes just produced and the
-        // atlas tiles the punctual shadow pass just filled, rather than
-        // building either for itself.
-        renderer::FogInjectPushConstants fogPushConstants{};
-        fogPushConstants.lightBufferAddress = clusteredLighting_.lightBufferAddress(currentFrame_);
-        fogPushConstants.clusterGridAddress =
-            clusteredLightingActive ? clusteredLighting_.clusterGridAddress(currentFrame_) : 0;
-        fogPushConstants.lightIndexListAddress =
-            clusteredLightingActive ? clusteredLighting_.lightIndexListAddress(currentFrame_) : 0;
-        fogPushConstants.punctualShadowSlotAddress =
-            punctualShadows_.slotCount() > 0 ? punctualShadows_.slotBufferAddress(currentFrame_) : 0;
-        fogPushConstants.lightCount = clusteredLighting_.lightCount();
-        fogPushConstants.useClustered = clusteredLightingActive ? 1u : 0u;
-        fogPushConstants.clusterZNear = camera_.nearPlane;
-        fogPushConstants.clusterZFar = camera_.farPlane;
-
-        renderGraph_.beginVolumetricFogPass();
-        volumetricFog_.recordCommands(commandBuffer, currentFrame_, fogPushConstants);
-        renderGraph_.endVolumetricFogPass();
-        if (fogProfileScope) {
-            gpuProfiler_.endScope(currentFrame_, commandBuffer);
-        }
-    }
-
-    // Probe shading parameters, refreshed inside this frame's own command buffer
-    // so a single buffer serves every frame in flight.
+void Renderer::recordMainPassGeometry(VkCommandBuffer commandBuffer)
+{
+    // The main HDR pass, the two-phase occlusion re-test, the screen-space
+    // effects between them, and the transparent pass, in one recorder rather
+    // than four.
     //
-    // Before the capture pass, not just before the main pass: the capture reads
-    // these too, for the multi-bounce lookup. Updating after it would have the
-    // capture read the previous frame's grid placement -- and on the very first
-    // frame, a buffer nothing had written yet.
-    {
-        renderer::ProbeShadingParams probeParams{};
-        const renderer::ProbeGridBounds bounds = irradianceProbes_.bounds();
-        // Intensity carries the off state, so everything downstream needs no
-        // separate flag: no atlases, no capture pipeline, or the toggle off all
-        // collapse to zero here.
-        const bool probeShadingActive = giSettings_.enabled && irradianceProbes_.hasAtlases() &&
-                                        irradianceProbes_.convolveAvailable() && !giSettings_.debugPattern;
-        probeParams.gridOrigin =
-            glm::vec4{bounds.origin, probeShadingActive ? giSettings_.intensity : 0.0f};
-        probeParams.gridSpacing = glm::vec4{bounds.spacing, giSettings_.surfaceBias};
-        probeParams.debug.x =
-            (probeShadingActive && giSettings_.debugIrradianceOnly) ? 1.0f : 0.0f;
-        irradianceProbes_.updateShadingParams(commandBuffer, probeParams);
-    }
-
-    // Probe capture, then the convolution that turns it into probe tiles. Both
-    // sit after the shadow passes -- the capture samples the cascades so the
-    // radiance it records is shadowed -- and before the main pass, which
-    // declares a read on the probe atlases.
-    if (frameProbeCaptureActive_) {
-        recordProbeCapturePass(commandBuffer);
-    } else {
-        probeCaptureDrawsRecorded_ = 0;
-    }
-
-    if (isIrradianceProbeUpdateActive()) {
-        const bool probeProfileScope =
-            gpuProfiler_.beginScope(currentFrame_, commandBuffer, "IrradianceProbeUpdate");
-        renderGraph_.beginIrradianceProbePass();
-        irradianceProbes_.recordUpdate(commandBuffer, giSettings_.debugPattern);
-        renderGraph_.endIrradianceProbePass();
-        if (probeProfileScope) {
-            gpuProfiler_.endScope(currentFrame_, commandBuffer);
-        }
-    }
-
+    // They are one region as far as state goes: the viewport, the global
+    // descriptor set, the indirect buffers, the base push constants and
+    // whether the bindless sets are currently bound are all set up by the main
+    // pass and reused by the other three. Splitting them would mean threading
+    // nine values through a shared struct, one of them mutable, for passes the
+    // graph has no freedom to separate anyway -- the same reason the mip-chain
+    // bloom recorder covers seven declared passes.
+    const VkDeviceAddress objectFrameDataBaseAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
+    const VkDeviceAddress frameConstantsBaseAddress = frameConstantsBuffers_.at(currentFrame_).deviceAddress();
+    const size_t mainDrawItemCount = visibleDrawItems_.size();
+    const bool clusteredLightingActive = clusteredLighting_.available() && useClusteredLighting_ &&
+                                         clusteredLighting_.lightCount() > 0 && !allDrawItems_.empty();
 
     const bool mainHdrProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "MainHDRPass");
     rhi::debug::beginLabel(commandBuffer, "MainHDRPass");
@@ -2110,49 +1972,287 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         renderGraph_.endTransparentPass();
         rhi::debug::endLabel(commandBuffer);
     }
+}
 
-    if (isDepthPyramidBuildRequired()) {
-        recordDepthPyramidCommands(commandBuffer);
+void Renderer::recordPunctualShadows(VkCommandBuffer commandBuffer)
+{
+    // GPU caster culling for the atlas, when enabled. Recorded here rather than
+    // inside recordPunctualShadowPass because compute cannot run inside a
+    // dynamic-rendering scope, and that pass is one scope so its cached tiles
+    // survive a partial clear. Every slot is therefore culled up front.
+    const bool gpuPunctualCullActive = isGpuPunctualShadowCullingActive();
+    if (gpuPunctualCullActive) {
+        const renderer::GpuProfileScope cullScope(
+            gpuProfiler_, currentFrame_, commandBuffer, "PunctualShadowGpuCull");
+        rhi::debug::beginLabel(commandBuffer, "PunctualShadowGpuCull");
+        punctualShadows_.uploadSlotFrustums(currentFrame_);
+
+        // The shared cull input carries no bucket, so the "does this cast" test
+        // travels beside it. Blended geometry only depth-tests in the main pass;
+        // letting it cast would put an opaque silhouette back into the atlas.
+        punctualShadowCasterFlags_.assign(allDrawItems_.size(), 1u);
+        for (size_t drawIndex = 0; drawIndex < allDrawItems_.size(); ++drawIndex) {
+            const DrawItem& drawItem = allDrawItems_[drawIndex];
+            if (drawItem.bucket == RenderBucket::Blend || drawItem.mesh == nullptr ||
+                drawItem.indexCount == 0) {
+                punctualShadowCasterFlags_[drawIndex] = 0u;
+            }
+        }
+
+        rhi::VulkanBuffer& cullInput = gpuCulling_.shadowCullInputBuffer(currentFrame_);
+        punctualShadows_.recordCull(
+            commandBuffer,
+            currentFrame_,
+            cullInput.buffer(),
+            cullInput.size(),
+            static_cast<uint32_t>(allDrawItems_.size()),
+            std::span<const uint32_t>(punctualShadowCasterFlags_.data(), punctualShadowCasterFlags_.size()));
+        rhi::debug::endLabel(commandBuffer);
+    }
+
+    // Punctual casters go into the atlas right after the directional cascades,
+    // so both shadow sources are resident before the main HDR pass samples them.
+    recordPunctualShadowPass(commandBuffer, gpuPunctualCullActive);
+}
+
+void Renderer::recordVolumetricFogPass(VkCommandBuffer commandBuffer)
+{
+    // Derived here rather than passed in: the recorder is the only thing that
+    // needs it, and the frame no longer keeps a copy for anyone else.
+    const bool clusteredLightingActive = clusteredLighting_.available() && useClusteredLighting_ &&
+                                         clusteredLighting_.lightCount() > 0 && !allDrawItems_.empty();
+
+    // Fog runs here, not with the shadow passes: injection walks the per-cluster
+    // light lists, so it has to follow the cluster build and light cull above.
+    // It still has to precede the main HDR pass, which samples the volume.
+    if (isVolumetricFogActive()) {
+        const bool fogProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "VolumetricFog");
+        // The graph pass carries no rendering scope; it exists so the cascaded
+        // shadow map is transitioned out of its depth-attachment layout before
+        // the injection dispatch samples it.
+        // Fog reuses the light lists the cluster passes just produced and the
+        // atlas tiles the punctual shadow pass just filled, rather than
+        // building either for itself.
+        renderer::FogInjectPushConstants fogPushConstants{};
+        fogPushConstants.lightBufferAddress = clusteredLighting_.lightBufferAddress(currentFrame_);
+        fogPushConstants.clusterGridAddress =
+            clusteredLightingActive ? clusteredLighting_.clusterGridAddress(currentFrame_) : 0;
+        fogPushConstants.lightIndexListAddress =
+            clusteredLightingActive ? clusteredLighting_.lightIndexListAddress(currentFrame_) : 0;
+        fogPushConstants.punctualShadowSlotAddress =
+            punctualShadows_.slotCount() > 0 ? punctualShadows_.slotBufferAddress(currentFrame_) : 0;
+        fogPushConstants.lightCount = clusteredLighting_.lightCount();
+        fogPushConstants.useClustered = clusteredLightingActive ? 1u : 0u;
+        fogPushConstants.clusterZNear = camera_.nearPlane;
+        fogPushConstants.clusterZFar = camera_.farPlane;
+
+        renderGraph_.beginVolumetricFogPass();
+        volumetricFog_.recordCommands(commandBuffer, currentFrame_, fogPushConstants);
+        renderGraph_.endVolumetricFogPass();
+        if (fogProfileScope) {
+            gpuProfiler_.endScope(currentFrame_, commandBuffer);
+        }
+    }
+}
+
+void Renderer::recordIrradianceProbePasses(VkCommandBuffer commandBuffer)
+{
+    // Probe shading parameters, refreshed inside this frame's own command buffer
+    // so a single buffer serves every frame in flight.
+    //
+    // Before the capture pass, not just before the main pass: the capture reads
+    // these too, for the multi-bounce lookup. Updating after it would have the
+    // capture read the previous frame's grid placement -- and on the very first
+    // frame, a buffer nothing had written yet.
+    {
+        renderer::ProbeShadingParams probeParams{};
+        const renderer::ProbeGridBounds bounds = irradianceProbes_.bounds();
+        // Intensity carries the off state, so everything downstream needs no
+        // separate flag: no atlases, no capture pipeline, or the toggle off all
+        // collapse to zero here.
+        const bool probeShadingActive = giSettings_.enabled && irradianceProbes_.hasAtlases() &&
+                                        irradianceProbes_.convolveAvailable() && !giSettings_.debugPattern;
+        probeParams.gridOrigin =
+            glm::vec4{bounds.origin, probeShadingActive ? giSettings_.intensity : 0.0f};
+        probeParams.gridSpacing = glm::vec4{bounds.spacing, giSettings_.surfaceBias};
+        probeParams.debug.x =
+            (probeShadingActive && giSettings_.debugIrradianceOnly) ? 1.0f : 0.0f;
+        irradianceProbes_.updateShadingParams(commandBuffer, probeParams);
+    }
+
+    // Probe capture, then the convolution that turns it into probe tiles. Both
+    // sit after the shadow passes -- the capture samples the cascades so the
+    // radiance it records is shadowed -- and before the main pass, which
+    // declares a read on the probe atlases.
+    if (frameProbeCaptureActive_) {
+        recordProbeCapturePass(commandBuffer);
     } else {
-        // Skipped, so whatever is in the image is from an unknown frame. Mark it
-        // unusable rather than leaving a stale pyramid flagged valid -- that is
-        // what re-enabling occlusion culling at runtime would otherwise read.
-        depthPyramid_.invalidate();
+        probeCaptureDrawsRecorded_ = 0;
     }
 
-    if (taaActiveThisFrame) {
-        postProcess_.recordTaaResolveCommands(commandBuffer);
+    if (isIrradianceProbeUpdateActive()) {
+        const bool probeProfileScope =
+            gpuProfiler_.beginScope(currentFrame_, commandBuffer, "IrradianceProbeUpdate");
+        renderGraph_.beginIrradianceProbePass();
+        irradianceProbes_.recordUpdate(commandBuffer, giSettings_.debugPattern);
+        renderGraph_.endIrradianceProbePass();
+        if (probeProfileScope) {
+            gpuProfiler_.endScope(currentFrame_, commandBuffer);
+        }
     }
+}
 
-    postProcess_.recordLegacyBloomCommands(commandBuffer);
-    postProcess_.recordMipChainBloomCommands(commandBuffer);
+void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex)
+{
+    // Only what this function still needs: every recorder it hands the graph
+    // derives its own inputs.
+    const bool taaActiveThisFrame = postProcess_.isTaaActive();
+    postProcess_.beginFrame(currentFrame_, taaActiveThisFrame);
 
-    postProcess_.recordLuminanceCommands(commandBuffer);
-    postProcess_.recordHistogramCommands(commandBuffer);
+    renderGraph_.beginFrame(commandBuffer,
+                            swapchain_,
+                            shadowMap_,
+                            punctualShadows_.valid() ? &punctualShadows_.atlas() : nullptr,
+                            isVsmPageRenderingActive() ? &virtualShadowMap_.pagePool() : nullptr,
+                            imageIndex,
+                            renderGraphFrameResources());
+    rhi::debug::beginLabel(commandBuffer, "Frame");
+    gpuProfiler_.beginFrame(currentFrame_, commandBuffer);
 
     // The probe-only view is a view of a linear radiance value, so it bypasses
     // the display pipeline entirely. Auto-exposure would otherwise cancel
     // exactly the brightness change the view exists to show.
     const float probeDebugGain =
         (giSettings_.enabled && giSettings_.debugIrradianceOnly) ? std::max(giSettings_.previewGain, 0.01f) : 0.0f;
-    postProcess_.recordCompositeCommands(commandBuffer,
-                                         frameJitteredProjection_,
-                                         probeDebugGain,
-                                         renderScaleSettings_.sharpness,
-                                         showSharpenDelta_ ? sharpenDeltaGain_ : 0.0f);
 
-    recordPortfolioScreenshotCopy(commandBuffer, imageIndex);
-    recordFrameCaptureCopy(commandBuffer, imageIndex);
+    // The whole frame, handed to the graph. Each entry names the pass whose
+    // scheduled position decides when it runs; the two without one -- the
+    // synchronous cluster build and the fog volume's first-use clear -- run with
+    // the anchored unit registered before them.
+    //
+    // The order the graph returns is today's order: every derived edge points
+    // backwards, so a stable topological sort reproduces the declarations. What
+    // changed is who decides it, and that the endFrame backstop now checks a
+    // frame the graph itself sequenced.
+    using Builtin = renderer::RenderGraphBuiltinPass;
+    std::array<renderer::RenderGraphScheduledUnit, 17> frameUnits{{
+        {renderGraph_.builtinPassIndex(Builtin::VsmPageMark),
+         [this, commandBuffer]() {
+             // Page marking reads the depth pyramid the previous frame left, so it
+             // runs before anything this frame writes. Culling is separate from the
+             // page pass because compute cannot be recorded inside a
+             // dynamic-rendering scope, and that scope has to stay single so pages
+             // this frame does not touch keep their cached depth.
+             recordVsmPageMarkPass(commandBuffer);
+             recordVsmPageCull(commandBuffer);
+             recordVsmPagePass(commandBuffer);
+         }},
+        {renderGraph_.builtinPassIndex(Builtin::Shadow),
+         [this, commandBuffer]() { recordCascadeShadowPass(commandBuffer); }},
+        {renderGraph_.builtinPassIndex(Builtin::PunctualShadow),
+         [this, commandBuffer]() { recordPunctualShadows(commandBuffer); }},
+        {renderer::kInvalidRenderGraphHandle,
+         [this, commandBuffer]() {
+             // Runs whether or not fog is on: binding 8 claims a sampled layout
+             // unconditionally, so the volume has to reach it even on a cold start
+             // with fog disabled. No-op after the first frame. Fog switching off has
+             // to leave a neutral volume behind, because the skybox samples it
+             // unconditionally, and detecting that here covers every path that can
+             // disable fog -- settings load, preset, toggle.
+             const bool fogActiveThisFrame = isVolumetricFogActive();
+             if (fogWasActive_ && !fogActiveThisFrame) {
+                 volumetricFog_.markVolumeNeedsClear();
+             }
+             fogWasActive_ = fogActiveThisFrame;
+             volumetricFog_.ensureVolumeInitialized(commandBuffer);
+         }},
+        {renderGraph_.builtinPassIndex(Builtin::MainGpuCulling),
+         [this, commandBuffer]() { recordGpuCullingCommands(commandBuffer); }},
+        {renderer::kInvalidRenderGraphHandle,
+         [this, commandBuffer]() {
+             // Clustered (Forward+) light assignment: rebuild the froxel AABBs, then
+             // cull every light into its froxels. Both write buffers the main HDR
+             // fragment shader reads. No graph pass of its own -- the async path
+             // submits these on the compute queue, which the renderer owns -- so it
+             // runs with the culling unit above.
+             const bool clusteredLightingActive = clusteredLighting_.available() && useClusteredLighting_ &&
+                                                  clusteredLighting_.lightCount() > 0 && !allDrawItems_.empty();
+             if (!clusteredLightingActive || frameAsyncComputeActive_) {
+                 return;
+             }
+             {
+                 const renderer::GpuProfileScope buildScope(gpuProfiler_, currentFrame_, commandBuffer, "ClusterBuild");
+                 rhi::debug::beginLabel(commandBuffer, "ClusterBuild");
+                 clusteredLighting_.recordClusterBuild(commandBuffer, currentFrame_);
+                 rhi::debug::endLabel(commandBuffer);
+             }
+             {
+                 const renderer::GpuProfileScope cullScope(gpuProfiler_, currentFrame_, commandBuffer, "LightCull");
+                 rhi::debug::beginLabel(commandBuffer, "LightCull");
+                 clusteredLighting_.recordLightCull(commandBuffer, currentFrame_);
+                 rhi::debug::endLabel(commandBuffer);
+             }
+         }},
+        {renderGraph_.builtinPassIndex(Builtin::VolumetricFog),
+         [this, commandBuffer]() { recordVolumetricFogPass(commandBuffer); }},
+        {renderGraph_.builtinPassIndex(Builtin::ProbeCapture),
+         [this, commandBuffer]() { recordIrradianceProbePasses(commandBuffer); }},
+        {renderGraph_.builtinPassIndex(Builtin::MainHdr),
+         [this, commandBuffer]() { recordMainPassGeometry(commandBuffer); }},
+        {renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::DepthPyramid),
+         [this, commandBuffer]() {
+             if (isDepthPyramidBuildRequired()) {
+                 recordDepthPyramidCommands(commandBuffer);
+             } else {
+                 // Skipped, so whatever is in the image is from an unknown frame.
+                 // Mark it unusable rather than leaving a stale pyramid flagged
+                 // valid -- that is what re-enabling occlusion culling at runtime
+                 // would otherwise read.
+                 depthPyramid_.invalidate();
+             }
+         }},
+        {renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::TaaResolve),
+         [this, commandBuffer, taaActiveThisFrame]() {
+             if (taaActiveThisFrame) {
+                 postProcess_.recordTaaResolveCommands(commandBuffer);
+             }
+         }},
+        {renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::BloomExtract),
+         [this, commandBuffer]() { postProcess_.recordLegacyBloomCommands(commandBuffer); }},
+        {renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::BloomDownsampleFirst),
+         [this, commandBuffer]() { postProcess_.recordMipChainBloomCommands(commandBuffer); }},
+        {renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::Luminance),
+         [this, commandBuffer]() { postProcess_.recordLuminanceCommands(commandBuffer); }},
+        {renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::HistogramExposure),
+         [this, commandBuffer]() { postProcess_.recordHistogramCommands(commandBuffer); }},
+        {renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::Composite),
+         [this, commandBuffer, probeDebugGain]() {
+             postProcess_.recordCompositeCommands(commandBuffer,
+                                                  frameJitteredProjection_,
+                                                  probeDebugGain,
+                                                  renderScaleSettings_.sharpness,
+                                                  showSharpenDelta_ ? sharpenDeltaGain_ : 0.0f);
+         }},
+        {renderGraph_.builtinPassIndex(Builtin::ImGui),
+         [this, commandBuffer, imageIndex]() {
+             // The screenshot copies belong to this unit rather than to the frame
+             // around it: they sit between the composite and the overlay, which is
+             // exactly where this unit starts.
+             recordPortfolioScreenshotCopy(commandBuffer, imageIndex);
+             recordFrameCaptureCopy(commandBuffer, imageIndex);
 
-    rhi::debug::beginLabel(commandBuffer, "ImGuiPass");
-    const bool imguiProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "ImGuiPass");
-    renderGraph_.beginImGuiPass();
-    imguiLayer_.render(commandBuffer);
-    renderGraph_.endImGuiPass();
-    if (imguiProfileScope) {
-        gpuProfiler_.endScope(currentFrame_, commandBuffer);
-    }
-    rhi::debug::endLabel(commandBuffer);
+             rhi::debug::beginLabel(commandBuffer, "ImGuiPass");
+             const bool imguiProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "ImGuiPass");
+             renderGraph_.beginImGuiPass();
+             imguiLayer_.render(commandBuffer);
+             renderGraph_.endImGuiPass();
+             if (imguiProfileScope) {
+                 gpuProfiler_.endScope(currentFrame_, commandBuffer);
+             }
+             rhi::debug::endLabel(commandBuffer);
+         }},
+    }};
+    renderGraph_.recordScheduledUnits(frameUnits);
 
     if (taaActiveThisFrame) {
         postProcess_.advanceTaaHistory();

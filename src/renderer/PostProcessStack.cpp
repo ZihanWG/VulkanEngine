@@ -402,14 +402,18 @@ void PostProcessStack::recordCompositeCommands(VkCommandBuffer commandBuffer,
                             &compositeDescriptorSet,
                             0,
                             nullptr);
+    // Designated rather than positional: this block used to be six bare values,
+    // which meant `bloomMethod` -- the field that decides which bloom chain the
+    // shader samples -- did not appear anywhere a search for the name would find
+    // it, and inserting a field would have silently shifted every value after it.
     CompositePushConstants compositePushConstants{
-        currentToneMappingExposure(),
-        bloomSettings_.enabled ? std::max(bloomSettings_.intensity, 0.0f) : 0.0f,
-        toneMappingOperatorValue(toneMappingSettings_.operatorType),
-        bloomSettings_.enabled ? 1u : 0u,
-        bloomSettings_.useMipChain && (!bloomMipUpsampleImages_.empty() || !bloomMipDownsampleImages_.empty()) ? 1u
-                                                                                                               : 0u,
-        isGpuExposureActive() ? 1u : 0u};
+        .exposure = currentToneMappingExposure(),
+        .bloomIntensity = bloomSettings_.enabled ? std::max(bloomSettings_.intensity, 0.0f) : 0.0f,
+        .toneMappingOperator = toneMappingOperatorValue(toneMappingSettings_.operatorType),
+        .bloomEnabled = bloomSettings_.enabled ? 1u : 0u,
+        .bloomMethod = willRecordMipChainBloom() ? 1u : 0u,
+        .useGpuExposure = isGpuExposureActive() ? 1u : 0u,
+    };
     // GTAO is computed in its own pass now; the composite only multiplies the
     // precomputed visibility term, gated by this enable flag. invProjection is
     // retained in the push block (still fed from the jittered projection) for
@@ -1991,11 +1995,11 @@ float PostProcessStack::currentToneMappingExposure() const
     return toneMappingExposureValue(toneMappingSettings_.manualExposure);
 }
 
-void PostProcessStack::recordLuminanceCommands(VkCommandBuffer commandBuffer)
+bool PostProcessStack::willRecordLuminancePass() const
 {
     if (!isLogAverageExposureActive() || exposureModeValue(toneMappingSettings_.exposureMode) == ExposureMode::Manual ||
         currentFrame_ >= frameLuminanceBuffers_.size()) {
-        return;
+        return false;
     }
     // Histogram mode does not read this pass's output. Its only consumers there
     // were an empty-histogram fallback and the debug average-luminance readout,
@@ -2005,11 +2009,18 @@ void PostProcessStack::recordLuminanceCommands(VkCommandBuffer commandBuffer)
     // LogAverage mode has no histogram pass and still needs this one.
     if (exposureModeValue(toneMappingSettings_.exposureMode) == ExposureMode::Histogram &&
         isHistogramExposureActive()) {
-        return;
+        return false;
     }
 
-    VkBuffer luminanceBuffer = frameLuminanceBuffers_[currentFrame_].buffer();
-    if (luminanceBuffer == VK_NULL_HANDLE) {
+    return frameLuminanceBuffers_[currentFrame_].buffer() != VK_NULL_HANDLE;
+}
+
+void PostProcessStack::recordLuminanceCommands(VkCommandBuffer commandBuffer)
+{
+    // Every reason this pass might not run lives in the predicate, because the
+    // graph declares the pass from the same call. Splitting them is how the
+    // declaration and the recording drift apart.
+    if (!willRecordLuminancePass()) {
         return;
     }
 
@@ -2048,24 +2059,32 @@ void PostProcessStack::recordLuminanceCommands(VkCommandBuffer commandBuffer)
     renderGraph_.endLuminancePass();
 }
 
-void PostProcessStack::recordHistogramCommands(VkCommandBuffer commandBuffer)
+bool PostProcessStack::willRecordHistogramPass() const
 {
     if (!isHistogramExposureActive() || exposureModeValue(toneMappingSettings_.exposureMode) == ExposureMode::Manual ||
         currentFrame_ >= frameHistogramBuffers_.size() || currentFrame_ >= frameExposureReadbackReady_.size()) {
+        return false;
+    }
+    if (frameHistogramBuffers_[currentFrame_].buffer() == VK_NULL_HANDLE) {
+        return false;
+    }
+
+    const VkExtent2D sceneExtent = activePostProcessSource().writtenExtent;
+    return sceneExtent.width > 0 && sceneExtent.height > 0;
+}
+
+void PostProcessStack::recordHistogramCommands(VkCommandBuffer commandBuffer)
+{
+    // Every reason this pass might not run lives in the predicate, because the
+    // graph declares the pass from the same call.
+    if (!willRecordHistogramPass()) {
         return;
     }
 
     VkBuffer histogramBuffer = frameHistogramBuffers_[currentFrame_].buffer();
-    if (histogramBuffer == VK_NULL_HANDLE) {
-        return;
-    }
-
     const VkExtent2D sceneExtent = activePostProcessSource().writtenExtent;
     const uint32_t groupCountX = (sceneExtent.width + kHistogramLocalSizeX - 1) / kHistogramLocalSizeX;
     const uint32_t groupCountY = (sceneExtent.height + kHistogramLocalSizeY - 1) / kHistogramLocalSizeY;
-    if (groupCountX == 0 || groupCountY == 0) {
-        return;
-    }
 
     const renderer::GpuProfileScope profileScope(gpuProfiler_, currentFrame_, commandBuffer, "Histogram Exposure");
     renderGraph_.beginHistogramExposurePass();
@@ -2275,6 +2294,13 @@ void PostProcessStack::recordTaaResolveCommands(VkCommandBuffer commandBuffer)
 
 void PostProcessStack::recordLegacyBloomCommands(VkCommandBuffer commandBuffer)
 {
+    // The fallback chain, and only that: when the mip chain runs, the composite
+    // discards this one's result, so filling it is three full-screen passes of
+    // work nothing reads. The graph culls them from the same decision.
+    if (willRecordMipChainBloom()) {
+        return;
+    }
+
     rhi::debug::beginLabel(commandBuffer, "BloomExtractPass");
     const bool bloomExtractProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "BloomExtractPass");
     renderGraph_.beginBloomExtractPass();
@@ -2369,11 +2395,20 @@ void PostProcessStack::recordLegacyBloomCommands(VkCommandBuffer commandBuffer)
     rhi::debug::endLabel(commandBuffer);
 }
 
+bool PostProcessStack::willRecordMipChainBloom() const
+{
+    if (!bloomSettings_.useMipChain) {
+        return false;
+    }
+
+    return !bloomMipDownsampleImages_.empty() &&
+           bloomMipDownsampleDescriptorSets_.size() == bloomMipDownsampleImages_.size() &&
+           bloomDownsamplePipeline_.pipeline() != VK_NULL_HANDLE && bloomDownsamplePipeline_.layout() != VK_NULL_HANDLE;
+}
+
 void PostProcessStack::recordMipChainBloomCommands(VkCommandBuffer commandBuffer)
 {
-    if (bloomMipDownsampleImages_.empty() ||
-        bloomMipDownsampleDescriptorSets_.size() != bloomMipDownsampleImages_.size() ||
-        bloomDownsamplePipeline_.pipeline() == VK_NULL_HANDLE || bloomDownsamplePipeline_.layout() == VK_NULL_HANDLE) {
+    if (!willRecordMipChainBloom()) {
         return;
     }
 

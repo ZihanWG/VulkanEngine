@@ -1,5 +1,6 @@
 #include "renderer/RenderGraph.h"
 
+#include "core/Logger.h"
 #include "renderer/IrradianceProbes.h"
 #include "rhi/VulkanShadowMap.h"
 #include "rhi/VulkanSwapchain.h"
@@ -128,11 +129,11 @@ RenderGraph::TextureAccessState accessStateFromLayout(VkImageLayout layout, VkIm
     return state;
 }
 
-std::string passBarrierSummary(uint32_t imageBarrierCount, uint32_t bufferBarrierCount)
+std::string passBarrierSummary(uint32_t imageBarrierCount, uint32_t bufferBarrierCount, uint32_t submitCount)
 {
-    return std::to_string(imageBarrierCount) + " inferred image barrier" +
-           (imageBarrierCount == 1 ? "" : "s") + ", " + std::to_string(bufferBarrierCount) +
-           " inferred buffer barrier" + (bufferBarrierCount == 1 ? "" : "s");
+    return std::to_string(imageBarrierCount) + " inferred image barrier" + (imageBarrierCount == 1 ? "" : "s") + ", " +
+           std::to_string(bufferBarrierCount) + " inferred buffer barrier" + (bufferBarrierCount == 1 ? "" : "s") +
+           " in " + std::to_string(submitCount) + " submission" + (submitCount == 1 ? "" : "s");
 }
 
 } // namespace
@@ -144,38 +145,45 @@ RenderGraphBuilder::RenderGraphBuilder(RenderGraph& graph, RenderPassNode& pass)
 
 RGTextureHandle RenderGraphBuilder::readTexture(RGTextureHandle handle, RGAccess access, std::string description)
 {
-    graph_.addTextureUsage(pass_, handle, RenderResourceAccess::Read, access, std::move(description));
-    return handle;
+    return graph_.addTextureUsage(pass_, handle, RenderResourceAccess::Read, access, std::move(description));
+}
+
+RGTextureHandle RenderGraphBuilder::readHistoryTexture(RGTextureHandle handle, RGAccess access, std::string description)
+{
+    return graph_.addTextureUsage(
+        pass_, handle, RenderResourceAccess::Read, access, std::move(description), RGReadKind::History);
+}
+
+RGTextureHandle
+RenderGraphBuilder::readTextureForLayout(RGTextureHandle handle, RGAccess access, std::string description)
+{
+    return graph_.addTextureUsage(
+        pass_, handle, RenderResourceAccess::Read, access, std::move(description), RGReadKind::LayoutOnly);
 }
 
 RGTextureHandle RenderGraphBuilder::writeTexture(RGTextureHandle handle, RGAccess access, std::string description)
 {
-    graph_.addTextureUsage(pass_, handle, RenderResourceAccess::Write, access, std::move(description));
-    return handle;
+    return graph_.addTextureUsage(pass_, handle, RenderResourceAccess::Write, access, std::move(description));
 }
 
 RGTextureHandle RenderGraphBuilder::readWriteTexture(RGTextureHandle handle, RGAccess access, std::string description)
 {
-    graph_.addTextureUsage(pass_, handle, RenderResourceAccess::ReadWrite, access, std::move(description));
-    return handle;
+    return graph_.addTextureUsage(pass_, handle, RenderResourceAccess::ReadWrite, access, std::move(description));
 }
 
 RGBufferHandle RenderGraphBuilder::readBuffer(RGBufferHandle handle, RGAccess access, std::string description)
 {
-    graph_.addBufferUsage(pass_, handle, RenderResourceAccess::Read, access, std::move(description));
-    return handle;
+    return graph_.addBufferUsage(pass_, handle, RenderResourceAccess::Read, access, std::move(description));
 }
 
 RGBufferHandle RenderGraphBuilder::writeBuffer(RGBufferHandle handle, RGAccess access, std::string description)
 {
-    graph_.addBufferUsage(pass_, handle, RenderResourceAccess::Write, access, std::move(description));
-    return handle;
+    return graph_.addBufferUsage(pass_, handle, RenderResourceAccess::Write, access, std::move(description));
 }
 
 RGBufferHandle RenderGraphBuilder::readWriteBuffer(RGBufferHandle handle, RGAccess access, std::string description)
 {
-    graph_.addBufferUsage(pass_, handle, RenderResourceAccess::ReadWrite, access, std::move(description));
-    return handle;
+    return graph_.addBufferUsage(pass_, handle, RenderResourceAccess::ReadWrite, access, std::move(description));
 }
 
 void RenderGraphBuilder::sideEffect(std::string reason)
@@ -371,6 +379,14 @@ void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
     buffers_.clear();
     passes_.clear();
     executeCallbacks_.clear();
+    barrierBatch_.reset();
+    declarationIssues_.clear();
+    passSchedule_.clear();
+    executionOrder_.clear();
+    executionOrderCycleDetected_ = false;
+    recordedOrder_.clear();
+    recordedOrderViolations_.clear();
+    unrecordedPassIndices_.clear();
     debugResources_.clear();
 
     frame_ = {};
@@ -392,6 +408,7 @@ void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
 
     buildFrameGraphDeclarations();
     compilePassCulling();
+    validateFrameDeclarations();
     refreshDebugResources();
 
     VkCommandBufferBeginInfo beginInfo{};
@@ -530,13 +547,13 @@ void RenderGraph::createTransientFrameTextures()
         frame_.ssrSceneColorCopy = createTransientTexture(makeTransientDesc(frame_.resources.ssrSceneColorCopy),
                                                           frame_.resources.ssrSceneColorCopy);
     }
-    frame_.postProcessSceneColor = frame_.sceneColor;
+
     if (frame_.resources.taaEnabled && validImageResource(frame_.resources.taaHistoryRead) &&
         validImageResource(frame_.resources.taaHistoryWrite)) {
         frame_.taaHistoryRead = importTexture(frame_.resources.taaHistoryRead);
         frame_.taaHistoryWrite = importTexture(frame_.resources.taaHistoryWrite);
         if (frame_.taaHistoryWrite.valid()) {
-            frame_.postProcessSceneColor = frame_.taaHistoryWrite;
+            frame_.taaHistoryIsPostProcessSource = true;
         }
     }
     frame_.bloomExtract =
@@ -1615,13 +1632,18 @@ void RenderGraph::endImGuiPass()
     }
 
     vkCmdEndRendering(frame_.commandBuffer);
-    const uint32_t presentBarriers = transitionTexture(frame_.swapchainColor, RGAccess::Present);
+    // Its own batch, and its own submission: this transition is recorded after
+    // the pass body rather than before it, so it cannot join the pass's set.
+    barrierBatch_.reset();
+    const uint32_t presentBarriers = transitionTexture(frame_.swapchainColor, RGAccess::Present, barrierBatch_);
+    flushBarrierBatch(barrierBatch_);
     if (frame_.passIndices.imgui != kInvalidRenderGraphHandle) {
         RenderPassNode& pass = passes_.at(frame_.passIndices.imgui);
         pass.generatedBarrierCount += presentBarriers;
         pass.generatedImageBarrierCount += presentBarriers;
-        pass.transitionSummary =
-            passBarrierSummary(pass.generatedImageBarrierCount, pass.generatedBufferBarrierCount);
+        pass.generatedBarrierSubmitCount += barrierBatch_.submitCount;
+        pass.transitionSummary = passBarrierSummary(
+            pass.generatedImageBarrierCount, pass.generatedBufferBarrierCount, pass.generatedBarrierSubmitCount);
     }
     activePass_ = ActivePass::None;
 }
@@ -1631,6 +1653,29 @@ void RenderGraph::endFrame()
     requireFrameActive("RenderGraph::endFrame");
     if (activePass_ != ActivePass::None) {
         throw std::logic_error("RenderGraph::endFrame called while a pass is still active.");
+    }
+
+    // The backstop. The declarations in buildFrameGraphDeclarations and the
+    // recording spread across the renderer's translation units are two sequences
+    // maintained by hand; this is what notices them drifting apart. Reported, not
+    // thrown, for the same reason validateDeclarations reports: a graph that
+    // refuses to render is a worse diagnostic than one that renders and says
+    // what looks wrong.
+    recordedOrderViolations_ = validatePassOrder(passSchedule_, recordedOrder_);
+    unrecordedPassIndices_ = unrecordedPasses(passSchedule_, recordedOrder_);
+
+    {
+        static int fn = 0;
+        if (fn++ == 8) {
+            ve::Logger::info("RGFIX violations=" + std::to_string(recordedOrderViolations_.size()) +
+                             " unrecorded=" + std::to_string(unrecordedPassIndices_.size()) +
+                             " issues=" + std::to_string(declarationIssues_.size()) +
+                             " sameOrder=" + std::string(executionOrder_ == recordedOrder_ ? "yes" : "NO"));
+            for (uint32_t i : unrecordedPassIndices_) { ve::Logger::info("RGFIX   unrecorded: " + passes_[i].name); }
+            std::string ord;
+            for (uint32_t i : recordedOrder_) { ord += passes_[i].name + " "; }
+            ve::Logger::info("RGFIX   recorded: " + ord);
+        }
     }
 
     refreshDebugResources();
@@ -1771,6 +1816,86 @@ VkBuffer RenderGraph::buffer(RGBufferHandle handle) const
     return buffers_[handle.index].buffer;
 }
 
+uint32_t RenderGraph::builtinPassIndex(RenderGraphBuiltinPass pass) const
+{
+    switch (pass) {
+    case RenderGraphBuiltinPass::VsmPageMark:
+        return frame_.passIndices.vsmPageMark;
+    case RenderGraphBuiltinPass::Shadow:
+        return frame_.passIndices.shadow;
+    case RenderGraphBuiltinPass::PunctualShadow:
+        return frame_.passIndices.punctualShadow;
+    case RenderGraphBuiltinPass::MainGpuCulling:
+        return frame_.passIndices.mainGpuCulling;
+    case RenderGraphBuiltinPass::VolumetricFog:
+        return frame_.passIndices.volumetricFog;
+    case RenderGraphBuiltinPass::ProbeCapture:
+        return frame_.passIndices.probeCapture;
+    case RenderGraphBuiltinPass::MainHdr:
+        return frame_.passIndices.mainHdr;
+    case RenderGraphBuiltinPass::DepthPyramid:
+        return frame_.passIndices.depthPyramid;
+    case RenderGraphBuiltinPass::TaaResolve:
+        return frame_.passIndices.taaResolve;
+    case RenderGraphBuiltinPass::BloomExtract:
+        return frame_.passIndices.bloomExtract;
+    case RenderGraphBuiltinPass::BloomDownsampleFirst:
+        return frame_.passIndices.bloomDownsampleChain.empty() ? kInvalidRenderGraphHandle
+                                                               : frame_.passIndices.bloomDownsampleChain.front();
+    case RenderGraphBuiltinPass::Luminance:
+        return frame_.passIndices.luminance;
+    case RenderGraphBuiltinPass::HistogramExposure:
+        return frame_.passIndices.histogramExposure;
+    case RenderGraphBuiltinPass::Composite:
+        return frame_.passIndices.composite;
+    case RenderGraphBuiltinPass::ImGui:
+        return frame_.passIndices.imgui;
+    }
+
+    return kInvalidRenderGraphHandle;
+}
+
+void RenderGraph::recordScheduledUnits(std::span<RenderGraphScheduledUnit> units)
+{
+    requireFrameActive("RenderGraph::recordScheduledUnits");
+
+    const auto scheduledPosition = [this](uint32_t passIndex) {
+        const auto found = std::find(executionOrder_.begin(), executionOrder_.end(), passIndex);
+        return found == executionOrder_.end() ? executionOrder_.size()
+                                              : static_cast<size_t>(found - executionOrder_.begin());
+    };
+
+    // A unit whose pass this frame does not declare -- a recorder with no graph
+    // pass of its own, or one whose pass is conditional and absent -- runs with
+    // the last anchored unit registered before it. Sorting it to the end instead
+    // would move work the graph knows nothing about, such as the synchronous
+    // cluster build, past the composite. Units sharing a position keep their
+    // registration order, which is what the second element of the pair is for.
+    std::vector<std::pair<size_t, size_t>> ordered;
+    ordered.reserve(units.size());
+    size_t inherited = 0;
+    for (size_t unitIndex = 0; unitIndex < units.size(); ++unitIndex) {
+        const size_t position = scheduledPosition(units[unitIndex].passIndex);
+        if (position != executionOrder_.size()) {
+            inherited = position;
+        }
+        ordered.emplace_back(inherited, unitIndex);
+    }
+    std::sort(ordered.begin(), ordered.end());
+
+    for (const auto& [position, unitIndex] : ordered) {
+        (void)position;
+        if (units[unitIndex].record) {
+            units[unitIndex].record();
+        }
+    }
+}
+
+RGTextureHandle RenderGraph::postProcessSource() const
+{
+    return frame_.taaHistoryIsPostProcessSource ? frame_.taaHistoryWrite : frame_.sceneColor;
+}
+
 void RenderGraph::requireFrameActive(const char* operation) const
 {
     if (!frameActive_) {
@@ -1799,10 +1924,10 @@ void RenderGraph::declareGeometryPasses()
             // analysis would cull the pass away.
             true,
             [this](RenderGraphBuilder& builder) {
-                builder.readTexture(frame_.depthPyramid,
-                                    RGAccess::ShaderRead,
-                                    "Samples the previous frame's Hi-Z depth to work out which shadow pages "
-                                    "this frame's visible surfaces need.");
+                builder.readHistoryTexture(frame_.depthPyramid,
+                                           RGAccess::ShaderRead,
+                                           "Samples the previous frame's Hi-Z depth to work out which shadow "
+                                           "pages this frame's visible surfaces need.");
             });
     }
 
@@ -1817,22 +1942,28 @@ void RenderGraph::declareGeometryPasses()
             RenderPassExecutionType::Graphics,
             false,
             [this](RenderGraphBuilder& builder) {
-                builder.writeTexture(frame_.vsmPagePoolDepth,
-                                     RGAccess::DepthStencilAttachmentWrite,
-                                     "Draws this frame's dirty clipmap pages into the virtual shadow page pool.");
+                frame_.vsmPagePoolDepth =
+                    builder.writeTexture(frame_.vsmPagePoolDepth,
+                                         RGAccess::DepthStencilAttachmentWrite,
+                                         "Draws this frame's dirty clipmap pages into the virtual shadow page pool.");
             });
     }
 
-    frame_.passIndices.shadow = addPass(
-        "CSMShadowPass",
-        RenderPassType::Shadow,
-        RenderPassExecutionType::Graphics,
-        false,
-        [this](RenderGraphBuilder& builder) {
-            builder.writeTexture(frame_.shadowMapDepth,
-                                 RGAccess::DepthStencilAttachmentWrite,
-                                 "Writes cascaded shadow-map depth array layers.");
-        });
+    // Skipped on a fully cached frame, when the renderer redraws no cascade.
+    // The shadow map stays imported and the main pass still declares its read,
+    // so it keeps the layout its sampler claims; only the write pass goes away.
+    if (frame_.resources.cascadeShadowRedrawRequired) {
+        frame_.passIndices.shadow = addPass(
+            "CSMShadowPass",
+            RenderPassType::Shadow,
+            RenderPassExecutionType::Graphics,
+            false,
+            [this](RenderGraphBuilder& builder) {
+                frame_.shadowMapDepth = builder.writeTexture(frame_.shadowMapDepth,
+                                                             RGAccess::DepthStencilAttachmentWrite,
+                                                             "Writes cascaded shadow-map depth array layers.");
+            });
+    }
 
     // Only declared when a light actually got a tile. The atlas texture is
     // still imported and still read by the main pass below, so a frame that
@@ -1844,12 +1975,48 @@ void RenderGraph::declareGeometryPasses()
             RenderPassExecutionType::Graphics,
             false,
             [this](RenderGraphBuilder& builder) {
-                builder.writeTexture(frame_.punctualShadowAtlasDepth,
-                                     RGAccess::DepthStencilAttachmentWrite,
-                                     "Writes per-slot spot-light depth tiles into the punctual shadow atlas.");
+                frame_.punctualShadowAtlasDepth =
+                    builder.writeTexture(frame_.punctualShadowAtlasDepth,
+                                         RGAccess::DepthStencilAttachmentWrite,
+                                         "Writes per-slot spot-light depth tiles into the punctual shadow atlas.");
             });
     }
 
+    frame_.passIndices.mainGpuCulling = addPass(
+        "MainGpuCullingPass",
+        RenderPassType::MainGpuCulling,
+        RenderPassExecutionType::Compute,
+        true,
+        [this](RenderGraphBuilder& builder) {
+            builder.readBuffer(frame_.mainCullInput,
+                               RGAccess::StorageBufferRead,
+                               "Reads per-draw AABB, draw-command, and batch metadata.");
+            builder.readHistoryTexture(frame_.depthPyramid,
+                                       RGAccess::ShaderRead,
+                                       "Optionally samples the previous-frame Hi-Z depth pyramid for occlusion tests.");
+            frame_.mainCullIndirectOutput = builder.writeBuffer(frame_.mainCullIndirectOutput,
+                                                                RGAccess::StorageBufferWrite,
+                                                                "Writes indirect draw commands for the main pass.");
+            frame_.mainCullVisibleCounts =
+                builder.writeBuffer(frame_.mainCullVisibleCounts,
+                                    RGAccess::StorageBufferReadWrite,
+                                    "Clears and writes visible counts plus culling debug counters.");
+            frame_.mainCullReadback =
+                builder.writeBuffer(frame_.mainCullReadback,
+                                    RGAccess::TransferDst,
+                                    "Receives copied culling counters for frame-latency CPU readback.");
+        });
+
+    // Declared after the main cull, which is where the renderer records them.
+    // They used to be declared before it and recorded after, a disagreement that
+    // cost nothing while nothing acted on the declared order and became a
+    // reordering the moment the graph started sequencing the frame. Fog in
+    // particular has a prerequisite the graph does not model -- injection walks
+    // the per-cluster light lists the synchronous cluster build produces -- so
+    // its declared position has to agree with where it actually runs.
+    //
+    // Safe to move: none of these three touch a resource MainGpuCullingPass
+    // touches, so no edge, version chain or culling outcome changes with them.
     if (frame_.resources.volumetricFogEnabled) {
         frame_.passIndices.volumetricFog = addPass(
             "VolumetricFogPass",
@@ -1906,12 +2073,13 @@ void RenderGraph::declareGeometryPasses()
                                         RGAccess::ShaderRead,
                                         "Reads probe visibility to weight the previous bounce.");
                 }
-                builder.writeTexture(frame_.probeCaptureAtlas,
-                                     RGAccess::ColorAttachmentWrite,
-                                     "Writes radiance and distance for every face of this frame's probes.");
-                builder.writeTexture(frame_.probeCaptureDepth,
-                                     RGAccess::DepthStencilAttachmentWrite,
-                                     "Resolves which surface each capture texel sees.");
+                frame_.probeCaptureAtlas =
+                    builder.writeTexture(frame_.probeCaptureAtlas,
+                                         RGAccess::ColorAttachmentWrite,
+                                         "Writes radiance and distance for every face of this frame's probes.");
+                frame_.probeCaptureDepth = builder.writeTexture(frame_.probeCaptureDepth,
+                                                                RGAccess::DepthStencilAttachmentWrite,
+                                                                "Resolves which surface each capture texel sees.");
             });
     }
 
@@ -1934,12 +2102,14 @@ void RenderGraph::declareGeometryPasses()
                 // Read-write, not write: the border dispatch copies core texels
                 // the fill dispatch produced, and later phases blend new radiance
                 // against what the atlas already holds.
-                builder.readWriteTexture(frame_.probeIrradianceAtlas,
-                                         RGAccess::StorageImageReadWrite,
-                                         "Writes probe irradiance tiles and wraps their octahedral border.");
-                builder.readWriteTexture(frame_.probeDepthAtlas,
-                                         RGAccess::StorageImageReadWrite,
-                                         "Writes probe visibility tiles and wraps their octahedral border.");
+                frame_.probeIrradianceAtlas =
+                    builder.readWriteTexture(frame_.probeIrradianceAtlas,
+                                             RGAccess::StorageImageReadWrite,
+                                             "Writes probe irradiance tiles and wraps their octahedral border.");
+                frame_.probeDepthAtlas =
+                    builder.readWriteTexture(frame_.probeDepthAtlas,
+                                             RGAccess::StorageImageReadWrite,
+                                             "Writes probe visibility tiles and wraps their octahedral border.");
                 if (frame_.resources.probeCaptureEnabled && frame_.probeCaptureAtlas.valid()) {
                     // Moves the capture atlas out of the colour-attachment
                     // layout the pass above left it in and into the one the
@@ -1950,30 +2120,6 @@ void RenderGraph::declareGeometryPasses()
                 }
             });
     }
-
-    frame_.passIndices.mainGpuCulling = addPass(
-        "MainGpuCullingPass",
-        RenderPassType::MainGpuCulling,
-        RenderPassExecutionType::Compute,
-        true,
-        [this](RenderGraphBuilder& builder) {
-            builder.readBuffer(frame_.mainCullInput,
-                               RGAccess::StorageBufferRead,
-                               "Reads per-draw AABB, draw-command, and batch metadata.");
-            builder.readTexture(frame_.depthPyramid,
-                                RGAccess::ShaderRead,
-                                "Optionally samples the previous-frame Hi-Z depth pyramid for occlusion tests.");
-            builder.writeBuffer(frame_.mainCullIndirectOutput,
-                                RGAccess::StorageBufferWrite,
-                                "Writes indirect draw commands for the main pass.");
-            builder.writeBuffer(frame_.mainCullVisibleCounts,
-                                RGAccess::StorageBufferReadWrite,
-                                "Clears and writes visible counts plus culling debug counters.");
-            builder.writeBuffer(frame_.mainCullReadback,
-                                RGAccess::TransferDst,
-                                "Receives copied culling counters for frame-latency CPU readback.");
-        });
-
     frame_.passIndices.mainHdr = addPass(
         "MainHDRPass",
         RenderPassType::MainHdr,
@@ -2019,22 +2165,23 @@ void RenderGraph::declareGeometryPasses()
                 // for the same reason as the atlases above: the declaration is
                 // what keeps it in a sampled layout rather than UNDEFINED, and
                 // the shader gates the fetch on a push constant anyway.
-                builder.readTexture(frame_.ambientOcclusion,
-                                    RGAccess::ShaderRead,
-                                    "Samples the previous frame's ambient occlusion for the ambient term.");
+                builder.readHistoryTexture(frame_.ambientOcclusion,
+                                           RGAccess::ShaderRead,
+                                           "Samples the previous frame's ambient occlusion for the ambient term.");
             }
-            builder.writeTexture(frame_.sceneColor,
-                                 RGAccess::ColorAttachmentWrite,
-                                 "Writes linear HDR skybox and mesh lighting.");
-            builder.writeTexture(frame_.velocity,
-                                 RGAccess::ColorAttachmentWrite,
-                                 "Writes UV-space motion vectors for TAA history reprojection.");
-            builder.writeTexture(frame_.normalRoughness,
-                                 RGAccess::ColorAttachmentWrite,
-                                 "Writes the thin G-buffer (normal, roughness, metallic) for SSR.");
-            builder.writeTexture(frame_.mainDepth,
-                                 RGAccess::DepthStencilAttachmentWrite,
-                                 "Clears and writes the main depth attachment.");
+            frame_.sceneColor = builder.writeTexture(frame_.sceneColor,
+                                                     RGAccess::ColorAttachmentWrite,
+                                                     "Writes linear HDR skybox and mesh lighting.");
+            frame_.velocity = builder.writeTexture(frame_.velocity,
+                                                   RGAccess::ColorAttachmentWrite,
+                                                   "Writes UV-space motion vectors for TAA history reprojection.");
+            frame_.normalRoughness =
+                builder.writeTexture(frame_.normalRoughness,
+                                     RGAccess::ColorAttachmentWrite,
+                                     "Writes the thin G-buffer (normal, roughness, metallic) for SSR.");
+            frame_.mainDepth = builder.writeTexture(frame_.mainDepth,
+                                                    RGAccess::DepthStencilAttachmentWrite,
+                                                    "Clears and writes the main depth attachment.");
             builder.readBuffer(frame_.mainCullIndirectOutput,
                                RGAccess::IndirectRead,
                                "Reads CPU- or GPU-generated indirect draw commands.");
@@ -2053,9 +2200,10 @@ void RenderGraph::declareGeometryPasses()
                 builder.readTexture(frame_.mainDepth,
                                     RGAccess::ShaderRead,
                                     "Samples phase-1 main depth for the mid-frame Hi-Z rebuild.");
-                builder.writeTexture(frame_.depthPyramid,
-                                     RGAccess::StorageImageWrite,
-                                     "Rebuilds the Hi-Z pyramid so phase 2 can re-test occlusion candidates.");
+                frame_.depthPyramid =
+                    builder.writeTexture(frame_.depthPyramid,
+                                         RGAccess::StorageImageWrite,
+                                         "Rebuilds the Hi-Z pyramid so phase 2 can re-test occlusion candidates.");
             });
 
         frame_.passIndices.mainGpuCullingPhase2 = addPass(
@@ -2070,15 +2218,18 @@ void RenderGraph::declareGeometryPasses()
                 builder.readTexture(frame_.depthPyramid,
                                     RGAccess::ShaderRead,
                                     "Samples the mid-frame Hi-Z pyramid for the candidate re-test.");
-                builder.writeBuffer(frame_.mainCullIndirectOutput,
-                                    RGAccess::StorageBufferWrite,
-                                    "Writes indirect draw commands for rescued (disoccluded) draws.");
-                builder.writeBuffer(frame_.mainCullVisibleCounts,
-                                    RGAccess::StorageBufferReadWrite,
-                                    "Resets per-batch counts and appends the rescued stats counter.");
-                builder.writeBuffer(frame_.mainCullReadback,
-                                    RGAccess::TransferDst,
-                                    "Receives the combined two-phase culling counters for CPU readback.");
+                frame_.mainCullIndirectOutput =
+                    builder.writeBuffer(frame_.mainCullIndirectOutput,
+                                        RGAccess::StorageBufferWrite,
+                                        "Writes indirect draw commands for rescued (disoccluded) draws.");
+                frame_.mainCullVisibleCounts =
+                    builder.writeBuffer(frame_.mainCullVisibleCounts,
+                                        RGAccess::StorageBufferReadWrite,
+                                        "Resets per-batch counts and appends the rescued stats counter.");
+                frame_.mainCullReadback =
+                    builder.writeBuffer(frame_.mainCullReadback,
+                                        RGAccess::TransferDst,
+                                        "Receives the combined two-phase culling counters for CPU readback.");
             });
 
         frame_.passIndices.mainHdrPhase2 = addPass(
@@ -2091,22 +2242,26 @@ void RenderGraph::declareGeometryPasses()
                                     RGAccess::ShaderRead,
                                     "Samples the cascaded shadow-map array for lighting.");
                 if (frame_.ambientOcclusion.valid()) {
-                    builder.readTexture(frame_.ambientOcclusion,
-                                        RGAccess::ShaderRead,
-                                        "Samples ambient occlusion for the ambient term, as the main pass does.");
+                    // A history read for the same reason phase 1's is: GTAO has
+                    // not run yet at this point in the frame.
+                    builder.readHistoryTexture(
+                        frame_.ambientOcclusion,
+                        RGAccess::ShaderRead,
+                        "Samples ambient occlusion for the ambient term, as the main pass does.");
                 }
-                builder.writeTexture(frame_.sceneColor,
-                                     RGAccess::ColorAttachmentWrite,
-                                     "Draws rescued disoccluded objects into the existing HDR color.");
-                builder.writeTexture(frame_.velocity,
-                                     RGAccess::ColorAttachmentWrite,
-                                     "Appends motion vectors for the rescued draws.");
-                builder.writeTexture(frame_.normalRoughness,
-                                     RGAccess::ColorAttachmentWrite,
-                                     "Appends thin G-buffer data for the rescued draws.");
-                builder.writeTexture(frame_.mainDepth,
-                                     RGAccess::DepthStencilAttachmentWrite,
-                                     "Loads and extends phase-1 depth with the rescued draws.");
+                frame_.sceneColor =
+                    builder.writeTexture(frame_.sceneColor,
+                                         RGAccess::ColorAttachmentWrite,
+                                         "Draws rescued disoccluded objects into the existing HDR color.");
+                frame_.velocity = builder.writeTexture(frame_.velocity,
+                                                       RGAccess::ColorAttachmentWrite,
+                                                       "Appends motion vectors for the rescued draws.");
+                frame_.normalRoughness = builder.writeTexture(frame_.normalRoughness,
+                                                              RGAccess::ColorAttachmentWrite,
+                                                              "Appends thin G-buffer data for the rescued draws.");
+                frame_.mainDepth = builder.writeTexture(frame_.mainDepth,
+                                                        RGAccess::DepthStencilAttachmentWrite,
+                                                        "Loads and extends phase-1 depth with the rescued draws.");
                 builder.readBuffer(frame_.mainCullIndirectOutput,
                                    RGAccess::IndirectRead,
                                    "Reads the phase-2 compacted indirect draw commands.");
@@ -2126,9 +2281,9 @@ void RenderGraph::declareGeometryPasses()
                 builder.readTexture(frame_.sceneColor,
                                     RGAccess::TransferSrc,
                                     "Copies the lit opaque scene color as the SSR reflection source.");
-                builder.writeTexture(frame_.ssrSceneColorCopy,
-                                     RGAccess::TransferDst,
-                                     "Receives the scene-color copy the trace samples.");
+                frame_.ssrSceneColorCopy = builder.writeTexture(frame_.ssrSceneColorCopy,
+                                                                RGAccess::TransferDst,
+                                                                "Receives the scene-color copy the trace samples.");
             });
 
         frame_.passIndices.ssrTrace = addPass(
@@ -2152,10 +2307,11 @@ void RenderGraph::declareGeometryPasses()
                 // only for as long as nothing else writes scene colour in between.
                 // The transparent pass hit exactly this and the note in
                 // docs/transparency.md flagged this one as the same latent gap.
-                builder.readWriteTexture(frame_.sceneColor,
-                                        RGAccess::ColorAttachmentWrite,
-                                        "Blends the reflection correction into scene color; additive, and the "
-                                        "correction is signed, so it reads what the main pass already wrote.");
+                frame_.sceneColor =
+                    builder.readWriteTexture(frame_.sceneColor,
+                                             RGAccess::ColorAttachmentWrite,
+                                             "Blends the reflection correction into scene color; additive, and the "
+                                             "correction is signed, so it reads what the main pass already wrote.");
             });
     }
 
@@ -2172,9 +2328,9 @@ void RenderGraph::declareGeometryPasses()
                 builder.readTexture(frame_.normalRoughness,
                                     RGAccess::ShaderRead,
                                     "Reads the surface normal for GTAO slice integration.");
-                builder.writeTexture(frame_.ambientOcclusionRaw,
-                                     RGAccess::ColorAttachmentWrite,
-                                     "Writes the raw (pre-denoise) GTAO visibility term.");
+                frame_.ambientOcclusionRaw = builder.writeTexture(frame_.ambientOcclusionRaw,
+                                                                  RGAccess::ColorAttachmentWrite,
+                                                                  "Writes the raw (pre-denoise) GTAO visibility term.");
             });
 
         frame_.passIndices.gtaoBlur = addPass(
@@ -2189,9 +2345,10 @@ void RenderGraph::declareGeometryPasses()
                 builder.readTexture(frame_.mainDepth,
                                     RGAccess::ShaderRead,
                                     "Samples main depth for the bilateral blur's edge-stopping weights.");
-                builder.writeTexture(frame_.ambientOcclusion,
-                                     RGAccess::ColorAttachmentWrite,
-                                     "Writes the denoised GTAO visibility term the composite multiplies in.");
+                frame_.ambientOcclusion =
+                    builder.writeTexture(frame_.ambientOcclusion,
+                                         RGAccess::ColorAttachmentWrite,
+                                         "Writes the denoised GTAO visibility term the composite multiplies in.");
             });
     }
 
@@ -2216,40 +2373,61 @@ void RenderGraph::declareGeometryPasses()
                     // GTAO already ran and left the image a colour attachment,
                     // so without this declaration it would still be in that
                     // layout when the descriptor is read.
-                    builder.readTexture(frame_.ambientOcclusion,
-                                        RGAccess::ShaderRead,
-                                        "Samples ambient occlusion through the shared main-pass fragment shader.");
+                    // Which read this is depends on whether GTAO ran: with it on,
+                    // the blur wrote this image earlier in the frame and this is
+                    // an ordinary dependency; with it off, nothing produced the
+                    // image this frame and the shader gates the fetch away.
+                    // Declaring the difference is what keeps the GTAO-off frame
+                    // from reading as an ordering mistake.
+                    const char* transparentAoDescription =
+                        "Samples ambient occlusion through the shared main-pass fragment shader.";
+                    if (frame_.resources.gtaoEnabled) {
+                        builder.readTexture(frame_.ambientOcclusion, RGAccess::ShaderRead, transparentAoDescription);
+                    } else {
+                        builder.readHistoryTexture(
+                            frame_.ambientOcclusion, RGAccess::ShaderRead, transparentAoDescription);
+                    }
                 }
                 // Read-modify-write, not a plain write: the "over" blend reads the
                 // destination. Declaring it write-only makes the pass culler treat
                 // every earlier write to scene color -- the main pass, and SSR's
                 // additive blend -- as dead, and cull them.
-                builder.readWriteTexture(frame_.sceneColor,
-                                         RGAccess::ColorAttachmentWrite,
-                                         "Alpha-blends sorted transparent geometry over the lit opaque scene color.");
-                builder.readWriteTexture(frame_.velocity,
-                                         RGAccess::ColorAttachmentWrite,
-                                         "Overwrites motion vectors for blended pixels so TAA reprojects them "
-                                         "with their own motion; loaded, so opaque velocity survives.");
-                builder.readWriteTexture(frame_.normalRoughness,
-                                         RGAccess::ColorAttachmentWrite,
-                                         "Written because the shared fragment shader emits it; SSR and GTAO, its "
-                                         "only readers, already ran earlier this frame.");
+                frame_.sceneColor =
+                    builder.readWriteTexture(frame_.sceneColor,
+                                             RGAccess::ColorAttachmentWrite,
+                                             "Alpha-blends sorted transparent geometry over the lit opaque "
+                                             "scene color.");
+                frame_.velocity =
+                    builder.readWriteTexture(frame_.velocity,
+                                             RGAccess::ColorAttachmentWrite,
+                                             "Overwrites motion vectors for blended pixels so TAA reprojects them "
+                                             "with their own motion; loaded, so opaque velocity survives.");
+                frame_.normalRoughness =
+                    builder.readWriteTexture(frame_.normalRoughness,
+                                             RGAccess::ColorAttachmentWrite,
+                                             "Written because the shared fragment shader emits it; SSR and GTAO, its "
+                                             "only readers, already ran earlier this frame.");
             });
     }
 
+    // Declared without a side effect, which it used to need. Nothing this frame
+    // reads what this pass writes -- the phase-2 re-test reads the mid-frame build
+    // -- and the next frame's page marking and main cull declare history reads on
+    // it. cullUnusedPasses keeps the last writer of a history-read resource alive,
+    // so the declarations are what save this pass now, not a hand-set flag.
     frame_.passIndices.depthPyramid = addPass(
         "DepthPyramidPass",
         RenderPassType::DepthPyramid,
         RenderPassExecutionType::Compute,
-        true,
+        false,
         [this](RenderGraphBuilder& builder) {
             builder.readTexture(frame_.mainDepth,
                                 RGAccess::ShaderRead,
                                 "Samples the completed normal-Z main depth buffer.");
-            builder.writeTexture(frame_.depthPyramid,
-                                 RGAccess::StorageImageWrite,
-                                 "Writes the max-depth Hi-Z pyramid for later-frame occlusion culling.");
+            frame_.depthPyramid =
+                builder.writeTexture(frame_.depthPyramid,
+                                     RGAccess::StorageImageWrite,
+                                     "Writes the max-depth Hi-Z pyramid for later-frame occlusion culling.");
         });
 }
 
@@ -2265,9 +2443,8 @@ void RenderGraph::declareBloomAndTaaPasses()
                 builder.readTexture(frame_.sceneColor,
                                     RGAccess::ShaderRead,
                                     "Samples the current jittered HDR scene color.");
-                builder.readTexture(frame_.taaHistoryRead,
-                                    RGAccess::ShaderRead,
-                                    "Samples the previous HDR TAA history image.");
+                builder.readHistoryTexture(
+                    frame_.taaHistoryRead, RGAccess::ShaderRead, "Samples the previous HDR TAA history image.");
                 builder.readTexture(frame_.velocity,
                                     RGAccess::ShaderRead,
                                     "Samples motion vectors to reproject the history UV.");
@@ -2276,9 +2453,9 @@ void RenderGraph::declareBloomAndTaaPasses()
                                         RGAccess::ShaderRead,
                                         "Samples main depth for closest-depth velocity dilation.");
                 }
-                builder.writeTexture(frame_.taaHistoryWrite,
-                                     RGAccess::ColorAttachmentWrite,
-                                     "Writes the resolved HDR TAA history image.");
+                frame_.taaHistoryWrite = builder.writeTexture(frame_.taaHistoryWrite,
+                                                              RGAccess::ColorAttachmentWrite,
+                                                              "Writes the resolved HDR TAA history image.");
             });
     }
 
@@ -2288,12 +2465,12 @@ void RenderGraph::declareBloomAndTaaPasses()
         RenderPassExecutionType::Graphics,
         false,
         [this](RenderGraphBuilder& builder) {
-            builder.readTexture(frame_.postProcessSceneColor,
+            builder.readTexture(postProcessSource(),
                                 RGAccess::ShaderRead,
                                 "Samples the active HDR scene color target.");
-            builder.writeTexture(frame_.bloomExtract,
-                                 RGAccess::ColorAttachmentWrite,
-                                 "Writes bright pixels above the bloom threshold.");
+            frame_.bloomExtract = builder.writeTexture(frame_.bloomExtract,
+                                                       RGAccess::ColorAttachmentWrite,
+                                                       "Writes bright pixels above the bloom threshold.");
         });
 
     frame_.passIndices.bloomBlurHorizontal = addPass(
@@ -2303,9 +2480,9 @@ void RenderGraph::declareBloomAndTaaPasses()
         false,
         [this](RenderGraphBuilder& builder) {
             builder.readTexture(frame_.bloomExtract, RGAccess::ShaderRead, "Samples extracted bloom highlights.");
-            builder.writeTexture(frame_.bloomPing,
-                                 RGAccess::ColorAttachmentWrite,
-                                 "Writes the horizontal blur result.");
+            frame_.bloomPing = builder.writeTexture(frame_.bloomPing,
+                                                    RGAccess::ColorAttachmentWrite,
+                                                    "Writes the horizontal blur result.");
         });
 
     frame_.passIndices.bloomBlurVertical = addPass(
@@ -2315,29 +2492,32 @@ void RenderGraph::declareBloomAndTaaPasses()
         false,
         [this](RenderGraphBuilder& builder) {
             builder.readTexture(frame_.bloomPing, RGAccess::ShaderRead, "Samples the horizontal blur result.");
-            builder.writeTexture(frame_.bloomPong,
-                                 RGAccess::ColorAttachmentWrite,
-                                 "Writes the final vertical blur result.");
+            frame_.bloomPong = builder.writeTexture(frame_.bloomPong,
+                                                    RGAccess::ColorAttachmentWrite,
+                                                    "Writes the final vertical blur result.");
         });
 
     frame_.passIndices.bloomDownsampleChain.reserve(frame_.bloomDownsampleChain.size());
     for (uint32_t level = 0; level < frame_.bloomDownsampleChain.size(); ++level) {
         const RGTextureHandle source =
-            level == 0 ? frame_.postProcessSceneColor : frame_.bloomDownsampleChain[level - 1];
-        const RGTextureHandle output = frame_.bloomDownsampleChain[level];
+            level == 0 ? postProcessSource() : frame_.bloomDownsampleChain[level - 1];
         frame_.passIndices.bloomDownsampleChain.push_back(addPass(
             "BloomDownsampleMip" + std::to_string(level),
             RenderPassType::BloomDownsample,
             RenderPassExecutionType::Graphics,
             false,
-            [source, output, level](RenderGraphBuilder& builder) {
+            // Captures this and the level rather than the output handle: the
+            // write produces a new version, and the next level reads the chain
+            // entry, so the new handle has to land back in the vector.
+            [this, source, level](RenderGraphBuilder& builder) {
                 builder.readTexture(source,
                                     RGAccess::ShaderRead,
                                     level == 0 ? "Samples HDR scene color and extracts conservative bright bloom."
                                                : "Samples the previous bloom mip.");
-                builder.writeTexture(output,
-                                     RGAccess::ColorAttachmentWrite,
-                                     "Writes a downsampled bloom mip-chain level.");
+                frame_.bloomDownsampleChain[level] =
+                    builder.writeTexture(frame_.bloomDownsampleChain[level],
+                                         RGAccess::ColorAttachmentWrite,
+                                         "Writes a downsampled bloom mip-chain level.");
             }));
     }
 
@@ -2349,57 +2529,66 @@ void RenderGraph::declareBloomAndTaaPasses()
         const RGTextureHandle lowerMip =
             level + 1u == frame_.bloomDownsampleChain.size() - 1u ? frame_.bloomDownsampleChain[level + 1u]
                                                                   : frame_.bloomUpsampleChain[level + 1u];
-        const RGTextureHandle output = frame_.bloomUpsampleChain[level];
         frame_.passIndices.bloomUpsampleChain[level] = addPass(
             "BloomUpsampleMip" + std::to_string(level),
             RenderPassType::BloomUpsample,
             RenderPassExecutionType::Graphics,
             false,
-            [currentMip, lowerMip, output](RenderGraphBuilder& builder) {
+            [this, currentMip, lowerMip, level](RenderGraphBuilder& builder) {
                 builder.readTexture(currentMip, RGAccess::ShaderRead, "Samples this bloom mip's local highlights.");
                 builder.readTexture(lowerMip, RGAccess::ShaderRead, "Samples the accumulated lower-resolution bloom.");
-                builder.writeTexture(output,
-                                     RGAccess::ColorAttachmentWrite,
-                                     "Writes the progressively upsampled bloom chain.");
+                frame_.bloomUpsampleChain[level] =
+                    builder.writeTexture(frame_.bloomUpsampleChain[level],
+                                         RGAccess::ColorAttachmentWrite,
+                                         "Writes the progressively upsampled bloom chain.");
             });
     }
 }
 
 void RenderGraph::declareExposureCompositePasses()
 {
-    frame_.passIndices.luminance = addPass(
-        "LuminancePass",
-        RenderPassType::Luminance,
-        RenderPassExecutionType::Compute,
-        true,
-        [this](RenderGraphBuilder& builder) {
-            builder.readTexture(frame_.postProcessSceneColor,
-                                RGAccess::ShaderRead,
-                                "Samples active scene color for log-average luminance reduction.");
-            builder.writeBuffer(frame_.luminancePartials,
-                                RGAccess::StorageBufferWrite,
-                                "Writes per-workgroup luminance partials.");
-        });
+    // Histogram exposure does not read the log-average reduction, so on that
+    // path the renderer records nothing here and the pass is not declared.
+    if (frame_.resources.luminancePassEnabled) {
+        frame_.passIndices.luminance = addPass(
+            "LuminancePass",
+            RenderPassType::Luminance,
+            RenderPassExecutionType::Compute,
+            true,
+            [this](RenderGraphBuilder& builder) {
+                builder.readTexture(postProcessSource(),
+                                    RGAccess::ShaderRead,
+                                    "Samples active scene color for log-average luminance reduction.");
+                frame_.luminancePartials = builder.writeBuffer(frame_.luminancePartials,
+                                                               RGAccess::StorageBufferWrite,
+                                                               "Writes per-workgroup luminance partials.");
+            });
+    }
 
-    frame_.passIndices.histogramExposure = addPass(
-        "HistogramExposurePass",
-        RenderPassType::HistogramExposure,
-        RenderPassExecutionType::Compute,
-        true,
-        [this](RenderGraphBuilder& builder) {
-            builder.readTexture(frame_.postProcessSceneColor,
-                                RGAccess::ShaderRead,
-                                "Samples active scene color for log2 luminance histogram binning.");
-            builder.writeBuffer(frame_.luminanceHistogram,
-                                RGAccess::StorageBufferReadWrite,
-                                "Clears and writes 256 luminance histogram bins.");
-            builder.readBuffer(frame_.luminancePartials,
-                               RGAccess::StorageBufferRead,
-                               "Reads log-average luminance partials for GPU exposure fallback.");
-            builder.readWriteBuffer(frame_.exposureState,
-                                    RGAccess::StorageBufferReadWrite,
-                                    "Reads previous exposure and writes GPU exposure/luminance state.");
-        });
+    // Declared only when the recorder will record it: manual and log-average
+    // exposure both return before the pass begins.
+    if (frame_.resources.histogramPassEnabled) {
+        frame_.passIndices.histogramExposure = addPass(
+            "HistogramExposurePass",
+            RenderPassType::HistogramExposure,
+            RenderPassExecutionType::Compute,
+            true,
+            [this](RenderGraphBuilder& builder) {
+                builder.readTexture(postProcessSource(),
+                                    RGAccess::ShaderRead,
+                                    "Samples active scene color for log2 luminance histogram binning.");
+                frame_.luminanceHistogram = builder.writeBuffer(frame_.luminanceHistogram,
+                                                                RGAccess::StorageBufferReadWrite,
+                                                                "Clears and writes 256 luminance histogram bins.");
+                builder.readBuffer(frame_.luminancePartials,
+                                   RGAccess::StorageBufferRead,
+                                   "Reads log-average luminance partials for GPU exposure fallback.");
+                frame_.exposureState =
+                    builder.readWriteBuffer(frame_.exposureState,
+                                            RGAccess::StorageBufferReadWrite,
+                                            "Reads previous exposure and writes GPU exposure/luminance state.");
+            });
+    }
 
     frame_.passIndices.composite = addPass(
         "CompositePass",
@@ -2407,28 +2596,59 @@ void RenderGraph::declareExposureCompositePasses()
         RenderPassExecutionType::Graphics,
         true,
         [this](RenderGraphBuilder& builder) {
-            builder.readTexture(frame_.postProcessSceneColor,
+            builder.readTexture(postProcessSource(),
                                 RGAccess::ShaderRead,
                                 "Samples the active HDR scene color target.");
-            builder.readTexture(frame_.bloomPong, RGAccess::ShaderRead, "Samples the legacy blurred bloom texture.");
+            // The shader samples both bloom bindings and selects one, so only the
+            // selected chain is really read. The other is declared for its layout
+            // alone -- the descriptor binds it either way and sampling an image
+            // in an undefined layout is not allowed -- and a layout-only read
+            // keeps no producer alive, so culling drops the whole chain that
+            // would have filled it.
+            const bool mipBloomSelected = frame_.resources.mipChainBloomSelected;
+            if (mipBloomSelected) {
+                builder.readTextureForLayout(frame_.bloomPong,
+                                             RGAccess::ShaderRead,
+                                             "Bound as the legacy bloom binding, but the mip chain is selected, so "
+                                             "the sample is discarded.");
+            } else {
+                builder.readTexture(
+                    frame_.bloomPong, RGAccess::ShaderRead, "Samples the legacy blurred bloom texture.");
+            }
+
+            RGTextureHandle mipBloom{};
+            const char* mipBloomDescription = "Samples the final mip-chain bloom texture.";
             if (!frame_.bloomUpsampleChain.empty()) {
-                builder.readTexture(frame_.bloomUpsampleChain.front(),
-                                    RGAccess::ShaderRead,
-                                    "Samples the final mip-chain bloom texture.");
+                mipBloom = frame_.bloomUpsampleChain.front();
             } else if (!frame_.bloomDownsampleChain.empty()) {
-                builder.readTexture(frame_.bloomDownsampleChain.front(),
-                                    RGAccess::ShaderRead,
-                                    "Samples the single-level mip-chain bloom texture.");
+                mipBloom = frame_.bloomDownsampleChain.front();
+                mipBloomDescription = "Samples the single-level mip-chain bloom texture.";
+            }
+            if (mipBloom.valid()) {
+                if (mipBloomSelected) {
+                    builder.readTexture(mipBloom, RGAccess::ShaderRead, mipBloomDescription);
+                } else {
+                    builder.readTextureForLayout(mipBloom,
+                                                 RGAccess::ShaderRead,
+                                                 "Bound as the mip-chain bloom binding, but the legacy chain is "
+                                                 "selected, so the sample is discarded.");
+                }
             }
             builder.readBuffer(frame_.exposureState,
                                RGAccess::StorageBufferRead,
                                "Reads GPU exposure state for auto exposure modes.");
-            builder.readTexture(frame_.ambientOcclusion,
-                                RGAccess::ShaderRead,
-                                "Samples the ground-truth ambient-occlusion term applied to scene color.");
-            builder.writeTexture(frame_.swapchainColor,
-                                 RGAccess::ColorAttachmentWrite,
-                                 "Writes the exposed and tone-mapped final color.");
+            // Same split as the transparent pass: produced this frame when GTAO
+            // is on, carried over from the previous one when it is off.
+            const char* compositeAoDescription =
+                "Samples the ground-truth ambient-occlusion term applied to scene color.";
+            if (frame_.resources.gtaoEnabled) {
+                builder.readTexture(frame_.ambientOcclusion, RGAccess::ShaderRead, compositeAoDescription);
+            } else {
+                builder.readHistoryTexture(frame_.ambientOcclusion, RGAccess::ShaderRead, compositeAoDescription);
+            }
+            frame_.swapchainColor = builder.writeTexture(frame_.swapchainColor,
+                                                         RGAccess::ColorAttachmentWrite,
+                                                         "Writes the exposed and tone-mapped final color.");
         });
 
     frame_.passIndices.imgui = addPass(
@@ -2437,9 +2657,10 @@ void RenderGraph::declareExposureCompositePasses()
         RenderPassExecutionType::Graphics,
         true,
         [this](RenderGraphBuilder& builder) {
-            builder.readWriteTexture(frame_.swapchainColor,
-                                     RGAccess::ColorAttachmentWrite,
-                                     "Loads the composited swapchain image and draws the debug overlay.");
+            frame_.swapchainColor =
+                builder.readWriteTexture(frame_.swapchainColor,
+                                         RGAccess::ColorAttachmentWrite,
+                                         "Loads the composited swapchain image and draws the debug overlay.");
         });
 }
 
@@ -2448,16 +2669,54 @@ void RenderGraph::compilePassCulling()
     cullUnusedPasses(passes_, textures_.size(), buffers_.size());
 }
 
-std::vector<RenderGraphResourceLifetime> computeTextureLifetimes(const std::vector<RenderPassNode>& passes,
-                                                                   size_t textureCount)
+void RenderGraph::validateFrameDeclarations()
+{
+    textureValidationInfo_.clear();
+    textureValidationInfo_.reserve(textures_.size());
+    for (const TextureResource& texture : textures_) {
+        textureValidationInfo_.push_back(RGResourceValidationInfo{texture.graphManaged, texture.desc.aliased});
+    }
+
+    bufferValidationInfo_.clear();
+    bufferValidationInfo_.reserve(buffers_.size());
+    for (const BufferResource& buffer : buffers_) {
+        bufferValidationInfo_.push_back(RGResourceValidationInfo{buffer.graphManaged, false});
+    }
+
+    declarationIssues_ = validateDeclarations(passes_, textureValidationInfo_, bufferValidationInfo_);
+    passSchedule_ = computePassSchedule(passes_);
+    const RenderGraphExecutionOrder executionOrder = computeExecutionOrder(passSchedule_);
+    executionOrder_ = executionOrder.order;
+    executionOrderCycleDetected_ = executionOrder.cycleDetected;
+
+    for (const RenderGraphDeclarationIssue& issue : declarationIssues_) {
+        if (issue.passIndex >= passes_.size()) {
+            continue;
+        }
+
+        const std::string resourceName = issue.resourceKind == RGResourceKind::Texture
+                                             ? textures_.at(issue.resourceIndex).desc.name
+                                             : buffers_.at(issue.resourceIndex).desc.name;
+        std::string& text = passes_[issue.passIndex].declarationIssues;
+        if (!text.empty()) {
+            text += "; ";
+        }
+        text += resourceName;
+        text += ": ";
+        text += renderGraphDeclarationIssueName(issue.issue);
+    }
+}
+
+std::vector<RenderGraphResourceLifetime>
+computeTextureLifetimes(const std::vector<RenderPassNode>& passes, std::span<const uint32_t> order, size_t textureCount)
 {
     std::vector<RenderGraphResourceLifetime> lifetimes(textureCount);
 
-    for (uint32_t passIndex = 0; passIndex < passes.size(); ++passIndex) {
-        const RenderPassNode& pass = passes[passIndex];
-        if (pass.culled) {
+    for (uint32_t slot = 0; slot < order.size(); ++slot) {
+        if (order[slot] >= passes.size()) {
             continue;
         }
+        const RenderPassNode& pass = passes[order[slot]];
 
         for (const RenderResourceUsage& usage : pass.resourceUsages) {
             if (usage.resource.kind != RGResourceKind::Texture || usage.resource.index >= lifetimes.size()) {
@@ -2466,15 +2725,18 @@ std::vector<RenderGraphResourceLifetime> computeTextureLifetimes(const std::vect
                 continue;
             }
 
+            // Every usage extends the interval, a layout-only read included: the
+            // image has to be in a valid state where a descriptor binds it, so
+            // its bytes cannot belong to something else at that point.
             RenderGraphResourceLifetime& lifetime = lifetimes[usage.resource.index];
             if (!lifetime.used) {
                 lifetime.used = true;
-                lifetime.firstPass = passIndex;
-                lifetime.lastPass = passIndex;
+                lifetime.firstPass = slot;
+                lifetime.lastPass = slot;
                 continue;
             }
-            lifetime.firstPass = std::min(lifetime.firstPass, passIndex);
-            lifetime.lastPass = std::max(lifetime.lastPass, passIndex);
+            lifetime.firstPass = std::min(lifetime.firstPass, slot);
+            lifetime.lastPass = std::max(lifetime.lastPass, slot);
         }
     }
 
@@ -2485,6 +2747,34 @@ void cullUnusedPasses(std::vector<RenderPassNode>& passes, size_t textureCount, 
 {
     std::vector<uint8_t> neededTextures(textureCount, 0);
     std::vector<uint8_t> neededBuffers(bufferCount, 0);
+
+    // A resource something declares a history read on is consumed by the *next*
+    // frame, so whatever writes it last this frame has to survive even though
+    // nothing here reads it. Seeding the needed set is the whole mechanism: it is
+    // a reader at the end of the frame, and the sweep below already knows how to
+    // keep the last writer of a needed resource and drop the ones before it.
+    //
+    // The end-of-frame depth pyramid rebuild is exactly this shape. Nothing this
+    // frame reads it -- the phase-2 re-test reads the mid-frame build -- and the
+    // next frame's page marking and main cull history-read it. It was kept alive
+    // by a hand-set side-effect flag, which is a fine outcome and a bad mechanism:
+    // a pass added in that shape without the flag is culled silently.
+    //
+    // Seeded from every pass, including ones this sweep is about to cull. A
+    // history reader that gets culled would be culled next frame too, so treating
+    // its declaration as live is conservative in the safe direction.
+    for (const RenderPassNode& pass : passes) {
+        for (const RenderResourceUsage& usage : pass.resourceUsages) {
+            if (usage.readKind != RGReadKind::History) {
+                continue;
+            }
+            if (usage.resource.kind == RGResourceKind::Texture && usage.resource.index < neededTextures.size()) {
+                neededTextures[usage.resource.index] = 1;
+            } else if (usage.resource.kind == RGResourceKind::Buffer && usage.resource.index < neededBuffers.size()) {
+                neededBuffers[usage.resource.index] = 1;
+            }
+        }
+    }
 
     for (auto passIt = passes.rbegin(); passIt != passes.rend(); ++passIt) {
         RenderPassNode& pass = *passIt;
@@ -2527,7 +2817,12 @@ void cullUnusedPasses(std::vector<RenderPassNode>& passes, size_t textureCount, 
                     neededBuffers[usage.resource.index] = 0;
                 }
             }
-            if (accessReads(usage.access)) {
+            // Only a read of what this frame produced marks the resource needed.
+            // A layout-only read consumes nothing, which is what lets culling
+            // remove the bloom chain the composite does not sample; a history read
+            // consumes the previous frame, and its claim on this frame's producer
+            // was already made by the seeding above.
+            if (accessReads(usage.access) && usage.readKind == RGReadKind::Produced) {
                 if (usage.resource.kind == RGResourceKind::Texture && usage.resource.index < neededTextures.size()) {
                     neededTextures[usage.resource.index] = 1;
                 } else if (usage.resource.kind == RGResourceKind::Buffer &&
@@ -2537,6 +2832,360 @@ void cullUnusedPasses(std::vector<RenderPassNode>& passes, size_t textureCount, 
             }
         }
     }
+}
+
+const char* renderGraphDeclarationIssueName(RGDeclarationIssue issue)
+{
+    switch (issue) {
+    case RGDeclarationIssue::ReadsContentNoPassProduced:
+        return "reads content no pass produced this frame";
+    case RGDeclarationIssue::HistoryReadOfAliasedResource:
+        return "history read of a pool-bound resource";
+    case RGDeclarationIssue::ResourceDeclaredTwice:
+        return "resource declared more than once";
+    case RGDeclarationIssue::HistoryReadAfterProducer:
+        return "history read placed after this frame's producer";
+    case RGDeclarationIssue::StaleVersionRead:
+        return "reads a version older than the one current here";
+    }
+
+    return "unknown declaration issue";
+}
+
+std::vector<RenderGraphDeclarationIssue> validateDeclarations(const std::vector<RenderPassNode>& passes,
+                                                              std::span<const RGResourceValidationInfo> textures,
+                                                              std::span<const RGResourceValidationInfo> buffers)
+{
+    std::vector<RenderGraphDeclarationIssue> issues;
+
+    // Whether any surviving pass so far has written each resource. Forward sweep,
+    // the opposite direction to cullUnusedPasses: liveness looks back from the
+    // consumers, production looks forward from the producers.
+    std::vector<uint8_t> textureWritten(textures.size(), 0);
+    std::vector<uint8_t> bufferWritten(buffers.size(), 0);
+    std::vector<uint32_t> textureVersion(textures.size(), 0);
+    std::vector<uint32_t> bufferVersion(buffers.size(), 0);
+    std::vector<uint32_t> seenTextures;
+    std::vector<uint32_t> seenBuffers;
+
+    for (uint32_t passIndex = 0; passIndex < passes.size(); ++passIndex) {
+        const RenderPassNode& pass = passes[passIndex];
+        if (pass.culled) {
+            continue;
+        }
+
+        seenTextures.clear();
+        seenBuffers.clear();
+
+        const auto report = [&](RGDeclarationIssue issue, const RenderResourceUsage& usage) {
+            issues.push_back(RenderGraphDeclarationIssue{passIndex, issue, usage.resource.kind, usage.resource.index});
+        };
+
+        for (const RenderResourceUsage& usage : pass.resourceUsages) {
+            const bool isTexture = usage.resource.kind == RGResourceKind::Texture;
+            const size_t resourceCount = isTexture ? textures.size() : buffers.size();
+            if (usage.resource.index >= resourceCount) {
+                continue;
+            }
+
+            std::vector<uint32_t>& seen = isTexture ? seenTextures : seenBuffers;
+            if (std::find(seen.begin(), seen.end(), usage.resource.index) != seen.end()) {
+                report(RGDeclarationIssue::ResourceDeclaredTwice, usage);
+            } else {
+                seen.push_back(usage.resource.index);
+            }
+
+            const RGResourceValidationInfo& info =
+                isTexture ? textures[usage.resource.index] : buffers[usage.resource.index];
+            const std::vector<uint8_t>& written = isTexture ? textureWritten : bufferWritten;
+            const std::vector<uint32_t>& current = isTexture ? textureVersion : bufferVersion;
+
+            // A layout-only read consumes nothing, so none of the content rules
+            // below have anything to say about it.
+            if (accessReads(usage.access) && usage.readKind != RGReadKind::LayoutOnly) {
+                const bool producedThisFrame = written[usage.resource.index] != 0;
+                // The version current at this point is what the last write left;
+                // a read naming an older one is holding a handle from before it.
+                // History reads are exempt: naming version 0 is the whole point,
+                // and HistoryReadAfterProducer already covers a stale one.
+                if (usage.readKind == RGReadKind::Produced && usage.inputVersion < current[usage.resource.index]) {
+                    report(RGDeclarationIssue::StaleVersionRead, usage);
+                }
+                if (usage.readKind == RGReadKind::History && producedThisFrame) {
+                    // The declaration claims the previous frame's contents but an
+                    // earlier pass already overwrote them. Applies whoever owns
+                    // the memory: what is wrong here is the ordering.
+                    report(RGDeclarationIssue::HistoryReadAfterProducer, usage);
+                } else if (!producedThisFrame && info.graphManaged) {
+                    // Only a graph-managed resource can be read before it is
+                    // produced: an imported one keeps its contents by contract.
+                    if (usage.readKind == RGReadKind::Produced) {
+                        report(RGDeclarationIssue::ReadsContentNoPassProduced, usage);
+                    } else if (info.aliased) {
+                        // A declared history read of a private resource is
+                        // exactly right; it is only wrong when the bytes are
+                        // shared, because then there is no previous frame left.
+                        report(RGDeclarationIssue::HistoryReadOfAliasedResource, usage);
+                    }
+                }
+            }
+        }
+
+        // Writes land after the whole pass is checked, so a pass that reads and
+        // writes the same resource is judged on what existed before it ran.
+        for (const RenderResourceUsage& usage : pass.resourceUsages) {
+            if (!accessWrites(usage.access)) {
+                continue;
+            }
+            if (usage.resource.kind == RGResourceKind::Texture && usage.resource.index < textureWritten.size()) {
+                textureWritten[usage.resource.index] = 1;
+                textureVersion[usage.resource.index] = usage.outputVersion;
+            } else if (usage.resource.kind == RGResourceKind::Buffer && usage.resource.index < bufferWritten.size()) {
+                bufferWritten[usage.resource.index] = 1;
+                bufferVersion[usage.resource.index] = usage.outputVersion;
+            }
+        }
+    }
+
+    return issues;
+}
+
+std::vector<RenderGraphPassSchedule> computePassSchedule(const std::vector<RenderPassNode>& passes)
+{
+    std::vector<RenderGraphPassSchedule> schedule(passes.size());
+
+    // Per resource: the last surviving pass to write it, and the passes that
+    // have read it since. Both index spaces are separate, the same way
+    // cullUnusedPasses keeps them separate.
+    std::vector<uint32_t> textureLastWriter;
+    std::vector<uint32_t> bufferLastWriter;
+    std::vector<std::vector<uint32_t>> textureReaders;
+    std::vector<std::vector<uint32_t>> bufferReaders;
+    // producers[R][v - 1] is the pass that produced version v of resource R.
+    std::vector<std::vector<uint32_t>> textureProducers;
+    std::vector<std::vector<uint32_t>> bufferProducers;
+
+    const auto grow = [](auto& lastWriter, auto& readers, auto& producers, uint32_t index) {
+        if (index >= lastWriter.size()) {
+            lastWriter.resize(index + 1, kInvalidRenderGraphHandle);
+            readers.resize(index + 1);
+            producers.resize(index + 1);
+        }
+    };
+
+    uint32_t recordedSlot = 0;
+    for (uint32_t passIndex = 0; passIndex < passes.size(); ++passIndex) {
+        const RenderPassNode& pass = passes[passIndex];
+        if (pass.culled) {
+            continue;
+        }
+
+        RenderGraphPassSchedule& entry = schedule[passIndex];
+        entry.scheduled = true;
+        entry.recordedSlot = recordedSlot++;
+
+        const auto addPredecessor = [&entry, passIndex](uint32_t predecessor) {
+            if (predecessor == kInvalidRenderGraphHandle || predecessor == passIndex) {
+                return;
+            }
+            if (std::find(entry.predecessors.begin(), entry.predecessors.end(), predecessor) ==
+                entry.predecessors.end()) {
+                entry.predecessors.push_back(predecessor);
+            }
+        };
+
+        for (const RenderResourceUsage& usage : pass.resourceUsages) {
+            const bool isTexture = usage.resource.kind == RGResourceKind::Texture;
+            auto& lastWriter = isTexture ? textureLastWriter : bufferLastWriter;
+            auto& readers = isTexture ? textureReaders : bufferReaders;
+            auto& producers = isTexture ? textureProducers : bufferProducers;
+            grow(lastWriter, readers, producers, usage.resource.index);
+
+            // Read after write, resolved through the version the handle names
+            // rather than through whichever write happens to be most recent: a
+            // reader holding an older handle depends on the pass that produced
+            // *that* version, which is what its declaration actually says.
+            //
+            // A history read makes no such edge at all -- it consumes the
+            // previous frame, not whatever this frame's producer will write.
+            if (accessReads(usage.access) && usage.readKind == RGReadKind::Produced && usage.inputVersion > 0) {
+                const std::vector<uint32_t>& versionProducers = producers[usage.resource.index];
+                if (usage.inputVersion <= versionProducers.size()) {
+                    addPredecessor(versionProducers[usage.inputVersion - 1]);
+                }
+            }
+
+            if (accessWrites(usage.access)) {
+                // Write after write, and write after read: overwriting means
+                // waiting both for the previous writer and for everyone who read
+                // what it left.
+                addPredecessor(lastWriter[usage.resource.index]);
+                for (const uint32_t reader : readers[usage.resource.index]) {
+                    addPredecessor(reader);
+                }
+            }
+        }
+
+        // Committed after the whole pass is examined, so a read-modify-write is
+        // judged against the state the pass found rather than the one it leaves.
+        for (const RenderResourceUsage& usage : pass.resourceUsages) {
+            if (!accessWrites(usage.access)) {
+                continue;
+            }
+            const bool isTexture = usage.resource.kind == RGResourceKind::Texture;
+            auto& lastWriter = isTexture ? textureLastWriter : bufferLastWriter;
+            auto& readers = isTexture ? textureReaders : bufferReaders;
+            auto& producers = isTexture ? textureProducers : bufferProducers;
+            grow(lastWriter, readers, producers, usage.resource.index);
+            lastWriter[usage.resource.index] = passIndex;
+            readers[usage.resource.index].clear();
+            if (usage.outputVersion > 0) {
+                producers[usage.resource.index].resize(usage.outputVersion, kInvalidRenderGraphHandle);
+                producers[usage.resource.index][usage.outputVersion - 1] = passIndex;
+            }
+        }
+        for (const RenderResourceUsage& usage : pass.resourceUsages) {
+            if (!accessReads(usage.access)) {
+                continue;
+            }
+            const bool isTexture = usage.resource.kind == RGResourceKind::Texture;
+            auto& lastWriter = isTexture ? textureLastWriter : bufferLastWriter;
+            auto& readers = isTexture ? textureReaders : bufferReaders;
+            auto& producers = isTexture ? textureProducers : bufferProducers;
+            grow(lastWriter, readers, producers, usage.resource.index);
+            readers[usage.resource.index].push_back(passIndex);
+        }
+
+        std::sort(entry.predecessors.begin(), entry.predecessors.end());
+
+        // Every edge points backwards, so one forward pass settles the longest
+        // chain: a predecessor's own earliest slot is already final here.
+        for (const uint32_t predecessor : entry.predecessors) {
+            entry.earliestSlot = std::max(entry.earliestSlot, schedule[predecessor].earliestSlot + 1);
+        }
+        entry.slack = entry.recordedSlot - entry.earliestSlot;
+    }
+
+    return schedule;
+}
+
+std::vector<RenderGraphOrderViolation> validatePassOrder(const std::vector<RenderGraphPassSchedule>& schedule,
+                                                         std::span<const uint32_t> order)
+{
+    std::vector<RenderGraphOrderViolation> violations;
+
+    // Position of each pass in the proposed order, or absent.
+    constexpr size_t kAbsent = std::numeric_limits<size_t>::max();
+    std::vector<size_t> position(schedule.size(), kAbsent);
+    for (size_t slot = 0; slot < order.size(); ++slot) {
+        if (order[slot] < position.size()) {
+            position[order[slot]] = slot;
+        }
+    }
+
+    for (uint32_t passIndex = 0; passIndex < schedule.size(); ++passIndex) {
+        const RenderGraphPassSchedule& entry = schedule[passIndex];
+        if (!entry.scheduled) {
+            continue;
+        }
+
+        for (const uint32_t predecessor : entry.predecessors) {
+            const size_t passSlot = position[passIndex];
+            const size_t predecessorSlot = predecessor < position.size() ? position[predecessor] : kAbsent;
+            // Absent counts as broken on either side: a pass the graph schedules
+            // cannot be dropped from an order, and a predecessor that is not run
+            // cannot be waited on.
+            if (passSlot == kAbsent || predecessorSlot == kAbsent || predecessorSlot >= passSlot) {
+                violations.push_back(RenderGraphOrderViolation{passIndex, predecessor});
+            }
+        }
+    }
+
+    return violations;
+}
+
+RenderGraphExecutionOrder computeExecutionOrder(const std::vector<RenderGraphPassSchedule>& schedule)
+{
+    RenderGraphExecutionOrder result;
+
+    std::vector<uint32_t> remaining(schedule.size(), 0);
+    // Successors, so emitting a pass can cheaply release what waited on it.
+    std::vector<std::vector<uint32_t>> successors(schedule.size());
+    uint32_t scheduledPasses = 0;
+
+    for (uint32_t passIndex = 0; passIndex < schedule.size(); ++passIndex) {
+        const RenderGraphPassSchedule& entry = schedule[passIndex];
+        if (!entry.scheduled) {
+            continue;
+        }
+
+        ++scheduledPasses;
+        for (const uint32_t predecessor : entry.predecessors) {
+            if (predecessor < schedule.size() && schedule[predecessor].scheduled) {
+                ++remaining[passIndex];
+                successors[predecessor].push_back(passIndex);
+            }
+        }
+    }
+
+    // Kahn's algorithm. The ready set is kept as a sorted vector rather than a
+    // heap: the counts here are in the tens, and taking the lowest declaration
+    // index is what makes the result reproduce the declaration order.
+    std::vector<uint32_t> ready;
+    for (uint32_t passIndex = 0; passIndex < schedule.size(); ++passIndex) {
+        if (schedule[passIndex].scheduled && remaining[passIndex] == 0) {
+            ready.push_back(passIndex);
+        }
+    }
+
+    result.order.reserve(scheduledPasses);
+    while (!ready.empty()) {
+        const auto next = std::min_element(ready.begin(), ready.end());
+        const uint32_t passIndex = *next;
+        ready.erase(next);
+        result.order.push_back(passIndex);
+
+        for (const uint32_t successor : successors[passIndex]) {
+            if (--remaining[successor] == 0) {
+                ready.push_back(successor);
+            }
+        }
+    }
+
+    result.cycleDetected = result.order.size() != scheduledPasses;
+    return result;
+}
+
+std::vector<uint32_t> unrecordedPasses(const std::vector<RenderGraphPassSchedule>& schedule,
+                                       std::span<const uint32_t> order)
+{
+    std::vector<uint8_t> present(schedule.size(), 0);
+    for (const uint32_t passIndex : order) {
+        if (passIndex < present.size()) {
+            present[passIndex] = 1;
+        }
+    }
+
+    std::vector<uint32_t> missing;
+    for (uint32_t passIndex = 0; passIndex < schedule.size(); ++passIndex) {
+        if (schedule[passIndex].scheduled && present[passIndex] == 0) {
+            missing.push_back(passIndex);
+        }
+    }
+
+    return missing;
+}
+
+uint32_t longestPassChain(const std::vector<RenderGraphPassSchedule>& schedule)
+{
+    uint32_t longest = 0;
+    for (const RenderGraphPassSchedule& entry : schedule) {
+        if (entry.scheduled) {
+            longest = std::max(longest, entry.earliestSlot + 1);
+        }
+    }
+
+    return longest;
 }
 
 bool RenderGraph::beginDeclaredPass(uint32_t passIndex)
@@ -2551,26 +3200,62 @@ bool RenderGraph::beginDeclaredPass(uint32_t passIndex)
         return false;
     }
 
+    // First occurrence only: the cascaded shadow pass is begun once per cascade,
+    // and the frame's recording order should say it ran once.
+    if (std::find(recordedOrder_.begin(), recordedOrder_.end(), passIndex) == recordedOrder_.end()) {
+        recordedOrder_.push_back(passIndex);
+    }
+
+    // Every barrier this pass infers sits between the same two points in the
+    // command stream -- after whatever the previous pass recorded, before this
+    // pass's first command -- so they are accumulated and submitted as one
+    // dependency rather than one vkCmdPipelineBarrier2 per resource.
+    barrierBatch_.reset();
+    BarrierBatch& batch = barrierBatch_;
     uint32_t imageBarrierCount = 0;
     uint32_t bufferBarrierCount = 0;
     for (const RenderResourceUsage& usage : pass.resourceUsages) {
         if (usage.resource.kind == RGResourceKind::Texture) {
-            imageBarrierCount += transitionTexture(RGTextureHandle{usage.resource.index}, usage.declaredAccess);
+            imageBarrierCount += transitionTexture(RGTextureHandle{usage.resource.index}, usage.declaredAccess, batch);
         } else if (usage.resource.kind == RGResourceKind::Buffer) {
-            bufferBarrierCount += transitionBuffer(RGBufferHandle{usage.resource.index}, usage.declaredAccess);
+            bufferBarrierCount += transitionBuffer(RGBufferHandle{usage.resource.index}, usage.declaredAccess, batch);
         }
     }
+    flushBarrierBatch(batch);
 
     pass.executed = true;
     pass.generatedBarrierCount += imageBarrierCount + bufferBarrierCount;
     pass.generatedImageBarrierCount += imageBarrierCount;
     pass.generatedBufferBarrierCount += bufferBarrierCount;
-    pass.transitionSummary =
-        passBarrierSummary(pass.generatedImageBarrierCount, pass.generatedBufferBarrierCount);
+    pass.generatedBarrierSubmitCount += batch.submitCount;
+    pass.transitionSummary = passBarrierSummary(
+        pass.generatedImageBarrierCount, pass.generatedBufferBarrierCount, pass.generatedBarrierSubmitCount);
     return true;
 }
 
-uint32_t RenderGraph::transitionTexture(RGTextureHandle handle, RGAccess access)
+void RenderGraph::flushBarrierBatch(BarrierBatch& batch)
+{
+    if (batch.imageBarriers.empty() && batch.bufferBarriers.empty()) {
+        return;
+    }
+
+    VkDependencyInfo dependencyInfo{};
+    dependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dependencyInfo.imageMemoryBarrierCount = static_cast<uint32_t>(batch.imageBarriers.size());
+    dependencyInfo.pImageMemoryBarriers = batch.imageBarriers.data();
+    dependencyInfo.bufferMemoryBarrierCount = static_cast<uint32_t>(batch.bufferBarriers.size());
+    dependencyInfo.pBufferMemoryBarriers = batch.bufferBarriers.data();
+
+    vkCmdPipelineBarrier2(frame_.commandBuffer, &dependencyInfo);
+
+    batch.imageBarriers.clear();
+    batch.bufferBarriers.clear();
+    batch.touchedTextures.clear();
+    batch.touchedBuffers.clear();
+    ++batch.submitCount;
+}
+
+uint32_t RenderGraph::transitionTexture(RGTextureHandle handle, RGAccess access, BarrierBatch& batch)
 {
     if (!handle.valid() || handle.index >= textures_.size()) {
         return 0;
@@ -2639,19 +3324,23 @@ uint32_t RenderGraph::transitionTexture(RGTextureHandle handle, RGAccess access)
     barrier.subresourceRange.baseArrayLayer = 0;
     barrier.subresourceRange.layerCount = resource.desc.arrayLayers;
 
-    VkDependencyInfo dependencyInfo{};
-    dependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dependencyInfo.imageMemoryBarrierCount = 1;
-    dependencyInfo.pImageMemoryBarriers = &barrier;
+    // The tracked state is updated here, not at flush time, so a second
+    // transition of this resource later in the pass computes its barrier from
+    // the layout and access this one leaves behind -- exactly as it did when
+    // every transition submitted immediately. Only the submission is deferred.
+    if (barrierBatchNeedsFlush(batch.touchedTextures, handle.index)) {
+        flushBarrierBatch(batch);
+    }
+    batch.imageBarriers.push_back(barrier);
+    batch.touchedTextures.push_back(handle.index);
 
-    vkCmdPipelineBarrier2(frame_.commandBuffer, &dependencyInfo);
     setTextureLayout(resource, desired.layout);
     resource.lastAccess = desired;
     resource.usedThisFrame = true;
     return 1;
 }
 
-uint32_t RenderGraph::transitionBuffer(RGBufferHandle handle, RGAccess access)
+uint32_t RenderGraph::transitionBuffer(RGBufferHandle handle, RGAccess access, BarrierBatch& batch)
 {
     if (!handle.valid() || handle.index >= buffers_.size()) {
         return 0;
@@ -2689,12 +3378,12 @@ uint32_t RenderGraph::transitionBuffer(RGBufferHandle handle, RGAccess access)
     barrier.offset = 0;
     barrier.size = resource.desc.size;
 
-    VkDependencyInfo dependencyInfo{};
-    dependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dependencyInfo.bufferMemoryBarrierCount = 1;
-    dependencyInfo.pBufferMemoryBarriers = &barrier;
+    if (barrierBatchNeedsFlush(batch.touchedBuffers, handle.index)) {
+        flushBarrierBatch(batch);
+    }
+    batch.bufferBarriers.push_back(barrier);
+    batch.touchedBuffers.push_back(handle.index);
 
-    vkCmdPipelineBarrier2(frame_.commandBuffer, &dependencyInfo);
     resource.lastAccess = desired;
     resource.usedThisFrame = true;
     return 1;
@@ -2785,6 +3474,11 @@ bool bufferBarrierRequired(bool usedThisFrame,
 {
     const bool touched = usedThisFrame || previousDeclared != RGAccess::Unknown;
     return touched && (accessMaskWrites(previousAccess) || accessMaskWrites(desiredAccess));
+}
+
+bool barrierBatchNeedsFlush(std::span<const uint32_t> batched, uint32_t resource)
+{
+    return std::find(batched.begin(), batched.end(), resource) != batched.end();
 }
 
 bool textureBarrierRequired(VkImageLayout oldLayout,
@@ -2932,40 +3626,64 @@ RenderResourceHandle RenderGraph::bufferResourceHandle(RGBufferHandle handle) co
     return RenderResourceHandle{buffers_[handle.index].desc.name, RGResourceKind::Buffer, handle.index};
 }
 
-void RenderGraph::addTextureUsage(RenderPassNode& pass,
-                                  RGTextureHandle handle,
-                                  RenderResourceAccess resourceAccess,
-                                  RGAccess declaredAccess,
-                                  std::string description)
+RGTextureHandle RenderGraph::addTextureUsage(RenderPassNode& pass,
+                                             RGTextureHandle handle,
+                                             RenderResourceAccess resourceAccess,
+                                             RGAccess declaredAccess,
+                                             std::string description,
+                                             RGReadKind readKind)
 {
     if (!handle.valid() || handle.index >= textures_.size()) {
-        return;
+        return handle;
     }
+
+    TextureResource& resource = textures_[handle.index];
+    const uint32_t inputVersion = handle.version;
+    // A write produces the next version and the caller is handed a handle for
+    // it; a plain read leaves the resource where it was.
+    const uint32_t outputVersion = accessWrites(resourceAccess) ? ++resource.currentVersion : inputVersion;
 
     pass.resourceUsages.push_back(RenderResourceUsage{
         textureResourceHandle(handle),
         resourceAccess,
         declaredAccess,
         std::move(description),
+        readKind,
+        inputVersion,
+        outputVersion,
     });
+
+    return RGTextureHandle{handle.index, outputVersion};
 }
 
-void RenderGraph::addBufferUsage(RenderPassNode& pass,
-                                 RGBufferHandle handle,
-                                 RenderResourceAccess resourceAccess,
-                                 RGAccess declaredAccess,
-                                 std::string description)
+RGBufferHandle RenderGraph::addBufferUsage(RenderPassNode& pass,
+                                           RGBufferHandle handle,
+                                           RenderResourceAccess resourceAccess,
+                                           RGAccess declaredAccess,
+                                           std::string description)
 {
     if (!handle.valid() || handle.index >= buffers_.size()) {
-        return;
+        return handle;
     }
+
+    BufferResource& resource = buffers_[handle.index];
+    const uint32_t inputVersion = handle.version;
+    const uint32_t outputVersion = accessWrites(resourceAccess) ? ++resource.currentVersion : inputVersion;
 
     pass.resourceUsages.push_back(RenderResourceUsage{
         bufferResourceHandle(handle),
         resourceAccess,
         declaredAccess,
         std::move(description),
+        // No buffer is graph-managed today, so neither a history nor a
+        // layout-only read of one has anything to say; the field exists to keep
+        // the usage type uniform.
+        RGReadKind::Produced,
+        inputVersion,
+        outputVersion,
     });
+
+    return RGBufferHandle{handle.index, outputVersion};
 }
 
 std::vector<RenderGraph::TransientTextureRecord> RenderGraph::transientTextures() const

@@ -468,6 +468,10 @@ private:
     // True when the cascades render as one multiview pass rather than one pass
     // each. Requires the device feature; the fallback is the original loop.
     [[nodiscard]] bool isLayeredCascadeRenderingActive() const;
+    // Whether any cascade will be redrawn this frame. The graph declares
+    // CSMShadowPass only when this is true, and the recording loop tests the
+    // same call, so a fully cached frame cannot declare a pass it never records.
+    [[nodiscard]] bool anyCascadeShadowRedrawRequired() const;
     // Whether anything will read the depth pyramid, i.e. whether building it
     // this frame is worth anything.
     [[nodiscard]] bool isDepthPyramidBuildRequired() const;
@@ -612,6 +616,26 @@ private:
     // Records the punctual shadow atlas pass: one dynamic-rendering pass over
     // the whole atlas, with a viewport/scissor per allocated slot.
     void recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuCullActive);
+    // Cascaded shadow maps, including the cache bookkeeping that decides which
+    // cascades were redrawn. Self-contained: it takes only the command buffer.
+    void recordCascadeShadowPass(VkCommandBuffer commandBuffer);
+    // The main HDR pass, the two-phase occlusion re-test, SSR, GTAO and the
+    // transparent pass. One recorder because they share the drawing state the
+    // main pass sets up, including a mutable flag tracking whether the bindless
+    // descriptor sets are currently bound.
+    // The punctual atlas cull and the atlas pass. The cull is separate from
+    // recordPunctualShadowPass because compute cannot run inside a
+    // dynamic-rendering scope, and that pass is one scope so its cached tiles
+    // survive a partial clear.
+    // Fog injection and scattering. Ordered after the cluster passes, whose light
+    // lists it walks, and before the main HDR pass, which samples the volume.
+    // The probe shading-parameter upload, the capture pass, and the convolution
+    // that turns the capture into probe tiles. The upload comes first because the
+    // capture reads those parameters too, for the multi-bounce lookup.
+    void recordIrradianceProbePasses(VkCommandBuffer commandBuffer);
+    void recordVolumetricFogPass(VkCommandBuffer commandBuffer);
+    void recordPunctualShadows(VkCommandBuffer commandBuffer);
+    void recordMainPassGeometry(VkCommandBuffer commandBuffer);
     [[nodiscard]] bool isGpuPunctualShadowCullingActive() const;
     [[nodiscard]] glm::vec4 activeDirectionalLightDirection() const;
     [[nodiscard]] glm::vec4 activeDirectionalLightColor() const;

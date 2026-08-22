@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -19,14 +20,27 @@ namespace ve::renderer {
 
 inline constexpr uint32_t kInvalidRenderGraphHandle = std::numeric_limits<uint32_t>::max();
 
+// A handle names a resource *and* which of its versions. Every declared write
+// produces a new version, and the builder hands back a handle for it, so the
+// caller has to thread the result forward:
+//
+//     frame_.sceneColor = builder.writeTexture(frame_.sceneColor, ...);
+//
+// The version is what makes the declared data flow independent of where a pass
+// sits: a reader names the version it consumes, so holding a handle from before
+// an intervening write is a detectable mistake rather than an invisible one.
+// Barriers and resource lookup ignore it -- all versions of a resource are the
+// same VkImage.
 struct RGTextureHandle {
     uint32_t index = kInvalidRenderGraphHandle;
+    uint32_t version = 0;
 
     [[nodiscard]] bool valid() const { return index != kInvalidRenderGraphHandle; }
 };
 
 struct RGBufferHandle {
     uint32_t index = kInvalidRenderGraphHandle;
+    uint32_t version = 0;
 
     [[nodiscard]] bool valid() const { return index != kInvalidRenderGraphHandle; }
 };
@@ -92,6 +106,29 @@ enum class RenderResourceAccess {
     ReadWrite
 };
 
+// What a declared read consumes. The distinction is invisible to barriers -- a
+// layout is a layout -- and decides everything else: which pass a reader
+// depends on, whether reading before anything wrote is a mistake, and whether a
+// producer is worth keeping alive.
+enum class RGReadKind {
+    // What this frame's graph produced. The ordinary case.
+    Produced,
+    // What the resource held at the end of the previous frame. Declaring it says
+    // the read-before-write is deliberate rather than an ordering mistake.
+    History,
+    // Nothing. A descriptor binds the resource and the pass samples it, but the
+    // result is discarded -- the shader picks between two bloom chains, or a
+    // fallback path leaves a binding unused. The declaration exists only to put
+    // the image in the layout the descriptor claims, which is the same reason
+    // the punctual atlas and the VSM page pool are declared on frames that draw
+    // nothing into them.
+    //
+    // Consuming nothing means keeping nothing alive: a producer whose only
+    // reader is layout-only is dead, and culling removes it. That is what makes
+    // the unselected bloom chain stop running.
+    LayoutOnly
+};
+
 struct RGTextureDesc {
     std::string name;
     VkFormat format = VK_FORMAT_UNDEFINED;
@@ -126,6 +163,13 @@ struct RenderResourceUsage {
     RenderResourceAccess access = RenderResourceAccess::Read;
     RGAccess declaredAccess = RGAccess::Unknown;
     std::string description;
+    // What the read consumes; see RGReadKind. Meaningless on a write.
+    RGReadKind readKind = RGReadKind::Produced;
+    // The version the declaring handle named, and the version the pass leaves
+    // behind: outputVersion is inputVersion + 1 for a write, and equal to it for
+    // a plain read. Version 0 is whatever the resource held before the frame.
+    uint32_t inputVersion = 0;
+    uint32_t outputVersion = 0;
 };
 
 // What a declared access means in barrier terms: the layout the image must be
@@ -180,6 +224,23 @@ struct BufferAccessState {
                                           VkAccessFlags2 previousAccess,
                                           VkAccessFlags2 desiredAccess);
 
+// Whether appending a barrier for `resource` to a batch that already holds
+// barriers for the resources in `batched` has to submit what is accumulated
+// first.
+//
+// A pass's inferred barriers all sit between the same two points in the command
+// stream, so they belong in one vkCmdPipelineBarrier2 -- except that two
+// barriers for the same resource inside one VkDependencyInfo are unordered with
+// respect to each other. A resource transitioned twice within a single pass
+// therefore has to see its first barrier submitted before the second is
+// recorded; distinct resources carry no such constraint, which is the whole
+// point of batching. Split out as pure index bookkeeping for the same reason
+// cullUnusedPasses was: it needs no device to exercise.
+//
+// Texture and buffer indices live in separate tables, so callers pass the batch
+// list matching the resource's kind.
+[[nodiscard]] bool barrierBatchNeedsFlush(std::span<const uint32_t> batched, uint32_t resource);
+
 struct RenderPassNode {
     std::string name;
     RenderPassType type = RenderPassType::MainHdr;
@@ -193,6 +254,106 @@ struct RenderPassNode {
     uint32_t generatedBarrierCount = 0;
     uint32_t generatedImageBarrierCount = 0;
     uint32_t generatedBufferBarrierCount = 0;
+    // vkCmdPipelineBarrier2 calls the above barriers were submitted in. Normally
+    // one: the pass's whole barrier set goes in a single dependency info. Two
+    // things raise it -- a resource transitioned more than once inside one pass
+    // (see barrierBatchNeedsFlush), and the ImGui pass, whose present transition
+    // is recorded after the pass body and so cannot join the pass's own set.
+    uint32_t generatedBarrierSubmitCount = 0;
+    // Declaration problems validateDeclarations found for this pass, joined for
+    // display. Empty on a well-formed pass, which is the normal state.
+    std::string declarationIssues;
+};
+
+// Declaration validation. The graph's declarations describe what each pass
+// touches; nothing until now checked that the description is self-consistent, so
+// a pass could read a transient nothing had produced and the only symptom would
+// be wrong pixels. These are the three ways a declaration set can be wrong that
+// are decidable from the declarations alone.
+enum class RGDeclarationIssue {
+    // Reads a graph-managed resource no earlier surviving pass wrote this frame,
+    // without declaring the read as a history read. Either the pass is ordered
+    // wrongly, or it means to read the previous frame and should say so.
+    ReadsContentNoPassProduced,
+    // A history read of a pool-bound resource. Aliasing hands the bytes to
+    // another resource between frames and the handoff barrier discards the
+    // contents, so there is no previous frame to read -- this is the rule that
+    // says which transients are unsafe to wire into the transient memory pool.
+    HistoryReadOfAliasedResource,
+    // The same resource declared more than once by one pass. Usually a
+    // copy-paste slip, and it costs a barrier submission: two barriers for one
+    // resource cannot share a dependency info (see barrierBatchNeedsFlush).
+    ResourceDeclaredTwice,
+    // A read naming an older version than the one current at that point: the
+    // declaring handle was taken before an intervening write and never
+    // refreshed. The pixels are right -- every version is the same image -- but
+    // the declared data flow points at the wrong producer, so anything that acts
+    // on it, a reordering above all, acts on a lie.
+    StaleVersionRead,
+    // A history read placed after a pass that writes the resource this frame.
+    // The declaration says "the previous frame's contents" and the schedule
+    // hands it this frame's, so the pass reads something other than what it
+    // claims. Unlike the two rules above this one applies to imported resources
+    // as well: what makes it wrong is the ordering, not who owns the memory.
+    HistoryReadAfterProducer
+};
+
+struct RenderGraphDeclarationIssue {
+    uint32_t passIndex = 0;
+    RGDeclarationIssue issue = RGDeclarationIssue::ReadsContentNoPassProduced;
+    RGResourceKind resourceKind = RGResourceKind::Texture;
+    uint32_t resourceIndex = 0;
+};
+
+// The pass dependency graph the declarations imply, and how much freedom the
+// recorded order leaves within it.
+//
+// The edges are the three orderings a resource forces between two passes:
+// read-after-write, write-after-read, and write-after-write. A history read
+// creates no read-after-write edge -- it consumes the previous frame, not this
+// frame's producer -- which is the one place the distinction changes the graph
+// rather than just the diagnostics.
+//
+// Read the slack, not the legality. Because a pass's declarations are recorded
+// in the order the passes run, every edge points backwards by construction and
+// the recorded order can never violate one. What the analysis does say, today,
+// is how tightly the declared data flow actually pins the order down: a pass
+// with slack could be recorded earlier without breaking anything, and the
+// longest chain bounds what any scheduler could achieve. Making the legality
+// question real needs handle-threaded resource versions in the builder API, so
+// that the data flow is stated independently of the order.
+struct RenderGraphPassSchedule {
+    // Passes that must be recorded before this one, ascending. Empty for a pass
+    // nothing constrains, and for a culled pass.
+    std::vector<uint32_t> predecessors;
+    // Position among the surviving passes, in recording order.
+    uint32_t recordedSlot = 0;
+    // Earliest position the dependencies allow: the longest chain of
+    // predecessors ending at this pass.
+    uint32_t earliestSlot = 0;
+    // recordedSlot - earliestSlot. Zero means the pass is pinned where it is.
+    uint32_t slack = 0;
+    // False for a culled pass, whose entry is left empty so the result stays
+    // parallel to the pass list.
+    bool scheduled = false;
+};
+
+
+// A dependency the proposed order breaks: `passIndex` is placed at or before
+// `predecessorIndex`, which it must follow.
+struct RenderGraphOrderViolation {
+    uint32_t passIndex = 0;
+    uint32_t predecessorIndex = 0;
+};
+
+// What validateDeclarations needs to know about a resource, which is only
+// whether the graph manages its bytes and whether they are shared.
+struct RGResourceValidationInfo {
+    // False for imported resources, whose contents persist by contract, so
+    // reading one before writing it is always defined.
+    bool graphManaged = false;
+    // True when the resource is bound into the shared transient pool.
+    bool aliased = false;
 };
 
 struct RenderGraphImageResource {
@@ -298,6 +459,25 @@ struct RenderGraphFrameResources {
     // runs on frames with nothing to capture -- the cold-start seed, and the
     // debug-pattern path.
     bool probeCaptureEnabled = false;
+    // Whether any cascade will be redrawn this frame. False skips declaring the
+    // cascaded shadow pass, but the shadow map is still imported and still read
+    // by the main pass -- the same asymmetry the punctual atlas uses. A fully
+    // cached frame redraws no cascade, and declaring a pass the renderer never
+    // records would leave the graph modelling work that did not happen.
+    bool cascadeShadowRedrawRequired = false;
+    // Whether the luminance reduction will record this frame. False skips
+    // declaring the pass; histogram mode does not read its output, so the
+    // exposure chain is unaffected.
+    bool luminancePassEnabled = false;
+    // Which bloom chain the composite will sample. The loser's output is
+    // declared as a layout-only read, so culling drops the passes that would
+    // have filled it; see PostProcessStack::willRecordMipChainBloom.
+    bool mipChainBloomSelected = false;
+    // Whether the histogram exposure reduction will record this frame. Manual and
+    // log-average exposure both return before the pass begins, and declaring it
+    // anyway makes the endFrame backstop report a mismatch on a frame where the
+    // renderer is behaving correctly.
+    bool histogramPassEnabled = false;
 };
 
 struct RenderGraphResourceDebugInfo {
@@ -317,11 +497,51 @@ struct RenderGraphResourceDebugInfo {
     VkImageLayout finalLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 };
 
+// A recorder the graph may invoke, and the pass whose scheduled position decides
+// when it runs. A recorder covering several declared passes names the first of
+// them. A recorder with no pass of its own -- the synchronous cluster build, the
+// fog volume's first-use clear -- leaves the index invalid and runs with the last
+// anchored unit registered before it.
+struct RenderGraphScheduledUnit {
+    uint32_t passIndex = kInvalidRenderGraphHandle;
+    std::function<void()> record;
+};
+
+// The passes a caller can anchor a scheduled unit to. Deliberately only the ones
+// with a recorder factored out far enough to be invoked by the graph; the rest
+// of the frame is still recorded in place.
+enum class RenderGraphBuiltinPass {
+    VsmPageMark,
+    Shadow,
+    PunctualShadow,
+    MainGpuCulling,
+    VolumetricFog,
+    ProbeCapture,
+    MainHdr,
+    DepthPyramid,
+    TaaResolve,
+    BloomExtract,
+    BloomDownsampleFirst,
+    Luminance,
+    HistogramExposure,
+    Composite,
+    ImGui
+};
+
 class RenderGraph;
 
 class RenderGraphBuilder final {
 public:
     RGTextureHandle readTexture(RGTextureHandle handle, RGAccess access, std::string description = {});
+    // A read of the previous frame's contents. Identical to readTexture in
+    // barrier terms -- the layout and scopes do not care where the pixels came
+    // from -- but it tells validateDeclarations that reading before anything
+    // wrote the resource this frame is the intent, not an ordering mistake.
+    RGTextureHandle readHistoryTexture(RGTextureHandle handle, RGAccess access, std::string description = {});
+    // A read whose content does not matter: see RGReadKind::LayoutOnly. It keeps
+    // no producer alive, so declaring one is how a pass says "put this in the
+    // right layout for my descriptor, but do not compute it on my account".
+    RGTextureHandle readTextureForLayout(RGTextureHandle handle, RGAccess access, std::string description = {});
     RGTextureHandle writeTexture(RGTextureHandle handle, RGAccess access, std::string description = {});
     RGTextureHandle readWriteTexture(RGTextureHandle handle, RGAccess access, std::string description = {});
     RGBufferHandle readBuffer(RGBufferHandle handle, RGAccess access, std::string description = {});
@@ -515,6 +735,57 @@ public:
         return debugResources_;
     }
 
+    // This frame's declaration problems. Empty is the normal state.
+    [[nodiscard]] const std::vector<RenderGraphDeclarationIssue>& declarationIssues() const
+    {
+        return declarationIssues_;
+    }
+
+    // This frame's derived dependency graph, parallel to passes().
+    [[nodiscard]] const std::vector<RenderGraphPassSchedule>& passSchedule() const
+    {
+        return passSchedule_;
+    }
+
+    // The order the graph scheduled this frame's passes in.
+    [[nodiscard]] const std::vector<uint32_t>& executionOrder() const
+    {
+        return executionOrder_;
+    }
+
+    // Dependencies the order the passes were actually recorded in broke, and
+    // scheduled passes that were never recorded at all. Both are filled at
+    // endFrame and survive into the next frame for the debug panel. Empty is the
+    // normal state for both.
+    [[nodiscard]] const std::vector<RenderGraphOrderViolation>& recordedOrderViolations() const
+    {
+        return recordedOrderViolations_;
+    }
+
+    [[nodiscard]] const std::vector<uint32_t>& unrecordedPassIndices() const
+    {
+        return unrecordedPassIndices_;
+    }
+
+    // True when the derived graph could not be fully ordered this frame.
+    [[nodiscard]] bool executionOrderCycleDetected() const
+    {
+        return executionOrderCycleDetected_;
+    }
+
+    // Index of a pass a scheduled unit can anchor to, or kInvalidRenderGraphHandle
+    // when this frame does not declare it.
+    [[nodiscard]] uint32_t builtinPassIndex(RenderGraphBuiltinPass pass) const;
+
+    // Invokes each recorder, ordered by where computeExecutionOrder put its pass.
+    // Units with no pass this frame, or with equal positions, keep the order they
+    // were registered in.
+    //
+    // This is where the graph stops describing the frame and starts driving it.
+    // It drives only what the caller hands it; everything else is still recorded
+    // in place, and the endFrame backstop is what covers both.
+    void recordScheduledUnits(std::span<RenderGraphScheduledUnit> units);
+
     // Aliases kept so existing RenderGraph::TextureAccessState spellings still
     // compile; the types themselves live at namespace scope below so the pure
     // derivation functions can return them.
@@ -567,6 +838,8 @@ private:
 
     struct TextureResource {
         RGTextureDesc desc;
+        // Versions produced so far this frame. 0 means nothing has written it.
+        uint32_t currentVersion = 0;
         VkImage image = VK_NULL_HANDLE;
         VkImageView imageView = VK_NULL_HANDLE;
         VkImageLayout* externalLayout = nullptr;
@@ -577,8 +850,35 @@ private:
         bool graphManaged = false;
     };
 
+    // One pass's inferred barriers, accumulated so the whole set is submitted as
+    // a single vkCmdPipelineBarrier2 rather than one call per resource.
+    //
+    // The graph owns one of these and reuses it (barrierBatch_) rather than
+    // building a fresh one per pass: this sits on the command-recording path, and
+    // a local would mean a handful of small allocations for every pass of every
+    // frame. reset() empties it without giving up the capacity.
+    struct BarrierBatch {
+        std::vector<VkImageMemoryBarrier2> imageBarriers;
+        std::vector<VkBufferMemoryBarrier2> bufferBarriers;
+        // Resource indices already represented in the batch, per resource table.
+        std::vector<uint32_t> touchedTextures;
+        std::vector<uint32_t> touchedBuffers;
+        // Submissions made since the last reset, including the final flush.
+        uint32_t submitCount = 0;
+
+        void reset()
+        {
+            imageBarriers.clear();
+            bufferBarriers.clear();
+            touchedTextures.clear();
+            touchedBuffers.clear();
+            submitCount = 0;
+        }
+    };
+
     struct BufferResource {
         RGBufferDesc desc;
+        uint32_t currentVersion = 0;
         VkBuffer buffer = VK_NULL_HANDLE;
         BufferAccessState lastAccess{};
         bool usedThisFrame = false;
@@ -642,7 +942,11 @@ private:
         RGTextureHandle ssrSceneColorCopy{};
         RGTextureHandle taaHistoryRead{};
         RGTextureHandle taaHistoryWrite{};
-        RGTextureHandle postProcessSceneColor{};
+        // Deliberately absent: the post-process source used to be snapshotted
+        // here before any pass had declared anything, which made every reader of
+        // it name version 0 of a target four writes old. It is resolved at the
+        // point of use instead; see RenderGraph::postProcessSource.
+        bool taaHistoryIsPostProcessSource = false;
         RGTextureHandle bloomExtract{};
         RGTextureHandle bloomPing{};
         RGTextureHandle bloomPong{};
@@ -664,6 +968,10 @@ private:
         RGBufferHandle exposureState{};
     };
 
+    // The HDR target the post-process chain reads: the TAA resolve's output when
+    // TAA is on, the scene colour otherwise. Resolved on each call rather than
+    // stored, so it always names the current version of whichever it is.
+    [[nodiscard]] RGTextureHandle postProcessSource() const;
     void requireFrameActive(const char* operation) const;
     // beginFrame() helpers (see RenderGraph.cpp): import the externally-owned
     // swapchain/shadow targets, create the transient frame textures, and import
@@ -682,25 +990,38 @@ private:
     void declareBloomAndTaaPasses();
     void declareExposureCompositePasses();
     void compilePassCulling();
+    // Runs validateDeclarations over the culled pass list and writes what it
+    // finds onto the pass nodes, where the debug panel picks it up.
+    void validateFrameDeclarations();
     bool beginDeclaredPass(uint32_t passIndex);
-    uint32_t transitionTexture(RGTextureHandle handle, RGAccess access);
-    uint32_t transitionBuffer(RGBufferHandle handle, RGAccess access);
+    // Both record into `batch` instead of submitting, and return the number of
+    // barriers they contributed (0 or 1) so the pass's counters keep meaning the
+    // same thing they did when every transition submitted on its own. Either may
+    // flush `batch` first when the resource is already in it.
+    uint32_t transitionTexture(RGTextureHandle handle, RGAccess access, BarrierBatch& batch);
+    uint32_t transitionBuffer(RGBufferHandle handle, RGAccess access, BarrierBatch& batch);
+    // Submits the accumulated barriers as one dependency and empties the batch.
+    // A no-op on an empty batch, so it does not count as a submission.
+    void flushBarrierBatch(BarrierBatch& batch);
     [[nodiscard]] TextureAccessState accessStateForTexture(const TextureResource& resource, RGAccess access) const;
     [[nodiscard]] BufferAccessState accessStateForBuffer(RGAccess access) const;
     [[nodiscard]] VkImageLayout currentTextureLayout(const TextureResource& resource) const;
     void setTextureLayout(TextureResource& resource, VkImageLayout layout);
     [[nodiscard]] RenderResourceHandle textureResourceHandle(RGTextureHandle handle) const;
     [[nodiscard]] RenderResourceHandle bufferResourceHandle(RGBufferHandle handle) const;
-    void addTextureUsage(RenderPassNode& pass,
-                         RGTextureHandle handle,
-                         RenderResourceAccess resourceAccess,
-                         RGAccess declaredAccess,
-                         std::string description);
-    void addBufferUsage(RenderPassNode& pass,
-                        RGBufferHandle handle,
-                        RenderResourceAccess resourceAccess,
-                        RGAccess declaredAccess,
-                        std::string description);
+    // Both return the handle naming the version the pass leaves behind: the next
+    // one for a write, the caller's own for a read.
+    RGTextureHandle addTextureUsage(RenderPassNode& pass,
+                                    RGTextureHandle handle,
+                                    RenderResourceAccess resourceAccess,
+                                    RGAccess declaredAccess,
+                                    std::string description,
+                                    RGReadKind readKind = RGReadKind::Produced);
+    RGBufferHandle addBufferUsage(RenderPassNode& pass,
+                                  RGBufferHandle handle,
+                                  RenderResourceAccess resourceAccess,
+                                  RGAccess declaredAccess,
+                                  std::string description);
     void refreshDebugResources();
     // extentOverride limits the renderArea to the sub-rect a scene-sized target
     // is actually written in; zero means the whole resource.
@@ -717,11 +1038,29 @@ private:
     void beginSwapchainRendering(VkClearValue clearValue, VkAttachmentLoadOp loadOp);
 
     FrameState frame_{};
+    // Reused across passes and frames; see BarrierBatch. Always empty between
+    // passes, because every user resets it on entry and flushes it on exit.
+    BarrierBatch barrierBatch_{};
     std::vector<TextureResource> textures_;
     std::vector<BufferResource> buffers_;
     std::vector<RenderPassNode> passes_;
     std::vector<ExecuteCallback> executeCallbacks_;
     std::vector<RenderGraphResourceDebugInfo> debugResources_;
+    // This frame's declaration problems, and the per-resource inputs the check
+    // needs. All three are members rather than locals so the per-frame check
+    // costs no allocations once the vectors have grown.
+    std::vector<RenderGraphDeclarationIssue> declarationIssues_;
+    std::vector<RGResourceValidationInfo> textureValidationInfo_;
+    std::vector<RGResourceValidationInfo> bufferValidationInfo_;
+    std::vector<RenderGraphPassSchedule> passSchedule_;
+    std::vector<uint32_t> executionOrder_;
+    bool executionOrderCycleDetected_ = false;
+    // Pass indices in the order beginDeclaredPass first saw them, which is the
+    // order the renderer actually recorded the frame in. A pass begun more than
+    // once -- the cascaded shadow pass, once per cascade -- appears once.
+    std::vector<uint32_t> recordedOrder_;
+    std::vector<RenderGraphOrderViolation> recordedOrderViolations_;
+    std::vector<uint32_t> unrecordedPassIndices_;
     bool frameActive_ = false;
     ActivePass activePass_ = ActivePass::None;
 
@@ -739,15 +1078,21 @@ private:
 // tolerates handles it never imported.
 void cullUnusedPasses(std::vector<RenderPassNode>& passes, size_t textureCount, size_t bufferCount);
 
-// Inclusive first/last pass index each texture is live across, for the transient
+// Inclusive first/last slot each texture is live across, for the transient
 // memory allocator (see TransientMemoryPlan.h). A free function next to
 // cullUnusedPasses for the same reason: it is pure logic over declarations and
 // needs no device to exercise.
 //
-// Culled passes are skipped. Running this before culling would stretch intervals
-// over passes that never execute, which does not break anything visibly -- it
-// just silently prevents resources from sharing memory, which is the entire
-// point of computing them.
+// The slots are positions in `order` -- the order the passes actually run in --
+// not declaration indices, and this is the one analysis where the difference is
+// not cosmetic. The intervals decide which resources may share bytes, so an
+// interval that does not describe the real timeline lets two simultaneously live
+// resources overlap in memory. Nothing catches that: not the validation layer,
+// not a barrier, not a test that does not happen to read the clobbered pixels.
+//
+// Passing the execution order also means culled passes are absent by
+// construction rather than skipped, so the intervals no longer carry gaps where
+// a culled pass sat. Tighter intervals only ever allow more sharing.
 //
 // A texture no surviving pass touches comes back with used == false and
 // firstPass > lastPass, matching the empty-lifetime convention
@@ -759,7 +1104,82 @@ struct RenderGraphResourceLifetime {
 };
 
 [[nodiscard]] std::vector<RenderGraphResourceLifetime> computeTextureLifetimes(
-    const std::vector<RenderPassNode>& passes, size_t textureCount);
+    const std::vector<RenderPassNode>& passes, std::span<const uint32_t> order, size_t textureCount);
+
+// Checks a frame's declarations against the three rules above. Pure logic over
+// declarations, next to cullUnusedPasses for the same reason: no device needed,
+// and a mistake here is invisible to the validation layer.
+//
+// Culled passes are skipped: their declarations describe work that will not run.
+// Resource indices past either span are ignored, matching how the rest of the
+// graph tolerates handles it never imported.
+//
+// Reports rather than throws. Every rule here has a legitimate-looking shape
+// that only the author can adjudicate, and a graph that refuses to render is a
+// worse diagnostic than one that renders and says what looks wrong.
+[[nodiscard]] std::vector<RenderGraphDeclarationIssue>
+validateDeclarations(const std::vector<RenderPassNode>& passes,
+                     std::span<const RGResourceValidationInfo> textures,
+                     std::span<const RGResourceValidationInfo> buffers);
+
+
+// Derives the schedule above from the declarations. Pure logic next to
+// cullUnusedPasses and validateDeclarations, for the same reason: no device, and
+// it is the data any future reordering would consume.
+//
+// Culled passes are skipped entirely -- they neither produce for nor constrain
+// anything, since they do not run.
+[[nodiscard]] std::vector<RenderGraphPassSchedule> computePassSchedule(const std::vector<RenderPassNode>& passes);
+
+// Checks a proposed execution order against the derived dependency graph. This
+// is the question versioned handles make answerable: the edges come from the
+// declared version chain rather than from where a pass happens to sit, so an
+// order that is not the recorded one can be judged, and rejected.
+//
+// `order` lists the pass indices to run, in the proposed order. A pass that is
+// scheduled but missing from `order` is reported against each predecessor it
+// would have followed, since dropping it is not an ordering the graph allows.
+[[nodiscard]] std::vector<RenderGraphOrderViolation>
+validatePassOrder(const std::vector<RenderGraphPassSchedule>& schedule, std::span<const uint32_t> order);
+
+// A topological order over the derived dependency graph: the order the graph
+// says the passes may run in.
+//
+// Ties break on declaration index, which makes the result deterministic and,
+// whenever the declaration order is itself legal, identical to it. That is the
+// intended outcome rather than a limitation: every derived edge points backwards
+// by construction, so making the graph the authority is meant to change nothing
+// on its own. What it changes is who decides.
+struct RenderGraphExecutionOrder {
+    // Scheduled passes, in execution order. Culled passes are absent.
+    std::vector<uint32_t> order;
+    // True when the graph could not be fully ordered. The passes involved are
+    // left out of `order` rather than emitted in an arbitrary place, so a cycle
+    // shows up as unrecorded passes instead of as silently wrong output. It
+    // cannot happen while declarations are written in a legal order; the flag
+    // exists so that a policy or a mis-declared frame that breaks that has a
+    // symptom.
+    bool cycleDetected = false;
+};
+
+[[nodiscard]] RenderGraphExecutionOrder computeExecutionOrder(const std::vector<RenderGraphPassSchedule>& schedule);
+
+// Scheduled passes missing from an order, ascending.
+//
+// validatePassOrder reports a missing pass only through the edges it breaks, so
+// one with no predecessors would otherwise go unnoticed. A declared pass the
+// renderer never records means the graph's model of the frame -- its culling,
+// its barriers, its resource lifetimes -- describes work that did not happen.
+[[nodiscard]] std::vector<uint32_t> unrecordedPasses(const std::vector<RenderGraphPassSchedule>& schedule,
+                                                     std::span<const uint32_t> order);
+
+// Longest chain of dependent passes in a schedule, in passes. The floor on how
+// many sequential steps the frame needs however it is reordered; 0 for an empty
+// or fully culled graph.
+[[nodiscard]] uint32_t longestPassChain(const std::vector<RenderGraphPassSchedule>& schedule);
+
+// One-line description of an issue, for the debug panel and for tests.
+[[nodiscard]] const char* renderGraphDeclarationIssueName(RGDeclarationIssue issue);
 
 [[nodiscard]] const char* renderPassTypeName(RenderPassType type);
 [[nodiscard]] const char* renderPassExecutionTypeName(RenderPassExecutionType executionType);

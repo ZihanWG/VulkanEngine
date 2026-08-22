@@ -8,6 +8,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -19,23 +21,62 @@ using ve::renderer::RGResourceKind;
 
 namespace {
 
-RenderResourceUsage texture(uint32_t index, RenderResourceAccess access)
+bool writesAccess(RenderResourceAccess access)
+{
+    return access == RenderResourceAccess::Write || access == RenderResourceAccess::ReadWrite;
+}
+
+// `inputVersion` is the version the declaring handle names, exactly as the
+// builder records it. A write produces the next one, which is what a later
+// reader has to name if it means to consume this pass's output.
+RenderResourceUsage texture(uint32_t index, RenderResourceAccess access, uint32_t inputVersion = 0)
 {
     RenderResourceUsage usage{};
     usage.resource.name = "texture" + std::to_string(index);
     usage.resource.kind = RGResourceKind::Texture;
     usage.resource.index = index;
     usage.access = access;
+    usage.inputVersion = inputVersion;
+    usage.outputVersion = writesAccess(access) ? inputVersion + 1 : inputVersion;
     return usage;
 }
 
-RenderResourceUsage buffer(uint32_t index, RenderResourceAccess access)
+RenderResourceUsage buffer(uint32_t index, RenderResourceAccess access, uint32_t inputVersion = 0)
 {
     RenderResourceUsage usage{};
     usage.resource.name = "buffer" + std::to_string(index);
     usage.resource.kind = RGResourceKind::Buffer;
     usage.resource.index = index;
     usage.access = access;
+    usage.inputVersion = inputVersion;
+    usage.outputVersion = writesAccess(access) ? inputVersion + 1 : inputVersion;
+    return usage;
+}
+
+// The surviving passes in declaration order, which is what computeExecutionOrder
+// returns while the declarations themselves are written in a legal order.
+std::vector<uint32_t> survivingOrder(const std::vector<RenderPassNode>& passes)
+{
+    std::vector<uint32_t> order;
+    for (uint32_t index = 0; index < passes.size(); ++index) {
+        if (!passes[index].culled) {
+            order.push_back(index);
+        }
+    }
+    return order;
+}
+
+RenderResourceUsage layoutOnlyTexture(uint32_t index)
+{
+    RenderResourceUsage usage = texture(index, RenderResourceAccess::Read);
+    usage.readKind = ve::renderer::RGReadKind::LayoutOnly;
+    return usage;
+}
+
+RenderResourceUsage historyTexture(uint32_t index)
+{
+    RenderResourceUsage usage = texture(index, RenderResourceAccess::Read);
+    usage.readKind = ve::renderer::RGReadKind::History;
     return usage;
 }
 
@@ -520,6 +561,863 @@ TEST_CASE("An UNDEFINED old layout orders against nothing", "[rendergraph][barri
 }
 
 // ---------------------------------------------------------------------------
+// Declaration validation. The declarations are the graph's description of what
+// each pass touches; until something checks them, a pass can read a transient
+// nothing produced and the only symptom is wrong pixels -- no validation error,
+// no crash. These are the three ways a declaration set can be wrong that are
+// decidable without a device.
+
+namespace {
+
+using ve::renderer::RGDeclarationIssue;
+using ve::renderer::RGResourceValidationInfo;
+using ve::renderer::validateDeclarations;
+
+constexpr RGResourceValidationInfo kImported{false, false};
+constexpr RGResourceValidationInfo kTransient{true, false};
+constexpr RGResourceValidationInfo kAliasedTransient{true, true};
+
+} // namespace
+
+TEST_CASE("Reading a transient nothing produced is reported", "[rendergraph][declarations]")
+{
+    std::vector<RenderPassNode> passes{pass("Consumer", {texture(0, RenderResourceAccess::Read)}, true)};
+    const std::vector<RGResourceValidationInfo> textures{kTransient};
+
+    const auto issues = validateDeclarations(passes, textures, {});
+
+    REQUIRE(issues.size() == 1);
+    CHECK(issues[0].passIndex == 0);
+    CHECK(issues[0].issue == RGDeclarationIssue::ReadsContentNoPassProduced);
+    CHECK(issues[0].resourceIndex == 0);
+}
+
+TEST_CASE("Reading an imported resource before writing it is fine", "[rendergraph][declarations]")
+{
+    // An imported resource keeps its contents by contract -- the swapchain, the
+    // shadow maps, the probe atlases -- so there is nothing to produce.
+    std::vector<RenderPassNode> passes{pass("Consumer", {texture(0, RenderResourceAccess::Read)}, true)};
+    const std::vector<RGResourceValidationInfo> textures{kImported};
+
+    CHECK(validateDeclarations(passes, textures, {}).empty());
+}
+
+TEST_CASE("A declared history read is not an issue", "[rendergraph][declarations]")
+{
+    // The main pass reading the previous frame's ambient occlusion, which GTAO
+    // only writes later in the frame.
+    std::vector<RenderPassNode> passes{
+        pass("MainHDR", {historyTexture(0), texture(1, RenderResourceAccess::Write)}, true),
+        pass("GtaoBlur", {texture(0, RenderResourceAccess::Write)}, true),
+    };
+    const std::vector<RGResourceValidationInfo> textures{kTransient, kTransient};
+
+    CHECK(validateDeclarations(passes, textures, {}).empty());
+}
+
+TEST_CASE("A history read of a pool-bound resource is reported", "[rendergraph][declarations]")
+{
+    // Aliasing gives the bytes to another resource between frames and the
+    // handoff barrier discards the contents, so there is no previous frame left
+    // to read. This is the rule that says which transients may be aliased.
+    std::vector<RenderPassNode> passes{pass("MainHDR", {historyTexture(0)}, true)};
+    const std::vector<RGResourceValidationInfo> textures{kAliasedTransient};
+
+    const auto issues = validateDeclarations(passes, textures, {});
+
+    REQUIRE(issues.size() == 1);
+    CHECK(issues[0].issue == RGDeclarationIssue::HistoryReadOfAliasedResource);
+}
+
+TEST_CASE("A producer earlier in the frame satisfies the read", "[rendergraph][declarations]")
+{
+    std::vector<RenderPassNode> passes{
+        pass("Producer", {texture(0, RenderResourceAccess::Write)}),
+        pass("Consumer", {texture(0, RenderResourceAccess::Read, 1)}, true),
+    };
+    const std::vector<RGResourceValidationInfo> textures{kTransient};
+
+    CHECK(validateDeclarations(passes, textures, {}).empty());
+}
+
+TEST_CASE("A producer later in the frame does not satisfy the read", "[rendergraph][declarations]")
+{
+    // The ordering mistake the check exists for: the consumer runs first and
+    // samples whatever was in the image, not what the producer will put there.
+    std::vector<RenderPassNode> passes{
+        pass("Consumer", {texture(0, RenderResourceAccess::Read)}, true),
+        pass("Producer", {texture(0, RenderResourceAccess::Write)}, true),
+    };
+    const std::vector<RGResourceValidationInfo> textures{kTransient};
+
+    const auto issues = validateDeclarations(passes, textures, {});
+
+    REQUIRE(issues.size() == 1);
+    CHECK(issues[0].passIndex == 0);
+    CHECK(issues[0].issue == RGDeclarationIssue::ReadsContentNoPassProduced);
+}
+
+TEST_CASE("A read-modify-write is judged on what existed before the pass", "[rendergraph][declarations]")
+{
+    // The pass's own write must not retroactively satisfy its own read, or an
+    // accumulate over an unproduced target would look well-formed.
+    std::vector<RenderPassNode> passes{pass("Accumulate", {texture(0, RenderResourceAccess::ReadWrite)}, true)};
+    const std::vector<RGResourceValidationInfo> textures{kTransient};
+
+    const auto issues = validateDeclarations(passes, textures, {});
+
+    REQUIRE(issues.size() == 1);
+    CHECK(issues[0].issue == RGDeclarationIssue::ReadsContentNoPassProduced);
+}
+
+TEST_CASE("A culled pass neither produces nor reports", "[rendergraph][declarations]")
+{
+    // Its declarations describe work that will not run, so it cannot satisfy a
+    // later read, and its own reads cannot be wrong.
+    std::vector<RenderPassNode> passes{
+        pass("DeadProducer", {texture(0, RenderResourceAccess::Write)}),
+        pass("DeadConsumer", {texture(1, RenderResourceAccess::Read)}),
+        pass("LiveConsumer", {texture(0, RenderResourceAccess::Read)}, true),
+    };
+    passes[0].culled = true;
+    passes[1].culled = true;
+    const std::vector<RGResourceValidationInfo> textures{kTransient, kTransient};
+
+    const auto issues = validateDeclarations(passes, textures, {});
+
+    REQUIRE(issues.size() == 1);
+    CHECK(issues[0].passIndex == 2);
+}
+
+TEST_CASE("Declaring one resource twice in a pass is reported", "[rendergraph][declarations]")
+{
+    // Two barriers for one resource cannot share a dependency info, so this
+    // costs a barrier submission on top of being a likely copy-paste slip.
+    std::vector<RenderPassNode> passes{
+        pass("Producer", {texture(0, RenderResourceAccess::Write)}),
+        pass("Consumer", {texture(0, RenderResourceAccess::Read, 1), texture(0, RenderResourceAccess::Read, 1)}, true),
+    };
+    const std::vector<RGResourceValidationInfo> textures{kTransient};
+
+    const auto issues = validateDeclarations(passes, textures, {});
+
+    REQUIRE(issues.size() == 1);
+    CHECK(issues[0].passIndex == 1);
+    CHECK(issues[0].issue == RGDeclarationIssue::ResourceDeclaredTwice);
+}
+
+TEST_CASE("Texture and buffer declarations are checked independently", "[rendergraph][declarations]")
+{
+    // Both index spaces start at 0, so a check that ignored the kind would let a
+    // write to texture 0 satisfy a read of buffer 0.
+    std::vector<RenderPassNode> passes{
+        pass("WritesTexture", {texture(0, RenderResourceAccess::Write)}),
+        pass("ReadsBuffer", {buffer(0, RenderResourceAccess::Read)}, true),
+    };
+    const std::vector<RGResourceValidationInfo> textures{kTransient};
+    const std::vector<RGResourceValidationInfo> buffers{kTransient};
+
+    const auto issues = validateDeclarations(passes, textures, buffers);
+
+    REQUIRE(issues.size() == 1);
+    CHECK(issues[0].resourceKind == RGResourceKind::Buffer);
+    CHECK(issues[0].issue == RGDeclarationIssue::ReadsContentNoPassProduced);
+}
+
+TEST_CASE("Usages past the resource count are ignored", "[rendergraph][declarations]")
+{
+    std::vector<RenderPassNode> passes{pass("Stale", {texture(99, RenderResourceAccess::Read)}, true)};
+    const std::vector<RGResourceValidationInfo> textures{kTransient};
+
+    CHECK(validateDeclarations(passes, textures, {}).empty());
+}
+
+TEST_CASE("Validating an empty graph is a no-op", "[rendergraph][declarations]")
+{
+    const std::vector<RenderPassNode> passes;
+
+    CHECK(validateDeclarations(passes, {}, {}).empty());
+}
+
+TEST_CASE("Every issue has a distinct name", "[rendergraph][declarations]")
+{
+    using ve::renderer::renderGraphDeclarationIssueName;
+
+    const std::string produced = renderGraphDeclarationIssueName(RGDeclarationIssue::ReadsContentNoPassProduced);
+    const std::string aliased = renderGraphDeclarationIssueName(RGDeclarationIssue::HistoryReadOfAliasedResource);
+    const std::string twice = renderGraphDeclarationIssueName(RGDeclarationIssue::ResourceDeclaredTwice);
+
+    CHECK_FALSE(produced.empty());
+    CHECK(produced != aliased);
+    CHECK(aliased != twice);
+    CHECK(produced != twice);
+}
+
+TEST_CASE("A history read after this frame's producer is reported", "[rendergraph][declarations]")
+{
+    // The declaration claims the previous frame's contents, but a pass earlier
+    // in the frame already overwrote them. The read is of something other than
+    // what it says, and the existing "nothing produced it" rule cannot see it.
+    std::vector<RenderPassNode> passes{
+        pass("Producer", {texture(0, RenderResourceAccess::Write)}),
+        pass("StaleHistoryReader", {historyTexture(0)}, true),
+    };
+    const std::vector<RGResourceValidationInfo> textures{kTransient};
+
+    const auto issues = validateDeclarations(passes, textures, {});
+
+    REQUIRE(issues.size() == 1);
+    CHECK(issues[0].passIndex == 1);
+    CHECK(issues[0].issue == RGDeclarationIssue::HistoryReadAfterProducer);
+}
+
+TEST_CASE("A stale history read of an imported resource is still reported", "[rendergraph][declarations]")
+{
+    // Unlike the other two rules, this one is about ordering rather than who
+    // owns the memory, so importing the resource does not excuse it.
+    std::vector<RenderPassNode> passes{
+        pass("Producer", {texture(0, RenderResourceAccess::Write)}),
+        pass("StaleHistoryReader", {historyTexture(0)}, true),
+    };
+    const std::vector<RGResourceValidationInfo> textures{kImported};
+
+    const auto issues = validateDeclarations(passes, textures, {});
+
+    REQUIRE(issues.size() == 1);
+    CHECK(issues[0].issue == RGDeclarationIssue::HistoryReadAfterProducer);
+}
+
+// ---------------------------------------------------------------------------
+// The pass dependency graph the declarations imply. This is the data any
+// reordering would consume, and the slack it reports is the only part of the
+// analysis that says something today: the recorded order cannot be illegal
+// while the declarations are written in the order the passes run.
+
+namespace {
+
+using ve::renderer::computePassSchedule;
+using ve::renderer::longestPassChain;
+
+} // namespace
+
+TEST_CASE("A consumer depends on the producer it reads", "[rendergraph][schedule]")
+{
+    std::vector<RenderPassNode> passes{
+        pass("Producer", {texture(0, RenderResourceAccess::Write)}),
+        pass("Consumer", {texture(0, RenderResourceAccess::Read, 1)}, true),
+    };
+
+    const auto schedule = computePassSchedule(passes);
+
+    REQUIRE(schedule.size() == 2);
+    CHECK(schedule[0].predecessors.empty());
+    REQUIRE(schedule[1].predecessors.size() == 1);
+    CHECK(schedule[1].predecessors[0] == 0);
+    CHECK(schedule[1].earliestSlot == 1);
+    CHECK(schedule[1].slack == 0);
+}
+
+TEST_CASE("A history read creates no dependency on the producer", "[rendergraph][schedule]")
+{
+    // It consumes the previous frame, so it does not have to wait for this
+    // frame's writer -- it has to come before it, which the write-after-read
+    // edge below covers.
+    std::vector<RenderPassNode> passes{
+        pass("HistoryReader", {historyTexture(0)}, true),
+        pass("Producer", {texture(0, RenderResourceAccess::Write)}, true),
+    };
+
+    const auto schedule = computePassSchedule(passes);
+
+    CHECK(schedule[0].predecessors.empty());
+    REQUIRE(schedule[1].predecessors.size() == 1);
+    CHECK(schedule[1].predecessors[0] == 0);
+}
+
+TEST_CASE("Overwriting waits for the previous writer and its readers", "[rendergraph][schedule]")
+{
+    std::vector<RenderPassNode> passes{
+        pass("FirstWrite", {texture(0, RenderResourceAccess::Write)}),
+        pass("Reader", {texture(0, RenderResourceAccess::Read, 1), texture(1, RenderResourceAccess::Write)}, true),
+        pass("SecondWrite", {texture(0, RenderResourceAccess::Write, 1)}, true),
+    };
+
+    const auto schedule = computePassSchedule(passes);
+
+    // Write-after-write on the first writer, write-after-read on the reader.
+    REQUIRE(schedule[2].predecessors.size() == 2);
+    CHECK(schedule[2].predecessors[0] == 0);
+    CHECK(schedule[2].predecessors[1] == 1);
+}
+
+TEST_CASE("Independent passes constrain nothing and report slack", "[rendergraph][schedule]")
+{
+    // The shape the real frame has between the bloom chain and the luminance
+    // pair: two branches off one producer, recorded one after the other but
+    // free to move.
+    std::vector<RenderPassNode> passes{
+        pass("Source", {texture(0, RenderResourceAccess::Write)}),
+        pass("BranchA", {texture(0, RenderResourceAccess::Read, 1), texture(1, RenderResourceAccess::Write)}, true),
+        pass("BranchB", {texture(0, RenderResourceAccess::Read, 1), texture(2, RenderResourceAccess::Write)}, true),
+    };
+
+    const auto schedule = computePassSchedule(passes);
+
+    CHECK(schedule[1].earliestSlot == 1);
+    CHECK(schedule[1].slack == 0);
+    // Recorded third, but only ever needed to follow the source.
+    CHECK(schedule[2].recordedSlot == 2);
+    CHECK(schedule[2].earliestSlot == 1);
+    CHECK(schedule[2].slack == 1);
+}
+
+TEST_CASE("A read-modify-write depends on what it found, not what it leaves", "[rendergraph][schedule]")
+{
+    std::vector<RenderPassNode> passes{
+        pass("Producer", {texture(0, RenderResourceAccess::Write)}),
+        pass("Accumulate", {texture(0, RenderResourceAccess::ReadWrite, 1)}, true),
+    };
+
+    const auto schedule = computePassSchedule(passes);
+
+    REQUIRE(schedule[1].predecessors.size() == 1);
+    CHECK(schedule[1].predecessors[0] == 0);
+}
+
+TEST_CASE("Culled passes are neither scheduled nor depended on", "[rendergraph][schedule]")
+{
+    std::vector<RenderPassNode> passes{
+        // The builder assigns versions while declaring, before culling runs, so
+        // the dead producer still consumed version 1 and the live one makes 2.
+        pass("DeadProducer", {texture(0, RenderResourceAccess::Write)}),
+        pass("LiveProducer", {texture(0, RenderResourceAccess::Write, 1)}),
+        pass("Consumer", {texture(0, RenderResourceAccess::Read, 2)}, true),
+    };
+    passes[0].culled = true;
+
+    const auto schedule = computePassSchedule(passes);
+
+    CHECK_FALSE(schedule[0].scheduled);
+    CHECK(schedule[0].predecessors.empty());
+    // Slots count surviving passes only, so the live producer starts the frame.
+    CHECK(schedule[1].recordedSlot == 0);
+    REQUIRE(schedule[2].predecessors.size() == 1);
+    CHECK(schedule[2].predecessors[0] == 1);
+}
+
+TEST_CASE("Buffer and texture dependencies are tracked separately", "[rendergraph][schedule]")
+{
+    std::vector<RenderPassNode> passes{
+        pass("WritesTexture", {texture(0, RenderResourceAccess::Write)}, true),
+        pass("ReadsBuffer", {buffer(0, RenderResourceAccess::Read)}, true),
+    };
+
+    const auto schedule = computePassSchedule(passes);
+
+    CHECK(schedule[1].predecessors.empty());
+}
+
+TEST_CASE("A duplicate predecessor is recorded once", "[rendergraph][schedule]")
+{
+    // Two resources carrying the same edge must not double-count it, or the
+    // longest-chain number would depend on how many targets a pass shares.
+    std::vector<RenderPassNode> passes{
+        pass("Producer", {texture(0, RenderResourceAccess::Write), texture(1, RenderResourceAccess::Write)}),
+        pass("Consumer", {texture(0, RenderResourceAccess::Read, 1), texture(1, RenderResourceAccess::Read, 1)}, true),
+    };
+
+    const auto schedule = computePassSchedule(passes);
+
+    REQUIRE(schedule[1].predecessors.size() == 1);
+    CHECK(schedule[1].predecessors[0] == 0);
+}
+
+TEST_CASE("The longest chain counts sequential steps, not passes", "[rendergraph][schedule]")
+{
+    // A -> B -> C alongside an unconstrained D: four passes, three steps.
+    std::vector<RenderPassNode> passes{
+        pass("A", {texture(0, RenderResourceAccess::Write)}),
+        pass("B", {texture(0, RenderResourceAccess::Read, 1), texture(1, RenderResourceAccess::Write)}),
+        pass("C", {texture(1, RenderResourceAccess::Read, 1)}, true),
+        pass("D", {texture(2, RenderResourceAccess::Write)}, true),
+    };
+
+    const auto schedule = computePassSchedule(passes);
+
+    CHECK(longestPassChain(schedule) == 3);
+    CHECK(schedule[3].earliestSlot == 0);
+    CHECK(schedule[3].slack == 3);
+}
+
+TEST_CASE("An empty graph has no chain", "[rendergraph][schedule]")
+{
+    const std::vector<RenderPassNode> passes;
+
+    CHECK(computePassSchedule(passes).empty());
+    CHECK(longestPassChain({}) == 0);
+}
+
+TEST_CASE("A read naming an older version than the current one is reported", "[rendergraph][declarations]")
+{
+    // The handle was taken before the second write and never refreshed. Every
+    // version is the same image, so the pixels are right; what is wrong is that
+    // the declaration now points at the wrong producer.
+    std::vector<RenderPassNode> passes{
+        pass("FirstWrite", {texture(0, RenderResourceAccess::Write)}),
+        pass("SecondWrite", {texture(0, RenderResourceAccess::Write, 1)}),
+        pass("StaleReader", {texture(0, RenderResourceAccess::Read, 1)}, true),
+    };
+    const std::vector<RGResourceValidationInfo> textures{kTransient};
+
+    const auto issues = validateDeclarations(passes, textures, {});
+
+    REQUIRE(issues.size() == 1);
+    CHECK(issues[0].passIndex == 2);
+    CHECK(issues[0].issue == RGDeclarationIssue::StaleVersionRead);
+}
+
+TEST_CASE("A stale read points the dependency at the wrong producer", "[rendergraph][schedule]")
+{
+    // The consequence of the rule above, and the reason it matters: the derived
+    // graph believes the reader only needs the first write, so a scheduler would
+    // be free to run it before the second one -- reading pixels that are not
+    // there yet.
+    std::vector<RenderPassNode> passes{
+        pass("FirstWrite", {texture(0, RenderResourceAccess::Write)}),
+        pass("SecondWrite", {texture(0, RenderResourceAccess::Write, 1)}),
+        pass("StaleReader", {texture(0, RenderResourceAccess::Read, 1)}, true),
+    };
+
+    const auto schedule = computePassSchedule(passes);
+
+    REQUIRE(schedule[2].predecessors.size() == 1);
+    CHECK(schedule[2].predecessors[0] == 0);
+    CHECK(schedule[2].earliestSlot == 1);
+}
+
+// ---------------------------------------------------------------------------
+// Order legality. This is the question versioned handles make answerable: the
+// edges come from the declared version chain rather than from where a pass
+// happens to sit, so an order other than the recorded one can be judged.
+
+namespace {
+
+using ve::renderer::validatePassOrder;
+
+} // namespace
+
+TEST_CASE("The recorded order satisfies its own dependencies", "[rendergraph][order]")
+{
+    std::vector<RenderPassNode> passes{
+        pass("Producer", {texture(0, RenderResourceAccess::Write)}),
+        pass("Consumer", {texture(0, RenderResourceAccess::Read, 1)}, true),
+    };
+    const auto schedule = computePassSchedule(passes);
+    const std::vector<uint32_t> recorded{0, 1};
+
+    CHECK(validatePassOrder(schedule, recorded).empty());
+}
+
+TEST_CASE("Running a consumer before its producer is rejected", "[rendergraph][order]")
+{
+    std::vector<RenderPassNode> passes{
+        pass("Producer", {texture(0, RenderResourceAccess::Write)}),
+        pass("Consumer", {texture(0, RenderResourceAccess::Read, 1)}, true),
+    };
+    const auto schedule = computePassSchedule(passes);
+    const std::vector<uint32_t> swapped{1, 0};
+
+    const auto violations = validatePassOrder(schedule, swapped);
+
+    REQUIRE(violations.size() == 1);
+    CHECK(violations[0].passIndex == 1);
+    CHECK(violations[0].predecessorIndex == 0);
+}
+
+TEST_CASE("An independent pass may be moved earlier", "[rendergraph][order]")
+{
+    // The shape the real frame has: the exposure passes depend only on the
+    // scene colour, not on the bloom chain recorded between them, so hoisting
+    // them past it is legal.
+    std::vector<RenderPassNode> passes{
+        pass("Source", {texture(0, RenderResourceAccess::Write)}),
+        pass("BloomA", {texture(0, RenderResourceAccess::Read, 1), texture(1, RenderResourceAccess::Write)}),
+        pass("BloomB", {texture(1, RenderResourceAccess::Read, 1), texture(2, RenderResourceAccess::Write)}, true),
+        pass("Exposure", {texture(0, RenderResourceAccess::Read, 1), texture(3, RenderResourceAccess::Write)}, true),
+    };
+    const auto schedule = computePassSchedule(passes);
+
+    CHECK(validatePassOrder(schedule, std::vector<uint32_t>{0, 3, 1, 2}).empty());
+    // But not past the pass that produces what it reads.
+    CHECK_FALSE(validatePassOrder(schedule, std::vector<uint32_t>{3, 0, 1, 2}).empty());
+}
+
+TEST_CASE("Dropping a scheduled pass from the order is rejected", "[rendergraph][order]")
+{
+    // An order is a permutation of the passes that run, not a subset: leaving one
+    // out is not a legal schedule, it is a different frame.
+    std::vector<RenderPassNode> passes{
+        pass("Producer", {texture(0, RenderResourceAccess::Write)}),
+        pass("Consumer", {texture(0, RenderResourceAccess::Read, 1)}, true),
+    };
+    const auto schedule = computePassSchedule(passes);
+
+    CHECK_FALSE(validatePassOrder(schedule, std::vector<uint32_t>{0}).empty());
+    CHECK_FALSE(validatePassOrder(schedule, std::vector<uint32_t>{1}).empty());
+}
+
+TEST_CASE("A culled pass is not required to appear in the order", "[rendergraph][order]")
+{
+    std::vector<RenderPassNode> passes{
+        pass("Dead", {texture(0, RenderResourceAccess::Write)}),
+        pass("Live", {texture(1, RenderResourceAccess::Write)}, true),
+    };
+    passes[0].culled = true;
+    const auto schedule = computePassSchedule(passes);
+
+    CHECK(validatePassOrder(schedule, std::vector<uint32_t>{1}).empty());
+}
+
+TEST_CASE("An empty order over an empty schedule is legal", "[rendergraph][order]")
+{
+    CHECK(validatePassOrder({}, {}).empty());
+}
+
+// ---------------------------------------------------------------------------
+// The execution order the graph hands the renderer, and the check that notices
+// when the recording did something else. The declarations and the recording are
+// two sequences kept in step by hand across nine files; nothing used to compare
+// them.
+
+namespace {
+
+using ve::renderer::computeExecutionOrder;
+using ve::renderer::RenderGraphPassSchedule;
+using ve::renderer::unrecordedPasses;
+
+} // namespace
+
+TEST_CASE("The scheduled order reproduces a legal declaration order", "[rendergraph][order]")
+{
+    // The property that makes handing the order to the graph a no-op: every
+    // derived edge points backwards, so the stable tie-break returns exactly the
+    // order the passes were declared in. If this ever stops holding, the graph
+    // has started disagreeing with the file and the golden image is at stake.
+    std::vector<RenderPassNode> passes{
+        pass("A", {texture(0, RenderResourceAccess::Write)}),
+        pass("B", {texture(0, RenderResourceAccess::Read, 1), texture(1, RenderResourceAccess::Write)}),
+        pass("C", {texture(1, RenderResourceAccess::Read, 1)}, true),
+        pass("D", {texture(2, RenderResourceAccess::Write)}, true),
+    };
+
+    const auto result = computeExecutionOrder(computePassSchedule(passes));
+
+    CHECK_FALSE(result.cycleDetected);
+    CHECK(result.order == std::vector<uint32_t>{0, 1, 2, 3});
+}
+
+TEST_CASE("The scheduled order leaves culled passes out", "[rendergraph][order]")
+{
+    std::vector<RenderPassNode> passes{
+        pass("Dead", {texture(0, RenderResourceAccess::Write)}),
+        pass("Live", {texture(1, RenderResourceAccess::Write)}, true),
+    };
+    passes[0].culled = true;
+
+    const auto result = computeExecutionOrder(computePassSchedule(passes));
+
+    CHECK(result.order == std::vector<uint32_t>{1});
+}
+
+TEST_CASE("The scheduled order respects an edge that points at a later pass", "[rendergraph][order]")
+{
+    // Hand-built rather than derived, because the declarations cannot produce a
+    // forward edge. It is what a reordering policy would produce, and the sort
+    // has to honour it rather than fall back on the index.
+    std::vector<RenderGraphPassSchedule> schedule(2);
+    schedule[0].scheduled = true;
+    schedule[0].predecessors = {1};
+    schedule[1].scheduled = true;
+
+    const auto result = computeExecutionOrder(schedule);
+
+    CHECK_FALSE(result.cycleDetected);
+    CHECK(result.order == std::vector<uint32_t>{1, 0});
+}
+
+TEST_CASE("A cycle is reported rather than passes silently dropped", "[rendergraph][order]")
+{
+    // Unreachable from the declarations today. The flag exists so that a policy
+    // or a mis-declared frame that creates one has a symptom instead of quietly
+    // rendering a frame with passes missing.
+    std::vector<RenderGraphPassSchedule> schedule(2);
+    schedule[0].scheduled = true;
+    schedule[0].predecessors = {1};
+    schedule[1].scheduled = true;
+    schedule[1].predecessors = {0};
+
+    const auto result = computeExecutionOrder(schedule);
+
+    CHECK(result.cycleDetected);
+    CHECK(result.order.empty());
+}
+
+TEST_CASE("An empty graph schedules nothing and reports no cycle", "[rendergraph][order]")
+{
+    const auto result = computeExecutionOrder({});
+
+    CHECK(result.order.empty());
+    CHECK_FALSE(result.cycleDetected);
+}
+
+TEST_CASE("A scheduled pass missing from the order is named", "[rendergraph][order]")
+{
+    // validatePassOrder sees a missing pass only through the edges it breaks, so
+    // one with no predecessors -- a pass declared but never recorded, which is
+    // the graph modelling work that did not happen -- needs its own check.
+    std::vector<RenderPassNode> passes{
+        pass("Recorded", {texture(0, RenderResourceAccess::Write)}, true),
+        pass("Forgotten", {texture(1, RenderResourceAccess::Write)}, true),
+    };
+    const auto schedule = computePassSchedule(passes);
+
+    CHECK(unrecordedPasses(schedule, std::vector<uint32_t>{0, 1}).empty());
+    CHECK(unrecordedPasses(schedule, std::vector<uint32_t>{0}) == std::vector<uint32_t>{1});
+    CHECK(validatePassOrder(schedule, std::vector<uint32_t>{0}).empty());
+}
+
+TEST_CASE("A culled pass is not expected in the order", "[rendergraph][order]")
+{
+    std::vector<RenderPassNode> passes{
+        pass("Dead", {texture(0, RenderResourceAccess::Write)}, true),
+        pass("Live", {texture(1, RenderResourceAccess::Write)}, true),
+    };
+    passes[0].culled = true;
+    const auto schedule = computePassSchedule(passes);
+
+    CHECK(unrecordedPasses(schedule, std::vector<uint32_t>{1}).empty());
+}
+
+// ---------------------------------------------------------------------------
+// Cross-frame liveness. A pass can produce something only the next frame reads.
+// Nothing in the declarations of this frame consumes it, so the backward sweep
+// would drop it, and the frame after would sample whatever was left behind.
+
+TEST_CASE("A history read keeps this frame's producer alive", "[rendergraph]")
+{
+    // The end-of-frame depth pyramid rebuild: nothing this frame reads it, and
+    // the next frame's page marking and main cull history-read it. Before this
+    // rule the pass survived on a hand-set side-effect flag, which is a fine
+    // outcome and a bad mechanism -- a pass added in this shape without the flag
+    // was culled silently.
+    std::vector<RenderPassNode> passes{
+        pass("HistoryReader", {historyTexture(0)}, true),
+        pass("EndOfFrameProducer", {texture(0, RenderResourceAccess::Write)}),
+    };
+
+    cullUnusedPasses(passes, 1, 0);
+
+    CHECK_FALSE(passes[1].culled);
+}
+
+TEST_CASE("Without the history read the same producer is culled", "[rendergraph]")
+{
+    // The control for the rule above: the shape is only live because something
+    // declared it reads the previous frame.
+    std::vector<RenderPassNode> passes{
+        pass("Reader", {texture(0, RenderResourceAccess::Read)}, true),
+        pass("EndOfFrameProducer", {texture(0, RenderResourceAccess::Write)}),
+    };
+
+    cullUnusedPasses(passes, 1, 0);
+
+    CHECK(passes[1].culled);
+}
+
+TEST_CASE("A history read keeps only the last writer alive", "[rendergraph]")
+{
+    // Next frame reads what this one left, which is the last write. The earlier
+    // one is as dead as it would be with an ordinary reader at the end.
+    std::vector<RenderPassNode> passes{
+        pass("HistoryReader", {historyTexture(0)}, true),
+        pass("FirstWrite", {texture(0, RenderResourceAccess::Write)}),
+        pass("LastWrite", {texture(0, RenderResourceAccess::Write, 1)}),
+    };
+
+    cullUnusedPasses(passes, 1, 0);
+
+    CHECK(passes[1].culled);
+    CHECK_FALSE(passes[2].culled);
+}
+
+TEST_CASE("A history read does not stand in for a same-frame read", "[rendergraph]")
+{
+    // It marks the resource needed at the end of the frame, not at its own
+    // position, so a producer that only feeds a pass between them still dies with
+    // that pass.
+    std::vector<RenderPassNode> passes{
+        pass("HistoryReader", {historyTexture(0)}, true),
+        pass("DeadProducer", {texture(1, RenderResourceAccess::Write)}),
+        pass("EndOfFrameProducer", {texture(0, RenderResourceAccess::Write)}),
+    };
+
+    cullUnusedPasses(passes, 2, 0);
+
+    CHECK(passes[1].culled);
+    CHECK_FALSE(passes[2].culled);
+}
+
+TEST_CASE("A history read on a buffer keeps its producer alive too", "[rendergraph]")
+{
+    std::vector<RenderPassNode> passes{
+        pass("Consumer", {texture(0, RenderResourceAccess::Write)}, true),
+        pass("Producer", {buffer(0, RenderResourceAccess::Write)}),
+    };
+    passes[0].resourceUsages.push_back(buffer(0, RenderResourceAccess::Read));
+    passes[0].resourceUsages.back().readKind = ve::renderer::RGReadKind::History;
+
+    cullUnusedPasses(passes, 1, 1);
+
+    CHECK_FALSE(passes[1].culled);
+}
+
+// ---------------------------------------------------------------------------
+// Layout-only reads. A pass can be forced to sample a resource it does not want
+// -- the composite shader binds both bloom chains and selects one -- and the
+// declaration then exists to put the image in the layout the descriptor claims,
+// not to consume anything. Getting this wrong either keeps a whole dead chain
+// running or culls one that is still sampled.
+
+TEST_CASE("A layout-only read does not keep its producer alive", "[rendergraph]")
+{
+    // The bloom case: the composite binds both chains, samples both, and
+    // discards one. The chain it discards must not survive on the strength of
+    // that sample.
+    std::vector<RenderPassNode> passes{
+        pass("UnselectedChain", {texture(0, RenderResourceAccess::Write)}),
+        pass("SelectedChain", {texture(1, RenderResourceAccess::Write)}),
+        pass("Composite", {layoutOnlyTexture(0), texture(1, RenderResourceAccess::Read, 1)}, true),
+    };
+
+    cullUnusedPasses(passes, 2, 0);
+
+    CHECK(passes[0].culled);
+    CHECK_FALSE(passes[1].culled);
+    CHECK_FALSE(passes[2].culled);
+}
+
+TEST_CASE("Culling a layout-only read is transitive back through its chain", "[rendergraph]")
+{
+    // Three passes feeding each other, sampled only for a layout at the end.
+    // All three are dead, which is what turns the bloom finding into three
+    // fewer passes rather than one.
+    std::vector<RenderPassNode> passes{
+        pass("Extract", {texture(0, RenderResourceAccess::Write)}),
+        pass("BlurH", {texture(0, RenderResourceAccess::Read, 1), texture(1, RenderResourceAccess::Write)}),
+        pass("BlurV", {texture(1, RenderResourceAccess::Read, 1), texture(2, RenderResourceAccess::Write)}),
+        pass("Composite", {layoutOnlyTexture(2), texture(3, RenderResourceAccess::Write)}, true),
+    };
+
+    cullUnusedPasses(passes, 4, 0);
+
+    CHECK(passes[0].culled);
+    CHECK(passes[1].culled);
+    CHECK(passes[2].culled);
+    CHECK_FALSE(passes[3].culled);
+}
+
+TEST_CASE("A layout-only read of an unproduced resource is not an issue", "[rendergraph][declarations]")
+{
+    // It consumes nothing, so "nothing produced it" is the expected state rather
+    // than a finding -- including when the resource is pool-bound, where a
+    // history read would be wrong.
+    std::vector<RenderPassNode> passes{pass("Composite", {layoutOnlyTexture(0)}, true)};
+
+    CHECK(validateDeclarations(passes, std::vector<RGResourceValidationInfo>{kTransient}, {}).empty());
+    CHECK(validateDeclarations(passes, std::vector<RGResourceValidationInfo>{kAliasedTransient}, {}).empty());
+}
+
+TEST_CASE("A layout-only read of a stale version is not an issue", "[rendergraph][declarations]")
+{
+    // Naming an old version cannot matter when the content does not.
+    std::vector<RenderPassNode> passes{
+        pass("FirstWrite", {texture(0, RenderResourceAccess::Write)}),
+        pass("SecondWrite", {texture(0, RenderResourceAccess::Write, 1)}),
+        pass("Composite", {layoutOnlyTexture(0)}, true),
+    };
+
+    CHECK(validateDeclarations(passes, std::vector<RGResourceValidationInfo>{kTransient}, {}).empty());
+}
+
+TEST_CASE("A layout-only read creates no dependency on the producer", "[rendergraph][schedule]")
+{
+    // It must still come after a writer in the write-after-read sense, but it
+    // does not have to wait for one to produce what it samples.
+    std::vector<RenderPassNode> passes{
+        pass("Producer", {texture(0, RenderResourceAccess::Write)}, true),
+        pass("Composite", {layoutOnlyTexture(0)}, true),
+    };
+
+    const auto schedule = computePassSchedule(passes);
+
+    CHECK(schedule[1].predecessors.empty());
+}
+
+// ---------------------------------------------------------------------------
+// Barrier batching. A pass's inferred barriers go into one vkCmdPipelineBarrier2,
+// which is only sound while no two of them target the same resource: barriers
+// inside one dependency info are unordered relative to each other, so a resource
+// transitioned twice in a pass would have its two transitions race. Getting this
+// wrong produces no validation error, just a resource occasionally read in the
+// wrong layout.
+
+TEST_CASE("An empty batch never needs a flush", "[rendergraph][barriers]")
+{
+    using ve::renderer::barrierBatchNeedsFlush;
+
+    const std::vector<uint32_t> batched{};
+
+    CHECK_FALSE(barrierBatchNeedsFlush(batched, 0));
+    CHECK_FALSE(barrierBatchNeedsFlush(batched, 7));
+}
+
+TEST_CASE("Distinct resources share one barrier submission", "[rendergraph][barriers]")
+{
+    using ve::renderer::barrierBatchNeedsFlush;
+
+    // The common case, and the entire point of batching: a pass reading four
+    // different textures emits one barrier call, not four.
+    const std::vector<uint32_t> batched{0, 1, 2};
+
+    CHECK_FALSE(barrierBatchNeedsFlush(batched, 3));
+}
+
+TEST_CASE("A resource already in the batch forces a flush", "[rendergraph][barriers]")
+{
+    using ve::renderer::barrierBatchNeedsFlush;
+
+    const std::vector<uint32_t> batched{4, 9, 2};
+
+    CHECK(barrierBatchNeedsFlush(batched, 4));
+    CHECK(barrierBatchNeedsFlush(batched, 9));
+    CHECK(barrierBatchNeedsFlush(batched, 2));
+}
+
+TEST_CASE("Texture and buffer indices do not collide", "[rendergraph][barriers]")
+{
+    using ve::renderer::barrierBatchNeedsFlush;
+
+    // Textures and buffers are separate tables, so index 3 in one says nothing
+    // about index 3 in the other. The caller keeps a list per kind; this only
+    // checks that the rule itself carries no cross-kind assumption.
+    const std::vector<uint32_t> batchedTextures{3};
+    const std::vector<uint32_t> batchedBuffers{};
+
+    CHECK(barrierBatchNeedsFlush(batchedTextures, 3));
+    CHECK_FALSE(barrierBatchNeedsFlush(batchedBuffers, 3));
+}
+
+// ---------------------------------------------------------------------------
 // Resource lifetimes for the transient memory allocator. An interval that is too
 // short lets two live resources share bytes, which corrupts the frame; one that
 // is too long is safe but silently prevents the sharing the allocator exists to
@@ -531,7 +1429,7 @@ TEST_CASE("A texture used by one pass has a single-pass lifetime")
         pass("write", {texture(0, RenderResourceAccess::Write)}, /*sideEffect=*/true),
     };
 
-    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, 1);
+    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, survivingOrder(passes), 1);
 
     REQUIRE(lifetimes.size() == 1);
     REQUIRE(lifetimes[0].used);
@@ -547,7 +1445,7 @@ TEST_CASE("A lifetime spans the first and last pass that touch a texture")
         pass("consume", {texture(0, RenderResourceAccess::Read)}, /*sideEffect=*/true),
     };
 
-    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, 2);
+    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, survivingOrder(passes), 2);
 
     REQUIRE(lifetimes[0].firstPass == 0);
     REQUIRE(lifetimes[0].lastPass == 2);
@@ -561,7 +1459,7 @@ TEST_CASE("An untouched texture reports an empty lifetime")
         pass("write", {texture(0, RenderResourceAccess::Write)}, /*sideEffect=*/true),
     };
 
-    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, 3);
+    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, survivingOrder(passes), 3);
 
     REQUIRE_FALSE(lifetimes[1].used);
     // The convention TransientAllocationRequest uses to drop a resource.
@@ -577,11 +1475,16 @@ TEST_CASE("Culled passes do not extend a lifetime")
     };
     passes[1].culled = true;
 
-    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, 2);
+    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, survivingOrder(passes), 2);
 
-    // Counting the culled pass would stretch texture0 to pass 1 and stop it
+    // Counting the culled pass would stretch texture0 to slot 1 and stop it
     // sharing bytes with anything that starts there.
     REQUIRE(lifetimes[0].lastPass == 0);
+    // And the slots close up behind it: "tail" is the second pass that runs, not
+    // the third that was declared, so texture1 is live at 1 rather than 2. A gap
+    // there would only ever prevent sharing.
+    REQUIRE(lifetimes[1].firstPass == 1);
+    REQUIRE(lifetimes[1].lastPass == 1);
 }
 
 TEST_CASE("Lifetimes ignore handles past the texture count")
@@ -591,7 +1494,7 @@ TEST_CASE("Lifetimes ignore handles past the texture count")
              /*sideEffect=*/true),
     };
 
-    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, 1);
+    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, survivingOrder(passes), 1);
 
     REQUIRE(lifetimes.size() == 1);
     REQUIRE(lifetimes[0].used);
@@ -604,10 +1507,33 @@ TEST_CASE("Buffer usages never appear in texture lifetimes")
         pass("draw", {texture(0, RenderResourceAccess::Write)}, /*sideEffect=*/true),
     };
 
-    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, 1);
+    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, survivingOrder(passes), 1);
 
     REQUIRE(lifetimes[0].firstPass == 1);
     REQUIRE(lifetimes[0].lastPass == 1);
+}
+
+TEST_CASE("Lifetimes follow the order they are given, not the declaration order")
+{
+    // The reason this takes an order at all. These intervals decide which
+    // resources may share bytes; if they describe a timeline other than the one
+    // the passes run on, two live resources can be handed the same memory, and
+    // nothing catches it -- not the validation layer, not a barrier.
+    std::vector<RenderPassNode> passes = {
+        pass("a", {texture(0, RenderResourceAccess::Write)}, /*sideEffect=*/true),
+        pass("b", {texture(1, RenderResourceAccess::Write)}, /*sideEffect=*/true),
+        pass("c", {texture(0, RenderResourceAccess::Read, 1)}, /*sideEffect=*/true),
+    };
+
+    const auto declared = ve::renderer::computeTextureLifetimes(passes, std::vector<uint32_t>{0, 1, 2}, 2);
+    // Running b last leaves texture0 live across only the first two slots, and
+    // texture1 live at the end instead of in the middle.
+    const auto reordered = ve::renderer::computeTextureLifetimes(passes, std::vector<uint32_t>{0, 2, 1}, 2);
+
+    CHECK(declared[0].lastPass == 2);
+    CHECK(declared[1].firstPass == 1);
+    CHECK(reordered[0].lastPass == 1);
+    CHECK(reordered[1].firstPass == 2);
 }
 
 TEST_CASE("Lifetimes run after culling, matching how the graph will call them")
@@ -618,10 +1544,12 @@ TEST_CASE("Lifetimes run after culling, matching how the graph will call them")
     };
 
     cullUnusedPasses(passes, 2, 0);
-    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, 2);
+    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, survivingOrder(passes), 2);
 
     // texture0's only writer was culled, so nothing is live for it at all.
     REQUIRE(passes[0].culled);
     REQUIRE_FALSE(lifetimes[0].used);
     REQUIRE(lifetimes[1].used);
+    // The survivor is the frame's first slot, not its second.
+    REQUIRE(lifetimes[1].firstPass == 0);
 }

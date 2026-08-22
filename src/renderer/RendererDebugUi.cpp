@@ -1538,7 +1538,64 @@ void Renderer::drawRenderGraphDebugUi()
 {
     const auto& passes = renderGraph_.debugPasses();
     const auto& resources = renderGraph_.debugResources();
+    const auto& schedule = renderGraph_.passSchedule();
     ImGui::Text("Declared pass order: %zu passes, %zu resources", passes.size(), resources.size());
+
+    const size_t declarationIssueCount = renderGraph_.declarationIssues().size();
+    if (declarationIssueCount == 0) {
+        ImGui::TextDisabled("Declarations check out.");
+    } else {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.6f, 0.2f, 1.0f));
+        ImGui::Text("%zu declaration issue%s, flagged on the passes below.",
+                    declarationIssueCount,
+                    declarationIssueCount == 1 ? "" : "s");
+        ImGui::PopStyleColor();
+    }
+    ImGui::SetItemTooltip(
+        "Checked every frame from the declarations alone: a pass reading a graph-owned resource nothing "
+        "produced yet, a previous-frame read of a pool-bound resource, one resource declared twice by "
+        "the same pass, a previous-frame read placed after this frame's producer, or a read holding a "
+        "handle from before an intervening write.");
+
+    const uint32_t longestChain = renderer::longestPassChain(schedule);
+    uint32_t scheduledPasses = 0;
+    for (const renderer::RenderGraphPassSchedule& entry : schedule) {
+        scheduledPasses += entry.scheduled ? 1u : 0u;
+    }
+    ImGui::Text("Longest dependency chain: %u of %u recorded passes", longestChain, scheduledPasses);
+    ImGui::SetItemTooltip(
+        "The declared data flow only forces this many sequential steps. The gap to the recorded count is "
+        "how much room a reordering would have; the Schedule column says where each pass could move. "
+        "Edges come from the version each handle names, so validatePassOrder can judge an order other "
+        "than the recorded one -- and reject it.");
+
+    // The backstop. The declarations and the recording are two sequences kept in
+    // step by hand across nine files; this line is what notices them drifting.
+    const size_t orderViolations = renderGraph_.recordedOrderViolations().size();
+    const size_t unrecorded = renderGraph_.unrecordedPassIndices().size();
+    if (orderViolations == 0 && unrecorded == 0 && !renderGraph_.executionOrderCycleDetected()) {
+        ImGui::TextDisabled("Recording order matches the schedule.");
+    } else {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.6f, 0.2f, 1.0f));
+        if (renderGraph_.executionOrderCycleDetected()) {
+            ImGui::TextUnformatted("The declared dependencies could not be ordered: a cycle.");
+        }
+        if (orderViolations > 0) {
+            ImGui::Text("%zu dependenc%s broken by the order the passes were recorded in.",
+                        orderViolations,
+                        orderViolations == 1 ? "y" : "ies");
+        }
+        for (const uint32_t passIndex : renderGraph_.unrecordedPassIndices()) {
+            if (passIndex < passes.size()) {
+                ImGui::Text("%s was declared and scheduled but never recorded.", passes[passIndex].name.c_str());
+            }
+        }
+        ImGui::PopStyleColor();
+    }
+    ImGui::SetItemTooltip(
+        "Checked at the end of every frame against the order the passes were actually begun in. The "
+        "declarations and the recording are separate sequences kept in step by hand, and this is what "
+        "notices them drifting apart.");
 
     // ScrollX makes the table a child window whose default height is "remaining
     // visible space" — near the bottom of a scrolled panel that collapses to a
@@ -1552,7 +1609,7 @@ void Renderer::drawRenderGraphDebugUi()
                                       ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY;
     const ImVec2 tableSize(0.0f, ImGui::GetTextLineHeightWithSpacing() * 12.0f);
     const float wideColumnWidth = ImGui::GetFontSize() * 16.0f;
-    if (ImGui::BeginTable("RenderGraphPassesV2", 8, flags, tableSize)) {
+    if (ImGui::BeginTable("RenderGraphPassesV2", 9, flags, tableSize)) {
         ImGui::TableSetupColumn("#");
         ImGui::TableSetupColumn("Pass");
         ImGui::TableSetupColumn("Type");
@@ -1561,6 +1618,7 @@ void Renderer::drawRenderGraphDebugUi()
         ImGui::TableSetupColumn("Reads", ImGuiTableColumnFlags_WidthFixed, wideColumnWidth);
         ImGui::TableSetupColumn("Writes", ImGuiTableColumnFlags_WidthFixed, wideColumnWidth);
         ImGui::TableSetupColumn("Barriers / notes", ImGuiTableColumnFlags_WidthFixed, wideColumnWidth);
+        ImGui::TableSetupColumn("Schedule");
         ImGui::TableHeadersRow();
 
         for (size_t index = 0; index < passes.size(); ++index) {
@@ -1591,6 +1649,37 @@ void Renderer::drawRenderGraphDebugUi()
                 ImGui::TextWrapped("%s", pass.cullReason.c_str());
             } else {
                 ImGui::TextWrapped("%s", pass.transitionSummary.c_str());
+            }
+            if (!pass.declarationIssues.empty()) {
+                // Declaration problems are the one thing in this table that is
+                // never expected, so they get the warning colour rather than
+                // another grey line nobody reads.
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.6f, 0.2f, 1.0f));
+                ImGui::TextWrapped("%s", pass.declarationIssues.c_str());
+                ImGui::PopStyleColor();
+            }
+
+            ImGui::TableNextColumn();
+            if (index < schedule.size() && schedule[index].scheduled) {
+                const renderer::RenderGraphPassSchedule& entry = schedule[index];
+                ImGui::Text(
+                    "%u deps, earliest %u", static_cast<uint32_t>(entry.predecessors.size()), entry.earliestSlot);
+                if (entry.slack > 0) {
+                    ImGui::TextDisabled("could move %u earlier", entry.slack);
+                }
+                if (ImGui::BeginItemTooltip()) {
+                    if (entry.predecessors.empty()) {
+                        ImGui::TextUnformatted("Nothing declared constrains this pass.");
+                    } else {
+                        ImGui::TextUnformatted("Must follow:");
+                        for (const uint32_t predecessor : entry.predecessors) {
+                            ImGui::BulletText("%s", passes[predecessor].name.c_str());
+                        }
+                    }
+                    ImGui::EndTooltip();
+                }
+            } else {
+                ImGui::TextDisabled("-");
             }
         }
 
