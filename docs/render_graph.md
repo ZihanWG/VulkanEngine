@@ -578,6 +578,35 @@ Passes can be marked as side-effecting. Side-effect passes are never culled. Cur
 
 The graph computes basic pass liveness from declared reads/writes. A pass with no side effects and unused outputs is marked culled, and a layout-only read does not count as a use (see "Layout-Only Reads"), which is what removes the bloom chain the composite does not sample. `TAAResolvePass` is not side-effecting, but it stays live when enabled because bloom, exposure, and composite read the resolved history image as the active HDR source.
 
+### Passes the next frame needs
+
+A pass can produce something only the *next* frame reads. Nothing in this frame's
+declarations consumes it, so the backward sweep drops it, and the frame after
+samples whatever was left behind.
+
+`DepthPyramidPass` is exactly that shape: the phase-2 re-test reads the mid-frame
+build, so nothing reads the end-of-frame one, and the next frame's page marking
+and main cull declare history reads on it. It survived on a hand-set side-effect
+flag — a fine outcome and a bad mechanism, because a pass added in that shape
+without the flag was culled silently.
+
+The declarations already say this. `cullUnusedPasses` seeds its needed set from
+every history read before sweeping, which is a reader at the end of the frame:
+the sweep already knows how to keep the last writer of a needed resource and drop
+the ones before it, so nothing else had to change. A history read no longer marks
+the resource needed at its own position, because what it consumes is the previous
+frame.
+
+`DepthPyramidPass` is declared without the side-effect flag now, which is the
+proof the rule is load-bearing rather than decorative: remove the seeding and the
+pass is culled, the renderer records it anyway, and `beginDeclaredPass` throws.
+That was checked, not assumed.
+
+The other side-effect flags were not audited and stay as they are. Some are
+genuine — `MainGpuCullingPass` writes a readback buffer the CPU reads, `ImGuiPass`
+writes the image that gets presented — and some may now be derivable. Removing
+one is a per-pass argument, not a sweep.
+
 A culled pass must not be recorded: `beginDeclaredPass` throws if the renderer tries. The reverse -- declared, not culled, never recorded -- is caught by the endFrame backstop instead.
 
 ## Debug UI

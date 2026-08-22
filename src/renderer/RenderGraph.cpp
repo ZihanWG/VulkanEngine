@@ -2386,11 +2386,16 @@ void RenderGraph::declareGeometryPasses()
             });
     }
 
+    // Declared without a side effect, which it used to need. Nothing this frame
+    // reads what this pass writes -- the phase-2 re-test reads the mid-frame build
+    // -- and the next frame's page marking and main cull declare history reads on
+    // it. cullUnusedPasses keeps the last writer of a history-read resource alive,
+    // so the declarations are what save this pass now, not a hand-set flag.
     frame_.passIndices.depthPyramid = addPass(
         "DepthPyramidPass",
         RenderPassType::DepthPyramid,
         RenderPassExecutionType::Compute,
-        true,
+        false,
         [this](RenderGraphBuilder& builder) {
             builder.readTexture(frame_.mainDepth,
                                 RGAccess::ShaderRead,
@@ -2715,6 +2720,34 @@ void cullUnusedPasses(std::vector<RenderPassNode>& passes, size_t textureCount, 
     std::vector<uint8_t> neededTextures(textureCount, 0);
     std::vector<uint8_t> neededBuffers(bufferCount, 0);
 
+    // A resource something declares a history read on is consumed by the *next*
+    // frame, so whatever writes it last this frame has to survive even though
+    // nothing here reads it. Seeding the needed set is the whole mechanism: it is
+    // a reader at the end of the frame, and the sweep below already knows how to
+    // keep the last writer of a needed resource and drop the ones before it.
+    //
+    // The end-of-frame depth pyramid rebuild is exactly this shape. Nothing this
+    // frame reads it -- the phase-2 re-test reads the mid-frame build -- and the
+    // next frame's page marking and main cull history-read it. It was kept alive
+    // by a hand-set side-effect flag, which is a fine outcome and a bad mechanism:
+    // a pass added in that shape without the flag is culled silently.
+    //
+    // Seeded from every pass, including ones this sweep is about to cull. A
+    // history reader that gets culled would be culled next frame too, so treating
+    // its declaration as live is conservative in the safe direction.
+    for (const RenderPassNode& pass : passes) {
+        for (const RenderResourceUsage& usage : pass.resourceUsages) {
+            if (usage.readKind != RGReadKind::History) {
+                continue;
+            }
+            if (usage.resource.kind == RGResourceKind::Texture && usage.resource.index < neededTextures.size()) {
+                neededTextures[usage.resource.index] = 1;
+            } else if (usage.resource.kind == RGResourceKind::Buffer && usage.resource.index < neededBuffers.size()) {
+                neededBuffers[usage.resource.index] = 1;
+            }
+        }
+    }
+
     for (auto passIt = passes.rbegin(); passIt != passes.rend(); ++passIt) {
         RenderPassNode& pass = *passIt;
         bool hasWrite = false;
@@ -2756,11 +2789,12 @@ void cullUnusedPasses(std::vector<RenderPassNode>& passes, size_t textureCount, 
                     neededBuffers[usage.resource.index] = 0;
                 }
             }
-            // A layout-only read consumes nothing, so it must not mark the
-            // resource as needed: a producer whose only reader is layout-only is
-            // dead, and this is what lets culling remove the bloom chain the
-            // composite does not sample.
-            if (accessReads(usage.access) && usage.readKind != RGReadKind::LayoutOnly) {
+            // Only a read of what this frame produced marks the resource needed.
+            // A layout-only read consumes nothing, which is what lets culling
+            // remove the bloom chain the composite does not sample; a history read
+            // consumes the previous frame, and its claim on this frame's producer
+            // was already made by the seeding above.
+            if (accessReads(usage.access) && usage.readKind == RGReadKind::Produced) {
                 if (usage.resource.kind == RGResourceKind::Texture && usage.resource.index < neededTextures.size()) {
                     neededTextures[usage.resource.index] = 1;
                 } else if (usage.resource.kind == RGResourceKind::Buffer &&

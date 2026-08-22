@@ -1199,6 +1199,89 @@ TEST_CASE("A culled pass is not expected in the order", "[rendergraph][order]")
 }
 
 // ---------------------------------------------------------------------------
+// Cross-frame liveness. A pass can produce something only the next frame reads.
+// Nothing in the declarations of this frame consumes it, so the backward sweep
+// would drop it, and the frame after would sample whatever was left behind.
+
+TEST_CASE("A history read keeps this frame's producer alive", "[rendergraph]")
+{
+    // The end-of-frame depth pyramid rebuild: nothing this frame reads it, and
+    // the next frame's page marking and main cull history-read it. Before this
+    // rule the pass survived on a hand-set side-effect flag, which is a fine
+    // outcome and a bad mechanism -- a pass added in this shape without the flag
+    // was culled silently.
+    std::vector<RenderPassNode> passes{
+        pass("HistoryReader", {historyTexture(0)}, true),
+        pass("EndOfFrameProducer", {texture(0, RenderResourceAccess::Write)}),
+    };
+
+    cullUnusedPasses(passes, 1, 0);
+
+    CHECK_FALSE(passes[1].culled);
+}
+
+TEST_CASE("Without the history read the same producer is culled", "[rendergraph]")
+{
+    // The control for the rule above: the shape is only live because something
+    // declared it reads the previous frame.
+    std::vector<RenderPassNode> passes{
+        pass("Reader", {texture(0, RenderResourceAccess::Read)}, true),
+        pass("EndOfFrameProducer", {texture(0, RenderResourceAccess::Write)}),
+    };
+
+    cullUnusedPasses(passes, 1, 0);
+
+    CHECK(passes[1].culled);
+}
+
+TEST_CASE("A history read keeps only the last writer alive", "[rendergraph]")
+{
+    // Next frame reads what this one left, which is the last write. The earlier
+    // one is as dead as it would be with an ordinary reader at the end.
+    std::vector<RenderPassNode> passes{
+        pass("HistoryReader", {historyTexture(0)}, true),
+        pass("FirstWrite", {texture(0, RenderResourceAccess::Write)}),
+        pass("LastWrite", {texture(0, RenderResourceAccess::Write, 1)}),
+    };
+
+    cullUnusedPasses(passes, 1, 0);
+
+    CHECK(passes[1].culled);
+    CHECK_FALSE(passes[2].culled);
+}
+
+TEST_CASE("A history read does not stand in for a same-frame read", "[rendergraph]")
+{
+    // It marks the resource needed at the end of the frame, not at its own
+    // position, so a producer that only feeds a pass between them still dies with
+    // that pass.
+    std::vector<RenderPassNode> passes{
+        pass("HistoryReader", {historyTexture(0)}, true),
+        pass("DeadProducer", {texture(1, RenderResourceAccess::Write)}),
+        pass("EndOfFrameProducer", {texture(0, RenderResourceAccess::Write)}),
+    };
+
+    cullUnusedPasses(passes, 2, 0);
+
+    CHECK(passes[1].culled);
+    CHECK_FALSE(passes[2].culled);
+}
+
+TEST_CASE("A history read on a buffer keeps its producer alive too", "[rendergraph]")
+{
+    std::vector<RenderPassNode> passes{
+        pass("Consumer", {texture(0, RenderResourceAccess::Write)}, true),
+        pass("Producer", {buffer(0, RenderResourceAccess::Write)}),
+    };
+    passes[0].resourceUsages.push_back(buffer(0, RenderResourceAccess::Read));
+    passes[0].resourceUsages.back().readKind = ve::renderer::RGReadKind::History;
+
+    cullUnusedPasses(passes, 1, 1);
+
+    CHECK_FALSE(passes[1].culled);
+}
+
+// ---------------------------------------------------------------------------
 // Layout-only reads. A pass can be forced to sample a resource it does not want
 // -- the composite shader binds both bloom chains and selects one -- and the
 // declaration then exists to put the image in the layout the descriptor claims,
