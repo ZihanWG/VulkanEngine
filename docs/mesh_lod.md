@@ -108,8 +108,10 @@ Only the cull shader knows which level it picked, so it packs the level into the
 command.firstInstance = objectFrameDataIndex | (selectedLod << 16);
 ```
 
-Draw-item indices are bounded by `kMaxDrawItems` (1024), so the high half is
-always free. Every vertex shader that indexes object data masks with `0xFFFF`;
+Draw-item indices stay below 65536, so the high half is always free. The
+guarantee is that ceiling, not the current cap: `kMaxDrawItems` is 8192 today and
+a `static_assert` pins it at `<= 0xFFFF`, so raising it stays safe until it would
+cross 65536. Every vertex shader that indexes object data masks with `0xFFFF`;
 `simple.vert` additionally forwards `gl_InstanceIndex >> 16` as a flat varying.
 This costs no extra buffer, descriptor, or push constant — only one `AND` in the
 vertex stage.

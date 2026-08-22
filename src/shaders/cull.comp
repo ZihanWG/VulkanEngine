@@ -354,11 +354,13 @@ void emitCommand(GpuCullDrawItem drawItem, uint drawIndex, bool compactCommands)
     command.firstIndex = firstIndex;
     command.vertexOffset = drawItem.vertexOffset;
     // firstInstance carries the object-data slot in the low 16 bits and the
-    // selected LOD level in the high bits. Draw-item indices are bounded by
-    // kMaxDrawItems (1024), so the high half is always free -- this is how the
-    // level, which is only known here, reaches the vertex stage without an extra
-    // buffer, descriptor, or push constant. Every vertex shader that indexes
-    // object data masks with 0xFFFF.
+    // selected LOD level in the high bits. What makes the high half free is that
+    // draw-item indices stay below 65536, not any particular cap value:
+    // kMaxDrawItems is 8192 today and a static_assert on the C++ side pins it at
+    // <= 0xFFFF, so raising it stays safe until it would cross that ceiling.
+    // Packing here is how the level, which is only known in this shader, reaches
+    // the vertex stage without an extra buffer, descriptor, or push constant.
+    // Every vertex shader that indexes object data masks with 0xFFFF.
     command.firstInstance = pc.params.y != 0 ? (drawItem.objectFrameDataIndex | (selectedLod << 16)) : 0;
     indirectOutput.commands[outputIndex] = command;
 }
