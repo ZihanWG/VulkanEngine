@@ -939,6 +939,7 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         frameProbeCaptureActive_,
         anyCascadeShadowRedrawRequired(),
         postProcess_.willRecordLuminancePass(),
+        postProcess_.willRecordMipChainBloom(),
     };
 }
 

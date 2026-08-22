@@ -402,14 +402,18 @@ void PostProcessStack::recordCompositeCommands(VkCommandBuffer commandBuffer,
                             &compositeDescriptorSet,
                             0,
                             nullptr);
+    // Designated rather than positional: this block used to be six bare values,
+    // which meant `bloomMethod` -- the field that decides which bloom chain the
+    // shader samples -- did not appear anywhere a search for the name would find
+    // it, and inserting a field would have silently shifted every value after it.
     CompositePushConstants compositePushConstants{
-        currentToneMappingExposure(),
-        bloomSettings_.enabled ? std::max(bloomSettings_.intensity, 0.0f) : 0.0f,
-        toneMappingOperatorValue(toneMappingSettings_.operatorType),
-        bloomSettings_.enabled ? 1u : 0u,
-        bloomSettings_.useMipChain && (!bloomMipUpsampleImages_.empty() || !bloomMipDownsampleImages_.empty()) ? 1u
-                                                                                                               : 0u,
-        isGpuExposureActive() ? 1u : 0u};
+        .exposure = currentToneMappingExposure(),
+        .bloomIntensity = bloomSettings_.enabled ? std::max(bloomSettings_.intensity, 0.0f) : 0.0f,
+        .toneMappingOperator = toneMappingOperatorValue(toneMappingSettings_.operatorType),
+        .bloomEnabled = bloomSettings_.enabled ? 1u : 0u,
+        .bloomMethod = willRecordMipChainBloom() ? 1u : 0u,
+        .useGpuExposure = isGpuExposureActive() ? 1u : 0u,
+    };
     // GTAO is computed in its own pass now; the composite only multiplies the
     // precomputed visibility term, gated by this enable flag. invProjection is
     // retained in the push block (still fed from the jittered projection) for
@@ -2282,6 +2286,13 @@ void PostProcessStack::recordTaaResolveCommands(VkCommandBuffer commandBuffer)
 
 void PostProcessStack::recordLegacyBloomCommands(VkCommandBuffer commandBuffer)
 {
+    // The fallback chain, and only that: when the mip chain runs, the composite
+    // discards this one's result, so filling it is three full-screen passes of
+    // work nothing reads. The graph culls them from the same decision.
+    if (willRecordMipChainBloom()) {
+        return;
+    }
+
     rhi::debug::beginLabel(commandBuffer, "BloomExtractPass");
     const bool bloomExtractProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "BloomExtractPass");
     renderGraph_.beginBloomExtractPass();
@@ -2376,11 +2387,20 @@ void PostProcessStack::recordLegacyBloomCommands(VkCommandBuffer commandBuffer)
     rhi::debug::endLabel(commandBuffer);
 }
 
+bool PostProcessStack::willRecordMipChainBloom() const
+{
+    if (!bloomSettings_.useMipChain) {
+        return false;
+    }
+
+    return !bloomMipDownsampleImages_.empty() &&
+           bloomMipDownsampleDescriptorSets_.size() == bloomMipDownsampleImages_.size() &&
+           bloomDownsamplePipeline_.pipeline() != VK_NULL_HANDLE && bloomDownsamplePipeline_.layout() != VK_NULL_HANDLE;
+}
+
 void PostProcessStack::recordMipChainBloomCommands(VkCommandBuffer commandBuffer)
 {
-    if (bloomMipDownsampleImages_.empty() ||
-        bloomMipDownsampleDescriptorSets_.size() != bloomMipDownsampleImages_.size() ||
-        bloomDownsamplePipeline_.pipeline() == VK_NULL_HANDLE || bloomDownsamplePipeline_.layout() == VK_NULL_HANDLE) {
+    if (!willRecordMipChainBloom()) {
         return;
     }
 

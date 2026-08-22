@@ -337,14 +337,19 @@ producer, and neither constrains the other.
 `DepthPyramidPass` is the same shape at smaller scale -- it needs only the
 phase-2 main pass, but is recorded after the transparent and screen-space work.
 
-### What the analysis surfaced
+### What the analysis surfaced, and what came of it
 
-`CompositePass` reads `bloomPong` *and* the mip-chain output unconditionally, so
-both bloom chains -- the legacy blur and the downsample/upsample chain -- are
-declared live and run every frame, ten of the twenty-five passes between them.
-Culling cannot drop either while the composite declaration reads both. Whether
-the shader needs both bound is a renderer question this document does not settle;
-the point is that the schedule made it visible.
+The schedule made it visible that ten of the twenty-five passes were bloom, split
+across two independent chains, and that `CompositePass` declared a read of both.
+`composite.frag` samples both bindings and then picks one:
+
+```glsl
+vec3 selectedBloom = pc.bloomMethod == 1u ? mipBloom : legacyBloom;
+```
+
+So whichever chain lost the selection was filled every frame and thrown away --
+three full-screen passes with the mip chain selected, which is the default, and
+seven with it off. See "Layout-Only Reads" for what fixed it.
 
 ## The Graph Drives The Post-Process Tail
 
@@ -430,6 +435,53 @@ scheduled order first, or they will describe a frame that does not happen.
 Barriers do not have this problem: they are derived from live tracked state as
 each pass is recorded, so they follow whatever order the recording takes.
 
+## Layout-Only Reads
+
+A pass sometimes has to sample a resource it does not want. `composite.frag`
+binds both bloom chains and selects one in the shader, so the losing binding must
+still point at an image in a readable layout -- sampling one in
+`VK_IMAGE_LAYOUT_UNDEFINED` is not allowed -- while its contents are discarded.
+
+`RenderGraphBuilder::readTextureForLayout` declares exactly that. It is the third
+`RGReadKind`, alongside the ordinary read and the previous-frame read:
+
+| Kind | Consumes | Depends on the producer | Keeps the producer alive |
+| --- | --- | --- | --- |
+| `Produced` | what this frame's graph produced | yes | yes |
+| `History` | what the previous frame left | no | yes |
+| `LayoutOnly` | nothing | no | **no** |
+
+Barriers do not distinguish them -- a layout is a layout. The last column is what
+matters: a producer whose only reader is layout-only is dead, so culling removes
+it. The content rules in `validateDeclarations` skip layout-only reads entirely,
+since "nothing produced it" and "it names an old version" cannot be complaints
+about a read that consumes nothing.
+
+### What it bought
+
+`CompositePass` now declares the selected chain with `readTexture` and the loser
+with `readTextureForLayout`, and both recorders return early on the same
+predicate, `PostProcessStack::willRecordMipChainBloom` -- which the composite's
+`bloomMethod` push constant also reads, so the shader cannot select a chain that
+was never filled.
+
+Measured on the default scene at 1280x720, passes actually recorded per frame:
+
+| Configuration | Before | After | Culled |
+| --- | --- | --- | --- |
+| mip chain (default) | 23 | **20** | the three legacy passes |
+| `useMipChain` off | 23 | **16** | the seven mip-chain passes |
+
+Both configurations were run: no declaration issues, no order violations, no
+unrecorded passes, and the validation layer clean in each. The captured frame is
+bit-identical to the pre-change capture -- 0 differing pixels, max channel delta
+0 -- which is the point: the passes that went away were producing something
+nothing read.
+
+This is also the first thing culling has actually removed. Until now every
+declared pass was live, and the sweep functioned as a check that the declarations
+and the recording agreed rather than as an optimization.
+
 ## Side Effects And Culling
 
 Passes can be marked as side-effecting. Side-effect passes are never culled. Current side-effect passes include:
@@ -441,7 +493,9 @@ Passes can be marked as side-effecting. Side-effect passes are never culled. Cur
 - `CompositePass`
 - `ImGuiPass`
 
-The graph computes basic pass liveness from declared reads/writes. A pass with no side effects and unused outputs is marked culled. Current renderer-visible passes remain live because their outputs feed later passes or external readback/present behavior. `TAAResolvePass` is not side-effecting, but it stays live when enabled because bloom, exposure, and composite read the resolved history image as the active HDR source.
+The graph computes basic pass liveness from declared reads/writes. A pass with no side effects and unused outputs is marked culled, and a layout-only read does not count as a use (see "Layout-Only Reads"), which is what removes the bloom chain the composite does not sample. `TAAResolvePass` is not side-effecting, but it stays live when enabled because bloom, exposure, and composite read the resolved history image as the active HDR source.
+
+A culled pass must not be recorded: `beginDeclaredPass` throws if the renderer tries. The reverse -- declared, not culled, never recorded -- is caught by the endFrame backstop instead.
 
 ## Debug UI
 

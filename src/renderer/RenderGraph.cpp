@@ -149,7 +149,15 @@ RGTextureHandle RenderGraphBuilder::readTexture(RGTextureHandle handle, RGAccess
 
 RGTextureHandle RenderGraphBuilder::readHistoryTexture(RGTextureHandle handle, RGAccess access, std::string description)
 {
-    return graph_.addTextureUsage(pass_, handle, RenderResourceAccess::Read, access, std::move(description), true);
+    return graph_.addTextureUsage(
+        pass_, handle, RenderResourceAccess::Read, access, std::move(description), RGReadKind::History);
+}
+
+RGTextureHandle
+RenderGraphBuilder::readTextureForLayout(RGTextureHandle handle, RGAccess access, std::string description)
+{
+    return graph_.addTextureUsage(
+        pass_, handle, RenderResourceAccess::Read, access, std::move(description), RGReadKind::LayoutOnly);
 }
 
 RGTextureHandle RenderGraphBuilder::writeTexture(RGTextureHandle handle, RGAccess access, std::string description)
@@ -2535,15 +2543,40 @@ void RenderGraph::declareExposureCompositePasses()
             builder.readTexture(postProcessSource(),
                                 RGAccess::ShaderRead,
                                 "Samples the active HDR scene color target.");
-            builder.readTexture(frame_.bloomPong, RGAccess::ShaderRead, "Samples the legacy blurred bloom texture.");
+            // The shader samples both bloom bindings and selects one, so only the
+            // selected chain is really read. The other is declared for its layout
+            // alone -- the descriptor binds it either way and sampling an image
+            // in an undefined layout is not allowed -- and a layout-only read
+            // keeps no producer alive, so culling drops the whole chain that
+            // would have filled it.
+            const bool mipBloomSelected = frame_.resources.mipChainBloomSelected;
+            if (mipBloomSelected) {
+                builder.readTextureForLayout(frame_.bloomPong,
+                                             RGAccess::ShaderRead,
+                                             "Bound as the legacy bloom binding, but the mip chain is selected, so "
+                                             "the sample is discarded.");
+            } else {
+                builder.readTexture(
+                    frame_.bloomPong, RGAccess::ShaderRead, "Samples the legacy blurred bloom texture.");
+            }
+
+            RGTextureHandle mipBloom{};
+            const char* mipBloomDescription = "Samples the final mip-chain bloom texture.";
             if (!frame_.bloomUpsampleChain.empty()) {
-                builder.readTexture(frame_.bloomUpsampleChain.front(),
-                                    RGAccess::ShaderRead,
-                                    "Samples the final mip-chain bloom texture.");
+                mipBloom = frame_.bloomUpsampleChain.front();
             } else if (!frame_.bloomDownsampleChain.empty()) {
-                builder.readTexture(frame_.bloomDownsampleChain.front(),
-                                    RGAccess::ShaderRead,
-                                    "Samples the single-level mip-chain bloom texture.");
+                mipBloom = frame_.bloomDownsampleChain.front();
+                mipBloomDescription = "Samples the single-level mip-chain bloom texture.";
+            }
+            if (mipBloom.valid()) {
+                if (mipBloomSelected) {
+                    builder.readTexture(mipBloom, RGAccess::ShaderRead, mipBloomDescription);
+                } else {
+                    builder.readTextureForLayout(mipBloom,
+                                                 RGAccess::ShaderRead,
+                                                 "Bound as the mip-chain bloom binding, but the legacy chain is "
+                                                 "selected, so the sample is discarded.");
+                }
             }
             builder.readBuffer(frame_.exposureState,
                                RGAccess::StorageBufferRead,
@@ -2697,7 +2730,11 @@ void cullUnusedPasses(std::vector<RenderPassNode>& passes, size_t textureCount, 
                     neededBuffers[usage.resource.index] = 0;
                 }
             }
-            if (accessReads(usage.access)) {
+            // A layout-only read consumes nothing, so it must not mark the
+            // resource as needed: a producer whose only reader is layout-only is
+            // dead, and this is what lets culling remove the bloom chain the
+            // composite does not sample.
+            if (accessReads(usage.access) && usage.readKind != RGReadKind::LayoutOnly) {
                 if (usage.resource.kind == RGResourceKind::Texture && usage.resource.index < neededTextures.size()) {
                     neededTextures[usage.resource.index] = 1;
                 } else if (usage.resource.kind == RGResourceKind::Buffer &&
@@ -2775,16 +2812,18 @@ std::vector<RenderGraphDeclarationIssue> validateDeclarations(const std::vector<
             const std::vector<uint8_t>& written = isTexture ? textureWritten : bufferWritten;
             const std::vector<uint32_t>& current = isTexture ? textureVersion : bufferVersion;
 
-            if (accessReads(usage.access)) {
+            // A layout-only read consumes nothing, so none of the content rules
+            // below have anything to say about it.
+            if (accessReads(usage.access) && usage.readKind != RGReadKind::LayoutOnly) {
                 const bool producedThisFrame = written[usage.resource.index] != 0;
                 // The version current at this point is what the last write left;
                 // a read naming an older one is holding a handle from before it.
                 // History reads are exempt: naming version 0 is the whole point,
                 // and HistoryReadAfterProducer already covers a stale one.
-                if (!usage.historyRead && usage.inputVersion < current[usage.resource.index]) {
+                if (usage.readKind == RGReadKind::Produced && usage.inputVersion < current[usage.resource.index]) {
                     report(RGDeclarationIssue::StaleVersionRead, usage);
                 }
-                if (usage.historyRead && producedThisFrame) {
+                if (usage.readKind == RGReadKind::History && producedThisFrame) {
                     // The declaration claims the previous frame's contents but an
                     // earlier pass already overwrote them. Applies whoever owns
                     // the memory: what is wrong here is the ordering.
@@ -2792,7 +2831,7 @@ std::vector<RenderGraphDeclarationIssue> validateDeclarations(const std::vector<
                 } else if (!producedThisFrame && info.graphManaged) {
                     // Only a graph-managed resource can be read before it is
                     // produced: an imported one keeps its contents by contract.
-                    if (!usage.historyRead) {
+                    if (usage.readKind == RGReadKind::Produced) {
                         report(RGDeclarationIssue::ReadsContentNoPassProduced, usage);
                     } else if (info.aliased) {
                         // A declared history read of a private resource is
@@ -2881,7 +2920,7 @@ std::vector<RenderGraphPassSchedule> computePassSchedule(const std::vector<Rende
             //
             // A history read makes no such edge at all -- it consumes the
             // previous frame, not whatever this frame's producer will write.
-            if (accessReads(usage.access) && !usage.historyRead && usage.inputVersion > 0) {
+            if (accessReads(usage.access) && usage.readKind == RGReadKind::Produced && usage.inputVersion > 0) {
                 const std::vector<uint32_t>& versionProducers = producers[usage.resource.index];
                 if (usage.inputVersion <= versionProducers.size()) {
                     addPredecessor(versionProducers[usage.inputVersion - 1]);
@@ -3504,7 +3543,7 @@ RGTextureHandle RenderGraph::addTextureUsage(RenderPassNode& pass,
                                              RenderResourceAccess resourceAccess,
                                              RGAccess declaredAccess,
                                              std::string description,
-                                             bool historyRead)
+                                             RGReadKind readKind)
 {
     if (!handle.valid() || handle.index >= textures_.size()) {
         return handle;
@@ -3521,7 +3560,7 @@ RGTextureHandle RenderGraph::addTextureUsage(RenderPassNode& pass,
         resourceAccess,
         declaredAccess,
         std::move(description),
-        historyRead,
+        readKind,
         inputVersion,
         outputVersion,
     });
@@ -3548,9 +3587,10 @@ RGBufferHandle RenderGraph::addBufferUsage(RenderPassNode& pass,
         resourceAccess,
         declaredAccess,
         std::move(description),
-        // No buffer is graph-managed today, so a history read of one has nothing
-        // to say; the field exists to keep the usage type uniform.
-        false,
+        // No buffer is graph-managed today, so neither a history nor a
+        // layout-only read of one has anything to say; the field exists to keep
+        // the usage type uniform.
+        RGReadKind::Produced,
         inputVersion,
         outputVersion,
     });

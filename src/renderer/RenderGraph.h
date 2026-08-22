@@ -106,6 +106,29 @@ enum class RenderResourceAccess {
     ReadWrite
 };
 
+// What a declared read consumes. The distinction is invisible to barriers -- a
+// layout is a layout -- and decides everything else: which pass a reader
+// depends on, whether reading before anything wrote is a mistake, and whether a
+// producer is worth keeping alive.
+enum class RGReadKind {
+    // What this frame's graph produced. The ordinary case.
+    Produced,
+    // What the resource held at the end of the previous frame. Declaring it says
+    // the read-before-write is deliberate rather than an ordering mistake.
+    History,
+    // Nothing. A descriptor binds the resource and the pass samples it, but the
+    // result is discarded -- the shader picks between two bloom chains, or a
+    // fallback path leaves a binding unused. The declaration exists only to put
+    // the image in the layout the descriptor claims, which is the same reason
+    // the punctual atlas and the VSM page pool are declared on frames that draw
+    // nothing into them.
+    //
+    // Consuming nothing means keeping nothing alive: a producer whose only
+    // reader is layout-only is dead, and culling removes it. That is what makes
+    // the unselected bloom chain stop running.
+    LayoutOnly
+};
+
 struct RGTextureDesc {
     std::string name;
     VkFormat format = VK_FORMAT_UNDEFINED;
@@ -140,10 +163,8 @@ struct RenderResourceUsage {
     RenderResourceAccess access = RenderResourceAccess::Read;
     RGAccess declaredAccess = RGAccess::Unknown;
     std::string description;
-    // A read of what the resource held at the end of the previous frame rather
-    // than of anything this frame's graph produced. Declaring it says the
-    // read-before-write is deliberate; see validateDeclarations.
-    bool historyRead = false;
+    // What the read consumes; see RGReadKind. Meaningless on a write.
+    RGReadKind readKind = RGReadKind::Produced;
     // The version the declaring handle named, and the version the pass leaves
     // behind: outputVersion is inputVersion + 1 for a write, and equal to it for
     // a plain read. Version 0 is whatever the resource held before the frame.
@@ -452,6 +473,10 @@ struct RenderGraphFrameResources {
     // declaring the pass; histogram mode does not read its output, so the
     // exposure chain is unaffected.
     bool luminancePassEnabled = false;
+    // Which bloom chain the composite will sample. The loser's output is
+    // declared as a layout-only read, so culling drops the passes that would
+    // have filled it; see PostProcessStack::willRecordMipChainBloom.
+    bool mipChainBloomSelected = false;
 };
 
 struct RenderGraphResourceDebugInfo {
@@ -503,6 +528,10 @@ public:
     // from -- but it tells validateDeclarations that reading before anything
     // wrote the resource this frame is the intent, not an ordering mistake.
     RGTextureHandle readHistoryTexture(RGTextureHandle handle, RGAccess access, std::string description = {});
+    // A read whose content does not matter: see RGReadKind::LayoutOnly. It keeps
+    // no producer alive, so declaring one is how a pass says "put this in the
+    // right layout for my descriptor, but do not compute it on my account".
+    RGTextureHandle readTextureForLayout(RGTextureHandle handle, RGAccess access, std::string description = {});
     RGTextureHandle writeTexture(RGTextureHandle handle, RGAccess access, std::string description = {});
     RGTextureHandle readWriteTexture(RGTextureHandle handle, RGAccess access, std::string description = {});
     RGBufferHandle readBuffer(RGBufferHandle handle, RGAccess access, std::string description = {});
@@ -977,7 +1006,7 @@ private:
                                     RenderResourceAccess resourceAccess,
                                     RGAccess declaredAccess,
                                     std::string description,
-                                    bool historyRead = false);
+                                    RGReadKind readKind = RGReadKind::Produced);
     RGBufferHandle addBufferUsage(RenderPassNode& pass,
                                   RGBufferHandle handle,
                                   RenderResourceAccess resourceAccess,

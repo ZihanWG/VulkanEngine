@@ -53,10 +53,17 @@ RenderResourceUsage buffer(uint32_t index, RenderResourceAccess access, uint32_t
     return usage;
 }
 
+RenderResourceUsage layoutOnlyTexture(uint32_t index)
+{
+    RenderResourceUsage usage = texture(index, RenderResourceAccess::Read);
+    usage.readKind = ve::renderer::RGReadKind::LayoutOnly;
+    return usage;
+}
+
 RenderResourceUsage historyTexture(uint32_t index)
 {
     RenderResourceUsage usage = texture(index, RenderResourceAccess::Read);
-    usage.historyRead = true;
+    usage.readKind = ve::renderer::RGReadKind::History;
     return usage;
 }
 
@@ -1176,6 +1183,88 @@ TEST_CASE("A culled pass is not expected in the order", "[rendergraph][order]")
     const auto schedule = computePassSchedule(passes);
 
     CHECK(unrecordedPasses(schedule, std::vector<uint32_t>{1}).empty());
+}
+
+// ---------------------------------------------------------------------------
+// Layout-only reads. A pass can be forced to sample a resource it does not want
+// -- the composite shader binds both bloom chains and selects one -- and the
+// declaration then exists to put the image in the layout the descriptor claims,
+// not to consume anything. Getting this wrong either keeps a whole dead chain
+// running or culls one that is still sampled.
+
+TEST_CASE("A layout-only read does not keep its producer alive", "[rendergraph]")
+{
+    // The bloom case: the composite binds both chains, samples both, and
+    // discards one. The chain it discards must not survive on the strength of
+    // that sample.
+    std::vector<RenderPassNode> passes{
+        pass("UnselectedChain", {texture(0, RenderResourceAccess::Write)}),
+        pass("SelectedChain", {texture(1, RenderResourceAccess::Write)}),
+        pass("Composite", {layoutOnlyTexture(0), texture(1, RenderResourceAccess::Read, 1)}, true),
+    };
+
+    cullUnusedPasses(passes, 2, 0);
+
+    CHECK(passes[0].culled);
+    CHECK_FALSE(passes[1].culled);
+    CHECK_FALSE(passes[2].culled);
+}
+
+TEST_CASE("Culling a layout-only read is transitive back through its chain", "[rendergraph]")
+{
+    // Three passes feeding each other, sampled only for a layout at the end.
+    // All three are dead, which is what turns the bloom finding into three
+    // fewer passes rather than one.
+    std::vector<RenderPassNode> passes{
+        pass("Extract", {texture(0, RenderResourceAccess::Write)}),
+        pass("BlurH", {texture(0, RenderResourceAccess::Read, 1), texture(1, RenderResourceAccess::Write)}),
+        pass("BlurV", {texture(1, RenderResourceAccess::Read, 1), texture(2, RenderResourceAccess::Write)}),
+        pass("Composite", {layoutOnlyTexture(2), texture(3, RenderResourceAccess::Write)}, true),
+    };
+
+    cullUnusedPasses(passes, 4, 0);
+
+    CHECK(passes[0].culled);
+    CHECK(passes[1].culled);
+    CHECK(passes[2].culled);
+    CHECK_FALSE(passes[3].culled);
+}
+
+TEST_CASE("A layout-only read of an unproduced resource is not an issue", "[rendergraph][declarations]")
+{
+    // It consumes nothing, so "nothing produced it" is the expected state rather
+    // than a finding -- including when the resource is pool-bound, where a
+    // history read would be wrong.
+    std::vector<RenderPassNode> passes{pass("Composite", {layoutOnlyTexture(0)}, true)};
+
+    CHECK(validateDeclarations(passes, std::vector<RGResourceValidationInfo>{kTransient}, {}).empty());
+    CHECK(validateDeclarations(passes, std::vector<RGResourceValidationInfo>{kAliasedTransient}, {}).empty());
+}
+
+TEST_CASE("A layout-only read of a stale version is not an issue", "[rendergraph][declarations]")
+{
+    // Naming an old version cannot matter when the content does not.
+    std::vector<RenderPassNode> passes{
+        pass("FirstWrite", {texture(0, RenderResourceAccess::Write)}),
+        pass("SecondWrite", {texture(0, RenderResourceAccess::Write, 1)}),
+        pass("Composite", {layoutOnlyTexture(0)}, true),
+    };
+
+    CHECK(validateDeclarations(passes, std::vector<RGResourceValidationInfo>{kTransient}, {}).empty());
+}
+
+TEST_CASE("A layout-only read creates no dependency on the producer", "[rendergraph][schedule]")
+{
+    // It must still come after a writer in the write-after-read sense, but it
+    // does not have to wait for one to produce what it samples.
+    std::vector<RenderPassNode> passes{
+        pass("Producer", {texture(0, RenderResourceAccess::Write)}, true),
+        pass("Composite", {layoutOnlyTexture(0)}, true),
+    };
+
+    const auto schedule = computePassSchedule(passes);
+
+    CHECK(schedule[1].predecessors.empty());
 }
 
 // ---------------------------------------------------------------------------

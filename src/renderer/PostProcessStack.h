@@ -129,6 +129,13 @@ public:
     // on the same call, so the declaration and the recording cannot disagree
     // about whether the pass exists.
     [[nodiscard]] bool willRecordLuminancePass() const;
+    // Which bloom chain this frame uses. The composite shader samples both
+    // bindings and selects one, so the chain that loses the selection is work
+    // thrown away; the graph declares the loser's output as a layout-only read,
+    // culling removes its passes, and the recorders below return early. The
+    // composite's bloomMethod push constant reads the same call, so the shader
+    // cannot select a chain that was never filled.
+    [[nodiscard]] bool willRecordMipChainBloom() const;
     [[nodiscard]] bool isHistogramExposureActive() const;
     [[nodiscard]] bool isGpuExposureActive() const;
     [[nodiscard]] bool isTaaActive() const;
