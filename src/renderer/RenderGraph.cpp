@@ -2651,16 +2651,16 @@ void RenderGraph::validateFrameDeclarations()
     }
 }
 
-std::vector<RenderGraphResourceLifetime> computeTextureLifetimes(const std::vector<RenderPassNode>& passes,
-                                                                   size_t textureCount)
+std::vector<RenderGraphResourceLifetime>
+computeTextureLifetimes(const std::vector<RenderPassNode>& passes, std::span<const uint32_t> order, size_t textureCount)
 {
     std::vector<RenderGraphResourceLifetime> lifetimes(textureCount);
 
-    for (uint32_t passIndex = 0; passIndex < passes.size(); ++passIndex) {
-        const RenderPassNode& pass = passes[passIndex];
-        if (pass.culled) {
+    for (uint32_t slot = 0; slot < order.size(); ++slot) {
+        if (order[slot] >= passes.size()) {
             continue;
         }
+        const RenderPassNode& pass = passes[order[slot]];
 
         for (const RenderResourceUsage& usage : pass.resourceUsages) {
             if (usage.resource.kind != RGResourceKind::Texture || usage.resource.index >= lifetimes.size()) {
@@ -2669,15 +2669,18 @@ std::vector<RenderGraphResourceLifetime> computeTextureLifetimes(const std::vect
                 continue;
             }
 
+            // Every usage extends the interval, a layout-only read included: the
+            // image has to be in a valid state where a descriptor binds it, so
+            // its bytes cannot belong to something else at that point.
             RenderGraphResourceLifetime& lifetime = lifetimes[usage.resource.index];
             if (!lifetime.used) {
                 lifetime.used = true;
-                lifetime.firstPass = passIndex;
-                lifetime.lastPass = passIndex;
+                lifetime.firstPass = slot;
+                lifetime.lastPass = slot;
                 continue;
             }
-            lifetime.firstPass = std::min(lifetime.firstPass, passIndex);
-            lifetime.lastPass = std::max(lifetime.lastPass, passIndex);
+            lifetime.firstPass = std::min(lifetime.firstPass, slot);
+            lifetime.lastPass = std::max(lifetime.lastPass, slot);
         }
     }
 

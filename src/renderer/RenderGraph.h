@@ -1064,15 +1064,21 @@ private:
 // tolerates handles it never imported.
 void cullUnusedPasses(std::vector<RenderPassNode>& passes, size_t textureCount, size_t bufferCount);
 
-// Inclusive first/last pass index each texture is live across, for the transient
+// Inclusive first/last slot each texture is live across, for the transient
 // memory allocator (see TransientMemoryPlan.h). A free function next to
 // cullUnusedPasses for the same reason: it is pure logic over declarations and
 // needs no device to exercise.
 //
-// Culled passes are skipped. Running this before culling would stretch intervals
-// over passes that never execute, which does not break anything visibly -- it
-// just silently prevents resources from sharing memory, which is the entire
-// point of computing them.
+// The slots are positions in `order` -- the order the passes actually run in --
+// not declaration indices, and this is the one analysis where the difference is
+// not cosmetic. The intervals decide which resources may share bytes, so an
+// interval that does not describe the real timeline lets two simultaneously live
+// resources overlap in memory. Nothing catches that: not the validation layer,
+// not a barrier, not a test that does not happen to read the clobbered pixels.
+//
+// Passing the execution order also means culled passes are absent by
+// construction rather than skipped, so the intervals no longer carry gaps where
+// a culled pass sat. Tighter intervals only ever allow more sharing.
 //
 // A texture no surviving pass touches comes back with used == false and
 // firstPass > lastPass, matching the empty-lifetime convention
@@ -1084,7 +1090,7 @@ struct RenderGraphResourceLifetime {
 };
 
 [[nodiscard]] std::vector<RenderGraphResourceLifetime> computeTextureLifetimes(
-    const std::vector<RenderPassNode>& passes, size_t textureCount);
+    const std::vector<RenderPassNode>& passes, std::span<const uint32_t> order, size_t textureCount);
 
 // Checks a frame's declarations against the three rules above. Pure logic over
 // declarations, next to cullUnusedPasses for the same reason: no device needed,

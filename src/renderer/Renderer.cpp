@@ -1161,8 +1161,8 @@ void Renderer::applyTransientAliasingPlan()
         return;
     }
 
-    const std::vector<renderer::RenderGraphResourceLifetime> lifetimes =
-        renderer::computeTextureLifetimes(renderGraph_.debugPasses(), renderGraph_.textureCount());
+    const std::vector<renderer::RenderGraphResourceLifetime> lifetimes = renderer::computeTextureLifetimes(
+        renderGraph_.debugPasses(), renderGraph_.executionOrder(), renderGraph_.textureCount());
 
     std::vector<renderer::TransientAllocationRequest> requests;
     uint32_t commonMemoryTypeBits = ~0u;
@@ -1291,7 +1291,7 @@ void Renderer::logTransientPoolReport()
     // on the hope that aliasing helps.
     const std::vector<renderer::RenderPassNode>& passes = renderGraph_.debugPasses();
     const std::vector<renderer::RenderGraphResourceLifetime> lifetimes =
-        renderer::computeTextureLifetimes(passes, renderGraph_.textureCount());
+        renderer::computeTextureLifetimes(passes, renderGraph_.executionOrder(), renderGraph_.textureCount());
 
     std::vector<renderer::TransientAllocationRequest> requests;
     requests.reserve(transients.size());

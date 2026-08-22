@@ -426,14 +426,42 @@ Checked the other way too: recording the tail in reverse reports three broken
 dependencies (`CompositePass` before `BloomBlurVertical`, `BloomUpsampleMip0`,
 and `HistogramExposurePass`).
 
-### The precondition for ever reordering
+### Which analyses a reordering would break
 
-Culling, `validateDeclarations`, and `computeTextureLifetimes` all sweep
-declaration order. They are correct today **only because the scheduled order
-equals it**. A policy that actually reorders has to move those analyses onto the
-scheduled order first, or they will describe a frame that does not happen.
-Barriers do not have this problem: they are derived from live tracked state as
+An earlier draft of this section said all three per-frame analyses sweep
+declaration order and would all have to move before anything reorders. That was
+too coarse. Taken one at a time:
+
+**`computeTextureLifetimes` had to move, and has.** Its intervals decide which
+resources may share bytes, so an interval describing a timeline other than the
+one the passes run on lets two simultaneously live resources overlap in memory --
+and nothing catches that: not the validation layer, not a barrier, not a test
+that does not happen to read the clobbered pixels. It now takes the execution
+order and numbers its slots by position in it.
+
+**`cullUnusedPasses` did not need to move.** Its answer is invariant under any
+legal reordering. The derived edges -- read-after-write, write-after-read,
+write-after-write -- fix the relative order of every pair of passes that touch a
+common resource, and two passes touching no common resource cannot affect each
+other's liveness. So the backward sweep sees the same per-resource sequence of
+reads and writes whatever legal order it is given.
+
+**`validateDeclarations` splits.** Its content rules -- `ResourceDeclaredTwice`,
+`ReadsContentNoPassProduced`, `HistoryReadOfAliasedResource` -- are invariant for
+the same reason. Its two ordering rules, `StaleVersionRead` and
+`HistoryReadAfterProducer`, are not, and must not be: they exist to report that
+the declared order and the declared data flow disagree, which is a statement
+about the declarations. A read holding a stale handle is precisely a read whose
+edges would let it move before the write it failed to name.
+
+Barriers have none of this problem: they are derived from live tracked state as
 each pass is recorded, so they follow whatever order the recording takes.
+
+Moving the lifetimes changed no packing today. The three culled legacy bloom
+passes were contiguous, so closing the gaps they left shifts every later slot
+uniformly without changing which intervals overlap: at 1280x720 the plan is
+26.62 MiB unaliased into a 20.21 MiB pool either way. The change buys
+correctness under a reordering, not memory.
 
 ## Layout-Only Reads
 
@@ -520,9 +548,10 @@ The ImGui Render Graph panel shows:
 
 Resources whose lifetimes do not overlap can share bytes in one allocation.
 `renderer::planTransientMemory` (GPU-free, unit tested) assigns offsets by greedy
-interval packing, `computeTextureLifetimes` supplies the intervals from the
-declared passes after culling, and `rhi::VulkanTransientMemoryPool` owns the
-allocation that `VulkanImage::createAliased` binds images into.
+interval packing, `computeTextureLifetimes` supplies the intervals -- numbered by
+position in the execution order, not by declaration index -- and
+`rhi::VulkanTransientMemoryPool` owns the allocation that
+`VulkanImage::createAliased` binds images into.
 
 Measured at 2560x1440: the whole transient set is 123.74 MiB and would pack into
 82.62 MiB. Only the bloom chain is wired -- 41.12 MiB of images into a 23.64 MiB

@@ -53,6 +53,19 @@ RenderResourceUsage buffer(uint32_t index, RenderResourceAccess access, uint32_t
     return usage;
 }
 
+// The surviving passes in declaration order, which is what computeExecutionOrder
+// returns while the declarations themselves are written in a legal order.
+std::vector<uint32_t> survivingOrder(const std::vector<RenderPassNode>& passes)
+{
+    std::vector<uint32_t> order;
+    for (uint32_t index = 0; index < passes.size(); ++index) {
+        if (!passes[index].culled) {
+            order.push_back(index);
+        }
+    }
+    return order;
+}
+
 RenderResourceUsage layoutOnlyTexture(uint32_t index)
 {
     RenderResourceUsage usage = texture(index, RenderResourceAccess::Read);
@@ -1333,7 +1346,7 @@ TEST_CASE("A texture used by one pass has a single-pass lifetime")
         pass("write", {texture(0, RenderResourceAccess::Write)}, /*sideEffect=*/true),
     };
 
-    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, 1);
+    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, survivingOrder(passes), 1);
 
     REQUIRE(lifetimes.size() == 1);
     REQUIRE(lifetimes[0].used);
@@ -1349,7 +1362,7 @@ TEST_CASE("A lifetime spans the first and last pass that touch a texture")
         pass("consume", {texture(0, RenderResourceAccess::Read)}, /*sideEffect=*/true),
     };
 
-    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, 2);
+    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, survivingOrder(passes), 2);
 
     REQUIRE(lifetimes[0].firstPass == 0);
     REQUIRE(lifetimes[0].lastPass == 2);
@@ -1363,7 +1376,7 @@ TEST_CASE("An untouched texture reports an empty lifetime")
         pass("write", {texture(0, RenderResourceAccess::Write)}, /*sideEffect=*/true),
     };
 
-    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, 3);
+    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, survivingOrder(passes), 3);
 
     REQUIRE_FALSE(lifetimes[1].used);
     // The convention TransientAllocationRequest uses to drop a resource.
@@ -1379,11 +1392,16 @@ TEST_CASE("Culled passes do not extend a lifetime")
     };
     passes[1].culled = true;
 
-    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, 2);
+    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, survivingOrder(passes), 2);
 
-    // Counting the culled pass would stretch texture0 to pass 1 and stop it
+    // Counting the culled pass would stretch texture0 to slot 1 and stop it
     // sharing bytes with anything that starts there.
     REQUIRE(lifetimes[0].lastPass == 0);
+    // And the slots close up behind it: "tail" is the second pass that runs, not
+    // the third that was declared, so texture1 is live at 1 rather than 2. A gap
+    // there would only ever prevent sharing.
+    REQUIRE(lifetimes[1].firstPass == 1);
+    REQUIRE(lifetimes[1].lastPass == 1);
 }
 
 TEST_CASE("Lifetimes ignore handles past the texture count")
@@ -1393,7 +1411,7 @@ TEST_CASE("Lifetimes ignore handles past the texture count")
              /*sideEffect=*/true),
     };
 
-    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, 1);
+    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, survivingOrder(passes), 1);
 
     REQUIRE(lifetimes.size() == 1);
     REQUIRE(lifetimes[0].used);
@@ -1406,10 +1424,33 @@ TEST_CASE("Buffer usages never appear in texture lifetimes")
         pass("draw", {texture(0, RenderResourceAccess::Write)}, /*sideEffect=*/true),
     };
 
-    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, 1);
+    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, survivingOrder(passes), 1);
 
     REQUIRE(lifetimes[0].firstPass == 1);
     REQUIRE(lifetimes[0].lastPass == 1);
+}
+
+TEST_CASE("Lifetimes follow the order they are given, not the declaration order")
+{
+    // The reason this takes an order at all. These intervals decide which
+    // resources may share bytes; if they describe a timeline other than the one
+    // the passes run on, two live resources can be handed the same memory, and
+    // nothing catches it -- not the validation layer, not a barrier.
+    std::vector<RenderPassNode> passes = {
+        pass("a", {texture(0, RenderResourceAccess::Write)}, /*sideEffect=*/true),
+        pass("b", {texture(1, RenderResourceAccess::Write)}, /*sideEffect=*/true),
+        pass("c", {texture(0, RenderResourceAccess::Read, 1)}, /*sideEffect=*/true),
+    };
+
+    const auto declared = ve::renderer::computeTextureLifetimes(passes, std::vector<uint32_t>{0, 1, 2}, 2);
+    // Running b last leaves texture0 live across only the first two slots, and
+    // texture1 live at the end instead of in the middle.
+    const auto reordered = ve::renderer::computeTextureLifetimes(passes, std::vector<uint32_t>{0, 2, 1}, 2);
+
+    CHECK(declared[0].lastPass == 2);
+    CHECK(declared[1].firstPass == 1);
+    CHECK(reordered[0].lastPass == 1);
+    CHECK(reordered[1].firstPass == 2);
 }
 
 TEST_CASE("Lifetimes run after culling, matching how the graph will call them")
@@ -1420,10 +1461,12 @@ TEST_CASE("Lifetimes run after culling, matching how the graph will call them")
     };
 
     cullUnusedPasses(passes, 2, 0);
-    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, 2);
+    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, survivingOrder(passes), 2);
 
     // texture0's only writer was culled, so nothing is live for it at all.
     REQUIRE(passes[0].culled);
     REQUIRE_FALSE(lifetimes[0].used);
     REQUIRE(lifetimes[1].used);
+    // The survivor is the frame's first slot, not its second.
+    REQUIRE(lifetimes[1].firstPass == 0);
 }
