@@ -20,14 +20,27 @@ namespace ve::renderer {
 
 inline constexpr uint32_t kInvalidRenderGraphHandle = std::numeric_limits<uint32_t>::max();
 
+// A handle names a resource *and* which of its versions. Every declared write
+// produces a new version, and the builder hands back a handle for it, so the
+// caller has to thread the result forward:
+//
+//     frame_.sceneColor = builder.writeTexture(frame_.sceneColor, ...);
+//
+// The version is what makes the declared data flow independent of where a pass
+// sits: a reader names the version it consumes, so holding a handle from before
+// an intervening write is a detectable mistake rather than an invisible one.
+// Barriers and resource lookup ignore it -- all versions of a resource are the
+// same VkImage.
 struct RGTextureHandle {
     uint32_t index = kInvalidRenderGraphHandle;
+    uint32_t version = 0;
 
     [[nodiscard]] bool valid() const { return index != kInvalidRenderGraphHandle; }
 };
 
 struct RGBufferHandle {
     uint32_t index = kInvalidRenderGraphHandle;
+    uint32_t version = 0;
 
     [[nodiscard]] bool valid() const { return index != kInvalidRenderGraphHandle; }
 };
@@ -131,6 +144,11 @@ struct RenderResourceUsage {
     // than of anything this frame's graph produced. Declaring it says the
     // read-before-write is deliberate; see validateDeclarations.
     bool historyRead = false;
+    // The version the declaring handle named, and the version the pass leaves
+    // behind: outputVersion is inputVersion + 1 for a write, and equal to it for
+    // a plain read. Version 0 is whatever the resource held before the frame.
+    uint32_t inputVersion = 0;
+    uint32_t outputVersion = 0;
 };
 
 // What a declared access means in barrier terms: the layout the image must be
@@ -245,6 +263,12 @@ enum class RGDeclarationIssue {
     // copy-paste slip, and it costs a barrier submission: two barriers for one
     // resource cannot share a dependency info (see barrierBatchNeedsFlush).
     ResourceDeclaredTwice,
+    // A read naming an older version than the one current at that point: the
+    // declaring handle was taken before an intervening write and never
+    // refreshed. The pixels are right -- every version is the same image -- but
+    // the declared data flow points at the wrong producer, so anything that acts
+    // on it, a reordering above all, acts on a lie.
+    StaleVersionRead,
     // A history read placed after a pass that writes the resource this frame.
     // The declaration says "the previous frame's contents" and the schedule
     // hands it this frame's, so the pass reads something other than what it
@@ -693,6 +717,8 @@ private:
 
     struct TextureResource {
         RGTextureDesc desc;
+        // Versions produced so far this frame. 0 means nothing has written it.
+        uint32_t currentVersion = 0;
         VkImage image = VK_NULL_HANDLE;
         VkImageView imageView = VK_NULL_HANDLE;
         VkImageLayout* externalLayout = nullptr;
@@ -731,6 +757,7 @@ private:
 
     struct BufferResource {
         RGBufferDesc desc;
+        uint32_t currentVersion = 0;
         VkBuffer buffer = VK_NULL_HANDLE;
         BufferAccessState lastAccess{};
         bool usedThisFrame = false;
@@ -794,7 +821,11 @@ private:
         RGTextureHandle ssrSceneColorCopy{};
         RGTextureHandle taaHistoryRead{};
         RGTextureHandle taaHistoryWrite{};
-        RGTextureHandle postProcessSceneColor{};
+        // Deliberately absent: the post-process source used to be snapshotted
+        // here before any pass had declared anything, which made every reader of
+        // it name version 0 of a target four writes old. It is resolved at the
+        // point of use instead; see RenderGraph::postProcessSource.
+        bool taaHistoryIsPostProcessSource = false;
         RGTextureHandle bloomExtract{};
         RGTextureHandle bloomPing{};
         RGTextureHandle bloomPong{};
@@ -816,6 +847,10 @@ private:
         RGBufferHandle exposureState{};
     };
 
+    // The HDR target the post-process chain reads: the TAA resolve's output when
+    // TAA is on, the scene colour otherwise. Resolved on each call rather than
+    // stored, so it always names the current version of whichever it is.
+    [[nodiscard]] RGTextureHandle postProcessSource() const;
     void requireFrameActive(const char* operation) const;
     // beginFrame() helpers (see RenderGraph.cpp): import the externally-owned
     // swapchain/shadow targets, create the transient frame textures, and import
@@ -853,17 +888,19 @@ private:
     void setTextureLayout(TextureResource& resource, VkImageLayout layout);
     [[nodiscard]] RenderResourceHandle textureResourceHandle(RGTextureHandle handle) const;
     [[nodiscard]] RenderResourceHandle bufferResourceHandle(RGBufferHandle handle) const;
-    void addTextureUsage(RenderPassNode& pass,
-                         RGTextureHandle handle,
-                         RenderResourceAccess resourceAccess,
-                         RGAccess declaredAccess,
-                         std::string description,
-                         bool historyRead = false);
-    void addBufferUsage(RenderPassNode& pass,
-                        RGBufferHandle handle,
-                        RenderResourceAccess resourceAccess,
-                        RGAccess declaredAccess,
-                        std::string description);
+    // Both return the handle naming the version the pass leaves behind: the next
+    // one for a write, the caller's own for a read.
+    RGTextureHandle addTextureUsage(RenderPassNode& pass,
+                                    RGTextureHandle handle,
+                                    RenderResourceAccess resourceAccess,
+                                    RGAccess declaredAccess,
+                                    std::string description,
+                                    bool historyRead = false);
+    RGBufferHandle addBufferUsage(RenderPassNode& pass,
+                                  RGBufferHandle handle,
+                                  RenderResourceAccess resourceAccess,
+                                  RGAccess declaredAccess,
+                                  std::string description);
     void refreshDebugResources();
     // extentOverride limits the renderArea to the sub-rect a scene-sized target
     // is actually written in; zero means the whole resource.
@@ -958,6 +995,24 @@ validateDeclarations(const std::vector<RenderPassNode>& passes,
 // Culled passes are skipped entirely -- they neither produce for nor constrain
 // anything, since they do not run.
 [[nodiscard]] std::vector<RenderGraphPassSchedule> computePassSchedule(const std::vector<RenderPassNode>& passes);
+
+// A dependency the proposed order breaks: `passIndex` is placed at or before
+// `predecessorIndex`, which it must follow.
+struct RenderGraphOrderViolation {
+    uint32_t passIndex = 0;
+    uint32_t predecessorIndex = 0;
+};
+
+// Checks a proposed execution order against the derived dependency graph. This
+// is the question versioned handles make answerable: the edges come from the
+// declared version chain rather than from where a pass happens to sit, so an
+// order that is not the recorded one can be judged, and rejected.
+//
+// `order` lists the pass indices to run, in the proposed order. A pass that is
+// scheduled but missing from `order` is reported against each predecessor it
+// would have followed, since dropping it is not an ordering the graph allows.
+[[nodiscard]] std::vector<RenderGraphOrderViolation>
+validatePassOrder(const std::vector<RenderGraphPassSchedule>& schedule, std::span<const uint32_t> order);
 
 // Longest chain of dependent passes in a schedule, in passes. The floor on how
 // many sequential steps the frame needs however it is reordered; 0 for an empty

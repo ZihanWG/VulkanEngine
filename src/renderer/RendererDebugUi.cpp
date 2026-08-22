@@ -1554,7 +1554,8 @@ void Renderer::drawRenderGraphDebugUi()
     ImGui::SetItemTooltip(
         "Checked every frame from the declarations alone: a pass reading a graph-owned resource nothing "
         "produced yet, a previous-frame read of a pool-bound resource, one resource declared twice by "
-        "the same pass, or a previous-frame read placed after this frame's producer.");
+        "the same pass, a previous-frame read placed after this frame's producer, or a read holding a "
+        "handle from before an intervening write.");
 
     const uint32_t longestChain = renderer::longestPassChain(schedule);
     uint32_t scheduledPasses = 0;
@@ -1564,9 +1565,9 @@ void Renderer::drawRenderGraphDebugUi()
     ImGui::Text("Longest dependency chain: %u of %u recorded passes", longestChain, scheduledPasses);
     ImGui::SetItemTooltip(
         "The declared data flow only forces this many sequential steps. The gap to the recorded count is "
-        "how much room a reordering would have; the Schedule column says where each pass could move. The "
-        "recorded order cannot be illegal here, because the declarations are written in the order the "
-        "passes run -- read the slack, not the legality.");
+        "how much room a reordering would have; the Schedule column says where each pass could move. "
+        "Edges come from the version each handle names, so validatePassOrder can judge an order other "
+        "than the recorded one -- and reject it.");
 
     // ScrollX makes the table a child window whose default height is "remaining
     // visible space" — near the bottom of a scrolled panel that collapses to a

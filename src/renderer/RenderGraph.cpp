@@ -144,44 +144,37 @@ RenderGraphBuilder::RenderGraphBuilder(RenderGraph& graph, RenderPassNode& pass)
 
 RGTextureHandle RenderGraphBuilder::readTexture(RGTextureHandle handle, RGAccess access, std::string description)
 {
-    graph_.addTextureUsage(pass_, handle, RenderResourceAccess::Read, access, std::move(description));
-    return handle;
+    return graph_.addTextureUsage(pass_, handle, RenderResourceAccess::Read, access, std::move(description));
 }
 
 RGTextureHandle RenderGraphBuilder::readHistoryTexture(RGTextureHandle handle, RGAccess access, std::string description)
 {
-    graph_.addTextureUsage(pass_, handle, RenderResourceAccess::Read, access, std::move(description), true);
-    return handle;
+    return graph_.addTextureUsage(pass_, handle, RenderResourceAccess::Read, access, std::move(description), true);
 }
 
 RGTextureHandle RenderGraphBuilder::writeTexture(RGTextureHandle handle, RGAccess access, std::string description)
 {
-    graph_.addTextureUsage(pass_, handle, RenderResourceAccess::Write, access, std::move(description));
-    return handle;
+    return graph_.addTextureUsage(pass_, handle, RenderResourceAccess::Write, access, std::move(description));
 }
 
 RGTextureHandle RenderGraphBuilder::readWriteTexture(RGTextureHandle handle, RGAccess access, std::string description)
 {
-    graph_.addTextureUsage(pass_, handle, RenderResourceAccess::ReadWrite, access, std::move(description));
-    return handle;
+    return graph_.addTextureUsage(pass_, handle, RenderResourceAccess::ReadWrite, access, std::move(description));
 }
 
 RGBufferHandle RenderGraphBuilder::readBuffer(RGBufferHandle handle, RGAccess access, std::string description)
 {
-    graph_.addBufferUsage(pass_, handle, RenderResourceAccess::Read, access, std::move(description));
-    return handle;
+    return graph_.addBufferUsage(pass_, handle, RenderResourceAccess::Read, access, std::move(description));
 }
 
 RGBufferHandle RenderGraphBuilder::writeBuffer(RGBufferHandle handle, RGAccess access, std::string description)
 {
-    graph_.addBufferUsage(pass_, handle, RenderResourceAccess::Write, access, std::move(description));
-    return handle;
+    return graph_.addBufferUsage(pass_, handle, RenderResourceAccess::Write, access, std::move(description));
 }
 
 RGBufferHandle RenderGraphBuilder::readWriteBuffer(RGBufferHandle handle, RGAccess access, std::string description)
 {
-    graph_.addBufferUsage(pass_, handle, RenderResourceAccess::ReadWrite, access, std::move(description));
-    return handle;
+    return graph_.addBufferUsage(pass_, handle, RenderResourceAccess::ReadWrite, access, std::move(description));
 }
 
 void RenderGraphBuilder::sideEffect(std::string reason)
@@ -540,13 +533,13 @@ void RenderGraph::createTransientFrameTextures()
         frame_.ssrSceneColorCopy = createTransientTexture(makeTransientDesc(frame_.resources.ssrSceneColorCopy),
                                                           frame_.resources.ssrSceneColorCopy);
     }
-    frame_.postProcessSceneColor = frame_.sceneColor;
+
     if (frame_.resources.taaEnabled && validImageResource(frame_.resources.taaHistoryRead) &&
         validImageResource(frame_.resources.taaHistoryWrite)) {
         frame_.taaHistoryRead = importTexture(frame_.resources.taaHistoryRead);
         frame_.taaHistoryWrite = importTexture(frame_.resources.taaHistoryWrite);
         if (frame_.taaHistoryWrite.valid()) {
-            frame_.postProcessSceneColor = frame_.taaHistoryWrite;
+            frame_.taaHistoryIsPostProcessSource = true;
         }
     }
     frame_.bloomExtract =
@@ -1786,6 +1779,11 @@ VkBuffer RenderGraph::buffer(RGBufferHandle handle) const
     return buffers_[handle.index].buffer;
 }
 
+RGTextureHandle RenderGraph::postProcessSource() const
+{
+    return frame_.taaHistoryIsPostProcessSource ? frame_.taaHistoryWrite : frame_.sceneColor;
+}
+
 void RenderGraph::requireFrameActive(const char* operation) const
 {
     if (!frameActive_) {
@@ -1832,9 +1830,10 @@ void RenderGraph::declareGeometryPasses()
             RenderPassExecutionType::Graphics,
             false,
             [this](RenderGraphBuilder& builder) {
-                builder.writeTexture(frame_.vsmPagePoolDepth,
-                                     RGAccess::DepthStencilAttachmentWrite,
-                                     "Draws this frame's dirty clipmap pages into the virtual shadow page pool.");
+                frame_.vsmPagePoolDepth =
+                    builder.writeTexture(frame_.vsmPagePoolDepth,
+                                         RGAccess::DepthStencilAttachmentWrite,
+                                         "Draws this frame's dirty clipmap pages into the virtual shadow page pool.");
             });
     }
 
@@ -1844,9 +1843,9 @@ void RenderGraph::declareGeometryPasses()
         RenderPassExecutionType::Graphics,
         false,
         [this](RenderGraphBuilder& builder) {
-            builder.writeTexture(frame_.shadowMapDepth,
-                                 RGAccess::DepthStencilAttachmentWrite,
-                                 "Writes cascaded shadow-map depth array layers.");
+            frame_.shadowMapDepth = builder.writeTexture(frame_.shadowMapDepth,
+                                                         RGAccess::DepthStencilAttachmentWrite,
+                                                         "Writes cascaded shadow-map depth array layers.");
         });
 
     // Only declared when a light actually got a tile. The atlas texture is
@@ -1859,9 +1858,10 @@ void RenderGraph::declareGeometryPasses()
             RenderPassExecutionType::Graphics,
             false,
             [this](RenderGraphBuilder& builder) {
-                builder.writeTexture(frame_.punctualShadowAtlasDepth,
-                                     RGAccess::DepthStencilAttachmentWrite,
-                                     "Writes per-slot spot-light depth tiles into the punctual shadow atlas.");
+                frame_.punctualShadowAtlasDepth =
+                    builder.writeTexture(frame_.punctualShadowAtlasDepth,
+                                         RGAccess::DepthStencilAttachmentWrite,
+                                         "Writes per-slot spot-light depth tiles into the punctual shadow atlas.");
             });
     }
 
@@ -1921,12 +1921,13 @@ void RenderGraph::declareGeometryPasses()
                                         RGAccess::ShaderRead,
                                         "Reads probe visibility to weight the previous bounce.");
                 }
-                builder.writeTexture(frame_.probeCaptureAtlas,
-                                     RGAccess::ColorAttachmentWrite,
-                                     "Writes radiance and distance for every face of this frame's probes.");
-                builder.writeTexture(frame_.probeCaptureDepth,
-                                     RGAccess::DepthStencilAttachmentWrite,
-                                     "Resolves which surface each capture texel sees.");
+                frame_.probeCaptureAtlas =
+                    builder.writeTexture(frame_.probeCaptureAtlas,
+                                         RGAccess::ColorAttachmentWrite,
+                                         "Writes radiance and distance for every face of this frame's probes.");
+                frame_.probeCaptureDepth = builder.writeTexture(frame_.probeCaptureDepth,
+                                                                RGAccess::DepthStencilAttachmentWrite,
+                                                                "Resolves which surface each capture texel sees.");
             });
     }
 
@@ -1949,12 +1950,14 @@ void RenderGraph::declareGeometryPasses()
                 // Read-write, not write: the border dispatch copies core texels
                 // the fill dispatch produced, and later phases blend new radiance
                 // against what the atlas already holds.
-                builder.readWriteTexture(frame_.probeIrradianceAtlas,
-                                         RGAccess::StorageImageReadWrite,
-                                         "Writes probe irradiance tiles and wraps their octahedral border.");
-                builder.readWriteTexture(frame_.probeDepthAtlas,
-                                         RGAccess::StorageImageReadWrite,
-                                         "Writes probe visibility tiles and wraps their octahedral border.");
+                frame_.probeIrradianceAtlas =
+                    builder.readWriteTexture(frame_.probeIrradianceAtlas,
+                                             RGAccess::StorageImageReadWrite,
+                                             "Writes probe irradiance tiles and wraps their octahedral border.");
+                frame_.probeDepthAtlas =
+                    builder.readWriteTexture(frame_.probeDepthAtlas,
+                                             RGAccess::StorageImageReadWrite,
+                                             "Writes probe visibility tiles and wraps their octahedral border.");
                 if (frame_.resources.probeCaptureEnabled && frame_.probeCaptureAtlas.valid()) {
                     // Moves the capture atlas out of the colour-attachment
                     // layout the pass above left it in and into the one the
@@ -1978,15 +1981,17 @@ void RenderGraph::declareGeometryPasses()
             builder.readHistoryTexture(frame_.depthPyramid,
                                        RGAccess::ShaderRead,
                                        "Optionally samples the previous-frame Hi-Z depth pyramid for occlusion tests.");
-            builder.writeBuffer(frame_.mainCullIndirectOutput,
-                                RGAccess::StorageBufferWrite,
-                                "Writes indirect draw commands for the main pass.");
-            builder.writeBuffer(frame_.mainCullVisibleCounts,
-                                RGAccess::StorageBufferReadWrite,
-                                "Clears and writes visible counts plus culling debug counters.");
-            builder.writeBuffer(frame_.mainCullReadback,
-                                RGAccess::TransferDst,
-                                "Receives copied culling counters for frame-latency CPU readback.");
+            frame_.mainCullIndirectOutput = builder.writeBuffer(frame_.mainCullIndirectOutput,
+                                                                RGAccess::StorageBufferWrite,
+                                                                "Writes indirect draw commands for the main pass.");
+            frame_.mainCullVisibleCounts =
+                builder.writeBuffer(frame_.mainCullVisibleCounts,
+                                    RGAccess::StorageBufferReadWrite,
+                                    "Clears and writes visible counts plus culling debug counters.");
+            frame_.mainCullReadback =
+                builder.writeBuffer(frame_.mainCullReadback,
+                                    RGAccess::TransferDst,
+                                    "Receives copied culling counters for frame-latency CPU readback.");
         });
 
     frame_.passIndices.mainHdr = addPass(
@@ -2038,18 +2043,19 @@ void RenderGraph::declareGeometryPasses()
                                            RGAccess::ShaderRead,
                                            "Samples the previous frame's ambient occlusion for the ambient term.");
             }
-            builder.writeTexture(frame_.sceneColor,
-                                 RGAccess::ColorAttachmentWrite,
-                                 "Writes linear HDR skybox and mesh lighting.");
-            builder.writeTexture(frame_.velocity,
-                                 RGAccess::ColorAttachmentWrite,
-                                 "Writes UV-space motion vectors for TAA history reprojection.");
-            builder.writeTexture(frame_.normalRoughness,
-                                 RGAccess::ColorAttachmentWrite,
-                                 "Writes the thin G-buffer (normal, roughness, metallic) for SSR.");
-            builder.writeTexture(frame_.mainDepth,
-                                 RGAccess::DepthStencilAttachmentWrite,
-                                 "Clears and writes the main depth attachment.");
+            frame_.sceneColor = builder.writeTexture(frame_.sceneColor,
+                                                     RGAccess::ColorAttachmentWrite,
+                                                     "Writes linear HDR skybox and mesh lighting.");
+            frame_.velocity = builder.writeTexture(frame_.velocity,
+                                                   RGAccess::ColorAttachmentWrite,
+                                                   "Writes UV-space motion vectors for TAA history reprojection.");
+            frame_.normalRoughness =
+                builder.writeTexture(frame_.normalRoughness,
+                                     RGAccess::ColorAttachmentWrite,
+                                     "Writes the thin G-buffer (normal, roughness, metallic) for SSR.");
+            frame_.mainDepth = builder.writeTexture(frame_.mainDepth,
+                                                    RGAccess::DepthStencilAttachmentWrite,
+                                                    "Clears and writes the main depth attachment.");
             builder.readBuffer(frame_.mainCullIndirectOutput,
                                RGAccess::IndirectRead,
                                "Reads CPU- or GPU-generated indirect draw commands.");
@@ -2068,9 +2074,10 @@ void RenderGraph::declareGeometryPasses()
                 builder.readTexture(frame_.mainDepth,
                                     RGAccess::ShaderRead,
                                     "Samples phase-1 main depth for the mid-frame Hi-Z rebuild.");
-                builder.writeTexture(frame_.depthPyramid,
-                                     RGAccess::StorageImageWrite,
-                                     "Rebuilds the Hi-Z pyramid so phase 2 can re-test occlusion candidates.");
+                frame_.depthPyramid =
+                    builder.writeTexture(frame_.depthPyramid,
+                                         RGAccess::StorageImageWrite,
+                                         "Rebuilds the Hi-Z pyramid so phase 2 can re-test occlusion candidates.");
             });
 
         frame_.passIndices.mainGpuCullingPhase2 = addPass(
@@ -2085,15 +2092,18 @@ void RenderGraph::declareGeometryPasses()
                 builder.readTexture(frame_.depthPyramid,
                                     RGAccess::ShaderRead,
                                     "Samples the mid-frame Hi-Z pyramid for the candidate re-test.");
-                builder.writeBuffer(frame_.mainCullIndirectOutput,
-                                    RGAccess::StorageBufferWrite,
-                                    "Writes indirect draw commands for rescued (disoccluded) draws.");
-                builder.writeBuffer(frame_.mainCullVisibleCounts,
-                                    RGAccess::StorageBufferReadWrite,
-                                    "Resets per-batch counts and appends the rescued stats counter.");
-                builder.writeBuffer(frame_.mainCullReadback,
-                                    RGAccess::TransferDst,
-                                    "Receives the combined two-phase culling counters for CPU readback.");
+                frame_.mainCullIndirectOutput =
+                    builder.writeBuffer(frame_.mainCullIndirectOutput,
+                                        RGAccess::StorageBufferWrite,
+                                        "Writes indirect draw commands for rescued (disoccluded) draws.");
+                frame_.mainCullVisibleCounts =
+                    builder.writeBuffer(frame_.mainCullVisibleCounts,
+                                        RGAccess::StorageBufferReadWrite,
+                                        "Resets per-batch counts and appends the rescued stats counter.");
+                frame_.mainCullReadback =
+                    builder.writeBuffer(frame_.mainCullReadback,
+                                        RGAccess::TransferDst,
+                                        "Receives the combined two-phase culling counters for CPU readback.");
             });
 
         frame_.passIndices.mainHdrPhase2 = addPass(
@@ -2113,18 +2123,19 @@ void RenderGraph::declareGeometryPasses()
                         RGAccess::ShaderRead,
                         "Samples ambient occlusion for the ambient term, as the main pass does.");
                 }
-                builder.writeTexture(frame_.sceneColor,
-                                     RGAccess::ColorAttachmentWrite,
-                                     "Draws rescued disoccluded objects into the existing HDR color.");
-                builder.writeTexture(frame_.velocity,
-                                     RGAccess::ColorAttachmentWrite,
-                                     "Appends motion vectors for the rescued draws.");
-                builder.writeTexture(frame_.normalRoughness,
-                                     RGAccess::ColorAttachmentWrite,
-                                     "Appends thin G-buffer data for the rescued draws.");
-                builder.writeTexture(frame_.mainDepth,
-                                     RGAccess::DepthStencilAttachmentWrite,
-                                     "Loads and extends phase-1 depth with the rescued draws.");
+                frame_.sceneColor =
+                    builder.writeTexture(frame_.sceneColor,
+                                         RGAccess::ColorAttachmentWrite,
+                                         "Draws rescued disoccluded objects into the existing HDR color.");
+                frame_.velocity = builder.writeTexture(frame_.velocity,
+                                                       RGAccess::ColorAttachmentWrite,
+                                                       "Appends motion vectors for the rescued draws.");
+                frame_.normalRoughness = builder.writeTexture(frame_.normalRoughness,
+                                                              RGAccess::ColorAttachmentWrite,
+                                                              "Appends thin G-buffer data for the rescued draws.");
+                frame_.mainDepth = builder.writeTexture(frame_.mainDepth,
+                                                        RGAccess::DepthStencilAttachmentWrite,
+                                                        "Loads and extends phase-1 depth with the rescued draws.");
                 builder.readBuffer(frame_.mainCullIndirectOutput,
                                    RGAccess::IndirectRead,
                                    "Reads the phase-2 compacted indirect draw commands.");
@@ -2144,9 +2155,9 @@ void RenderGraph::declareGeometryPasses()
                 builder.readTexture(frame_.sceneColor,
                                     RGAccess::TransferSrc,
                                     "Copies the lit opaque scene color as the SSR reflection source.");
-                builder.writeTexture(frame_.ssrSceneColorCopy,
-                                     RGAccess::TransferDst,
-                                     "Receives the scene-color copy the trace samples.");
+                frame_.ssrSceneColorCopy = builder.writeTexture(frame_.ssrSceneColorCopy,
+                                                                RGAccess::TransferDst,
+                                                                "Receives the scene-color copy the trace samples.");
             });
 
         frame_.passIndices.ssrTrace = addPass(
@@ -2170,10 +2181,11 @@ void RenderGraph::declareGeometryPasses()
                 // only for as long as nothing else writes scene colour in between.
                 // The transparent pass hit exactly this and the note in
                 // docs/transparency.md flagged this one as the same latent gap.
-                builder.readWriteTexture(frame_.sceneColor,
-                                        RGAccess::ColorAttachmentWrite,
-                                        "Blends the reflection correction into scene color; additive, and the "
-                                        "correction is signed, so it reads what the main pass already wrote.");
+                frame_.sceneColor =
+                    builder.readWriteTexture(frame_.sceneColor,
+                                             RGAccess::ColorAttachmentWrite,
+                                             "Blends the reflection correction into scene color; additive, and the "
+                                             "correction is signed, so it reads what the main pass already wrote.");
             });
     }
 
@@ -2190,9 +2202,9 @@ void RenderGraph::declareGeometryPasses()
                 builder.readTexture(frame_.normalRoughness,
                                     RGAccess::ShaderRead,
                                     "Reads the surface normal for GTAO slice integration.");
-                builder.writeTexture(frame_.ambientOcclusionRaw,
-                                     RGAccess::ColorAttachmentWrite,
-                                     "Writes the raw (pre-denoise) GTAO visibility term.");
+                frame_.ambientOcclusionRaw = builder.writeTexture(frame_.ambientOcclusionRaw,
+                                                                  RGAccess::ColorAttachmentWrite,
+                                                                  "Writes the raw (pre-denoise) GTAO visibility term.");
             });
 
         frame_.passIndices.gtaoBlur = addPass(
@@ -2207,9 +2219,10 @@ void RenderGraph::declareGeometryPasses()
                 builder.readTexture(frame_.mainDepth,
                                     RGAccess::ShaderRead,
                                     "Samples main depth for the bilateral blur's edge-stopping weights.");
-                builder.writeTexture(frame_.ambientOcclusion,
-                                     RGAccess::ColorAttachmentWrite,
-                                     "Writes the denoised GTAO visibility term the composite multiplies in.");
+                frame_.ambientOcclusion =
+                    builder.writeTexture(frame_.ambientOcclusion,
+                                         RGAccess::ColorAttachmentWrite,
+                                         "Writes the denoised GTAO visibility term the composite multiplies in.");
             });
     }
 
@@ -2253,17 +2266,21 @@ void RenderGraph::declareGeometryPasses()
                 // destination. Declaring it write-only makes the pass culler treat
                 // every earlier write to scene color -- the main pass, and SSR's
                 // additive blend -- as dead, and cull them.
-                builder.readWriteTexture(frame_.sceneColor,
-                                         RGAccess::ColorAttachmentWrite,
-                                         "Alpha-blends sorted transparent geometry over the lit opaque scene color.");
-                builder.readWriteTexture(frame_.velocity,
-                                         RGAccess::ColorAttachmentWrite,
-                                         "Overwrites motion vectors for blended pixels so TAA reprojects them "
-                                         "with their own motion; loaded, so opaque velocity survives.");
-                builder.readWriteTexture(frame_.normalRoughness,
-                                         RGAccess::ColorAttachmentWrite,
-                                         "Written because the shared fragment shader emits it; SSR and GTAO, its "
-                                         "only readers, already ran earlier this frame.");
+                frame_.sceneColor =
+                    builder.readWriteTexture(frame_.sceneColor,
+                                             RGAccess::ColorAttachmentWrite,
+                                             "Alpha-blends sorted transparent geometry over the lit opaque "
+                                             "scene color.");
+                frame_.velocity =
+                    builder.readWriteTexture(frame_.velocity,
+                                             RGAccess::ColorAttachmentWrite,
+                                             "Overwrites motion vectors for blended pixels so TAA reprojects them "
+                                             "with their own motion; loaded, so opaque velocity survives.");
+                frame_.normalRoughness =
+                    builder.readWriteTexture(frame_.normalRoughness,
+                                             RGAccess::ColorAttachmentWrite,
+                                             "Written because the shared fragment shader emits it; SSR and GTAO, its "
+                                             "only readers, already ran earlier this frame.");
             });
     }
 
@@ -2276,9 +2293,10 @@ void RenderGraph::declareGeometryPasses()
             builder.readTexture(frame_.mainDepth,
                                 RGAccess::ShaderRead,
                                 "Samples the completed normal-Z main depth buffer.");
-            builder.writeTexture(frame_.depthPyramid,
-                                 RGAccess::StorageImageWrite,
-                                 "Writes the max-depth Hi-Z pyramid for later-frame occlusion culling.");
+            frame_.depthPyramid =
+                builder.writeTexture(frame_.depthPyramid,
+                                     RGAccess::StorageImageWrite,
+                                     "Writes the max-depth Hi-Z pyramid for later-frame occlusion culling.");
         });
 }
 
@@ -2304,9 +2322,9 @@ void RenderGraph::declareBloomAndTaaPasses()
                                         RGAccess::ShaderRead,
                                         "Samples main depth for closest-depth velocity dilation.");
                 }
-                builder.writeTexture(frame_.taaHistoryWrite,
-                                     RGAccess::ColorAttachmentWrite,
-                                     "Writes the resolved HDR TAA history image.");
+                frame_.taaHistoryWrite = builder.writeTexture(frame_.taaHistoryWrite,
+                                                              RGAccess::ColorAttachmentWrite,
+                                                              "Writes the resolved HDR TAA history image.");
             });
     }
 
@@ -2316,12 +2334,12 @@ void RenderGraph::declareBloomAndTaaPasses()
         RenderPassExecutionType::Graphics,
         false,
         [this](RenderGraphBuilder& builder) {
-            builder.readTexture(frame_.postProcessSceneColor,
+            builder.readTexture(postProcessSource(),
                                 RGAccess::ShaderRead,
                                 "Samples the active HDR scene color target.");
-            builder.writeTexture(frame_.bloomExtract,
-                                 RGAccess::ColorAttachmentWrite,
-                                 "Writes bright pixels above the bloom threshold.");
+            frame_.bloomExtract = builder.writeTexture(frame_.bloomExtract,
+                                                       RGAccess::ColorAttachmentWrite,
+                                                       "Writes bright pixels above the bloom threshold.");
         });
 
     frame_.passIndices.bloomBlurHorizontal = addPass(
@@ -2331,9 +2349,9 @@ void RenderGraph::declareBloomAndTaaPasses()
         false,
         [this](RenderGraphBuilder& builder) {
             builder.readTexture(frame_.bloomExtract, RGAccess::ShaderRead, "Samples extracted bloom highlights.");
-            builder.writeTexture(frame_.bloomPing,
-                                 RGAccess::ColorAttachmentWrite,
-                                 "Writes the horizontal blur result.");
+            frame_.bloomPing = builder.writeTexture(frame_.bloomPing,
+                                                    RGAccess::ColorAttachmentWrite,
+                                                    "Writes the horizontal blur result.");
         });
 
     frame_.passIndices.bloomBlurVertical = addPass(
@@ -2343,29 +2361,32 @@ void RenderGraph::declareBloomAndTaaPasses()
         false,
         [this](RenderGraphBuilder& builder) {
             builder.readTexture(frame_.bloomPing, RGAccess::ShaderRead, "Samples the horizontal blur result.");
-            builder.writeTexture(frame_.bloomPong,
-                                 RGAccess::ColorAttachmentWrite,
-                                 "Writes the final vertical blur result.");
+            frame_.bloomPong = builder.writeTexture(frame_.bloomPong,
+                                                    RGAccess::ColorAttachmentWrite,
+                                                    "Writes the final vertical blur result.");
         });
 
     frame_.passIndices.bloomDownsampleChain.reserve(frame_.bloomDownsampleChain.size());
     for (uint32_t level = 0; level < frame_.bloomDownsampleChain.size(); ++level) {
         const RGTextureHandle source =
-            level == 0 ? frame_.postProcessSceneColor : frame_.bloomDownsampleChain[level - 1];
-        const RGTextureHandle output = frame_.bloomDownsampleChain[level];
+            level == 0 ? postProcessSource() : frame_.bloomDownsampleChain[level - 1];
         frame_.passIndices.bloomDownsampleChain.push_back(addPass(
             "BloomDownsampleMip" + std::to_string(level),
             RenderPassType::BloomDownsample,
             RenderPassExecutionType::Graphics,
             false,
-            [source, output, level](RenderGraphBuilder& builder) {
+            // Captures this and the level rather than the output handle: the
+            // write produces a new version, and the next level reads the chain
+            // entry, so the new handle has to land back in the vector.
+            [this, source, level](RenderGraphBuilder& builder) {
                 builder.readTexture(source,
                                     RGAccess::ShaderRead,
                                     level == 0 ? "Samples HDR scene color and extracts conservative bright bloom."
                                                : "Samples the previous bloom mip.");
-                builder.writeTexture(output,
-                                     RGAccess::ColorAttachmentWrite,
-                                     "Writes a downsampled bloom mip-chain level.");
+                frame_.bloomDownsampleChain[level] =
+                    builder.writeTexture(frame_.bloomDownsampleChain[level],
+                                         RGAccess::ColorAttachmentWrite,
+                                         "Writes a downsampled bloom mip-chain level.");
             }));
     }
 
@@ -2377,18 +2398,18 @@ void RenderGraph::declareBloomAndTaaPasses()
         const RGTextureHandle lowerMip =
             level + 1u == frame_.bloomDownsampleChain.size() - 1u ? frame_.bloomDownsampleChain[level + 1u]
                                                                   : frame_.bloomUpsampleChain[level + 1u];
-        const RGTextureHandle output = frame_.bloomUpsampleChain[level];
         frame_.passIndices.bloomUpsampleChain[level] = addPass(
             "BloomUpsampleMip" + std::to_string(level),
             RenderPassType::BloomUpsample,
             RenderPassExecutionType::Graphics,
             false,
-            [currentMip, lowerMip, output](RenderGraphBuilder& builder) {
+            [this, currentMip, lowerMip, level](RenderGraphBuilder& builder) {
                 builder.readTexture(currentMip, RGAccess::ShaderRead, "Samples this bloom mip's local highlights.");
                 builder.readTexture(lowerMip, RGAccess::ShaderRead, "Samples the accumulated lower-resolution bloom.");
-                builder.writeTexture(output,
-                                     RGAccess::ColorAttachmentWrite,
-                                     "Writes the progressively upsampled bloom chain.");
+                frame_.bloomUpsampleChain[level] =
+                    builder.writeTexture(frame_.bloomUpsampleChain[level],
+                                         RGAccess::ColorAttachmentWrite,
+                                         "Writes the progressively upsampled bloom chain.");
             });
     }
 }
@@ -2401,12 +2422,12 @@ void RenderGraph::declareExposureCompositePasses()
         RenderPassExecutionType::Compute,
         true,
         [this](RenderGraphBuilder& builder) {
-            builder.readTexture(frame_.postProcessSceneColor,
+            builder.readTexture(postProcessSource(),
                                 RGAccess::ShaderRead,
                                 "Samples active scene color for log-average luminance reduction.");
-            builder.writeBuffer(frame_.luminancePartials,
-                                RGAccess::StorageBufferWrite,
-                                "Writes per-workgroup luminance partials.");
+            frame_.luminancePartials = builder.writeBuffer(frame_.luminancePartials,
+                                                           RGAccess::StorageBufferWrite,
+                                                           "Writes per-workgroup luminance partials.");
         });
 
     frame_.passIndices.histogramExposure = addPass(
@@ -2415,18 +2436,19 @@ void RenderGraph::declareExposureCompositePasses()
         RenderPassExecutionType::Compute,
         true,
         [this](RenderGraphBuilder& builder) {
-            builder.readTexture(frame_.postProcessSceneColor,
+            builder.readTexture(postProcessSource(),
                                 RGAccess::ShaderRead,
                                 "Samples active scene color for log2 luminance histogram binning.");
-            builder.writeBuffer(frame_.luminanceHistogram,
-                                RGAccess::StorageBufferReadWrite,
-                                "Clears and writes 256 luminance histogram bins.");
+            frame_.luminanceHistogram = builder.writeBuffer(frame_.luminanceHistogram,
+                                                            RGAccess::StorageBufferReadWrite,
+                                                            "Clears and writes 256 luminance histogram bins.");
             builder.readBuffer(frame_.luminancePartials,
                                RGAccess::StorageBufferRead,
                                "Reads log-average luminance partials for GPU exposure fallback.");
-            builder.readWriteBuffer(frame_.exposureState,
-                                    RGAccess::StorageBufferReadWrite,
-                                    "Reads previous exposure and writes GPU exposure/luminance state.");
+            frame_.exposureState =
+                builder.readWriteBuffer(frame_.exposureState,
+                                        RGAccess::StorageBufferReadWrite,
+                                        "Reads previous exposure and writes GPU exposure/luminance state.");
         });
 
     frame_.passIndices.composite = addPass(
@@ -2435,7 +2457,7 @@ void RenderGraph::declareExposureCompositePasses()
         RenderPassExecutionType::Graphics,
         true,
         [this](RenderGraphBuilder& builder) {
-            builder.readTexture(frame_.postProcessSceneColor,
+            builder.readTexture(postProcessSource(),
                                 RGAccess::ShaderRead,
                                 "Samples the active HDR scene color target.");
             builder.readTexture(frame_.bloomPong, RGAccess::ShaderRead, "Samples the legacy blurred bloom texture.");
@@ -2460,9 +2482,9 @@ void RenderGraph::declareExposureCompositePasses()
             } else {
                 builder.readHistoryTexture(frame_.ambientOcclusion, RGAccess::ShaderRead, compositeAoDescription);
             }
-            builder.writeTexture(frame_.swapchainColor,
-                                 RGAccess::ColorAttachmentWrite,
-                                 "Writes the exposed and tone-mapped final color.");
+            frame_.swapchainColor = builder.writeTexture(frame_.swapchainColor,
+                                                         RGAccess::ColorAttachmentWrite,
+                                                         "Writes the exposed and tone-mapped final color.");
         });
 
     frame_.passIndices.imgui = addPass(
@@ -2471,9 +2493,10 @@ void RenderGraph::declareExposureCompositePasses()
         RenderPassExecutionType::Graphics,
         true,
         [this](RenderGraphBuilder& builder) {
-            builder.readWriteTexture(frame_.swapchainColor,
-                                     RGAccess::ColorAttachmentWrite,
-                                     "Loads the composited swapchain image and draws the debug overlay.");
+            frame_.swapchainColor =
+                builder.readWriteTexture(frame_.swapchainColor,
+                                         RGAccess::ColorAttachmentWrite,
+                                         "Loads the composited swapchain image and draws the debug overlay.");
         });
 }
 
@@ -2619,6 +2642,8 @@ const char* renderGraphDeclarationIssueName(RGDeclarationIssue issue)
         return "resource declared more than once";
     case RGDeclarationIssue::HistoryReadAfterProducer:
         return "history read placed after this frame's producer";
+    case RGDeclarationIssue::StaleVersionRead:
+        return "reads a version older than the one current here";
     }
 
     return "unknown declaration issue";
@@ -2635,6 +2660,8 @@ std::vector<RenderGraphDeclarationIssue> validateDeclarations(const std::vector<
     // consumers, production looks forward from the producers.
     std::vector<uint8_t> textureWritten(textures.size(), 0);
     std::vector<uint8_t> bufferWritten(buffers.size(), 0);
+    std::vector<uint32_t> textureVersion(textures.size(), 0);
+    std::vector<uint32_t> bufferVersion(buffers.size(), 0);
     std::vector<uint32_t> seenTextures;
     std::vector<uint32_t> seenBuffers;
 
@@ -2668,9 +2695,17 @@ std::vector<RenderGraphDeclarationIssue> validateDeclarations(const std::vector<
             const RGResourceValidationInfo& info =
                 isTexture ? textures[usage.resource.index] : buffers[usage.resource.index];
             const std::vector<uint8_t>& written = isTexture ? textureWritten : bufferWritten;
+            const std::vector<uint32_t>& current = isTexture ? textureVersion : bufferVersion;
 
             if (accessReads(usage.access)) {
                 const bool producedThisFrame = written[usage.resource.index] != 0;
+                // The version current at this point is what the last write left;
+                // a read naming an older one is holding a handle from before it.
+                // History reads are exempt: naming version 0 is the whole point,
+                // and HistoryReadAfterProducer already covers a stale one.
+                if (!usage.historyRead && usage.inputVersion < current[usage.resource.index]) {
+                    report(RGDeclarationIssue::StaleVersionRead, usage);
+                }
                 if (usage.historyRead && producedThisFrame) {
                     // The declaration claims the previous frame's contents but an
                     // earlier pass already overwrote them. Applies whoever owns
@@ -2699,8 +2734,10 @@ std::vector<RenderGraphDeclarationIssue> validateDeclarations(const std::vector<
             }
             if (usage.resource.kind == RGResourceKind::Texture && usage.resource.index < textureWritten.size()) {
                 textureWritten[usage.resource.index] = 1;
+                textureVersion[usage.resource.index] = usage.outputVersion;
             } else if (usage.resource.kind == RGResourceKind::Buffer && usage.resource.index < bufferWritten.size()) {
                 bufferWritten[usage.resource.index] = 1;
+                bufferVersion[usage.resource.index] = usage.outputVersion;
             }
         }
     }
@@ -2719,11 +2756,15 @@ std::vector<RenderGraphPassSchedule> computePassSchedule(const std::vector<Rende
     std::vector<uint32_t> bufferLastWriter;
     std::vector<std::vector<uint32_t>> textureReaders;
     std::vector<std::vector<uint32_t>> bufferReaders;
+    // producers[R][v - 1] is the pass that produced version v of resource R.
+    std::vector<std::vector<uint32_t>> textureProducers;
+    std::vector<std::vector<uint32_t>> bufferProducers;
 
-    const auto grow = [](auto& lastWriter, auto& readers, uint32_t index) {
+    const auto grow = [](auto& lastWriter, auto& readers, auto& producers, uint32_t index) {
         if (index >= lastWriter.size()) {
             lastWriter.resize(index + 1, kInvalidRenderGraphHandle);
             readers.resize(index + 1);
+            producers.resize(index + 1);
         }
     };
 
@@ -2752,12 +2793,21 @@ std::vector<RenderGraphPassSchedule> computePassSchedule(const std::vector<Rende
             const bool isTexture = usage.resource.kind == RGResourceKind::Texture;
             auto& lastWriter = isTexture ? textureLastWriter : bufferLastWriter;
             auto& readers = isTexture ? textureReaders : bufferReaders;
-            grow(lastWriter, readers, usage.resource.index);
+            auto& producers = isTexture ? textureProducers : bufferProducers;
+            grow(lastWriter, readers, producers, usage.resource.index);
 
-            // Read after write. A history read makes no such edge: it consumes
-            // the previous frame, not whatever this frame's producer will write.
-            if (accessReads(usage.access) && !usage.historyRead) {
-                addPredecessor(lastWriter[usage.resource.index]);
+            // Read after write, resolved through the version the handle names
+            // rather than through whichever write happens to be most recent: a
+            // reader holding an older handle depends on the pass that produced
+            // *that* version, which is what its declaration actually says.
+            //
+            // A history read makes no such edge at all -- it consumes the
+            // previous frame, not whatever this frame's producer will write.
+            if (accessReads(usage.access) && !usage.historyRead && usage.inputVersion > 0) {
+                const std::vector<uint32_t>& versionProducers = producers[usage.resource.index];
+                if (usage.inputVersion <= versionProducers.size()) {
+                    addPredecessor(versionProducers[usage.inputVersion - 1]);
+                }
             }
 
             if (accessWrites(usage.access)) {
@@ -2780,9 +2830,14 @@ std::vector<RenderGraphPassSchedule> computePassSchedule(const std::vector<Rende
             const bool isTexture = usage.resource.kind == RGResourceKind::Texture;
             auto& lastWriter = isTexture ? textureLastWriter : bufferLastWriter;
             auto& readers = isTexture ? textureReaders : bufferReaders;
-            grow(lastWriter, readers, usage.resource.index);
+            auto& producers = isTexture ? textureProducers : bufferProducers;
+            grow(lastWriter, readers, producers, usage.resource.index);
             lastWriter[usage.resource.index] = passIndex;
             readers[usage.resource.index].clear();
+            if (usage.outputVersion > 0) {
+                producers[usage.resource.index].resize(usage.outputVersion, kInvalidRenderGraphHandle);
+                producers[usage.resource.index][usage.outputVersion - 1] = passIndex;
+            }
         }
         for (const RenderResourceUsage& usage : pass.resourceUsages) {
             if (!accessReads(usage.access)) {
@@ -2791,7 +2846,8 @@ std::vector<RenderGraphPassSchedule> computePassSchedule(const std::vector<Rende
             const bool isTexture = usage.resource.kind == RGResourceKind::Texture;
             auto& lastWriter = isTexture ? textureLastWriter : bufferLastWriter;
             auto& readers = isTexture ? textureReaders : bufferReaders;
-            grow(lastWriter, readers, usage.resource.index);
+            auto& producers = isTexture ? textureProducers : bufferProducers;
+            grow(lastWriter, readers, producers, usage.resource.index);
             readers[usage.resource.index].push_back(passIndex);
         }
 
@@ -2806,6 +2862,41 @@ std::vector<RenderGraphPassSchedule> computePassSchedule(const std::vector<Rende
     }
 
     return schedule;
+}
+
+std::vector<RenderGraphOrderViolation> validatePassOrder(const std::vector<RenderGraphPassSchedule>& schedule,
+                                                         std::span<const uint32_t> order)
+{
+    std::vector<RenderGraphOrderViolation> violations;
+
+    // Position of each pass in the proposed order, or absent.
+    constexpr size_t kAbsent = std::numeric_limits<size_t>::max();
+    std::vector<size_t> position(schedule.size(), kAbsent);
+    for (size_t slot = 0; slot < order.size(); ++slot) {
+        if (order[slot] < position.size()) {
+            position[order[slot]] = slot;
+        }
+    }
+
+    for (uint32_t passIndex = 0; passIndex < schedule.size(); ++passIndex) {
+        const RenderGraphPassSchedule& entry = schedule[passIndex];
+        if (!entry.scheduled) {
+            continue;
+        }
+
+        for (const uint32_t predecessor : entry.predecessors) {
+            const size_t passSlot = position[passIndex];
+            const size_t predecessorSlot = predecessor < position.size() ? position[predecessor] : kAbsent;
+            // Absent counts as broken on either side: a pass the graph schedules
+            // cannot be dropped from an order, and a predecessor that is not run
+            // cannot be waited on.
+            if (passSlot == kAbsent || predecessorSlot == kAbsent || predecessorSlot >= passSlot) {
+                violations.push_back(RenderGraphOrderViolation{passIndex, predecessor});
+            }
+        }
+    }
+
+    return violations;
 }
 
 uint32_t longestPassChain(const std::vector<RenderGraphPassSchedule>& schedule)
@@ -3252,16 +3343,22 @@ RenderResourceHandle RenderGraph::bufferResourceHandle(RGBufferHandle handle) co
     return RenderResourceHandle{buffers_[handle.index].desc.name, RGResourceKind::Buffer, handle.index};
 }
 
-void RenderGraph::addTextureUsage(RenderPassNode& pass,
-                                  RGTextureHandle handle,
-                                  RenderResourceAccess resourceAccess,
-                                  RGAccess declaredAccess,
-                                  std::string description,
-                                  bool historyRead)
+RGTextureHandle RenderGraph::addTextureUsage(RenderPassNode& pass,
+                                             RGTextureHandle handle,
+                                             RenderResourceAccess resourceAccess,
+                                             RGAccess declaredAccess,
+                                             std::string description,
+                                             bool historyRead)
 {
     if (!handle.valid() || handle.index >= textures_.size()) {
-        return;
+        return handle;
     }
+
+    TextureResource& resource = textures_[handle.index];
+    const uint32_t inputVersion = handle.version;
+    // A write produces the next version and the caller is handed a handle for
+    // it; a plain read leaves the resource where it was.
+    const uint32_t outputVersion = accessWrites(resourceAccess) ? ++resource.currentVersion : inputVersion;
 
     pass.resourceUsages.push_back(RenderResourceUsage{
         textureResourceHandle(handle),
@@ -3269,18 +3366,26 @@ void RenderGraph::addTextureUsage(RenderPassNode& pass,
         declaredAccess,
         std::move(description),
         historyRead,
+        inputVersion,
+        outputVersion,
     });
+
+    return RGTextureHandle{handle.index, outputVersion};
 }
 
-void RenderGraph::addBufferUsage(RenderPassNode& pass,
-                                 RGBufferHandle handle,
-                                 RenderResourceAccess resourceAccess,
-                                 RGAccess declaredAccess,
-                                 std::string description)
+RGBufferHandle RenderGraph::addBufferUsage(RenderPassNode& pass,
+                                           RGBufferHandle handle,
+                                           RenderResourceAccess resourceAccess,
+                                           RGAccess declaredAccess,
+                                           std::string description)
 {
     if (!handle.valid() || handle.index >= buffers_.size()) {
-        return;
+        return handle;
     }
+
+    BufferResource& resource = buffers_[handle.index];
+    const uint32_t inputVersion = handle.version;
+    const uint32_t outputVersion = accessWrites(resourceAccess) ? ++resource.currentVersion : inputVersion;
 
     pass.resourceUsages.push_back(RenderResourceUsage{
         bufferResourceHandle(handle),
@@ -3290,7 +3395,11 @@ void RenderGraph::addBufferUsage(RenderPassNode& pass,
         // No buffer is graph-managed today, so a history read of one has nothing
         // to say; the field exists to keep the usage type uniform.
         false,
+        inputVersion,
+        outputVersion,
     });
+
+    return RGBufferHandle{handle.index, outputVersion};
 }
 
 std::vector<RenderGraph::TransientTextureRecord> RenderGraph::transientTextures() const

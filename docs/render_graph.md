@@ -16,6 +16,47 @@ Phase 4 upgraded the earlier manual pass list into a small engine-style render g
 
 The graph keeps the existing `begin*Pass` / `end*Pass` entry points so profiler scopes, debug labels, and command recording stay at the existing call sites.
 
+## Resource Versions
+
+A handle names a resource **and which of its versions**. Every declared write
+produces a new version and the builder hands back a handle for it, so a
+declaration threads the result forward:
+
+```cpp
+frame_.sceneColor = builder.writeTexture(frame_.sceneColor, RGAccess::ColorAttachmentWrite, "...");
+```
+
+Barriers and resource lookup ignore the version -- every version of a resource
+is the same `VkImage`. What it buys is that a reader names the version it
+consumes, so the declared data flow no longer depends on where a pass happens to
+sit in the file. That is what lets `validatePassOrder` judge an order other than
+the recorded one, and it makes holding a handle from before an intervening write
+a detectable mistake (`StaleVersionRead`) instead of an invisible one.
+
+This frame's version counts, at 1280x720 with the default settings: `SceneColor`
+reaches 4 (main, phase 2, SSR trace, transparent), `VelocityBuffer` and
+`NormalRoughnessGBuffer` 3, `SwapchainColor`, `MainDepth` and `DepthPyramidHiZ` 2.
+
+### What versioning found
+
+The post-process source was snapshotted into `FrameState` *before any pass had
+declared anything*, and five passes read it: bloom extract, the first mip-chain
+downsample, luminance, histogram exposure, and composite. With versions turned
+on, all five report `StaleVersionRead` -- they name version 0 of a target that
+four writes later is at version 4.
+
+The consequence is not cosmetic. With those stale handles the derived dependency
+graph puts the entire post-process chain at a longest chain of **9** instead of
+**17**, because it believes bloom, luminance and composite depend on the scene
+colour *before the main pass wrote it*. A scheduler acting on that graph would
+hoist the whole post-process chain above the main pass.
+
+The fix is to resolve the source at the point of use rather than snapshot it:
+`RenderGraph::postProcessSource()` returns the TAA resolve target or the scene
+colour, reading whichever member currently holds the latest version. Both the
+defect and the fix were checked on a real frame: restoring the snapshot behaviour
+reports the five findings and drops the chain to 9; the fix reports none.
+
 ## Resource Handles
 
 Textures and buffers are referenced by frame-local handles:
@@ -191,6 +232,7 @@ wrong without looking at a device:
 | `HistoryReadOfAliasedResource` | A previous-frame read of a pool-bound resource. Aliasing hands those bytes to another resource and the handoff barrier discards the contents, so there is no previous frame left to read. |
 | `ResourceDeclaredTwice` | One pass declares the same resource more than once. Usually a copy-paste slip, and it costs a barrier submission, since two barriers for one resource cannot share a dependency info. |
 | `HistoryReadAfterProducer` | A previous-frame read placed after a pass that writes the resource this frame. The declaration says "last frame" and the schedule hands it this frame's data. Unlike the two rules above, this one applies to imported resources too: what is wrong is the ordering, not who owns the memory. |
+| `StaleVersionRead` | A read naming an older version than the one current at that point: the handle was taken before an intervening write and never refreshed. Every version is the same image, so the pixels are right; what is wrong is that the declared data flow points at the wrong producer. |
 
 Imported resources are exempt from the first two: their contents persist by
 contract, which is what importing them means.
@@ -244,19 +286,31 @@ history read makes no read-after-write edge -- it consumes the previous frame,
 not this frame's producer -- which is the one place that distinction changes the
 graph rather than only the diagnostics.
 
-### Read the slack, not the legality
+### Judging an order
 
-**The recorded order cannot fail this check, and that is not a bug in the
-check.** A pass's declarations are written in the order the passes run, so every
-derived edge points backwards by construction. Turning "is this order legal?"
-into a question that can answer no requires stating the data flow independently
-of the order, which means handle-threaded resource versions in the builder API:
-`auto lit = builder.write(sceneColor)` with later passes reading `lit` by name.
-Until that lands, treat this as the dependency data a scheduler would consume,
-and read the slack.
+Read-after-write edges resolve through the version a handle names, not through
+whichever write happens to be most recent, so the edge set is a property of the
+declarations rather than of where a pass sits. `validatePassOrder` takes a
+proposed execution order and reports the edges it breaks -- and it does reject
+orders, which is the point of the versioning work.
 
-What the slack says is how tightly the declared data flow actually pins the
-frame down. Measured on the default scene at 1280x720:
+Checked on a real frame at 1280x720:
+
+| Proposed order | Violations |
+| --- | --- |
+| the recorded order | 0 |
+| exposure pair hoisted 13 slots, to just after `TransparentPass` | **0** |
+| the same hoist one step further, above `TransparentPass` | **2** |
+
+So moving `LuminancePass` and `HistogramExposurePass` out from behind the bloom
+chain is provably legal, and moving them one step too far is provably not. The
+recording order itself has not changed; what exists now is the means to check a
+change before making it.
+
+### Slack
+
+How tightly the declared data flow pins the frame down. Measured on the default
+scene at 1280x720:
 
 | | |
 | --- | --- |
@@ -319,6 +373,7 @@ The ImGui Render Graph panel shows:
 - declaration issues found for the pass, and a frame-level count above the table
 - each pass's derived predecessor count, earliest legal slot, and slack, with the
   predecessor names in a tooltip, plus the frame's longest dependency chain
+- resource versions are not shown; they are visible through the pass declarations
 - resource name, kind, lifetime, extent/size, format, mip/layer count, initial layout, and final layout
 
 ## Transient Memory Aliasing
@@ -438,7 +493,8 @@ the default.
 - There is no node-editor view yet.
 - Declaration validation does not model cross-frame liveness; see "What it does
   not check".
-- The derived dependency graph is descriptive only. Pass order is still the order
-  `buildFrameGraphDeclarations` writes it in, and the order-legality question
-  cannot fail until the builder threads resource versions; see "Read the slack,
-  not the legality".
+- Nothing acts on the derived dependency graph yet. Pass order is still the order
+  `buildFrameGraphDeclarations` writes it in; `validatePassOrder` can check a
+  proposed reordering, but no reordering is performed.
+- Versions are per frame and per resource, not per subresource, so a pass writing
+  one mip of an image advances the version of the whole image.
