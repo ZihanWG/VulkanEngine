@@ -26,7 +26,56 @@ constexpr ScenePresetName kScenePresetNames[] = {
     {"cornell", ScenePreset::CornellBox},
 };
 
+// Same one-table rule as the scene presets, for the same reason.
+struct VsmModeName {
+    std::string_view name;
+    VsmMode mode;
+};
+
+constexpr VsmModeName kVsmModeNames[] = {
+    {"off", VsmMode::Off},
+    {"mark", VsmMode::Mark},
+    {"render", VsmMode::Render},
+    {"shadows", VsmMode::Shadows},
+};
+
+// Shared by both --scene and --vsm so an unknown value reports what it could
+// have been instead of only what it was.
+template <typename Table>
+std::string knownNames(const Table& table)
+{
+    std::string known;
+    for (const auto& entry : table) {
+        if (!known.empty()) {
+            known += ", ";
+        }
+        known += entry.name;
+    }
+    return known;
+}
+
 } // namespace
+
+bool parseVsmMode(std::string_view name, VsmMode& mode)
+{
+    for (const VsmModeName& entry : kVsmModeNames) {
+        if (entry.name == name) {
+            mode = entry.mode;
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string_view vsmModeName(VsmMode mode)
+{
+    for (const VsmModeName& entry : kVsmModeNames) {
+        if (entry.mode == mode) {
+            return entry.name;
+        }
+    }
+    return "off";
+}
 
 bool parseScenePreset(std::string_view name, ScenePreset& preset)
 {
@@ -76,16 +125,25 @@ bool parseLaunchOptions(int argc, char** argv, LaunchOptions& options)
             }
             const std::string_view value(argv[++index]);
             if (!parseScenePreset(value, options.scene)) {
-                std::string known;
-                for (const ScenePresetName& entry : kScenePresetNames) {
-                    if (!known.empty()) {
-                        known += ", ";
-                    }
-                    known += entry.name;
-                }
-                Logger::error("--scene expects one of: " + known + "; got: " + std::string(value));
+                Logger::error("--scene expects one of: " + knownNames(kScenePresetNames) +
+                              "; got: " + std::string(value));
                 return false;
             }
+            continue;
+        }
+
+        if (argument == "--vsm") {
+            if (index + 1 >= argc) {
+                Logger::error("--vsm requires a stage name.");
+                return false;
+            }
+            const std::string_view value(argv[++index]);
+            VsmMode mode = VsmMode::Off;
+            if (!parseVsmMode(value, mode)) {
+                Logger::error("--vsm expects one of: " + knownNames(kVsmModeNames) + "; got: " + std::string(value));
+                return false;
+            }
+            options.vsm = mode;
             continue;
         }
 

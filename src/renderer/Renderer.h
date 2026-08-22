@@ -65,6 +65,7 @@
 #include <glm/vec3.hpp>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -76,9 +77,29 @@ namespace ve {
 
 class Window;
 
+// Decisions the constructor has to make before it allocates anything, so they
+// cannot arrive through a setter afterwards.
+//
+// The persisted settings file is the normal source for all of these; this
+// overrides it for one run without writing to it, which is what makes a
+// scripted A/B possible without clobbering whatever the person at the keyboard
+// had configured.
+struct RendererStartupOverrides {
+    // VSM's three nested stages, set together or not at all. Marking gates the
+    // 64 MiB page pool allocated during construction (see the comment at that
+    // allocation), so no post-construction toggle can reach it.
+    struct VsmStages {
+        bool marking = false;
+        bool pageRendering = false;
+        bool shadows = false;
+    };
+
+    std::optional<VsmStages> vsmStages;
+};
+
 class Renderer final {
 public:
-    explicit Renderer(Window& window);
+    explicit Renderer(Window& window, const RendererStartupOverrides& overrides = {});
     ~Renderer();
 
     Renderer(const Renderer&) = delete;

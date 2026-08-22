@@ -11,6 +11,7 @@
 // because SDL3.dll does not sit next to the test binary.
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -37,6 +38,35 @@ enum class ScenePreset {
 
 // The spelling accepted on the command line, for error messages and tests.
 [[nodiscard]] std::string_view scenePresetName(ScenePreset preset);
+
+// Which VSM stages a run turns on, overriding whatever config/runtime_settings.json
+// persisted.
+//
+// The stages are nested rather than independent -- rendering pages without
+// marking them, or sampling a pool nothing filled, are not configurations -- so
+// one cumulative mode names all three booleans and cannot spell an impossible
+// combination. Off is a real value, not the absence of the flag: `--vsm off`
+// pins the cascade baseline even when the persisted file asks for VSM, which is
+// exactly what the A/B control needs.
+//
+// enableMarking gates a 64 MiB page pool allocated during renderer construction,
+// so it can only be decided before the renderer exists. That is why this arrives
+// on the command line at all: the ImGui checkbox cannot reach it, and editing
+// the git-ignored settings file to run an A/B overwrites whatever the person at
+// the keyboard had configured.
+enum class VsmMode {
+    Off,
+    Mark,
+    Render,
+    Shadows,
+};
+
+// Parses a --vsm value. Returns false for an unknown name rather than silently
+// picking a stage, which would report on a configuration nobody asked for.
+[[nodiscard]] bool parseVsmMode(std::string_view name, VsmMode& mode);
+
+// The spelling accepted on the command line, for error messages and tests.
+[[nodiscard]] std::string_view vsmModeName(VsmMode mode);
 
 struct LaunchOptions {
     std::string title = "VulkanEngine";
@@ -73,6 +103,10 @@ struct LaunchOptions {
 
     // Startup scene. Default keeps whatever createScene() builds on its own.
     ScenePreset scene = ScenePreset::Default;
+
+    // Unset leaves the persisted VSM settings untouched, which is what a normal
+    // desktop run wants. Any value overrides all three stage toggles.
+    std::optional<VsmMode> vsm;
 };
 
 // Parses the recognized flags and leaves defaults in place otherwise. Returns

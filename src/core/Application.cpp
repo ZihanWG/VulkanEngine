@@ -52,8 +52,23 @@ void Application::initialize()
 
     window_ = std::make_unique<Window>(config_.title, config_.width, config_.height);
 
+    // Built before the renderer, not applied to it afterwards: the VSM page pool
+    // is allocated inside the constructor and gated on the marking stage, so the
+    // decision has to be in hand by then.
+    RendererStartupOverrides overrides{};
+    if (config_.vsm.has_value()) {
+        // The stages are cumulative, which is what makes one mode name safe to
+        // expand into three booleans here.
+        const VsmMode mode = *config_.vsm;
+        overrides.vsmStages = RendererStartupOverrides::VsmStages{
+            .marking = mode != VsmMode::Off,
+            .pageRendering = mode == VsmMode::Render || mode == VsmMode::Shadows,
+            .shadows = mode == VsmMode::Shadows,
+        };
+    }
+
     const auto rendererInitStart = std::chrono::steady_clock::now();
-    renderer_ = std::make_unique<Renderer>(*window_);
+    renderer_ = std::make_unique<Renderer>(*window_, overrides);
     rendererInitMs_ =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - rendererInitStart).count();
 

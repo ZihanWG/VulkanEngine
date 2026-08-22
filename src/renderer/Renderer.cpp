@@ -142,11 +142,25 @@ size_t Renderer::DebugHistory::copyChronological(std::array<float, kDebugHistory
     return sampleCount;
 }
 
-Renderer::Renderer(Window& window) : window_(window)
+Renderer::Renderer(Window& window, const RendererStartupOverrides& overrides) : window_(window)
 {
     runtimeSettingsPath_ = defaultRuntimeSettingsPath();
     sceneDocumentPath_ = defaultSceneDocumentPath();
     loadRuntimeSettingsAtStartup();
+
+    // After the file, before anything reads the settings: an override exists to
+    // beat what was persisted. Only the three stage toggles are overridden --
+    // the clipmap numerics keep whatever the file configured, so an A/B changes
+    // one thing.
+    if (overrides.vsmStages.has_value()) {
+        vsmSettings_.enableMarking = overrides.vsmStages->marking;
+        vsmSettings_.enablePageRendering = overrides.vsmStages->pageRendering;
+        vsmSettings_.enableShadows = overrides.vsmStages->shadows;
+        Logger::info(std::string("VSM stages overridden from the command line: marking=") +
+                     (vsmSettings_.enableMarking ? "on" : "off") +
+                     " pageRendering=" + (vsmSettings_.enablePageRendering ? "on" : "off") +
+                     " shadows=" + (vsmSettings_.enableShadows ? "on" : "off"));
+    }
 
     context_.initialize(window_, shaderDirectory());
 

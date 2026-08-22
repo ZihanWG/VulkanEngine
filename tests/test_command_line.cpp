@@ -194,3 +194,81 @@ TEST_CASE("Scene selection composes with the measurement flags", "[command-line]
     REQUIRE(config.deterministic);
     REQUIRE(config.exitAfterFrames == 120);
 }
+
+// The VSM stage flag exists for the same reason --scene does: the three toggles
+// live in a git-ignored settings file and behind ImGui checkboxes, and the first
+// of them is startup-only, so an A/B could not be scripted without either
+// overwriting the user's settings or driving the UI by hand.
+
+TEST_CASE("VSM stages are unset unless asked for", "[command-line][vsm]")
+{
+    LaunchOptions config{};
+    REQUIRE(parse({}, config));
+
+    // Unset, not "off": absence must leave the persisted settings alone, while
+    // --vsm off deliberately overrides them.
+    REQUIRE_FALSE(config.vsm.has_value());
+}
+
+TEST_CASE("Every VSM stage name parses", "[command-line][vsm]")
+{
+    struct TestCase {
+        const char* name;
+        ve::VsmMode mode;
+    };
+
+    const TestCase cases[] = {
+        {"off", ve::VsmMode::Off},
+        {"mark", ve::VsmMode::Mark},
+        {"render", ve::VsmMode::Render},
+        {"shadows", ve::VsmMode::Shadows},
+    };
+
+    for (const TestCase& testCase : cases) {
+        LaunchOptions config{};
+        REQUIRE(parse({"--vsm", testCase.name}, config));
+        REQUIRE(config.vsm.has_value());
+        REQUIRE(*config.vsm == testCase.mode);
+
+        // Round trip, so a log line or an error message cannot name a different
+        // stage than the one the run is in.
+        REQUIRE(ve::vsmModeName(testCase.mode) == testCase.name);
+    }
+}
+
+TEST_CASE("An unknown VSM stage name is rejected", "[command-line][vsm]")
+{
+    LaunchOptions config{};
+    REQUIRE_FALSE(parse({"--vsm", "shadow"}, config));
+
+    // Rejected outright rather than falling back to a stage nobody asked for: a
+    // silent fallback would report VSM numbers for a cascade run.
+    REQUIRE_FALSE(config.vsm.has_value());
+}
+
+TEST_CASE("A VSM flag with no value is rejected", "[command-line][vsm]")
+{
+    LaunchOptions config{};
+    REQUIRE_FALSE(parse({"--vsm"}, config));
+}
+
+TEST_CASE("The VSM A/B command line parses as a whole", "[command-line][vsm]")
+{
+    // Exactly what the A/B script runs, both halves of it.
+    LaunchOptions config{};
+    REQUIRE(parse({"--deterministic",
+                   "--vsm",
+                   "shadows",
+                   "--exit-after-frames",
+                   "90",
+                   "--capture-frame",
+                   "60",
+                   "--capture-output",
+                   "/tmp/vsm.png"},
+                  config));
+    REQUIRE(config.deterministic);
+    REQUIRE(config.vsm.has_value());
+    REQUIRE(*config.vsm == ve::VsmMode::Shadows);
+    REQUIRE(config.captureFrame == 60);
+    REQUIRE(config.captureOutput == "/tmp/vsm.png");
+}
