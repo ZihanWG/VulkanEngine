@@ -648,6 +648,25 @@ path, this graph's barriers are already documented as conservative, and the cost
 is a measurement question. Tightening it is measurement-driven, not a correctness
 fix.
 
+#### lavapipe cannot answer this; do not re-run it there
+
+Measured and rejected as a method. An interleaved A/B of
+`renderer.enableTransientAliasing` on Mesa's lavapipe passed its own control-drift
+gate (0.54%, limit 1%) and still produced nothing usable: every pass moved the
+same direction, including `ClusterBuild` at -17%, `LightCull` at -17%,
+`MainGpuCullingPass` at -13% and `CSMShadowPass` at -6% -- passes whose buffers
+aliasing does not touch. A frame total 2.6% *faster* with aliasing on also
+contradicts the +1.2% measured on real hardware.
+
+The reason is structural rather than statistical, so more samples will not fix
+it. On a software rasterizer a pipeline barrier is a scheduler sync point, not a
+cache flush and pipeline drain, so the cost this section is asking about does not
+exist on that driver. What the numbers most likely reflect is the ~6 MiB smaller
+resident set changing CPU cache pressure for the whole frame -- an effect of the
+rasterizer, not of the barrier.
+
+Answering it needs the hardware the +1.2% was measured on.
+
 ### Why it is off by default, and a known wart
 
 The plan needs resource lifetimes, which only exist once a frame has been
