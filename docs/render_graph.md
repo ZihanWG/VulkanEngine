@@ -532,6 +532,35 @@ bit-identical to the pre-change capture -- 0 differing pixels, max channel delta
 0 -- which is the point: the passes that went away were producing something
 nothing read.
 
+#### What the removed passes cost, on lavapipe
+
+Not a frame-time claim for real hardware, and not quotable as one. What it
+establishes is that the removed work was not a rounding error. Measured with two
+Release builds, the change reverted and restored, four interleaved 60-second
+runs:
+
+| Removed pass | Median, before |
+| --- | --- |
+| `BloomBlurVertical` | 4.215 ms |
+| `BloomBlurHorizontal` | 4.153 ms |
+| `BloomExtractPass` | 1.620 ms |
+
+These are top-level scopes, not nested inside another, and after the change they
+do not appear in the log at all -- 46 occurrences of `BloomExtractPass` in a
+before run, zero in an after run. The mip chain is unchanged across the two
+builds (6.835 -> 7.215 and 5.602 -> 5.709), which is what confirms the builds
+differ only in the legacy chain.
+
+The frame-total comparison from the same series is **void** and is deliberately
+not quoted: the repeated controls drifted 1.3% and 2.3% against a 1% limit, which
+is the same order as the effect. The pass rows above stand on their own because
+they are not a difference between two numbers -- the scopes simply stop existing.
+
+A software rasterizer pays for a fullscreen pass in CPU fill, where a GPU pays in
+bandwidth, so neither the absolute milliseconds nor their share of the frame
+transfers. Three fullscreen passes at bloom resolution, removed, is the part that
+does.
+
 This is also the first thing culling has actually removed. Until now every
 declared pass was live, and the sweep functioned as a check that the declarations
 and the recording agreed rather than as an optimization.
