@@ -459,10 +459,6 @@ struct RenderGraphFrameResources {
     // runs on frames with nothing to capture -- the cold-start seed, and the
     // debug-pattern path.
     bool probeCaptureEnabled = false;
-    // Appended rather than grouped with the other pass flags on purpose: this
-    // struct is filled by positional aggregate initialization, so inserting a
-    // field in the middle silently shifts every value after it.
-    //
     // Whether any cascade will be redrawn this frame. False skips declaring the
     // cascaded shadow pass, but the shadow map is still imported and still read
     // by the main pass -- the same asymmetry the punctual atlas uses. A fully
