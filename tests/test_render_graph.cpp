@@ -41,6 +41,13 @@ RenderResourceUsage buffer(uint32_t index, RenderResourceAccess access)
     return usage;
 }
 
+RenderResourceUsage historyTexture(uint32_t index)
+{
+    RenderResourceUsage usage = texture(index, RenderResourceAccess::Read);
+    usage.historyRead = true;
+    return usage;
+}
+
 RenderPassNode pass(std::string name, std::vector<RenderResourceUsage> usages, bool sideEffect = false)
 {
     RenderPassNode node{};
@@ -519,6 +526,199 @@ TEST_CASE("An UNDEFINED old layout orders against nothing", "[rendergraph][barri
                                        RGAccess::ColorAttachmentWrite,
                                        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                                        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT));
+}
+
+// ---------------------------------------------------------------------------
+// Declaration validation. The declarations are the graph's description of what
+// each pass touches; until something checks them, a pass can read a transient
+// nothing produced and the only symptom is wrong pixels -- no validation error,
+// no crash. These are the three ways a declaration set can be wrong that are
+// decidable without a device.
+
+namespace {
+
+using ve::renderer::RGDeclarationIssue;
+using ve::renderer::RGResourceValidationInfo;
+using ve::renderer::validateDeclarations;
+
+constexpr RGResourceValidationInfo kImported{false, false};
+constexpr RGResourceValidationInfo kTransient{true, false};
+constexpr RGResourceValidationInfo kAliasedTransient{true, true};
+
+} // namespace
+
+TEST_CASE("Reading a transient nothing produced is reported", "[rendergraph][declarations]")
+{
+    std::vector<RenderPassNode> passes{pass("Consumer", {texture(0, RenderResourceAccess::Read)}, true)};
+    const std::vector<RGResourceValidationInfo> textures{kTransient};
+
+    const auto issues = validateDeclarations(passes, textures, {});
+
+    REQUIRE(issues.size() == 1);
+    CHECK(issues[0].passIndex == 0);
+    CHECK(issues[0].issue == RGDeclarationIssue::ReadsContentNoPassProduced);
+    CHECK(issues[0].resourceIndex == 0);
+}
+
+TEST_CASE("Reading an imported resource before writing it is fine", "[rendergraph][declarations]")
+{
+    // An imported resource keeps its contents by contract -- the swapchain, the
+    // shadow maps, the probe atlases -- so there is nothing to produce.
+    std::vector<RenderPassNode> passes{pass("Consumer", {texture(0, RenderResourceAccess::Read)}, true)};
+    const std::vector<RGResourceValidationInfo> textures{kImported};
+
+    CHECK(validateDeclarations(passes, textures, {}).empty());
+}
+
+TEST_CASE("A declared history read is not an issue", "[rendergraph][declarations]")
+{
+    // The main pass reading the previous frame's ambient occlusion, which GTAO
+    // only writes later in the frame.
+    std::vector<RenderPassNode> passes{
+        pass("MainHDR", {historyTexture(0), texture(1, RenderResourceAccess::Write)}, true),
+        pass("GtaoBlur", {texture(0, RenderResourceAccess::Write)}, true),
+    };
+    const std::vector<RGResourceValidationInfo> textures{kTransient, kTransient};
+
+    CHECK(validateDeclarations(passes, textures, {}).empty());
+}
+
+TEST_CASE("A history read of a pool-bound resource is reported", "[rendergraph][declarations]")
+{
+    // Aliasing gives the bytes to another resource between frames and the
+    // handoff barrier discards the contents, so there is no previous frame left
+    // to read. This is the rule that says which transients may be aliased.
+    std::vector<RenderPassNode> passes{pass("MainHDR", {historyTexture(0)}, true)};
+    const std::vector<RGResourceValidationInfo> textures{kAliasedTransient};
+
+    const auto issues = validateDeclarations(passes, textures, {});
+
+    REQUIRE(issues.size() == 1);
+    CHECK(issues[0].issue == RGDeclarationIssue::HistoryReadOfAliasedResource);
+}
+
+TEST_CASE("A producer earlier in the frame satisfies the read", "[rendergraph][declarations]")
+{
+    std::vector<RenderPassNode> passes{
+        pass("Producer", {texture(0, RenderResourceAccess::Write)}),
+        pass("Consumer", {texture(0, RenderResourceAccess::Read)}, true),
+    };
+    const std::vector<RGResourceValidationInfo> textures{kTransient};
+
+    CHECK(validateDeclarations(passes, textures, {}).empty());
+}
+
+TEST_CASE("A producer later in the frame does not satisfy the read", "[rendergraph][declarations]")
+{
+    // The ordering mistake the check exists for: the consumer runs first and
+    // samples whatever was in the image, not what the producer will put there.
+    std::vector<RenderPassNode> passes{
+        pass("Consumer", {texture(0, RenderResourceAccess::Read)}, true),
+        pass("Producer", {texture(0, RenderResourceAccess::Write)}, true),
+    };
+    const std::vector<RGResourceValidationInfo> textures{kTransient};
+
+    const auto issues = validateDeclarations(passes, textures, {});
+
+    REQUIRE(issues.size() == 1);
+    CHECK(issues[0].passIndex == 0);
+    CHECK(issues[0].issue == RGDeclarationIssue::ReadsContentNoPassProduced);
+}
+
+TEST_CASE("A read-modify-write is judged on what existed before the pass", "[rendergraph][declarations]")
+{
+    // The pass's own write must not retroactively satisfy its own read, or an
+    // accumulate over an unproduced target would look well-formed.
+    std::vector<RenderPassNode> passes{pass("Accumulate", {texture(0, RenderResourceAccess::ReadWrite)}, true)};
+    const std::vector<RGResourceValidationInfo> textures{kTransient};
+
+    const auto issues = validateDeclarations(passes, textures, {});
+
+    REQUIRE(issues.size() == 1);
+    CHECK(issues[0].issue == RGDeclarationIssue::ReadsContentNoPassProduced);
+}
+
+TEST_CASE("A culled pass neither produces nor reports", "[rendergraph][declarations]")
+{
+    // Its declarations describe work that will not run, so it cannot satisfy a
+    // later read, and its own reads cannot be wrong.
+    std::vector<RenderPassNode> passes{
+        pass("DeadProducer", {texture(0, RenderResourceAccess::Write)}),
+        pass("DeadConsumer", {texture(1, RenderResourceAccess::Read)}),
+        pass("LiveConsumer", {texture(0, RenderResourceAccess::Read)}, true),
+    };
+    passes[0].culled = true;
+    passes[1].culled = true;
+    const std::vector<RGResourceValidationInfo> textures{kTransient, kTransient};
+
+    const auto issues = validateDeclarations(passes, textures, {});
+
+    REQUIRE(issues.size() == 1);
+    CHECK(issues[0].passIndex == 2);
+}
+
+TEST_CASE("Declaring one resource twice in a pass is reported", "[rendergraph][declarations]")
+{
+    // Two barriers for one resource cannot share a dependency info, so this
+    // costs a barrier submission on top of being a likely copy-paste slip.
+    std::vector<RenderPassNode> passes{
+        pass("Producer", {texture(0, RenderResourceAccess::Write)}),
+        pass("Consumer", {texture(0, RenderResourceAccess::Read), texture(0, RenderResourceAccess::Read)}, true),
+    };
+    const std::vector<RGResourceValidationInfo> textures{kTransient};
+
+    const auto issues = validateDeclarations(passes, textures, {});
+
+    REQUIRE(issues.size() == 1);
+    CHECK(issues[0].passIndex == 1);
+    CHECK(issues[0].issue == RGDeclarationIssue::ResourceDeclaredTwice);
+}
+
+TEST_CASE("Texture and buffer declarations are checked independently", "[rendergraph][declarations]")
+{
+    // Both index spaces start at 0, so a check that ignored the kind would let a
+    // write to texture 0 satisfy a read of buffer 0.
+    std::vector<RenderPassNode> passes{
+        pass("WritesTexture", {texture(0, RenderResourceAccess::Write)}),
+        pass("ReadsBuffer", {buffer(0, RenderResourceAccess::Read)}, true),
+    };
+    const std::vector<RGResourceValidationInfo> textures{kTransient};
+    const std::vector<RGResourceValidationInfo> buffers{kTransient};
+
+    const auto issues = validateDeclarations(passes, textures, buffers);
+
+    REQUIRE(issues.size() == 1);
+    CHECK(issues[0].resourceKind == RGResourceKind::Buffer);
+    CHECK(issues[0].issue == RGDeclarationIssue::ReadsContentNoPassProduced);
+}
+
+TEST_CASE("Usages past the resource count are ignored", "[rendergraph][declarations]")
+{
+    std::vector<RenderPassNode> passes{pass("Stale", {texture(99, RenderResourceAccess::Read)}, true)};
+    const std::vector<RGResourceValidationInfo> textures{kTransient};
+
+    CHECK(validateDeclarations(passes, textures, {}).empty());
+}
+
+TEST_CASE("Validating an empty graph is a no-op", "[rendergraph][declarations]")
+{
+    const std::vector<RenderPassNode> passes;
+
+    CHECK(validateDeclarations(passes, {}, {}).empty());
+}
+
+TEST_CASE("Every issue has a distinct name", "[rendergraph][declarations]")
+{
+    using ve::renderer::renderGraphDeclarationIssueName;
+
+    const std::string produced = renderGraphDeclarationIssueName(RGDeclarationIssue::ReadsContentNoPassProduced);
+    const std::string aliased = renderGraphDeclarationIssueName(RGDeclarationIssue::HistoryReadOfAliasedResource);
+    const std::string twice = renderGraphDeclarationIssueName(RGDeclarationIssue::ResourceDeclaredTwice);
+
+    CHECK_FALSE(produced.empty());
+    CHECK(produced != aliased);
+    CHECK(aliased != twice);
+    CHECK(produced != twice);
 }
 
 // ---------------------------------------------------------------------------

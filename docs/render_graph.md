@@ -176,6 +176,63 @@ timing claim is attached to it. It is also the prerequisite for tightening the
 alias-handoff source scope, since that only pays off once a pass's barriers
 share one dependency.
 
+## Declaration Validation
+
+The declarations describe what each pass touches. Nothing used to check that the
+description was self-consistent, so a pass could read a transient nothing had
+produced and the only symptom would be wrong pixels -- no validation error, no
+crash, nothing in a log. `validateDeclarations` (GPU-free, unit tested) runs
+every frame after culling and checks the three ways a declaration set can be
+wrong without looking at a device:
+
+| Issue | Meaning |
+| --- | --- |
+| `ReadsContentNoPassProduced` | A pass reads a graph-managed resource no earlier surviving pass wrote this frame, without saying the read is deliberate. Either the pass is ordered wrongly, or it means to read the previous frame and should declare that. |
+| `HistoryReadOfAliasedResource` | A previous-frame read of a pool-bound resource. Aliasing hands those bytes to another resource and the handoff barrier discards the contents, so there is no previous frame left to read. |
+| `ResourceDeclaredTwice` | One pass declares the same resource more than once. Usually a copy-paste slip, and it costs a barrier submission, since two barriers for one resource cannot share a dependency info. |
+
+Imported resources are exempt from the first two: their contents persist by
+contract, which is what importing them means.
+
+The check reports, it does not throw. Every rule here has a legitimate-looking
+shape that only the author can adjudicate, and a graph that refuses to render is
+a worse diagnostic than one that renders and says what looks wrong. Findings
+appear in the ImGui Render Graph panel, on the pass that declared them, and are
+queryable through `RenderGraph::declarationIssues()`.
+
+### Declaring a previous-frame read
+
+`RenderGraphBuilder::readHistoryTexture` declares a read of what a resource held
+at the end of the previous frame. It is identical to `readTexture` in barrier
+terms -- the layout and scopes do not care where the pixels came from -- and
+exists so that reading before anything wrote the resource reads as intent rather
+than as an ordering mistake. The frame's history reads are:
+
+- `MainHDRPass` and `MainHDRPhase2` sampling ambient occlusion, which GTAO only
+  writes later in the frame
+- `VsmPageMarkPass` and `MainGpuCullingPass` sampling the Hi-Z depth pyramid
+- `TAAResolvePass` sampling the previous HDR history image
+- `TransparentPass` and `CompositePass` sampling ambient occlusion **when GTAO is
+  off**, because then nothing produces that image at all; with GTAO on the same
+  reads are ordinary same-frame dependencies on the blur, and are declared as such
+
+That last split is the point of the whole exercise: the declaration now states
+which frame the data comes from, and it changes with the setting that actually
+changes the answer.
+
+The default configuration reports zero issues. That was checked both ways --
+injecting an undeclared history read and a duplicate declaration into
+`MainHDRPass` makes the panel report three findings on that pass, and removing
+them returns it to zero.
+
+### What it does not check
+
+Liveness across frames. A history read is only satisfied if *this* frame's
+producer runs, and culling does not know that: a pass whose output is read only
+by the next frame's history read can still be culled. Nothing in the current
+frame graph is in that shape, and fixing it means teaching `cullUnusedPasses`
+about cross-frame edges, which is a larger change than this check.
+
 ## Side Effects And Culling
 
 Passes can be marked as side-effecting. Side-effect passes are never culled. Current side-effect passes include:
@@ -200,6 +257,7 @@ The ImGui Render Graph panel shows:
 - read and write resources with declared access
 - generated image and buffer barrier count/summary, and the number of
   `vkCmdPipelineBarrier2` submissions they were batched into
+- declaration issues found for the pass, and a frame-level count above the table
 - resource name, kind, lifetime, extent/size, format, mip/layer count, initial layout, and final layout
 
 ## Transient Memory Aliasing
@@ -317,3 +375,5 @@ the default.
   pass (see "Barrier batching"), but their stage/access scopes are unchanged.
 - Not all descriptor-driven sampled resources are graph-owned yet, including material textures, IBL cubemaps, BRDF LUT, and render-target preview descriptors.
 - There is no node-editor view yet.
+- Declaration validation does not model cross-frame liveness; see "What it does
+  not check".

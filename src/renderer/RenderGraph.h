@@ -127,6 +127,10 @@ struct RenderResourceUsage {
     RenderResourceAccess access = RenderResourceAccess::Read;
     RGAccess declaredAccess = RGAccess::Unknown;
     std::string description;
+    // A read of what the resource held at the end of the previous frame rather
+    // than of anything this frame's graph produced. Declaring it says the
+    // read-before-write is deliberate; see validateDeclarations.
+    bool historyRead = false;
 };
 
 // What a declared access means in barrier terms: the layout the image must be
@@ -217,6 +221,47 @@ struct RenderPassNode {
     // (see barrierBatchNeedsFlush), and the ImGui pass, whose present transition
     // is recorded after the pass body and so cannot join the pass's own set.
     uint32_t generatedBarrierSubmitCount = 0;
+    // Declaration problems validateDeclarations found for this pass, joined for
+    // display. Empty on a well-formed pass, which is the normal state.
+    std::string declarationIssues;
+};
+
+// Declaration validation. The graph's declarations describe what each pass
+// touches; nothing until now checked that the description is self-consistent, so
+// a pass could read a transient nothing had produced and the only symptom would
+// be wrong pixels. These are the three ways a declaration set can be wrong that
+// are decidable from the declarations alone.
+enum class RGDeclarationIssue {
+    // Reads a graph-managed resource no earlier surviving pass wrote this frame,
+    // without declaring the read as a history read. Either the pass is ordered
+    // wrongly, or it means to read the previous frame and should say so.
+    ReadsContentNoPassProduced,
+    // A history read of a pool-bound resource. Aliasing hands the bytes to
+    // another resource between frames and the handoff barrier discards the
+    // contents, so there is no previous frame to read -- this is the rule that
+    // says which transients are unsafe to wire into the transient memory pool.
+    HistoryReadOfAliasedResource,
+    // The same resource declared more than once by one pass. Usually a
+    // copy-paste slip, and it costs a barrier submission: two barriers for one
+    // resource cannot share a dependency info (see barrierBatchNeedsFlush).
+    ResourceDeclaredTwice
+};
+
+struct RenderGraphDeclarationIssue {
+    uint32_t passIndex = 0;
+    RGDeclarationIssue issue = RGDeclarationIssue::ReadsContentNoPassProduced;
+    RGResourceKind resourceKind = RGResourceKind::Texture;
+    uint32_t resourceIndex = 0;
+};
+
+// What validateDeclarations needs to know about a resource, which is only
+// whether the graph manages its bytes and whether they are shared.
+struct RGResourceValidationInfo {
+    // False for imported resources, whose contents persist by contract, so
+    // reading one before writing it is always defined.
+    bool graphManaged = false;
+    // True when the resource is bound into the shared transient pool.
+    bool aliased = false;
 };
 
 struct RenderGraphImageResource {
@@ -346,6 +391,11 @@ class RenderGraph;
 class RenderGraphBuilder final {
 public:
     RGTextureHandle readTexture(RGTextureHandle handle, RGAccess access, std::string description = {});
+    // A read of the previous frame's contents. Identical to readTexture in
+    // barrier terms -- the layout and scopes do not care where the pixels came
+    // from -- but it tells validateDeclarations that reading before anything
+    // wrote the resource this frame is the intent, not an ordering mistake.
+    RGTextureHandle readHistoryTexture(RGTextureHandle handle, RGAccess access, std::string description = {});
     RGTextureHandle writeTexture(RGTextureHandle handle, RGAccess access, std::string description = {});
     RGTextureHandle readWriteTexture(RGTextureHandle handle, RGAccess access, std::string description = {});
     RGBufferHandle readBuffer(RGBufferHandle handle, RGAccess access, std::string description = {});
@@ -537,6 +587,12 @@ public:
     [[nodiscard]] const std::vector<RenderGraphResourceDebugInfo>& debugResources() const
     {
         return debugResources_;
+    }
+
+    // This frame's declaration problems. Empty is the normal state.
+    [[nodiscard]] const std::vector<RenderGraphDeclarationIssue>& declarationIssues() const
+    {
+        return declarationIssues_;
     }
 
     // Aliases kept so existing RenderGraph::TextureAccessState spellings still
@@ -732,6 +788,9 @@ private:
     void declareBloomAndTaaPasses();
     void declareExposureCompositePasses();
     void compilePassCulling();
+    // Runs validateDeclarations over the culled pass list and writes what it
+    // finds onto the pass nodes, where the debug panel picks it up.
+    void validateFrameDeclarations();
     bool beginDeclaredPass(uint32_t passIndex);
     // Both record into `batch` instead of submitting, and return the number of
     // barriers they contributed (0 or 1) so the pass's counters keep meaning the
@@ -752,7 +811,8 @@ private:
                          RGTextureHandle handle,
                          RenderResourceAccess resourceAccess,
                          RGAccess declaredAccess,
-                         std::string description);
+                         std::string description,
+                         bool historyRead = false);
     void addBufferUsage(RenderPassNode& pass,
                         RGBufferHandle handle,
                         RenderResourceAccess resourceAccess,
@@ -782,6 +842,12 @@ private:
     std::vector<RenderPassNode> passes_;
     std::vector<ExecuteCallback> executeCallbacks_;
     std::vector<RenderGraphResourceDebugInfo> debugResources_;
+    // This frame's declaration problems, and the per-resource inputs the check
+    // needs. All three are members rather than locals so the per-frame check
+    // costs no allocations once the vectors have grown.
+    std::vector<RenderGraphDeclarationIssue> declarationIssues_;
+    std::vector<RGResourceValidationInfo> textureValidationInfo_;
+    std::vector<RGResourceValidationInfo> bufferValidationInfo_;
     bool frameActive_ = false;
     ActivePass activePass_ = ActivePass::None;
 
@@ -820,6 +886,25 @@ struct RenderGraphResourceLifetime {
 
 [[nodiscard]] std::vector<RenderGraphResourceLifetime> computeTextureLifetimes(
     const std::vector<RenderPassNode>& passes, size_t textureCount);
+
+// Checks a frame's declarations against the three rules above. Pure logic over
+// declarations, next to cullUnusedPasses for the same reason: no device needed,
+// and a mistake here is invisible to the validation layer.
+//
+// Culled passes are skipped: their declarations describe work that will not run.
+// Resource indices past either span are ignored, matching how the rest of the
+// graph tolerates handles it never imported.
+//
+// Reports rather than throws. Every rule here has a legitimate-looking shape
+// that only the author can adjudicate, and a graph that refuses to render is a
+// worse diagnostic than one that renders and says what looks wrong.
+[[nodiscard]] std::vector<RenderGraphDeclarationIssue>
+validateDeclarations(const std::vector<RenderPassNode>& passes,
+                     std::span<const RGResourceValidationInfo> textures,
+                     std::span<const RGResourceValidationInfo> buffers);
+
+// One-line description of an issue, for the debug panel and for tests.
+[[nodiscard]] const char* renderGraphDeclarationIssueName(RGDeclarationIssue issue);
 
 [[nodiscard]] const char* renderPassTypeName(RenderPassType type);
 [[nodiscard]] const char* renderPassExecutionTypeName(RenderPassExecutionType executionType);

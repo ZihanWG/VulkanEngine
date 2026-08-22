@@ -1540,6 +1540,21 @@ void Renderer::drawRenderGraphDebugUi()
     const auto& resources = renderGraph_.debugResources();
     ImGui::Text("Declared pass order: %zu passes, %zu resources", passes.size(), resources.size());
 
+    const size_t declarationIssueCount = renderGraph_.declarationIssues().size();
+    if (declarationIssueCount == 0) {
+        ImGui::TextDisabled("Declarations check out.");
+    } else {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.6f, 0.2f, 1.0f));
+        ImGui::Text("%zu declaration issue%s, flagged on the passes below.",
+                    declarationIssueCount,
+                    declarationIssueCount == 1 ? "" : "s");
+        ImGui::PopStyleColor();
+    }
+    ImGui::SetItemTooltip(
+        "Checked every frame from the declarations alone: a pass reading a graph-owned resource nothing "
+        "produced yet, a previous-frame read of a pool-bound resource, or one resource declared twice by "
+        "the same pass.");
+
     // ScrollX makes the table a child window whose default height is "remaining
     // visible space" — near the bottom of a scrolled panel that collapses to a
     // bare scrollbar. Pin an explicit height (with ScrollY) so both tables stay
@@ -1591,6 +1606,14 @@ void Renderer::drawRenderGraphDebugUi()
                 ImGui::TextWrapped("%s", pass.cullReason.c_str());
             } else {
                 ImGui::TextWrapped("%s", pass.transitionSummary.c_str());
+            }
+            if (!pass.declarationIssues.empty()) {
+                // Declaration problems are the one thing in this table that is
+                // never expected, so they get the warning colour rather than
+                // another grey line nobody reads.
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.6f, 0.2f, 1.0f));
+                ImGui::TextWrapped("%s", pass.declarationIssues.c_str());
+                ImGui::PopStyleColor();
             }
         }
 

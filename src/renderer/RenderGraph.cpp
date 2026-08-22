@@ -148,6 +148,12 @@ RGTextureHandle RenderGraphBuilder::readTexture(RGTextureHandle handle, RGAccess
     return handle;
 }
 
+RGTextureHandle RenderGraphBuilder::readHistoryTexture(RGTextureHandle handle, RGAccess access, std::string description)
+{
+    graph_.addTextureUsage(pass_, handle, RenderResourceAccess::Read, access, std::move(description), true);
+    return handle;
+}
+
 RGTextureHandle RenderGraphBuilder::writeTexture(RGTextureHandle handle, RGAccess access, std::string description)
 {
     graph_.addTextureUsage(pass_, handle, RenderResourceAccess::Write, access, std::move(description));
@@ -372,6 +378,7 @@ void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
     passes_.clear();
     executeCallbacks_.clear();
     barrierBatch_.reset();
+    declarationIssues_.clear();
     debugResources_.clear();
 
     frame_ = {};
@@ -393,6 +400,7 @@ void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
 
     buildFrameGraphDeclarations();
     compilePassCulling();
+    validateFrameDeclarations();
     refreshDebugResources();
 
     VkCommandBufferBeginInfo beginInfo{};
@@ -1805,10 +1813,10 @@ void RenderGraph::declareGeometryPasses()
             // analysis would cull the pass away.
             true,
             [this](RenderGraphBuilder& builder) {
-                builder.readTexture(frame_.depthPyramid,
-                                    RGAccess::ShaderRead,
-                                    "Samples the previous frame's Hi-Z depth to work out which shadow pages "
-                                    "this frame's visible surfaces need.");
+                builder.readHistoryTexture(frame_.depthPyramid,
+                                           RGAccess::ShaderRead,
+                                           "Samples the previous frame's Hi-Z depth to work out which shadow "
+                                           "pages this frame's visible surfaces need.");
             });
     }
 
@@ -1966,9 +1974,9 @@ void RenderGraph::declareGeometryPasses()
             builder.readBuffer(frame_.mainCullInput,
                                RGAccess::StorageBufferRead,
                                "Reads per-draw AABB, draw-command, and batch metadata.");
-            builder.readTexture(frame_.depthPyramid,
-                                RGAccess::ShaderRead,
-                                "Optionally samples the previous-frame Hi-Z depth pyramid for occlusion tests.");
+            builder.readHistoryTexture(frame_.depthPyramid,
+                                       RGAccess::ShaderRead,
+                                       "Optionally samples the previous-frame Hi-Z depth pyramid for occlusion tests.");
             builder.writeBuffer(frame_.mainCullIndirectOutput,
                                 RGAccess::StorageBufferWrite,
                                 "Writes indirect draw commands for the main pass.");
@@ -2025,9 +2033,9 @@ void RenderGraph::declareGeometryPasses()
                 // for the same reason as the atlases above: the declaration is
                 // what keeps it in a sampled layout rather than UNDEFINED, and
                 // the shader gates the fetch on a push constant anyway.
-                builder.readTexture(frame_.ambientOcclusion,
-                                    RGAccess::ShaderRead,
-                                    "Samples the previous frame's ambient occlusion for the ambient term.");
+                builder.readHistoryTexture(frame_.ambientOcclusion,
+                                           RGAccess::ShaderRead,
+                                           "Samples the previous frame's ambient occlusion for the ambient term.");
             }
             builder.writeTexture(frame_.sceneColor,
                                  RGAccess::ColorAttachmentWrite,
@@ -2097,9 +2105,12 @@ void RenderGraph::declareGeometryPasses()
                                     RGAccess::ShaderRead,
                                     "Samples the cascaded shadow-map array for lighting.");
                 if (frame_.ambientOcclusion.valid()) {
-                    builder.readTexture(frame_.ambientOcclusion,
-                                        RGAccess::ShaderRead,
-                                        "Samples ambient occlusion for the ambient term, as the main pass does.");
+                    // A history read for the same reason phase 1's is: GTAO has
+                    // not run yet at this point in the frame.
+                    builder.readHistoryTexture(
+                        frame_.ambientOcclusion,
+                        RGAccess::ShaderRead,
+                        "Samples ambient occlusion for the ambient term, as the main pass does.");
                 }
                 builder.writeTexture(frame_.sceneColor,
                                      RGAccess::ColorAttachmentWrite,
@@ -2222,9 +2233,20 @@ void RenderGraph::declareGeometryPasses()
                     // GTAO already ran and left the image a colour attachment,
                     // so without this declaration it would still be in that
                     // layout when the descriptor is read.
-                    builder.readTexture(frame_.ambientOcclusion,
-                                        RGAccess::ShaderRead,
-                                        "Samples ambient occlusion through the shared main-pass fragment shader.");
+                    // Which read this is depends on whether GTAO ran: with it on,
+                    // the blur wrote this image earlier in the frame and this is
+                    // an ordinary dependency; with it off, nothing produced the
+                    // image this frame and the shader gates the fetch away.
+                    // Declaring the difference is what keeps the GTAO-off frame
+                    // from reading as an ordering mistake.
+                    const char* transparentAoDescription =
+                        "Samples ambient occlusion through the shared main-pass fragment shader.";
+                    if (frame_.resources.gtaoEnabled) {
+                        builder.readTexture(frame_.ambientOcclusion, RGAccess::ShaderRead, transparentAoDescription);
+                    } else {
+                        builder.readHistoryTexture(
+                            frame_.ambientOcclusion, RGAccess::ShaderRead, transparentAoDescription);
+                    }
                 }
                 // Read-modify-write, not a plain write: the "over" blend reads the
                 // destination. Declaring it write-only makes the pass culler treat
@@ -2271,9 +2293,8 @@ void RenderGraph::declareBloomAndTaaPasses()
                 builder.readTexture(frame_.sceneColor,
                                     RGAccess::ShaderRead,
                                     "Samples the current jittered HDR scene color.");
-                builder.readTexture(frame_.taaHistoryRead,
-                                    RGAccess::ShaderRead,
-                                    "Samples the previous HDR TAA history image.");
+                builder.readHistoryTexture(
+                    frame_.taaHistoryRead, RGAccess::ShaderRead, "Samples the previous HDR TAA history image.");
                 builder.readTexture(frame_.velocity,
                                     RGAccess::ShaderRead,
                                     "Samples motion vectors to reproject the history UV.");
@@ -2429,9 +2450,15 @@ void RenderGraph::declareExposureCompositePasses()
             builder.readBuffer(frame_.exposureState,
                                RGAccess::StorageBufferRead,
                                "Reads GPU exposure state for auto exposure modes.");
-            builder.readTexture(frame_.ambientOcclusion,
-                                RGAccess::ShaderRead,
-                                "Samples the ground-truth ambient-occlusion term applied to scene color.");
+            // Same split as the transparent pass: produced this frame when GTAO
+            // is on, carried over from the previous one when it is off.
+            const char* compositeAoDescription =
+                "Samples the ground-truth ambient-occlusion term applied to scene color.";
+            if (frame_.resources.gtaoEnabled) {
+                builder.readTexture(frame_.ambientOcclusion, RGAccess::ShaderRead, compositeAoDescription);
+            } else {
+                builder.readHistoryTexture(frame_.ambientOcclusion, RGAccess::ShaderRead, compositeAoDescription);
+            }
             builder.writeTexture(frame_.swapchainColor,
                                  RGAccess::ColorAttachmentWrite,
                                  "Writes the exposed and tone-mapped final color.");
@@ -2452,6 +2479,40 @@ void RenderGraph::declareExposureCompositePasses()
 void RenderGraph::compilePassCulling()
 {
     cullUnusedPasses(passes_, textures_.size(), buffers_.size());
+}
+
+void RenderGraph::validateFrameDeclarations()
+{
+    textureValidationInfo_.clear();
+    textureValidationInfo_.reserve(textures_.size());
+    for (const TextureResource& texture : textures_) {
+        textureValidationInfo_.push_back(RGResourceValidationInfo{texture.graphManaged, texture.desc.aliased});
+    }
+
+    bufferValidationInfo_.clear();
+    bufferValidationInfo_.reserve(buffers_.size());
+    for (const BufferResource& buffer : buffers_) {
+        bufferValidationInfo_.push_back(RGResourceValidationInfo{buffer.graphManaged, false});
+    }
+
+    declarationIssues_ = validateDeclarations(passes_, textureValidationInfo_, bufferValidationInfo_);
+
+    for (const RenderGraphDeclarationIssue& issue : declarationIssues_) {
+        if (issue.passIndex >= passes_.size()) {
+            continue;
+        }
+
+        const std::string resourceName = issue.resourceKind == RGResourceKind::Texture
+                                             ? textures_.at(issue.resourceIndex).desc.name
+                                             : buffers_.at(issue.resourceIndex).desc.name;
+        std::string& text = passes_[issue.passIndex].declarationIssues;
+        if (!text.empty()) {
+            text += "; ";
+        }
+        text += resourceName;
+        text += ": ";
+        text += renderGraphDeclarationIssueName(issue.issue);
+    }
 }
 
 std::vector<RenderGraphResourceLifetime> computeTextureLifetimes(const std::vector<RenderPassNode>& passes,
@@ -2543,6 +2604,96 @@ void cullUnusedPasses(std::vector<RenderPassNode>& passes, size_t textureCount, 
             }
         }
     }
+}
+
+const char* renderGraphDeclarationIssueName(RGDeclarationIssue issue)
+{
+    switch (issue) {
+    case RGDeclarationIssue::ReadsContentNoPassProduced:
+        return "reads content no pass produced this frame";
+    case RGDeclarationIssue::HistoryReadOfAliasedResource:
+        return "history read of a pool-bound resource";
+    case RGDeclarationIssue::ResourceDeclaredTwice:
+        return "resource declared more than once";
+    }
+
+    return "unknown declaration issue";
+}
+
+std::vector<RenderGraphDeclarationIssue> validateDeclarations(const std::vector<RenderPassNode>& passes,
+                                                              std::span<const RGResourceValidationInfo> textures,
+                                                              std::span<const RGResourceValidationInfo> buffers)
+{
+    std::vector<RenderGraphDeclarationIssue> issues;
+
+    // Whether any surviving pass so far has written each resource. Forward sweep,
+    // the opposite direction to cullUnusedPasses: liveness looks back from the
+    // consumers, production looks forward from the producers.
+    std::vector<uint8_t> textureWritten(textures.size(), 0);
+    std::vector<uint8_t> bufferWritten(buffers.size(), 0);
+    std::vector<uint32_t> seenTextures;
+    std::vector<uint32_t> seenBuffers;
+
+    for (uint32_t passIndex = 0; passIndex < passes.size(); ++passIndex) {
+        const RenderPassNode& pass = passes[passIndex];
+        if (pass.culled) {
+            continue;
+        }
+
+        seenTextures.clear();
+        seenBuffers.clear();
+
+        const auto report = [&](RGDeclarationIssue issue, const RenderResourceUsage& usage) {
+            issues.push_back(RenderGraphDeclarationIssue{passIndex, issue, usage.resource.kind, usage.resource.index});
+        };
+
+        for (const RenderResourceUsage& usage : pass.resourceUsages) {
+            const bool isTexture = usage.resource.kind == RGResourceKind::Texture;
+            const size_t resourceCount = isTexture ? textures.size() : buffers.size();
+            if (usage.resource.index >= resourceCount) {
+                continue;
+            }
+
+            std::vector<uint32_t>& seen = isTexture ? seenTextures : seenBuffers;
+            if (std::find(seen.begin(), seen.end(), usage.resource.index) != seen.end()) {
+                report(RGDeclarationIssue::ResourceDeclaredTwice, usage);
+            } else {
+                seen.push_back(usage.resource.index);
+            }
+
+            const RGResourceValidationInfo& info =
+                isTexture ? textures[usage.resource.index] : buffers[usage.resource.index];
+            const std::vector<uint8_t>& written = isTexture ? textureWritten : bufferWritten;
+
+            // Only a graph-managed resource can be read before it is produced:
+            // an imported one keeps its contents by contract.
+            if (accessReads(usage.access) && info.graphManaged && written[usage.resource.index] == 0) {
+                if (!usage.historyRead) {
+                    report(RGDeclarationIssue::ReadsContentNoPassProduced, usage);
+                } else if (info.aliased) {
+                    // A declared history read of a private resource is exactly
+                    // right; it is only wrong when the bytes are shared, because
+                    // then there is no previous frame left to read.
+                    report(RGDeclarationIssue::HistoryReadOfAliasedResource, usage);
+                }
+            }
+        }
+
+        // Writes land after the whole pass is checked, so a pass that reads and
+        // writes the same resource is judged on what existed before it ran.
+        for (const RenderResourceUsage& usage : pass.resourceUsages) {
+            if (!accessWrites(usage.access)) {
+                continue;
+            }
+            if (usage.resource.kind == RGResourceKind::Texture && usage.resource.index < textureWritten.size()) {
+                textureWritten[usage.resource.index] = 1;
+            } else if (usage.resource.kind == RGResourceKind::Buffer && usage.resource.index < bufferWritten.size()) {
+                bufferWritten[usage.resource.index] = 1;
+            }
+        }
+    }
+
+    return issues;
 }
 
 bool RenderGraph::beginDeclaredPass(uint32_t passIndex)
@@ -2981,7 +3132,8 @@ void RenderGraph::addTextureUsage(RenderPassNode& pass,
                                   RGTextureHandle handle,
                                   RenderResourceAccess resourceAccess,
                                   RGAccess declaredAccess,
-                                  std::string description)
+                                  std::string description,
+                                  bool historyRead)
 {
     if (!handle.valid() || handle.index >= textures_.size()) {
         return;
@@ -2992,6 +3144,7 @@ void RenderGraph::addTextureUsage(RenderPassNode& pass,
         resourceAccess,
         declaredAccess,
         std::move(description),
+        historyRead,
     });
 }
 
@@ -3010,6 +3163,9 @@ void RenderGraph::addBufferUsage(RenderPassNode& pass,
         resourceAccess,
         declaredAccess,
         std::move(description),
+        // No buffer is graph-managed today, so a history read of one has nothing
+        // to say; the field exists to keep the usage type uniform.
+        false,
     });
 }
 
