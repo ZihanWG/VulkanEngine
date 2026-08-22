@@ -360,3 +360,37 @@ TEST_CASE("Applying CSM settings at runtime holds the cascade count", "[settings
     expected.cascadeCount = 4;
     REQUIRE(current == expected);
 }
+
+TEST_CASE("The VSM depth bias is clamped without losing zero", "[settings][vsm]")
+{
+    Settings s;
+    s.vsm.depthBiasTexels = -4.0f;
+    s.clamp();
+    // Negative would subtract the bias in the wrong direction, pulling the
+    // compare depth toward the light and shadowing everything.
+    CHECK(s.vsm.depthBiasTexels == 0.0f);
+
+    // Zero survives the clamp: it is the A/B point that shows the acne the bias
+    // exists to hide, so it must stay reachable.
+    s.vsm.depthBiasTexels = 0.0f;
+    s.clamp();
+    CHECK(s.vsm.depthBiasTexels == 0.0f);
+
+    s.vsm.depthBiasTexels = 5000.0f;
+    s.clamp();
+    // The ceiling is where the bias would peter-pan every shadow off its caster
+    // rather than anything physical, so it only has to be finite and sane.
+    CHECK(s.vsm.depthBiasTexels == 1024.0f);
+}
+
+TEST_CASE("The VSM depth bias default sits inside its measured window", "[settings][vsm]")
+{
+    // 64 texels was picked from a sweep on the default scene: below ~32 the
+    // scene self-shadows its own lit surfaces, and by 128 the umbra starts
+    // lifting back toward the leak this setting exists to remove. Pinning the
+    // window here means a casual retune has to argue with the measurement in
+    // docs/virtual_shadow_maps.md.
+    const VsmSettings defaults;
+    CHECK(defaults.depthBiasTexels >= 32.0f);
+    CHECK(defaults.depthBiasTexels <= 128.0f);
+}

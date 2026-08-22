@@ -794,6 +794,15 @@ void Renderer::drawShadowsDebugUi()
                               "The pass takes at most 2x2 taps per block, so this genuinely changes\n"
                               "the fetch count. Measured: 8 returns the same page count as 4 on both\n"
                               "the default and geometry-stress scenes for roughly half the cost.");
+        if (ImGui::SliderFloat(
+                "Depth bias (texels)", &vsmSettings_.depthBiasTexels, 0.0f, 512.0f, "%.1f", ImGuiSliderFlags_Logarithmic)) {
+            clampRuntimeSettings();
+        }
+        ImGui::SetItemTooltip("Shadow-compare bias, in texels of whichever level a lookup lands on.\n\n"
+                              "NOT the cascades' constant: that one is a fraction of a cascade's\n"
+                              "ortho depth box, and a page's depth axis spans 2x the depth range\n"
+                              "instead. Reusing it lifted every umbra by ~15% of the sun.\n\n"
+                              "Drop it to 0 to see the acne it is holding back.");
         ImGui::EndDisabled();
 
         const renderer::VsmClipmapSettings clipmap = vsmClipmapSettings();

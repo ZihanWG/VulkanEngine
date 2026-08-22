@@ -17,11 +17,13 @@ Building it in that order is what let three design errors surface before anythin
 downstream depended on them — see
 [What the measurement changed](#what-the-measurement-changed).
 
-> **Spot-checked by eye, not gated.** A side-by-side A/B on the default scene
-> showed no obvious breakage — no holes, no seams, no acne — and the residency
-> counters read as designed. That is a spot check on one static camera with much
-> of the shadowed ground hidden behind the debug window, not a verification: see
-> [Why there is no pixel gate](#why-there-is-no-pixel-gate).
+> **Gated, and the gate found a leak.** `tools/dev/vsm_ab.sh` captures a
+> reproducible frame with and without VSM; both configurations repeat byte for
+> byte, so the comparison between them means something. The first thing it
+> measured was every umbra reading ~15% of the sun too bright, from a
+> shadow-compare bias carried over from the cascades in the wrong depth
+> normalization. That is fixed and measured; one lit-surface discrepancy is still
+> open. See [The pixel gate, and the leak it found](#the-pixel-gate-and-the-leak-it-found).
 
 ## Why, given the cascades already cache
 
@@ -477,33 +479,140 @@ alone would leave a stale page.
 If the page pass ever shows up in a real frame's profile, this is the first thing
 to revisit — with a measurement, not on principle.
 
-## Why there is no pixel gate
+## The pixel gate, and the leak it found
 
-The obvious check — capture a frame with cascades, capture one with VSM, compare
-— does not work on this scene, and the reason is worth recording because it
-invalidates the control, not just the experiment.
+There is one, and building it falsified the claim that stood here before.
 
-Two captures of the **same** configuration at the same frame number differ by
-8.5% of pixels (max channel delta 85). The cause is
-`updateDemoLights(elapsedSeconds)`: the animated light swarm advances on
-wall-clock time, so frame 240 of two runs is at two different animation phases.
-Turning auto-exposure off does not help; it makes the mismatch worse, because the
-manual exposure is a different constant.
+That claim was that a pixel gate "needs a fixed timestep or a scene with no
+animation, and neither exists yet". The measurement behind it was real -- two
+captures of the same configuration differed by 8.5% of pixels, because
+`updateDemoLights(elapsedSeconds)` advances the light swarm on wall-clock time --
+but the conclusion was wrong, and had been wrong since before this feature
+started: `--deterministic` landed in `92feaac`, ahead of the first VSM commit.
+It pins the frame clock to a fixed 1/60 s, which makes the light swarm, the
+skeletal delta, exposure adaptation and every animated transform a function of
+the frame number, and `docs/headless_ci.md` had already measured three runs of
+`--deterministic --capture-frame 60` producing byte-identical PNGs. The control
+that failed was simply run without the flag.
 
-So the 53% difference measured between the cascade and VSM captures says nothing:
-it is smaller than the control's own noise in max-delta terms and larger in pixel
-count, and neither number is trustworthy. **Any pixel gate for this feature needs
-a fixed timestep or a scene with no animation**, and neither exists yet.
+Re-run with it, on MoltenVK, at frame 60 of the default scene:
 
-What *is* checked: the pass runs with zero validation errors on MoltenVK, the
-page pool fills with real depth, the residency counters behave as designed, and a
-human has eyeballed the A/B on the default scene without finding anything wrong.
+| configuration | repeats | differing pixels |
+| --- | --- | --- |
+| cascades (`--vsm off`) | 3 | **0 / 3686400** |
+| VSM (`--vsm shadows`) | 3 | **0 / 3686400** |
 
-One trap that A/B sets, worth knowing before anyone repeats it: the two captures
-differ in overall tone, and that difference is **not** the shadows. The sky
-changes too, and the sky samples no shadow — it is the animated light swarm at a
-different phase, the same thing that makes the pixel gate impossible. Toggling
-`enableShadows` back and forth within a second isolates the shadow term from it.
+The second row is the one that was not obvious. Page residency is cross-frame
+state -- last frame's depth pyramid marks this frame's requests, which allocate
+pages that persist and are re-used -- and a fixed timestep turning all of that
+into a function of the frame number was a claim, not a given. It reproduces.
+
+`tools/dev/vsm_ab.sh` runs the whole thing: both controls first, then the
+cascade-versus-VSM comparison at three tolerances. It refuses to print a
+comparison whose control did not reproduce. It is deliberately **not** a CI job:
+pixel determinism holds here and does not hold on lavapipe, where the same commit
+rendered three times produced 0, then 433, then 0 differing pixels.
+
+### Read the tolerance-3 diff, not the tolerance-0 one
+
+Changing the shadow term changes scene luminance, auto-exposure follows it, and
+the entire frame lands one quantization step away. So a raw comparison reports
+~11% of pixels differing, and ~87% of those are a delta of 1 in a smooth
+gradient: sky, sphere bodies, the lit floor. They are real and they mean nothing.
+At `--channel-tolerance 3` that noise is gone and what is left is 1.7% of the
+frame, which is the shadows.
+
+### What the gate found: every umbra was leaking
+
+The first comparison it produced was not the expected "shapes agree, edges
+differ". Every cast shadow read **uniformly lighter under VSM**, by 7.6/255 in a
+64x64 patch of the deepest umbra -- against a lit floor at 80/255 and a cascade
+umbra at 31.8/255, that is about 15% of the sun leaking into shadow that should
+have none.
+
+The cause was a units mismatch in the shadow-compare bias. The sampler took
+`CsmSettings::depthBiasConstant` -- 0.002 -- and subtracted it from the page's
+normalized depth. But that constant is a fraction of a *cascade's* ortho depth
+box, tens of world units, while a page's depth axis spans `2 * depthRange`, 500
+world units by default. The same 0.002 therefore meant centimetres in one place
+and a **whole world unit** in the other. Zeroing it dropped the umbra straight
+back onto the cascades' value (31.95 against 31.84), which is what confirmed the
+mechanism rather than merely fitting it.
+
+Zero is not the fix, though: it puts the acne back. The bias is now expressed in
+**texels of whichever clipmap level the lookup lands on**, converted to world
+units at that level and only then into the page's depth normalization. Texels
+rather than world units because level *L*'s texel is 2^L times level 0's, so the
+depth error one texel can hide scales with the level -- one figure in texels is
+right at every level, one in world units at exactly one of them.
+
+The default was then swept rather than guessed, on the same reproducible frame
+(all values are the red channel's mean over a fixed patch; the cascade column is
+the reference each row is trying to match):
+
+| `depthBiasTexels` | lit face | lit sphere | umbra |
+| --- | --- | --- | --- |
+| *cascades (reference)* | *63.57* | *138.93* | *31.84* |
+| old, mis-scaled | 63.56 | 138.87 | **39.40 leaking** |
+| 2 | 57.09 | 130.39 | 31.91 |
+| 8 | 57.09 | 131.36 | 31.91 |
+| 32 | 57.09 | **139.00** | 31.88 |
+| **64 (shipped)** | 57.09 | **138.97** | **31.86** |
+| 128 | 57.09 | 138.90 | 32.38 leaking |
+| 256 | **63.56** | 138.86 | **39.40 leaking** |
+
+The window is [32, 128] and 64 sits in the middle of it. Below 32 the scene
+self-shadows its own lit surfaces; by 128 the umbra starts lifting back toward
+the leak the setting exists to remove.
+
+With 64 shipped, VSM differs from the cascades over **1.7% of the frame at a
+maximum channel delta of 10**, and the difference image is shadow *outlines* --
+the umbra interiors now agree, and what is left is the penumbra, which is exactly
+where two shadow techniques at different resolutions are supposed to disagree.
+
+### What it did not settle
+
+One column of that table stays stubborn: a lit face reads 57.09 against the
+cascades' 63.57 at every bias in the window, and only "recovers" at 256, which is
+also where the umbra leak returns -- so that recovery is peter-panning erasing the
+difference, not fixing it. It is ~6.5/255 on certain lit surfaces, it is uniform
+across each face rather than shaped like a cast shadow, and it does not move with
+`texelsPerPixel` at 1.0, 0.5 or 0.25.
+
+The leading hypothesis is that the sampler has no **slope-scaled** bias term. The
+cascades take `max(constantBias, slopeBias * (1 - N·L))` with a slope 2.5x their
+constant (`shadowDepthBias` in `simple_bindless.frag`); the VSM sampler has only
+the constant, so a surface at a grazing angle to the sun is under-biased at any
+constant that keeps the umbra honest. That is a hypothesis with an obvious test
+and it has not been run.
+
+A second observation from the same sweep, unexplained and worth someone's time:
+`texelsPerPixel` at 1.0, 0.5 and 0.25 produced an **identical page set** (99
+pages) and byte-identical pixels on the default scene. The window/coverage bound
+appears to be what is binding here, not the requested resolution.
+
+### Cutout page shadows do resolve their holes
+
+The perforated panel is in the default startup scene -- `appendPortfolioShowcase`
+builds it, and `createScene()` falls to that showcase whenever no sample scene
+was fetched -- so the same deterministic capture covers the masked caster bucket
+without any UI driving.
+
+At tolerance 3 the difference under the panel traces **the bottom row of
+perforations**, one arc per hole, rather than a solid band. A solid silhouette
+would have produced the band. Sampling a 300x40 strip of that shadow confirms the
+sign: VSM reads 60.06 against the cascades' 59.53, so more light comes through the
+holes, not less -- the higher-resolution page resolves openings the cascade's
+filter blurs shut.
+
+### What the scene cannot show
+
+The directional shadows in every demo scene here are low contrast: the umbra sits
+at 31.8/255 against a lit floor at 80/255, because ambient and punctual lighting
+dominate the sun. That is why an eyeball A/B found nothing wrong -- there is
+little to see -- and it is why the numbers above are all patch means from a
+reproducible capture rather than descriptions of an image. A scene with a
+dominant sun would make this feature much easier to judge, and none exists yet.
 
 ## Where it sits in the frame
 
@@ -582,6 +691,7 @@ is the shader-side duplicate, the same arrangement `ClusterGrid.h` /
 | `texelsPerPixel` | 1.0 | above 1 selects coarser levels; below, finer |
 | `enablePageRendering` | `false` | allocates and draws pages; still samples nothing |
 | `markBlockStride` | 8 | pixels per marking thread along each axis |
+| `depthBiasTexels` | 64 | shadow-compare bias, in texels of the sampled level |
 
 The numeric fields are clamped by `renderer::clampVsmClipmapSettings`, which
 `clampRuntimeSettings` delegates to rather than repeating — a second copy of the
@@ -595,13 +705,16 @@ or scripted run.
 
 ## Limitations
 
-- **Visual correctness is unverified**, and no pixel gate is possible on this
-  scene (above).
-- **Cutout page shadows are unverified.** The only cutout geometry in the engine
-  is the portfolio showcase's perforated panel, which is reachable through an
-  ImGui preset rather than `--scene`, so the path has been exercised (both
-  bucket sweeps issue draws, zero validation errors) but the resulting shadow has
-  not been looked at.
+- **One lit-surface discrepancy is unexplained.** Certain lit faces read ~6.5/255
+  darker than under the cascades at every depth bias that keeps the umbra honest;
+  the leading hypothesis is the missing slope-scaled bias term, untested. See
+  [What it did not settle](#what-it-did-not-settle).
+- **`texelsPerPixel` changed nothing** on the default scene at 1.0, 0.5 and 0.25
+  — same 99 pages, same pixels. Unexplained; the coverage bound appears to be
+  binding instead.
+- **The demo scenes barely show a directional shadow.** Umbra 31.8/255 against a
+  lit floor at 80/255, so every judgement here is a patch mean from a
+  reproducible capture rather than something visible at a glance.
 - **Page casters draw authored geometry.** No LOD, deliberately — see above.
 - **Skinned geometry is not a caster at all.** The skinned demo mesh is drawn
   directly rather than as a `RenderObject`, so it is absent from the draw-item

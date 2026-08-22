@@ -230,7 +230,19 @@ float vsmShadowFactor(FrameConstants frame,
     float poolTexel = frame.vsmParams.w;
     vec2 cameraLightSpaceXy = frame.vsmCamera.xy;
     float normalBias = frame.vsmCamera.z;
-    float depthBias = frame.vsmCamera.w;
+    // In TEXELS of the level that ends up being sampled, not in normalized page
+    // depth. A page's depth axis spans 2*depthRange world units -- 500 by
+    // default -- while a cascade's spans its own ortho box, so the cascades'
+    // normalized constant means something entirely different here: 0.002 of a
+    // cascade is centimetres, 0.002 of a page is a whole world unit. Passing it
+    // straight through lifted every umbra by about 15% of the sun (measured:
+    // docs/virtual_shadow_maps.md).
+    //
+    // Texels rather than world units because a clipmap has no single texel size:
+    // level L's is 2^L times level 0's, so the depth error a texel can hide
+    // doubles with it. One bias in texel units is right at every level; one in
+    // world units is wrong at all but one of them.
+    float depthBiasTexels = frame.vsmCamera.w;
 
     // Offset along the normal before projecting, same trick and same units the
     // cascades and the punctual atlas use: it lets the depth bias stay small,
@@ -246,8 +258,10 @@ float vsmShadowFactor(FrameConstants frame,
     // and it saves carrying projScaleY into the fragment stage.
     uint startLevel = vsmMinLevelForCoverage(level0Extent, levelCount, distanceToCamera);
 
-    float depth = vsmPageDepth(depthRange, lightSpace.z) - depthBias;
-    if (depth <= 0.0 || depth >= 1.0) {
+    // Unbiased: the range test asks whether the point is inside the page's depth
+    // slab at all, which the bias must not be able to answer differently.
+    float pageDepth = vsmPageDepth(depthRange, lightSpace.z);
+    if (pageDepth <= 0.0 || pageDepth >= 1.0) {
         return 1.0;
     }
 
@@ -272,6 +286,11 @@ float vsmShadowFactor(FrameConstants frame,
 
         vec4 poolRect = vsmPagePoolUvRect(entry.physicalPage);
         vec2 pageUv = vsmPageLocalUv(level0Extent, level, absolutePage, lightSpace.xy);
+
+        // Now that the level is known, so is the texel it will be compared
+        // against. World units first, then into this page's depth normalization.
+        float worldBias = depthBiasTexels * vsmTexelWorldSize(level0Extent, level);
+        float depth = pageDepth - worldBias / (2.0 * max(depthRange, 1e-4));
 
         // Every tap is clamped inside this page. Neighbouring pool texels belong
         // to a different page -- a different world location entirely, possibly a

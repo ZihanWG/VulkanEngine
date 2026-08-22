@@ -1877,7 +1877,13 @@ void Renderer::uploadFrameConstants(uint32_t frameIndex, uint32_t cascadeCount)
                                         std::max(csmSettings_.normalBias, 0.0f) *
                                             renderer::vsmTexelWorldSize(clipmap, 0) *
                                             static_cast<float>(renderer::kVsmPageSize),
-                                        std::max(csmSettings_.depthBiasConstant, 0.0f));
+                                        // In texels of the sampled level; the shader turns it into
+                                        // world units there, because the level is not known until
+                                        // the page walk finds one. This used to pass the cascades'
+                                        // depthBiasConstant straight through, which is a fraction
+                                        // of a cascade's ortho depth and means something ~250x
+                                        // larger against a page's 2*depthRange axis.
+                                        std::max(vsmSettings_.depthBiasTexels, 0.0f));
     }
 
     frameConstantsBuffers_.at(frameIndex)

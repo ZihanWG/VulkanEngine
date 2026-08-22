@@ -40,9 +40,10 @@ overview; these documents describe implementation details and limitations.
   identity rather than just residency, page marking from the previous frame's
   depth pyramid, and the coverage bound a measurement forced.
   **Complete through sampling, moving casters included, and off by default; the
-  cascades keep rendering underneath, so the A/B is one checkbox. Spot-checked by
-  eye, not gated — the doc explains why no pixel gate is possible on this
-  scene.**
+  cascades keep rendering underneath, so the A/B is one checkbox. Now gated by a
+  reproducible capture (`tools/dev/vsm_ab.sh`), which found and fixed a
+  shadow-compare bias carried over from the cascades in the wrong depth
+  normalization — every umbra had been leaking ~15% of the sun.**
 - [Irradiance Probes](irradiance_probes.md): Real-time global illumination
   without ray tracing — the octahedral probe atlases and their seam border, the
   amortised cube capture and its convolution, Chebyshev visibility weighting,

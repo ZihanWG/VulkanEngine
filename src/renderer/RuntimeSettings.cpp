@@ -201,6 +201,9 @@ void clampRuntimeSettings(RenderScaleSettings& renderScale,
     // Above 32 a marking thread covers more screen than a page does and starts
     // missing pages outright; 1 is one thread per pixel.
     vsm.markBlockStride = std::clamp(vsm.markBlockStride, 1U, 32U);
+    // Zero is allowed and means "no bias", which is a real A/B point: it is what
+    // shows the acne the bias exists to hide.
+    vsm.depthBiasTexels = std::clamp(vsm.depthBiasTexels, 0.0f, 1024.0f);
 }
 
 namespace {
@@ -496,6 +499,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readFloat(*vsm, "texelsPerPixel", settings.vsm.texelsPerPixel);
         readFloat(*vsm, "depthRange", settings.vsm.depthRange);
         readUint32(*vsm, "markBlockStride", settings.vsm.markBlockStride);
+        readFloat(*vsm, "depthBiasTexels", settings.vsm.depthBiasTexels);
     }
 
     if (const Json* gi = objectMember(json, "gi")) {
@@ -649,7 +653,8 @@ Json toJson(const RuntimeSettings& settings)
               {"level0Extent", settings.vsm.level0Extent},
               {"texelsPerPixel", settings.vsm.texelsPerPixel},
               {"depthRange", settings.vsm.depthRange},
-              {"markBlockStride", settings.vsm.markBlockStride}}},
+              {"markBlockStride", settings.vsm.markBlockStride},
+              {"depthBiasTexels", settings.vsm.depthBiasTexels}}},
         {"gi",
          Json{{"enabled", settings.gi.enabled},
               {"debugPattern", settings.gi.debugPattern},

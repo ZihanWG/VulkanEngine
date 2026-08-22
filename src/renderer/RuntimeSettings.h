@@ -405,6 +405,22 @@ struct VsmSettings {
     // returned an identical page count on both the default and geometry-stress
     // scenes at roughly half the cost. See docs/virtual_shadow_maps.md.
     uint32_t markBlockStride = 8;
+    // Shadow-compare depth bias, in TEXELS of whichever clipmap level a lookup
+    // lands on.
+    //
+    // Its own setting rather than CsmSettings::depthBiasConstant, which VSM used
+    // to reuse: that value is a fraction of a cascade's ortho depth box, and a
+    // page's depth axis is 2*depthRange world units instead -- 500 by default --
+    // so the same 0.002 meant centimetres there and a whole world unit here. It
+    // lifted every umbra by ~15% of the sun. Texels rather than world units
+    // because a clipmap level's texel is 2^level times level 0's, so the depth
+    // error a texel can hide scales with the level and a single world figure is
+    // wrong at all but one of them.
+    //
+    // 64 is measured, not guessed: below ~32 the default scene self-shadows its
+    // own lit surfaces, and by 128 the umbra starts lifting again. The table is
+    // in docs/virtual_shadow_maps.md.
+    float depthBiasTexels = 64.0f;
 
     [[nodiscard]] bool operator==(const VsmSettings&) const = default;
 };
