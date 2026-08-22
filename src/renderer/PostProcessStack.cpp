@@ -2059,24 +2059,32 @@ void PostProcessStack::recordLuminanceCommands(VkCommandBuffer commandBuffer)
     renderGraph_.endLuminancePass();
 }
 
-void PostProcessStack::recordHistogramCommands(VkCommandBuffer commandBuffer)
+bool PostProcessStack::willRecordHistogramPass() const
 {
     if (!isHistogramExposureActive() || exposureModeValue(toneMappingSettings_.exposureMode) == ExposureMode::Manual ||
         currentFrame_ >= frameHistogramBuffers_.size() || currentFrame_ >= frameExposureReadbackReady_.size()) {
+        return false;
+    }
+    if (frameHistogramBuffers_[currentFrame_].buffer() == VK_NULL_HANDLE) {
+        return false;
+    }
+
+    const VkExtent2D sceneExtent = activePostProcessSource().writtenExtent;
+    return sceneExtent.width > 0 && sceneExtent.height > 0;
+}
+
+void PostProcessStack::recordHistogramCommands(VkCommandBuffer commandBuffer)
+{
+    // Every reason this pass might not run lives in the predicate, because the
+    // graph declares the pass from the same call.
+    if (!willRecordHistogramPass()) {
         return;
     }
 
     VkBuffer histogramBuffer = frameHistogramBuffers_[currentFrame_].buffer();
-    if (histogramBuffer == VK_NULL_HANDLE) {
-        return;
-    }
-
     const VkExtent2D sceneExtent = activePostProcessSource().writtenExtent;
     const uint32_t groupCountX = (sceneExtent.width + kHistogramLocalSizeX - 1) / kHistogramLocalSizeX;
     const uint32_t groupCountY = (sceneExtent.height + kHistogramLocalSizeY - 1) / kHistogramLocalSizeY;
-    if (groupCountX == 0 || groupCountY == 0) {
-        return;
-    }
 
     const renderer::GpuProfileScope profileScope(gpuProfiler_, currentFrame_, commandBuffer, "Histogram Exposure");
     renderGraph_.beginHistogramExposurePass();

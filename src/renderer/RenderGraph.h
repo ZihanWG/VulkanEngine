@@ -473,6 +473,11 @@ struct RenderGraphFrameResources {
     // declared as a layout-only read, so culling drops the passes that would
     // have filled it; see PostProcessStack::willRecordMipChainBloom.
     bool mipChainBloomSelected = false;
+    // Whether the histogram exposure reduction will record this frame. Manual and
+    // log-average exposure both return before the pass begins, and declaring it
+    // anyway makes the endFrame backstop report a mismatch on a frame where the
+    // renderer is behaving correctly.
+    bool histogramPassEnabled = false;
 };
 
 struct RenderGraphResourceDebugInfo {

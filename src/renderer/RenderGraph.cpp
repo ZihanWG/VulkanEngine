@@ -1,5 +1,6 @@
 #include "renderer/RenderGraph.h"
 
+#include "core/Logger.h"
 #include "renderer/IrradianceProbes.h"
 #include "rhi/VulkanShadowMap.h"
 #include "rhi/VulkanSwapchain.h"
@@ -1663,6 +1664,20 @@ void RenderGraph::endFrame()
     recordedOrderViolations_ = validatePassOrder(passSchedule_, recordedOrder_);
     unrecordedPassIndices_ = unrecordedPasses(passSchedule_, recordedOrder_);
 
+    {
+        static int fn = 0;
+        if (fn++ == 8) {
+            ve::Logger::info("RGFIX violations=" + std::to_string(recordedOrderViolations_.size()) +
+                             " unrecorded=" + std::to_string(unrecordedPassIndices_.size()) +
+                             " issues=" + std::to_string(declarationIssues_.size()) +
+                             " sameOrder=" + std::string(executionOrder_ == recordedOrder_ ? "yes" : "NO"));
+            for (uint32_t i : unrecordedPassIndices_) { ve::Logger::info("RGFIX   unrecorded: " + passes_[i].name); }
+            std::string ord;
+            for (uint32_t i : recordedOrder_) { ord += passes_[i].name + " "; }
+            ve::Logger::info("RGFIX   recorded: " + ord);
+        }
+    }
+
     refreshDebugResources();
     VK_CHECK(vkEndCommandBuffer(frame_.commandBuffer));
 
@@ -1967,6 +1982,41 @@ void RenderGraph::declareGeometryPasses()
             });
     }
 
+    frame_.passIndices.mainGpuCulling = addPass(
+        "MainGpuCullingPass",
+        RenderPassType::MainGpuCulling,
+        RenderPassExecutionType::Compute,
+        true,
+        [this](RenderGraphBuilder& builder) {
+            builder.readBuffer(frame_.mainCullInput,
+                               RGAccess::StorageBufferRead,
+                               "Reads per-draw AABB, draw-command, and batch metadata.");
+            builder.readHistoryTexture(frame_.depthPyramid,
+                                       RGAccess::ShaderRead,
+                                       "Optionally samples the previous-frame Hi-Z depth pyramid for occlusion tests.");
+            frame_.mainCullIndirectOutput = builder.writeBuffer(frame_.mainCullIndirectOutput,
+                                                                RGAccess::StorageBufferWrite,
+                                                                "Writes indirect draw commands for the main pass.");
+            frame_.mainCullVisibleCounts =
+                builder.writeBuffer(frame_.mainCullVisibleCounts,
+                                    RGAccess::StorageBufferReadWrite,
+                                    "Clears and writes visible counts plus culling debug counters.");
+            frame_.mainCullReadback =
+                builder.writeBuffer(frame_.mainCullReadback,
+                                    RGAccess::TransferDst,
+                                    "Receives copied culling counters for frame-latency CPU readback.");
+        });
+
+    // Declared after the main cull, which is where the renderer records them.
+    // They used to be declared before it and recorded after, a disagreement that
+    // cost nothing while nothing acted on the declared order and became a
+    // reordering the moment the graph started sequencing the frame. Fog in
+    // particular has a prerequisite the graph does not model -- injection walks
+    // the per-cluster light lists the synchronous cluster build produces -- so
+    // its declared position has to agree with where it actually runs.
+    //
+    // Safe to move: none of these three touch a resource MainGpuCullingPass
+    // touches, so no edge, version chain or culling outcome changes with them.
     if (frame_.resources.volumetricFogEnabled) {
         frame_.passIndices.volumetricFog = addPass(
             "VolumetricFogPass",
@@ -2070,32 +2120,6 @@ void RenderGraph::declareGeometryPasses()
                 }
             });
     }
-
-    frame_.passIndices.mainGpuCulling = addPass(
-        "MainGpuCullingPass",
-        RenderPassType::MainGpuCulling,
-        RenderPassExecutionType::Compute,
-        true,
-        [this](RenderGraphBuilder& builder) {
-            builder.readBuffer(frame_.mainCullInput,
-                               RGAccess::StorageBufferRead,
-                               "Reads per-draw AABB, draw-command, and batch metadata.");
-            builder.readHistoryTexture(frame_.depthPyramid,
-                                       RGAccess::ShaderRead,
-                                       "Optionally samples the previous-frame Hi-Z depth pyramid for occlusion tests.");
-            frame_.mainCullIndirectOutput = builder.writeBuffer(frame_.mainCullIndirectOutput,
-                                                                RGAccess::StorageBufferWrite,
-                                                                "Writes indirect draw commands for the main pass.");
-            frame_.mainCullVisibleCounts =
-                builder.writeBuffer(frame_.mainCullVisibleCounts,
-                                    RGAccess::StorageBufferReadWrite,
-                                    "Clears and writes visible counts plus culling debug counters.");
-            frame_.mainCullReadback =
-                builder.writeBuffer(frame_.mainCullReadback,
-                                    RGAccess::TransferDst,
-                                    "Receives copied culling counters for frame-latency CPU readback.");
-        });
-
     frame_.passIndices.mainHdr = addPass(
         "MainHDRPass",
         RenderPassType::MainHdr,
@@ -2541,26 +2565,30 @@ void RenderGraph::declareExposureCompositePasses()
             });
     }
 
-    frame_.passIndices.histogramExposure = addPass(
-        "HistogramExposurePass",
-        RenderPassType::HistogramExposure,
-        RenderPassExecutionType::Compute,
-        true,
-        [this](RenderGraphBuilder& builder) {
-            builder.readTexture(postProcessSource(),
-                                RGAccess::ShaderRead,
-                                "Samples active scene color for log2 luminance histogram binning.");
-            frame_.luminanceHistogram = builder.writeBuffer(frame_.luminanceHistogram,
-                                                            RGAccess::StorageBufferReadWrite,
-                                                            "Clears and writes 256 luminance histogram bins.");
-            builder.readBuffer(frame_.luminancePartials,
-                               RGAccess::StorageBufferRead,
-                               "Reads log-average luminance partials for GPU exposure fallback.");
-            frame_.exposureState =
-                builder.readWriteBuffer(frame_.exposureState,
-                                        RGAccess::StorageBufferReadWrite,
-                                        "Reads previous exposure and writes GPU exposure/luminance state.");
-        });
+    // Declared only when the recorder will record it: manual and log-average
+    // exposure both return before the pass begins.
+    if (frame_.resources.histogramPassEnabled) {
+        frame_.passIndices.histogramExposure = addPass(
+            "HistogramExposurePass",
+            RenderPassType::HistogramExposure,
+            RenderPassExecutionType::Compute,
+            true,
+            [this](RenderGraphBuilder& builder) {
+                builder.readTexture(postProcessSource(),
+                                    RGAccess::ShaderRead,
+                                    "Samples active scene color for log2 luminance histogram binning.");
+                frame_.luminanceHistogram = builder.writeBuffer(frame_.luminanceHistogram,
+                                                                RGAccess::StorageBufferReadWrite,
+                                                                "Clears and writes 256 luminance histogram bins.");
+                builder.readBuffer(frame_.luminancePartials,
+                                   RGAccess::StorageBufferRead,
+                                   "Reads log-average luminance partials for GPU exposure fallback.");
+                frame_.exposureState =
+                    builder.readWriteBuffer(frame_.exposureState,
+                                            RGAccess::StorageBufferReadWrite,
+                                            "Reads previous exposure and writes GPU exposure/luminance state.");
+            });
+    }
 
     frame_.passIndices.composite = addPass(
         "CompositePass",

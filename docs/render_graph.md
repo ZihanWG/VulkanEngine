@@ -408,6 +408,30 @@ function became a dozen named recorders, and that async-compute placement — th
 one change that would make scheduling matter, because moving a pass to another
 queue is a real change rather than a reshuffle — now has somewhere to plug in.
 
+### Declaration order has to match recording order
+
+The passes are declared in `declareGeometryPasses` and recorded by the units in
+`recordRenderCommands`. While nothing acted on the declared order those two could
+disagree for free, and they did: `VolumetricFogPass`, `ProbeCapture` and the
+irradiance probe update were declared before `MainGpuCullingPass` and recorded
+after it.
+
+Handing the order to the graph turned that latent disagreement into a real
+reordering — the fog unit anchored on its own earlier declared position and
+sorted ahead of the synchronous cluster build, whose light lists fog injection
+walks. The graph does not model that dependency, and cannot: the cluster buffers
+are not graph resources and the async path submits them on another queue.
+
+The three declarations moved to where the passes actually run. None of them
+touches a resource `MainGpuCullingPass` touches, so no edge, version chain or
+culling outcome changed with them.
+
+The general rule this leaves: **a pass whose ordering constraint the graph does
+not model must have its declared position agree with where it has to run**, or
+the unit must be left unanchored so it follows the units around it. The
+synchronous cluster build and the fog volume's first-use clear are unanchored for
+exactly that reason.
+
 ### The backstop
 
 The declarations in `buildFrameGraphDeclarations` and the recording spread across
@@ -422,6 +446,20 @@ and `endFrame` checks it:
 
 Both are reported in the Render Graph panel, never thrown, for the same reason
 `validateDeclarations` reports.
+
+### The backstop only proves itself on configurations that run
+
+Everything above was checked on the default configuration, and that was not
+enough. A review of this work found two more declaration/recording mismatches
+that only appear elsewhere: the fog and probe ordering above, which needs
+volumetric fog and GI enabled, and `HistogramExposurePass`, which was declared
+unconditionally while its recorder returns early under manual exposure.
+
+Both are now checked in the configurations they live in -- fog and GI on, manual
+exposure, log-average exposure -- and all three report no violations, no
+unrecorded passes and no declaration issues. The headless CI job still exercises
+only the default settings, so a mismatch introduced in a configuration nothing
+runs will still go unnoticed until someone runs it.
 
 ### What the backstop found on its first run
 

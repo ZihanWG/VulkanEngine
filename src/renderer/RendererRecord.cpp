@@ -949,6 +949,7 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         .cascadeShadowRedrawRequired = anyCascadeShadowRedrawRequired(),
         .luminancePassEnabled = postProcess_.willRecordLuminancePass(),
         .mipChainBloomSelected = postProcess_.willRecordMipChainBloom(),
+        .histogramPassEnabled = postProcess_.willRecordHistogramPass(),
     };
 }
 
@@ -2150,6 +2151,21 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
          [this, commandBuffer]() { recordCascadeShadowPass(commandBuffer); }},
         {renderGraph_.builtinPassIndex(Builtin::PunctualShadow),
          [this, commandBuffer]() { recordPunctualShadows(commandBuffer); }},
+        {renderer::kInvalidRenderGraphHandle,
+         [this, commandBuffer]() {
+             // Runs whether or not fog is on: binding 8 claims a sampled layout
+             // unconditionally, so the volume has to reach it even on a cold start
+             // with fog disabled. No-op after the first frame. Fog switching off has
+             // to leave a neutral volume behind, because the skybox samples it
+             // unconditionally, and detecting that here covers every path that can
+             // disable fog -- settings load, preset, toggle.
+             const bool fogActiveThisFrame = isVolumetricFogActive();
+             if (fogWasActive_ && !fogActiveThisFrame) {
+                 volumetricFog_.markVolumeNeedsClear();
+             }
+             fogWasActive_ = fogActiveThisFrame;
+             volumetricFog_.ensureVolumeInitialized(commandBuffer);
+         }},
         {renderGraph_.builtinPassIndex(Builtin::MainGpuCulling),
          [this, commandBuffer]() { recordGpuCullingCommands(commandBuffer); }},
         {renderer::kInvalidRenderGraphHandle,
@@ -2176,21 +2192,6 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                  clusteredLighting_.recordLightCull(commandBuffer, currentFrame_);
                  rhi::debug::endLabel(commandBuffer);
              }
-         }},
-        {renderer::kInvalidRenderGraphHandle,
-         [this, commandBuffer]() {
-             // Runs whether or not fog is on: binding 8 claims a sampled layout
-             // unconditionally, so the volume has to reach it even on a cold start
-             // with fog disabled. No-op after the first frame. Fog switching off has
-             // to leave a neutral volume behind, because the skybox samples it
-             // unconditionally, and detecting that here covers every path that can
-             // disable fog -- settings load, preset, toggle.
-             const bool fogActiveThisFrame = isVolumetricFogActive();
-             if (fogWasActive_ && !fogActiveThisFrame) {
-                 volumetricFog_.markVolumeNeedsClear();
-             }
-             fogWasActive_ = fogActiveThisFrame;
-             volumetricFog_.ensureVolumeInitialized(commandBuffer);
          }},
         {renderGraph_.builtinPassIndex(Builtin::VolumetricFog),
          [this, commandBuffer]() { recordVolumetricFogPass(commandBuffer); }},
