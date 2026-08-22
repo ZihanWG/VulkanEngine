@@ -85,7 +85,26 @@ The graph now owns selected declared buffer pass-to-pass barriers:
 - `LuminancePass` storage writes to luminance partials before `HistogramExposurePass` reads them
 - `HistogramExposurePass` exposure-state writes before `CompositePass` reads the GPU exposure buffer
 
-Shadow GPU culling barriers, main GPU culling reset/copy/readback barriers, histogram reset and in-pass histogram-to-exposure-reduce barriers, exposure debug host-read visibility, and portfolio screenshot copy barriers are still manually synchronized in `RendererRecord.cpp`.
+Everything else is still synchronized by hand, in the subsystem that owns the
+resource rather than in one place. `RendererRecord.cpp` itself no longer records
+a single barrier; the remaining manual sites are:
+
+| File | What it synchronizes by hand |
+| --- | --- |
+| `GpuCulling.cpp` | Main cull reset/dispatch/draw, phase-2 count reset, visible-count copy and readback, and the shadow cull equivalents |
+| `PunctualShadows.cpp` | Punctual cull dispatch and its indirect/count consumers |
+| `VirtualShadowMapPass.cpp` | Page-marking and page-cull request buffers, which are not graph resources |
+| `PostProcessStack.cpp` | Histogram reset, the in-pass histogram-to-exposure reduce, and exposure host-read visibility |
+| `IrradianceProbeVolume.cpp` | Probe shading-param upload and the atlas update dispatches |
+| `DepthPyramid.cpp` | The mip chain's write-to-read sequencing inside its own pass |
+| `ClusteredLighting.cpp` | Cluster build to light cull, on the async compute queue |
+| `VolumetricFogPass.cpp` | Injection to scattering, between its own volumes |
+| `ScreenshotCapture.cpp` | Portfolio screenshot copy, which transitions the swapchain between `CompositePass` and `ImGuiPass` |
+
+Two of those categories are deliberate rather than pending: barriers
+for intra-pass sequencing (the depth pyramid's mip chain, fog's volumes, the
+histogram reduce) and for readback/host visibility stay explicit even for
+resources the graph does declare.
 
 ## Synchronization Inference
 
