@@ -115,6 +115,48 @@ At pass begin, the graph maps buffer accesses to conservative Synchronization2 b
 
 The implementation favors correctness and debug readability over barrier minimization. Same-layout write-after-write or write-after-read cases can still emit ordering barriers.
 
+### Barrier batching
+
+Every barrier a pass infers sits between the same two points in the command
+stream -- after whatever the previous pass recorded, before this pass's first
+command -- so they are accumulated and submitted as a single
+`vkCmdPipelineBarrier2` rather than one call per resource. This changes how many
+barrier commands carry the frame's synchronization, not what is synchronized:
+the inferred barrier set is byte-for-byte the same.
+
+The one case that cannot be batched is a resource transitioned twice inside a
+single pass. Two barriers for the same resource in one `VkDependencyInfo` are
+unordered with respect to each other, so the accumulated set is submitted before
+the second transition is recorded (`barrierBatchNeedsFlush`, unit tested).
+Tracked state is still updated at record time, not at flush time, so the second
+transition derives its barrier from what the first one leaves behind exactly as
+it did when every transition submitted on its own.
+
+No declared pass currently declares the same resource twice, so that flush path
+is dormant today. `RenderPassNode::generatedBarrierSubmitCount` above one is the
+signal that a pass has started doing it -- with one standing exception:
+`ImGuiPass` always reports two, because its transition of the swapchain into the
+present layout is recorded after the pass body and cannot join the pass's own
+set.
+
+Measured on the default scene at 1280x720 with default settings, on lavapipe
+under the headless-render job's flags:
+
+| | Per frame |
+| --- | --- |
+| executed passes | 23 |
+| inferred barriers | 57 |
+| `vkCmdPipelineBarrier2` calls, before | 57 |
+| `vkCmdPipelineBarrier2` calls, after | **22** |
+
+The barrier count is identical on both sides, which is the property that matters:
+the batching moved 57 barriers from 57 commands into 22, and added none.
+
+This is a command-count reduction, **not a measured frame-time win** -- no
+timing claim is attached to it. It is also the prerequisite for tightening the
+alias-handoff source scope, since that only pays off once a pass's barriers
+share one dependency.
+
 ## Side Effects And Culling
 
 Passes can be marked as side-effecting. Side-effect passes are never culled. Current side-effect passes include:
@@ -137,7 +179,8 @@ The ImGui Render Graph panel shows:
 - culled status/reason
 - side-effect flag
 - read and write resources with declared access
-- generated image and buffer barrier count/summary
+- generated image and buffer barrier count/summary, and the number of
+  `vkCmdPipelineBarrier2` submissions they were batched into
 - resource name, kind, lifetime, extent/size, format, mip/layer count, initial layout, and final layout
 
 ## Transient Memory Aliasing
@@ -251,6 +294,7 @@ the default.
 - Shadow GPU culling buffers are not graph-declared yet, so their reset/dispatch/draw/readback barriers remain manual.
 - Intra-pass buffer sequencing remains manual when a buffer is filled, dispatched against, copied, or made host-visible inside one renderer command block.
 - Portfolio screenshot copy remains manual because it temporarily transitions the swapchain between `CompositePass` and `ImGuiPass`.
-- Barriers are conservative and not heavily optimized.
+- Barriers are conservative and not heavily optimized. They are batched per
+  pass (see "Barrier batching"), but their stage/access scopes are unchanged.
 - Not all descriptor-driven sampled resources are graph-owned yet, including material textures, IBL cubemaps, BRDF LUT, and render-target preview descriptors.
 - There is no node-editor view yet.

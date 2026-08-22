@@ -8,6 +8,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -517,6 +519,60 @@ TEST_CASE("An UNDEFINED old layout orders against nothing", "[rendergraph][barri
                                        RGAccess::ColorAttachmentWrite,
                                        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                                        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT));
+}
+
+// ---------------------------------------------------------------------------
+// Barrier batching. A pass's inferred barriers go into one vkCmdPipelineBarrier2,
+// which is only sound while no two of them target the same resource: barriers
+// inside one dependency info are unordered relative to each other, so a resource
+// transitioned twice in a pass would have its two transitions race. Getting this
+// wrong produces no validation error, just a resource occasionally read in the
+// wrong layout.
+
+TEST_CASE("An empty batch never needs a flush", "[rendergraph][barriers]")
+{
+    using ve::renderer::barrierBatchNeedsFlush;
+
+    const std::vector<uint32_t> batched{};
+
+    CHECK_FALSE(barrierBatchNeedsFlush(batched, 0));
+    CHECK_FALSE(barrierBatchNeedsFlush(batched, 7));
+}
+
+TEST_CASE("Distinct resources share one barrier submission", "[rendergraph][barriers]")
+{
+    using ve::renderer::barrierBatchNeedsFlush;
+
+    // The common case, and the entire point of batching: a pass reading four
+    // different textures emits one barrier call, not four.
+    const std::vector<uint32_t> batched{0, 1, 2};
+
+    CHECK_FALSE(barrierBatchNeedsFlush(batched, 3));
+}
+
+TEST_CASE("A resource already in the batch forces a flush", "[rendergraph][barriers]")
+{
+    using ve::renderer::barrierBatchNeedsFlush;
+
+    const std::vector<uint32_t> batched{4, 9, 2};
+
+    CHECK(barrierBatchNeedsFlush(batched, 4));
+    CHECK(barrierBatchNeedsFlush(batched, 9));
+    CHECK(barrierBatchNeedsFlush(batched, 2));
+}
+
+TEST_CASE("Texture and buffer indices do not collide", "[rendergraph][barriers]")
+{
+    using ve::renderer::barrierBatchNeedsFlush;
+
+    // Textures and buffers are separate tables, so index 3 in one says nothing
+    // about index 3 in the other. The caller keeps a list per kind; this only
+    // checks that the rule itself carries no cross-kind assumption.
+    const std::vector<uint32_t> batchedTextures{3};
+    const std::vector<uint32_t> batchedBuffers{};
+
+    CHECK(barrierBatchNeedsFlush(batchedTextures, 3));
+    CHECK_FALSE(barrierBatchNeedsFlush(batchedBuffers, 3));
 }
 
 // ---------------------------------------------------------------------------

@@ -128,11 +128,11 @@ RenderGraph::TextureAccessState accessStateFromLayout(VkImageLayout layout, VkIm
     return state;
 }
 
-std::string passBarrierSummary(uint32_t imageBarrierCount, uint32_t bufferBarrierCount)
+std::string passBarrierSummary(uint32_t imageBarrierCount, uint32_t bufferBarrierCount, uint32_t submitCount)
 {
-    return std::to_string(imageBarrierCount) + " inferred image barrier" +
-           (imageBarrierCount == 1 ? "" : "s") + ", " + std::to_string(bufferBarrierCount) +
-           " inferred buffer barrier" + (bufferBarrierCount == 1 ? "" : "s");
+    return std::to_string(imageBarrierCount) + " inferred image barrier" + (imageBarrierCount == 1 ? "" : "s") + ", " +
+           std::to_string(bufferBarrierCount) + " inferred buffer barrier" + (bufferBarrierCount == 1 ? "" : "s") +
+           " in " + std::to_string(submitCount) + " submission" + (submitCount == 1 ? "" : "s");
 }
 
 } // namespace
@@ -371,6 +371,7 @@ void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
     buffers_.clear();
     passes_.clear();
     executeCallbacks_.clear();
+    barrierBatch_.reset();
     debugResources_.clear();
 
     frame_ = {};
@@ -1615,13 +1616,18 @@ void RenderGraph::endImGuiPass()
     }
 
     vkCmdEndRendering(frame_.commandBuffer);
-    const uint32_t presentBarriers = transitionTexture(frame_.swapchainColor, RGAccess::Present);
+    // Its own batch, and its own submission: this transition is recorded after
+    // the pass body rather than before it, so it cannot join the pass's set.
+    barrierBatch_.reset();
+    const uint32_t presentBarriers = transitionTexture(frame_.swapchainColor, RGAccess::Present, barrierBatch_);
+    flushBarrierBatch(barrierBatch_);
     if (frame_.passIndices.imgui != kInvalidRenderGraphHandle) {
         RenderPassNode& pass = passes_.at(frame_.passIndices.imgui);
         pass.generatedBarrierCount += presentBarriers;
         pass.generatedImageBarrierCount += presentBarriers;
-        pass.transitionSummary =
-            passBarrierSummary(pass.generatedImageBarrierCount, pass.generatedBufferBarrierCount);
+        pass.generatedBarrierSubmitCount += barrierBatch_.submitCount;
+        pass.transitionSummary = passBarrierSummary(
+            pass.generatedImageBarrierCount, pass.generatedBufferBarrierCount, pass.generatedBarrierSubmitCount);
     }
     activePass_ = ActivePass::None;
 }
@@ -2551,26 +2557,56 @@ bool RenderGraph::beginDeclaredPass(uint32_t passIndex)
         return false;
     }
 
+    // Every barrier this pass infers sits between the same two points in the
+    // command stream -- after whatever the previous pass recorded, before this
+    // pass's first command -- so they are accumulated and submitted as one
+    // dependency rather than one vkCmdPipelineBarrier2 per resource.
+    barrierBatch_.reset();
+    BarrierBatch& batch = barrierBatch_;
     uint32_t imageBarrierCount = 0;
     uint32_t bufferBarrierCount = 0;
     for (const RenderResourceUsage& usage : pass.resourceUsages) {
         if (usage.resource.kind == RGResourceKind::Texture) {
-            imageBarrierCount += transitionTexture(RGTextureHandle{usage.resource.index}, usage.declaredAccess);
+            imageBarrierCount += transitionTexture(RGTextureHandle{usage.resource.index}, usage.declaredAccess, batch);
         } else if (usage.resource.kind == RGResourceKind::Buffer) {
-            bufferBarrierCount += transitionBuffer(RGBufferHandle{usage.resource.index}, usage.declaredAccess);
+            bufferBarrierCount += transitionBuffer(RGBufferHandle{usage.resource.index}, usage.declaredAccess, batch);
         }
     }
+    flushBarrierBatch(batch);
 
     pass.executed = true;
     pass.generatedBarrierCount += imageBarrierCount + bufferBarrierCount;
     pass.generatedImageBarrierCount += imageBarrierCount;
     pass.generatedBufferBarrierCount += bufferBarrierCount;
-    pass.transitionSummary =
-        passBarrierSummary(pass.generatedImageBarrierCount, pass.generatedBufferBarrierCount);
+    pass.generatedBarrierSubmitCount += batch.submitCount;
+    pass.transitionSummary = passBarrierSummary(
+        pass.generatedImageBarrierCount, pass.generatedBufferBarrierCount, pass.generatedBarrierSubmitCount);
     return true;
 }
 
-uint32_t RenderGraph::transitionTexture(RGTextureHandle handle, RGAccess access)
+void RenderGraph::flushBarrierBatch(BarrierBatch& batch)
+{
+    if (batch.imageBarriers.empty() && batch.bufferBarriers.empty()) {
+        return;
+    }
+
+    VkDependencyInfo dependencyInfo{};
+    dependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dependencyInfo.imageMemoryBarrierCount = static_cast<uint32_t>(batch.imageBarriers.size());
+    dependencyInfo.pImageMemoryBarriers = batch.imageBarriers.data();
+    dependencyInfo.bufferMemoryBarrierCount = static_cast<uint32_t>(batch.bufferBarriers.size());
+    dependencyInfo.pBufferMemoryBarriers = batch.bufferBarriers.data();
+
+    vkCmdPipelineBarrier2(frame_.commandBuffer, &dependencyInfo);
+
+    batch.imageBarriers.clear();
+    batch.bufferBarriers.clear();
+    batch.touchedTextures.clear();
+    batch.touchedBuffers.clear();
+    ++batch.submitCount;
+}
+
+uint32_t RenderGraph::transitionTexture(RGTextureHandle handle, RGAccess access, BarrierBatch& batch)
 {
     if (!handle.valid() || handle.index >= textures_.size()) {
         return 0;
@@ -2639,19 +2675,23 @@ uint32_t RenderGraph::transitionTexture(RGTextureHandle handle, RGAccess access)
     barrier.subresourceRange.baseArrayLayer = 0;
     barrier.subresourceRange.layerCount = resource.desc.arrayLayers;
 
-    VkDependencyInfo dependencyInfo{};
-    dependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dependencyInfo.imageMemoryBarrierCount = 1;
-    dependencyInfo.pImageMemoryBarriers = &barrier;
+    // The tracked state is updated here, not at flush time, so a second
+    // transition of this resource later in the pass computes its barrier from
+    // the layout and access this one leaves behind -- exactly as it did when
+    // every transition submitted immediately. Only the submission is deferred.
+    if (barrierBatchNeedsFlush(batch.touchedTextures, handle.index)) {
+        flushBarrierBatch(batch);
+    }
+    batch.imageBarriers.push_back(barrier);
+    batch.touchedTextures.push_back(handle.index);
 
-    vkCmdPipelineBarrier2(frame_.commandBuffer, &dependencyInfo);
     setTextureLayout(resource, desired.layout);
     resource.lastAccess = desired;
     resource.usedThisFrame = true;
     return 1;
 }
 
-uint32_t RenderGraph::transitionBuffer(RGBufferHandle handle, RGAccess access)
+uint32_t RenderGraph::transitionBuffer(RGBufferHandle handle, RGAccess access, BarrierBatch& batch)
 {
     if (!handle.valid() || handle.index >= buffers_.size()) {
         return 0;
@@ -2689,12 +2729,12 @@ uint32_t RenderGraph::transitionBuffer(RGBufferHandle handle, RGAccess access)
     barrier.offset = 0;
     barrier.size = resource.desc.size;
 
-    VkDependencyInfo dependencyInfo{};
-    dependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dependencyInfo.bufferMemoryBarrierCount = 1;
-    dependencyInfo.pBufferMemoryBarriers = &barrier;
+    if (barrierBatchNeedsFlush(batch.touchedBuffers, handle.index)) {
+        flushBarrierBatch(batch);
+    }
+    batch.bufferBarriers.push_back(barrier);
+    batch.touchedBuffers.push_back(handle.index);
 
-    vkCmdPipelineBarrier2(frame_.commandBuffer, &dependencyInfo);
     resource.lastAccess = desired;
     resource.usedThisFrame = true;
     return 1;
@@ -2785,6 +2825,11 @@ bool bufferBarrierRequired(bool usedThisFrame,
 {
     const bool touched = usedThisFrame || previousDeclared != RGAccess::Unknown;
     return touched && (accessMaskWrites(previousAccess) || accessMaskWrites(desiredAccess));
+}
+
+bool barrierBatchNeedsFlush(std::span<const uint32_t> batched, uint32_t resource)
+{
+    return std::find(batched.begin(), batched.end(), resource) != batched.end();
 }
 
 bool textureBarrierRequired(VkImageLayout oldLayout,

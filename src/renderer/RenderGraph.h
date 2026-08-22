@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -180,6 +181,23 @@ struct BufferAccessState {
                                           VkAccessFlags2 previousAccess,
                                           VkAccessFlags2 desiredAccess);
 
+// Whether appending a barrier for `resource` to a batch that already holds
+// barriers for the resources in `batched` has to submit what is accumulated
+// first.
+//
+// A pass's inferred barriers all sit between the same two points in the command
+// stream, so they belong in one vkCmdPipelineBarrier2 -- except that two
+// barriers for the same resource inside one VkDependencyInfo are unordered with
+// respect to each other. A resource transitioned twice within a single pass
+// therefore has to see its first barrier submitted before the second is
+// recorded; distinct resources carry no such constraint, which is the whole
+// point of batching. Split out as pure index bookkeeping for the same reason
+// cullUnusedPasses was: it needs no device to exercise.
+//
+// Texture and buffer indices live in separate tables, so callers pass the batch
+// list matching the resource's kind.
+[[nodiscard]] bool barrierBatchNeedsFlush(std::span<const uint32_t> batched, uint32_t resource);
+
 struct RenderPassNode {
     std::string name;
     RenderPassType type = RenderPassType::MainHdr;
@@ -193,6 +211,12 @@ struct RenderPassNode {
     uint32_t generatedBarrierCount = 0;
     uint32_t generatedImageBarrierCount = 0;
     uint32_t generatedBufferBarrierCount = 0;
+    // vkCmdPipelineBarrier2 calls the above barriers were submitted in. Normally
+    // one: the pass's whole barrier set goes in a single dependency info. Two
+    // things raise it -- a resource transitioned more than once inside one pass
+    // (see barrierBatchNeedsFlush), and the ImGui pass, whose present transition
+    // is recorded after the pass body and so cannot join the pass's own set.
+    uint32_t generatedBarrierSubmitCount = 0;
 };
 
 struct RenderGraphImageResource {
@@ -577,6 +601,32 @@ private:
         bool graphManaged = false;
     };
 
+    // One pass's inferred barriers, accumulated so the whole set is submitted as
+    // a single vkCmdPipelineBarrier2 rather than one call per resource.
+    //
+    // The graph owns one of these and reuses it (barrierBatch_) rather than
+    // building a fresh one per pass: this sits on the command-recording path, and
+    // a local would mean a handful of small allocations for every pass of every
+    // frame. reset() empties it without giving up the capacity.
+    struct BarrierBatch {
+        std::vector<VkImageMemoryBarrier2> imageBarriers;
+        std::vector<VkBufferMemoryBarrier2> bufferBarriers;
+        // Resource indices already represented in the batch, per resource table.
+        std::vector<uint32_t> touchedTextures;
+        std::vector<uint32_t> touchedBuffers;
+        // Submissions made since the last reset, including the final flush.
+        uint32_t submitCount = 0;
+
+        void reset()
+        {
+            imageBarriers.clear();
+            bufferBarriers.clear();
+            touchedTextures.clear();
+            touchedBuffers.clear();
+            submitCount = 0;
+        }
+    };
+
     struct BufferResource {
         RGBufferDesc desc;
         VkBuffer buffer = VK_NULL_HANDLE;
@@ -683,8 +733,15 @@ private:
     void declareExposureCompositePasses();
     void compilePassCulling();
     bool beginDeclaredPass(uint32_t passIndex);
-    uint32_t transitionTexture(RGTextureHandle handle, RGAccess access);
-    uint32_t transitionBuffer(RGBufferHandle handle, RGAccess access);
+    // Both record into `batch` instead of submitting, and return the number of
+    // barriers they contributed (0 or 1) so the pass's counters keep meaning the
+    // same thing they did when every transition submitted on its own. Either may
+    // flush `batch` first when the resource is already in it.
+    uint32_t transitionTexture(RGTextureHandle handle, RGAccess access, BarrierBatch& batch);
+    uint32_t transitionBuffer(RGBufferHandle handle, RGAccess access, BarrierBatch& batch);
+    // Submits the accumulated barriers as one dependency and empties the batch.
+    // A no-op on an empty batch, so it does not count as a submission.
+    void flushBarrierBatch(BarrierBatch& batch);
     [[nodiscard]] TextureAccessState accessStateForTexture(const TextureResource& resource, RGAccess access) const;
     [[nodiscard]] BufferAccessState accessStateForBuffer(RGAccess access) const;
     [[nodiscard]] VkImageLayout currentTextureLayout(const TextureResource& resource) const;
@@ -717,6 +774,9 @@ private:
     void beginSwapchainRendering(VkClearValue clearValue, VkAttachmentLoadOp loadOp);
 
     FrameState frame_{};
+    // Reused across passes and frames; see BarrierBatch. Always empty between
+    // passes, because every user resets it on entry and flushes it on exit.
+    BarrierBatch barrierBatch_{};
     std::vector<TextureResource> textures_;
     std::vector<BufferResource> buffers_;
     std::vector<RenderPassNode> passes_;
