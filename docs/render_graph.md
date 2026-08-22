@@ -351,7 +351,7 @@ So whichever chain lost the selection was filled every frame and thrown away --
 three full-screen passes with the mip chain selected, which is the default, and
 seven with it off. See "Layout-Only Reads" for what fixed it.
 
-## The Graph Drives The Post-Process Tail
+## The Graph Drives The Frame
 
 `computeExecutionOrder` turns the derived dependency graph into an order: Kahn's
 algorithm over the predecessor sets, breaking ties on declaration index. The tie
@@ -360,27 +360,53 @@ result is exactly the order the passes were declared in — handing the order to
 the graph changes nothing about what runs or when. What it changes is who
 decides, and a unit test pins that the two still agree.
 
-`Renderer::recordRenderCommands` hands the graph seven recorders through
-`RenderGraph::recordScheduledUnits`:
+`Renderer::recordRenderCommands` is now a list of seventeen recorders handed to
+`RenderGraph::recordScheduledUnits`, and nothing else: `beginFrame`, the units,
+`endFrame`. It went from ~980 lines to ~160, and the frame it describes is
+sequenced by the graph from end to end.
 
 | Unit | Anchor pass |
 | --- | --- |
-| `recordDepthPyramidCommands` | `DepthPyramidPass` |
-| `recordTaaResolveCommands` | `TAAResolvePass` |
-| `recordLegacyBloomCommands` | `BloomExtractPass` |
-| `recordMipChainBloomCommands` | `BloomDownsampleMip0` |
-| `recordLuminanceCommands` | `LuminancePass` |
-| `recordHistogramCommands` | `HistogramExposurePass` |
-| `recordCompositeCommands` | `CompositePass` |
+| VSM page marking, page cull, page render | `VsmPageMarkPass` |
+| `recordCascadeShadowPass` | `CSMShadowPass` |
+| `recordPunctualShadows` | `PunctualShadowAtlasPass` |
+| `recordGpuCullingCommands` | `MainGpuCullingPass` |
+| synchronous cluster build and light cull | *none* |
+| fog volume first-use clear | *none* |
+| `recordVolumetricFogPass` | `VolumetricFogPass` |
+| `recordIrradianceProbePasses` | `ProbeCapturePass` |
+| `recordMainPassGeometry` | `MainHDRPass` |
+| the seven post-process recorders | `DepthPyramidPass` … `CompositePass` |
+| screenshot copies and the ImGui overlay | `ImGuiPass` |
 
-A recorder spanning several declared passes anchors on the first of them; the
-mip-chain recorder covers seven. This is the region already factored far enough
-to be invoked rather than called in sequence, and it is also where all of the
-frame's scheduling slack is. Everything before it — the shadow, culling, probe,
-main and screen-space passes — is still recorded in place.
+A recorder spanning several declared passes anchors on the first of them.
+`recordMainPassGeometry` covers six — the main pass, the two-phase occlusion
+re-test, SSR, GTAO and the transparent pass — because they are one region as far
+as state goes: the viewport, the global descriptor set, the indirect buffers, the
+base push constants and a mutable flag tracking whether the bindless sets are
+currently bound are all set up by the main pass and reused by the rest. The
+mip-chain bloom recorder covers seven for the same kind of reason.
 
-**No reordering happens.** The scheduled order is today's order, the golden image
-is bit-identical, and the proven-legal exposure hoist stays unapplied.
+The two units with no anchor have no declared pass to name. The synchronous
+cluster build is the fallback path for work the renderer submits on the compute
+queue itself, which `docs/async_compute.md` describes and the graph does not
+model; the fog volume's first-use clear is frame setup, not a pass. Both run with
+the last anchored unit registered before them, which is where they always ran.
+
+**No reordering happens.** The scheduled order is today's order — verified as
+equal to the recorded order every frame — and the captured frame stayed
+bit-identical through the whole extraction.
+
+### What this does not buy
+
+The head of the frame has almost no scheduling freedom: the longest dependency
+chain is 17 of 20 recorded passes, and the slack sits in the tail. Nothing here
+can move anywhere useful, and reordering on a single queue would not be a
+performance win if it could. What it does buy is that the backstop and any future
+policy now cover the whole frame rather than its last third, that a ~980-line
+function became a dozen named recorders, and that async-compute placement — the
+one change that would make scheduling matter, because moving a pass to another
+queue is a real change rather than a reshuffle — now has somewhere to plug in.
 
 ### The backstop
 
@@ -662,11 +688,10 @@ the default.
 - There is no node-editor view yet.
 - Declaration validation does not model cross-frame liveness; see "What it does
   not check".
-- The graph orders the post-process tail and nothing else. The rest of the frame
-  is recorded in place, and making it schedulable means factoring the main HDR
-  pass (~300 inline lines), the shadow, probe and culling regions into callable
-  units.
 - No reordering is performed. The scheduled order equals the declaration order by
-  construction; see "The precondition for ever reordering".
+  construction; see "Which analyses a reordering would break".
+- The unit granularity is coarser than the pass granularity in two places: the
+  main-pass recorder covers six declared passes and the mip-chain bloom recorder
+  seven, because each is one region of shared recording state.
 - Versions are per frame and per resource, not per subresource, so a pass writing
   one mip of an image advances the version of the whole image.

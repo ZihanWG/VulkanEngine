@@ -1804,6 +1804,20 @@ VkBuffer RenderGraph::buffer(RGBufferHandle handle) const
 uint32_t RenderGraph::builtinPassIndex(RenderGraphBuiltinPass pass) const
 {
     switch (pass) {
+    case RenderGraphBuiltinPass::VsmPageMark:
+        return frame_.passIndices.vsmPageMark;
+    case RenderGraphBuiltinPass::Shadow:
+        return frame_.passIndices.shadow;
+    case RenderGraphBuiltinPass::PunctualShadow:
+        return frame_.passIndices.punctualShadow;
+    case RenderGraphBuiltinPass::MainGpuCulling:
+        return frame_.passIndices.mainGpuCulling;
+    case RenderGraphBuiltinPass::VolumetricFog:
+        return frame_.passIndices.volumetricFog;
+    case RenderGraphBuiltinPass::ProbeCapture:
+        return frame_.passIndices.probeCapture;
+    case RenderGraphBuiltinPass::MainHdr:
+        return frame_.passIndices.mainHdr;
     case RenderGraphBuiltinPass::DepthPyramid:
         return frame_.passIndices.depthPyramid;
     case RenderGraphBuiltinPass::TaaResolve:
@@ -1819,6 +1833,8 @@ uint32_t RenderGraph::builtinPassIndex(RenderGraphBuiltinPass pass) const
         return frame_.passIndices.histogramExposure;
     case RenderGraphBuiltinPass::Composite:
         return frame_.passIndices.composite;
+    case RenderGraphBuiltinPass::ImGui:
+        return frame_.passIndices.imgui;
     }
 
     return kInvalidRenderGraphHandle;
@@ -1828,20 +1844,27 @@ void RenderGraph::recordScheduledUnits(std::span<RenderGraphScheduledUnit> units
 {
     requireFrameActive("RenderGraph::recordScheduledUnits");
 
-    // Position in the scheduled order, or "keep where you were" for a unit whose
-    // pass this frame does not declare. Sorting on the pair with the registration
-    // index second makes the sort stable without needing stable_sort's guarantee
-    // to carry the meaning.
     const auto scheduledPosition = [this](uint32_t passIndex) {
         const auto found = std::find(executionOrder_.begin(), executionOrder_.end(), passIndex);
         return found == executionOrder_.end() ? executionOrder_.size()
                                               : static_cast<size_t>(found - executionOrder_.begin());
     };
 
+    // A unit whose pass this frame does not declare -- a recorder with no graph
+    // pass of its own, or one whose pass is conditional and absent -- runs with
+    // the last anchored unit registered before it. Sorting it to the end instead
+    // would move work the graph knows nothing about, such as the synchronous
+    // cluster build, past the composite. Units sharing a position keep their
+    // registration order, which is what the second element of the pair is for.
     std::vector<std::pair<size_t, size_t>> ordered;
     ordered.reserve(units.size());
+    size_t inherited = 0;
     for (size_t unitIndex = 0; unitIndex < units.size(); ++unitIndex) {
-        ordered.emplace_back(scheduledPosition(units[unitIndex].passIndex), unitIndex);
+        const size_t position = scheduledPosition(units[unitIndex].passIndex);
+        if (position != executionOrder_.size()) {
+            inherited = position;
+        }
+        ordered.emplace_back(inherited, unitIndex);
     }
     std::sort(ordered.begin(), ordered.end());
 

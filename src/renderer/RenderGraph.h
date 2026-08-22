@@ -494,8 +494,9 @@ struct RenderGraphResourceDebugInfo {
 
 // A recorder the graph may invoke, and the pass whose scheduled position decides
 // when it runs. A recorder covering several declared passes names the first of
-// them; a recorder with no pass of its own leaves the index invalid and keeps
-// its registration position.
+// them. A recorder with no pass of its own -- the synchronous cluster build, the
+// fog volume's first-use clear -- leaves the index invalid and runs with the last
+// anchored unit registered before it.
 struct RenderGraphScheduledUnit {
     uint32_t passIndex = kInvalidRenderGraphHandle;
     std::function<void()> record;
@@ -505,13 +506,21 @@ struct RenderGraphScheduledUnit {
 // with a recorder factored out far enough to be invoked by the graph; the rest
 // of the frame is still recorded in place.
 enum class RenderGraphBuiltinPass {
+    VsmPageMark,
+    Shadow,
+    PunctualShadow,
+    MainGpuCulling,
+    VolumetricFog,
+    ProbeCapture,
+    MainHdr,
     DepthPyramid,
     TaaResolve,
     BloomExtract,
     BloomDownsampleFirst,
     Luminance,
     HistogramExposure,
-    Composite
+    Composite,
+    ImGui
 };
 
 class RenderGraph;

@@ -1202,34 +1202,10 @@ void Renderer::recordDepthPyramidCommands(VkCommandBuffer commandBuffer, bool mi
     depthPyramid_.recordCommands(commandBuffer, currentFrame_, frameViewProjection_, frameCameraPosition_, midFrame);
 }
 
-void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex)
+void Renderer::recordCascadeShadowPass(VkCommandBuffer commandBuffer)
 {
     const VkDeviceAddress objectFrameDataBaseAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
     const VkDeviceAddress frameConstantsBaseAddress = frameConstantsBuffers_.at(currentFrame_).deviceAddress();
-    const size_t mainDrawItemCount = visibleDrawItems_.size();
-    const bool clusteredLightingActive = clusteredLighting_.available() && useClusteredLighting_ &&
-                                         clusteredLighting_.lightCount() > 0 && !allDrawItems_.empty();
-    const bool taaActiveThisFrame = postProcess_.isTaaActive();
-    postProcess_.beginFrame(currentFrame_, taaActiveThisFrame);
-
-    renderGraph_.beginFrame(commandBuffer,
-                            swapchain_,
-                            shadowMap_,
-                            punctualShadows_.valid() ? &punctualShadows_.atlas() : nullptr,
-                            isVsmPageRenderingActive() ? &virtualShadowMap_.pagePool() : nullptr,
-                            imageIndex,
-                            renderGraphFrameResources());
-    rhi::debug::beginLabel(commandBuffer, "Frame");
-    gpuProfiler_.beginFrame(currentFrame_, commandBuffer);
-
-    // First recorded pass of the frame: it reads the depth pyramid the previous
-    // frame left behind, so it has to run before anything this frame writes.
-    recordVsmPageMarkPass(commandBuffer);
-    // Culling before the page pass, not inside it: compute cannot be recorded
-    // inside a dynamic-rendering scope, and that scope has to stay single so the
-    // pages this frame does not touch keep their cached depth.
-    recordVsmPageCull(commandBuffer);
-    recordVsmPagePass(commandBuffer);
 
     const bool gpuShadowCullingActive = isGpuShadowCullingActive() && !allDrawItems_.empty();
     const uint32_t cascadeCount = activeCascadeCount();
@@ -1514,158 +1490,26 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     if (csmProfileScope) {
         gpuProfiler_.endScope(currentFrame_, commandBuffer);
     }
+}
 
-    // GPU caster culling for the atlas, when enabled. Recorded here rather than
-    // inside recordPunctualShadowPass because compute cannot run inside a
-    // dynamic-rendering scope, and that pass is one scope so its cached tiles
-    // survive a partial clear. Every slot is therefore culled up front.
-    const bool gpuPunctualCullActive = isGpuPunctualShadowCullingActive();
-    if (gpuPunctualCullActive) {
-        const renderer::GpuProfileScope cullScope(
-            gpuProfiler_, currentFrame_, commandBuffer, "PunctualShadowGpuCull");
-        rhi::debug::beginLabel(commandBuffer, "PunctualShadowGpuCull");
-        punctualShadows_.uploadSlotFrustums(currentFrame_);
-
-        // The shared cull input carries no bucket, so the "does this cast" test
-        // travels beside it. Blended geometry only depth-tests in the main pass;
-        // letting it cast would put an opaque silhouette back into the atlas.
-        punctualShadowCasterFlags_.assign(allDrawItems_.size(), 1u);
-        for (size_t drawIndex = 0; drawIndex < allDrawItems_.size(); ++drawIndex) {
-            const DrawItem& drawItem = allDrawItems_[drawIndex];
-            if (drawItem.bucket == RenderBucket::Blend || drawItem.mesh == nullptr ||
-                drawItem.indexCount == 0) {
-                punctualShadowCasterFlags_[drawIndex] = 0u;
-            }
-        }
-
-        rhi::VulkanBuffer& cullInput = gpuCulling_.shadowCullInputBuffer(currentFrame_);
-        punctualShadows_.recordCull(
-            commandBuffer,
-            currentFrame_,
-            cullInput.buffer(),
-            cullInput.size(),
-            static_cast<uint32_t>(allDrawItems_.size()),
-            std::span<const uint32_t>(punctualShadowCasterFlags_.data(), punctualShadowCasterFlags_.size()));
-        rhi::debug::endLabel(commandBuffer);
-    }
-
-    // Punctual casters go into the atlas right after the directional cascades,
-    // so both shadow sources are resident before the main HDR pass samples them.
-    recordPunctualShadowPass(commandBuffer, gpuPunctualCullActive);
-
-    // Fog injection samples the cascaded shadow map, so it has to follow the
-    // shadow passes; the main HDR pass samples the integrated volume, so it has
-    // to precede that.
-    // Runs whether or not fog is on: binding 8 claims a sampled layout
-    // unconditionally, so the volume has to reach it even on a cold start with
-    // fog disabled. No-op after the first frame.
-    // Fog switching off has to leave a neutral volume behind, because the
-    // skybox samples it unconditionally. Detected here rather than in the UI so
-    // any path that disables fog -- settings load, preset, toggle -- is covered.
-    const bool fogActiveThisFrame = isVolumetricFogActive();
-    if (fogWasActive_ && !fogActiveThisFrame) {
-        volumetricFog_.markVolumeNeedsClear();
-    }
-    fogWasActive_ = fogActiveThisFrame;
-
-    volumetricFog_.ensureVolumeInitialized(commandBuffer);
-
-    recordGpuCullingCommands(commandBuffer);
-
-    // Clustered (Forward+) light assignment: rebuild the froxel AABBs, then cull
-    // every light into its froxels. Both write buffers the main HDR fragment
-    // shader reads, so the assignment pass barriers into the fragment stage.
-    if (clusteredLightingActive && !frameAsyncComputeActive_) {
-        {
-            const renderer::GpuProfileScope buildScope(gpuProfiler_, currentFrame_, commandBuffer, "ClusterBuild");
-            rhi::debug::beginLabel(commandBuffer, "ClusterBuild");
-            clusteredLighting_.recordClusterBuild(commandBuffer, currentFrame_);
-            rhi::debug::endLabel(commandBuffer);
-        }
-        {
-            const renderer::GpuProfileScope cullScope(gpuProfiler_, currentFrame_, commandBuffer, "LightCull");
-            rhi::debug::beginLabel(commandBuffer, "LightCull");
-            clusteredLighting_.recordLightCull(commandBuffer, currentFrame_);
-            rhi::debug::endLabel(commandBuffer);
-        }
-    }
-
-    // Fog runs here, not with the shadow passes: injection walks the per-cluster
-    // light lists, so it has to follow the cluster build and light cull above.
-    // It still has to precede the main HDR pass, which samples the volume.
-    if (isVolumetricFogActive()) {
-        const bool fogProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "VolumetricFog");
-        // The graph pass carries no rendering scope; it exists so the cascaded
-        // shadow map is transitioned out of its depth-attachment layout before
-        // the injection dispatch samples it.
-        // Fog reuses the light lists the cluster passes just produced and the
-        // atlas tiles the punctual shadow pass just filled, rather than
-        // building either for itself.
-        renderer::FogInjectPushConstants fogPushConstants{};
-        fogPushConstants.lightBufferAddress = clusteredLighting_.lightBufferAddress(currentFrame_);
-        fogPushConstants.clusterGridAddress =
-            clusteredLightingActive ? clusteredLighting_.clusterGridAddress(currentFrame_) : 0;
-        fogPushConstants.lightIndexListAddress =
-            clusteredLightingActive ? clusteredLighting_.lightIndexListAddress(currentFrame_) : 0;
-        fogPushConstants.punctualShadowSlotAddress =
-            punctualShadows_.slotCount() > 0 ? punctualShadows_.slotBufferAddress(currentFrame_) : 0;
-        fogPushConstants.lightCount = clusteredLighting_.lightCount();
-        fogPushConstants.useClustered = clusteredLightingActive ? 1u : 0u;
-        fogPushConstants.clusterZNear = camera_.nearPlane;
-        fogPushConstants.clusterZFar = camera_.farPlane;
-
-        renderGraph_.beginVolumetricFogPass();
-        volumetricFog_.recordCommands(commandBuffer, currentFrame_, fogPushConstants);
-        renderGraph_.endVolumetricFogPass();
-        if (fogProfileScope) {
-            gpuProfiler_.endScope(currentFrame_, commandBuffer);
-        }
-    }
-
-    // Probe shading parameters, refreshed inside this frame's own command buffer
-    // so a single buffer serves every frame in flight.
+void Renderer::recordMainPassGeometry(VkCommandBuffer commandBuffer)
+{
+    // The main HDR pass, the two-phase occlusion re-test, the screen-space
+    // effects between them, and the transparent pass, in one recorder rather
+    // than four.
     //
-    // Before the capture pass, not just before the main pass: the capture reads
-    // these too, for the multi-bounce lookup. Updating after it would have the
-    // capture read the previous frame's grid placement -- and on the very first
-    // frame, a buffer nothing had written yet.
-    {
-        renderer::ProbeShadingParams probeParams{};
-        const renderer::ProbeGridBounds bounds = irradianceProbes_.bounds();
-        // Intensity carries the off state, so everything downstream needs no
-        // separate flag: no atlases, no capture pipeline, or the toggle off all
-        // collapse to zero here.
-        const bool probeShadingActive = giSettings_.enabled && irradianceProbes_.hasAtlases() &&
-                                        irradianceProbes_.convolveAvailable() && !giSettings_.debugPattern;
-        probeParams.gridOrigin =
-            glm::vec4{bounds.origin, probeShadingActive ? giSettings_.intensity : 0.0f};
-        probeParams.gridSpacing = glm::vec4{bounds.spacing, giSettings_.surfaceBias};
-        probeParams.debug.x =
-            (probeShadingActive && giSettings_.debugIrradianceOnly) ? 1.0f : 0.0f;
-        irradianceProbes_.updateShadingParams(commandBuffer, probeParams);
-    }
-
-    // Probe capture, then the convolution that turns it into probe tiles. Both
-    // sit after the shadow passes -- the capture samples the cascades so the
-    // radiance it records is shadowed -- and before the main pass, which
-    // declares a read on the probe atlases.
-    if (frameProbeCaptureActive_) {
-        recordProbeCapturePass(commandBuffer);
-    } else {
-        probeCaptureDrawsRecorded_ = 0;
-    }
-
-    if (isIrradianceProbeUpdateActive()) {
-        const bool probeProfileScope =
-            gpuProfiler_.beginScope(currentFrame_, commandBuffer, "IrradianceProbeUpdate");
-        renderGraph_.beginIrradianceProbePass();
-        irradianceProbes_.recordUpdate(commandBuffer, giSettings_.debugPattern);
-        renderGraph_.endIrradianceProbePass();
-        if (probeProfileScope) {
-            gpuProfiler_.endScope(currentFrame_, commandBuffer);
-        }
-    }
-
+    // They are one region as far as state goes: the viewport, the global
+    // descriptor set, the indirect buffers, the base push constants and
+    // whether the bindless sets are currently bound are all set up by the main
+    // pass and reused by the other three. Splitting them would mean threading
+    // nine values through a shared struct, one of them mutable, for passes the
+    // graph has no freedom to separate anyway -- the same reason the mip-chain
+    // bloom recorder covers seven declared passes.
+    const VkDeviceAddress objectFrameDataBaseAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
+    const VkDeviceAddress frameConstantsBaseAddress = frameConstantsBuffers_.at(currentFrame_).deviceAddress();
+    const size_t mainDrawItemCount = visibleDrawItems_.size();
+    const bool clusteredLightingActive = clusteredLighting_.available() && useClusteredLighting_ &&
+                                         clusteredLighting_.lightCount() > 0 && !allDrawItems_.empty();
 
     const bool mainHdrProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "MainHDRPass");
     rhi::debug::beginLabel(commandBuffer, "MainHDRPass");
@@ -2127,17 +1971,152 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         renderGraph_.endTransparentPass();
         rhi::debug::endLabel(commandBuffer);
     }
+}
 
-    // From here the graph decides the order. These seven recorders are the part
-    // of the frame already factored far enough to be invoked rather than called
-    // in sequence, and they are also where all of the frame's scheduling slack
-    // is. Each still guards itself and owns its own label, profiler scope, and
-    // graph pass, exactly as it did when this was a straight line.
+void Renderer::recordPunctualShadows(VkCommandBuffer commandBuffer)
+{
+    // GPU caster culling for the atlas, when enabled. Recorded here rather than
+    // inside recordPunctualShadowPass because compute cannot run inside a
+    // dynamic-rendering scope, and that pass is one scope so its cached tiles
+    // survive a partial clear. Every slot is therefore culled up front.
+    const bool gpuPunctualCullActive = isGpuPunctualShadowCullingActive();
+    if (gpuPunctualCullActive) {
+        const renderer::GpuProfileScope cullScope(
+            gpuProfiler_, currentFrame_, commandBuffer, "PunctualShadowGpuCull");
+        rhi::debug::beginLabel(commandBuffer, "PunctualShadowGpuCull");
+        punctualShadows_.uploadSlotFrustums(currentFrame_);
+
+        // The shared cull input carries no bucket, so the "does this cast" test
+        // travels beside it. Blended geometry only depth-tests in the main pass;
+        // letting it cast would put an opaque silhouette back into the atlas.
+        punctualShadowCasterFlags_.assign(allDrawItems_.size(), 1u);
+        for (size_t drawIndex = 0; drawIndex < allDrawItems_.size(); ++drawIndex) {
+            const DrawItem& drawItem = allDrawItems_[drawIndex];
+            if (drawItem.bucket == RenderBucket::Blend || drawItem.mesh == nullptr ||
+                drawItem.indexCount == 0) {
+                punctualShadowCasterFlags_[drawIndex] = 0u;
+            }
+        }
+
+        rhi::VulkanBuffer& cullInput = gpuCulling_.shadowCullInputBuffer(currentFrame_);
+        punctualShadows_.recordCull(
+            commandBuffer,
+            currentFrame_,
+            cullInput.buffer(),
+            cullInput.size(),
+            static_cast<uint32_t>(allDrawItems_.size()),
+            std::span<const uint32_t>(punctualShadowCasterFlags_.data(), punctualShadowCasterFlags_.size()));
+        rhi::debug::endLabel(commandBuffer);
+    }
+
+    // Punctual casters go into the atlas right after the directional cascades,
+    // so both shadow sources are resident before the main HDR pass samples them.
+    recordPunctualShadowPass(commandBuffer, gpuPunctualCullActive);
+}
+
+void Renderer::recordVolumetricFogPass(VkCommandBuffer commandBuffer)
+{
+    // Derived here rather than passed in: the recorder is the only thing that
+    // needs it, and the frame no longer keeps a copy for anyone else.
+    const bool clusteredLightingActive = clusteredLighting_.available() && useClusteredLighting_ &&
+                                         clusteredLighting_.lightCount() > 0 && !allDrawItems_.empty();
+
+    // Fog runs here, not with the shadow passes: injection walks the per-cluster
+    // light lists, so it has to follow the cluster build and light cull above.
+    // It still has to precede the main HDR pass, which samples the volume.
+    if (isVolumetricFogActive()) {
+        const bool fogProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "VolumetricFog");
+        // The graph pass carries no rendering scope; it exists so the cascaded
+        // shadow map is transitioned out of its depth-attachment layout before
+        // the injection dispatch samples it.
+        // Fog reuses the light lists the cluster passes just produced and the
+        // atlas tiles the punctual shadow pass just filled, rather than
+        // building either for itself.
+        renderer::FogInjectPushConstants fogPushConstants{};
+        fogPushConstants.lightBufferAddress = clusteredLighting_.lightBufferAddress(currentFrame_);
+        fogPushConstants.clusterGridAddress =
+            clusteredLightingActive ? clusteredLighting_.clusterGridAddress(currentFrame_) : 0;
+        fogPushConstants.lightIndexListAddress =
+            clusteredLightingActive ? clusteredLighting_.lightIndexListAddress(currentFrame_) : 0;
+        fogPushConstants.punctualShadowSlotAddress =
+            punctualShadows_.slotCount() > 0 ? punctualShadows_.slotBufferAddress(currentFrame_) : 0;
+        fogPushConstants.lightCount = clusteredLighting_.lightCount();
+        fogPushConstants.useClustered = clusteredLightingActive ? 1u : 0u;
+        fogPushConstants.clusterZNear = camera_.nearPlane;
+        fogPushConstants.clusterZFar = camera_.farPlane;
+
+        renderGraph_.beginVolumetricFogPass();
+        volumetricFog_.recordCommands(commandBuffer, currentFrame_, fogPushConstants);
+        renderGraph_.endVolumetricFogPass();
+        if (fogProfileScope) {
+            gpuProfiler_.endScope(currentFrame_, commandBuffer);
+        }
+    }
+}
+
+void Renderer::recordIrradianceProbePasses(VkCommandBuffer commandBuffer)
+{
+    // Probe shading parameters, refreshed inside this frame's own command buffer
+    // so a single buffer serves every frame in flight.
     //
-    // The order the graph returns is today's order -- every derived edge points
-    // backwards, so a stable topological sort reproduces the declarations. What
-    // changed is who decides it. The endFrame backstop checks the whole frame,
-    // this region included.
+    // Before the capture pass, not just before the main pass: the capture reads
+    // these too, for the multi-bounce lookup. Updating after it would have the
+    // capture read the previous frame's grid placement -- and on the very first
+    // frame, a buffer nothing had written yet.
+    {
+        renderer::ProbeShadingParams probeParams{};
+        const renderer::ProbeGridBounds bounds = irradianceProbes_.bounds();
+        // Intensity carries the off state, so everything downstream needs no
+        // separate flag: no atlases, no capture pipeline, or the toggle off all
+        // collapse to zero here.
+        const bool probeShadingActive = giSettings_.enabled && irradianceProbes_.hasAtlases() &&
+                                        irradianceProbes_.convolveAvailable() && !giSettings_.debugPattern;
+        probeParams.gridOrigin =
+            glm::vec4{bounds.origin, probeShadingActive ? giSettings_.intensity : 0.0f};
+        probeParams.gridSpacing = glm::vec4{bounds.spacing, giSettings_.surfaceBias};
+        probeParams.debug.x =
+            (probeShadingActive && giSettings_.debugIrradianceOnly) ? 1.0f : 0.0f;
+        irradianceProbes_.updateShadingParams(commandBuffer, probeParams);
+    }
+
+    // Probe capture, then the convolution that turns it into probe tiles. Both
+    // sit after the shadow passes -- the capture samples the cascades so the
+    // radiance it records is shadowed -- and before the main pass, which
+    // declares a read on the probe atlases.
+    if (frameProbeCaptureActive_) {
+        recordProbeCapturePass(commandBuffer);
+    } else {
+        probeCaptureDrawsRecorded_ = 0;
+    }
+
+    if (isIrradianceProbeUpdateActive()) {
+        const bool probeProfileScope =
+            gpuProfiler_.beginScope(currentFrame_, commandBuffer, "IrradianceProbeUpdate");
+        renderGraph_.beginIrradianceProbePass();
+        irradianceProbes_.recordUpdate(commandBuffer, giSettings_.debugPattern);
+        renderGraph_.endIrradianceProbePass();
+        if (probeProfileScope) {
+            gpuProfiler_.endScope(currentFrame_, commandBuffer);
+        }
+    }
+}
+
+void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex)
+{
+    // Only what this function still needs: every recorder it hands the graph
+    // derives its own inputs.
+    const bool taaActiveThisFrame = postProcess_.isTaaActive();
+    postProcess_.beginFrame(currentFrame_, taaActiveThisFrame);
+
+    renderGraph_.beginFrame(commandBuffer,
+                            swapchain_,
+                            shadowMap_,
+                            punctualShadows_.valid() ? &punctualShadows_.atlas() : nullptr,
+                            isVsmPageRenderingActive() ? &virtualShadowMap_.pagePool() : nullptr,
+                            imageIndex,
+                            renderGraphFrameResources());
+    rhi::debug::beginLabel(commandBuffer, "Frame");
+    gpuProfiler_.beginFrame(currentFrame_, commandBuffer);
 
     // The probe-only view is a view of a linear radiance value, so it bypasses
     // the display pipeline entirely. Auto-exposure would otherwise cancel
@@ -2145,7 +2124,80 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     const float probeDebugGain =
         (giSettings_.enabled && giSettings_.debugIrradianceOnly) ? std::max(giSettings_.previewGain, 0.01f) : 0.0f;
 
-    std::array<renderer::RenderGraphScheduledUnit, 7> postProcessUnits{{
+    // The whole frame, handed to the graph. Each entry names the pass whose
+    // scheduled position decides when it runs; the two without one -- the
+    // synchronous cluster build and the fog volume's first-use clear -- run with
+    // the anchored unit registered before them.
+    //
+    // The order the graph returns is today's order: every derived edge points
+    // backwards, so a stable topological sort reproduces the declarations. What
+    // changed is who decides it, and that the endFrame backstop now checks a
+    // frame the graph itself sequenced.
+    using Builtin = renderer::RenderGraphBuiltinPass;
+    std::array<renderer::RenderGraphScheduledUnit, 17> frameUnits{{
+        {renderGraph_.builtinPassIndex(Builtin::VsmPageMark),
+         [this, commandBuffer]() {
+             // Page marking reads the depth pyramid the previous frame left, so it
+             // runs before anything this frame writes. Culling is separate from the
+             // page pass because compute cannot be recorded inside a
+             // dynamic-rendering scope, and that scope has to stay single so pages
+             // this frame does not touch keep their cached depth.
+             recordVsmPageMarkPass(commandBuffer);
+             recordVsmPageCull(commandBuffer);
+             recordVsmPagePass(commandBuffer);
+         }},
+        {renderGraph_.builtinPassIndex(Builtin::Shadow),
+         [this, commandBuffer]() { recordCascadeShadowPass(commandBuffer); }},
+        {renderGraph_.builtinPassIndex(Builtin::PunctualShadow),
+         [this, commandBuffer]() { recordPunctualShadows(commandBuffer); }},
+        {renderGraph_.builtinPassIndex(Builtin::MainGpuCulling),
+         [this, commandBuffer]() { recordGpuCullingCommands(commandBuffer); }},
+        {renderer::kInvalidRenderGraphHandle,
+         [this, commandBuffer]() {
+             // Clustered (Forward+) light assignment: rebuild the froxel AABBs, then
+             // cull every light into its froxels. Both write buffers the main HDR
+             // fragment shader reads. No graph pass of its own -- the async path
+             // submits these on the compute queue, which the renderer owns -- so it
+             // runs with the culling unit above.
+             const bool clusteredLightingActive = clusteredLighting_.available() && useClusteredLighting_ &&
+                                                  clusteredLighting_.lightCount() > 0 && !allDrawItems_.empty();
+             if (!clusteredLightingActive || frameAsyncComputeActive_) {
+                 return;
+             }
+             {
+                 const renderer::GpuProfileScope buildScope(gpuProfiler_, currentFrame_, commandBuffer, "ClusterBuild");
+                 rhi::debug::beginLabel(commandBuffer, "ClusterBuild");
+                 clusteredLighting_.recordClusterBuild(commandBuffer, currentFrame_);
+                 rhi::debug::endLabel(commandBuffer);
+             }
+             {
+                 const renderer::GpuProfileScope cullScope(gpuProfiler_, currentFrame_, commandBuffer, "LightCull");
+                 rhi::debug::beginLabel(commandBuffer, "LightCull");
+                 clusteredLighting_.recordLightCull(commandBuffer, currentFrame_);
+                 rhi::debug::endLabel(commandBuffer);
+             }
+         }},
+        {renderer::kInvalidRenderGraphHandle,
+         [this, commandBuffer]() {
+             // Runs whether or not fog is on: binding 8 claims a sampled layout
+             // unconditionally, so the volume has to reach it even on a cold start
+             // with fog disabled. No-op after the first frame. Fog switching off has
+             // to leave a neutral volume behind, because the skybox samples it
+             // unconditionally, and detecting that here covers every path that can
+             // disable fog -- settings load, preset, toggle.
+             const bool fogActiveThisFrame = isVolumetricFogActive();
+             if (fogWasActive_ && !fogActiveThisFrame) {
+                 volumetricFog_.markVolumeNeedsClear();
+             }
+             fogWasActive_ = fogActiveThisFrame;
+             volumetricFog_.ensureVolumeInitialized(commandBuffer);
+         }},
+        {renderGraph_.builtinPassIndex(Builtin::VolumetricFog),
+         [this, commandBuffer]() { recordVolumetricFogPass(commandBuffer); }},
+        {renderGraph_.builtinPassIndex(Builtin::ProbeCapture),
+         [this, commandBuffer]() { recordIrradianceProbePasses(commandBuffer); }},
+        {renderGraph_.builtinPassIndex(Builtin::MainHdr),
+         [this, commandBuffer]() { recordMainPassGeometry(commandBuffer); }},
         {renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::DepthPyramid),
          [this, commandBuffer]() {
              if (isDepthPyramidBuildRequired()) {
@@ -2180,21 +2232,26 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                                                   renderScaleSettings_.sharpness,
                                                   showSharpenDelta_ ? sharpenDeltaGain_ : 0.0f);
          }},
+        {renderGraph_.builtinPassIndex(Builtin::ImGui),
+         [this, commandBuffer, imageIndex]() {
+             // The screenshot copies belong to this unit rather than to the frame
+             // around it: they sit between the composite and the overlay, which is
+             // exactly where this unit starts.
+             recordPortfolioScreenshotCopy(commandBuffer, imageIndex);
+             recordFrameCaptureCopy(commandBuffer, imageIndex);
+
+             rhi::debug::beginLabel(commandBuffer, "ImGuiPass");
+             const bool imguiProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "ImGuiPass");
+             renderGraph_.beginImGuiPass();
+             imguiLayer_.render(commandBuffer);
+             renderGraph_.endImGuiPass();
+             if (imguiProfileScope) {
+                 gpuProfiler_.endScope(currentFrame_, commandBuffer);
+             }
+             rhi::debug::endLabel(commandBuffer);
+         }},
     }};
-    renderGraph_.recordScheduledUnits(postProcessUnits);
-
-    recordPortfolioScreenshotCopy(commandBuffer, imageIndex);
-    recordFrameCaptureCopy(commandBuffer, imageIndex);
-
-    rhi::debug::beginLabel(commandBuffer, "ImGuiPass");
-    const bool imguiProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "ImGuiPass");
-    renderGraph_.beginImGuiPass();
-    imguiLayer_.render(commandBuffer);
-    renderGraph_.endImGuiPass();
-    if (imguiProfileScope) {
-        gpuProfiler_.endScope(currentFrame_, commandBuffer);
-    }
-    rhi::debug::endLabel(commandBuffer);
+    renderGraph_.recordScheduledUnits(frameUnits);
 
     if (taaActiveThisFrame) {
         postProcess_.advanceTaaHistory();
