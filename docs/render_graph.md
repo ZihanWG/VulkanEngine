@@ -190,6 +190,7 @@ wrong without looking at a device:
 | `ReadsContentNoPassProduced` | A pass reads a graph-managed resource no earlier surviving pass wrote this frame, without saying the read is deliberate. Either the pass is ordered wrongly, or it means to read the previous frame and should declare that. |
 | `HistoryReadOfAliasedResource` | A previous-frame read of a pool-bound resource. Aliasing hands those bytes to another resource and the handoff barrier discards the contents, so there is no previous frame left to read. |
 | `ResourceDeclaredTwice` | One pass declares the same resource more than once. Usually a copy-paste slip, and it costs a barrier submission, since two barriers for one resource cannot share a dependency info. |
+| `HistoryReadAfterProducer` | A previous-frame read placed after a pass that writes the resource this frame. The declaration says "last frame" and the schedule hands it this frame's data. Unlike the two rules above, this one applies to imported resources too: what is wrong is the ordering, not who owns the memory. |
 
 Imported resources are exempt from the first two: their contents persist by
 contract, which is what importing them means.
@@ -222,8 +223,9 @@ changes the answer.
 
 The default configuration reports zero issues. That was checked both ways --
 injecting an undeclared history read and a duplicate declaration into
-`MainHDRPass` makes the panel report three findings on that pass, and removing
-them returns it to zero.
+`MainHDRPass` makes the panel report three findings on that pass, and turning
+`CompositePass`'s bloom read into a history read reports the fourth rule.
+Removing the injections returns it to zero.
 
 ### What it does not check
 
@@ -232,6 +234,63 @@ producer runs, and culling does not know that: a pass whose output is read only
 by the next frame's history read can still be culled. Nothing in the current
 frame graph is in that shape, and fixing it means teaching `cullUnusedPasses`
 about cross-frame edges, which is a larger change than this check.
+
+## The Derived Dependency Graph
+
+`computePassSchedule` (GPU-free, unit tested) derives, from the declarations
+alone, which passes each pass must follow. The edges are the three orderings a
+resource forces: read-after-write, write-after-read, and write-after-write. A
+history read makes no read-after-write edge -- it consumes the previous frame,
+not this frame's producer -- which is the one place that distinction changes the
+graph rather than only the diagnostics.
+
+### Read the slack, not the legality
+
+**The recorded order cannot fail this check, and that is not a bug in the
+check.** A pass's declarations are written in the order the passes run, so every
+derived edge points backwards by construction. Turning "is this order legal?"
+into a question that can answer no requires stating the data flow independently
+of the order, which means handle-threaded resource versions in the builder API:
+`auto lit = builder.write(sceneColor)` with later passes reading `lit` by name.
+Until that lands, treat this as the dependency data a scheduler would consume,
+and read the slack.
+
+What the slack says is how tightly the declared data flow actually pins the
+frame down. Measured on the default scene at 1280x720:
+
+| | |
+| --- | --- |
+| recorded passes | 25 |
+| longest dependency chain | **17** |
+
+So the frame is recorded 25 steps deep but the declarations only force 17. Where
+that headroom sits:
+
+| Pass | Recorded slot | Earliest legal | Slack |
+| --- | --- | --- | --- |
+| `LuminancePass` | 21 | 8 | **13** |
+| `HistogramExposurePass` | 22 | 9 | **13** |
+| `CompositePass` | 23 | 15 | 8 |
+| `BloomDownsampleMip0`..`BloomUpsampleMip0` | 14-20 | 8-14 | 6 |
+| `DepthPyramidPass` | 10 | 5 | 5 |
+| `MainHDRPass`..`TransparentPass` | 3-9 | 1-7 | 2 |
+
+The auto-exposure pair is the clearest: both depend only on `TransparentPass`,
+and both are recorded after the entire bloom chain they have nothing to do with.
+The bloom chain and the exposure pair are independent branches off the same
+producer, and neither constrains the other.
+
+`DepthPyramidPass` is the same shape at smaller scale -- it needs only the
+phase-2 main pass, but is recorded after the transparent and screen-space work.
+
+### What the analysis surfaced
+
+`CompositePass` reads `bloomPong` *and* the mip-chain output unconditionally, so
+both bloom chains -- the legacy blur and the downsample/upsample chain -- are
+declared live and run every frame, ten of the twenty-five passes between them.
+Culling cannot drop either while the composite declaration reads both. Whether
+the shader needs both bound is a renderer question this document does not settle;
+the point is that the schedule made it visible.
 
 ## Side Effects And Culling
 
@@ -258,6 +317,8 @@ The ImGui Render Graph panel shows:
 - generated image and buffer barrier count/summary, and the number of
   `vkCmdPipelineBarrier2` submissions they were batched into
 - declaration issues found for the pass, and a frame-level count above the table
+- each pass's derived predecessor count, earliest legal slot, and slack, with the
+  predecessor names in a tooltip, plus the frame's longest dependency chain
 - resource name, kind, lifetime, extent/size, format, mip/layer count, initial layout, and final layout
 
 ## Transient Memory Aliasing
@@ -377,3 +438,7 @@ the default.
 - There is no node-editor view yet.
 - Declaration validation does not model cross-frame liveness; see "What it does
   not check".
+- The derived dependency graph is descriptive only. Pass order is still the order
+  `buildFrameGraphDeclarations` writes it in, and the order-legality question
+  cannot fail until the builder threads resource versions; see "Read the slack,
+  not the legality".

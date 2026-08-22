@@ -721,6 +721,208 @@ TEST_CASE("Every issue has a distinct name", "[rendergraph][declarations]")
     CHECK(produced != twice);
 }
 
+TEST_CASE("A history read after this frame's producer is reported", "[rendergraph][declarations]")
+{
+    // The declaration claims the previous frame's contents, but a pass earlier
+    // in the frame already overwrote them. The read is of something other than
+    // what it says, and the existing "nothing produced it" rule cannot see it.
+    std::vector<RenderPassNode> passes{
+        pass("Producer", {texture(0, RenderResourceAccess::Write)}),
+        pass("StaleHistoryReader", {historyTexture(0)}, true),
+    };
+    const std::vector<RGResourceValidationInfo> textures{kTransient};
+
+    const auto issues = validateDeclarations(passes, textures, {});
+
+    REQUIRE(issues.size() == 1);
+    CHECK(issues[0].passIndex == 1);
+    CHECK(issues[0].issue == RGDeclarationIssue::HistoryReadAfterProducer);
+}
+
+TEST_CASE("A stale history read of an imported resource is still reported", "[rendergraph][declarations]")
+{
+    // Unlike the other two rules, this one is about ordering rather than who
+    // owns the memory, so importing the resource does not excuse it.
+    std::vector<RenderPassNode> passes{
+        pass("Producer", {texture(0, RenderResourceAccess::Write)}),
+        pass("StaleHistoryReader", {historyTexture(0)}, true),
+    };
+    const std::vector<RGResourceValidationInfo> textures{kImported};
+
+    const auto issues = validateDeclarations(passes, textures, {});
+
+    REQUIRE(issues.size() == 1);
+    CHECK(issues[0].issue == RGDeclarationIssue::HistoryReadAfterProducer);
+}
+
+// ---------------------------------------------------------------------------
+// The pass dependency graph the declarations imply. This is the data any
+// reordering would consume, and the slack it reports is the only part of the
+// analysis that says something today: the recorded order cannot be illegal
+// while the declarations are written in the order the passes run.
+
+namespace {
+
+using ve::renderer::computePassSchedule;
+using ve::renderer::longestPassChain;
+
+} // namespace
+
+TEST_CASE("A consumer depends on the producer it reads", "[rendergraph][schedule]")
+{
+    std::vector<RenderPassNode> passes{
+        pass("Producer", {texture(0, RenderResourceAccess::Write)}),
+        pass("Consumer", {texture(0, RenderResourceAccess::Read)}, true),
+    };
+
+    const auto schedule = computePassSchedule(passes);
+
+    REQUIRE(schedule.size() == 2);
+    CHECK(schedule[0].predecessors.empty());
+    REQUIRE(schedule[1].predecessors.size() == 1);
+    CHECK(schedule[1].predecessors[0] == 0);
+    CHECK(schedule[1].earliestSlot == 1);
+    CHECK(schedule[1].slack == 0);
+}
+
+TEST_CASE("A history read creates no dependency on the producer", "[rendergraph][schedule]")
+{
+    // It consumes the previous frame, so it does not have to wait for this
+    // frame's writer -- it has to come before it, which the write-after-read
+    // edge below covers.
+    std::vector<RenderPassNode> passes{
+        pass("HistoryReader", {historyTexture(0)}, true),
+        pass("Producer", {texture(0, RenderResourceAccess::Write)}, true),
+    };
+
+    const auto schedule = computePassSchedule(passes);
+
+    CHECK(schedule[0].predecessors.empty());
+    REQUIRE(schedule[1].predecessors.size() == 1);
+    CHECK(schedule[1].predecessors[0] == 0);
+}
+
+TEST_CASE("Overwriting waits for the previous writer and its readers", "[rendergraph][schedule]")
+{
+    std::vector<RenderPassNode> passes{
+        pass("FirstWrite", {texture(0, RenderResourceAccess::Write)}),
+        pass("Reader", {texture(0, RenderResourceAccess::Read), texture(1, RenderResourceAccess::Write)}, true),
+        pass("SecondWrite", {texture(0, RenderResourceAccess::Write)}, true),
+    };
+
+    const auto schedule = computePassSchedule(passes);
+
+    // Write-after-write on the first writer, write-after-read on the reader.
+    REQUIRE(schedule[2].predecessors.size() == 2);
+    CHECK(schedule[2].predecessors[0] == 0);
+    CHECK(schedule[2].predecessors[1] == 1);
+}
+
+TEST_CASE("Independent passes constrain nothing and report slack", "[rendergraph][schedule]")
+{
+    // The shape the real frame has between the bloom chain and the luminance
+    // pair: two branches off one producer, recorded one after the other but
+    // free to move.
+    std::vector<RenderPassNode> passes{
+        pass("Source", {texture(0, RenderResourceAccess::Write)}),
+        pass("BranchA", {texture(0, RenderResourceAccess::Read), texture(1, RenderResourceAccess::Write)}, true),
+        pass("BranchB", {texture(0, RenderResourceAccess::Read), texture(2, RenderResourceAccess::Write)}, true),
+    };
+
+    const auto schedule = computePassSchedule(passes);
+
+    CHECK(schedule[1].earliestSlot == 1);
+    CHECK(schedule[1].slack == 0);
+    // Recorded third, but only ever needed to follow the source.
+    CHECK(schedule[2].recordedSlot == 2);
+    CHECK(schedule[2].earliestSlot == 1);
+    CHECK(schedule[2].slack == 1);
+}
+
+TEST_CASE("A read-modify-write depends on what it found, not what it leaves", "[rendergraph][schedule]")
+{
+    std::vector<RenderPassNode> passes{
+        pass("Producer", {texture(0, RenderResourceAccess::Write)}),
+        pass("Accumulate", {texture(0, RenderResourceAccess::ReadWrite)}, true),
+    };
+
+    const auto schedule = computePassSchedule(passes);
+
+    REQUIRE(schedule[1].predecessors.size() == 1);
+    CHECK(schedule[1].predecessors[0] == 0);
+}
+
+TEST_CASE("Culled passes are neither scheduled nor depended on", "[rendergraph][schedule]")
+{
+    std::vector<RenderPassNode> passes{
+        pass("DeadProducer", {texture(0, RenderResourceAccess::Write)}),
+        pass("LiveProducer", {texture(0, RenderResourceAccess::Write)}),
+        pass("Consumer", {texture(0, RenderResourceAccess::Read)}, true),
+    };
+    passes[0].culled = true;
+
+    const auto schedule = computePassSchedule(passes);
+
+    CHECK_FALSE(schedule[0].scheduled);
+    CHECK(schedule[0].predecessors.empty());
+    // Slots count surviving passes only, so the live producer starts the frame.
+    CHECK(schedule[1].recordedSlot == 0);
+    REQUIRE(schedule[2].predecessors.size() == 1);
+    CHECK(schedule[2].predecessors[0] == 1);
+}
+
+TEST_CASE("Buffer and texture dependencies are tracked separately", "[rendergraph][schedule]")
+{
+    std::vector<RenderPassNode> passes{
+        pass("WritesTexture", {texture(0, RenderResourceAccess::Write)}, true),
+        pass("ReadsBuffer", {buffer(0, RenderResourceAccess::Read)}, true),
+    };
+
+    const auto schedule = computePassSchedule(passes);
+
+    CHECK(schedule[1].predecessors.empty());
+}
+
+TEST_CASE("A duplicate predecessor is recorded once", "[rendergraph][schedule]")
+{
+    // Two resources carrying the same edge must not double-count it, or the
+    // longest-chain number would depend on how many targets a pass shares.
+    std::vector<RenderPassNode> passes{
+        pass("Producer", {texture(0, RenderResourceAccess::Write), texture(1, RenderResourceAccess::Write)}),
+        pass("Consumer", {texture(0, RenderResourceAccess::Read), texture(1, RenderResourceAccess::Read)}, true),
+    };
+
+    const auto schedule = computePassSchedule(passes);
+
+    REQUIRE(schedule[1].predecessors.size() == 1);
+    CHECK(schedule[1].predecessors[0] == 0);
+}
+
+TEST_CASE("The longest chain counts sequential steps, not passes", "[rendergraph][schedule]")
+{
+    // A -> B -> C alongside an unconstrained D: four passes, three steps.
+    std::vector<RenderPassNode> passes{
+        pass("A", {texture(0, RenderResourceAccess::Write)}),
+        pass("B", {texture(0, RenderResourceAccess::Read), texture(1, RenderResourceAccess::Write)}),
+        pass("C", {texture(1, RenderResourceAccess::Read)}, true),
+        pass("D", {texture(2, RenderResourceAccess::Write)}, true),
+    };
+
+    const auto schedule = computePassSchedule(passes);
+
+    CHECK(longestPassChain(schedule) == 3);
+    CHECK(schedule[3].earliestSlot == 0);
+    CHECK(schedule[3].slack == 3);
+}
+
+TEST_CASE("An empty graph has no chain", "[rendergraph][schedule]")
+{
+    const std::vector<RenderPassNode> passes;
+
+    CHECK(computePassSchedule(passes).empty());
+    CHECK(longestPassChain({}) == 0);
+}
+
 // ---------------------------------------------------------------------------
 // Barrier batching. A pass's inferred barriers go into one vkCmdPipelineBarrier2,
 // which is only sound while no two of them target the same resource: barriers

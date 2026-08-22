@@ -244,7 +244,13 @@ enum class RGDeclarationIssue {
     // The same resource declared more than once by one pass. Usually a
     // copy-paste slip, and it costs a barrier submission: two barriers for one
     // resource cannot share a dependency info (see barrierBatchNeedsFlush).
-    ResourceDeclaredTwice
+    ResourceDeclaredTwice,
+    // A history read placed after a pass that writes the resource this frame.
+    // The declaration says "the previous frame's contents" and the schedule
+    // hands it this frame's, so the pass reads something other than what it
+    // claims. Unlike the two rules above this one applies to imported resources
+    // as well: what makes it wrong is the ordering, not who owns the memory.
+    HistoryReadAfterProducer
 };
 
 struct RenderGraphDeclarationIssue {
@@ -253,6 +259,40 @@ struct RenderGraphDeclarationIssue {
     RGResourceKind resourceKind = RGResourceKind::Texture;
     uint32_t resourceIndex = 0;
 };
+
+// The pass dependency graph the declarations imply, and how much freedom the
+// recorded order leaves within it.
+//
+// The edges are the three orderings a resource forces between two passes:
+// read-after-write, write-after-read, and write-after-write. A history read
+// creates no read-after-write edge -- it consumes the previous frame, not this
+// frame's producer -- which is the one place the distinction changes the graph
+// rather than just the diagnostics.
+//
+// Read the slack, not the legality. Because a pass's declarations are recorded
+// in the order the passes run, every edge points backwards by construction and
+// the recorded order can never violate one. What the analysis does say, today,
+// is how tightly the declared data flow actually pins the order down: a pass
+// with slack could be recorded earlier without breaking anything, and the
+// longest chain bounds what any scheduler could achieve. Making the legality
+// question real needs handle-threaded resource versions in the builder API, so
+// that the data flow is stated independently of the order.
+struct RenderGraphPassSchedule {
+    // Passes that must be recorded before this one, ascending. Empty for a pass
+    // nothing constrains, and for a culled pass.
+    std::vector<uint32_t> predecessors;
+    // Position among the surviving passes, in recording order.
+    uint32_t recordedSlot = 0;
+    // Earliest position the dependencies allow: the longest chain of
+    // predecessors ending at this pass.
+    uint32_t earliestSlot = 0;
+    // recordedSlot - earliestSlot. Zero means the pass is pinned where it is.
+    uint32_t slack = 0;
+    // False for a culled pass, whose entry is left empty so the result stays
+    // parallel to the pass list.
+    bool scheduled = false;
+};
+
 
 // What validateDeclarations needs to know about a resource, which is only
 // whether the graph manages its bytes and whether they are shared.
@@ -595,6 +635,12 @@ public:
         return declarationIssues_;
     }
 
+    // This frame's derived dependency graph, parallel to passes().
+    [[nodiscard]] const std::vector<RenderGraphPassSchedule>& passSchedule() const
+    {
+        return passSchedule_;
+    }
+
     // Aliases kept so existing RenderGraph::TextureAccessState spellings still
     // compile; the types themselves live at namespace scope below so the pure
     // derivation functions can return them.
@@ -848,6 +894,7 @@ private:
     std::vector<RenderGraphDeclarationIssue> declarationIssues_;
     std::vector<RGResourceValidationInfo> textureValidationInfo_;
     std::vector<RGResourceValidationInfo> bufferValidationInfo_;
+    std::vector<RenderGraphPassSchedule> passSchedule_;
     bool frameActive_ = false;
     ActivePass activePass_ = ActivePass::None;
 
@@ -902,6 +949,20 @@ struct RenderGraphResourceLifetime {
 validateDeclarations(const std::vector<RenderPassNode>& passes,
                      std::span<const RGResourceValidationInfo> textures,
                      std::span<const RGResourceValidationInfo> buffers);
+
+
+// Derives the schedule above from the declarations. Pure logic next to
+// cullUnusedPasses and validateDeclarations, for the same reason: no device, and
+// it is the data any future reordering would consume.
+//
+// Culled passes are skipped entirely -- they neither produce for nor constrain
+// anything, since they do not run.
+[[nodiscard]] std::vector<RenderGraphPassSchedule> computePassSchedule(const std::vector<RenderPassNode>& passes);
+
+// Longest chain of dependent passes in a schedule, in passes. The floor on how
+// many sequential steps the frame needs however it is reordered; 0 for an empty
+// or fully culled graph.
+[[nodiscard]] uint32_t longestPassChain(const std::vector<RenderGraphPassSchedule>& schedule);
 
 // One-line description of an issue, for the debug panel and for tests.
 [[nodiscard]] const char* renderGraphDeclarationIssueName(RGDeclarationIssue issue);

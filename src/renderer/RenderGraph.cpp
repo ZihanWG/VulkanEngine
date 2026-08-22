@@ -379,6 +379,7 @@ void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
     executeCallbacks_.clear();
     barrierBatch_.reset();
     declarationIssues_.clear();
+    passSchedule_.clear();
     debugResources_.clear();
 
     frame_ = {};
@@ -2496,6 +2497,7 @@ void RenderGraph::validateFrameDeclarations()
     }
 
     declarationIssues_ = validateDeclarations(passes_, textureValidationInfo_, bufferValidationInfo_);
+    passSchedule_ = computePassSchedule(passes_);
 
     for (const RenderGraphDeclarationIssue& issue : declarationIssues_) {
         if (issue.passIndex >= passes_.size()) {
@@ -2615,6 +2617,8 @@ const char* renderGraphDeclarationIssueName(RGDeclarationIssue issue)
         return "history read of a pool-bound resource";
     case RGDeclarationIssue::ResourceDeclaredTwice:
         return "resource declared more than once";
+    case RGDeclarationIssue::HistoryReadAfterProducer:
+        return "history read placed after this frame's producer";
     }
 
     return "unknown declaration issue";
@@ -2665,16 +2669,24 @@ std::vector<RenderGraphDeclarationIssue> validateDeclarations(const std::vector<
                 isTexture ? textures[usage.resource.index] : buffers[usage.resource.index];
             const std::vector<uint8_t>& written = isTexture ? textureWritten : bufferWritten;
 
-            // Only a graph-managed resource can be read before it is produced:
-            // an imported one keeps its contents by contract.
-            if (accessReads(usage.access) && info.graphManaged && written[usage.resource.index] == 0) {
-                if (!usage.historyRead) {
-                    report(RGDeclarationIssue::ReadsContentNoPassProduced, usage);
-                } else if (info.aliased) {
-                    // A declared history read of a private resource is exactly
-                    // right; it is only wrong when the bytes are shared, because
-                    // then there is no previous frame left to read.
-                    report(RGDeclarationIssue::HistoryReadOfAliasedResource, usage);
+            if (accessReads(usage.access)) {
+                const bool producedThisFrame = written[usage.resource.index] != 0;
+                if (usage.historyRead && producedThisFrame) {
+                    // The declaration claims the previous frame's contents but an
+                    // earlier pass already overwrote them. Applies whoever owns
+                    // the memory: what is wrong here is the ordering.
+                    report(RGDeclarationIssue::HistoryReadAfterProducer, usage);
+                } else if (!producedThisFrame && info.graphManaged) {
+                    // Only a graph-managed resource can be read before it is
+                    // produced: an imported one keeps its contents by contract.
+                    if (!usage.historyRead) {
+                        report(RGDeclarationIssue::ReadsContentNoPassProduced, usage);
+                    } else if (info.aliased) {
+                        // A declared history read of a private resource is
+                        // exactly right; it is only wrong when the bytes are
+                        // shared, because then there is no previous frame left.
+                        report(RGDeclarationIssue::HistoryReadOfAliasedResource, usage);
+                    }
                 }
             }
         }
@@ -2694,6 +2706,118 @@ std::vector<RenderGraphDeclarationIssue> validateDeclarations(const std::vector<
     }
 
     return issues;
+}
+
+std::vector<RenderGraphPassSchedule> computePassSchedule(const std::vector<RenderPassNode>& passes)
+{
+    std::vector<RenderGraphPassSchedule> schedule(passes.size());
+
+    // Per resource: the last surviving pass to write it, and the passes that
+    // have read it since. Both index spaces are separate, the same way
+    // cullUnusedPasses keeps them separate.
+    std::vector<uint32_t> textureLastWriter;
+    std::vector<uint32_t> bufferLastWriter;
+    std::vector<std::vector<uint32_t>> textureReaders;
+    std::vector<std::vector<uint32_t>> bufferReaders;
+
+    const auto grow = [](auto& lastWriter, auto& readers, uint32_t index) {
+        if (index >= lastWriter.size()) {
+            lastWriter.resize(index + 1, kInvalidRenderGraphHandle);
+            readers.resize(index + 1);
+        }
+    };
+
+    uint32_t recordedSlot = 0;
+    for (uint32_t passIndex = 0; passIndex < passes.size(); ++passIndex) {
+        const RenderPassNode& pass = passes[passIndex];
+        if (pass.culled) {
+            continue;
+        }
+
+        RenderGraphPassSchedule& entry = schedule[passIndex];
+        entry.scheduled = true;
+        entry.recordedSlot = recordedSlot++;
+
+        const auto addPredecessor = [&entry, passIndex](uint32_t predecessor) {
+            if (predecessor == kInvalidRenderGraphHandle || predecessor == passIndex) {
+                return;
+            }
+            if (std::find(entry.predecessors.begin(), entry.predecessors.end(), predecessor) ==
+                entry.predecessors.end()) {
+                entry.predecessors.push_back(predecessor);
+            }
+        };
+
+        for (const RenderResourceUsage& usage : pass.resourceUsages) {
+            const bool isTexture = usage.resource.kind == RGResourceKind::Texture;
+            auto& lastWriter = isTexture ? textureLastWriter : bufferLastWriter;
+            auto& readers = isTexture ? textureReaders : bufferReaders;
+            grow(lastWriter, readers, usage.resource.index);
+
+            // Read after write. A history read makes no such edge: it consumes
+            // the previous frame, not whatever this frame's producer will write.
+            if (accessReads(usage.access) && !usage.historyRead) {
+                addPredecessor(lastWriter[usage.resource.index]);
+            }
+
+            if (accessWrites(usage.access)) {
+                // Write after write, and write after read: overwriting means
+                // waiting both for the previous writer and for everyone who read
+                // what it left.
+                addPredecessor(lastWriter[usage.resource.index]);
+                for (const uint32_t reader : readers[usage.resource.index]) {
+                    addPredecessor(reader);
+                }
+            }
+        }
+
+        // Committed after the whole pass is examined, so a read-modify-write is
+        // judged against the state the pass found rather than the one it leaves.
+        for (const RenderResourceUsage& usage : pass.resourceUsages) {
+            if (!accessWrites(usage.access)) {
+                continue;
+            }
+            const bool isTexture = usage.resource.kind == RGResourceKind::Texture;
+            auto& lastWriter = isTexture ? textureLastWriter : bufferLastWriter;
+            auto& readers = isTexture ? textureReaders : bufferReaders;
+            grow(lastWriter, readers, usage.resource.index);
+            lastWriter[usage.resource.index] = passIndex;
+            readers[usage.resource.index].clear();
+        }
+        for (const RenderResourceUsage& usage : pass.resourceUsages) {
+            if (!accessReads(usage.access)) {
+                continue;
+            }
+            const bool isTexture = usage.resource.kind == RGResourceKind::Texture;
+            auto& lastWriter = isTexture ? textureLastWriter : bufferLastWriter;
+            auto& readers = isTexture ? textureReaders : bufferReaders;
+            grow(lastWriter, readers, usage.resource.index);
+            readers[usage.resource.index].push_back(passIndex);
+        }
+
+        std::sort(entry.predecessors.begin(), entry.predecessors.end());
+
+        // Every edge points backwards, so one forward pass settles the longest
+        // chain: a predecessor's own earliest slot is already final here.
+        for (const uint32_t predecessor : entry.predecessors) {
+            entry.earliestSlot = std::max(entry.earliestSlot, schedule[predecessor].earliestSlot + 1);
+        }
+        entry.slack = entry.recordedSlot - entry.earliestSlot;
+    }
+
+    return schedule;
+}
+
+uint32_t longestPassChain(const std::vector<RenderGraphPassSchedule>& schedule)
+{
+    uint32_t longest = 0;
+    for (const RenderGraphPassSchedule& entry : schedule) {
+        if (entry.scheduled) {
+            longest = std::max(longest, entry.earliestSlot + 1);
+        }
+    }
+
+    return longest;
 }
 
 bool RenderGraph::beginDeclaredPass(uint32_t passIndex)

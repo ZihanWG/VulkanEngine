@@ -1538,6 +1538,7 @@ void Renderer::drawRenderGraphDebugUi()
 {
     const auto& passes = renderGraph_.debugPasses();
     const auto& resources = renderGraph_.debugResources();
+    const auto& schedule = renderGraph_.passSchedule();
     ImGui::Text("Declared pass order: %zu passes, %zu resources", passes.size(), resources.size());
 
     const size_t declarationIssueCount = renderGraph_.declarationIssues().size();
@@ -1552,8 +1553,20 @@ void Renderer::drawRenderGraphDebugUi()
     }
     ImGui::SetItemTooltip(
         "Checked every frame from the declarations alone: a pass reading a graph-owned resource nothing "
-        "produced yet, a previous-frame read of a pool-bound resource, or one resource declared twice by "
-        "the same pass.");
+        "produced yet, a previous-frame read of a pool-bound resource, one resource declared twice by "
+        "the same pass, or a previous-frame read placed after this frame's producer.");
+
+    const uint32_t longestChain = renderer::longestPassChain(schedule);
+    uint32_t scheduledPasses = 0;
+    for (const renderer::RenderGraphPassSchedule& entry : schedule) {
+        scheduledPasses += entry.scheduled ? 1u : 0u;
+    }
+    ImGui::Text("Longest dependency chain: %u of %u recorded passes", longestChain, scheduledPasses);
+    ImGui::SetItemTooltip(
+        "The declared data flow only forces this many sequential steps. The gap to the recorded count is "
+        "how much room a reordering would have; the Schedule column says where each pass could move. The "
+        "recorded order cannot be illegal here, because the declarations are written in the order the "
+        "passes run -- read the slack, not the legality.");
 
     // ScrollX makes the table a child window whose default height is "remaining
     // visible space" — near the bottom of a scrolled panel that collapses to a
@@ -1567,7 +1580,7 @@ void Renderer::drawRenderGraphDebugUi()
                                       ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY;
     const ImVec2 tableSize(0.0f, ImGui::GetTextLineHeightWithSpacing() * 12.0f);
     const float wideColumnWidth = ImGui::GetFontSize() * 16.0f;
-    if (ImGui::BeginTable("RenderGraphPassesV2", 8, flags, tableSize)) {
+    if (ImGui::BeginTable("RenderGraphPassesV2", 9, flags, tableSize)) {
         ImGui::TableSetupColumn("#");
         ImGui::TableSetupColumn("Pass");
         ImGui::TableSetupColumn("Type");
@@ -1576,6 +1589,7 @@ void Renderer::drawRenderGraphDebugUi()
         ImGui::TableSetupColumn("Reads", ImGuiTableColumnFlags_WidthFixed, wideColumnWidth);
         ImGui::TableSetupColumn("Writes", ImGuiTableColumnFlags_WidthFixed, wideColumnWidth);
         ImGui::TableSetupColumn("Barriers / notes", ImGuiTableColumnFlags_WidthFixed, wideColumnWidth);
+        ImGui::TableSetupColumn("Schedule");
         ImGui::TableHeadersRow();
 
         for (size_t index = 0; index < passes.size(); ++index) {
@@ -1614,6 +1628,29 @@ void Renderer::drawRenderGraphDebugUi()
                 ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.6f, 0.2f, 1.0f));
                 ImGui::TextWrapped("%s", pass.declarationIssues.c_str());
                 ImGui::PopStyleColor();
+            }
+
+            ImGui::TableNextColumn();
+            if (index < schedule.size() && schedule[index].scheduled) {
+                const renderer::RenderGraphPassSchedule& entry = schedule[index];
+                ImGui::Text(
+                    "%u deps, earliest %u", static_cast<uint32_t>(entry.predecessors.size()), entry.earliestSlot);
+                if (entry.slack > 0) {
+                    ImGui::TextDisabled("could move %u earlier", entry.slack);
+                }
+                if (ImGui::BeginItemTooltip()) {
+                    if (entry.predecessors.empty()) {
+                        ImGui::TextUnformatted("Nothing declared constrains this pass.");
+                    } else {
+                        ImGui::TextUnformatted("Must follow:");
+                        for (const uint32_t predecessor : entry.predecessors) {
+                            ImGui::BulletText("%s", passes[predecessor].name.c_str());
+                        }
+                    }
+                    ImGui::EndTooltip();
+                }
+            } else {
+                ImGui::TextDisabled("-");
             }
         }
 
