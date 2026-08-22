@@ -346,6 +346,90 @@ Culling cannot drop either while the composite declaration reads both. Whether
 the shader needs both bound is a renderer question this document does not settle;
 the point is that the schedule made it visible.
 
+## The Graph Drives The Post-Process Tail
+
+`computeExecutionOrder` turns the derived dependency graph into an order: Kahn's
+algorithm over the predecessor sets, breaking ties on declaration index. The tie
+break is the point. Every derived edge points backwards by construction, so the
+result is exactly the order the passes were declared in — handing the order to
+the graph changes nothing about what runs or when. What it changes is who
+decides, and a unit test pins that the two still agree.
+
+`Renderer::recordRenderCommands` hands the graph seven recorders through
+`RenderGraph::recordScheduledUnits`:
+
+| Unit | Anchor pass |
+| --- | --- |
+| `recordDepthPyramidCommands` | `DepthPyramidPass` |
+| `recordTaaResolveCommands` | `TAAResolvePass` |
+| `recordLegacyBloomCommands` | `BloomExtractPass` |
+| `recordMipChainBloomCommands` | `BloomDownsampleMip0` |
+| `recordLuminanceCommands` | `LuminancePass` |
+| `recordHistogramCommands` | `HistogramExposurePass` |
+| `recordCompositeCommands` | `CompositePass` |
+
+A recorder spanning several declared passes anchors on the first of them; the
+mip-chain recorder covers seven. This is the region already factored far enough
+to be invoked rather than called in sequence, and it is also where all of the
+frame's scheduling slack is. Everything before it — the shadow, culling, probe,
+main and screen-space passes — is still recorded in place.
+
+**No reordering happens.** The scheduled order is today's order, the golden image
+is bit-identical, and the proven-legal exposure hoist stays unapplied.
+
+### The backstop
+
+The declarations in `buildFrameGraphDeclarations` and the recording spread across
+nine translation units are two sequences kept in step by hand. Nothing compared
+them. `beginDeclaredPass` now records the order passes were actually begun in,
+and `endFrame` checks it:
+
+- `validatePassOrder` — dependencies the recording order broke;
+- `unrecordedPasses` — scheduled passes never recorded at all. `validatePassOrder`
+  sees a missing pass only through the edges it breaks, so one with no
+  predecessors would otherwise pass unnoticed.
+
+Both are reported in the Render Graph panel, never thrown, for the same reason
+`validateDeclarations` reports.
+
+### What the backstop found on its first run
+
+Two passes were declared and scheduled every frame but never recorded, which
+means the graph's model of the frame — its culling, its barriers, its resource
+lifetimes — described work that did not happen:
+
+- **`CSMShadowPass`.** The cascade cache skips the redraw when every cascade is
+  clean (`if (!cascadeNeedsRedraw(cascadeIndex)) continue;`), but the declaration
+  was unconditional. On a cached frame the main pass read a shadow map the graph
+  believed had just been written.
+- **`LuminancePass`.** `recordLuminanceCommands` returns early in histogram mode,
+  which is the default, so `HistogramExposurePass` declared a read of partials
+  nothing had produced.
+
+Both now follow the pattern the punctual atlas and the VSM page pool already
+used: the pass is declared only when the renderer will record it, while the
+resource stays imported and its readers stay declared, so it keeps the layout its
+sampler claims. The predicates are shared rather than duplicated —
+`Renderer::anyCascadeShadowRedrawRequired` and
+`PostProcessStack::willRecordLuminancePass` are called both by the declaration
+and by the recorder, so the two cannot drift apart again. Collapsing the
+luminance recorder's three early-outs into that one predicate is what closed it;
+the first attempt covered only the first of them, and the backstop said so.
+
+The default frame now reports 23 scheduled passes, 23 recorded, no violations.
+Checked the other way too: recording the tail in reverse reports three broken
+dependencies (`CompositePass` before `BloomBlurVertical`, `BloomUpsampleMip0`,
+and `HistogramExposurePass`).
+
+### The precondition for ever reordering
+
+Culling, `validateDeclarations`, and `computeTextureLifetimes` all sweep
+declaration order. They are correct today **only because the scheduled order
+equals it**. A policy that actually reorders has to move those analyses onto the
+scheduled order first, or they will describe a frame that does not happen.
+Barriers do not have this problem: they are derived from live tracked state as
+each pass is recorded, so they follow whatever order the recording takes.
+
 ## Side Effects And Culling
 
 Passes can be marked as side-effecting. Side-effect passes are never culled. Current side-effect passes include:
@@ -374,6 +458,8 @@ The ImGui Render Graph panel shows:
 - each pass's derived predecessor count, earliest legal slot, and slack, with the
   predecessor names in a tooltip, plus the frame's longest dependency chain
 - resource versions are not shown; they are visible through the pass declarations
+- whether the recorded order matched the schedule, and any pass that was declared
+  and scheduled but never recorded
 - resource name, kind, lifetime, extent/size, format, mip/layer count, initial layout, and final layout
 
 ## Transient Memory Aliasing
@@ -493,8 +579,11 @@ the default.
 - There is no node-editor view yet.
 - Declaration validation does not model cross-frame liveness; see "What it does
   not check".
-- Nothing acts on the derived dependency graph yet. Pass order is still the order
-  `buildFrameGraphDeclarations` writes it in; `validatePassOrder` can check a
-  proposed reordering, but no reordering is performed.
+- The graph orders the post-process tail and nothing else. The rest of the frame
+  is recorded in place, and making it schedulable means factoring the main HDR
+  pass (~300 inline lines), the shadow, probe and culling regions into callable
+  units.
+- No reordering is performed. The scheduled order equals the declaration order by
+  construction; see "The precondition for ever reordering".
 - Versions are per frame and per resource, not per subresource, so a pass writing
   one mip of an image advances the version of the whole image.

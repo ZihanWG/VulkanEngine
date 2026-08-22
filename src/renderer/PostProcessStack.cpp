@@ -1991,11 +1991,11 @@ float PostProcessStack::currentToneMappingExposure() const
     return toneMappingExposureValue(toneMappingSettings_.manualExposure);
 }
 
-void PostProcessStack::recordLuminanceCommands(VkCommandBuffer commandBuffer)
+bool PostProcessStack::willRecordLuminancePass() const
 {
     if (!isLogAverageExposureActive() || exposureModeValue(toneMappingSettings_.exposureMode) == ExposureMode::Manual ||
         currentFrame_ >= frameLuminanceBuffers_.size()) {
-        return;
+        return false;
     }
     // Histogram mode does not read this pass's output. Its only consumers there
     // were an empty-histogram fallback and the debug average-luminance readout,
@@ -2005,11 +2005,18 @@ void PostProcessStack::recordLuminanceCommands(VkCommandBuffer commandBuffer)
     // LogAverage mode has no histogram pass and still needs this one.
     if (exposureModeValue(toneMappingSettings_.exposureMode) == ExposureMode::Histogram &&
         isHistogramExposureActive()) {
-        return;
+        return false;
     }
 
-    VkBuffer luminanceBuffer = frameLuminanceBuffers_[currentFrame_].buffer();
-    if (luminanceBuffer == VK_NULL_HANDLE) {
+    return frameLuminanceBuffers_[currentFrame_].buffer() != VK_NULL_HANDLE;
+}
+
+void PostProcessStack::recordLuminanceCommands(VkCommandBuffer commandBuffer)
+{
+    // Every reason this pass might not run lives in the predicate, because the
+    // graph declares the pass from the same call. Splitting them is how the
+    // declaration and the recording drift apart.
+    if (!willRecordLuminancePass()) {
         return;
     }
 

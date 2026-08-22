@@ -1569,6 +1569,34 @@ void Renderer::drawRenderGraphDebugUi()
         "Edges come from the version each handle names, so validatePassOrder can judge an order other "
         "than the recorded one -- and reject it.");
 
+    // The backstop. The declarations and the recording are two sequences kept in
+    // step by hand across nine files; this line is what notices them drifting.
+    const size_t orderViolations = renderGraph_.recordedOrderViolations().size();
+    const size_t unrecorded = renderGraph_.unrecordedPassIndices().size();
+    if (orderViolations == 0 && unrecorded == 0 && !renderGraph_.executionOrderCycleDetected()) {
+        ImGui::TextDisabled("Recording order matches the schedule.");
+    } else {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.6f, 0.2f, 1.0f));
+        if (renderGraph_.executionOrderCycleDetected()) {
+            ImGui::TextUnformatted("The declared dependencies could not be ordered: a cycle.");
+        }
+        if (orderViolations > 0) {
+            ImGui::Text("%zu dependenc%s broken by the order the passes were recorded in.",
+                        orderViolations,
+                        orderViolations == 1 ? "y" : "ies");
+        }
+        for (const uint32_t passIndex : renderGraph_.unrecordedPassIndices()) {
+            if (passIndex < passes.size()) {
+                ImGui::Text("%s was declared and scheduled but never recorded.", passes[passIndex].name.c_str());
+            }
+        }
+        ImGui::PopStyleColor();
+    }
+    ImGui::SetItemTooltip(
+        "Checked at the end of every frame against the order the passes were actually begun in. The "
+        "declarations and the recording are separate sequences kept in step by hand, and this is what "
+        "notices them drifting apart.");
+
     // ScrollX makes the table a child window whose default height is "remaining
     // visible space" — near the bottom of a scrolled panel that collapses to a
     // bare scrollbar. Pin an explicit height (with ScrollY) so both tables stay

@@ -373,6 +373,11 @@ void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
     barrierBatch_.reset();
     declarationIssues_.clear();
     passSchedule_.clear();
+    executionOrder_.clear();
+    executionOrderCycleDetected_ = false;
+    recordedOrder_.clear();
+    recordedOrderViolations_.clear();
+    unrecordedPassIndices_.clear();
     debugResources_.clear();
 
     frame_ = {};
@@ -1641,6 +1646,15 @@ void RenderGraph::endFrame()
         throw std::logic_error("RenderGraph::endFrame called while a pass is still active.");
     }
 
+    // The backstop. The declarations in buildFrameGraphDeclarations and the
+    // recording spread across the renderer's translation units are two sequences
+    // maintained by hand; this is what notices them drifting apart. Reported, not
+    // thrown, for the same reason validateDeclarations reports: a graph that
+    // refuses to render is a worse diagnostic than one that renders and says
+    // what looks wrong.
+    recordedOrderViolations_ = validatePassOrder(passSchedule_, recordedOrder_);
+    unrecordedPassIndices_ = unrecordedPasses(passSchedule_, recordedOrder_);
+
     refreshDebugResources();
     VK_CHECK(vkEndCommandBuffer(frame_.commandBuffer));
 
@@ -1779,6 +1793,58 @@ VkBuffer RenderGraph::buffer(RGBufferHandle handle) const
     return buffers_[handle.index].buffer;
 }
 
+uint32_t RenderGraph::builtinPassIndex(RenderGraphBuiltinPass pass) const
+{
+    switch (pass) {
+    case RenderGraphBuiltinPass::DepthPyramid:
+        return frame_.passIndices.depthPyramid;
+    case RenderGraphBuiltinPass::TaaResolve:
+        return frame_.passIndices.taaResolve;
+    case RenderGraphBuiltinPass::BloomExtract:
+        return frame_.passIndices.bloomExtract;
+    case RenderGraphBuiltinPass::BloomDownsampleFirst:
+        return frame_.passIndices.bloomDownsampleChain.empty() ? kInvalidRenderGraphHandle
+                                                               : frame_.passIndices.bloomDownsampleChain.front();
+    case RenderGraphBuiltinPass::Luminance:
+        return frame_.passIndices.luminance;
+    case RenderGraphBuiltinPass::HistogramExposure:
+        return frame_.passIndices.histogramExposure;
+    case RenderGraphBuiltinPass::Composite:
+        return frame_.passIndices.composite;
+    }
+
+    return kInvalidRenderGraphHandle;
+}
+
+void RenderGraph::recordScheduledUnits(std::span<RenderGraphScheduledUnit> units)
+{
+    requireFrameActive("RenderGraph::recordScheduledUnits");
+
+    // Position in the scheduled order, or "keep where you were" for a unit whose
+    // pass this frame does not declare. Sorting on the pair with the registration
+    // index second makes the sort stable without needing stable_sort's guarantee
+    // to carry the meaning.
+    const auto scheduledPosition = [this](uint32_t passIndex) {
+        const auto found = std::find(executionOrder_.begin(), executionOrder_.end(), passIndex);
+        return found == executionOrder_.end() ? executionOrder_.size()
+                                              : static_cast<size_t>(found - executionOrder_.begin());
+    };
+
+    std::vector<std::pair<size_t, size_t>> ordered;
+    ordered.reserve(units.size());
+    for (size_t unitIndex = 0; unitIndex < units.size(); ++unitIndex) {
+        ordered.emplace_back(scheduledPosition(units[unitIndex].passIndex), unitIndex);
+    }
+    std::sort(ordered.begin(), ordered.end());
+
+    for (const auto& [position, unitIndex] : ordered) {
+        (void)position;
+        if (units[unitIndex].record) {
+            units[unitIndex].record();
+        }
+    }
+}
+
 RGTextureHandle RenderGraph::postProcessSource() const
 {
     return frame_.taaHistoryIsPostProcessSource ? frame_.taaHistoryWrite : frame_.sceneColor;
@@ -1837,16 +1903,21 @@ void RenderGraph::declareGeometryPasses()
             });
     }
 
-    frame_.passIndices.shadow = addPass(
-        "CSMShadowPass",
-        RenderPassType::Shadow,
-        RenderPassExecutionType::Graphics,
-        false,
-        [this](RenderGraphBuilder& builder) {
-            frame_.shadowMapDepth = builder.writeTexture(frame_.shadowMapDepth,
-                                                         RGAccess::DepthStencilAttachmentWrite,
-                                                         "Writes cascaded shadow-map depth array layers.");
-        });
+    // Skipped on a fully cached frame, when the renderer redraws no cascade.
+    // The shadow map stays imported and the main pass still declares its read,
+    // so it keeps the layout its sampler claims; only the write pass goes away.
+    if (frame_.resources.cascadeShadowRedrawRequired) {
+        frame_.passIndices.shadow = addPass(
+            "CSMShadowPass",
+            RenderPassType::Shadow,
+            RenderPassExecutionType::Graphics,
+            false,
+            [this](RenderGraphBuilder& builder) {
+                frame_.shadowMapDepth = builder.writeTexture(frame_.shadowMapDepth,
+                                                             RGAccess::DepthStencilAttachmentWrite,
+                                                             "Writes cascaded shadow-map depth array layers.");
+            });
+    }
 
     // Only declared when a light actually got a tile. The atlas texture is
     // still imported and still read by the main pass below, so a frame that
@@ -2416,19 +2487,23 @@ void RenderGraph::declareBloomAndTaaPasses()
 
 void RenderGraph::declareExposureCompositePasses()
 {
-    frame_.passIndices.luminance = addPass(
-        "LuminancePass",
-        RenderPassType::Luminance,
-        RenderPassExecutionType::Compute,
-        true,
-        [this](RenderGraphBuilder& builder) {
-            builder.readTexture(postProcessSource(),
-                                RGAccess::ShaderRead,
-                                "Samples active scene color for log-average luminance reduction.");
-            frame_.luminancePartials = builder.writeBuffer(frame_.luminancePartials,
-                                                           RGAccess::StorageBufferWrite,
-                                                           "Writes per-workgroup luminance partials.");
-        });
+    // Histogram exposure does not read the log-average reduction, so on that
+    // path the renderer records nothing here and the pass is not declared.
+    if (frame_.resources.luminancePassEnabled) {
+        frame_.passIndices.luminance = addPass(
+            "LuminancePass",
+            RenderPassType::Luminance,
+            RenderPassExecutionType::Compute,
+            true,
+            [this](RenderGraphBuilder& builder) {
+                builder.readTexture(postProcessSource(),
+                                    RGAccess::ShaderRead,
+                                    "Samples active scene color for log-average luminance reduction.");
+                frame_.luminancePartials = builder.writeBuffer(frame_.luminancePartials,
+                                                               RGAccess::StorageBufferWrite,
+                                                               "Writes per-workgroup luminance partials.");
+            });
+    }
 
     frame_.passIndices.histogramExposure = addPass(
         "HistogramExposurePass",
@@ -2521,6 +2596,9 @@ void RenderGraph::validateFrameDeclarations()
 
     declarationIssues_ = validateDeclarations(passes_, textureValidationInfo_, bufferValidationInfo_);
     passSchedule_ = computePassSchedule(passes_);
+    const RenderGraphExecutionOrder executionOrder = computeExecutionOrder(passSchedule_);
+    executionOrder_ = executionOrder.order;
+    executionOrderCycleDetected_ = executionOrder.cycleDetected;
 
     for (const RenderGraphDeclarationIssue& issue : declarationIssues_) {
         if (issue.passIndex >= passes_.size()) {
@@ -2899,6 +2977,78 @@ std::vector<RenderGraphOrderViolation> validatePassOrder(const std::vector<Rende
     return violations;
 }
 
+RenderGraphExecutionOrder computeExecutionOrder(const std::vector<RenderGraphPassSchedule>& schedule)
+{
+    RenderGraphExecutionOrder result;
+
+    std::vector<uint32_t> remaining(schedule.size(), 0);
+    // Successors, so emitting a pass can cheaply release what waited on it.
+    std::vector<std::vector<uint32_t>> successors(schedule.size());
+    uint32_t scheduledPasses = 0;
+
+    for (uint32_t passIndex = 0; passIndex < schedule.size(); ++passIndex) {
+        const RenderGraphPassSchedule& entry = schedule[passIndex];
+        if (!entry.scheduled) {
+            continue;
+        }
+
+        ++scheduledPasses;
+        for (const uint32_t predecessor : entry.predecessors) {
+            if (predecessor < schedule.size() && schedule[predecessor].scheduled) {
+                ++remaining[passIndex];
+                successors[predecessor].push_back(passIndex);
+            }
+        }
+    }
+
+    // Kahn's algorithm. The ready set is kept as a sorted vector rather than a
+    // heap: the counts here are in the tens, and taking the lowest declaration
+    // index is what makes the result reproduce the declaration order.
+    std::vector<uint32_t> ready;
+    for (uint32_t passIndex = 0; passIndex < schedule.size(); ++passIndex) {
+        if (schedule[passIndex].scheduled && remaining[passIndex] == 0) {
+            ready.push_back(passIndex);
+        }
+    }
+
+    result.order.reserve(scheduledPasses);
+    while (!ready.empty()) {
+        const auto next = std::min_element(ready.begin(), ready.end());
+        const uint32_t passIndex = *next;
+        ready.erase(next);
+        result.order.push_back(passIndex);
+
+        for (const uint32_t successor : successors[passIndex]) {
+            if (--remaining[successor] == 0) {
+                ready.push_back(successor);
+            }
+        }
+    }
+
+    result.cycleDetected = result.order.size() != scheduledPasses;
+    return result;
+}
+
+std::vector<uint32_t> unrecordedPasses(const std::vector<RenderGraphPassSchedule>& schedule,
+                                       std::span<const uint32_t> order)
+{
+    std::vector<uint8_t> present(schedule.size(), 0);
+    for (const uint32_t passIndex : order) {
+        if (passIndex < present.size()) {
+            present[passIndex] = 1;
+        }
+    }
+
+    std::vector<uint32_t> missing;
+    for (uint32_t passIndex = 0; passIndex < schedule.size(); ++passIndex) {
+        if (schedule[passIndex].scheduled && present[passIndex] == 0) {
+            missing.push_back(passIndex);
+        }
+    }
+
+    return missing;
+}
+
 uint32_t longestPassChain(const std::vector<RenderGraphPassSchedule>& schedule)
 {
     uint32_t longest = 0;
@@ -2921,6 +3071,12 @@ bool RenderGraph::beginDeclaredPass(uint32_t passIndex)
     if (pass.culled) {
         pass.executed = false;
         return false;
+    }
+
+    // First occurrence only: the cascaded shadow pass is begun once per cascade,
+    // and the frame's recording order should say it ran once.
+    if (std::find(recordedOrder_.begin(), recordedOrder_.end(), passIndex) == recordedOrder_.end()) {
+        recordedOrder_.push_back(passIndex);
     }
 
     // Every barrier this pass infers sits between the same two points in the

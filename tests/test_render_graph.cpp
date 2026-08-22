@@ -1064,6 +1064,121 @@ TEST_CASE("An empty order over an empty schedule is legal", "[rendergraph][order
 }
 
 // ---------------------------------------------------------------------------
+// The execution order the graph hands the renderer, and the check that notices
+// when the recording did something else. The declarations and the recording are
+// two sequences kept in step by hand across nine files; nothing used to compare
+// them.
+
+namespace {
+
+using ve::renderer::computeExecutionOrder;
+using ve::renderer::RenderGraphPassSchedule;
+using ve::renderer::unrecordedPasses;
+
+} // namespace
+
+TEST_CASE("The scheduled order reproduces a legal declaration order", "[rendergraph][order]")
+{
+    // The property that makes handing the order to the graph a no-op: every
+    // derived edge points backwards, so the stable tie-break returns exactly the
+    // order the passes were declared in. If this ever stops holding, the graph
+    // has started disagreeing with the file and the golden image is at stake.
+    std::vector<RenderPassNode> passes{
+        pass("A", {texture(0, RenderResourceAccess::Write)}),
+        pass("B", {texture(0, RenderResourceAccess::Read, 1), texture(1, RenderResourceAccess::Write)}),
+        pass("C", {texture(1, RenderResourceAccess::Read, 1)}, true),
+        pass("D", {texture(2, RenderResourceAccess::Write)}, true),
+    };
+
+    const auto result = computeExecutionOrder(computePassSchedule(passes));
+
+    CHECK_FALSE(result.cycleDetected);
+    CHECK(result.order == std::vector<uint32_t>{0, 1, 2, 3});
+}
+
+TEST_CASE("The scheduled order leaves culled passes out", "[rendergraph][order]")
+{
+    std::vector<RenderPassNode> passes{
+        pass("Dead", {texture(0, RenderResourceAccess::Write)}),
+        pass("Live", {texture(1, RenderResourceAccess::Write)}, true),
+    };
+    passes[0].culled = true;
+
+    const auto result = computeExecutionOrder(computePassSchedule(passes));
+
+    CHECK(result.order == std::vector<uint32_t>{1});
+}
+
+TEST_CASE("The scheduled order respects an edge that points at a later pass", "[rendergraph][order]")
+{
+    // Hand-built rather than derived, because the declarations cannot produce a
+    // forward edge. It is what a reordering policy would produce, and the sort
+    // has to honour it rather than fall back on the index.
+    std::vector<RenderGraphPassSchedule> schedule(2);
+    schedule[0].scheduled = true;
+    schedule[0].predecessors = {1};
+    schedule[1].scheduled = true;
+
+    const auto result = computeExecutionOrder(schedule);
+
+    CHECK_FALSE(result.cycleDetected);
+    CHECK(result.order == std::vector<uint32_t>{1, 0});
+}
+
+TEST_CASE("A cycle is reported rather than passes silently dropped", "[rendergraph][order]")
+{
+    // Unreachable from the declarations today. The flag exists so that a policy
+    // or a mis-declared frame that creates one has a symptom instead of quietly
+    // rendering a frame with passes missing.
+    std::vector<RenderGraphPassSchedule> schedule(2);
+    schedule[0].scheduled = true;
+    schedule[0].predecessors = {1};
+    schedule[1].scheduled = true;
+    schedule[1].predecessors = {0};
+
+    const auto result = computeExecutionOrder(schedule);
+
+    CHECK(result.cycleDetected);
+    CHECK(result.order.empty());
+}
+
+TEST_CASE("An empty graph schedules nothing and reports no cycle", "[rendergraph][order]")
+{
+    const auto result = computeExecutionOrder({});
+
+    CHECK(result.order.empty());
+    CHECK_FALSE(result.cycleDetected);
+}
+
+TEST_CASE("A scheduled pass missing from the order is named", "[rendergraph][order]")
+{
+    // validatePassOrder sees a missing pass only through the edges it breaks, so
+    // one with no predecessors -- a pass declared but never recorded, which is
+    // the graph modelling work that did not happen -- needs its own check.
+    std::vector<RenderPassNode> passes{
+        pass("Recorded", {texture(0, RenderResourceAccess::Write)}, true),
+        pass("Forgotten", {texture(1, RenderResourceAccess::Write)}, true),
+    };
+    const auto schedule = computePassSchedule(passes);
+
+    CHECK(unrecordedPasses(schedule, std::vector<uint32_t>{0, 1}).empty());
+    CHECK(unrecordedPasses(schedule, std::vector<uint32_t>{0}) == std::vector<uint32_t>{1});
+    CHECK(validatePassOrder(schedule, std::vector<uint32_t>{0}).empty());
+}
+
+TEST_CASE("A culled pass is not expected in the order", "[rendergraph][order]")
+{
+    std::vector<RenderPassNode> passes{
+        pass("Dead", {texture(0, RenderResourceAccess::Write)}, true),
+        pass("Live", {texture(1, RenderResourceAccess::Write)}, true),
+    };
+    passes[0].culled = true;
+    const auto schedule = computePassSchedule(passes);
+
+    CHECK(unrecordedPasses(schedule, std::vector<uint32_t>{1}).empty());
+}
+
+// ---------------------------------------------------------------------------
 // Barrier batching. A pass's inferred barriers go into one vkCmdPipelineBarrier2,
 // which is only sound while no two of them target the same resource: barriers
 // inside one dependency info are unordered relative to each other, so a resource

@@ -124,6 +124,11 @@ public:
     // State queries.
     [[nodiscard]] bool isAutoExposureActive() const;
     [[nodiscard]] bool isLogAverageExposureActive() const;
+    // Whether recordLuminanceCommands will record anything this frame. The graph
+    // declares LuminancePass only when this is true, and the recorder early-outs
+    // on the same call, so the declaration and the recording cannot disagree
+    // about whether the pass exists.
+    [[nodiscard]] bool willRecordLuminancePass() const;
     [[nodiscard]] bool isHistogramExposureActive() const;
     [[nodiscard]] bool isGpuExposureActive() const;
     [[nodiscard]] bool isTaaActive() const;

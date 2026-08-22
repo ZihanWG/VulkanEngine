@@ -468,6 +468,10 @@ private:
     // True when the cascades render as one multiview pass rather than one pass
     // each. Requires the device feature; the fallback is the original loop.
     [[nodiscard]] bool isLayeredCascadeRenderingActive() const;
+    // Whether any cascade will be redrawn this frame. The graph declares
+    // CSMShadowPass only when this is true, and the recording loop tests the
+    // same call, so a fully cached frame cannot declare a pass it never records.
+    [[nodiscard]] bool anyCascadeShadowRedrawRequired() const;
     // Whether anything will read the depth pyramid, i.e. whether building it
     // this frame is worth anything.
     [[nodiscard]] bool isDepthPyramidBuildRequired() const;

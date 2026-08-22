@@ -318,6 +318,13 @@ struct RenderGraphPassSchedule {
 };
 
 
+// A dependency the proposed order breaks: `passIndex` is placed at or before
+// `predecessorIndex`, which it must follow.
+struct RenderGraphOrderViolation {
+    uint32_t passIndex = 0;
+    uint32_t predecessorIndex = 0;
+};
+
 // What validateDeclarations needs to know about a resource, which is only
 // whether the graph manages its bytes and whether they are shared.
 struct RGResourceValidationInfo {
@@ -431,6 +438,20 @@ struct RenderGraphFrameResources {
     // runs on frames with nothing to capture -- the cold-start seed, and the
     // debug-pattern path.
     bool probeCaptureEnabled = false;
+    // Appended rather than grouped with the other pass flags on purpose: this
+    // struct is filled by positional aggregate initialization, so inserting a
+    // field in the middle silently shifts every value after it.
+    //
+    // Whether any cascade will be redrawn this frame. False skips declaring the
+    // cascaded shadow pass, but the shadow map is still imported and still read
+    // by the main pass -- the same asymmetry the punctual atlas uses. A fully
+    // cached frame redraws no cascade, and declaring a pass the renderer never
+    // records would leave the graph modelling work that did not happen.
+    bool cascadeShadowRedrawRequired = false;
+    // Whether the luminance reduction will record this frame. False skips
+    // declaring the pass; histogram mode does not read its output, so the
+    // exposure chain is unaffected.
+    bool luminancePassEnabled = false;
 };
 
 struct RenderGraphResourceDebugInfo {
@@ -448,6 +469,28 @@ struct RenderGraphResourceDebugInfo {
     bool graphManaged = false;
     VkImageLayout initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     VkImageLayout finalLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+};
+
+// A recorder the graph may invoke, and the pass whose scheduled position decides
+// when it runs. A recorder covering several declared passes names the first of
+// them; a recorder with no pass of its own leaves the index invalid and keeps
+// its registration position.
+struct RenderGraphScheduledUnit {
+    uint32_t passIndex = kInvalidRenderGraphHandle;
+    std::function<void()> record;
+};
+
+// The passes a caller can anchor a scheduled unit to. Deliberately only the ones
+// with a recorder factored out far enough to be invoked by the graph; the rest
+// of the frame is still recorded in place.
+enum class RenderGraphBuiltinPass {
+    DepthPyramid,
+    TaaResolve,
+    BloomExtract,
+    BloomDownsampleFirst,
+    Luminance,
+    HistogramExposure,
+    Composite
 };
 
 class RenderGraph;
@@ -664,6 +707,45 @@ public:
     {
         return passSchedule_;
     }
+
+    // The order the graph scheduled this frame's passes in.
+    [[nodiscard]] const std::vector<uint32_t>& executionOrder() const
+    {
+        return executionOrder_;
+    }
+
+    // Dependencies the order the passes were actually recorded in broke, and
+    // scheduled passes that were never recorded at all. Both are filled at
+    // endFrame and survive into the next frame for the debug panel. Empty is the
+    // normal state for both.
+    [[nodiscard]] const std::vector<RenderGraphOrderViolation>& recordedOrderViolations() const
+    {
+        return recordedOrderViolations_;
+    }
+
+    [[nodiscard]] const std::vector<uint32_t>& unrecordedPassIndices() const
+    {
+        return unrecordedPassIndices_;
+    }
+
+    // True when the derived graph could not be fully ordered this frame.
+    [[nodiscard]] bool executionOrderCycleDetected() const
+    {
+        return executionOrderCycleDetected_;
+    }
+
+    // Index of a pass a scheduled unit can anchor to, or kInvalidRenderGraphHandle
+    // when this frame does not declare it.
+    [[nodiscard]] uint32_t builtinPassIndex(RenderGraphBuiltinPass pass) const;
+
+    // Invokes each recorder, ordered by where computeExecutionOrder put its pass.
+    // Units with no pass this frame, or with equal positions, keep the order they
+    // were registered in.
+    //
+    // This is where the graph stops describing the frame and starts driving it.
+    // It drives only what the caller hands it; everything else is still recorded
+    // in place, and the endFrame backstop is what covers both.
+    void recordScheduledUnits(std::span<RenderGraphScheduledUnit> units);
 
     // Aliases kept so existing RenderGraph::TextureAccessState spellings still
     // compile; the types themselves live at namespace scope below so the pure
@@ -932,6 +1014,14 @@ private:
     std::vector<RGResourceValidationInfo> textureValidationInfo_;
     std::vector<RGResourceValidationInfo> bufferValidationInfo_;
     std::vector<RenderGraphPassSchedule> passSchedule_;
+    std::vector<uint32_t> executionOrder_;
+    bool executionOrderCycleDetected_ = false;
+    // Pass indices in the order beginDeclaredPass first saw them, which is the
+    // order the renderer actually recorded the frame in. A pass begun more than
+    // once -- the cascaded shadow pass, once per cascade -- appears once.
+    std::vector<uint32_t> recordedOrder_;
+    std::vector<RenderGraphOrderViolation> recordedOrderViolations_;
+    std::vector<uint32_t> unrecordedPassIndices_;
     bool frameActive_ = false;
     ActivePass activePass_ = ActivePass::None;
 
@@ -996,13 +1086,6 @@ validateDeclarations(const std::vector<RenderPassNode>& passes,
 // anything, since they do not run.
 [[nodiscard]] std::vector<RenderGraphPassSchedule> computePassSchedule(const std::vector<RenderPassNode>& passes);
 
-// A dependency the proposed order breaks: `passIndex` is placed at or before
-// `predecessorIndex`, which it must follow.
-struct RenderGraphOrderViolation {
-    uint32_t passIndex = 0;
-    uint32_t predecessorIndex = 0;
-};
-
 // Checks a proposed execution order against the derived dependency graph. This
 // is the question versioned handles make answerable: the edges come from the
 // declared version chain rather than from where a pass happens to sit, so an
@@ -1013,6 +1096,37 @@ struct RenderGraphOrderViolation {
 // would have followed, since dropping it is not an ordering the graph allows.
 [[nodiscard]] std::vector<RenderGraphOrderViolation>
 validatePassOrder(const std::vector<RenderGraphPassSchedule>& schedule, std::span<const uint32_t> order);
+
+// A topological order over the derived dependency graph: the order the graph
+// says the passes may run in.
+//
+// Ties break on declaration index, which makes the result deterministic and,
+// whenever the declaration order is itself legal, identical to it. That is the
+// intended outcome rather than a limitation: every derived edge points backwards
+// by construction, so making the graph the authority is meant to change nothing
+// on its own. What it changes is who decides.
+struct RenderGraphExecutionOrder {
+    // Scheduled passes, in execution order. Culled passes are absent.
+    std::vector<uint32_t> order;
+    // True when the graph could not be fully ordered. The passes involved are
+    // left out of `order` rather than emitted in an arbitrary place, so a cycle
+    // shows up as unrecorded passes instead of as silently wrong output. It
+    // cannot happen while declarations are written in a legal order; the flag
+    // exists so that a policy or a mis-declared frame that breaks that has a
+    // symptom.
+    bool cycleDetected = false;
+};
+
+[[nodiscard]] RenderGraphExecutionOrder computeExecutionOrder(const std::vector<RenderGraphPassSchedule>& schedule);
+
+// Scheduled passes missing from an order, ascending.
+//
+// validatePassOrder reports a missing pass only through the edges it breaks, so
+// one with no predecessors would otherwise go unnoticed. A declared pass the
+// renderer never records means the graph's model of the frame -- its culling,
+// its barriers, its resource lifetimes -- describes work that did not happen.
+[[nodiscard]] std::vector<uint32_t> unrecordedPasses(const std::vector<RenderGraphPassSchedule>& schedule,
+                                                     std::span<const uint32_t> order);
 
 // Longest chain of dependent passes in a schedule, in passes. The floor on how
 // many sequential steps the frame needs however it is reordered; 0 for an empty

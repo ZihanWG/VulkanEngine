@@ -534,6 +534,11 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuC
     }
 }
 
+bool Renderer::anyCascadeShadowRedrawRequired() const
+{
+    return !csmSettings_.enableCascadeCache || cascadeShadowCascadesRedrawn_ > 0;
+}
+
 renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
 {
     // sceneExtent is the *allocated* size of the scene targets; renderExtent
@@ -932,6 +937,8 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         isVolumetricFogActive(),
         isIrradianceProbeUpdateActive(),
         frameProbeCaptureActive_,
+        anyCascadeShadowRedrawRequired(),
+        postProcess_.willRecordLuminancePass(),
     };
 }
 
@@ -1237,7 +1244,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         }
         return cascadeIndex < cascadeShadowDirty_.size() && cascadeShadowDirty_[cascadeIndex];
     };
-    const bool anyCascadeNeedsRedraw = !cascadeCacheActive || cascadeShadowCascadesRedrawn_ > 0;
+    const bool anyCascadeNeedsRedraw = anyCascadeShadowRedrawRequired();
 
     const bool csmProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "CSMShadowPass");
     rhi::debug::beginLabel(commandBuffer, "CSMShadowPass");
@@ -2111,35 +2118,60 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
         rhi::debug::endLabel(commandBuffer);
     }
 
-    if (isDepthPyramidBuildRequired()) {
-        recordDepthPyramidCommands(commandBuffer);
-    } else {
-        // Skipped, so whatever is in the image is from an unknown frame. Mark it
-        // unusable rather than leaving a stale pyramid flagged valid -- that is
-        // what re-enabling occlusion culling at runtime would otherwise read.
-        depthPyramid_.invalidate();
-    }
-
-    if (taaActiveThisFrame) {
-        postProcess_.recordTaaResolveCommands(commandBuffer);
-    }
-
-    postProcess_.recordLegacyBloomCommands(commandBuffer);
-    postProcess_.recordMipChainBloomCommands(commandBuffer);
-
-    postProcess_.recordLuminanceCommands(commandBuffer);
-    postProcess_.recordHistogramCommands(commandBuffer);
+    // From here the graph decides the order. These seven recorders are the part
+    // of the frame already factored far enough to be invoked rather than called
+    // in sequence, and they are also where all of the frame's scheduling slack
+    // is. Each still guards itself and owns its own label, profiler scope, and
+    // graph pass, exactly as it did when this was a straight line.
+    //
+    // The order the graph returns is today's order -- every derived edge points
+    // backwards, so a stable topological sort reproduces the declarations. What
+    // changed is who decides it. The endFrame backstop checks the whole frame,
+    // this region included.
 
     // The probe-only view is a view of a linear radiance value, so it bypasses
     // the display pipeline entirely. Auto-exposure would otherwise cancel
     // exactly the brightness change the view exists to show.
     const float probeDebugGain =
         (giSettings_.enabled && giSettings_.debugIrradianceOnly) ? std::max(giSettings_.previewGain, 0.01f) : 0.0f;
-    postProcess_.recordCompositeCommands(commandBuffer,
-                                         frameJitteredProjection_,
-                                         probeDebugGain,
-                                         renderScaleSettings_.sharpness,
-                                         showSharpenDelta_ ? sharpenDeltaGain_ : 0.0f);
+
+    std::array<renderer::RenderGraphScheduledUnit, 7> postProcessUnits{{
+        {renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::DepthPyramid),
+         [this, commandBuffer]() {
+             if (isDepthPyramidBuildRequired()) {
+                 recordDepthPyramidCommands(commandBuffer);
+             } else {
+                 // Skipped, so whatever is in the image is from an unknown frame.
+                 // Mark it unusable rather than leaving a stale pyramid flagged
+                 // valid -- that is what re-enabling occlusion culling at runtime
+                 // would otherwise read.
+                 depthPyramid_.invalidate();
+             }
+         }},
+        {renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::TaaResolve),
+         [this, commandBuffer, taaActiveThisFrame]() {
+             if (taaActiveThisFrame) {
+                 postProcess_.recordTaaResolveCommands(commandBuffer);
+             }
+         }},
+        {renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::BloomExtract),
+         [this, commandBuffer]() { postProcess_.recordLegacyBloomCommands(commandBuffer); }},
+        {renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::BloomDownsampleFirst),
+         [this, commandBuffer]() { postProcess_.recordMipChainBloomCommands(commandBuffer); }},
+        {renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::Luminance),
+         [this, commandBuffer]() { postProcess_.recordLuminanceCommands(commandBuffer); }},
+        {renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::HistogramExposure),
+         [this, commandBuffer]() { postProcess_.recordHistogramCommands(commandBuffer); }},
+        {renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::Composite),
+         [this, commandBuffer, probeDebugGain]() {
+             postProcess_.recordCompositeCommands(commandBuffer,
+                                                  frameJitteredProjection_,
+                                                  probeDebugGain,
+                                                  renderScaleSettings_.sharpness,
+                                                  showSharpenDelta_ ? sharpenDeltaGain_ : 0.0f);
+         }},
+    }};
+    renderGraph_.recordScheduledUnits(postProcessUnits);
 
     recordPortfolioScreenshotCopy(commandBuffer, imageIndex);
     recordFrameCaptureCopy(commandBuffer, imageIndex);
