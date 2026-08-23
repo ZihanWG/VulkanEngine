@@ -711,7 +711,7 @@ is the shader-side duplicate, the same arrangement `ClusterGrid.h` /
 | `enableShadows` | `false` | samples the pool instead of the cascades |
 | `clipmapLevels` | 8 | active levels |
 | `level0Extent` | 4.0 m | world span of the finest level's grid |
-| `texelsPerPixel` | 1.0 | above 1 selects coarser levels; below 1 is clamped by the coverage bound (see Limitations) |
+| `texelsPerPixel` | 1.0 | above 1 selects coarser levels, below 1 finer — but only where the coverage bound is not already the larger of the two (see Limitations) |
 | `enablePageRendering` | `false` | allocates and draws pages; still samples nothing |
 | `markBlockStride` | 8 | pixels per marking thread along each axis |
 | `depthBiasTexels` | 64 | shadow-compare bias, in texels of the sampled level |
@@ -755,14 +755,19 @@ page rendering.
   Seven hypotheses have been measured and eliminated, including the slope-scaled
   bias term this doc used to lead with. See
   [What it did not settle, and what was ruled out](#what-it-did-not-settle-and-what-was-ruled-out).
-- **`texelsPerPixel` below 1.0 does nothing on this scene, by design.** Asking
-  for finer levels is clamped by the coverage bound — `vsmSelectLevel` returns
-  `max(quality, coverage)` — so 0.25 and 1.0 produce the identical 99-page set
-  and byte-identical pixels. Above 1.0 it works normally, because coarser is
-  always addressable: 2.0 gives 97 pages, 4.0 gives 37, 8.0 gives 18. This is the
-  `kVsmPagesPerLevelAxis` cap below wearing a different hat, not a broken
-  setting; an earlier note here called it unexplained because only the clamped
-  half of the range had been measured.
+- **`texelsPerPixel` below 1.0 does nothing *on this scene*, and that is the
+  coverage bound rather than a broken setting.** `vsmSelectLevel` returns
+  `max(quality, coverage)`, so a finer request only survives where coverage is
+  not already the larger bound — which means inside level 0's reach,
+  `(kVsmPagesPerLevelAxis / 2 - 1) * pageWorldSize(0)` = **1.75 m** at the
+  defaults. The default scene has nothing that close: the per-level log reads
+  `L0=0` and levels touched 1..5, so 0.25 and 1.0 land on the identical 99-page
+  set and byte-identical pixels. Move the camera to 1.6 m from geometry and the
+  two diverge — quality asks for L1 at 1.0 and L0 at 0.25, and coverage permits
+  both. Above 1.0 it always works, because coarser is always addressable: 2.0
+  gives 97 pages, 4.0 gives 37, 8.0 gives 18. An earlier note here called the
+  no-op unexplained, having measured only the clamped half of the range on the
+  one scene where it is clamped.
 - **The demo scenes barely show a directional shadow.** Umbra 31.8/255 against a
   lit floor at 80/255, so every judgement here is a patch mean from a
   reproducible capture rather than something visible at a glance.
