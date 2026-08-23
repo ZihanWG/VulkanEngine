@@ -1070,7 +1070,8 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
                     << vsmResidencyStats_.refusedPages << ", evicted " << vsmResidencyStats_.evictions << "\n"
                     << "  casters over the per-page cap: " << vsmPageCullOverflow_ << "\n"
                     << "  casters changed: " << vsmCastersChangedThisFrame_ << ", pages they invalidated: "
-                    << vsmResidencyStats_.casterInvalidatedPages << "\n";
+                    << vsmResidencyStats_.casterInvalidatedPages << "\n"
+                    << "  skinned caster: pages drawn into " << vsmSkinnedPageDrawsRecorded_ << "\n";
             message << "  directional shadows: "
                     << (isVsmDirectionalShadowActive() ? "sampled from the page pool" : "cascades")
                     << "\n";
@@ -1931,6 +1932,7 @@ void Renderer::updateVsmCasterInvalidation()
         // with. The states are dropped so that re-enabling starts from a clean
         // comparison rather than against a scene that has moved since.
         vsmCasterStates_.clear();
+        skinnedVsmCasterState_ = VsmCasterState{};
         return;
     }
 
@@ -1941,6 +1943,7 @@ void Renderer::updateVsmCasterInvalidation()
     // to handle bluntly.
     if (vsmCasterStates_.size() != objectCount) {
         vsmCasterStates_.assign(objectCount, VsmCasterState{});
+        skinnedVsmCasterState_ = VsmCasterState{};
         virtualShadowMap_.invalidateResidency();
     }
 
@@ -2020,6 +2023,43 @@ void Renderer::updateVsmCasterInvalidation()
         state.bounds = bounds;
         state.valid = true;
     }
+
+    // The skinned caster, which the loop above cannot reach: it is keyed by
+    // objectIndex over renderObjects_, and the skinned mesh is not one. Its key
+    // is the joint palette rather than a model matrix, for the reason this whole
+    // mechanism exists -- a skinned mesh deforms without its transform moving,
+    // so the page keeps both its coordinates and its physical page while its
+    // depth silently describes a pose that is gone.
+    //
+    // Its bounds change every frame it animates, so this dirties the pages it
+    // covers every frame. That is not a tuning failure: animated geometry has no
+    // cacheable shadow, and the honest cost is a redraw of the few pages it
+    // touches. The count is reported next to the others.
+    const bool skinnedCasts = skinnedCasterActive();
+    const uint64_t skinnedKey = skinnedCasts ? skinnedMesh_.poseHash() : 0;
+    if (skinnedVsmCasterState_.valid && skinnedVsmCasterState_.key != skinnedKey) {
+        ++vsmCastersChangedThisFrame_;
+        // Where it was, then where it is -- the same pair the loop above uses,
+        // and for the same reason.
+        if (skinnedVsmCasterState_.bounds.valid()) {
+            virtualShadowMap_.invalidatePagesForBounds(clipmap,
+                                                       lightView,
+                                                       cameraLightSpaceXy,
+                                                       skinnedVsmCasterState_.bounds.min,
+                                                       skinnedVsmCasterState_.bounds.max);
+        }
+        if (skinnedCasts && skinnedMesh_.worldBounds().valid()) {
+            virtualShadowMap_.invalidatePagesForBounds(clipmap,
+                                                       lightView,
+                                                       cameraLightSpaceXy,
+                                                       skinnedMesh_.worldBounds().min,
+                                                       skinnedMesh_.worldBounds().max);
+        }
+    }
+
+    skinnedVsmCasterState_.key = skinnedKey;
+    skinnedVsmCasterState_.bounds = skinnedCasts ? skinnedMesh_.worldBounds() : renderer::Aabb{};
+    skinnedVsmCasterState_.valid = true;
 }
 
 void Renderer::updateVsmResidency(uint32_t frameIndex)

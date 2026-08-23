@@ -1213,6 +1213,8 @@ void Renderer::recordVsmPagePass(VkCommandBuffer commandBuffer)
         drawPages(renderer::kVsmMaskedCasterBucket, vsmMaskedPagePipeline_);
     }
 
+    recordSkinnedVsmPageCasters(commandBuffer, dirtyPages, clipmap, lightView);
+
     // Counted once per PAGE, not once per draw. Each page now issues one draw
     // per caster bucket, and the counter is read against the per-frame page
     // budget -- reporting draw calls there would show a page count that can
@@ -1228,6 +1230,77 @@ void Renderer::recordVsmPagePass(VkCommandBuffer commandBuffer)
     // occupant's depth, and an early mark would advertise depth never written.
     virtualShadowMap_.markDirtyPagesRendered(currentFrame_);
     virtualShadowMap_.setPagePoolFullClearDone();
+}
+
+void Renderer::recordSkinnedVsmPageCasters(VkCommandBuffer commandBuffer,
+                                           const std::vector<renderer::VsmDirtyPage>& dirtyPages,
+                                           const renderer::VsmClipmapSettings& clipmap,
+                                           const glm::mat4& lightView)
+{
+    if (!skinnedCasterActive() || skinnedVsmPagePipeline_.pipeline() == VK_NULL_HANDLE) {
+        return;
+    }
+
+    // The page cull runs over allDrawItems_, which the skinned mesh is not in,
+    // so no indirect command exists for it and none can: the cull emits draws
+    // against one shared vertex buffer. It is drawn directly instead, into the
+    // dirty pages its bounds actually reach.
+    const renderer::Aabb& bounds = skinnedMesh_.worldBounds();
+    glm::vec2 lightMin{0.0f};
+    glm::vec2 lightMax{0.0f};
+    if (!renderer::vsmLightSpaceBoundsXy(lightView, bounds.min, bounds.max, lightMin, lightMax)) {
+        return;
+    }
+
+    bool pipelineBound = false;
+    uint32_t drawnPages = 0;
+    for (const renderer::VsmDirtyPage& page : dirtyPages) {
+        if (!renderer::vsmPageOverlapsLightSpaceBounds(clipmap, page.level, page.absolutePage, lightMin, lightMax)) {
+            continue;
+        }
+
+        // Bound lazily: most frames dirty pages the mesh is nowhere near, and a
+        // pipeline bind for zero draws is pure state churn.
+        if (!pipelineBound) {
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, skinnedVsmPagePipeline_.pipeline());
+            pipelineBound = true;
+        }
+
+        const renderer::VsmPageRect rect = renderer::vsmPagePoolRect(page.physicalPage);
+
+        VkViewport viewport{};
+        viewport.x = static_cast<float>(rect.x);
+        viewport.y = static_cast<float>(rect.y);
+        viewport.width = static_cast<float>(rect.size);
+        viewport.height = static_cast<float>(rect.size);
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+        vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+
+        VkRect2D scissor{};
+        scissor.offset = {static_cast<int32_t>(rect.x), static_cast<int32_t>(rect.y)};
+        scissor.extent = {rect.size, rect.size};
+        vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+        SkinnedShadowPushConstants pushConstants{};
+        pushConstants.objectFrameDataAddress =
+            frameObjectDataBuffers_.at(currentFrame_).deviceAddress() +
+            static_cast<VkDeviceAddress>(kSkinnedObjectFrameSlot * sizeof(ObjectFrameData));
+        pushConstants.lightViewProjection =
+            renderer::vsmPageViewProjection(clipmap, lightView, page.level, page.absolutePage);
+        pushConstants.jointMatricesAddress = skinnedMesh_.jointPaletteAddress(currentFrame_);
+        vkCmdPushConstants(commandBuffer,
+                           skinnedVsmPagePipeline_.layout(),
+                           VK_SHADER_STAGE_VERTEX_BIT,
+                           0,
+                           static_cast<uint32_t>(sizeof(pushConstants)),
+                           &pushConstants);
+
+        recordSkinnedCasterDraw(commandBuffer);
+        ++drawnPages;
+    }
+
+    vsmSkinnedPageDrawsRecorded_ = drawnPages;
 }
 
 void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)

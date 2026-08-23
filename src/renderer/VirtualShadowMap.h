@@ -388,6 +388,22 @@ void vsmPagesOverlappingBounds(const VsmClipmapSettings& settings,
                                          glm::vec2& outMin,
                                          glm::vec2& outMax);
 
+// Whether one page's world rect overlaps a light-space XY box, at this level.
+//
+// The per-page counterpart to vsmPagesOverlappingBounds, for the caller that
+// already holds a page and is asking whether a caster belongs in it -- a direct
+// draw into a dirty page, rather than a search for the pages to invalidate.
+// Takes the light-space rect rather than the world AABB so a caller testing many
+// pages against one caster projects it once.
+//
+// Inclusive on the shared edge: a caster exactly on a page boundary is drawn
+// into both neighbours, which costs a draw and cannot lose a shadow.
+[[nodiscard]] bool vsmPageOverlapsLightSpaceBounds(const VsmClipmapSettings& settings,
+                                                   uint32_t level,
+                                                   const glm::ivec2& absolutePage,
+                                                   const glm::vec2& lightMin,
+                                                   const glm::vec2& lightMax);
+
 // --- Page projection ------------------------------------------------------
 
 // Light view-projection that rasterizes exactly one page: an orthographic box

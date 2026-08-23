@@ -350,6 +350,10 @@ private:
     void recordSkinnedCascadeCaster(VkCommandBuffer commandBuffer, uint32_t cascadeIndex, bool layeredCascades);
     // Vertex/index binding plus the draw, shared by every target it casts into.
     void recordSkinnedCasterDraw(VkCommandBuffer commandBuffer);
+    void recordSkinnedVsmPageCasters(VkCommandBuffer commandBuffer,
+                                     const std::vector<renderer::VsmDirtyPage>& dirtyPages,
+                                     const renderer::VsmClipmapSettings& clipmap,
+                                     const glm::mat4& lightView);
     void createVsmPagePipeline(const VkVertexInputBindingDescription& binding,
                                const std::array<VkVertexInputAttributeDescription, 5>& attributes);
     void createVsmMaskedPagePipeline(const VkVertexInputBindingDescription& binding,
@@ -969,6 +973,9 @@ private:
         bool valid = false;
     };
     std::vector<VsmCasterState> vsmCasterStates_;
+    // The skinned mesh's own slot: it has no objectIndex to be stored under, and
+    // its key is a pose digest rather than a transform.
+    VsmCasterState skinnedVsmCasterState_{};
     // Per-object content keys for this frame, accumulated over the draw items.
     std::vector<renderer::ShadowCacheKey> vsmCasterKeys_;
     uint32_t vsmCastersChangedThisFrame_ = 0;
@@ -982,6 +989,10 @@ private:
     // number that actually sizes a page pool: an average would hide the peak
     // that overflows it.
     uint32_t vsmPeakRequestedPages_ = 0;
+    // Dirty pages the skinned caster was drawn into last frame. Reported rather
+    // than inferred: it is the only number that says whether the caster reached
+    // the pool at all, and the debug UI is not visible to a scripted capture.
+    uint32_t vsmSkinnedPageDrawsRecorded_ = 0;
     std::vector<VkFence> imagesInFlight_;
     ShadowSettings shadowSettings_{};
     SsaoSettings ssaoSettings_{};

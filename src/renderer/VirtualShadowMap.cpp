@@ -376,6 +376,25 @@ bool vsmLightSpaceBoundsXy(const glm::mat4& lightView,
     return true;
 }
 
+bool vsmPageOverlapsLightSpaceBounds(const VsmClipmapSettings& settings,
+                                     uint32_t level,
+                                     const glm::ivec2& absolutePage,
+                                     const glm::vec2& lightMin,
+                                     const glm::vec2& lightMax)
+{
+    const VsmClipmapSettings clamped = clampVsmClipmapSettings(settings);
+    if (level >= clamped.levelCount) {
+        return false;
+    }
+
+    const float pageWorldSize = vsmPageWorldSize(clamped, level);
+    const glm::vec2 pageMin = glm::vec2(absolutePage) * pageWorldSize;
+    const glm::vec2 pageMax = pageMin + glm::vec2(pageWorldSize);
+
+    return lightMax.x >= pageMin.x && lightMin.x <= pageMax.x && lightMax.y >= pageMin.y &&
+           lightMin.y <= pageMax.y;
+}
+
 void vsmPagesOverlappingBounds(const VsmClipmapSettings& settings,
                                const glm::mat4& lightView,
                                uint32_t level,
