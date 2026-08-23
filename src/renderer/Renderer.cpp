@@ -393,6 +393,11 @@ void Renderer::drawFrame()
     // it produced last time round is here, after its fence proved the copy
     // retired.
     updateVsmPageRequestStats(currentFrame_);
+    // Before residency: it decides which pages to invalidate from the skinned
+    // caster's bounds and pose, and the page pass later draws whatever pose the
+    // palette holds. Advancing the pose after that decision would let the two
+    // disagree by a frame, in the direction that loses a shadow.
+    advanceSkinnedAnimation(currentFrame_);
     // After the readback above, because it consumes the same request set, and
     // before recording, because the page pass draws what it decides.
     updateVsmResidency(currentFrame_);
@@ -1122,6 +1127,14 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
                     ? (isShadowIndirectCountPathActive(frameIndex) ? "per-cascade indirect count"
                                                                    : "per-cascade indirect fallback")
                     : "per-cascade direct fallback");
+
+    // Cascade cache state, which until now lived only in the debug UI. A
+    // scripted run could not see whether the cache was holding -- and "the
+    // cascades stopped caching" is exactly the failure mode a caster keyed on
+    // the wrong thing produces.
+    message << "\n  cascade cache: " << (csmSettings_.enableCascadeCache ? "enabled" : "disabled")
+            << ", redrawn this frame " << cascadeShadowCascadesRedrawn_ << "/" << activeCascadeCount()
+            << ", consecutive cached frames " << cascadeShadowCachedFrames_;
 
     // The skinned caster is drawn directly and is in none of the counts above,
     // so without this line there is no way to tell from a scripted run whether

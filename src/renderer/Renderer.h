@@ -341,6 +341,9 @@ private:
     void createShadowPipeline();
     // Casters for the skinned mesh: cascades and VSM pages. Both read the same
     // shader and push block; only the depth target differs.
+    // Advances the skinned pose and uploads its palette, bounds and digest.
+    // Called before the VSM residency update, which consumes all three.
+    void advanceSkinnedAnimation(uint32_t frameIndex);
     void createSkinnedShadowPipelines();
     // Whether the skinned mesh should cast at all this frame.
     // Puts an allocated-but-unrendered page pool into the layout its descriptor

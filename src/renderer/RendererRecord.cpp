@@ -300,6 +300,10 @@ void Renderer::recordProbeCapturePass(VkCommandBuffer commandBuffer)
 void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuCullActive)
 {
     const uint32_t slotCount = punctualShadows_.slotCount();
+    // Cleared before any early return, not on the successful tail: a stale count
+    // would report skinned tiles drawn during a frame that recorded nothing,
+    // which is exactly the reading this counter exists to make trustworthy.
+    punctualShadowSkinnedDrawsRecorded_ = 0;
     if (!punctualShadows_.valid() || punctualShadowPipeline_.pipeline() == VK_NULL_HANDLE || slotCount == 0 ||
         allDrawItems_.empty()) {
         punctualShadowDrawsRecorded_ = 0;
@@ -1033,18 +1037,20 @@ void Renderer::recordSkinnedCascadeCaster(VkCommandBuffer commandBuffer, uint32_
         return;
     }
 
-    // Multiview draws one command into every cascade layer at once and expects
-    // the shader to pick its matrix from gl_ViewIndex. This shader takes the
-    // matrix as a push constant, so there is no per-view choice to make and the
-    // one draw would land in all four layers with cascade 0's projection.
-    // Skipped rather than drawn wrong; the layered path ships off (measured
-    // ~20% slower on MoltenVK) and the cascades still shadow everything else.
-    if (layeredCascades || cascadeIndex >= frameCascades_.size()) {
+    // One predicate, shared with the cache key, which also answers "no" for
+    // every cascade on the layered path: multiview draws one command into all
+    // layers at once and expects the shader to pick its matrix from
+    // gl_ViewIndex, which a pushed matrix cannot answer. Skipped rather than
+    // drawn wrong -- and skipped in the key too, or the animation would dirty a
+    // layered shadow map that never contains the caster.
+    //
+    // The parameter stays so this reads as a deliberate skip at the call site
+    // rather than an accident of culling; the assertion below is that the two
+    // sources of the same fact agree.
+    if (cascadeIndex >= frameCascades_.size() || !skinnedCasterCastsIntoCascade(cascadeIndex)) {
         return;
     }
-
-    // Same predicate the cache key used; see skinnedCasterCastsIntoCascade.
-    if (!skinnedCasterCastsIntoCascade(cascadeIndex)) {
+    if (layeredCascades) {
         return;
     }
 
@@ -1151,6 +1157,10 @@ void Renderer::recordVsmPageCull(VkCommandBuffer commandBuffer)
 void Renderer::recordVsmPagePass(VkCommandBuffer commandBuffer)
 {
     vsmPageDrawsRecorded_ = 0;
+    // Same rule as the page count beside it: cleared here so every early return
+    // below reports the frame that actually happened. A cache experiment reading
+    // last frame's number would be measuring nothing.
+    vsmSkinnedPageDrawsRecorded_ = 0;
     const std::vector<renderer::VsmDirtyPage>& dirtyPages = virtualShadowMap_.dirtyPages();
     if (!isVsmPageRenderingActive() || dirtyPages.empty() || !virtualShadowMap_.cullAvailable() ||
         allDrawItems_.empty()) {
