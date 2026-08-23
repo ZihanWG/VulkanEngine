@@ -339,6 +339,30 @@ private:
     void createSkyboxPipeline();
     void createTransparentPipeline();
     void createShadowPipeline();
+    // Casters for the skinned mesh: cascades and VSM pages. Both read the same
+    // shader and push block; only the depth target differs.
+    // Advances the skinned pose and uploads its palette, bounds and digest.
+    // Called before the VSM residency update, which consumes all three.
+    void advanceSkinnedAnimation(uint32_t frameIndex);
+    void createSkinnedShadowPipelines();
+    // Whether the skinned mesh should cast at all this frame.
+    // Puts an allocated-but-unrendered page pool into the layout its descriptor
+    // was written with. See the definition for why it is a manual barrier.
+    void recordVsmPagePoolIdleTransition(VkCommandBuffer commandBuffer);
+    [[nodiscard]] bool skinnedCasterActive() const;
+    // Whether the skinned mesh reaches this cascade. Read by both the cache key
+    // and the recorder, which must not disagree.
+    [[nodiscard]] bool skinnedCasterCastsIntoFrustum(const renderer::Frustum& frustum) const;
+    [[nodiscard]] bool skinnedCasterCastsIntoCascade(uint32_t cascadeIndex) const;
+    void recordSkinnedCascadeCaster(VkCommandBuffer commandBuffer, uint32_t cascadeIndex, bool layeredCascades);
+    // Vertex/index binding plus the draw, shared by every target it casts into.
+    void recordSkinnedCasterDraw(VkCommandBuffer commandBuffer);
+    // Returns the draws recorded, which the pass folds into its own count.
+    [[nodiscard]] uint32_t recordSkinnedPunctualCasters(VkCommandBuffer commandBuffer);
+    void recordSkinnedVsmPageCasters(VkCommandBuffer commandBuffer,
+                                     const std::vector<renderer::VsmDirtyPage>& dirtyPages,
+                                     const renderer::VsmClipmapSettings& clipmap,
+                                     const glm::mat4& lightView);
     void createVsmPagePipeline(const VkVertexInputBindingDescription& binding,
                                const std::array<VkVertexInputAttributeDescription, 5>& attributes);
     void createVsmMaskedPagePipeline(const VkVertexInputBindingDescription& binding,
@@ -853,6 +877,13 @@ private:
     // shadowPipeline_ because its push-constant layout carries the slot's
     // view-projection instead of a cascade index.
     rhi::VulkanPipeline punctualShadowPipeline_;
+    // The skinned demo mesh as a shadow caster. One pipeline per depth target
+    // rather than one shared: the vertex input (two bindings) and push layout
+    // are the same everywhere, but the depth format and raster bias belong to
+    // the target, exactly as they do for the static casters.
+    rhi::VulkanPipeline skinnedShadowPipeline_;
+    rhi::VulkanPipeline skinnedPunctualShadowPipeline_;
+    rhi::VulkanPipeline skinnedVsmPagePipeline_;
     rhi::VulkanPipeline probeCapturePipeline_;
     // glTF BLEND geometry: same shaders as the main pass, but "over" blending,
     // depth writes off, and a scene-color-only attachment set.
@@ -952,6 +983,16 @@ private:
         bool valid = false;
     };
     std::vector<VsmCasterState> vsmCasterStates_;
+    // The skinned mesh's own slot: it has no objectIndex to be stored under, and
+    // its key is a pose digest rather than a transform.
+    VsmCasterState skinnedVsmCasterState_{};
+    // Atlas slots the skinned caster reached this frame, collected during the
+    // per-slot loop and drawn after it. Reused so the pass does not allocate.
+    std::vector<uint32_t> skinnedPunctualSlots_;
+    // Tiles the skinned caster was drawn into last frame, reported for the same
+    // reason the page count is: nothing else in the stats can distinguish
+    // "reached no tile" from "was never drawn".
+    uint32_t punctualShadowSkinnedDrawsRecorded_ = 0;
     // Per-object content keys for this frame, accumulated over the draw items.
     std::vector<renderer::ShadowCacheKey> vsmCasterKeys_;
     uint32_t vsmCastersChangedThisFrame_ = 0;
@@ -965,6 +1006,13 @@ private:
     // number that actually sizes a page pool: an average would hide the peak
     // that overflows it.
     uint32_t vsmPeakRequestedPages_ = 0;
+    // Dirty pages the skinned caster was drawn into last frame. Reported rather
+    // than inferred: it is the only number that says whether the caster reached
+    // the pool at all, and the debug UI is not visible to a scripted capture.
+    uint32_t vsmSkinnedPageDrawsRecorded_ = 0;
+    // Whether the idle-pool layout transition has been recorded. One-shot per
+    // pool: re-recording it every frame would be a barrier for nothing.
+    bool vsmPagePoolIdleTransitionDone_ = false;
     std::vector<VkFence> imagesInFlight_;
     ShadowSettings shadowSettings_{};
     SsaoSettings ssaoSettings_{};

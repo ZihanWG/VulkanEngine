@@ -261,6 +261,16 @@ void Renderer::updatePunctualShadowCacheState()
             punctualShadowCacheKey_.add(renderObjects_[drawItem.objectIndex].transform.modelMatrix());
         }
 
+        // The skinned caster, on the same rule and for the same reason as the
+        // cascades: it is in no draw-item list, and what changes about it is the
+        // pose rather than anything the loop above hashes. The recorder tests
+        // the identical frustum, so a tile that draws it always has it in its
+        // key -- and a tile it cannot reach keeps caching.
+        if (skinnedCasterCastsIntoFrustum(slotFrustum)) {
+            const uint64_t pose = skinnedMesh_.poseHash();
+            punctualShadowCacheKey_.addBytes(&pose, sizeof(pose));
+        }
+
         const uint64_t key = punctualShadowCacheKey_.value();
         punctualShadowSlotKeys_[slot] = key;
 
@@ -301,6 +311,35 @@ void Renderer::invalidatePunctualShadowCache()
 // As with the atlas, the enumeration below is the load-bearing part: anything
 // that can change a cascade's image and is not hashed here becomes a stale
 // shadow, which surfaces far from its cause.
+void Renderer::advanceSkinnedAnimation(uint32_t frameIndex)
+{
+    // Called from drawFrame BEFORE updateVsmResidency, not from updateFrameData
+    // with the rest of the per-frame animation.
+    //
+    // Residency decides which pages to invalidate from the caster's bounds and
+    // pose digest, and the page pass then draws whatever pose is in the palette.
+    // Advancing the pose after that decision means the two describe different
+    // poses: a page the caster newly moves into is not invalidated, stays
+    // cached, and holds depth that omits the caster -- for one frame, in the
+    // direction that loses a shadow. The cascade and punctual keys were already
+    // safe because they are built inside updateFrameData, after this ran; the
+    // page invalidation was the one consumer that ran earlier.
+    //
+    // Writing the palette buffer this early is safe: drawFrame waits on this
+    // frame slot's fence before any of this, so the GPU is done reading it.
+    const float elapsedSeconds = static_cast<float>(frameClock_.elapsedSeconds());
+    // Speed-scaled frame delta so play/pause holds the current pose and the
+    // speed slider changes playback continuously.
+    const float skinnedDelta = elapsedSeconds - previousElapsedSeconds_;
+    previousElapsedSeconds_ = elapsedSeconds;
+    if (animateSkinnedMesh_) {
+        skinnedAnimationTime_ += skinnedDelta * skinnedAnimationSpeed_;
+    }
+    if (skinnedMesh_.valid()) {
+        skinnedMesh_.update(frameIndex, skinnedAnimationTime_);
+    }
+}
+
 void Renderer::updateCascadeShadowCacheState()
 {
     const uint32_t cascadeCount = activeCascadeCount();
@@ -331,6 +370,10 @@ void Renderer::updateCascadeShadowCacheState()
         state.rasterDepthBiasSlopeFactor = shadowSettings_.rasterDepthBiasSlopeFactor;
         state.shadowResolution = shadowSettings_.resolution;
         state.gpuLodSelectionActive = gpuLodSelectionActive;
+        // Exactly the test the recorder makes before drawing it. The two have to
+        // agree: a cascade that draws the skinned mesh without its pose in the
+        // key would cache a shadow that never updates again.
+        state.skinnedCasterPose = skinnedCasterCastsIntoCascade(cascadeIndex) ? skinnedMesh_.poseHash() : 0;
 
         // shadowCascadeDrawItems_ is already this cascade's frustum-culled
         // caster list, built by buildShadowDrawItems against the very frustum
@@ -385,6 +428,34 @@ void Renderer::updateCascadeShadowCacheState()
     // whole map anyway, since it reconfigures the image.
     cascadeShadowCacheHit_ = cascadeShadowCascadesRedrawn_ == 0 && cascadeCount > 0;
     cascadeShadowCachedFrames_ = cascadeShadowCacheHit_ ? cascadeShadowCachedFrames_ + 1 : 0;
+}
+
+bool Renderer::skinnedCasterCastsIntoFrustum(const renderer::Frustum& frustum) const
+{
+    // The same test every other caster gets, against whichever light frustum the
+    // caller holds: a cascade's, or an atlas slot's. Shared so a cache key and
+    // the recorder that fills it cannot answer differently.
+    return skinnedCasterActive() && frustum.testAabb(skinnedMesh_.worldBounds());
+}
+
+bool Renderer::skinnedCasterCastsIntoCascade(uint32_t cascadeIndex) const
+{
+    if (!skinnedCasterActive() || cascadeIndex >= frameCascades_.size()) {
+        return false;
+    }
+
+    // The layered path is a "no" for every cascade, not just for the recorder.
+    // One draw fans out to all layers there and picks its matrix from
+    // gl_ViewIndex, which a pushed matrix cannot answer, so the caster is
+    // skipped -- and a pose that is never drawn must not enter a cache key
+    // either. It would dirty every cascade on every frame of the animation, and
+    // the layered pass redraws all of them together, so the whole shadow map
+    // would redraw for geometry it does not contain.
+    if (isLayeredCascadeRenderingActive()) {
+        return false;
+    }
+
+    return skinnedCasterCastsIntoFrustum(frameCascades_[cascadeIndex].lightFrustum);
 }
 
 // The level cull.comp would pick for this item on a shadow dispatch. Kept
@@ -1377,16 +1448,9 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     // the slot index into each GpuLight, so it has to run between the rebuild
     // and clusteredLighting_.upload().
     updatePunctualShadowSlots(frameIndex, aspect);
-    // Advance the skinned animation by a speed-scaled frame delta so play/pause
-    // holds the current pose and the speed slider changes playback continuously.
-    const float skinnedDelta = elapsedSeconds - previousElapsedSeconds_;
-    previousElapsedSeconds_ = elapsedSeconds;
-    if (animateSkinnedMesh_) {
-        skinnedAnimationTime_ += skinnedDelta * skinnedAnimationSpeed_;
-    }
-    if (skinnedMesh_.valid()) {
-        skinnedMesh_.update(frameIndex, skinnedAnimationTime_);
-    }
+    // The skinned pose is NOT advanced here. It has to be in place before
+    // updateVsmResidency, which decides which pages to invalidate, and that runs
+    // earlier in drawFrame than this does -- see advanceSkinnedAnimation.
     clusteredLighting_.updateParams(frameIndex,
                                     view,
                                     glm::inverse(projection),

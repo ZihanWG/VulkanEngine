@@ -393,6 +393,11 @@ void Renderer::drawFrame()
     // it produced last time round is here, after its fence proved the copy
     // retired.
     updateVsmPageRequestStats(currentFrame_);
+    // Before residency: it decides which pages to invalidate from the skinned
+    // caster's bounds and pose, and the page pass later draws whatever pose the
+    // palette holds. Advancing the pose after that decision would let the two
+    // disagree by a frame, in the direction that loses a shadow.
+    advanceSkinnedAnimation(currentFrame_);
     // After the readback above, because it consumes the same request set, and
     // before recording, because the page pass draws what it decides.
     updateVsmResidency(currentFrame_);
@@ -1070,7 +1075,8 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
                     << vsmResidencyStats_.refusedPages << ", evicted " << vsmResidencyStats_.evictions << "\n"
                     << "  casters over the per-page cap: " << vsmPageCullOverflow_ << "\n"
                     << "  casters changed: " << vsmCastersChangedThisFrame_ << ", pages they invalidated: "
-                    << vsmResidencyStats_.casterInvalidatedPages << "\n";
+                    << vsmResidencyStats_.casterInvalidatedPages << "\n"
+                    << "  skinned caster: pages drawn into " << vsmSkinnedPageDrawsRecorded_ << "\n";
             message << "  directional shadows: "
                     << (isVsmDirectionalShadowActive() ? "sampled from the page pool" : "cascades")
                     << "\n";
@@ -1083,7 +1089,8 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
             << "  casting: " << (usePunctualShadows_ ? "enabled" : "disabled") << "\n"
             << "  slots used: " << punctualShadowSlotsUsed_ << "\n"
             << "  atlas occupancy: " << static_cast<int>(punctualShadows_.occupancy() * 100.0f) << "%\n"
-            << "  caster draws recorded: " << punctualShadowDrawsRecorded_ << "\n"
+            << "  caster draws recorded: " << punctualShadowDrawsRecorded_
+            << " (skinned caster tiles: " << punctualShadowSkinnedDrawsRecorded_ << ")\n"
             << "  atlas this frame: " << (punctualShadowCacheHit_ ? "fully cached" : "partial") << "\n"
             << "  tiles redrawn: " << punctualShadowSlotsRedrawn_ << "/" << punctualShadowSlotsUsed_ << "\n"
             << "  cull+record CPU: " << punctualShadowCpuMicros_ << " us\n"
@@ -1120,6 +1127,37 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
                     ? (isShadowIndirectCountPathActive(frameIndex) ? "per-cascade indirect count"
                                                                    : "per-cascade indirect fallback")
                     : "per-cascade direct fallback");
+
+    // Cascade cache state, which until now lived only in the debug UI. A
+    // scripted run could not see whether the cache was holding -- and "the
+    // cascades stopped caching" is exactly the failure mode a caster keyed on
+    // the wrong thing produces.
+    message << "\n  cascade cache: " << (csmSettings_.enableCascadeCache ? "enabled" : "disabled")
+            << ", redrawn this frame " << cascadeShadowCascadesRedrawn_ << "/" << activeCascadeCount()
+            << ", consecutive cached frames " << cascadeShadowCachedFrames_;
+
+    // The skinned caster is drawn directly and is in none of the counts above,
+    // so without this line there is no way to tell from a scripted run whether
+    // it cast anything -- and --capture-frame excludes the debug UI that would
+    // otherwise show it.
+    message << "\n  skinned caster: ";
+    if (!skinnedCasterActive()) {
+        message << "inactive";
+    } else {
+        message << "cascades";
+        for (uint32_t cascadeIndex = 0; cascadeIndex < activeCascadeCount(); ++cascadeIndex) {
+            if (skinnedCasterCastsIntoCascade(cascadeIndex)) {
+                message << ' ' << cascadeIndex;
+            }
+        }
+        const renderer::Aabb& bounds = skinnedMesh_.worldBounds();
+        message << ", pose " << skinnedMesh_.poseHash() << ", bounds (" << bounds.min.x << ", " << bounds.min.y
+                << ", " << bounds.min.z << ") to (" << bounds.max.x << ", " << bounds.max.y << ", " << bounds.max.z
+                << ")";
+        if (isLayeredCascadeRenderingActive()) {
+            message << " [SKIPPED: layered cascades]";
+        }
+    }
     Logger::info(message.str());
 }
 
@@ -1908,6 +1946,7 @@ void Renderer::updateVsmCasterInvalidation()
         // with. The states are dropped so that re-enabling starts from a clean
         // comparison rather than against a scene that has moved since.
         vsmCasterStates_.clear();
+        skinnedVsmCasterState_ = VsmCasterState{};
         return;
     }
 
@@ -1918,6 +1957,7 @@ void Renderer::updateVsmCasterInvalidation()
     // to handle bluntly.
     if (vsmCasterStates_.size() != objectCount) {
         vsmCasterStates_.assign(objectCount, VsmCasterState{});
+        skinnedVsmCasterState_ = VsmCasterState{};
         virtualShadowMap_.invalidateResidency();
     }
 
@@ -1997,6 +2037,43 @@ void Renderer::updateVsmCasterInvalidation()
         state.bounds = bounds;
         state.valid = true;
     }
+
+    // The skinned caster, which the loop above cannot reach: it is keyed by
+    // objectIndex over renderObjects_, and the skinned mesh is not one. Its key
+    // is the joint palette rather than a model matrix, for the reason this whole
+    // mechanism exists -- a skinned mesh deforms without its transform moving,
+    // so the page keeps both its coordinates and its physical page while its
+    // depth silently describes a pose that is gone.
+    //
+    // Its bounds change every frame it animates, so this dirties the pages it
+    // covers every frame. That is not a tuning failure: animated geometry has no
+    // cacheable shadow, and the honest cost is a redraw of the few pages it
+    // touches. The count is reported next to the others.
+    const bool skinnedCasts = skinnedCasterActive();
+    const uint64_t skinnedKey = skinnedCasts ? skinnedMesh_.poseHash() : 0;
+    if (skinnedVsmCasterState_.valid && skinnedVsmCasterState_.key != skinnedKey) {
+        ++vsmCastersChangedThisFrame_;
+        // Where it was, then where it is -- the same pair the loop above uses,
+        // and for the same reason.
+        if (skinnedVsmCasterState_.bounds.valid()) {
+            virtualShadowMap_.invalidatePagesForBounds(clipmap,
+                                                       lightView,
+                                                       cameraLightSpaceXy,
+                                                       skinnedVsmCasterState_.bounds.min,
+                                                       skinnedVsmCasterState_.bounds.max);
+        }
+        if (skinnedCasts && skinnedMesh_.worldBounds().valid()) {
+            virtualShadowMap_.invalidatePagesForBounds(clipmap,
+                                                       lightView,
+                                                       cameraLightSpaceXy,
+                                                       skinnedMesh_.worldBounds().min,
+                                                       skinnedMesh_.worldBounds().max);
+        }
+    }
+
+    skinnedVsmCasterState_.key = skinnedKey;
+    skinnedVsmCasterState_.bounds = skinnedCasts ? skinnedMesh_.worldBounds() : renderer::Aabb{};
+    skinnedVsmCasterState_.valid = true;
 }
 
 void Renderer::updateVsmResidency(uint32_t frameIndex)

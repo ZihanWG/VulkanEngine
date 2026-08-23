@@ -300,6 +300,10 @@ void Renderer::recordProbeCapturePass(VkCommandBuffer commandBuffer)
 void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuCullActive)
 {
     const uint32_t slotCount = punctualShadows_.slotCount();
+    // Cleared before any early return, not on the successful tail: a stale count
+    // would report skinned tiles drawn during a frame that recorded nothing,
+    // which is exactly the reading this counter exists to make trustworthy.
+    punctualShadowSkinnedDrawsRecorded_ = 0;
     if (!punctualShadows_.valid() || punctualShadowPipeline_.pipeline() == VK_NULL_HANDLE || slotCount == 0 ||
         allDrawItems_.empty()) {
         punctualShadowDrawsRecorded_ = 0;
@@ -315,6 +319,8 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuC
         ++punctualShadowCachedFrames_;
         return;
     }
+
+    skinnedPunctualSlots_.clear();
 
     const bool profileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "PunctualShadowAtlas");
     rhi::debug::beginLabel(commandBuffer, "PunctualShadowAtlas");
@@ -405,6 +411,13 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuC
         // so the whole slot is one draw call regardless of caster count. There
         // is no indirect-count on this platform, so the full per-slot stride is
         // submitted and the zeroed commands the dispatch left behind are no-ops.
+        // Noted now, drawn after the loop: the skinned caster needs its own
+        // pipeline, and swapping back and forth per slot would rebind the
+        // punctual one for every tile that follows.
+        if (skinnedCasterCastsIntoFrustum(punctualShadows_.slotFrustum(slot))) {
+            skinnedPunctualSlots_.push_back(slot);
+        }
+
         if (gpuCullActive && slot < renderer::PunctualShadows::kMaxGpuCulledSlots) {
             const VkBuffer indirectBuffer = punctualShadows_.cullIndirectBuffer(currentFrame_);
             if (indirectBuffer != VK_NULL_HANDLE && !allDrawItems_.empty()) {
@@ -492,6 +505,9 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuC
             ++recordedDraws;
         }
     }
+
+    punctualShadowSkinnedDrawsRecorded_ = recordSkinnedPunctualCasters(commandBuffer);
+    recordedDraws += punctualShadowSkinnedDrawsRecorded_;
 
     renderGraph_.endPunctualShadowPass();
 
@@ -953,6 +969,119 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
     };
 }
 
+void Renderer::recordVsmPagePoolIdleTransition(VkCommandBuffer commandBuffer)
+{
+    // Marking on, page rendering off: the pool is allocated -- that is what the
+    // startup-only marking toggle decides -- and the material set binds it
+    // either way, so a main-pass draw statically accesses a descriptor that
+    // promises DEPTH_READ_ONLY_OPTIMAL while the image is still UNDEFINED.
+    // Eleven validation errors a frame, in a configuration nothing could select
+    // until --vsm existed to select it.
+    //
+    // An explicit barrier rather than a graph declaration, because in this mode
+    // the pool is not a graph resource at all: it is handed to beginFrame only
+    // when page rendering is active. This is the case the manual-barrier rule
+    // exists for -- a resource the graph does not represent.
+    //
+    // Contents stay undefined, and that is sound here rather than lucky: the
+    // only shader that samples the pool is gated on enableShadows, which cannot
+    // be on without page rendering. What this fixes is the layout the descriptor
+    // was written with, not the depth in the image.
+    if (isVsmPageRenderingActive() || !virtualShadowMap_.pagePoolValid() || vsmPagePoolIdleTransitionDone_) {
+        return;
+    }
+
+    VkImageMemoryBarrier2 barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    // Nothing has touched the image, so there is nothing to wait on; the
+    // destination scope is every stage that could sample it afterwards.
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+    barrier.srcAccessMask = VK_ACCESS_2_NONE;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = virtualShadowMap_.pagePool().image();
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+
+    VkDependencyInfo dependency{};
+    dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dependency.imageMemoryBarrierCount = 1;
+    dependency.pImageMemoryBarriers = &barrier;
+    vkCmdPipelineBarrier2(commandBuffer, &dependency);
+
+    // Deliberately not setPagePoolFullClearDone(): the pool still holds nothing,
+    // and turning page rendering on later must still clear it whole. This latch
+    // only records that the layout no longer lies, so the barrier is recorded
+    // once rather than every frame.
+    vsmPagePoolIdleTransitionDone_ = true;
+}
+
+bool Renderer::skinnedCasterActive() const
+{
+    // Same gate the main pass uses, plus a bound: a caster with no bounds cannot
+    // be culled or invalidated against, and drawing it anyway would put a shadow
+    // in the world that nothing knows how to dirty.
+    return showSkinnedMesh_ && skinnedMesh_.valid() && skinnedMesh_.worldBounds().valid();
+}
+
+void Renderer::recordSkinnedCascadeCaster(VkCommandBuffer commandBuffer, uint32_t cascadeIndex, bool layeredCascades)
+{
+    if (!skinnedCasterActive() || skinnedShadowPipeline_.pipeline() == VK_NULL_HANDLE) {
+        return;
+    }
+
+    // One predicate, shared with the cache key, which also answers "no" for
+    // every cascade on the layered path: multiview draws one command into all
+    // layers at once and expects the shader to pick its matrix from
+    // gl_ViewIndex, which a pushed matrix cannot answer. Skipped rather than
+    // drawn wrong -- and skipped in the key too, or the animation would dirty a
+    // layered shadow map that never contains the caster.
+    //
+    // The parameter stays so this reads as a deliberate skip at the call site
+    // rather than an accident of culling; the assertion below is that the two
+    // sources of the same fact agree.
+    if (cascadeIndex >= frameCascades_.size() || !skinnedCasterCastsIntoCascade(cascadeIndex)) {
+        return;
+    }
+    if (layeredCascades) {
+        return;
+    }
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, skinnedShadowPipeline_.pipeline());
+
+    SkinnedShadowPushConstants pushConstants{};
+    pushConstants.objectFrameDataAddress =
+        frameObjectDataBuffers_.at(currentFrame_).deviceAddress() +
+        static_cast<VkDeviceAddress>(kSkinnedObjectFrameSlot * sizeof(ObjectFrameData));
+    pushConstants.lightViewProjection = frameCascades_[cascadeIndex].lightViewProjection;
+    pushConstants.jointMatricesAddress = skinnedMesh_.jointPaletteAddress(currentFrame_);
+    vkCmdPushConstants(commandBuffer,
+                       skinnedShadowPipeline_.layout(),
+                       VK_SHADER_STAGE_VERTEX_BIT,
+                       0,
+                       static_cast<uint32_t>(sizeof(pushConstants)),
+                       &pushConstants);
+
+    recordSkinnedCasterDraw(commandBuffer);
+}
+
+void Renderer::recordSkinnedCasterDraw(VkCommandBuffer commandBuffer)
+{
+    const std::array<VkBuffer, 2> vertexBuffers{skinnedMesh_.geometryBuffer(), skinnedMesh_.skinningBuffer()};
+    const std::array<VkDeviceSize, 2> vertexOffsets{0, 0};
+    vkCmdBindVertexBuffers(
+        commandBuffer, 0, static_cast<uint32_t>(vertexBuffers.size()), vertexBuffers.data(), vertexOffsets.data());
+    vkCmdBindIndexBuffer(commandBuffer, skinnedMesh_.indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(commandBuffer, skinnedMesh_.indexCount(), 1, 0, 0, 0);
+}
+
 void Renderer::recordVsmPageMarkPass(VkCommandBuffer commandBuffer)
 {
     if (!isVsmPageMarkingActive()) {
@@ -1028,9 +1157,14 @@ void Renderer::recordVsmPageCull(VkCommandBuffer commandBuffer)
 void Renderer::recordVsmPagePass(VkCommandBuffer commandBuffer)
 {
     vsmPageDrawsRecorded_ = 0;
+    // Same rule as the page count beside it: cleared here so every early return
+    // below reports the frame that actually happened. A cache experiment reading
+    // last frame's number would be measuring nothing.
+    vsmSkinnedPageDrawsRecorded_ = 0;
     const std::vector<renderer::VsmDirtyPage>& dirtyPages = virtualShadowMap_.dirtyPages();
     if (!isVsmPageRenderingActive() || dirtyPages.empty() || !virtualShadowMap_.cullAvailable() ||
         allDrawItems_.empty()) {
+        recordVsmPagePoolIdleTransition(commandBuffer);
         return;
     }
 
@@ -1156,6 +1290,8 @@ void Renderer::recordVsmPagePass(VkCommandBuffer commandBuffer)
         drawPages(renderer::kVsmMaskedCasterBucket, vsmMaskedPagePipeline_);
     }
 
+    recordSkinnedVsmPageCasters(commandBuffer, dirtyPages, clipmap, lightView);
+
     // Counted once per PAGE, not once per draw. Each page now issues one draw
     // per caster bucket, and the counter is read against the per-frame page
     // budget -- reporting draw calls there would show a page count that can
@@ -1171,6 +1307,126 @@ void Renderer::recordVsmPagePass(VkCommandBuffer commandBuffer)
     // occupant's depth, and an early mark would advertise depth never written.
     virtualShadowMap_.markDirtyPagesRendered(currentFrame_);
     virtualShadowMap_.setPagePoolFullClearDone();
+}
+
+uint32_t Renderer::recordSkinnedPunctualCasters(VkCommandBuffer commandBuffer)
+{
+    if (skinnedPunctualSlots_.empty() || skinnedPunctualShadowPipeline_.pipeline() == VK_NULL_HANDLE) {
+        return 0;
+    }
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, skinnedPunctualShadowPipeline_.pipeline());
+
+    uint32_t draws = 0;
+    for (const uint32_t slot : skinnedPunctualSlots_) {
+        const renderer::ShadowAtlasRect rect = punctualShadows_.slotRect(slot);
+        if (rect.size == 0) {
+            continue;
+        }
+
+        VkViewport viewport{};
+        viewport.x = static_cast<float>(rect.x);
+        viewport.y = static_cast<float>(rect.y);
+        viewport.width = static_cast<float>(rect.size);
+        viewport.height = static_cast<float>(rect.size);
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+        vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+
+        VkRect2D scissor{};
+        scissor.offset = {static_cast<int32_t>(rect.x), static_cast<int32_t>(rect.y)};
+        scissor.extent = {rect.size, rect.size};
+        vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+        SkinnedShadowPushConstants pushConstants{};
+        pushConstants.objectFrameDataAddress =
+            frameObjectDataBuffers_.at(currentFrame_).deviceAddress() +
+            static_cast<VkDeviceAddress>(kSkinnedObjectFrameSlot * sizeof(ObjectFrameData));
+        pushConstants.lightViewProjection = punctualShadows_.slotViewProjection(slot);
+        pushConstants.jointMatricesAddress = skinnedMesh_.jointPaletteAddress(currentFrame_);
+        vkCmdPushConstants(commandBuffer,
+                           skinnedPunctualShadowPipeline_.layout(),
+                           VK_SHADER_STAGE_VERTEX_BIT,
+                           0,
+                           static_cast<uint32_t>(sizeof(pushConstants)),
+                           &pushConstants);
+
+        recordSkinnedCasterDraw(commandBuffer);
+        ++draws;
+    }
+
+    return draws;
+}
+
+void Renderer::recordSkinnedVsmPageCasters(VkCommandBuffer commandBuffer,
+                                           const std::vector<renderer::VsmDirtyPage>& dirtyPages,
+                                           const renderer::VsmClipmapSettings& clipmap,
+                                           const glm::mat4& lightView)
+{
+    if (!skinnedCasterActive() || skinnedVsmPagePipeline_.pipeline() == VK_NULL_HANDLE) {
+        return;
+    }
+
+    // The page cull runs over allDrawItems_, which the skinned mesh is not in,
+    // so no indirect command exists for it and none can: the cull emits draws
+    // against one shared vertex buffer. It is drawn directly instead, into the
+    // dirty pages its bounds actually reach.
+    const renderer::Aabb& bounds = skinnedMesh_.worldBounds();
+    glm::vec2 lightMin{0.0f};
+    glm::vec2 lightMax{0.0f};
+    if (!renderer::vsmLightSpaceBoundsXy(lightView, bounds.min, bounds.max, lightMin, lightMax)) {
+        return;
+    }
+
+    bool pipelineBound = false;
+    uint32_t drawnPages = 0;
+    for (const renderer::VsmDirtyPage& page : dirtyPages) {
+        if (!renderer::vsmPageOverlapsLightSpaceBounds(clipmap, page.level, page.absolutePage, lightMin, lightMax)) {
+            continue;
+        }
+
+        // Bound lazily: most frames dirty pages the mesh is nowhere near, and a
+        // pipeline bind for zero draws is pure state churn.
+        if (!pipelineBound) {
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, skinnedVsmPagePipeline_.pipeline());
+            pipelineBound = true;
+        }
+
+        const renderer::VsmPageRect rect = renderer::vsmPagePoolRect(page.physicalPage);
+
+        VkViewport viewport{};
+        viewport.x = static_cast<float>(rect.x);
+        viewport.y = static_cast<float>(rect.y);
+        viewport.width = static_cast<float>(rect.size);
+        viewport.height = static_cast<float>(rect.size);
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+        vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+
+        VkRect2D scissor{};
+        scissor.offset = {static_cast<int32_t>(rect.x), static_cast<int32_t>(rect.y)};
+        scissor.extent = {rect.size, rect.size};
+        vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+        SkinnedShadowPushConstants pushConstants{};
+        pushConstants.objectFrameDataAddress =
+            frameObjectDataBuffers_.at(currentFrame_).deviceAddress() +
+            static_cast<VkDeviceAddress>(kSkinnedObjectFrameSlot * sizeof(ObjectFrameData));
+        pushConstants.lightViewProjection =
+            renderer::vsmPageViewProjection(clipmap, lightView, page.level, page.absolutePage);
+        pushConstants.jointMatricesAddress = skinnedMesh_.jointPaletteAddress(currentFrame_);
+        vkCmdPushConstants(commandBuffer,
+                           skinnedVsmPagePipeline_.layout(),
+                           VK_SHADER_STAGE_VERTEX_BIT,
+                           0,
+                           static_cast<uint32_t>(sizeof(pushConstants)),
+                           &pushConstants);
+
+        recordSkinnedCasterDraw(commandBuffer);
+        ++drawnPages;
+    }
+
+    vsmSkinnedPageDrawsRecorded_ = drawnPages;
 }
 
 void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
@@ -1455,6 +1711,14 @@ void Renderer::recordCascadeShadowPass(VkCommandBuffer commandBuffer)
                 }
             }
         }
+
+        // The skinned mesh, drawn directly after the batched casters. It cannot
+        // join them: it has a second vertex binding they do not have and a
+        // per-frame joint palette they do not read, so it is neither in
+        // allDrawItems_ nor in any batch. Direct is also cheap here -- one mesh,
+        // one draw per cascade that is being redrawn anyway.
+        recordSkinnedCascadeCaster(commandBuffer, cascadeIndex, layeredCascades);
+
         rhi::debug::endLabel(commandBuffer);
 
         renderGraph_.endShadowPass(cascadeIndex + 1 == cascadePassCount);

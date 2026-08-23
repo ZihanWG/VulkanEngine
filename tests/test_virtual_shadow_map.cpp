@@ -31,6 +31,7 @@ using ve::renderer::kVsmInvalidPhysicalPage;
 using ve::renderer::vsmAbsolutePageCoords;
 using ve::renderer::vsmAbsolutePageForSlot;
 using ve::renderer::vsmLightSpaceBoundsXy;
+using ve::renderer::vsmPageOverlapsLightSpaceBounds;
 using ve::renderer::vsmPagesOverlappingBounds;
 using ve::renderer::VsmPageAllocator;
 using ve::renderer::VsmPageTableEntry;
@@ -906,4 +907,71 @@ TEST_CASE("Invalidating reports only pages that actually held depth", "[vsm]")
     REQUIRE_FALSE(allocator.invalidate(pageId));  // already invalidated
 
     REQUIRE_FALSE(allocator.invalidate(kVsmMaxVirtualPages + 5u));
+}
+
+// vsmPageOverlapsLightSpaceBounds is the per-page counterpart of the search
+// above: it answers "does this caster belong in the page I am already holding",
+// which is the question a direct draw into a dirty page has to ask.
+
+TEST_CASE("A page overlaps a caster that sits inside it", "[vsm]")
+{
+    VsmClipmapSettings settings{};
+    settings.levelCount = 4;
+    settings.level0Extent = 4.0f;
+    const float pageSize = ve::renderer::vsmPageWorldSize(settings, 0);
+
+    // Page (2, 3) at level 0 spans [2*pageSize, 3*pageSize) on X and
+    // [3*pageSize, 4*pageSize) on Y.
+    const glm::ivec2 page{2, 3};
+    const glm::vec2 inside{2.5f * pageSize, 3.5f * pageSize};
+    CHECK(vsmPageOverlapsLightSpaceBounds(settings, 0, page, inside, inside));
+
+    const glm::vec2 elsewhere{9.5f * pageSize, 3.5f * pageSize};
+    CHECK_FALSE(vsmPageOverlapsLightSpaceBounds(settings, 0, page, elsewhere, elsewhere));
+}
+
+TEST_CASE("A caster straddling a page seam reaches both pages", "[vsm]")
+{
+    VsmClipmapSettings settings{};
+    settings.levelCount = 4;
+    settings.level0Extent = 4.0f;
+    const float pageSize = ve::renderer::vsmPageWorldSize(settings, 0);
+
+    // A box crossing the boundary between page 2 and page 3 on X.
+    const glm::vec2 min{2.9f * pageSize, 0.5f * pageSize};
+    const glm::vec2 max{3.1f * pageSize, 0.6f * pageSize};
+
+    CHECK(vsmPageOverlapsLightSpaceBounds(settings, 0, glm::ivec2{2, 0}, min, max));
+    CHECK(vsmPageOverlapsLightSpaceBounds(settings, 0, glm::ivec2{3, 0}, min, max));
+    // Drawing into one page too many costs a draw; missing one loses a shadow,
+    // so the shared edge counts as overlap on both sides.
+    CHECK(vsmPageOverlapsLightSpaceBounds(settings, 0, glm::ivec2{2, 0}, glm::vec2{3.0f * pageSize, 0.5f * pageSize},
+                                          glm::vec2{3.0f * pageSize, 0.5f * pageSize}));
+    CHECK(vsmPageOverlapsLightSpaceBounds(settings, 0, glm::ivec2{3, 0}, glm::vec2{3.0f * pageSize, 0.5f * pageSize},
+                                          glm::vec2{3.0f * pageSize, 0.5f * pageSize}));
+}
+
+TEST_CASE("A coarser level covers what a finer one at the same coordinate does not", "[vsm]")
+{
+    VsmClipmapSettings settings{};
+    settings.levelCount = 4;
+    settings.level0Extent = 4.0f;
+    const float level0Page = ve::renderer::vsmPageWorldSize(settings, 0);
+
+    // A point three level-0 pages out is outside page (0,0) at level 0, but page
+    // (0,0) at level 2 is four times as wide and still contains it.
+    const glm::vec2 point{3.5f * level0Page, 0.5f * level0Page};
+    CHECK_FALSE(vsmPageOverlapsLightSpaceBounds(settings, 0, glm::ivec2{0, 0}, point, point));
+    CHECK(vsmPageOverlapsLightSpaceBounds(settings, 2, glm::ivec2{0, 0}, point, point));
+}
+
+TEST_CASE("A level past the active count overlaps nothing", "[vsm]")
+{
+    VsmClipmapSettings settings{};
+    settings.levelCount = 2;
+    settings.level0Extent = 4.0f;
+
+    // Same rule the page search follows: an inactive level has no pages, so it
+    // cannot be asked to hold a caster.
+    CHECK_FALSE(vsmPageOverlapsLightSpaceBounds(settings, 5, glm::ivec2{0, 0}, glm::vec2{0.0f}, glm::vec2{0.0f}));
 }

@@ -458,6 +458,7 @@ set(SHADER_SOURCES
     "${SHADER_SOURCE_DIR}/shadow_masked.vert"
     "${SHADER_SOURCE_DIR}/shadow_masked_layered.vert"
     "${SHADER_SOURCE_DIR}/shadow_punctual.vert"
+    "${SHADER_SOURCE_DIR}/shadow_skinned.vert"
     "${SHADER_SOURCE_DIR}/punctual_shadow_cull.comp"
     "${SHADER_SOURCE_DIR}/vsm_page_mark.comp"
     "${SHADER_SOURCE_DIR}/vsm_page_cull.comp"

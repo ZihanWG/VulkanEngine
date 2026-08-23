@@ -106,6 +106,15 @@ struct CascadeShadowPassState {
     // straight from the CPU draw items. Hashed so that toggling the path
     // invalidates rather than silently reinterpreting every caster's lodLevel.
     bool gpuLodSelectionActive = false;
+    // The skinned caster's pose, or 0 when it does not reach this cascade.
+    //
+    // It cannot be a CascadeShadowCaster: those are identified by mesh pointer
+    // and index range, all of which a skinned mesh holds constant while its
+    // vertices move. A skinned caster's content lives in the joint palette
+    // instead, so what gets hashed is a digest of that palette. Without it the
+    // cache would hold a cascade whose caster is visibly somewhere else -- a
+    // stale shadow, which reads as a rendering bug rather than a cache bug.
+    uint64_t skinnedCasterPose = 0;
 };
 
 // Content hash of one cascade: the pass state plus every caster that cascade

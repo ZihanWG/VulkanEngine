@@ -72,6 +72,18 @@ public:
     [[nodiscard]] VkDeviceAddress jointPaletteAddress(uint32_t frameIndex) const;
     [[nodiscard]] const glm::mat4& modelMatrix() const { return modelMatrix_; }
 
+    // Conservative world bounds of the pose update() last uploaded, so shadow
+    // culling and page invalidation have something that moves when the mesh
+    // does. The model matrix does not: that is the whole problem a skinned
+    // caster poses. Invalid until the first update().
+    [[nodiscard]] const Aabb& worldBounds() const { return worldBounds_; }
+
+    // Digest of the palette update() last uploaded. This is what a shadow cache
+    // has to key on: mesh pointer, index range and model matrix all hold still
+    // while the pose moves, so they cannot tell a cached shadow from a stale
+    // one. Never 0 once a pose exists, so callers can use 0 for "no caster".
+    [[nodiscard]] uint64_t poseHash() const { return poseHash_; }
+
 private:
     void buildBuffers(rhi::VulkanContext& context,
                       const rhi::VulkanCommandContext& commandContext,
@@ -79,6 +91,10 @@ private:
                       std::span<const Vertex> geometry,
                       std::span<const SkinningVertex> skinning,
                       std::span<const uint32_t> indices);
+
+    // Called once per build, after the skeleton is in place: the per-joint boxes
+    // are indexed by joint, so the joint count has to be final.
+    void cacheJointBindBounds(std::span<const Vertex> geometry, std::span<const SkinningVertex> skinning);
 
     glm::mat4 modelMatrix_{1.0f};
     Skeleton skeleton_;
@@ -91,6 +107,9 @@ private:
     rhi::VulkanBuffer indexBuffer_;
     uint32_t indexCount_ = 0;
     std::vector<rhi::VulkanBuffer> paletteBuffers_;
+    std::vector<Aabb> jointBindBounds_;
+    Aabb worldBounds_{};
+    uint64_t poseHash_ = 0;
 };
 
 } // namespace ve::renderer

@@ -418,6 +418,13 @@ near-black and reads as a catastrophic bug that is not there.
 
 ## Limitations
 
+- **The skinned caster is exercised here but not visually verified.** It is
+  drawn into every tile its bounds reach (6 of 25 on the default scene, printed
+  beside the caster draw count) and its pose digest enters those tiles' cache
+  keys, so an animating rig dirties them. But the demo scene's punctual shadows
+  are too dim, and the mesh too close to the frame edge, to compose an A/B from:
+  the frame changes by at most one quantization step. See
+  [skeletal_animation.md](skeletal_animation.md).
 - **A tile is all-or-nothing internally.** One moved caster inside a tile's
   frustum redraws that whole tile, including the casters in it that did not
   move. That is inherent to a shadow map: the depth buffer is not separable per

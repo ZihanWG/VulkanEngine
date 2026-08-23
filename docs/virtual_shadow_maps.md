@@ -703,6 +703,28 @@ as well as shown in the panel, because `--capture-frame` excludes ImGui and a
 GPU-derived number that exists only on screen cannot be checked from a headless
 or scripted run.
 
+### Marking without page rendering left the pool lying about its layout
+
+`--vsm mark` allocates the pool -- that is what the startup-only marking toggle
+decides -- but runs no page pass, and the material set binds the pool either way.
+So every main-pass draw statically accessed a descriptor promising
+`DEPTH_READ_ONLY_OPTIMAL` for an image still in `UNDEFINED`: eleven validation
+errors a frame.
+
+It had been there since the pool was introduced. What was missing was a way to
+*select* the configuration: the three stage toggles lived in a git-ignored
+settings file and behind a startup-only checkbox, so "marking on, rendering off"
+was reachable in principle and never actually run. The flag that made the A/B
+scriptable is what walked into it on its first pass through the matrix.
+
+The fix is a one-shot explicit barrier into the layout the descriptor was written
+with. Explicit rather than graph-declared on purpose: in this mode the pool is
+not a graph resource at all -- it is handed to `beginFrame` only when page
+rendering is active -- which is exactly the case the manual-barrier rule is for.
+The contents stay undefined, which is sound rather than lucky: the only shader
+that samples the pool is gated on `enableShadows`, and that cannot be on without
+page rendering.
+
 ## Limitations
 
 - **One lit-surface discrepancy is unexplained.** Certain lit faces read ~6.5/255
@@ -716,11 +738,13 @@ or scripted run.
   lit floor at 80/255, so every judgement here is a patch mean from a
   reproducible capture rather than something visible at a glance.
 - **Page casters draw authored geometry.** No LOD, deliberately — see above.
-- **Skinned geometry is not a caster at all.** The skinned demo mesh is drawn
-  directly rather than as a `RenderObject`, so it is absent from the draw-item
-  list every shadow path walks — VSM and cascades alike. Skinning would also
-  defeat the invalidation above on its own terms: it moves vertices without
-  touching the model matrix, so the key would not change.
+- **The skinned caster costs 12 pages a frame** on the default scene: it
+  invalidates and redraws the pages its bounds cover on every frame it animates,
+  leaving 87 of 99 resident pages cached. Animated geometry has no cacheable
+  shadow, so that is inherent rather than a tuning failure — but it is the one
+  thing here that defeats page caching by construction. Its key is a pose digest
+  rather than a transform, for exactly the reason the invalidation section above
+  describes; see [skeletal_animation.md](skeletal_animation.md).
 - **Bindless path only.** `simple.frag`, the fallback for devices without
   descriptor indexing, still uses the cascades. Adding VSM there means a second
   descriptor layout for a path that only exists on hardware this feature is not

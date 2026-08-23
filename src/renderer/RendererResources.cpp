@@ -689,6 +689,88 @@ void Renderer::createShadowPipeline()
     createPunctualShadowPipeline(binding, attributes);
     createVsmPagePipeline(binding, attributes);
     createVsmMaskedPagePipeline(binding, attributes);
+    createSkinnedShadowPipelines();
+}
+
+void Renderer::createSkinnedShadowPipelines()
+{
+    const std::array<VkVertexInputBindingDescription, 2> bindings = renderer::skinnedVertexBindingDescriptions();
+    const std::array<VkVertexInputAttributeDescription, 7> allAttributes =
+        renderer::skinnedVertexAttributeDescriptions();
+
+    // Depth-only, so of the seven attributes only position and the two skinning
+    // streams are consumed. Declaring the unread four would make the pipeline
+    // demand vertex data the shader never reads.
+    const std::array<VkVertexInputAttributeDescription, 3> attributes{
+        allAttributes[0], allAttributes[5], allAttributes[6]};
+
+    const VkPushConstantRange pushConstantRange{
+        VK_SHADER_STAGE_VERTEX_BIT, 0, static_cast<uint32_t>(sizeof(SkinnedShadowPushConstants))};
+
+    // Everything except the depth format is shared, because everything except
+    // the depth target is the same operation.
+    const auto makeInfo = [&](VkFormat depthFormat) {
+        rhi::VulkanPipelineCreateInfo info{};
+        info.vertexShaderPath = shaderPath("shadow_skinned.vert.spv");
+        info.depthFormat = depthFormat;
+        info.vertexBindings = std::span<const VkVertexInputBindingDescription>(bindings.data(), bindings.size());
+        info.vertexAttributes = std::span<const VkVertexInputAttributeDescription>(attributes.data(), attributes.size());
+        info.pushConstantRanges = std::span<const VkPushConstantRange>(&pushConstantRange, 1);
+        info.enableColorAttachment = false;
+        info.enableDepth = true;
+        info.depthWriteEnable = true;
+        info.enableDepthBias = true;
+        info.cullMode = VK_CULL_MODE_NONE;
+        info.depthBiasConstantFactor = shadowSettings_.rasterDepthBiasConstantFactor;
+        info.depthBiasSlopeFactor = shadowSettings_.rasterDepthBiasSlopeFactor;
+        info.pipelineCache = context_.pipelineCache();
+        return info;
+    };
+
+    // Cascades. No viewMask even when the layered path is active: this shader
+    // takes its view-projection from a push constant, so one draw cannot fan out
+    // across cascade layers the way the multiview variant of shadow.vert does.
+    // The recorder skips the skinned caster in that mode rather than drawing it
+    // into every layer with the wrong matrix -- see docs/skeletal_animation.md.
+    skinnedShadowPipeline_.create(context_.vkDevice(), makeInfo(shadowMap_.format()));
+    rhi::debug::setObjectName(
+        context_.vkDevice(), skinnedShadowPipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "SkinnedShadowPipeline");
+    rhi::debug::setObjectName(context_.vkDevice(),
+                              skinnedShadowPipeline_.layout(),
+                              VK_OBJECT_TYPE_PIPELINE_LAYOUT,
+                              "SkinnedShadowPipelineLayout");
+
+    // The punctual atlas, on the same "only if it exists" rule as the pool.
+    if (!punctualShadows_.valid()) {
+        skinnedPunctualShadowPipeline_.reset();
+    } else {
+        skinnedPunctualShadowPipeline_.create(context_.vkDevice(), makeInfo(punctualShadows_.atlas().format()));
+        rhi::debug::setObjectName(context_.vkDevice(),
+                                  skinnedPunctualShadowPipeline_.pipeline(),
+                                  VK_OBJECT_TYPE_PIPELINE,
+                                  "SkinnedPunctualShadowPipeline");
+        rhi::debug::setObjectName(context_.vkDevice(),
+                                  skinnedPunctualShadowPipeline_.layout(),
+                                  VK_OBJECT_TYPE_PIPELINE_LAYOUT,
+                                  "SkinnedPunctualShadowPipelineLayout");
+    }
+
+    // VSM pages, only if the pool exists: it is a startup decision, and a
+    // pipeline built against a format nothing allocated is a pipeline that is
+    // silently never used -- the mistake the page pipeline itself already made
+    // once (see docs/virtual_shadow_maps.md).
+    if (!virtualShadowMap_.pagePoolValid()) {
+        skinnedVsmPagePipeline_.reset();
+        return;
+    }
+
+    skinnedVsmPagePipeline_.create(context_.vkDevice(), makeInfo(virtualShadowMap_.pagePool().format()));
+    rhi::debug::setObjectName(
+        context_.vkDevice(), skinnedVsmPagePipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "SkinnedVsmPagePipeline");
+    rhi::debug::setObjectName(context_.vkDevice(),
+                              skinnedVsmPagePipeline_.layout(),
+                              VK_OBJECT_TYPE_PIPELINE_LAYOUT,
+                              "SkinnedVsmPagePipelineLayout");
 }
 
 void Renderer::createPunctualShadowPipeline(const VkVertexInputBindingDescription& binding,
