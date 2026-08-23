@@ -168,6 +168,11 @@ bool parseLaunchOptions(int argc, char** argv, LaunchOptions& options)
             continue;
         }
 
+        if (argument == "--capture-include-ui") {
+            options.captureIncludeUi = true;
+            continue;
+        }
+
         if (argument == "--capture-output") {
             if (index + 1 >= argc) {
                 Logger::error("--capture-output requires a file path.");
@@ -199,6 +204,14 @@ bool parseLaunchOptions(int argc, char** argv, LaunchOptions& options)
 
     if ((options.captureFrame != 0) != !options.captureOutput.empty()) {
         Logger::error("--capture-frame and --capture-output must be given together.");
+        return false;
+    }
+
+    // Rejected rather than ignored: a run asking for the overlay in an image it
+    // never captures has been misconfigured, and silently dropping the flag
+    // would hand back a frame that looks right and answers nothing.
+    if (options.captureIncludeUi && options.captureFrame == 0) {
+        Logger::error("--capture-include-ui requires --capture-frame.");
         return false;
     }
 

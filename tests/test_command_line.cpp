@@ -272,3 +272,30 @@ TEST_CASE("The VSM A/B command line parses as a whole", "[command-line][vsm]")
     REQUIRE(config.captureFrame == 60);
     REQUIRE(config.captureOutput == "/tmp/vsm.png");
 }
+
+// --capture-include-ui exists because the debug panel is the one thing a
+// scripted run cannot otherwise see: it is drawn after the point the regression
+// capture is taken, so anything it reports and the log does not has no evidence
+// path at all.
+
+TEST_CASE("The capture excludes the overlay unless asked", "[command-line][capture]")
+{
+    LaunchOptions config{};
+    REQUIRE(parse({"--capture-frame", "60", "--capture-output", "/tmp/f.png"}, config));
+    REQUIRE_FALSE(config.captureIncludeUi);
+}
+
+TEST_CASE("The overlay can be asked for", "[command-line][capture]")
+{
+    LaunchOptions config{};
+    REQUIRE(parse({"--capture-frame", "60", "--capture-output", "/tmp/f.png", "--capture-include-ui"}, config));
+    REQUIRE(config.captureIncludeUi);
+    REQUIRE(config.captureFrame == 60);
+}
+
+TEST_CASE("Asking for the overlay without a capture is rejected", "[command-line][capture]")
+{
+    LaunchOptions config{};
+    // Ignoring it would hand back a frame that looks right and answers nothing.
+    REQUIRE_FALSE(parse({"--capture-include-ui"}, config));
+}

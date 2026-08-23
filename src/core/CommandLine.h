@@ -96,6 +96,15 @@ struct LaunchOptions {
     uint64_t captureFrame = 0;
     std::string captureOutput;
 
+    // Take the capture AFTER the ImGui overlay instead of before it.
+    //
+    // Off by default because a regression capture wants the rendered frame and
+    // not a debug panel drawn over a third of it. On, it is the only way to see
+    // the debug UI from a scripted run at all: the panel exists solely on screen,
+    // so anything it reports and the log does not -- an amber capacity warning,
+    // a colour, a layout -- has no other evidence path.
+    bool captureIncludeUi = false;
+
     // Reports whether this driver can bind two images into one allocation, and
     // whether they provably share bytes, then continues as normal. Kept as the
     // standing check for that -- see rhi/VulkanAliasingProbe.h.

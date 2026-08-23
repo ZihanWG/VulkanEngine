@@ -109,7 +109,8 @@ void ScreenshotCapture::recordCopy(VkCommandBuffer commandBuffer,
                                    uint32_t frameIndex,
                                    rhi::VulkanSwapchain& swapchain,
                                    uint32_t imageIndex,
-                                   const std::filesystem::path& explicitOutputPath)
+                                   const std::filesystem::path& explicitOutputPath,
+                                   VkImageLayout restoreLayout)
 {
     if (frameIndex >= readbacks_.size()) {
         status_ = "Screenshot failed: frame readback slots are not initialized.";
@@ -141,9 +142,10 @@ void ScreenshotCapture::recordCopy(VkCommandBuffer commandBuffer,
                                   "PortfolioScreenshotReadbackBuffer" + std::to_string(frameIndex));
     }
 
-    // Screenshot capture sits between CompositePass and ImGuiPass. The swapchain
-    // image is copied as a transfer source, then returned to color attachment
-    // layout so the normal overlay/present path can continue unchanged.
+    // The swapchain image is copied as a transfer source, then returned to
+    // whichever layout the caller needs next: colour attachment for a copy taken
+    // between the composite and the overlay, PRESENT_SRC for one taken after the
+    // overlay, which is already past the graph's present transition.
     const VkImageLayout oldLayout = swapchain.imageLayout(imageIndex);
     VkImageMemoryBarrier2 toTransferBarrier{};
     toTransferBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
@@ -202,10 +204,17 @@ void ScreenshotCapture::recordCopy(VkCommandBuffer commandBuffer,
     toColorBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
     toColorBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
     toColorBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
-    toColorBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-    toColorBarrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    const bool restoreToPresent = restoreLayout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    // Nothing in this submission reads the image after a present restore; the
+    // presentation engine is ordered by the semaphore, not by this barrier, so
+    // naming a stage here would claim a dependency that does not exist.
+    toColorBarrier.dstStageMask = restoreToPresent ? VK_PIPELINE_STAGE_2_NONE
+                                                   : VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    toColorBarrier.dstAccessMask =
+        restoreToPresent ? VK_ACCESS_2_NONE
+                         : (VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
     toColorBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    toColorBarrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    toColorBarrier.newLayout = restoreLayout;
     toColorBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     toColorBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     toColorBarrier.image = swapchain.image(imageIndex);
@@ -219,7 +228,7 @@ void ScreenshotCapture::recordCopy(VkCommandBuffer commandBuffer,
     afterCopyDependency.imageMemoryBarrierCount = static_cast<uint32_t>(imageBarriers.size());
     afterCopyDependency.pImageMemoryBarriers = imageBarriers.data();
     vkCmdPipelineBarrier2(commandBuffer, &afterCopyDependency);
-    swapchain.setImageLayout(imageIndex, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    swapchain.setImageLayout(imageIndex, restoreLayout);
 
     readback.extent = extent;
     readback.format = format;
