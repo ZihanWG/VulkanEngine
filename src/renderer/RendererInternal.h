@@ -422,6 +422,27 @@ static_assert(offsetof(PunctualShadowPushConstants, lightViewProjection) == 16);
 static_assert(sizeof(PunctualShadowPushConstants) == 80);
 static_assert(sizeof(PunctualShadowPushConstants) <= 128);
 
+// Push constant for a skinned caster (shadow_skinned.vert), used by every shadow
+// path the skinned mesh casts into.
+//
+// Same leading shape as PunctualShadowPushConstants and the same padding for the
+// same reason; the palette reference follows the matrix. The skinned mesh reads
+// exactly one object slot, so the address is offset per draw rather than indexed
+// by an instance id it does not have.
+struct SkinnedShadowPushConstants {
+    VkDeviceAddress objectFrameDataAddress = 0;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+    glm::mat4 lightViewProjection{1.0f};
+    VkDeviceAddress jointMatricesAddress = 0;
+};
+
+static_assert(offsetof(SkinnedShadowPushConstants, objectFrameDataAddress) == 0);
+static_assert(offsetof(SkinnedShadowPushConstants, lightViewProjection) == 16);
+static_assert(offsetof(SkinnedShadowPushConstants, jointMatricesAddress) == 80);
+static_assert(sizeof(SkinnedShadowPushConstants) == 88);
+static_assert(sizeof(SkinnedShadowPushConstants) <= 128);
+
 // Mirrors the push constant block in probe_capture.vert / probe_capture.frag.
 // Same shape as PunctualShadowPushConstants, and the same padding for the same
 // reason: the mat4 rounds up to a 16-byte boundary after the buffer reference.

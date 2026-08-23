@@ -159,4 +159,53 @@ std::vector<glm::mat4> computeJointMatricesAtTime(const Skeleton& skeleton, cons
     return computeJointMatrices(skeleton, sampleLocalPoses(skeleton, clip, time));
 }
 
+std::vector<Aabb> computeJointBindBounds(size_t jointCount,
+                                         std::span<const glm::vec3> positions,
+                                         std::span<const glm::uvec4> jointIndices,
+                                         std::span<const glm::vec4> weights)
+{
+    std::vector<Aabb> bounds(jointCount);
+    const size_t vertexCount = std::min({positions.size(), jointIndices.size(), weights.size()});
+
+    for (size_t vertex = 0; vertex < vertexCount; ++vertex) {
+        for (int influence = 0; influence < 4; ++influence) {
+            if (!(weights[vertex][influence] > 0.0f)) {
+                continue;
+            }
+            // An index past the palette is dropped rather than clamped: clamping
+            // would grow joint 0's box by geometry it does not move, which shows
+            // up as a shadow bound that is too large everywhere instead of an
+            // import that is visibly wrong once.
+            const uint32_t joint = jointIndices[vertex][influence];
+            if (joint >= jointCount) {
+                continue;
+            }
+            bounds[joint].expand(positions[vertex]);
+        }
+    }
+
+    return bounds;
+}
+
+Aabb skinnedWorldBounds(std::span<const Aabb> jointBindBounds,
+                        std::span<const glm::mat4> jointMatrices,
+                        const glm::mat4& model)
+{
+    Aabb bounds{};
+    const size_t jointCount = std::min(jointBindBounds.size(), jointMatrices.size());
+
+    for (size_t joint = 0; joint < jointCount; ++joint) {
+        if (!jointBindBounds[joint].valid()) {
+            continue;
+        }
+        bounds.merge(jointBindBounds[joint].transform(jointMatrices[joint]));
+    }
+
+    if (!bounds.valid()) {
+        return bounds;
+    }
+
+    return bounds.transform(model);
+}
+
 } // namespace ve::renderer

@@ -1120,6 +1120,29 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
                     ? (isShadowIndirectCountPathActive(frameIndex) ? "per-cascade indirect count"
                                                                    : "per-cascade indirect fallback")
                     : "per-cascade direct fallback");
+
+    // The skinned caster is drawn directly and is in none of the counts above,
+    // so without this line there is no way to tell from a scripted run whether
+    // it cast anything -- and --capture-frame excludes the debug UI that would
+    // otherwise show it.
+    message << "\n  skinned caster: ";
+    if (!skinnedCasterActive()) {
+        message << "inactive";
+    } else {
+        message << "cascades";
+        for (uint32_t cascadeIndex = 0; cascadeIndex < activeCascadeCount(); ++cascadeIndex) {
+            if (skinnedCasterCastsIntoCascade(cascadeIndex)) {
+                message << ' ' << cascadeIndex;
+            }
+        }
+        const renderer::Aabb& bounds = skinnedMesh_.worldBounds();
+        message << ", pose " << skinnedMesh_.poseHash() << ", bounds (" << bounds.min.x << ", " << bounds.min.y
+                << ", " << bounds.min.z << ") to (" << bounds.max.x << ", " << bounds.max.y << ", " << bounds.max.z
+                << ")";
+        if (isLayeredCascadeRenderingActive()) {
+            message << " [SKIPPED: layered cascades]";
+        }
+    }
     Logger::info(message.str());
 }
 

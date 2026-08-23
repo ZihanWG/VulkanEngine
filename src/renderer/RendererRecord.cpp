@@ -953,6 +953,63 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
     };
 }
 
+bool Renderer::skinnedCasterActive() const
+{
+    // Same gate the main pass uses, plus a bound: a caster with no bounds cannot
+    // be culled or invalidated against, and drawing it anyway would put a shadow
+    // in the world that nothing knows how to dirty.
+    return showSkinnedMesh_ && skinnedMesh_.valid() && skinnedMesh_.worldBounds().valid();
+}
+
+void Renderer::recordSkinnedCascadeCaster(VkCommandBuffer commandBuffer, uint32_t cascadeIndex, bool layeredCascades)
+{
+    if (!skinnedCasterActive() || skinnedShadowPipeline_.pipeline() == VK_NULL_HANDLE) {
+        return;
+    }
+
+    // Multiview draws one command into every cascade layer at once and expects
+    // the shader to pick its matrix from gl_ViewIndex. This shader takes the
+    // matrix as a push constant, so there is no per-view choice to make and the
+    // one draw would land in all four layers with cascade 0's projection.
+    // Skipped rather than drawn wrong; the layered path ships off (measured
+    // ~20% slower on MoltenVK) and the cascades still shadow everything else.
+    if (layeredCascades || cascadeIndex >= frameCascades_.size()) {
+        return;
+    }
+
+    // Same predicate the cache key used; see skinnedCasterCastsIntoCascade.
+    if (!skinnedCasterCastsIntoCascade(cascadeIndex)) {
+        return;
+    }
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, skinnedShadowPipeline_.pipeline());
+
+    SkinnedShadowPushConstants pushConstants{};
+    pushConstants.objectFrameDataAddress =
+        frameObjectDataBuffers_.at(currentFrame_).deviceAddress() +
+        static_cast<VkDeviceAddress>(kSkinnedObjectFrameSlot * sizeof(ObjectFrameData));
+    pushConstants.lightViewProjection = frameCascades_[cascadeIndex].lightViewProjection;
+    pushConstants.jointMatricesAddress = skinnedMesh_.jointPaletteAddress(currentFrame_);
+    vkCmdPushConstants(commandBuffer,
+                       skinnedShadowPipeline_.layout(),
+                       VK_SHADER_STAGE_VERTEX_BIT,
+                       0,
+                       static_cast<uint32_t>(sizeof(pushConstants)),
+                       &pushConstants);
+
+    recordSkinnedCasterDraw(commandBuffer);
+}
+
+void Renderer::recordSkinnedCasterDraw(VkCommandBuffer commandBuffer)
+{
+    const std::array<VkBuffer, 2> vertexBuffers{skinnedMesh_.geometryBuffer(), skinnedMesh_.skinningBuffer()};
+    const std::array<VkDeviceSize, 2> vertexOffsets{0, 0};
+    vkCmdBindVertexBuffers(
+        commandBuffer, 0, static_cast<uint32_t>(vertexBuffers.size()), vertexBuffers.data(), vertexOffsets.data());
+    vkCmdBindIndexBuffer(commandBuffer, skinnedMesh_.indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(commandBuffer, skinnedMesh_.indexCount(), 1, 0, 0, 0);
+}
+
 void Renderer::recordVsmPageMarkPass(VkCommandBuffer commandBuffer)
 {
     if (!isVsmPageMarkingActive()) {
@@ -1455,6 +1512,14 @@ void Renderer::recordCascadeShadowPass(VkCommandBuffer commandBuffer)
                 }
             }
         }
+
+        // The skinned mesh, drawn directly after the batched casters. It cannot
+        // join them: it has a second vertex binding they do not have and a
+        // per-frame joint palette they do not read, so it is neither in
+        // allDrawItems_ nor in any batch. Direct is also cheap here -- one mesh,
+        // one draw per cascade that is being redrawn anyway.
+        recordSkinnedCascadeCaster(commandBuffer, cascadeIndex, layeredCascades);
+
         rhi::debug::endLabel(commandBuffer);
 
         renderGraph_.endShadowPass(cascadeIndex + 1 == cascadePassCount);

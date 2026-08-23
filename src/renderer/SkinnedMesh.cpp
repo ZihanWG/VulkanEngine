@@ -1,6 +1,7 @@
 #include "renderer/SkinnedMesh.h"
 
 #include "core/Logger.h"
+#include "renderer/CascadeShadowCache.h"
 #include "renderer/GltfSkinnedImport.h"
 #include "rhi/VulkanContext.h"
 
@@ -162,6 +163,7 @@ void SkinnedMesh::create(rhi::VulkanContext& context,
     clipDuration_ = 0.0f;
     sourceName_ = "procedural bone chain";
     modelMatrix_ = kDemoModelMatrix;
+    cacheJointBindBounds(vertices, skinning);
 }
 
 bool SkinnedMesh::createFromGltf(rhi::VulkanContext& context,
@@ -208,10 +210,30 @@ bool SkinnedMesh::createFromGltf(rhi::VulkanContext& context,
     }
     sourceName_ = path.filename().string();
     modelMatrix_ = kDemoModelMatrix;
+    cacheJointBindBounds(geometry, skinning);
 
     Logger::info("Loaded skinned glTF '" + sourceName_ + "': " + std::to_string(skeleton_.jointCount()) +
                  " joints, " + std::to_string(imported.clips.size()) + " clip(s).");
     return valid();
+}
+
+void SkinnedMesh::cacheJointBindBounds(std::span<const Vertex> geometry, std::span<const SkinningVertex> skinning)
+{
+    // Unpacked into flat arrays because the bounds math lives in the GPU-free
+    // core, which must not see a Vulkan vertex layout.
+    std::vector<glm::vec3> positions(geometry.size());
+    std::vector<glm::uvec4> jointIndices(skinning.size());
+    std::vector<glm::vec4> weights(skinning.size());
+    for (size_t vertex = 0; vertex < geometry.size(); ++vertex) {
+        positions[vertex] = geometry[vertex].position;
+    }
+    for (size_t vertex = 0; vertex < skinning.size(); ++vertex) {
+        jointIndices[vertex] = skinning[vertex].jointIndices;
+        weights[vertex] = skinning[vertex].weights;
+    }
+
+    jointBindBounds_ = computeJointBindBounds(skeleton_.jointCount(), positions, jointIndices, weights);
+    worldBounds_ = Aabb{};
 }
 
 void SkinnedMesh::update(uint32_t frameIndex, float timeSeconds)
@@ -242,6 +264,18 @@ void SkinnedMesh::update(uint32_t frameIndex, float timeSeconds)
     if (jointMatrices.size() > kMaxJoints) {
         jointMatrices.resize(kMaxJoints);
     }
+
+    // Both derived from the same palette the GPU is about to skin with, not from
+    // a second pose evaluated separately: a bound or a key describing a
+    // different pose than the one drawn is worse than having neither.
+    worldBounds_ = skinnedWorldBounds(jointBindBounds_, jointMatrices, modelMatrix_);
+
+    ShadowCacheKey key;
+    key.reset();
+    key.add(modelMatrix_);
+    key.addBytes(jointMatrices.data(), jointMatrices.size() * sizeof(glm::mat4));
+    poseHash_ = key.value();
+
     paletteBuffers_[frameIndex].upload(std::as_bytes(std::span<const glm::mat4>(jointMatrices)));
 }
 

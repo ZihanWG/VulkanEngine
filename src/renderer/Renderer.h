@@ -339,6 +339,17 @@ private:
     void createSkyboxPipeline();
     void createTransparentPipeline();
     void createShadowPipeline();
+    // Casters for the skinned mesh: cascades and VSM pages. Both read the same
+    // shader and push block; only the depth target differs.
+    void createSkinnedShadowPipelines();
+    // Whether the skinned mesh should cast at all this frame.
+    [[nodiscard]] bool skinnedCasterActive() const;
+    // Whether the skinned mesh reaches this cascade. Read by both the cache key
+    // and the recorder, which must not disagree.
+    [[nodiscard]] bool skinnedCasterCastsIntoCascade(uint32_t cascadeIndex) const;
+    void recordSkinnedCascadeCaster(VkCommandBuffer commandBuffer, uint32_t cascadeIndex, bool layeredCascades);
+    // Vertex/index binding plus the draw, shared by every target it casts into.
+    void recordSkinnedCasterDraw(VkCommandBuffer commandBuffer);
     void createVsmPagePipeline(const VkVertexInputBindingDescription& binding,
                                const std::array<VkVertexInputAttributeDescription, 5>& attributes);
     void createVsmMaskedPagePipeline(const VkVertexInputBindingDescription& binding,
@@ -853,6 +864,12 @@ private:
     // shadowPipeline_ because its push-constant layout carries the slot's
     // view-projection instead of a cascade index.
     rhi::VulkanPipeline punctualShadowPipeline_;
+    // The skinned demo mesh as a shadow caster. One pipeline per depth target
+    // rather than one shared: the vertex input (two bindings) and push layout
+    // are the same everywhere, but the depth format and raster bias belong to
+    // the target, exactly as they do for the static casters.
+    rhi::VulkanPipeline skinnedShadowPipeline_;
+    rhi::VulkanPipeline skinnedVsmPagePipeline_;
     rhi::VulkanPipeline probeCapturePipeline_;
     // glTF BLEND geometry: same shaders as the main pass, but "over" blending,
     // depth writes off, and a scene-color-only attachment set.

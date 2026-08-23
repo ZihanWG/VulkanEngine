@@ -253,3 +253,32 @@ TEST_CASE("Cascades with different fits do not share a key", "[cascade-shadow-ca
         }
     }
 }
+
+TEST_CASE("A moving skinned pose dirties the cascade key", "[shadow-cache][skinning]")
+{
+    // The case the rest of the key cannot see. A skinned caster keeps its mesh
+    // pointer, its index range and its model matrix while its vertices move, so
+    // every other field here is constant across the whole animation: without the
+    // pose digest the cascade would cache a shadow of a pose that is long gone.
+    CascadeShadowPassState state{};
+    const uint64_t still = computeCascadeShadowKey(state, {});
+
+    state.skinnedCasterPose = 0x9E3779B97F4A7C15ULL;
+    const uint64_t posed = computeCascadeShadowKey(state, {});
+    CHECK(posed != still);
+
+    state.skinnedCasterPose = 0x9E3779B97F4A7C16ULL;
+    CHECK(computeCascadeShadowKey(state, {}) != posed);
+}
+
+TEST_CASE("A cascade the skinned caster cannot reach keeps its key", "[shadow-cache][skinning]")
+{
+    // Zero means "does not reach this cascade", and it has to leave the key
+    // exactly where it was: a distant cascade that redraws every frame because
+    // something animates elsewhere would silently undo the cascade cache.
+    CascadeShadowPassState withoutSkinned{};
+    CascadeShadowPassState explicitlyAbsent{};
+    explicitlyAbsent.skinnedCasterPose = 0;
+
+    CHECK(computeCascadeShadowKey(withoutSkinned, {}) == computeCascadeShadowKey(explicitlyAbsent, {}));
+}

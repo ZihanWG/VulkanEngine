@@ -331,6 +331,10 @@ void Renderer::updateCascadeShadowCacheState()
         state.rasterDepthBiasSlopeFactor = shadowSettings_.rasterDepthBiasSlopeFactor;
         state.shadowResolution = shadowSettings_.resolution;
         state.gpuLodSelectionActive = gpuLodSelectionActive;
+        // Exactly the test the recorder makes before drawing it. The two have to
+        // agree: a cascade that draws the skinned mesh without its pose in the
+        // key would cache a shadow that never updates again.
+        state.skinnedCasterPose = skinnedCasterCastsIntoCascade(cascadeIndex) ? skinnedMesh_.poseHash() : 0;
 
         // shadowCascadeDrawItems_ is already this cascade's frustum-culled
         // caster list, built by buildShadowDrawItems against the very frustum
@@ -385,6 +389,18 @@ void Renderer::updateCascadeShadowCacheState()
     // whole map anyway, since it reconfigures the image.
     cascadeShadowCacheHit_ = cascadeShadowCascadesRedrawn_ == 0 && cascadeCount > 0;
     cascadeShadowCachedFrames_ = cascadeShadowCacheHit_ ? cascadeShadowCachedFrames_ + 1 : 0;
+}
+
+bool Renderer::skinnedCasterCastsIntoCascade(uint32_t cascadeIndex) const
+{
+    if (!skinnedCasterActive() || cascadeIndex >= frameCascades_.size()) {
+        return false;
+    }
+
+    // The same light frustum buildShadowDrawItems culls every other caster
+    // against, so the skinned mesh joins or leaves a cascade on the same rule
+    // the rest of the scene does -- and a cascade it cannot reach keeps caching.
+    return frameCascades_[cascadeIndex].lightFrustum.testAabb(skinnedMesh_.worldBounds());
 }
 
 // The level cull.comp would pick for this item on a shadow dispatch. Kept
