@@ -1927,7 +1927,12 @@ void Renderer::uploadFrameConstants(uint32_t frameIndex, uint32_t cascadeCount)
         constants.vsmPageTable = glm::uvec4(static_cast<uint32_t>(pageTableAddress & 0xFFFFFFFFull),
                                             static_cast<uint32_t>(pageTableAddress >> 32),
                                             clipmap.levelCount,
-                                            pageTableAddress != 0 ? 1u : 0u);
+                                            // Flag word, not a bool: bit 0 gates the whole path,
+                                            // bit 1 asks the sampler to report which clipmap level
+                                            // it used so the debug view can tint by it. Mirrored by
+                                            // kVsmFlag* in virtual_shadow_map.glsl.
+                                            (pageTableAddress != 0 ? 1u : 0u) |
+                                                (vsmSettings_.debugLevelColors ? 2u : 0u));
         constants.vsmParams = glm::vec4(clipmap.level0Extent,
                                         clipmap.texelsPerPixel,
                                         clipmap.depthRange,

@@ -780,15 +780,17 @@ void main()
     // -1 is exactly what it should see on the VSM path, which has no cascades.
     int cascadeIndex = -1;
     float shadowFactor;
-    if (pc.frameConstants.values.vsmPageTable.w != 0u) {
+    uint vsmSampledLevel = kVsmNoResidentLevel;
+    if ((pc.frameConstants.values.vsmPageTable.w & kVsmFlagEnabled) != 0u) {
         // Virtual shadow maps replace the cascades outright rather than blending
         // with them: the two disagree about texel size everywhere, so mixing
         // them would show the disagreement as a seam instead of hiding it.
-        shadowFactor = vsmShadowFactor(pc.frameConstants.values,
-                                       uVsmPagePool,
-                                       vWorldPosition,
-                                       normal,
-                                       clamp(int(vShadowSettings.w + 0.5), 0, 4));
+        shadowFactor = vsmShadowFactorLevel(pc.frameConstants.values,
+                                            uVsmPagePool,
+                                            vWorldPosition,
+                                            normal,
+                                            clamp(int(vShadowSettings.w + 0.5), 0, 4),
+                                            vsmSampledLevel);
     } else {
         cascadeIndex = selectShadowCascade();
         shadowFactor = sampleShadowFactor(normal, cascadeIndex);
@@ -1001,6 +1003,20 @@ void main()
 
     if (vCascadeDebugEnabled > 0.5 && cascadeIndex >= 0) {
         finalColor = mix(finalColor, cascadeDebugColor(cascadeIndex), 0.3);
+    }
+
+    // The VSM counterpart. Not a mix like the cascades' 0.3: the tint is applied
+    // before tone mapping and exposure, so a blended colour cannot be read back
+    // out of a capture -- which is the entire point of this view. Same shape as
+    // the LOD heatmap instead: the hue is the answer, and scene luminance only
+    // modulates its brightness so the geometry stays legible.
+    if ((pc.frameConstants.values.vsmPageTable.w & kVsmFlagDebugLevels) != 0u) {
+        float debugLuminance = dot(finalColor, vec3(0.2126, 0.7152, 0.0722));
+        outColor = vec4(vsmLevelDebugColor(vsmSampledLevel) * (0.35 + 0.65 * clamp(debugLuminance, 0.0, 1.0)),
+                        alpha);
+        outVelocity = computeVelocity();
+        outNormalRoughness = vec4(octEncode(normal), roughness, metallic);
+        return;
     }
 
     outColor = vec4(finalColor, alpha);

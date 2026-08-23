@@ -578,7 +578,7 @@ also where the umbra leak returns -- so that recovery is peter-panning erasing t
 difference, not fixing it. It is ~6.5/255 on certain lit surfaces and uniform
 across each face rather than shaped like a cast shadow.
 
-Seven hypotheses have since been measured and eliminated, each on the same
+Eight hypotheses have since been measured and eliminated, each on the same
 reproducible frame. The value in the list is that it is *narrowing*: whoever picks
 this up should not spend the day re-running these.
 
@@ -752,8 +752,10 @@ page rendering.
 
 - **One lit-surface discrepancy is unexplained.** Certain lit faces read ~6.5/255
   darker than under the cascades at every depth bias that keeps the umbra honest.
-  Seven hypotheses have been measured and eliminated, including the slope-scaled
-  bias term this doc used to lead with. See
+  Eight hypotheses have been measured and eliminated, including the slope-scaled
+  bias term this doc used to lead with and, via the level debug view, the last
+  plausible geometric one — the face samples the same L1 as the surfaces around
+  it that behave correctly. See
   [What it did not settle, and what was ruled out](#what-it-did-not-settle-and-what-was-ruled-out).
 - **`texelsPerPixel` below 1.0 does nothing *on this scene*, and that is the
   coverage bound rather than a broken setting.** `vsmSelectLevel` returns
