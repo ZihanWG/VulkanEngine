@@ -578,7 +578,7 @@ also where the umbra leak returns -- so that recovery is peter-panning erasing t
 difference, not fixing it. It is ~6.5/255 on certain lit surfaces and uniform
 across each face rather than shaped like a cast shadow.
 
-Seven hypotheses have since been measured and eliminated, each on the same
+Eight hypotheses have since been measured and eliminated, each on the same
 reproducible frame. The value in the list is that it is *narrowing*: whoever picks
 this up should not spend the day re-running these.
 
@@ -591,6 +591,7 @@ this up should not spend the day re-running these.
 | The cascade clips the occluder away in depth | `zPadding` x5, x25 | **63.57** (x25 lifts the *umbra* to 35.72 on precision alone) |
 | PCF taps clamped at a page seam over-occlude | radius 0, 1, 2, both paths | **unchanged** (the radius does reach the GPU -- it moves 6 pixels elsewhere) |
 | The sampler lacks the cascades' slope-scaled bias term | added `max(const, slope * (1 - N.L))`, slope 128 / 512 / 2048 texels | **the face and the umbra move together**: 128 changes nothing, 512 gives 60.43 with the umbra already at 39.12, 2048 gives 63.56 with the umbra fully leaking at 39.40 |
+| The face samples a different, coarser level than its neighbours | `debugLevelColors`, reading the level off a capture | **all L1**: the face, the ground beside it, the umbra patch that behaves correctly, the hero sphere, and the near and far ground. Only the distant backdrop is coarser (L3) |
 
 That last row is the one this document previously led with, and it is now the
 most thoroughly dead: a slope term was the one shape that could plausibly have
@@ -608,11 +609,28 @@ difference, which survives forcing both to level 0.
 
 So the cascade says "lit" under every knob it has, and the page pool says
 "partially occluded" under every knob it has, and no bias function of depth or
-surface angle separates the affected face from the umbra. What has *not* been done is looking
-at what is actually in the page that covers that surface; the residency grid says
-where pages are, not what depth they hold. That is the next instrument to build,
-and it is now capturable — `--capture-include-ui` puts the debug panel in a
-scripted capture.
+surface angle separates the affected face from the umbra.
+
+**The last row died to an instrument rather than a sweep.** The residency grid
+cannot answer which level a surface used: it reports which pages *exist*, not
+which one a lookup ended up on after walking up from the coverage bound.
+`VsmSettings::debugLevelColors` tints every surface by the level its own lookup
+sampled, magenta where the walk found nothing resident. The misbehaving face and
+its well-behaved neighbours come back on the same level, in the same page grid --
+so the difference is in what the page *contains*, not in which page is read.
+
+That view is hue-pure rather than a blend, and that was not the first attempt.
+Mixing the level colour into the shaded result is unreadable from a capture: the
+tint lands before exposure and tone mapping, so the palette cannot be recovered
+from the PNG. Inverting the mix returned "L1" for every surface in the frame,
+including a backdrop the picture plainly showed as a different colour -- the right
+answer for the wrong reason, which is worse than a wrong one.
+
+What is still unknown is what depth the page actually stores there. Reading it
+back needs a trick, because the pool is bound as a `sampler2DShadow` and cannot
+return a raw depth: bisect the comparison with a handful of stepped reference
+depths. Roughly fifteen lines in the sampler, no descriptor change. That is the
+next instrument.
 
 ### Cutout page shadows do resolve their holes
 
@@ -752,8 +770,10 @@ page rendering.
 
 - **One lit-surface discrepancy is unexplained.** Certain lit faces read ~6.5/255
   darker than under the cascades at every depth bias that keeps the umbra honest.
-  Seven hypotheses have been measured and eliminated, including the slope-scaled
-  bias term this doc used to lead with. See
+  Eight hypotheses have been measured and eliminated, including the slope-scaled
+  bias term this doc used to lead with and, via the level debug view, the last
+  plausible geometric one — the face samples the same L1 as the surfaces around
+  it that behave correctly. See
   [What it did not settle, and what was ruled out](#what-it-did-not-settle-and-what-was-ruled-out).
 - **`texelsPerPixel` below 1.0 does nothing *on this scene*, and that is the
   coverage bound rather than a broken setting.** `vsmSelectLevel` returns

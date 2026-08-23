@@ -803,6 +803,15 @@ void Renderer::drawShadowsDebugUi()
                               "ortho depth box, and a page's depth axis spans 2x the depth range\n"
                               "instead. Reusing it lifted every umbra by ~15% of the sun.\n\n"
                               "Drop it to 0 to see the acne it is holding back.");
+        ImGui::Checkbox("Debug: tint by sampled level", &vsmSettings_.debugLevelColors);
+        ImGui::SetItemTooltip("One colour per clipmap level -- green, yellow-green, yellow, orange,\n"
+                              "red for L0-L4, then brown/blue/cyan/teal/slate/grey/navy out to the\n"
+                              "12th. Magenta means the walk found no resident page and the lookup\n"
+                              "fell through to lit.\n\n"
+                              "The residency grid says which pages exist. This says which one a\n"
+                              "given surface actually sampled after walking up from the coverage\n"
+                              "bound, which is a different question and the one that matters when\n"
+                              "a surface looks wrong.");
         ImGui::EndDisabled();
 
         const renderer::VsmClipmapSettings clipmap = vsmClipmapSettings();

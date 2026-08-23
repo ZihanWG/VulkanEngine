@@ -421,6 +421,14 @@ struct VsmSettings {
     // own lit surfaces, and by 128 the umbra starts lifting again. The table is
     // in docs/virtual_shadow_maps.md.
     float depthBiasTexels = 64.0f;
+    // Tints every surface by the clipmap level its shadow lookup actually
+    // sampled, magenta where the walk found nothing resident.
+    //
+    // The residency grid answers "which pages exist"; this answers "which one did
+    // this surface end up on", which is a different question once the walk starts
+    // at the coverage bound and climbs. Runtime-only in spirit but persisted like
+    // the cascade debug colours, so a scripted capture can turn it on.
+    bool debugLevelColors = false;
 
     [[nodiscard]] bool operator==(const VsmSettings&) const = default;
 };

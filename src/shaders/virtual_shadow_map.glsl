@@ -214,13 +214,33 @@ float vsmPageDepth(float depthRange, float lightSpaceZ)
 //
 // Returns 1.0 (fully lit) when no level is resident at all, which is the same
 // thing the cascades do outside their range.
-float vsmShadowFactor(FrameConstants frame,
-                      sampler2DShadow pagePool,
-                      vec3 worldPosition,
-                      vec3 normal,
-                      int pcfRadius)
+// Flag word in vsmPageTable.w. Bit 0 is "the pool is sampleable at all", which
+// is what the whole path is gated on; bit 1 asks the sampler to also report the
+// level it used, for the debug view. A bitfield rather than a second slot
+// because every other component of every VSM vector is already carrying a value.
+const uint kVsmFlagEnabled = 1u;
+const uint kVsmFlagDebugLevels = 2u;
+
+// What vsmShadowFactorLevel reports when the walk found nothing resident and the
+// lookup fell through to "lit". Distinct from level 0, which is a real answer.
+const uint kVsmNoResidentLevel = 0xFFFFFFFFu;
+
+// The shadow factor, and the clipmap level the answer came from.
+//
+// The level is the diagnostic that the residency grid cannot give: the grid says
+// which pages exist, not which one a given surface ended up sampling after the
+// walk up from the coverage bound. A surface that looks wrong and a surface that
+// sampled a coarser level than expected are the same picture until this is
+// visible.
+float vsmShadowFactorLevel(FrameConstants frame,
+                           sampler2DShadow pagePool,
+                           vec3 worldPosition,
+                           vec3 normal,
+                           int pcfRadius,
+                           out uint sampledLevel)
 {
-    if (frame.vsmPageTable.w == 0u) {
+    sampledLevel = kVsmNoResidentLevel;
+    if ((frame.vsmPageTable.w & kVsmFlagEnabled) == 0u) {
         return 1.0;
     }
 
@@ -309,10 +329,55 @@ float vsmShadowFactor(FrameConstants frame,
                 sampleCount += 1.0;
             }
         }
+        sampledLevel = level;
         return sampleCount > 0.0 ? litSamples / sampleCount : 1.0;
     }
 
     return 1.0;
+}
+
+// The plain form, for every caller that does not want the diagnostic.
+float vsmShadowFactor(FrameConstants frame,
+                      sampler2DShadow pagePool,
+                      vec3 worldPosition,
+                      vec3 normal,
+                      int pcfRadius)
+{
+    uint ignored = kVsmNoResidentLevel;
+    return vsmShadowFactorLevel(frame, pagePool, worldPosition, normal, pcfRadius, ignored);
+}
+
+// One distinct colour per clipmap level, magenta where the walk found nothing
+// resident at all -- a different failure from "sampled a coarse page", and one
+// that has to be told apart at a glance.
+//
+// Sized by kVsmMaxClipmapLevels rather than by however many levels the default
+// settings use: the UI goes to 12, and a palette that ran out would map every
+// coarse level to the same colour, which is the one thing this view exists to
+// prevent. Sizing the array by the constant makes a future change to it a
+// compile error rather than a silently degraded view.
+//
+// The first five are a warm ramp because those are the levels a normal scene
+// actually lands on; past that the requirement is only that neighbours are
+// telling apart. Nothing in the ramp reuses the magenta.
+vec3 vsmLevelDebugColor(uint level)
+{
+    if (level == kVsmNoResidentLevel) {
+        return vec3(1.0, 0.0, 0.8);
+    }
+    const vec3 palette[kVsmMaxClipmapLevels] = vec3[kVsmMaxClipmapLevels](vec3(0.15, 0.85, 0.25),  // L0 green
+                                                                          vec3(0.65, 0.90, 0.15),  // L1 yellow-green
+                                                                          vec3(0.95, 0.85, 0.15),  // L2 yellow
+                                                                          vec3(1.00, 0.55, 0.10),  // L3 orange
+                                                                          vec3(0.95, 0.25, 0.25),  // L4 red
+                                                                          vec3(0.55, 0.32, 0.12),  // L5 brown
+                                                                          vec3(0.35, 0.45, 1.00),  // L6 blue
+                                                                          vec3(0.20, 0.80, 0.90),  // L7 cyan
+                                                                          vec3(0.10, 0.55, 0.50),  // L8 teal
+                                                                          vec3(0.45, 0.55, 0.75),  // L9 slate
+                                                                          vec3(0.70, 0.70, 0.70),  // L10 grey
+                                                                          vec3(0.10, 0.15, 0.45)); // L11 navy
+    return palette[min(level, kVsmMaxClipmapLevels - 1u)];
 }
 
 #endif // VE_VIRTUAL_SHADOW_MAP_GLSL
