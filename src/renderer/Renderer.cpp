@@ -829,7 +829,7 @@ void Renderer::processPortfolioScreenshotReadback(uint32_t frameIndex)
     }
 }
 
-void Renderer::requestFrameCaptureAt(uint64_t frameNumber, std::filesystem::path outputPath)
+void Renderer::requestFrameCaptureAt(uint64_t frameNumber, std::filesystem::path outputPath, bool includeUi)
 {
     if (frameNumber == 0 || outputPath.empty()) {
         Logger::error("Frame capture needs a frame number of at least 1 and a non-empty output path.");
@@ -838,8 +838,9 @@ void Renderer::requestFrameCaptureAt(uint64_t frameNumber, std::filesystem::path
 
     frameCaptureTargetFrame_ = frameNumber;
     frameCaptureOutputPath_ = std::move(outputPath);
+    frameCaptureIncludesUi_ = includeUi;
     Logger::info("Frame capture requested at frame " + std::to_string(frameNumber) + " -> " +
-                 frameCaptureOutputPath_.string());
+                 frameCaptureOutputPath_.string() + (includeUi ? " (including the ImGui overlay)" : ""));
 }
 
 void Renderer::setPortfolioCaptureMode(bool enabled)

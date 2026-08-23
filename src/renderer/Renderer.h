@@ -152,7 +152,9 @@ public:
     // showcase scene preset and writes a timestamped file plus the tracked
     // "_latest" alias. A regression capture wants the scene as configured, one
     // named file, and no timestamp -- a timestamp would defeat comparing runs.
-    void requestFrameCaptureAt(uint64_t frameNumber, std::filesystem::path outputPath);
+    // includeUi records the copy after the ImGui pass instead of before it, which
+    // is the only way a scripted run can see the debug panel at all.
+    void requestFrameCaptureAt(uint64_t frameNumber, std::filesystem::path outputPath, bool includeUi = false);
 
     // True once the requested capture has been read back and written. The
     // readback lags the recorded frame by the in-flight frame count, so a caller
@@ -824,6 +826,8 @@ private:
     bool frameCaptureComplete_ = false;
 
     void recordFrameCaptureCopy(VkCommandBuffer commandBuffer, uint32_t imageIndex);
+    // Whether that copy is recorded after the overlay rather than before it.
+    bool frameCaptureIncludesUi_ = false;
     rhi::VulkanContext context_;
     std::vector<renderer::FrameResources> frames_;
     renderer::GpuProfiler gpuProfiler_;

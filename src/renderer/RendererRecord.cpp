@@ -124,7 +124,16 @@ void Renderer::recordFrameCaptureCopy(VkCommandBuffer commandBuffer, uint32_t im
         return;
     }
 
-    screenshotCapture_.recordCopy(commandBuffer, currentFrame_, swapchain_, imageIndex, frameCaptureOutputPath_);
+    // After the overlay the image is already in PRESENT_SRC, and it has to go
+    // back there: nothing draws into it again, and present rejects any other
+    // layout.
+    screenshotCapture_.recordCopy(commandBuffer,
+                                  currentFrame_,
+                                  swapchain_,
+                                  imageIndex,
+                                  frameCaptureOutputPath_,
+                                  frameCaptureIncludesUi_ ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+                                                          : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     frameCaptureRecorded_ = true;
 }
 
@@ -2502,8 +2511,22 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
              // The screenshot copies belong to this unit rather than to the frame
              // around it: they sit between the composite and the overlay, which is
              // exactly where this unit starts.
+             //
+             // The portfolio screenshot is always taken here, before the overlay:
+             // a portfolio shot with a debug panel across it is not a portfolio
+             // shot. The regression capture can be asked for the other side of
+             // the overlay instead, which is the only way anything the debug UI
+             // reports and the log does not can be seen from a scripted run.
+             //
+             // Moving it is layout-neutral by construction: recordCopy reads the
+             // swapchain's tracked layout on entry and leaves it in
+             // COLOR_ATTACHMENT_OPTIMAL either way, which is what the ImGui pass
+             // wants before it and what the graph's present transition wants
+             // after it.
              recordPortfolioScreenshotCopy(commandBuffer, imageIndex);
-             recordFrameCaptureCopy(commandBuffer, imageIndex);
+             if (!frameCaptureIncludesUi_) {
+                 recordFrameCaptureCopy(commandBuffer, imageIndex);
+             }
 
              rhi::debug::beginLabel(commandBuffer, "ImGuiPass");
              const bool imguiProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "ImGuiPass");
@@ -2514,6 +2537,10 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                  gpuProfiler_.endScope(currentFrame_, commandBuffer);
              }
              rhi::debug::endLabel(commandBuffer);
+
+             if (frameCaptureIncludesUi_) {
+                 recordFrameCaptureCopy(commandBuffer, imageIndex);
+             }
          }},
     }};
     renderGraph_.recordScheduledUnits(frameUnits);

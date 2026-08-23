@@ -45,11 +45,19 @@ public:
     // explicitOutputPath overrides the timestamped + "_latest" pair with a single
     // named file. Regression capture uses it so a CI run cannot clobber the one
     // tracked portfolio screenshot.
+    //
+    // restoreLayout is what the image is left in afterwards. The default suits a
+    // copy taken between the composite and the overlay, where a render pass
+    // still has to draw into the image. A copy taken AFTER the overlay is past
+    // the graph's present transition, so it has to put the image back into
+    // PRESENT_SRC or the present call rejects it -- which is exactly what
+    // validation reported the first time this ran.
     void recordCopy(VkCommandBuffer commandBuffer,
                     uint32_t frameIndex,
                     rhi::VulkanSwapchain& swapchain,
                     uint32_t imageIndex,
-                    const std::filesystem::path& explicitOutputPath = {});
+                    const std::filesystem::path& explicitOutputPath = {},
+                    VkImageLayout restoreLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
     // Downloads a previously queued readback (if ready) and writes it to PNG.
     void processReadback(uint32_t frameIndex);

@@ -137,6 +137,23 @@ N (1-based, matching the frame clock) to exactly one PNG.
 ./build/debug/VulkanEngine --deterministic --capture-frame 60 --capture-output /tmp/frame60.png
 ```
 
+`--capture-include-ui` takes the copy *after* the ImGui pass instead of before
+it. Off by default, because a regression capture wants the rendered frame and not
+a debug panel over a third of it — the default path is byte-for-byte what it was.
+
+It exists because the debug panel is otherwise invisible to every scripted run:
+it is drawn after the point the capture is taken, so anything it reports and the
+log does not — an amber warning, a colour, where a line sits relative to the
+numbers it contradicts — had no evidence path at all. That is what left the frame
+capacity warning's UI half unverified for months while its log half was A/B
+tested; see [engine_upgrade_audit.md](engine_upgrade_audit.md).
+
+Moving the copy is not free of consequence, and validation said so on the first
+run: after the overlay the swapchain image is already past the graph's present
+transition, so the copy has to put it back in `PRESENT_SRC_KHR` rather than the
+colour-attachment layout the pre-overlay copy restores. `recordCopy` takes the
+restore layout as a parameter for exactly that reason.
+
 This is deliberately *not* the portfolio screenshot path (F12). That one
 switches to the showcase scene preset and writes a timestamped file plus the
 tracked `screenshots/..._latest.png` alias. A regression capture wants the scene

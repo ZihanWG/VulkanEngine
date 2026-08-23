@@ -50,6 +50,11 @@ The PNG excludes:
 - ImGui panels
 - debug overlays
 
+**The portfolio path always copies here, before the overlay** — a portfolio shot
+with a debug panel across it is not a portfolio shot. Only the regression capture
+(`--capture-frame`) can be asked for the other side of it, with
+`--capture-include-ui`; see [headless_ci.md](headless_ci.md).
+
 ## Reflection Scope
 
 Reflections are environment-based specular IBL plus screen-space reflections (see [ssr.md](ssr.md)); SSR is on by default, so polished materials pick up scene detail the cubemap cannot supply. There are no planar reflections, ray-traced reflections, local reflection probes, or real glass transmission/refraction, and SSR only finds what is on screen. Smooth metallic objects sample the prefiltered environment cubemap through the split-sum BRDF path, so polished materials are kept small and secondary in the portfolio PBR material showcase.
