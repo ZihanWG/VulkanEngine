@@ -226,6 +226,13 @@ When the change is intended, or when the runner's Mesa version moved:
 
 The failure output prints the driver version to make that distinction possible.
 
+The golden has been re-baselined once, for the skinned shadow caster: the mesh
+had thrown no shadow at all, and giving it one moved 811 of 921600 pixels at a
+maximum channel delta of 8. Mesa was 25.2.8 on both sides, so it was the change
+and not the runner. The difference image is the whole argument: the changed
+pixels are the row of perforations the new shadow falls across and the caster's
+own silhouette, and nothing else in the frame moved.
+
 The committed golden is re-encoded with real deflate compression (305 KB rather
 than the 3.6 MB the engine's stored-block PNG writer emits). Only the encoding
 differs; the comparison decodes both sides, so pixels are what is compared.
