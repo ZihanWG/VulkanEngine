@@ -570,26 +570,49 @@ maximum channel delta of 10**, and the difference image is shadow *outlines* --
 the umbra interiors now agree, and what is left is the penumbra, which is exactly
 where two shadow techniques at different resolutions are supposed to disagree.
 
-### What it did not settle
+### What it did not settle, and what was ruled out
 
 One column of that table stays stubborn: a lit face reads 57.09 against the
 cascades' 63.57 at every bias in the window, and only "recovers" at 256, which is
 also where the umbra leak returns -- so that recovery is peter-panning erasing the
-difference, not fixing it. It is ~6.5/255 on certain lit surfaces, it is uniform
-across each face rather than shaped like a cast shadow, and it does not move with
-`texelsPerPixel` at 1.0, 0.5 or 0.25.
+difference, not fixing it. It is ~6.5/255 on certain lit surfaces and uniform
+across each face rather than shaped like a cast shadow.
 
-The leading hypothesis is that the sampler has no **slope-scaled** bias term. The
-cascades take `max(constantBias, slopeBias * (1 - N·L))` with a slope 2.5x their
-constant (`shadowDepthBias` in `simple_bindless.frag`); the VSM sampler has only
-the constant, so a surface at a grazing angle to the sun is under-biased at any
-constant that keeps the umbra honest. That is a hypothesis with an obvious test
-and it has not been run.
+Seven hypotheses have since been measured and eliminated, each on the same
+reproducible frame. The value in the list is that it is *narrowing*: whoever picks
+this up should not spend the day re-running these.
 
-A second observation from the same sweep, unexplained and worth someone's time:
-`texelsPerPixel` at 1.0, 0.5 and 0.25 produced an **identical page set** (99
-pages) and byte-identical pixels on the default scene. The window/coverage bound
-appears to be what is binding here, not the requested resolution.
+| hypothesis | test | result |
+| --- | --- | --- |
+| VSM depth bias too small | 2, 8, 32, 64, 128 texels | **57.09 at every one** |
+| VSM samples too coarse a level | `texelsPerPixel` 0.25 → 4.0, levels L1–L4 | **57.09 at every one** |
+| The cascade is under-biased and only *looks* right | cascade constant bias / 10 | **63.57, unchanged** |
+| The cascade is resolution-limited | 2048 → 4096 → 8192 | **63.57, unchanged** |
+| The cascade clips the occluder away in depth | `zPadding` x5, x25 | **63.57** (x25 lifts the *umbra* to 35.72 on precision alone) |
+| PCF taps clamped at a page seam over-occlude | radius 0, 1, 2, both paths | **unchanged** (the radius does reach the GPU -- it moves 6 pixels elsewhere) |
+| The sampler lacks the cascades' slope-scaled bias term | added `max(const, slope * (1 - N.L))`, slope 128 / 512 / 2048 texels | **the face and the umbra move together**: 128 changes nothing, 512 gives 60.43 with the umbra already at 39.12, 2048 gives 63.56 with the umbra fully leaking at 39.40 |
+
+That last row is the one this document previously led with, and it is now the
+most thoroughly dead: a slope term was the one shape that could plausibly have
+biased a grazing face hard while leaving the umbra alone, and it does not
+separate them. Which says the two surfaces have similar `N.L` -- the "cube top"
+is about as horizontal as the floor -- so no function of the surface angle can
+tell them apart.
+
+One neighbouring fact fell out of the same sweep and is worth keeping: shadow LOD
+*does* move the cascade umbra. `lod.shadowBias = 0` or `forcedLod = 0` takes it
+from 31.84 to 35.72, because the simplified caster's silhouette is not the
+authored one. Pages draw authored geometry and cascades draw the cull-selected
+level, so the two paths disagree there by construction -- but it is not this
+difference, which survives forcing both to level 0.
+
+So the cascade says "lit" under every knob it has, and the page pool says
+"partially occluded" under every knob it has, and no bias function of depth or
+surface angle separates the affected face from the umbra. What has *not* been done is looking
+at what is actually in the page that covers that surface; the residency grid says
+where pages are, not what depth they hold. That is the next instrument to build,
+and it is now capturable — `--capture-include-ui` puts the debug panel in a
+scripted capture.
 
 ### Cutout page shadows do resolve their holes
 
@@ -688,7 +711,7 @@ is the shader-side duplicate, the same arrangement `ClusterGrid.h` /
 | `enableShadows` | `false` | samples the pool instead of the cascades |
 | `clipmapLevels` | 8 | active levels |
 | `level0Extent` | 4.0 m | world span of the finest level's grid |
-| `texelsPerPixel` | 1.0 | above 1 selects coarser levels; below, finer |
+| `texelsPerPixel` | 1.0 | above 1 selects coarser levels; below 1 is clamped by the coverage bound (see Limitations) |
 | `enablePageRendering` | `false` | allocates and draws pages; still samples nothing |
 | `markBlockStride` | 8 | pixels per marking thread along each axis |
 | `depthBiasTexels` | 64 | shadow-compare bias, in texels of the sampled level |
@@ -728,12 +751,18 @@ page rendering.
 ## Limitations
 
 - **One lit-surface discrepancy is unexplained.** Certain lit faces read ~6.5/255
-  darker than under the cascades at every depth bias that keeps the umbra honest;
-  the leading hypothesis is the missing slope-scaled bias term, untested. See
-  [What it did not settle](#what-it-did-not-settle).
-- **`texelsPerPixel` changed nothing** on the default scene at 1.0, 0.5 and 0.25
-  — same 99 pages, same pixels. Unexplained; the coverage bound appears to be
-  binding instead.
+  darker than under the cascades at every depth bias that keeps the umbra honest.
+  Seven hypotheses have been measured and eliminated, including the slope-scaled
+  bias term this doc used to lead with. See
+  [What it did not settle, and what was ruled out](#what-it-did-not-settle-and-what-was-ruled-out).
+- **`texelsPerPixel` below 1.0 does nothing on this scene, by design.** Asking
+  for finer levels is clamped by the coverage bound — `vsmSelectLevel` returns
+  `max(quality, coverage)` — so 0.25 and 1.0 produce the identical 99-page set
+  and byte-identical pixels. Above 1.0 it works normally, because coarser is
+  always addressable: 2.0 gives 97 pages, 4.0 gives 37, 8.0 gives 18. This is the
+  `kVsmPagesPerLevelAxis` cap below wearing a different hat, not a broken
+  setting; an earlier note here called it unexplained because only the clamped
+  half of the range had been measured.
 - **The demo scenes barely show a directional shadow.** Umbra 31.8/255 against a
   lit floor at 80/255, so every judgement here is a patch mean from a
   reproducible capture rather than something visible at a glance.
