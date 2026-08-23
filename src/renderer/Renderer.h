@@ -343,6 +343,9 @@ private:
     // shader and push block; only the depth target differs.
     void createSkinnedShadowPipelines();
     // Whether the skinned mesh should cast at all this frame.
+    // Puts an allocated-but-unrendered page pool into the layout its descriptor
+    // was written with. See the definition for why it is a manual barrier.
+    void recordVsmPagePoolIdleTransition(VkCommandBuffer commandBuffer);
     [[nodiscard]] bool skinnedCasterActive() const;
     // Whether the skinned mesh reaches this cascade. Read by both the cache key
     // and the recorder, which must not disagree.
@@ -1004,6 +1007,9 @@ private:
     // than inferred: it is the only number that says whether the caster reached
     // the pool at all, and the debug UI is not visible to a scripted capture.
     uint32_t vsmSkinnedPageDrawsRecorded_ = 0;
+    // Whether the idle-pool layout transition has been recorded. One-shot per
+    // pool: re-recording it every frame would be a barrier for nothing.
+    bool vsmPagePoolIdleTransitionDone_ = false;
     std::vector<VkFence> imagesInFlight_;
     ShadowSettings shadowSettings_{};
     SsaoSettings ssaoSettings_{};

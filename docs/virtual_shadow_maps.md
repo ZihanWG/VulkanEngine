@@ -703,6 +703,28 @@ as well as shown in the panel, because `--capture-frame` excludes ImGui and a
 GPU-derived number that exists only on screen cannot be checked from a headless
 or scripted run.
 
+### Marking without page rendering left the pool lying about its layout
+
+`--vsm mark` allocates the pool -- that is what the startup-only marking toggle
+decides -- but runs no page pass, and the material set binds the pool either way.
+So every main-pass draw statically accessed a descriptor promising
+`DEPTH_READ_ONLY_OPTIMAL` for an image still in `UNDEFINED`: eleven validation
+errors a frame.
+
+It had been there since the pool was introduced. What was missing was a way to
+*select* the configuration: the three stage toggles lived in a git-ignored
+settings file and behind a startup-only checkbox, so "marking on, rendering off"
+was reachable in principle and never actually run. The flag that made the A/B
+scriptable is what walked into it on its first pass through the matrix.
+
+The fix is a one-shot explicit barrier into the layout the descriptor was written
+with. Explicit rather than graph-declared on purpose: in this mode the pool is
+not a graph resource at all -- it is handed to `beginFrame` only when page
+rendering is active -- which is exactly the case the manual-barrier rule is for.
+The contents stay undefined, which is sound rather than lucky: the only shader
+that samples the pool is gated on `enableShadows`, and that cannot be on without
+page rendering.
+
 ## Limitations
 
 - **One lit-surface discrepancy is unexplained.** Certain lit faces read ~6.5/255

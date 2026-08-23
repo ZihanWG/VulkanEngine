@@ -965,6 +965,60 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
     };
 }
 
+void Renderer::recordVsmPagePoolIdleTransition(VkCommandBuffer commandBuffer)
+{
+    // Marking on, page rendering off: the pool is allocated -- that is what the
+    // startup-only marking toggle decides -- and the material set binds it
+    // either way, so a main-pass draw statically accesses a descriptor that
+    // promises DEPTH_READ_ONLY_OPTIMAL while the image is still UNDEFINED.
+    // Eleven validation errors a frame, in a configuration nothing could select
+    // until --vsm existed to select it.
+    //
+    // An explicit barrier rather than a graph declaration, because in this mode
+    // the pool is not a graph resource at all: it is handed to beginFrame only
+    // when page rendering is active. This is the case the manual-barrier rule
+    // exists for -- a resource the graph does not represent.
+    //
+    // Contents stay undefined, and that is sound here rather than lucky: the
+    // only shader that samples the pool is gated on enableShadows, which cannot
+    // be on without page rendering. What this fixes is the layout the descriptor
+    // was written with, not the depth in the image.
+    if (isVsmPageRenderingActive() || !virtualShadowMap_.pagePoolValid() || vsmPagePoolIdleTransitionDone_) {
+        return;
+    }
+
+    VkImageMemoryBarrier2 barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    // Nothing has touched the image, so there is nothing to wait on; the
+    // destination scope is every stage that could sample it afterwards.
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+    barrier.srcAccessMask = VK_ACCESS_2_NONE;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = virtualShadowMap_.pagePool().image();
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+
+    VkDependencyInfo dependency{};
+    dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dependency.imageMemoryBarrierCount = 1;
+    dependency.pImageMemoryBarriers = &barrier;
+    vkCmdPipelineBarrier2(commandBuffer, &dependency);
+
+    // Deliberately not setPagePoolFullClearDone(): the pool still holds nothing,
+    // and turning page rendering on later must still clear it whole. This latch
+    // only records that the layout no longer lies, so the barrier is recorded
+    // once rather than every frame.
+    vsmPagePoolIdleTransitionDone_ = true;
+}
+
 bool Renderer::skinnedCasterActive() const
 {
     // Same gate the main pass uses, plus a bound: a caster with no bounds cannot
@@ -1100,6 +1154,7 @@ void Renderer::recordVsmPagePass(VkCommandBuffer commandBuffer)
     const std::vector<renderer::VsmDirtyPage>& dirtyPages = virtualShadowMap_.dirtyPages();
     if (!isVsmPageRenderingActive() || dirtyPages.empty() || !virtualShadowMap_.cullAvailable() ||
         allDrawItems_.empty()) {
+        recordVsmPagePoolIdleTransition(commandBuffer);
         return;
     }
 
