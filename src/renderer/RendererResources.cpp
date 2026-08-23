@@ -740,6 +740,21 @@ void Renderer::createSkinnedShadowPipelines()
                               VK_OBJECT_TYPE_PIPELINE_LAYOUT,
                               "SkinnedShadowPipelineLayout");
 
+    // The punctual atlas, on the same "only if it exists" rule as the pool.
+    if (!punctualShadows_.valid()) {
+        skinnedPunctualShadowPipeline_.reset();
+    } else {
+        skinnedPunctualShadowPipeline_.create(context_.vkDevice(), makeInfo(punctualShadows_.atlas().format()));
+        rhi::debug::setObjectName(context_.vkDevice(),
+                                  skinnedPunctualShadowPipeline_.pipeline(),
+                                  VK_OBJECT_TYPE_PIPELINE,
+                                  "SkinnedPunctualShadowPipeline");
+        rhi::debug::setObjectName(context_.vkDevice(),
+                                  skinnedPunctualShadowPipeline_.layout(),
+                                  VK_OBJECT_TYPE_PIPELINE_LAYOUT,
+                                  "SkinnedPunctualShadowPipelineLayout");
+    }
+
     // VSM pages, only if the pool exists: it is a startup decision, and a
     // pipeline built against a format nothing allocated is a pipeline that is
     // silently never used -- the mistake the page pipeline itself already made

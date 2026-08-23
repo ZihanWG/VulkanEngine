@@ -1084,7 +1084,8 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
             << "  casting: " << (usePunctualShadows_ ? "enabled" : "disabled") << "\n"
             << "  slots used: " << punctualShadowSlotsUsed_ << "\n"
             << "  atlas occupancy: " << static_cast<int>(punctualShadows_.occupancy() * 100.0f) << "%\n"
-            << "  caster draws recorded: " << punctualShadowDrawsRecorded_ << "\n"
+            << "  caster draws recorded: " << punctualShadowDrawsRecorded_
+            << " (skinned caster tiles: " << punctualShadowSkinnedDrawsRecorded_ << ")\n"
             << "  atlas this frame: " << (punctualShadowCacheHit_ ? "fully cached" : "partial") << "\n"
             << "  tiles redrawn: " << punctualShadowSlotsRedrawn_ << "/" << punctualShadowSlotsUsed_ << "\n"
             << "  cull+record CPU: " << punctualShadowCpuMicros_ << " us\n"

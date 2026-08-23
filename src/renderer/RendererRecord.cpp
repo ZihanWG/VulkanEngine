@@ -316,6 +316,8 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuC
         return;
     }
 
+    skinnedPunctualSlots_.clear();
+
     const bool profileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "PunctualShadowAtlas");
     rhi::debug::beginLabel(commandBuffer, "PunctualShadowAtlas");
 
@@ -405,6 +407,13 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuC
         // so the whole slot is one draw call regardless of caster count. There
         // is no indirect-count on this platform, so the full per-slot stride is
         // submitted and the zeroed commands the dispatch left behind are no-ops.
+        // Noted now, drawn after the loop: the skinned caster needs its own
+        // pipeline, and swapping back and forth per slot would rebind the
+        // punctual one for every tile that follows.
+        if (skinnedCasterCastsIntoFrustum(punctualShadows_.slotFrustum(slot))) {
+            skinnedPunctualSlots_.push_back(slot);
+        }
+
         if (gpuCullActive && slot < renderer::PunctualShadows::kMaxGpuCulledSlots) {
             const VkBuffer indirectBuffer = punctualShadows_.cullIndirectBuffer(currentFrame_);
             if (indirectBuffer != VK_NULL_HANDLE && !allDrawItems_.empty()) {
@@ -492,6 +501,9 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuC
             ++recordedDraws;
         }
     }
+
+    punctualShadowSkinnedDrawsRecorded_ = recordSkinnedPunctualCasters(commandBuffer);
+    recordedDraws += punctualShadowSkinnedDrawsRecorded_;
 
     renderGraph_.endPunctualShadowPass();
 
@@ -1230,6 +1242,55 @@ void Renderer::recordVsmPagePass(VkCommandBuffer commandBuffer)
     // occupant's depth, and an early mark would advertise depth never written.
     virtualShadowMap_.markDirtyPagesRendered(currentFrame_);
     virtualShadowMap_.setPagePoolFullClearDone();
+}
+
+uint32_t Renderer::recordSkinnedPunctualCasters(VkCommandBuffer commandBuffer)
+{
+    if (skinnedPunctualSlots_.empty() || skinnedPunctualShadowPipeline_.pipeline() == VK_NULL_HANDLE) {
+        return 0;
+    }
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, skinnedPunctualShadowPipeline_.pipeline());
+
+    uint32_t draws = 0;
+    for (const uint32_t slot : skinnedPunctualSlots_) {
+        const renderer::ShadowAtlasRect rect = punctualShadows_.slotRect(slot);
+        if (rect.size == 0) {
+            continue;
+        }
+
+        VkViewport viewport{};
+        viewport.x = static_cast<float>(rect.x);
+        viewport.y = static_cast<float>(rect.y);
+        viewport.width = static_cast<float>(rect.size);
+        viewport.height = static_cast<float>(rect.size);
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+        vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+
+        VkRect2D scissor{};
+        scissor.offset = {static_cast<int32_t>(rect.x), static_cast<int32_t>(rect.y)};
+        scissor.extent = {rect.size, rect.size};
+        vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+        SkinnedShadowPushConstants pushConstants{};
+        pushConstants.objectFrameDataAddress =
+            frameObjectDataBuffers_.at(currentFrame_).deviceAddress() +
+            static_cast<VkDeviceAddress>(kSkinnedObjectFrameSlot * sizeof(ObjectFrameData));
+        pushConstants.lightViewProjection = punctualShadows_.slotViewProjection(slot);
+        pushConstants.jointMatricesAddress = skinnedMesh_.jointPaletteAddress(currentFrame_);
+        vkCmdPushConstants(commandBuffer,
+                           skinnedPunctualShadowPipeline_.layout(),
+                           VK_SHADER_STAGE_VERTEX_BIT,
+                           0,
+                           static_cast<uint32_t>(sizeof(pushConstants)),
+                           &pushConstants);
+
+        recordSkinnedCasterDraw(commandBuffer);
+        ++draws;
+    }
+
+    return draws;
 }
 
 void Renderer::recordSkinnedVsmPageCasters(VkCommandBuffer commandBuffer,

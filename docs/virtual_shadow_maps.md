@@ -716,11 +716,13 @@ or scripted run.
   lit floor at 80/255, so every judgement here is a patch mean from a
   reproducible capture rather than something visible at a glance.
 - **Page casters draw authored geometry.** No LOD, deliberately — see above.
-- **Skinned geometry is not a caster at all.** The skinned demo mesh is drawn
-  directly rather than as a `RenderObject`, so it is absent from the draw-item
-  list every shadow path walks — VSM and cascades alike. Skinning would also
-  defeat the invalidation above on its own terms: it moves vertices without
-  touching the model matrix, so the key would not change.
+- **The skinned caster costs 12 pages a frame** on the default scene: it
+  invalidates and redraws the pages its bounds cover on every frame it animates,
+  leaving 87 of 99 resident pages cached. Animated geometry has no cacheable
+  shadow, so that is inherent rather than a tuning failure — but it is the one
+  thing here that defeats page caching by construction. Its key is a pose digest
+  rather than a transform, for exactly the reason the invalidation section above
+  describes; see [skeletal_animation.md](skeletal_animation.md).
 - **Bindless path only.** `simple.frag`, the fallback for devices without
   descriptor indexing, still uses the cascades. Adding VSM there means a second
   descriptor layout for a path that only exists on hardware this feature is not

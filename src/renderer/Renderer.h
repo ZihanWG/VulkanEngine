@@ -346,10 +346,13 @@ private:
     [[nodiscard]] bool skinnedCasterActive() const;
     // Whether the skinned mesh reaches this cascade. Read by both the cache key
     // and the recorder, which must not disagree.
+    [[nodiscard]] bool skinnedCasterCastsIntoFrustum(const renderer::Frustum& frustum) const;
     [[nodiscard]] bool skinnedCasterCastsIntoCascade(uint32_t cascadeIndex) const;
     void recordSkinnedCascadeCaster(VkCommandBuffer commandBuffer, uint32_t cascadeIndex, bool layeredCascades);
     // Vertex/index binding plus the draw, shared by every target it casts into.
     void recordSkinnedCasterDraw(VkCommandBuffer commandBuffer);
+    // Returns the draws recorded, which the pass folds into its own count.
+    [[nodiscard]] uint32_t recordSkinnedPunctualCasters(VkCommandBuffer commandBuffer);
     void recordSkinnedVsmPageCasters(VkCommandBuffer commandBuffer,
                                      const std::vector<renderer::VsmDirtyPage>& dirtyPages,
                                      const renderer::VsmClipmapSettings& clipmap,
@@ -873,6 +876,7 @@ private:
     // are the same everywhere, but the depth format and raster bias belong to
     // the target, exactly as they do for the static casters.
     rhi::VulkanPipeline skinnedShadowPipeline_;
+    rhi::VulkanPipeline skinnedPunctualShadowPipeline_;
     rhi::VulkanPipeline skinnedVsmPagePipeline_;
     rhi::VulkanPipeline probeCapturePipeline_;
     // glTF BLEND geometry: same shaders as the main pass, but "over" blending,
@@ -976,6 +980,13 @@ private:
     // The skinned mesh's own slot: it has no objectIndex to be stored under, and
     // its key is a pose digest rather than a transform.
     VsmCasterState skinnedVsmCasterState_{};
+    // Atlas slots the skinned caster reached this frame, collected during the
+    // per-slot loop and drawn after it. Reused so the pass does not allocate.
+    std::vector<uint32_t> skinnedPunctualSlots_;
+    // Tiles the skinned caster was drawn into last frame, reported for the same
+    // reason the page count is: nothing else in the stats can distinguish
+    // "reached no tile" from "was never drawn".
+    uint32_t punctualShadowSkinnedDrawsRecorded_ = 0;
     // Per-object content keys for this frame, accumulated over the draw items.
     std::vector<renderer::ShadowCacheKey> vsmCasterKeys_;
     uint32_t vsmCastersChangedThisFrame_ = 0;

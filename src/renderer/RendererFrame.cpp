@@ -261,6 +261,16 @@ void Renderer::updatePunctualShadowCacheState()
             punctualShadowCacheKey_.add(renderObjects_[drawItem.objectIndex].transform.modelMatrix());
         }
 
+        // The skinned caster, on the same rule and for the same reason as the
+        // cascades: it is in no draw-item list, and what changes about it is the
+        // pose rather than anything the loop above hashes. The recorder tests
+        // the identical frustum, so a tile that draws it always has it in its
+        // key -- and a tile it cannot reach keeps caching.
+        if (skinnedCasterCastsIntoFrustum(slotFrustum)) {
+            const uint64_t pose = skinnedMesh_.poseHash();
+            punctualShadowCacheKey_.addBytes(&pose, sizeof(pose));
+        }
+
         const uint64_t key = punctualShadowCacheKey_.value();
         punctualShadowSlotKeys_[slot] = key;
 
@@ -391,16 +401,21 @@ void Renderer::updateCascadeShadowCacheState()
     cascadeShadowCachedFrames_ = cascadeShadowCacheHit_ ? cascadeShadowCachedFrames_ + 1 : 0;
 }
 
+bool Renderer::skinnedCasterCastsIntoFrustum(const renderer::Frustum& frustum) const
+{
+    // The same test every other caster gets, against whichever light frustum the
+    // caller holds: a cascade's, or an atlas slot's. Shared so a cache key and
+    // the recorder that fills it cannot answer differently.
+    return skinnedCasterActive() && frustum.testAabb(skinnedMesh_.worldBounds());
+}
+
 bool Renderer::skinnedCasterCastsIntoCascade(uint32_t cascadeIndex) const
 {
     if (!skinnedCasterActive() || cascadeIndex >= frameCascades_.size()) {
         return false;
     }
 
-    // The same light frustum buildShadowDrawItems culls every other caster
-    // against, so the skinned mesh joins or leaves a cascade on the same rule
-    // the rest of the scene does -- and a cascade it cannot reach keeps caching.
-    return frameCascades_[cascadeIndex].lightFrustum.testAabb(skinnedMesh_.worldBounds());
+    return skinnedCasterCastsIntoFrustum(frameCascades_[cascadeIndex].lightFrustum);
 }
 
 // The level cull.comp would pick for this item on a shadow dispatch. Kept
