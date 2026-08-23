@@ -347,21 +347,37 @@ float vsmShadowFactor(FrameConstants frame,
     return vsmShadowFactorLevel(frame, pagePool, worldPosition, normal, pcfRadius, ignored);
 }
 
-// Green through blue as the level coarsens, magenta where the walk found nothing
-// resident at all -- which is a different failure from "sampled a coarse page"
-// and has to be told apart at a glance.
+// One distinct colour per clipmap level, magenta where the walk found nothing
+// resident at all -- a different failure from "sampled a coarse page", and one
+// that has to be told apart at a glance.
+//
+// Sized by kVsmMaxClipmapLevels rather than by however many levels the default
+// settings use: the UI goes to 12, and a palette that ran out would map every
+// coarse level to the same colour, which is the one thing this view exists to
+// prevent. Sizing the array by the constant makes a future change to it a
+// compile error rather than a silently degraded view.
+//
+// The first five are a warm ramp because those are the levels a normal scene
+// actually lands on; past that the requirement is only that neighbours are
+// telling apart. Nothing in the ramp reuses the magenta.
 vec3 vsmLevelDebugColor(uint level)
 {
     if (level == kVsmNoResidentLevel) {
         return vec3(1.0, 0.0, 0.8);
     }
-    const vec3 palette[6] = vec3[6](vec3(0.15, 0.85, 0.25),
-                                    vec3(0.65, 0.90, 0.15),
-                                    vec3(0.95, 0.85, 0.15),
-                                    vec3(1.0, 0.55, 0.10),
-                                    vec3(0.95, 0.25, 0.25),
-                                    vec3(0.35, 0.45, 1.0));
-    return palette[min(level, 5u)];
+    const vec3 palette[kVsmMaxClipmapLevels] = vec3[kVsmMaxClipmapLevels](vec3(0.15, 0.85, 0.25),  // L0 green
+                                                                          vec3(0.65, 0.90, 0.15),  // L1 yellow-green
+                                                                          vec3(0.95, 0.85, 0.15),  // L2 yellow
+                                                                          vec3(1.00, 0.55, 0.10),  // L3 orange
+                                                                          vec3(0.95, 0.25, 0.25),  // L4 red
+                                                                          vec3(0.55, 0.32, 0.12),  // L5 brown
+                                                                          vec3(0.35, 0.45, 1.00),  // L6 blue
+                                                                          vec3(0.20, 0.80, 0.90),  // L7 cyan
+                                                                          vec3(0.10, 0.55, 0.50),  // L8 teal
+                                                                          vec3(0.45, 0.55, 0.75),  // L9 slate
+                                                                          vec3(0.70, 0.70, 0.70),  // L10 grey
+                                                                          vec3(0.10, 0.15, 0.45)); // L11 navy
+    return palette[min(level, kVsmMaxClipmapLevels - 1u)];
 }
 
 #endif // VE_VIRTUAL_SHADOW_MAP_GLSL
