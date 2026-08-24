@@ -147,12 +147,14 @@ from a scripted run whether the caster reached anything.
 - **The skinned caster is opaque-only.** No alpha-tested variant, so a cutout
   skinned material would throw a solid silhouette. Nothing in the engine has one
   yet.
-- **The punctual half is exercised but not visually verified.** In the default
-  scene the caster reaches 6 atlas tiles with zero validation errors, and the
-  frame changes by at most one quantization step -- the animated light swarm's
-  shadows there are too dim, and the mesh too close to the frame edge, to
-  compose an A/B from. The cascade and page halves both produce a visible,
-  reproducible shadow on the perforated panel.
+- The punctual half is **verified now**, on `--scene sunlit`. It could not be on
+  the default scene: there the caster reaches 6 atlas tiles with zero validation
+  errors but the frame changes by at most one quantization step, because the
+  light swarm's shadows are too dim and the mesh too close to the frame edge.
+  The sunlit yard puts a spot almost level with the mesh so it throws a
+  magnified shadow onto a wall. Suppressing only the punctual skinned draw there
+  moves **20866 pixels at a maximum channel delta of 85**. The cascade and page
+  halves produce a visible, reproducible shadow on the perforated panel.
 - **The bound is per joint, not per cluster.** A long bone whose box is mostly
   empty pays for the whole box. Fine for a demo rig; a real character would want
   the bound fitted more tightly than "every vertex this joint touches".
