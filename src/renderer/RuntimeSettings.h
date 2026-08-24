@@ -429,6 +429,11 @@ struct VsmSettings {
     // at the coverage bound and climbs. Runtime-only in spirit but persisted like
     // the cascade debug colours, so a scripted capture can turn it on.
     bool debugLevelColors = false;
+    // Tints by how far in front of each surface the page's stored depth sits,
+    // recovered by bisecting the shadow comparison. Blue means nothing is in
+    // front of it and the surface is comparing against itself; warmer means a
+    // real occluder, further away. Wins over debugLevelColors when both are on.
+    bool debugDepthDelta = false;
 
     [[nodiscard]] bool operator==(const VsmSettings&) const = default;
 };

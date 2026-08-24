@@ -220,10 +220,39 @@ float vsmPageDepth(float depthRange, float lightSpaceZ)
 // because every other component of every VSM vector is already carrying a value.
 const uint kVsmFlagEnabled = 1u;
 const uint kVsmFlagDebugLevels = 2u;
+const uint kVsmFlagDebugDepthDelta = 4u;
 
 // What vsmShadowFactorLevel reports when the walk found nothing resident and the
 // lookup fell through to "lit". Distinct from level 0, which is a real answer.
 const uint kVsmNoResidentLevel = 0xFFFFFFFFu;
+
+// Recovers the depth a page stores at one texel, by bisecting the comparison.
+//
+// The pool is bound as a sampler2DShadow, so it cannot return a raw depth: every
+// fetch is a comparison against a reference this code supplies. But a comparison
+// is a predicate on the stored value, and sixteen of them bisect [0, 1] to about
+// 1/65536 of the page's depth range -- 0.0076 world units at the default 250.
+//
+// The compare op is LESS_OR_EQUAL, so a lit result means the reference is at or
+// in front of what is stored, and "still lit" is the half to keep. The compare
+// filter is LINEAR, so each fetch is a bilinear blend of four comparisons and
+// the threshold converges on their median rather than on one texel's value --
+// the right answer for "what is this lookup comparing against", the wrong one
+// for "what is in texel (i, j)".
+float vsmProbeStoredDepth(sampler2DShadow pagePool, vec2 poolUv)
+{
+    float lo = 0.0;
+    float hi = 1.0;
+    for (int iteration = 0; iteration < 16; ++iteration) {
+        float mid = 0.5 * (lo + hi);
+        if (texture(pagePool, vec3(poolUv, mid)) >= 0.5) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
 
 // The shadow factor, and the clipmap level the answer came from.
 //
@@ -336,6 +365,74 @@ float vsmShadowFactorLevel(FrameConstants frame,
     return 1.0;
 }
 
+// The stored depth in front of a surface, in world units, for the debug view.
+//
+// A separate walk rather than another out-parameter on vsmShadowFactorLevel, and
+// that is not a style choice. Adding a second `out` and *reading* it in the
+// fragment shader made the first one -- the sampled level -- come back as its
+// "nothing resident" sentinel on this driver, even though an instrumented probe
+// three lines earlier proved it valid. Every piece worked alone: one extra
+// unused out param, the bool, the guarded block, the runtime flag. Only reading
+// both outputs failed, and collapsing the two debug branches into one did not
+// help. A function with a single return value has no such problem.
+//
+// The duplication is the price, and it is bounded: this runs only when the debug
+// view is on, and it is the same walk with the same terminating conditions.
+// Returning a negative value means the walk found nothing resident.
+float vsmDebugStoredDepthDelta(FrameConstants frame,
+                               sampler2DShadow pagePool,
+                               vec3 worldPosition,
+                               vec3 normal)
+{
+    if ((frame.vsmPageTable.w & kVsmFlagEnabled) == 0u) {
+        return -1.0;
+    }
+
+    uint levelCount = max(frame.vsmPageTable.z, 1u);
+    float level0Extent = frame.vsmParams.x;
+    float depthRange = frame.vsmParams.z;
+    float poolTexel = frame.vsmParams.w;
+    vec2 cameraLightSpaceXy = frame.vsmCamera.xy;
+    float normalBias = frame.vsmCamera.z;
+
+    vec3 biased = worldPosition + normal * normalBias;
+    vec4 lightSpace = frame.vsmLightView * vec4(biased, 1.0);
+    float distanceToCamera = length(biased - frame.cameraPosition.xyz);
+    uint startLevel = vsmMinLevelForCoverage(level0Extent, levelCount, distanceToCamera);
+
+    float pageDepth = vsmPageDepth(depthRange, lightSpace.z);
+    if (pageDepth <= 0.0 || pageDepth >= 1.0) {
+        return -1.0;
+    }
+
+    VsmPageTableBuffer table = VsmPageTableBuffer(frame.vsmPageTable.xy);
+
+    for (uint level = startLevel; level < levelCount; ++level) {
+        ivec2 absolutePage = vsmAbsolutePageCoords(level0Extent, level, lightSpace.xy);
+        ivec2 windowOrigin = vsmWindowOrigin(level0Extent, level, cameraLightSpaceXy);
+        if (!vsmPageInWindow(absolutePage, windowOrigin)) {
+            continue;
+        }
+
+        VsmPageTableEntry entry = table.entries[vsmPageId(level, vsmSlotIndex(absolutePage))];
+        if (entry.rendered == 0u || entry.physicalPage == kVsmInvalidPhysicalPage) {
+            continue;
+        }
+        if (entry.absoluteX != absolutePage.x || entry.absoluteY != absolutePage.y) {
+            continue;
+        }
+
+        vec4 poolRect = vsmPagePoolUvRect(entry.physicalPage);
+        vec2 pageUv = vsmPageLocalUv(level0Extent, level, absolutePage, lightSpace.xy);
+        float halfTexel = 0.5 * poolTexel / poolRect.z;
+        vec2 centreUv = poolRect.xy + clamp(pageUv, vec2(halfTexel), vec2(1.0 - halfTexel)) * poolRect.zw;
+        float stored = vsmProbeStoredDepth(pagePool, centreUv);
+        return abs(pageDepth - stored) * 2.0 * max(depthRange, 1e-4);
+    }
+
+    return -1.0;
+}
+
 // The plain form, for every caller that does not want the diagnostic.
 float vsmShadowFactor(FrameConstants frame,
                       sampler2DShadow pagePool,
@@ -360,6 +457,33 @@ float vsmShadowFactor(FrameConstants frame,
 // The first five are a warm ramp because those are the levels a normal scene
 // actually lands on; past that the requirement is only that neighbours are
 // telling apart. Nothing in the ramp reuses the magenta.
+// How far in front of a surface the page's stored depth sits, in world units.
+// Negative means the walk found nothing resident. Blue is "nothing in front of
+// it" -- the surface is comparing against itself, so darkening there is
+// self-shadowing or bias, not an occluder.
+vec3 vsmDepthDeltaDebugColor(float deltaWorld)
+{
+    if (deltaWorld < 0.0) {
+        return vec3(1.0, 0.0, 0.8);
+    }
+    if (deltaWorld < 0.01) {
+        return vec3(0.20, 0.35, 1.00);
+    }
+    if (deltaWorld < 0.05) {
+        return vec3(0.20, 0.80, 0.90);
+    }
+    if (deltaWorld < 0.25) {
+        return vec3(0.15, 0.85, 0.25);
+    }
+    if (deltaWorld < 1.0) {
+        return vec3(0.95, 0.85, 0.15);
+    }
+    if (deltaWorld < 4.0) {
+        return vec3(1.00, 0.55, 0.10);
+    }
+    return vec3(0.95, 0.25, 0.25);
+}
+
 vec3 vsmLevelDebugColor(uint level)
 {
     if (level == kVsmNoResidentLevel) {

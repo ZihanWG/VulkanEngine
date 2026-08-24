@@ -1963,7 +1963,8 @@ void Renderer::uploadFrameConstants(uint32_t frameIndex, uint32_t cascadeCount)
                                             // it used so the debug view can tint by it. Mirrored by
                                             // kVsmFlag* in virtual_shadow_map.glsl.
                                             (pageTableAddress != 0 ? 1u : 0u) |
-                                                (vsmSettings_.debugLevelColors ? 2u : 0u));
+                                                (vsmSettings_.debugLevelColors ? 2u : 0u) |
+                                                (vsmSettings_.debugDepthDelta ? 4u : 0u));
         constants.vsmParams = glm::vec4(clipmap.level0Extent,
                                         clipmap.texelsPerPixel,
                                         clipmap.depthRange,

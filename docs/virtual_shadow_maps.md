@@ -768,12 +768,13 @@ page rendering.
 
 ## Limitations
 
-- **One lit-surface discrepancy is unexplained.** Certain lit faces read ~6.5/255
-  darker than under the cascades at every depth bias that keeps the umbra honest.
-  Eight hypotheses have been measured and eliminated, including the slope-scaled
-  bias term this doc used to lead with and, via the level debug view, the last
-  plausible geometric one — the face samples the same L1 as the surfaces around
-  it that behave correctly. See
+- **One lit-surface discrepancy is narrowed to its cause but not yet fixed.**
+  Certain lit faces read ~6.5/255 darker than under the cascades. Nine hypotheses
+  about the *lookup* have been measured and eliminated; the depth-delta view then
+  showed a real occluder recorded in the page, 0.25–1 m in front of the surface,
+  where the cascade says lit. So the question is no longer why VSM shadows it but
+  why the cascade does not, and the untested candidate is the cascade's fitted XY
+  extent dropping a caster the absolute page grid keeps. See
   [What it did not settle, and what was ruled out](#what-it-did-not-settle-and-what-was-ruled-out).
 - **`texelsPerPixel` below 1.0 does nothing *on this scene*, and that is the
   coverage bound rather than a broken setting.** `vsmSelectLevel` returns
