@@ -1010,6 +1010,18 @@ void main()
     // out of a capture -- which is the entire point of this view. Same shape as
     // the LOD heatmap instead: the hue is the answer, and scene luminance only
     // modulates its brightness so the geometry stays legible.
+    if ((pc.frameConstants.values.vsmPageTable.w & kVsmFlagDebugDepthDelta) != 0u) {
+        // Its own walk, deliberately -- see vsmDebugStoredDepthDelta.
+        float storedDelta =
+            vsmDebugStoredDepthDelta(pc.frameConstants.values, uVsmPagePool, vWorldPosition, normal);
+        float debugLuminance = dot(finalColor, vec3(0.2126, 0.7152, 0.0722));
+        outColor = vec4(vsmDepthDeltaDebugColor(storedDelta) * (0.35 + 0.65 * clamp(debugLuminance, 0.0, 1.0)),
+                        alpha);
+        outVelocity = computeVelocity();
+        outNormalRoughness = vec4(octEncode(normal), roughness, metallic);
+        return;
+    }
+
     if ((pc.frameConstants.values.vsmPageTable.w & kVsmFlagDebugLevels) != 0u) {
         float debugLuminance = dot(finalColor, vec3(0.2126, 0.7152, 0.0722));
         outColor = vec4(vsmLevelDebugColor(vsmSampledLevel) * (0.35 + 0.65 * clamp(debugLuminance, 0.0, 1.0)),

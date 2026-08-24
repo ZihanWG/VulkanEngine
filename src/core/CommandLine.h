@@ -30,6 +30,10 @@ enum class ScenePreset {
     FragmentStress,
     Occlusion,
     CornellBox,
+    // Strong low sun over a broad ground plane. The one preset whose directional
+    // shadows are legible rather than a faint tint, which is what makes shadow
+    // work judgeable from a picture instead of from patch means.
+    SunlitYard,
 };
 
 // Parses a --scene value. Returns false for an unknown name rather than

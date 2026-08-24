@@ -24,6 +24,7 @@ constexpr ScenePresetName kScenePresetNames[] = {
     {"fragment-stress", ScenePreset::FragmentStress},
     {"occlusion", ScenePreset::Occlusion},
     {"cornell", ScenePreset::CornellBox},
+    {"sunlit", ScenePreset::SunlitYard},
 };
 
 // Same one-table rule as the scene presets, for the same reason.
