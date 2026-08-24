@@ -837,9 +837,12 @@ page rendering.
   gives 97 pages, 4.0 gives 37, 8.0 gives 18. An earlier note here called the
   no-op unexplained, having measured only the clamped half of the range on the
   one scene where it is clamped.
-- **The demo scenes barely show a directional shadow.** Umbra 31.8/255 against a
-  lit floor at 80/255, so every judgement here is a patch mean from a
-  reproducible capture rather than something visible at a glance.
+- **The default scene barely shows a directional shadow.** Umbra 31.8/255 against
+  a lit floor at 80/255, which is why every measurement above is a patch mean
+  from a reproducible capture rather than something visible at a glance. Use
+  `--scene sunlit` when the question is what a shadow *looks* like: it measures
+  5.92:1 on the same ground-block sweep, and it is the scene the punctual skinned
+  caster was finally verified on.
 - **Page casters draw authored geometry.** No LOD, deliberately — see above.
 - **The skinned caster costs 12 pages a frame** on the default scene: it
   invalidates and redraws the pages its bounds cover on every frame it animates,
