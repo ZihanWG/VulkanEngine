@@ -117,6 +117,37 @@ void Renderer::updateDemoLights(float elapsedSeconds)
         return;
     }
 
+    if (sunlitYardSceneActive_) {
+        // One spot, and no swarm. The swarm is 24 animated point lights that
+        // would light every surface from every side, which is exactly what has
+        // to not happen in the one scene built so a single directional shadow is
+        // readable.
+        //
+        // Aimed down the wall rather than at the ground: a punctual shadow cast
+        // onto a vertical surface is legible, and one cast along the ground at a
+        // grazing angle is not. This is the light whose atlas tile the skinned
+        // caster's punctual half has never been verified through.
+        // In line with the skinned mesh (x = -2.6) and in front of it, so the
+        // mesh sits between the light and the wall. That is the whole geometry:
+        // the caster has to be in the beam, and the beam has to end on something
+        // a shadow can be read off.
+        const glm::vec3 spotPosition{-2.6f, renderer::kSunlitYardSpotHeight, 4.2f};
+        const glm::vec3 spotTarget{-2.6f, 1.6f, renderer::kSunlitYardWallZ};
+        clusteredLighting_.addSpotLight(spotPosition,
+                                        glm::normalize(spotTarget - spotPosition),
+                                        glm::vec3{1.0f, 0.92f, 0.80f},
+                                        // The light has to reach a wall about ten units away, and
+                                        // punctual falloff is inverse-square: at 90 the pool on the
+                                        // wall was a dim smudge with no readable shadow in it, which
+                                        // is the same unverifiable situation this scene exists to
+                                        // end.
+                                        900.0f,
+                                        26.0f,
+                                        glm::radians(16.0f),
+                                        glm::radians(26.0f));
+        return;
+    }
+
     const int lightCount = std::clamp(demoLightCount_, 0, 512);
     for (int lightIndex = 0; lightIndex < lightCount; ++lightIndex) {
         const float radius = 2.0f + 4.0f * hash01(lightIndex, 0.0f);

@@ -108,6 +108,31 @@ constexpr int kFragmentStressObjectCount = kFragmentStressLayerCount + 1;
 constexpr int kFragmentStressLightCount = 192;
 constexpr float kFragmentStressLightRange = 14.0f;
 
+// --- Sunlit yard -----------------------------------------------------------
+//
+// Every other scene here is ambient-dominated: the umbra sits at 31.8/255
+// against a lit floor at 80, so a directional shadow is a faint tint rather than
+// a shadow. That has real consequences -- the VSM verification had to be done
+// from patch means because there was nothing to see, and the skinned caster's
+// punctual half could not be verified at all.
+//
+// This scene exists to fix that, and nothing else. A strong low sun over a broad
+// ground plane, casters tall enough to throw long shadows across it, and one
+// spot light aimed so a punctual shadow lands somewhere visible.
+constexpr int kSunlitYardCasterCount = 7;
+// Ground, back wall, and the casters.
+constexpr int kSunlitYardObjectCount = kSunlitYardCasterCount + 2;
+// Where the spot light sits and what it points at. Shared with updateDemoLights,
+// which places the light, so the geometry and the light cannot drift apart.
+// Deliberately near the skinned mesh's own mid-height, and the light sits almost
+// level with its target. A spot mounted high casts the mesh's shadow onto the
+// ground a couple of units away, where it is foreshortened into nothing; almost
+// horizontal, the mesh blocks the beam and throws a magnified shadow the full
+// depth of the yard onto the wall, which is the only place it can actually be
+// looked at.
+constexpr float kSunlitYardSpotHeight = 1.9f;
+constexpr float kSunlitYardWallZ = -7.0f;
+
 class SceneBuilder {
 public:
     SceneBuilder(const Mesh& cubeMesh,
@@ -144,6 +169,10 @@ public:
     // whole purpose is overdraw and screen coverage.
     bool appendFragmentStressScene(std::vector<RenderObject>& objects, std::string& status) const;
 
+    // Appends the sunlit yard: ground, back wall, and casters chosen so a low
+    // sun throws long, unambiguous shadows across the ground.
+    bool appendSunlitYard(std::vector<RenderObject>& objects, std::string& status) const;
+
     // Restores the showcase objects' transforms/visibility to their authored
     // preset. Pure operation on an existing object list (the caller is responsible
     // for any GPU-state invalidation that should follow).
@@ -154,6 +183,7 @@ public:
     [[nodiscard]] static bool hasCornellBox(const std::vector<RenderObject>& objects);
     [[nodiscard]] static bool hasStressScene(const std::vector<RenderObject>& objects);
     [[nodiscard]] static bool hasFragmentStressScene(const std::vector<RenderObject>& objects);
+    [[nodiscard]] static bool hasSunlitYard(const std::vector<RenderObject>& objects);
 
 private:
     const Mesh& cubeMesh_;
