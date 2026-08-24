@@ -694,6 +694,7 @@ private:
     void resetCornellBoxSceneToPreset();
     void removeStressSceneObjects();
     void removeFragmentStressSceneObjects();
+    void removeSunlitYardObjects();
     void resetFragmentStressSceneToPreset();
     void loadFragmentStressScene();
     void resetStressSceneToPreset();

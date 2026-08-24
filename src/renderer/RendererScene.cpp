@@ -347,6 +347,24 @@ void Renderer::resetOcclusionTestSceneToPreset()
     invalidateTaaHistory();
 }
 
+void Renderer::removeSunlitYardObjects()
+{
+    const auto firstRemoved = std::remove_if(renderObjects_.begin(), renderObjects_.end(), [](const auto& object) {
+        return object.sourceType == renderer::RenderObjectSourceType::SunlitYard;
+    });
+
+    if (firstRemoved != renderObjects_.end()) {
+        const size_t firstRemovedIndex = static_cast<size_t>(firstRemoved - renderObjects_.begin());
+        if (selectedRenderObjectIndex_ >= firstRemovedIndex) {
+            selectedRenderObjectIndex_ = kInvalidRenderObjectIndex;
+        }
+        renderObjects_.erase(firstRemoved, renderObjects_.end());
+    }
+
+    invalidateDepthPyramid();
+    invalidateTaaHistory();
+}
+
 void Renderer::removeFragmentStressSceneObjects()
 {
     const auto firstRemoved = std::remove_if(renderObjects_.begin(), renderObjects_.end(), [](const auto& object) {
@@ -378,6 +396,8 @@ void Renderer::loadFragmentStressScene()
     }
     occlusionTestSceneActive_ = false;
     cornellBoxSceneActive_ = false;
+    sunlitYardSceneActive_ = false;
+    removeSunlitYardObjects();
     stressSceneActive_ = false;
     removeStressSceneObjects();
 
@@ -1439,6 +1459,8 @@ void Renderer::loadStressScene()
     }
     occlusionTestSceneActive_ = false;
     cornellBoxSceneActive_ = false;
+    sunlitYardSceneActive_ = false;
+    removeSunlitYardObjects();
     fragmentStressSceneActive_ = false;
     removeFragmentStressSceneObjects();
 
@@ -1471,6 +1493,8 @@ void Renderer::loadCornellBoxScene()
         setPortfolioCaptureMode(false);
     }
     occlusionTestSceneActive_ = false;
+    sunlitYardSceneActive_ = false;
+    removeSunlitYardObjects();
 
     resetCornellBoxSceneToPreset();
     if (!renderer::SceneBuilder::hasCornellBox(renderObjects_)) {
@@ -1526,10 +1550,34 @@ void Renderer::loadSunlitYardScene()
     }
     occlusionTestSceneActive_ = false;
     cornellBoxSceneActive_ = false;
+    fragmentStressSceneActive_ = false;
+    stressSceneActive_ = false;
+    removeFragmentStressSceneObjects();
+    // Its own stale objects too: re-selecting this preset must rebuild it rather
+    // than append a second copy.
+    removeSunlitYardObjects();
 
-    resetSceneState();
-    createSceneSharedResources();
+    // And the showcase, which is the one sibling this preset cannot simply avoid.
+    // The stress and occlusion scenes coexist with it by living at their own
+    // coordinates; this one cannot, because the skinned mesh it exists to light
+    // is fixed near the origin and the yard has to be built around it. Left in
+    // place, the showcase spheres end up half-buried in the yard's ground.
+    // The "Load Portfolio Showcase Scene" button brings them back.
+    const auto firstShowcase = std::remove_if(renderObjects_.begin(), renderObjects_.end(), [](const auto& object) {
+        return object.sourceType == renderer::RenderObjectSourceType::PortfolioShowcase;
+    });
+    if (firstShowcase != renderObjects_.end()) {
+        selectedRenderObjectIndex_ = kInvalidRenderObjectIndex;
+        renderObjects_.erase(firstShowcase, renderObjects_.end());
+    }
 
+    // Deliberately NOT resetSceneState() + createSceneSharedResources(), which is
+    // what this loader did first. That pair recreates every built-in texture in
+    // place, and BindlessTextureHeap caches its registrations by VulkanTexture*
+    // -- the member addresses do not change, so the heap hands back the old
+    // indices without rewriting the descriptors, which then point at image views
+    // that were just destroyed. Every other preset loader appends onto the
+    // resources renderer construction already made; this one does too.
     std::string status;
     if (!makeSceneBuilder().appendSunlitYard(renderObjects_, status)) {
         sunlitYardSceneActive_ = false;

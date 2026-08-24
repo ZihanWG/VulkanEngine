@@ -119,7 +119,8 @@ constexpr float kFragmentStressLightRange = 14.0f;
 // This scene exists to fix that, and nothing else. A strong low sun over a broad
 // ground plane, casters tall enough to throw long shadows across it, and one
 // spot light aimed so a punctual shadow lands somewhere visible.
-constexpr int kSunlitYardCasterCount = 7;
+// Three pillars, two spheres, one plinth.
+constexpr int kSunlitYardCasterCount = 6;
 // Ground, back wall, and the casters.
 constexpr int kSunlitYardObjectCount = kSunlitYardCasterCount + 2;
 // Where the spot light sits and what it points at. Shared with updateDemoLights,

@@ -427,7 +427,16 @@ float vsmDebugStoredDepthDelta(FrameConstants frame,
         float halfTexel = 0.5 * poolTexel / poolRect.z;
         vec2 centreUv = poolRect.xy + clamp(pageUv, vec2(halfTexel), vec2(1.0 - halfTexel)) * poolRect.zw;
         float stored = vsmProbeStoredDepth(pagePool, centreUv);
-        return abs(pageDepth - stored) * 2.0 * max(depthRange, 1e-4);
+        // Signed, then clamped at zero -- NOT abs(). The compare is
+        // LESS_OR_EQUAL, so only pageDepth > stored means the stored value is in
+        // FRONT of this surface. A texel that is merely far away, a cleared one
+        // above all, reconstructs to nearly 1.0 and would come back through
+        // abs() as a large warm "occluder" on a surface the same lookup calls
+        // lit. Zero therefore reads as "nothing in front of it", which covers
+        // both a surface comparing against itself and one comparing against
+        // something behind it; the negative sentinel above stays reserved for
+        // "no resident page".
+        return max(pageDepth - stored, 0.0) * 2.0 * max(depthRange, 1e-4);
     }
 
     return -1.0;
@@ -459,8 +468,9 @@ float vsmShadowFactor(FrameConstants frame,
 // telling apart. Nothing in the ramp reuses the magenta.
 // How far in front of a surface the page's stored depth sits, in world units.
 // Negative means the walk found nothing resident. Blue is "nothing in front of
-// it" -- the surface is comparing against itself, so darkening there is
-// self-shadowing or bias, not an occluder.
+// it" -- either the surface is comparing against itself, or what it compares
+// against is behind it; both mean any darkening there is self-shadowing or bias
+// rather than an occluder.
 vec3 vsmDepthDeltaDebugColor(float deltaWorld)
 {
     if (deltaWorld < 0.0) {
