@@ -127,6 +127,7 @@ void Renderer::resetSceneState()
     selectedRenderObjectIndex_ = kInvalidRenderObjectIndex;
     nextRenderObjectDebugId_ = 1;
     occlusionTestSceneActive_ = false;
+    sunlitYardSceneActive_ = false;
     occlusionTestSceneStatus_ = "Occlusion test scene not loaded.";
     allDrawItems_.clear();
     visibleDrawItems_.clear();
@@ -346,6 +347,24 @@ void Renderer::resetOcclusionTestSceneToPreset()
     invalidateTaaHistory();
 }
 
+void Renderer::removeSunlitYardObjects()
+{
+    const auto firstRemoved = std::remove_if(renderObjects_.begin(), renderObjects_.end(), [](const auto& object) {
+        return object.sourceType == renderer::RenderObjectSourceType::SunlitYard;
+    });
+
+    if (firstRemoved != renderObjects_.end()) {
+        const size_t firstRemovedIndex = static_cast<size_t>(firstRemoved - renderObjects_.begin());
+        if (selectedRenderObjectIndex_ >= firstRemovedIndex) {
+            selectedRenderObjectIndex_ = kInvalidRenderObjectIndex;
+        }
+        renderObjects_.erase(firstRemoved, renderObjects_.end());
+    }
+
+    invalidateDepthPyramid();
+    invalidateTaaHistory();
+}
+
 void Renderer::removeFragmentStressSceneObjects()
 {
     const auto firstRemoved = std::remove_if(renderObjects_.begin(), renderObjects_.end(), [](const auto& object) {
@@ -377,6 +396,8 @@ void Renderer::loadFragmentStressScene()
     }
     occlusionTestSceneActive_ = false;
     cornellBoxSceneActive_ = false;
+    sunlitYardSceneActive_ = false;
+    removeSunlitYardObjects();
     stressSceneActive_ = false;
     removeStressSceneObjects();
 
@@ -1403,6 +1424,12 @@ void Renderer::loadOcclusionTestScene()
 
 void Renderer::loadScenePreset(ScenePreset preset)
 {
+    // Not every loader tears the scene down through resetSceneState, so the
+    // scene-policy lighting is put back here too. Cheap, and the failure it
+    // prevents -- a preset lit by the previous preset's rules -- looks like a
+    // rendering bug rather than a missing assignment.
+    sunlitYardSceneActive_ = false;
+
     switch (preset) {
     case ScenePreset::Stress:
         loadStressScene();
@@ -1415,6 +1442,9 @@ void Renderer::loadScenePreset(ScenePreset preset)
         return;
     case ScenePreset::CornellBox:
         loadCornellBoxScene();
+        return;
+    case ScenePreset::SunlitYard:
+        loadSunlitYardScene();
         return;
     case ScenePreset::Default:
         break;
@@ -1429,6 +1459,8 @@ void Renderer::loadStressScene()
     }
     occlusionTestSceneActive_ = false;
     cornellBoxSceneActive_ = false;
+    sunlitYardSceneActive_ = false;
+    removeSunlitYardObjects();
     fragmentStressSceneActive_ = false;
     removeFragmentStressSceneObjects();
 
@@ -1461,6 +1493,8 @@ void Renderer::loadCornellBoxScene()
         setPortfolioCaptureMode(false);
     }
     occlusionTestSceneActive_ = false;
+    sunlitYardSceneActive_ = false;
+    removeSunlitYardObjects();
 
     resetCornellBoxSceneToPreset();
     if (!renderer::SceneBuilder::hasCornellBox(renderObjects_)) {
@@ -1507,6 +1541,107 @@ void Renderer::loadCornellBoxScene()
     cornellBoxSceneStatus_ =
         "Cornell box active: closed room, one overhead light, sun disabled, probe grid fitted to the interior.";
     Logger::info(cornellBoxSceneStatus_);
+}
+
+void Renderer::loadSunlitYardScene()
+{
+    if (portfolioCaptureMode_) {
+        setPortfolioCaptureMode(false);
+    }
+    occlusionTestSceneActive_ = false;
+    cornellBoxSceneActive_ = false;
+    fragmentStressSceneActive_ = false;
+    stressSceneActive_ = false;
+    removeFragmentStressSceneObjects();
+    // Its own stale objects too: re-selecting this preset must rebuild it rather
+    // than append a second copy.
+    removeSunlitYardObjects();
+
+    // And the showcase, which is the one sibling this preset cannot simply avoid.
+    // The stress and occlusion scenes coexist with it by living at their own
+    // coordinates; this one cannot, because the skinned mesh it exists to light
+    // is fixed near the origin and the yard has to be built around it. Left in
+    // place, the showcase spheres end up half-buried in the yard's ground.
+    // The "Load Portfolio Showcase Scene" button brings them back.
+    const auto firstShowcase = std::remove_if(renderObjects_.begin(), renderObjects_.end(), [](const auto& object) {
+        return object.sourceType == renderer::RenderObjectSourceType::PortfolioShowcase;
+    });
+    if (firstShowcase != renderObjects_.end()) {
+        selectedRenderObjectIndex_ = kInvalidRenderObjectIndex;
+        renderObjects_.erase(firstShowcase, renderObjects_.end());
+    }
+
+    // Deliberately NOT resetSceneState() + createSceneSharedResources(), which is
+    // what this loader did first. That pair recreates every built-in texture in
+    // place, and BindlessTextureHeap caches its registrations by VulkanTexture*
+    // -- the member addresses do not change, so the heap hands back the old
+    // indices without rewriting the descriptors, which then point at image views
+    // that were just destroyed. Every other preset loader appends onto the
+    // resources renderer construction already made; this one does too.
+    std::string status;
+    if (!makeSceneBuilder().appendSunlitYard(renderObjects_, status)) {
+        sunlitYardSceneActive_ = false;
+        sunlitYardSceneStatus_ = status;
+        return;
+    }
+
+    sunlitYardSceneActive_ = true;
+    sunlitYardSceneStatus_ = status;
+
+    // Off to one side and low, so the shadows run across the frame rather than
+    // away from the camera. A shadow pointing at the viewer is a few pixels of
+    // shadow.
+    camera_.position = {8.5f, 4.0f, 11.0f};
+    camera_.target = {-1.0f, 1.2f, -1.0f};
+    camera_.up = {0.0f, 1.0f, 0.0f};
+    editorCamera_.syncFromCamera(camera_);
+
+    // The whole point. Low enough that the pillars throw shadows several times
+    // their own height, and strong enough that the umbra is a shadow rather than
+    // a tint: the default scene's sun contributes about 48/255 against an
+    // ambient floor of 31.8, and this one is meant to swamp that ratio rather
+    // than to look pretty.
+    // About 38 degrees of elevation. Lower throws longer shadows but starves the
+    // ground -- at 25 degrees the lit ground only reaches 44/255 because it
+    // receives 42% of the sun, and a bright umbra next to a dim lit surface is
+    // the same unreadable picture in the other direction. 38 keeps the shadows
+    // several times the caster height while the ground still takes 62% of it.
+    // Across the view rather than along it, which took two wrong answers to
+    // find. Lighting from behind the camera hides every shadow behind its own
+    // caster -- measured, and it collapsed the ground contrast from 9.7:1 to
+    // 2.2:1. Lighting from in front makes the camera-facing side of every object
+    // a black silhouette. A light travelling roughly perpendicular to the view
+    // does both jobs: the shadows sweep across the frame where they can be seen,
+    // and each object keeps a lit face.
+    directionalLightSettings_.direction = glm::normalize(glm::vec3{-0.55f, -0.62f, 0.55f});
+    directionalLightSettings_.color = {1.0f, 0.96f, 0.88f};
+    // 80, measured. Higher does not help: with exposure pinned the shadowed
+    // ground still takes a share of the sun, so 160 and 300 lift the umbra
+    // faster than they lift the lit side and the ratio falls back to 5.1:1.
+    directionalLightSettings_.intensity = 80.0f;
+
+    // Exposure is the lever, and it took three wrong ones to find it.
+    //
+    // Raising the sun alone plateaus at 3.5:1 and then gets worse (measured at
+    // 9, 30, 80 and 200): auto-exposure re-centres the histogram, so a brighter
+    // sun lifts the umbra along with everything else, and Reinhard compresses
+    // what is left. Scaling the environment irradiance in the shader does work,
+    // but reading one more uniform in that block changed the emitted maths
+    // enough to move 3% of the DEFAULT scene's pixels by up to 10/255 -- a
+    // re-baselined golden as the price of a feature no other scene uses.
+    //
+    // Pinning exposure costs nothing and no other scene notices. Reinhard is
+    // near-linear at low exposure, so the displayed contrast becomes the scene's
+    // real contrast instead of a re-centred one.
+    toneMappingSettings_.enableAutoExposure = false;
+    toneMappingSettings_.manualExposure = 0.055f;
+
+    // The cascades are fitted to the camera frustum, so a scene this open needs
+    // the shadow distance to actually reach the far pillar's shadow.
+    csmSettings_.shadowDistance = 60.0f;
+    clampRuntimeSettings();
+
+    Logger::info(sunlitYardSceneStatus_);
 }
 
 void Renderer::saveSceneFromUi()

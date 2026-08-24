@@ -689,9 +689,12 @@ private:
     void loadOcclusionTestScene();
     // A closed, coloured room -- the one scene here that can show indirect light.
     void loadCornellBoxScene();
+    // The one scene whose directional shadows are legible; see RenderObject.h.
+    void loadSunlitYardScene();
     void resetCornellBoxSceneToPreset();
     void removeStressSceneObjects();
     void removeFragmentStressSceneObjects();
+    void removeSunlitYardObjects();
     void resetFragmentStressSceneToPreset();
     void loadFragmentStressScene();
     void resetStressSceneToPreset();
@@ -1293,6 +1296,8 @@ private:
     bool portfolioCaptureMode_ = false;
     bool occlusionTestSceneActive_ = false;
     bool cornellBoxSceneActive_ = false;
+    bool sunlitYardSceneActive_ = false;
+    std::string sunlitYardSceneStatus_;
     std::string cornellBoxSceneStatus_ = "Cornell box inactive.";
     bool stressSceneActive_ = false;
     std::string stressSceneStatus_{"Stress scene inactive."};

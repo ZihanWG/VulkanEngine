@@ -579,6 +579,90 @@ bool SceneBuilder::appendFragmentStressScene(std::vector<RenderObject>& objects,
     return true;
 }
 
+bool SceneBuilder::appendSunlitYard(std::vector<RenderObject>& objects, std::string& status) const
+{
+    if (!cubeMesh_.valid() || !sphereMesh_.valid() || materials_.empty()) {
+        status = "Sunlit yard is unavailable: cube/sphere mesh or runtime materials are not initialized.";
+        Logger::warn(status);
+        return false;
+    }
+
+    const auto materialAt = [this](size_t materialIndex) -> const Material* {
+        return &materials_.at(materialIndex % materials_.size());
+    };
+
+    const auto addObject = [this, &objects](std::string debugName,
+                                            const Mesh& mesh,
+                                            const Material* material,
+                                            const glm::vec3& position,
+                                            const glm::vec3& scale) {
+        RenderObject object{};
+        object.debugId = allocateDebugId_();
+        object.sceneObjectId = object.debugId;
+        object.mesh = &mesh;
+        object.material = material;
+        object.debugName = std::move(debugName);
+        object.sourceType = RenderObjectSourceType::SunlitYard;
+        object.transform.position = position;
+        object.transform.rotationRadians = glm::vec3{0.0f};
+        object.transform.scale = scale;
+        // Static on purpose. A shadow that moves cannot be compared against a
+        // capture from a different build, and comparing captures is the entire
+        // reason this scene exists.
+        object.animateTransform = false;
+        object.portfolioOnly = false;
+        object.hideInPortfolio = true;
+        objects.push_back(std::move(object));
+    };
+
+    objects.reserve(objects.size() + static_cast<size_t>(kSunlitYardObjectCount));
+
+    const size_t groundMaterial =
+        materials_.size() > kPortfolioGroundMaterialIndex ? kPortfolioGroundMaterialIndex : 0;
+
+    // Wide and flat, so a low sun has somewhere to throw a long shadow. The
+    // shadow is the subject here, not the geometry.
+    addObject("Sunlit Yard Ground", cubeMesh_, materialAt(groundMaterial), {0.0f, -0.1f, -1.0f},
+              {30.0f, 0.2f, 30.0f});
+
+    // Catches the spot light's shadow. Without a vertical surface behind the
+    // scene, a punctual shadow lands on the ground at a grazing angle and is
+    // almost impossible to read.
+    addObject("Sunlit Yard Wall", cubeMesh_, materialAt(groundMaterial),
+              {0.0f, 3.5f, kSunlitYardWallZ}, {24.0f, 7.0f, 0.4f});
+
+    // Three pillars of different heights: the long shadows are the primary
+    // subject, and the height spread means one of them is always crossing a
+    // clipmap level boundary somewhere along its length.
+    addObject("Sunlit Yard Pillar Tall", cubeMesh_, materialAt(1), {-4.5f, 2.6f, -1.5f}, {0.5f, 5.2f, 0.5f});
+    addObject("Sunlit Yard Pillar Mid", cubeMesh_, materialAt(2), {-1.5f, 1.7f, 0.5f}, {0.5f, 3.4f, 0.5f});
+    addObject("Sunlit Yard Pillar Short", cubeMesh_, materialAt(3), {2.0f, 1.0f, -2.0f}, {0.5f, 2.0f, 0.5f});
+
+    // Floating spheres. A sphere's shadow has a shape that is wrong in an
+    // obvious way if anything about the projection is wrong, which a box's
+    // rectangle does not.
+    addObject("Sunlit Yard Sphere High", sphereMesh_, materialAt(4), {4.5f, 2.8f, 1.0f}, {1.1f, 1.1f, 1.1f});
+    addObject("Sunlit Yard Sphere Low", sphereMesh_, materialAt(5), {0.8f, 0.9f, 2.5f}, {0.9f, 0.9f, 0.9f});
+
+    // A slab with a broad horizontal top, positioned to catch the tall pillar's
+    // shadow partway along its length. A shadow crossing a surface edge is what
+    // shows a projection or bias error that a shadow on flat ground hides.
+    addObject("Sunlit Yard Plinth", cubeMesh_, materialAt(6), {-2.2f, 0.45f, -3.4f}, {3.2f, 0.9f, 1.6f});
+
+    status = "Sunlit yard active: strong low sun, long shadows, one spot light for the punctual atlas.";
+    return true;
+}
+
+bool SceneBuilder::hasSunlitYard(const std::vector<RenderObject>& objects)
+{
+    for (const RenderObject& object : objects) {
+        if (object.sourceType == RenderObjectSourceType::SunlitYard && object.mesh != nullptr) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool SceneBuilder::hasFragmentStressScene(const std::vector<RenderObject>& objects)
 {
     for (const RenderObject& object : objects) {

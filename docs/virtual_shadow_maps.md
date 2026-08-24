@@ -626,11 +626,57 @@ from the PNG. Inverting the mix returned "L1" for every surface in the frame,
 including a backdrop the picture plainly showed as a different colour -- the right
 answer for the wrong reason, which is worse than a wrong one.
 
-What is still unknown is what depth the page actually stores there. Reading it
-back needs a trick, because the pool is bound as a `sampler2DShadow` and cannot
-return a raw depth: bisect the comparison with a handful of stepped reference
-depths. Roughly fifteen lines in the sampler, no descriptor change. That is the
-next instrument.
+### The ninth answer: a real occluder is in the page
+
+The bisection view was built and run, and it settles what the level view could
+not. `VsmSettings::debugDepthDelta` recovers what a page stores by **bisecting
+the comparison**: the pool is a `sampler2DShadow` and cannot return a raw depth,
+but a comparison is a predicate on the stored value, and sixteen of them narrow
+[0, 1] to about 0.0076 world units.
+
+| surface | stored depth in front of it |
+| --- | --- |
+| **the affected face** | **0.25 - 1 m** |
+| the ground beside it | nothing in front |
+| the umbra that behaves correctly | 0.25 - 1 m |
+
+The difference is **signed and clamped at zero, not an absolute value**, and the
+first version got that wrong. The compare is `LESS_OR_EQUAL`, so only
+`pageDepth > stored` means the stored value is in front; a texel that is merely
+far away -- a cleared one above all -- reconstructs to nearly 1.0 and came back
+through `abs()` as a large warm "occluder" on a surface the same lookup calls
+lit. Review caught it, and the reading above was re-measured with the sign
+correct rather than assumed: it is unchanged, so the conclusion rests on the
+fixed instrument.
+
+So the face is **not** shadowing itself and it is not bias. Something is really
+recorded in that page, at the same depth scale as a genuine cast shadow, while
+the cascade map at the same point says lit.
+
+That moves the question out of the sampler entirely -- not bias, not level, not
+filtering, not precision. **It is what gets drawn into the page versus into the
+cascade.** The page cull runs per page over the whole draw list with the page's
+own depth box; the cascades cull against a box fitted to the camera's frustum
+slice. The one untested thing on that side is its **XY** extent: a tall caster
+standing beside the fitted slice can cast into it and still be culled from it,
+and an absolute page grid has no such notion. If that is it, the conclusion
+flips and the cascades have been dropping a caster.
+
+### A shader hazard found on the way
+
+The first version of the depth view read a **second `out` parameter** from the
+sampler and reported "nothing resident" for every surface in the frame --
+including surfaces an instrumented probe proved valid three lines earlier.
+
+Every piece worked alone: one extra unused `out`, the `bool`, the guarded block,
+a runtime flag instead of a literal. Only *reading* both outputs failed, and it
+failed silently with a plausible answer. Collapsing the two debug branches into
+one did not help either. It is a separate function with a single return value
+now, which duplicates the page walk on purpose.
+
+That is the second time this shader has punished a structural edit. The other:
+adding one uniform read to the IBL block moved 3% of the default scene's pixels
+by up to 10/255 once auto-exposure amplified it.
 
 ### Cutout page shadows do resolve their holes
 
@@ -733,6 +779,8 @@ is the shader-side duplicate, the same arrangement `ClusterGrid.h` /
 | `enablePageRendering` | `false` | allocates and draws pages; still samples nothing |
 | `markBlockStride` | 8 | pixels per marking thread along each axis |
 | `depthBiasTexels` | 64 | shadow-compare bias, in texels of the sampled level |
+| `debugLevelColors` | `false` | tints each surface by the clipmap level its lookup sampled |
+| `debugDepthDelta` | `false` | tints by how far in front of each surface the page's stored depth sits; wins over the level view |
 
 The numeric fields are clamped by `renderer::clampVsmClipmapSettings`, which
 `clampRuntimeSettings` delegates to rather than repeating — a second copy of the
@@ -768,12 +816,13 @@ page rendering.
 
 ## Limitations
 
-- **One lit-surface discrepancy is unexplained.** Certain lit faces read ~6.5/255
-  darker than under the cascades at every depth bias that keeps the umbra honest.
-  Eight hypotheses have been measured and eliminated, including the slope-scaled
-  bias term this doc used to lead with and, via the level debug view, the last
-  plausible geometric one — the face samples the same L1 as the surfaces around
-  it that behave correctly. See
+- **One lit-surface discrepancy is narrowed to its cause but not yet fixed.**
+  Certain lit faces read ~6.5/255 darker than under the cascades. Nine hypotheses
+  about the *lookup* have been measured and eliminated; the depth-delta view then
+  showed a real occluder recorded in the page, 0.25–1 m in front of the surface,
+  where the cascade says lit. So the question is no longer why VSM shadows it but
+  why the cascade does not, and the untested candidate is the cascade's fitted XY
+  extent dropping a caster the absolute page grid keeps. See
   [What it did not settle, and what was ruled out](#what-it-did-not-settle-and-what-was-ruled-out).
 - **`texelsPerPixel` below 1.0 does nothing *on this scene*, and that is the
   coverage bound rather than a broken setting.** `vsmSelectLevel` returns

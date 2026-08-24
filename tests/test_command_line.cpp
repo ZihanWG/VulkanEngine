@@ -157,6 +157,7 @@ TEST_CASE("Every scene preset name parses", "[command-line][scene]")
         {"fragment-stress", ve::ScenePreset::FragmentStress},
         {"occlusion", ve::ScenePreset::Occlusion},
         {"cornell", ve::ScenePreset::CornellBox},
+        {"sunlit", ve::ScenePreset::SunlitYard},
     };
 
     for (const Case& testCase : cases) {

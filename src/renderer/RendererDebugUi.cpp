@@ -803,6 +803,15 @@ void Renderer::drawShadowsDebugUi()
                               "ortho depth box, and a page's depth axis spans 2x the depth range\n"
                               "instead. Reusing it lifted every umbra by ~15% of the sun.\n\n"
                               "Drop it to 0 to see the acne it is holding back.");
+        ImGui::Checkbox("Debug: tint by stored depth delta", &vsmSettings_.debugDepthDelta);
+        ImGui::SetItemTooltip("How far in front of each surface the page's stored depth sits,\n"
+                              "recovered by bisecting the shadow comparison (the pool is a\n"
+                              "compare sampler and cannot return a raw depth).\n\n"
+                              "Blue: nothing in front of it -- the surface is comparing against\n"
+                              "itself, so any darkening there is self-shadowing or bias, not an\n"
+                              "occluder. Cyan/green/yellow/orange/red: a real occluder, further\n"
+                              "away as it warms. Magenta: no resident page.\n\n"
+                              "Wins over the level view when both are on.");
         ImGui::Checkbox("Debug: tint by sampled level", &vsmSettings_.debugLevelColors);
         ImGui::SetItemTooltip("One colour per clipmap level -- green, yellow-green, yellow, orange,\n"
                               "red for L0-L4, then brown/blue/cyan/teal/slate/grey/navy out to the\n"

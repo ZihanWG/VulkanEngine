@@ -24,7 +24,13 @@ enum class RenderObjectSourceType {
     Stress,
     // Overlapping full-frame slabs. Loads the fragment path, which the geometry
     // stress scene deliberately does not.
-    FragmentStress
+    FragmentStress,
+    // A ground plane under a strong low sun, with tall casters and one spot
+    // light. The one scene here whose directional shadows are actually legible:
+    // every other scene is ambient-dominated, with an umbra at 31.8/255 against
+    // a lit floor at 80, which is why shadow work has had to be judged from
+    // patch means rather than from the picture.
+    SunlitYard
 };
 
 struct RenderObject {
