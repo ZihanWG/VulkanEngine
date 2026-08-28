@@ -1,5 +1,7 @@
 // Command recording: the main frame recording routine and the passes it drives,
 // plus the render-graph frame resource description they are recorded against.
+// These functions only encode commands into a command buffer; Renderer.cpp owns
+// queue submission, presentation and frame-slot synchronization.
 //
 // Split out of Renderer.cpp, where recordRenderCommands alone was 784 lines.
 // Definitions only -- these remain Renderer member functions, so no call site
@@ -564,6 +566,11 @@ bool Renderer::anyCascadeShadowRedrawRequired() const
     return !csmSettings_.enableCascadeCache || cascadeShadowCascadesRedrawn_ > 0;
 }
 
+// Describes the physical resources owned by Renderer and its subsystems to the
+// logical graph for this frame. Importing a handle does not transfer ownership
+// or allocate memory: the graph uses the description for pass liveness,
+// conservative barriers and Dynamic Rendering scopes, while the pointed-to
+// layout fields remain the owners' persistent layout state across frames.
 renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
 {
     // sceneExtent is the *allocated* size of the scene targets; renderExtent
@@ -1440,6 +1447,9 @@ void Renderer::recordSkinnedVsmPageCasters(VkCommandBuffer commandBuffer,
 
 void Renderer::recordGpuCullingCommands(VkCommandBuffer commandBuffer)
 {
+    // GpuCulling owns the dispatch-local reset/copy barriers and optional host
+    // readback. The surrounding graph declaration covers the later consumer
+    // edge from compute-written indirect/count buffers to the draw commands.
     gpuCulling_.recordMainCull(commandBuffer,
                                currentFrame_,
                                isGpuCullingActive(),
@@ -2377,6 +2387,10 @@ void Renderer::recordIrradianceProbePasses(VkCommandBuffer commandBuffer)
 
 void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex)
 {
+    // Recording boundary: beginFrame imports resources and compiles the logical
+    // pass graph; scheduled callbacks below emit the actual feature commands.
+    // endFrame validates/closes the graph and command buffer, but submission is
+    // intentionally left to Renderer::drawFrame().
     // Only what this function still needs: every recorder it hands the graph
     // derives its own inputs.
     const bool taaActiveThisFrame = postProcess_.isTaaActive();
@@ -2543,6 +2557,10 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
              }
          }},
     }};
+    // Invokes each callback in the graph's stable topological order. A callback
+    // remains responsible for calling its begin/end pass helpers; those helpers
+    // are the bridge from declared usage to the actual Synchronization2
+    // barriers and rendering scopes recorded into this command buffer.
     renderGraph_.recordScheduledUnits(frameUnits);
 
     if (taaActiveThisFrame) {
@@ -2551,6 +2569,8 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
 
     gpuProfiler_.endFrame(currentFrame_, commandBuffer);
     rhi::debug::endLabel(commandBuffer);
+    // No queue operation occurs here. drawFrame submits this fully recorded
+    // buffer and attaches the frame-slot fence plus presentation semaphores.
     renderGraph_.endFrame();
 }
 

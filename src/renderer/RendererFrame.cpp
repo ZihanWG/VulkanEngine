@@ -1436,6 +1436,18 @@ void Renderer::updateShadowIndirectDrawBuffer(uint32_t frameIndex)
             std::span<const VkDrawIndexedIndirectCommand>(indirectCommands.data(), indirectCommands.size())));
 }
 
+// Builds all CPU-visible state consumed while recording this frame. This
+// function does not record or submit Vulkan commands; it updates renderer state
+// and uploads only the current frame slot's buffers.
+//
+// The order is part of the contract:
+//   1. freeze camera, jitter, lights and animated transforms;
+//   2. build draw-item candidates, bounds, LOD tables and shadow data;
+//   3. choose CPU/GPU culling and optional feature paths for this frame;
+//   4. upload per-item/shared constants before any recorder reads them.
+//
+// Feature booleans are latched here so graph declarations, queue selection and
+// the commands recorded later cannot disagree within one frame.
 void Renderer::updateFrameData(uint32_t frameIndex)
 {
     // From the frame clock, not the steady clock: this value drives the demo
@@ -1673,6 +1685,10 @@ void Renderer::resetGpuCullFrameCounters(uint32_t frameIndex)
 
 void Renderer::buildShadowFrameData(uint32_t frameIndex)
 {
+    // CPU cascade lists are always built: they are the direct-draw fallback and
+    // also provide stable debug/statistics data. When GPU shadow culling is
+    // active, allDrawItems_ additionally becomes the compute candidate stream
+    // and gpuShadowMeshDrawBatches_ defines the indirect output regions.
     const uint32_t cascadeCount = activeCascadeCount();
     shadowDrawItems_.clear();
     shadowMeshDrawBatches_.clear();
@@ -1759,6 +1775,10 @@ void Renderer::buildShadowFrameData(uint32_t frameIndex)
 
 void Renderer::buildMainCullingFrameData(uint32_t frameIndex, const renderer::Frustum& cameraFrustum)
 {
+    // This is deliberately hybrid GPU-driven rendering. The CPU still owns the
+    // candidate list and mesh batches; the GPU path decides visibility and
+    // writes indirect commands. The fallback filters the same candidates on the
+    // CPU and uploads commands with the identical draw-item/object-data indices.
     const bool gpuCullingActive = isGpuCullingActive();
     if (gpuCullingActive) {
         visibleDrawItems_ = allDrawItems_;
@@ -1847,6 +1867,11 @@ void Renderer::updateOcclusionYield(uint32_t frameIndex)
 
 void Renderer::uploadObjectFrameData(uint32_t frameIndex)
 {
+    // ObjectFrameData is an array indexed by DrawItem::frameDataIndex. On the
+    // multi-draw path the compute/indirect command carries that index in
+    // firstInstance; direct fallbacks instead push the address of one element.
+    // Keeping both paths on the same array is what makes a runtime fallback a
+    // submission choice rather than a different shader-data contract.
     const uint32_t cascadeCount = activeCascadeCount();
     const size_t objectFrameCount = std::min(allDrawItems_.size(), static_cast<size_t>(kMaxDrawItems));
     std::vector<ObjectFrameData> objectFrameData(objectFrameCount);
