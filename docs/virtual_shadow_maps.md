@@ -657,10 +657,35 @@ That moves the question out of the sampler entirely -- not bias, not level, not
 filtering, not precision. **It is what gets drawn into the page versus into the
 cascade.** The page cull runs per page over the whole draw list with the page's
 own depth box; the cascades cull against a box fitted to the camera's frustum
-slice. The one untested thing on that side is its **XY** extent: a tall caster
-standing beside the fitted slice can cast into it and still be culled from it,
-and an absolute page grid has no such notion. If that is it, the conclusion
-flips and the cascades have been dropping a caster.
+slice.
+
+That XY extent was the last untested thing on the cascade side. It has since been
+tested, and it failed, along with three more:
+
+| hypothesis | test | result |
+| --- | --- | --- |
+| The cascade's fitted **XY** box drops a caster the absolute page grid keeps | box widened x2 and x4, shadow resolution raised by the same factor so texel density is held constant | **63.57 at both** |
+| The GPU shadow cull drops it | `useGpuShadowCulling = false` | 63.57, unchanged |
+| The occlusion cull drops it | `enableGpuOcclusionCulling = false` | 63.57, unchanged |
+| The page pool accumulates a phantom over time | captured at frames 5, 20, 60 and 200, against the cascade at the same frames | **both paths drift together** -- animation and exposure -- and the gap is a stable ~8/255 at every one, with the umbrae agreeing to 0.04 |
+
+And one positive result that removes the last easy explanation: with
+`enableCascadeDebugColors` on, the face tints as **cascade 0**, the same as the
+ground beside it and the umbra that behaves correctly. The cascade is not
+skipping the lookup. It samples its map there and returns lit while the page
+returns an occluder -- which is also why every cascade knob is inert: the lookup
+happens, it just finds nothing.
+
+So the cascade genuinely tests that point and finds nothing above it, the page
+genuinely stores something 0.25-1 m above it, and no cull, extent or resolution
+on either side accounts for it.
+
+**The next instrument is the symmetric one.** The bisection above recovers what a
+*page* stores; `uShadowMapCompare` is a compare sampler too, so the identical
+trick recovers what the *cascade* stores at the same world point. That answers
+the only question left: whether the cascade map holds nothing there, or holds the
+same occluder at a depth its own comparison then rejects. About fifteen more
+lines, and it turns "the two disagree" into "here is which one is wrong".
 
 ### A shader hazard found on the way
 
@@ -817,12 +842,14 @@ page rendering.
 ## Limitations
 
 - **One lit-surface discrepancy is narrowed to its cause but not yet fixed.**
-  Certain lit faces read ~6.5/255 darker than under the cascades. Nine hypotheses
+  Certain lit faces read ~6.5/255 darker than under the cascades. Thirteen hypotheses
   about the *lookup* have been measured and eliminated; the depth-delta view then
   showed a real occluder recorded in the page, 0.25–1 m in front of the surface,
-  where the cascade says lit. So the question is no longer why VSM shadows it but
-  why the cascade does not, and the untested candidate is the cascade's fitted XY
-  extent dropping a caster the absolute page grid keeps. See
+  where the cascade says lit — and the cascade *does* sample its map there
+  (`enableCascadeDebugColors` puts the face in cascade 0), which is why every
+  cascade knob is inert. The next instrument is the bisection applied to
+  `uShadowMapCompare`, to say whether the cascade map holds nothing there or
+  holds the same occluder at a depth it then rejects. See
   [What it did not settle, and what was ruled out](#what-it-did-not-settle-and-what-was-ruled-out).
 - **`texelsPerPixel` below 1.0 does nothing *on this scene*, and that is the
   coverage bound rather than a broken setting.** `vsmSelectLevel` returns
