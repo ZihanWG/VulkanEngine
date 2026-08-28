@@ -353,6 +353,20 @@ void Renderer::invalidateTaaHistory()
     postProcess_.invalidateTaaHistory();
 }
 
+// Orchestrates one frame; it does not itself encode the render passes.
+//
+// There are three different ordering mechanisms here and they protect
+// different things:
+//   * the frame-slot fence makes this slot's command buffer, uploads and
+//     readbacks safe for the CPU to reuse;
+//   * imagesInFlight_ prevents a newly acquired swapchain image from being
+//     reused while an older frame still owns it;
+//   * semaphores order queue execution and presentation without idling either
+//     device or queue in the steady-state path.
+//
+// updateFrameData() is CPU preparation/upload, recordRenderCommands() only
+// encodes Vulkan commands, and vkQueueSubmit2() is the point at which those
+// recorded commands become GPU work.
 void Renderer::drawFrame()
 {
     if (window_.isMinimized()) {
@@ -378,6 +392,9 @@ void Renderer::drawFrame()
     }
 
     renderer::FrameResources& frame = frames_[currentFrame_];
+    // This wait retires the previous use of currentFrame_. It is also the proof
+    // that the slot's host readbacks are complete; it says nothing about which
+    // swapchain image the next acquire will return.
     VK_CHECK(vkWaitForFences(context_.vkDevice(), 1, &frame.inFlightFence, VK_TRUE, UINT64_MAX));
     processPortfolioScreenshotReadback(currentFrame_);
     postProcess_.updateAutoExposureFromReadback(currentFrame_);
@@ -417,10 +434,16 @@ void Renderer::drawFrame()
     }
 
     if (imagesInFlight_[imageIndex] != VK_NULL_HANDLE) {
+        // A swapchain image and a frame slot have independent lifetimes. If the
+        // presentation engine hands back an image owned by another slot, wait
+        // for that owner before recording writes to the image again.
         VK_CHECK(vkWaitForFences(context_.vkDevice(), 1, &imagesInFlight_[imageIndex], VK_TRUE, UINT64_MAX));
     }
     imagesInFlight_[imageIndex] = frame.inFlightFence;
 
+    // Reset only after acquire has succeeded. Resetting before an out-of-date
+    // early return would leave this slot's fence unsignaled with no submission
+    // that could ever signal it.
     VK_CHECK(vkResetFences(context_.vkDevice(), 1, &frame.inFlightFence));
     VK_CHECK(vkResetCommandBuffer(frame.commandBuffer, 0));
 
@@ -472,6 +495,9 @@ void Renderer::drawFrame()
         VK_CHECK(vkQueueSubmit2(asyncCompute_.queue(), 1, &asyncSubmitInfo, VK_NULL_HANDLE));
     }
 
+    // CPU-side recording only. No graphics work can execute until the submit
+    // below, although the optional async-compute submission may already be in
+    // flight on its own queue.
     recordRenderCommands(frame.commandBuffer, imageIndex);
     const VkSemaphore renderFinished = sync_.renderFinishedSemaphore(imageIndex);
 
@@ -507,6 +533,9 @@ void Renderer::drawFrame()
     submitInfo.signalSemaphoreInfoCount = 1;
     submitInfo.pSignalSemaphoreInfos = &signalSemaphore;
 
+    // The fence belongs to the frame slot, while renderFinished belongs to the
+    // acquired image. The former enables CPU reuse; the latter lets present
+    // wait for this image's rendering without coupling presentation to a slot.
     VK_CHECK(vkQueueSubmit2(context_.graphicsQueue(), 1, &submitInfo, frame.inFlightFence));
     gpuProfiler_.markFrameSubmitted(currentFrame_);
     capturePreviousFrameMatrices();
@@ -534,6 +563,8 @@ void Renderer::drawFrame()
         window_.clearResizedFlag();
     }
 
+    // Advance the CPU frame slot, not the swapchain image index. Acquire chooses
+    // the latter independently on the next frame.
     currentFrame_ = (currentFrame_ + 1) % static_cast<uint32_t>(frames_.size());
 }
 
