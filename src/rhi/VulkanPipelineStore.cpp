@@ -14,7 +14,7 @@ VulkanPipelineStore::get(VkDevice device, const VulkanPipelineCreateInfo& create
     if (const auto existing = entries_.find(key); existing != entries_.end()) {
         ++hits_;
         existing->second.debugNames.emplace_back(debugName);
-        return PipelineRef(existing->second.pipeline);
+        return PipelineRef(*this, existing->second.pipeline, generation_);
     }
 
     // Built into a local first so a throw leaves entries_ untouched. Several
@@ -33,7 +33,7 @@ VulkanPipelineStore::get(VkDevice device, const VulkanPipelineCreateInfo& create
     entry.debugNames.push_back(name);
 
     const auto inserted = entries_.emplace(std::move(key), std::move(entry));
-    return PipelineRef(inserted.first->second.pipeline);
+    return PipelineRef(*this, inserted.first->second.pipeline, generation_);
 }
 
 void VulkanPipelineStore::reset()
@@ -41,6 +41,10 @@ void VulkanPipelineStore::reset()
     entries_.clear();
     hits_ = 0;
     misses_ = 0;
+    // Invalidates every ref issued from the entries just destroyed. A ref the
+    // caller reissues picks up the new generation; one it forgets to reissue
+    // reads as empty instead of as a dangling pointer.
+    ++generation_;
 }
 
 std::vector<std::vector<std::string>> VulkanPipelineStore::entryDebugNames() const

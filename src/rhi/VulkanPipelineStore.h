@@ -60,39 +60,41 @@ namespace ve::rhi {
 // them has to learn about null.
 //
 // A ref is only obtainable from VulkanPipelineStore::get(), so its lifetime
-// question has exactly one answer: it is valid until that store is reset().
+// question has exactly one answer: it is valid until that store is reset(). It
+// carries the store's generation so that answer is enforced rather than trusted.
+class VulkanPipelineStore;
+
 class PipelineRef {
 public:
     PipelineRef() = default;
-    explicit PipelineRef(const VulkanPipeline& pipeline) : pipeline_(&pipeline)
+    PipelineRef(const VulkanPipelineStore& store, const VulkanPipeline& pipeline, uint32_t generation)
+        : store_(&store), pipeline_(&pipeline), generation_(generation)
     {}
 
-    [[nodiscard]] VkPipeline pipeline() const
-    {
-        return pipeline_ != nullptr ? pipeline_->pipeline() : VK_NULL_HANDLE;
-    }
+    // VK_NULL_HANDLE both when empty and when the store has been reset since this
+    // ref was issued. The second case is the backstop: every ref must be reissued
+    // by the rebuild that reset the store, and one that is not would otherwise be
+    // a pointer into a destroyed entry. Degrading to the null handle turns that
+    // into the "feature unavailable" path every call site already handles, which
+    // is a visibly missing effect rather than a use-after-free.
+    [[nodiscard]] VkPipeline pipeline() const { return current() ? pipeline_->pipeline() : VK_NULL_HANDLE; }
 
-    [[nodiscard]] VkPipelineLayout layout() const
-    {
-        return pipeline_ != nullptr ? pipeline_->layout() : VK_NULL_HANDLE;
-    }
+    [[nodiscard]] VkPipelineLayout layout() const { return current() ? pipeline_->layout() : VK_NULL_HANDLE; }
 
     // Forgets the pipeline; it stays alive in the store. Named reset() to match
     // what the owning members it replaced were called.
-    void reset()
-    {
-        pipeline_ = nullptr;
-    }
+    void reset() { *this = PipelineRef{}; }
 
-    [[nodiscard]] bool valid() const
-    {
-        return pipeline_ != nullptr;
-    }
+    [[nodiscard]] bool valid() const { return current(); }
 
 private:
-    const VulkanPipeline* pipeline_ = nullptr;
-};
+    // Defined after VulkanPipelineStore, whose generation it reads.
+    [[nodiscard]] bool current() const;
 
+    const VulkanPipelineStore* store_ = nullptr;
+    const VulkanPipeline* pipeline_ = nullptr;
+    uint32_t generation_ = 0;
+};
 class VulkanPipelineStore {
 public:
     VulkanPipelineStore() = default;
@@ -125,6 +127,11 @@ public:
     {
         return entries_.size();
     }
+    // Bumped by reset(). Refs compare against it to notice they were not reissued.
+    [[nodiscard]] uint32_t generation() const
+    {
+        return generation_;
+    }
     [[nodiscard]] uint32_t hits() const
     {
         return hits_;
@@ -149,6 +156,12 @@ private:
     std::unordered_map<PipelineKey, Entry> entries_;
     uint32_t hits_ = 0;
     uint32_t misses_ = 0;
+    uint32_t generation_ = 0;
 };
+
+inline bool PipelineRef::current() const
+{
+    return pipeline_ != nullptr && store_ != nullptr && store_->generation() == generation_;
+}
 
 } // namespace ve::rhi

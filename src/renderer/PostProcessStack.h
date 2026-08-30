@@ -32,6 +32,7 @@
 #include "rhi/VulkanImage.h"
 #include "rhi/VulkanTransientMemoryPool.h"
 #include "rhi/VulkanPipeline.h"
+#include "rhi/VulkanPipelineStore.h"
 
 #include <array>
 #include <cstdint>
@@ -59,6 +60,7 @@ public:
                      RenderGraph& renderGraph,
                      GpuProfiler& gpuProfiler,
                      rhi::VulkanSwapchain& swapchain,
+                     rhi::VulkanPipelineStore& pipelineStore,
                      const RenderResolution& renderResolution,
                      ToneMappingSettings& toneMappingSettings,
                      BloomSettings& bloomSettings,
@@ -309,27 +311,27 @@ public:
 
     // Pipeline presence / format accessors used by recreateSwapchain's
     // pipeline-recreate decision.
-    [[nodiscard]] const rhi::VulkanPipeline& bloomExtractPipeline() const
+    [[nodiscard]] rhi::PipelineRef bloomExtractPipeline() const
     {
         return bloomExtractPipeline_;
     }
-    [[nodiscard]] const rhi::VulkanPipeline& bloomBlurPipeline() const
+    [[nodiscard]] rhi::PipelineRef bloomBlurPipeline() const
     {
         return bloomBlurPipeline_;
     }
-    [[nodiscard]] const rhi::VulkanPipeline& bloomDownsamplePipeline() const
+    [[nodiscard]] rhi::PipelineRef bloomDownsamplePipeline() const
     {
         return bloomDownsamplePipeline_;
     }
-    [[nodiscard]] const rhi::VulkanPipeline& bloomUpsamplePipeline() const
+    [[nodiscard]] rhi::PipelineRef bloomUpsamplePipeline() const
     {
         return bloomUpsamplePipeline_;
     }
-    [[nodiscard]] const rhi::VulkanPipeline& taaResolvePipeline() const
+    [[nodiscard]] rhi::PipelineRef taaResolvePipeline() const
     {
         return taaResolvePipeline_;
     }
-    [[nodiscard]] const rhi::VulkanPipeline& compositePipeline() const
+    [[nodiscard]] rhi::PipelineRef compositePipeline() const
     {
         return compositePipeline_;
     }
@@ -465,6 +467,10 @@ private:
     RenderGraph& renderGraph_;
     GpuProfiler& gpuProfiler_;
     rhi::VulkanSwapchain& swapchain_;
+    // Borrowed from Renderer, which owns it and resets it. The graphics pipelines
+    // below are non-owning refs into it, so a post-process pipeline that happens
+    // to describe the same state as another pass's is the same VkPipeline.
+    rhi::VulkanPipelineStore& pipelineStore_;
     const RenderResolution& renderResolution_;
 
     // ---- The sub-rect invariant --------------------------------------------
@@ -568,12 +574,12 @@ private:
     std::vector<rhi::VulkanImage> bloomMipDownsampleImages_;
     std::vector<rhi::VulkanImage> bloomMipUpsampleImages_;
 
-    rhi::VulkanPipeline bloomExtractPipeline_;
-    rhi::VulkanPipeline bloomBlurPipeline_;
-    rhi::VulkanPipeline bloomDownsamplePipeline_;
-    rhi::VulkanPipeline bloomUpsamplePipeline_;
-    rhi::VulkanPipeline taaResolvePipeline_;
-    rhi::VulkanPipeline compositePipeline_;
+    rhi::PipelineRef bloomExtractPipeline_;
+    rhi::PipelineRef bloomBlurPipeline_;
+    rhi::PipelineRef bloomDownsamplePipeline_;
+    rhi::PipelineRef bloomUpsamplePipeline_;
+    rhi::PipelineRef taaResolvePipeline_;
+    rhi::PipelineRef compositePipeline_;
     rhi::VulkanComputePipeline luminancePipeline_;
     rhi::VulkanComputePipeline histogramPipeline_;
     rhi::VulkanComputePipeline exposureReducePipeline_;

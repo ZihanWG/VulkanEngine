@@ -416,6 +416,12 @@ void Renderer::createPipeline()
     gtao_.createPipeline(
         shaderPath("fullscreen.vert.spv"), shaderPath("gtao.frag.spv"), shaderPath("gtao_blur.frag.spv"));
     createComputePipelines();
+    // Re-registered here, not only from the constructor, because every ref into
+    // the store must be reissued after the reset above -- one that is not becomes
+    // a dangling pointer into a destroyed entry. It no-ops on the constructor's
+    // first pass, when the probe atlases do not exist yet; the constructor calls
+    // it again once they do.
+    createProbeCapturePipeline();
 
     logPipelineStoreContents();
 }
