@@ -1985,8 +1985,11 @@ void Renderer::uploadFrameConstants(uint32_t frameIndex, uint32_t cascadeCount)
                                             clipmap.levelCount,
                                             // Flag word, not a bool: bit 0 gates the whole path,
                                             // bit 1 asks the sampler to report which clipmap level
-                                            // it used so the debug view can tint by it. Mirrored by
-                                            // kVsmFlag* in virtual_shadow_map.glsl.
+                                            // it used so the debug view can tint by it, and bit 2
+                                            // tints by what a page stores. Bit 3 is set below,
+                                            // outside this branch, for the reason given there.
+                                            // Mirrored by kVsmFlag*/kShadowFlag* in
+                                            // virtual_shadow_map.glsl.
                                             (pageTableAddress != 0 ? 1u : 0u) |
                                                 (vsmSettings_.debugLevelColors ? 2u : 0u) |
                                                 (vsmSettings_.debugDepthDelta ? 4u : 0u));
@@ -2010,6 +2013,16 @@ void Renderer::uploadFrameConstants(uint32_t frameIndex, uint32_t cascadeCount)
                                         // of a cascade's ortho depth and means something ~250x
                                         // larger against a page's 2*depthRange axis.
                                         std::max(vsmSettings_.depthBiasTexels, 0.0f));
+    }
+
+    // Bit 3 rides in the VSM flag word but is deliberately set outside the block
+    // above, because it gates a CASCADE view. The configuration whose cascade
+    // lookup it exists to interrogate is the one with the VSM path switched off
+    // entirely, and everything above is skipped there -- a first version set it
+    // inside and produced a capture that was silently just the ordinary shaded
+    // frame, which is indistinguishable from a debug view that found nothing.
+    if (vsmSettings_.debugCascadeDepthDelta) {
+        constants.vsmPageTable.w |= 8u;
     }
 
     frameConstantsBuffers_.at(frameIndex)
