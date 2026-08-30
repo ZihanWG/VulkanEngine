@@ -304,6 +304,7 @@ add_library(VulkanEngineRuntime STATIC
     src/renderer/ScreenshotCapture.cpp
     src/renderer/VirtualShadowMapPass.cpp
     src/ui/ImGuiLayer.cpp
+    src/rhi/PipelineKey.cpp
     src/rhi/ValidationTally.cpp
     src/rhi/VulkanAliasingProbe.cpp
     src/rhi/VulkanBuffer.cpp
@@ -320,6 +321,7 @@ add_library(VulkanEngineRuntime STATIC
     src/rhi/VulkanMemory.cpp
     src/rhi/VulkanPipeline.cpp
     src/rhi/VulkanPipelineCache.cpp
+    src/rhi/VulkanPipelineStore.cpp
     src/rhi/VulkanShadowMap.cpp
     src/rhi/VulkanSwapchain.cpp
     src/rhi/VulkanSync.cpp
