@@ -177,6 +177,22 @@ PipelineKey PipelineKey::from(const VulkanPipelineCreateInfo& createInfo)
     return key;
 }
 
+ComputePipelineKey ComputePipelineKey::from(const VulkanComputePipelineCreateInfo& createInfo)
+{
+    ComputePipelineKey key{};
+    key.shaderPath = createInfo.shaderPath;
+    key.descriptorSetLayouts.assign(createInfo.descriptorSetLayouts.begin(), createInfo.descriptorSetLayouts.end());
+    key.pushConstantRanges.assign(createInfo.pushConstantRanges.begin(), createInfo.pushConstantRanges.end());
+    // createInfo.pipelineCache is deliberately not copied -- see PipelineKey.h.
+    return key;
+}
+
+bool operator==(const ComputePipelineKey& lhs, const ComputePipelineKey& rhs)
+{
+    return lhs.shaderPath == rhs.shaderPath && equalSequence(lhs.descriptorSetLayouts, rhs.descriptorSetLayouts)
+        && equalSequence(lhs.pushConstantRanges, rhs.pushConstantRanges);
+}
+
 bool operator==(const PipelineKey& lhs, const PipelineKey& rhs)
 {
     // Scalars first: they are cheap and reject most mismatches before any
@@ -223,6 +239,17 @@ std::size_t std::hash<ve::rhi::PipelineKey>::operator()(const ve::rhi::PipelineK
     ve::rhi::hashValue(seed, key.enableDepth);
     ve::rhi::hashValue(seed, key.depthWriteEnable);
     ve::rhi::hashValue(seed, key.enableDepthBias);
+
+    return seed;
+}
+
+std::size_t std::hash<ve::rhi::ComputePipelineKey>::operator()(const ve::rhi::ComputePipelineKey& key) const noexcept
+{
+    std::size_t seed = 0;
+
+    ve::rhi::hashValue(seed, key.shaderPath);
+    ve::rhi::hashSequence(seed, key.descriptorSetLayouts);
+    ve::rhi::hashSequence(seed, key.pushConstantRanges);
 
     return seed;
 }

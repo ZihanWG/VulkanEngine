@@ -168,12 +168,44 @@ generation: a ref the rebuild forgot to reissue reads as `VK_NULL_HANDLE` -- the
 pointer into freed memory. Verified by forcing a second `createPipeline()` after
 the probes exist: 19 requests with the fix, 18 without.
 
-**More time.** Route the compute pipelines, then delete `pipelineNeedsRecreate`
-entirely -- with the store, an unconditional rebuild is all hits, but only once
-`reset()` stops being unconditional (a mark-and-sweep over one build generation
-would drop exactly the entries nobody re-requested). Shader hot-reload becomes
-tractable after that: reloading is invalidating the entries whose shader path
-changed.
+**The store holds compute pipelines too, but the line is lifetime, not type.**
+`ComputePipelineKey` is the same idea with three fields -- shader, set layouts,
+push ranges -- since a compute pipeline has no raster, blend, depth or attachment
+state, and nothing to normalize. What decides whether a pipeline belongs here is
+the reset rule: **only a pipeline `createPipeline()` rebuilds can live in the
+store**, because a ref the rebuild does not reissue points at a destroyed entry.
+
+By that test seven more pipelines moved in -- SSR's trace, GTAO's main and blur,
+the depth pyramid's, and the three exposure compute pipelines -- all of them built
+only from `createPipeline()`. The eight compute pipelines owned by
+`ClusteredLighting`, `GpuCulling`, `PunctualShadows`, `VolumetricFogPass`,
+`VirtualShadowMapPass` and the probe volume stayed where they are: they are
+created inside those subsystems' `createResources()` calls, their lifetime is
+their subsystem's resources, and a reset would destroy them with nothing to
+rebuild them. Routing them "for consistency" would have reproduced the probe-
+capture bug eight times.
+
+Under `--vsm shadows` the store now holds 22 pipelines from 25 requests. None of
+the seven collapsed, which was the expectation -- every `.comp` and every
+post-process fragment shader here is distinct. The gain is one owner, one reset
+and one generation, not a saving.
+
+Verified that the reissue rule holds by forcing a second `createPipeline()`: all
+25 requests come back.
+
+**Trade-off this introduced.** The exposure fallback paths
+(`disableAutoExposureFallback` and friends) used to destroy their pipelines;
+clearing a ref now only marks the feature unavailable, and the pipeline is
+reclaimed at the next `createPipeline()`. That is a few unused compute pipelines
+resident in a configuration where auto-exposure has already failed.
+
+**More time.** Delete `pipelineNeedsRecreate`. With the store an unconditional
+rebuild is all hits, but only once `reset()` stops being unconditional -- and the
+obvious fix, a mark-and-sweep over one build generation, does not work while some
+pipelines are created outside any build. Giving the subsystem-lifetime pipelines
+their own scope, or making every pipeline creation funnel through one place, is
+the prerequisite. Shader hot-reload becomes tractable after that: reloading is
+invalidating the entries whose shader path changed.
 
 ## Buffer-device-address for per-frame GPU data
 

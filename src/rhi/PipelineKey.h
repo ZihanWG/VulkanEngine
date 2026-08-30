@@ -1,5 +1,6 @@
 #pragma once
 
+#include "rhi/VulkanComputePipeline.h"
 #include "rhi/VulkanPipeline.h"
 
 #include <cstddef>
@@ -117,6 +118,33 @@ struct PipelineKey {
     [[nodiscard]] static PipelineKey from(const VulkanPipelineCreateInfo& createInfo);
 };
 
+// The compute equivalent. Far smaller, because a compute pipeline has no raster,
+// blend, depth or attachment state to describe -- a shader, the set layouts it
+// binds, and its push constant ranges are the whole pipeline.
+//
+// Nothing here needs normalizing: VulkanComputePipelineCreateInfo carries no
+// redundant field pairs the way the graphics one carries colorFormat and
+// colorFormats. `pipelineCache` is excluded for the same reason as there.
+//
+// Duplicates are not expected -- every .comp in this renderer is a distinct
+// shader -- so this exists for uniform ownership and one reset point, not for a
+// collapse. If two compute pipelines ever do share a key, that is worth looking
+// at rather than celebrating.
+struct ComputePipelineKey {
+    std::filesystem::path shaderPath;
+    std::vector<VkDescriptorSetLayout> descriptorSetLayouts;
+    std::vector<VkPushConstantRange> pushConstantRanges;
+
+    [[nodiscard]] static ComputePipelineKey from(const VulkanComputePipelineCreateInfo& createInfo);
+};
+
+[[nodiscard]] bool operator==(const ComputePipelineKey& lhs, const ComputePipelineKey& rhs);
+
+[[nodiscard]] inline bool operator!=(const ComputePipelineKey& lhs, const ComputePipelineKey& rhs)
+{
+    return !(lhs == rhs);
+}
+
 [[nodiscard]] bool operator==(const PipelineKey& lhs, const PipelineKey& rhs);
 
 [[nodiscard]] inline bool operator!=(const PipelineKey& lhs, const PipelineKey& rhs)
@@ -128,4 +156,8 @@ struct PipelineKey {
 
 template <> struct std::hash<ve::rhi::PipelineKey> {
     [[nodiscard]] std::size_t operator()(const ve::rhi::PipelineKey& key) const noexcept;
+};
+
+template <> struct std::hash<ve::rhi::ComputePipelineKey> {
+    [[nodiscard]] std::size_t operator()(const ve::rhi::ComputePipelineKey& key) const noexcept;
 };

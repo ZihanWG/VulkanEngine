@@ -36,9 +36,37 @@ VulkanPipelineStore::get(VkDevice device, const VulkanPipelineCreateInfo& create
     return PipelineRef(*this, inserted.first->second.pipeline, generation_);
 }
 
+ComputePipelineRef
+VulkanPipelineStore::get(VkDevice device, const VulkanComputePipelineCreateInfo& createInfo, std::string_view debugName)
+{
+    ComputePipelineKey key = ComputePipelineKey::from(createInfo);
+
+    if (const auto existing = computeEntries_.find(key); existing != computeEntries_.end()) {
+        ++hits_;
+        existing->second.debugNames.emplace_back(debugName);
+        return ComputePipelineRef(*this, existing->second.pipeline, generation_);
+    }
+
+    VulkanComputePipeline pipeline;
+    pipeline.create(device, createInfo);
+
+    const std::string name(debugName);
+    debug::setObjectName(device, pipeline.pipeline(), VK_OBJECT_TYPE_PIPELINE, name);
+    debug::setObjectName(device, pipeline.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, name + "Layout");
+
+    ++misses_;
+    ComputeEntry entry{};
+    entry.pipeline = std::move(pipeline);
+    entry.debugNames.push_back(name);
+
+    const auto inserted = computeEntries_.emplace(std::move(key), std::move(entry));
+    return ComputePipelineRef(*this, inserted.first->second.pipeline, generation_);
+}
+
 void VulkanPipelineStore::reset()
 {
     entries_.clear();
+    computeEntries_.clear();
     hits_ = 0;
     misses_ = 0;
     // Invalidates every ref issued from the entries just destroyed. A ref the
@@ -50,8 +78,11 @@ void VulkanPipelineStore::reset()
 std::vector<std::vector<std::string>> VulkanPipelineStore::entryDebugNames() const
 {
     std::vector<std::vector<std::string>> names;
-    names.reserve(entries_.size());
+    names.reserve(entries_.size() + computeEntries_.size());
     for (const auto& entry : entries_) {
+        names.push_back(entry.second.debugNames);
+    }
+    for (const auto& entry : computeEntries_) {
         names.push_back(entry.second.debugNames);
     }
 

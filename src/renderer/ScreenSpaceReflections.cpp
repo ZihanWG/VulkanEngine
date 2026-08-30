@@ -55,12 +55,14 @@ static_assert(sizeof(SsrParams) == 240);
 
 ScreenSpaceReflections::ScreenSpaceReflections(rhi::VulkanContext& context,
                                                rhi::VulkanSwapchain& swapchain,
+                                               rhi::VulkanPipelineStore& pipelineStore,
                                                const RenderResolution& renderResolution,
                                                RenderGraph& renderGraph,
                                                GpuProfiler& gpuProfiler,
                                                SsrSettings& settings)
-    : context_(context), swapchain_(swapchain), renderResolution_(renderResolution), renderGraph_(renderGraph),
-      gpuProfiler_(gpuProfiler), settings_(settings)
+    : context_(context), swapchain_(swapchain), pipelineStore_(pipelineStore),
+      renderResolution_(renderResolution), renderGraph_(renderGraph), gpuProfiler_(gpuProfiler),
+      settings_(settings)
 {
 }
 
@@ -119,10 +121,7 @@ void ScreenSpaceReflections::createPipeline(const std::filesystem::path& vertexS
     pipelineInfo.descriptorSetLayouts = std::span<const VkDescriptorSetLayout>(&setLayout, 1);
     pipelineInfo.enableAdditiveBlend = true;
     pipelineInfo.pipelineCache = context_.pipelineCache();
-    pipeline_.create(context_.vkDevice(), pipelineInfo);
-    rhi::debug::setObjectName(context_.vkDevice(), pipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "SsrTracePipeline");
-    rhi::debug::setObjectName(
-        context_.vkDevice(), pipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "SsrTracePipelineLayout");
+    pipeline_ = pipelineStore_.get(context_.vkDevice(), pipelineInfo, "SSRTracePipeline");
 }
 
 void ScreenSpaceReflections::createResources(VkImageView normalRoughnessView, uint32_t frameCount)
