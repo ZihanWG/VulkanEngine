@@ -321,6 +321,131 @@ float sampleShadowFactor(vec3 normal, int cascadeIndex)
     return litSamples / float(sampleCount);
 }
 
+// --- Cascade-side depth probe ------------------------------------------------
+//
+// The symmetric instrument to vsmDebugStoredDepthDelta: the page pool and the
+// cascade array are both compare samplers, so the same bisection recovers what
+// each one stores at the same world point, and the same ramp colours the two
+// answers. Only with both is "the two paths disagree" resolvable into "here is
+// which one is wrong".
+//
+// It has to separate three outcomes that shading collapses into one lit pixel,
+// and review is why. Tinting by selectShadowCascade()'s result proves only that
+// a cascade was *selected*: that function reads vViewDepth and nothing else, and
+// sampleShadowFactor() then returns 1.0 for a fragment outside the cascade's
+// UV/Z box without ever fetching uShadowMapCompare. "Never sampled" and "sampled
+// and found nothing" are the same colour in the shading path and the same
+// screenshot, and they are not the same fact.
+const float kCascadeDeltaNoCascade = -2.0;
+const float kCascadeDeltaNotSampled = -1.0;
+const float kCascadeDeltaClearedTexel = -3.0;
+
+// A cleared shadow texel bisects to just under the 1.0 clear, and a delta of
+// zero cannot tell it apart from a texel holding this very surface: both mean
+// "nothing in front", which is exactly the ambiguity the page-side view carries
+// and states. The cascade view cannot afford it, because "the map holds nothing
+// there" versus "the map holds the occluder at a depth the compare then
+// rejects" is the whole question, so the cleared case gets its own answer. The
+// margin is six times the bisection's own 2^-16 resolution and still far under
+// any depth a caster in the box produces.
+const float kCascadeClearedEpsilon = 1e-4;
+
+// Sixteen comparisons bisect [0, 1] to about 1/65536 of the cascade's ortho
+// depth box. Same reasoning as vsmProbeStoredDepth, same LESS_OR_EQUAL compare
+// op, one array layer in place of an atlas rect: a lit result means the
+// reference is at or in front of what is stored, so "still lit" is the half to
+// keep.
+float probeCascadeStoredDepth(vec2 shadowUV, int cascadeIndex)
+{
+    float lo = 0.0;
+    float hi = 1.0;
+    for (int iteration = 0; iteration < 16; ++iteration) {
+        float mid = 0.5 * (lo + hi);
+        if (texture(uShadowMapCompare, vec4(shadowUV, float(cascadeIndex), mid)) >= 0.5) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
+// How far in front of this fragment the cascade's stored depth sits, in world
+// units, or one of the two sentinels above.
+//
+// A separate function with a single return value, like the page-side walk, for
+// the reason recorded in docs/virtual_shadow_maps.md: reading a second out
+// parameter from a compare sampler produced a plausible wrong answer for every
+// surface in the frame.
+float cascadeDebugStoredDepthDelta(int cascadeIndex)
+{
+    if (cascadeIndex < 0) {
+        return kCascadeDeltaNoCascade;
+    }
+
+    // The real lookup's own input, not a rebuilt one. The question is what THIS
+    // fragment's bounds test does, so it has to be the same coordinate the
+    // shading path tests, down to the vertex stage's normal offset.
+    vec4 lightSpacePosition = vLightSpacePosition[cascadeIndex];
+    vec3 shadowCoord = lightSpacePosition.xyz / lightSpacePosition.w;
+    vec2 shadowUV = shadowCoord.xy * 0.5 + 0.5;
+
+    // Byte for byte the early exit in sampleShadowFactor. When it fires, no
+    // fetch of uShadowMapCompare happened at all and "the cascade says lit"
+    // carries no information about what the cascade map holds.
+    if (shadowCoord.z < 0.0 || shadowCoord.z > 1.0 || shadowUV.x < 0.0 || shadowUV.x > 1.0 ||
+        shadowUV.y < 0.0 || shadowUV.y > 1.0) {
+        return kCascadeDeltaNotSampled;
+    }
+
+    float stored = probeCascadeStoredDepth(shadowUV, cascadeIndex);
+    if (stored >= 1.0 - kCascadeClearedEpsilon) {
+        return kCascadeDeltaClearedTexel;
+    }
+
+    // Normalized depth into world units, so this number and the page side's are
+    // the same quantity. clip.z = dot(row 2 of the matrix, world), and the
+    // cascade projection is orthographic, so that row's xyz is the gradient of
+    // normalized depth with respect to world position and is constant over the
+    // box. GLSL indexes columns, hence the transposed-looking gather.
+    mat4 cascadeViewProjection = pc.frameConstants.values.cascadeViewProjection[cascadeIndex];
+    vec3 depthGradient =
+        vec3(cascadeViewProjection[0][2], cascadeViewProjection[1][2], cascadeViewProjection[2][2]);
+    float worldPerDepth = 1.0 / max(length(depthGradient), 1e-6);
+
+    // Signed then clamped at zero, exactly as on the page side and for the same
+    // reason: the compare is LESS_OR_EQUAL, so only shadowCoord.z > stored puts
+    // the stored value in FRONT of this surface, and a cleared texel reconstructs
+    // to nearly 1.0 and would come back through abs() as a large false occluder.
+    // The compare-time bias is deliberately excluded: this asks what the map
+    // holds, not what the comparison then decides about it.
+    return max(shadowCoord.z - stored, 0.0) * worldPerDepth;
+}
+
+// Shares vsmDepthDeltaDebugColor's ramp for the >= 0 half, so a page capture and
+// a cascade capture of the same pixel are read against the same key. Its own two
+// colours are spent only on the ways the cascade path reaches "lit" with no
+// depth to report -- and telling those two apart is the point of the view.
+vec3 cascadeDepthDeltaDebugColor(float deltaWorld)
+{
+    if (deltaWorld <= kCascadeDeltaClearedTexel) {
+        // Near-black: sampled, and the texel is still the clear. The cascade map
+        // holds nothing at all there. Neutral like the "never sampled" white and
+        // separated from it by brightness rather than hue, because the luminance
+        // modulation below only spans 0.35..1.0 and cannot close that gap.
+        return vec3(0.04, 0.04, 0.04);
+    }
+    if (deltaWorld <= kCascadeDeltaNoCascade) {
+        // Magenta, as the page walk's "nothing resident": no lookup was possible.
+        return vec3(1.0, 0.0, 0.8);
+    }
+    if (deltaWorld < 0.0) {
+        // White: a cascade was selected and the lookup exited before fetching.
+        return vec3(1.0, 1.0, 1.0);
+    }
+    return vsmDepthDeltaDebugColor(deltaWorld);
+}
+
 
 // --- Irradiance-probe lookup -------------------------------------------------
 //
@@ -1017,6 +1142,26 @@ void main()
         float debugLuminance = dot(finalColor, vec3(0.2126, 0.7152, 0.0722));
         outColor = vec4(vsmDepthDeltaDebugColor(storedDelta) * (0.35 + 0.65 * clamp(debugLuminance, 0.0, 1.0)),
                         alpha);
+        outVelocity = computeVelocity();
+        outNormalRoughness = vec4(octEncode(normal), roughness, metallic);
+        return;
+    }
+
+    // The cascade side of the same question, same ramp, same pre-tone-mapping
+    // application so a capture can be read back. Sits after the page view rather
+    // than before it because the page view is the one with a known answer, so it
+    // keeps precedence: flip this on second, at the same pixel, and the pair
+    // says which map is wrong.
+    if ((pc.frameConstants.values.vsmPageTable.w & kShadowFlagDebugCascadeDelta) != 0u) {
+        // Its own selection, deliberately: on the VSM path cascadeIndex is -1 by
+        // construction, and a view that answered "no cascade" for every pixel of
+        // the run whose disagreement it exists to explain would be useless. This
+        // way one run can carry the page view and this one at the same pixel.
+        float cascadeDelta = cascadeDebugStoredDepthDelta(selectShadowCascade());
+        float debugLuminance = dot(finalColor, vec3(0.2126, 0.7152, 0.0722));
+        outColor =
+            vec4(cascadeDepthDeltaDebugColor(cascadeDelta) * (0.35 + 0.65 * clamp(debugLuminance, 0.0, 1.0)),
+                 alpha);
         outVelocity = computeVelocity();
         outNormalRoughness = vec4(octEncode(normal), roughness, metallic);
         return;

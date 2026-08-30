@@ -812,6 +812,18 @@ void Renderer::drawShadowsDebugUi()
                               "occluder. Cyan/green/yellow/orange/red: a real occluder, further\n"
                               "away as it warms. Magenta: no resident page.\n\n"
                               "Wins over the level view when both are on.");
+        ImGui::Checkbox("Debug: tint by cascade's stored depth delta", &vsmSettings_.debugCascadeDepthDelta);
+        ImGui::SetItemTooltip("The same bisection against the cascade array instead of the page\n"
+                              "pool, so the two maps can be read against each other at one pixel.\n"
+                              "Selects its own cascade, so it answers with the VSM path on.\n\n"
+                              "Same ramp as the page view for a real stored depth, plus the two\n"
+                              "answers the shading path cannot show you. White: the fragment falls\n"
+                              "outside the cascade's UV/Z box, so the lookup returns lit WITHOUT\n"
+                              "ever sampling. Near-black: it sampled, and the texel is still the\n"
+                              "clear, so the map holds nothing there. Magenta: outside every\n"
+                              "cascade split.\n\n"
+                              "The page depth-delta view above wins over this one when both\n"
+                              "are on; this one wins over the level view.");
         ImGui::Checkbox("Debug: tint by sampled level", &vsmSettings_.debugLevelColors);
         ImGui::SetItemTooltip("One colour per clipmap level -- green, yellow-green, yellow, orange,\n"
                               "red for L0-L4, then brown/blue/cyan/teal/slate/grey/navy out to the\n"
