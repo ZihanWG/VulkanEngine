@@ -310,15 +310,7 @@ void PostProcessStack::createExposureComputePipelines()
             luminancePipelineInfo.pushConstantRanges =
                 std::span<const VkPushConstantRange>(&luminancePushConstantRange, 1);
             luminancePipelineInfo.pipelineCache = context_.pipelineCache();
-            luminancePipeline_.create(context_.vkDevice(), luminancePipelineInfo);
-            rhi::debug::setObjectName(context_.vkDevice(),
-                                      luminancePipeline_.pipeline(),
-                                      VK_OBJECT_TYPE_PIPELINE,
-                                      "AutoExposureComputePipeline");
-            rhi::debug::setObjectName(context_.vkDevice(),
-                                      luminancePipeline_.layout(),
-                                      VK_OBJECT_TYPE_PIPELINE_LAYOUT,
-                                      "AutoExposurePipelineLayout");
+            luminancePipeline_ = pipelineStore_.get(context_.vkDevice(), luminancePipelineInfo, "LuminancePipeline");
         } catch (const std::exception& error) {
             disableLogAverageExposureFallback(std::string("Log-average exposure compute pipeline creation failed: ") +
                                               error.what());
@@ -335,15 +327,7 @@ void PostProcessStack::createExposureComputePipelines()
             histogramPipelineInfo.pushConstantRanges =
                 std::span<const VkPushConstantRange>(&histogramPushConstantRange, 1);
             histogramPipelineInfo.pipelineCache = context_.pipelineCache();
-            histogramPipeline_.create(context_.vkDevice(), histogramPipelineInfo);
-            rhi::debug::setObjectName(context_.vkDevice(),
-                                      histogramPipeline_.pipeline(),
-                                      VK_OBJECT_TYPE_PIPELINE,
-                                      "HistogramExposureComputePipeline");
-            rhi::debug::setObjectName(context_.vkDevice(),
-                                      histogramPipeline_.layout(),
-                                      VK_OBJECT_TYPE_PIPELINE_LAYOUT,
-                                      "HistogramExposurePipelineLayout");
+            histogramPipeline_ = pipelineStore_.get(context_.vkDevice(), histogramPipelineInfo, "HistogramPipeline");
         } catch (const std::exception& error) {
             disableHistogramExposureFallback(std::string("Histogram exposure compute pipeline creation failed: ") +
                                              error.what());
@@ -361,15 +345,8 @@ void PostProcessStack::createExposureComputePipelines()
                 exposureReducePipelineInfo.pushConstantRanges =
                     std::span<const VkPushConstantRange>(&exposureReducePushConstantRange, 1);
                 exposureReducePipelineInfo.pipelineCache = context_.pipelineCache();
-                exposureReducePipeline_.create(context_.vkDevice(), exposureReducePipelineInfo);
-                rhi::debug::setObjectName(context_.vkDevice(),
-                                          exposureReducePipeline_.pipeline(),
-                                          VK_OBJECT_TYPE_PIPELINE,
-                                          "ExposureReduceComputePipeline");
-                rhi::debug::setObjectName(context_.vkDevice(),
-                                          exposureReducePipeline_.layout(),
-                                          VK_OBJECT_TYPE_PIPELINE_LAYOUT,
-                                          "ExposureReducePipelineLayout");
+                exposureReducePipeline_ = pipelineStore_.get(
+                    context_.vkDevice(), exposureReducePipelineInfo, "ExposureReducePipeline");
             } catch (const std::exception& error) {
                 disableAutoExposureFallback(std::string("GPU exposure reduce compute pipeline creation failed: ") +
                                             error.what());
@@ -1635,6 +1612,10 @@ void PostProcessStack::disableAutoExposureFallback(std::string_view reason)
     currentExposure_ = toneMappingExposureValue(toneMappingSettings_.manualExposure);
     destroyLuminanceResources();
     destroyHistogramResources();
+    // Clearing the refs marks the feature unavailable, which is what every reader
+    // of these checks for. It no longer destroys the VkPipeline -- the store owns
+    // that and reclaims it at the next createPipeline(). Holding a few unused
+    // compute pipelines until then is the cost of one owner for all of them.
     luminancePipeline_.reset();
     histogramPipeline_.reset();
     exposureReducePipeline_.reset();

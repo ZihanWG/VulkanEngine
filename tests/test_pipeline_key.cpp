@@ -5,6 +5,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <type_traits>
 #include <functional>
 #include <string>
 #include <unordered_map>
@@ -340,4 +341,88 @@ TEST_CASE("The key works as an unordered_map key", "[pipeline-key]")
     different.cullMode = VK_CULL_MODE_NONE;
     pipelines.emplace(PipelineKey::from(different), "MainNoCull");
     CHECK(pipelines.size() == 2);
+}
+
+// --- ComputePipelineKey ------------------------------------------------------
+
+namespace {
+
+using ve::rhi::ComputePipelineKey;
+using ve::rhi::VulkanComputePipelineCreateInfo;
+
+constexpr VkPushConstantRange kComputePushRange{VK_SHADER_STAGE_COMPUTE_BIT, 0, 32};
+
+VulkanComputePipelineCreateInfo baselineComputeInfo()
+{
+    VulkanComputePipelineCreateInfo info{};
+    info.shaderPath = "shaders/cull.comp.spv";
+    info.pushConstantRanges = std::span<const VkPushConstantRange>(&kComputePushRange, 1);
+    return info;
+}
+
+void requireSameComputeKey(const ComputePipelineKey& lhs, const ComputePipelineKey& rhs)
+{
+    CHECK(lhs == rhs);
+    CHECK(std::hash<ComputePipelineKey>{}(lhs) == std::hash<ComputePipelineKey>{}(rhs));
+}
+
+} // namespace
+
+TEST_CASE("Identical compute descriptions produce equal keys", "[pipeline-key]")
+{
+    requireSameComputeKey(ComputePipelineKey::from(baselineComputeInfo()),
+                          ComputePipelineKey::from(baselineComputeInfo()));
+}
+
+TEST_CASE("The pipeline cache handle is not part of the compute key", "[pipeline-key]")
+{
+    VulkanComputePipelineCreateInfo withCache = baselineComputeInfo();
+    withCache.pipelineCache = reinterpret_cast<VkPipelineCache>(std::uintptr_t{0xCAFE});
+
+    requireSameComputeKey(ComputePipelineKey::from(baselineComputeInfo()), ComputePipelineKey::from(withCache));
+}
+
+TEST_CASE("Every keyed compute field changes the key", "[pipeline-key]")
+{
+    // Same forgotten-field guard as the graphics case. A compute pipeline has
+    // only three keyed fields, which is exactly why it would be easy to add a
+    // fourth to VulkanComputePipelineCreateInfo and not notice it is unkeyed.
+    const std::array<VkDescriptorSetLayout, 1> layouts{fakeLayout(0x30)};
+    constexpr VkPushConstantRange otherPushRange{VK_SHADER_STAGE_COMPUTE_BIT, 0, 64};
+
+    const std::vector<std::pair<std::string, std::function<void(VulkanComputePipelineCreateInfo&)>>> mutations{
+        {"shaderPath", [](VulkanComputePipelineCreateInfo& i) { i.shaderPath = "shaders/light_cull.comp.spv"; }},
+        {"descriptorSetLayouts",
+         [&](VulkanComputePipelineCreateInfo& i) {
+             i.descriptorSetLayouts = std::span<const VkDescriptorSetLayout>(layouts.data(), layouts.size());
+         }},
+        {"pushConstantRanges",
+         [&](VulkanComputePipelineCreateInfo& i) {
+             i.pushConstantRanges = std::span<const VkPushConstantRange>(&otherPushRange, 1);
+         }},
+    };
+
+    const ComputePipelineKey baseline = ComputePipelineKey::from(baselineComputeInfo());
+    for (const auto& [fieldName, mutate] : mutations) {
+        VulkanComputePipelineCreateInfo mutated = baselineComputeInfo();
+        mutate(mutated);
+
+        INFO("field: " << fieldName);
+        CHECK(ComputePipelineKey::from(mutated) != baseline);
+    }
+}
+
+TEST_CASE("Compute and graphics keys occupy separate maps", "[pipeline-key]")
+{
+    // The store keeps two maps rather than one keyed on a variant. Nothing here
+    // can collide across them, and this pins that the two key types are distinct
+    // rather than one implicitly convertible to the other.
+    static_assert(!std::is_convertible_v<ComputePipelineKey, PipelineKey>);
+    static_assert(!std::is_convertible_v<PipelineKey, ComputePipelineKey>);
+
+    std::unordered_map<ComputePipelineKey, std::string> computePipelines;
+    computePipelines.emplace(ComputePipelineKey::from(baselineComputeInfo()), "Cull");
+    const auto reused = computePipelines.emplace(ComputePipelineKey::from(baselineComputeInfo()), "CullAgain");
+    CHECK_FALSE(reused.second);
+    CHECK(computePipelines.at(ComputePipelineKey::from(baselineComputeInfo())) == "Cull");
 }

@@ -335,15 +335,15 @@ public:
     {
         return compositePipeline_;
     }
-    [[nodiscard]] const rhi::VulkanComputePipeline& luminancePipeline() const
+    [[nodiscard]] rhi::ComputePipelineRef luminancePipeline() const
     {
         return luminancePipeline_;
     }
-    [[nodiscard]] const rhi::VulkanComputePipeline& histogramPipeline() const
+    [[nodiscard]] rhi::ComputePipelineRef histogramPipeline() const
     {
         return histogramPipeline_;
     }
-    [[nodiscard]] const rhi::VulkanComputePipeline& exposureReducePipeline() const
+    [[nodiscard]] rhi::ComputePipelineRef exposureReducePipeline() const
     {
         return exposureReducePipeline_;
     }
@@ -580,9 +580,9 @@ private:
     rhi::PipelineRef bloomUpsamplePipeline_;
     rhi::PipelineRef taaResolvePipeline_;
     rhi::PipelineRef compositePipeline_;
-    rhi::VulkanComputePipeline luminancePipeline_;
-    rhi::VulkanComputePipeline histogramPipeline_;
-    rhi::VulkanComputePipeline exposureReducePipeline_;
+    rhi::ComputePipelineRef luminancePipeline_;
+    rhi::ComputePipelineRef histogramPipeline_;
+    rhi::ComputePipelineRef exposureReducePipeline_;
 
     VkDescriptorSet bloomExtractDescriptorSet_ = VK_NULL_HANDLE;
     VkDescriptorSet bloomBlurHorizontalDescriptorSet_ = VK_NULL_HANDLE;

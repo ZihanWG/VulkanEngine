@@ -1354,19 +1354,21 @@ private:
     // Screen-space reflections: view-space march against main depth using the
     // thin G-buffer, additively blended into scene color before TAA. Declared
     // after the services + settings it borrows.
-    renderer::ScreenSpaceReflections ssr_{context_, swapchain_, renderResolution_, renderGraph_, gpuProfiler_,
+    renderer::ScreenSpaceReflections ssr_{context_, swapchain_, pipelineStore_, renderResolution_, renderGraph_,
+                                          gpuProfiler_,
                                           ssrSettings_};
 
     // Ground-truth ambient occlusion: horizon-search pass reading main depth +
     // the thin G-buffer normal, writing the visibility target the composite
     // multiplies into scene color. Borrows the same services + the SSAO settings.
-    renderer::GroundTruthAmbientOcclusion gtao_{context_,       swapchain_,   renderResolution_,
+    renderer::GroundTruthAmbientOcclusion gtao_{context_,       swapchain_,   pipelineStore_,   renderResolution_,
                                                 renderGraph_, gpuProfiler_, ssaoSettings_};
 
     // Hi-Z depth pyramid subsystem. Like postProcess_, it owns its GPU resources
     // and borrows the rendering services by reference, so it is declared last to
     // guarantee those are constructed first.
-    renderer::DepthPyramid depthPyramid_{context_, swapchain_, renderResolution_, renderGraph_, gpuProfiler_};
+    renderer::DepthPyramid depthPyramid_{context_, swapchain_, pipelineStore_, renderResolution_, renderGraph_,
+                                         gpuProfiler_};
 
     // GPU-driven visibility culling (main frustum/occlusion + per-cascade shadow).
     // Owns its cull pipeline/descriptors/buffers; borrows the services, the depth

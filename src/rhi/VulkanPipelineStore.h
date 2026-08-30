@@ -1,6 +1,7 @@
 #pragma once
 
 #include "rhi/PipelineKey.h"
+#include "rhi/VulkanComputePipeline.h"
 #include "rhi/VulkanPipeline.h"
 
 #include <cstddef>
@@ -10,8 +11,9 @@
 #include <unordered_map>
 #include <vector>
 
-// Owns graphics pipelines keyed by their state, so callers ask for "a pipeline
-// that does this" instead of declaring "a pipeline named that".
+// Owns pipelines keyed by their state, so callers ask for "a pipeline that does
+// this" instead of declaring "a pipeline named that". Graphics and compute both,
+// in two maps behind one reset and one generation.
 //
 // Distinct from rhi::VulkanPipelineCache despite the similar name: that one is the
 // on-disk VkPipelineCache blob (a driver-level compile cache, persisted between
@@ -35,6 +37,21 @@
 // therefore never outlives a layout recreation, and no eviction policy is needed
 // -- entries live exactly one pipeline-build generation.
 //
+// That rule has a sharp edge, and it has already drawn blood once
+// (createProbeCapturePipeline, which the constructor called and createPipeline()
+// did not): **only put a pipeline in this store if createPipeline() rebuilds it.**
+// A ref that the rebuild does not reissue points at a destroyed entry. The
+// generation stamp on PipelineRefT turns that into a null handle rather than a
+// use-after-free, but a silently missing pass is still a bug -- the guard is a
+// backstop, not a licence.
+//
+// This is why the compute pipelines owned by ClusteredLighting, GpuCulling,
+// PunctualShadows, VolumetricFogPass, VirtualShadowMapPass and the probe volume
+// are *not* here: they are built inside those subsystems' createResources() calls,
+// their lifetime is their subsystem's resources rather than the renderer's
+// pipeline rebuild, and a reset would destroy them with nothing to rebuild them.
+// The line is lifetime, not graphics-versus-compute.
+//
 // Do not add a "keep entries across reset if they look unchanged" optimization
 // without first giving layouts a generation counter. The saving would be a handful
 // of pipeline compiles behind an already-warm VkPipelineCache; the risk is a stale
@@ -48,6 +65,8 @@
 // pass mysteriously labelled with another pass's name.
 namespace ve::rhi {
 
+class VulkanPipelineStore;
+
 // A non-owning handle to a pipeline the store owns.
 //
 // It exists so a caller can hold "the pipeline for this pass" as a member the
@@ -59,15 +78,17 @@ namespace ve::rhi {
 // `x.pipeline() != VK_NULL_HANDLE` guard keeps working unchanged, and none of
 // them has to learn about null.
 //
+// Templated because VulkanPipeline and VulkanComputePipeline are unrelated types
+// with the same two accessors, and the generation check below must exist once.
+//
 // A ref is only obtainable from VulkanPipelineStore::get(), so its lifetime
 // question has exactly one answer: it is valid until that store is reset(). It
 // carries the store's generation so that answer is enforced rather than trusted.
-class VulkanPipelineStore;
-
-class PipelineRef {
+template <typename Pipeline>
+class PipelineRefT {
 public:
-    PipelineRef() = default;
-    PipelineRef(const VulkanPipelineStore& store, const VulkanPipeline& pipeline, uint32_t generation)
+    PipelineRefT() = default;
+    PipelineRefT(const VulkanPipelineStore& store, const Pipeline& pipeline, uint32_t generation)
         : store_(&store), pipeline_(&pipeline), generation_(generation)
     {}
 
@@ -83,7 +104,7 @@ public:
 
     // Forgets the pipeline; it stays alive in the store. Named reset() to match
     // what the owning members it replaced were called.
-    void reset() { *this = PipelineRef{}; }
+    void reset() { *this = PipelineRefT{}; }
 
     [[nodiscard]] bool valid() const { return current(); }
 
@@ -92,9 +113,13 @@ private:
     [[nodiscard]] bool current() const;
 
     const VulkanPipelineStore* store_ = nullptr;
-    const VulkanPipeline* pipeline_ = nullptr;
+    const Pipeline* pipeline_ = nullptr;
     uint32_t generation_ = 0;
 };
+
+using PipelineRef = PipelineRefT<VulkanPipeline>;
+using ComputePipelineRef = PipelineRefT<VulkanComputePipeline>;
+
 class VulkanPipelineStore {
 public:
     VulkanPipelineStore() = default;
@@ -120,12 +145,21 @@ public:
     [[nodiscard]] PipelineRef
     get(VkDevice device, const VulkanPipelineCreateInfo& createInfo, std::string_view debugName);
 
+    // The compute overload. Same contract, same generation, same reset -- a
+    // compute pipeline whose lifetime is the renderer's pipeline rebuild belongs
+    // in the same store as the graphics ones, and one whose lifetime is its
+    // subsystem's resources does not (see the class comment).
+    [[nodiscard]] ComputePipelineRef
+    get(VkDevice device, const VulkanComputePipelineCreateInfo& createInfo, std::string_view debugName);
+
     // Destroys every pipeline. See the lifetime note above for when this must run.
     void reset();
 
+    // Graphics and compute together: the log line reports what the renderer
+    // holds, and the split is not what a reader of it wants to reconcile.
     [[nodiscard]] std::size_t size() const
     {
-        return entries_.size();
+        return entries_.size() + computeEntries_.size();
     }
     // Bumped by reset(). Refs compare against it to notice they were not reissued.
     [[nodiscard]] uint32_t generation() const
@@ -148,18 +182,24 @@ public:
     [[nodiscard]] std::vector<std::vector<std::string>> entryDebugNames() const;
 
 private:
-    struct Entry {
-        VulkanPipeline pipeline;
+    template <typename Pipeline>
+    struct EntryT {
+        Pipeline pipeline;
         std::vector<std::string> debugNames;
     };
 
+    using Entry = EntryT<VulkanPipeline>;
+    using ComputeEntry = EntryT<VulkanComputePipeline>;
+
     std::unordered_map<PipelineKey, Entry> entries_;
+    std::unordered_map<ComputePipelineKey, ComputeEntry> computeEntries_;
     uint32_t hits_ = 0;
     uint32_t misses_ = 0;
     uint32_t generation_ = 0;
 };
 
-inline bool PipelineRef::current() const
+template <typename Pipeline>
+inline bool PipelineRefT<Pipeline>::current() const
 {
     return pipeline_ != nullptr && store_ != nullptr && store_->generation() == generation_;
 }
