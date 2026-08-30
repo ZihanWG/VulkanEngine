@@ -801,7 +801,7 @@ void Renderer::drawShadowsDebugUi()
         ImGui::SetItemTooltip("Shadow-compare bias, in texels of whichever level a lookup lands on.\n\n"
                               "NOT the cascades' constant: that one is a fraction of a cascade's\n"
                               "ortho depth box, and a page's depth axis spans 2x the depth range\n"
-                              "instead. Reusing it lifted every umbra by ~15% of the sun.\n\n"
+                              "instead. Reusing it lifted every umbra by ~15%% of the sun.\n\n"
                               "Drop it to 0 to see the acne it is holding back.");
         ImGui::Checkbox("Debug: tint by stored depth delta", &vsmSettings_.debugDepthDelta);
         ImGui::SetItemTooltip("How far in front of each surface the page's stored depth sits,\n"
