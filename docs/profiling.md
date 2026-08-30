@@ -63,7 +63,7 @@ Single-frame numbers on this hardware swing wide enough to invert a comparison. 
 
 ## Scripted measurement harness
 
-`tools/dev/measure_gpu.py` automates the protocol this document requires for a performance claim, so a pass timing does not depend on remembering the rules by hand. The renderer has no command line interface, so the harness works through the two channels it does have: it patches named keys in `config/runtime_settings.json` and parses the once-per-second `GPU timings:` blocks from stdout.
+`tools/dev/measure_gpu.py` automates the protocol this document requires for a performance claim, so a pass timing does not depend on remembering the rules by hand. The renderer does parse a command line (`src/core/CommandLine.cpp` — `--scene`, `--vsm`, `--deterministic`, `--exit-after-frames`, `--capture-frame`, and others), but none of those flags reach the toggles an A/B actually varies: there is no general `--set` for a runtime settings key, so SSR, GTAO, fog, render scale and the rest are only reachable through the settings file. That is why the harness patches named keys in `config/runtime_settings.json` and restores the file afterwards. Results come back from the once-per-second `GPU timings:` blocks on stdout, which is the only machine-readable source of per-pass GPU time — the ImGui overlay shows the same numbers but only on screen.
 
 ```bash
 # One configuration, absolute medians.
@@ -92,7 +92,11 @@ What the harness enforces:
 
 Logs and a `summary.json` land in `build/measurements/`. The summary records the full effective settings, not just the overrides, because configuration A is "whatever was persisted that day" and that file lives outside git. Nested scopes are parsed but reported as unusable for attribution, for the reason in the previous section.
 
-Scene presets are ImGui actions and reset on every launch, so the harness cannot select them. Capture those runs by hand with stdout redirected, then use `parse`.
+Scene presets are not persisted settings, so `--set` cannot reach them. The renderer's own `--scene` flag can, but the harness does not pass arguments to the binary at all yet, so those runs are still captured by hand and fed to `parse`:
+
+```bash
+./build/release/VulkanEngine --scene fragment-stress > build/measurements/fragment-stress.log
+```
 
 ## Frame Latency
 
