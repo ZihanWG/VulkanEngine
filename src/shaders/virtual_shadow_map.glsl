@@ -222,6 +222,13 @@ const uint kVsmFlagEnabled = 1u;
 const uint kVsmFlagDebugLevels = 2u;
 const uint kVsmFlagDebugDepthDelta = 4u;
 
+// Bit 3 gates the cascade-side counterpart of the depth-delta view, and it rides
+// in this word on purpose even though it interrogates uShadowMapCompare rather
+// than the page pool. The view exists to be flipped against bit 2 at the same
+// pixel; a second flag word somewhere else would let the two drift apart, and
+// the shading path reads them three lines from each other.
+const uint kShadowFlagDebugCascadeDelta = 8u;
+
 // What vsmShadowFactorLevel reports when the walk found nothing resident and the
 // lookup fell through to "lit". Distinct from level 0, which is a real answer.
 const uint kVsmNoResidentLevel = 0xFFFFFFFFu;

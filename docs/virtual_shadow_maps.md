@@ -657,10 +657,75 @@ That moves the question out of the sampler entirely -- not bias, not level, not
 filtering, not precision. **It is what gets drawn into the page versus into the
 cascade.** The page cull runs per page over the whole draw list with the page's
 own depth box; the cascades cull against a box fitted to the camera's frustum
-slice. The one untested thing on that side is its **XY** extent: a tall caster
-standing beside the fitted slice can cast into it and still be culled from it,
-and an absolute page grid has no such notion. If that is it, the conclusion
-flips and the cascades have been dropping a caster.
+slice.
+
+That XY extent was the last untested thing on the cascade side. It has since been
+tested, and it failed, along with three more:
+
+| hypothesis | test | result |
+| --- | --- | --- |
+| The cascade's fitted **XY** box drops a caster the absolute page grid keeps | box widened x2 and x4, shadow resolution raised by the same factor so texel density is held constant | **63.57 at both** |
+| The GPU shadow cull drops it | `useGpuShadowCulling = false` | 63.57, unchanged |
+| The occlusion cull drops it | `enableGpuOcclusionCulling = false` | 63.57, unchanged |
+| The page pool accumulates a phantom over time | captured at frames 5, 20, 60 and 200, against the cascade at the same frames | **both paths drift together** -- animation and exposure -- and the gap is a stable ~8/255 at every one, with the umbrae agreeing to 0.04 |
+
+One further observation looked like a positive result and was not one. With
+`enableCascadeDebugColors` on, the face tints as **cascade 0**, the same as the
+ground beside it and the umbra that behaves correctly -- and an earlier version
+of this section read that as "the cascade samples its map there and returns lit".
+It does not say that. `selectShadowCascade()` picks by `vViewDepth` and nothing
+else, and `sampleShadowFactor()` then returns 1.0 for a fragment outside the
+cascade's light-space UV/Z box **without ever fetching `uShadowMapCompare`**. A
+tint proves a cascade was selected. "Never sampled" and "sampled and found
+nothing" produce the same tint, the same lit pixel, and the same screenshot.
+Review caught the gap, and the fix is not better wording but the instrument that
+tells the two apart.
+
+### The symmetric instrument, and what it answered
+
+`uShadowMapCompare` is a compare sampler as well, so the identical bisection
+recovers what the *cascade* stores at the same world point. Reused wholesale,
+including the signed-then-clamped convention and the colour ramp, so a page
+capture and a cascade capture of one pixel are read against one key. What is new
+is that it has to separate three outcomes the shading path collapses into one lit
+pixel, because two of them are the question:
+
+| colour | meaning |
+| --- | --- |
+| white | the UV/Z bounds exit fired. **No fetch happened**, and "the cascade says lit" carries no information about the map |
+| near-black | sampled, and the texel is still at its 1.0 clear. The map holds **nothing** there |
+| blue -> red | sampled, and the map holds a real depth, warming with how far in front of the surface it sits |
+
+Near-black exists because a cleared texel and a texel holding this very surface
+both bisect to a delta of zero. The page-side view carries that ambiguity and
+says so; here it *is* the question, so it gets its own answer.
+
+Measured on the same reproducible frame, over a 32x32 patch at (1960, 1048) --
+the densest part of the gap, cascades 48.98 against VSM 42.00, a delta of 6.98 --
+and repeated at (1928, 984) and (1544, 856):
+
+| view | reading at the lit face |
+| --- | --- |
+| page pool | **yellow**, 1024/1024 pixels: an occluder 0.25-1 m in front |
+| cascade array | **blue**, 1024/1024 pixels: sampled, not cleared, nothing more than 0.01 m in front |
+
+So all three answers are now distinguished, and the two that would have overturned
+the section did not fire: the bounds exit is **not** taken, and the texel is **not**
+empty. The cascade samples, and what it finds under that face is the face itself.
+
+Two controls, because a view that answered "nothing" everywhere would produce the
+same table. Two captures of the cascade view are byte identical (0/3686400), and
+at pixels that are both shaded below 45/255 and called a real occluder by the page
+view, the cascade view returns green or yellow for 854 of 1209 sampled -- it sees
+an occluder wherever there genuinely is one, and the remainder are umbra edges.
+The reading is also unchanged between `--vsm off` and `--vsm shadows`, which rules
+out the cascade array having gone stale under the VSM path.
+
+That narrows the gap by one full step. It is not the sampler, not the lookup, not
+an absent cascade fetch, and not an empty cascade map: **the cascade map holds
+this face's own depth where the page pool holds something 0.25-1 m in front of
+it.** The remaining question is what put that something into the page, and it is
+now the only one left.
 
 ### A shader hazard found on the way
 
@@ -673,6 +738,16 @@ a runtime flag instead of a literal. Only *reading* both outputs failed, and it
 failed silently with a plausible answer. Collapsing the two debug branches into
 one did not help either. It is a separate function with a single return value
 now, which duplicates the page walk on purpose.
+
+The cascade probe produced the same shape of failure from a different direction.
+Its flag was first assembled inside the `isVsmDirectionalShadowActive()` branch
+that fills the rest of the VSM frame constants, so with the VSM path switched off
+-- the configuration whose cascade lookup the view exists to interrogate -- the
+whole word stayed zero and the capture came back as the ordinary shaded frame. It
+looked like a debug view reporting "nothing anywhere". `compare_images` against
+the plain cascade capture is what exposed it: 0 differing pixels, when a view that
+replaces every shaded pixel with a hue should differ in all of them. That
+comparison is now the first thing to run on any new debug view here.
 
 That is the second time this shader has punished a structural edit. The other:
 adding one uniform read to the IBL block moved 3% of the default scene's pixels
@@ -781,6 +856,7 @@ is the shader-side duplicate, the same arrangement `ClusterGrid.h` /
 | `depthBiasTexels` | 64 | shadow-compare bias, in texels of the sampled level |
 | `debugLevelColors` | `false` | tints each surface by the clipmap level its lookup sampled |
 | `debugDepthDelta` | `false` | tints by how far in front of each surface the page's stored depth sits; wins over the level view |
+| `debugCascadeDepthDelta` | `false` | the same bisection against the cascade array, separating "never sampled" and "cleared texel" from a real stored depth; set independently of the VSM path, so it also answers with VSM off |
 
 The numeric fields are clamped by `renderer::clampVsmClipmapSettings`, which
 `clampRuntimeSettings` delegates to rather than repeating — a second copy of the
@@ -817,12 +893,16 @@ page rendering.
 ## Limitations
 
 - **One lit-surface discrepancy is narrowed to its cause but not yet fixed.**
-  Certain lit faces read ~6.5/255 darker than under the cascades. Nine hypotheses
+  Certain lit faces read ~6.5/255 darker than under the cascades. Thirteen hypotheses
   about the *lookup* have been measured and eliminated; the depth-delta view then
-  showed a real occluder recorded in the page, 0.25–1 m in front of the surface,
-  where the cascade says lit. So the question is no longer why VSM shadows it but
-  why the cascade does not, and the untested candidate is the cascade's fitted XY
-  extent dropping a caster the absolute page grid keeps. See
+  showed a real occluder recorded in the page, 0.25–1 m in front of the surface.
+  The same bisection has since been run against `uShadowMapCompare`, separating
+  the three outcomes the shading path collapses into one lit pixel, and at that
+  face the cascade lookup **does** sample (the UV/Z bounds exit is not taken) and
+  finds a texel that is **not** cleared, holding a depth within 0.01 m of the
+  surface — its own. So the disagreement is entirely in what the two paths
+  *record*: the cascade map holds the face, the page pool holds something in
+  front of it. What puts it there is the one question left. See
   [What it did not settle, and what was ruled out](#what-it-did-not-settle-and-what-was-ruled-out).
 - **`texelsPerPixel` below 1.0 does nothing *on this scene*, and that is the
   coverage bound rather than a broken setting.** `vsmSelectLevel` returns
