@@ -1063,8 +1063,15 @@ void Renderer::createImportedGltfTextures(const std::vector<renderer::GltfTextur
             });
         }
 
-        pendingUploads.push_back(PendingTextureUpload{
-            textureIndex, usage, slotName, std::string(debugPrefix), &textures, infoPtr, cooked, std::move(decode)});
+        pendingUploads.push_back(PendingTextureUpload{textureIndex,
+                                                      usage,
+                                                      slotName,
+                                                      std::string(debugPrefix),
+                                                      &textures,
+                                                      infoPtr,
+                                                      cooked,
+                                                      std::move(decode),
+                                                      {}});
     };
 
     for (size_t textureIndex = 0; textureIndex < textureInfos.size(); ++textureIndex) {
