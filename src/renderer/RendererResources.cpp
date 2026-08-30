@@ -398,6 +398,12 @@ void Renderer::createShadowMap()
 
 void Renderer::createPipeline()
 {
+    // Everything below is rebuilt from scratch, which is also when every
+    // descriptor set layout and attachment format a PipelineKey holds is
+    // re-derived. Dropping the store here is what keeps a key from ever
+    // outliving a handle it was built from -- see rhi/VulkanPipelineStore.h.
+    pipelineStore_.reset();
+
     createMainGraphicsPipeline();
     createSkinnedPipeline();
     createTransparentPipeline();
@@ -410,6 +416,40 @@ void Renderer::createPipeline()
     gtao_.createPipeline(
         shaderPath("fullscreen.vert.spv"), shaderPath("gtao.frag.spv"), shaderPath("gtao_blur.frag.spv"));
     createComputePipelines();
+
+    logPipelineStoreContents();
+}
+
+void Renderer::logPipelineStoreContents() const
+{
+    // The collapse is reported, not assumed. Several pipelines here are optional
+    // (bindless off, no punctual atlas, no VSM page pool), so how many requests
+    // and how many objects a given configuration produces is a fact about that
+    // configuration -- and it is the only machine-checkable evidence that
+    // identically described pipelines are actually being shared.
+    std::vector<std::vector<std::string>> entries = pipelineStore_.entryDebugNames();
+    // The store is a hash map, so fix an order before printing or the log line
+    // reshuffles between runs and stops being diffable.
+    for (std::vector<std::string>& names : entries) {
+        std::sort(names.begin(), names.end());
+    }
+    std::sort(entries.begin(), entries.end());
+
+    Logger::info("Graphics pipeline store: " + std::to_string(pipelineStore_.size()) + " pipelines from "
+                 + std::to_string(pipelineStore_.misses() + pipelineStore_.hits()) + " requests ("
+                 + std::to_string(pipelineStore_.hits()) + " shared)");
+
+    for (const std::vector<std::string>& names : entries) {
+        if (names.size() < 2) {
+            continue;
+        }
+
+        std::string line = "  shared pipeline: ";
+        for (size_t index = 0; index < names.size(); ++index) {
+            line += (index == 0 ? "" : ", ") + names[index];
+        }
+        Logger::info(line);
+    }
 }
 
 void Renderer::createMainGraphicsPipeline()
@@ -444,11 +484,7 @@ void Renderer::createMainGraphicsPipeline()
     pipelineInfo.enableDepth = true;
 
     pipelineInfo.pipelineCache = context_.pipelineCache();
-    pipeline_.create(context_.vkDevice(), pipelineInfo);
-    rhi::debug::setObjectName(
-        context_.vkDevice(), pipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "MainGraphicsPipeline");
-    rhi::debug::setObjectName(
-        context_.vkDevice(), pipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "MainPipelineLayout");
+    pipeline_ = pipelineStore_.get(context_.vkDevice(), pipelineInfo, "MainGraphicsPipeline");
     pipelineColorFormat_ = pipelineInfo.colorFormat;
     pipelineDepthFormat_ = pipelineInfo.depthFormat;
 }
@@ -495,11 +531,7 @@ void Renderer::createProbeCapturePipeline()
         // shader flips normals toward the probe to match.
         pipelineInfo.cullMode = VK_CULL_MODE_NONE;
         pipelineInfo.pipelineCache = context_.pipelineCache();
-        probeCapturePipeline_.create(context_.vkDevice(), pipelineInfo);
-        rhi::debug::setObjectName(context_.vkDevice(),
-                                  probeCapturePipeline_.pipeline(),
-                                  VK_OBJECT_TYPE_PIPELINE,
-                                  "ProbeCapturePipeline");
+        probeCapturePipeline_ = pipelineStore_.get(context_.vkDevice(), pipelineInfo, "ProbeCapturePipeline");
     } catch (const std::exception& error) {
         // Optional like every other probe piece: without the capture pipeline
         // the atlases still exist and still hold the debug pattern.
@@ -546,11 +578,7 @@ void Renderer::createSkinnedPipeline()
     pipelineInfo.cullMode = VK_CULL_MODE_NONE;
 
     pipelineInfo.pipelineCache = context_.pipelineCache();
-    skinnedPipeline_.create(context_.vkDevice(), pipelineInfo);
-    rhi::debug::setObjectName(
-        context_.vkDevice(), skinnedPipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "SkinnedGraphicsPipeline");
-    rhi::debug::setObjectName(
-        context_.vkDevice(), skinnedPipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "SkinnedPipelineLayout");
+    skinnedPipeline_ = pipelineStore_.get(context_.vkDevice(), pipelineInfo, "SkinnedGraphicsPipeline");
 }
 
 void Renderer::createTransparentPipeline()
@@ -605,13 +633,7 @@ void Renderer::createTransparentPipeline()
     pipelineInfo.cullMode = VK_CULL_MODE_NONE;
 
     pipelineInfo.pipelineCache = context_.pipelineCache();
-    transparentPipeline_.create(context_.vkDevice(), pipelineInfo);
-    rhi::debug::setObjectName(
-        context_.vkDevice(), transparentPipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "TransparentPipeline");
-    rhi::debug::setObjectName(context_.vkDevice(),
-                              transparentPipeline_.layout(),
-                              VK_OBJECT_TYPE_PIPELINE_LAYOUT,
-                              "TransparentPipelineLayout");
+    transparentPipeline_ = pipelineStore_.get(context_.vkDevice(), pipelineInfo, "TransparentPipeline");
 }
 
 void Renderer::createSkyboxPipeline()
@@ -637,11 +659,7 @@ void Renderer::createSkyboxPipeline()
     skyboxPipelineInfo.cullMode = VK_CULL_MODE_NONE;
 
     skyboxPipelineInfo.pipelineCache = context_.pipelineCache();
-    skyboxPipeline_.create(context_.vkDevice(), skyboxPipelineInfo);
-    rhi::debug::setObjectName(
-        context_.vkDevice(), skyboxPipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "SkyboxPipeline");
-    rhi::debug::setObjectName(
-        context_.vkDevice(), skyboxPipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "SkyboxPipelineLayout");
+    skyboxPipeline_ = pipelineStore_.get(context_.vkDevice(), skyboxPipelineInfo, "SkyboxPipeline");
     skyboxPipelineColorFormat_ = skyboxPipelineInfo.colorFormat;
     skyboxPipelineDepthFormat_ = skyboxPipelineInfo.depthFormat;
 }
@@ -678,11 +696,7 @@ void Renderer::createShadowPipeline()
     shadowPipelineInfo.depthBiasSlopeFactor = shadowSettings_.rasterDepthBiasSlopeFactor;
 
     shadowPipelineInfo.pipelineCache = context_.pipelineCache();
-    shadowPipeline_.create(context_.vkDevice(), shadowPipelineInfo);
-    rhi::debug::setObjectName(
-        context_.vkDevice(), shadowPipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "ShadowPipeline");
-    rhi::debug::setObjectName(
-        context_.vkDevice(), shadowPipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "ShadowPipelineLayout");
+    shadowPipeline_ = pipelineStore_.get(context_.vkDevice(), shadowPipelineInfo, "ShadowPipeline");
     shadowPipelineDepthFormat_ = shadowPipelineInfo.depthFormat;
 
     createMaskedShadowPipeline(binding, attributes);
@@ -732,27 +746,15 @@ void Renderer::createSkinnedShadowPipelines()
     // across cascade layers the way the multiview variant of shadow.vert does.
     // The recorder skips the skinned caster in that mode rather than drawing it
     // into every layer with the wrong matrix -- see docs/skeletal_animation.md.
-    skinnedShadowPipeline_.create(context_.vkDevice(), makeInfo(shadowMap_.format()));
-    rhi::debug::setObjectName(
-        context_.vkDevice(), skinnedShadowPipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "SkinnedShadowPipeline");
-    rhi::debug::setObjectName(context_.vkDevice(),
-                              skinnedShadowPipeline_.layout(),
-                              VK_OBJECT_TYPE_PIPELINE_LAYOUT,
-                              "SkinnedShadowPipelineLayout");
+    skinnedShadowPipeline_ =
+        pipelineStore_.get(context_.vkDevice(), makeInfo(shadowMap_.format()), "SkinnedShadowPipeline");
 
     // The punctual atlas, on the same "only if it exists" rule as the pool.
     if (!punctualShadows_.valid()) {
         skinnedPunctualShadowPipeline_.reset();
     } else {
-        skinnedPunctualShadowPipeline_.create(context_.vkDevice(), makeInfo(punctualShadows_.atlas().format()));
-        rhi::debug::setObjectName(context_.vkDevice(),
-                                  skinnedPunctualShadowPipeline_.pipeline(),
-                                  VK_OBJECT_TYPE_PIPELINE,
-                                  "SkinnedPunctualShadowPipeline");
-        rhi::debug::setObjectName(context_.vkDevice(),
-                                  skinnedPunctualShadowPipeline_.layout(),
-                                  VK_OBJECT_TYPE_PIPELINE_LAYOUT,
-                                  "SkinnedPunctualShadowPipelineLayout");
+        skinnedPunctualShadowPipeline_ = pipelineStore_.get(
+            context_.vkDevice(), makeInfo(punctualShadows_.atlas().format()), "SkinnedPunctualShadowPipeline");
     }
 
     // VSM pages, only if the pool exists: it is a startup decision, and a
@@ -764,13 +766,8 @@ void Renderer::createSkinnedShadowPipelines()
         return;
     }
 
-    skinnedVsmPagePipeline_.create(context_.vkDevice(), makeInfo(virtualShadowMap_.pagePool().format()));
-    rhi::debug::setObjectName(
-        context_.vkDevice(), skinnedVsmPagePipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "SkinnedVsmPagePipeline");
-    rhi::debug::setObjectName(context_.vkDevice(),
-                              skinnedVsmPagePipeline_.layout(),
-                              VK_OBJECT_TYPE_PIPELINE_LAYOUT,
-                              "SkinnedVsmPagePipelineLayout");
+    skinnedVsmPagePipeline_ = pipelineStore_.get(
+        context_.vkDevice(), makeInfo(virtualShadowMap_.pagePool().format()), "SkinnedVsmPagePipeline");
 }
 
 void Renderer::createPunctualShadowPipeline(const VkVertexInputBindingDescription& binding,
@@ -801,15 +798,7 @@ void Renderer::createPunctualShadowPipeline(const VkVertexInputBindingDescriptio
     info.depthBiasSlopeFactor = shadowSettings_.rasterDepthBiasSlopeFactor;
     info.pipelineCache = context_.pipelineCache();
 
-    punctualShadowPipeline_.create(context_.vkDevice(), info);
-    rhi::debug::setObjectName(context_.vkDevice(),
-                              punctualShadowPipeline_.pipeline(),
-                              VK_OBJECT_TYPE_PIPELINE,
-                              "PunctualShadowPipeline");
-    rhi::debug::setObjectName(context_.vkDevice(),
-                              punctualShadowPipeline_.layout(),
-                              VK_OBJECT_TYPE_PIPELINE_LAYOUT,
-                              "PunctualShadowPipelineLayout");
+    punctualShadowPipeline_ = pipelineStore_.get(context_.vkDevice(), info, "PunctualShadowPipeline");
     punctualShadowPipelineDepthFormat_ = info.depthFormat;
 }
 
@@ -823,8 +812,14 @@ void Renderer::createVsmPagePipeline(const VkVertexInputBindingDescription& bind
 
     // Same shader and same push block as the punctual atlas: a VSM page and an
     // atlas tile are the same operation -- one depth-only draw per rect with
-    // that rect's own projection pushed. The pipeline is separate only because
-    // the pool has its own depth format and its own bias.
+    // that rect's own projection pushed. This used to claim the pipeline was
+    // separate because the pool has its own depth format and bias; it is not.
+    // Both targets are an rhi::VulkanShadowMap and both resolve their format
+    // through the same chooseShadowMapFormat() on the same device, and the bias
+    // comes from the same shadowSettings_, so the two descriptions are identical
+    // and the store hands back one VkPipeline for both. The call sites stay
+    // separate because their preconditions differ (a page pool that was never
+    // allocated, an atlas that does not exist), not because the state does.
     rhi::VulkanPipelineCreateInfo info{};
     info.vertexShaderPath = shaderPath("shadow_punctual.vert.spv");
     info.depthFormat = virtualShadowMap_.pagePool().format();
@@ -843,11 +838,7 @@ void Renderer::createVsmPagePipeline(const VkVertexInputBindingDescription& bind
     info.depthBiasSlopeFactor = shadowSettings_.rasterDepthBiasSlopeFactor;
     info.pipelineCache = context_.pipelineCache();
 
-    vsmPagePipeline_.create(context_.vkDevice(), info);
-    rhi::debug::setObjectName(
-        context_.vkDevice(), vsmPagePipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "VsmPagePipeline");
-    rhi::debug::setObjectName(
-        context_.vkDevice(), vsmPagePipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "VsmPagePipelineLayout");
+    vsmPagePipeline_ = pipelineStore_.get(context_.vkDevice(), info, "VsmPagePipeline");
 }
 
 void Renderer::createVsmMaskedPagePipeline(const VkVertexInputBindingDescription& binding,
@@ -888,13 +879,7 @@ void Renderer::createVsmMaskedPagePipeline(const VkVertexInputBindingDescription
     info.depthBiasSlopeFactor = shadowSettings_.rasterDepthBiasSlopeFactor;
     info.pipelineCache = context_.pipelineCache();
 
-    vsmMaskedPagePipeline_.create(context_.vkDevice(), info);
-    rhi::debug::setObjectName(
-        context_.vkDevice(), vsmMaskedPagePipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "VsmMaskedPagePipeline");
-    rhi::debug::setObjectName(context_.vkDevice(),
-                              vsmMaskedPagePipeline_.layout(),
-                              VK_OBJECT_TYPE_PIPELINE_LAYOUT,
-                              "VsmMaskedPagePipelineLayout");
+    vsmMaskedPagePipeline_ = pipelineStore_.get(context_.vkDevice(), info, "VsmMaskedPagePipeline");
 }
 
 void Renderer::createMaskedShadowPipeline(const VkVertexInputBindingDescription& binding,
@@ -939,13 +924,7 @@ void Renderer::createMaskedShadowPipeline(const VkVertexInputBindingDescription&
     maskedInfo.depthBiasSlopeFactor = shadowSettings_.rasterDepthBiasSlopeFactor;
     maskedInfo.pipelineCache = context_.pipelineCache();
 
-    maskedShadowPipeline_.create(context_.vkDevice(), maskedInfo);
-    rhi::debug::setObjectName(
-        context_.vkDevice(), maskedShadowPipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "MaskedShadowPipeline");
-    rhi::debug::setObjectName(context_.vkDevice(),
-                              maskedShadowPipeline_.layout(),
-                              VK_OBJECT_TYPE_PIPELINE_LAYOUT,
-                              "MaskedShadowPipelineLayout");
+    maskedShadowPipeline_ = pipelineStore_.get(context_.vkDevice(), maskedInfo, "MaskedShadowPipeline");
 }
 
 void Renderer::createComputePipelines()

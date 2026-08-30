@@ -6,7 +6,7 @@
 
 namespace ve::rhi {
 
-const VulkanPipeline&
+PipelineRef
 VulkanPipelineStore::get(VkDevice device, const VulkanPipelineCreateInfo& createInfo, std::string_view debugName)
 {
     PipelineKey key = PipelineKey::from(createInfo);
@@ -14,7 +14,7 @@ VulkanPipelineStore::get(VkDevice device, const VulkanPipelineCreateInfo& create
     if (const auto existing = entries_.find(key); existing != entries_.end()) {
         ++hits_;
         existing->second.debugNames.emplace_back(debugName);
-        return existing->second.pipeline;
+        return PipelineRef(existing->second.pipeline);
     }
 
     // Built into a local first so a throw leaves entries_ untouched. Several
@@ -33,7 +33,7 @@ VulkanPipelineStore::get(VkDevice device, const VulkanPipelineCreateInfo& create
     entry.debugNames.push_back(name);
 
     const auto inserted = entries_.emplace(std::move(key), std::move(entry));
-    return inserted.first->second.pipeline;
+    return PipelineRef(inserted.first->second.pipeline);
 }
 
 void VulkanPipelineStore::reset()
