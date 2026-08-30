@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Fixed-protocol GPU pass measurement for VulkanEngine.
 
-The renderer has no command line interface: its configuration comes from
-``config/runtime_settings.json`` and its GPU timings arrive as a once-per-second
-``GPU timings:`` block on stdout. This harness wraps that reality into a
-repeatable protocol so a pass timing can be quoted as evidence:
+The renderer does parse a command line (see ``src/core/CommandLine.cpp``), but
+none of its flags reach the toggles an A/B varies -- there is no general
+``--set`` for a runtime settings key -- so feature configuration still comes
+from ``config/runtime_settings.json``. GPU timings arrive as a once-per-second
+``GPU timings:`` block on stdout, the only machine-readable source of per-pass
+GPU time. This harness wraps that into a repeatable protocol so a pass timing
+can be quoted as evidence:
 
 - patch only named settings keys, then restore the user's file afterwards;
 - discard a warm-up window instead of trusting the first frames;
@@ -12,9 +15,10 @@ repeatable protocol so a pass timing can be quoted as evidence:
 - interleave A/B/A/B and refuse the comparison when the repeated control drifts.
 
 Scene and camera are deliberately left at their launch defaults, which is what
-makes separate runs comparable. Scene presets (stress, Cornell box, portfolio)
-are ImGui-driven and reset on every launch, so they cannot be scripted here --
-capture those runs by hand and feed the log to ``parse``.
+makes separate runs comparable. Scene presets are not persisted settings, so
+``--set`` cannot reach them; the renderer's ``--scene`` flag can, but this
+harness does not pass arguments to the binary yet -- capture those runs by hand
+and feed the log to ``parse``.
 
 Usage:
     tools/dev/measure_gpu.py run   [--set k=v ...] [--label NAME]
