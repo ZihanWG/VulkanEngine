@@ -769,12 +769,20 @@ filter blurs shut.
 
 ### What the scene cannot show
 
-The directional shadows in every demo scene here are low contrast: the umbra sits
-at 31.8/255 against a lit floor at 80/255, because ambient and punctual lighting
-dominate the sun. That is why an eyeball A/B found nothing wrong -- there is
-little to see -- and it is why the numbers above are all patch means from a
-reproducible capture rather than descriptions of an image. A scene with a
-dominant sun would make this feature much easier to judge, and none exists yet.
+Every measurement above was taken on the **default** scene, whose directional
+shadows are low contrast: the umbra sits at 31.8/255 against a lit floor at
+80/255, because ambient and punctual lighting dominate the sun. That is why an
+eyeball A/B found nothing wrong -- there was little to see -- and why those
+numbers are patch means from a reproducible capture rather than descriptions of
+an image.
+
+**A dominant-sun scene exists now**, which it did not when this section was
+written: `--scene sunlit` measures 5.92:1 on the same ground-block sweep, and it
+is where the skinned caster's punctual half was finally verified. The figures
+above have deliberately not been re-taken on it -- they are what they were
+measured as, and re-deriving a settled number on a new scene would quietly
+change what the table means. Use the yard for the questions the default scene
+cannot answer, not to restate the ones it already did.
 
 ## Where it sits in the frame
 
