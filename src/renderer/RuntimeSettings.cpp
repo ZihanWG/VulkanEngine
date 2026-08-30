@@ -502,6 +502,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readFloat(*vsm, "depthBiasTexels", settings.vsm.depthBiasTexels);
         readBool(*vsm, "debugLevelColors", settings.vsm.debugLevelColors);
         readBool(*vsm, "debugDepthDelta", settings.vsm.debugDepthDelta);
+        readBool(*vsm, "debugCascadeDepthDelta", settings.vsm.debugCascadeDepthDelta);
     }
 
     if (const Json* gi = objectMember(json, "gi")) {
@@ -658,7 +659,8 @@ Json toJson(const RuntimeSettings& settings)
               {"markBlockStride", settings.vsm.markBlockStride},
               {"depthBiasTexels", settings.vsm.depthBiasTexels},
               {"debugLevelColors", settings.vsm.debugLevelColors},
-              {"debugDepthDelta", settings.vsm.debugDepthDelta}}},
+              {"debugDepthDelta", settings.vsm.debugDepthDelta},
+              {"debugCascadeDepthDelta", settings.vsm.debugCascadeDepthDelta}}},
         {"gi",
          Json{{"enabled", settings.gi.enabled},
               {"debugPattern", settings.gi.debugPattern},

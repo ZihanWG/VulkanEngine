@@ -434,6 +434,16 @@ struct VsmSettings {
     // front of it and the surface is comparing against itself; warmer means a
     // real occluder, further away. Wins over debugLevelColors when both are on.
     bool debugDepthDelta = false;
+    // The same view against the cascade array instead of the page pool, by the
+    // same bisection. Selects its own cascade rather than reusing the shading
+    // path's, so it still answers while the VSM lookup is the active one -- the
+    // two views are only worth anything read against each other at one pixel.
+    // White marks a fragment whose lookup exits on the cascade's UV/Z bounds
+    // without sampling at all, and near-black one that sampled a texel still at
+    // its clear -- the shading path collapses both, and a lookup that sampled a
+    // real occluder, into the same lit pixel. The page depth-delta view
+    // wins over this one when both are on; this one wins over the level view.
+    bool debugCascadeDepthDelta = false;
 
     [[nodiscard]] bool operator==(const VsmSettings&) const = default;
 };
