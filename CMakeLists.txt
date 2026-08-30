@@ -100,9 +100,13 @@ if(NOT TARGET GPUOpen::VulkanMemoryAllocator AND NOT TARGET VulkanMemoryAllocato
         message(FATAL_ERROR "Vulkan Memory Allocator was not found. Install VMA or configure with VULKAN_ENGINE_FETCH_DEPS=ON.")
     endif()
 
+    # SYSTEM: vk_mem_alloc.h is third-party, so it is not held to the project's
+    # -Wall -Wextra -Wpedantic policy -- same treatment as the imgui and bc7enc
+    # targets. Without it this one header is 14085 of the build's diagnostics.
     FetchContent_Declare(vma
         GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
         GIT_TAG ${VULKAN_ENGINE_VMA_TAG}
+        SYSTEM
     )
     FetchContent_MakeAvailable(vma)
 endif()
@@ -159,7 +163,7 @@ elseif(TARGET VulkanMemoryAllocator)
     set(VMA_TARGET VulkanMemoryAllocator)
 elseif(vma_SOURCE_DIR)
     add_library(vma_headers INTERFACE)
-    target_include_directories(vma_headers INTERFACE "${vma_SOURCE_DIR}/include")
+    target_include_directories(vma_headers SYSTEM INTERFACE "${vma_SOURCE_DIR}/include")
     set(VMA_TARGET vma_headers)
 endif()
 
