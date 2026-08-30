@@ -1247,7 +1247,7 @@ void Renderer::recordVsmPagePass(VkCommandBuffer commandBuffer)
     const glm::mat4 lightView = renderer::vsmLightView(directionalLightSettings_.direction);
     const uint32_t pageCommandStride = virtualShadowMap_.pageCommandStride();
 
-    const auto drawPages = [&](uint32_t bucket, const rhi::VulkanPipeline& pipeline) {
+    const auto drawPages = [&](uint32_t bucket, rhi::PipelineRef pipeline) {
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline());
         if (bucket == renderer::kVsmMaskedCasterBucket) {
             const VkDescriptorSet bindlessSet = bindlessTextureHeap_.descriptorSet();
@@ -1600,7 +1600,7 @@ void Renderer::recordCascadeShadowPass(VkCommandBuffer commandBuffer)
                 return false;
             }
 
-            const rhi::VulkanPipeline& pipeline = wantMasked ? maskedShadowPipeline_ : shadowPipeline_;
+            const rhi::PipelineRef pipeline = wantMasked ? maskedShadowPipeline_ : shadowPipeline_;
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline());
             if (wantMasked) {
                 const VkDescriptorSet bindlessSet = bindlessTextureHeap_.descriptorSet();

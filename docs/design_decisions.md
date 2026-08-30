@@ -93,6 +93,68 @@ make geometry disappear, so it is a deliberate decision rather than a cleanup.
 back-facing single-sided surfaces, and re-measure on a geometry-heavy scene
 where the primitive-rate saving, rather than the fragment saving, is the point.
 
+## Graphics pipelines are looked up by state, not by name
+
+**Decision.** `rhi::VulkanPipelineStore` owns every `Renderer`-built graphics
+pipeline, keyed on `rhi::PipelineKey` -- an owning, hashable value form of
+`VulkanPipelineCreateInfo`. The 13 pipeline members are non-owning
+`rhi::PipelineRef`s into it.
+
+**Why.** Declaring pipelines one member at a time gives no way to ask whether the
+state a caller wants has already been compiled, and two things followed from that.
+
+Identical state was compiled more than once under different member names. The
+punctual shadow atlas, the VSM page pool and the CSM cascades are all
+`rhi::VulkanShadowMap`, and every `VulkanShadowMap` resolves its depth format
+through the same `chooseShadowMapFormat()` on the same device -- so the formats
+are always equal, and the depth-only caster pipelines built against them were
+always the same pipeline. A comment in `createVsmPagePipeline` asserted the
+opposite for months. Measured on this machine with `--vsm shadows`:
+
+| Configuration | Requests | Pipelines | Shared |
+| --- | --- | --- | --- |
+| Default (VSM off) | 9 | 8 | `SkinnedShadowPipeline` = `SkinnedPunctualShadowPipeline` |
+| `--vsm shadows` | 12 | 9 | the above + `SkinnedVsmPagePipeline`; `PunctualShadowPipeline` = `VsmPagePipeline` |
+
+Five named pipelines resolve to two objects once every optional path is on.
+
+Second, format-change detection was a hand-maintained condition. Each pipeline
+kept a shadow copy of its formats (`pipelineColorFormat_`,
+`shadowPipelineDepthFormat_`, ...) that `Renderer::pipelineNeedsRecreate` compared
+against the live ones. A key subsumes that: any state difference is a miss by
+construction rather than by a clause someone remembered to write. (That condition
+is still in place -- retiring it needs `PostProcessStack`'s pipelines routed too,
+or it would be left half automatic and half hand-written.)
+
+**Normalization is deliberately minimal.** The two failure modes are not
+symmetric: treating significant state as irrelevant hands back a pipeline built
+for a different configuration, quietly, while treating irrelevant state as
+significant costs one extra object. So the key normalizes only what
+`VulkanPipeline::create()` proves cannot reach the driver -- the
+`colorFormat`/`colorFormats` redundancy, and `depthFormat`/`depthWriteEnable` when
+the depth test is off. `depthCompareOp` and the depth-bias factors are kept
+verbatim even where they look inert, because `create()` writes them
+unconditionally. The `VkPipelineCache` handle is excluded outright: it is a
+compile hint, not state.
+
+**Trade-offs.** Keys hold `VkDescriptorSetLayout` handles, which would dangle if a
+layout were recreated under a live entry, and nothing in the key could detect it.
+The store is therefore reset at the top of `Renderer::createPipeline()` -- already
+the one point where every layout, format and shader is re-derived -- so an entry
+never outlives a handle it was built from and no eviction policy is needed. A
+shared pipeline also keeps the debug name its first requester gave it, so a
+capture labels the VSM page pass with the punctual pipeline's name; every
+requested name is logged at startup so the sharing is visible rather than
+puzzling.
+
+Verified pixel-identical against the pre-change build in both configurations
+(0/3686400 pixels differ, max channel delta 0), with no validation errors.
+
+**More time.** Route `PostProcessStack`'s six graphics pipelines and the compute
+pipelines through the store, then delete `pipelineNeedsRecreate` entirely. Shader
+hot-reload becomes tractable once that is done: reloading is invalidating the
+entries whose shader path changed.
+
 ## Buffer-device-address for per-frame GPU data
 
 **Decision.** Deliver per-frame buffers (object data, the light list, the cluster

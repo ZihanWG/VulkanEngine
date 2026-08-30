@@ -48,6 +48,51 @@
 // pass mysteriously labelled with another pass's name.
 namespace ve::rhi {
 
+// A non-owning handle to a pipeline the store owns.
+//
+// It exists so a caller can hold "the pipeline for this pass" as a member the
+// same way it used to hold a VulkanPipeline, without owning it. The accessors
+// deliberately mirror VulkanPipeline's and return VK_NULL_HANDLE when empty,
+// because an empty ref is how this renderer already spells "this feature is not
+// available in this configuration" -- the bindless fallback, a missing punctual
+// atlas, a VSM page pool that was never allocated. Every existing
+// `x.pipeline() != VK_NULL_HANDLE` guard keeps working unchanged, and none of
+// them has to learn about null.
+//
+// A ref is only obtainable from VulkanPipelineStore::get(), so its lifetime
+// question has exactly one answer: it is valid until that store is reset().
+class PipelineRef {
+public:
+    PipelineRef() = default;
+    explicit PipelineRef(const VulkanPipeline& pipeline) : pipeline_(&pipeline)
+    {}
+
+    [[nodiscard]] VkPipeline pipeline() const
+    {
+        return pipeline_ != nullptr ? pipeline_->pipeline() : VK_NULL_HANDLE;
+    }
+
+    [[nodiscard]] VkPipelineLayout layout() const
+    {
+        return pipeline_ != nullptr ? pipeline_->layout() : VK_NULL_HANDLE;
+    }
+
+    // Forgets the pipeline; it stays alive in the store. Named reset() to match
+    // what the owning members it replaced were called.
+    void reset()
+    {
+        pipeline_ = nullptr;
+    }
+
+    [[nodiscard]] bool valid() const
+    {
+        return pipeline_ != nullptr;
+    }
+
+private:
+    const VulkanPipeline* pipeline_ = nullptr;
+};
+
 class VulkanPipelineStore {
 public:
     VulkanPipelineStore() = default;
@@ -58,18 +103,19 @@ public:
     VulkanPipelineStore(VulkanPipelineStore&&) = delete;
     VulkanPipelineStore& operator=(VulkanPipelineStore&&) = delete;
 
-    // Returns the pipeline for createInfo's state, creating it on first request.
+    // Returns a ref to the pipeline for createInfo's state, creating it on first
+    // request.
     //
-    // The reference is stable until reset(): the map is node-based, so neither
+    // The ref stays valid until reset(): the map is node-based, so neither
     // rehashing nor later insertions move the stored VulkanPipeline. Callers may
-    // therefore hold the address across frames -- which is exactly how the renderer
-    // keeps its per-pipeline members.
+    // therefore hold it across frames -- which is exactly how the renderer keeps
+    // its per-pipeline members.
     //
     // Throws whatever VulkanPipeline::create() throws (a missing SPIR-V file, an
     // undefined attachment format, a driver failure). On a throw the store is
     // unchanged: the pipeline is built into a local and only moved in on success,
     // so a failed optional feature leaves no half-built entry behind.
-    [[nodiscard]] const VulkanPipeline&
+    [[nodiscard]] PipelineRef
     get(VkDevice device, const VulkanPipelineCreateInfo& createInfo, std::string_view debugName);
 
     // Destroys every pipeline. See the lifetime note above for when this must run.
