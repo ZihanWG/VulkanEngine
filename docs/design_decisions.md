@@ -150,10 +150,30 @@ puzzling.
 Verified pixel-identical against the pre-change build in both configurations
 (0/3686400 pixels differ, max channel delta 0), with no validation errors.
 
-**More time.** Route `PostProcessStack`'s six graphics pipelines and the compute
-pipelines through the store, then delete `pipelineNeedsRecreate` entirely. Shader
-hot-reload becomes tractable once that is done: reloading is invalidating the
-entries whose shader path changed.
+`PostProcessStack` borrows the store the same way it borrows every other service.
+Its six graphics pipelines are six distinct fragment shaders, so they add no
+sharing -- the point there is single ownership and a single reset, not a collapse.
+With them routed the store holds 14 pipelines from 15 requests by default, 15 from
+18 under `--vsm shadows`.
+
+**The reset rule needs every ref reissued, and that bit immediately.**
+`createProbeCapturePipeline()` was reachable only from the constructor, never from
+`createPipeline()`, so the reset destroyed its entry while `probeCapturePipeline_`
+still pointed at it -- a dangling pointer introduced by the routing itself, latent
+because `pipelineNeedsRecreate` only fires when a format actually changes. It is
+registered from `createPipeline()` now. Because that invariant is implicit and the
+next pipeline could break it the same way, `PipelineRef` also carries the store's
+generation: a ref the rebuild forgot to reissue reads as `VK_NULL_HANDLE` -- the
+"feature unavailable" path every call site already handles -- instead of as a
+pointer into freed memory. Verified by forcing a second `createPipeline()` after
+the probes exist: 19 requests with the fix, 18 without.
+
+**More time.** Route the compute pipelines, then delete `pipelineNeedsRecreate`
+entirely -- with the store, an unconditional rebuild is all hits, but only once
+`reset()` stops being unconditional (a mark-and-sweep over one build generation
+would drop exactly the entries nobody re-requested). Shader hot-reload becomes
+tractable after that: reloading is invalidating the entries whose shader path
+changed.
 
 ## Buffer-device-address for per-frame GPU data
 

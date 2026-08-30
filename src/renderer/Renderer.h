@@ -1340,6 +1340,7 @@ private:
                                             renderGraph_,
                                             gpuProfiler_,
                                             swapchain_,
+                                            pipelineStore_,
                                             renderResolution_,
                                             toneMappingSettings_,
                                             bloomSettings_,
