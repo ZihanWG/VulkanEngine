@@ -731,6 +731,8 @@ const char* renderObjectSourceTypeName(renderer::RenderObjectSourceType sourceTy
         return "stress";
     case renderer::RenderObjectSourceType::FragmentStress:
         return "fragment stress";
+    case renderer::RenderObjectSourceType::SunlitYard:
+        return "sunlit yard";
     }
 
     return "unknown";
