@@ -20,6 +20,7 @@
 #include "renderer/RenderResolution.h"
 #include "rhi/VulkanCommon.h"
 #include "rhi/VulkanComputePipeline.h"
+#include "rhi/VulkanPipelineStore.h"
 #include "rhi/VulkanDescriptor.h"
 #include "rhi/VulkanImage.h"
 
@@ -45,6 +46,7 @@ class DepthPyramid final {
 public:
     DepthPyramid(rhi::VulkanContext& context,
                  rhi::VulkanSwapchain& swapchain,
+                 rhi::VulkanPipelineStore& pipelineStore,
                  const RenderResolution& renderResolution,
                  RenderGraph& renderGraph,
                  GpuProfiler& gpuProfiler);
@@ -102,12 +104,16 @@ public:
 private:
     rhi::VulkanContext& context_;
     rhi::VulkanSwapchain& swapchain_;
+    // Borrowed from Renderer, which owns it and resets it in createPipeline() --
+    // the only place this subsystem's pipeline is built, which is what makes a ref
+    // into it safe. See rhi/VulkanPipelineStore.h.
+    rhi::VulkanPipelineStore& pipelineStore_;
     const RenderResolution& renderResolution_;
     RenderGraph& renderGraph_;
     GpuProfiler& gpuProfiler_;
 
     rhi::VulkanDescriptorSetLayout descriptorSetLayout_;
-    rhi::VulkanComputePipeline pipeline_;
+    rhi::ComputePipelineRef pipeline_;
     rhi::VulkanImage image_;
     rhi::VulkanDescriptorPool descriptorPool_;
     VkSampler sampler_ = VK_NULL_HANDLE;

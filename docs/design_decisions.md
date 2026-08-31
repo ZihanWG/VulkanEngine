@@ -93,6 +93,120 @@ make geometry disappear, so it is a deliberate decision rather than a cleanup.
 back-facing single-sided surfaces, and re-measure on a geometry-heavy scene
 where the primitive-rate saving, rather than the fragment saving, is the point.
 
+## Graphics pipelines are looked up by state, not by name
+
+**Decision.** `rhi::VulkanPipelineStore` owns every `Renderer`-built graphics
+pipeline, keyed on `rhi::PipelineKey` -- an owning, hashable value form of
+`VulkanPipelineCreateInfo`. The 13 pipeline members are non-owning
+`rhi::PipelineRef`s into it.
+
+**Why.** Declaring pipelines one member at a time gives no way to ask whether the
+state a caller wants has already been compiled, and two things followed from that.
+
+Identical state was compiled more than once under different member names. The
+punctual shadow atlas, the VSM page pool and the CSM cascades are all
+`rhi::VulkanShadowMap`, and every `VulkanShadowMap` resolves its depth format
+through the same `chooseShadowMapFormat()` on the same device -- so the formats
+are always equal, and the depth-only caster pipelines built against them were
+always the same pipeline. A comment in `createVsmPagePipeline` asserted the
+opposite for months. Measured on this machine with `--vsm shadows`:
+
+| Configuration | Requests | Pipelines | Shared |
+| --- | --- | --- | --- |
+| Default (VSM off) | 9 | 8 | `SkinnedShadowPipeline` = `SkinnedPunctualShadowPipeline` |
+| `--vsm shadows` | 12 | 9 | the above + `SkinnedVsmPagePipeline`; `PunctualShadowPipeline` = `VsmPagePipeline` |
+
+Five named pipelines resolve to two objects once every optional path is on.
+
+Second, format-change detection was a hand-maintained condition. Each pipeline
+kept a shadow copy of its formats (`pipelineColorFormat_`,
+`shadowPipelineDepthFormat_`, ...) that `Renderer::pipelineNeedsRecreate` compared
+against the live ones. A key subsumes that: any state difference is a miss by
+construction rather than by a clause someone remembered to write. (That condition
+is still in place -- retiring it needs `PostProcessStack`'s pipelines routed too,
+or it would be left half automatic and half hand-written.)
+
+**Normalization is deliberately minimal.** The two failure modes are not
+symmetric: treating significant state as irrelevant hands back a pipeline built
+for a different configuration, quietly, while treating irrelevant state as
+significant costs one extra object. So the key normalizes only what
+`VulkanPipeline::create()` proves cannot reach the driver -- the
+`colorFormat`/`colorFormats` redundancy, and `depthFormat`/`depthWriteEnable` when
+the depth test is off. `depthCompareOp` and the depth-bias factors are kept
+verbatim even where they look inert, because `create()` writes them
+unconditionally. The `VkPipelineCache` handle is excluded outright: it is a
+compile hint, not state.
+
+**Trade-offs.** Keys hold `VkDescriptorSetLayout` handles, which would dangle if a
+layout were recreated under a live entry, and nothing in the key could detect it.
+The store is therefore reset at the top of `Renderer::createPipeline()` -- already
+the one point where every layout, format and shader is re-derived -- so an entry
+never outlives a handle it was built from and no eviction policy is needed. A
+shared pipeline also keeps the debug name its first requester gave it, so a
+capture labels the VSM page pass with the punctual pipeline's name; every
+requested name is logged at startup so the sharing is visible rather than
+puzzling.
+
+Verified pixel-identical against the pre-change build in both configurations
+(0/3686400 pixels differ, max channel delta 0), with no validation errors.
+
+`PostProcessStack` borrows the store the same way it borrows every other service.
+Its six graphics pipelines are six distinct fragment shaders, so they add no
+sharing -- the point there is single ownership and a single reset, not a collapse.
+With them routed the store holds 14 pipelines from 15 requests by default, 15 from
+18 under `--vsm shadows`.
+
+**The reset rule needs every ref reissued, and that bit immediately.**
+`createProbeCapturePipeline()` was reachable only from the constructor, never from
+`createPipeline()`, so the reset destroyed its entry while `probeCapturePipeline_`
+still pointed at it -- a dangling pointer introduced by the routing itself, latent
+because `pipelineNeedsRecreate` only fires when a format actually changes. It is
+registered from `createPipeline()` now. Because that invariant is implicit and the
+next pipeline could break it the same way, `PipelineRef` also carries the store's
+generation: a ref the rebuild forgot to reissue reads as `VK_NULL_HANDLE` -- the
+"feature unavailable" path every call site already handles -- instead of as a
+pointer into freed memory. Verified by forcing a second `createPipeline()` after
+the probes exist: 19 requests with the fix, 18 without.
+
+**The store holds compute pipelines too, but the line is lifetime, not type.**
+`ComputePipelineKey` is the same idea with three fields -- shader, set layouts,
+push ranges -- since a compute pipeline has no raster, blend, depth or attachment
+state, and nothing to normalize. What decides whether a pipeline belongs here is
+the reset rule: **only a pipeline `createPipeline()` rebuilds can live in the
+store**, because a ref the rebuild does not reissue points at a destroyed entry.
+
+By that test seven more pipelines moved in -- SSR's trace, GTAO's main and blur,
+the depth pyramid's, and the three exposure compute pipelines -- all of them built
+only from `createPipeline()`. The eight compute pipelines owned by
+`ClusteredLighting`, `GpuCulling`, `PunctualShadows`, `VolumetricFogPass`,
+`VirtualShadowMapPass` and the probe volume stayed where they are: they are
+created inside those subsystems' `createResources()` calls, their lifetime is
+their subsystem's resources, and a reset would destroy them with nothing to
+rebuild them. Routing them "for consistency" would have reproduced the probe-
+capture bug eight times.
+
+Under `--vsm shadows` the store now holds 22 pipelines from 25 requests. None of
+the seven collapsed, which was the expectation -- every `.comp` and every
+post-process fragment shader here is distinct. The gain is one owner, one reset
+and one generation, not a saving.
+
+Verified that the reissue rule holds by forcing a second `createPipeline()`: all
+25 requests come back.
+
+**Trade-off this introduced.** The exposure fallback paths
+(`disableAutoExposureFallback` and friends) used to destroy their pipelines;
+clearing a ref now only marks the feature unavailable, and the pipeline is
+reclaimed at the next `createPipeline()`. That is a few unused compute pipelines
+resident in a configuration where auto-exposure has already failed.
+
+**More time.** Delete `pipelineNeedsRecreate`. With the store an unconditional
+rebuild is all hits, but only once `reset()` stops being unconditional -- and the
+obvious fix, a mark-and-sweep over one build generation, does not work while some
+pipelines are created outside any build. Giving the subsystem-lifetime pipelines
+their own scope, or making every pipeline creation funnel through one place, is
+the prerequisite. Shader hot-reload becomes tractable after that: reloading is
+invalidating the entries whose shader path changed.
+
 ## Buffer-device-address for per-frame GPU data
 
 **Decision.** Deliver per-frame buffers (object data, the light list, the cluster

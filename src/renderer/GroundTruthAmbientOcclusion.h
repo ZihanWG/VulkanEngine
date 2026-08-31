@@ -24,6 +24,7 @@
 #include "rhi/VulkanDescriptor.h"
 #include "rhi/VulkanImage.h"
 #include "rhi/VulkanPipeline.h"
+#include "rhi/VulkanPipelineStore.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -47,6 +48,7 @@ class GroundTruthAmbientOcclusion final {
 public:
     GroundTruthAmbientOcclusion(rhi::VulkanContext& context,
                                 rhi::VulkanSwapchain& swapchain,
+                                rhi::VulkanPipelineStore& pipelineStore,
                                 const RenderResolution& renderResolution,
                                 RenderGraph& renderGraph,
                                 GpuProfiler& gpuProfiler,
@@ -90,6 +92,10 @@ public:
 private:
     rhi::VulkanContext& context_;
     rhi::VulkanSwapchain& swapchain_;
+    // Borrowed from Renderer, which owns it and resets it in createPipeline() --
+    // the only place this subsystem's pipeline is built, which is what makes a ref
+    // into it safe. See rhi/VulkanPipelineStore.h.
+    rhi::VulkanPipelineStore& pipelineStore_;
     const RenderResolution& renderResolution_;
     RenderGraph& renderGraph_;
     GpuProfiler& gpuProfiler_;
@@ -97,8 +103,8 @@ private:
 
     rhi::VulkanDescriptorSetLayout descriptorSetLayout_;
     rhi::VulkanDescriptorPool descriptorPool_;
-    rhi::VulkanPipeline pipeline_;
-    rhi::VulkanPipeline blurPipeline_;
+    rhi::PipelineRef pipeline_;
+    rhi::PipelineRef blurPipeline_;
     rhi::VulkanImage rawAo_;
     VkImageLayout rawAoLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     VkSampler sampler_ = VK_NULL_HANDLE;

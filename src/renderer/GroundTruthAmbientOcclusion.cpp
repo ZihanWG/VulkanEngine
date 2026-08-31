@@ -38,12 +38,14 @@ static_assert(sizeof(GtaoParams) == 240);
 
 GroundTruthAmbientOcclusion::GroundTruthAmbientOcclusion(rhi::VulkanContext& context,
                                                          rhi::VulkanSwapchain& swapchain,
+                                                         rhi::VulkanPipelineStore& pipelineStore,
                                                          const RenderResolution& renderResolution,
                                                          RenderGraph& renderGraph,
                                                          GpuProfiler& gpuProfiler,
                                                          SsaoSettings& settings)
-    : context_(context), swapchain_(swapchain), renderResolution_(renderResolution), renderGraph_(renderGraph),
-      gpuProfiler_(gpuProfiler), settings_(settings)
+    : context_(context), swapchain_(swapchain), pipelineStore_(pipelineStore),
+      renderResolution_(renderResolution), renderGraph_(renderGraph), gpuProfiler_(gpuProfiler),
+      settings_(settings)
 {
 }
 
@@ -93,16 +95,10 @@ void GroundTruthAmbientOcclusion::createPipeline(const std::filesystem::path& ve
     pipelineInfo.colorFormat = VK_FORMAT_R8_UNORM; // single-channel visibility target
     pipelineInfo.descriptorSetLayouts = std::span<const VkDescriptorSetLayout>(&setLayout, 1);
     pipelineInfo.pipelineCache = context_.pipelineCache();
-    pipeline_.create(context_.vkDevice(), pipelineInfo);
-    rhi::debug::setObjectName(context_.vkDevice(), pipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "GtaoPipeline");
-    rhi::debug::setObjectName(
-        context_.vkDevice(), pipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "GtaoPipelineLayout");
+    pipeline_ = pipelineStore_.get(context_.vkDevice(), pipelineInfo, "GtaoPipeline");
 
     pipelineInfo.fragmentShaderPath = blurFragmentShaderPath;
-    blurPipeline_.create(context_.vkDevice(), pipelineInfo);
-    rhi::debug::setObjectName(context_.vkDevice(), blurPipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "GtaoBlurPipeline");
-    rhi::debug::setObjectName(
-        context_.vkDevice(), blurPipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "GtaoBlurPipelineLayout");
+    blurPipeline_ = pipelineStore_.get(context_.vkDevice(), pipelineInfo, "GtaoBlurPipeline");
 }
 
 void GroundTruthAmbientOcclusion::createResources(VkImageView normalRoughnessView, uint32_t frameCount)
