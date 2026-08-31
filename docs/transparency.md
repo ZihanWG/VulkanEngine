@@ -1,8 +1,8 @@
 # Transparency: alpha modes and render buckets
 
-The renderer implements the glTF 2.0 alpha model. This page covers what is
-shipped today (`OPAQUE` and `MASK`) and how the bucket infrastructure is laid out
-for the `BLEND` pass.
+The renderer implements the glTF 2.0 alpha model. All three modes are shipped:
+`OPAQUE`, `MASK`, and `BLEND` in its own sorted pass. This page covers how each
+one reaches the GPU and how the render buckets are laid out.
 
 ## Alpha modes
 

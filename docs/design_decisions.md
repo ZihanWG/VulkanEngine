@@ -97,8 +97,8 @@ where the primitive-rate saving, rather than the fragment saving, is the point.
 
 **Decision.** `rhi::VulkanPipelineStore` owns every `Renderer`-built graphics
 pipeline, keyed on `rhi::PipelineKey` -- an owning, hashable value form of
-`VulkanPipelineCreateInfo`. The 13 pipeline members are non-owning
-`rhi::PipelineRef`s into it.
+`VulkanPipelineCreateInfo`. Every pipeline member it covers is a non-owning
+`rhi::PipelineRef` into it.
 
 **Why.** Declaring pipelines one member at a time gives no way to ask whether the
 state a caller wants has already been compiled, and two things followed from that.
@@ -113,18 +113,22 @@ opposite for months. Measured on this machine with `--vsm shadows`:
 
 | Configuration | Requests | Pipelines | Shared |
 | --- | --- | --- | --- |
-| Default (VSM off) | 9 | 8 | `SkinnedShadowPipeline` = `SkinnedPunctualShadowPipeline` |
-| `--vsm shadows` | 12 | 9 | the above + `SkinnedVsmPagePipeline`; `PunctualShadowPipeline` = `VsmPagePipeline` |
+| Default (VSM off) | 22 | 21 | `SkinnedShadowPipeline` = `SkinnedPunctualShadowPipeline` |
+| Bindless off | 19 | 18 | as default |
+| `--vsm shadows` | 25 | 22 | the above + `SkinnedVsmPagePipeline`; `PunctualShadowPipeline` = `VsmPagePipeline` |
 
-Five named pipelines resolve to two objects once every optional path is on.
+Five named pipelines resolve to two objects once every optional path is on. The
+default configuration understates it because virtual shadow maps ship off, so
+four of the caster pipelines are never requested -- `--vsm shadows` is what
+exercises them.
 
 Second, format-change detection was a hand-maintained condition. Each pipeline
 kept a shadow copy of its formats (`pipelineColorFormat_`,
 `shadowPipelineDepthFormat_`, ...) that `Renderer::pipelineNeedsRecreate` compared
 against the live ones. A key subsumes that: any state difference is a miss by
-construction rather than by a clause someone remembered to write. (That condition
-is still in place -- retiring it needs `PostProcessStack`'s pipelines routed too,
-or it would be left half automatic and half hand-written.)
+construction rather than by a clause someone remembered to write. That condition
+is still in place; why it could not simply be deleted once everything was routed
+is the last section here.
 
 **Normalization is deliberately minimal.** The two failure modes are not
 symmetric: treating significant state as irrelevant hands back a pipeline built
