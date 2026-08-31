@@ -57,6 +57,7 @@ add_executable(VulkanEngineTests
     test_editor_camera.cpp
     test_scene_builder.cpp
     test_pipeline_cache_header.cpp
+    test_pipeline_key.cpp
     test_render_graph.cpp
     test_render_scale.cpp
     test_dynamic_resolution.cpp

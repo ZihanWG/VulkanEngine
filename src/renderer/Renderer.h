@@ -48,6 +48,7 @@
 #include "rhi/VulkanEnvironmentMap.h"
 #include "rhi/VulkanImage.h"
 #include "rhi/VulkanPipeline.h"
+#include "rhi/VulkanPipelineStore.h"
 #include "rhi/VulkanShadowMap.h"
 #include "rhi/VulkanSwapchain.h"
 #include "rhi/VulkanSync.h"
@@ -374,6 +375,9 @@ private:
     void createMaskedShadowPipeline(const VkVertexInputBindingDescription& binding,
                                     const std::array<VkVertexInputAttributeDescription, 5>& attributes);
     void createComputePipelines();
+    // Reports how many distinct pipelines the store ended up holding, and which
+    // named requests share one. Called once at the end of createPipeline().
+    void logPipelineStoreContents() const;
     void createScene();
     // createScene() helpers (see Renderer.cpp): reset scene state, build the shared
     // meshes/textures/material, try the glTF scene, else the built-in cube fallback.
@@ -870,31 +874,40 @@ private:
     rhi::VulkanDescriptorSetLayout materialDescriptorSetLayout_;
     rhi::VulkanDescriptorSetLayout skyboxDescriptorSetLayout_;
     rhi::VulkanShadowMap shadowMap_;
-    rhi::VulkanPipeline pipeline_;
-    rhi::VulkanPipeline skinnedPipeline_;
-    rhi::VulkanPipeline skyboxPipeline_;
+    // Owns every graphics pipeline below. The rhi::PipelineRef members are
+    // non-owning views into it, so two of them that describe identical state are
+    // the same VkPipeline -- see the shadow casters, where six named members
+    // resolve to two objects. Declared before them so it is destroyed last, and
+    // reset at the top of createPipeline(), which is the point where every
+    // descriptor set layout and attachment format a key holds is re-derived.
+    rhi::VulkanPipelineStore pipelineStore_;
+    rhi::PipelineRef pipeline_;
+    rhi::PipelineRef skinnedPipeline_;
+    rhi::PipelineRef skyboxPipeline_;
     // Immutable in the material set layout; see createShadowCompareSampler.
     VkSampler shadowCompareSampler_ = VK_NULL_HANDLE;
-    rhi::VulkanPipeline shadowPipeline_;
+    rhi::PipelineRef shadowPipeline_;
     // Alpha-tested shadow casters. Separate from shadowPipeline_ because the
     // depth-only pipeline has no fragment stage at all; this one adds the cutout
     // discard and therefore needs the bindless base-color array bound.
-    rhi::VulkanPipeline maskedShadowPipeline_;
+    rhi::PipelineRef maskedShadowPipeline_;
     // Depth-only pipeline for the punctual shadow atlas. Separate from
     // shadowPipeline_ because its push-constant layout carries the slot's
     // view-projection instead of a cascade index.
-    rhi::VulkanPipeline punctualShadowPipeline_;
-    // The skinned demo mesh as a shadow caster. One pipeline per depth target
-    // rather than one shared: the vertex input (two bindings) and push layout
-    // are the same everywhere, but the depth format and raster bias belong to
-    // the target, exactly as they do for the static casters.
-    rhi::VulkanPipeline skinnedShadowPipeline_;
-    rhi::VulkanPipeline skinnedPunctualShadowPipeline_;
-    rhi::VulkanPipeline skinnedVsmPagePipeline_;
-    rhi::VulkanPipeline probeCapturePipeline_;
+    rhi::PipelineRef punctualShadowPipeline_;
+    // The skinned demo mesh as a shadow caster, one ref per depth target. The
+    // vertex input, push layout, depth format and raster bias turn out to be the
+    // same for all three -- every target is an rhi::VulkanShadowMap resolving its
+    // format the same way -- so the store resolves these three names to a single
+    // VkPipeline. They stay three members because their preconditions differ:
+    // the punctual atlas and the VSM page pool each may not exist.
+    rhi::PipelineRef skinnedShadowPipeline_;
+    rhi::PipelineRef skinnedPunctualShadowPipeline_;
+    rhi::PipelineRef skinnedVsmPagePipeline_;
+    rhi::PipelineRef probeCapturePipeline_;
     // glTF BLEND geometry: same shaders as the main pass, but "over" blending,
     // depth writes off, and a scene-color-only attachment set.
-    rhi::VulkanPipeline transparentPipeline_;
+    rhi::PipelineRef transparentPipeline_;
     rhi::VulkanCommandContext commandContext_;
     // Async compute: per-frame command buffers + semaphores for the queue that
     // runs ClusterBuild/LightCull in parallel with the shadow passes. Falls
@@ -1007,8 +1020,8 @@ private:
     // Reused per frame so the caster-flag upload does not allocate.
     std::vector<uint32_t> vsmCasterFlags_;
     std::vector<VkClearRect> vsmPageClearRects_;
-    rhi::VulkanPipeline vsmPagePipeline_;
-    rhi::VulkanPipeline vsmMaskedPagePipeline_;
+    rhi::PipelineRef vsmPagePipeline_;
+    rhi::PipelineRef vsmMaskedPagePipeline_;
     // Highest request count seen since the counter was last reset, which is the
     // number that actually sizes a page pool: an average would hide the peak
     // that overflows it.
@@ -1327,6 +1340,7 @@ private:
                                             renderGraph_,
                                             gpuProfiler_,
                                             swapchain_,
+                                            pipelineStore_,
                                             renderResolution_,
                                             toneMappingSettings_,
                                             bloomSettings_,
@@ -1340,19 +1354,21 @@ private:
     // Screen-space reflections: view-space march against main depth using the
     // thin G-buffer, additively blended into scene color before TAA. Declared
     // after the services + settings it borrows.
-    renderer::ScreenSpaceReflections ssr_{context_, swapchain_, renderResolution_, renderGraph_, gpuProfiler_,
+    renderer::ScreenSpaceReflections ssr_{context_, swapchain_, pipelineStore_, renderResolution_, renderGraph_,
+                                          gpuProfiler_,
                                           ssrSettings_};
 
     // Ground-truth ambient occlusion: horizon-search pass reading main depth +
     // the thin G-buffer normal, writing the visibility target the composite
     // multiplies into scene color. Borrows the same services + the SSAO settings.
-    renderer::GroundTruthAmbientOcclusion gtao_{context_,       swapchain_,   renderResolution_,
+    renderer::GroundTruthAmbientOcclusion gtao_{context_,       swapchain_,   pipelineStore_,   renderResolution_,
                                                 renderGraph_, gpuProfiler_, ssaoSettings_};
 
     // Hi-Z depth pyramid subsystem. Like postProcess_, it owns its GPU resources
     // and borrows the rendering services by reference, so it is declared last to
     // guarantee those are constructed first.
-    renderer::DepthPyramid depthPyramid_{context_, swapchain_, renderResolution_, renderGraph_, gpuProfiler_};
+    renderer::DepthPyramid depthPyramid_{context_, swapchain_, pipelineStore_, renderResolution_, renderGraph_,
+                                         gpuProfiler_};
 
     // GPU-driven visibility culling (main frustum/occlusion + per-cascade shadow).
     // Owns its cull pipeline/descriptors/buffers; borrows the services, the depth

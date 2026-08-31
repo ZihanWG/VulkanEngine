@@ -23,11 +23,12 @@ namespace ve::renderer {
 
 DepthPyramid::DepthPyramid(rhi::VulkanContext& context,
                            rhi::VulkanSwapchain& swapchain,
+                           rhi::VulkanPipelineStore& pipelineStore,
                            const RenderResolution& renderResolution,
                            RenderGraph& renderGraph,
                            GpuProfiler& gpuProfiler)
-    : context_(context), swapchain_(swapchain), renderResolution_(renderResolution), renderGraph_(renderGraph),
-      gpuProfiler_(gpuProfiler)
+    : context_(context), swapchain_(swapchain), pipelineStore_(pipelineStore),
+      renderResolution_(renderResolution), renderGraph_(renderGraph), gpuProfiler_(gpuProfiler)
 {
 }
 
@@ -75,11 +76,7 @@ void DepthPyramid::createPipeline()
     depthPyramidPipelineInfo.pushConstantRanges =
         std::span<const VkPushConstantRange>(&depthPyramidPushConstantRange, 1);
     depthPyramidPipelineInfo.pipelineCache = context_.pipelineCache();
-    pipeline_.create(context_.vkDevice(), depthPyramidPipelineInfo);
-    rhi::debug::setObjectName(
-        context_.vkDevice(), pipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "DepthPyramidComputePipeline");
-    rhi::debug::setObjectName(
-        context_.vkDevice(), pipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "DepthPyramidPipelineLayout");
+    pipeline_ = pipelineStore_.get(context_.vkDevice(), depthPyramidPipelineInfo, "DepthPyramidPipeline");
 }
 
 void DepthPyramid::destroyResources()

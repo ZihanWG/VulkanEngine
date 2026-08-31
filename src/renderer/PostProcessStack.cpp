@@ -29,6 +29,7 @@ PostProcessStack::PostProcessStack(rhi::VulkanContext& context,
                                    RenderGraph& renderGraph,
                                    GpuProfiler& gpuProfiler,
                                    rhi::VulkanSwapchain& swapchain,
+                                   rhi::VulkanPipelineStore& pipelineStore,
                                    const RenderResolution& renderResolution,
                                    ToneMappingSettings& toneMappingSettings,
                                    BloomSettings& bloomSettings,
@@ -39,7 +40,8 @@ PostProcessStack::PostProcessStack(rhi::VulkanContext& context,
                                    float& histogramClippedLuminance,
                                    bool& ssaoAvailable)
     : context_(context), renderGraph_(renderGraph), gpuProfiler_(gpuProfiler), swapchain_(swapchain),
-      renderResolution_(renderResolution), toneMappingSettings_(toneMappingSettings), bloomSettings_(bloomSettings), taaSettings_(taaSettings),
+      pipelineStore_(pipelineStore), renderResolution_(renderResolution),
+      toneMappingSettings_(toneMappingSettings), bloomSettings_(bloomSettings), taaSettings_(taaSettings),
       ssaoSettings_(ssaoSettings), currentExposure_(currentExposure), averageLuminance_(averageLuminance),
       histogramClippedLuminance_(histogramClippedLuminance), ssaoAvailable_(ssaoAvailable)
 {}
@@ -308,15 +310,7 @@ void PostProcessStack::createExposureComputePipelines()
             luminancePipelineInfo.pushConstantRanges =
                 std::span<const VkPushConstantRange>(&luminancePushConstantRange, 1);
             luminancePipelineInfo.pipelineCache = context_.pipelineCache();
-            luminancePipeline_.create(context_.vkDevice(), luminancePipelineInfo);
-            rhi::debug::setObjectName(context_.vkDevice(),
-                                      luminancePipeline_.pipeline(),
-                                      VK_OBJECT_TYPE_PIPELINE,
-                                      "AutoExposureComputePipeline");
-            rhi::debug::setObjectName(context_.vkDevice(),
-                                      luminancePipeline_.layout(),
-                                      VK_OBJECT_TYPE_PIPELINE_LAYOUT,
-                                      "AutoExposurePipelineLayout");
+            luminancePipeline_ = pipelineStore_.get(context_.vkDevice(), luminancePipelineInfo, "LuminancePipeline");
         } catch (const std::exception& error) {
             disableLogAverageExposureFallback(std::string("Log-average exposure compute pipeline creation failed: ") +
                                               error.what());
@@ -333,15 +327,7 @@ void PostProcessStack::createExposureComputePipelines()
             histogramPipelineInfo.pushConstantRanges =
                 std::span<const VkPushConstantRange>(&histogramPushConstantRange, 1);
             histogramPipelineInfo.pipelineCache = context_.pipelineCache();
-            histogramPipeline_.create(context_.vkDevice(), histogramPipelineInfo);
-            rhi::debug::setObjectName(context_.vkDevice(),
-                                      histogramPipeline_.pipeline(),
-                                      VK_OBJECT_TYPE_PIPELINE,
-                                      "HistogramExposureComputePipeline");
-            rhi::debug::setObjectName(context_.vkDevice(),
-                                      histogramPipeline_.layout(),
-                                      VK_OBJECT_TYPE_PIPELINE_LAYOUT,
-                                      "HistogramExposurePipelineLayout");
+            histogramPipeline_ = pipelineStore_.get(context_.vkDevice(), histogramPipelineInfo, "HistogramPipeline");
         } catch (const std::exception& error) {
             disableHistogramExposureFallback(std::string("Histogram exposure compute pipeline creation failed: ") +
                                              error.what());
@@ -359,15 +345,8 @@ void PostProcessStack::createExposureComputePipelines()
                 exposureReducePipelineInfo.pushConstantRanges =
                     std::span<const VkPushConstantRange>(&exposureReducePushConstantRange, 1);
                 exposureReducePipelineInfo.pipelineCache = context_.pipelineCache();
-                exposureReducePipeline_.create(context_.vkDevice(), exposureReducePipelineInfo);
-                rhi::debug::setObjectName(context_.vkDevice(),
-                                          exposureReducePipeline_.pipeline(),
-                                          VK_OBJECT_TYPE_PIPELINE,
-                                          "ExposureReduceComputePipeline");
-                rhi::debug::setObjectName(context_.vkDevice(),
-                                          exposureReducePipeline_.layout(),
-                                          VK_OBJECT_TYPE_PIPELINE_LAYOUT,
-                                          "ExposureReducePipelineLayout");
+                exposureReducePipeline_ = pipelineStore_.get(
+                    context_.vkDevice(), exposureReducePipelineInfo, "ExposureReducePipeline");
             } catch (const std::exception& error) {
                 disableAutoExposureFallback(std::string("GPU exposure reduce compute pipeline creation failed: ") +
                                             error.what());
@@ -1633,6 +1612,10 @@ void PostProcessStack::disableAutoExposureFallback(std::string_view reason)
     currentExposure_ = toneMappingExposureValue(toneMappingSettings_.manualExposure);
     destroyLuminanceResources();
     destroyHistogramResources();
+    // Clearing the refs marks the feature unavailable, which is what every reader
+    // of these checks for. It no longer destroys the VkPipeline -- the store owns
+    // that and reclaims it at the next createPipeline(). Holding a few unused
+    // compute pipelines until then is the cost of one owner for all of them.
     luminancePipeline_.reset();
     histogramPipeline_.reset();
     exposureReducePipeline_.reset();
@@ -1696,13 +1679,7 @@ void PostProcessStack::createBloomPipelines()
         std::span<const VkPushConstantRange>(&bloomExtractPushConstantRange, 1);
 
     bloomExtractPipelineInfo.pipelineCache = context_.pipelineCache();
-    bloomExtractPipeline_.create(context_.vkDevice(), bloomExtractPipelineInfo);
-    rhi::debug::setObjectName(
-        context_.vkDevice(), bloomExtractPipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "BloomExtractPipeline");
-    rhi::debug::setObjectName(context_.vkDevice(),
-                              bloomExtractPipeline_.layout(),
-                              VK_OBJECT_TYPE_PIPELINE_LAYOUT,
-                              "BloomExtractPipelineLayout");
+    bloomExtractPipeline_ = pipelineStore_.get(context_.vkDevice(), bloomExtractPipelineInfo, "BloomExtractPipeline");
     bloomExtractPipelineColorFormat_ = bloomExtractPipelineInfo.colorFormat;
 
     rhi::VulkanPipelineCreateInfo bloomBlurPipelineInfo{};
@@ -1714,11 +1691,7 @@ void PostProcessStack::createBloomPipelines()
     bloomBlurPipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&bloomBlurPushConstantRange, 1);
 
     bloomBlurPipelineInfo.pipelineCache = context_.pipelineCache();
-    bloomBlurPipeline_.create(context_.vkDevice(), bloomBlurPipelineInfo);
-    rhi::debug::setObjectName(
-        context_.vkDevice(), bloomBlurPipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "BloomBlurPipeline");
-    rhi::debug::setObjectName(
-        context_.vkDevice(), bloomBlurPipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "BloomBlurPipelineLayout");
+    bloomBlurPipeline_ = pipelineStore_.get(context_.vkDevice(), bloomBlurPipelineInfo, "BloomBlurPipeline");
     bloomBlurPipelineColorFormat_ = bloomBlurPipelineInfo.colorFormat;
 
     rhi::VulkanPipelineCreateInfo bloomDownsamplePipelineInfo{};
@@ -1731,13 +1704,8 @@ void PostProcessStack::createBloomPipelines()
         std::span<const VkPushConstantRange>(&bloomDownsamplePushConstantRange, 1);
 
     bloomDownsamplePipelineInfo.pipelineCache = context_.pipelineCache();
-    bloomDownsamplePipeline_.create(context_.vkDevice(), bloomDownsamplePipelineInfo);
-    rhi::debug::setObjectName(
-        context_.vkDevice(), bloomDownsamplePipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "BloomDownsamplePipeline");
-    rhi::debug::setObjectName(context_.vkDevice(),
-                              bloomDownsamplePipeline_.layout(),
-                              VK_OBJECT_TYPE_PIPELINE_LAYOUT,
-                              "BloomDownsamplePipelineLayout");
+    bloomDownsamplePipeline_ =
+        pipelineStore_.get(context_.vkDevice(), bloomDownsamplePipelineInfo, "BloomDownsamplePipeline");
     bloomDownsamplePipelineColorFormat_ = bloomDownsamplePipelineInfo.colorFormat;
 
     rhi::VulkanPipelineCreateInfo bloomUpsamplePipelineInfo{};
@@ -1750,13 +1718,8 @@ void PostProcessStack::createBloomPipelines()
         std::span<const VkPushConstantRange>(&bloomUpsamplePushConstantRange, 1);
 
     bloomUpsamplePipelineInfo.pipelineCache = context_.pipelineCache();
-    bloomUpsamplePipeline_.create(context_.vkDevice(), bloomUpsamplePipelineInfo);
-    rhi::debug::setObjectName(
-        context_.vkDevice(), bloomUpsamplePipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "BloomUpsamplePipeline");
-    rhi::debug::setObjectName(context_.vkDevice(),
-                              bloomUpsamplePipeline_.layout(),
-                              VK_OBJECT_TYPE_PIPELINE_LAYOUT,
-                              "BloomUpsamplePipelineLayout");
+    bloomUpsamplePipeline_ =
+        pipelineStore_.get(context_.vkDevice(), bloomUpsamplePipelineInfo, "BloomUpsamplePipeline");
     bloomUpsamplePipelineColorFormat_ = bloomUpsamplePipelineInfo.colorFormat;
 }
 
@@ -1775,11 +1738,7 @@ void PostProcessStack::createTaaResolvePipeline()
     taaResolvePipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&taaResolvePushConstantRange, 1);
 
     taaResolvePipelineInfo.pipelineCache = context_.pipelineCache();
-    taaResolvePipeline_.create(context_.vkDevice(), taaResolvePipelineInfo);
-    rhi::debug::setObjectName(
-        context_.vkDevice(), taaResolvePipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "TAAResolvePipeline");
-    rhi::debug::setObjectName(
-        context_.vkDevice(), taaResolvePipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "TAAResolvePipelineLayout");
+    taaResolvePipeline_ = pipelineStore_.get(context_.vkDevice(), taaResolvePipelineInfo, "TAAResolvePipeline");
     taaResolvePipelineColorFormat_ = taaResolvePipelineInfo.colorFormat;
 }
 
@@ -1799,11 +1758,7 @@ void PostProcessStack::createCompositePipeline()
     compositePipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&compositePushConstantRange, 1);
 
     compositePipelineInfo.pipelineCache = context_.pipelineCache();
-    compositePipeline_.create(context_.vkDevice(), compositePipelineInfo);
-    rhi::debug::setObjectName(
-        context_.vkDevice(), compositePipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "CompositePipeline");
-    rhi::debug::setObjectName(
-        context_.vkDevice(), compositePipeline_.layout(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, "CompositePipelineLayout");
+    compositePipeline_ = pipelineStore_.get(context_.vkDevice(), compositePipelineInfo, "CompositePipeline");
     compositePipelineColorFormat_ = compositePipelineInfo.colorFormat;
 }
 

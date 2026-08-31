@@ -23,6 +23,7 @@
 #include "rhi/VulkanDescriptor.h"
 #include "rhi/VulkanImage.h"
 #include "rhi/VulkanPipeline.h"
+#include "rhi/VulkanPipelineStore.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -46,6 +47,7 @@ class ScreenSpaceReflections final {
 public:
     ScreenSpaceReflections(rhi::VulkanContext& context,
                            rhi::VulkanSwapchain& swapchain,
+                           rhi::VulkanPipelineStore& pipelineStore,
                            const RenderResolution& renderResolution,
                            RenderGraph& renderGraph,
                            GpuProfiler& gpuProfiler,
@@ -106,6 +108,10 @@ public:
 private:
     rhi::VulkanContext& context_;
     rhi::VulkanSwapchain& swapchain_;
+    // Borrowed from Renderer, which owns it and resets it in createPipeline() --
+    // the only place this subsystem's pipeline is built, which is what makes a ref
+    // into it safe. See rhi/VulkanPipelineStore.h.
+    rhi::VulkanPipelineStore& pipelineStore_;
     const RenderResolution& renderResolution_;
     RenderGraph& renderGraph_;
     GpuProfiler& gpuProfiler_;
@@ -113,7 +119,7 @@ private:
 
     rhi::VulkanDescriptorSetLayout descriptorSetLayout_;
     rhi::VulkanDescriptorPool descriptorPool_;
-    rhi::VulkanPipeline pipeline_;
+    rhi::PipelineRef pipeline_;
     rhi::VulkanImage sceneColorCopy_;
     VkImageLayout sceneColorCopyLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 
