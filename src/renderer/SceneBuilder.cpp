@@ -1,4 +1,4 @@
-#include "renderer/SceneBuilder.h"
+﻿#include "renderer/SceneBuilder.h"
 
 #include "core/Logger.h"
 
@@ -529,7 +529,9 @@ bool SceneBuilder::appendStressScene(std::vector<RenderObject>& objects, std::st
     return true;
 }
 
-bool SceneBuilder::appendFragmentStressScene(std::vector<RenderObject>& objects, std::string& status) const
+bool SceneBuilder::appendFragmentStressScene(std::vector<RenderObject>& objects,
+                                            std::string& status,
+                                            int layerCount) const
 {
     if (!cubeMesh_.valid() || materials_.empty()) {
         status = "Fragment stress scene is unavailable: cube mesh or runtime materials are not initialized.";
@@ -560,7 +562,7 @@ bool SceneBuilder::appendFragmentStressScene(std::vector<RenderObject>& objects,
         objects.push_back(std::move(object));
     };
 
-    objects.reserve(objects.size() + static_cast<size_t>(kFragmentStressObjectCount));
+    objects.reserve(objects.size() + static_cast<size_t>(layerCount) + 1u);
 
     add("Fragment Stress Floor", materialAt(kPortfolioGroundMaterialIndex), {0.0f, -1.0f, 0.0f}, {60.0f, 0.5f, 60.0f});
 
@@ -568,11 +570,16 @@ bool SceneBuilder::appendFragmentStressScene(std::vector<RenderObject>& objects,
     // are drawn front to back after the depth sort, but the fragment cost is
     // paid regardless on a tile-based GPU: every layer that survives the depth
     // test shades, and the near ones do not occlude enough to save the far ones.
-    for (int layer = 0; layer < kFragmentStressLayerCount; ++layer) {
-        const float t = static_cast<float>(layer) / static_cast<float>(kFragmentStressLayerCount);
+    for (int layer = 0; layer < layerCount; ++layer) {
+        const float t = static_cast<float>(layer) / static_cast<float>(layerCount);
         add("Fragment Stress Layer " + std::to_string(layer),
             materialAt(static_cast<size_t>(layer)),
-            {0.0f, 3.0f + t * 1.5f, -4.0f - static_cast<float>(layer) * 3.5f},
+            // Spread across a fixed depth span rather than a fixed spacing, so more
+            // layers means denser overdraw instead of a longer tunnel whose far end
+            // shrinks out of frame. At the original six layers this is the same
+            // arithmetic it replaces -- layer * 3.5 and (layer / 6) * 21 agree --
+            // so fragment-stress keeps the geometry its measurements were taken on.
+            {0.0f, 3.0f + t * 1.5f, -4.0f - t * kFragmentStressDepthSpan},
             {26.0f, 9.0f, 0.35f});
     }
 

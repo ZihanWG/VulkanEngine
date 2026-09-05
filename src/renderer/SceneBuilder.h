@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // SceneBuilder constructs the renderer's CPU-side scene object lists (the default
 // portfolio showcase, the built-in cube fallback, and the procedural occlusion
@@ -107,6 +107,33 @@ constexpr int kFragmentStressLayerCount = 6;
 constexpr int kFragmentStressObjectCount = kFragmentStressLayerCount + 1;
 constexpr int kFragmentStressLightCount = 192;
 constexpr float kFragmentStressLightRange = 14.0f;
+// Depth the slabs are spread over, whatever their count. 6 * 3.5 -- the spacing
+// this replaced -- so the original layout is unchanged.
+constexpr float kFragmentStressDepthSpan = 21.0f;
+
+// --- GPU stress ------------------------------------------------------------
+//
+// The same shape as fragment stress, turned up until the GPU frame is large
+// enough to measure against. It exists for the measurement problem rather than
+// for the renderer: on an RTX 3080 Ti at 1280x720 every other preset produces a
+// 1-2 ms GPU frame, and tools/dev/measure_gpu.py's control-drift gate cannot
+// resolve a change that small -- the card idles between frames and its clock
+// wanders further than the effect being measured. The harness says as much in
+// its own docs: a heavier preset pins the clock and the comparison becomes
+// quotable.
+//
+// Both knobs cost GPU and almost no CPU, which is the point. Layers are
+// overdraw, so they multiply fragment work while adding one draw item each;
+// lights feed the per-froxel loop, and the light list is a fixed-size upload
+// whatever its length. A preset that scaled draw items instead would just move
+// the bottleneck back onto the CPU, where `stress` already is.
+constexpr int kGpuStressLayerCount = 24;
+constexpr int kGpuStressObjectCount = kGpuStressLayerCount + 1;
+// Past saturating kMaxLightsPerCluster (64) per froxel, more lights buy nothing:
+// the loop is bounded by what a froxel holds, not by the total. This is chosen
+// to saturate the froxels the slabs occupy, not to approach ClusteredLighting's
+// 1024-light ceiling.
+constexpr int kGpuStressLightCount = 512;
 
 // --- Sunlit yard -----------------------------------------------------------
 //
@@ -168,7 +195,11 @@ public:
 
     // Appends the fragment stress scene: overlapping full-frame slabs whose
     // whole purpose is overdraw and screen coverage.
-    bool appendFragmentStressScene(std::vector<RenderObject>& objects, std::string& status) const;
+    // layerCount is the overdraw knob; fragment stress and GPU stress differ by
+    // nothing else in the geometry.
+    bool appendFragmentStressScene(std::vector<RenderObject>& objects,
+                                   std::string& status,
+                                   int layerCount = kFragmentStressLayerCount) const;
 
     // Appends the sunlit yard: ground, back wall, and casters chosen so a low
     // sun throws long, unambiguous shadows across the ground.

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // Command-line parsing for the engine executable.
 //
@@ -34,6 +34,9 @@ enum class ScenePreset {
     // shadows are legible rather than a faint tint, which is what makes shadow
     // work judgeable from a picture instead of from patch means.
     SunlitYard,
+    // fragment-stress turned up until the GPU frame is large enough to measure
+    // against. See kGpuStressLayerCount.
+    GpuStress,
 };
 
 // Parses a --scene value. Returns false for an unknown name rather than
@@ -74,6 +77,12 @@ enum class VsmMode {
 
 struct LaunchOptions {
     std::string title = "VulkanEngine";
+    // Presentation size, and with it the render target size. Settable from the
+    // command line because it is the only load knob with no ceiling and no CPU
+    // cost: renderScale only scales down, the scene presets are bounded by
+    // early-Z and by kMaxLightsPerCluster, and every one of them leaves an
+    // RTX 3080 Ti at a 1-2 ms GPU frame that measure_gpu.py's drift gate cannot
+    // resolve a change against.
     int width = 1280;
     int height = 720;
 
