@@ -151,3 +151,104 @@ The same major ranges also use `VK_EXT_debug_utils` labels through the existing 
 - The profiler has a fixed per-frame query capacity. The UI reports query usage and warns if the frame exceeds the configured capacity.
 - Passes that run on the async compute queue are timestamped on that queue, so their rows are not directly comparable with graphics-queue rows on the same timeline. The debug UI notes this next to `ClusterBuild`/`LightCull`.
 - Timeline lane visualization and RenderDoc capture automation are future work.
+
+## Load knobs, and why they did not fix the drift gate
+
+`tools/dev/measure_gpu.py` refuses a comparison when the repeated control moves
+more than 1% across the series. Its own documentation suggests the remedy: *"A
+heavier preset pins the clock and the same comparison becomes quotable."* On this
+machine -- an RTX 3080 Ti **Laptop** -- that advice is backwards, and it is worth
+recording so nobody spends another afternoon on it.
+
+### The knobs
+
+**`--scene gpu-stress`** is `fragment-stress` turned up: 24 overdraw layers
+instead of 6, 512 lights instead of 192. Both knobs cost GPU and almost no CPU,
+which is the point -- a preset that scaled draw items instead would just move the
+bottleneck back onto the CPU, where `stress` already is. The slabs are spread
+across a fixed depth span rather than at a fixed spacing, so more layers means
+denser overdraw rather than a longer tunnel whose far end shrinks out of frame; at
+six layers that arithmetic is identical to what it replaced, so `fragment-stress`
+is bit-identical and keeps the measurements taken on it.
+
+**`--window-size WIDTHxHEIGHT`** is the lever with no ceiling. `renderScale` only
+scales *down*, the scene presets are bounded by early-Z and by
+`kMaxLightsPerCluster`, and resolution is the one input that multiplies fragment
+work while costing nothing on the CPU:
+
+| `--scene gpu-stress` | GPU frame | CPU prep | CPU record |
+| --- | --- | --- | --- |
+| 1280x720 | 2.45 ms | 0.15 ms | 0.20 ms |
+| 1920x1080 | 3.71 ms | 0.19 ms | 0.25 ms |
+| 2560x1440 | 6.68 ms | 0.16 ms | 0.23 ms |
+| 3840x2160 | **14.54 ms** | 0.18 ms | 0.28 ms |
+
+Six times the GPU work with the CPU flat, ending at 31:1 GPU-bound. As a way to
+put load on the card, it works exactly as intended.
+
+### It made the measurement worse, not better
+
+The drift gate was run against `punctualShadows.gpuCasterCulling` at every size.
+Best control drift achieved, against a 1% limit:
+
+| load | GPU frame | best drift |
+| --- | --- | --- |
+| `stress` at 720p | 1.0 ms | **1.4%** |
+| `gpu-stress` at 1440p | 7.4 ms | 16.8% |
+| `gpu-stress` at 4K | 14.5 ms | 9.6% |
+
+Drift grows with GPU load. Shortening the sample window did not help either -- the
+1440p figure above is from the shortest run the harness accepts.
+
+The cause is visible from `nvidia-smi`: this GPU's graphics clock ranges from
+**472 MHz idle to 2100 MHz boost**, a 4.4x swing, with no user-settable power
+limit. A desktop card under sustained load settles at a steady boost clock, which
+is what "a heavier preset pins the clock" assumes. A laptop card under sustained
+load throttles instead, and a throttling clock *is* a drifting control.
+
+### What actually fixes it, and how far it goes
+
+Pin the clocks. That removes the drift at its source instead of trying to out-run
+it. `tools/dev/gpu_clock.ps1` wraps it and self-elevates, because the device
+writes need administrator:
+
+```
+powershell -File tools/dev/gpu_clock.ps1 lock            # graphics 1400, memory 7001
+powershell -File tools/dev/gpu_clock.ps1 status          # needs no privileges
+powershell -File tools/dev/gpu_clock.ps1 unlock
+```
+
+With the graphics clock pinned at 1400 MHz, the same A/B that had been refused
+eight times in a row:
+
+| A/B on `punctualShadows.gpuCasterCulling` | control drift | verdict |
+| --- | --- | --- |
+| `--scene stress` | **0.30%** | passes (limit 1%) |
+| `--scene gpu-stress` | 9.0% | still refused |
+
+The first row is the first time the gate has ever passed on this machine; the
+previous best across eight attempts was 1.4%.
+
+The second row is the part worth remembering: **a pin is a ceiling, not a
+floor.** Sampling `nvidia-smi` every two seconds during a `gpu-stress` run, with
+the pin in place:
+
+| t | graphics | memory | temp | sw_thermal_slowdown |
+| --- | --- | --- | --- | --- |
+| 2 s | 1402 MHz | 7001 MHz | 86 C | Not Active |
+| 4 s | 1282 MHz | 8001 MHz | 87 C | **Active** |
+| 12 s | 1320 MHz | 6001 MHz | 86 C | **Active** |
+| 20 s | 1320 MHz | 7001 MHz | 86 C | **Active** |
+
+Two separate leaks. The card reaches its thermal threshold and slides *below* the
+pin; and the memory clock was never pinned at all, hopping 6001/7001/8001 -- a
+33% swing in the one resource a bandwidth-bound scene is waiting on. So the
+script pins both, and a heavier scene needs a *lower* graphics pin, not a higher
+one. Run `status` during a measurement: if any throttle reason reads Active the
+pin is not holding, and the gate will refuse the comparison no matter how long
+the run is.
+
+Until a comparison passes the gate it is directional at best, and the honest
+thing is to report a refused comparison as refused. Absolute numbers, per-pass
+breakdowns and anything measured in bytes remain trustworthy; it is only the A/B
+deltas that the clock takes away.

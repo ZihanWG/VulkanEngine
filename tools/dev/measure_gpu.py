@@ -22,9 +22,15 @@ identically to both sides of an A/B so the scene is never the variable.
 Reach for it when the control keeps drifting: the drift gate assumes the machine
 holds a steady clock, and the default scene is light enough on a fast discrete
 GPU that it does not -- the part idles between frames and the boost clock wanders
-more than the effect being measured. A heavier preset pins the clock and the same
-comparison becomes quotable. ``CONTROL_DRIFT_LIMIT`` is itself calibrated on
-hardware, not universal.
+more than the effect being measured.
+
+A heavier preset is NOT the remedy on a laptop, whatever this docstring used to
+say. Measured on an RTX 3080 Ti Laptop: drift grew with load (1.4% on ``stress``,
+9.6% at 4K), because the card throttles rather than settling at a steady boost.
+Pin the clocks instead -- ``tools/dev/gpu_clock.ps1 lock`` -- which took the same
+comparison to 0.30%. A pin is a ceiling, not a floor, so a heavier scene needs a
+*lower* pin; see docs/profiling.md. ``CONTROL_DRIFT_LIMIT`` is itself calibrated
+on hardware, not universal.
 
 Usage:
     tools/dev/measure_gpu.py run   [--set k=v ...] [--label NAME] [--args ...]
