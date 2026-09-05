@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // PostProcessStack owns the HDR post-process subsystem extracted from the
 // monolithic Renderer: the SceneColorHDR target, bloom (legacy + mip chain),
@@ -232,9 +232,21 @@ public:
     {
         return postProcessSampler_;
     }
-    // Rebuilds the bloom chain into `pool` at these offsets on the next resource
-    // creation. Pass an empty map to go back to private allocations.
-    void setBloomAliasPlan(std::unordered_map<std::string, VkDeviceSize> offsets,
+    // What the transient plan decided for one bloom image.
+    struct BloomAliasPlacement {
+        VkDeviceSize offset = 0;
+        // Set when the planner deliberately left this image out because no pass
+        // this frame uses it -- the mip chain culls the two-target bloom images
+        // and vice versa, so one of the two groups is always unused. Such an
+        // image gets a private allocation, which is safe precisely because
+        // nothing reads or writes it. A *used* image with no placement is a
+        // planning bug and still tears the whole chain down.
+        bool unusedThisFrame = false;
+    };
+
+    // Rebuilds the bloom chain into `pool` at these placements on the next
+    // resource creation. Pass an empty map to go back to private allocations.
+    void setBloomAliasPlan(std::unordered_map<std::string, BloomAliasPlacement> placements,
                            VkDeviceSize poolBytes,
                            uint32_t memoryTypeBits,
                            VkDeviceSize alignment);
@@ -557,7 +569,7 @@ private:
     // writes that reference their views are rebuilt together by the one path
     // that already knows how to do both.
     rhi::VulkanTransientMemoryPool bloomPool_;
-    std::unordered_map<std::string, VkDeviceSize> bloomAliasOffsets_;
+    std::unordered_map<std::string, BloomAliasPlacement> bloomAliasOffsets_;
     // The allocation extent the offsets were computed for. A resize invalidates
     // them: offsets and pool size are both extent-dependent.
     VkExtent2D bloomAliasPlanExtent_{};

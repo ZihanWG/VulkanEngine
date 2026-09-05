@@ -12,7 +12,6 @@
 
 namespace ve::rhi {
 
-inline constexpr uint32_t kMaxFramesInFlight = 2;
 
 inline const char* vkResultToString(VkResult result)
 {

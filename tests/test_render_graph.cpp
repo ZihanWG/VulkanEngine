@@ -1,4 +1,4 @@
-// Render graph pass culling: the backward liveness sweep that decides which
+﻿// Render graph pass culling: the backward liveness sweep that decides which
 // declared passes actually run. It is the graph's one piece of non-trivial pure
 // logic, and a mistake in it either drops work that was needed (missing shadows,
 // a black screen) or keeps work that was not, silently, with no validation error
@@ -1422,6 +1422,78 @@ TEST_CASE("Texture and buffer indices do not collide", "[rendergraph][barriers]"
 // short lets two live resources share bytes, which corrupts the frame; one that
 // is too long is safe but silently prevents the sharing the allocator exists to
 // do. Neither shows up as a validation error.
+
+TEST_CASE("A history-read texture is live for the whole frame")
+{
+    // The interval this frame's usages describe is not the interval the bytes
+    // have to survive: the read consumes what the *previous* frame wrote. Written
+    // late and read early, it looks free at the start of the frame, and anything
+    // the allocator packs there overwrites -- at the start of frame N+1 -- exactly
+    // what frame N left for it. The read happens after the clobber, so only the
+    // pixels ever say so.
+    RenderResourceUsage historyRead = texture(0, RenderResourceAccess::Read);
+    historyRead.readKind = ve::renderer::RGReadKind::History;
+
+    std::vector<RenderPassNode> passes = {
+        pass("read history early", {historyRead}, /*sideEffect=*/true),
+        pass("unrelated", {texture(1, RenderResourceAccess::Write)}, /*sideEffect=*/true),
+        pass("write late", {texture(0, RenderResourceAccess::Write)}, /*sideEffect=*/true),
+    };
+
+    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, survivingOrder(passes), 2);
+
+    REQUIRE(lifetimes.size() == 2);
+    REQUIRE(lifetimes[0].used);
+    CHECK(lifetimes[0].firstPass == 0);
+    CHECK(lifetimes[0].lastPass == 2);
+
+    // The unrelated texture keeps its own tight interval; widening is not
+    // contagious.
+    REQUIRE(lifetimes[1].used);
+    CHECK(lifetimes[1].firstPass == 1);
+    CHECK(lifetimes[1].lastPass == 1);
+}
+
+TEST_CASE("A history read widens the interval even when every usage sits in the middle")
+{
+    // The dangerous shape is the one where the natural interval leaves free space
+    // on both sides. Without widening, the allocator would happily place another
+    // resource in slot 0 or slot 3 and clobber the history across the frame
+    // boundary.
+    RenderResourceUsage historyRead = texture(0, RenderResourceAccess::Read);
+    historyRead.readKind = ve::renderer::RGReadKind::History;
+
+    std::vector<RenderPassNode> passes = {
+        pass("before", {texture(1, RenderResourceAccess::Write)}, /*sideEffect=*/true),
+        pass("history", {historyRead}, /*sideEffect=*/true),
+        pass("write", {texture(0, RenderResourceAccess::Write)}, /*sideEffect=*/true),
+        pass("after", {texture(1, RenderResourceAccess::Read)}, /*sideEffect=*/true),
+    };
+
+    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, survivingOrder(passes), 2);
+
+    REQUIRE(lifetimes[0].used);
+    CHECK(lifetimes[0].firstPass == 0);
+    CHECK(lifetimes[0].lastPass == 3);
+}
+
+TEST_CASE("An ordinary read does not widen a lifetime")
+{
+    // The guard is specific to RGReadKind::History. A Produced read consumes what
+    // this frame made, so its interval is honest and the allocator should keep
+    // being allowed to pack around it.
+    std::vector<RenderPassNode> passes = {
+        pass("unrelated", {texture(1, RenderResourceAccess::Write)}, /*sideEffect=*/true),
+        pass("produce", {texture(0, RenderResourceAccess::Write)}),
+        pass("consume", {texture(0, RenderResourceAccess::Read)}, /*sideEffect=*/true),
+    };
+
+    const auto lifetimes = ve::renderer::computeTextureLifetimes(passes, survivingOrder(passes), 2);
+
+    REQUIRE(lifetimes[0].used);
+    CHECK(lifetimes[0].firstPass == 1);
+    CHECK(lifetimes[0].lastPass == 2);
+}
 
 TEST_CASE("A texture used by one pass has a single-pass lifetime")
 {

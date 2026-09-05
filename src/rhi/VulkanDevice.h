@@ -1,10 +1,12 @@
 #pragma once
 
+#include "rhi/DeviceExtensionSelection.h"
 #include "rhi/VulkanCommon.h"
 
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace ve::rhi {
@@ -84,6 +86,10 @@ private:
     void createLogicalDevice();
     void createPipelineCache();
     void destroyPipelineCache();
+    // One table naming, for every negotiated capability, the path that is
+    // actually live -- not just whether the feature was found. Emitted once at
+    // startup so a bug report carries the answer without a second run.
+    void logCapabilityReport(std::span<const ExtensionOutcome> optionalExtensions) const;
 
     [[nodiscard]] QueueFamilyIndices findQueueFamilies(VkPhysicalDevice candidate) const;
     [[nodiscard]] bool checkDeviceExtensionSupport(VkPhysicalDevice candidate) const;

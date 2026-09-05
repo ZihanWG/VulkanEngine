@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "assets/AssetManager.h"
 #include "core/JobSystem.h"
@@ -208,6 +208,16 @@ private:
     static constexpr size_t kRenderBucketCount = renderer::kRenderBucketCount;
 
     [[nodiscard]] static RenderBucket renderBucketForMaterial(const renderer::Material* material);
+    // Whether this material's geometry is drawn with back-face culling disabled.
+    // A missing material is treated as single-sided, matching the opaque bucket
+    // default above: the built-in fallback geometry is wound correctly.
+    [[nodiscard]] static bool materialIsDoubleSided(const renderer::Material* material);
+    // The main-pass pipeline a draw with this facing rule binds. Falls back to the
+    // single-sided one if the two-sided ref is null: both come from the same
+    // createMainGraphicsPipeline() call and the same store generation, so that
+    // cannot happen today, but binding VK_NULL_HANDLE is a validation error and
+    // drawing one panel with the wrong cull mode is not.
+    [[nodiscard]] VkPipeline mainPipelineFor(bool doubleSided) const;
     [[nodiscard]] static const char* renderBucketName(RenderBucket bucket);
 
     using DrawItem = renderer::DrawItem;
@@ -777,6 +787,13 @@ private:
     void drawHistoryPlot(const DebugHistory& history, float height) const;
     void clampRuntimeSettings();
     void updateCpuFrameTime();
+    // Per-unit recording cost, logged separately from the GPU timings block
+    // so the measurement harness does not read CPU numbers as GPU scopes.
+    void emitRecordCpuBreakdown() const;
+    // Rebuild every pipeline when the compiled shader directory changes. Polled,
+    // not watched: a digest of a few dozen small files once a second is cheaper
+    // than a platform file-watch API and has no per-platform code.
+    void tryReloadShaders();
     void pushGpuTimingSample(const renderer::GpuProfiler::FrameResults& results);
     void resetGpuProfilerHistory();
     [[nodiscard]] DebugHistory* gpuTimingHistoryForPass(std::string_view name);
@@ -882,6 +899,12 @@ private:
     // descriptor set layout and attachment format a key holds is re-derived.
     rhi::VulkanPipelineStore pipelineStore_;
     rhi::PipelineRef pipeline_;
+    // The main pipeline again with culling disabled, for materials marked
+    // doubleSided. Identical in every other respect, so when back-face culling is
+    // off globally both cull modes resolve to VK_CULL_MODE_NONE, PipelineKey
+    // hashes the two requests the same, and the store hands back one pipeline for
+    // both refs -- the split costs nothing until culling is actually on.
+    rhi::PipelineRef pipelineDoubleSided_;
     rhi::PipelineRef skinnedPipeline_;
     rhi::PipelineRef skyboxPipeline_;
     // Immutable in the material set layout; see createShadowCompareSampler.
@@ -902,6 +925,11 @@ private:
     // VkPipeline. They stay three members because their preconditions differ:
     // the punctual atlas and the VSM page pool each may not exist.
     rhi::PipelineRef skinnedShadowPipeline_;
+    // Multiview variant of the above, built only when the layered cascade path
+    // is active. Separate pipeline rather than a mode on one: gl_ViewIndex needs
+    // the MultiView SPIR-V capability, and such a module is invalid in a
+    // pipeline built without a view mask.
+    rhi::PipelineRef skinnedLayeredShadowPipeline_;
     rhi::PipelineRef skinnedPunctualShadowPipeline_;
     rhi::PipelineRef skinnedVsmPagePipeline_;
     rhi::PipelineRef probeCapturePipeline_;
@@ -949,6 +977,19 @@ private:
     renderer::IrradianceProbeVolume irradianceProbes_;
     renderer::SkinnedMesh skinnedMesh_;
     rhi::VulkanDescriptorPool materialDescriptorPool_;
+    // The one set every material shares while bindless material textures are
+    // active. Set 0 holds three per-material bindings and eleven global ones, and
+    // the bindless path samples the three from the heap instead -- so every
+    // material's set was a copy of the same eleven, and the recorder only ever
+    // bound one of them anyway (globalMaterialDescriptorSet). Allocating one
+    // makes that true rather than merely observed, and lifts the material count
+    // off kMaxMaterialDescriptorSets. VK_NULL_HANDLE without bindless, where the
+    // per-material bindings are live and each material does need its own.
+    VkDescriptorSet sharedEnvironmentDescriptorSet_ = VK_NULL_HANDLE;
+    // Sets actually allocated out of materialDescriptorPool_. Reported, because
+    // "every material shares one set" is a claim that should be checkable from a
+    // log rather than inferred from the code.
+    uint32_t materialDescriptorSetsAllocated_ = 0;
     rhi::VulkanDescriptorPool skyboxDescriptorPool_;
     VkDescriptorSet skyboxDescriptorSet_ = VK_NULL_HANDLE;
     renderer::Camera camera_;
@@ -1033,7 +1074,29 @@ private:
     // Whether the idle-pool layout transition has been recorded. One-shot per
     // pool: re-recording it every frame would be a barrier for nothing.
     bool vsmPagePoolIdleTransitionDone_ = false;
-    std::vector<VkFence> imagesInFlight_;
+    // Per swapchain image, the frame-timeline value the submission that last
+    // wrote it will signal; zero when no frame owns it. Waiting for that value
+    // before recording into the image again is what stops two frame slots from
+    // writing the same image at once. Values rather than fence handles because
+    // the timeline replaced the fences, and because a stale value is harmless
+    // where a stale fence handle would be a dangling one.
+    std::vector<uint64_t> imagesInFlight_;
+    // Monotonic; the value the next graphics submit will signal is ++this.
+    // Never reset, including across swapchain recreation: a timeline that went
+    // backwards would make an older recorded value look unreached forever.
+    uint64_t frameTimelineValue_ = 0;
+    // Startup-applied copy of RuntimeSettings::framesInFlight; sizes frames_
+    // and every per-frame resource allocated off frames_.size().
+    uint32_t framesInFlight_ = 2;
+    bool shaderHotReloadEnabled_ = false;
+    // Digest of the shader directory the live pipelines were built from.
+    uint64_t shaderDirectoryDigest_ = 0;
+    // A new digest seen once but not yet acted on. A build writes the .spv files
+    // one at a time, so a digest taken mid-write describes a directory that is
+    // half old and half new; requiring the same new digest twice in a row is what
+    // keeps the reload from compiling a truncated module.
+    uint64_t pendingShaderDigest_ = 0;
+    double lastShaderPollSeconds_ = 0.0;
     ShadowSettings shadowSettings_{};
     SsaoSettings ssaoSettings_{};
     VkFormat pipelineColorFormat_ = VK_FORMAT_UNDEFINED;
@@ -1136,6 +1199,11 @@ private:
     // that lets the debug UI A/B single-threaded vs parallel prep.
     bool parallelFramePrepEnabled_ = true;
     DebugHistory framePrepCpuHistory_{};
+    // Wall time spent in recordRenderCommands. Sits beside the frame-prep number
+    // because the pair is the question: prep is already parallel, so what is left
+    // on one thread is recording, and whether that is worth splitting across
+    // threads is a ratio nobody could read before this existed.
+    DebugHistory recordCpuHistory_{};
     std::vector<renderer::Aabb> frameWorldBounds_;
     float currentExposure_ = 1.0f;
     float averageLuminance_ = 0.18f;
@@ -1286,6 +1354,7 @@ private:
     // path; frameTwoPhaseOcclusionActive_ is the per-frame resolved predicate.
     bool useTwoPhaseOcclusion_ = true;
     bool useLayeredCascades_ = false;
+    bool useBackfaceCulling_ = false;
     bool useAdaptiveOcclusion_ = true;
     renderer::OcclusionYieldController occlusionYield_;
     // Per frame slot: was occlusion culling running when this slot's cull

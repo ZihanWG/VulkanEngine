@@ -40,6 +40,13 @@ public:
     // slots * kMaxDrawItems commands, so the cap is what keeps that from growing
     // to megabytes for an atlas that in practice holds a couple of dozen tiles.
     static constexpr uint32_t kMaxGpuCulledSlots = 64;
+    // Mesh batches the GPU cull can address. Survivors are compacted per
+    // (slot, batch), so the counter buffer is slots x batches; 64 x 256 is 64 KiB
+    // per frame, where sizing it for the 8192-batch worst case would be 2 MiB.
+    // Scenes here run under twenty batches, and a frame that exceeds this falls
+    // back to CPU caster culling rather than drawing something wrong -- see
+    // Renderer::isGpuPunctualShadowCullingActive.
+    static constexpr uint32_t kMaxGpuCulledBatches = 256;
 
     void create(rhi::VulkanContext& context, uint32_t frameCount);
 
@@ -65,14 +72,20 @@ public:
     // casterFlags is one entry per draw item, zero for anything that must not
     // cast. It is separate from the shared cull input because that buffer serves
     // the main and CSM paths too and carries no bucket information.
+    // batchCount is gpuShadowMeshDrawBatches_.size(); it addresses the
+    // per-(slot, batch) survivor counters the draw side reads back as an
+    // indirect count.
     void recordCull(VkCommandBuffer commandBuffer,
                     uint32_t frameIndex,
                     VkBuffer cullInputBuffer,
                     VkDeviceSize cullInputSize,
                     uint32_t drawItemCount,
+                    uint32_t batchCount,
                     std::span<const uint32_t> casterFlags);
 
     [[nodiscard]] VkBuffer cullIndirectBuffer(uint32_t frameIndex) const;
+    // Survivor count per (slot, batch), consumed by vkCmdDrawIndexedIndirectCount.
+    [[nodiscard]] VkBuffer cullVisibleCountBuffer(uint32_t frameIndex) const;
     // Commands reserved per slot; also the offset multiplier into the buffer.
     [[nodiscard]] uint32_t cullSlotCommandStride() const
     {
@@ -186,8 +199,8 @@ private:
     std::vector<rhi::VulkanBuffer> slotFrustumBuffers_;
     // Per frame: compacted commands, one region of cullSlotCommandStride_ per slot.
     std::vector<rhi::VulkanBuffer> cullIndirectBuffers_;
-    // Per frame: one visible count per slot, reset each dispatch.
     std::vector<rhi::VulkanBuffer> cullVisibleCountBuffers_;
+    // Per frame: one visible count per slot, reset each dispatch.
     // Per frame: one flag per draw item, host-visible since buckets change with
     // the scene.
     std::vector<rhi::VulkanBuffer> casterFlagBuffers_;

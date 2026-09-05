@@ -74,13 +74,18 @@ with update-after-bind, clustered (Forward+) lighting, CSM with GPU shadow
 culling, the punctual shadow atlas, GTAO, SSR, volumetric fog, irradiance
 probes, GPU frustum and occlusion culling, and the GPU timestamp profiler.
 
-Two differences from the primary macOS/MoltenVK development machine are worth
-stating explicitly, because they cut in opposite directions:
+Two differences from an Apple M3 / MoltenVK development machine are worth
+stating explicitly, because they cut in opposite directions. Both are about
+MoltenVK, not about "the dev machine": on an RTX 3080 Ti Laptop the renderer
+logs a dedicated transfer queue (family 1), a compute-only async queue
+(family 2) and `vkCmdDrawIndexedIndirectCount` with
+`maxDrawIndirectCount=4294967295`, so a Windows/NVIDIA developer already covers
+both of the paths below locally.
 
 - **lavapipe exposes `drawIndirectCount`; MoltenVK does not.** This job runs the
-  compacted `per-cascade indirect count` shadow path, which cannot execute on
-  the development machine at all. That is new coverage, and it is the main
-  reason this workflow earns its runtime.
+  compacted `per-cascade indirect count` shadow path, which cannot execute on a
+  MoltenVK machine at all. That was the main reason this workflow earned its
+  runtime, and it stays the reason for anyone developing on macOS.
 - **lavapipe exposes no async compute queue.** ClusterBuild and LightCull stay
   on the graphics queue here, so the async-compute submission path is *not*
   covered by CI and remains verifiable only on the development machine.
@@ -255,8 +260,13 @@ than the 3.6 MB the engine's stored-block PNG writer emits). Only the encoding
 differs; the comparison decodes both sides, so pixels are what is compared.
 
 **Goldens are driver-specific.** This one was captured on lavapipe and is only
-meaningful against lavapipe. A capture from the macOS/MoltenVK development
-machine will not match it and is not expected to.
+meaningful against lavapipe. A capture from any development machine -- MoltenVK
+or NVIDIA -- will not match it and is not expected to.
+
+Byte-identical repeats do hold on NVIDIA: three `--deterministic
+--capture-frame 30` runs of `--scene sunlit` on an RTX 3080 Ti Laptop compared
+0/921600 pixels differing. So a same-driver A/B capture is a usable correctness
+instrument there, the same way it is on MoltenVK and unlike lavapipe.
 
 Note for repo hygiene: `tests/golden/` is the second category of tracked binary
 in this repository, after `screenshots/`. A capture run writes only where

@@ -207,7 +207,32 @@ shows whether back-to-front ordering actually holds.
 - **No order-independent transparency.** Sorting is per object, not per triangle,
   so intersecting or concave transparent geometry can still composite wrongly.
   Weighted-blended OIT would remove the sort entirely and is the natural follow-up.
-- **`Material::doubleSided` is not yet wired to the pipeline cull mode.** Both the
-  transparent and masked pipelines currently force `VK_CULL_MODE_NONE`, which is
-  right for the demo materials but ignores the flag for single-sided ones. Honouring
-  it needs the batch split to also break on double-sidedness.
+- **The two-phase Hi-Z re-test used to submit blended batches, and no longer does.**
+  Phase 1 skips them with a comment saying why: the GPU cull emits commands for
+  blended geometry into the compacted buffer and those slots are simply never
+  replayed, because `recordTransparentPass` draws them later. Phase 2 replays the
+  same buffer against the rebuilt pyramid and had no such guard, so a blended
+  caster that phase 1 rejected as occluded could be resurrected there -- drawn
+  with the opaque main pipeline, depth writes on and no blending, into the scene
+  colour the transparent pass is about to composite into.
+
+  It was latent rather than live. Instrumented before the fix, phase 2 was
+  submitting 2 blended batches / 146 indirect commands per frame on `--scene
+  stress` and 1 batch / 2 commands on `--scene default`, but every one of those
+  commands was a zeroed no-op: the phase-2 re-test did not resurrect a blended
+  caster at these camera positions. Adding the guard leaves all six presets
+  bit-identical, which is what says it was latent. Whether it stays latent is a
+  property of the scene and the view, not of the code -- which is the definition
+  of the kind of bug worth closing before it is observed.
+
+  Seven of the eight draw loops in `RendererRecord.cpp` already had the guard.
+  This was the eighth.
+
+- **The transparent pipeline still forces `VK_CULL_MODE_NONE`, deliberately.**
+  `Material::doubleSided` now reaches the cull mode in the main pass -- draw items
+  carry the flag, `buildMeshDrawBatches` breaks a run on it, and the recorder binds
+  a second pipeline per batch -- so opaque and masked geometry honour it. Blended
+  geometry does not: glass and foliage cards are routinely seen from both sides, so
+  the transparent pass keeps culling off for every material rather than trusting a
+  flag that authoring tools set inconsistently on exactly that kind of surface. The
+  shadow pipelines are unchanged for the same reason plus peter-panning.

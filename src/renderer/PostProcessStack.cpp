@@ -1,4 +1,4 @@
-// PostProcessStack: HDR post-process subsystem extracted from Renderer.
+﻿// PostProcessStack: HDR post-process subsystem extracted from Renderer.
 //
 // The bulk of this file is relocated verbatim from Renderer.cpp (bloom, TAA,
 // auto-exposure, composite, descriptor/resource creation). Injected services
@@ -141,7 +141,8 @@ void PostProcessStack::createPostProcessResources(VkImageView depthFallbackView,
     velocityInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     velocityInfo.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     velocityInfo.debugName = "VelocityBuffer";
-    velocity_.create(context_, velocityInfo);
+    // Created below with the rest of the chain, not here: it dies early enough in
+    // the frame that the bloom images can have its bytes.
     velocityLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 
     rhi::VulkanImageCreateInfo normalRoughnessInfo{};
@@ -151,7 +152,8 @@ void PostProcessStack::createPostProcessResources(VkImageView depthFallbackView,
     normalRoughnessInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     normalRoughnessInfo.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     normalRoughnessInfo.debugName = "NormalRoughnessGBuffer";
-    normalRoughness_.create(context_, normalRoughnessInfo);
+    // Deferred with the velocity buffer above, and for the same reason: it is the
+    // single largest transient that stops being read partway through the frame.
     normalRoughnessLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 
     rhi::VulkanImageCreateInfo ambientOcclusionInfo{};
@@ -193,12 +195,22 @@ void PostProcessStack::createPostProcessResources(VkImageView depthFallbackView,
         bloomPool_.reset();
     }
 
-    // Binding is all-or-nothing. A partially bound chain is the dangerous state:
-    // the graph decides the alias-handoff barrier for the resource set as a
-    // whole, so images left pool-bound while the set is marked private would
-    // share memory with no ordering between them. Every image is therefore
-    // attempted first, and any failure tears the whole attempt down before
-    // anything is created privately.
+    // Binding is all-or-nothing for the images that are *used*. A partially bound
+    // chain is the dangerous state: the graph decides the alias-handoff barrier
+    // for the resource set as a whole, so images left pool-bound while the set is
+    // marked private would share memory with no ordering between them. Every used
+    // image is therefore attempted first, and any failure tears the whole attempt
+    // down before anything is created privately.
+    //
+    // Images the planner marked unusedThisFrame are the exception, and getting
+    // that wrong is what broke this feature outright. The two bloom paths cull
+    // each other -- with the mip chain on, BloomExtract and BloomPing have no
+    // pass, and with it off the mip images do not -- so the planner, which only
+    // places used resources, never produced a placement for one group or the
+    // other. Requiring a placement for every image then failed the chain in both
+    // configurations, which is to say in all of them: transient aliasing could
+    // not activate at all. An unused image is safe to allocate privately because
+    // nothing reads or writes it.
     struct BloomImageBinding {
         rhi::VulkanImage* image = nullptr;
         rhi::VulkanImageCreateInfo info;
@@ -209,10 +221,16 @@ void PostProcessStack::createPostProcessResources(VkImageView depthFallbackView,
             return false;
         }
         for (BloomImageBinding& binding : chain) {
-            const auto offset = bloomAliasOffsets_.find(binding.info.debugName);
-            if (offset == bloomAliasOffsets_.end() ||
-                !binding.image->createAliased(context_, binding.info, bloomPool_, offset->second)) {
-                Logger::warn("Bloom image '" + binding.info.debugName +
+            const auto placement = bloomAliasOffsets_.find(binding.info.debugName);
+            if (placement != bloomAliasOffsets_.end() && placement->second.unusedThisFrame) {
+                // No pass touches it, so a private allocation cannot alias anything
+                // it would need ordering against.
+                binding.image->create(context_, binding.info);
+                continue;
+            }
+            if (placement == bloomAliasOffsets_.end() ||
+                !binding.image->createAliased(context_, binding.info, bloomPool_, placement->second.offset)) {
+                Logger::warn("Transient image '" + binding.info.debugName +
                              "' could not be bound into the transient pool; the whole chain falls back to "
                              "private allocations.");
                 // Undo every binding made so far, so nothing is left sharing pool
@@ -225,6 +243,13 @@ void PostProcessStack::createPostProcessResources(VkImageView depthFallbackView,
         }
         return true;
     };
+
+    // The G-buffer pair leads the chain. Both stop being read at the same pass,
+    // well before the bloom chain starts, and between them they are the largest
+    // block of transient memory nothing was reusing -- 11.25 MiB at 1280x720
+    // against the bloom chain's 7.4.
+    chain.push_back({&velocity_, velocityInfo});
+    chain.push_back({&normalRoughness_, normalRoughnessInfo});
 
     bloomInfo.debugName = "BloomExtract";
     chain.push_back({&bloomExtract_, bloomInfo});
@@ -1458,12 +1483,12 @@ void PostProcessStack::createLuminanceResources()
     lastAutoExposureUpdateSeconds_ = frameTimeSeconds_;
 }
 
-void PostProcessStack::setBloomAliasPlan(std::unordered_map<std::string, VkDeviceSize> offsets,
+void PostProcessStack::setBloomAliasPlan(std::unordered_map<std::string, BloomAliasPlacement> placements,
                                          VkDeviceSize poolBytes,
                                          uint32_t memoryTypeBits,
                                          VkDeviceSize alignment)
 {
-    bloomAliasOffsets_ = std::move(offsets);
+    bloomAliasOffsets_ = std::move(placements);
     bloomAliasPlanExtent_ = sceneAllocatedExtent();
 
     if (bloomAliasOffsets_.empty() || poolBytes == 0) {

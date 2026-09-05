@@ -8,6 +8,7 @@ void buildMeshDrawBatches(const std::vector<DrawItem>& drawItems,
 {
     const Mesh* currentMesh = nullptr;
     RenderBucket currentBucket = RenderBucket::Opaque;
+    bool currentDoubleSided = false;
     // An index, not a pointer into `batches`: push_back may reallocate, and a
     // retained pointer only survives because it is reassigned immediately after
     // every push. That is one edit away from dangling and no sanitizer would
@@ -23,18 +24,21 @@ void buildMeshDrawBatches(const std::vector<DrawItem>& drawItems,
             continue;
         }
 
-        if (!haveBatch || currentMesh != drawItem.mesh || currentBucket != drawItem.bucket) {
+        if (!haveBatch || currentMesh != drawItem.mesh || currentBucket != drawItem.bucket ||
+            currentDoubleSided != drawItem.doubleSided) {
             MeshDrawBatch batch{};
             batch.mesh = drawItem.mesh;
             batch.beginDrawItem = static_cast<uint32_t>(drawItemIndex);
             batch.compactedCommandOffset = static_cast<uint32_t>(drawItemIndex);
             batch.visibleCountOffset = static_cast<uint32_t>(batches.size() * sizeof(uint32_t));
             batch.bucket = drawItem.bucket;
+            batch.doubleSided = drawItem.doubleSided;
             currentBatch = batches.size();
             batches.push_back(batch);
             haveBatch = true;
             currentMesh = drawItem.mesh;
             currentBucket = drawItem.bucket;
+            currentDoubleSided = drawItem.doubleSided;
         }
 
         ++batches[currentBatch].drawItemCount;

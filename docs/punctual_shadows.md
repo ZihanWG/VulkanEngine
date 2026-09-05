@@ -253,6 +253,219 @@ side scales with survivors rather than candidates. It is kept as a toggle so the
 comparison is something you run rather than something you argue about, and the
 panel reports the CPU cost it would remove next to the GPU cost it would add.
 
+**Both of those conditions now hold on the Windows/NVIDIA target, and the CPU
+number is much larger than ~40us there.** On `--scene stress` (2322 draw items)
+with an RTX 3080 Ti Laptop, which does expose `vkCmdDrawIndexedIndirectCount`,
+three runs of each configuration measured the atlas pass's *recording* time:
+
+| | Atlas unit record CPU | Whole-frame record CPU |
+| --- | --- | --- |
+| CPU culling | 0.313 / 0.335 / 0.340 ms | 0.487 / 0.534 / 0.542 ms |
+| GPU culling | 0.019 / 0.019 / 0.022 ms | 0.194 / 0.206 / 0.247 ms |
+
+That is a 94% cut to this pass's recording and a ~60% cut to the frame's total
+recording, on a scene where CPU frame work already exceeds the GPU frame. The
+`~40us` in the table above was the demo scene; this pass is the single largest
+recording cost in the frame once the scene is big enough to matter, which is what
+`Record CPU by unit` in the log now shows directly.
+
+**The blended-caster trap described below is already handled, and the note about
+"no spare field" is stale.** The mask exists: `punctualShadowCasterFlags_` is built
+in `RendererRecord.cpp` (blend, null mesh and empty index range all map to 0), it
+travels in its own `CasterFlagBuffer` at set 0 binding 4 rather than inside
+`GpuCullDrawItem`, and `punctual_shadow_cull.comp` rejects on it before anything
+else. The 64-byte record never had to grow.
+
+**What blocks the default is an unexplained image difference on one scene.** With
+`--channel-tolerance 1 --max-differing-fraction 0` at frame 30, GPU culling is
+bit-identical to CPU culling on `--scene stress`, `--scene cornell` and
+`--scene sunlit`. `--scene default` moves 23715 of 921600 pixels (2.6%) with a
+peak channel delta of 27, and the difference is spread in jagged patches wherever
+punctual shadows land rather than being one object's silhouette. Four candidate
+causes have been ruled out by reading the code:
+
+- the blended-caster mask (present and correct, above);
+- a masked/alpha-tested caster pipeline (there is only one punctual shadow
+  pipeline, so both paths draw cutouts as solid silhouettes);
+- LOD divergence (`punctual_shadow_cull.comp` emits the authored
+  `indexCount`/`firstIndex` and does no LOD selection, unlike `cull.comp`);
+- draw-item index mismatch (the caster flags, the shadow cull input and the
+  shader all index `allDrawItems_` in the same order);
+- the frustum test (both are the same positive-vertex test with the same
+  `dot(n, v) + d < 0` rejection; the CPU's extra `!bounds.valid()` early accept is
+  matched on the GPU side by the builder substituting a `kUnboundedCullExtent` box
+  that passes every plane);
+- a stale cull input (`buildShadowFrameData` runs and uploads unconditionally in
+  prep, not gated on the cascade cache);
+- the skinned caster (`recordSkinnedPunctualCasters` runs after the slot loop, so
+  both paths draw it);
+- non-determinism from the compaction atomics or a `slotCommandStride` overflow
+  dropping arbitrary survivors: two GPU-culled runs of `--scene default` in
+  `--deterministic` mode are bit-identical to each other and differ from the CPU
+  reference by exactly the same 23715 pixels.
+
+### The cause: the indirect path binds one mesh for a whole slot
+
+The culling is not what differs. Replicating `punctual_shadow_cull.comp`'s accept
+test on the CPU against the same uploaded inputs and diffing it against the CPU
+replay loop's own test, per slot, gives an empty symmetric difference on every
+scene: `cpuOnly=0 gpuOnly=0`. Both paths accept exactly the same casters.
+
+The difference is on the draw side, and it is this:
+
+```cpp
+// RendererRecord.cpp, the GPU-culled branch of the slot loop
+const renderer::Mesh* indirectMesh = allDrawItems_.front().mesh;
+...
+vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
+vkCmdBindIndexBuffer(commandBuffer, indirectMesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+...
+vkCmdDrawIndexedIndirect(commandBuffer, indirectBuffer, ..., drawCount, ...);
+```
+
+One `vkCmdDrawIndexedIndirect` covers every surviving caster in the slot, with the
+vertex and index buffers of **the first draw item's mesh** bound for all of them.
+Casters belonging to any other mesh are drawn with their own `firstIndex`,
+`vertexOffset` and `indexCount` indexing into the wrong buffers, which produces
+whatever geometry those offsets happen to name. The CPU replay loop rebinds per
+item (`if (boundMesh != drawItem.mesh)`), so it does not have the problem.
+
+This is the same constraint `renderer/DrawItemBatching.h` already states for the
+main and CSM paths -- "a batch is one indirect draw with one pipeline bound", and
+a run breaks on a change of mesh. The main and CSM indirect paths honour it by
+walking `MeshDrawBatch`es. The punctual path does not batch at all: it compacts
+per slot, and a slot is not a mesh.
+
+Counting, per slot, the meshes among its accepted casters:
+
+| scene | slots | draw items | distinct meshes | slots whose casters span >1 mesh | image |
+| --- | --- | --- | --- | --- | --- |
+| `default` | 25 | 11 | 2 | 10 | **differs** |
+| `stress` | 25 | 2322 | 2 | 15 | identical |
+| `cornell` | 6 | 7 | 1 | 0 | identical |
+| `sunlit` | 1 | 8 | 2 | 0 | identical |
+
+Spanning slots are necessary but not sufficient: `stress` has fifteen of them and
+still matches, because there the wrong geometry does not land on anything the
+camera can see. That makes it a latent bug there rather than an absent one, and it
+is exactly the failure mode this repo keeps warning about -- silent, and dependent
+on which scene you happen to test.
+
+### The fix: write in place, replay per batch
+
+The fix was an addressing change, not a filter. The shader used to compact
+survivors into `slot * slotCommandStride + localIndex` with an atomic, which put
+one slot's survivors in arbitrary order in one contiguous run and forced the draw
+side to be a single indirect call for the whole slot. It now writes each survivor
+**in place**, at `slot * slotCommandStride + item`. Two consequences:
+
+- A mesh batch is a contiguous run of draw items by construction
+  (`renderer/DrawItemBatching.h`), so its commands are now the contiguous range
+  `[beginDrawItem, beginDrawItem + drawItemCount)` inside the slot's region. The
+  replay walks `gpuShadowMeshDrawBatches_` per slot, rebinds when the mesh
+  changes, and issues one indirect call per (slot, batch) -- the same shape the
+  main and CSM indirect paths already use.
+- The per-slot atomic counter is gone, and with it the visible-count buffer, its
+  descriptor binding and its per-frame fill. Nothing was lost: with no
+  indirect-count on the draw side the full range was always submitted and zeroed
+  commands relied on as no-ops, so the total command count is unchanged.
+
+Blended batches are now also skipped at replay. The caster mask already zeroes
+their commands, so this is the cheaper of two guards rather than the only one --
+batches are homogeneous in bucket, so skipping removes a whole draw call.
+
+**Verified.** With `--channel-tolerance 1 --max-differing-fraction 0` at frame 30,
+GPU culling is now bit-identical to CPU culling on all six scene presets
+(`default`, `stress`, `cornell`, `sunlit`, `occlusion`, `fragment-stress`), each
+with zero validation errors. `default` went from 23715 differing pixels to 0. The
+CPU-culling default path is unchanged, byte for byte.
+
+**The CPU win survives the extra draw calls.** Re-measured on `--scene stress`,
+Release, three runs each:
+
+| | Atlas unit record CPU | Whole-frame record CPU |
+| --- | --- | --- |
+| CPU culling | 0.317 / 0.318 / 0.354 ms | 0.492 / 0.495 / 0.546 ms |
+| GPU culling | 0.021 / 0.021 / 0.021 ms | 0.201 / 0.204 / 0.208 ms |
+
+One indirect call per (slot, batch) instead of one per slot costs nothing
+measurable here, because the batch count is small.
+
+**One latent crash came out with it.** The punctual GPU path borrows two products
+of the CSM GPU shadow cull -- the shared cull input buffer, and now
+`gpuShadowMeshDrawBatches_`, which the per-batch replay walks. Both are built only
+inside `buildShadowFrameData`'s `isGpuShadowCullingActive()` branch, so turning
+`punctualShadows.gpuCasterCulling` on while `renderer.useGpuShadowCulling` was off
+reached `shadowCullInputBuffer().at()` on an unsized vector and threw "invalid
+vector subscript". That combination has always crashed; the per-batch replay just
+made the dependency load-bearing enough to notice. `isGpuPunctualShadowCullingActive()`
+now requires the CSM path, so the combination falls back to the CPU caster loop and
+renders identically instead of dying. Building those two products for whichever
+consumer wants them, rather than only for the CSM one, would lift the restriction.
+
+### Compaction granularity, and the two wrong answers before it
+
+Getting this right took three tries, and the granularity is the whole story.
+
+**Per slot** (original): survivors from a whole slot compacted into one run in
+atomic order, so the draw side was one indirect call per slot -- and one indirect
+call has one mesh bound. Wrong geometry whenever a slot's casters spanned meshes.
+
+**In place** (the correctness fix): each survivor written at its own draw-item
+index. That keeps a batch's commands in its own contiguous run so the replay can
+rebind per mesh, but it gives up compaction: every slot then submits each batch's
+whole range whether its casters survived or not -- on `--scene stress`, 25 slots x
+2322 draw items, around 58k mostly-zeroed commands a frame against a few hundred
+survivors. Correct, and expensive.
+
+**Per (slot, mesh batch)** (current): survivors compacted into the front of their
+own batch's region, counted by their own atomic. A batch's region is a contiguous
+run of one mesh's draw items, so the replay still rebinds per mesh, and the
+per-(slot, batch) survivor count is exactly what `vkCmdDrawIndexedIndirectCount`
+consumes -- so the draw side fetches survivors, not candidates. The counter buffer
+is slots x `kMaxGpuCulledBatches` (64 x 256 = 64 KiB); a frame with more batches
+than that falls back to CPU caster culling rather than drawing something wrong.
+
+Without indirect-count the replay still submits a batch's whole range and relies
+on the zeroed tail, so that path is unchanged and still correct.
+
+**Verified.** Bit-identical to CPU culling on all six scene presets at frame 30,
+zero validation errors, and the CPU-culling default path unchanged byte for byte.
+
+**CPU recording, `--scene stress`, Release, three runs each:**
+
+| | Atlas unit record CPU | Whole-frame record CPU |
+| --- | --- | --- |
+| CPU culling | 0.320 / 0.321 / 0.349 ms | 0.511 / 0.531 / 0.567 ms |
+| GPU culling | 0.022 / 0.022 / 0.025 ms | 0.196 / 0.205 / 0.250 ms |
+
+**The GPU side is still not quotable, but it is no longer the objection.** Five
+A/B attempts were refused by the control-drift gate (3.9%, 7.6%, 6.4%, 1.4%,
+10.9% against a 1% limit); this laptop does not hold a steady clock across a
+six-launch series, and lengthening the sample window made it worse rather than
+better. What changed is what the refused runs show. With in-place writing,
+`PunctualShadowAtlas` read 0.030 -> 0.325 ms, a delta 59x that row's own drift.
+With per-batch compaction it read 0.029 -> 0.031 and 0.032 -> 0.032, inside its
+own drift both times. The remaining GPU cost is the cull dispatch itself,
+`PunctualShadowGpuCull` at ~0.017 ms, which has no counterpart in the CPU path.
+
+So the shape of the trade is ~0.017 ms of added GPU work against ~0.31 ms of
+removed CPU recording, on a scene whose CPU frame already exceeds its GPU frame.
+That looks clearly favourable and is still not a measurement. **Do not flip the
+default on it.** What that needs is a gate-passing A/B on a machine with a stable
+clock, plus `tests/golden/lavapipe_frame30.png` regenerated on lavapipe.
+
+**The GPU side of that trade is still unresolved on this target.** Two attempts
+at an A/B were refused by `tools/dev/measure_gpu.py`'s control-drift gate (3.9%
+and 7.6% against a 1% limit -- the machine does not settle between runs of a
+series this long), so there is no quotable number here. Directionally both
+refused runs put `PunctualShadowAtlas` substantially higher with GPU culling on,
+which is the same direction as the MoltenVK measurement above even though
+indirect-count is available here. That matters: the CPU win is real and measured,
+but it may be paid for on the GPU, and on a CPU-bound scene that can still be a
+net gain. Whoever adds the caster mask has to produce a clean A/B before the
+default moves -- do not carry the CPU numbers alone into that decision.
+
 **One trap worth recording.** The cull input buffer is shared with the main and
 CSM paths and carries no bucket, and `GpuCullDrawItem` is exactly 64 bytes with
 no spare field. The CSM path filters blended geometry at *replay* time, which an
@@ -444,8 +657,11 @@ near-black and reads as a catastrophic bug that is not there.
   a visible light then cannot have.
 - **The point-light demotion is a fixed one class**, not derived from the actual
   per-face footprint.
-- **GPU caster culling is off by default, and on this scene it is a net loss.**
-  See [GPU caster culling](#gpu-caster-culling).
+- **GPU caster culling is off by default, pending a clean GPU A/B.** It is now
+  bit-identical to the CPU path on all six scene presets, and it removes ~60% of
+  the frame’s CPU recording on `--scene stress`, but the GPU side of that trade
+  has not been measured cleanly and flipping the default needs the golden image
+  regenerated on lavapipe. See [GPU caster culling](#gpu-caster-culling).
 - **No filtering beyond 3x3 PCF.** No variance/moment maps, no contact-hardening.
 - **No cross-face filtering.** PCF is clamped inside a face rather than
   continuing onto the neighbour, so filtering narrows slightly at face

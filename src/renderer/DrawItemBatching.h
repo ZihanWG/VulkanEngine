@@ -56,6 +56,12 @@ struct DrawItem {
     int32_t vertexOffset = 0;
     uint32_t frameDataIndex = 0;
     RenderBucket bucket = RenderBucket::Opaque;
+    // Material::doubleSided, carried here so batching can break on it. A batch
+    // binds one pipeline and the cull mode lives in pipeline state, so a batch
+    // straddling this would draw single-sided geometry with the two-sided
+    // pipeline or the reverse -- silently, like every other disagreement in this
+    // file.
+    bool doubleSided = false;
 };
 
 // One indirect draw with one pipeline bound, over a contiguous run of draw items
@@ -67,16 +73,19 @@ struct MeshDrawBatch {
     uint32_t compactedCommandOffset = 0;
     uint32_t visibleCountOffset = 0;
     RenderBucket bucket = RenderBucket::Opaque;
+    // Which of the two main pipelines this batch binds. Uniform across the batch
+    // by construction -- buildMeshDrawBatches breaks a run when it changes.
+    bool doubleSided = false;
 };
 
 // Group a draw-item list into batches. Appends to `batches` rather than clearing
 // it, matching the callers that build several lists into one vector.
 //
-// A run breaks on a change of mesh OR of bucket: a batch is one indirect draw
-// with one pipeline bound, so it must not straddle a bucket boundary even when
-// consecutive items share a mesh. Items with no mesh, or whose frameDataIndex is
-// past `maxDrawItems`, break the run and are skipped -- they have no valid object
-// record for the shader to read.
+// A run breaks on a change of mesh, of bucket, OR of doubleSided: a batch is one
+// indirect draw with one pipeline bound, so it must not straddle a boundary that
+// selects a different pipeline even when consecutive items share a mesh. Items
+// with no mesh, or whose frameDataIndex is past `maxDrawItems`, break the run and
+// are skipped -- they have no valid object record for the shader to read.
 void buildMeshDrawBatches(const std::vector<DrawItem>& drawItems,
                           uint32_t maxDrawItems,
                           std::vector<MeshDrawBatch>& batches);

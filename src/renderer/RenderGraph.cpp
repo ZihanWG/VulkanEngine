@@ -1,4 +1,4 @@
-#include "renderer/RenderGraph.h"
+﻿#include "renderer/RenderGraph.h"
 
 #include "core/Logger.h"
 #include "renderer/IrradianceProbes.h"
@@ -6,6 +6,7 @@
 #include "rhi/VulkanSwapchain.h"
 
 #include <algorithm>
+#include <chrono>
 #include <array>
 #include <stdexcept>
 #include <string>
@@ -194,31 +195,6 @@ void RenderGraphBuilder::sideEffect(std::string reason)
     }
 }
 
-RenderGraphContext::RenderGraphContext(RenderGraph& graph, VkCommandBuffer commandBuffer)
-    : graph_(graph)
-    , commandBuffer_(commandBuffer)
-{}
-
-VkCommandBuffer RenderGraphContext::commandBuffer() const
-{
-    return commandBuffer_;
-}
-
-VkImage RenderGraphContext::image(RGTextureHandle handle) const
-{
-    return graph_.image(handle);
-}
-
-VkImageView RenderGraphContext::imageView(RGTextureHandle handle) const
-{
-    return graph_.imageView(handle);
-}
-
-VkBuffer RenderGraphContext::buffer(RGBufferHandle handle) const
-{
-    return graph_.buffer(handle);
-}
-
 RenderGraph::RenderGraph() = default;
 
 const char* renderPassTypeName(RenderPassType type)
@@ -378,7 +354,6 @@ void RenderGraph::beginFrame(VkCommandBuffer commandBuffer,
     textures_.clear();
     buffers_.clear();
     passes_.clear();
-    executeCallbacks_.clear();
     barrierBatch_.reset();
     declarationIssues_.clear();
     passSchedule_.clear();
@@ -1664,20 +1639,6 @@ void RenderGraph::endFrame()
     recordedOrderViolations_ = validatePassOrder(passSchedule_, recordedOrder_);
     unrecordedPassIndices_ = unrecordedPasses(passSchedule_, recordedOrder_);
 
-    {
-        static int fn = 0;
-        if (fn++ == 8) {
-            ve::Logger::info("RGFIX violations=" + std::to_string(recordedOrderViolations_.size()) +
-                             " unrecorded=" + std::to_string(unrecordedPassIndices_.size()) +
-                             " issues=" + std::to_string(declarationIssues_.size()) +
-                             " sameOrder=" + std::string(executionOrder_ == recordedOrder_ ? "yes" : "NO"));
-            for (uint32_t i : unrecordedPassIndices_) { ve::Logger::info("RGFIX   unrecorded: " + passes_[i].name); }
-            std::string ord;
-            for (uint32_t i : recordedOrder_) { ord += passes_[i].name + " "; }
-            ve::Logger::info("RGFIX   recorded: " + ord);
-        }
-    }
-
     refreshDebugResources();
     VK_CHECK(vkEndCommandBuffer(frame_.commandBuffer));
 
@@ -1685,22 +1646,20 @@ void RenderGraph::endFrame()
     frameActive_ = false;
 }
 
-uint32_t RenderGraph::addPass(std::string name, SetupCallback setup, ExecuteCallback execute)
+uint32_t RenderGraph::addPass(std::string name, SetupCallback setup)
 {
     return addPass(std::move(name),
                    RenderPassType::MainHdr,
                    RenderPassExecutionType::Graphics,
                    false,
-                   std::move(setup),
-                   std::move(execute));
+                   std::move(setup));
 }
 
 uint32_t RenderGraph::addPass(std::string name,
                               RenderPassType type,
                               RenderPassExecutionType executionType,
                               bool sideEffect,
-                              SetupCallback setup,
-                              ExecuteCallback execute)
+                              SetupCallback setup)
 {
     RenderPassNode pass{};
     pass.name = std::move(name);
@@ -1710,7 +1669,6 @@ uint32_t RenderGraph::addPass(std::string name,
     pass.transitionSummary = "Declared; waiting for execution.";
 
     passes_.push_back(std::move(pass));
-    executeCallbacks_.push_back(std::move(execute));
     const uint32_t index = static_cast<uint32_t>(passes_.size() - 1);
 
     if (setup) {
@@ -1883,11 +1841,29 @@ void RenderGraph::recordScheduledUnits(std::span<RenderGraphScheduledUnit> units
     }
     std::sort(ordered.begin(), ordered.end());
 
+    // Cleared here rather than in beginFrame: the report that reads this runs at
+    // the top of the next frame, after beginFrame has already run, so clearing
+    // there would hand it an empty list every time.
+    unitRecordCosts_.clear();
+    unitRecordCosts_.reserve(ordered.size());
+
     for (const auto& [position, unitIndex] : ordered) {
         (void)position;
-        if (units[unitIndex].record) {
-            units[unitIndex].record();
+        if (!units[unitIndex].record) {
+            continue;
         }
+        const uint32_t passIndex = units[unitIndex].passIndex;
+        // A unit with no pass this frame -- the synchronous cluster build, the
+        // fog volume's first-use clear -- still costs recording time, and it is
+        // exactly the kind of work that would be missed by a report keyed only on
+        // declared passes.
+        const char* name = passIndex < passes_.size() ? renderPassTypeName(passes_[passIndex].type) : "Unanchored";
+        const auto start = std::chrono::steady_clock::now();
+        units[unitIndex].record();
+        unitRecordCosts_.push_back(
+            {name,
+             std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count(),
+             static_cast<uint32_t>(unitIndex)});
     }
 }
 
@@ -2711,6 +2687,14 @@ std::vector<RenderGraphResourceLifetime>
 computeTextureLifetimes(const std::vector<RenderPassNode>& passes, std::span<const uint32_t> order, size_t textureCount)
 {
     std::vector<RenderGraphResourceLifetime> lifetimes(textureCount);
+    // A resource something history-reads is consumed by the *next* frame, so the
+    // interval this frame's usages describe is not the interval its bytes have to
+    // survive. Written at slot 17 and history-read at slot 4, it looks live over
+    // [4, 17] -- and anything the allocator packs into [0, 3] would then overwrite,
+    // at the start of frame N+1, exactly what frame N left for it to read. The
+    // read happens after the clobber, so nothing catches it: not the validation
+    // layer, not a barrier, only the pixels.
+    std::vector<uint8_t> historyRead(textureCount, 0);
 
     for (uint32_t slot = 0; slot < order.size(); ++slot) {
         if (order[slot] >= passes.size()) {
@@ -2728,6 +2712,10 @@ computeTextureLifetimes(const std::vector<RenderPassNode>& passes, std::span<con
             // Every usage extends the interval, a layout-only read included: the
             // image has to be in a valid state where a descriptor binds it, so
             // its bytes cannot belong to something else at that point.
+            if (usage.readKind == RGReadKind::History) {
+                historyRead[usage.resource.index] = 1;
+            }
+
             RenderGraphResourceLifetime& lifetime = lifetimes[usage.resource.index];
             if (!lifetime.used) {
                 lifetime.used = true;
@@ -2737,6 +2725,21 @@ computeTextureLifetimes(const std::vector<RenderPassNode>& passes, std::span<con
             }
             lifetime.firstPass = std::min(lifetime.firstPass, slot);
             lifetime.lastPass = std::max(lifetime.lastPass, slot);
+        }
+    }
+
+    // Widened to the whole frame rather than excluded outright: the allocator
+    // already drops a resource whose interval covers everything from sharing with
+    // anything, and saying "live all frame" keeps one concept instead of two. The
+    // effect is that a history resource can still be placed in the pool -- it just
+    // cannot have its bytes reused by anything.
+    if (!order.empty()) {
+        const uint32_t lastSlot = static_cast<uint32_t>(order.size()) - 1;
+        for (size_t index = 0; index < lifetimes.size(); ++index) {
+            if (historyRead[index] != 0 && lifetimes[index].used) {
+                lifetimes[index].firstPass = 0;
+                lifetimes[index].lastPass = lastSlot;
+            }
         }
     }
 

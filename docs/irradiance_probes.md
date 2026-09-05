@@ -15,10 +15,24 @@ back to shading: indirect diffuse, from geometry the camera cannot see.
 The obvious answer for probe GI in 2020s renderers is DDGI, where each probe
 fires rays every frame and the update is a ray-tracing dispatch.
 
-**This target reports neither `VK_KHR_ray_query` nor
-`VK_KHR_acceleration_structure`.** Of 131 device extensions, none are ray
-tracing; MoltenVK does not expose them. DDGI as normally implemented is not
-merely slow here, it is unavailable.
+**This was chosen on a target that reported neither `VK_KHR_ray_query` nor
+`VK_KHR_acceleration_structure`.** Of the 131 device extensions an Apple M3
+through MoltenVK exposes, none are ray tracing, so DDGI as normally implemented
+was not merely slow there, it was unavailable.
+
+That constraint is device-specific and no longer holds everywhere this builds.
+On an RTX 3080 Ti Laptop (NVIDIA 616.56) `rayQuery`, `accelerationStructure` and
+`VK_KHR_ray_tracing_pipeline` are all present, so DDGI is available on that
+machine and the rasterised capture below is a portability floor rather than the
+only option. Note `rayTracingInvocationReorderReorderingHint` is `NONE` on
+Ampere -- shader execution reordering is Ada hardware, so a DDGI gather here has
+to tolerate divergence rather than assume it is reordered away.
+
+What would carry over unchanged is most of this document: the octahedral tile
+layout, the border texel that fixes the seam, and the Chebyshev visibility
+weight that stops light leaking through walls are properties of how probe
+irradiance is *stored and sampled*, not of how its radiance was gathered. Only
+the capture would be replaced.
 
 So probe radiance is gathered the way it was before ray tracing: **rasterise the
 scene from the probe's own position** into a small cube, then convolve that cube

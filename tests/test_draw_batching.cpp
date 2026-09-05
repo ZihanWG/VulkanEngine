@@ -29,12 +29,16 @@ const Mesh* meshB()
 
 constexpr uint32_t kMaxDrawItems = 8192;
 
-DrawItem item(const Mesh* mesh, RenderBucket bucket = RenderBucket::Opaque, uint32_t frameDataIndex = 0)
+DrawItem item(const Mesh* mesh,
+              RenderBucket bucket = RenderBucket::Opaque,
+              uint32_t frameDataIndex = 0,
+              bool doubleSided = false)
 {
     DrawItem drawItem{};
     drawItem.mesh = mesh;
     drawItem.bucket = bucket;
     drawItem.frameDataIndex = frameDataIndex;
+    drawItem.doubleSided = doubleSided;
     return drawItem;
 }
 
@@ -85,6 +89,53 @@ TEST_CASE("A change of bucket starts a new batch even on the same mesh")
     CHECK(batches[0].bucket == RenderBucket::Opaque);
     CHECK(batches[1].bucket == RenderBucket::Mask);
     CHECK(batches[1].beginDrawItem == 1);
+}
+
+TEST_CASE("A change of doubleSided starts a new batch even on the same mesh and bucket")
+{
+    // Same reasoning as the bucket break above, and the same failure mode. The
+    // cull mode lives in pipeline state, so a batch spanning both values would
+    // draw one half of it with the wrong facing rule -- and back-face culling
+    // failing is invisible until you look at the geometry from behind.
+    const std::vector<MeshDrawBatch> batches = batchesFor({
+        item(meshA(), RenderBucket::Opaque, 0, false),
+        item(meshA(), RenderBucket::Opaque, 1, true),
+    });
+
+    REQUIRE(batches.size() == 2);
+    CHECK_FALSE(batches[0].doubleSided);
+    CHECK(batches[1].doubleSided);
+    CHECK(batches[1].beginDrawItem == 1);
+}
+
+TEST_CASE("doubleSided breaks a run rather than grouping across one")
+{
+    // The flag is a run break, not a sort key: batching sees the order it is
+    // given. Draw items are sorted so this interleaving does not normally reach
+    // here, but batching must not quietly merge the two false items if it does.
+    const std::vector<MeshDrawBatch> batches = batchesFor({
+        item(meshA(), RenderBucket::Opaque, 0, false),
+        item(meshA(), RenderBucket::Opaque, 1, true),
+        item(meshA(), RenderBucket::Opaque, 2, false),
+    });
+
+    REQUIRE(batches.size() == 3);
+    CHECK(batches[0].drawItemCount == 1);
+    CHECK(batches[1].drawItemCount == 1);
+    CHECK(batches[2].drawItemCount == 1);
+    CHECK(batches[2].compactedCommandOffset == 2);
+}
+
+TEST_CASE("A batch of two-sided items carries the flag its pipeline selection needs")
+{
+    const std::vector<MeshDrawBatch> batches = batchesFor({
+        item(meshA(), RenderBucket::Opaque, 0, true),
+        item(meshA(), RenderBucket::Opaque, 1, true),
+    });
+
+    REQUIRE(batches.size() == 1);
+    CHECK(batches[0].doubleSided);
+    CHECK(batches[0].drawItemCount == 2);
 }
 
 TEST_CASE("compactedCommandOffset is the draw item index the batch starts at")

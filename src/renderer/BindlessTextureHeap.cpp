@@ -1,4 +1,4 @@
-#include "renderer/BindlessTextureHeap.h"
+﻿#include "renderer/BindlessTextureHeap.h"
 
 #include "core/Logger.h"
 #include "rhi/VulkanContext.h"
@@ -75,6 +75,12 @@ void BindlessTextureHeap::create(rhi::VulkanContext& context, uint32_t maxTextur
                      std::to_string(descriptorBudget) + " descriptors per class by device descriptor limits.");
     }
     maxTextures_ = std::min(maxTextures, descriptorBudget);
+    // Reported, not just warned on: the capacity is a cliff -- registerTexture
+    // throws when a scene needs one more -- so how much headroom a given device
+    // actually grants is worth knowing before an import finds out.
+    Logger::info("Bindless material texture heap: " + std::to_string(maxTextures_) +
+                 " descriptors per class (device budget " + std::to_string(descriptorBudget) + ", " +
+                 (updateAfterBind ? "update-after-bind" : "no update-after-bind") + ").");
 
     std::array<VkDescriptorSetLayoutBinding, kTextureKindCount> bindings{};
     for (uint32_t binding = 0; binding < static_cast<uint32_t>(bindings.size()); ++binding) {

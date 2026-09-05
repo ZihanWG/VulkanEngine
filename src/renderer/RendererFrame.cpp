@@ -475,17 +475,19 @@ bool Renderer::skinnedCasterCastsIntoCascade(uint32_t cascadeIndex) const
         return false;
     }
 
-    // The layered path is a "no" for every cascade, not just for the recorder.
-    // One draw fans out to all layers there and picks its matrix from
-    // gl_ViewIndex, which a pushed matrix cannot answer, so the caster is
-    // skipped -- and a pose that is never drawn must not enter a cache key
-    // either. It would dirty every cascade on every frame of the animation, and
-    // the layered pass redraws all of them together, so the whole shadow map
-    // would redraw for geometry it does not contain.
-    if (isLayeredCascadeRenderingActive()) {
-        return false;
-    }
-
+    // The layered path used to be a blanket "no" here, matching a recorder that
+    // skipped the caster because a pushed matrix cannot answer gl_ViewIndex.
+    // The two agreed, so the cache stayed coherent -- and the shadow was simply
+    // absent, with the cascades never dirtying because the pose they were
+    // missing was also the pose they did not hash. Now that
+    // shadow_skinned_layered.vert indexes cascadeViewProjection[] by
+    // gl_ViewIndex, the caster is drawn on that path too and the same frustum
+    // test applies to both.
+    //
+    // Both halves had to move together. Teaching the recorder to draw while this
+    // still answered "no" would have been the worse of the two bugs: a caster
+    // that animates but never dirties the cascade it draws into leaves a shadow
+    // frozen at whatever pose the first frame happened to have.
     return skinnedCasterCastsIntoFrustum(frameCascades_[cascadeIndex].lightFrustum);
 }
 
@@ -739,6 +741,11 @@ Renderer::RenderBucket Renderer::renderBucketForMaterial(const renderer::Materia
     return RenderBucket::Opaque;
 }
 
+bool Renderer::materialIsDoubleSided(const renderer::Material* material)
+{
+    return material != nullptr && material->doubleSided;
+}
+
 const char* Renderer::renderBucketName(RenderBucket bucket)
 {
     switch (bucket) {
@@ -795,6 +802,7 @@ void Renderer::appendDrawItemsForObject(uint32_t objectIndex,
             drawItem.indexCount = primitive.indexCount;
             drawItem.frameDataIndex = static_cast<uint32_t>(drawItems.size());
             drawItem.bucket = renderBucketForMaterial(drawItem.material);
+            drawItem.doubleSided = materialIsDoubleSided(drawItem.material);
             drawItems.push_back(drawItem);
         }
         return;
@@ -814,6 +822,7 @@ void Renderer::appendDrawItemsForObject(uint32_t objectIndex,
     drawItem.indexCount = mesh->indexCount();
     drawItem.frameDataIndex = static_cast<uint32_t>(drawItems.size());
     drawItem.bucket = renderBucketForMaterial(drawItem.material);
+    drawItem.doubleSided = materialIsDoubleSided(drawItem.material);
     drawItems.push_back(drawItem);
 }
 
@@ -898,11 +907,18 @@ void Renderer::buildDrawItems()
     reportFrameCapacityOverflow();
 
     // Bucket is the primary key so each bucket is one contiguous range (the pass
-    // and pipeline split reduces to a range walk); mesh stays the secondary key so
-    // batching inside a bucket still coalesces vertex/index buffer binds.
+    // and pipeline split reduces to a range walk). doubleSided comes next because
+    // it is the other thing that selects a pipeline, and buildMeshDrawBatches
+    // breaks a run when it changes -- sorting on it keeps the two-sided items of a
+    // bucket contiguous, so the split costs one extra batch per bucket rather than
+    // one per alternation. Mesh stays last so batching inside a run still
+    // coalesces vertex/index buffer binds.
     std::stable_sort(allDrawItems_.begin(), allDrawItems_.end(), [](const DrawItem& lhs, const DrawItem& rhs) {
         if (lhs.bucket != rhs.bucket) {
             return lhs.bucket < rhs.bucket;
+        }
+        if (lhs.doubleSided != rhs.doubleSided) {
+            return static_cast<int>(lhs.doubleSided) < static_cast<int>(rhs.doubleSided);
         }
         return std::less<const renderer::Mesh*>{}(lhs.mesh, rhs.mesh);
     });

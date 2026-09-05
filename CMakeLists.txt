@@ -246,6 +246,7 @@ add_library(VulkanEngineCore STATIC
     src/renderer/MeshCache.cpp
     src/renderer/MeshLod.cpp
     src/renderer/IrradianceProbes.cpp
+    src/renderer/PrimitiveGeometry.cpp
     src/renderer/PunctualShadowAtlas.cpp
     src/renderer/RenderScale.cpp
     src/renderer/TransientMemoryPlan.cpp
@@ -330,6 +331,7 @@ add_library(VulkanEngineRuntime STATIC
     src/rhi/VulkanSwapchain.cpp
     src/rhi/VulkanSync.cpp
     src/rhi/VulkanTimestampQuery.cpp
+    src/rhi/DeviceExtensionSelection.cpp
     src/rhi/TransferQueueSelection.cpp
     src/rhi/VulkanTransientMemoryPool.cpp
     src/rhi/VulkanUploadBatch.cpp
@@ -465,6 +467,7 @@ set(SHADER_SOURCES
     "${SHADER_SOURCE_DIR}/shadow_masked_layered.vert"
     "${SHADER_SOURCE_DIR}/shadow_punctual.vert"
     "${SHADER_SOURCE_DIR}/shadow_skinned.vert"
+    "${SHADER_SOURCE_DIR}/shadow_skinned_layered.vert"
     "${SHADER_SOURCE_DIR}/punctual_shadow_cull.comp"
     "${SHADER_SOURCE_DIR}/vsm_page_mark.comp"
     "${SHADER_SOURCE_DIR}/vsm_page_cull.comp"

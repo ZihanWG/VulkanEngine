@@ -394,3 +394,35 @@ TEST_CASE("The VSM depth bias default sits inside its measured window", "[settin
     CHECK(defaults.depthBiasTexels >= 32.0f);
     CHECK(defaults.depthBiasTexels <= 128.0f);
 }
+
+
+TEST_CASE("Frames in flight clamps into the range the renderer can size", "[settings][frames]")
+{
+    // Zero is the input that matters: it reaches here only from a hand-edited
+    // settings file, and passing it through would size frames_ to nothing, so
+    // every frames_.size() modulo downstream divides by zero.
+    CHECK(ve::clampFramesInFlight(0) == 1);
+    CHECK(ve::clampFramesInFlight(1) == 1);
+    CHECK(ve::clampFramesInFlight(2) == 2);
+    CHECK(ve::clampFramesInFlight(ve::kMaxFramesInFlight) == ve::kMaxFramesInFlight);
+    CHECK(ve::clampFramesInFlight(ve::kMaxFramesInFlight + 1) == ve::kMaxFramesInFlight);
+    CHECK(ve::clampFramesInFlight(1000000) == ve::kMaxFramesInFlight);
+}
+
+TEST_CASE("The frames-in-flight ceiling stays above the TAA history it is bounded by", "[settings][frames]")
+{
+    // The ceiling is not a hardware limit; it is TAA. The history ping-pong has
+    // two slots advanced by their own counter, so the number of frames that may
+    // be in flight has to stay at or below history slots + 1, or a frame could
+    // rewrite an image an older in-flight frame still reads. Raising the ceiling
+    // without adding history slots is the mistake this pins.
+    CHECK(ve::kMaxFramesInFlight >= 2);
+    CHECK(ve::kMaxFramesInFlight <= 3);
+}
+
+TEST_CASE("The frames-in-flight default is the double-buffered one", "[settings][frames]")
+{
+    const ve::RuntimeSettings defaults;
+    CHECK(defaults.framesInFlight == 2);
+    CHECK(ve::clampFramesInFlight(defaults.framesInFlight) == defaults.framesInFlight);
+}

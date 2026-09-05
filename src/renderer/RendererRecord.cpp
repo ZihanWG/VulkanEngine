@@ -1,4 +1,4 @@
-// Command recording: the main frame recording routine and the passes it drives,
+﻿// Command recording: the main frame recording routine and the passes it drives,
 // plus the render-graph frame resource description they are recorded against.
 // These functions only encode commands into a command buffer; Renderer.cpp owns
 // queue submission, presentation and frame-slot synchronization.
@@ -139,11 +139,37 @@ void Renderer::recordFrameCaptureCopy(VkCommandBuffer commandBuffer, uint32_t im
     frameCaptureRecorded_ = true;
 }
 
+VkPipeline Renderer::mainPipelineFor(bool doubleSided) const
+{
+    if (!doubleSided) {
+        return pipeline_.pipeline();
+    }
+    const VkPipeline twoSided = pipelineDoubleSided_.pipeline();
+    return twoSided != VK_NULL_HANDLE ? twoSided : pipeline_.pipeline();
+}
+
 bool Renderer::isGpuPunctualShadowCullingActive() const
 {
-    return useGpuPunctualShadowCulling_ && punctualShadows_.cullAvailable() && punctualShadows_.valid() &&
-           usePunctualShadows_ && punctualShadows_.slotCount() > 0 && !allDrawItems_.empty() &&
-           !punctualShadowCacheHit_ && context_.device().drawIndirectFirstInstanceEnabled();
+    // Requires the CSM GPU shadow cull to be active, because it borrows two of
+    // that path's per-frame products: the shared cull input buffer it culls
+    // against, and gpuShadowMeshDrawBatches_, which the replay walks to rebind
+    // per mesh. Both are built only inside buildShadowFrameData's
+    // isGpuShadowCullingActive() branch, so without this the punctual path
+    // reached shadowCullInputBuffer().at() on an unsized vector and threw
+    // "invalid vector subscript" -- a crash reachable by turning
+    // punctualShadows.gpuCasterCulling on while renderer.useGpuShadowCulling is
+    // off. Falling back to the CPU caster loop is the honest answer until the
+    // two products are built for whichever consumer wants them.
+    // The batch cap is a real bound, not a formality: survivors are compacted per
+    // (slot, batch) into a counter buffer sized slots x kMaxGpuCulledBatches, and a
+    // frame with more batches than that has nowhere to count them. Falling back to
+    // the CPU caster loop is the honest answer.
+    const size_t batchCount = gpuShadowMeshDrawBatches_.size();
+    return useGpuPunctualShadowCulling_ && isGpuShadowCullingActive() && punctualShadows_.cullAvailable() &&
+           punctualShadows_.valid() && usePunctualShadows_ && punctualShadows_.slotCount() > 0 &&
+           !allDrawItems_.empty() && batchCount > 0 &&
+           batchCount <= renderer::PunctualShadows::kMaxGpuCulledBatches && !punctualShadowCacheHit_ &&
+           context_.device().drawIndirectFirstInstanceEnabled();
 }
 
 bool Renderer::isProbeCaptureActive() const
@@ -432,38 +458,88 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuC
         if (gpuCullActive && slot < renderer::PunctualShadows::kMaxGpuCulledSlots) {
             const VkBuffer indirectBuffer = punctualShadows_.cullIndirectBuffer(currentFrame_);
             if (indirectBuffer != VK_NULL_HANDLE && !allDrawItems_.empty()) {
-                const renderer::Mesh* indirectMesh = allDrawItems_.front().mesh;
-                if (indirectMesh != nullptr) {
-                    if (boundMesh != indirectMesh) {
-                        const VkBuffer vertexBuffers[] = {indirectMesh->vertexBuffer()};
-                        const VkDeviceSize vertexOffsets[] = {0};
-                        vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
-                        vkCmdBindIndexBuffer(commandBuffer, indirectMesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
-                        boundMesh = indirectMesh;
+                // Base address, not a per-draw offset: indirect draws carry the
+                // object-data index in firstInstance, which the vertex stage
+                // reads back out of gl_InstanceIndex. Pushed once per slot --
+                // only lightViewProjection varies here, and it varies by slot.
+                PunctualShadowPushConstants pushConstants{};
+                pushConstants.objectFrameDataAddress = objectFrameDataBaseAddress;
+                pushConstants.lightViewProjection = punctualShadows_.slotViewProjection(slot);
+                vkCmdPushConstants(commandBuffer,
+                                   punctualShadowPipeline_.layout(),
+                                   VK_SHADER_STAGE_VERTEX_BIT,
+                                   0,
+                                   static_cast<uint32_t>(sizeof(PunctualShadowPushConstants)),
+                                   &pushConstants);
+
+                // One indirect call per mesh batch, not one for the whole slot.
+                // A batch is a contiguous run of draw items sharing a mesh
+                // (renderer/DrawItemBatching.h), and the cull shader compacts a
+                // batch's survivors into the front of that batch's own region, so
+                // the call can bind that batch's mesh and take its survivor count
+                // straight from the counter buffer.
+                //
+                // This replaces binding one mesh for the whole slot, which drew
+                // every caster in it against whichever mesh came first -- wrong as
+                // soon as a slot's casters span more than one mesh, and wrong
+                // silently, because the bad geometry only shows when it lands
+                // somewhere the camera can see.
+                const uint32_t stride = punctualShadows_.cullSlotCommandStride();
+                const uint32_t drawItemCount = static_cast<uint32_t>(allDrawItems_.size());
+                const uint32_t batchCount = static_cast<uint32_t>(gpuShadowMeshDrawBatches_.size());
+                const VkBuffer countBuffer = punctualShadows_.cullVisibleCountBuffer(currentFrame_);
+                // Without indirect-count the whole region is submitted and the
+                // zeroed tail is relied on to be no-ops, exactly as before.
+                const bool countPathActive =
+                    countBuffer != VK_NULL_HANDLE && context_.device().drawIndexedIndirectCountAvailable();
+
+                for (uint32_t batchIndex = 0; batchIndex < batchCount; ++batchIndex) {
+                    const MeshDrawBatch& batch = gpuShadowMeshDrawBatches_[batchIndex];
+                    if (!batch.mesh || batch.drawItemCount == 0 || batch.compactedCommandOffset >= drawItemCount) {
+                        continue;
+                    }
+                    // Blended geometry is not an occluder. The caster mask already
+                    // zeroes these commands, so this is the cheaper of two guards
+                    // rather than the only one: batches are homogeneous in bucket,
+                    // so skipping here removes a whole draw call.
+                    if (batch.bucket == RenderBucket::Blend) {
+                        continue;
                     }
 
-                    // Base address, not a per-draw offset: indirect draws carry
-                    // the object-data index in firstInstance, which the vertex
-                    // stage reads back out of gl_InstanceIndex.
-                    PunctualShadowPushConstants pushConstants{};
-                    pushConstants.objectFrameDataAddress = objectFrameDataBaseAddress;
-                    pushConstants.lightViewProjection = punctualShadows_.slotViewProjection(slot);
-                    vkCmdPushConstants(commandBuffer,
-                                       punctualShadowPipeline_.layout(),
-                                       VK_SHADER_STAGE_VERTEX_BIT,
-                                       0,
-                                       static_cast<uint32_t>(sizeof(PunctualShadowPushConstants)),
-                                       &pushConstants);
+                    const uint32_t batchDrawCount =
+                        std::min(batch.drawItemCount, drawItemCount - batch.compactedCommandOffset);
+                    if (batchDrawCount == 0 || batch.compactedCommandOffset + batchDrawCount > stride) {
+                        continue;
+                    }
 
-                    const uint32_t stride = punctualShadows_.cullSlotCommandStride();
-                    const uint32_t drawCount = std::min(stride, static_cast<uint32_t>(allDrawItems_.size()));
-                    vkCmdDrawIndexedIndirect(
-                        commandBuffer,
-                        indirectBuffer,
-                        static_cast<VkDeviceSize>(slot) * stride * sizeof(VkDrawIndexedIndirectCommand),
-                        drawCount,
-                        sizeof(VkDrawIndexedIndirectCommand));
-                    recordedDraws += drawCount;
+                    if (boundMesh != batch.mesh) {
+                        const VkBuffer vertexBuffers[] = {batch.mesh->vertexBuffer()};
+                        const VkDeviceSize vertexOffsets[] = {0};
+                        vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
+                        vkCmdBindIndexBuffer(commandBuffer, batch.mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+                        boundMesh = batch.mesh;
+                    }
+
+                    const VkDeviceSize batchOffset =
+                        (static_cast<VkDeviceSize>(slot) * stride + batch.compactedCommandOffset) *
+                        sizeof(VkDrawIndexedIndirectCommand);
+                    if (countPathActive) {
+                        vkCmdDrawIndexedIndirectCount(commandBuffer,
+                                                      indirectBuffer,
+                                                      batchOffset,
+                                                      countBuffer,
+                                                      (static_cast<VkDeviceSize>(slot) * batchCount + batchIndex) *
+                                                          sizeof(uint32_t),
+                                                      batchDrawCount,
+                                                      sizeof(VkDrawIndexedIndirectCommand));
+                    } else {
+                        vkCmdDrawIndexedIndirect(commandBuffer,
+                                                 indirectBuffer,
+                                                 batchOffset,
+                                                 batchDrawCount,
+                                                 sizeof(VkDrawIndexedIndirectCommand));
+                    }
+                    recordedDraws += batchDrawCount;
                 }
             }
             continue;
@@ -804,6 +880,7 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
                 .clearValue = VkClearValue{},
                 .hasClearValue = true,
                 .imported = false,
+                .aliased = postProcess_.bloomImagesAreAliased(),
             },
         .normalRoughness =
             renderer::RenderGraphImageResource{
@@ -820,6 +897,7 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
                 .clearValue = VkClearValue{},
                 .hasClearValue = true,
                 .imported = false,
+                .aliased = postProcess_.bloomImagesAreAliased(),
             },
         .ambientOcclusion =
             renderer::RenderGraphImageResource{
@@ -1053,20 +1131,59 @@ void Renderer::recordSkinnedCascadeCaster(VkCommandBuffer commandBuffer, uint32_
         return;
     }
 
-    // One predicate, shared with the cache key, which also answers "no" for
-    // every cascade on the layered path: multiview draws one command into all
-    // layers at once and expects the shader to pick its matrix from
-    // gl_ViewIndex, which a pushed matrix cannot answer. Skipped rather than
-    // drawn wrong -- and skipped in the key too, or the animation would dirty a
-    // layered shadow map that never contains the caster.
+    // One predicate, shared with the cache key, so the pose that dirties a
+    // cascade is exactly the pose that gets drawn into it. The assertion is that
+    // the two sources of the same fact agree; when they disagreed, the result
+    // was a shadow map that cached forever and never updated.
+    // Layered: one draw fans out to every cascade layer, so the projection
+    // cannot ride a push constant -- the multiview shader indexes
+    // cascadeViewProjection[] by gl_ViewIndex instead.
     //
-    // The parameter stays so this reads as a deliberate skip at the call site
-    // rather than an accident of culling; the assertion below is that the two
-    // sources of the same fact agree.
-    if (cascadeIndex >= frameCascades_.size() || !skinnedCasterCastsIntoCascade(cascadeIndex)) {
+    // The visibility question is therefore different in kind from the
+    // per-cascade one below, and getting that wrong is a silent dropped shadow:
+    // the layered pass runs once (cascadePassCount == 1, so cascadeIndex is
+    // always 0), while the caster typically falls in the *far* cascades only --
+    // 2 and 3 for the sunlit scene. Asking "is it in cascade 0" would reject it
+    // every time. The right question is whether any cascade wants it, because
+    // the single draw reaches all of them and each layer clips with its own
+    // projection.
+    if (layeredCascades) {
+        if (cascadeIndex != 0 || skinnedLayeredShadowPipeline_.pipeline() == VK_NULL_HANDLE) {
+            return;
+        }
+
+        bool castsIntoAnyCascade = false;
+        for (uint32_t cascade = 0; cascade < activeCascadeCount(); ++cascade) {
+            if (skinnedCasterCastsIntoCascade(cascade)) {
+                castsIntoAnyCascade = true;
+                break;
+            }
+        }
+        if (!castsIntoAnyCascade) {
+            return;
+        }
+
+        vkCmdBindPipeline(
+            commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, skinnedLayeredShadowPipeline_.pipeline());
+
+        SkinnedLayeredShadowPushConstants layeredPushConstants{};
+        layeredPushConstants.objectFrameDataAddress =
+            frameObjectDataBuffers_.at(currentFrame_).deviceAddress() +
+            static_cast<VkDeviceAddress>(kSkinnedObjectFrameSlot * sizeof(ObjectFrameData));
+        layeredPushConstants.jointMatricesAddress = skinnedMesh_.jointPaletteAddress(currentFrame_);
+        layeredPushConstants.frameConstantsAddress = frameConstantsBuffers_.at(currentFrame_).deviceAddress();
+        vkCmdPushConstants(commandBuffer,
+                           skinnedLayeredShadowPipeline_.layout(),
+                           VK_SHADER_STAGE_VERTEX_BIT,
+                           0,
+                           static_cast<uint32_t>(sizeof(layeredPushConstants)),
+                           &layeredPushConstants);
+
+        recordSkinnedCasterDraw(commandBuffer);
         return;
     }
-    if (layeredCascades) {
+
+    if (cascadeIndex >= frameCascades_.size() || !skinnedCasterCastsIntoCascade(cascadeIndex)) {
         return;
     }
 
@@ -1882,6 +1999,10 @@ void Renderer::recordMainPassGeometry(VkCommandBuffer commandBuffer)
     }
 
     const renderer::Mesh* boundMesh = nullptr;
+    // Seeded with the bind above. Materials marked doubleSided draw with
+    // pipelineDoubleSided_ instead; draw items are sorted on that flag, so this
+    // switches at most once per bucket rather than per batch.
+    VkPipeline boundMainPipeline = pipeline_.pipeline();
     const VkBuffer indirectDrawBuffer = frameIndirectDrawBuffers_.at(currentFrame_).buffer();
     const bool indirectCountPathActive = isFrameIndirectCountPathActive(currentFrame_);
     const VkBuffer batchVisibleCountBuffer =
@@ -1949,6 +2070,12 @@ void Renderer::recordMainPassGeometry(VkCommandBuffer commandBuffer)
                     continue;
                 }
 
+                const VkPipeline batchPipeline = mainPipelineFor(batch.doubleSided);
+                if (boundMainPipeline != batchPipeline) {
+                    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, batchPipeline);
+                    boundMainPipeline = batchPipeline;
+                }
+
                 if (boundMesh != batch.mesh) {
                     const VkBuffer vertexBuffers[] = {batch.mesh->vertexBuffer()};
                     const VkDeviceSize vertexOffsets[] = {0};
@@ -2011,6 +2138,12 @@ void Renderer::recordMainPassGeometry(VkCommandBuffer commandBuffer)
                                         &descriptorSet,
                                         0,
                                         nullptr);
+            }
+
+            const VkPipeline itemPipeline = mainPipelineFor(drawItem.doubleSided);
+            if (boundMainPipeline != itemPipeline) {
+                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, itemPipeline);
+                boundMainPipeline = itemPipeline;
             }
 
             PushConstants pushConstants = basePushConstants;
@@ -2139,9 +2272,29 @@ void Renderer::recordMainPassGeometry(VkCommandBuffer commandBuffer)
                                &basePushConstants);
 
             const renderer::Mesh* phase2BoundMesh = nullptr;
+            VkPipeline phase2BoundPipeline = pipeline_.pipeline();
             for (const MeshDrawBatch& batch : meshDrawBatches_) {
                 if (!batch.mesh || batch.drawItemCount == 0) {
                     continue;
+                }
+                // Blended geometry is drawn later, by recordTransparentPass, and
+                // the phase-1 loop above skips it for that reason. Phase 2 replays
+                // the same compacted buffer against the rebuilt pyramid, so
+                // without the same guard a blended caster that phase 1 rejected as
+                // occluded gets resurrected here -- and drawn with the opaque
+                // pipeline, depth writes on and no blending, into the scene colour
+                // the transparent pass is about to composite into.
+                //
+                // Seven of the eight draw loops in this file had this guard; this
+                // was the eighth.
+                if (batch.bucket == RenderBucket::Blend) {
+                    continue;
+                }
+
+                const VkPipeline batchPipeline = mainPipelineFor(batch.doubleSided);
+                if (phase2BoundPipeline != batchPipeline) {
+                    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, batchPipeline);
+                    phase2BoundPipeline = batchPipeline;
                 }
 
                 if (phase2BoundMesh != batch.mesh) {
@@ -2289,6 +2442,7 @@ void Renderer::recordPunctualShadows(VkCommandBuffer commandBuffer)
             cullInput.buffer(),
             cullInput.size(),
             static_cast<uint32_t>(allDrawItems_.size()),
+            static_cast<uint32_t>(gpuShadowMeshDrawBatches_.size()),
             std::span<const uint32_t>(punctualShadowCasterFlags_.data(), punctualShadowCasterFlags_.size()));
         rhi::debug::endLabel(commandBuffer);
     }

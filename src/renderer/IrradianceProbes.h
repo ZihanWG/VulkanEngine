@@ -10,11 +10,24 @@
 //   * the trilinear blend weights a shading point uses over the eight probes
 //     surrounding it.
 //
-// Why probes and not DDGI-style ray tracing: this engine's target device reports
-// neither VK_KHR_ray_query nor VK_KHR_acceleration_structure, so probe radiance
-// has to be gathered by rasterising the scene from each probe rather than by
-// tracing rays. That is the classic irradiance-volume approach, and it reuses
-// the cubemap capture and irradiance convolution the IBL path already has.
+// Why probes and not DDGI-style ray tracing: this was written against a device
+// -- an Apple M3 through MoltenVK -- that reports neither VK_KHR_ray_query nor
+// VK_KHR_acceleration_structure, so probe radiance had to be gathered by
+// rasterising the scene from each probe rather than by tracing rays. That is the
+// classic irradiance-volume approach, and it reuses the cubemap capture and
+// irradiance convolution the IBL path already has.
+//
+// That premise is device-specific and no longer universal here: an RTX 3080 Ti
+// Laptop reports rayQuery, accelerationStructure and VK_KHR_ray_tracing_pipeline,
+// so DDGI is available on that machine. Treat the rasterised capture as the
+// portability floor, not as the only option, and keep the capability query rather
+// than the hardware assumption. (Ampere reports
+// rayTracingInvocationReorderReorderingHint = NONE -- shader execution reordering
+// is Ada, so a gather here has to tolerate divergence rather than assume it away.)
+//
+// What a switch would NOT touch is most of this header: the octahedral tile
+// layout, the border texel, and the Chebyshev visibility weight describe how
+// probe irradiance is stored and sampled, not how its radiance was gathered.
 //
 // The octahedral convention is deliberately identical to the one already in
 // simple.frag / ssr_trace.frag / gtao.frag rather than a second one of its own.
