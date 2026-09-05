@@ -206,32 +206,28 @@ limit. A desktop card under sustained load settles at a steady boost clock, whic
 is what "a heavier preset pins the clock" assumes. A laptop card under sustained
 load throttles instead, and a throttling clock *is* a drifting control.
 
-### What actually fixes it, and how far it goes
+### What actually fixes it: three separate causes, in order
 
-Pin the clocks. That removes the drift at its source instead of trying to out-run
-it. `tools/dev/gpu_clock.ps1` wraps it and self-elevates, because the device
-writes need administrator:
+The gate turned out to be refusing for three unrelated reasons at once. Each was
+found only after the one before it was removed, so they are recorded in the order
+they surfaced rather than the order they matter.
+
+**1. The clock swings.** Pin it. `tools/dev/gpu_clock.ps1` wraps `nvidia-smi` and
+self-elevates, because the device writes need administrator:
 
 ```
-powershell -File tools/dev/gpu_clock.ps1 lock            # graphics 1400, memory 7001
-powershell -File tools/dev/gpu_clock.ps1 status          # needs no privileges
+powershell -File tools/dev/gpu_clock.ps1 lock -Mhz 1100   # graphics and memory
+powershell -File tools/dev/gpu_clock.ps1 status           # needs no privileges
 powershell -File tools/dev/gpu_clock.ps1 unlock
 ```
 
-With the graphics clock pinned at 1400 MHz, the same A/B that had been refused
-eight times in a row:
+Pinning the graphics clock at 1400 MHz took a `--scene stress` A/B from eight
+consecutive refusals, best 1.4%, to 0.30%. The first time the gate had ever
+passed on this machine.
 
-| A/B on `punctualShadows.gpuCasterCulling` | control drift | verdict |
-| --- | --- | --- |
-| `--scene stress` | **0.30%** | passes (limit 1%) |
-| `--scene gpu-stress` | 9.0% | still refused |
-
-The first row is the first time the gate has ever passed on this machine; the
-previous best across eight attempts was 1.4%.
-
-The second row is the part worth remembering: **a pin is a ceiling, not a
-floor.** Sampling `nvidia-smi` every two seconds during a `gpu-stress` run, with
-the pin in place:
+**2. A pin is a ceiling, not a floor.** The same A/B on `--scene gpu-stress` was
+still refused at 9.0%. Sampling `nvidia-smi` every two seconds during the run,
+with the pin in place:
 
 | t | graphics | memory | temp | sw_thermal_slowdown |
 | --- | --- | --- | --- | --- |
@@ -240,15 +236,55 @@ the pin in place:
 | 12 s | 1320 MHz | 6001 MHz | 86 C | **Active** |
 | 20 s | 1320 MHz | 7001 MHz | 86 C | **Active** |
 
-Two separate leaks. The card reaches its thermal threshold and slides *below* the
-pin; and the memory clock was never pinned at all, hopping 6001/7001/8001 -- a
-33% swing in the one resource a bandwidth-bound scene is waiting on. So the
-script pins both, and a heavier scene needs a *lower* graphics pin, not a higher
-one. Run `status` during a measurement: if any throttle reason reads Active the
-pin is not holding, and the gate will refuse the comparison no matter how long
-the run is.
+Two leaks. The card reaches its thermal threshold and slides *below* the pin, and
+the memory clock was never pinned at all -- it hops 6001/7001/8001, a 33% swing
+in the one resource a bandwidth-bound scene is waiting on. So the script pins
+both, and a heavier scene needs a *lower* graphics pin rather than a higher one.
+Run `status` during a measurement: if a throttle reason reads Active, the pin is
+not holding.
+
+**3. The median was the wrong statistic.** With both clocks pinned at 1100/7001
+and no throttle reason active for the whole run, `gpu-stress` drifted *worse*:
+15.9%. The pin was holding and the drift got bigger, which falsified the thermal
+explanation outright.
+
+The per-sample distribution says why. Every scope has a tight floor and a long
+upper tail -- `MainHDRPass` over one launch: p10 1.962, min 1.956, max 2.917.
+That is the signature of something else using the GPU, and this laptop has 21
+other processes on the device: the compositor, three WebView2 instances, two
+NVIDIA overlays, a Steam helper, two chat clients. Contention is **one-sided**.
+Another process can only ever add time to a frame, never remove it.
+
+A median rides that tail. A low percentile does not. Same six logs, only the
+statistic changed:
+
+| statistic | control drift | A/B delta |
+| --- | --- | --- |
+| median | 11.8% -- refused | -0.197 ms (-6.5%) |
+| p25 | 0.61% -- passes | +0.019 ms |
+| p10 | 0.84% -- passes | +0.022 ms |
+| min | 0.85% -- passes | +0.021 ms |
+
+The median did not merely have more noise. **It reported the delta with the wrong
+sign**, claiming GPU culling made the heavy scene 6.5% faster. The low percentiles
+agreed with each other and with the same comparison run on a light scene that had
+passed the gate outright.
+
+So `measure_gpu.py` quotes p10 rather than the median; see `QUOTED_PERCENTILE`.
+What that gives up is the tail itself -- a regression that shows up only as
+occasional long frames, a shader recompile or an allocator stall, is exactly what
+p10 discards. Use `run` and read its Max column when that is the question.
+
+### Where that leaves the gate
+
+Both scenes now pass, at the same 1100/7001 pin:
+
+| A/B on `punctualShadows.gpuCasterCulling` | control drift |
+| --- | --- |
+| `--scene stress` | **0.14%** |
+| `--scene gpu-stress` | **0.50%** |
 
 Until a comparison passes the gate it is directional at best, and the honest
 thing is to report a refused comparison as refused. Absolute numbers, per-pass
-breakdowns and anything measured in bytes remain trustworthy; it is only the A/B
-deltas that the clock takes away.
+breakdowns and anything measured in bytes remain trustworthy; it was only the A/B
+deltas that the machine took away.

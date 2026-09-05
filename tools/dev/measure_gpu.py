@@ -11,7 +11,7 @@ can be quoted as evidence:
 
 - patch only named settings keys, then restore the user's file afterwards;
 - discard a warm-up window instead of trusting the first frames;
-- report medians over many samples, never a single frame;
+- report a low percentile over many samples, never a single frame;
 - interleave A/B/A/B and refuse the comparison when the repeated control drifts.
 
 Scene and camera default to the renderer's launch defaults, which is what makes
@@ -27,10 +27,12 @@ more than the effect being measured.
 A heavier preset is NOT the remedy on a laptop, whatever this docstring used to
 say. Measured on an RTX 3080 Ti Laptop: drift grew with load (1.4% on ``stress``,
 9.6% at 4K), because the card throttles rather than settling at a steady boost.
-Pin the clocks instead -- ``tools/dev/gpu_clock.ps1 lock`` -- which took the same
-comparison to 0.30%. A pin is a ceiling, not a floor, so a heavier scene needs a
-*lower* pin; see docs/profiling.md. ``CONTROL_DRIFT_LIMIT`` is itself calibrated
-on hardware, not universal.
+Pin the clocks instead -- ``tools/dev/gpu_clock.ps1 lock``. A pin is a ceiling,
+not a floor, so a heavier scene needs a *lower* pin, and the memory clock needs
+pinning too. That plus quoting p10 rather than the median (see
+``QUOTED_PERCENTILE``) took two long-refused comparisons to 0.14% and 0.50%; the
+full account is in docs/profiling.md. ``CONTROL_DRIFT_LIMIT`` is itself
+calibrated on hardware, not universal.
 
 Usage:
     tools/dev/measure_gpu.py run   [--set k=v ...] [--label NAME] [--args ...]
@@ -46,7 +48,6 @@ import os
 import re
 import shutil
 import signal
-import statistics
 import subprocess
 import sys
 import time
@@ -65,7 +66,8 @@ DEFAULT_OUTPUT_DIR = REPO_ROOT / "build" / "measurements"
 DEFAULT_WARMUP_SECONDS = 10
 DEFAULT_DURATION_SECONDS = 30
 
-# Minimum samples worth reporting a median over.
+# Minimum samples worth reporting a percentile over. At exactly this many,
+# QUOTED_PERCENTILE degenerates to the minimum; the defaults pool about 55.
 MIN_SAMPLES = 8
 
 # Idle time after a build, before the first run. A parallel build leaves the
@@ -76,6 +78,32 @@ DEFAULT_SETTLE_SECONDS = 90
 # moved more than the effect being measured.
 CONTROL_DRIFT_LIMIT = 0.01
 
+# The statistic every number here is quoted at. Not the median, because on a
+# desktop that is also running a compositor, a browser and a chat client, GPU
+# contention is one-sided: another process can only ever add time to a frame,
+# never remove it. That leaves every scope with a tight floor and a long upper
+# tail, and the median rides the tail.
+#
+# Measured on --scene gpu-stress with 21 other processes on the device and the
+# clocks pinned: the control drifted 11.8% under the median and 0.84% under
+# this percentile, and the median got the A/B delta's SIGN wrong -- -6.5%
+# where this percentile said +0.8%, agreeing to the millisecond with the same
+# comparison on a light scene that had passed the gate outright. A low
+# percentile is the cost of the frames nobody interrupted, which is what
+# attributing a code change wants.
+#
+# What it gives up is the tail itself. A regression that shows up only as
+# occasional long frames -- a shader recompile, an allocator stall -- is
+# exactly what this discards. Use ``run`` and read its Max column for that.
+QUOTED_PERCENTILE = 0.10
+QUOTED_LABEL = "p10"
+
+
+def quoted_value(values: list[float]) -> float:
+    """The percentile every reported number uses. See QUOTED_PERCENTILE."""
+    ordered = sorted(values)
+    return ordered[int(QUOTED_PERCENTILE * (len(ordered) - 1))]
+
 # docs/profiling.md: scopes recorded between vkCmdBeginRendering and
 # vkCmdEndRendering read near zero on tile-based hardware regardless of the work
 # they contain. They are parsed so the log stays faithful, but never compared.
@@ -83,12 +111,12 @@ UNRELIABLE_SCOPES = frozenset({"Skybox", "RenderObjects", "SkinnedMesh"})
 
 # A pass that runs every frame appears in every block. Anything below this is
 # conditional -- the depth pyramid, for instance, is built in 1-2 blocks out of
-# 29 while occlusion culling is suspended. Its median is the cost of a rare
+# 29 while occlusion culling is suspended. Its value is the cost of a rare
 # frame, not of the configuration, and whether it appears at all is luck.
 INTERMITTENT_COVERAGE = 0.9
 
 # A pass present in only one configuration has no A/B delta to test its control
-# drift against, so the drift is compared with the pass's own median instead.
+# drift against, so the drift is compared with the pass's own value instead.
 # Above this fraction the value is not stable enough to quote: SSRTrace once
 # reported 0.158 ms as an "A only" row while moving 0.137 ms between the two
 # control runs, and it was read as a real cost for an hour.
@@ -138,9 +166,9 @@ class Samples:
         if not self.effective_settings:
             self.effective_settings = other.effective_settings
 
-    def median(self, scope: str) -> float | None:
+    def quoted(self, scope: str) -> float | None:
         values = self.scopes.get(scope)
-        return statistics.median(values) if values else None
+        return quoted_value(values) if values else None
 
     def sample_count(self, scope: str) -> int:
         return len(self.scopes.get(scope, ()))
@@ -434,9 +462,9 @@ def format_single(samples: Samples, release_run: bool = True) -> str:
     lines = [
         f"## {samples.label}",
         "",
-        f"{samples.block_count} samples, medians in ms.",
+        f"{samples.block_count} samples, {QUOTED_LABEL} in ms.",
         "",
-        "| Pass | Median | Min | Max | Blocks |",
+        f"| Pass | {QUOTED_LABEL} | Min | Max | Blocks |",
         "| --- | --- | --- | --- | --- |",
     ]
     intermittent: list[str] = []
@@ -448,7 +476,7 @@ def format_single(samples: Samples, release_run: bool = True) -> str:
             coverage = f"**{coverage}**"
             intermittent.append(name)
         lines.append(
-            f"| {name}{note} | {statistics.median(values):.3f} | "
+            f"| {name}{note} | {quoted_value(values):.3f} | "
             f"{min(values):.3f} | {max(values):.3f} | {coverage} |"
         )
     if intermittent:
@@ -456,7 +484,7 @@ def format_single(samples: Samples, release_run: bool = True) -> str:
             [
                 "",
                 f"**Intermittent passes:** {', '.join(intermittent)}. These did not run "
-                "in every sampled frame, so their median is the cost of the frames that "
+                "in every sampled frame, so their value is the cost of the frames that "
                 "did run them, not a per-frame cost of this configuration.",
             ]
         )
@@ -465,7 +493,7 @@ def format_single(samples: Samples, release_run: bool = True) -> str:
 
 
 def scope_control_drift(first_a: Samples, last_a: Samples) -> dict[str, float]:
-    """Absolute median movement of each scope between the two control runs.
+    """Absolute movement of each scope between the two control runs.
 
     A frame-level control that returns says nothing about a sub-millisecond
     pass: the composite sharpen filter once read 0.416 vs 0.424 ms at frame
@@ -473,8 +501,8 @@ def scope_control_drift(first_a: Samples, last_a: Samples) -> dict[str, float]:
     """
     drift: dict[str, float] = {}
     for name in first_a.scopes:
-        baseline = first_a.median(name)
-        repeated = last_a.median(name)
+        baseline = first_a.quoted(name)
+        repeated = last_a.quoted(name)
         if baseline is not None and repeated is not None:
             drift[name] = abs(repeated - baseline)
     return drift
@@ -490,7 +518,8 @@ def format_comparison(
     lines = [
         f"## {a.label} vs {b.label}",
         "",
-        f"Medians in ms over {a.block_count} and {b.block_count} samples.",
+        f"{QUOTED_LABEL} in ms over {a.block_count} and {b.block_count} samples. "
+        "The median is not used here: see QUOTED_PERCENTILE.",
         "",
         "| Pass | A | B | Delta | Delta % | Control drift | Attributable | Blocks |",
         "| --- | --- | --- | --- | --- | --- | --- | --- |",
@@ -500,8 +529,8 @@ def format_comparison(
     intermittent: list[str] = []
     unstable: list[str] = []
     for name in names:
-        median_a = a.median(name)
-        median_b = b.median(name)
+        value_a = a.quoted(name)
+        value_b = b.quoted(name)
         count_a = a.sample_count(name)
         count_b = b.sample_count(name)
         coverage = f"{count_a}/{a.block_count} · {count_b}/{b.block_count}"
@@ -523,20 +552,20 @@ def format_comparison(
         if name in UNRELIABLE_SCOPES:
             lines.append(
                 f"| {name} *(nested: reads ~0, not a breakdown)* | "
-                f"{fmt(median_a)} | {fmt(median_b)} | - | - | - | no | {coverage} |"
+                f"{fmt(value_a)} | {fmt(value_b)} | - | - | - | no | {coverage} |"
             )
             continue
-        if median_a is None or median_b is None:
+        if value_a is None or value_b is None:
             # "A only" reads as a real presence difference, but a pass that runs
             # in 2 of 29 frames on both sides lands here purely by sampling luck.
-            appeared = "B only" if median_a is None else "A only"
+            appeared = "B only" if value_a is None else "A only"
             if rare:
                 appeared += ", intermittent"
             # There is no delta to test the drift against, so test it against the
-            # pass's own median. Hiding the drift here is what let a 0.158 ms row
+            # pass's own value. Hiding the drift here is what let a 0.158 ms row
             # be quoted while its control moved 0.137 ms between runs.
             own_drift = scope_drift.get(name)
-            present = median_a if median_b is None else median_b
+            present = value_a if value_b is None else value_b
             if own_drift is None:
                 drift_text, verdict = "no control", "-"
             else:
@@ -547,12 +576,12 @@ def format_comparison(
                 else:
                     verdict = "-"
             lines.append(
-                f"| {name} | {fmt(median_a)} | {fmt(median_b)} | {appeared} | - "
+                f"| {name} | {fmt(value_a)} | {fmt(value_b)} | {appeared} | - "
                 f"| {drift_text} | {verdict} | {coverage} |"
             )
             continue
-        delta = median_b - median_a
-        percent = (delta / median_a * 100.0) if median_a else 0.0
+        delta = value_b - value_a
+        percent = (delta / value_a * 100.0) if value_a else 0.0
         own_drift = scope_drift.get(name)
         if own_drift is None:
             drift_text, verdict = "-", "unchecked"
@@ -564,7 +593,7 @@ def format_comparison(
         if rare:
             verdict = "**no**"
         lines.append(
-            f"| {name} | {median_a:.3f} | {median_b:.3f} | {delta:+.3f} | "
+            f"| {name} | {value_a:.3f} | {value_b:.3f} | {delta:+.3f} | "
             f"{percent:+.1f}% | {drift_text} | {verdict} | {coverage} |"
         )
 
@@ -572,7 +601,7 @@ def format_comparison(
     if unstable:
         lines.append(
             f"**Unstable values:** {', '.join(unstable)}. These run in only one "
-            "configuration, so there is no delta to check; instead their own median "
+            "configuration, so there is no delta to check; instead their own value "
             "moved more than a quarter of itself between the two control runs. The "
             "number is not reproducible from one run to the next -- do not quote it "
             "as the pass's cost."
@@ -582,7 +611,7 @@ def format_comparison(
         lines.append(
             f"**Intermittent passes:** {', '.join(intermittent)}. These did not run in "
             "every sampled frame, so an 'A only' label is sampling luck rather than a "
-            "presence difference, and the median is the cost of the frames that did run "
+            "presence difference, and the value is the cost of the frames that did run "
             "them. Not comparable between configurations."
         )
         lines.append("")
@@ -662,7 +691,7 @@ def ordered_scopes(scopes: dict[str, list[float]]) -> list[str]:
         if name == FRAME_TOTAL:
             return (0, 0.0)
         values = scopes.get(name) or [0.0]
-        return (1, -statistics.median(values))
+        return (1, -quoted_value(values))
 
     return sorted(scopes, key=sort_key)
 
@@ -683,8 +712,9 @@ def samples_to_json(samples: Samples) -> dict:
         "label": samples.label,
         "sample_count": samples.block_count,
         "query_limit_exceeded": samples.query_limit_exceeded,
-        "medians_ms": {
-            name: round(statistics.median(values), 4) for name, values in samples.scopes.items()
+        "statistic": QUOTED_LABEL,
+        "p10_ms": {
+            name: round(quoted_value(values), 4) for name, values in samples.scopes.items()
         },
     }
 
@@ -742,8 +772,8 @@ def cmd_ab(args: argparse.Namespace) -> int:
     drift = None
     scope_drift: dict[str, float] = {}
     if args.repeat >= 2 and first_a is not None and last_a is not None:
-        baseline = first_a.median(FRAME_TOTAL)
-        repeated = last_a.median(FRAME_TOTAL)
+        baseline = first_a.quoted(FRAME_TOTAL)
+        repeated = last_a.quoted(FRAME_TOTAL)
         if baseline and repeated:
             drift = abs(repeated - baseline) / baseline
         scope_drift = scope_control_drift(first_a, last_a)
