@@ -1,4 +1,4 @@
-#include "core/CommandLine.h"
+﻿#include "core/CommandLine.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -80,6 +80,42 @@ TEST_CASE("Frame counts must be positive integers")
 
     LaunchOptions missingValue{};
     REQUIRE_FALSE(parse({"--exit-after-frames"}, missingValue));
+}
+
+TEST_CASE("Window size parses WIDTHxHEIGHT and rejects everything else")
+{
+    LaunchOptions config{};
+    REQUIRE(parse({"--window-size", "3840x2160"}, config));
+    CHECK(config.width == 3840);
+    CHECK(config.height == 2160);
+
+    // Both halves get the same trailing-garbage rejection --exit-after-frames
+    // gets, because a size that silently parses as a prefix would put the whole
+    // measurement at a resolution nobody asked for -- and the frame time is the
+    // thing being measured.
+    for (const std::string& bad : {std::string("1280"),
+                                   std::string("1280x"),
+                                   std::string("x720"),
+                                   std::string("1280x720junk"),
+                                   std::string("1280xabc"),
+                                   std::string("0x720"),
+                                   std::string("1280x0"),
+                                   std::string("-1280x720")}) {
+        LaunchOptions rejected{};
+        REQUIRE_FALSE(parse({"--window-size", bad}, rejected));
+    }
+
+    LaunchOptions missingValue{};
+    REQUIRE_FALSE(parse({"--window-size"}, missingValue));
+}
+
+TEST_CASE("Window size defaults to 1280x720 when not given")
+{
+    // The default is what every existing measurement and the golden image were
+    // taken at, so it is pinned rather than left to drift with the struct.
+    const LaunchOptions defaults;
+    CHECK(defaults.width == 1280);
+    CHECK(defaults.height == 720);
 }
 
 TEST_CASE("Capture requires both a frame and an output path")

@@ -1,4 +1,4 @@
-// Scene contents: building the demo scenes, creating and editing materials, and
+﻿// Scene contents: building the demo scenes, creating and editing materials, and
 // the material-asset and scene JSON round trips.
 //
 // Split out of Renderer.cpp. Definitions only -- these remain Renderer member
@@ -386,11 +386,15 @@ void Renderer::removeFragmentStressSceneObjects()
 void Renderer::resetFragmentStressSceneToPreset()
 {
     removeFragmentStressSceneObjects();
-    makeSceneBuilder().appendFragmentStressScene(renderObjects_, fragmentStressSceneStatus_);
+    makeSceneBuilder().appendFragmentStressScene(
+        renderObjects_, fragmentStressSceneStatus_, fragmentStressLayerCount_);
 }
 
-void Renderer::loadFragmentStressScene()
+void Renderer::loadFragmentStressScene(int layerCount, int lightCount)
 {
+    fragmentStressLayerCount_ = layerCount;
+    fragmentStressLightCount_ = lightCount;
+
     if (portfolioCaptureMode_) {
         setPortfolioCaptureMode(false);
     }
@@ -1452,6 +1456,10 @@ void Renderer::loadScenePreset(ScenePreset preset)
         return;
     case ScenePreset::SunlitYard:
         loadSunlitYardScene();
+        return;
+    case ScenePreset::GpuStress:
+        // Same scene, same camera, same loader -- only the two knobs differ.
+        loadFragmentStressScene(renderer::kGpuStressLayerCount, renderer::kGpuStressLightCount);
         return;
     case ScenePreset::Default:
         break;
