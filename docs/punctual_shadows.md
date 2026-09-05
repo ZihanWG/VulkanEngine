@@ -439,32 +439,37 @@ zero validation errors, and the CPU-culling default path unchanged byte for byte
 | CPU culling | 0.320 / 0.321 / 0.349 ms | 0.511 / 0.531 / 0.567 ms |
 | GPU culling | 0.022 / 0.022 / 0.025 ms | 0.196 / 0.205 / 0.250 ms |
 
-**The GPU side is still not quotable, but it is no longer the objection.** Five
-A/B attempts were refused by the control-drift gate (3.9%, 7.6%, 6.4%, 1.4%,
-10.9% against a 1% limit); this laptop does not hold a steady clock across a
-six-launch series, and lengthening the sample window made it worse rather than
-better. What changed is what the refused runs show. With in-place writing,
-`PunctualShadowAtlas` read 0.030 -> 0.325 ms, a delta 59x that row's own drift.
-With per-batch compaction it read 0.029 -> 0.031 and 0.032 -> 0.032, inside its
-own drift both times. The remaining GPU cost is the cull dispatch itself,
-`PunctualShadowGpuCull` at ~0.017 ms, which has no counterpart in the CPU path.
+**The GPU side is now measured.** With `tools/dev/gpu_clock.ps1` pinning the
+graphics clock at 1400 MHz, an A/B on `--scene stress` passed the control-drift
+gate at **0.30%** -- the first gate-passing GPU comparison on this machine, after
+eight refusals whose best was 1.4%. Three A/B pairs, medians over 54 and 57
+samples:
 
-So the shape of the trade is ~0.017 ms of added GPU work against ~0.31 ms of
-removed CPU recording, on a scene whose CPU frame already exceeds its GPU frame.
-That looks clearly favourable and is still not a measurement. **Do not flip the
-default on it.** What that needs is a gate-passing A/B on a machine with a stable
-clock, plus `tests/golden/lavapipe_frame30.png` regenerated on lavapipe.
+| Pass | culling off | culling on | delta | attributable |
+| --- | --- | --- | --- | --- |
+| Frame total | 1.186 ms | 1.207 ms | **+0.021 ms (+1.8%)** | yes |
+| PunctualShadowAtlas | 0.035 ms | 0.036 ms | +0.001 ms | yes |
+| PunctualShadowGpuCull | - | 0.019 ms | B only | - |
 
-**The GPU side of that trade is still unresolved on this target.** Two attempts
-at an A/B were refused by `tools/dev/measure_gpu.py`'s control-drift gate (3.9%
-and 7.6% against a 1% limit -- the machine does not settle between runs of a
-series this long), so there is no quotable number here. Directionally both
-refused runs put `PunctualShadowAtlas` substantially higher with GPU culling on,
-which is the same direction as the MoltenVK measurement above even though
-indirect-count is available here. That matters: the CPU win is real and measured,
-but it may be paid for on the GPU, and on a CPU-bound scene that can still be a
-net gain. Whoever adds the caster mask has to produce a clean A/B before the
-default moves -- do not carry the CPU numbers alone into that decision.
+**The feared outcome did not happen.** The worry recorded above was that the
+atlas pass would blow up the way it does under MoltenVK. It does not move. The
+whole GPU cost is the cull dispatch itself at 0.019 ms, and it lands on the frame
+very nearly one-for-one.
+
+So the trade is finally a number instead of a shape: **+0.021 ms of GPU against
+~0.31 ms of removed CPU recording**, on a scene whose CPU frame already exceeds
+its GPU frame. Net favourable by an order of magnitude, in the direction the CPU
+numbers predicted.
+
+The same A/B on `--scene gpu-stress` was still refused, at 9.0% drift: that scene
+drives the card to 87 C, `sw_thermal_slowdown` goes Active, and the clock falls
+below the pin. See `docs/profiling.md`. So the number above is established for a
+CPU-bound scene and **not** for a GPU-bound one.
+
+**This still does not flip the default**, and the reason is no longer
+measurement. Two things gate it: `tests/golden/lavapipe_frame30.png` has to be
+regenerated on lavapipe, and the correctness trap below has to be closed first.
+A favourable performance number is not permission to ship a wrong shadow.
 
 **One trap worth recording.** The cull input buffer is shared with the main and
 CSM paths and carries no bucket, and `GpuCullDrawItem` is exactly 64 bytes with
@@ -657,11 +662,14 @@ near-black and reads as a catastrophic bug that is not there.
   a visible light then cannot have.
 - **The point-light demotion is a fixed one class**, not derived from the actual
   per-face footprint.
-- **GPU caster culling is off by default, pending a clean GPU A/B.** It is now
-  bit-identical to the CPU path on all six scene presets, and it removes ~60% of
-  the frame’s CPU recording on `--scene stress`, but the GPU side of that trade
-  has not been measured cleanly and flipping the default needs the golden image
-  regenerated on lavapipe. See [GPU caster culling](#gpu-caster-culling).
+- **GPU caster culling is off by default, and no longer for want of a
+  measurement.** It is bit-identical to the CPU path on all six scene presets, it
+  removes ~60% of the frame’s CPU recording on `--scene stress`, and a
+  gate-passing A/B (0.30% control drift) puts the GPU side at +0.021 ms against
+  that ~0.31 ms CPU saving. What still blocks the flip is the missing per-draw-item
+  caster mask -- without it, enabling this reintroduces alpha-blended geometry
+  casting opaque shadows -- plus `tests/golden/lavapipe_frame30.png` regenerated on
+  lavapipe. See [GPU caster culling](#gpu-caster-culling).
 - **No filtering beyond 3x3 PCF.** No variance/moment maps, no contact-hardening.
 - **No cross-face filtering.** PCF is clamped inside a face rather than
   continuing onto the neighbour, so filtering narrows slightly at face
