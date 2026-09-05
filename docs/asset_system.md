@@ -55,7 +55,10 @@ Supported fields are `name`, `shader`, `baseColorFactor`,
 the fragment shader and cast alpha-tested shadows, and `BLEND` materials draw in
 a separate transparent pass (see [transparency.md](transparency.md)). The cutoff
 is data, not a pipeline variant -- it rides in ObjectFrameData -- so there is
-still no shader permutation system. `doubleSided` remains metadata only.
+still no shader permutation system. `doubleSided` is not data in that sense: cull
+mode lives in pipeline state, so it selects between two main-pass pipelines and
+breaks the draw-item batch run (`renderer/DrawItemBatching.h`). It has no effect
+while `renderer.enableBackfaceCulling` is off, which is the default.
 
 ## Runtime Mapping
 
@@ -282,7 +285,8 @@ A TRANSFER-only queue does not list `SHADER_READ_ONLY_OPTIMAL` among its
 supported layouts, and the release barrier above names it anyway, on the grounds
 that the transition belongs to the ownership transfer rather than to the source
 queue. **That was verified, not assumed** -- validation layers accept this form on
-MoltenVK. The contingency, had they not, was to transfer ownership at
+MoltenVK, and on an NVIDIA driver with a genuinely separate TRANSFER-only family
+(see Limitations). The contingency, had they not, was to transfer ownership at
 `TRANSFER_DST → TRANSFER_DST` and add a third graphics-side barrier.
 
 **Measured effect on wall clock: none that this machine can resolve.** Interleaved
@@ -319,13 +323,20 @@ compressed, decode wait goes to zero, and upload halves.
 
 ### Limitations
 
-- **The transfer queue is inert by default and CI never runs it.** On this
-  machine a TRANSFER-only family does not exist unless
+- **CI never runs the transfer queue, and on MoltenVK neither does a default
+  launch.** There a TRANSFER-only family does not exist unless
   `MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES=1` is set -- MoltenVK otherwise exposes
   four identical GRAPHICS|COMPUTE|TRANSFER families -- which is the same gate the
-  async compute path documents. Everything above about ownership transfer is
-  therefore exercised only under that environment variable, and was verified by
-  hand with validation layers rather than by CI.
+  async compute path documents.
+
+  It is not inert everywhere. An RTX 3080 Ti Laptop exposes a TRANSFER-only
+  family (family 1, 2 queues) alongside a compute-only family 2, and the
+  renderer selects it with no environment variable: `Dedicated transfer queue
+  available (family 1); load-time texture uploads use it.` A 200-frame
+  `--scene stress` run with `--fail-on-validation-error` reports 0 errors, so
+  the ownership-transfer barriers above are now confirmed on a second driver
+  that implements queue families natively rather than emulating them. CI still
+  does not cover it: lavapipe exposes no such family.
 - **Upload is not overlapped with anything.** The load flow still waits for the
   copies before continuing, so the transfer queue buys the capability and frees
   the graphics queue without shortening startup.

@@ -679,6 +679,106 @@ Measured at 2560x1440: the whole transient set is 123.74 MiB and would pack into
 82.62 MiB. Only the bloom chain is wired -- 41.12 MiB of images into a 23.64 MiB
 pool, **17.48 MiB saved**.
 
+### It regressed to never activating at all, and that is now fixed
+
+The measurement below was taken while the feature worked. It stopped working
+afterwards, silently, and stayed broken because it is off by default.
+
+The planner only requests transients a pass actually uses this frame -- correct,
+since an unused resource has no lifetime to place. The binder then required a
+placement for **every** image in the bloom chain, treating a missing one as a
+failure and falling the whole chain back to private allocations. Those two rules
+are incompatible the moment part of the chain is culled, and the two bloom paths
+cull each other: with `useMipChain` on, `BloomExtract` and `BloomPing` have no
+pass; with it off, the mip images do not. So one group was always unused, always
+unplaced, and always failed the bind:
+
+```
+useMipChain on : Bloom image 'BloomExtract' could not be bound into the transient pool; ...
+useMipChain off: Bloom image 'BloomMipDownsample0' could not be bound into the transient pool; ...
+```
+
+Both configurations, which is to say all of them. Turning
+`renderer.enableTransientAliasing` on did nothing but log a warning.
+
+The fix distinguishes the two reasons an image can lack a placement.
+`BloomAliasPlacement::unusedThisFrame` marks the ones the planner left out on
+purpose; those get a private allocation, which is safe precisely because no pass
+reads or writes them. An image that *is* used and still has no placement remains a
+planning bug and still tears the whole chain down, which is the case the
+all-or-nothing rule exists for.
+
+### The G-buffer joins the pool, which is where the memory actually was
+
+Bloom alone saved 2.85 MiB. The lifetimes said where the rest was:
+`NormalRoughnessGBuffer` (7.5 MiB) and `VelocityBuffer` (3.75 MiB) both stop being
+read at pass 7, while the bloom chain does not start until pass 9 -- 11.25 MiB
+sitting idle for two thirds of the frame with nothing reusing it.
+
+They are now bound into the same pool. Measured on an RTX 3080 Ti Laptop,
+`--scene stress` at 1280x720:
+
+| | images | pool | saved |
+| --- | --- | --- | --- |
+| bloom only, `useMipChain` on | 7.23 MiB | 4.38 MiB | 2.85 MiB |
+| bloom only, `useMipChain` off | 7.50 MiB | 5.62 MiB | 1.88 MiB |
+| **with the G-buffer, `useMipChain` on** | **18.48 MiB** | **11.25 MiB** | **7.23 MiB** |
+| **with the G-buffer, `useMipChain` off** | **18.75 MiB** | **11.25 MiB** | **7.50 MiB** |
+
+The pool is now exactly the G-buffer pair's 11.25 MiB, which is to say the whole
+bloom chain fits inside their bytes after pass 7 and costs nothing further. That
+matches the ceiling `--probe-aliasing` reports for the frame as a whole (28.79 MiB
+of transients into a 21.56 MiB pool), so this is the end of what these lifetimes
+allow rather than a step towards it.
+
+Zero validation errors in every configuration, and all six scene presets pass the
+golden gate (`--channel-tolerance 1 --max-differing-fraction 0`) against the
+private-allocation reference. `--probe-aliasing` confirms the driver really shares
+the bytes rather than merely accepting the binds.
+
+**What made it safe to extend.** Three things, and skipping any of them would have
+corrupted pixels rather than failed:
+
+- Both images are declared to the graph with `aliased = true`. Without that the
+  graph emits no handoff barrier and the bloom writes land on live G-buffer bytes.
+- `recreatePostProcessResources` already rebinds SSR and GTAO against a fresh
+  normal-roughness view, so recreating the image pool-bound does not leave stale
+  descriptors. That path existed for resize; aliasing only needed it to be true.
+- Neither is history-read, which is now enforced rather than checked once; see
+  below.
+
+**The membership is a name list on purpose.** `isAliasableTransient` in
+`Renderer.cpp` names them. Whether a resource can be recreated as aliased is a fact
+about the code that owns it, not about how it is declared to the graph, and adding
+a name without giving it a recreate-and-rebind path binds it into shared memory
+while stale descriptors still point at the image it used to be. `SceneColorHDR` and
+`AmbientOcclusion` are the obvious next candidates and are deliberately absent:
+both live nearly the whole frame, so they would take pool space without freeing
+any.
+
+### History reads are what the lifetime rule had to grow a guard for
+
+Aliasing was safe before this only by accident of scope: bloom is not history-read,
+so the question never arose. Extending the pool made it worth answering properly.
+
+`computeTextureLifetimes` derives an interval from one frame's usages, and for a
+resource something reads with `RGReadKind::History` that interval is not the one
+its bytes have to survive. Written at slot 17 and history-read at slot 4, it looks
+free over [0, 3] -- and whatever the allocator packs there overwrites, at the start
+of frame N+1, exactly what frame N left for it to read. The read happens after the
+clobber, so nothing reports it: not the validation layer, not a barrier, only the
+pixels.
+
+Such a texture now comes back live for the whole frame, whatever its usages say,
+which leaves it in the pool but stops anything reusing its bytes. Three cases in
+`tests/test_render_graph.cpp` pin it, including that an ordinary `Produced` read
+still gets its tight interval -- the guard has to be specific, or it would forbid
+the sharing the allocator exists to do.
+
+Today that covers `AmbientOcclusion`, `DepthPyramid` and the TAA history, none of
+which are in the alias list. It matters for what comes next: the README lists
+disocclusion detection as future work, and that wants the previous frame's depth.
+
 ### What it costs, and why it stays off
 
 Measured A/B, interleaved with a repeated control (drift 0.48%, limit 1%):
@@ -810,3 +910,31 @@ the default.
   seven, because each is one region of shared recording state.
 - Versions are per frame and per resource, not per subresource, so a pass writing
   one mip of an image advances the version of the whole image.
+
+### Declaration allocates for debug text, measured and left alone
+
+The declaration path allocates once per frame for every piece of debug text it
+carries: `addPass` takes `std::string name` by value, every usage stores a
+`std::string description`, and `textureResourceHandle` copies the resource name
+into `RenderResourceHandle`. Across ~23 live passes and 99 usage declarations
+that is upwards of 220 heap allocations a frame, none of which the GPU ever sees.
+
+Rewriting them as `std::string_view` onto static storage -- plus a static table
+for the two mip names that are built with `std::to_string`, and resolving the
+resource name by index rather than copying it -- was benchmarked in isolation
+against the real string lengths and counts: **10.0-11.1 us/frame today, 4.5-4.9
+us/frame after, so 5.5-6.3 us recoverable**.
+
+That is not worth taking. On an RTX 3080 Ti Laptop, `--scene stress`, Release,
+frame prep CPU runs 0.99 ms average against a 1.01 ms GPU frame, so the recovery
+is **0.6% of the CPU frame** -- below the 0.49% control drift the A/B harness
+itself reports on a good run, which means it could not be demonstrated after the
+fact. Against that, the change touches `RGResourceUsage`, `RenderResourceHandle`,
+the debug UI that reads them, and the 1555 lines of tests over the analysis
+functions, and it introduces a lifetime rule (views into `textures_[i].desc.name`
+would dangle when the vector reallocates a short, SSO-stored name) that the
+current owning strings do not have.
+
+Worth revisiting only if the declaration set grows by an order of magnitude, or
+if a pass-registration API (see the pass-list limitation above) moves declaration
+off the recording thread and makes the allocator contended.

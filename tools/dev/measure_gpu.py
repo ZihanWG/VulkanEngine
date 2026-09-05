@@ -14,15 +14,21 @@ can be quoted as evidence:
 - report medians over many samples, never a single frame;
 - interleave A/B/A/B and refuse the comparison when the repeated control drifts.
 
-Scene and camera are deliberately left at their launch defaults, which is what
-makes separate runs comparable. Scene presets are not persisted settings, so
-``--set`` cannot reach them; the renderer's ``--scene`` flag can, but this
-harness does not pass arguments to the binary yet -- capture those runs by hand
-and feed the log to ``parse``.
+Scene and camera default to the renderer's launch defaults, which is what makes
+separate runs comparable. Scene presets are not persisted settings, so ``--set``
+cannot reach them; ``--args`` passes the renderer's own flags through instead,
+identically to both sides of an A/B so the scene is never the variable.
+
+Reach for it when the control keeps drifting: the drift gate assumes the machine
+holds a steady clock, and the default scene is light enough on a fast discrete
+GPU that it does not -- the part idles between frames and the boost clock wanders
+more than the effect being measured. A heavier preset pins the clock and the same
+comparison becomes quotable. ``CONTROL_DRIFT_LIMIT`` is itself calibrated on
+hardware, not universal.
 
 Usage:
-    tools/dev/measure_gpu.py run   [--set k=v ...] [--label NAME]
-    tools/dev/measure_gpu.py ab    [--a-set k=v ...] --b-set k=v [...]
+    tools/dev/measure_gpu.py run   [--set k=v ...] [--label NAME] [--args ...]
+    tools/dev/measure_gpu.py ab    [--a-set k=v ...] --b-set k=v [...] [--args ...]
     tools/dev/measure_gpu.py parse LOG [LOG ...] [--warmup-blocks N]
 """
 
@@ -43,7 +49,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SETTINGS_PATH = REPO_ROOT / "config" / "runtime_settings.json"
-RELEASE_BINARY = REPO_ROOT / "build" / "release" / "VulkanEngine"
+# The suffix is not cosmetic: ensure_binary() gates every run on
+# RELEASE_BINARY.exists(), so a bare name on Windows fails as "missing binary,
+# rerun with --build" no matter how recently it was built.
+RELEASE_BINARY = REPO_ROOT / "build" / "release" / ("VulkanEngine.exe" if os.name == "nt" else "VulkanEngine")
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "build" / "measurements"
 
 # Timings are printed once per second, so these are also sample counts.
@@ -307,6 +316,7 @@ def run_once(
     warmup: int,
     duration: int,
     output_dir: Path,
+    binary_args: list[str] | None = None,
 ) -> Samples:
     """Launch the renderer once with patched settings and collect samples."""
     if duration <= warmup + MIN_SAMPLES:
@@ -330,12 +340,20 @@ def run_once(
         print(f"[measure]   warm-up {warmup}s, sample {duration - warmup}s", flush=True)
 
         with log_path.open("wb") as log_file:
+            # Both flags mean the same thing -- put the renderer in its own
+            # process group so terminate() can take down anything it spawned --
+            # but each is rejected outright on the other platform, so they
+            # cannot be passed unconditionally.
+            if os.name == "nt":
+                group_kwargs = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+            else:
+                group_kwargs = {"start_new_session": True}
             process = subprocess.Popen(
-                [str(RELEASE_BINARY)],
+                [str(RELEASE_BINARY), *(binary_args or [])],
                 cwd=REPO_ROOT,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
-                start_new_session=True,
+                **group_kwargs,
             )
             try:
                 exited = wait_or_timeout(process, duration)
@@ -375,6 +393,15 @@ def wait_or_timeout(process: subprocess.Popen, duration: int) -> int | None:
 
 
 def terminate(process: subprocess.Popen) -> None:
+    # Windows has no SIGTERM delivery and no process groups to signal: both
+    # send_signal(SIGTERM) and kill() land on the same TerminateProcess, and
+    # os.killpg does not exist. So the escalation below is POSIX-only, and the
+    # Windows path is the single hard kill that is all the OS offers here.
+    if os.name == "nt":
+        process.kill()
+        process.wait(timeout=10)
+        return
+
     process.send_signal(signal.SIGTERM)
     try:
         process.wait(timeout=10)
@@ -664,7 +691,7 @@ def samples_to_json(samples: Samples) -> dict:
 def cmd_run(args: argparse.Namespace) -> int:
     ensure_binary(args.build, args.settle)
     output_dir = Path(args.out)
-    samples = run_once(args.label, args.set, args.warmup, args.duration, output_dir)
+    samples = run_once(args.label, args.set, args.warmup, args.duration, output_dir, args.args)
     print()
     print(format_single(samples))
     summary = write_summary(
@@ -695,14 +722,14 @@ def cmd_ab(args: argparse.Namespace) -> int:
     # entirely on one configuration.
     for index in range(1, args.repeat + 1):
         run_a = run_once(
-            f"{args.a_label}-{index}", args.a_set, args.warmup, args.duration, output_dir
+            f"{args.a_label}-{index}", args.a_set, args.warmup, args.duration, output_dir, args.args
         )
         pooled_a.add(run_a)
         first_a = first_a or run_a
         last_a = run_a
 
         run_b = run_once(
-            f"{args.b_label}-{index}", args.b_set, args.warmup, args.duration, output_dir
+            f"{args.b_label}-{index}", args.b_set, args.warmup, args.duration, output_dir, args.args
         )
         pooled_b.add(run_b)
 
@@ -787,6 +814,17 @@ def build_parser() -> argparse.ArgumentParser:
             "--build",
             action="store_true",
             help="build the Release preset before measuring",
+        )
+        # Scene is a launch flag, not a persisted setting, so --set cannot reach
+        # it. Without this the harness can only ever measure the default scene --
+        # and on a fast GPU that scene is too light to hold the clocks steady,
+        # which shows up as control drift rather than as a signal.
+        # Applied identically to A and B, so it never becomes the variable.
+        target.add_argument(
+            "--args",
+            nargs=argparse.REMAINDER,
+            default=[],
+            help="arguments passed through to the renderer (e.g. --args --scene stress)",
         )
         target.add_argument(
             "--settle",

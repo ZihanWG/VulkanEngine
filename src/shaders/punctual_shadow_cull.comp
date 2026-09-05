@@ -10,8 +10,28 @@
 // culled up front anyway, doing it in one dispatch is both less code and avoids
 // paying dispatch overhead per slot.
 //
-// Each slot writes its surviving commands into its own region of the output
-// buffer, so the draws afterwards are one indirect call per slot.
+// Survivors are compacted **per (slot, mesh batch)**: into the front of that
+// batch's own region inside the slot, counted by its own atomic. That granularity
+// is the whole point, and it took two wrong answers to find.
+//
+// Compacting per *slot* put one slot's survivors in arbitrary order in a single
+// contiguous run, so the draw side had to be one indirect call for the whole
+// slot. A single indirect call has one vertex and index buffer bound, so every
+// caster in the slot was drawn against whichever mesh happened to be bound --
+// wrong geometry, silently, and only visible on scenes where it lands somewhere
+// the camera can see.
+//
+// Writing survivors *in place* fixed that (a batch's commands stayed in its own
+// contiguous run, so the replay could rebind per mesh) but gave up compaction, so
+// every slot submitted each batch's whole range instead of just its survivors --
+// tens of thousands of mostly-zeroed commands a frame.
+//
+// Per (slot, batch) gives both. A batch's region is
+// `[batchOutputBase, batchOutputBase + batchDrawItemCount)`, which
+// renderer/DrawItemBatching.h already guarantees is a contiguous run of one
+// mesh's draw items, and the survivor count for that region is what
+// vkCmdDrawIndexedIndirectCount consumes -- so the draw side rebinds per mesh AND
+// fetches only survivors.
 
 layout(local_size_x = 64) in;
 
@@ -48,12 +68,8 @@ layout(set = 0, binding = 1, std430) writeonly buffer IndirectOutputBuffer {
     DrawIndexedIndirectCommand commands[];
 } indirectOutput;
 
-layout(set = 0, binding = 2, std430) buffer SlotVisibleCountBuffer {
-    uint visibleCounts[];
-} slotVisibleCounts;
-
 // Six planes per slot, laid out consecutively.
-layout(set = 0, binding = 3, std430) readonly buffer SlotFrustumBuffer {
+layout(set = 0, binding = 2, std430) readonly buffer SlotFrustumBuffer {
     vec4 planes[];
 } slotFrustums;
 
@@ -61,14 +77,17 @@ layout(set = 0, binding = 3, std430) readonly buffer SlotFrustumBuffer {
 //
 // This exists because the cull input buffer is shared with the main and CSM
 // paths and carries no bucket information, while GpuCullDrawItem is exactly 64
-// bytes with no spare field to add one. The CSM path can skip blended batches at
-// replay time; an indirect per-slot draw cannot, because by then the commands
-// are already compacted. So the filter has to happen here, or alpha-blended
-// geometry silently starts throwing opaque shadows again -- which is a bug this
-// engine has already had once.
-layout(set = 0, binding = 4, std430) readonly buffer CasterFlagBuffer {
+// bytes with no spare field to add one. Blended geometry only depth-tests in the
+// main pass, so letting it cast would put an opaque silhouette into the atlas.
+layout(set = 0, binding = 3, std430) readonly buffer CasterFlagBuffer {
     uint flags[];
 } casterFlags;
+
+// Survivor count per (slot, batch), indexed slot * batchCount + batchIndex. Read
+// back by vkCmdDrawIndexedIndirectCount as that draw's count.
+layout(set = 0, binding = 4, std430) buffer BatchVisibleCountBuffer {
+    uint visibleCounts[];
+} batchVisibleCounts;
 
 layout(push_constant) uniform PunctualCullPushConstants {
     uint slotCount;
@@ -77,7 +96,8 @@ layout(push_constant) uniform PunctualCullPushConstants {
     // than drawItemCount so a frame with fewer draw items still writes where the
     // draw side expects to read.
     uint slotCommandStride;
-    uint padding;
+    // Mesh batches this frame; addresses the counter buffer.
+    uint batchCount;
 } pc;
 
 // Same conservative AABB test the other cull paths use: outside only when the
@@ -117,11 +137,24 @@ void main()
         }
     }
 
-    // Compact into this slot's region. The order within a slot is whatever the
+    // A draw item outside the batch table cannot be addressed, and guessing a
+    // batch would compact it into another mesh's region -- the exact failure this
+    // granularity exists to prevent.
+    if (drawItem.batchIndex >= pc.batchCount) {
+        return;
+    }
+
+    // Compact into this batch's region. Order within a region is whatever the
     // atomics produce, which is fine for a depth-only pass: every surviving
     // caster writes depth and the result is order-independent.
-    uint localIndex = atomicAdd(slotVisibleCounts.visibleCounts[slot], 1u);
-    if (localIndex >= pc.slotCommandStride) {
+    uint localIndex = atomicAdd(batchVisibleCounts.visibleCounts[slot * pc.batchCount + drawItem.batchIndex], 1u);
+    uint outputIndex = drawItem.batchOutputBase + localIndex;
+
+    // localIndex cannot exceed the batch's own item count, and a batch's region
+    // ends inside the slot by construction, so this holds today. Checked anyway:
+    // overflowing it would write into the neighbouring batch's commands, and the
+    // symptom would be one mesh's shadow drawn with another's geometry.
+    if (outputIndex >= pc.slotCommandStride) {
         return;
     }
 
@@ -134,5 +167,5 @@ void main()
     // exactly as the CSM indirect path does.
     command.firstInstance = drawItem.objectFrameDataIndex;
 
-    indirectOutput.commands[slot * pc.slotCommandStride + localIndex] = command;
+    indirectOutput.commands[slot * pc.slotCommandStride + outputIndex] = command;
 }

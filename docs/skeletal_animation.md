@@ -81,7 +81,11 @@ drawn directly instead, after the indirect draws, into each rect it reaches.
 
 One shader (`shadow_skinned.vert`) serves all three, because a cascade, an atlas
 tile and a clipmap page are the same thing from a caster's point of view: one
-rect with one view-projection, pushed. Its skinning loop is a copy of
+rect with one view-projection, pushed. The layered cascade path is the one place
+that shape does not fit -- a multiview draw needs a different projection per
+layer, which a push constant cannot express -- so it has a second shader,
+`shadow_skinned_layered.vert`, identical but for reading
+`cascadeViewProjection[gl_ViewIndex]` out of the frame-constants buffer. Its skinning loop is a copy of
 `simple_skinned.vert`'s deliberately -- a caster that deforms differently from
 the surface it casts for produces a shadow subtly detached from its own
 geometry, and nothing in the image says which of the two shaders is wrong.
@@ -139,11 +143,24 @@ from a scripted run whether the caster reached anything.
   manage many skinned instances with per-instance palette offsets.
 - Linear-blend skinning shows the usual volume-loss artifacts at extreme bends; dual
   quaternion skinning would address that.
-- **The layered (multiview) cascade path skips the skinned caster.** One draw
-  fans out to every cascade layer there and picks its matrix from
-  `gl_ViewIndex`, which a pushed matrix cannot answer; drawing it anyway would
-  put cascade 0's projection into all four layers. It is skipped and the log
-  says so. That path ships off and measured ~20% slower on this driver.
+- ~~The layered (multiview) cascade path skips the skinned caster.~~ **Fixed.**
+  It used to: one draw fans out to every cascade layer there and picks its matrix
+  from `gl_ViewIndex`, which a pushed matrix cannot answer, so the caster was
+  skipped rather than drawn with cascade 0's projection in all four layers.
+  `shadow_skinned_layered.vert` now answers `gl_ViewIndex` properly and the
+  caster draws once for all layers, gated on whether *any* cascade wants it --
+  not cascade 0, which the caster usually does not reach.
+
+  Worth recording how it failed, because the failure was invisible in timings.
+  Skipping the draw also required keeping the pose out of the cascade cache key,
+  or the animation would have dirtied a shadow map that never contained the
+  caster. Those two agreed, and the consequence was that *nothing* dirtied the
+  cascades: on an RTX 3080 Ti, `--scene sunlit` reported 0/4 cascades redrawn
+  over 3263 consecutive cached frames with `CSMShadowPass` at 0.000 ms. That
+  reads as multiview paying off spectacularly; it was a frozen shadow map. The
+  check that caught it was a `--deterministic --capture-frame` capture against
+  the per-cascade path (11491 pixels differing, every one brighter), which now
+  reads 0/921600.
 - **The skinned caster is opaque-only.** No alpha-tested variant, so a cutout
   skinned material would throw a solid silhouette. Nothing in the engine has one
   yet.

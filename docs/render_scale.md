@@ -482,13 +482,40 @@ gets *worse* every time it is compared:
 | one multiview pass | 0.54 / 0.59 / 0.63 ms |
 
 Consistent direction across four separate measurement windows, roughly +20%. The
-likely reason is that this is emulation: Apple hardware does vertex amplification
-for at most two views, so MoltenVK has no native path for four, and whatever it
-substitutes costs more than the three command encoders it removes. The setting
-therefore ships **off**, alongside the per-cascade path it was meant to replace.
-It is kept rather than deleted because the reasoning inverts on hardware with
-native multiview, where one pass over four layers is unambiguously the right
-shape -- and because the union cull it required is the part that paid.
+reason given here used to be emulation -- Apple amplifies at most two views, so
+MoltenVK has no native path for four -- with the prediction that "the reasoning
+inverts on hardware with native multiview".
+
+**Both halves of that were wrong, and the measurement that settled it is worth
+keeping.** On an RTX 3080 Ti Laptop, which has native multiview, `--scene stress`
+reproduces the same penalty almost exactly: `CSMShadowPass` 0.082 -> 0.098 ms,
++19.5%, control drift 0.000 ms, gate passed at 0.97%. Native hardware does not
+invert it, so it was never emulation.
+
+The actual cause is an interaction with the cascade cache, and turning the cache
+off on *both* sides exposes it -- at which point multiview wins:
+
+| `CSMShadowPass` (RTX 3080 Ti, `--scene stress`) | per-cascade | layered |
+| --- | --- | --- |
+| cascade cache **on** | **0.082 ms** | 0.098 ms (+19.5%) |
+| cascade cache **off** | 0.107 ms | 0.099 ms (-7.5%) |
+
+Multiview is the faster shape, as the original reasoning assumed. It just cannot
+keep the cache: the per-cascade path redraws only the cascades whose content hash
+moved -- 2 of 4 on this scene -- while a multiview pass is one encoder over all
+four layers and is therefore all-or-nothing. Redrawing four layers to service two
+dirty cascades costs more than the three encoders it saves.
+
+So the two are mutually exclusive optimisations rather than independent ones, and
+on this scene the cache wins by the larger margin. The default configuration
+(per-cascade + cache, 0.082 ms) is the best of the four cells, which nothing had
+established before. Multiview would take the lead on content where every cascade
+is dirty every frame anyway -- fast camera motion, which is exactly when the
+cache is worthless -- or if the page-level invalidation the VSM path has were
+ever extended to cascade layers.
+
+The setting therefore still ships **off**, and the union cull it required remains
+the part that paid.
 
 Absolutes in this section were taken with WindowServer, Safari and WeChat active
 and are a few percent high; every comparison is back-to-back with the control

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "rhi/VulkanCommon.h"
 
@@ -507,6 +507,23 @@ struct RenderGraphScheduledUnit {
     std::function<void()> record;
 };
 
+// CPU wall time one scheduled unit spent recording. The GPU profiler answers
+// "what did this pass cost the GPU"; this is the other half, and without it the
+// only visible number is the whole-frame recording total, which cannot say what
+// splitting recording across threads would actually buy.
+//
+// `name` has static storage duration -- it comes from renderPassTypeName -- so a
+// cost outlives the frame whose passes_ produced it, which the per-frame reset
+// would otherwise invalidate.
+struct RenderGraphUnitCost {
+    const char* name = "";
+    float milliseconds = 0.0f;
+    // Registration index of the unit. Two units can share a pass type name --
+    // the cascade and punctual shadow passes both report "Shadow" -- and a
+    // breakdown that cannot tell them apart sends you to read the wrong one.
+    uint32_t unitIndex = 0;
+};
+
 // The passes a caller can anchor a scheduled unit to. Deliberately only the ones
 // with a recorder factored out far enough to be invoked by the graph; the rest
 // of the frame is still recorded in place.
@@ -558,22 +575,6 @@ private:
     friend class RenderGraph;
 };
 
-class RenderGraphContext final {
-public:
-    [[nodiscard]] VkCommandBuffer commandBuffer() const;
-    [[nodiscard]] VkImage image(RGTextureHandle handle) const;
-    [[nodiscard]] VkImageView imageView(RGTextureHandle handle) const;
-    [[nodiscard]] VkBuffer buffer(RGBufferHandle handle) const;
-
-private:
-    RenderGraphContext(RenderGraph& graph, VkCommandBuffer commandBuffer);
-
-    RenderGraph& graph_;
-    VkCommandBuffer commandBuffer_ = VK_NULL_HANDLE;
-
-    friend class RenderGraph;
-};
-
 // Render Graph 2.0 keeps the renderer's existing pass recorders in place while
 // adding logical handles, declarations, conservative inferred image and buffer
 // barriers, transient/imported resource metadata, pass liveness state, and
@@ -581,7 +582,6 @@ private:
 class RenderGraph final {
 public:
     using SetupCallback = std::function<void(RenderGraphBuilder&)>;
-    using ExecuteCallback = std::function<void(RenderGraphContext&)>;
 
     RenderGraph();
 
@@ -688,13 +688,12 @@ public:
     void endImGuiPass();
     void endFrame();
 
-    uint32_t addPass(std::string name, SetupCallback setup, ExecuteCallback execute = {});
+    uint32_t addPass(std::string name, SetupCallback setup);
     uint32_t addPass(std::string name,
                      RenderPassType type,
                      RenderPassExecutionType executionType,
                      bool sideEffect,
-                     SetupCallback setup,
-                     ExecuteCallback execute = {});
+                     SetupCallback setup);
 
     RGTextureHandle importTexture(const RenderGraphImageResource& resource);
     RGTextureHandle createTransientTexture(const RGTextureDesc& desc, const RenderGraphImageResource& backingResource);
@@ -765,6 +764,13 @@ public:
     [[nodiscard]] const std::vector<uint32_t>& unrecordedPassIndices() const
     {
         return unrecordedPassIndices_;
+    }
+
+    // Last frame's per-unit recording cost, in the order the units ran. Survives
+    // the next beginFrame so a once-per-second report can print it.
+    [[nodiscard]] const std::vector<RenderGraphUnitCost>& unitRecordCosts() const
+    {
+        return unitRecordCosts_;
     }
 
     // True when the derived graph could not be fully ordered this frame.
@@ -1044,7 +1050,6 @@ private:
     std::vector<TextureResource> textures_;
     std::vector<BufferResource> buffers_;
     std::vector<RenderPassNode> passes_;
-    std::vector<ExecuteCallback> executeCallbacks_;
     std::vector<RenderGraphResourceDebugInfo> debugResources_;
     // This frame's declaration problems, and the per-resource inputs the check
     // needs. All three are members rather than locals so the per-frame check
@@ -1061,11 +1066,11 @@ private:
     std::vector<uint32_t> recordedOrder_;
     std::vector<RenderGraphOrderViolation> recordedOrderViolations_;
     std::vector<uint32_t> unrecordedPassIndices_;
+    std::vector<RenderGraphUnitCost> unitRecordCosts_;
     bool frameActive_ = false;
     ActivePass activePass_ = ActivePass::None;
 
     friend class RenderGraphBuilder;
-    friend class RenderGraphContext;
 };
 
 // Backward liveness sweep that marks passes whose declared writes nothing later
@@ -1097,6 +1102,14 @@ void cullUnusedPasses(std::vector<RenderPassNode>& passes, size_t textureCount, 
 // A texture no surviving pass touches comes back with used == false and
 // firstPass > lastPass, matching the empty-lifetime convention
 // TransientAllocationRequest uses to drop a resource.
+//
+// A texture anything history-reads comes back live for the whole frame,
+// whatever its usages say. Its bytes have to survive from the write in frame N
+// to the read in frame N+1, and an interval derived from one frame cannot
+// express that: written at slot 17 and history-read at slot 4, it looks free
+// over [0, 3], and whatever the allocator packs there overwrites at the start of
+// frame N+1 exactly what frame N left to be read. The read happens after the
+// clobber, so only the pixels ever say so.
 struct RenderGraphResourceLifetime {
     uint32_t firstPass = 1;
     uint32_t lastPass = 0;

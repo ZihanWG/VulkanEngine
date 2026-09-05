@@ -3,9 +3,12 @@
 // Which queue family, if any, should carry load-time texture uploads.
 //
 // Split out from VulkanDevice so the choice is a pure function of the family
-// list rather than something only observable in a log line: on this project's
-// primary machine the answer is "none" unless a MoltenVK environment variable is
-// set, so the fallback is the case that actually needs pinning.
+// list rather than something only observable in a log line. Both branches are
+// real, on different hardware: MoltenVK answers "none" unless
+// MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES=1 is set, so the fallback needs pinning;
+// an RTX 3080 Ti Laptop exposes a TRANSFER-only family (family 1, 2 queues)
+// with no environment variable, so the selection path is live there and the
+// ownership-transfer barriers it implies run under validation.
 
 #include <cstdint>
 #include <span>

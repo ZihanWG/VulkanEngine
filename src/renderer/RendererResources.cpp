@@ -1,4 +1,4 @@
-// Creation and teardown of the renderer's device-lifetime GPU objects:
+﻿// Creation and teardown of the renderer's device-lifetime GPU objects:
 // descriptor set layouts and sets, graphics and compute pipelines, the shadow
 // map, the IBL chain, and the per-frame buffers.
 //
@@ -404,6 +404,12 @@ void Renderer::createPipeline()
     // outliving a handle it was built from -- see rhi/VulkanPipelineStore.h.
     pipelineStore_.reset();
 
+    // The cold-start cost nobody could see. Every create below is a synchronous
+    // vkCreate*Pipelines on this thread, and whether that is worth moving onto
+    // the job system is a number, not an opinion. Reported next to the store
+    // contents so the time and the pipeline count that produced it stay together.
+    const auto pipelineBuildStart = std::chrono::steady_clock::now();
+
     createMainGraphicsPipeline();
     createSkinnedPipeline();
     createTransparentPipeline();
@@ -423,7 +429,10 @@ void Renderer::createPipeline()
     // it again once they do.
     createProbeCapturePipeline();
 
+    const double pipelineBuildMs =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - pipelineBuildStart).count();
     logPipelineStoreContents();
+    Logger::info("Pipeline build: " + std::to_string(pipelineBuildMs) + " ms");
 }
 
 void Renderer::logPipelineStoreContents() const
@@ -488,11 +497,24 @@ void Renderer::createMainGraphicsPipeline()
         std::span<const VkDescriptorSetLayout>(mainDescriptorSetLayouts.data(), bindlessMaterialTexturesActive ? 2 : 1);
     pipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&pushConstantRange, 1);
     pipelineInfo.enableDepth = true;
+    // See RuntimeSettings::enableBackfaceCulling: off is the historical answer
+    // from a tiler, not a general one. The store keys on cullMode, so flipping
+    // this is a different pipeline rather than a mutated one.
+    pipelineInfo.cullMode = useBackfaceCulling_ ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
 
     pipelineInfo.pipelineCache = context_.pipelineCache();
     pipeline_ = pipelineStore_.get(context_.vkDevice(), pipelineInfo, "MainGraphicsPipeline");
     pipelineColorFormat_ = pipelineInfo.colorFormat;
     pipelineDepthFormat_ = pipelineInfo.depthFormat;
+
+    // Material::doubleSided selects this one instead. Requested unconditionally
+    // rather than behind `if (useBackfaceCulling_)`: with culling off the request
+    // is byte-identical to the one above, so the store returns the same pipeline
+    // and reports it as shared, and the recorder never has to ask which mode is
+    // live. Both refs share a layout, so bound descriptor sets and push constants
+    // stay valid across a switch between them.
+    pipelineInfo.cullMode = VK_CULL_MODE_NONE;
+    pipelineDoubleSided_ = pipelineStore_.get(context_.vkDevice(), pipelineInfo, "MainGraphicsPipelineDoubleSided");
 }
 
 void Renderer::createProbeCapturePipeline()
@@ -581,7 +603,8 @@ void Renderer::createSkinnedPipeline()
         std::span<const VkDescriptorSetLayout>(skinnedDescriptorSetLayouts.data(), skinnedDescriptorSetLayouts.size());
     pipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&pushConstantRange, 1);
     pipelineInfo.enableDepth = true;
-    pipelineInfo.cullMode = VK_CULL_MODE_NONE;
+    // Follows the main opaque pipeline: same geometry class, same question.
+    pipelineInfo.cullMode = useBackfaceCulling_ ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
 
     pipelineInfo.pipelineCache = context_.pipelineCache();
     skinnedPipeline_ = pipelineStore_.get(context_.vkDevice(), pipelineInfo, "SkinnedGraphicsPipeline");
@@ -747,13 +770,35 @@ void Renderer::createSkinnedShadowPipelines()
         return info;
     };
 
-    // Cascades. No viewMask even when the layered path is active: this shader
-    // takes its view-projection from a push constant, so one draw cannot fan out
-    // across cascade layers the way the multiview variant of shadow.vert does.
-    // The recorder skips the skinned caster in that mode rather than drawing it
-    // into every layer with the wrong matrix -- see docs/skeletal_animation.md.
+    // Cascades, non-layered: this shader takes its view-projection from a push
+    // constant, so it carries no view mask.
     skinnedShadowPipeline_ =
         pipelineStore_.get(context_.vkDevice(), makeInfo(shadowMap_.format()), "SkinnedShadowPipeline");
+
+    // Cascades, layered. The pushed matrix cannot answer gl_ViewIndex, so the
+    // multiview variant reads cascadeViewProjection[] out of the frame-constants
+    // buffer exactly as shadow_layered.vert does -- which is a different push
+    // layout, hence a separate range rather than a flag on makeInfo().
+    //
+    // This used to not exist, and the recorder skipped the skinned caster in
+    // layered mode instead. That dropped its shadow outright, and because the
+    // pose then had to stay out of the cascade cache key as well, nothing
+    // dirtied the cascades and the whole shadow map froze -- measured as 0/4
+    // cascades redrawn over 3263 consecutive frames with CSMShadowPass reading
+    // 0.000 ms. See docs/skeletal_animation.md.
+    if (!isLayeredCascadeRenderingActive()) {
+        skinnedLayeredShadowPipeline_.reset();
+    } else {
+        const VkPushConstantRange layeredPushConstantRange{
+            VK_SHADER_STAGE_VERTEX_BIT, 0, static_cast<uint32_t>(sizeof(SkinnedLayeredShadowPushConstants))};
+        rhi::VulkanPipelineCreateInfo layeredInfo = makeInfo(shadowMap_.format());
+        layeredInfo.vertexShaderPath = shaderPath("shadow_skinned_layered.vert.spv");
+        layeredInfo.viewMask = (1u << activeCascadeCount()) - 1u;
+        layeredInfo.pushConstantRanges =
+            std::span<const VkPushConstantRange>(&layeredPushConstantRange, 1);
+        skinnedLayeredShadowPipeline_ =
+            pipelineStore_.get(context_.vkDevice(), layeredInfo, "SkinnedLayeredShadowPipeline");
+    }
 
     // The punctual atlas, on the same "only if it exists" rule as the pool.
     if (!punctualShadows_.valid()) {
@@ -1075,8 +1120,9 @@ void Renderer::refreshMaterialAmbientOcclusionDescriptors()
     // sized by something other than the window and survives a resize.
     //
     // Only that one binding is rewritten. Re-running createMaterialDescriptorSet
-    // would allocate a fresh set per material out of a fixed-size pool, so
-    // resizing enough times would exhaust it.
+    // would allocate a fresh set out of a fixed-size pool, so resizing enough
+    // times would exhaust it -- true even now that bindless shares one set,
+    // because the allocation would still be a new one each time.
     const VkImageView ambientOcclusionView = postProcess_.ambientOcclusion().imageView();
     if (ambientOcclusionView == VK_NULL_HANDLE) {
         return;
@@ -1102,6 +1148,15 @@ void Renderer::refreshMaterialAmbientOcclusionDescriptors()
         vkUpdateDescriptorSets(context_.vkDevice(), 1, &write, 0, nullptr);
     };
 
+    // Under bindless every material points at the same set, so walking them all
+    // would rewrite one descriptor N times.
+    if (sharedEnvironmentDescriptorSet_ != VK_NULL_HANDLE) {
+        renderer::Material shared{};
+        shared.descriptorSet = sharedEnvironmentDescriptorSet_;
+        rewrite(shared);
+        return;
+    }
+
     rewrite(checkerboardMaterial_);
     for (renderer::Material& material : materialVariants_) {
         rewrite(material);
@@ -1113,6 +1168,13 @@ void Renderer::refreshMaterialAmbientOcclusionDescriptors()
 
 void Renderer::createMaterialDescriptorSet(renderer::Material& material)
 {
+    // Bindless: hand back the shared set instead of allocating another copy of
+    // it. The first material through here still builds it below.
+    if (isBindlessMaterialTextureActive() && sharedEnvironmentDescriptorSet_ != VK_NULL_HANDLE) {
+        material.descriptorSet = sharedEnvironmentDescriptorSet_;
+        return;
+    }
+
     if (!material.baseColorTexture || !material.baseColorTexture->valid()) {
         throw std::runtime_error("Cannot create a material descriptor set without a valid base color texture.");
     }
@@ -1158,6 +1220,7 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     allocateInfo.descriptorSetCount = 1;
     allocateInfo.pSetLayouts = &descriptorSetLayout;
     VK_CHECK(vkAllocateDescriptorSets(context_.vkDevice(), &allocateInfo, &material.descriptorSet));
+    ++materialDescriptorSetsAllocated_;
 
     VkDescriptorImageInfo baseColorInfo{};
     baseColorInfo.sampler = material.baseColorTexture->sampler();
@@ -1377,6 +1440,17 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     // "sampled images only" -- carries the probe grid parameters that address
     // them. Object data remains outside descriptors.
     vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+
+    // Remember it so every later material gets this one instead of a copy. Only
+    // under bindless: without it, bindings 0/2/3 are this material's own textures
+    // and sharing would hand every material the first one's.
+    if (isBindlessMaterialTextureActive()) {
+        sharedEnvironmentDescriptorSet_ = material.descriptorSet;
+        rhi::debug::setObjectName(context_.vkDevice(),
+                                  material.descriptorSet,
+                                  VK_OBJECT_TYPE_DESCRIPTOR_SET,
+                                  "SharedEnvironmentDescriptorSet");
+    }
 }
 
 void Renderer::createSkyboxDescriptorSet()

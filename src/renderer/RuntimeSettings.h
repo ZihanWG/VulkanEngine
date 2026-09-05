@@ -448,6 +448,17 @@ struct VsmSettings {
     [[nodiscard]] bool operator==(const VsmSettings&) const = default;
 };
 
+// Ceiling for RuntimeSettings::framesInFlight. Lives here rather than in
+// rhi/VulkanCommon.h because the setting it bounds lives here, and this header
+// is deliberately Vulkan-free so the clamp and its tests stay device-free -- the
+// same placement kMaxShadowCascades has in renderer/CascadeMath.h.
+//
+// Three, and the limit is TAA rather than hardware. The history ping-pong has
+// two slots advanced by their own counter, independent of the frame slot, so
+// with more frames in flight than history slots plus one, a frame could rewrite
+// a history image an older in-flight frame still reads.
+inline constexpr uint32_t kMaxFramesInFlight = 3;
+
 struct RuntimeSettings {
     RenderScaleSettings renderScale;
     DynamicResolutionSettings dynamicResolution;
@@ -481,11 +492,83 @@ struct RuntimeSettings {
     // Render every shadow cascade in one multiview pass instead of one pass per
     // cascade. Startup-only: the shadow pipelines bake the view mask.
     //
-    // OFF because it was measured slower here, not because it is unfinished. The
-    // output is pixel-identical; MoltenVK just does not have hardware for four
-    // views (Apple vertex amplification tops out at two), so the emulation costs
-    // more than the three command encoders it removes. See docs/render_scale.md.
+    // OFF because it is measured slower, and NOT for the reason this comment used
+    // to give. It blamed MoltenVK emulation and expected native multiview to
+    // invert the result; an RTX 3080 Ti reproduces the same +19.5% on
+    // CSMShadowPass, so the hardware was never the cause.
+    //
+    // The cause is that this path cannot keep the cascade cache. Per-cascade
+    // redraws only the cascades whose content hash moved (2 of 4 on --scene
+    // stress); one multiview encoder over four layers is all-or-nothing. With the
+    // cache disabled on both sides multiview wins by 7.5%, which is the real
+    // shape of the trade. See docs/render_scale.md for the 2x2.
+    //
+    // The output IS pixel-identical, but only since shadow_skinned_layered.vert
+    // existed. Before it, the skinned caster pushed a per-cascade matrix that
+    // gl_ViewIndex cannot answer, so it was skipped on this path entirely: no
+    // directional shadow from the skinned mesh, and -- because its pose then had
+    // to stay out of the cascade cache key as well -- nothing left to dirty the
+    // cascades. Measured on an RTX 3080 Ti, `--scene sunlit`: CSMShadowPass read
+    // 0.000 ms with 3263 consecutive cached frames while the capture differed
+    // from the per-cascade path by 11491 pixels, every one of them brighter.
+    //
+    // Worth keeping in mind if this path is extended: that failure presented as
+    // a large performance win, so a timing A/B could not have caught it. The
+    // check that did was a `--deterministic --capture-frame` capture compared
+    // against the per-cascade path, which now reads 0/921600 pixels differing.
     bool enableLayeredCascades = false;
+    // Rasterize the opaque and skinned main-pass geometry with
+    // VK_CULL_MODE_BACK_BIT instead of VK_CULL_MODE_NONE.
+    //
+    // Exists because the "off" answer was measured on a tiler and cannot be
+    // carried to an immediate-mode GPU. On an Apple M3 through MoltenVK the
+    // hidden-surface removal discards back faces before the fragment shader
+    // runs, so culling had nothing left to save and the A/B landed inside the
+    // control's own spread (docs/design_decisions.md). An IMR part has no HSR
+    // and shades both sides of closed geometry, so the same A/B has to be run
+    // again per device class rather than inherited.
+    //
+    // Only the main opaque and skinned pipelines follow this. Skybox, probe
+    // capture and the transparent pass stay VK_CULL_MODE_NONE for reasons that
+    // are about correctness, not cost, and are documented at each site.
+    //
+    // Startup-applied: cull mode is baked into the pipeline.
+    //
+    // Measured on an RTX 3080 Ti Laptop, `--scene stress`, A/B/A/B interleaved:
+    // MainHDRPass 0.344 -> 0.199 ms (-42%) against a control drift of 0.003 ms,
+    // frame total 1.042 -> 0.905 ms. So the tiler's answer really does not
+    // carry: on an IMR this is one of the largest single wins available.
+    //
+    // Enabling it first uncovered a latent bug, which is now fixed: the built-in
+    // UV sphere was wound clockwise-from-outside, so culling made every sphere
+    // render its own interior. VK_CULL_MODE_NONE had hidden that for the life of
+    // the renderer. See renderer/PrimitiveGeometry.h; the regression guard is
+    // tests/test_primitive_geometry.cpp.
+    //
+    // Material::doubleSided now reaches the cull mode: the main pass carries a
+    // second pipeline built with VK_CULL_MODE_NONE, draw items sort and batch on
+    // the flag, and the recorder picks per batch (Renderer::mainPipelineFor).
+    // With culling off both requests are byte-identical, so the pipeline store
+    // returns one pipeline for both refs and the command stream is unchanged --
+    // verified by the store reporting MainGraphicsPipeline and
+    // MainGraphicsPipelineDoubleSided as shared.
+    //
+    // What remains before flipping this default is the golden image. All six
+    // scene presets render with zero validation errors under culling, and the
+    // captures are visually identical, but they are not bit-identical: 1 to 64
+    // pixels of 921600 move per preset (default 40, stress 39, sunlit 64,
+    // fragment-stress 0), which the headless job's --max-differing-fraction 0
+    // rejects. tests/golden/lavapipe_frame30.png has to be regenerated on
+    // lavapipe in the same change that flips this, so the flip belongs in a
+    // Linux run rather than a Windows one.
+    //
+    // Measured on an RTX 3080 Ti Laptop, --scene stress, A/B/A/B x3, control
+    // drift 0.49% against a 1% limit: MainHDRPass 0.321 -> 0.196 ms (-38.9%),
+    // frame total 1.016 -> 0.942 ms (-7.3%). Three later passes move the other
+    // way and are attributable rather than noise -- Transparent +9.0%, SSRTrace
+    // +4.9%, CSMShadowPass +7.1% -- so the frame total, not the pass delta, is
+    // the number to quote.
+    bool enableBackfaceCulling = false;
     // Suspend Hi-Z occlusion culling (and the pyramid build that feeds it) while
     // it is culling nothing, re-probing periodically. Never changes the image --
     // skipping occlusion culling can only draw more, never less.
@@ -500,6 +583,37 @@ struct RuntimeSettings {
     // no async-capable queue.
     bool enableAsyncCompute = true;
     bool enableBindlessMaterialTextures = true;
+    // Poll the compiled SPIR-V directory and rebuild every pipeline when it
+    // changes, so a shader edit takes effect without restarting.
+    //
+    // Watches the build output, not the GLSL: shaders are compiled by CMake, so
+    // the workflow is edit, build the shader target, and the running engine picks
+    // it up. Off by default -- it costs a directory digest once a second, and a
+    // release run has nothing to reload.
+    bool enableShaderHotReload = false;
+    // How many frames the CPU may run ahead of the GPU. Startup-only: it sizes
+    // frames_ and, through it, every per-frame resource the subsystems allocate
+    // off frames_.size(), so changing it mid-run would leave half the renderer
+    // indexed against the old count.
+    //
+    // 1 serializes the frame -- the CPU waits for the GPU to finish before
+    // recording the next one -- which is the lowest-latency setting and the
+    // useful one when a measurement should not overlap frames. 2 is the default
+    // and the throughput setting. 3 is permitted but costs a third more of every
+    // per-frame buffer, query pool and descriptor set for no measured gain on
+    // this scene, which is not CPU-starved.
+    //
+    // All three run clean under validation, and with auto-exposure off all three
+    // produce bit-identical frames. With it on they do not, and that is expected
+    // rather than a bug: the exposure readback is per frame slot, so it lags by
+    // this many frames and the adaptation converges along a different path. At
+    // frame 30 of --scene default the peak channel difference against the
+    // two-frame result is 9 at one frame in flight and 4 at three. Anything that
+    // compares captures across a change to this value has to pin exposure first.
+    //
+    // Clamped to [1, kMaxFramesInFlight]; see that constant for why the ceiling
+    // is where it is.
+    uint32_t framesInFlight = 2;
 };
 
 // Clamp the GPU-independent runtime settings into valid ranges in place
@@ -519,6 +633,15 @@ void clampRuntimeSettings(RenderScaleSettings& renderScale,
                           LodSettings& lod,
                           GiSettings& gi,
                           DebugUiSettings& debugUi);
+
+// Startup-only, so deliberately not folded into clampRuntimeSettings: that one
+// clamps the live per-frame settings and runs after every edit, while this value
+// is read once, before the renderer has frames to clamp anything against.
+//
+// Zero is the input worth naming. It reaches here from a hand-edited settings
+// file, and passing it through would size frames_ to nothing, so every
+// frames_.size() division and modulo downstream would be by zero.
+[[nodiscard]] uint32_t clampFramesInFlight(uint32_t requested);
 
 enum class RuntimeSettingsLoadStatus {
     Loaded,

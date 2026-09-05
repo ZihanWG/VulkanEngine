@@ -125,10 +125,13 @@
         "enableGpuOcclusionCulling": true,
         "enableTwoPhaseOcclusion": true,
         "enableLayeredCascades": false,
+        "enableBackfaceCulling": false,
         "enableAdaptiveOcclusion": true,
         "useClusteredLighting": true,
         "enableAsyncCompute": true,
-        "enableBindlessMaterialTextures": true
+        "enableBindlessMaterialTextures": true,
+        "framesInFlight": 2,
+        "enableShaderHotReload": false
     },
     "debugUi": {
         "showRenderGraphPanel": true,

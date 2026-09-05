@@ -225,9 +225,12 @@ void PunctualShadows::createCullResources(uint32_t frameCount,
             flagInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
             casterFlagBuffers_[frameIndex].createBuffer(*context_, flagInfo);
 
+            // One survivor counter per (slot, batch). INDIRECT_BUFFER because
+            // vkCmdDrawIndexedIndirectCount reads the count straight out of it.
             rhi::VulkanBufferCreateInfo countInfo{};
-            countInfo.size = static_cast<VkDeviceSize>(kMaxGpuCulledSlots) * sizeof(uint32_t);
-            countInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+            countInfo.size = static_cast<VkDeviceSize>(kMaxGpuCulledSlots) * kMaxGpuCulledBatches * sizeof(uint32_t);
+            countInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                              VK_BUFFER_USAGE_TRANSFER_DST_BIT;
             countInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
             cullVisibleCountBuffers_[frameIndex].createBuffer(*context_, countInfo);
 
@@ -284,11 +287,12 @@ void PunctualShadows::recordCull(VkCommandBuffer commandBuffer,
                                  VkBuffer cullInputBuffer,
                                  VkDeviceSize cullInputSize,
                                  uint32_t drawItemCount,
+                                 uint32_t batchCount,
                                  std::span<const uint32_t> casterFlags)
 {
     const uint32_t culledSlots = std::min<uint32_t>(slotCount(), kMaxGpuCulledSlots);
     if (!cullAvailable_ || frameIndex >= cullSets_.size() || culledSlots == 0 || drawItemCount == 0 ||
-        cullInputBuffer == VK_NULL_HANDLE) {
+        batchCount == 0 || batchCount > kMaxGpuCulledBatches || cullInputBuffer == VK_NULL_HANDLE) {
         return;
     }
 
@@ -303,9 +307,9 @@ void PunctualShadows::recordCull(VkCommandBuffer commandBuffer,
     std::array<VkDescriptorBufferInfo, 5> bufferInfos{};
     bufferInfos[0] = {cullInputBuffer, 0, cullInputSize};
     bufferInfos[1] = {cullIndirectBuffers_[frameIndex].buffer(), 0, VK_WHOLE_SIZE};
-    bufferInfos[2] = {cullVisibleCountBuffers_[frameIndex].buffer(), 0, VK_WHOLE_SIZE};
-    bufferInfos[3] = {slotFrustumBuffers_[frameIndex].buffer(), 0, VK_WHOLE_SIZE};
-    bufferInfos[4] = {casterFlagBuffers_[frameIndex].buffer(), 0, VK_WHOLE_SIZE};
+    bufferInfos[2] = {slotFrustumBuffers_[frameIndex].buffer(), 0, VK_WHOLE_SIZE};
+    bufferInfos[3] = {casterFlagBuffers_[frameIndex].buffer(), 0, VK_WHOLE_SIZE};
+    bufferInfos[4] = {cullVisibleCountBuffers_[frameIndex].buffer(), 0, VK_WHOLE_SIZE};
 
     std::array<VkWriteDescriptorSet, 5> writes{};
     for (uint32_t binding = 0; binding < writes.size(); ++binding) {
@@ -318,14 +322,19 @@ void PunctualShadows::recordCull(VkCommandBuffer commandBuffer,
     }
     vkUpdateDescriptorSets(context_->vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 
-    // Zero the counts, and zero the command region so a slot that culls
-    // everything draws nothing rather than replaying last frame's commands --
-    // this platform has no indirect-count, so the draw side always submits the
-    // full stride and relies on zeroed indexCount to be a no-op.
+    // Zero the counters, and zero the command region so a slot that culls
+    // everything draws nothing rather than replaying last frame's commands. The
+    // counters are what vkCmdDrawIndexedIndirectCount reads, so they have to be
+    // zero before the atomics start; the command fill additionally covers the
+    // no-indirect-count fallback, which submits a batch's whole range and relies
+    // on a zeroed indexCount being a no-op.
+    //
+    // Only the region this frame uses is filled -- slots x batches counters, not
+    // the whole 64 KiB the buffer reserves for the worst case.
     const VkDeviceSize indirectBytes = static_cast<VkDeviceSize>(culledSlots) * cullSlotCommandStride_ *
                                        sizeof(VkDrawIndexedIndirectCommand);
-    vkCmdFillBuffer(commandBuffer, cullVisibleCountBuffers_[frameIndex].buffer(), 0,
-                    static_cast<VkDeviceSize>(culledSlots) * sizeof(uint32_t), 0);
+    const VkDeviceSize counterBytes = static_cast<VkDeviceSize>(culledSlots) * batchCount * sizeof(uint32_t);
+    vkCmdFillBuffer(commandBuffer, cullVisibleCountBuffers_[frameIndex].buffer(), 0, counterBytes, 0);
     vkCmdFillBuffer(commandBuffer, cullIndirectBuffers_[frameIndex].buffer(), 0, indirectBytes, 0);
 
     std::array<VkBufferMemoryBarrier2, 2> resetBarriers{};
@@ -339,9 +348,9 @@ void PunctualShadows::recordCull(VkCommandBuffer commandBuffer,
         resetBarriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         resetBarriers[i].offset = 0;
     }
-    resetBarriers[0].buffer = cullVisibleCountBuffers_[frameIndex].buffer();
+    resetBarriers[0].buffer = cullIndirectBuffers_[frameIndex].buffer();
     resetBarriers[0].size = VK_WHOLE_SIZE;
-    resetBarriers[1].buffer = cullIndirectBuffers_[frameIndex].buffer();
+    resetBarriers[1].buffer = cullVisibleCountBuffers_[frameIndex].buffer();
     resetBarriers[1].size = VK_WHOLE_SIZE;
 
     VkDependencyInfo resetDependency{};
@@ -360,7 +369,7 @@ void PunctualShadows::recordCull(VkCommandBuffer commandBuffer,
                             0,
                             nullptr);
 
-    const std::array<uint32_t, 4> pushConstants{culledSlots, drawItemCount, cullSlotCommandStride_, 0};
+    const std::array<uint32_t, 4> pushConstants{culledSlots, drawItemCount, cullSlotCommandStride_, batchCount};
     vkCmdPushConstants(commandBuffer,
                        cullPipeline_.layout(),
                        VK_SHADER_STAGE_COMPUTE_BIT,
@@ -373,24 +382,37 @@ void PunctualShadows::recordCull(VkCommandBuffer commandBuffer,
     const uint32_t threadCount = culledSlots * drawItemCount;
     vkCmdDispatch(commandBuffer, (threadCount + kLocalSize - 1) / kLocalSize, 1, 1);
 
-    // The atlas pass consumes these as indirect draw commands.
-    VkBufferMemoryBarrier2 toIndirect{};
-    toIndirect.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-    toIndirect.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    toIndirect.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-    toIndirect.dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
-    toIndirect.dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
-    toIndirect.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    toIndirect.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    toIndirect.buffer = cullIndirectBuffers_[frameIndex].buffer();
-    toIndirect.offset = 0;
-    toIndirect.size = VK_WHOLE_SIZE;
+    // The atlas pass consumes the commands as indirect draws and the counters as
+    // the indirect draw count, so both need the same transition.
+    std::array<VkBufferMemoryBarrier2, 2> toIndirect{};
+    for (VkBufferMemoryBarrier2& barrier : toIndirect) {
+        barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+        barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        barrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        barrier.dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
+        barrier.dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.offset = 0;
+        barrier.size = VK_WHOLE_SIZE;
+    }
+    toIndirect[0].buffer = cullIndirectBuffers_[frameIndex].buffer();
+    toIndirect[1].buffer = cullVisibleCountBuffers_[frameIndex].buffer();
 
     VkDependencyInfo indirectDependency{};
     indirectDependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    indirectDependency.bufferMemoryBarrierCount = 1;
-    indirectDependency.pBufferMemoryBarriers = &toIndirect;
+    indirectDependency.bufferMemoryBarrierCount = static_cast<uint32_t>(toIndirect.size());
+    indirectDependency.pBufferMemoryBarriers = toIndirect.data();
     vkCmdPipelineBarrier2(commandBuffer, &indirectDependency);
+}
+
+VkBuffer PunctualShadows::cullVisibleCountBuffer(uint32_t frameIndex) const
+{
+    if (frameIndex >= cullVisibleCountBuffers_.size()) {
+        return VK_NULL_HANDLE;
+    }
+
+    return cullVisibleCountBuffers_[frameIndex].buffer();
 }
 
 VkBuffer PunctualShadows::cullIndirectBuffer(uint32_t frameIndex) const

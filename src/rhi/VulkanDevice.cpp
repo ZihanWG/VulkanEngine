@@ -1,5 +1,6 @@
 #include "rhi/VulkanDevice.h"
 
+#include "rhi/DeviceExtensionSelection.h"
 #include "rhi/TransferQueueSelection.h"
 
 #include "core/Logger.h"
@@ -19,6 +20,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -30,12 +32,10 @@ constexpr std::array<const char*, 1> kRequiredDeviceExtensions = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME
 };
 
-#if defined(__APPLE__)
 #if defined(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME)
 constexpr const char* kPortabilitySubsetExtensionName = VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME;
 #else
 constexpr const char* kPortabilitySubsetExtensionName = "VK_KHR_portability_subset";
-#endif
 #endif
 
 bool containsExtension(const std::vector<const char*>& extensions, const char* extensionName)
@@ -61,25 +61,58 @@ std::vector<VkExtensionProperties> enumerateDeviceExtensions(VkPhysicalDevice ca
     return availableExtensions;
 }
 
-bool supportsDeviceExtension(VkPhysicalDevice candidate, const char* extensionName)
-{
-    const std::vector<VkExtensionProperties> availableExtensions = enumerateDeviceExtensions(candidate);
-    return std::find_if(availableExtensions.begin(),
-                        availableExtensions.end(),
-                        [extensionName](const VkExtensionProperties& extension) {
-                            return std::strcmp(extension.extensionName, extensionName) == 0;
-                        }) != availableExtensions.end();
-}
+// What the device will be created with, plus why each optional extension was or
+// was not taken. The outcomes are kept so the startup report can explain a path
+// being off without the reader having to reason about driver versions.
+struct DeviceExtensionPlan {
+    std::vector<const char*> enabled;
+    std::vector<ExtensionOutcome> optionalOutcomes;
+};
 
-std::vector<const char*> deviceExtensionsFor(VkPhysicalDevice physicalDevice)
+DeviceExtensionPlan planDeviceExtensions(VkPhysicalDevice physicalDevice)
 {
-    std::vector<const char*> extensions(kRequiredDeviceExtensions.begin(), kRequiredDeviceExtensions.end());
-#if defined(__APPLE__)
-    if (supportsDeviceExtension(physicalDevice, kPortabilitySubsetExtensionName)) {
-        appendUniqueExtension(extensions, kPortabilitySubsetExtensionName);
+    DeviceExtensionPlan plan{};
+    plan.enabled.assign(kRequiredDeviceExtensions.begin(), kRequiredDeviceExtensions.end());
+
+    // Held by value for the whole function: the string_views below point into it.
+    const std::vector<VkExtensionProperties> availableProperties = enumerateDeviceExtensions(physicalDevice);
+    std::vector<std::string_view> available;
+    available.reserve(availableProperties.size());
+    for (const VkExtensionProperties& extension : availableProperties) {
+        available.emplace_back(extension.extensionName);
     }
-#endif
-    return extensions;
+
+    // The optional table. Requested unconditionally rather than behind
+    // #if defined(__APPLE__): the spec says portability_subset must be enabled
+    // whenever the device exposes it, which is a property of the driver and not
+    // of the host OS, so asking the device is both simpler and more correct than
+    // asking the compiler. On a native driver it is absent and the row reports
+    // exactly that.
+    //
+    // A ray query or mesh shader path is added here as one row plus its feature
+    // predicate; selectOptionalExtensions already handles dependency chains and
+    // is pinned by tests/test_device_extension_selection.cpp.
+    static constexpr std::array<const char*, 1> kOptionalExtensionNames{
+        kPortabilitySubsetExtensionName,
+    };
+    const std::array<OptionalExtensionRequest, kOptionalExtensionNames.size()> requests{
+        OptionalExtensionRequest{kOptionalExtensionNames[0],
+                                 {},
+                                 true,
+                                 "required by portability-layer drivers such as MoltenVK"},
+    };
+
+    plan.optionalOutcomes = selectOptionalExtensions(available, requests);
+    // Indexed rather than taking outcome.name.data(): a string_view is not
+    // required to be null-terminated, and this is the one place a name reaches a
+    // C API. selectOptionalExtensions returns one outcome per request in request
+    // order, which tests/test_device_extension_selection.cpp pins.
+    for (size_t index = 0; index < plan.optionalOutcomes.size(); ++index) {
+        if (plan.optionalOutcomes[index].enabled()) {
+            appendUniqueExtension(plan.enabled, kOptionalExtensionNames[index]);
+        }
+    }
+    return plan;
 }
 
 #ifndef NDEBUG
@@ -146,6 +179,7 @@ void VulkanDevice::cleanup()
     bufferDeviceAddressEnabled_ = false;
     multiDrawIndirectEnabled_ = false;
     drawIndirectFirstInstanceEnabled_ = false;
+    multiviewEnabled_ = false;
     independentBlendEnabled_ = false;
     drawIndexedIndirectCountAvailable_ = false;
     maxDrawIndirectCount_ = 0;
@@ -373,6 +407,12 @@ void VulkanDevice::createLogicalDevice()
     enabled12.bufferDeviceAddress = VK_TRUE;
     enabled12.separateDepthStencilLayouts = VK_TRUE;
     enabled12.drawIndirectCount = supported12.drawIndirectCount;
+    // Frame pacing. Unconditional, and deliberately not a row in the optional
+    // extension table: timelineSemaphore is a mandatory Vulkan 1.2 core feature
+    // and isDeviceSuitable already refuses anything below 1.3, so there is no
+    // device reaching this line that could answer no. A fallback path here would
+    // be unreachable code pretending to be caution.
+    enabled12.timelineSemaphore = VK_TRUE;
 
     if (descriptorIndexingEnabled_) {
         enabled12.descriptorIndexing = VK_TRUE;
@@ -391,7 +431,8 @@ void VulkanDevice::createLogicalDevice()
             descriptorUpdateAfterBindEnabled_ ? VK_TRUE : VK_FALSE;
     }
 
-    const std::vector<const char*> enabledExtensions = deviceExtensionsFor(physicalDevice_);
+    const DeviceExtensionPlan extensionPlan = planDeviceExtensions(physicalDevice_);
+    const std::vector<const char*>& enabledExtensions = extensionPlan.enabled;
 #ifndef NDEBUG
     logEnabledExtensions("Enabled Vulkan device extensions:", enabledExtensions);
 #endif
@@ -419,23 +460,6 @@ void VulkanDevice::createLogicalDevice()
         vkGetDeviceQueue(device_, transferQueueFamily_, 0, &transferQueue_);
         transferQueueAvailable_ = transferQueue_ != VK_NULL_HANDLE;
     }
-    if (transferQueueAvailable_) {
-        Logger::info("Dedicated transfer queue available (family " + std::to_string(transferQueueFamily_) +
-                     "); load-time texture uploads use it.");
-    } else {
-        Logger::info("No dedicated transfer queue; texture uploads stay on the graphics queue. "
-                     "(On MoltenVK, set MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES=1 to expose one.)");
-    }
-    if (asyncComputeAvailable_) {
-        Logger::info(std::string("Async compute queue available (") +
-                     (asyncComputeDedicatedFamily_ ? "dedicated compute-only family "
-                                                   : "second queue in the graphics family ") +
-                     std::to_string(asyncComputeQueueFamily_) + ").");
-    } else {
-        Logger::info("No async compute queue available; compute passes stay on the graphics queue. "
-                     "(On MoltenVK, set MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES=1 to expose one.)");
-    }
-
     createPipelineCache();
 
     VkPhysicalDeviceProperties properties{};
@@ -445,26 +469,106 @@ void VulkanDevice::createLogicalDevice()
                                          vkCmdDrawIndexedIndirectCount != nullptr &&
                                          maxDrawIndirectCount_ > 0;
 
-    if (descriptorIndexingEnabled_) {
-        Logger::info(std::string("Descriptor indexing features for bindless material textures are enabled") +
-                     (descriptorUpdateAfterBindEnabled_ ? " (with update-after-bind)." : " (without update-after-bind)."));
-    } else {
-        Logger::warn("Descriptor indexing features required for bindless material textures are not fully supported; "
-                     "the renderer will use per-material descriptor sets.");
+    logCapabilityReport(extensionPlan.optionalOutcomes);
+}
+
+void VulkanDevice::logCapabilityReport(std::span<const ExtensionOutcome> optionalExtensions) const
+{
+    // One table instead of five scattered lines. Every row names the path that is
+    // actually live, because "descriptor indexing is not fully supported" answers
+    // only half of what a bug report needs; the other half is what the renderer
+    // does instead.
+    struct Row {
+        const char* capability;
+        bool active;
+        std::string detail;
+    };
+
+    const bool multiDrawIndirectActive = multiDrawIndirectEnabled_ && drawIndirectFirstInstanceEnabled_;
+
+    std::vector<Row> rows;
+    rows.push_back({"bindless material textures",
+                    descriptorIndexingEnabled_,
+                    descriptorIndexingEnabled_
+                        ? (descriptorUpdateAfterBindEnabled_ ? "descriptor indexing, with update-after-bind"
+                                                             : "descriptor indexing, without update-after-bind")
+                        : "falling back to per-material descriptor sets"});
+    rows.push_back({"multi-draw indirect",
+                    multiDrawIndirectActive,
+                    multiDrawIndirectActive ? "object data indexed by firstInstance"
+                                            : "falling back to per-draw indirect recording"});
+    rows.push_back({"indirect draw count",
+                    drawIndexedIndirectCountAvailable_,
+                    drawIndexedIndirectCountAvailable_
+                        ? "vkCmdDrawIndexedIndirectCount, max " + std::to_string(maxDrawIndirectCount_)
+                        : "falling back to a CPU-supplied draw count"});
+    rows.push_back({"layered cascade shadows",
+                    multiviewEnabled_,
+                    multiviewEnabled_ ? "multiview, one pass for all cascades"
+                                      : "falling back to one pass per cascade"});
+    rows.push_back({"independent blend",
+                    independentBlendEnabled_,
+                    independentBlendEnabled_ ? "per-attachment blend state"
+                                             : "falling back to uniform blend state across attachments"});
+    rows.push_back({"async compute queue",
+                    asyncComputeAvailable_,
+                    asyncComputeAvailable_
+                        ? (asyncComputeDedicatedFamily_ ? "dedicated compute-only family "
+                                                        : "second queue in graphics family ") +
+                              std::to_string(asyncComputeQueueFamily_)
+                        : "compute passes stay on the graphics queue"});
+    rows.push_back({"transfer queue",
+                    transferQueueAvailable_,
+                    transferQueueAvailable_ ? "dedicated DMA family " + std::to_string(transferQueueFamily_)
+                                            : "uploads stay on the graphics queue"});
+
+    size_t labelWidth = 0;
+    for (const Row& row : rows) {
+        labelWidth = std::max(labelWidth, std::strlen(row.capability));
+    }
+    for (const ExtensionOutcome& outcome : optionalExtensions) {
+        labelWidth = std::max(labelWidth, outcome.name.size());
     }
 
-    if (multiDrawIndirectEnabled_ && drawIndirectFirstInstanceEnabled_) {
-        Logger::info("Multi-draw indirect and drawIndirectFirstInstance are enabled.");
-    } else {
-        Logger::warn("Multi-draw indirect object-data array indexing is not fully supported; "
-                     "the main pass will use per-draw indirect fallback recording.");
+    std::string message = "Device capability report:";
+    const auto appendRow = [&message, labelWidth](std::string_view label, bool active, const std::string& detail) {
+        message += "\n  ";
+        message += label;
+        message.append(labelWidth - label.size(), ' ');
+        message += active ? " : on  -- " : " : off -- ";
+        message += detail;
+    };
+    for (const Row& row : rows) {
+        appendRow(row.capability, row.active, row.detail);
     }
+    for (const ExtensionOutcome& outcome : optionalExtensions) {
+        std::string detail = extensionDecisionName(outcome.decision);
+        if (!outcome.blockedBy.empty()) {
+            detail += " (";
+            detail += outcome.blockedBy;
+            detail += ")";
+        }
+        if (!outcome.purpose.empty()) {
+            detail += "; ";
+            detail += outcome.purpose;
+        }
+        appendRow(outcome.name, outcome.enabled(), detail);
+    }
+    Logger::info(message);
 
-    if (drawIndexedIndirectCountAvailable_) {
-        Logger::info("vkCmdDrawIndexedIndirectCount is available. maxDrawIndirectCount=" +
-                     std::to_string(maxDrawIndirectCount_) + ".");
-    } else {
-        Logger::warn("vkCmdDrawIndexedIndirectCount is unavailable; indirect-count drawing will remain disabled.");
+    // A single warn keeps a degraded run greppable at one level, which is what
+    // the individual warn lines used to provide.
+    std::string degraded;
+    for (const Row& row : rows) {
+        if (!row.active) {
+            degraded += degraded.empty() ? "" : ", ";
+            degraded += row.capability;
+        }
+    }
+    if (!degraded.empty()) {
+        Logger::warn("Running on fallback paths for: " + degraded +
+                     ". The capability report above says what each one does instead. "
+                     "(On MoltenVK, MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES=1 exposes the extra queues.)");
     }
 }
 

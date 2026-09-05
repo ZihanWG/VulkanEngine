@@ -44,6 +44,11 @@ void applyCsmSettings(const CsmSettings& incoming, CsmSettings& current, bool st
     }
 }
 
+uint32_t clampFramesInFlight(uint32_t requested)
+{
+    return std::clamp(requested, 1U, kMaxFramesInFlight);
+}
+
 void clampRuntimeSettings(RenderScaleSettings& renderScale,
                           DynamicResolutionSettings& dynamicResolution,
                           ToneMappingSettings& toneMapping,
@@ -530,10 +535,13 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readBool(*renderer, "enableGpuOcclusionCulling", settings.enableGpuOcclusionCulling);
         readBool(*renderer, "enableTwoPhaseOcclusion", settings.enableTwoPhaseOcclusion);
         readBool(*renderer, "enableLayeredCascades", settings.enableLayeredCascades);
+        readBool(*renderer, "enableBackfaceCulling", settings.enableBackfaceCulling);
         readBool(*renderer, "enableAdaptiveOcclusion", settings.enableAdaptiveOcclusion);
         readBool(*renderer, "useClusteredLighting", settings.useClusteredLighting);
         readBool(*renderer, "enableAsyncCompute", settings.enableAsyncCompute);
         readBool(*renderer, "enableBindlessMaterialTextures", settings.enableBindlessMaterialTextures);
+        readUint32(*renderer, "framesInFlight", settings.framesInFlight);
+        readBool(*renderer, "enableShaderHotReload", settings.enableShaderHotReload);
     }
 
     if (const Json* debugUi = objectMember(json, "debugUi")) {
@@ -684,10 +692,13 @@ Json toJson(const RuntimeSettings& settings)
               {"enableGpuOcclusionCulling", settings.enableGpuOcclusionCulling},
               {"enableTwoPhaseOcclusion", settings.enableTwoPhaseOcclusion},
               {"enableLayeredCascades", settings.enableLayeredCascades},
+              {"enableBackfaceCulling", settings.enableBackfaceCulling},
               {"enableAdaptiveOcclusion", settings.enableAdaptiveOcclusion},
               {"useClusteredLighting", settings.useClusteredLighting},
               {"enableAsyncCompute", settings.enableAsyncCompute},
-              {"enableBindlessMaterialTextures", settings.enableBindlessMaterialTextures}}},
+              {"enableBindlessMaterialTextures", settings.enableBindlessMaterialTextures},
+              {"framesInFlight", settings.framesInFlight},
+              {"enableShaderHotReload", settings.enableShaderHotReload}}},
         {"debugUi",
          Json{{"advancedMode", settings.debugUi.advancedMode},
               {"showRenderGraphPanel", settings.debugUi.showRenderGraphPanel},

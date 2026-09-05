@@ -46,6 +46,7 @@ add_executable(VulkanEngineTests
     test_ktx2.cpp
     test_texture_cook.cpp
     test_upload_batch.cpp
+    test_device_extension_selection.cpp
     test_transfer_queue_selection.cpp
     test_material_asset.cpp
     test_material_alpha.cpp
@@ -58,6 +59,7 @@ add_executable(VulkanEngineTests
     test_scene_builder.cpp
     test_pipeline_cache_header.cpp
     test_pipeline_key.cpp
+    test_primitive_geometry.cpp
     test_render_graph.cpp
     test_render_scale.cpp
     test_dynamic_resolution.cpp

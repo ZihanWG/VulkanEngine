@@ -1,4 +1,4 @@
-// Renderer core: construction and teardown, the frame loop entry point, input
+﻿// Renderer core: construction and teardown, the frame loop entry point, input
 // and viewport interaction, swapchain recreation, runtime settings, and the
 // small state accessors the rest of the class is built on.
 //
@@ -27,6 +27,7 @@
 #include "core/Window.h"
 #include "renderer/Bounds.h"
 #include "rhi/VulkanDebugUtils.h"
+#include "rhi/VulkanPipelineCache.h"
 
 #include <SDL3/SDL.h>
 #include <imgui.h>
@@ -164,7 +165,9 @@ Renderer::Renderer(Window& window, const RendererStartupOverrides& overrides) : 
 
     context_.initialize(window_, shaderDirectory());
 
-    frames_.resize(rhi::kMaxFramesInFlight);
+    // Startup-only, and read here rather than from the settings struct because
+    // applyRuntimeSettings(Startup) has already clamped it.
+    frames_.resize(framesInFlight_);
     frameOcclusionTested_.assign(frames_.size(), 0u);
     screenshotCapture_.initialize(
         context_, static_cast<uint32_t>(frames_.size()), portfolioScreenshotDirectory());
@@ -210,6 +213,8 @@ Renderer::Renderer(Window& window, const RendererStartupOverrides& overrides) : 
     // recreate decision there reads availability flags that resource creation
     // sets, and by then the pipelines already exist.
     createPipeline();
+    // Seeded after the first build so startup is not mistaken for an edit.
+    shaderDirectoryDigest_ = rhi::hashShaderDirectory(shaderDirectory());
     recreatePostProcessResources();
     commandContext_.initialize(context_, frames_);
     asyncCompute_.initialize(context_, static_cast<uint32_t>(frames_.size()));
@@ -227,6 +232,13 @@ Renderer::Renderer(Window& window, const RendererStartupOverrides& overrides) : 
     irradianceProbes_.setBounds(giGridBounds());
     const auto sceneCreateStart = std::chrono::steady_clock::now();
     createScene();
+    // After createScene, the one point where every startup material exists. Under
+    // bindless this should read 1 however many materials the scene has; anything
+    // else means a material took its own copy of the shared environment set.
+    Logger::info("Material descriptor sets allocated: " + std::to_string(materialDescriptorSetsAllocated_) +
+                 " (cap " + std::to_string(kMaxMaterialDescriptorSets) +
+                 (isBindlessMaterialTextureActive() ? ", bindless: one shared environment set)"
+                                                    : ", per material)"));
     assetLoadStats_.timings.sceneCreateMs =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - sceneCreateStart).count();
     createObjectFrameDataBuffers();
@@ -250,7 +262,7 @@ Renderer::Renderer(Window& window, const RendererStartupOverrides& overrides) : 
     createShadowIndirectDrawBuffers();
     createGpuCullingResources();
     sync_.initialize(context_, frames_, swapchain_.imageCount());
-    imagesInFlight_.assign(swapchain_.imageCount(), VK_NULL_HANDLE);
+    imagesInFlight_.assign(swapchain_.imageCount(), 0);
     currentExposure_ = toneMappingExposureValue(toneMappingSettings_.manualExposure);
     averageLuminance_ = toneMappingSettings_.targetLuminance;
     histogramClippedLuminance_ = toneMappingSettings_.targetLuminance;
@@ -357,12 +369,16 @@ void Renderer::invalidateTaaHistory()
 //
 // There are three different ordering mechanisms here and they protect
 // different things:
-//   * the frame-slot fence makes this slot's command buffer, uploads and
-//     readbacks safe for the CPU to reuse;
+//   * the frame timeline makes this slot's command buffer, uploads and
+//     readbacks safe for the CPU to reuse: every graphics submit signals the
+//     next value, each slot remembers the value its last submit will signal,
+//     and waiting for that value is what the slot's fence used to do;
 //   * imagesInFlight_ prevents a newly acquired swapchain image from being
-//     reused while an older frame still owns it;
-//   * semaphores order queue execution and presentation without idling either
-//     device or queue in the steady-state path.
+//     reused while an older frame still owns it, by recording the timeline
+//     value that frame will signal;
+//   * binary semaphores order queue execution and presentation without idling
+//     either device or queue in the steady-state path. Acquire and present keep
+//     binary semaphores because VK_KHR_swapchain accepts nothing else.
 //
 // updateFrameData() is CPU preparation/upload, recordRenderCommands() only
 // encodes Vulkan commands, and vkQueueSubmit2() is the point at which those
@@ -374,7 +390,11 @@ void Renderer::drawFrame()
     }
 
     updateCpuFrameTime();
-    updateEditorCamera(cpuFrameDeltaMs_ * 0.001f);
+    // Fixed step rather than the measured delta when the clock is deterministic:
+    // cpuFrameDeltaMs_ is real elapsed time, so feeding it here would let machine
+    // speed move the camera even though every other input to the frame is pinned.
+    updateEditorCamera(frameClock_.fixedStep() ? static_cast<float>(frameClock_.fixedStepSeconds())
+                                               : cpuFrameDeltaMs_ * 0.001f);
 
     // Needs a recorded frame to know resource lifetimes, so it lands after frame
     // one and then never again unless resources are rebuilt.
@@ -395,11 +415,12 @@ void Renderer::drawFrame()
     // This wait retires the previous use of currentFrame_. It is also the proof
     // that the slot's host readbacks are complete; it says nothing about which
     // swapchain image the next acquire will return.
-    VK_CHECK(vkWaitForFences(context_.vkDevice(), 1, &frame.inFlightFence, VK_TRUE, UINT64_MAX));
+    sync_.waitForTimelineValue(frame.timelineValue);
     processPortfolioScreenshotReadback(currentFrame_);
     postProcess_.updateAutoExposureFromReadback(currentFrame_);
     tryPrintExposureStats();
     tryPrintGpuTimings(currentFrame_);
+    tryReloadShaders();
     // Straight after the readback that refreshes gpuFrameTimeHistory_, so the
     // controller always sees the freshest GPU frame total available.
     updateDynamicResolution();
@@ -433,18 +454,16 @@ void Renderer::drawFrame()
         throw std::runtime_error(std::string("vkAcquireNextImageKHR failed: ") + rhi::vkResultToString(acquireResult));
     }
 
-    if (imagesInFlight_[imageIndex] != VK_NULL_HANDLE) {
-        // A swapchain image and a frame slot have independent lifetimes. If the
-        // presentation engine hands back an image owned by another slot, wait
-        // for that owner before recording writes to the image again.
-        VK_CHECK(vkWaitForFences(context_.vkDevice(), 1, &imagesInFlight_[imageIndex], VK_TRUE, UINT64_MAX));
-    }
-    imagesInFlight_[imageIndex] = frame.inFlightFence;
+    // A swapchain image and a frame slot have independent lifetimes. If the
+    // presentation engine hands back an image owned by another slot, wait for
+    // that owner before recording writes to the image again.
+    sync_.waitForTimelineValue(imagesInFlight_[imageIndex]);
 
-    // Reset only after acquire has succeeded. Resetting before an out-of-date
-    // early return would leave this slot's fence unsignaled with no submission
-    // that could ever signal it.
-    VK_CHECK(vkResetFences(context_.vkDevice(), 1, &frame.inFlightFence));
+    // The value this frame's submit will signal. Claimed here because recording
+    // needs it, but published to the slot and the image only after the submit
+    // actually happens -- see below.
+    const uint64_t submitTimelineValue = frameTimelineValue_ + 1;
+
     VK_CHECK(vkResetCommandBuffer(frame.commandBuffer, 0));
 
     imguiLayer_.beginFrame();
@@ -461,8 +480,8 @@ void Renderer::drawFrame()
     // Async compute: cluster build + light cull go to the compute queue before
     // the graphics command buffer is even recorded, so the GPU overlaps them
     // with the shadow passes (and with this CPU recording). The graphics submit
-    // below waits on the semaphore at FRAGMENT_SHADER — the first stage that
-    // reads the cluster buffers — so shadow/culling work is never blocked.
+    // below waits on the semaphore at FRAGMENT_SHADER 鈥?the first stage that
+    // reads the cluster buffers 鈥?so shadow/culling work is never blocked.
     if (frameAsyncComputeActive_) {
         const VkCommandBuffer asyncCommandBuffer = asyncCompute_.commandBuffer(currentFrame_);
         VK_CHECK(vkResetCommandBuffer(asyncCommandBuffer, 0));
@@ -498,7 +517,12 @@ void Renderer::drawFrame()
     // CPU-side recording only. No graphics work can execute until the submit
     // below, although the optional async-compute submission may already be in
     // flight on its own queue.
-    recordRenderCommands(frame.commandBuffer, imageIndex);
+    {
+        const auto recordStart = std::chrono::steady_clock::now();
+        recordRenderCommands(frame.commandBuffer, imageIndex);
+        recordCpuHistory_.push(
+            std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - recordStart).count());
+    }
     const VkSemaphore renderFinished = sync_.renderFinishedSemaphore(imageIndex);
 
     std::array<VkSemaphoreSubmitInfo, 2> waitSemaphores{};
@@ -519,10 +543,19 @@ void Renderer::drawFrame()
     commandBufferInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
     commandBufferInfo.commandBuffer = frame.commandBuffer;
 
-    VkSemaphoreSubmitInfo signalSemaphore{};
-    signalSemaphore.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-    signalSemaphore.semaphore = renderFinished;
-    signalSemaphore.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    // Two signals, different jobs. renderFinished belongs to the acquired image
+    // and is what present waits on; the timeline belongs to the device and is
+    // what the CPU waits on to reuse a slot. Synchronization2 takes both in one
+    // array, so the timeline needs no VkTimelineSemaphoreSubmitInfo pNext chain
+    // -- `value` is simply ignored for the binary one.
+    std::array<VkSemaphoreSubmitInfo, 2> signalSemaphores{};
+    signalSemaphores[0].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+    signalSemaphores[0].semaphore = renderFinished;
+    signalSemaphores[0].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    signalSemaphores[1].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+    signalSemaphores[1].semaphore = sync_.frameTimeline();
+    signalSemaphores[1].value = submitTimelineValue;
+    signalSemaphores[1].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 
     VkSubmitInfo2 submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
@@ -530,13 +563,19 @@ void Renderer::drawFrame()
     submitInfo.pWaitSemaphoreInfos = waitSemaphores.data();
     submitInfo.commandBufferInfoCount = 1;
     submitInfo.pCommandBufferInfos = &commandBufferInfo;
-    submitInfo.signalSemaphoreInfoCount = 1;
-    submitInfo.pSignalSemaphoreInfos = &signalSemaphore;
+    submitInfo.signalSemaphoreInfoCount = static_cast<uint32_t>(signalSemaphores.size());
+    submitInfo.pSignalSemaphoreInfos = signalSemaphores.data();
 
-    // The fence belongs to the frame slot, while renderFinished belongs to the
-    // acquired image. The former enables CPU reuse; the latter lets present
-    // wait for this image's rendering without coupling presentation to a slot.
-    VK_CHECK(vkQueueSubmit2(context_.graphicsQueue(), 1, &submitInfo, frame.inFlightFence));
+    VK_CHECK(vkQueueSubmit2(context_.graphicsQueue(), 1, &submitInfo, VK_NULL_HANDLE));
+
+    // Published only now. Everything above can still throw or return early, and
+    // a slot left holding a value nothing will ever signal is a hang on the next
+    // visit to it -- the failure mode the old code had to avoid by resetting the
+    // fence after acquire rather than before.
+    frameTimelineValue_ = submitTimelineValue;
+    frame.timelineValue = submitTimelineValue;
+    imagesInFlight_[imageIndex] = submitTimelineValue;
+
     gpuProfiler_.markFrameSubmitted(currentFrame_);
     capturePreviousFrameMatrices();
 
@@ -669,6 +708,19 @@ void Renderer::handleEvent(const SDL_Event& event)
 
 void Renderer::updateEditorCamera(float deltaSeconds)
 {
+    // A deterministic run must be reproducible from the frame number alone, and
+    // live input is the one remaining thing that is not. This is not theoretical:
+    // a stray scroll over the window dollies the camera through the branch at the
+    // bottom of this function, and two --capture-frame runs of the same
+    // configuration then disagree on 32% of their pixels -- which reads exactly
+    // like a rendering regression. Pending input is dropped rather than left
+    // queued, so it cannot arrive a frame later either.
+    if (frameClock_.fixedStep()) {
+        pendingLookDelta_ = glm::vec2(0.0f);
+        pendingScroll_ = 0.0f;
+        return;
+    }
+
     if (cameraFlying_) {
         EditorCameraInput input;
         const bool* keys = SDL_GetKeyboardState(nullptr);
@@ -974,6 +1026,84 @@ void Renderer::tryPrintExposureStats()
     Logger::info(message.str());
 }
 
+void Renderer::tryReloadShaders()
+{
+    if (!shaderHotReloadEnabled_) {
+        return;
+    }
+
+    // Once a second, on the same clock every other periodic report uses.
+    constexpr double kPollIntervalSeconds = 1.0;
+    const double now = frameClock_.elapsedSeconds();
+    if (now - lastShaderPollSeconds_ < kPollIntervalSeconds) {
+        return;
+    }
+    lastShaderPollSeconds_ = now;
+
+    // The same digest the persisted VkPipelineCache is keyed on, so "the shaders
+    // changed" has one definition in this codebase rather than two that can
+    // disagree. Returns 0 for an unreadable or empty directory and never throws.
+    const uint64_t digest = rhi::hashShaderDirectory(shaderDirectory());
+    if (digest == 0 || digest == shaderDirectoryDigest_) {
+        pendingShaderDigest_ = 0;
+        return;
+    }
+
+    // Seen once is not enough. glslc writes the modules one at a time, so a digest
+    // taken while a build is running describes a directory that is part old and
+    // part new; rebuilding from it would compile a module that is about to be
+    // replaced, or a truncated one. Requiring the same new digest on two
+    // consecutive polls means the directory stopped changing for a second first.
+    if (digest != pendingShaderDigest_) {
+        pendingShaderDigest_ = digest;
+        return;
+    }
+    pendingShaderDigest_ = 0;
+
+    Logger::info("Shader directory changed; rebuilding pipelines.");
+    waitIdle();
+    try {
+        createPipeline();
+        shaderDirectoryDigest_ = digest;
+        Logger::info("Shader hot reload complete.");
+    } catch (const std::exception& error) {
+        // createPipeline() resets the store before it rebuilds, so a throw here
+        // leaves the renderer with no pipelines and the next frame draws nothing.
+        // Recoverable rather than fatal -- shaderDirectoryDigest_ is deliberately
+        // not advanced, so the next build that produces loadable modules is picked
+        // up and restores the frame -- but worth saying out loud rather than
+        // letting a black screen speak for it.
+        Logger::error(std::string("Shader hot reload failed; the frame will stay empty until a build that "
+                                  "loads succeeds: ") +
+                      error.what());
+    }
+}
+
+void Renderer::emitRecordCpuBreakdown() const
+{
+    const std::vector<renderer::RenderGraphUnitCost>& unitCosts = renderGraph_.unitRecordCosts();
+    if (unitCosts.empty()) {
+        return;
+    }
+
+    std::vector<renderer::RenderGraphUnitCost> sorted = unitCosts;
+    std::sort(sorted.begin(), sorted.end(), [](const renderer::RenderGraphUnitCost& lhs,
+                                               const renderer::RenderGraphUnitCost& rhs) {
+        return lhs.milliseconds > rhs.milliseconds;
+    });
+
+    // Whole-frame recording time says whether splitting recording across threads
+    // could pay at all; this says which units would have to be split for it to,
+    // and it is the number that showed the answer was one pass rather than
+    // seventeen. The unit index disambiguates units that share a pass type name.
+    std::ostringstream message;
+    message << std::fixed << std::setprecision(3) << "Record CPU by unit:";
+    for (const renderer::RenderGraphUnitCost& cost : sorted) {
+        message << "\n  [" << cost.unitIndex << "] " << cost.name << ": " << cost.milliseconds << " ms";
+    }
+    Logger::info(message.str());
+}
+
 void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
 {
     renderer::GpuProfiler::FrameResults results{};
@@ -1002,6 +1132,18 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
                 << " ms (avg " << framePrepCpuHistory_.average() << ", max " << framePrepCpuHistory_.max()
                 << ")\n";
     }
+    // Recording next to prep, for the same reason prep sits next to the GPU
+    // total: what matters is the share of the CPU frame that is still serial.
+    if (!recordCpuHistory_.empty()) {
+        message << "  Record CPU: " << recordCpuHistory_.latest()
+                << " ms (avg " << recordCpuHistory_.average() << ", max " << recordCpuHistory_.max()
+                << ")\n";
+    }
+    // The per-unit breakdown goes out as its own log line, deliberately NOT inside
+    // the GPU timings block. tools/dev/measure_gpu.py treats every two-space
+    // indented line after "GPU timings:" as a GPU scope, so a CPU number left in
+    // there is reported as a pass timing and quoted as one.
+    emitRecordCpuBreakdown();
     message << "  draw items: " << allDrawItems_.size() << ", objects: " << renderObjects_.size() << "\n"
             << "  timestamp queries: " << results.queryCount << "/" << results.maxQueryCount << "\n";
     if (results.queryLimitExceeded) {
@@ -1219,6 +1361,26 @@ void Renderer::updateCpuFrameTime()
     postProcess_.setFrameTimeSeconds(static_cast<float>(frameClock_.elapsedSeconds()));
 }
 
+namespace {
+
+// Transients the renderer can rebuild as pool-bound and rebind afterwards.
+//
+// A name list, not a graph property: whether a resource can be recreated as
+// aliased is a fact about the code that owns it, not about how it is declared.
+// PostProcessStack creates all of these in one function and
+// Renderer::recreatePostProcessResources rewrites everything that samples them.
+// A resource added here without that path gets bound into shared memory while
+// stale descriptors still point at the image it used to be.
+bool isAliasableTransient(const std::string& name)
+{
+    if (name.rfind("Bloom", 0) == 0) {
+        return true;
+    }
+    return name == "VelocityBuffer" || name == "NormalRoughnessGBuffer";
+}
+
+} // namespace
+
 void Renderer::applyTransientAliasingPlan()
 {
     // Replan when the allocation extent moves. A resize recreates the bloom
@@ -1236,9 +1398,17 @@ void Renderer::applyTransientAliasingPlan()
         return;
     }
 
-    // Only the bloom chain for now. Its resources are created and described in
-    // one place, and its descriptors are rewritten by the same path that creates
-    // the images, so nothing outside PostProcessStack has to change.
+    // The bloom chain plus the G-buffer pair. All of them are created and
+    // described in one place, and their descriptors are rewritten by the same
+    // path that creates the images -- recreatePostProcessResources rebinds SSR and
+    // GTAO against the fresh normal-roughness view -- so nothing outside
+    // PostProcessStack has to change.
+    //
+    // The membership is a name list rather than a property of the resource
+    // because "can this be recreated as aliased and rebound" is a fact about the
+    // code that owns it, not about the graph declaration. Adding a resource here
+    // without giving it that path binds it into shared memory and leaves stale
+    // descriptors pointing at the old image.
     const std::vector<renderer::RenderGraph::TransientTextureRecord> transients = renderGraph_.transientTextures();
     if (transients.empty()) {
         // No frame recorded yet; try again after the next one.
@@ -1249,13 +1419,22 @@ void Renderer::applyTransientAliasingPlan()
         renderGraph_.debugPasses(), renderGraph_.executionOrder(), renderGraph_.textureCount());
 
     std::vector<renderer::TransientAllocationRequest> requests;
+    // Bloom images no pass uses this frame. They are reported rather than
+    // silently dropped: the binder needs to tell "deliberately not placed"
+    // from "should have been placed and was not", and treating the two the
+    // same is what kept this feature from ever activating. The two bloom paths
+    // cull each other, so one group is always in here.
+    std::unordered_map<std::string, renderer::PostProcessStack::BloomAliasPlacement> placements;
     uint32_t commonMemoryTypeBits = ~0u;
     VkDeviceSize alignment = 1;
     for (const renderer::RenderGraph::TransientTextureRecord& record : transients) {
-        if (record.name.rfind("Bloom", 0) != 0) {
+        if (!isAliasableTransient(record.name)) {
             continue;
         }
         if (record.resourceIndex >= lifetimes.size() || !lifetimes[record.resourceIndex].used) {
+            renderer::PostProcessStack::BloomAliasPlacement unused{};
+            unused.unusedThisFrame = true;
+            placements.emplace(record.name, unused);
             continue;
         }
 
@@ -1281,11 +1460,11 @@ void Renderer::applyTransientAliasingPlan()
 
     const renderer::TransientMemoryPlan plan = renderer::planTransientMemory(requests);
 
-    std::unordered_map<std::string, VkDeviceSize> offsets;
-    offsets.reserve(plan.allocations.size());
     for (const renderer::TransientAllocation& allocation : plan.allocations) {
         if (allocation.placed) {
-            offsets.emplace(allocation.name, allocation.offset);
+            renderer::PostProcessStack::BloomAliasPlacement placed{};
+            placed.offset = allocation.offset;
+            placements.emplace(allocation.name, placed);
         }
     }
 
@@ -1294,7 +1473,7 @@ void Renderer::applyTransientAliasingPlan()
     // startup, on the same path a resize already takes -- never in the steady
     // frame loop.
     waitIdle();
-    postProcess_.setBloomAliasPlan(std::move(offsets), plan.poolBytes, commonMemoryTypeBits, alignment);
+    postProcess_.setBloomAliasPlan(std::move(placements), plan.poolBytes, commonMemoryTypeBits, alignment);
     recreatePostProcessResources();
     transientAliasingApplied_ = true;
     transientAliasingPlanExtent_ = allocationExtent;
@@ -1784,6 +1963,10 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
         virtualShadowMap_.invalidateResidency();
     }
 
+    // Outside the startup/runtime split: it owns no resource, so toggling it
+    // mid-run just starts or stops the poll.
+    shaderHotReloadEnabled_ = settings.enableShaderHotReload;
+
     if (mode == RuntimeSettingsApplyMode::Startup) {
         useTransientAliasing_ = settings.enableTransientAliasing;
         useGpuCulling_ = settings.useGpuCulling;
@@ -1791,9 +1974,11 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
         useGpuOcclusionCulling_ = settings.enableGpuOcclusionCulling && settings.useGpuCulling;
         useTwoPhaseOcclusion_ = settings.enableTwoPhaseOcclusion;
         useLayeredCascades_ = settings.enableLayeredCascades;
+        useBackfaceCulling_ = settings.enableBackfaceCulling;
         useAdaptiveOcclusion_ = settings.enableAdaptiveOcclusion;
         useAsyncCompute_ = settings.enableAsyncCompute;
         useBindlessMaterialTextures_ = settings.enableBindlessMaterialTextures;
+        framesInFlight_ = clampFramesInFlight(settings.framesInFlight);
         // Assigned unguarded here: this runs before the punctual shadow
         // subsystem is created, so cullAvailable() has nothing to report yet.
         // The record path re-checks it every frame regardless.
@@ -1857,6 +2042,7 @@ RuntimeSettings Renderer::captureRuntimeSettings() const
     settings.enableGpuOcclusionCulling = useGpuOcclusionCulling_;
     settings.enableTwoPhaseOcclusion = useTwoPhaseOcclusion_;
     settings.enableLayeredCascades = useLayeredCascades_;
+    settings.enableBackfaceCulling = useBackfaceCulling_;
     settings.enableAdaptiveOcclusion = useAdaptiveOcclusion_;
     settings.useClusteredLighting = useClusteredLighting_;
     settings.enableAsyncCompute = useAsyncCompute_;
@@ -2317,7 +2503,7 @@ void Renderer::recreateSwapchain()
         createPipeline();
     }
 
-    imagesInFlight_.assign(swapchain_.imageCount(), VK_NULL_HANDLE);
+    imagesInFlight_.assign(swapchain_.imageCount(), 0);
 }
 
 bool Renderer::readGpuVisibleCount(uint32_t frameIndex, uint32_t& visibleCount)

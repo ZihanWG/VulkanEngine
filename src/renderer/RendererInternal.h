@@ -443,6 +443,27 @@ static_assert(offsetof(SkinnedShadowPushConstants, jointMatricesAddress) == 80);
 static_assert(sizeof(SkinnedShadowPushConstants) == 88);
 static_assert(sizeof(SkinnedShadowPushConstants) <= 128);
 
+// Mirrors the push constant block in shadow_skinned_layered.vert.
+//
+// The difference from SkinnedShadowPushConstants above is the whole reason the
+// layered variant exists: no pushed matrix. A push constant has one value for
+// the entire draw, and a multiview draw needs a different cascade projection per
+// layer, so the projection is read from the frame-constants buffer by
+// gl_ViewIndex instead. What is left is three buffer references, which need no
+// padding: 8-byte members at 8-byte alignment, unlike the mat4 above that forced
+// an 8-byte hole after the first address.
+struct SkinnedLayeredShadowPushConstants {
+    VkDeviceAddress objectFrameDataAddress = 0;
+    VkDeviceAddress jointMatricesAddress = 0;
+    VkDeviceAddress frameConstantsAddress = 0;
+};
+
+static_assert(offsetof(SkinnedLayeredShadowPushConstants, objectFrameDataAddress) == 0);
+static_assert(offsetof(SkinnedLayeredShadowPushConstants, jointMatricesAddress) == 8);
+static_assert(offsetof(SkinnedLayeredShadowPushConstants, frameConstantsAddress) == 16);
+static_assert(sizeof(SkinnedLayeredShadowPushConstants) == 24);
+static_assert(sizeof(SkinnedLayeredShadowPushConstants) <= 128);
+
 // Mirrors the push constant block in probe_capture.vert / probe_capture.frag.
 // Same shape as PunctualShadowPushConstants, and the same padding for the same
 // reason: the mat4 rounds up to a 16-byte boundary after the buffer reference.

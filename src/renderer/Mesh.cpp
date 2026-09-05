@@ -1,5 +1,7 @@
 #include "renderer/Mesh.h"
 
+#include "renderer/PrimitiveGeometry.h"
+
 #include "core/Logger.h"
 #include "renderer/MeshCache.h"
 #include "rhi/VulkanCommandContext.h"
@@ -60,56 +62,6 @@ std::vector<std::byte> readFileBytes(const std::filesystem::path& path)
     return bytes;
 }
 
-constexpr float kPi = 3.14159265358979323846f;
-
-
-const std::array<Vertex, 24> kCubeVertices = {{
-    // Front (+Z)
-    {{-0.5f, -0.5f, 0.5f}, {1.0f, 0.95f, 0.95f}, {0.0f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 0.0f, 0.0f, 1.0f}},
-    {{0.5f, -0.5f, 0.5f}, {1.0f, 0.95f, 0.95f}, {1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 0.0f, 0.0f, 1.0f}},
-    {{0.5f, 0.5f, 0.5f}, {1.0f, 0.95f, 0.95f}, {1.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 0.0f, 0.0f, 1.0f}},
-    {{-0.5f, 0.5f, 0.5f}, {1.0f, 0.95f, 0.95f}, {0.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 0.0f, 0.0f, 1.0f}},
-
-    // Back (-Z)
-    {{0.5f, -0.5f, -0.5f}, {0.95f, 1.0f, 0.95f}, {0.0f, 0.0f}, {0.0f, 0.0f, -1.0f}, {-1.0f, 0.0f, 0.0f, 1.0f}},
-    {{-0.5f, -0.5f, -0.5f}, {0.95f, 1.0f, 0.95f}, {1.0f, 0.0f}, {0.0f, 0.0f, -1.0f}, {-1.0f, 0.0f, 0.0f, 1.0f}},
-    {{-0.5f, 0.5f, -0.5f}, {0.95f, 1.0f, 0.95f}, {1.0f, 1.0f}, {0.0f, 0.0f, -1.0f}, {-1.0f, 0.0f, 0.0f, 1.0f}},
-    {{0.5f, 0.5f, -0.5f}, {0.95f, 1.0f, 0.95f}, {0.0f, 1.0f}, {0.0f, 0.0f, -1.0f}, {-1.0f, 0.0f, 0.0f, 1.0f}},
-
-    // Left (-X)
-    {{-0.5f, -0.5f, -0.5f}, {0.95f, 0.95f, 1.0f}, {0.0f, 0.0f}, {-1.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 1.0f, 1.0f}},
-    {{-0.5f, -0.5f, 0.5f}, {0.95f, 0.95f, 1.0f}, {1.0f, 0.0f}, {-1.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 1.0f, 1.0f}},
-    {{-0.5f, 0.5f, 0.5f}, {0.95f, 0.95f, 1.0f}, {1.0f, 1.0f}, {-1.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 1.0f, 1.0f}},
-    {{-0.5f, 0.5f, -0.5f}, {0.95f, 0.95f, 1.0f}, {0.0f, 1.0f}, {-1.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 1.0f, 1.0f}},
-
-    // Right (+X)
-    {{0.5f, -0.5f, 0.5f}, {1.0f, 1.0f, 0.9f}, {0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f, -1.0f, 1.0f}},
-    {{0.5f, -0.5f, -0.5f}, {1.0f, 1.0f, 0.9f}, {1.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f, -1.0f, 1.0f}},
-    {{0.5f, 0.5f, -0.5f}, {1.0f, 1.0f, 0.9f}, {1.0f, 1.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f, -1.0f, 1.0f}},
-    {{0.5f, 0.5f, 0.5f}, {1.0f, 1.0f, 0.9f}, {0.0f, 1.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f, -1.0f, 1.0f}},
-
-    // Top (+Y)
-    {{-0.5f, 0.5f, 0.5f}, {1.0f, 0.95f, 1.0f}, {0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f, 0.0f, 1.0f}},
-    {{0.5f, 0.5f, 0.5f}, {1.0f, 0.95f, 1.0f}, {1.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f, 0.0f, 1.0f}},
-    {{0.5f, 0.5f, -0.5f}, {1.0f, 0.95f, 1.0f}, {1.0f, 1.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f, 0.0f, 1.0f}},
-    {{-0.5f, 0.5f, -0.5f}, {1.0f, 0.95f, 1.0f}, {0.0f, 1.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f, 0.0f, 1.0f}},
-
-    // Bottom (-Y)
-    {{-0.5f, -0.5f, -0.5f}, {0.95f, 1.0f, 1.0f}, {0.0f, 0.0f}, {0.0f, -1.0f, 0.0f}, {1.0f, 0.0f, 0.0f, 1.0f}},
-    {{0.5f, -0.5f, -0.5f}, {0.95f, 1.0f, 1.0f}, {1.0f, 0.0f}, {0.0f, -1.0f, 0.0f}, {1.0f, 0.0f, 0.0f, 1.0f}},
-    {{0.5f, -0.5f, 0.5f}, {0.95f, 1.0f, 1.0f}, {1.0f, 1.0f}, {0.0f, -1.0f, 0.0f}, {1.0f, 0.0f, 0.0f, 1.0f}},
-    {{-0.5f, -0.5f, 0.5f}, {0.95f, 1.0f, 1.0f}, {0.0f, 1.0f}, {0.0f, -1.0f, 0.0f}, {1.0f, 0.0f, 0.0f, 1.0f}}
-}};
-
-const std::array<uint32_t, 36> kCubeIndices = {
-    0, 1, 2, 0, 2, 3,
-    4, 5, 6, 4, 6, 7,
-    8, 9, 10, 8, 10, 11,
-    12, 13, 14, 12, 14, 15,
-    16, 17, 18, 16, 18, 19,
-    20, 21, 22, 20, 22, 23
-};
-
 } // namespace
 
 VkVertexInputBindingDescription vertexBindingDescription()
@@ -155,29 +107,31 @@ std::array<VkVertexInputAttributeDescription, 5> vertexAttributeDescriptions()
 
 Mesh Mesh::createCube(rhi::VulkanContext& context, const rhi::VulkanCommandContext& commandContext)
 {
+    const PrimitiveGeometry geometry = buildCubeGeometry();
+
     Mesh mesh;
     mesh.debugName_ = "Built-in Cube Mesh";
-    for (const Vertex& vertex : kCubeVertices) {
+    for (const Vertex& vertex : geometry.vertices) {
         mesh.localBounds_.expand(vertex.position);
     }
 
     mesh.vertexBuffer_.createDeviceLocal(
         context,
         commandContext,
-        std::as_bytes(std::span<const Vertex>(kCubeVertices.data(), kCubeVertices.size())),
+        std::as_bytes(std::span<const Vertex>(geometry.vertices.data(), geometry.vertices.size())),
         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
 
-    mesh.indexCount_ = static_cast<uint32_t>(kCubeIndices.size());
+    mesh.indexCount_ = static_cast<uint32_t>(geometry.indices.size());
 
     // 12 triangles is far under kMinLodIndexCount, so this produces a level-0-only
     // chain. It still runs so every valid mesh has a LOD table and the cull shader
     // never has to special-case a missing one.
-    std::vector<uint32_t> indices(kCubeIndices.begin(), kCubeIndices.end());
+    std::vector<uint32_t> indices = geometry.indices;
     mesh.lods_ = buildLodChain(indices,
                                0,
                                mesh.indexCount_,
-                               &kCubeVertices[0].position.x,
-                               kCubeVertices.size(),
+                               &geometry.vertices[0].position.x,
+                               geometry.vertices.size(),
                                sizeof(Vertex),
                                mesh.debugName_);
     mesh.lodBase_ = 0;
@@ -198,60 +152,9 @@ Mesh Mesh::createUvSphere(
     uint32_t segments,
     uint32_t rings)
 {
-    segments = std::max(segments, 8U);
-    rings = std::max(rings, 4U);
-
-    std::vector<Vertex> vertices;
-    std::vector<uint32_t> indices;
-    vertices.reserve(static_cast<size_t>(segments + 1U) * static_cast<size_t>(rings + 1U));
-    indices.reserve(static_cast<size_t>(segments) * static_cast<size_t>(rings - 1U) * 6U);
-
-    for (uint32_t ring = 0; ring <= rings; ++ring) {
-        const float v = static_cast<float>(ring) / static_cast<float>(rings);
-        const float phi = v * kPi;
-        const float y = std::cos(phi) * 0.5f;
-        const float radius = std::sin(phi) * 0.5f;
-
-        for (uint32_t segment = 0; segment <= segments; ++segment) {
-            const float u = static_cast<float>(segment) / static_cast<float>(segments);
-            const float theta = u * kPi * 2.0f;
-            const glm::vec3 normal = glm::normalize(glm::vec3{
-                std::cos(theta) * radius,
-                y,
-                std::sin(theta) * radius,
-            });
-            const glm::vec3 tangent = glm::normalize(glm::vec3{-std::sin(theta), 0.0f, std::cos(theta)});
-
-            Vertex vertex{};
-            vertex.position = normal * 0.5f;
-            vertex.color = glm::vec3(1.0f);
-            vertex.uv = {u, 1.0f - v};
-            vertex.normal = normal;
-            vertex.tangent = {tangent, 1.0f};
-            vertices.push_back(vertex);
-        }
-    }
-
-    const uint32_t rowStride = segments + 1U;
-    for (uint32_t ring = 0; ring < rings; ++ring) {
-        for (uint32_t segment = 0; segment < segments; ++segment) {
-            const uint32_t a = ring * rowStride + segment;
-            const uint32_t b = (ring + 1U) * rowStride + segment;
-            const uint32_t c = b + 1U;
-            const uint32_t d = a + 1U;
-
-            if (ring > 0) {
-                indices.push_back(a);
-                indices.push_back(b);
-                indices.push_back(d);
-            }
-            if (ring + 1U < rings) {
-                indices.push_back(d);
-                indices.push_back(b);
-                indices.push_back(c);
-            }
-        }
-    }
+    const PrimitiveGeometry geometry = buildUvSphereGeometry(segments, rings);
+    const std::vector<Vertex>& vertices = geometry.vertices;
+    std::vector<uint32_t> indices = geometry.indices;
 
     Mesh mesh;
     mesh.debugName_ = "Built-in UV Sphere Mesh";
