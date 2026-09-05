@@ -439,37 +439,45 @@ zero validation errors, and the CPU-culling default path unchanged byte for byte
 | CPU culling | 0.320 / 0.321 / 0.349 ms | 0.511 / 0.531 / 0.567 ms |
 | GPU culling | 0.022 / 0.022 / 0.025 ms | 0.196 / 0.205 / 0.250 ms |
 
-**The GPU side is now measured.** With `tools/dev/gpu_clock.ps1` pinning the
-graphics clock at 1400 MHz, an A/B on `--scene stress` passed the control-drift
-gate at **0.30%** -- the first gate-passing GPU comparison on this machine, after
-eight refusals whose best was 1.4%. Three A/B pairs, medians over 54 and 57
-samples:
+**The GPU side is now measured.** It took `tools/dev/gpu_clock.ps1` pinning both
+clocks and a change of statistic in the harness -- see `docs/profiling.md` -- but
+both scenes now pass the control-drift gate. Three A/B pairs each, p10 over 54
+and 57 samples, clocks pinned at 1100/7001 MHz:
 
-| Pass | culling off | culling on | delta | attributable |
+| | culling off | culling on | delta | drift |
 | --- | --- | --- | --- | --- |
-| Frame total | 1.186 ms | 1.207 ms | **+0.021 ms (+1.8%)** | yes |
-| PunctualShadowAtlas | 0.035 ms | 0.036 ms | +0.001 ms | yes |
-| PunctualShadowGpuCull | - | 0.019 ms | B only | - |
+| **`--scene stress`** | | | | **0.14%** |
+| Frame total | 1.423 ms | 1.435 ms | **+0.012 ms (+0.8%)** | attributable |
+| PunctualShadowAtlas | 0.040 ms | 0.042 ms | +0.002 ms (+5.0%) | attributable |
+| PunctualShadowGpuCull | - | 0.022 ms | B only | - |
+| **`--scene gpu-stress`** | | | | **0.50%** |
+| Frame total | 2.607 ms | 2.648 ms | **+0.041 ms (+1.6%)** | attributable |
+| PunctualShadowAtlas | 0.047 ms | 0.052 ms | +0.005 ms (+10.6%) | attributable |
+| PunctualShadowGpuCull | - | 0.018 ms | B only | - |
 
-**The feared outcome did not happen.** The worry recorded above was that the
-atlas pass would blow up the way it does under MoltenVK. It does not move. The
-whole GPU cost is the cull dispatch itself at 0.019 ms, and it lands on the frame
-very nearly one-for-one.
+**The atlas pass does not get cheaper. It gets more expensive.** That is the
+result worth carrying: the hope was that culling casters on the GPU would shrink
+`PunctualShadowAtlas`, and on both scenes it grows instead -- +5.0% and +10.6%,
+attributable on both. Whatever the indirect per-slot replay saves in submitted
+work, it does not show up here. The cull dispatch is then paid on top, ~0.02 ms,
+and it has no counterpart in the CPU path.
 
-So the trade is finally a number instead of a shape: **+0.021 ms of GPU against
-~0.31 ms of removed CPU recording**, on a scene whose CPU frame already exceeds
-its GPU frame. Net favourable by an order of magnitude, in the direction the CPU
-numbers predicted.
+So the GPU side costs 0.8-1.6% of the frame, on the two scenes measured, and the
+larger the scene the larger the absolute cost. The earlier fear -- that the atlas
+pass would blow up the way it does under MoltenVK -- was directionally right and
+wrong about the magnitude: it moves the wrong way, but by hundredths of a
+millisecond rather than by a factor.
 
-The same A/B on `--scene gpu-stress` was still refused, at 9.0% drift: that scene
-drives the card to 87 C, `sw_thermal_slowdown` goes Active, and the clock falls
-below the pin. See `docs/profiling.md`. So the number above is established for a
-CPU-bound scene and **not** for a GPU-bound one.
+Against that sits the CPU measurement already recorded above: ~0.31 ms of frame
+recording removed, on a scene whose CPU frame already exceeds its GPU frame. The
+trade is still favourable by roughly an order of magnitude. It is simply no
+longer free, and the number to quote against a future regression is +0.012 ms on
+`stress`, not zero.
 
-**This still does not flip the default**, and the reason is no longer
-measurement. Two things gate it: `tests/golden/lavapipe_frame30.png` has to be
-regenerated on lavapipe, and the correctness trap below has to be closed first.
-A favourable performance number is not permission to ship a wrong shadow.
+**None of that flips the default**, and the reason was never the measurement. Two
+things gate it: `tests/golden/lavapipe_frame30.png` regenerated on lavapipe, and
+the correctness trap below closed first. A favourable performance number is not
+permission to ship a wrong shadow.
 
 **One trap worth recording.** The cull input buffer is shared with the main and
 CSM paths and carries no bucket, and `GpuCullDrawItem` is exactly 64 bytes with
@@ -663,13 +671,14 @@ near-black and reads as a catastrophic bug that is not there.
 - **The point-light demotion is a fixed one class**, not derived from the actual
   per-face footprint.
 - **GPU caster culling is off by default, and no longer for want of a
-  measurement.** It is bit-identical to the CPU path on all six scene presets, it
-  removes ~60% of the frame’s CPU recording on `--scene stress`, and a
-  gate-passing A/B (0.30% control drift) puts the GPU side at +0.021 ms against
-  that ~0.31 ms CPU saving. What still blocks the flip is the missing per-draw-item
-  caster mask -- without it, enabling this reintroduces alpha-blended geometry
-  casting opaque shadows -- plus `tests/golden/lavapipe_frame30.png` regenerated on
-  lavapipe. See [GPU caster culling](#gpu-caster-culling).
+  measurement.** It is bit-identical to the CPU path on all six scene presets and
+  removes ~60% of the frame’s CPU recording on `--scene stress`. Gate-passing
+  A/Bs now put the GPU side at +0.012 ms on `stress` (0.14% drift) and +0.041 ms
+  on `gpu-stress` (0.50%), against that ~0.31 ms CPU saving -- a cost rather than
+  the hoped-for atlas saving, but a small one. What blocks the flip is the missing
+  per-draw-item caster mask -- without it, enabling this reintroduces alpha-blended
+  geometry casting opaque shadows -- plus `tests/golden/lavapipe_frame30.png`
+  regenerated on lavapipe. See [GPU caster culling](#gpu-caster-culling).
 - **No filtering beyond 3x3 PCF.** No variance/moment maps, no contact-hardening.
 - **No cross-face filtering.** PCF is clamped inside a face rather than
   continuing onto the neighbour, so filtering narrows slightly at face
