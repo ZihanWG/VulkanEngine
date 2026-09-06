@@ -1,4 +1,4 @@
-#include "core/CommandLine.h"
+﻿#include "core/CommandLine.h"
 
 #include "core/Logger.h"
 
@@ -25,6 +25,7 @@ constexpr ScenePresetName kScenePresetNames[] = {
     {"occlusion", ScenePreset::Occlusion},
     {"cornell", ScenePreset::CornellBox},
     {"sunlit", ScenePreset::SunlitYard},
+    {"gpu-stress", ScenePreset::GpuStress},
 };
 
 // Same one-table rule as the scene presets, for the same reason.
@@ -180,6 +181,38 @@ bool parseLaunchOptions(int argc, char** argv, LaunchOptions& options)
                 return false;
             }
             options.captureOutput = argv[++index];
+            continue;
+        }
+
+        if (argument == "--window-size") {
+            if (index + 1 >= argc) {
+                Logger::error("--window-size requires WIDTHxHEIGHT, for example 2560x1440.");
+                return false;
+            }
+            const std::string_view value(argv[++index]);
+            const size_t separator = value.find('x');
+            if (separator == std::string_view::npos) {
+                Logger::error("--window-size expects WIDTHxHEIGHT, got: " + std::string(value));
+                return false;
+            }
+
+            // Both halves parsed the same way --exit-after-frames parses its
+            // count: reject trailing characters rather than stopping at the first
+            // one that does not fit, so "1280xabc" and "1280x720junk" fail loudly.
+            const auto parseExtent = [](std::string_view text, uint32_t& out) {
+                const auto result = std::from_chars(text.data(), text.data() + text.size(), out);
+                return result.ec == std::errc{} && result.ptr == text.data() + text.size() && out != 0;
+            };
+
+            uint32_t parsedWidth = 0;
+            uint32_t parsedHeight = 0;
+            if (!parseExtent(value.substr(0, separator), parsedWidth) ||
+                !parseExtent(value.substr(separator + 1), parsedHeight)) {
+                Logger::error("--window-size expects two positive integers, got: " + std::string(value));
+                return false;
+            }
+            options.width = static_cast<int>(parsedWidth);
+            options.height = static_cast<int>(parsedHeight);
             continue;
         }
 

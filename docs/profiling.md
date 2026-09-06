@@ -151,3 +151,140 @@ The same major ranges also use `VK_EXT_debug_utils` labels through the existing 
 - The profiler has a fixed per-frame query capacity. The UI reports query usage and warns if the frame exceeds the configured capacity.
 - Passes that run on the async compute queue are timestamped on that queue, so their rows are not directly comparable with graphics-queue rows on the same timeline. The debug UI notes this next to `ClusterBuild`/`LightCull`.
 - Timeline lane visualization and RenderDoc capture automation are future work.
+
+## Load knobs, and why they did not fix the drift gate
+
+`tools/dev/measure_gpu.py` refuses a comparison when the repeated control moves
+more than 1% across the series. Its own documentation suggests the remedy: *"A
+heavier preset pins the clock and the same comparison becomes quotable."* On this
+machine -- an RTX 3080 Ti **Laptop** -- that advice is backwards, and it is worth
+recording so nobody spends another afternoon on it.
+
+### The knobs
+
+**`--scene gpu-stress`** is `fragment-stress` turned up: 24 overdraw layers
+instead of 6, 512 lights instead of 192. Both knobs cost GPU and almost no CPU,
+which is the point -- a preset that scaled draw items instead would just move the
+bottleneck back onto the CPU, where `stress` already is. The slabs are spread
+across a fixed depth span rather than at a fixed spacing, so more layers means
+denser overdraw rather than a longer tunnel whose far end shrinks out of frame; at
+six layers that arithmetic is identical to what it replaced, so `fragment-stress`
+is bit-identical and keeps the measurements taken on it.
+
+**`--window-size WIDTHxHEIGHT`** is the lever with no ceiling. `renderScale` only
+scales *down*, the scene presets are bounded by early-Z and by
+`kMaxLightsPerCluster`, and resolution is the one input that multiplies fragment
+work while costing nothing on the CPU:
+
+| `--scene gpu-stress` | GPU frame | CPU prep | CPU record |
+| --- | --- | --- | --- |
+| 1280x720 | 2.45 ms | 0.15 ms | 0.20 ms |
+| 1920x1080 | 3.71 ms | 0.19 ms | 0.25 ms |
+| 2560x1440 | 6.68 ms | 0.16 ms | 0.23 ms |
+| 3840x2160 | **14.54 ms** | 0.18 ms | 0.28 ms |
+
+Six times the GPU work with the CPU flat, ending at 31:1 GPU-bound. As a way to
+put load on the card, it works exactly as intended.
+
+### It made the measurement worse, not better
+
+The drift gate was run against `punctualShadows.gpuCasterCulling` at every size.
+Best control drift achieved, against a 1% limit:
+
+| load | GPU frame | best drift |
+| --- | --- | --- |
+| `stress` at 720p | 1.0 ms | **1.4%** |
+| `gpu-stress` at 1440p | 7.4 ms | 16.8% |
+| `gpu-stress` at 4K | 14.5 ms | 9.6% |
+
+Drift grows with GPU load. Shortening the sample window did not help either -- the
+1440p figure above is from the shortest run the harness accepts.
+
+The cause is visible from `nvidia-smi`: this GPU's graphics clock ranges from
+**472 MHz idle to 2100 MHz boost**, a 4.4x swing, with no user-settable power
+limit. A desktop card under sustained load settles at a steady boost clock, which
+is what "a heavier preset pins the clock" assumes. A laptop card under sustained
+load throttles instead, and a throttling clock *is* a drifting control.
+
+### What actually fixes it: three separate causes, in order
+
+The gate turned out to be refusing for three unrelated reasons at once. Each was
+found only after the one before it was removed, so they are recorded in the order
+they surfaced rather than the order they matter.
+
+**1. The clock swings.** Pin it. `tools/dev/gpu_clock.ps1` wraps `nvidia-smi` and
+self-elevates, because the device writes need administrator:
+
+```
+powershell -File tools/dev/gpu_clock.ps1 lock -Mhz 1100   # graphics and memory
+powershell -File tools/dev/gpu_clock.ps1 status           # needs no privileges
+powershell -File tools/dev/gpu_clock.ps1 unlock
+```
+
+Pinning the graphics clock at 1400 MHz took a `--scene stress` A/B from eight
+consecutive refusals, best 1.4%, to 0.30%. The first time the gate had ever
+passed on this machine.
+
+**2. A pin is a ceiling, not a floor.** The same A/B on `--scene gpu-stress` was
+still refused at 9.0%. Sampling `nvidia-smi` every two seconds during the run,
+with the pin in place:
+
+| t | graphics | memory | temp | sw_thermal_slowdown |
+| --- | --- | --- | --- | --- |
+| 2 s | 1402 MHz | 7001 MHz | 86 C | Not Active |
+| 4 s | 1282 MHz | 8001 MHz | 87 C | **Active** |
+| 12 s | 1320 MHz | 6001 MHz | 86 C | **Active** |
+| 20 s | 1320 MHz | 7001 MHz | 86 C | **Active** |
+
+Two leaks. The card reaches its thermal threshold and slides *below* the pin, and
+the memory clock was never pinned at all -- it hops 6001/7001/8001, a 33% swing
+in the one resource a bandwidth-bound scene is waiting on. So the script pins
+both, and a heavier scene needs a *lower* graphics pin rather than a higher one.
+Run `status` during a measurement: if a throttle reason reads Active, the pin is
+not holding.
+
+**3. The median was the wrong statistic.** With both clocks pinned at 1100/7001
+and no throttle reason active for the whole run, `gpu-stress` drifted *worse*:
+15.9%. The pin was holding and the drift got bigger, which falsified the thermal
+explanation outright.
+
+The per-sample distribution says why. Every scope has a tight floor and a long
+upper tail -- `MainHDRPass` over one launch: p10 1.962, min 1.956, max 2.917.
+That is the signature of something else using the GPU, and this laptop has 21
+other processes on the device: the compositor, three WebView2 instances, two
+NVIDIA overlays, a Steam helper, two chat clients. Contention is **one-sided**.
+Another process can only ever add time to a frame, never remove it.
+
+A median rides that tail. A low percentile does not. Same six logs, only the
+statistic changed:
+
+| statistic | control drift | A/B delta |
+| --- | --- | --- |
+| median | 11.8% -- refused | -0.197 ms (-6.5%) |
+| p25 | 0.61% -- passes | +0.019 ms |
+| p10 | 0.84% -- passes | +0.022 ms |
+| min | 0.85% -- passes | +0.021 ms |
+
+The median did not merely have more noise. **It reported the delta with the wrong
+sign**, claiming GPU culling made the heavy scene 6.5% faster. The low percentiles
+agreed with each other and with the same comparison run on a light scene that had
+passed the gate outright.
+
+So `measure_gpu.py` quotes p10 rather than the median; see `QUOTED_PERCENTILE`.
+What that gives up is the tail itself -- a regression that shows up only as
+occasional long frames, a shader recompile or an allocator stall, is exactly what
+p10 discards. Use `run` and read its Max column when that is the question.
+
+### Where that leaves the gate
+
+Both scenes now pass, at the same 1100/7001 pin:
+
+| A/B on `punctualShadows.gpuCasterCulling` | control drift |
+| --- | --- |
+| `--scene stress` | **0.14%** |
+| `--scene gpu-stress` | **0.50%** |
+
+Until a comparison passes the gate it is directional at best, and the honest
+thing is to report a refused comparison as refused. Absolute numbers, per-pass
+breakdowns and anything measured in bytes remain trustworthy; it was only the A/B
+deltas that the machine took away.
