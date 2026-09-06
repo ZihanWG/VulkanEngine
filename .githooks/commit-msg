@@ -1,0 +1,29 @@
+#!/bin/bash
+#
+# Strips agent attribution trailers, then refuses what stripping cannot fix.
+#
+# Several coding agents append Co-Authored-By and session-link trailers by
+# default. GitHub counts a co-author as a contributor, so those trailers put the
+# tooling in this repository's contributor list. Deleting a trailer cannot break
+# a commit, so those are rewritten rather than rejected.
+#
+# Everything else in a message is prose the author meant, so it is refused
+# rather than silently edited: a subject like "Add Codex to the agent list"
+# cannot be repaired by a regex, only rewritten by hand.
+#
+# The pattern table lives in hygiene.py. An earlier version of this guard kept
+# its own copy of the list next to a "keep in sync" comment, the two drifted,
+# and the drift was only found on a pull request.
+#
+# Bypassable with --no-verify, and with HYGIENE_SKIP=1 for a considered
+# exception. Not installed at all until core.hooksPath is set.
+set -euo pipefail
+
+perl -0pi -e '
+  s/^Co-Authored-By:.*(claude|anthropic|copilot|codex|openai).*\n//gmi;
+  s/^(Claude-Session|Session-Link):.*\n//gmi;
+  s/\n*_?.{0,2} ?Generated (with|by) \[[^\n]*\n//gmi;
+  s/\n+\z/\n/;
+' "$1"
+
+exec "$(dirname "${BASH_SOURCE[0]}")/hygiene.py" message "$1"

@@ -1,0 +1,43 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git checkout -b *)",
+      "Bash(git switch *)",
+      "Bash(cmake --build --preset ci-debug --parallel)",
+      "Bash(ctest --preset ci-debug)",
+      "Bash(git add *)",
+      "Bash(git commit -q -m ' *)",
+      "Bash(awk -F: '{print $1}')",
+      "Bash(cmake --build build/debug *)",
+      "Bash(cmake --build build/release *)",
+      "Bash(cmake --build --preset debug)",
+      "Bash(cmake --build --preset release)",
+      "Bash(cmake --build --preset ci-debug)",
+      "Bash(ctest --test-dir build/debug *)",
+      "Bash(ctest --test-dir build/release *)",
+      "Bash(ctest --preset ci-debug *)",
+      "Bash(tools/dev/verify_renderer.sh *)",
+      "Bash(bash tools/dev/verify_renderer.sh *)",
+      "Bash(python3 tools/dev/measure_gpu.py *)",
+      "Bash(glslc src/shaders/*)",
+      "Bash(clang-format --dry-run *)",
+      "Bash(vulkaninfo *)",
+      "Bash(git rm --cached *)",
+      "Bash(git rm -r --cached *)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(.githooks/hygiene.py *)",
+      "Bash(.githooks/test-hygiene.sh)",
+      "Bash(bash .githooks/test-hygiene.sh)"
+    ],
+    "ask": [
+      "Bash(HYGIENE_SKIP=1 *)",
+      "Bash(git push --force *)",
+      "Bash(git push -f *)"
+    ],
+    "deny": [
+      "Bash(git commit --no-verify*)",
+      "Bash(git commit -n *)",
+      "Bash(git push --no-verify*)"
+    ]
+  }
+}

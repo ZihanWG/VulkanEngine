@@ -1,0 +1,4 @@
+interface:
+  display_name: "Vulkan Sync Audit"
+  short_description: "Audit Vulkan hazards, barriers, queues, and lifetimes"
+  default_prompt: "Use $vulkan-sync-audit to review this VulkanEngine synchronization path."

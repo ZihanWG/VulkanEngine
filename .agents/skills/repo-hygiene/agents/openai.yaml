@@ -1,0 +1,4 @@
+interface:
+  display_name: "Repository Hygiene"
+  short_description: "Keep tooling out of commits, pull requests, and CI titles"
+  default_prompt: "Use $repo-hygiene to check what this change would publish before I push it."

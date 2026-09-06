@@ -1,0 +1,4 @@
+interface:
+  display_name: "Vulkan Feature Delivery"
+  short_description: "Deliver renderer features with explicit GPU contracts"
+  default_prompt: "Use $vulkan-feature-delivery to implement this VulkanEngine renderer feature end to end."

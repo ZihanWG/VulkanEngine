@@ -1,0 +1,16 @@
+#!/bin/bash
+#
+# Refuses a commit that would publish tooling traces.
+#
+# The repository is a portfolio; what wrote a line belongs in the pull request,
+# not in the published history. Scrubbing that after the fact means rewriting
+# history and force-pushing, so it is cheaper to be refused here.
+#
+# Checks the staged paths and the staged added lines only, so it stays fast
+# enough to run on every commit. The pattern table lives in hygiene.py.
+#
+# Bypassable with --no-verify, and with HYGIENE_SKIP=1 for a considered
+# exception. Not installed at all until core.hooksPath is set.
+set -euo pipefail
+
+exec "$(dirname "${BASH_SOURCE[0]}")/hygiene.py" staged

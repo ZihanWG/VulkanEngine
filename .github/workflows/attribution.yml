@@ -1,0 +1,62 @@
+# Fails a pull request whose commits credit a coding agent.
+#
+# Agents commit with the container's git identity and append Co-Authored-By and
+# session-link trailers; GitHub counts both an author and a co-author as a
+# contributor. .claude/hooks/session-start.sh and .githooks/commit-msg prevent
+# that in a session, but both live inside the session -- a hook that did not run
+# leaves nothing behind to notice. This runs on GitHub instead, so the worst
+# case is a red pull request rather than a rewrite of merged history.
+#
+# KEEP THE AGENT LIST BELOW IN SYNC with the strip pattern in
+# .githooks/commit-msg. If the hook strips less than this rejects, the
+# difference is silent locally and red here, which is the worst place to
+# discover it.
+#
+# Pull requests only, deliberately: on a push event the previous head can be a
+# commit that no longer exists after a force-push, which makes the range wrong
+# in exactly the situation this check matters. A direct push to main is not
+# covered.
+name: Attribution
+
+on:
+  pull_request:
+
+jobs:
+  attribution:
+    name: No agent attribution
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check commit identities and trailers
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          failed=0
+          for sha in $(git rev-list "$BASE_SHA..$HEAD_SHA"); do
+            identity=$(git log -1 --format='author %an <%ae>, committer %cn <%ce>' "$sha")
+            if printf '%s' "$identity" | grep -qiE 'claude|anthropic|copilot|codex|openai|\[bot\]'; then
+              echo "::error::$sha is $identity"
+              failed=1
+            fi
+            if git log -1 --format='%B' "$sha" \
+                | grep -qiE '^(Co-Authored-By:.*(claude|anthropic|copilot|codex|openai)|Claude-Session:)'; then
+              echo "::error::$sha carries an agent attribution trailer"
+              failed=1
+            fi
+          done
+
+          if [ "$failed" -ne 0 ]; then
+            echo "Rewrite the offending commits before merging:"
+            echo "  git rebase -i $BASE_SHA   # or git commit --amend --reset-author"
+            exit 1
+          fi
+
+          echo "$(git rev-list --count "$BASE_SHA..$HEAD_SHA") commit(s) checked, none credit an agent."

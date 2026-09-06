@@ -1,0 +1,4 @@
+interface:
+  display_name: "Renderer Regression"
+  short_description: "Verify renderer changes across builds, tests, and GPU checks"
+  default_prompt: "Use $renderer-regression to validate this VulkanEngine change and report the evidence."
