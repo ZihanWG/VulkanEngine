@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 // SceneBuilder constructs the renderer's CPU-side scene object lists (the default
 // portfolio showcase, the built-in cube fallback, and the procedural occlusion
