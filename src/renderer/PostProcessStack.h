@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 // PostProcessStack owns the HDR post-process subsystem extracted from the
 // monolithic Renderer: the SceneColorHDR target, bloom (legacy + mip chain),

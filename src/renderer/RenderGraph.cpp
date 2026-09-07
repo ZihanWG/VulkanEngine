@@ -1,4 +1,4 @@
-﻿#include "renderer/RenderGraph.h"
+#include "renderer/RenderGraph.h"
 
 #include "core/Logger.h"
 #include "renderer/IrradianceProbes.h"

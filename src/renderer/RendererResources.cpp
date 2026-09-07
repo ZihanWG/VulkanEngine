@@ -1,4 +1,4 @@
-﻿// Creation and teardown of the renderer's device-lifetime GPU objects:
+// Creation and teardown of the renderer's device-lifetime GPU objects:
 // descriptor set layouts and sets, graphics and compute pipelines, the shadow
 // map, the IBL chain, and the per-frame buffers.
 //
