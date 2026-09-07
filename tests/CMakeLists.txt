@@ -70,6 +70,7 @@ add_executable(VulkanEngineTests
     test_frame_clock.cpp
     test_command_line.cpp
     test_image_compare.cpp
+    test_png_writer.cpp
     test_transient_memory_plan.cpp
     test_camera_framing.cpp
 )
