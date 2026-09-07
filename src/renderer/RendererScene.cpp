@@ -1,4 +1,4 @@
-﻿// Scene contents: building the demo scenes, creating and editing materials, and
+// Scene contents: building the demo scenes, creating and editing materials, and
 // the material-asset and scene JSON round trips.
 //
 // Split out of Renderer.cpp. Definitions only -- these remain Renderer member

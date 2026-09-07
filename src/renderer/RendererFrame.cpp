@@ -1,4 +1,4 @@
-﻿// Per-frame CPU preparation, everything between "a frame starts" and "recording
+// Per-frame CPU preparation, everything between "a frame starts" and "recording
 // begins": light and fog parameters, cascade fitting, draw-item and batch
 // construction, and the GPU-cull and object-data uploads.
 //

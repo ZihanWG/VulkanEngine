@@ -1,4 +1,4 @@
-﻿#include "core/CommandLine.h"
+#include "core/CommandLine.h"
 
 #include "core/Logger.h"
 

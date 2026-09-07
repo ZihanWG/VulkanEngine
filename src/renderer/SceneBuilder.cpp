@@ -1,4 +1,4 @@
-﻿#include "renderer/SceneBuilder.h"
+#include "renderer/SceneBuilder.h"
 
 #include "core/Logger.h"
 

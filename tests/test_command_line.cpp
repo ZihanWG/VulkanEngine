@@ -1,4 +1,4 @@
-﻿#include "core/CommandLine.h"
+#include "core/CommandLine.h"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 // Command-line parsing for the engine executable.
 //
