@@ -1,3 +1,14 @@
+// std::getenv is how this file locates the cache directory -- three calls, each
+// behind a platform guard. MSVC deprecates it in favour of _dupenv_s, which is
+// MSVC-only and would need a second code path for the macOS and Linux builds, so
+// the deprecation is suppressed here rather than answered.
+//
+// This must precede every include: the deprecation attaches when <cstdlib> is
+// first parsed, so a define placed after it arrives too late to do anything.
+#if defined(_MSC_VER) && !defined(_CRT_SECURE_NO_WARNINGS)
+#define _CRT_SECURE_NO_WARNINGS
+#endif
+
 #include "rhi/VulkanPipelineCache.h"
 
 #include "core/Logger.h"
