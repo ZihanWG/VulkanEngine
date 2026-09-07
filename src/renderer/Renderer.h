@@ -710,7 +710,8 @@ private:
     void removeFragmentStressSceneObjects();
     void removeSunlitYardObjects();
     void resetFragmentStressSceneToPreset();
-    void loadFragmentStressScene();
+    void loadFragmentStressScene(int layerCount = renderer::kFragmentStressLayerCount,
+                                 int lightCount = renderer::kFragmentStressLightCount);
     void resetStressSceneToPreset();
     void loadStressScene();
     void enableOcclusionTestSettings();
@@ -1384,6 +1385,10 @@ private:
     bool stressSceneActive_ = false;
     std::string stressSceneStatus_{"Stress scene inactive."};
     bool fragmentStressSceneActive_ = false;
+    // Lights the active fragment-stress-shaped scene wants. gpu-stress is the same
+    // scene turned up, so it shares the flag above and differs by these two.
+    int fragmentStressLightCount_ = renderer::kFragmentStressLightCount;
+    int fragmentStressLayerCount_ = renderer::kFragmentStressLayerCount;
     std::string fragmentStressSceneStatus_{"Fragment stress scene inactive."};
     bool portfolioScreenshotRequested_ = false;
     bool normalMapAssetLoaded_ = false;
