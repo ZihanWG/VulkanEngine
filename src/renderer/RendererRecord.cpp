@@ -1,4 +1,4 @@
-﻿// Command recording: the main frame recording routine and the passes it drives,
+// Command recording: the main frame recording routine and the passes it drives,
 // plus the render-graph frame resource description they are recorded against.
 // These functions only encode commands into a command buffer; Renderer.cpp owns
 // queue submission, presentation and frame-slot synchronization.

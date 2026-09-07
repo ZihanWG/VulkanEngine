@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "rhi/VulkanCommon.h"
 #include "rhi/VulkanDescriptor.h"
