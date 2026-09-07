@@ -1,4 +1,4 @@
-﻿// Render graph pass culling: the backward liveness sweep that decides which
+// Render graph pass culling: the backward liveness sweep that decides which
 // declared passes actually run. It is the graph's one piece of non-trivial pure
 // logic, and a mistake in it either drops work that was needed (missing shadows,
 // a black screen) or keeps work that was not, silently, with no validation error

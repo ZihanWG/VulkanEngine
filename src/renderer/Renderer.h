@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "assets/AssetManager.h"
 #include "core/JobSystem.h"

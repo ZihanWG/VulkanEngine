@@ -1,4 +1,4 @@
-﻿// Renderer core: construction and teardown, the frame loop entry point, input
+// Renderer core: construction and teardown, the frame loop entry point, input
 // and viewport interaction, swapchain recreation, runtime settings, and the
 // small state accessors the rest of the class is built on.
 //
@@ -480,8 +480,8 @@ void Renderer::drawFrame()
     // Async compute: cluster build + light cull go to the compute queue before
     // the graphics command buffer is even recorded, so the GPU overlaps them
     // with the shadow passes (and with this CPU recording). The graphics submit
-    // below waits on the semaphore at FRAGMENT_SHADER 鈥?the first stage that
-    // reads the cluster buffers 鈥?so shadow/culling work is never blocked.
+    // below waits on the semaphore at FRAGMENT_SHADER -- the first stage that
+    // reads the cluster buffers -- so shadow/culling work is never blocked.
     if (frameAsyncComputeActive_) {
         const VkCommandBuffer asyncCommandBuffer = asyncCompute_.commandBuffer(currentFrame_);
         VK_CHECK(vkResetCommandBuffer(asyncCommandBuffer, 0));

@@ -1,4 +1,4 @@
-﻿// PostProcessStack: HDR post-process subsystem extracted from Renderer.
+// PostProcessStack: HDR post-process subsystem extracted from Renderer.
 //
 // The bulk of this file is relocated verbatim from Renderer.cpp (bloom, TAA,
 // auto-exposure, composite, descriptor/resource creation). Injected services

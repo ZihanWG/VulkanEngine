@@ -1,4 +1,4 @@
-﻿#include "renderer/BindlessTextureHeap.h"
+#include "renderer/BindlessTextureHeap.h"
 
 #include "core/Logger.h"
 #include "rhi/VulkanContext.h"
