@@ -1661,7 +1661,7 @@ void Renderer::pushGpuTimingSample(const renderer::GpuProfiler::FrameResults& re
     // must not see the same frame time twice: repeats would fill its median
     // window with duplicates of one sample and defeat the outlier rejection.
     // gpuFrameTimeHistory_.latest() cannot distinguish the two on its own.
-    freshGpuFrameMs_ = results.totalGpuTimeMs;
+    freshGpuFrameMs_ = historyValue(results.totalGpuTimeMs);
     for (const renderer::GpuProfiler::ScopeResult& scope : results.scopes) {
         if (DebugHistory* history = gpuTimingHistoryForPass(scope.name)) {
             history->push(historyValue(scope.elapsedMs));
