@@ -89,7 +89,7 @@ void Renderer::updateDemoLights(float elapsedSeconds)
         // than their spacing, so froxels see many lights at once. That is the
         // point: ablation put the per-fragment punctual loop at ~64% of
         // MainHDRPass, and it scales with lights *per froxel*, not lights total.
-        for (int lightIndex = 0; lightIndex < renderer::kFragmentStressLightCount; ++lightIndex) {
+        for (int lightIndex = 0; lightIndex < fragmentStressLightCount_; ++lightIndex) {
             const float u = hash01(lightIndex, 3.0f);
             const float v = hash01(lightIndex, 17.0f);
             const float w = hash01(lightIndex, 31.0f);
