@@ -816,28 +816,81 @@ bands overlap. Their false shadow lands **around each isolated caster's own cast
 shadow** -- so this is not one bad object. It is every caster whose shadow falls
 on a lit surface the camera can see, and the three are simply the three that do.
 
-**Dilated or displaced is NOT settled, and the whole-frame correlation above is
-not the evidence that settles it.** Isolating a caster and painting its own VSM
-shadow against the part the cascades disagree with shows the disagreement is the
-**outer rim on one side**, with the core agreeing -- which a one-sided dilation
-and a displacement both produce. The whole-frame shift test cannot separate them
-either: its windows are mostly static geometry, which pins the optimum at zero
-whatever the shadows do. Trying to measure a per-caster shift by overlap does not
-work as posed, because the only cascade reference available carries *every*
-caster's shadow while the isolated VSM capture carries one; the overlap peaks
-weakly (0.357 at zero against a best of 0.395) and for one object the optimum
-runs to the edge of the search range, which means there is no peak to trust. A
-per-object cascade isolation -- the mirror of `debugOnlyCasterObject` on the
-cascade path -- is what that measurement needs, and it does not exist yet.
+### The cascade-side mirror, and the answer: dilated, not displaced
 
-**Where that leaves it.** The page records a real occluder, at a real height,
-whose recorded extent disagrees with the cascades' by a world-scale amount that
-does not move when the clipmap's resolution changes by 4x, and that needs ~250x
-the geometric bias to mask. The mesh, the model matrix and the orthographic page
-projection are shared with the path that gets it right, and `vsmPageWorldSize`
-was checked against its GLSL mirror by hand. Whether the silhouette is dilated or
-shifted is the next question, and the cascade-side isolation is the instrument it
-needs.
+Isolating on the VSM side alone cannot answer whether its shadow is displaced or
+dilated, because the only cascade reference available carries *every* caster's
+shadow while the isolated VSM capture carries one. Overlapping the two peaks
+weakly (0.357 at zero shift against a best of 0.395) and for one object the
+optimum runs to the edge of the search range, which is not a peak.
+
+`CsmSettings::debugOnlyShadowCasterObject` is the mirror, and it is deliberately
+**scene-wide across every shadow path** rather than cascade-only: it filters the
+shared shadow cull input, so the object leaves the cascades, the punctual atlas
+and the VSM pages together. That is what makes the measurement valid -- whatever
+the removal does to the punctual atlas it does identically to both sides of a
+`--vsm off` / `--vsm shadows` pair, so it cancels out of the difference and the
+two directional paths are left rendering the same single caster. Receivers are
+untouched, so the geometry a shadow lands on is still drawn.
+
+**A trap worth keeping, found while building it.** The first version marked an
+isolated-out caster by zeroing its `indexCount` in the cull input. That is not
+enough: `cull.comp` rewrites `indexCount` from the LOD table whenever
+`lodCount > 0`, so every mesh with a LOD chain -- most of them -- would have kept
+casting, and the isolation would have failed **silently on exactly the casters
+worth isolating**. An isolated-out caster is now pushed to bounds no cascade and
+no page can contain, which is the one filter every shadow cull here already
+applies, with the index range zeroed as well.
+
+Both paths are byte identical to the unfiltered capture with the setting at -1,
+and the knob demonstrably reaches the cascades (isolating objects 3, 6 and 7
+moves 436337, 400067 and 502717 cascade pixels).
+
+With both paths rendering the same single caster, against each path's own
+no-caster reference:
+
+| object | cascade shadow | VSM shadow | ratio | VSM adds | cascade-only |
+| --- | --- | --- | --- | --- | --- |
+| 3 | 19619 | 48843 | **2.49x** | 29741 | 517 |
+| 6 | 24994 | 46321 | **1.85x** | 22175 | 848 |
+| 7 | 8100 | 12156 | **1.50x** | 5021 | 965 |
+
+**The VSM shadow is a near-superset of the cascade's.** Only 2-11% of the cascade
+shadow is missing from it, while it adds 1.5-2.5x the area around it, and
+re-aligning barely helps -- best-fit IoU improves from 0.387 to 0.401, from 0.512
+to 0.526, and for object 7 the optimum is **at zero shift**. So it is dilated,
+not displaced, and the earlier "not displaced" line -- withdrawn above because
+its test could not support it -- is now actually measured.
+
+**And there is no setting that undoes it.** Holding the world-space bias fixed
+and varying the texel separates the two knobs that were confounded (the bias is
+in texels, so changing the level changes both):
+
+| world bias | texel at the sampled level | VSM px | ratio to cascade | cascade-only |
+| --- | --- | --- | --- | --- |
+| 0.25 m | 3.9 mm | 48843 | 2.49 | 517 |
+| 0.25 m | 7.8 mm | 49874 | 2.54 | 17 |
+| 0.25 m | 15.6 mm | 82318 | 4.20 | 17 |
+| 1.0 m | 3.9 mm | **0** | 0.00 | 19619 |
+| 1.0 m | 7.8 mm | 11034 | 0.56 | 12280 |
+| 1.0 m | 15.6 mm | 34769 | 1.77 | 2554 |
+
+At a fixed world bias a coarser texel dilates more, which is the footprint
+direction and the expected one. More bias shrinks the shadow -- at the finest
+texel 1 m of bias erases it **completely**, all 19619 pixels. Between those the
+shadow goes from 2.5x too big to nothing at all without passing through a match:
+the whole-frame sweep above already showed false shadow and leaked umbra are
+both non-zero at every bias, so even where the areas would cross, the shapes do
+not.
+
+**Where that leaves it.** At the finest texel the page has a 3.9 mm footprint and
+a 45-degree floor asks for 3.9 mm of bias, yet the silhouette comes out 2.5x too
+large in area and needs a bias 250x that to suppress -- which then erases the
+shadow outright. The mesh, the model matrix, the orthographic page projection,
+the PCF radius and the one-texel tap spacing are all shared with, or equal to,
+the path that gets it right, and `vsmPageWorldSize` was checked against its GLSL
+mirror by hand. What remains is to find why a page records an occluder across a
+neighbourhood far wider than the geometry that occupies it.
 
 ### A shader hazard found on the way
 
@@ -979,6 +1032,11 @@ is the shader-side duplicate, the same arrangement `ClusterGrid.h` /
 | `debugCascadeDepthDelta` | `false` | the same bisection against the cascade array, separating "never sampled" and "cleared texel" from a real stored depth; set independently of the VSM path, so it also answers with VSM off |
 | `debugOnlyCasterObject` | -1 | restricts the page pass to one render object's casters, by index; -1 draws every caster. The only view here that attributes page content to a caster |
 
+`CsmSettings::debugOnlyShadowCasterObject` is the companion, and lives with the
+cascade settings because it is not a VSM setting: it restricts shadow **casting**
+to one render object across every shadow path at once, which is what makes a
+cascade-versus-VSM capture at one caster comparable.
+
 The numeric fields are clamped by `renderer::clampVsmClipmapSettings`, which
 `clampRuntimeSettings` delegates to rather than repeating — a second copy of the
 bounds could drift and would be invisible until a page landed somewhere
@@ -1025,9 +1083,14 @@ page rendering.
   real height whose silhouette is too big by a world-scale amount that is
   **invariant to a 4x change in clipmap resolution**, and no `depthBiasTexels`
   value separates it from real occlusion -- the sweep trades false shadow against
-  a leaked umbra monotonically. `debugOnlyCasterObject` attributes it to the
-  casters rather than to one object. See
-  [It is every caster, it is not MoltenVK, and no bias separates it](#it-is-every-caster-it-is-not-moltenvk-and-no-bias-separates-it).
+  a leaked umbra monotonically. With both paths isolated to the same single
+  caster the VSM shadow is a near-superset of the cascade's -- **1.5-2.5x the
+  area, dilated rather than displaced**, with only 2-11% of the cascade shadow
+  missing from it. `debugOnlyCasterObject` attributes page content to a caster,
+  and `CsmSettings::debugOnlyShadowCasterObject` is what makes the two paths
+  comparable at one caster. See
+  [It is every caster, it is not MoltenVK, and no bias separates it](#it-is-every-caster-it-is-not-moltenvk-and-no-bias-separates-it)
+  and [The cascade-side mirror, and the answer](#the-cascade-side-mirror-and-the-answer-dilated-not-displaced).
 - **`texelsPerPixel` below 1.0 does nothing *on this scene*, and that is the
   coverage bound rather than a broken setting.** `vsmSelectLevel` returns
   `max(quality, coverage)`, so a finer request only survives where coverage is
