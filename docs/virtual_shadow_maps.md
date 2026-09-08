@@ -952,6 +952,70 @@ page, 0.5 m across, spans half a metre of depth -- twice the 0.25 m the default
 64-texel bias allows. A lookup landing even a fraction of a page from where it
 should would read a depth error of exactly the 0.25-1 m the delta view reports.
 
+### The cause: the page pass draws every caster out of one mesh's buffers
+
+```cpp
+const renderer::Mesh* indirectMesh = allDrawItems_.front().mesh;
+```
+
+The page pass binds **that** vertex and index buffer once and then issues every
+page's indirect draw against it. Meshes here each own their buffers -- they are
+not suballocations of one merged pool -- so a draw item's `firstIndex` and
+`vertexOffset` only mean anything against its *own* mesh. Every other indirect
+path in the renderer rebinds per mesh batch (`if (boundMesh != batch.mesh)`, in
+the main pass, the cascades and the punctual atlas). The page pass is the only
+one that does not.
+
+In the default scene `allDrawItems_.front()` is the studio floor, a **cube**. So
+every caster is drawn out of the cube's buffers. A sphere's index range runs past
+the cube's 36 indices, and what survives is the cube itself, drawn under the
+sphere's model matrix. The primitives are a unit cube and a unit-*diameter*
+sphere, so "the unit cube under the sphere's transform" is exactly **the sphere's
+axis-aligned bounding box**.
+
+**Measured against that model, on the pool dumped with only the hero sphere
+casting** (object 3, radius 0.41 m at (0, -0.11, 0.08)):
+
+| model | texels explained | residual |
+| --- | --- | --- |
+| ray-entry into the sphere's AABB | **72877 of 72877 (100%)** | **4.91 mm rms** |
+| the sphere's own surface | -- | 75.78 mm rms, +102.52 mm mean |
+
+The AABB residual is *below* the 12.12 mm the 8-bit dump ramp quantizes to, so
+the recorded depth field is that box to the precision the dump can express. The
+silhouette area agrees independently: **1.1120 m² measured against 1.1321 m²
+predicted** for a cube of edge 0.82 projected along the light, and 0.5281 m² for
+the sphere that should have been there.
+
+**Everything the previous sections measured falls out of this.**
+
+- The dilation ratio. An AABB silhouette over its sphere's disc is
+  `a²(|fx|+|fy|+|fz|) / πr²` = **2.14x**, against the 2.49x, 1.85x and 1.50x
+  measured on the three affected objects.
+- **Why only three objects showed up in the isolation sweep.** It is not
+  visibility, which is what that section guessed. A cube *is* its own AABB, so
+  the bug is invisible on every cube caster, and the showcase scene is four cubes
+  and five spheres.
+- Why no bias value works: the recorded occluder is the wrong *shape*, and no
+  depth offset fixes a shape.
+- Why the dilation is invariant to `level0Extent`, `texelsPerPixel`,
+  `depthRange`, LOD and marking stride: none of them changes which buffer is
+  bound.
+- Why the pool nevertheless passed every geometric check. The ground-plane fits
+  that validated the light basis, the page origin, `vsmPageWorldSize`, the Y flip
+  and `vsmPageDepth` were fits to the **floor**, which is a cube and therefore
+  drawn correctly. The encode was never wrong; the geometry fed into it was.
+- Why the cascades are right: they rebind per batch.
+
+**The fix is not a one-liner**, which is why it is worth stating separately. Each
+page issues one indirect draw per caster bucket, and the cull compacts every
+surviving caster of that page into one region regardless of which mesh it came
+from -- so a single draw covers commands that need different buffers bound.
+Correcting it means compacting per (page, bucket, **mesh batch**) and binding per
+batch the way the cascades do, which multiplies the region count by the batch
+count (7 on the default scene) unless the per-region stride is re-sized at the
+same time.
+
 ### A shader hazard found on the way
 
 The first version of the depth view read a **second `out` parameter** from the
