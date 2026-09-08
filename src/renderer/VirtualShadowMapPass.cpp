@@ -12,9 +12,17 @@
 #include "rhi/VulkanContext.h"
 #include "rhi/VulkanDebugUtils.h"
 
+#include "core/PngWriter.h"
+
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <cstring>
+#include <fstream>
+#include <limits>
 #include <span>
+#include <sstream>
+#include <vector>
 #include <stdexcept>
 #include <string>
 
@@ -337,7 +345,8 @@ void VirtualShadowMapPass::createPagePool()
                      kVsmPagePoolSize,
                      /*layerCount=*/1,
                      rhi::VulkanShadowMap::ViewKind::Single,
-                     "VsmPagePool");
+                     "VsmPagePool",
+                     /*transferSrc=*/true);
     pagePoolNeedsFullClear_ = true;
 }
 
@@ -530,6 +539,255 @@ void VirtualShadowMapPass::recordMarkPass(VkCommandBuffer commandBuffer,
     }
 
     rhi::debug::endLabel(commandBuffer);
+}
+
+bool VirtualShadowMapPass::dumpPagePool(const std::filesystem::path& path,
+                                       const VsmClipmapSettings& settings,
+                                       VkCommandPool commandPool,
+                                       VkQueue queue)
+{
+    if (!pagePool_.valid()) {
+        Logger::error("VSM page pool dump: no pool is allocated. Run with --vsm render or --vsm shadows.");
+        return false;
+    }
+    if (commandPool == VK_NULL_HANDLE || queue == VK_NULL_HANDLE) {
+        Logger::error("VSM page pool dump: no command pool or queue to submit the copy on.");
+        return false;
+    }
+
+    const VkFormat format = pagePool_.format();
+    if (format != VK_FORMAT_D32_SFLOAT && format != VK_FORMAT_D16_UNORM) {
+        Logger::error("VSM page pool dump: unhandled pool format; chooseShadowMapFormat returns D32 or D16.");
+        return false;
+    }
+
+    const VkDevice device = context_.vkDevice();
+    const uint32_t bytesPerTexel = format == VK_FORMAT_D16_UNORM ? 2u : 4u;
+    const VkExtent2D extent = pagePool_.extent();
+    const size_t texelCount = static_cast<size_t>(extent.width) * static_cast<size_t>(extent.height);
+    const VkDeviceSize byteCount = static_cast<VkDeviceSize>(texelCount) * bytesPerTexel;
+
+    // The pool is a render-graph resource in the modes worth dumping, and the
+    // copy moves it out of the layout the graph left it in. Idling first is what
+    // makes that safe rather than lucky: with no frame in flight nothing can
+    // observe the intermediate layout, and the original is put back below.
+    vkDeviceWaitIdle(device);
+
+    rhi::VulkanBufferCreateInfo bufferInfo{};
+    bufferInfo.size = byteCount;
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    bufferInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
+    bufferInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+    rhi::VulkanBuffer staging;
+    staging.createBuffer(context_, bufferInfo);
+    if (!staging.valid()) {
+        Logger::error("VSM page pool dump: could not allocate the readback buffer.");
+        return false;
+    }
+
+    VkCommandBufferAllocateInfo allocateInfo{};
+    allocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocateInfo.commandPool = commandPool;
+    allocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocateInfo.commandBufferCount = 1;
+    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+    if (vkAllocateCommandBuffers(device, &allocateInfo, &commandBuffer) != VK_SUCCESS) {
+        Logger::error("VSM page pool dump: could not allocate a command buffer.");
+        return false;
+    }
+
+    // A transition INTO undefined is illegal, so a pool that was never used goes
+    // to the layout its descriptor already promises instead of back where it was.
+    const VkImageLayout previousLayout = pagePool_.layout();
+    const VkImageLayout restoreLayout = previousLayout == VK_IMAGE_LAYOUT_UNDEFINED
+                                            ? VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL
+                                            : previousLayout;
+
+    VkImageMemoryBarrier2 barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    barrier.oldLayout = previousLayout;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = pagePool_.image();
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+
+    VkDependencyInfo dependency{};
+    dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dependency.imageMemoryBarrierCount = 1;
+    dependency.pImageMemoryBarriers = &barrier;
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(commandBuffer, &beginInfo);
+    vkCmdPipelineBarrier2(commandBuffer, &dependency);
+
+    VkBufferImageCopy region{};
+    region.bufferOffset = 0;
+    region.bufferRowLength = 0;
+    region.bufferImageHeight = 0;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset = {0, 0, 0};
+    region.imageExtent = {extent.width, extent.height, 1};
+    vkCmdCopyImageToBuffer(
+        commandBuffer, pagePool_.image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging.buffer(), 1, &region);
+
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.newLayout = restoreLayout;
+    vkCmdPipelineBarrier2(commandBuffer, &dependency);
+    vkEndCommandBuffer(commandBuffer);
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+    const VkResult submitted = vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
+    if (submitted == VK_SUCCESS) {
+        vkQueueWaitIdle(queue);
+        pagePool_.setLayout(restoreLayout);
+    }
+    vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+    if (submitted != VK_SUCCESS) {
+        Logger::error("VSM page pool dump: the copy submission failed.");
+        return false;
+    }
+
+    std::vector<std::byte> raw(static_cast<size_t>(byteCount));
+    staging.download(std::span<std::byte>(raw.data(), raw.size()));
+
+    std::vector<float> depth(texelCount, 1.0f);
+    if (format == VK_FORMAT_D32_SFLOAT) {
+        std::memcpy(depth.data(), raw.data(), raw.size());
+    } else {
+        for (size_t texel = 0; texel < texelCount; ++texel) {
+            uint16_t stored = 0;
+            std::memcpy(&stored, raw.data() + texel * 2, sizeof(stored));
+            depth[texel] = static_cast<float>(stored) / 65535.0f;
+        }
+    }
+
+    // A cleared texel is the far plane. Excluded from the range, or it would
+    // define it and every page would come out one flat grey: the scene occupies
+    // a sliver of a 500-unit depth axis.
+    const float clearedDepth = 1.0f - 1.0e-6f;
+    float minDepth = std::numeric_limits<float>::max();
+    float maxDepth = std::numeric_limits<float>::lowest();
+    size_t populated = 0;
+    for (const float value : depth) {
+        if (value >= clearedDepth || !std::isfinite(value)) {
+            continue;
+        }
+        minDepth = std::min(minDepth, value);
+        maxDepth = std::max(maxDepth, value);
+        ++populated;
+    }
+    if (populated == 0) {
+        Logger::error("VSM page pool dump: every texel is still at its clear value; nothing was drawn.");
+        return false;
+    }
+
+    const float span = std::max(maxDepth - minDepth, 1.0e-8f);
+    std::vector<uint8_t> pixels(texelCount * 4, 0);
+    for (size_t texel = 0; texel < texelCount; ++texel) {
+        const float value = depth[texel];
+        uint8_t* out = pixels.data() + texel * 4;
+        out[3] = 255;
+        if (value >= clearedDepth || !std::isfinite(value)) {
+            // Cleared: a flat cold blue, so an empty page reads as empty rather
+            // than as one end of the ramp.
+            out[0] = 12;
+            out[1] = 16;
+            out[2] = 48;
+            continue;
+        }
+        // Nearest the light is brightest, which puts a caster in front of the
+        // surface it shadows.
+        const float normalized = 1.0f - (value - minDepth) / span;
+        const uint8_t grey = static_cast<uint8_t>(std::clamp(normalized * 255.0f, 0.0f, 255.0f));
+        out[0] = grey;
+        out[1] = grey;
+        out[2] = grey;
+    }
+
+    std::error_code directoryError;
+    if (path.has_parent_path()) {
+        std::filesystem::create_directories(path.parent_path(), directoryError);
+    }
+    writePngRgba8(path,
+                  extent.width,
+                  extent.height,
+                  std::span<const uint8_t>(pixels.data(), pixels.size()),
+                  extent.width * 4);
+
+    // The image alone cannot say which world page a pool rect holds, and the
+    // toroidal slot mapping means neighbouring rects are unrelated places. The
+    // manifest is what makes a crop of the image addressable.
+    const VsmClipmapSettings clamped = clampVsmClipmapSettings(settings);
+    const float depthRange = clamped.depthRange;
+    std::filesystem::path manifestPath = path;
+    manifestPath.replace_extension(".txt");
+
+    std::ostringstream manifest;
+    manifest << "# VSM page pool dump\n";
+    manifest << "# pool " << extent.width << "x" << extent.height << ", page " << kVsmPageSize << ", depthRange "
+             << depthRange << ", level0Extent " << clamped.level0Extent << "\n";
+    manifest << "# populated texels " << populated << " of " << texelCount << "\n";
+    manifest << "# ramp: depth " << minDepth << " is white, " << maxDepth << " is black, cleared is blue\n";
+    manifest << "# level absX absY physicalPage poolX poolY pageWorldSize minLightZ maxLightZ populatedTexels\n";
+
+    const std::span<const VsmPageTableEntry> entries = pageTable();
+    for (uint32_t pageId = 0; pageId < entries.size(); ++pageId) {
+        const VsmPageTableEntry& entry = entries[pageId];
+        if (entry.physicalPage == kVsmInvalidPhysicalPage || entry.rendered == 0) {
+            continue;
+        }
+        const VsmPageRect rect = vsmPagePoolRect(entry.physicalPage);
+        float pageMin = std::numeric_limits<float>::max();
+        float pageMax = std::numeric_limits<float>::lowest();
+        size_t pagePopulated = 0;
+        for (uint32_t y = 0; y < rect.size; ++y) {
+            for (uint32_t x = 0; x < rect.size; ++x) {
+                const float value = depth[static_cast<size_t>(rect.y + y) * extent.width + (rect.x + x)];
+                if (value >= clearedDepth || !std::isfinite(value)) {
+                    continue;
+                }
+                pageMin = std::min(pageMin, value);
+                pageMax = std::max(pageMax, value);
+                ++pagePopulated;
+            }
+        }
+        // Back into light-space Z, the units every other VSM measurement uses.
+        const float minZ = pagePopulated > 0 ? (0.5f - pageMax) * 2.0f * depthRange : 0.0f;
+        const float maxZ = pagePopulated > 0 ? (0.5f - pageMin) * 2.0f * depthRange : 0.0f;
+        manifest << vsmPageLevel(pageId) << ' ' << entry.absoluteX << ' ' << entry.absoluteY << ' '
+                 << entry.physicalPage << ' ' << rect.x << ' ' << rect.y << ' '
+                 << vsmPageWorldSize(clamped, vsmPageLevel(pageId)) << ' ' << minZ << ' ' << maxZ << ' '
+                 << pagePopulated << "\n";
+    }
+
+    std::ofstream manifestFile(manifestPath, std::ios::binary);
+    manifestFile << manifest.str();
+    manifestFile.close();
+
+    Logger::info("VSM page pool dumped to " + path.string() + " (" + std::to_string(populated) +
+                 " populated texels), manifest beside it.");
+    return true;
 }
 
 bool VirtualShadowMapPass::readRequestWords(uint32_t frameIndex, std::array<uint32_t, kVsmPageRequestWordCount>& words)

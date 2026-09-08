@@ -892,6 +892,66 @@ the path that gets it right, and `vsmPageWorldSize` was checked against its GLSL
 mirror by hand. What remains is to find why a page records an occluder across a
 neighbourhood far wider than the geometry that occupies it.
 
+### Dumping the pool: the record is correct
+
+`--vsm-dump-pool <path>` copies the whole page pool out at the capture frame and
+writes it as a PNG, with a `.txt` manifest naming the world page every populated
+pool rect holds. The image alone cannot say that: a pool slot is a toroidal wrap,
+so neighbouring rects are unrelated places, and without the manifest a crop is
+not addressable.
+
+It runs **out of band** -- it idles the device, uses its own one-shot command
+buffer, and restores the layout it found. The pool is a render-graph resource in
+the modes worth dumping, so threading a copy through the frame would mean
+hand-barriering around the graph's own transitions, which is the case the
+manual-barrier rule here exists to avoid. A dump costs a full pipeline stall, and
+being a debug action it pays that rather than risking the frame path. Only the
+page pool opts into `VK_IMAGE_USAGE_TRANSFER_SRC_BIT`; the cascades and the
+punctual atlas have no reason to risk a driver's depth compression for it.
+
+Depth is written as a **self-scaling ramp over the populated range**, brightest
+nearest the light. A ramp over [0, 1] would render every page one flat grey: the
+scene occupies 0.481-0.507 of a depth axis that spans 500 world units. Cleared
+texels are excluded from the range -- they would define it -- and coloured blue.
+
+Three controls, because a dump that fabricated its contents would look the same:
+`--vsm off` refuses (no pool is allocated); `--vsm mark` reports **16777216**
+populated texels, the whole pool, which is right because that mode deliberately
+never clears it and the memory is undefined; and `--vsm shadows` reports
+**1553063**, against 99 resident pages of 128 squared. Adding the usage flag
+leaves the rendered frame byte identical (0/3686400).
+
+**What it shows is that the page pool is correct.** Fitting a plane to the ground
+texels of one page and comparing against the light basis, computed independently
+from the light direction:
+
+| | dZ/dX | dZ/dY | plane residual |
+| --- | --- | --- | --- |
+| analytic, from `vsmLightView` | +0.00000 | -1.00295 | -- |
+| measured, page L2 abs(-2,0) | -0.00010 | -1.00272 | **14.71 mm rms** |
+
+The residual is below the 51 mm the 8-bit ramp quantizes to, so the agreement is
+as exact as the dump can express. That single fit validates the **light basis,
+the page's absolute origin, `vsmPageWorldSize`, the Y flip in `vsmPageLocalUv`
+and the depth normalization in `vsmPageDepth`, together** -- any one of them
+wrong by a page, a sign or a scale moves that gradient off -1. And the silhouette
+edges are **hard**: a scan across a caster boundary steps from grey 118 to 48 in
+a single texel, four rows running. No blur, no ramp, no dilation in the map.
+
+**So the framing this document has carried since the depth-delta view is wrong,
+and this is the correction.** It said the question had moved "out of the sampler
+entirely" and was "what gets drawn into the page versus into the cascade". The
+page gets the right geometry, in the right place, at the right depth, with clean
+edges. Whatever makes the VSM shadow 1.5-2.5x too large is therefore in the
+**lookup or the comparison**, not in what the page pass records -- the opposite
+of where the last three sections were pointing.
+
+One number worth carrying into that: on a horizontal receiver the ground's depth
+changes by **1 m per 1 m of light-space Y** (the gradient above), so one level-1
+page, 0.5 m across, spans half a metre of depth -- twice the 0.25 m the default
+64-texel bias allows. A lookup landing even a fraction of a page from where it
+should would read a depth error of exactly the 0.25-1 m the delta view reports.
+
 ### A shader hazard found on the way
 
 The first version of the depth view read a **second `out` parameter** from the
@@ -1031,6 +1091,7 @@ is the shader-side duplicate, the same arrangement `ClusterGrid.h` /
 | `debugDepthDelta` | `false` | tints by how far in front of each surface the page's stored depth sits; wins over the level view |
 | `debugCascadeDepthDelta` | `false` | the same bisection against the cascade array, separating "never sampled" and "cleared texel" from a real stored depth; set independently of the VSM path, so it also answers with VSM off |
 | `debugOnlyCasterObject` | -1 | restricts the page pass to one render object's casters, by index; -1 draws every caster. The only view here that attributes page content to a caster |
+| `--vsm-dump-pool <path>` | -- | a command-line flag, not a setting: writes the whole pool as a PNG plus a page manifest at the capture frame |
 
 `CsmSettings::debugOnlyShadowCasterObject` is the companion, and lives with the
 cascade settings because it is not a VSM setting: it restricts shadow **casting**
@@ -1088,9 +1149,13 @@ page rendering.
   area, dilated rather than displaced**, with only 2-11% of the cascade shadow
   missing from it. `debugOnlyCasterObject` attributes page content to a caster,
   and `CsmSettings::debugOnlyShadowCasterObject` is what makes the two paths
-  comparable at one caster. See
-  [It is every caster, it is not MoltenVK, and no bias separates it](#it-is-every-caster-it-is-not-moltenvk-and-no-bias-separates-it)
-  and [The cascade-side mirror, and the answer](#the-cascade-side-mirror-and-the-answer-dilated-not-displaced).
+  comparable at one caster. **The page pool has since been dumped and its
+  contents are correct** -- the recorded ground plane matches the light basis to
+  14.71 mm rms and silhouette edges are hard single-texel steps -- so the cause
+  is in the lookup or the comparison, not in what the page pass records. See
+  [It is every caster, it is not MoltenVK, and no bias separates it](#it-is-every-caster-it-is-not-moltenvk-and-no-bias-separates-it),
+  [The cascade-side mirror, and the answer](#the-cascade-side-mirror-and-the-answer-dilated-not-displaced)
+  and [Dumping the pool](#dumping-the-pool-the-record-is-correct).
 - **`texelsPerPixel` below 1.0 does nothing *on this scene*, and that is the
   coverage bound rather than a broken setting.** `vsmSelectLevel` returns
   `max(quality, coverage)`, so a finer request only survives where coverage is
