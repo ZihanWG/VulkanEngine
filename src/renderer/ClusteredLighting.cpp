@@ -110,8 +110,7 @@ void ClusteredLighting::createBuffers(uint32_t frameCount)
             bufferInfo.memoryUsage = hostVisible ? VMA_MEMORY_USAGE_AUTO : VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
             bufferInfo.allocationFlags = hostVisible ? VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT : 0;
             bufferInfo.requestDeviceAddress = deviceAddress;
-            bufferInfo.sharedQueueFamilies =
-                std::span<const uint32_t>(sharedFamilies.data(), sharedFamilyCount);
+            bufferInfo.sharedQueueFamilies = std::span<const uint32_t>(sharedFamilies.data(), sharedFamilyCount);
             buffers[frameIndex].createBuffer(*context_, bufferInfo);
             rhi::debug::setObjectName(
                 device, buffers[frameIndex].buffer(), VK_OBJECT_TYPE_BUFFER, name + std::to_string(frameIndex));

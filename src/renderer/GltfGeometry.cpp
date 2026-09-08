@@ -79,11 +79,8 @@ struct GltfAccessorView {
     return lhs > std::numeric_limits<size_t>::max() - rhs;
 }
 
-[[nodiscard]] GltfAccessorView makeAccessorView(
-    const tinygltf::Model& model,
-    int accessorIndex,
-    std::string_view name,
-    int minimumComponentCount)
+[[nodiscard]] GltfAccessorView
+makeAccessorView(const tinygltf::Model& model, int accessorIndex, std::string_view name, int minimumComponentCount)
 {
     if (accessorIndex < 0 || static_cast<size_t>(accessorIndex) >= model.accessors.size()) {
         throw std::runtime_error("glTF accessor index is out of range for " + std::string(name) + ".");
@@ -116,7 +113,8 @@ struct GltfAccessorView {
     const size_t baseOffset = bufferView.byteOffset + accessor.byteOffset;
     const size_t elementByteSize = componentSize * static_cast<size_t>(componentCount);
     if (static_cast<size_t>(byteStride) < elementByteSize) {
-        throw std::runtime_error("glTF accessor stride is smaller than its element size for " + std::string(name) + ".");
+        throw std::runtime_error("glTF accessor stride is smaller than its element size for " + std::string(name) +
+                                 ".");
     }
 
     const tinygltf::Buffer& buffer = model.buffers[static_cast<size_t>(bufferView.buffer)];
@@ -251,12 +249,11 @@ struct GltfAccessorView {
     return attribute == primitive.attributes.end() ? -1 : attribute->second;
 }
 
-[[nodiscard]] GltfAccessorView makeOptionalAttributeView(
-    const tinygltf::Model& model,
-    const tinygltf::Primitive& primitive,
-    const char* name,
-    int minimumComponentCount,
-    size_t vertexCount)
+[[nodiscard]] GltfAccessorView makeOptionalAttributeView(const tinygltf::Model& model,
+                                                         const tinygltf::Primitive& primitive,
+                                                         const char* name,
+                                                         int minimumComponentCount,
+                                                         size_t vertexCount)
 {
     const int accessorIndex = findAttribute(primitive, name);
     if (accessorIndex < 0) {
@@ -329,9 +326,8 @@ bool copyEncodedImageData(tinygltf::Image* image,
     return imagePath.lexically_normal();
 }
 
-[[nodiscard]] std::string textureDebugName(const tinygltf::Texture& texture,
-                                           const tinygltf::Image& image,
-                                           size_t textureIndex)
+[[nodiscard]] std::string
+textureDebugName(const tinygltf::Texture& texture, const tinygltf::Image& image, size_t textureIndex)
 {
     if (!texture.name.empty()) {
         return texture.name;
@@ -408,9 +404,8 @@ bool copyEncodedImageData(tinygltf::Image* image,
     return material;
 }
 
-[[nodiscard]] GltfMaterialInfo loadGltfMaterialInfo(const tinygltf::Model& model,
-                                                    const tinygltf::Material& sourceMaterial,
-                                                    size_t materialIndex)
+[[nodiscard]] GltfMaterialInfo
+loadGltfMaterialInfo(const tinygltf::Model& model, const tinygltf::Material& sourceMaterial, size_t materialIndex)
 {
     GltfMaterialInfo material{};
     material.debugName =
@@ -524,13 +519,11 @@ bool copyEncodedImageData(tinygltf::Image* image,
         if (node.scale.size() != 3) {
             throw std::runtime_error("glTF node scale must contain 3 values.");
         }
-        scale = {static_cast<float>(node.scale[0]),
-                 static_cast<float>(node.scale[1]),
-                 static_cast<float>(node.scale[2])};
+        scale = {
+            static_cast<float>(node.scale[0]), static_cast<float>(node.scale[1]), static_cast<float>(node.scale[2])};
     }
 
-    return glm::translate(glm::mat4{1.0f}, translation) * glm::mat4_cast(rotation) *
-           glm::scale(glm::mat4{1.0f}, scale);
+    return glm::translate(glm::mat4{1.0f}, translation) * glm::mat4_cast(rotation) * glm::scale(glm::mat4{1.0f}, scale);
 }
 
 [[nodiscard]] std::string meshDebugName(const tinygltf::Mesh& mesh, size_t meshIndex)
@@ -538,29 +531,26 @@ bool copyEncodedImageData(tinygltf::Image* image,
     return mesh.name.empty() ? "glTF Mesh " + std::to_string(meshIndex) : mesh.name;
 }
 
-[[nodiscard]] std::string nodeMeshInstanceDebugName(const tinygltf::Model& model,
-                                                    const tinygltf::Node& node,
-                                                    size_t nodeIndex)
+[[nodiscard]] std::string
+nodeMeshInstanceDebugName(const tinygltf::Model& model, const tinygltf::Node& node, size_t nodeIndex)
 {
     if (!node.name.empty()) {
         return node.name;
     }
 
     if (node.mesh >= 0 && static_cast<size_t>(node.mesh) < model.meshes.size()) {
-        const std::string meshName = meshDebugName(model.meshes[static_cast<size_t>(node.mesh)],
-                                                  static_cast<size_t>(node.mesh));
+        const std::string meshName =
+            meshDebugName(model.meshes[static_cast<size_t>(node.mesh)], static_cast<size_t>(node.mesh));
         return "glTF Node " + std::to_string(nodeIndex) + " (" + meshName + ")";
     }
 
     return "glTF Node " + std::to_string(nodeIndex);
 }
 
-
 } // namespace
 
-GltfGeometry loadGltfGeometry(const std::filesystem::path& path,
-                              JobSystem* jobSystem,
-                              std::vector<CpuMeshData>* cookedMeshes)
+GltfGeometry
+loadGltfGeometry(const std::filesystem::path& path, JobSystem* jobSystem, std::vector<CpuMeshData>* cookedMeshes)
 {
     tinygltf::TinyGLTF loader;
     loader.SetImageLoader(copyEncodedImageData, nullptr);
@@ -668,8 +658,7 @@ GltfGeometry loadGltfGeometry(const std::filesystem::path& path,
                 const glm::vec4 uv = readAccessorVec4(texcoords, vertexIndex, glm::vec4(0.0f));
                 // Missing tangents use a stable axis fallback. Proper imported-mesh tangent
                 // generation is future work.
-                const glm::vec4 tangent =
-                    readAccessorVec4(tangents, vertexIndex, glm::vec4(1.0f, 0.0f, 0.0f, 1.0f));
+                const glm::vec4 tangent = readAccessorVec4(tangents, vertexIndex, glm::vec4(1.0f, 0.0f, 0.0f, 1.0f));
 
                 Vertex vertex{};
                 vertex.position = glm::vec3(position);
@@ -802,9 +791,8 @@ GltfGeometry loadGltfGeometry(const std::filesystem::path& path,
         // time; this is the cheap second check on the one thing that would still
         // render.
         if (cookedMeshes->size() != model.meshes.size()) {
-            throw std::runtime_error("Cooked mesh geometry has " + std::to_string(cookedMeshes->size())
-                                     + " mesh(es) but " + filename + " has " + std::to_string(model.meshes.size())
-                                     + ".");
+            throw std::runtime_error("Cooked mesh geometry has " + std::to_string(cookedMeshes->size()) +
+                                     " mesh(es) but " + filename + " has " + std::to_string(model.meshes.size()) + ".");
         }
 
         meshes = std::move(*cookedMeshes);

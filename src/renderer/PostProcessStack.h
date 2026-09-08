@@ -121,7 +121,10 @@ public:
     // The AO target holds the previous frame's occlusion in the previous
     // sub-rect. A scale change makes it unusable without moving any storage, so
     // this exists separately from recreating the resources.
-    void invalidateAmbientOcclusionHistory() { ambientOcclusionHistoryValid_ = false; }
+    void invalidateAmbientOcclusionHistory()
+    {
+        ambientOcclusionHistoryValid_ = false;
+    }
 
     // State queries.
     [[nodiscard]] bool isAutoExposureActive() const;
@@ -253,8 +256,14 @@ public:
 
     // True when the bloom images currently share pool memory. Drives the graph's
     // alias-handoff barrier, so it must reflect reality, not intent.
-    [[nodiscard]] bool bloomImagesAreAliased() const { return bloomAliased_; }
-    [[nodiscard]] VkDeviceSize bloomPoolBytes() const { return bloomPool_.size(); }
+    [[nodiscard]] bool bloomImagesAreAliased() const
+    {
+        return bloomAliased_;
+    }
+    [[nodiscard]] VkDeviceSize bloomPoolBytes() const
+    {
+        return bloomPool_.size();
+    }
 
     [[nodiscard]] VkExtent2D bloomExtent() const
     {
@@ -414,11 +423,17 @@ public:
     // The frame clock's elapsed time, pushed in by Renderer once per frame.
     // Exposure adaptation used to read steady_clock here, which made it a second
     // independent time source and defeated any attempt at a reproducible frame.
-    void setFrameTimeSeconds(float seconds) { frameTimeSeconds_ = seconds; }
+    void setFrameTimeSeconds(float seconds)
+    {
+        frameTimeSeconds_ = seconds;
+    }
 
     // Resets the auto-exposure adaptation timer (called when settings change to
     // avoid a large delta-time spike on the next exposure reduce).
-    void resetAutoExposureTimer() { lastAutoExposureUpdateSeconds_ = frameTimeSeconds_; }
+    void resetAutoExposureTimer()
+    {
+        lastAutoExposureUpdateSeconds_ = frameTimeSeconds_;
+    }
 
 private:
     // Per-frame descriptor-set counts + which optional groups to create, computed
@@ -522,14 +537,23 @@ private:
     };
     [[nodiscard]] ActivePostProcessSource activePostProcessSource() const;
 
-    [[nodiscard]] VkExtent2D sceneUsedExtent() const { return renderResolution_.extent(); }
-    [[nodiscard]] VkExtent2D sceneAllocatedExtent() const { return renderResolution_.allocationExtent(); }
+    [[nodiscard]] VkExtent2D sceneUsedExtent() const
+    {
+        return renderResolution_.extent();
+    }
+    [[nodiscard]] VkExtent2D sceneAllocatedExtent() const
+    {
+        return renderResolution_.allocationExtent();
+    }
     // bloomExtent_ is the ALLOCATED bloom size; this is the half of what the
     // frame writes. Both halve their own base, so their ratio drifts from the
     // scene's uv scale and each bloom pass carries its own.
     // What the bloom chain's written region is derived from: whatever the chain
     // is reading, which temporal upsampling makes full resolution.
-    [[nodiscard]] VkExtent2D bloomChainSourceExtent() const { return activePostProcessSource().writtenExtent; }
+    [[nodiscard]] VkExtent2D bloomChainSourceExtent() const
+    {
+        return activePostProcessSource().writtenExtent;
+    }
     [[nodiscard]] VkExtent2D bloomWrittenExtent() const
     {
         return RenderResolution::halved(bloomChainSourceExtent());

@@ -83,14 +83,12 @@ struct Camera {
     // The horizontal half-angle for this aspect. Whichever axis is tighter is the
     // one that decides the distance, or a wide scene overflows the sides of a
     // narrow window.
-    const float halfHorizontal =
-        std::atan(std::tan(halfVertical) * (aspectRatio > 0.0f ? aspectRatio : 1.0f));
+    const float halfHorizontal = std::atan(std::tan(halfVertical) * (aspectRatio > 0.0f ? aspectRatio : 1.0f));
     const float halfAngle = std::min(halfVertical, halfHorizontal);
     const float distance = radius / (std::sin(halfAngle) * safeFill);
 
     const float directionLength = glm::length(direction);
-    const glm::vec3 forward =
-        directionLength > 0.0f ? direction / directionLength : glm::vec3(0.0f, 0.0f, -1.0f);
+    const glm::vec3 forward = directionLength > 0.0f ? direction / directionLength : glm::vec3(0.0f, 0.0f, -1.0f);
 
     camera.position = center - forward * distance;
     camera.target = center;

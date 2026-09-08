@@ -25,7 +25,10 @@ public:
     void initialize(const VulkanContext& context, std::span<renderer::FrameResources> frames);
     void cleanup();
 
-    [[nodiscard]] VkCommandPool commandPool() const { return commandPool_; }
+    [[nodiscard]] VkCommandPool commandPool() const
+    {
+        return commandPool_;
+    }
 
 private:
     VkDevice device_ = VK_NULL_HANDLE;

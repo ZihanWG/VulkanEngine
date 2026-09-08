@@ -85,17 +85,15 @@ struct FogIntegratedSample {
 // leaving the slice, which a naive `scatter * thickness` overestimates badly at
 // high density. That difference is what makes dense fog stay grey rather than
 // blowing out to white.
-[[nodiscard]] FogIntegratedSample integrateFogSlice(const FogIntegratedSample& accumulated,
-                                                    const FogFroxelSample& slice,
-                                                    float sliceThickness);
+[[nodiscard]] FogIntegratedSample
+integrateFogSlice(const FogIntegratedSample& accumulated, const FogFroxelSample& slice, float sliceThickness);
 
 // Henyey-Greenstein phase function: how much light travelling along
 // `lightDirection` scatters toward `viewDirection`. anisotropy in (-1, 1);
 // positive values scatter forward, which is what produces the bright halo when
 // looking toward a light through fog.
-[[nodiscard]] float henyeyGreensteinPhase(const glm::vec3& viewDirection,
-                                          const glm::vec3& lightDirection,
-                                          float anisotropy);
+[[nodiscard]] float
+henyeyGreensteinPhase(const glm::vec3& viewDirection, const glm::vec3& lightDirection, float anisotropy);
 
 // Largest value henyeyGreensteinPhase can return for a given anisotropy, over
 // every possible scattering angle.
@@ -123,12 +121,8 @@ struct FogIntegratedSample {
 // Defined as "the cluster the fragment shader would pick for a fragment at this
 // froxel's screen position and view depth", and a unit test asserts exactly
 // that against ClusterGrid.h's own clusterIndex rather than re-deriving it.
-[[nodiscard]] uint32_t fogFroxelClusterIndex(uint32_t froxelX,
-                                             uint32_t froxelY,
-                                             uint32_t froxelZ,
-                                             float fogMaxDistance,
-                                             float clusterZNear,
-                                             float clusterZFar);
+[[nodiscard]] uint32_t fogFroxelClusterIndex(
+    uint32_t froxelX, uint32_t froxelY, uint32_t froxelZ, float fogMaxDistance, float clusterZNear, float clusterZFar);
 
 // Density at a world height for exponential height fog. `falloff` of zero gives
 // uniform density; larger values pull the fog down toward `baseHeight`.

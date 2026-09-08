@@ -28,9 +28,7 @@ namespace ve::rhi {
 
 namespace {
 
-constexpr std::array<const char*, 1> kRequiredDeviceExtensions = {
-    VK_KHR_SWAPCHAIN_EXTENSION_NAME
-};
+constexpr std::array<const char*, 1> kRequiredDeviceExtensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 
 #if defined(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME)
 constexpr const char* kPortabilitySubsetExtensionName = VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME;
@@ -96,10 +94,8 @@ DeviceExtensionPlan planDeviceExtensions(VkPhysicalDevice physicalDevice)
         kPortabilitySubsetExtensionName,
     };
     const std::array<OptionalExtensionRequest, kOptionalExtensionNames.size()> requests{
-        OptionalExtensionRequest{kOptionalExtensionNames[0],
-                                 {},
-                                 true,
-                                 "required by portability-layer drivers such as MoltenVK"},
+        OptionalExtensionRequest{
+            kOptionalExtensionNames[0], {}, true, "required by portability-layer drivers such as MoltenVK"},
     };
 
     plan.optionalOutcomes = selectOptionalExtensions(available, requests);
@@ -129,10 +125,9 @@ void logEnabledExtensions(const char* label, const std::vector<const char*>& ext
 
 bool supportsDescriptorIndexing(const VkPhysicalDeviceVulkan12Features& features)
 {
-    return features.descriptorIndexing == VK_TRUE
-        && features.runtimeDescriptorArray == VK_TRUE
-        && features.descriptorBindingPartiallyBound == VK_TRUE
-        && features.shaderSampledImageArrayNonUniformIndexing == VK_TRUE;
+    return features.descriptorIndexing == VK_TRUE && features.runtimeDescriptorArray == VK_TRUE &&
+           features.descriptorBindingPartiallyBound == VK_TRUE &&
+           features.shaderSampledImageArrayNonUniformIndexing == VK_TRUE;
 }
 
 } // namespace
@@ -256,13 +251,12 @@ bool VulkanDevice::isDeviceSuitable(VkPhysicalDevice candidate) const
     features.pNext = &features12;
     vkGetPhysicalDeviceFeatures2(candidate, &features);
 
-    return features13.dynamicRendering == VK_TRUE
-        && features13.synchronization2 == VK_TRUE
-        // Needed by the alpha-tested main and shadow fragment shaders; see the
-        // enabled13 setup in createLogicalDevice for why `discard` requires it.
-        && features13.shaderDemoteToHelperInvocation == VK_TRUE
-        && features12.bufferDeviceAddress == VK_TRUE
-        && features12.separateDepthStencilLayouts == VK_TRUE;
+    return features13.dynamicRendering == VK_TRUE &&
+           features13.synchronization2 == VK_TRUE
+           // Needed by the alpha-tested main and shadow fragment shaders; see the
+           // enabled13 setup in createLogicalDevice for why `discard` requires it.
+           && features13.shaderDemoteToHelperInvocation == VK_TRUE && features12.bufferDeviceAddress == VK_TRUE &&
+           features12.separateDepthStencilLayouts == VK_TRUE;
 }
 
 int VulkanDevice::scoreDevice(VkPhysicalDevice candidate) const
@@ -368,8 +362,8 @@ void VulkanDevice::createLogicalDevice()
     vkGetPhysicalDeviceFeatures2(physicalDevice_, &supportedFeatures);
 
     descriptorIndexingEnabled_ = supportsDescriptorIndexing(supported12);
-    descriptorUpdateAfterBindEnabled_ = descriptorIndexingEnabled_ &&
-                                        supported12.descriptorBindingSampledImageUpdateAfterBind == VK_TRUE;
+    descriptorUpdateAfterBindEnabled_ =
+        descriptorIndexingEnabled_ && supported12.descriptorBindingSampledImageUpdateAfterBind == VK_TRUE;
     bufferDeviceAddressEnabled_ = supported12.bufferDeviceAddress == VK_TRUE;
     multiDrawIndirectEnabled_ = supportedFeatures.features.multiDrawIndirect == VK_TRUE;
     // Per-attachment blend state. The transparent pass wants "over" blending on
@@ -422,13 +416,11 @@ void VulkanDevice::createLogicalDevice()
         // The current bindless heap allocates a fixed-size descriptor array, so
         // variable descriptor count is optional. Enable it when present for
         // future experiments, but do not require it for Milestone 30.
-        enabled12.descriptorBindingVariableDescriptorCount =
-            supported12.descriptorBindingVariableDescriptorCount;
+        enabled12.descriptorBindingVariableDescriptorCount = supported12.descriptorBindingVariableDescriptorCount;
         // Update-after-bind lets the bindless heap be validated against the much
         // larger maxPerStageDescriptorUpdateAfterBind* limits instead of the
         // small non-update-after-bind per-stage limits.
-        enabled12.descriptorBindingSampledImageUpdateAfterBind =
-            descriptorUpdateAfterBindEnabled_ ? VK_TRUE : VK_FALSE;
+        enabled12.descriptorBindingSampledImageUpdateAfterBind = descriptorUpdateAfterBindEnabled_ ? VK_TRUE : VK_FALSE;
     }
 
     const DeviceExtensionPlan extensionPlan = planDeviceExtensions(physicalDevice_);
@@ -466,8 +458,7 @@ void VulkanDevice::createLogicalDevice()
     vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
     maxDrawIndirectCount_ = properties.limits.maxDrawIndirectCount;
     drawIndexedIndirectCountAvailable_ = supported12.drawIndirectCount == VK_TRUE &&
-                                         vkCmdDrawIndexedIndirectCount != nullptr &&
-                                         maxDrawIndirectCount_ > 0;
+                                         vkCmdDrawIndexedIndirectCount != nullptr && maxDrawIndirectCount_ > 0;
 
     logCapabilityReport(extensionPlan.optionalOutcomes);
 }
@@ -502,21 +493,20 @@ void VulkanDevice::logCapabilityReport(std::span<const ExtensionOutcome> optiona
                     drawIndexedIndirectCountAvailable_
                         ? "vkCmdDrawIndexedIndirectCount, max " + std::to_string(maxDrawIndirectCount_)
                         : "falling back to a CPU-supplied draw count"});
-    rows.push_back({"layered cascade shadows",
-                    multiviewEnabled_,
-                    multiviewEnabled_ ? "multiview, one pass for all cascades"
-                                      : "falling back to one pass per cascade"});
+    rows.push_back(
+        {"layered cascade shadows",
+         multiviewEnabled_,
+         multiviewEnabled_ ? "multiview, one pass for all cascades" : "falling back to one pass per cascade"});
     rows.push_back({"independent blend",
                     independentBlendEnabled_,
                     independentBlendEnabled_ ? "per-attachment blend state"
                                              : "falling back to uniform blend state across attachments"});
     rows.push_back({"async compute queue",
                     asyncComputeAvailable_,
-                    asyncComputeAvailable_
-                        ? (asyncComputeDedicatedFamily_ ? "dedicated compute-only family "
-                                                        : "second queue in graphics family ") +
-                              std::to_string(asyncComputeQueueFamily_)
-                        : "compute passes stay on the graphics queue"});
+                    asyncComputeAvailable_ ? (asyncComputeDedicatedFamily_ ? "dedicated compute-only family "
+                                                                           : "second queue in graphics family ") +
+                                                 std::to_string(asyncComputeQueueFamily_)
+                                           : "compute passes stay on the graphics queue"});
     rows.push_back({"transfer queue",
                     transferQueueAvailable_,
                     transferQueueAvailable_ ? "dedicated DMA family " + std::to_string(transferQueueFamily_)
@@ -729,7 +719,8 @@ SwapchainSupportDetails VulkanDevice::querySwapchainSupport(VkPhysicalDevice can
     VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(candidate, surface_, &presentModeCount, nullptr));
     if (presentModeCount != 0) {
         details.presentModes.resize(presentModeCount);
-        VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(candidate, surface_, &presentModeCount, details.presentModes.data()));
+        VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(
+            candidate, surface_, &presentModeCount, details.presentModes.data()));
     }
 
     return details;

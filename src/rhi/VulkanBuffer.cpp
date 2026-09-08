@@ -76,12 +76,11 @@ void VulkanBuffer::createBuffer(VulkanContext& context, const VulkanBufferCreate
     }
 }
 
-void VulkanBuffer::createDeviceLocal(
-    VulkanContext& context,
-    const VulkanCommandContext& commandContext,
-    std::span<const std::byte> data,
-    VkBufferUsageFlags usage,
-    bool requestDeviceAddress)
+void VulkanBuffer::createDeviceLocal(VulkanContext& context,
+                                     const VulkanCommandContext& commandContext,
+                                     std::span<const std::byte> data,
+                                     VkBufferUsageFlags usage,
+                                     bool requestDeviceAddress)
 {
     if (data.empty()) {
         throw std::runtime_error("Cannot create a GPU buffer from empty data.");
@@ -116,14 +115,7 @@ void VulkanBuffer::createDeviceLocal(
         destinationAccess = VK_ACCESS_2_MEMORY_READ_BIT;
     }
 
-    copyBuffer(
-        context,
-        commandContext,
-        stagingBuffer.buffer(),
-        buffer_,
-        size_,
-        destinationStage,
-        destinationAccess);
+    copyBuffer(context, commandContext, stagingBuffer.buffer(), buffer_, size_, destinationStage, destinationAccess);
 }
 
 void VulkanBuffer::reset()
@@ -208,14 +200,13 @@ void VulkanBuffer::download(std::span<std::byte> data, VkDeviceSize offset)
     unmap();
 }
 
-void VulkanBuffer::copyBuffer(
-    const VulkanContext& context,
-    const VulkanCommandContext& commandContext,
-    VkBuffer source,
-    VkBuffer destination,
-    VkDeviceSize size,
-    VkPipelineStageFlags2 destinationStage,
-    VkAccessFlags2 destinationAccess)
+void VulkanBuffer::copyBuffer(const VulkanContext& context,
+                              const VulkanCommandContext& commandContext,
+                              VkBuffer source,
+                              VkBuffer destination,
+                              VkDeviceSize size,
+                              VkPipelineStageFlags2 destinationStage,
+                              VkAccessFlags2 destinationAccess)
 {
     VkCommandBufferAllocateInfo allocateInfo{};
     allocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;

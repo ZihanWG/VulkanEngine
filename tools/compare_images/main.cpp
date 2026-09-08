@@ -37,7 +37,10 @@ struct DecodedPng {
 };
 
 struct StbFree {
-    void operator()(stbi_uc* pixels) const { stbi_image_free(pixels); }
+    void operator()(stbi_uc* pixels) const
+    {
+        stbi_image_free(pixels);
+    }
 };
 
 bool decodePng(const std::filesystem::path& path, DecodedPng& out)

@@ -90,8 +90,7 @@ constexpr int kOcclusionTestObjectCount =
 constexpr int kStressGridColumns = 48;
 constexpr int kStressGridRows = 48;
 constexpr int kStressOccluderCount = 6;
-constexpr int kStressObjectCount =
-    1 + kStressOccluderCount + (kStressGridColumns * kStressGridRows);
+constexpr int kStressObjectCount = 1 + kStressOccluderCount + (kStressGridColumns * kStressGridRows);
 constexpr float kStressGridSpacing = 2.2f;
 
 // Fragment stress. The geometry stress scene above loads culling and CPU frame

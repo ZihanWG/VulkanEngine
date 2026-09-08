@@ -11,8 +11,8 @@
 
 using ve::DynamicResolutionSettings;
 using ve::renderer::DynamicResolutionController;
-using ve::renderer::kDynamicResolutionScaleStep;
 using ve::renderer::kDynamicResolutionSampleWindow;
+using ve::renderer::kDynamicResolutionScaleStep;
 using ve::renderer::kDynamicResolutionSettleFrames;
 using ve::renderer::kMaxRenderScale;
 

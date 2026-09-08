@@ -53,7 +53,6 @@
 #include <utility>
 #include <vector>
 
-
 namespace ve {
 
 uint32_t Renderer::allocateRenderObjectDebugId()
@@ -183,7 +182,8 @@ void Renderer::createSceneSharedResources()
     cubeMesh_ = renderer::Mesh::createCube(context_, commandContext_);
     portfolioSphereMesh_ = renderer::Mesh::createUvSphere(context_, commandContext_);
     const std::filesystem::path builtinAssetDir = assetDirectory();
-    builtinTextureFactory_.createCheckerboardBaseColor(context_, commandContext_, builtinAssetDir, checkerboardTexture_);
+    builtinTextureFactory_.createCheckerboardBaseColor(
+        context_, commandContext_, builtinAssetDir, checkerboardTexture_);
     builtinTextureFactory_.createPortfolioBaseColor(context_, commandContext_, portfolioBaseColorTexture_);
     builtinTextureFactory_.createPortfolioBackdrop(context_, commandContext_, portfolioBackdropTexture_);
     builtinTextureFactory_.createCutoutLattice(context_, commandContext_, cutoutLatticeTexture_);
@@ -386,8 +386,7 @@ void Renderer::removeFragmentStressSceneObjects()
 void Renderer::resetFragmentStressSceneToPreset()
 {
     removeFragmentStressSceneObjects();
-    makeSceneBuilder().appendFragmentStressScene(
-        renderObjects_, fragmentStressSceneStatus_, fragmentStressLayerCount_);
+    makeSceneBuilder().appendFragmentStressScene(renderObjects_, fragmentStressSceneStatus_, fragmentStressLayerCount_);
 }
 
 void Renderer::loadFragmentStressScene(int layerCount, int lightCount)
@@ -422,9 +421,9 @@ void Renderer::loadFragmentStressScene(int layerCount, int lightCount)
     camera_.up = {0.0f, 1.0f, 0.0f};
     editorCamera_.syncFromCamera(camera_);
 
-    fragmentStressSceneStatus_ =
-        "Fragment stress active: " + std::to_string(renderer::kFragmentStressLayerCount) +
-        " full-frame layers, " + std::to_string(renderer::kFragmentStressLightCount) + " dense point lights.";
+    fragmentStressSceneStatus_ = "Fragment stress active: " + std::to_string(renderer::kFragmentStressLayerCount) +
+                                 " full-frame layers, " + std::to_string(renderer::kFragmentStressLightCount) +
+                                 " dense point lights.";
     Logger::info(fragmentStressSceneStatus_);
 }
 
@@ -473,13 +472,12 @@ void Renderer::resetCornellBoxSceneToPreset()
     invalidateTaaHistory();
 }
 
-const rhi::VulkanTexture* Renderer::loadMaterialAssetTextureOrFallback(
-    const std::filesystem::path& materialPath,
-    const std::filesystem::path& texturePath,
-    assets::TextureUsage usage,
-    std::string_view slotName,
-    const rhi::VulkanTexture& fallbackTexture,
-    bool& fallbackUsed)
+const rhi::VulkanTexture* Renderer::loadMaterialAssetTextureOrFallback(const std::filesystem::path& materialPath,
+                                                                       const std::filesystem::path& texturePath,
+                                                                       assets::TextureUsage usage,
+                                                                       std::string_view slotName,
+                                                                       const rhi::VulkanTexture& fallbackTexture,
+                                                                       bool& fallbackUsed)
 {
     const rhi::TextureColorSpace colorSpace =
         assets::textureUsageIsSrgb(usage) ? rhi::TextureColorSpace::SRGB : rhi::TextureColorSpace::Linear;
@@ -509,8 +507,8 @@ const rhi::VulkanTexture* Renderer::loadMaterialAssetTextureOrFallback(
             try {
                 texture->createFromKtx2(context_, commandContext_, cookedPath, usage);
                 loadedCooked = true;
-                Logger::info("Loaded cooked material asset " + std::string(slotName) + " texture: " +
-                             cookedPath.string());
+                Logger::info("Loaded cooked material asset " + std::string(slotName) +
+                             " texture: " + cookedPath.string());
             } catch (const std::exception& error) {
                 Logger::warn("Cooked material asset " + std::string(slotName) + " texture '" + cookedPath.string() +
                              "' could not be used; loading the uncompressed source instead: " + error.what());
@@ -577,13 +575,12 @@ renderer::Material Renderer::createMaterialFromAsset(const assets::MaterialAsset
                                                                 "normal",
                                                                 normalFallback,
                                                                 normalLoadFallback);
-    material.metallicRoughnessTexture =
-        loadMaterialAssetTextureOrFallback(materialAsset.sourcePath,
-                                           materialAsset.textures.metallicRoughness,
-                                           assets::TextureUsage::MetallicRoughness,
-                                           "metallic-roughness",
-                                           metallicRoughnessFallback,
-                                           metallicRoughnessLoadFallback);
+    material.metallicRoughnessTexture = loadMaterialAssetTextureOrFallback(materialAsset.sourcePath,
+                                                                           materialAsset.textures.metallicRoughness,
+                                                                           assets::TextureUsage::MetallicRoughness,
+                                                                           "metallic-roughness",
+                                                                           metallicRoughnessFallback,
+                                                                           metallicRoughnessLoadFallback);
     material.baseColorFactor = materialAsset.baseColorFactor;
     material.emissiveFactor = glm::max(materialAsset.emissiveFactor, glm::vec3(0.0f));
     material.metallic = std::clamp(materialAsset.metallicFactor, 0.0f, 1.0f);
@@ -662,8 +659,8 @@ std::string slugifyMaterialName(std::string_view name)
 
 std::filesystem::path Renderer::makeNewMaterialAssetPath(const renderer::Material& material) const
 {
-    std::string_view name = !material.assetName.empty() ? std::string_view(material.assetName)
-                                                        : std::string_view(material.debugName);
+    std::string_view name =
+        !material.assetName.empty() ? std::string_view(material.assetName) : std::string_view(material.debugName);
     const std::string slug = slugifyMaterialName(name);
 
     // Avoid clobbering an existing file on disk by appending a numeric suffix.
@@ -737,9 +734,8 @@ bool Renderer::reloadMaterialAssetFromUi(renderer::Material& material)
     material.doubleSided = materialAsset->doubleSided;
     material.source = renderer::MaterialSource::MaterialAsset;
 
-    lastMaterialAssetStatus_ =
-        "Reloaded material scalar/metadata fields from " + material.sourceAssetPath.string() +
-        ". Texture rebinding is not hot-reloaded in Phase 3.";
+    lastMaterialAssetStatus_ = "Reloaded material scalar/metadata fields from " + material.sourceAssetPath.string() +
+                               ". Texture rebinding is not hot-reloaded in Phase 3.";
     Logger::info(lastMaterialAssetStatus_);
     invalidateTaaHistory();
     return true;
@@ -831,72 +827,58 @@ void Renderer::createPortfolioMaterialVariants()
         materialVariants_.push_back(std::move(material));
     };
 
-    const auto portfolioMaterialAssetOrFallback =
-        [this](std::string_view filename,
-               std::string debugName,
-               const glm::vec4& baseColorFactor,
-               float metallic,
-               float roughness) {
-            const std::filesystem::path path = materialAssetPath(filename);
-            std::string errorMessage;
-            const assets::MaterialAssetHandle handle = assetManager_.loadMaterialAsset(path, &errorMessage);
-            if (handle) {
-                const assets::MaterialAsset* materialAsset = assetManager_.materialAsset(handle);
-                if (materialAsset) {
-                    Logger::info("Loaded portfolio material asset: " + path.string());
-                    return *materialAsset;
-                }
+    const auto portfolioMaterialAssetOrFallback = [this](std::string_view filename,
+                                                         std::string debugName,
+                                                         const glm::vec4& baseColorFactor,
+                                                         float metallic,
+                                                         float roughness) {
+        const std::filesystem::path path = materialAssetPath(filename);
+        std::string errorMessage;
+        const assets::MaterialAssetHandle handle = assetManager_.loadMaterialAsset(path, &errorMessage);
+        if (handle) {
+            const assets::MaterialAsset* materialAsset = assetManager_.materialAsset(handle);
+            if (materialAsset) {
+                Logger::info("Loaded portfolio material asset: " + path.string());
+                return *materialAsset;
             }
+        }
 
-            Logger::warn(errorMessage.empty() ? "Portfolio material asset failed to load; using fallback values: " +
-                                                    path.string()
-                                              : errorMessage + "; using fallback values.");
-            assets::MaterialAsset fallback = assets::AssetManager::fallbackMaterialAsset(std::move(debugName));
-            fallback.sourcePath = path;
-            fallback.baseColorFactor = baseColorFactor;
-            fallback.metallicFactor = metallic;
-            fallback.roughnessFactor = roughness;
-            return fallback;
-        };
+        Logger::warn(errorMessage.empty()
+                         ? "Portfolio material asset failed to load; using fallback values: " + path.string()
+                         : errorMessage + "; using fallback values.");
+        assets::MaterialAsset fallback = assets::AssetManager::fallbackMaterialAsset(std::move(debugName));
+        fallback.sourcePath = path;
+        fallback.baseColorFactor = baseColorFactor;
+        fallback.metallicFactor = metallic;
+        fallback.roughnessFactor = roughness;
+        return fallback;
+    };
 
-    const auto addPortfolioMaterialAsset =
-        [this, &portfolioMaterialAssetOrFallback](std::string_view filename,
-                                                  std::string debugName,
-                                                  const glm::vec4& baseColorFactor,
-                                                  float metallic,
-                                                  float roughness,
-                                                  float multiScatterStrength) {
-            const assets::MaterialAsset materialAsset =
-                portfolioMaterialAssetOrFallback(filename, debugName, baseColorFactor, metallic, roughness);
-            renderer::Material material = createMaterialFromAsset(materialAsset,
-                                                                  portfolioBaseColorTexture_,
-                                                                  flatNormalTexture_,
-                                                                  neutralMetallicRoughnessTexture_,
-                                                                  multiScatterStrength,
-                                                                  renderer::MaterialSource::Fallback);
-            materialVariants_.push_back(std::move(material));
-        };
+    const auto addPortfolioMaterialAsset = [this, &portfolioMaterialAssetOrFallback](std::string_view filename,
+                                                                                     std::string debugName,
+                                                                                     const glm::vec4& baseColorFactor,
+                                                                                     float metallic,
+                                                                                     float roughness,
+                                                                                     float multiScatterStrength) {
+        const assets::MaterialAsset materialAsset =
+            portfolioMaterialAssetOrFallback(filename, debugName, baseColorFactor, metallic, roughness);
+        renderer::Material material = createMaterialFromAsset(materialAsset,
+                                                              portfolioBaseColorTexture_,
+                                                              flatNormalTexture_,
+                                                              neutralMetallicRoughnessTexture_,
+                                                              multiScatterStrength,
+                                                              renderer::MaterialSource::Fallback);
+        materialVariants_.push_back(std::move(material));
+    };
 
     addPortfolioMaterial(
         "Portfolio_Ground", &portfolioBaseColorTexture_, {0.30f, 0.32f, 0.32f, 1.0f}, 0.0f, 0.86f, 0.0f);
-    addPortfolioMaterialAsset("portfolio_matte_gray.material.json",
-                              "Portfolio_MatteGray",
-                              {0.66f, 0.66f, 0.62f, 1.0f},
-                              0.0f,
-                              0.85f,
-                              0.0f);
-    addPortfolioMaterialAsset("portfolio_glossy_blue.material.json",
-                              "Portfolio_GlossyBlue",
-                              {0.18f, 0.43f, 0.88f, 1.0f},
-                              0.0f,
-                              0.30f,
-                              0.2f);
-    addPortfolioMaterialAsset("portfolio_rough_metal.material.json",
-                              "Portfolio_RoughMetal",
-                              {0.76f, 0.74f, 0.70f, 1.0f},
-                              1.0f,
-                              0.60f,
-                              0.70f);
+    addPortfolioMaterialAsset(
+        "portfolio_matte_gray.material.json", "Portfolio_MatteGray", {0.66f, 0.66f, 0.62f, 1.0f}, 0.0f, 0.85f, 0.0f);
+    addPortfolioMaterialAsset(
+        "portfolio_glossy_blue.material.json", "Portfolio_GlossyBlue", {0.18f, 0.43f, 0.88f, 1.0f}, 0.0f, 0.30f, 0.2f);
+    addPortfolioMaterialAsset(
+        "portfolio_rough_metal.material.json", "Portfolio_RoughMetal", {0.76f, 0.74f, 0.70f, 1.0f}, 1.0f, 0.60f, 0.70f);
     addPortfolioMaterialAsset("portfolio_polished_metal_small.material.json",
                               "Portfolio_PolishedMetalSmall",
                               {0.82f, 0.85f, 0.88f, 1.0f},
@@ -909,8 +891,7 @@ void Renderer::createPortfolioMaterialVariants()
                               0.0f,
                               0.55f,
                               0.05f);
-    addPortfolioMaterial(
-        "Portfolio_Backdrop", &portfolioBackdropTexture_, {1.0f, 1.0f, 1.0f, 1.0f}, 0.0f, 0.94f, 0.0f);
+    addPortfolioMaterial("Portfolio_Backdrop", &portfolioBackdropTexture_, {1.0f, 1.0f, 1.0f, 1.0f}, 0.0f, 0.94f, 0.0f);
     addPortfolioMaterial(
         "Portfolio_CutoutLattice", &cutoutLatticeTexture_, {1.0f, 1.0f, 1.0f, 1.0f}, 0.0f, 0.58f, 0.0f);
     // baseColorFactor.a is the glass opacity; the blend pipeline reads it straight
@@ -1045,15 +1026,14 @@ void Renderer::createImportedGltfTextures(const std::vector<renderer::GltfTextur
             return;
         }
         if (!textureInfo.path.empty() && !std::filesystem::exists(textureInfo.path)) {
-            Logger::warn("glTF texture image is missing; material fallback will be used: " +
-                         textureInfo.path.string());
+            Logger::warn("glTF texture image is missing; material fallback will be used: " + textureInfo.path.string());
             return;
         }
 
         // Only external images can have a cooked sidecar; an image embedded in
         // the glTF has no path to hang one off.
-        const bool cooked = !textureInfo.path.empty()
-                            && rhi::cookedTextureAvailable(context_.physicalDevice(), textureInfo.path, usage);
+        const bool cooked = !textureInfo.path.empty() &&
+                            rhi::cookedTextureAvailable(context_.physicalDevice(), textureInfo.path, usage);
 
         const renderer::GltfTextureInfo* infoPtr = &textureInfo;
         std::future<rhi::DecodedImage> decode;
@@ -1122,8 +1102,7 @@ void Renderer::createImportedGltfTextures(const std::vector<renderer::GltfTextur
                 continue;
             }
 
-            const std::filesystem::path cookedPath =
-                assets::ktx2SidecarPath(pending.info->path, pending.usage);
+            const std::filesystem::path cookedPath = assets::ktx2SidecarPath(pending.info->path, pending.usage);
             std::error_code sizeError;
             const auto fileBytes = std::filesystem::file_size(cookedPath, sizeError);
             const VkDeviceSize cost = sizeError ? 0 : static_cast<VkDeviceSize>(fileBytes);
@@ -1168,9 +1147,8 @@ void Renderer::createImportedGltfTextures(const std::vector<renderer::GltfTextur
         }
         std::vector<rhi::VulkanTexture>& textures = *pending.textures;
         const renderer::GltfTextureInfo& textureInfo = *pending.info;
-        const rhi::TextureColorSpace colorSpace = assets::textureUsageIsSrgb(pending.usage)
-                                                     ? rhi::TextureColorSpace::SRGB
-                                                     : rhi::TextureColorSpace::Linear;
+        const rhi::TextureColorSpace colorSpace =
+            assets::textureUsageIsSrgb(pending.usage) ? rhi::TextureColorSpace::SRGB : rhi::TextureColorSpace::Linear;
         try {
             bool loadedCooked = false;
             if (pending.cooked) {
@@ -1186,8 +1164,8 @@ void Renderer::createImportedGltfTextures(const std::vector<renderer::GltfTextur
                     assetLoadStats_.timings.textureUploadMs +=
                         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - cookedUploadStart)
                             .count();
-                    Logger::info("Loaded cooked glTF " + std::string(pending.slotName) + " texture: " +
-                                 cookedPath.string());
+                    Logger::info("Loaded cooked glTF " + std::string(pending.slotName) +
+                                 " texture: " + cookedPath.string());
                 } catch (const std::exception& error) {
                     Logger::warn("Cooked glTF " + std::string(pending.slotName) + " texture '" + cookedPath.string() +
                                  "' could not be used; decoding the uncompressed source instead: " + error.what());
@@ -1299,21 +1277,22 @@ void Renderer::createImportedGltfMaterials(const std::vector<renderer::GltfMater
         material.baseColorFactor = materialInfo.baseColorFactor;
         material.emissiveFactor = materialInfo.emissiveFactor;
         material.hasEmissiveTexture = textureLoaded(materialInfo.emissiveTextureIndex, importedBaseColorTextures_);
-        material.emissiveTexture = material.hasEmissiveTexture
-                                       ? &importedBaseColorTextures_[static_cast<size_t>(materialInfo.emissiveTextureIndex)]
-                                       : nullptr;
+        material.emissiveTexture =
+            material.hasEmissiveTexture
+                ? &importedBaseColorTextures_[static_cast<size_t>(materialInfo.emissiveTextureIndex)]
+                : nullptr;
         material.metallic = materialInfo.metallic;
         material.roughness = materialInfo.roughness;
         material.multiScatterStrength = 1.0f;
         material.alphaMode = materialInfo.alphaMode;
         material.alphaCutoff = std::max(materialInfo.alphaCutoff, 0.0f);
         material.doubleSided = materialInfo.doubleSided;
-        material.source =
-            materialInfo.fallback ? renderer::MaterialSource::Fallback : renderer::MaterialSource::Gltf;
+        material.source = materialInfo.fallback ? renderer::MaterialSource::Fallback : renderer::MaterialSource::Gltf;
         material.hasNormalMap = textureLoaded(materialInfo.normalTextureIndex, importedNormalTextures_);
         material.hasMetallicRoughnessMap =
             textureLoaded(materialInfo.metallicRoughnessTextureIndex, importedMetallicRoughnessTextures_);
-        material.baseColorTextureFallback = !textureLoaded(materialInfo.baseColorTextureIndex, importedBaseColorTextures_);
+        material.baseColorTextureFallback =
+            !textureLoaded(materialInfo.baseColorTextureIndex, importedBaseColorTextures_);
         material.normalTextureFallback = !material.hasNormalMap;
         material.metallicRoughnessTextureFallback = !material.hasMetallicRoughnessMap;
 
@@ -1427,8 +1406,7 @@ void Renderer::loadOcclusionTestScene()
     debugUiSettings_.showCullingStats = true;
     debugUiSettings_.showGpuTimingGraphs = true;
     debugUiSettings_.showRenderGraphPanel = true;
-    occlusionTestSceneStatus_ = "Occlusion test scene active: " +
-                                std::to_string(renderer::kOcclusionTestObjectCount) +
+    occlusionTestSceneStatus_ = "Occlusion test scene active: " + std::to_string(renderer::kOcclusionTestObjectCount) +
                                 " procedural cube objects, including 5 occluder walls and 120 hidden/edge cubes.";
     Logger::info(occlusionTestSceneStatus_);
 }
@@ -1704,37 +1682,39 @@ void Renderer::saveSceneFromUi()
             objectJson["mesh"] = Json{{"name", object.mesh ? object.mesh->debugName() : std::string{}},
                                       {"pointer", pointerString(object.mesh)},
                                       {"submeshCount", meshSubmeshCount(object.mesh)}};
-            objectJson["material"] =
-                Json{{"name", material ? material->debugName : std::string{}},
-                     {"assetName", material ? material->assetName : std::string{}},
-                     {"assetPath", material ? stableProjectPathString(material->sourceAssetPath) : std::string{}},
-                     {"shader", material ? material->shader : std::string{}},
-                     {"primaryLabel", materialDebugLabel(object)},
-                     {"pointer", pointerString(material)},
-                     {"slotCount", object.materialCount},
-                     {"source", material ? std::string(materialSourceName(material->source)) : std::string{"none"}},
-                     {"materialAssetRebinding", object.materialTable ? "metadata-only for material tables"
-                                                                      : "restored by assetPath when available"}};
+            objectJson["material"] = Json{
+                {"name", material ? material->debugName : std::string{}},
+                {"assetName", material ? material->assetName : std::string{}},
+                {"assetPath", material ? stableProjectPathString(material->sourceAssetPath) : std::string{}},
+                {"shader", material ? material->shader : std::string{}},
+                {"primaryLabel", materialDebugLabel(object)},
+                {"pointer", pointerString(material)},
+                {"slotCount", object.materialCount},
+                {"source", material ? std::string(materialSourceName(material->source)) : std::string{"none"}},
+                {"materialAssetRebinding",
+                 object.materialTable ? "metadata-only for material tables" : "restored by assetPath when available"}};
 
             objectsJson.push_back(std::move(objectJson));
         }
 
-        const Json sceneJson = Json{{"schemaVersion", 1},
-                                    {"sceneName", portfolioCaptureMode_ ? "Portfolio Runtime Scene"
-                                                  : (occlusionTestSceneActive_ ? "Occlusion Test Runtime Scene"
-                                                                               : "Default Runtime Scene")},
-                                    {"camera", std::move(cameraJson)},
-                                    {"directionalLight", std::move(lightJson)},
-                                    {"objects", std::move(objectsJson)},
-                                     {"limitations",
-                                     Json::array({"Mesh references and glTF material-table references are saved as "
-                                                  "debug metadata only.",
-                                                  "Simple object material asset paths are restored when they match a "
-                                                  "loaded runtime material.",
-                                                  "glTF material-table assignments remain runtime data and are not "
-                                                  "rebuilt from scene JSON.",
-                                                  "Load preserves current runtime mesh/material pointers and restores "
-                                                  "matching object transforms, names, visibility, camera, and light."})}};
+        const Json sceneJson =
+            Json{{"schemaVersion", 1},
+                 {"sceneName",
+                  portfolioCaptureMode_
+                      ? "Portfolio Runtime Scene"
+                      : (occlusionTestSceneActive_ ? "Occlusion Test Runtime Scene" : "Default Runtime Scene")},
+                 {"camera", std::move(cameraJson)},
+                 {"directionalLight", std::move(lightJson)},
+                 {"objects", std::move(objectsJson)},
+                 {"limitations",
+                  Json::array({"Mesh references and glTF material-table references are saved as "
+                               "debug metadata only.",
+                               "Simple object material asset paths are restored when they match a "
+                               "loaded runtime material.",
+                               "glTF material-table assignments remain runtime data and are not "
+                               "rebuilt from scene JSON.",
+                               "Load preserves current runtime mesh/material pointers and restores "
+                               "matching object transforms, names, visibility, camera, and light."})}};
 
         std::ofstream output(sceneDocumentPath_);
         if (!output) {
@@ -1787,9 +1767,8 @@ void Renderer::loadSceneFromUi()
                 camera_.verticalFovRadians = glm::radians(std::clamp(fovDegrees, 1.0f, 160.0f));
             } else {
                 readJsonFloat(*cameraJson, "verticalFovRadians", camera_.verticalFovRadians);
-                camera_.verticalFovRadians = std::clamp(camera_.verticalFovRadians,
-                                                        glm::radians(1.0f),
-                                                        glm::radians(160.0f));
+                camera_.verticalFovRadians =
+                    std::clamp(camera_.verticalFovRadians, glm::radians(1.0f), glm::radians(160.0f));
             }
 
             readJsonFloat(*cameraJson, "nearPlane", camera_.nearPlane);
@@ -1808,11 +1787,9 @@ void Renderer::loadSceneFromUi()
             readJsonVec3(*lightJson, "direction", directionalLightSettings_.direction);
             readJsonVec3(*lightJson, "color", directionalLightSettings_.color);
             readJsonFloat(*lightJson, "intensity", directionalLightSettings_.intensity);
-            directionalLightSettings_.direction =
-                normalizedOrFallback(directionalLightSettings_.direction,
-                                     {kDirectionalLightDirection.x,
-                                      kDirectionalLightDirection.y,
-                                      kDirectionalLightDirection.z});
+            directionalLightSettings_.direction = normalizedOrFallback(
+                directionalLightSettings_.direction,
+                {kDirectionalLightDirection.x, kDirectionalLightDirection.y, kDirectionalLightDirection.z});
             directionalLightSettings_.color = glm::max(directionalLightSettings_.color, glm::vec3{0.0f});
             directionalLightSettings_.intensity = std::max(directionalLightSettings_.intensity, 0.0f);
         }
@@ -1952,9 +1929,8 @@ void Renderer::loadSceneFromUi()
         invalidateTaaHistory();
         lastSceneLoadStatus_ = "Loaded scene from " + sceneDocumentPath_.string() + ". Matched " +
                                std::to_string(matchedObjects) + " object(s), skipped " +
-                               std::to_string(skippedObjects) + ", restored " +
-                               std::to_string(restoredMaterialAssets) + " material asset assignment(s), skipped " +
-                               std::to_string(skippedMaterialAssets) + ".";
+                               std::to_string(skippedObjects) + ", restored " + std::to_string(restoredMaterialAssets) +
+                               " material asset assignment(s), skipped " + std::to_string(skippedMaterialAssets) + ".";
         Logger::info(lastSceneLoadStatus_);
     } catch (const std::exception& error) {
         lastSceneLoadStatus_ = "Scene load failed: " + std::string(error.what());

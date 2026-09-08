@@ -43,19 +43,33 @@ public:
         // clampRenderScale caps at 1.0 -- so that is the presentation size.
         allocationExtent_ = outputExtent;
         scale_ = clampRenderScale(scale);
-        const RenderDimensions dimensions =
-            scaledRenderDimensions(outputExtent.width, outputExtent.height, scale_);
+        const RenderDimensions dimensions = scaledRenderDimensions(outputExtent.width, outputExtent.height, scale_);
         extent_ = VkExtent2D{dimensions.width, dimensions.height};
     }
 
-    [[nodiscard]] VkExtent2D extent() const { return extent_; }
-    [[nodiscard]] VkExtent2D allocationExtent() const { return allocationExtent_; }
-    [[nodiscard]] VkExtent2D outputExtent() const { return outputExtent_; }
-    [[nodiscard]] float scale() const { return scale_; }
+    [[nodiscard]] VkExtent2D extent() const
+    {
+        return extent_;
+    }
+    [[nodiscard]] VkExtent2D allocationExtent() const
+    {
+        return allocationExtent_;
+    }
+    [[nodiscard]] VkExtent2D outputExtent() const
+    {
+        return outputExtent_;
+    }
+    [[nodiscard]] float scale() const
+    {
+        return scale_;
+    }
 
     // UV scale for sampling a full-size target that only its top-left sub-rect
     // was written into.
-    [[nodiscard]] glm::vec2 uvScale() const { return subRectUvScale(extent_, allocationExtent_); }
+    [[nodiscard]] glm::vec2 uvScale() const
+    {
+        return subRectUvScale(extent_, allocationExtent_);
+    }
 
     // True when the whole allocation is written, so callers can skip work that
     // only a scaled frame needs. Compares the extents rather than the scale,

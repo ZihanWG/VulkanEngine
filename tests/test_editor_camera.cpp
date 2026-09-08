@@ -40,7 +40,7 @@ TEST_CASE("Moving forward advances the camera along its view direction", "[edito
     controller.setMoveSpeed(10.0f);
 
     EditorCameraInput input;
-    input.moveAxis.z = 1.0f; // forward
+    input.moveAxis.z = 1.0f;                   // forward
     controller.updateFly(camera, input, 0.5f); // 10 * 0.5 = 5 units forward (-Z)
 
     CHECK(camera.position.z == Catch::Approx(0.0f).margin(1e-4)); // 5 - 5

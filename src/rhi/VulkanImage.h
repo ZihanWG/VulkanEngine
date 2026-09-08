@@ -62,11 +62,26 @@ public:
 
     void reset();
 
-    [[nodiscard]] VkImage image() const { return image_; }
-    [[nodiscard]] VkImageView imageView() const { return imageView_; }
-    [[nodiscard]] VkFormat format() const { return format_; }
-    [[nodiscard]] VkExtent3D extent() const { return extent_; }
-    [[nodiscard]] uint32_t mipLevels() const { return mipLevels_; }
+    [[nodiscard]] VkImage image() const
+    {
+        return image_;
+    }
+    [[nodiscard]] VkImageView imageView() const
+    {
+        return imageView_;
+    }
+    [[nodiscard]] VkFormat format() const
+    {
+        return format_;
+    }
+    [[nodiscard]] VkExtent3D extent() const
+    {
+        return extent_;
+    }
+    [[nodiscard]] uint32_t mipLevels() const
+    {
+        return mipLevels_;
+    }
 
 private:
     void createImageViewForCreateInfo(const VulkanImageCreateInfo& createInfo);

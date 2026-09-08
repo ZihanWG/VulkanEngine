@@ -79,16 +79,14 @@ enum class MeshCacheStatus {
 // the file on disk. Both the cook and the runtime go through this so they cannot
 // disagree about what a match means. Returns false when the source cannot be
 // stat'd.
-[[nodiscard]] bool makeMeshCacheExpectation(const std::filesystem::path& gltfPath,
-                                            MeshCacheExpectation& expectation);
+[[nodiscard]] bool makeMeshCacheExpectation(const std::filesystem::path& gltfPath, MeshCacheExpectation& expectation);
 
 // Fingerprint of the settings that decide what the LOD chains contain. Changing
 // any of them changes the correct output, so it has to invalidate the cook.
 [[nodiscard]] uint64_t hashLodBuildSettings(const LodBuildSettings& settings);
 
 // Pure validation. Never throws; a blob it rejects is never parsed.
-[[nodiscard]] MeshCacheStatus meshCacheStatus(std::span<const std::byte> blob,
-                                              const MeshCacheExpectation& expected);
+[[nodiscard]] MeshCacheStatus meshCacheStatus(std::span<const std::byte> blob, const MeshCacheExpectation& expected);
 
 [[nodiscard]] std::vector<std::byte> writeMeshCache(std::span<const CpuMeshData> meshes,
                                                     const MeshCacheExpectation& expectation);

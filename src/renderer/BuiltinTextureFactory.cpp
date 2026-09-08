@@ -199,7 +199,8 @@ void BuiltinTextureFactory::createCutoutLattice(rhi::VulkanContext& context,
             const float alpha = std::clamp(distance - holeRadius, 0.0f, 1.0f);
             // Darken toward the hole rim so the perforation reads in the shading
             // and not only in the silhouette.
-            const glm::vec3 color = glm::mix(rimColor, panelColor, std::clamp((distance - holeRadius) / 3.0f, 0.0f, 1.0f));
+            const glm::vec3 color =
+                glm::mix(rimColor, panelColor, std::clamp((distance - holeRadius) / 3.0f, 0.0f, 1.0f));
 
             const size_t offset = (static_cast<size_t>(y) * width + x) * 4U;
             pixels[offset + 0] = static_cast<uint8_t>(std::clamp(color.r, 0.0f, 255.0f));

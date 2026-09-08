@@ -27,8 +27,7 @@ std::runtime_error sdlError(std::string_view action)
 
 std::string sdlVersionString(int version)
 {
-    return std::to_string(SDL_VERSIONNUM_MAJOR(version)) + "." +
-           std::to_string(SDL_VERSIONNUM_MINOR(version)) + "." +
+    return std::to_string(SDL_VERSIONNUM_MAJOR(version)) + "." + std::to_string(SDL_VERSIONNUM_MINOR(version)) + "." +
            std::to_string(SDL_VERSIONNUM_MICRO(version));
 }
 
@@ -92,8 +91,7 @@ void loadSdlVulkanLibrary()
 
 } // namespace
 
-Window::Window(std::string title, int width, int height)
-    : title_(std::move(title))
+Window::Window(std::string title, int width, int height) : title_(std::move(title))
 {
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         throw sdlError("SDL_Init failed");
@@ -125,8 +123,8 @@ Window::Window(std::string title, int width, int height)
         throw sdlError("SDL_Vulkan_GetVkGetInstanceProcAddr failed");
     }
 
-    const SDL_WindowFlags flags = static_cast<SDL_WindowFlags>(
-        SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+    const SDL_WindowFlags flags =
+        static_cast<SDL_WindowFlags>(SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     window_ = SDL_CreateWindow(title_.c_str(), width, height, flags);
     if (!window_) {
         SDL_Vulkan_UnloadLibrary();
@@ -170,8 +168,8 @@ void Window::pollEvents()
             continue;
         }
 
-        if ((event.type == SDL_EVENT_WINDOW_RESIZED || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
-            && event.window.windowID == windowId) {
+        if ((event.type == SDL_EVENT_WINDOW_RESIZED || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) &&
+            event.window.windowID == windowId) {
             resized_ = true;
         }
     }
@@ -185,10 +183,7 @@ WindowExtent Window::framebufferExtent() const
         return {};
     }
 
-    return {
-        static_cast<uint32_t>(width > 0 ? width : 0),
-        static_cast<uint32_t>(height > 0 ? height : 0)
-    };
+    return {static_cast<uint32_t>(width > 0 ? width : 0), static_cast<uint32_t>(height > 0 ? height : 0)};
 }
 
 bool Window::isMinimized() const

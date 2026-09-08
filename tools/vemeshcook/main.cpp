@@ -133,22 +133,19 @@ std::string firstMismatch(const std::vector<ve::renderer::CpuMeshData>& built,
         if (a.vertices.size() != b.vertices.size()) {
             return where + "vertex count";
         }
-        if (!a.vertices.empty()
-            && std::memcmp(a.vertices.data(), b.vertices.data(), a.vertices.size() * sizeof(ve::renderer::Vertex))
-                   != 0) {
+        if (!a.vertices.empty() &&
+            std::memcmp(a.vertices.data(), b.vertices.data(), a.vertices.size() * sizeof(ve::renderer::Vertex)) != 0) {
             return where + "vertex data";
         }
-        if (a.primitives.size() != b.primitives.size()
-            || (!a.primitives.empty()
-                && std::memcmp(a.primitives.data(),
-                               b.primitives.data(),
-                               a.primitives.size() * sizeof(ve::renderer::MeshPrimitive))
-                       != 0)) {
+        if (a.primitives.size() != b.primitives.size() ||
+            (!a.primitives.empty() && std::memcmp(a.primitives.data(),
+                                                  b.primitives.data(),
+                                                  a.primitives.size() * sizeof(ve::renderer::MeshPrimitive)) != 0)) {
             return where + "primitive table";
         }
-        if (a.lods.size() != b.lods.size()
-            || (!a.lods.empty()
-                && std::memcmp(a.lods.data(), b.lods.data(), a.lods.size() * sizeof(ve::renderer::MeshLod)) != 0)) {
+        if (a.lods.size() != b.lods.size() ||
+            (!a.lods.empty() &&
+             std::memcmp(a.lods.data(), b.lods.data(), a.lods.size() * sizeof(ve::renderer::MeshLod)) != 0)) {
             return where + "LOD table";
         }
         if (a.localBounds.min != b.localBounds.min || a.localBounds.max != b.localBounds.max) {
@@ -236,8 +233,7 @@ int main(int argc, char** argv)
             lodCount += mesh.lods.size();
         }
 
-        const auto buildMs =
-            std::chrono::duration_cast<std::chrono::milliseconds>(builtAt - started).count();
+        const auto buildMs = std::chrono::duration_cast<std::chrono::milliseconds>(builtAt - started).count();
 
         std::printf("vemeshcook: %s -> %s\n", options.scene.string().c_str(), output.string().c_str());
         std::printf("vemeshcook: %zu mesh(es), %zu vertices, %zu indices, %zu LOD level(s), built in %lld ms\n",

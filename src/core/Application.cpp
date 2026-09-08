@@ -15,15 +15,11 @@
 
 namespace ve {
 
-Application::Application()
-    : Application(Config{})
-{
-}
+Application::Application() : Application(Config{})
+{}
 
-Application::Application(Config config)
-    : config_(std::move(config))
-{
-}
+Application::Application(Config config) : config_(std::move(config))
+{}
 
 Application::~Application()
 {
@@ -141,8 +137,7 @@ void Application::mainLoop()
         // Bounds that extension. Without it, a capture that can never be
         // recorded (an unsupported swapchain format, say) would spin.
         if (captureOutstanding && framesDrawn >= config_.captureFrame + kCaptureReadbackGraceFrames) {
-            Logger::error("Frame capture never completed; giving up after " + std::to_string(framesDrawn) +
-                          " frames.");
+            Logger::error("Frame capture never completed; giving up after " + std::to_string(framesDrawn) + " frames.");
             break;
         }
     }

@@ -12,7 +12,6 @@
 
 namespace ve::rhi {
 
-
 inline const char* vkResultToString(VkResult result)
 {
     switch (result) {
@@ -69,11 +68,11 @@ inline const char* vkResultToString(VkResult result)
 
 } // namespace ve::rhi
 
-#define VK_CHECK(expression)                                                                                          \
-    do {                                                                                                              \
-        const VkResult vk_check_result = (expression);                                                                \
-        if (vk_check_result != VK_SUCCESS) {                                                                          \
-            throw std::runtime_error(std::string("Vulkan call failed: ") + #expression + " -> "                    \
-                + ::ve::rhi::vkResultToString(vk_check_result));                                                      \
-        }                                                                                                             \
+#define VK_CHECK(expression)                                                                                           \
+    do {                                                                                                               \
+        const VkResult vk_check_result = (expression);                                                                 \
+        if (vk_check_result != VK_SUCCESS) {                                                                           \
+            throw std::runtime_error(std::string("Vulkan call failed: ") + #expression + " -> " +                      \
+                                     ::ve::rhi::vkResultToString(vk_check_result));                                    \
+        }                                                                                                              \
     } while (false)

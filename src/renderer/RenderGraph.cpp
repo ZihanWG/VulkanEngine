@@ -63,10 +63,9 @@ bool accessReads(RenderResourceAccess access)
 
 bool accessMaskWrites(VkAccessFlags2 access)
 {
-    constexpr VkAccessFlags2 kWriteMask = VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
-                                          VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
-                                          VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
-                                          VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_HOST_WRITE_BIT;
+    constexpr VkAccessFlags2 kWriteMask =
+        VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
+        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_HOST_WRITE_BIT;
     return (access & kWriteMask) != 0;
 }
 
@@ -90,8 +89,7 @@ RenderGraph::TextureAccessState accessStateFromLayout(VkImageLayout layout, VkIm
     case VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL:
     case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
         state.stage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-        state.access = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                       VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        state.access = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
         state.declaredAccess = RGAccess::DepthStencilAttachmentWrite;
         break;
     case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
@@ -139,9 +137,7 @@ std::string passBarrierSummary(uint32_t imageBarrierCount, uint32_t bufferBarrie
 
 } // namespace
 
-RenderGraphBuilder::RenderGraphBuilder(RenderGraph& graph, RenderPassNode& pass)
-    : graph_(graph)
-    , pass_(pass)
+RenderGraphBuilder::RenderGraphBuilder(RenderGraph& graph, RenderPassNode& pass) : graph_(graph), pass_(pass)
 {}
 
 RGTextureHandle RenderGraphBuilder::readTexture(RGTextureHandle handle, RGAccess access, std::string description)
@@ -508,12 +504,13 @@ void RenderGraph::createTransientFrameTextures()
         return desc;
     };
 
-    frame_.sceneColor = createTransientTexture(makeTransientDesc(frame_.resources.sceneColor), frame_.resources.sceneColor);
+    frame_.sceneColor =
+        createTransientTexture(makeTransientDesc(frame_.resources.sceneColor), frame_.resources.sceneColor);
     frame_.velocity = createTransientTexture(makeTransientDesc(frame_.resources.velocity), frame_.resources.velocity);
-    frame_.normalRoughness = createTransientTexture(makeTransientDesc(frame_.resources.normalRoughness),
-                                                    frame_.resources.normalRoughness);
-    frame_.ambientOcclusion = createTransientTexture(makeTransientDesc(frame_.resources.ambientOcclusion),
-                                                     frame_.resources.ambientOcclusion);
+    frame_.normalRoughness =
+        createTransientTexture(makeTransientDesc(frame_.resources.normalRoughness), frame_.resources.normalRoughness);
+    frame_.ambientOcclusion =
+        createTransientTexture(makeTransientDesc(frame_.resources.ambientOcclusion), frame_.resources.ambientOcclusion);
     if (frame_.resources.gtaoEnabled && validImageResource(frame_.resources.ambientOcclusionRaw)) {
         frame_.ambientOcclusionRaw = createTransientTexture(makeTransientDesc(frame_.resources.ambientOcclusionRaw),
                                                             frame_.resources.ambientOcclusionRaw);
@@ -533,8 +530,10 @@ void RenderGraph::createTransientFrameTextures()
     }
     frame_.bloomExtract =
         createTransientTexture(makeTransientDesc(frame_.resources.bloomExtract), frame_.resources.bloomExtract);
-    frame_.bloomPing = createTransientTexture(makeTransientDesc(frame_.resources.bloomPing), frame_.resources.bloomPing);
-    frame_.bloomPong = createTransientTexture(makeTransientDesc(frame_.resources.bloomPong), frame_.resources.bloomPong);
+    frame_.bloomPing =
+        createTransientTexture(makeTransientDesc(frame_.resources.bloomPing), frame_.resources.bloomPing);
+    frame_.bloomPong =
+        createTransientTexture(makeTransientDesc(frame_.resources.bloomPong), frame_.resources.bloomPong);
     frame_.bloomDownsampleChain.reserve(frame_.resources.bloomDownsampleChain.size());
     for (const RenderGraphImageResource& resource : frame_.resources.bloomDownsampleChain) {
         if (validImageResource(resource)) {
@@ -581,8 +580,7 @@ void RenderGraph::beginVsmPageMarkPass()
         throw std::logic_error("RenderGraph::beginVsmPageMarkPass called while another pass is active.");
     }
     if (!beginDeclaredPass(frame_.passIndices.vsmPageMark)) {
-        throw std::logic_error(
-            "RenderGraph::beginVsmPageMarkPass was culled but the renderer attempted to record it.");
+        throw std::logic_error("RenderGraph::beginVsmPageMarkPass was culled but the renderer attempted to record it.");
     }
 
     activePass_ = ActivePass::VsmPageMark;
@@ -753,8 +751,7 @@ void RenderGraph::beginPunctualShadowPass(bool clearWholeAtlas)
     // preserves the tiles the caller means to reuse, and the caller clears just
     // the ones it is about to redraw. The graph's write transition uses the
     // tracked current layout rather than UNDEFINED, so contents survive it.
-    atlasDepthAttachment.loadOp =
-        clearWholeAtlas ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
+    atlasDepthAttachment.loadOp = clearWholeAtlas ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
     atlasDepthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     atlasDepthAttachment.clearValue = atlasDepthClear;
 
@@ -922,8 +919,7 @@ void RenderGraph::endMainGpuCullingPass()
 {
     requireFrameActive("RenderGraph::endMainGpuCullingPass");
     if (activePass_ != ActivePass::MainGpuCulling) {
-        throw std::logic_error(
-            "RenderGraph::endMainGpuCullingPass called without an active main GPU culling pass.");
+        throw std::logic_error("RenderGraph::endMainGpuCullingPass called without an active main GPU culling pass.");
     }
 
     activePass_ = ActivePass::None;
@@ -1381,7 +1377,8 @@ void RenderGraph::beginBloomExtractPass()
         throw std::logic_error("RenderGraph::beginBloomExtractPass called while another pass is active.");
     }
     if (!beginDeclaredPass(frame_.passIndices.bloomExtract)) {
-        throw std::logic_error("RenderGraph::beginBloomExtractPass was culled but the renderer attempted to record it.");
+        throw std::logic_error(
+            "RenderGraph::beginBloomExtractPass was culled but the renderer attempted to record it.");
     }
 
     VkClearValue clearColor{};
@@ -1410,7 +1407,8 @@ void RenderGraph::beginBloomBlurPass(bool horizontal)
     if (activePass_ != ActivePass::None) {
         throw std::logic_error("RenderGraph::beginBloomBlurPass called while another pass is active.");
     }
-    const uint32_t passIndex = horizontal ? frame_.passIndices.bloomBlurHorizontal : frame_.passIndices.bloomBlurVertical;
+    const uint32_t passIndex =
+        horizontal ? frame_.passIndices.bloomBlurHorizontal : frame_.passIndices.bloomBlurVertical;
     if (!beginDeclaredPass(passIndex)) {
         throw std::logic_error("RenderGraph::beginBloomBlurPass was culled but the renderer attempted to record it.");
     }
@@ -1442,8 +1440,7 @@ void RenderGraph::beginBloomDownsamplePass(uint32_t level)
     if (activePass_ != ActivePass::None) {
         throw std::logic_error("RenderGraph::beginBloomDownsamplePass called while another pass is active.");
     }
-    if (level >= frame_.passIndices.bloomDownsampleChain.size() ||
-        level >= frame_.bloomDownsampleChain.size()) {
+    if (level >= frame_.passIndices.bloomDownsampleChain.size() || level >= frame_.bloomDownsampleChain.size()) {
         throw std::out_of_range("RenderGraph::beginBloomDownsamplePass level is out of range.");
     }
     if (!beginDeclaredPass(frame_.passIndices.bloomDownsampleChain[level])) {
@@ -1464,8 +1461,7 @@ void RenderGraph::endBloomDownsamplePass()
 {
     requireFrameActive("RenderGraph::endBloomDownsamplePass");
     if (activePass_ != ActivePass::BloomDownsample) {
-        throw std::logic_error(
-            "RenderGraph::endBloomDownsamplePass called without an active bloom downsample pass.");
+        throw std::logic_error("RenderGraph::endBloomDownsamplePass called without an active bloom downsample pass.");
     }
 
     vkCmdEndRendering(frame_.commandBuffer);
@@ -1648,18 +1644,12 @@ void RenderGraph::endFrame()
 
 uint32_t RenderGraph::addPass(std::string name, SetupCallback setup)
 {
-    return addPass(std::move(name),
-                   RenderPassType::MainHdr,
-                   RenderPassExecutionType::Graphics,
-                   false,
-                   std::move(setup));
+    return addPass(
+        std::move(name), RenderPassType::MainHdr, RenderPassExecutionType::Graphics, false, std::move(setup));
 }
 
-uint32_t RenderGraph::addPass(std::string name,
-                              RenderPassType type,
-                              RenderPassExecutionType executionType,
-                              bool sideEffect,
-                              SetupCallback setup)
+uint32_t RenderGraph::addPass(
+    std::string name, RenderPassType type, RenderPassExecutionType executionType, bool sideEffect, SetupCallback setup)
 {
     RenderPassNode pass{};
     pass.name = std::move(name);
@@ -1891,20 +1881,20 @@ void RenderGraph::declareGeometryPasses()
     // First pass of the frame: it reads the depth pyramid the PREVIOUS frame
     // left behind, so it has to be declared before anything this frame writes.
     if (frame_.resources.vsmPageMarkEnabled) {
-        frame_.passIndices.vsmPageMark = addPass(
-            "VsmPageMarkPass",
-            RenderPassType::VsmPageMark,
-            RenderPassExecutionType::Compute,
-            // Side effect: the page-request bitmask it writes is not a graph
-            // resource, so nothing downstream declares a read and liveness
-            // analysis would cull the pass away.
-            true,
-            [this](RenderGraphBuilder& builder) {
-                builder.readHistoryTexture(frame_.depthPyramid,
-                                           RGAccess::ShaderRead,
-                                           "Samples the previous frame's Hi-Z depth to work out which shadow "
-                                           "pages this frame's visible surfaces need.");
-            });
+        frame_.passIndices.vsmPageMark =
+            addPass("VsmPageMarkPass",
+                    RenderPassType::VsmPageMark,
+                    RenderPassExecutionType::Compute,
+                    // Side effect: the page-request bitmask it writes is not a graph
+                    // resource, so nothing downstream declares a read and liveness
+                    // analysis would cull the pass away.
+                    true,
+                    [this](RenderGraphBuilder& builder) {
+                        builder.readHistoryTexture(frame_.depthPyramid,
+                                                   RGAccess::ShaderRead,
+                                                   "Samples the previous frame's Hi-Z depth to work out which shadow "
+                                                   "pages this frame's visible surfaces need.");
+                    });
     }
 
     // Only declared when the residency update actually queued pages. The pool is
@@ -1912,50 +1902,50 @@ void RenderGraph::declareGeometryPasses()
     // redraws nothing gets the read-layout transition without the write pass --
     // the same asymmetry the punctual shadow atlas uses.
     if (frame_.vsmPagePool != nullptr && frame_.resources.vsmDirtyPageCount > 0) {
-        frame_.passIndices.vsmPage = addPass(
-            "VsmPagePass",
-            RenderPassType::VsmPage,
-            RenderPassExecutionType::Graphics,
-            false,
-            [this](RenderGraphBuilder& builder) {
-                frame_.vsmPagePoolDepth =
-                    builder.writeTexture(frame_.vsmPagePoolDepth,
-                                         RGAccess::DepthStencilAttachmentWrite,
-                                         "Draws this frame's dirty clipmap pages into the virtual shadow page pool.");
-            });
+        frame_.passIndices.vsmPage =
+            addPass("VsmPagePass",
+                    RenderPassType::VsmPage,
+                    RenderPassExecutionType::Graphics,
+                    false,
+                    [this](RenderGraphBuilder& builder) {
+                        frame_.vsmPagePoolDepth = builder.writeTexture(
+                            frame_.vsmPagePoolDepth,
+                            RGAccess::DepthStencilAttachmentWrite,
+                            "Draws this frame's dirty clipmap pages into the virtual shadow page pool.");
+                    });
     }
 
     // Skipped on a fully cached frame, when the renderer redraws no cascade.
     // The shadow map stays imported and the main pass still declares its read,
     // so it keeps the layout its sampler claims; only the write pass goes away.
     if (frame_.resources.cascadeShadowRedrawRequired) {
-        frame_.passIndices.shadow = addPass(
-            "CSMShadowPass",
-            RenderPassType::Shadow,
-            RenderPassExecutionType::Graphics,
-            false,
-            [this](RenderGraphBuilder& builder) {
-                frame_.shadowMapDepth = builder.writeTexture(frame_.shadowMapDepth,
-                                                             RGAccess::DepthStencilAttachmentWrite,
-                                                             "Writes cascaded shadow-map depth array layers.");
-            });
+        frame_.passIndices.shadow =
+            addPass("CSMShadowPass",
+                    RenderPassType::Shadow,
+                    RenderPassExecutionType::Graphics,
+                    false,
+                    [this](RenderGraphBuilder& builder) {
+                        frame_.shadowMapDepth = builder.writeTexture(frame_.shadowMapDepth,
+                                                                     RGAccess::DepthStencilAttachmentWrite,
+                                                                     "Writes cascaded shadow-map depth array layers.");
+                    });
     }
 
     // Only declared when a light actually got a tile. The atlas texture is
     // still imported and still read by the main pass below, so a frame that
     // casts nothing gets the read-layout transition without the write pass.
     if (frame_.punctualShadowAtlas != nullptr && frame_.resources.punctualShadowSlotCount > 0) {
-        frame_.passIndices.punctualShadow = addPass(
-            "PunctualShadowAtlasPass",
-            RenderPassType::Shadow,
-            RenderPassExecutionType::Graphics,
-            false,
-            [this](RenderGraphBuilder& builder) {
-                frame_.punctualShadowAtlasDepth =
-                    builder.writeTexture(frame_.punctualShadowAtlasDepth,
-                                         RGAccess::DepthStencilAttachmentWrite,
-                                         "Writes per-slot spot-light depth tiles into the punctual shadow atlas.");
-            });
+        frame_.passIndices.punctualShadow =
+            addPass("PunctualShadowAtlasPass",
+                    RenderPassType::Shadow,
+                    RenderPassExecutionType::Graphics,
+                    false,
+                    [this](RenderGraphBuilder& builder) {
+                        frame_.punctualShadowAtlasDepth = builder.writeTexture(
+                            frame_.punctualShadowAtlasDepth,
+                            RGAccess::DepthStencilAttachmentWrite,
+                            "Writes per-slot spot-light depth tiles into the punctual shadow atlas.");
+                    });
     }
 
     frame_.passIndices.mainGpuCulling = addPass(
@@ -1994,69 +1984,69 @@ void RenderGraph::declareGeometryPasses()
     // Safe to move: none of these three touch a resource MainGpuCullingPass
     // touches, so no edge, version chain or culling outcome changes with them.
     if (frame_.resources.volumetricFogEnabled) {
-        frame_.passIndices.volumetricFog = addPass(
-            "VolumetricFogPass",
-            RenderPassType::VolumetricFog,
-            RenderPassExecutionType::Compute,
-            // Side effect: its output volumes are not graph resources, so
-            // nothing downstream declares a read on them and liveness analysis
-            // would otherwise cull the pass away.
-            true,
-            [this](RenderGraphBuilder& builder) {
-                builder.readTexture(frame_.shadowMapDepth,
-                                    RGAccess::ShaderRead,
-                                    "Samples the cascaded shadow map to shadow the fog froxels.");
-                if (frame_.punctualShadowAtlas != nullptr) {
-                    // Fog runs between the atlas pass and the main pass, so
-                    // without this the atlas is still a depth attachment when
-                    // the injection dispatch samples it for light shafts.
-                    builder.readTexture(frame_.punctualShadowAtlasDepth,
-                                        RGAccess::ShaderRead,
-                                        "Samples the punctual shadow atlas for fog light shafts.");
-                }
-            });
+        frame_.passIndices.volumetricFog =
+            addPass("VolumetricFogPass",
+                    RenderPassType::VolumetricFog,
+                    RenderPassExecutionType::Compute,
+                    // Side effect: its output volumes are not graph resources, so
+                    // nothing downstream declares a read on them and liveness analysis
+                    // would otherwise cull the pass away.
+                    true,
+                    [this](RenderGraphBuilder& builder) {
+                        builder.readTexture(frame_.shadowMapDepth,
+                                            RGAccess::ShaderRead,
+                                            "Samples the cascaded shadow map to shadow the fog froxels.");
+                        if (frame_.punctualShadowAtlas != nullptr) {
+                            // Fog runs between the atlas pass and the main pass, so
+                            // without this the atlas is still a depth attachment when
+                            // the injection dispatch samples it for light shafts.
+                            builder.readTexture(frame_.punctualShadowAtlasDepth,
+                                                RGAccess::ShaderRead,
+                                                "Samples the punctual shadow atlas for fog light shafts.");
+                        }
+                    });
     }
 
-    if (frame_.resources.probeCaptureEnabled && frame_.probeCaptureAtlas.valid() &&
-        frame_.probeCaptureDepth.valid()) {
-        frame_.passIndices.probeCapture = addPass(
-            "ProbeCapture",
-            RenderPassType::ProbeCapture,
-            RenderPassExecutionType::Graphics,
-            false,
-            [this](RenderGraphBuilder& builder) {
-                builder.readTexture(frame_.shadowMapDepth,
-                                    RGAccess::ShaderRead,
-                                    "Samples the cascaded shadow map so captured radiance is shadowed.");
-                if (frame_.punctualShadowAtlas != nullptr) {
-                    // The capture evaluates punctual lights too, so the atlas has
-                    // to be out of its depth-attachment layout before this pass
-                    // rather than only before the main pass.
-                    builder.readTexture(frame_.punctualShadowAtlasDepth,
-                                        RGAccess::ShaderRead,
-                                        "Samples the punctual shadow atlas so captured radiance is shadowed.");
-                }
-                if (frame_.probeIrradianceAtlas.valid() && frame_.probeDepthAtlas.valid()) {
-                    // Multi-bounce: the capture reads the irradiance the grid
-                    // already holds. The update pass writes those same images
-                    // later this frame, so what the capture sees is the previous
-                    // frame's contents -- which is exactly the feedback wanted,
-                    // and why the read has to be declared before that write.
-                    builder.readTexture(frame_.probeIrradianceAtlas,
-                                        RGAccess::ShaderRead,
-                                        "Reads the previous bounce's irradiance so light can bounce again.");
-                    builder.readTexture(frame_.probeDepthAtlas,
-                                        RGAccess::ShaderRead,
-                                        "Reads probe visibility to weight the previous bounce.");
-                }
-                frame_.probeCaptureAtlas =
-                    builder.writeTexture(frame_.probeCaptureAtlas,
-                                         RGAccess::ColorAttachmentWrite,
-                                         "Writes radiance and distance for every face of this frame's probes.");
-                frame_.probeCaptureDepth = builder.writeTexture(frame_.probeCaptureDepth,
-                                                                RGAccess::DepthStencilAttachmentWrite,
-                                                                "Resolves which surface each capture texel sees.");
-            });
+    if (frame_.resources.probeCaptureEnabled && frame_.probeCaptureAtlas.valid() && frame_.probeCaptureDepth.valid()) {
+        frame_.passIndices.probeCapture =
+            addPass("ProbeCapture",
+                    RenderPassType::ProbeCapture,
+                    RenderPassExecutionType::Graphics,
+                    false,
+                    [this](RenderGraphBuilder& builder) {
+                        builder.readTexture(frame_.shadowMapDepth,
+                                            RGAccess::ShaderRead,
+                                            "Samples the cascaded shadow map so captured radiance is shadowed.");
+                        if (frame_.punctualShadowAtlas != nullptr) {
+                            // The capture evaluates punctual lights too, so the atlas has
+                            // to be out of its depth-attachment layout before this pass
+                            // rather than only before the main pass.
+                            builder.readTexture(frame_.punctualShadowAtlasDepth,
+                                                RGAccess::ShaderRead,
+                                                "Samples the punctual shadow atlas so captured radiance is shadowed.");
+                        }
+                        if (frame_.probeIrradianceAtlas.valid() && frame_.probeDepthAtlas.valid()) {
+                            // Multi-bounce: the capture reads the irradiance the grid
+                            // already holds. The update pass writes those same images
+                            // later this frame, so what the capture sees is the previous
+                            // frame's contents -- which is exactly the feedback wanted,
+                            // and why the read has to be declared before that write.
+                            builder.readTexture(frame_.probeIrradianceAtlas,
+                                                RGAccess::ShaderRead,
+                                                "Reads the previous bounce's irradiance so light can bounce again.");
+                            builder.readTexture(frame_.probeDepthAtlas,
+                                                RGAccess::ShaderRead,
+                                                "Reads probe visibility to weight the previous bounce.");
+                        }
+                        frame_.probeCaptureAtlas =
+                            builder.writeTexture(frame_.probeCaptureAtlas,
+                                                 RGAccess::ColorAttachmentWrite,
+                                                 "Writes radiance and distance for every face of this frame's probes.");
+                        frame_.probeCaptureDepth =
+                            builder.writeTexture(frame_.probeCaptureDepth,
+                                                 RGAccess::DepthStencilAttachmentWrite,
+                                                 "Resolves which surface each capture texel sees.");
+                    });
     }
 
     if (frame_.resources.irradianceProbeUpdateEnabled && frame_.probeIrradianceAtlas.valid() &&
@@ -2102,9 +2092,8 @@ void RenderGraph::declareGeometryPasses()
         RenderPassExecutionType::Graphics,
         false,
         [this](RenderGraphBuilder& builder) {
-            builder.readTexture(frame_.shadowMapDepth,
-                                RGAccess::ShaderRead,
-                                "Samples the cascaded shadow-map array for lighting.");
+            builder.readTexture(
+                frame_.shadowMapDepth, RGAccess::ShaderRead, "Samples the cascaded shadow-map array for lighting.");
             if (frame_.punctualShadowAtlas != nullptr) {
                 // Declared unconditionally (not just when slots exist) so the
                 // atlas always reaches the layout the material descriptors
@@ -2145,9 +2134,8 @@ void RenderGraph::declareGeometryPasses()
                                            RGAccess::ShaderRead,
                                            "Samples the previous frame's ambient occlusion for the ambient term.");
             }
-            frame_.sceneColor = builder.writeTexture(frame_.sceneColor,
-                                                     RGAccess::ColorAttachmentWrite,
-                                                     "Writes linear HDR skybox and mesh lighting.");
+            frame_.sceneColor = builder.writeTexture(
+                frame_.sceneColor, RGAccess::ColorAttachmentWrite, "Writes linear HDR skybox and mesh lighting.");
             frame_.velocity = builder.writeTexture(frame_.velocity,
                                                    RGAccess::ColorAttachmentWrite,
                                                    "Writes UV-space motion vectors for TAA history reprojection.");
@@ -2167,46 +2155,46 @@ void RenderGraph::declareGeometryPasses()
         });
 
     if (frame_.resources.twoPhaseOcclusionEnabled) {
-        frame_.passIndices.depthPyramidMid = addPass(
-            "DepthPyramidMidPass",
-            RenderPassType::DepthPyramid,
-            RenderPassExecutionType::Compute,
-            true,
-            [this](RenderGraphBuilder& builder) {
-                builder.readTexture(frame_.mainDepth,
-                                    RGAccess::ShaderRead,
-                                    "Samples phase-1 main depth for the mid-frame Hi-Z rebuild.");
-                frame_.depthPyramid =
-                    builder.writeTexture(frame_.depthPyramid,
-                                         RGAccess::StorageImageWrite,
-                                         "Rebuilds the Hi-Z pyramid so phase 2 can re-test occlusion candidates.");
-            });
+        frame_.passIndices.depthPyramidMid =
+            addPass("DepthPyramidMidPass",
+                    RenderPassType::DepthPyramid,
+                    RenderPassExecutionType::Compute,
+                    true,
+                    [this](RenderGraphBuilder& builder) {
+                        builder.readTexture(frame_.mainDepth,
+                                            RGAccess::ShaderRead,
+                                            "Samples phase-1 main depth for the mid-frame Hi-Z rebuild.");
+                        frame_.depthPyramid = builder.writeTexture(
+                            frame_.depthPyramid,
+                            RGAccess::StorageImageWrite,
+                            "Rebuilds the Hi-Z pyramid so phase 2 can re-test occlusion candidates.");
+                    });
 
-        frame_.passIndices.mainGpuCullingPhase2 = addPass(
-            "MainGpuCullingPhase2",
-            RenderPassType::MainGpuCulling,
-            RenderPassExecutionType::Compute,
-            true,
-            [this](RenderGraphBuilder& builder) {
-                builder.readBuffer(frame_.mainCullInput,
-                                   RGAccess::StorageBufferRead,
-                                   "Re-reads per-draw AABBs for the phase-1 occlusion candidates.");
-                builder.readTexture(frame_.depthPyramid,
-                                    RGAccess::ShaderRead,
-                                    "Samples the mid-frame Hi-Z pyramid for the candidate re-test.");
-                frame_.mainCullIndirectOutput =
-                    builder.writeBuffer(frame_.mainCullIndirectOutput,
-                                        RGAccess::StorageBufferWrite,
-                                        "Writes indirect draw commands for rescued (disoccluded) draws.");
-                frame_.mainCullVisibleCounts =
-                    builder.writeBuffer(frame_.mainCullVisibleCounts,
-                                        RGAccess::StorageBufferReadWrite,
-                                        "Resets per-batch counts and appends the rescued stats counter.");
-                frame_.mainCullReadback =
-                    builder.writeBuffer(frame_.mainCullReadback,
-                                        RGAccess::TransferDst,
-                                        "Receives the combined two-phase culling counters for CPU readback.");
-            });
+        frame_.passIndices.mainGpuCullingPhase2 =
+            addPass("MainGpuCullingPhase2",
+                    RenderPassType::MainGpuCulling,
+                    RenderPassExecutionType::Compute,
+                    true,
+                    [this](RenderGraphBuilder& builder) {
+                        builder.readBuffer(frame_.mainCullInput,
+                                           RGAccess::StorageBufferRead,
+                                           "Re-reads per-draw AABBs for the phase-1 occlusion candidates.");
+                        builder.readTexture(frame_.depthPyramid,
+                                            RGAccess::ShaderRead,
+                                            "Samples the mid-frame Hi-Z pyramid for the candidate re-test.");
+                        frame_.mainCullIndirectOutput =
+                            builder.writeBuffer(frame_.mainCullIndirectOutput,
+                                                RGAccess::StorageBufferWrite,
+                                                "Writes indirect draw commands for rescued (disoccluded) draws.");
+                        frame_.mainCullVisibleCounts =
+                            builder.writeBuffer(frame_.mainCullVisibleCounts,
+                                                RGAccess::StorageBufferReadWrite,
+                                                "Resets per-batch counts and appends the rescued stats counter.");
+                        frame_.mainCullReadback =
+                            builder.writeBuffer(frame_.mainCullReadback,
+                                                RGAccess::TransferDst,
+                                                "Receives the combined two-phase culling counters for CPU readback.");
+                    });
 
         frame_.passIndices.mainHdrPhase2 = addPass(
             "MainHDRPhase2",
@@ -2214,9 +2202,8 @@ void RenderGraph::declareGeometryPasses()
             RenderPassExecutionType::Graphics,
             false,
             [this](RenderGraphBuilder& builder) {
-                builder.readTexture(frame_.shadowMapDepth,
-                                    RGAccess::ShaderRead,
-                                    "Samples the cascaded shadow-map array for lighting.");
+                builder.readTexture(
+                    frame_.shadowMapDepth, RGAccess::ShaderRead, "Samples the cascaded shadow-map array for lighting.");
                 if (frame_.ambientOcclusion.valid()) {
                     // A history read for the same reason phase 1's is: GTAO has
                     // not run yet at this point in the frame.
@@ -2229,9 +2216,8 @@ void RenderGraph::declareGeometryPasses()
                     builder.writeTexture(frame_.sceneColor,
                                          RGAccess::ColorAttachmentWrite,
                                          "Draws rescued disoccluded objects into the existing HDR color.");
-                frame_.velocity = builder.writeTexture(frame_.velocity,
-                                                       RGAccess::ColorAttachmentWrite,
-                                                       "Appends motion vectors for the rescued draws.");
+                frame_.velocity = builder.writeTexture(
+                    frame_.velocity, RGAccess::ColorAttachmentWrite, "Appends motion vectors for the rescued draws.");
                 frame_.normalRoughness = builder.writeTexture(frame_.normalRoughness,
                                                               RGAccess::ColorAttachmentWrite,
                                                               "Appends thin G-buffer data for the rescued draws.");
@@ -2248,47 +2234,47 @@ void RenderGraph::declareGeometryPasses()
     }
 
     if (frame_.resources.ssrEnabled && frame_.ssrSceneColorCopy.valid()) {
-        frame_.passIndices.ssrCopy = addPass(
-            "SSRCopyPass",
-            RenderPassType::Ssr,
-            RenderPassExecutionType::Transfer,
-            false,
-            [this](RenderGraphBuilder& builder) {
-                builder.readTexture(frame_.sceneColor,
-                                    RGAccess::TransferSrc,
-                                    "Copies the lit opaque scene color as the SSR reflection source.");
-                frame_.ssrSceneColorCopy = builder.writeTexture(frame_.ssrSceneColorCopy,
-                                                                RGAccess::TransferDst,
-                                                                "Receives the scene-color copy the trace samples.");
-            });
+        frame_.passIndices.ssrCopy =
+            addPass("SSRCopyPass",
+                    RenderPassType::Ssr,
+                    RenderPassExecutionType::Transfer,
+                    false,
+                    [this](RenderGraphBuilder& builder) {
+                        builder.readTexture(frame_.sceneColor,
+                                            RGAccess::TransferSrc,
+                                            "Copies the lit opaque scene color as the SSR reflection source.");
+                        frame_.ssrSceneColorCopy =
+                            builder.writeTexture(frame_.ssrSceneColorCopy,
+                                                 RGAccess::TransferDst,
+                                                 "Receives the scene-color copy the trace samples.");
+                    });
 
-        frame_.passIndices.ssrTrace = addPass(
-            "SSRTracePass",
-            RenderPassType::Ssr,
-            RenderPassExecutionType::Graphics,
-            false,
-            [this](RenderGraphBuilder& builder) {
-                builder.readTexture(frame_.ssrSceneColorCopy,
-                                    RGAccess::ShaderRead,
-                                    "Samples the pre-reflection scene color at ray hit points.");
-                builder.readTexture(frame_.normalRoughness,
-                                    RGAccess::ShaderRead,
-                                    "Reads surface normal/roughness/metallic for ray setup and weighting.");
-                builder.readTexture(frame_.mainDepth,
-                                    RGAccess::ShaderRead,
-                                    "Marches rays against the main depth buffer.");
-                // Read-modify-write, like the transparent pass: an additive blend
-                // reads the destination. Declared write-only, the culler is free to
-                // treat the main pass's write to scene colour as dead -- harmless
-                // only for as long as nothing else writes scene colour in between.
-                // The transparent pass hit exactly this and the note in
-                // docs/transparency.md flagged this one as the same latent gap.
-                frame_.sceneColor =
-                    builder.readWriteTexture(frame_.sceneColor,
-                                             RGAccess::ColorAttachmentWrite,
-                                             "Blends the reflection correction into scene color; additive, and the "
-                                             "correction is signed, so it reads what the main pass already wrote.");
-            });
+        frame_.passIndices.ssrTrace =
+            addPass("SSRTracePass",
+                    RenderPassType::Ssr,
+                    RenderPassExecutionType::Graphics,
+                    false,
+                    [this](RenderGraphBuilder& builder) {
+                        builder.readTexture(frame_.ssrSceneColorCopy,
+                                            RGAccess::ShaderRead,
+                                            "Samples the pre-reflection scene color at ray hit points.");
+                        builder.readTexture(frame_.normalRoughness,
+                                            RGAccess::ShaderRead,
+                                            "Reads surface normal/roughness/metallic for ray setup and weighting.");
+                        builder.readTexture(
+                            frame_.mainDepth, RGAccess::ShaderRead, "Marches rays against the main depth buffer.");
+                        // Read-modify-write, like the transparent pass: an additive blend
+                        // reads the destination. Declared write-only, the culler is free to
+                        // treat the main pass's write to scene colour as dead -- harmless
+                        // only for as long as nothing else writes scene colour in between.
+                        // The transparent pass hit exactly this and the note in
+                        // docs/transparency.md flagged this one as the same latent gap.
+                        frame_.sceneColor = builder.readWriteTexture(
+                            frame_.sceneColor,
+                            RGAccess::ColorAttachmentWrite,
+                            "Blends the reflection correction into scene color; additive, and the "
+                            "correction is signed, so it reads what the main pass already wrote.");
+                    });
     }
 
     if (frame_.resources.gtaoEnabled && frame_.ambientOcclusion.valid() && frame_.ambientOcclusionRaw.valid()) {
@@ -2309,23 +2295,23 @@ void RenderGraph::declareGeometryPasses()
                                                                   "Writes the raw (pre-denoise) GTAO visibility term.");
             });
 
-        frame_.passIndices.gtaoBlur = addPass(
-            "GTAOBlurPass",
-            RenderPassType::GtaoBlur,
-            RenderPassExecutionType::Graphics,
-            false,
-            [this](RenderGraphBuilder& builder) {
-                builder.readTexture(frame_.ambientOcclusionRaw,
-                                    RGAccess::ShaderRead,
-                                    "Samples the raw GTAO term for depth-aware bilateral denoising.");
-                builder.readTexture(frame_.mainDepth,
-                                    RGAccess::ShaderRead,
-                                    "Samples main depth for the bilateral blur's edge-stopping weights.");
-                frame_.ambientOcclusion =
-                    builder.writeTexture(frame_.ambientOcclusion,
-                                         RGAccess::ColorAttachmentWrite,
-                                         "Writes the denoised GTAO visibility term the composite multiplies in.");
-            });
+        frame_.passIndices.gtaoBlur =
+            addPass("GTAOBlurPass",
+                    RenderPassType::GtaoBlur,
+                    RenderPassExecutionType::Graphics,
+                    false,
+                    [this](RenderGraphBuilder& builder) {
+                        builder.readTexture(frame_.ambientOcclusionRaw,
+                                            RGAccess::ShaderRead,
+                                            "Samples the raw GTAO term for depth-aware bilateral denoising.");
+                        builder.readTexture(frame_.mainDepth,
+                                            RGAccess::ShaderRead,
+                                            "Samples main depth for the bilateral blur's edge-stopping weights.");
+                        frame_.ambientOcclusion = builder.writeTexture(
+                            frame_.ambientOcclusion,
+                            RGAccess::ColorAttachmentWrite,
+                            "Writes the denoised GTAO visibility term the composite multiplies in.");
+                    });
     }
 
     // Transparents come after SSR and GTAO, which both need an opaque-only depth
@@ -2391,63 +2377,60 @@ void RenderGraph::declareGeometryPasses()
     // -- and the next frame's page marking and main cull declare history reads on
     // it. cullUnusedPasses keeps the last writer of a history-read resource alive,
     // so the declarations are what save this pass now, not a hand-set flag.
-    frame_.passIndices.depthPyramid = addPass(
-        "DepthPyramidPass",
-        RenderPassType::DepthPyramid,
-        RenderPassExecutionType::Compute,
-        false,
-        [this](RenderGraphBuilder& builder) {
-            builder.readTexture(frame_.mainDepth,
-                                RGAccess::ShaderRead,
-                                "Samples the completed normal-Z main depth buffer.");
-            frame_.depthPyramid =
-                builder.writeTexture(frame_.depthPyramid,
-                                     RGAccess::StorageImageWrite,
-                                     "Writes the max-depth Hi-Z pyramid for later-frame occlusion culling.");
-        });
+    frame_.passIndices.depthPyramid =
+        addPass("DepthPyramidPass",
+                RenderPassType::DepthPyramid,
+                RenderPassExecutionType::Compute,
+                false,
+                [this](RenderGraphBuilder& builder) {
+                    builder.readTexture(
+                        frame_.mainDepth, RGAccess::ShaderRead, "Samples the completed normal-Z main depth buffer.");
+                    frame_.depthPyramid =
+                        builder.writeTexture(frame_.depthPyramid,
+                                             RGAccess::StorageImageWrite,
+                                             "Writes the max-depth Hi-Z pyramid for later-frame occlusion culling.");
+                });
 }
 
 void RenderGraph::declareBloomAndTaaPasses()
 {
     if (frame_.taaHistoryRead.valid() && frame_.taaHistoryWrite.valid()) {
-        frame_.passIndices.taaResolve = addPass(
-            "TAAResolvePass",
-            RenderPassType::TaaResolve,
-            RenderPassExecutionType::Graphics,
-            false,
-            [this](RenderGraphBuilder& builder) {
-                builder.readTexture(frame_.sceneColor,
-                                    RGAccess::ShaderRead,
-                                    "Samples the current jittered HDR scene color.");
-                builder.readHistoryTexture(
-                    frame_.taaHistoryRead, RGAccess::ShaderRead, "Samples the previous HDR TAA history image.");
-                builder.readTexture(frame_.velocity,
-                                    RGAccess::ShaderRead,
-                                    "Samples motion vectors to reproject the history UV.");
-                if (frame_.swapchain->depthSupportsSampling()) {
-                    builder.readTexture(frame_.mainDepth,
-                                        RGAccess::ShaderRead,
-                                        "Samples main depth for closest-depth velocity dilation.");
-                }
-                frame_.taaHistoryWrite = builder.writeTexture(frame_.taaHistoryWrite,
-                                                              RGAccess::ColorAttachmentWrite,
-                                                              "Writes the resolved HDR TAA history image.");
-            });
+        frame_.passIndices.taaResolve =
+            addPass("TAAResolvePass",
+                    RenderPassType::TaaResolve,
+                    RenderPassExecutionType::Graphics,
+                    false,
+                    [this](RenderGraphBuilder& builder) {
+                        builder.readTexture(
+                            frame_.sceneColor, RGAccess::ShaderRead, "Samples the current jittered HDR scene color.");
+                        builder.readHistoryTexture(
+                            frame_.taaHistoryRead, RGAccess::ShaderRead, "Samples the previous HDR TAA history image.");
+                        builder.readTexture(frame_.velocity,
+                                            RGAccess::ShaderRead,
+                                            "Samples motion vectors to reproject the history UV.");
+                        if (frame_.swapchain->depthSupportsSampling()) {
+                            builder.readTexture(frame_.mainDepth,
+                                                RGAccess::ShaderRead,
+                                                "Samples main depth for closest-depth velocity dilation.");
+                        }
+                        frame_.taaHistoryWrite = builder.writeTexture(frame_.taaHistoryWrite,
+                                                                      RGAccess::ColorAttachmentWrite,
+                                                                      "Writes the resolved HDR TAA history image.");
+                    });
     }
 
-    frame_.passIndices.bloomExtract = addPass(
-        "BloomExtractPass",
-        RenderPassType::BloomExtract,
-        RenderPassExecutionType::Graphics,
-        false,
-        [this](RenderGraphBuilder& builder) {
-            builder.readTexture(postProcessSource(),
-                                RGAccess::ShaderRead,
-                                "Samples the active HDR scene color target.");
-            frame_.bloomExtract = builder.writeTexture(frame_.bloomExtract,
-                                                       RGAccess::ColorAttachmentWrite,
-                                                       "Writes bright pixels above the bloom threshold.");
-        });
+    frame_.passIndices.bloomExtract =
+        addPass("BloomExtractPass",
+                RenderPassType::BloomExtract,
+                RenderPassExecutionType::Graphics,
+                false,
+                [this](RenderGraphBuilder& builder) {
+                    builder.readTexture(
+                        postProcessSource(), RGAccess::ShaderRead, "Samples the active HDR scene color target.");
+                    frame_.bloomExtract = builder.writeTexture(frame_.bloomExtract,
+                                                               RGAccess::ColorAttachmentWrite,
+                                                               "Writes bright pixels above the bloom threshold.");
+                });
 
     frame_.passIndices.bloomBlurHorizontal = addPass(
         "BloomBlurHorizontal",
@@ -2456,27 +2439,24 @@ void RenderGraph::declareBloomAndTaaPasses()
         false,
         [this](RenderGraphBuilder& builder) {
             builder.readTexture(frame_.bloomExtract, RGAccess::ShaderRead, "Samples extracted bloom highlights.");
-            frame_.bloomPing = builder.writeTexture(frame_.bloomPing,
-                                                    RGAccess::ColorAttachmentWrite,
-                                                    "Writes the horizontal blur result.");
+            frame_.bloomPing = builder.writeTexture(
+                frame_.bloomPing, RGAccess::ColorAttachmentWrite, "Writes the horizontal blur result.");
         });
 
-    frame_.passIndices.bloomBlurVertical = addPass(
-        "BloomBlurVertical",
-        RenderPassType::BloomBlur,
-        RenderPassExecutionType::Graphics,
-        false,
-        [this](RenderGraphBuilder& builder) {
-            builder.readTexture(frame_.bloomPing, RGAccess::ShaderRead, "Samples the horizontal blur result.");
-            frame_.bloomPong = builder.writeTexture(frame_.bloomPong,
-                                                    RGAccess::ColorAttachmentWrite,
-                                                    "Writes the final vertical blur result.");
-        });
+    frame_.passIndices.bloomBlurVertical =
+        addPass("BloomBlurVertical",
+                RenderPassType::BloomBlur,
+                RenderPassExecutionType::Graphics,
+                false,
+                [this](RenderGraphBuilder& builder) {
+                    builder.readTexture(frame_.bloomPing, RGAccess::ShaderRead, "Samples the horizontal blur result.");
+                    frame_.bloomPong = builder.writeTexture(
+                        frame_.bloomPong, RGAccess::ColorAttachmentWrite, "Writes the final vertical blur result.");
+                });
 
     frame_.passIndices.bloomDownsampleChain.reserve(frame_.bloomDownsampleChain.size());
     for (uint32_t level = 0; level < frame_.bloomDownsampleChain.size(); ++level) {
-        const RGTextureHandle source =
-            level == 0 ? postProcessSource() : frame_.bloomDownsampleChain[level - 1];
+        const RGTextureHandle source = level == 0 ? postProcessSource() : frame_.bloomDownsampleChain[level - 1];
         frame_.passIndices.bloomDownsampleChain.push_back(addPass(
             "BloomDownsampleMip" + std::to_string(level),
             RenderPassType::BloomDownsample,
@@ -2499,12 +2479,11 @@ void RenderGraph::declareBloomAndTaaPasses()
 
     frame_.passIndices.bloomUpsampleChain.assign(frame_.bloomUpsampleChain.size(), kInvalidRenderGraphHandle);
     for (uint32_t reverseIndex = 0; reverseIndex < frame_.bloomUpsampleChain.size(); ++reverseIndex) {
-        const uint32_t level =
-            static_cast<uint32_t>(frame_.bloomUpsampleChain.size() - 1u - reverseIndex);
+        const uint32_t level = static_cast<uint32_t>(frame_.bloomUpsampleChain.size() - 1u - reverseIndex);
         const RGTextureHandle currentMip = frame_.bloomDownsampleChain[level];
-        const RGTextureHandle lowerMip =
-            level + 1u == frame_.bloomDownsampleChain.size() - 1u ? frame_.bloomDownsampleChain[level + 1u]
-                                                                  : frame_.bloomUpsampleChain[level + 1u];
+        const RGTextureHandle lowerMip = level + 1u == frame_.bloomDownsampleChain.size() - 1u
+                                             ? frame_.bloomDownsampleChain[level + 1u]
+                                             : frame_.bloomUpsampleChain[level + 1u];
         frame_.passIndices.bloomUpsampleChain[level] = addPass(
             "BloomUpsampleMip" + std::to_string(level),
             RenderPassType::BloomUpsample,
@@ -2526,44 +2505,45 @@ void RenderGraph::declareExposureCompositePasses()
     // Histogram exposure does not read the log-average reduction, so on that
     // path the renderer records nothing here and the pass is not declared.
     if (frame_.resources.luminancePassEnabled) {
-        frame_.passIndices.luminance = addPass(
-            "LuminancePass",
-            RenderPassType::Luminance,
-            RenderPassExecutionType::Compute,
-            true,
-            [this](RenderGraphBuilder& builder) {
-                builder.readTexture(postProcessSource(),
-                                    RGAccess::ShaderRead,
-                                    "Samples active scene color for log-average luminance reduction.");
-                frame_.luminancePartials = builder.writeBuffer(frame_.luminancePartials,
-                                                               RGAccess::StorageBufferWrite,
-                                                               "Writes per-workgroup luminance partials.");
-            });
+        frame_.passIndices.luminance =
+            addPass("LuminancePass",
+                    RenderPassType::Luminance,
+                    RenderPassExecutionType::Compute,
+                    true,
+                    [this](RenderGraphBuilder& builder) {
+                        builder.readTexture(postProcessSource(),
+                                            RGAccess::ShaderRead,
+                                            "Samples active scene color for log-average luminance reduction.");
+                        frame_.luminancePartials = builder.writeBuffer(frame_.luminancePartials,
+                                                                       RGAccess::StorageBufferWrite,
+                                                                       "Writes per-workgroup luminance partials.");
+                    });
     }
 
     // Declared only when the recorder will record it: manual and log-average
     // exposure both return before the pass begins.
     if (frame_.resources.histogramPassEnabled) {
-        frame_.passIndices.histogramExposure = addPass(
-            "HistogramExposurePass",
-            RenderPassType::HistogramExposure,
-            RenderPassExecutionType::Compute,
-            true,
-            [this](RenderGraphBuilder& builder) {
-                builder.readTexture(postProcessSource(),
-                                    RGAccess::ShaderRead,
-                                    "Samples active scene color for log2 luminance histogram binning.");
-                frame_.luminanceHistogram = builder.writeBuffer(frame_.luminanceHistogram,
-                                                                RGAccess::StorageBufferReadWrite,
-                                                                "Clears and writes 256 luminance histogram bins.");
-                builder.readBuffer(frame_.luminancePartials,
-                                   RGAccess::StorageBufferRead,
-                                   "Reads log-average luminance partials for GPU exposure fallback.");
-                frame_.exposureState =
-                    builder.readWriteBuffer(frame_.exposureState,
-                                            RGAccess::StorageBufferReadWrite,
-                                            "Reads previous exposure and writes GPU exposure/luminance state.");
-            });
+        frame_.passIndices.histogramExposure =
+            addPass("HistogramExposurePass",
+                    RenderPassType::HistogramExposure,
+                    RenderPassExecutionType::Compute,
+                    true,
+                    [this](RenderGraphBuilder& builder) {
+                        builder.readTexture(postProcessSource(),
+                                            RGAccess::ShaderRead,
+                                            "Samples active scene color for log2 luminance histogram binning.");
+                        frame_.luminanceHistogram =
+                            builder.writeBuffer(frame_.luminanceHistogram,
+                                                RGAccess::StorageBufferReadWrite,
+                                                "Clears and writes 256 luminance histogram bins.");
+                        builder.readBuffer(frame_.luminancePartials,
+                                           RGAccess::StorageBufferRead,
+                                           "Reads log-average luminance partials for GPU exposure fallback.");
+                        frame_.exposureState =
+                            builder.readWriteBuffer(frame_.exposureState,
+                                                    RGAccess::StorageBufferReadWrite,
+                                                    "Reads previous exposure and writes GPU exposure/luminance state.");
+                    });
     }
 
     frame_.passIndices.composite = addPass(
@@ -2572,9 +2552,8 @@ void RenderGraph::declareExposureCompositePasses()
         RenderPassExecutionType::Graphics,
         true,
         [this](RenderGraphBuilder& builder) {
-            builder.readTexture(postProcessSource(),
-                                RGAccess::ShaderRead,
-                                "Samples the active HDR scene color target.");
+            builder.readTexture(
+                postProcessSource(), RGAccess::ShaderRead, "Samples the active HDR scene color target.");
             // The shader samples both bloom bindings and selects one, so only the
             // selected chain is really read. The other is declared for its layout
             // alone -- the descriptor binds it either way and sampling an image
@@ -2610,9 +2589,8 @@ void RenderGraph::declareExposureCompositePasses()
                                                  "selected, so the sample is discarded.");
                 }
             }
-            builder.readBuffer(frame_.exposureState,
-                               RGAccess::StorageBufferRead,
-                               "Reads GPU exposure state for auto exposure modes.");
+            builder.readBuffer(
+                frame_.exposureState, RGAccess::StorageBufferRead, "Reads GPU exposure state for auto exposure modes.");
             // Same split as the transparent pass: produced this frame when GTAO
             // is on, carried over from the previous one when it is off.
             const char* compositeAoDescription =
@@ -2627,17 +2605,16 @@ void RenderGraph::declareExposureCompositePasses()
                                                          "Writes the exposed and tone-mapped final color.");
         });
 
-    frame_.passIndices.imgui = addPass(
-        "ImGuiPass",
-        RenderPassType::ImGui,
-        RenderPassExecutionType::Graphics,
-        true,
-        [this](RenderGraphBuilder& builder) {
-            frame_.swapchainColor =
-                builder.readWriteTexture(frame_.swapchainColor,
-                                         RGAccess::ColorAttachmentWrite,
-                                         "Loads the composited swapchain image and draws the debug overlay.");
-        });
+    frame_.passIndices.imgui = addPass("ImGuiPass",
+                                       RenderPassType::ImGui,
+                                       RenderPassExecutionType::Graphics,
+                                       true,
+                                       [this](RenderGraphBuilder& builder) {
+                                           frame_.swapchainColor = builder.readWriteTexture(
+                                               frame_.swapchainColor,
+                                               RGAccess::ColorAttachmentWrite,
+                                               "Loads the composited swapchain image and draws the debug overlay.");
+                                       });
 }
 
 void RenderGraph::compilePassCulling()
@@ -2792,8 +2769,7 @@ void cullUnusedPasses(std::vector<RenderPassNode>& passes, size_t textureCount, 
             hasWrite = true;
             if (usage.resource.kind == RGResourceKind::Texture && usage.resource.index < neededTextures.size()) {
                 writesNeededOutput = writesNeededOutput || neededTextures[usage.resource.index] != 0;
-            } else if (usage.resource.kind == RGResourceKind::Buffer &&
-                       usage.resource.index < neededBuffers.size()) {
+            } else if (usage.resource.kind == RGResourceKind::Buffer && usage.resource.index < neededBuffers.size()) {
                 writesNeededOutput = writesNeededOutput || neededBuffers[usage.resource.index] != 0;
             }
         }
@@ -3300,11 +3276,11 @@ uint32_t RenderGraph::transitionTexture(RGTextureHandle handle, RGAccess access,
     }
 
     if (!aliasHandoff && !textureBarrierRequired(oldLayout,
-                                desired.layout,
-                                resource.usedThisFrame,
-                                previous.declaredAccess,
-                                previous.access,
-                                desired.access)) {
+                                                 desired.layout,
+                                                 resource.usedThisFrame,
+                                                 previous.declaredAccess,
+                                                 previous.access,
+                                                 desired.access)) {
         resource.lastAccess = desired;
         resource.usedThisFrame = true;
         return 0;
@@ -3361,8 +3337,8 @@ uint32_t RenderGraph::transitionBuffer(RGBufferHandle handle, RGAccess access, B
     }
 
     const BufferAccessState previous = resource.lastAccess;
-    const bool needsOrdering = bufferBarrierRequired(
-        resource.usedThisFrame, previous.declaredAccess, previous.access, desired.access);
+    const bool needsOrdering =
+        bufferBarrierRequired(resource.usedThisFrame, previous.declaredAccess, previous.access, desired.access);
     if (!needsOrdering) {
         resource.lastAccess = desired;
         resource.usedThisFrame = true;
@@ -3392,7 +3368,8 @@ uint32_t RenderGraph::transitionBuffer(RGBufferHandle handle, RGAccess access, B
     return 1;
 }
 
-RenderGraph::TextureAccessState RenderGraph::accessStateForTexture(const TextureResource& resource, RGAccess access) const
+RenderGraph::TextureAccessState RenderGraph::accessStateForTexture(const TextureResource& resource,
+                                                                   RGAccess access) const
 {
     return textureAccessState(resource.desc.aspectMask, access, currentTextureLayout(resource));
 }
@@ -3404,8 +3381,8 @@ TextureAccessState textureAccessState(VkImageAspectFlags aspectMask, RGAccess ac
 
     switch (access) {
     case RGAccess::ShaderRead:
-        state.layout = isDepthAspect(aspectMask) ? depthReadOnlyLayout(aspectMask)
-                                                 : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        state.layout =
+            isDepthAspect(aspectMask) ? depthReadOnlyLayout(aspectMask) : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         state.stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         state.access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
         break;
@@ -3417,8 +3394,7 @@ TextureAccessState textureAccessState(VkImageAspectFlags aspectMask, RGAccess ac
     case RGAccess::DepthStencilAttachmentWrite:
         state.layout = depthAttachmentLayout(aspectMask);
         state.stage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-        state.access = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                       VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        state.access = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
         break;
     case RGAccess::StorageImageRead:
         state.layout = VK_IMAGE_LAYOUT_GENERAL;

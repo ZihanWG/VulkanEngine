@@ -157,7 +157,8 @@ TEST_CASE("The report row limit truncates and says how many were dropped")
 {
     AssetLoadStats stats{};
     for (int index = 0; index < 5; ++index) {
-        stats.textures.push_back(makeRecord("texture" + std::to_string(index), static_cast<uint64_t>(index) * kMebibyte));
+        stats.textures.push_back(
+            makeRecord("texture" + std::to_string(index), static_cast<uint64_t>(index) * kMebibyte));
     }
 
     const std::string report = formatReport(stats, /*largestTextureRows=*/2);

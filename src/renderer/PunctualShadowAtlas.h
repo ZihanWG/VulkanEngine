@@ -156,10 +156,8 @@ inline constexpr uint32_t kPointShadowFaceCount = 6;
 
 // Light-space view-projection for one cube face. The FOV is exactly 90 degrees
 // so the six faces tile the sphere with no gaps and no overlap.
-[[nodiscard]] glm::mat4 computePointShadowFaceViewProjection(const glm::vec3& position,
-                                                             uint32_t face,
-                                                             float range,
-                                                             float nearPlane = 0.0f);
+[[nodiscard]] glm::mat4
+computePointShadowFaceViewProjection(const glm::vec3& position, uint32_t face, float range, float nearPlane = 0.0f);
 
 // A tile rect packed into one integer, for use as a map key.
 //

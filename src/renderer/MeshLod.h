@@ -108,9 +108,8 @@ struct LodChainBuild {
 // Calling this in a fixed order over the primitives is what makes the parallel
 // path produce a byte-identical index buffer to the serial one: the expensive
 // work is order-independent, and only this append decides layout.
-[[nodiscard]] std::vector<MeshLod> appendLodChain(std::vector<uint32_t>& indices,
-                                                  uint32_t firstIndex,
-                                                  const LodChainBuild& build);
+[[nodiscard]] std::vector<MeshLod>
+appendLodChain(std::vector<uint32_t>& indices, uint32_t firstIndex, const LodChainBuild& build);
 
 // --- LOD selection -------------------------------------------------------
 //
@@ -141,8 +140,7 @@ struct LodSelectionSettings {
 // Level for a given projected radius, clamped into [0, lodCount - 1]. Returns 0
 // when the mesh has no chain, so a missing LOD table degrades to the authored
 // geometry rather than to an out-of-range read.
-[[nodiscard]] uint32_t selectLodIndex(float projectedRadiusPixels,
-                                      uint32_t lodCount,
-                                      const LodSelectionSettings& settings = {});
+[[nodiscard]] uint32_t
+selectLodIndex(float projectedRadiusPixels, uint32_t lodCount, const LodSelectionSettings& settings = {});
 
 } // namespace ve::renderer

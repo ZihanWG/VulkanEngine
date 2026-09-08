@@ -37,7 +37,10 @@ struct Skeleton {
     std::vector<glm::mat4> inverseBind;
     std::vector<JointPose> bindPose;
 
-    [[nodiscard]] size_t jointCount() const { return parents.size(); }
+    [[nodiscard]] size_t jointCount() const
+    {
+        return parents.size();
+    }
 };
 
 enum class AnimationPath : uint8_t {
@@ -69,19 +72,16 @@ struct AnimationClip {
 
 // Local poses for every joint at time t: starts from the skeleton bind pose and
 // overrides each joint with whatever channels target it.
-[[nodiscard]] std::vector<JointPose> sampleLocalPoses(const Skeleton& skeleton,
-                                                      const AnimationClip& clip,
-                                                      float time);
+[[nodiscard]] std::vector<JointPose> sampleLocalPoses(const Skeleton& skeleton, const AnimationClip& clip, float time);
 
 // Skinning palette: jointMatrix[i] = global[i] * inverseBind[i], where
 // global[i] = global[parent[i]] * local[i]. Handles arbitrary parent ordering.
 // At the bind pose this yields identity matrices (no deformation).
 [[nodiscard]] std::vector<glm::mat4> computeJointMatrices(const Skeleton& skeleton,
-                                                         const std::vector<JointPose>& localPoses);
+                                                          const std::vector<JointPose>& localPoses);
 
-[[nodiscard]] std::vector<glm::mat4> computeJointMatricesAtTime(const Skeleton& skeleton,
-                                                               const AnimationClip& clip,
-                                                               float time);
+[[nodiscard]] std::vector<glm::mat4>
+computeJointMatricesAtTime(const Skeleton& skeleton, const AnimationClip& clip, float time);
 
 // --- Bounds of a posed skinned mesh -----------------------------------------
 //

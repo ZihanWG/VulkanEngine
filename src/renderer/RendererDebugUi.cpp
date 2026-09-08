@@ -20,8 +20,7 @@ void Renderer::buildDebugUi()
     // First run only: the layout file takes over from then on, so moving or
     // resizing the panel sticks across restarts.
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + 16.0f, viewport->WorkPos.y + 16.0f),
-                            ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + 16.0f, viewport->WorkPos.y + 16.0f), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(460.0f, std::min(viewport->WorkSize.y - 32.0f, 780.0f)), ImGuiCond_FirstUseEver);
     ImGui::Begin("VulkanEngine Debug");
 
@@ -250,8 +249,7 @@ void Renderer::drawRenderScaleDebugUi()
     // Committing waits for the device to go idle and rebuilds every screen-sized
     // target, which is not something to do once per dragged frame.
     ImGui::BeginDisabled(dynamicResolutionSettings_.enabled);
-    ImGui::SliderFloat(
-        "Scale", &pendingRenderScale_, renderer::kMinRenderScale, renderer::kMaxRenderScale, "%.2f");
+    ImGui::SliderFloat("Scale", &pendingRenderScale_, renderer::kMinRenderScale, renderer::kMaxRenderScale, "%.2f");
     const bool sliderActive = ImGui::IsItemActive();
     const bool sliderCommitted = ImGui::IsItemDeactivatedAfterEdit();
     if (sliderCommitted) {
@@ -424,9 +422,8 @@ void Renderer::drawSsaoDebugUi()
                           "Off: the composite multiplies the whole scene colour by it, which also darkens\n"
                           "direct lighting. Kept for A/B comparison -- a crease in full sunlight going dark\n"
                           "is the artefact the default avoids.");
-    ImGui::TextWrapped(
-        "Ground-truth ambient occlusion: a horizon-search pass reads the main depth buffer and the thin "
-        "G-buffer normal, and the main pass multiplies the visibility term into the ambient term.");
+    ImGui::TextWrapped("Ground-truth ambient occlusion: a horizon-search pass reads the main depth buffer and the thin "
+                       "G-buffer normal, and the main pass multiplies the visibility term into the ambient term.");
     ImGui::EndDisabled();
 }
 
@@ -482,8 +479,6 @@ void Renderer::drawVolumetricFogDebugUi()
     ImGui::TextDisabled("Directional light only; punctual light shafts are not wired up yet.");
 }
 
-
-
 void Renderer::drawIrradianceProbesDebugUi()
 {
     if (!ImGui::CollapsingHeader("Global Illumination (Irradiance Probes)", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -501,10 +496,8 @@ void Renderer::drawIrradianceProbesDebugUi()
                           "probes are captured and convolved each frame.");
 
     ImGui::BeginDisabled(!giSettings_.enabled);
-    ImGui::SliderInt("Probes per frame",
-                     &giSettings_.probesPerFrame,
-                     0,
-                     static_cast<int>(renderer::kMaxProbesPerFrame));
+    ImGui::SliderInt(
+        "Probes per frame", &giSettings_.probesPerFrame, 0, static_cast<int>(renderer::kMaxProbesPerFrame));
     ImGui::SetItemTooltip("Round robin over the grid. This is the whole cost control: raising it\n"
                           "makes the grid catch up with a lighting change sooner and makes every\n"
                           "frame more expensive. Zero pauses capture without losing the cursor.");
@@ -607,7 +600,6 @@ void Renderer::drawIrradianceProbesDebugUi()
                             jitter.x,
                             jitter.y);
     }
-
 
     ImGui::SeparatorText("Atlas previews");
 
@@ -720,7 +712,9 @@ void Renderer::drawShadowsDebugUi()
     {
         const uint32_t activeCascades = activeCascadeCount();
         ImGui::Text("Cascades: %s, %u/%u redrawn (%u frames fully cached)",
-                    cascadeShadowCacheHit_ ? "reused" : (cascadeShadowCascadesRedrawn_ >= activeCascades ? "all redrawn" : "partial"),
+                    cascadeShadowCacheHit_
+                        ? "reused"
+                        : (cascadeShadowCascadesRedrawn_ >= activeCascades ? "all redrawn" : "partial"),
                     cascadeShadowCascadesRedrawn_,
                     activeCascades,
                     cascadeShadowCachedFrames_);
@@ -794,8 +788,12 @@ void Renderer::drawShadowsDebugUi()
                               "The pass takes at most 2x2 taps per block, so this genuinely changes\n"
                               "the fetch count. Measured: 8 returns the same page count as 4 on both\n"
                               "the default and geometry-stress scenes for roughly half the cost.");
-        if (ImGui::SliderFloat(
-                "Depth bias (texels)", &vsmSettings_.depthBiasTexels, 0.0f, 512.0f, "%.1f", ImGuiSliderFlags_Logarithmic)) {
+        if (ImGui::SliderFloat("Depth bias (texels)",
+                               &vsmSettings_.depthBiasTexels,
+                               0.0f,
+                               512.0f,
+                               "%.1f",
+                               ImGuiSliderFlags_Logarithmic)) {
             clampRuntimeSettings();
         }
         ImGui::SetItemTooltip("Shadow-compare bias, in texels of whichever level a lookup lands on.\n\n"
@@ -867,8 +865,8 @@ void Renderer::drawShadowsDebugUi()
                 if (level > 0) {
                     perLevel += "  ";
                 }
-                perLevel += "L" + std::to_string(level) + "=" +
-                            std::to_string(vsmPageRequestStats_.requestedPerLevel[level]);
+                perLevel +=
+                    "L" + std::to_string(level) + "=" + std::to_string(vsmPageRequestStats_.requestedPerLevel[level]);
             }
             ImGui::TextUnformatted(perLevel.c_str());
 
@@ -895,9 +893,8 @@ void Renderer::drawShadowsDebugUi()
                               "cost measurable on its own.");
 
         if (isVsmPageRenderingActive()) {
-            ImGui::Text("Addressable now: %u/%u",
-                        vsmResidencyStats_.addressablePages,
-                        vsmResidencyStats_.requestedPages);
+            ImGui::Text(
+                "Addressable now: %u/%u", vsmResidencyStats_.addressablePages, vsmResidencyStats_.requestedPages);
             ImGui::SetItemTooltip("Requested pages still inside this frame's window. The shortfall is the\n"
                                   "cost of the readback latency under camera motion: a page that scrolled\n"
                                   "out between being asked for and being allocated is not worth drawing.");
@@ -975,9 +972,8 @@ void Renderer::drawShadowsDebugUi()
                     renderer::kPunctualShadowMaxTileSize);
         // With mixed tile sizes a slot count says nothing about how full the
         // atlas is, so the occupancy fraction is the number that matters.
-        ImGui::Text("Slots used: %u  (atlas %.0f%% full)",
-                    punctualShadowSlotsUsed_,
-                    punctualShadows_.occupancy() * 100.0f);
+        ImGui::Text(
+            "Slots used: %u  (atlas %.0f%% full)", punctualShadowSlotsUsed_, punctualShadows_.occupancy() * 100.0f);
         ImGui::Text("Caster draws recorded: %u", punctualShadowDrawsRecorded_);
         // Assignment churn is what popping actually looks like, so it is
         // measured rather than inferred from the image.
@@ -1015,10 +1011,7 @@ void Renderer::drawShadowsDebugUi()
                               "here without the shaded image changing nearly as much.");
         // Six tiles per point light against 64 total, so the budget is explicit
         // rather than an implicit cap the user cannot see.
-        ImGui::SliderInt("Max shadowed point lights",
-                         &maxShadowCastingPointLights_,
-                         0,
-                         16);
+        ImGui::SliderInt("Max shadowed point lights", &maxShadowCastingPointLights_, 0, 16);
         ImGui::SetItemTooltip("Each point light costs 6 tiles (one per cube face).\n"
                               "Nearest to the camera are served first.");
 
@@ -1267,7 +1260,8 @@ void Renderer::drawGpuCullingDebugUi()
     }
     if (postProcess_.bloomImagesAreAliased()) {
         ImGui::SameLine();
-        ImGui::TextDisabled("(active, %.2f MiB pool)", static_cast<double>(postProcess_.bloomPoolBytes()) / (1024.0 * 1024.0));
+        ImGui::TextDisabled("(active, %.2f MiB pool)",
+                            static_cast<double>(postProcess_.bloomPoolBytes()) / (1024.0 * 1024.0));
     } else if (useTransientAliasing_) {
         ImGui::SameLine();
         ImGui::TextDisabled("(pending)");
@@ -1294,8 +1288,7 @@ void Renderer::drawGpuCullingDebugUi()
     ImGui::BeginDisabled();
     ImGui::Checkbox("Bindless material textures enabled (startup)", &bindlessEnabled);
     ImGui::EndDisabled();
-    ImGui::Text("Main indirect count path: %s",
-                isFrameIndirectCountPathActive(currentFrame_) ? "active" : "fallback");
+    ImGui::Text("Main indirect count path: %s", isFrameIndirectCountPathActive(currentFrame_) ? "active" : "fallback");
     ImGui::Text("Shadow indirect count path: %s",
                 isShadowIndirectCountPathActive(currentFrame_) ? "active" : "fallback");
     if (ImGui::Button("Enable Occlusion Test Settings")) {
@@ -1643,9 +1636,9 @@ void Renderer::drawRenderGraphDebugUi()
     // Sizing must be FixedFit: stretch-proportional columns degenerate under
     // ScrollX (the long text columns collapse to a few characters and wrapped
     // text turns into one giant row).
-    constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-                                      ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingFixedFit |
-                                      ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY;
+    constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable |
+                                      ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_ScrollX |
+                                      ImGuiTableFlags_ScrollY;
     const ImVec2 tableSize(0.0f, ImGui::GetTextLineHeightWithSpacing() * 12.0f);
     const float wideColumnWidth = ImGui::GetFontSize() * 16.0f;
     if (ImGui::BeginTable("RenderGraphPassesV2", 9, flags, tableSize)) {
@@ -1855,11 +1848,9 @@ void Renderer::drawCameraLightEditorDebugUi()
 
     if (ImGui::TreeNodeEx("Directional Light", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::DragFloat3("Direction", &directionalLightSettings_.direction.x, 0.01f, -1.0f, 1.0f, "%.3f");
-        directionalLightSettings_.direction =
-            normalizedOrFallback(directionalLightSettings_.direction,
-                                 {kDirectionalLightDirection.x,
-                                  kDirectionalLightDirection.y,
-                                  kDirectionalLightDirection.z});
+        directionalLightSettings_.direction = normalizedOrFallback(
+            directionalLightSettings_.direction,
+            {kDirectionalLightDirection.x, kDirectionalLightDirection.y, kDirectionalLightDirection.z});
 
         ImGui::ColorEdit3("Color", &directionalLightSettings_.color.x);
         directionalLightSettings_.color = glm::max(directionalLightSettings_.color, glm::vec3{0.0f});
@@ -1895,8 +1886,7 @@ void Renderer::drawSceneHierarchyDebugUi()
     if (ImGui::TreeNodeEx("Scene", sceneFlags)) {
         for (size_t objectIndex = 0; objectIndex < renderObjects_.size(); ++objectIndex) {
             const renderer::RenderObject& object = renderObjects_[objectIndex];
-            const ObjectDrawDebugInfo debugInfo =
-                objectDrawDebugInfo(static_cast<uint32_t>(objectIndex));
+            const ObjectDrawDebugInfo debugInfo = objectDrawDebugInfo(static_cast<uint32_t>(objectIndex));
             const bool selected = selectedRenderObjectIndex_ == objectIndex;
             ImGuiTreeNodeFlags objectFlags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
             if (selected) {
@@ -1905,8 +1895,8 @@ void Renderer::drawSceneHierarchyDebugUi()
 
             const uint32_t objectId = renderObjectEditorId(object);
             const std::string objectName = object.debugName.empty() ? "(unnamed)" : object.debugName;
-            const std::string label = std::string(object.visible ? "" : "[hidden] ") + objectName + "##" +
-                                      std::to_string(objectId);
+            const std::string label =
+                std::string(object.visible ? "" : "[hidden] ") + objectName + "##" + std::to_string(objectId);
             const bool open = ImGui::TreeNodeEx(label.c_str(), objectFlags);
             if (ImGui::IsItemClicked()) {
                 selectedRenderObjectIndex_ = objectIndex;
@@ -2018,8 +2008,7 @@ void Renderer::drawSelectedRenderObjectInspector(uint32_t objectIndex)
 
     const TransformComponents transformComponents = editableTransformComponents(object.transform);
     if (!transformComponents.valid) {
-        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.25f, 1.0f),
-                           "Transform cannot be decomposed for editing.");
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.25f, 1.0f), "Transform cannot be decomposed for editing.");
     } else {
         glm::vec3 position = transformComponents.position;
         if (ImGui::DragFloat3("Position", &position.x, 0.01f, -1000.0f, 1000.0f, "%.3f")) {
@@ -2083,7 +2072,8 @@ void Renderer::drawSelectedRenderObjectInspector(uint32_t objectIndex)
 
 void Renderer::drawMaterialInspectorDebugUi()
 {
-    if (selectedRenderObjectIndex_ == kInvalidRenderObjectIndex || selectedRenderObjectIndex_ >= renderObjects_.size()) {
+    if (selectedRenderObjectIndex_ == kInvalidRenderObjectIndex ||
+        selectedRenderObjectIndex_ >= renderObjects_.size()) {
         ImGui::TextDisabled("No RenderObject selected.");
         return;
     }
@@ -2100,8 +2090,8 @@ void Renderer::drawMaterialInspectorDebugUi()
 
     if (materials.size() > 1) {
         ImGui::Text("Resolved materials: %zu (showing first material)", materials.size());
-        constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-                                          ImGuiTableFlags_SizingStretchProp;
+        constexpr ImGuiTableFlags flags =
+            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp;
         if (ImGui::BeginTable("MaterialInspectorMaterialList", 3, flags)) {
             ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed);
             ImGui::TableSetupColumn("Material");
@@ -2257,19 +2247,18 @@ void Renderer::drawMaterialDebugSection(const renderer::Material* material,
     ImGui::Text("baseColorTextureIndex: %u", material->baseColorTextureIndex);
     ImGui::Text("normalTextureIndex: %u", material->normalTextureIndex);
     ImGui::Text("metallicRoughnessTextureIndex: %u", material->metallicRoughnessTextureIndex);
-    ImGui::TextWrapped("Base color texture path: %s",
-                       material->baseColorTexturePath.empty()
-                           ? "(none)"
-                           : material->baseColorTexturePath.generic_string().c_str());
+    ImGui::TextWrapped(
+        "Base color texture path: %s",
+        material->baseColorTexturePath.empty() ? "(none)" : material->baseColorTexturePath.generic_string().c_str());
     ImGui::TextWrapped("Normal texture path: %s",
-                       material->normalTexturePath.empty() ? "(none)" : material->normalTexturePath.generic_string().c_str());
+                       material->normalTexturePath.empty() ? "(none)"
+                                                           : material->normalTexturePath.generic_string().c_str());
     ImGui::TextWrapped("Metallic-roughness texture path: %s",
                        material->metallicRoughnessTexturePath.empty()
                            ? "(none)"
                            : material->metallicRoughnessTexturePath.generic_string().c_str());
     ImGui::Text("Bindless material textures: %s", isBindlessMaterialTextureActive() ? "active" : "inactive");
-    ImGui::Text("Legacy material descriptor fallback: %s",
-                isBindlessMaterialTextureActive() ? "inactive" : "active");
+    ImGui::Text("Legacy material descriptor fallback: %s", isBindlessMaterialTextureActive() ? "inactive" : "active");
     ImGui::Text("Material descriptor set: %s", descriptorSetLabel.c_str());
 
     if (!includeTextureSummary) {
@@ -2343,8 +2332,8 @@ void Renderer::drawMaterialTextureSlotDebugUi(const char* slotName,
 
 void Renderer::drawTexturePreview(const rhi::VulkanTexture& texture, float size)
 {
-    const VkDescriptorSet descriptorSet =
-        imguiLayer_.texturePreviewDescriptor(texture.imageView(), texture.sampler(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    const VkDescriptorSet descriptorSet = imguiLayer_.texturePreviewDescriptor(
+        texture.imageView(), texture.sampler(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     if (descriptorSet == VK_NULL_HANDLE) {
         ImGui::TextDisabled("Preview unavailable.");
         return;
@@ -2408,8 +2397,7 @@ void Renderer::drawVsmPageResidency()
     uint32_t renderedHere = 0;
     for (uint32_t y = 0; y < renderer::kVsmPagesPerLevelAxis; ++y) {
         for (uint32_t x = 0; x < renderer::kVsmPagesPerLevelAxis; ++x) {
-            const glm::ivec2 absolutePage =
-                windowOrigin + glm::ivec2{static_cast<int32_t>(x), static_cast<int32_t>(y)};
+            const glm::ivec2 absolutePage = windowOrigin + glm::ivec2{static_cast<int32_t>(x), static_cast<int32_t>(y)};
             const uint32_t pageId =
                 renderer::vsmPageId(static_cast<uint32_t>(level), renderer::vsmSlotIndex(absolutePage));
 
@@ -2419,9 +2407,8 @@ void Renderer::drawVsmPageResidency()
                 // The identity check, exactly as the sampler does it: a slot can
                 // hold a page that scrolled away, and that page is not usable
                 // here even though it is resident.
-                const bool matchesIdentity =
-                    entry.physicalPage != renderer::kVsmInvalidPhysicalPage &&
-                    entry.absoluteX == absolutePage.x && entry.absoluteY == absolutePage.y;
+                const bool matchesIdentity = entry.physicalPage != renderer::kVsmInvalidPhysicalPage &&
+                                             entry.absoluteX == absolutePage.x && entry.absoluteY == absolutePage.y;
                 if (matchesIdentity) {
                     ++residentHere;
                     if (entry.rendered != 0) {
@@ -2435,8 +2422,7 @@ void Renderer::drawVsmPageResidency()
 
             // Rows are drawn top-down while light-space Y grows upward, so the
             // grid is flipped to read the way the world does.
-            const float cellY =
-                origin.y + static_cast<float>(renderer::kVsmPagesPerLevelAxis - 1u - y) * cellSize;
+            const float cellY = origin.y + static_cast<float>(renderer::kVsmPagesPerLevelAxis - 1u - y) * cellSize;
             const ImVec2 min{origin.x + static_cast<float>(x) * cellSize, cellY};
             const ImVec2 max{min.x + cellSize - 1.0f, min.y + cellSize - 1.0f};
             drawList->AddRectFilled(min, max, color);
@@ -2490,8 +2476,7 @@ void Renderer::drawRenderTargetPreview(VkImageView imageView,
                                        float size,
                                        float exposureScale)
 {
-    const VkDescriptorSet descriptorSet =
-        imguiLayer_.renderTargetPreviewDescriptor(imageView, sampler, imageLayout);
+    const VkDescriptorSet descriptorSet = imguiLayer_.renderTargetPreviewDescriptor(imageView, sampler, imageLayout);
     if (descriptorSet == VK_NULL_HANDLE) {
         ImGui::TextDisabled("Preview unavailable.");
         return;
@@ -2549,9 +2534,8 @@ void Renderer::drawRenderTargetMetadataTable()
     };
 
     if (ImGui::CollapsingHeader("Resource Metadata", ImGuiTreeNodeFlags_DefaultOpen)) {
-        constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-                                          ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp |
-                                          ImGuiTableFlags_ScrollX;
+        constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable |
+                                          ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_ScrollX;
         if (ImGui::BeginTable("RenderTargetDebugMetadata", 8, flags)) {
             ImGui::TableSetupColumn("Debug name");
             ImGui::TableSetupColumn("Dimensions");
@@ -2684,16 +2668,16 @@ void Renderer::drawRenderTargetMetadataTable()
             }
             if (showRenderTargetFinalCompositeMetadata_) {
                 const VkExtent2D extent = swapchain_.extent();
-                addMetadataRow(RenderTargetDebugMetadata{
-                    "FinalCompositeSwapchain",
-                    extentString(extent.width, extent.height) + ", " + std::to_string(swapchain_.imageCount()) +
-                        " images",
-                    swapchain_.colorFormat(),
-                    1,
-                    1,
-                    "CompositePass color attachment, then ImGui overlay and present",
-                    false,
-                    "swapchain"});
+                addMetadataRow(
+                    RenderTargetDebugMetadata{"FinalCompositeSwapchain",
+                                              extentString(extent.width, extent.height) + ", " +
+                                                  std::to_string(swapchain_.imageCount()) + " images",
+                                              swapchain_.colorFormat(),
+                                              1,
+                                              1,
+                                              "CompositePass color attachment, then ImGui overlay and present",
+                                              false,
+                                              "swapchain"});
             }
             if (brdfLutTexture_.valid()) {
                 addMetadataRow(RenderTargetDebugMetadata{
@@ -2734,38 +2718,37 @@ void Renderer::drawRenderTargetMetadataTable()
                     "2D mip chain"});
             }
             if (diffuseIrradianceMap_.valid()) {
-                addMetadataRow(RenderTargetDebugMetadata{
-                    "DiffuseIrradianceCubemap",
-                    cubeExtentString(diffuseIrradianceMap_.faceSize()),
-                    diffuseIrradianceMap_.format(),
-                    diffuseIrradianceMap_.mipLevels(),
-                    6,
-                    hdrEnvironmentLoaded_ ? "HDR-derived diffuse IBL cubemap" : "Procedural diffuse IBL cubemap",
-                    false,
-                    "cube"});
+                addMetadataRow(RenderTargetDebugMetadata{"DiffuseIrradianceCubemap",
+                                                         cubeExtentString(diffuseIrradianceMap_.faceSize()),
+                                                         diffuseIrradianceMap_.format(),
+                                                         diffuseIrradianceMap_.mipLevels(),
+                                                         6,
+                                                         hdrEnvironmentLoaded_ ? "HDR-derived diffuse IBL cubemap"
+                                                                               : "Procedural diffuse IBL cubemap",
+                                                         false,
+                                                         "cube"});
             }
             if (prefilteredEnvironmentMap_.valid()) {
-                addMetadataRow(RenderTargetDebugMetadata{
-                    "PrefilteredSpecularCubemap",
-                    cubeExtentString(prefilteredEnvironmentMap_.faceSize()),
-                    prefilteredEnvironmentMap_.format(),
-                    prefilteredEnvironmentMap_.mipLevels(),
-                    6,
-                    hdrEnvironmentLoaded_ ? "HDR-derived specular IBL mip chain"
-                                          : "Procedural specular IBL mip chain",
-                    false,
-                    "cube"});
+                addMetadataRow(RenderTargetDebugMetadata{"PrefilteredSpecularCubemap",
+                                                         cubeExtentString(prefilteredEnvironmentMap_.faceSize()),
+                                                         prefilteredEnvironmentMap_.format(),
+                                                         prefilteredEnvironmentMap_.mipLevels(),
+                                                         6,
+                                                         hdrEnvironmentLoaded_ ? "HDR-derived specular IBL mip chain"
+                                                                               : "Procedural specular IBL mip chain",
+                                                         false,
+                                                         "cube"});
             }
             if (environmentMap_.valid()) {
-                addMetadataRow(RenderTargetDebugMetadata{
-                    "VisibleEnvironmentCubemap",
-                    cubeExtentString(environmentMap_.faceSize()),
-                    environmentMap_.format(),
-                    environmentMap_.mipLevels(),
-                    6,
-                    hdrEnvironmentLoaded_ ? "HDR environment skybox source" : "Procedural skybox source",
-                    false,
-                    "cube"});
+                addMetadataRow(RenderTargetDebugMetadata{"VisibleEnvironmentCubemap",
+                                                         cubeExtentString(environmentMap_.faceSize()),
+                                                         environmentMap_.format(),
+                                                         environmentMap_.mipLevels(),
+                                                         6,
+                                                         hdrEnvironmentLoaded_ ? "HDR environment skybox source"
+                                                                               : "Procedural skybox source",
+                                                         false,
+                                                         "cube"});
             }
 
             ImGui::EndTable();
@@ -2799,8 +2782,9 @@ void Renderer::drawRenderTargetPreviews()
         const VkExtent3D extent = postProcess_.ambientOcclusion().extent();
         ImGui::Text("Dimensions: %u x %u", extent.width, extent.height);
         ImGui::Text("Format: %s", vkFormatName(postProcess_.ambientOcclusion().format()));
-        ImGui::TextDisabled("%s", frameGtaoActive_ ? "Denoised visibility (1 = lit)."
-                                                    : "GTAO disabled; showing the last-written term.");
+        ImGui::TextDisabled("%s",
+                            frameGtaoActive_ ? "Denoised visibility (1 = lit)."
+                                             : "GTAO disabled; showing the last-written term.");
         // AO is an LDR [0,1] visibility term, so preview it without HDR exposure scaling.
         drawRenderTargetPreview(postProcess_.ambientOcclusion().imageView(),
                                 postProcess_.sampler(),
@@ -2928,8 +2912,8 @@ void Renderer::drawRenderTargetPreviews()
 
     if (depthPyramid_.image() != VK_NULL_HANDLE && !depthPyramid_.mipImageViews().empty() &&
         ImGui::CollapsingHeader("Depth Pyramid", ImGuiTreeNodeFlags_DefaultOpen)) {
-        uint32_t selectedMipLevel = std::min(depthPyramid_.selectedDebugMip(),
-                                             static_cast<uint32_t>(depthPyramid_.mipImageViews().size() - 1));
+        uint32_t selectedMipLevel =
+            std::min(depthPyramid_.selectedDebugMip(), static_cast<uint32_t>(depthPyramid_.mipImageViews().size() - 1));
         int selectedMip = static_cast<int>(selectedMipLevel);
         ImGui::SliderInt("Selected mip", &selectedMip, 0, static_cast<int>(depthPyramid_.mipImageViews().size() - 1));
         selectedMipLevel = static_cast<uint32_t>(std::max(selectedMip, 0));
@@ -3000,8 +2984,8 @@ void Renderer::drawCsmCascadeDebugUi(float previewSize)
         ImGui::TextDisabled("Per-cascade draw and batch counts below are CPU frustum estimates.");
     }
 
-    constexpr ImGuiTableFlags tableFlags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-                                           ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp;
+    constexpr ImGuiTableFlags tableFlags =
+        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp;
     if (ImGui::BeginTable("CsmCascadeMetadata", 7, tableFlags)) {
         ImGui::TableSetupColumn("Cascade", ImGuiTableColumnFlags_WidthFixed);
         ImGui::TableSetupColumn("Split range");
@@ -3015,9 +2999,8 @@ void Renderer::drawCsmCascadeDebugUi(float previewSize)
         for (uint32_t cascadeIndex = 0; cascadeIndex < cascadeCount; ++cascadeIndex) {
             const CascadeFrameData& cascade = frameCascades_[cascadeIndex];
             const float range = std::max(cascade.farDepth - cascade.nearDepth, 0.0f);
-            const float coverage = csmSettings_.shadowDistance > 0.0f
-                                       ? (range / csmSettings_.shadowDistance) * 100.0f
-                                       : 0.0f;
+            const float coverage =
+                csmSettings_.shadowDistance > 0.0f ? (range / csmSettings_.shadowDistance) * 100.0f : 0.0f;
 
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
@@ -3093,8 +3076,8 @@ void Renderer::drawCsmCascadeDebugUi(float previewSize)
 
 void Renderer::drawGlobalTextureMetadata()
 {
-    constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-                                      ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp;
+    constexpr ImGuiTableFlags flags =
+        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp;
     if (!ImGui::BeginTable("GlobalTextureMetadata", 6, flags)) {
         return;
     }
@@ -3264,16 +3247,16 @@ void Renderer::drawGpuTimingDebugUi()
                     framePrepCpuHistory_.average(),
                     framePrepCpuHistory_.max());
     }
-    ImGui::Text("Timestamp queries: %u / %u",
-                latestGpuProfilerResults_.queryCount,
-                latestGpuProfilerResults_.maxQueryCount);
+    ImGui::Text(
+        "Timestamp queries: %u / %u", latestGpuProfilerResults_.queryCount, latestGpuProfilerResults_.maxQueryCount);
     if (latestGpuProfilerResults_.queryLimitExceeded) {
         ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.25f, 1.0f), "Warning: profiler query capacity exceeded.");
     }
-    ImGui::TextDisabled("Timings are read back after frame-fence completion. Nested scopes are shown in execution order.");
+    ImGui::TextDisabled(
+        "Timings are read back after frame-fence completion. Nested scopes are shown in execution order.");
 
-    constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-                                      ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp;
+    constexpr ImGuiTableFlags flags =
+        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp;
     if (!ImGui::BeginTable("GpuTimingHistoryTable", 5, flags)) {
         return;
     }
@@ -3298,11 +3281,10 @@ void Renderer::drawGpuTimingDebugUi()
 void Renderer::drawCullingDebugUi()
 {
     const CullingDebugSnapshot snapshot = cullingDebugSnapshot(currentFrame_);
-    const float occlusionRejectionPercent =
-        snapshot.totalDrawItems > 0
-            ? (100.0f * static_cast<float>(snapshot.occlusionCulledDrawItems) /
-               static_cast<float>(snapshot.totalDrawItems))
-            : 0.0f;
+    const float occlusionRejectionPercent = snapshot.totalDrawItems > 0
+                                                ? (100.0f * static_cast<float>(snapshot.occlusionCulledDrawItems) /
+                                                   static_cast<float>(snapshot.totalDrawItems))
+                                                : 0.0f;
     ImGui::Text("Occlusion test scene: %s", snapshot.occlusionTestSceneActive ? "active" : "inactive");
     ImGui::Text("Total objects: %u", snapshot.totalObjects);
     ImGui::Text("Total draw items: %u", snapshot.totalDrawItems);
@@ -3316,9 +3298,8 @@ void Renderer::drawCullingDebugUi()
                            "Warning: frame capacity exceeded -- %u object(s) and %u draw item(s) dropped.",
                            snapshot.droppedObjects,
                            snapshot.droppedDrawItems);
-        ImGui::TextDisabled("Caps are %u objects / %u draw items (renderer/RendererInternal.h).",
-                            kMaxFrameObjects,
-                            kMaxDrawItems);
+        ImGui::TextDisabled(
+            "Caps are %u objects / %u draw items (renderer/RendererInternal.h).", kMaxFrameObjects, kMaxDrawItems);
     }
 
     // Render-bucket split. Opaque and Mask share the main pipeline (the alpha test
@@ -3362,8 +3343,8 @@ void Renderer::drawCullingDebugUi()
                 gpuOcclusionMinScreenPixels_);
     ImGui::Text("GPU shadow culling: %s", snapshot.gpuShadowCulling ? "enabled" : "disabled");
 
-    constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-                                      ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp;
+    constexpr ImGuiTableFlags flags =
+        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp;
     if (!ImGui::BeginTable("CullingHistoryTable", 5, flags)) {
         return;
     }
@@ -3385,8 +3366,8 @@ void Renderer::drawCullingDebugUi()
 
 void Renderer::drawExposureDebugUi()
 {
-    const ExposureMode mode = exposureModeValue(toneMappingSettings_.enableAutoExposure ? toneMappingSettings_.exposureMode
-                                                                                        : 0);
+    const ExposureMode mode =
+        exposureModeValue(toneMappingSettings_.enableAutoExposure ? toneMappingSettings_.exposureMode : 0);
     ImGui::Text("Current exposure: %.4f", postProcess_.currentToneMappingExposure());
     ImGui::Text("Log-average luminance: %.4f", averageLuminance_);
     ImGui::Text("Histogram clipped luminance: %.4f", histogramClippedLuminance_);
@@ -3394,8 +3375,8 @@ void Renderer::drawExposureDebugUi()
     ImGui::Text("Composite exposure source: %s",
                 postProcess_.isGpuExposureActive() ? "GPU exposure buffer" : "push constant");
 
-    constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-                                      ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp;
+    constexpr ImGuiTableFlags flags =
+        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp;
     if (!ImGui::BeginTable("ExposureHistoryTable", 5, flags)) {
         return;
     }
@@ -3458,14 +3439,8 @@ void Renderer::drawHistoryPlot(const DebugHistory& history, float height) const
     std::array<float, kDebugHistoryCapacity> values{};
     const size_t sampleCount = history.copyChronological(values);
     const float scaleMax = std::max(history.max(), 0.001f);
-    ImGui::PlotLines("##history",
-                     values.data(),
-                     static_cast<int>(sampleCount),
-                     0,
-                     nullptr,
-                     0.0f,
-                     scaleMax,
-                     ImVec2(180.0f, height));
+    ImGui::PlotLines(
+        "##history", values.data(), static_cast<int>(sampleCount), 0, nullptr, 0.0f, scaleMax, ImVec2(180.0f, height));
 }
 
 } // namespace ve

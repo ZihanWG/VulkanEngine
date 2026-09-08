@@ -50,7 +50,10 @@ public:
                      std::size_t minChunkSize,
                      const std::function<void(std::size_t begin, std::size_t end)>& body);
 
-    [[nodiscard]] std::size_t threadCount() const { return workers_.size(); }
+    [[nodiscard]] std::size_t threadCount() const
+    {
+        return workers_.size();
+    }
 
     // Approximate number of jobs not yet picked up by a worker. For diagnostics.
     [[nodiscard]] std::size_t pendingJobs() const;
@@ -70,8 +73,8 @@ auto JobSystem::enqueue(F&& f, Args&&... args) -> std::future<std::invoke_result
 {
     using ReturnType = std::invoke_result_t<F, Args...>;
 
-    auto task = std::make_shared<std::packaged_task<ReturnType()>>(
-        std::bind(std::forward<F>(f), std::forward<Args>(args)...));
+    auto task =
+        std::make_shared<std::packaged_task<ReturnType()>>(std::bind(std::forward<F>(f), std::forward<Args>(args)...));
     std::future<ReturnType> result = task->get_future();
 
     {

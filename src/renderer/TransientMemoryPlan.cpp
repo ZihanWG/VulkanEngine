@@ -22,9 +22,8 @@ namespace {
 
 // Lowest offset at or above `alignment` boundaries where [offset, offset+size)
 // clears every already-placed block it must avoid. `blocked` is sorted by offset.
-[[nodiscard]] uint64_t lowestFreeOffset(const std::vector<const TransientAllocation*>& blocked,
-                                        uint64_t size,
-                                        uint64_t alignment)
+[[nodiscard]] uint64_t
+lowestFreeOffset(const std::vector<const TransientAllocation*>& blocked, uint64_t size, uint64_t alignment)
 {
     uint64_t candidate = 0;
     for (const TransientAllocation* placed : blocked) {

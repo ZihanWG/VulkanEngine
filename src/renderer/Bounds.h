@@ -170,14 +170,10 @@ struct Frustum {
         // GLM stores matrices by column and indexes as matrix[column][row].
         // Frustum extraction is easier to read as row combinations, so rebuild
         // the four rows explicitly from the projection * view matrix.
-        const glm::vec4 row0{
-            viewProjection[0][0], viewProjection[1][0], viewProjection[2][0], viewProjection[3][0]};
-        const glm::vec4 row1{
-            viewProjection[0][1], viewProjection[1][1], viewProjection[2][1], viewProjection[3][1]};
-        const glm::vec4 row2{
-            viewProjection[0][2], viewProjection[1][2], viewProjection[2][2], viewProjection[3][2]};
-        const glm::vec4 row3{
-            viewProjection[0][3], viewProjection[1][3], viewProjection[2][3], viewProjection[3][3]};
+        const glm::vec4 row0{viewProjection[0][0], viewProjection[1][0], viewProjection[2][0], viewProjection[3][0]};
+        const glm::vec4 row1{viewProjection[0][1], viewProjection[1][1], viewProjection[2][1], viewProjection[3][1]};
+        const glm::vec4 row2{viewProjection[0][2], viewProjection[1][2], viewProjection[2][2], viewProjection[3][2]};
+        const glm::vec4 row3{viewProjection[0][3], viewProjection[1][3], viewProjection[2][3], viewProjection[3][3]};
 
         Frustum frustum{};
         // Vulkan clip space with GLM_FORCE_DEPTH_ZERO_TO_ONE is:

@@ -131,8 +131,8 @@ std::string formatReport(const AssetLoadStats& stats, size_t largestTextureRows)
 
     out += "Device memory (VMA)\n";
     if (stats.memory.valid) {
-        out += "  device-local used         " + padLeft(formatMebibytes(stats.memory.deviceLocalUsedBytes), 10) +
-               " MiB\n";
+        out +=
+            "  device-local used         " + padLeft(formatMebibytes(stats.memory.deviceLocalUsedBytes), 10) + " MiB\n";
         out += "  device-local allocated    " + padLeft(formatMebibytes(stats.memory.deviceLocalAllocatedBytes), 10) +
                " MiB\n";
         out += "  device-local budget       " + padLeft(formatMebibytes(stats.memory.deviceLocalBudgetBytes), 10) +

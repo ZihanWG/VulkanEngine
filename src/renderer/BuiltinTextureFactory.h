@@ -78,9 +78,7 @@ private:
     void createNeutralMetallicRoughness(rhi::VulkanContext& context,
                                         const rhi::VulkanCommandContext& commandContext,
                                         rhi::VulkanTexture& out) const;
-    void nameTexture(const rhi::VulkanContext& context,
-                     const rhi::VulkanTexture& texture,
-                     std::string_view name) const;
+    void nameTexture(const rhi::VulkanContext& context, const rhi::VulkanTexture& texture, std::string_view name) const;
 };
 
 } // namespace ve::renderer

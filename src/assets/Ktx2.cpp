@@ -12,8 +12,8 @@ namespace ve::assets {
 
 namespace {
 
-constexpr std::array<uint8_t, 12> kIdentifier = {0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32,
-                                                 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A};
+constexpr std::array<uint8_t, 12> kIdentifier = {
+    0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A};
 
 // Fixed section sizes from the KTX 2.0 specification. The level index follows the
 // header immediately, so the first variable-length section (the DFD) starts at
@@ -67,14 +67,14 @@ void writeU64At(std::vector<uint8_t>& bytes, size_t offset, uint64_t value)
 
 [[nodiscard]] uint32_t readU32At(std::span<const uint8_t> bytes, size_t offset)
 {
-    return static_cast<uint32_t>(bytes[offset]) | (static_cast<uint32_t>(bytes[offset + 1]) << 8U)
-           | (static_cast<uint32_t>(bytes[offset + 2]) << 16U) | (static_cast<uint32_t>(bytes[offset + 3]) << 24U);
+    return static_cast<uint32_t>(bytes[offset]) | (static_cast<uint32_t>(bytes[offset + 1]) << 8U) |
+           (static_cast<uint32_t>(bytes[offset + 2]) << 16U) | (static_cast<uint32_t>(bytes[offset + 3]) << 24U);
 }
 
 [[nodiscard]] uint64_t readU64At(std::span<const uint8_t> bytes, size_t offset)
 {
-    return static_cast<uint64_t>(readU32At(bytes, offset))
-           | (static_cast<uint64_t>(readU32At(bytes, offset + 4)) << 32U);
+    return static_cast<uint64_t>(readU32At(bytes, offset)) |
+           (static_cast<uint64_t>(readU32At(bytes, offset + 4)) << 32U);
 }
 
 [[nodiscard]] uint32_t levelExtent(uint32_t base, uint32_t level)
@@ -137,8 +137,7 @@ struct DfdSample {
         samples.push_back(DfdSample{64, 63, kDfdChannelBc5Green});
         break;
     default:
-        throw std::runtime_error("KTX2: no data format descriptor for vkFormat "
-                                 + std::to_string(vkFormat));
+        throw std::runtime_error("KTX2: no data format descriptor for vkFormat " + std::to_string(vkFormat));
     }
 
     const uint32_t descriptorBlockSize = 24U + 16U * static_cast<uint32_t>(samples.size());
@@ -157,8 +156,8 @@ struct DfdSample {
 
     for (const DfdSample& sample : samples) {
         appendU32(dfd, sample.bitOffset | (sample.bitLength << 16U) | (sample.channelType << 24U));
-        appendU32(dfd, 0);          // samplePosition0-3, all zero for a whole block
-        appendU32(dfd, 0);          // sampleLower
+        appendU32(dfd, 0);           // samplePosition0-3, all zero for a whole block
+        appendU32(dfd, 0);           // sampleLower
         appendU32(dfd, 0xffffffffU); // sampleUpper: unsigned normalized
     }
 
@@ -233,9 +232,9 @@ std::vector<uint8_t> writeKtx2(const Ktx2Image& image)
     for (uint32_t level = 0; level < levelCount; ++level) {
         const size_t expected = ktx2LevelSizeBytes(image.vkFormat, image.pixelWidth, image.pixelHeight, level);
         if (image.levels[level].size() != expected) {
-            throw std::runtime_error("KTX2: mip level " + std::to_string(level) + " is "
-                                     + std::to_string(image.levels[level].size()) + " bytes, expected "
-                                     + std::to_string(expected) + ".");
+            throw std::runtime_error("KTX2: mip level " + std::to_string(level) + " is " +
+                                     std::to_string(image.levels[level].size()) + " bytes, expected " +
+                                     std::to_string(expected) + ".");
         }
     }
 
@@ -251,9 +250,9 @@ std::vector<uint8_t> writeKtx2(const Ktx2Image& image)
     appendU32(bytes, 1); // typeSize is 1 for every block-compressed format
     appendU32(bytes, image.pixelWidth);
     appendU32(bytes, image.pixelHeight);
-    appendU32(bytes, 0);          // pixelDepth: 2D
-    appendU32(bytes, 0);          // layerCount: not an array
-    appendU32(bytes, 1);          // faceCount
+    appendU32(bytes, 0); // pixelDepth: 2D
+    appendU32(bytes, 0); // layerCount: not an array
+    appendU32(bytes, 1); // faceCount
     appendU32(bytes, levelCount);
     appendU32(bytes, 0); // supercompressionScheme: none
 
@@ -393,8 +392,8 @@ std::vector<Ktx2CopyRegion> ktx2CopyPlan(const Ktx2Info& info)
     for (uint32_t level = 0; level < info.levels.size(); ++level) {
         const Ktx2LevelView& view = info.levels[level];
         if (view.byteOffset % alignment != 0) {
-            throw std::runtime_error("KTX2: level " + std::to_string(level)
-                                     + " is not aligned to the texel block size.");
+            throw std::runtime_error("KTX2: level " + std::to_string(level) +
+                                     " is not aligned to the texel block size.");
         }
         if (view.byteLength != ktx2LevelSizeBytes(info.vkFormat, info.pixelWidth, info.pixelHeight, level)) {
             throw std::runtime_error("KTX2: level " + std::to_string(level) + " has the wrong size for its extent.");

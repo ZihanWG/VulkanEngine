@@ -58,7 +58,10 @@ struct TransientMemoryPlan {
     // number this whole exercise is measured against.
     uint64_t unaliasedBytes = 0;
 
-    [[nodiscard]] uint64_t savedBytes() const { return unaliasedBytes > poolBytes ? unaliasedBytes - poolBytes : 0; }
+    [[nodiscard]] uint64_t savedBytes() const
+    {
+        return unaliasedBytes > poolBytes ? unaliasedBytes - poolBytes : 0;
+    }
 
     // 0.0 when nothing is shared, approaching 1.0 as more is. Zero when there is
     // nothing to place, rather than a division by zero.

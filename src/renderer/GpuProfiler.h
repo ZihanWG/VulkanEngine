@@ -56,11 +56,26 @@ public:
     void markFrameSubmitted(uint32_t frameIndex);
     [[nodiscard]] bool readFrame(uint32_t frameIndex, FrameResults& results);
 
-    void setEnabled(bool enabled) { enabled_ = enabled; }
-    [[nodiscard]] bool enabled() const { return enabled_; }
-    [[nodiscard]] bool available() const { return available_; }
-    [[nodiscard]] const std::string& unavailableReason() const { return unavailableReason_; }
-    [[nodiscard]] uint32_t maxTimestampQueriesPerFrame() const { return maxTimestampQueriesPerFrame_; }
+    void setEnabled(bool enabled)
+    {
+        enabled_ = enabled;
+    }
+    [[nodiscard]] bool enabled() const
+    {
+        return enabled_;
+    }
+    [[nodiscard]] bool available() const
+    {
+        return available_;
+    }
+    [[nodiscard]] const std::string& unavailableReason() const
+    {
+        return unavailableReason_;
+    }
+    [[nodiscard]] uint32_t maxTimestampQueriesPerFrame() const
+    {
+        return maxTimestampQueriesPerFrame_;
+    }
 
 private:
     struct ScopeRecord {
@@ -86,7 +101,8 @@ private:
 
     [[nodiscard]] bool validFrameIndex(uint32_t frameIndex) const;
     [[nodiscard]] bool allocateQueries(FrameState& frame, uint32_t count, uint32_t& firstQuery);
-    void writeTimestamp(VkCommandBuffer commandBuffer, VkPipelineStageFlags2 stage, VkQueryPool queryPool, uint32_t query);
+    void
+    writeTimestamp(VkCommandBuffer commandBuffer, VkPipelineStageFlags2 stage, VkQueryPool queryPool, uint32_t query);
     [[nodiscard]] double elapsedMilliseconds(uint64_t begin, uint64_t end) const;
     void disable(std::string reason);
 
@@ -102,10 +118,7 @@ private:
 
 class GpuProfileScope final {
 public:
-    GpuProfileScope(GpuProfiler& profiler,
-                    uint32_t frameIndex,
-                    VkCommandBuffer commandBuffer,
-                    std::string_view name);
+    GpuProfileScope(GpuProfiler& profiler, uint32_t frameIndex, VkCommandBuffer commandBuffer, std::string_view name);
     ~GpuProfileScope();
 
     GpuProfileScope(const GpuProfileScope&) = delete;

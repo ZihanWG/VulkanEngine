@@ -302,8 +302,8 @@ int exposureModeFromString(const std::string& value)
     if (normalized == "logaverage" || normalized == "log-average" || normalized == "log_average") {
         return 1;
     }
-    if (normalized == "histogram" || normalized == "histogrampercentile" ||
-        normalized == "histogram-percentile" || normalized == "histogram_percentile") {
+    if (normalized == "histogram" || normalized == "histogrampercentile" || normalized == "histogram-percentile" ||
+        normalized == "histogram_percentile") {
         return 2;
     }
 
@@ -565,8 +565,7 @@ Json toJson(const RuntimeSettings& settings)
 {
     return Json{
         {"schemaVersion", 1},
-        {"renderScale",
-         Json{{"scale", settings.renderScale.scale}, {"sharpness", settings.renderScale.sharpness}}},
+        {"renderScale", Json{{"scale", settings.renderScale.scale}, {"sharpness", settings.renderScale.sharpness}}},
         {"dynamicResolution",
          Json{{"enabled", settings.dynamicResolution.enabled},
               {"targetFrameMs", settings.dynamicResolution.targetFrameMs},
@@ -600,7 +599,7 @@ Json toJson(const RuntimeSettings& settings)
               {"varianceClipping", settings.taa.varianceClipping},
               {"varianceGamma", settings.taa.varianceGamma},
               {"rejectionFeedback", settings.taa.rejectionFeedback},
-          {"catmullRomHistory", settings.taa.catmullRomHistory},
+              {"catmullRomHistory", settings.taa.catmullRomHistory},
               {"feedback", settings.taa.feedback}}},
         {"lod",
          Json{{"enabled", settings.lod.enabled},
@@ -687,7 +686,7 @@ Json toJson(const RuntimeSettings& settings)
               {"gridSpacingZ", settings.gi.gridSpacing[2]}}},
         {"renderer",
          Json{{"enableTransientAliasing", settings.enableTransientAliasing},
-               {"useGpuCulling", settings.useGpuCulling},
+              {"useGpuCulling", settings.useGpuCulling},
               {"useGpuShadowCulling", settings.useGpuShadowCulling},
               {"enableGpuOcclusionCulling", settings.enableGpuOcclusionCulling},
               {"enableTwoPhaseOcclusion", settings.enableTwoPhaseOcclusion},
@@ -730,9 +729,8 @@ RuntimeSettingsLoadResult loadRuntimeSettingsDetailed(const std::filesystem::pat
     std::error_code existsError;
     if (!std::filesystem::exists(path, existsError)) {
         if (existsError) {
-            const std::string message =
-                "Runtime settings file could not be checked at " + pathString(path) + ": " + existsError.message() +
-                ". Using defaults.";
+            const std::string message = "Runtime settings file could not be checked at " + pathString(path) + ": " +
+                                        existsError.message() + ". Using defaults.";
             Logger::warn(message);
             return {RuntimeSettingsLoadStatus::IoError, message};
         }
@@ -745,8 +743,8 @@ RuntimeSettingsLoadResult loadRuntimeSettingsDetailed(const std::filesystem::pat
     try {
         std::ifstream input(path);
         if (!input) {
-            const std::string message = "Runtime settings file could not be opened at " + pathString(path) +
-                                        "; using defaults.";
+            const std::string message =
+                "Runtime settings file could not be opened at " + pathString(path) + "; using defaults.";
             Logger::warn(message);
             return {RuntimeSettingsLoadStatus::IoError, message};
         }
@@ -759,8 +757,8 @@ RuntimeSettingsLoadResult loadRuntimeSettingsDetailed(const std::filesystem::pat
         return {RuntimeSettingsLoadStatus::Loaded, message};
     } catch (const std::exception& error) {
         outSettings = RuntimeSettings{};
-        const std::string message = "Runtime settings file at " + pathString(path) +
-                                    " is malformed; using defaults: " + error.what();
+        const std::string message =
+            "Runtime settings file at " + pathString(path) + " is malformed; using defaults: " + error.what();
         Logger::warn(message);
         return {RuntimeSettingsLoadStatus::Malformed, message};
     }
@@ -780,8 +778,8 @@ RuntimeSettingsSaveResult saveRuntimeSettingsDetailed(const std::filesystem::pat
             std::error_code createError;
             std::filesystem::create_directories(parentPath, createError);
             if (createError) {
-                const std::string message = "Could not create runtime settings directory " +
-                                            pathString(parentPath) + ": " + createError.message();
+                const std::string message = "Could not create runtime settings directory " + pathString(parentPath) +
+                                            ": " + createError.message();
                 Logger::warn(message);
                 return {false, message};
             }

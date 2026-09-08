@@ -55,6 +55,6 @@ struct AliasingProbeResult {
 // Allocates, binds, and immediately destroys. Records nothing and leaves no
 // state behind; safe to call once at startup.
 [[nodiscard]] AliasingProbeResult probeImageMemoryAliasing(VulkanContext& context,
-                                                          const VulkanCommandContext& commandContext);
+                                                           const VulkanCommandContext& commandContext);
 
 } // namespace ve::rhi

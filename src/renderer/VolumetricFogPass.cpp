@@ -110,8 +110,8 @@ void VolumetricFogPass::create(rhi::VulkanContext& context,
         writeDescriptorSets();
 
         available_ = true;
-        Logger::info("Volumetric fog enabled with a " + std::to_string(kFogGridX) + "x" +
-                     std::to_string(kFogGridY) + "x" + std::to_string(kFogGridZ) + " froxel volume.");
+        Logger::info("Volumetric fog enabled with a " + std::to_string(kFogGridX) + "x" + std::to_string(kFogGridY) +
+                     "x" + std::to_string(kFogGridZ) + " froxel volume.");
     } catch (const std::exception& error) {
         // Optional subsystem: a failure leaves the scene rendering without fog
         // rather than failing device creation, matching the clustered lighting
@@ -176,8 +176,7 @@ void VolumetricFogPass::createVolumes()
         info.format = VK_FORMAT_R16G16B16A16_SFLOAT;
         // TRANSFER_DST is for the one-time neutral clear in
         // ensureVolumeInitialized.
-        info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                     VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         info.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         info.viewType = VK_IMAGE_VIEW_TYPE_3D;
         info.debugName = name;
@@ -246,9 +245,8 @@ void VolumetricFogPass::createDescriptorResources(uint32_t frameCount)
     injectBindings[kInjectBindingHistoryVolume].descriptorCount = 1;
     injectBindings[kInjectBindingHistoryVolume].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
-    injectSetLayout_.create(device,
-                            std::span<const VkDescriptorSetLayoutBinding>(injectBindings.data(),
-                                                                          injectBindings.size()));
+    injectSetLayout_.create(
+        device, std::span<const VkDescriptorSetLayoutBinding>(injectBindings.data(), injectBindings.size()));
 
     std::array<VkDescriptorSetLayoutBinding, kIntegrateBindingCount> integrateBindings{};
     integrateBindings[kIntegrateBindingParams].binding = kIntegrateBindingParams;
@@ -264,9 +262,8 @@ void VolumetricFogPass::createDescriptorResources(uint32_t frameCount)
     integrateBindings[kIntegrateBindingIntegratedVolume].descriptorCount = 1;
     integrateBindings[kIntegrateBindingIntegratedVolume].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
-    integrateSetLayout_.create(device,
-                               std::span<const VkDescriptorSetLayoutBinding>(integrateBindings.data(),
-                                                                             integrateBindings.size()));
+    integrateSetLayout_.create(
+        device, std::span<const VkDescriptorSetLayoutBinding>(integrateBindings.data(), integrateBindings.size()));
 
     std::array<VkDescriptorPoolSize, 3> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -277,8 +274,8 @@ void VolumetricFogPass::createDescriptorResources(uint32_t frameCount)
     poolSizes[2].descriptorCount = frameCount * 6;
     // Two sets per frame per pipeline, one per ping-pong parity: a set bakes in
     // which volume is written and which is sampled as history.
-    descriptorPool_.create(device, std::span<const VkDescriptorPoolSize>(poolSizes.data(), poolSizes.size()),
-                           frameCount * 4);
+    descriptorPool_.create(
+        device, std::span<const VkDescriptorPoolSize>(poolSizes.data(), poolSizes.size()), frameCount * 4);
 
     injectParamBuffers_.resize(frameCount);
     integrateParamBuffers_.resize(frameCount);
@@ -341,8 +338,7 @@ void VolumetricFogPass::createPipelines(const std::filesystem::path& injectShade
     integrateInfo.descriptorSetLayouts = std::span<const VkDescriptorSetLayout>(&integrateLayout, 1);
     integrateInfo.pipelineCache = context_->pipelineCache();
     integratePipeline_.create(device, integrateInfo);
-    rhi::debug::setObjectName(
-        device, integratePipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "FogIntegratePipeline");
+    rhi::debug::setObjectName(device, integratePipeline_.pipeline(), VK_OBJECT_TYPE_PIPELINE, "FogIntegratePipeline");
 }
 
 void VolumetricFogPass::writeDescriptorSets()
@@ -391,43 +387,40 @@ void VolumetricFogPass::writeDescriptorSets()
         punctualAtlasInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
 
         std::array<VkWriteDescriptorSet, 8> writes{};
-        const auto makeWrite =
-            [](VkDescriptorSet set, uint32_t binding, VkDescriptorType type) {
-                VkWriteDescriptorSet write{};
-                write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                write.dstSet = set;
-                write.dstBinding = binding;
-                write.dstArrayElement = 0;
-                write.descriptorCount = 1;
-                write.descriptorType = type;
-                return write;
-            };
+        const auto makeWrite = [](VkDescriptorSet set, uint32_t binding, VkDescriptorType type) {
+            VkWriteDescriptorSet write{};
+            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet = set;
+            write.dstBinding = binding;
+            write.dstArrayElement = 0;
+            write.descriptorCount = 1;
+            write.descriptorType = type;
+            return write;
+        };
 
         writes[0] = makeWrite(injectSets_[setIndex], kInjectBindingParams, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
         writes[0].pBufferInfo = &injectParamsInfo;
         writes[1] =
             makeWrite(injectSets_[setIndex], kInjectBindingShadowMap, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
         writes[1].pImageInfo = &shadowInfo;
-        writes[2] =
-            makeWrite(injectSets_[setIndex], kInjectBindingScatterVolume, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+        writes[2] = makeWrite(injectSets_[setIndex], kInjectBindingScatterVolume, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
         writes[2].pImageInfo = &scatterInfo;
 
-        writes[6] = makeWrite(
-            injectSets_[setIndex], kInjectBindingPunctualAtlas, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+        writes[6] =
+            makeWrite(injectSets_[setIndex], kInjectBindingPunctualAtlas, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
         writes[6].pImageInfo = &punctualAtlasInfo;
 
-        writes[7] = makeWrite(
-            injectSets_[setIndex], kInjectBindingHistoryVolume, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+        writes[7] =
+            makeWrite(injectSets_[setIndex], kInjectBindingHistoryVolume, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
         writes[7].pImageInfo = &historyInfo;
 
-        writes[3] =
-            makeWrite(integrateSets_[setIndex], kIntegrateBindingParams, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+        writes[3] = makeWrite(integrateSets_[setIndex], kIntegrateBindingParams, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
         writes[3].pBufferInfo = &integrateParamsInfo;
-        writes[4] = makeWrite(
-            integrateSets_[setIndex], kIntegrateBindingScatterVolume, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+        writes[4] =
+            makeWrite(integrateSets_[setIndex], kIntegrateBindingScatterVolume, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
         writes[4].pImageInfo = &scatterInfo;
-        writes[5] = makeWrite(
-            integrateSets_[setIndex], kIntegrateBindingIntegratedVolume, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+        writes[5] =
+            makeWrite(integrateSets_[setIndex], kIntegrateBindingIntegratedVolume, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
         writes[5].pImageInfo = &integratedInfo;
 
         vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
@@ -461,8 +454,7 @@ void VolumetricFogPass::updateParams(uint32_t frameIndex, const FogInjectParams&
 
     FogIntegrateParams integrateParams{};
     integrateParams.fogParams = glm::vec4(injectParams.fogParams.y, 0.0f, 0.0f, 0.0f);
-    integrateParamBuffers_[frameIndex].upload(
-        std::as_bytes(std::span<const FogIntegrateParams>(&integrateParams, 1)));
+    integrateParamBuffers_[frameIndex].upload(std::as_bytes(std::span<const FogIntegrateParams>(&integrateParams, 1)));
 }
 
 void VolumetricFogPass::ensureVolumeInitialized(VkCommandBuffer commandBuffer)
@@ -477,30 +469,28 @@ void VolumetricFogPass::ensureVolumeInitialized(VkCommandBuffer commandBuffer)
     // each other through the temporal blend, so an uninitialised history would
     // not merely look wrong on frame one -- a NaN read out of undefined memory
     // would be blended forward and never leave the volume.
-    const std::array<VkImageMemoryBarrier2, 3> toTransfer{
-        volumeBarrier(integratedVolume_.image(),
-                      VK_IMAGE_LAYOUT_UNDEFINED,
-                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                      VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-                      VK_ACCESS_2_NONE,
-                      VK_PIPELINE_STAGE_2_CLEAR_BIT,
-                      VK_ACCESS_2_TRANSFER_WRITE_BIT),
-        volumeBarrier(scatterVolumes_[0].image(),
-                      VK_IMAGE_LAYOUT_UNDEFINED,
-                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                      VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-                      VK_ACCESS_2_NONE,
-                      VK_PIPELINE_STAGE_2_CLEAR_BIT,
-                      VK_ACCESS_2_TRANSFER_WRITE_BIT),
-        volumeBarrier(scatterVolumes_[1].image(),
-                      VK_IMAGE_LAYOUT_UNDEFINED,
-                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                      VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-                      VK_ACCESS_2_NONE,
-                      VK_PIPELINE_STAGE_2_CLEAR_BIT,
-                      VK_ACCESS_2_TRANSFER_WRITE_BIT)};
-    submitImageBarriers(commandBuffer,
-                        std::span<const VkImageMemoryBarrier2>(toTransfer.data(), toTransfer.size()));
+    const std::array<VkImageMemoryBarrier2, 3> toTransfer{volumeBarrier(integratedVolume_.image(),
+                                                                        VK_IMAGE_LAYOUT_UNDEFINED,
+                                                                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                                                        VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                                                                        VK_ACCESS_2_NONE,
+                                                                        VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                                                                        VK_ACCESS_2_TRANSFER_WRITE_BIT),
+                                                          volumeBarrier(scatterVolumes_[0].image(),
+                                                                        VK_IMAGE_LAYOUT_UNDEFINED,
+                                                                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                                                        VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                                                                        VK_ACCESS_2_NONE,
+                                                                        VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                                                                        VK_ACCESS_2_TRANSFER_WRITE_BIT),
+                                                          volumeBarrier(scatterVolumes_[1].image(),
+                                                                        VK_IMAGE_LAYOUT_UNDEFINED,
+                                                                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                                                        VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                                                                        VK_ACCESS_2_NONE,
+                                                                        VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                                                                        VK_ACCESS_2_TRANSFER_WRITE_BIT)};
+    submitImageBarriers(commandBuffer, std::span<const VkImageMemoryBarrier2>(toTransfer.data(), toTransfer.size()));
 
     // rgb = 0 scattered light, a = 1 transmittance: the identity for the apply
     // step, so sampling it changes nothing.
@@ -520,30 +510,28 @@ void VolumetricFogPass::ensureVolumeInitialized(VkCommandBuffer commandBuffer)
     vkCmdClearColorImage(
         commandBuffer, scatterVolumes_[1].image(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &emptyMedium, 1, &range);
 
-    const std::array<VkImageMemoryBarrier2, 3> toSampled{
-        volumeBarrier(integratedVolume_.image(),
-                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                      VK_PIPELINE_STAGE_2_CLEAR_BIT,
-                      VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                      VK_ACCESS_2_SHADER_SAMPLED_READ_BIT),
-        volumeBarrier(scatterVolumes_[0].image(),
-                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                      VK_PIPELINE_STAGE_2_CLEAR_BIT,
-                      VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                      VK_ACCESS_2_SHADER_SAMPLED_READ_BIT),
-        volumeBarrier(scatterVolumes_[1].image(),
-                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                      VK_PIPELINE_STAGE_2_CLEAR_BIT,
-                      VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                      VK_ACCESS_2_SHADER_SAMPLED_READ_BIT)};
-    submitImageBarriers(commandBuffer,
-                        std::span<const VkImageMemoryBarrier2>(toSampled.data(), toSampled.size()));
+    const std::array<VkImageMemoryBarrier2, 3> toSampled{volumeBarrier(integratedVolume_.image(),
+                                                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                                                       VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                                                                       VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                                                       VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                                                       VK_ACCESS_2_SHADER_SAMPLED_READ_BIT),
+                                                         volumeBarrier(scatterVolumes_[0].image(),
+                                                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                                                       VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                                                                       VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                                                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                                                       VK_ACCESS_2_SHADER_SAMPLED_READ_BIT),
+                                                         volumeBarrier(scatterVolumes_[1].image(),
+                                                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                                                       VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                                                                       VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                                                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                                                       VK_ACCESS_2_SHADER_SAMPLED_READ_BIT)};
+    submitImageBarriers(commandBuffer, std::span<const VkImageMemoryBarrier2>(toSampled.data(), toSampled.size()));
 
     integratedVolumeLayout_ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     scatterVolumeLayouts_ = {VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -614,10 +602,8 @@ void VolumetricFogPass::recordCommands(VkCommandBuffer commandBuffer,
                        0,
                        static_cast<uint32_t>(sizeof(FogInjectPushConstants)),
                        &pushConstants);
-    vkCmdDispatch(commandBuffer,
-                  dispatchCount(kFogGridX, kFogLocalSize),
-                  dispatchCount(kFogGridY, kFogLocalSize),
-                  kFogGridZ);
+    vkCmdDispatch(
+        commandBuffer, dispatchCount(kFogGridX, kFogLocalSize), dispatchCount(kFogGridY, kFogLocalSize), kFogGridZ);
     rhi::debug::endLabel(commandBuffer);
 
     // Integration reads every froxel injection wrote, and each column reads
@@ -643,8 +629,7 @@ void VolumetricFogPass::recordCommands(VkCommandBuffer commandBuffer,
                             0,
                             nullptr);
     // One invocation per column; the march over Z happens inside the shader.
-    vkCmdDispatch(
-        commandBuffer, dispatchCount(kFogGridX, kFogLocalSize), dispatchCount(kFogGridY, kFogLocalSize), 1);
+    vkCmdDispatch(commandBuffer, dispatchCount(kFogGridX, kFogLocalSize), dispatchCount(kFogGridY, kFogLocalSize), 1);
     rhi::debug::endLabel(commandBuffer);
 
     // Hand the integrated volume to the composite pass as a sampled image.

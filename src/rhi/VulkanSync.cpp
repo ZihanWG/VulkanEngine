@@ -21,7 +21,9 @@ VulkanSync::~VulkanSync()
     cleanup();
 }
 
-void VulkanSync::initialize(const VulkanContext& context, std::span<renderer::FrameResources> frames, uint32_t swapchainImageCount)
+void VulkanSync::initialize(const VulkanContext& context,
+                            std::span<renderer::FrameResources> frames,
+                            uint32_t swapchainImageCount)
 {
     cleanup();
 

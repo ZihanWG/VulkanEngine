@@ -45,7 +45,8 @@ static_assert(offsetof(VsmMarkParams, sizesAndFlags) == 160);
 static_assert(sizeof(VsmMarkParams) == 176);
 
 constexpr VkDeviceSize kRequestBufferSize = static_cast<VkDeviceSize>(kVsmPageRequestWordCount) * sizeof(uint32_t);
-constexpr VkDeviceSize kPageTableBufferSize = static_cast<VkDeviceSize>(kVsmMaxVirtualPages) * sizeof(VsmPageTableEntry);
+constexpr VkDeviceSize kPageTableBufferSize =
+    static_cast<VkDeviceSize>(kVsmMaxVirtualPages) * sizeof(VsmPageTableEntry);
 constexpr uint32_t kMarkWorkgroupSize = 8;
 
 // Stand-in when a frame slot has no remembered window, which only happens before
@@ -102,8 +103,7 @@ VirtualShadowMapPass::VirtualShadowMapPass(rhi::VulkanContext& context,
                                            DepthPyramid& depthPyramid,
                                            GpuProfiler& gpuProfiler)
     : context_(context), depthPyramid_(depthPyramid), gpuProfiler_(gpuProfiler)
-{
-}
+{}
 
 VirtualShadowMapPass::~VirtualShadowMapPass()
 {
@@ -293,8 +293,8 @@ void VirtualShadowMapPass::createBuffers(uint32_t frameCount)
     for (uint32_t frameIndex = 0; frameIndex < frameCount; ++frameIndex) {
         rhi::VulkanBufferCreateInfo requestInfo{};
         requestInfo.size = kRequestBufferSize;
-        requestInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                            VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        requestInfo.usage =
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
         requestInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
         requestBuffers_[frameIndex].createBuffer(context_, requestInfo);
         rhi::debug::setObjectName(context_.vkDevice(),
@@ -709,8 +709,7 @@ uint32_t VirtualShadowMapPass::invalidatePagesForBounds(const VsmClipmapSettings
     for (uint32_t level = 0; level < clamped.levelCount; ++level) {
         scratchPageIds_.clear();
         const glm::ivec2 windowOrigin = vsmWindowOrigin(clamped, level, cameraLightSpaceXy);
-        vsmPagesOverlappingBounds(
-            clamped, lightView, level, windowOrigin, boundsMin, boundsMax, scratchPageIds_);
+        vsmPagesOverlappingBounds(clamped, lightView, level, windowOrigin, boundsMin, boundsMax, scratchPageIds_);
         for (const uint32_t pageId : scratchPageIds_) {
             if (allocator_.invalidate(pageId)) {
                 ++invalidated;

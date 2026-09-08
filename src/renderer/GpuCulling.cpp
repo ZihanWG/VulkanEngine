@@ -28,24 +28,17 @@ GpuCulling::GpuCulling(rhi::VulkanContext& context,
                        GpuProfiler& gpuProfiler,
                        const std::vector<rhi::VulkanBuffer>& frameIndirectDrawBuffers,
                        const std::vector<rhi::VulkanBuffer>& frameShadowIndirectDrawBuffers)
-    : context_(context),
-      depthPyramid_(depthPyramid),
-      renderGraph_(renderGraph),
-      gpuProfiler_(gpuProfiler),
+    : context_(context), depthPyramid_(depthPyramid), renderGraph_(renderGraph), gpuProfiler_(gpuProfiler),
       frameIndirectDrawBuffers_(frameIndirectDrawBuffers),
       frameShadowIndirectDrawBuffers_(frameShadowIndirectDrawBuffers)
-{
-}
+{}
 
 GpuCulling::~GpuCulling()
 {
     destroyResources();
 }
 
-void GpuCulling::createResources(uint32_t frameCount,
-                                 bool wantMainCull,
-                                 bool wantShadowCull,
-                                 bool shadowIndirectActive)
+void GpuCulling::createResources(uint32_t frameCount, bool wantMainCull, bool wantShadowCull, bool shadowIndirectActive)
 {
     destroyResources();
 
@@ -129,8 +122,8 @@ void GpuCulling::createCullDescriptorLayout()
     bindings[6].descriptorCount = 1;
     bindings[6].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
-    gpuCullDescriptorSetLayout_.create(
-        context_.vkDevice(), std::span<const VkDescriptorSetLayoutBinding>(bindings.data(), bindings.size()));
+    gpuCullDescriptorSetLayout_.create(context_.vkDevice(),
+                                       std::span<const VkDescriptorSetLayoutBinding>(bindings.data(), bindings.size()));
     rhi::debug::setObjectName(context_.vkDevice(),
                               gpuCullDescriptorSetLayout_.handle(),
                               VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
@@ -254,10 +247,8 @@ void GpuCulling::createCullDescriptorSets(uint32_t frameCount)
     gpuCullDescriptorPool_.create(context_.vkDevice(),
                                   std::span<const VkDescriptorPoolSize>(poolSizes.data(), poolSizes.size()),
                                   static_cast<uint32_t>(frameCount));
-    rhi::debug::setObjectName(context_.vkDevice(),
-                              gpuCullDescriptorPool_.handle(),
-                              VK_OBJECT_TYPE_DESCRIPTOR_POOL,
-                              "GpuCullDescriptorPool");
+    rhi::debug::setObjectName(
+        context_.vkDevice(), gpuCullDescriptorPool_.handle(), VK_OBJECT_TYPE_DESCRIPTOR_POOL, "GpuCullDescriptorPool");
 
     gpuCullDescriptorSets_.resize(frameCount, VK_NULL_HANDLE);
     std::vector<VkDescriptorSetLayout> setLayouts(frameCount, gpuCullDescriptorSetLayout_.handle());
@@ -388,8 +379,8 @@ void GpuCulling::createShadowCullingResources(uint32_t frameCount, bool shadowIn
     destroyShadowCullingResources();
 
     try {
-        if (gpuCullDescriptorSetLayout_.handle() == VK_NULL_HANDLE ||
-            gpuCullPipeline_.pipeline() == VK_NULL_HANDLE || gpuCullPipeline_.layout() == VK_NULL_HANDLE) {
+        if (gpuCullDescriptorSetLayout_.handle() == VK_NULL_HANDLE || gpuCullPipeline_.pipeline() == VK_NULL_HANDLE ||
+            gpuCullPipeline_.layout() == VK_NULL_HANDLE) {
             throw std::runtime_error("GPU shadow culling requires the shared cull.comp pipeline.");
         }
         if (!shadowIndirectActive) {
@@ -403,8 +394,7 @@ void GpuCulling::createShadowCullingResources(uint32_t frameCount, bool shadowIn
         Logger::info("GPU shadow culling preparation enabled with per-frame shadow cull input, compacted indirect "
                      "output, and per-batch visible count buffers.");
     } catch (const std::exception& error) {
-        Logger::warn(std::string("GPU shadow culling unavailable; using CPU shadow culling fallback: ") +
-                     error.what());
+        Logger::warn(std::string("GPU shadow culling unavailable; using CPU shadow culling fallback: ") + error.what());
         destroyShadowCullingResources();
     }
 }
@@ -709,7 +699,8 @@ void GpuCulling::recordMainCull(VkCommandBuffer commandBuffer,
         return;
     }
     if (frameIndex >= gpuCullDescriptorSets_.size() || frameIndex >= frameBatchVisibleCountBuffers_.size() ||
-        frameIndex >= frameBatchVisibleCountReadbackBuffers_.size() || frameIndex >= frameGpuCullReadbackReady_.size()) {
+        frameIndex >= frameBatchVisibleCountReadbackBuffers_.size() ||
+        frameIndex >= frameGpuCullReadbackReady_.size()) {
         return;
     }
 
@@ -753,10 +744,8 @@ void GpuCulling::recordMainCull(VkCommandBuffer commandBuffer,
 
     GpuCullPushConstants pushConstants{};
     pushConstants.frustumPlanes = frustumPlanes;
-    pushConstants.params = glm::uvec4(drawItemCount,
-                                      mainPassMultiDrawIndirect ? 1U : 0U,
-                                      indirectCountPathActive ? 1U : 0U,
-                                      1U);
+    pushConstants.params =
+        glm::uvec4(drawItemCount, mainPassMultiDrawIndirect ? 1U : 0U, indirectCountPathActive ? 1U : 0U, 1U);
     vkCmdPushConstants(commandBuffer,
                        gpuCullPipeline_.layout(),
                        VK_SHADER_STAGE_COMPUTE_BIT,
@@ -835,7 +824,8 @@ void GpuCulling::recordMainCullPhase2(VkCommandBuffer commandBuffer,
         return;
     }
     if (frameIndex >= gpuCullDescriptorSets_.size() || frameIndex >= frameBatchVisibleCountBuffers_.size() ||
-        frameIndex >= frameBatchVisibleCountReadbackBuffers_.size() || frameIndex >= frameGpuCullReadbackReady_.size()) {
+        frameIndex >= frameBatchVisibleCountReadbackBuffers_.size() ||
+        frameIndex >= frameGpuCullReadbackReady_.size()) {
         return;
     }
 
@@ -886,10 +876,8 @@ void GpuCulling::recordMainCullPhase2(VkCommandBuffer commandBuffer,
     GpuCullPushConstants pushConstants{};
     pushConstants.frustumPlanes = frustumPlanes;
     // w = occlusion allowed (bit 0) + phase 2 (bit 1).
-    pushConstants.params = glm::uvec4(drawItemCount,
-                                      mainPassMultiDrawIndirect ? 1U : 0U,
-                                      frameIndirectCountPathActive(frameIndex) ? 1U : 0U,
-                                      3U);
+    pushConstants.params = glm::uvec4(
+        drawItemCount, mainPassMultiDrawIndirect ? 1U : 0U, frameIndirectCountPathActive(frameIndex) ? 1U : 0U, 3U);
     vkCmdPushConstants(commandBuffer,
                        gpuCullPipeline_.layout(),
                        VK_SHADER_STAGE_COMPUTE_BIT,
@@ -907,11 +895,8 @@ void GpuCulling::recordMainCullPhase2(VkCommandBuffer commandBuffer,
     renderGraph_.endMainGpuCullingPhase2Pass();
 }
 
-void GpuCulling::recordShadowCull(VkCommandBuffer commandBuffer,
-                                  uint32_t frameIndex,
-                                  bool active,
-                                  uint32_t cascadeCount,
-                                  uint32_t drawItemCount)
+void GpuCulling::recordShadowCull(
+    VkCommandBuffer commandBuffer, uint32_t frameIndex, bool active, uint32_t cascadeCount, uint32_t drawItemCount)
 {
     if (!active || drawItemCount == 0) {
         return;
@@ -919,11 +904,9 @@ void GpuCulling::recordShadowCull(VkCommandBuffer commandBuffer,
     if (cascadeCount == 0) {
         return;
     }
-    if (frameIndex >= shadowCullDescriptorSets_.size() ||
-        frameIndex >= frameShadowBatchVisibleCountBuffers_.size() ||
+    if (frameIndex >= shadowCullDescriptorSets_.size() || frameIndex >= frameShadowBatchVisibleCountBuffers_.size() ||
         frameIndex >= frameShadowBatchVisibleCountReadbackBuffers_.size() ||
-        frameIndex >= frameShadowIndirectDrawBuffers_.size() ||
-        frameIndex >= frameGpuShadowCullReadbackReady_.size()) {
+        frameIndex >= frameShadowIndirectDrawBuffers_.size() || frameIndex >= frameGpuShadowCullReadbackReady_.size()) {
         return;
     }
 

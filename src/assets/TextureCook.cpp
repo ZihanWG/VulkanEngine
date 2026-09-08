@@ -157,10 +157,8 @@ bool cookedFormatUsable(BlockCompressionCaps caps, uint32_t cookedVkFormat, Text
     return cookedVkFormat == cookedFormatForUsage(usage) && chooseTextureFormat(caps, usage) == cookedVkFormat;
 }
 
-std::vector<std::vector<uint8_t>> generateMipChainRgba8(std::span<const uint8_t> basePixels,
-                                                        uint32_t width,
-                                                        uint32_t height,
-                                                        bool srgb)
+std::vector<std::vector<uint8_t>>
+generateMipChainRgba8(std::span<const uint8_t> basePixels, uint32_t width, uint32_t height, bool srgb)
 {
     if (width == 0 || height == 0) {
         throw std::runtime_error("Texture cook: cannot build a mip chain for a zero-sized image.");

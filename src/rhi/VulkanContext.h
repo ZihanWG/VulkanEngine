@@ -28,22 +28,70 @@ public:
     void cleanup();
     void waitIdle() const;
 
-    [[nodiscard]] VkInstance instance() const { return instance_; }
-    [[nodiscard]] VkSurfaceKHR surface() const { return surface_; }
-    [[nodiscard]] VkDevice vkDevice() const { return device_.device(); }
-    [[nodiscard]] VkPhysicalDevice physicalDevice() const { return device_.physicalDevice(); }
-    [[nodiscard]] VkPipelineCache pipelineCache() const { return device_.pipelineCache(); }
-    [[nodiscard]] VkQueue graphicsQueue() const { return device_.graphicsQueue(); }
-    [[nodiscard]] VkQueue presentQueue() const { return device_.presentQueue(); }
-    [[nodiscard]] VkQueue asyncComputeQueue() const { return device_.asyncComputeQueue(); }
-    [[nodiscard]] uint32_t asyncComputeQueueFamily() const { return device_.asyncComputeQueueFamily(); }
-    [[nodiscard]] bool asyncComputeAvailable() const { return device_.asyncComputeAvailable(); }
-    [[nodiscard]] VkQueue transferQueue() const { return device_.transferQueue(); }
-    [[nodiscard]] uint32_t transferQueueFamily() const { return device_.transferQueueFamily(); }
-    [[nodiscard]] bool transferQueueAvailable() const { return device_.transferQueueAvailable(); }
-    [[nodiscard]] VmaAllocator allocator() const { return allocator_; }
-    [[nodiscard]] const VulkanDevice& device() const { return device_; }
-    [[nodiscard]] const QueueFamilyIndices& queueFamilies() const { return device_.queueFamilies(); }
+    [[nodiscard]] VkInstance instance() const
+    {
+        return instance_;
+    }
+    [[nodiscard]] VkSurfaceKHR surface() const
+    {
+        return surface_;
+    }
+    [[nodiscard]] VkDevice vkDevice() const
+    {
+        return device_.device();
+    }
+    [[nodiscard]] VkPhysicalDevice physicalDevice() const
+    {
+        return device_.physicalDevice();
+    }
+    [[nodiscard]] VkPipelineCache pipelineCache() const
+    {
+        return device_.pipelineCache();
+    }
+    [[nodiscard]] VkQueue graphicsQueue() const
+    {
+        return device_.graphicsQueue();
+    }
+    [[nodiscard]] VkQueue presentQueue() const
+    {
+        return device_.presentQueue();
+    }
+    [[nodiscard]] VkQueue asyncComputeQueue() const
+    {
+        return device_.asyncComputeQueue();
+    }
+    [[nodiscard]] uint32_t asyncComputeQueueFamily() const
+    {
+        return device_.asyncComputeQueueFamily();
+    }
+    [[nodiscard]] bool asyncComputeAvailable() const
+    {
+        return device_.asyncComputeAvailable();
+    }
+    [[nodiscard]] VkQueue transferQueue() const
+    {
+        return device_.transferQueue();
+    }
+    [[nodiscard]] uint32_t transferQueueFamily() const
+    {
+        return device_.transferQueueFamily();
+    }
+    [[nodiscard]] bool transferQueueAvailable() const
+    {
+        return device_.transferQueueAvailable();
+    }
+    [[nodiscard]] VmaAllocator allocator() const
+    {
+        return allocator_;
+    }
+    [[nodiscard]] const VulkanDevice& device() const
+    {
+        return device_;
+    }
+    [[nodiscard]] const QueueFamilyIndices& queueFamilies() const
+    {
+        return device_.queueFamilies();
+    }
 
 private:
     // The instance is the process-level Vulkan entry point. It must outlive the surface and device.

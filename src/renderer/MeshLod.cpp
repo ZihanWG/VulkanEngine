@@ -35,8 +35,7 @@ LodChainBuild buildLodChainDetached(std::span<const uint32_t> sourceIndices,
         // Keep the target a multiple of 3 so the simplifier is never asked for a
         // partial triangle.
         const double ratio = std::pow(settings.indexRatio, static_cast<double>(level));
-        const size_t targetCount =
-            (static_cast<size_t>(static_cast<double>(sourceIndices.size()) * ratio) / 3U) * 3U;
+        const size_t targetCount = (static_cast<size_t>(static_cast<double>(sourceIndices.size()) * ratio) / 3U) * 3U;
         if (targetCount < settings.minIndexCount) {
             break;
         }
@@ -59,8 +58,7 @@ LodChainBuild buildLodChainDetached(std::span<const uint32_t> sourceIndices,
         // removes triangles still costs index memory and a LOD-table entry, and
         // buys a switch that changes nothing on screen.
         if (resultCount == 0 ||
-            static_cast<double>(resultCount) >
-                static_cast<double>(previousCount) * (1.0 - settings.minReduction)) {
+            static_cast<double>(resultCount) > static_cast<double>(previousCount) * (1.0 - settings.minReduction)) {
             break;
         }
 
@@ -75,8 +73,8 @@ LodChainBuild buildLodChainDetached(std::span<const uint32_t> sourceIndices,
 
     // Composed, not printed: this can run on a worker and Logger has no mutex.
     if (!build.simplifiedLods.empty() && !debugName.empty()) {
-        build.logMessage = "LOD chain for '" + std::string(debugName) +
-                           "': L0=" + std::to_string(build.sourceIndexCount / 3) + "tri";
+        build.logMessage =
+            "LOD chain for '" + std::string(debugName) + "': L0=" + std::to_string(build.sourceIndexCount / 3) + "tri";
         for (size_t level = 0; level < build.simplifiedLods.size(); ++level) {
             build.logMessage += " L" + std::to_string(level + 1) + "=" +
                                 std::to_string(build.simplifiedLods[level].indexCount / 3) + "tri";
@@ -127,13 +125,13 @@ std::vector<MeshLod> buildLodChain(std::vector<uint32_t>& indices,
         return {{firstIndex, indexCount}};
     }
 
-    const LodChainBuild build = buildLodChainDetached(
-        std::span<const uint32_t>(indices.data() + firstIndex, indexCount),
-        vertexPositions,
-        vertexCount,
-        vertexStride,
-        debugName,
-        settings);
+    const LodChainBuild build =
+        buildLodChainDetached(std::span<const uint32_t>(indices.data() + firstIndex, indexCount),
+                              vertexPositions,
+                              vertexCount,
+                              vertexStride,
+                              debugName,
+                              settings);
 
     std::vector<MeshLod> lods = appendLodChain(indices, firstIndex, build);
     if (!build.logMessage.empty()) {

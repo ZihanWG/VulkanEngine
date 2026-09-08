@@ -17,10 +17,10 @@ using ve::renderer::fogSliceThickness;
 using ve::renderer::fogSliceViewDepth;
 using ve::renderer::fogViewDepthToSlice;
 using ve::renderer::henyeyGreensteinPhase;
+using ve::renderer::integrateFogSlice;
 using ve::renderer::kDefaultFogMaxDistance;
 using ve::renderer::kFogGridZ;
 using ve::renderer::kFogNearPlane;
-using ve::renderer::integrateFogSlice;
 
 TEST_CASE("Fog slice depth and its inverse round-trip", "[fog]")
 {
@@ -256,8 +256,7 @@ TEST_CASE("A fog froxel maps to the cluster a fragment there would use", "[fog]"
     for (uint32_t x = 0; x < kFogGridX; x += 7) {
         for (uint32_t y = 0; y < kFogGridY; y += 5) {
             for (uint32_t z = 0; z < kFogGridZ; z += 3) {
-                const uint32_t fogCluster =
-                    fogFroxelClusterIndex(x, y, z, fogMaxDistance, zNear, zFar);
+                const uint32_t fogCluster = fogFroxelClusterIndex(x, y, z, fogMaxDistance, zNear, zFar);
                 REQUIRE(fogCluster < kClusterCount);
 
                 const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(kFogGridX);

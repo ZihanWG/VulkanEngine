@@ -44,38 +44,104 @@ public:
     void initialize(VkInstance instance, VkSurfaceKHR surface, std::filesystem::path shaderDirectory);
     void cleanup();
 
-    [[nodiscard]] VkPhysicalDevice physicalDevice() const { return physicalDevice_; }
-    [[nodiscard]] VkDevice device() const { return device_; }
-    [[nodiscard]] VkPipelineCache pipelineCache() const { return pipelineCache_; }
-    [[nodiscard]] VkQueue graphicsQueue() const { return graphicsQueue_; }
-    [[nodiscard]] VkQueue presentQueue() const { return presentQueue_; }
+    [[nodiscard]] VkPhysicalDevice physicalDevice() const
+    {
+        return physicalDevice_;
+    }
+    [[nodiscard]] VkDevice device() const
+    {
+        return device_;
+    }
+    [[nodiscard]] VkPipelineCache pipelineCache() const
+    {
+        return pipelineCache_;
+    }
+    [[nodiscard]] VkQueue graphicsQueue() const
+    {
+        return graphicsQueue_;
+    }
+    [[nodiscard]] VkQueue presentQueue() const
+    {
+        return presentQueue_;
+    }
     // Async compute queue for overlapping compute with rasterization. Prefers a
     // dedicated compute-only family; falls back to a second queue in the
     // graphics family; unavailable when the device exposes neither.
-    [[nodiscard]] VkQueue asyncComputeQueue() const { return asyncComputeQueue_; }
-    [[nodiscard]] uint32_t asyncComputeQueueFamily() const { return asyncComputeQueueFamily_; }
-    [[nodiscard]] bool asyncComputeAvailable() const { return asyncComputeAvailable_; }
-    [[nodiscard]] bool asyncComputeDedicatedFamily() const { return asyncComputeDedicatedFamily_; }
+    [[nodiscard]] VkQueue asyncComputeQueue() const
+    {
+        return asyncComputeQueue_;
+    }
+    [[nodiscard]] uint32_t asyncComputeQueueFamily() const
+    {
+        return asyncComputeQueueFamily_;
+    }
+    [[nodiscard]] bool asyncComputeAvailable() const
+    {
+        return asyncComputeAvailable_;
+    }
+    [[nodiscard]] bool asyncComputeDedicatedFamily() const
+    {
+        return asyncComputeDedicatedFamily_;
+    }
     // Dedicated transfer queue for load-time uploads (docs/asset_system.md).
     // Only a DMA family qualifies -- transfer-capable, neither graphics nor
     // compute -- so this is unavailable on most drivers, including MoltenVK
     // unless MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES=1 is set. When unavailable,
     // uploads stay on the graphics queue.
-    [[nodiscard]] VkQueue transferQueue() const { return transferQueue_; }
-    [[nodiscard]] uint32_t transferQueueFamily() const { return transferQueueFamily_; }
-    [[nodiscard]] bool transferQueueAvailable() const { return transferQueueAvailable_; }
-    [[nodiscard]] const QueueFamilyIndices& queueFamilies() const { return queueFamilies_; }
-    [[nodiscard]] bool descriptorIndexingEnabled() const { return descriptorIndexingEnabled_; }
-    [[nodiscard]] bool independentBlendEnabled() const { return independentBlendEnabled_; }
-    [[nodiscard]] bool descriptorUpdateAfterBindEnabled() const { return descriptorUpdateAfterBindEnabled_; }
-    [[nodiscard]] bool bufferDeviceAddressEnabled() const { return bufferDeviceAddressEnabled_; }
-    [[nodiscard]] bool multiDrawIndirectEnabled() const { return multiDrawIndirectEnabled_; }
-    [[nodiscard]] bool drawIndirectFirstInstanceEnabled() const { return drawIndirectFirstInstanceEnabled_; }
+    [[nodiscard]] VkQueue transferQueue() const
+    {
+        return transferQueue_;
+    }
+    [[nodiscard]] uint32_t transferQueueFamily() const
+    {
+        return transferQueueFamily_;
+    }
+    [[nodiscard]] bool transferQueueAvailable() const
+    {
+        return transferQueueAvailable_;
+    }
+    [[nodiscard]] const QueueFamilyIndices& queueFamilies() const
+    {
+        return queueFamilies_;
+    }
+    [[nodiscard]] bool descriptorIndexingEnabled() const
+    {
+        return descriptorIndexingEnabled_;
+    }
+    [[nodiscard]] bool independentBlendEnabled() const
+    {
+        return independentBlendEnabled_;
+    }
+    [[nodiscard]] bool descriptorUpdateAfterBindEnabled() const
+    {
+        return descriptorUpdateAfterBindEnabled_;
+    }
+    [[nodiscard]] bool bufferDeviceAddressEnabled() const
+    {
+        return bufferDeviceAddressEnabled_;
+    }
+    [[nodiscard]] bool multiDrawIndirectEnabled() const
+    {
+        return multiDrawIndirectEnabled_;
+    }
+    [[nodiscard]] bool drawIndirectFirstInstanceEnabled() const
+    {
+        return drawIndirectFirstInstanceEnabled_;
+    }
     // Multiview: one render pass renders into several array layers at once.
     // Optional -- the shadow cascades fall back to a pass per cascade without it.
-    [[nodiscard]] bool multiviewEnabled() const { return multiviewEnabled_; }
-    [[nodiscard]] bool drawIndexedIndirectCountAvailable() const { return drawIndexedIndirectCountAvailable_; }
-    [[nodiscard]] uint32_t maxDrawIndirectCount() const { return maxDrawIndirectCount_; }
+    [[nodiscard]] bool multiviewEnabled() const
+    {
+        return multiviewEnabled_;
+    }
+    [[nodiscard]] bool drawIndexedIndirectCountAvailable() const
+    {
+        return drawIndexedIndirectCountAvailable_;
+    }
+    [[nodiscard]] uint32_t maxDrawIndirectCount() const
+    {
+        return maxDrawIndirectCount_;
+    }
 
     [[nodiscard]] SwapchainSupportDetails querySwapchainSupport() const;
 

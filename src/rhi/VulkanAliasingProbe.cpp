@@ -42,7 +42,6 @@ VkDeviceSize alignUp(VkDeviceSize value, VkDeviceSize alignment)
     return (value + alignment - 1) / alignment * alignment;
 }
 
-
 // Clears one alias, reads the other back, and reports whether the second saw the
 // first's bytes. See AliasingProbeResult::aliasedWriteObserved for why a false
 // result is inconclusive rather than a failure.
@@ -147,8 +146,7 @@ bool observeAliasedWrite(VulkanContext& context,
     VkBufferImageCopy region{};
     region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     region.imageExtent = {2, 2, 1};
-    vkCmdCopyImageToBuffer(
-        commandBuffer, reader, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback.buffer(), 1, &region);
+    vkCmdCopyImageToBuffer(commandBuffer, reader, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback.buffer(), 1, &region);
 
     VK_CHECK(vkEndCommandBuffer(commandBuffer));
 

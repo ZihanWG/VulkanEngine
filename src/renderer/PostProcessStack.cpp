@@ -40,9 +40,9 @@ PostProcessStack::PostProcessStack(rhi::VulkanContext& context,
                                    float& histogramClippedLuminance,
                                    bool& ssaoAvailable)
     : context_(context), renderGraph_(renderGraph), gpuProfiler_(gpuProfiler), swapchain_(swapchain),
-      pipelineStore_(pipelineStore), renderResolution_(renderResolution),
-      toneMappingSettings_(toneMappingSettings), bloomSettings_(bloomSettings), taaSettings_(taaSettings),
-      ssaoSettings_(ssaoSettings), currentExposure_(currentExposure), averageLuminance_(averageLuminance),
+      pipelineStore_(pipelineStore), renderResolution_(renderResolution), toneMappingSettings_(toneMappingSettings),
+      bloomSettings_(bloomSettings), taaSettings_(taaSettings), ssaoSettings_(ssaoSettings),
+      currentExposure_(currentExposure), averageLuminance_(averageLuminance),
       histogramClippedLuminance_(histogramClippedLuminance), ssaoAvailable_(ssaoAvailable)
 {}
 
@@ -370,8 +370,8 @@ void PostProcessStack::createExposureComputePipelines()
                 exposureReducePipelineInfo.pushConstantRanges =
                     std::span<const VkPushConstantRange>(&exposureReducePushConstantRange, 1);
                 exposureReducePipelineInfo.pipelineCache = context_.pipelineCache();
-                exposureReducePipeline_ = pipelineStore_.get(
-                    context_.vkDevice(), exposureReducePipelineInfo, "ExposureReducePipeline");
+                exposureReducePipeline_ =
+                    pipelineStore_.get(context_.vkDevice(), exposureReducePipelineInfo, "ExposureReducePipeline");
             } catch (const std::exception& error) {
                 disableAutoExposureFallback(std::string("GPU exposure reduce compute pipeline creation failed: ") +
                                             error.what());
@@ -2462,9 +2462,8 @@ void PostProcessStack::recordMipChainBloomCommands(VkCommandBuffer commandBuffer
                                                ? bloomMipDownsampleImages_[level + 1u].extent()
                                                : bloomMipUpsampleImages_[level + 1u].extent();
             // The two sources are different mips, so different written fractions.
-            const glm::vec2 currentUvScale =
-                RenderResolution::subRectUvScale(bloomMipExtent(bloomChainSourceExtent(), level),
-                                                 bloomMipExtent(sceneAllocatedExtent(), level));
+            const glm::vec2 currentUvScale = RenderResolution::subRectUvScale(
+                bloomMipExtent(bloomChainSourceExtent(), level), bloomMipExtent(sceneAllocatedExtent(), level));
             const glm::vec2 lowerUvScale =
                 RenderResolution::subRectUvScale(bloomMipExtent(bloomChainSourceExtent(), level + 1u),
                                                  bloomMipExtent(sceneAllocatedExtent(), level + 1u));

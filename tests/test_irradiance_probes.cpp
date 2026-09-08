@@ -27,30 +27,30 @@ using ve::renderer::kProbeGridZ;
 using ve::renderer::kProbeIrradianceResolution;
 using ve::renderer::octahedralDecode;
 using ve::renderer::octahedralEncode;
-using ve::renderer::ProbeBlend;
 using ve::renderer::probeAtlasSize;
 using ve::renderer::probeAtlasUv;
+using ve::renderer::ProbeBlend;
 using ve::renderer::probeBlendAt;
 using ve::renderer::probeBorderSource;
-using ve::renderer::probeChebyshevVisibility;
-using ve::renderer::probeDirectionWeight;
-using ve::renderer::probeSamplePosition;
-using ve::renderer::probeCaptureJitter;
 using ve::renderer::probeBounceAmplification;
 using ve::renderer::probeCaptureAtlasSize;
 using ve::renderer::probeCaptureFaceViewProjection;
+using ve::renderer::probeCaptureJitter;
 using ve::renderer::probeCaptureTileOrigin;
-using ve::renderer::probeCubeTexelDirection;
-using ve::renderer::probeCubeTexelSolidAngle;
-using ve::renderer::probeUpdateBatch;
+using ve::renderer::probeChebyshevVisibility;
 using ve::renderer::probeCoord;
 using ve::renderer::probeCornerCoord;
 using ve::renderer::probeCornerWeight;
+using ve::renderer::probeCubeTexelDirection;
+using ve::renderer::probeCubeTexelSolidAngle;
+using ve::renderer::probeDirectionWeight;
 using ve::renderer::ProbeGridBounds;
 using ve::renderer::probeIndex;
+using ve::renderer::probeSamplePosition;
 using ve::renderer::probeTexelDirection;
 using ve::renderer::probeTileCoord;
 using ve::renderer::probeTileOrigin;
+using ve::renderer::probeUpdateBatch;
 using ve::renderer::probeWorldPosition;
 
 namespace {
@@ -64,8 +64,8 @@ std::vector<glm::vec3> sphereDirections()
         for (int phi = 0; phi <= 18; ++phi) {
             const float a = static_cast<float>(theta) * 10.0f * 3.14159265f / 180.0f;
             const float b = static_cast<float>(phi) * 10.0f * 3.14159265f / 180.0f;
-            directions.push_back(glm::normalize(
-                glm::vec3{std::sin(b) * std::cos(a), std::cos(b), std::sin(b) * std::sin(a)}));
+            directions.push_back(
+                glm::normalize(glm::vec3{std::sin(b) * std::cos(a), std::cos(b), std::sin(b) * std::sin(a)}));
         }
     }
     // The six axes and the eight octant diagonals: the fold seams.
@@ -80,9 +80,8 @@ std::vector<glm::vec3> sphereDirections()
     for (int sx = -1; sx <= 1; sx += 2) {
         for (int sy = -1; sy <= 1; sy += 2) {
             for (int sz = -1; sz <= 1; sz += 2) {
-                directions.push_back(glm::normalize(glm::vec3{static_cast<float>(sx),
-                                                              static_cast<float>(sy),
-                                                              static_cast<float>(sz)}));
+                directions.push_back(
+                    glm::normalize(glm::vec3{static_cast<float>(sx), static_cast<float>(sy), static_cast<float>(sz)}));
             }
         }
     }
@@ -174,8 +173,7 @@ TEST_CASE("Octahedral mapping survives degenerate directions", "[probes]")
 
     // Corners of the square are the -Z pole; all four must decode to a unit
     // vector rather than a zero-length one.
-    for (const glm::vec2& corner :
-         {glm::vec2{0, 0}, glm::vec2{1, 0}, glm::vec2{0, 1}, glm::vec2{1, 1}}) {
+    for (const glm::vec2& corner : {glm::vec2{0, 0}, glm::vec2{1, 0}, glm::vec2{0, 1}, glm::vec2{1, 1}}) {
         const glm::vec3 decoded = octahedralDecode(corner);
         CHECK(std::isfinite(decoded.x));
         CHECK(glm::length(decoded) == Approx(1.0f).margin(1.0e-4f));
@@ -225,14 +223,14 @@ TEST_CASE("Probe positions follow the grid bounds", "[probes]")
 
     CHECK(probeWorldPosition(probeIndex(0, 0, 0), bounds) == bounds.origin);
 
-    const glm::vec3 stepX = probeWorldPosition(probeIndex(1, 0, 0), bounds) -
-                            probeWorldPosition(probeIndex(0, 0, 0), bounds);
+    const glm::vec3 stepX =
+        probeWorldPosition(probeIndex(1, 0, 0), bounds) - probeWorldPosition(probeIndex(0, 0, 0), bounds);
     CHECK(stepX.x == Approx(bounds.spacing.x));
     CHECK(stepX.y == Approx(0.0f));
     CHECK(stepX.z == Approx(0.0f));
 
-    const glm::vec3 stepZ = probeWorldPosition(probeIndex(0, 0, 1), bounds) -
-                            probeWorldPosition(probeIndex(0, 0, 0), bounds);
+    const glm::vec3 stepZ =
+        probeWorldPosition(probeIndex(0, 0, 1), bounds) - probeWorldPosition(probeIndex(0, 0, 0), bounds);
     CHECK(stepZ.z == Approx(bounds.spacing.z));
     CHECK(stepZ.x == Approx(0.0f));
 
@@ -739,8 +737,7 @@ TEST_CASE("Cosine convolution reproduces a constant radiance field", "[probes]")
                             if (cosine <= 0.0f) {
                                 continue;
                             }
-                            const float weight =
-                                cosine * probeCubeTexelSolidAngle(x, y, kProbeCaptureFaceResolution);
+                            const float weight = cosine * probeCubeTexelSolidAngle(x, y, kProbeCaptureFaceResolution);
                             weightedSum += kConstantRadiance * weight;
                             weightTotal += weight;
                         }
@@ -779,8 +776,8 @@ TEST_CASE("Every hemisphere gathers a meaningful share of the capture", "[probes
             for (uint32_t face = 0; face < kProbeCaptureFaceCount; ++face) {
                 for (uint32_t y = 0; y < kProbeCaptureFaceResolution; ++y) {
                     for (uint32_t x = 0; x < kProbeCaptureFaceResolution; ++x) {
-                        const float cosine = glm::dot(
-                            outputDirection, probeCubeTexelDirection(face, x, y, kProbeCaptureFaceResolution));
+                        const float cosine =
+                            glm::dot(outputDirection, probeCubeTexelDirection(face, x, y, kProbeCaptureFaceResolution));
                         if (cosine > 0.0f) {
                             weightTotal += cosine * probeCubeTexelSolidAngle(x, y, kProbeCaptureFaceResolution);
                         }

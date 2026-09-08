@@ -16,12 +16,8 @@ SceneBuilder::SceneBuilder(const Mesh& cubeMesh,
                            const Mesh& sphereMesh,
                            const std::vector<Material>& materials,
                            std::function<uint32_t()> allocateDebugId)
-    : cubeMesh_(cubeMesh),
-      sphereMesh_(sphereMesh),
-      materials_(materials),
-      allocateDebugId_(std::move(allocateDebugId))
-{
-}
+    : cubeMesh_(cubeMesh), sphereMesh_(sphereMesh), materials_(materials), allocateDebugId_(std::move(allocateDebugId))
+{}
 
 void SceneBuilder::appendPortfolioShowcase(std::vector<RenderObject>& objects) const
 {
@@ -55,23 +51,22 @@ void SceneBuilder::appendPortfolioShowcase(std::vector<RenderObject>& objects) c
         objects.push_back(std::move(cube));
     };
 
-    const auto addPortfolioSphere = [this, &objects](std::string debugName,
-                                                     const Material* material,
-                                                     const glm::vec3& position,
-                                                     const glm::vec3& scale) {
-        RenderObject sphere{};
-        sphere.debugId = allocateDebugId_();
-        sphere.sceneObjectId = sphere.debugId;
-        sphere.mesh = &sphereMesh_;
-        sphere.material = material;
-        sphere.debugName = std::move(debugName);
-        sphere.sourceType = RenderObjectSourceType::PortfolioShowcase;
-        sphere.transform.position = position;
-        sphere.transform.scale = scale;
-        sphere.animateTransform = false;
-        sphere.portfolioOnly = false;
-        objects.push_back(std::move(sphere));
-    };
+    const auto addPortfolioSphere =
+        [this,
+         &objects](std::string debugName, const Material* material, const glm::vec3& position, const glm::vec3& scale) {
+            RenderObject sphere{};
+            sphere.debugId = allocateDebugId_();
+            sphere.sceneObjectId = sphere.debugId;
+            sphere.mesh = &sphereMesh_;
+            sphere.material = material;
+            sphere.debugName = std::move(debugName);
+            sphere.sourceType = RenderObjectSourceType::PortfolioShowcase;
+            sphere.transform.position = position;
+            sphere.transform.scale = scale;
+            sphere.animateTransform = false;
+            sphere.portfolioOnly = false;
+            objects.push_back(std::move(sphere));
+        };
 
     objects.reserve(objects.size() + 8);
     addPortfolioCube("Portfolio Studio Floor",
@@ -143,16 +138,16 @@ void SceneBuilder::appendPortfolioShowcase(std::vector<RenderObject>& objects) c
 
 void SceneBuilder::appendCubeFallback(std::vector<RenderObject>& objects) const
 {
-    const auto addCube = [this, &objects](std::string debugName,
-                                          const Material* material,
-                                          const glm::vec3& position,
-                                          const glm::vec3& rotationRadians,
-                                          const glm::vec3& scale,
-                                          bool animateTransform = true,
-                                          bool portfolioOnly = false,
-                                          bool hideInPortfolio = false,
-                                          RenderObjectSourceType sourceType =
-                                              RenderObjectSourceType::BuiltInFallbackCube) {
+    const auto addCube = [this,
+                          &objects](std::string debugName,
+                                    const Material* material,
+                                    const glm::vec3& position,
+                                    const glm::vec3& rotationRadians,
+                                    const glm::vec3& scale,
+                                    bool animateTransform = true,
+                                    bool portfolioOnly = false,
+                                    bool hideInPortfolio = false,
+                                    RenderObjectSourceType sourceType = RenderObjectSourceType::BuiltInFallbackCube) {
         RenderObject cube{};
         cube.debugId = allocateDebugId_();
         cube.sceneObjectId = cube.debugId;
@@ -178,15 +173,14 @@ void SceneBuilder::appendCubeFallback(std::vector<RenderObject>& objects) const
             true,
             false,
             true);
-    addCube(
-        "Left Cube",
-        &materials_.at(1),
-        {-1.35f, -0.15f, -0.35f},
-        {0.0f, 0.35f, 0.2f},
-        {0.5f, 0.5f, 0.5f},
-        true,
-        false,
-        true);
+    addCube("Left Cube",
+            &materials_.at(1),
+            {-1.35f, -0.15f, -0.35f},
+            {0.0f, 0.35f, 0.2f},
+            {0.5f, 0.5f, 0.5f},
+            true,
+            false,
+            true);
     addCube("Right Cube",
             &materials_.at(2),
             {1.35f, -0.05f, -0.25f},
@@ -240,9 +234,7 @@ bool SceneBuilder::appendOcclusionTest(std::vector<RenderObject>& objects, std::
 
     objects.reserve(objects.size() + static_cast<size_t>(kOcclusionTestObjectCount));
 
-    const size_t groundMaterial = materials_.size() > kPortfolioGroundMaterialIndex
-                                      ? kPortfolioGroundMaterialIndex
-                                      : 0;
+    const size_t groundMaterial = materials_.size() > kPortfolioGroundMaterialIndex ? kPortfolioGroundMaterialIndex : 0;
     addCube("Occlusion Test Ground",
             materialAt(groundMaterial),
             {0.0f, -0.10f, -4.0f},
@@ -268,7 +260,8 @@ bool SceneBuilder::appendOcclusionTest(std::vector<RenderObject>& objects, std::
             const bool topWitnessRow = row == kOcclusionTestGridRows - 1;
             const bool sideWitnessColumn = column == 0 || column == kOcclusionTestGridColumns - 1;
             const float y = topWitnessRow ? 3.05f : 0.22f + 0.34f * static_cast<float>((row + column) % 3);
-            const float uniformScale = sideWitnessColumn ? 0.40f : 0.32f + 0.035f * static_cast<float>((row + column) % 4);
+            const float uniformScale =
+                sideWitnessColumn ? 0.40f : 0.32f + 0.035f * static_cast<float>((row + column) % 4);
 
             std::ostringstream name;
             name << "Occlusion Test Hidden Cube r" << row << " c" << column;
@@ -294,8 +287,7 @@ void SceneBuilder::resetPortfolioShowcaseToPreset(std::vector<RenderObject>& obj
                                         const glm::vec3& rotationRadians,
                                         const glm::vec3& scale) {
         for (RenderObject& object : objects) {
-            if (object.sourceType != RenderObjectSourceType::PortfolioShowcase ||
-                object.debugName != debugName) {
+            if (object.sourceType != RenderObjectSourceType::PortfolioShowcase || object.debugName != debugName) {
                 continue;
             }
 
@@ -336,8 +328,8 @@ bool SceneBuilder::hasPortfolioShowcase(const std::vector<RenderObject>& objects
     size_t materialSampleCount = 0;
 
     for (const RenderObject& object : objects) {
-        if (object.sourceType != RenderObjectSourceType::PortfolioShowcase || !object.mesh ||
-            !object.mesh->valid() || !object.material) {
+        if (object.sourceType != RenderObjectSourceType::PortfolioShowcase || !object.mesh || !object.mesh->valid() ||
+            !object.material) {
             continue;
         }
 
@@ -404,7 +396,8 @@ bool SceneBuilder::appendCornellBox(std::vector<RenderObject>& objects, std::str
 
     // The room. Walls sit just outside the interior so the interior really is
     // kSize on a side, which is what the probe grid is fitted to.
-    addSlab("Cornell Floor", kCornellWhiteMaterialIndex, {0.0f, -kHalfThickness, 0.0f}, {}, {kSize, kWallThickness, kSize});
+    addSlab(
+        "Cornell Floor", kCornellWhiteMaterialIndex, {0.0f, -kHalfThickness, 0.0f}, {}, {kSize, kWallThickness, kSize});
     addSlab("Cornell Ceiling",
             kCornellWhiteMaterialIndex,
             {0.0f, kSize + kHalfThickness, 0.0f},
@@ -438,11 +431,8 @@ bool SceneBuilder::appendCornellBox(std::vector<RenderObject>& objects, std::str
             {-1.7f, 3.0f, -1.6f},
             {0.0f, -0.30f, 0.0f},
             {2.8f, 6.0f, 2.8f});
-    addSlab("Cornell Short Block",
-            kCornellWhiteMaterialIndex,
-            {1.9f, 1.5f, 1.1f},
-            {0.0f, 0.28f, 0.0f},
-            {2.8f, 3.0f, 2.8f});
+    addSlab(
+        "Cornell Short Block", kCornellWhiteMaterialIndex, {1.9f, 1.5f, 1.1f}, {0.0f, 0.28f, 0.0f}, {2.8f, 3.0f, 2.8f});
 
     status = "Cornell box active: closed room with red and green side walls, lit by one overhead light.";
     return true;
@@ -488,8 +478,7 @@ bool SceneBuilder::appendStressScene(std::vector<RenderObject>& objects, std::st
     constexpr float kHalfSpanX = 0.5f * kStressGridSpacing * static_cast<float>(kStressGridColumns - 1);
     constexpr float kHalfSpanZ = 0.5f * kStressGridSpacing * static_cast<float>(kStressGridRows - 1);
 
-    const size_t groundMaterial =
-        materials_.size() > kPortfolioGroundMaterialIndex ? kPortfolioGroundMaterialIndex : 0;
+    const size_t groundMaterial = materials_.size() > kPortfolioGroundMaterialIndex ? kPortfolioGroundMaterialIndex : 0;
     add("Stress Ground",
         cubeMesh_,
         materialAt(groundMaterial),
@@ -530,8 +519,8 @@ bool SceneBuilder::appendStressScene(std::vector<RenderObject>& objects, std::st
 }
 
 bool SceneBuilder::appendFragmentStressScene(std::vector<RenderObject>& objects,
-                                            std::string& status,
-                                            int layerCount) const
+                                             std::string& status,
+                                             int layerCount) const
 {
     if (!cubeMesh_.valid() || materials_.empty()) {
         status = "Fragment stress scene is unavailable: cube mesh or runtime materials are not initialized.";
@@ -543,24 +532,23 @@ bool SceneBuilder::appendFragmentStressScene(std::vector<RenderObject>& objects,
         return &materials_.at(materialIndex % materials_.size());
     };
 
-    const auto add = [this, &objects](std::string debugName,
-                                      const Material* material,
-                                      const glm::vec3& position,
-                                      const glm::vec3& scale) {
-        RenderObject object{};
-        object.debugId = allocateDebugId_();
-        object.sceneObjectId = object.debugId;
-        object.mesh = &cubeMesh_;
-        object.material = material;
-        object.debugName = std::move(debugName);
-        object.sourceType = RenderObjectSourceType::FragmentStress;
-        object.transform.position = position;
-        object.transform.scale = scale;
-        object.animateTransform = false;
-        object.portfolioOnly = false;
-        object.hideInPortfolio = true;
-        objects.push_back(std::move(object));
-    };
+    const auto add =
+        [this,
+         &objects](std::string debugName, const Material* material, const glm::vec3& position, const glm::vec3& scale) {
+            RenderObject object{};
+            object.debugId = allocateDebugId_();
+            object.sceneObjectId = object.debugId;
+            object.mesh = &cubeMesh_;
+            object.material = material;
+            object.debugName = std::move(debugName);
+            object.sourceType = RenderObjectSourceType::FragmentStress;
+            object.transform.position = position;
+            object.transform.scale = scale;
+            object.animateTransform = false;
+            object.portfolioOnly = false;
+            object.hideInPortfolio = true;
+            objects.push_back(std::move(object));
+        };
 
     objects.reserve(objects.size() + static_cast<size_t>(layerCount) + 1u);
 
@@ -624,19 +612,17 @@ bool SceneBuilder::appendSunlitYard(std::vector<RenderObject>& objects, std::str
 
     objects.reserve(objects.size() + static_cast<size_t>(kSunlitYardObjectCount));
 
-    const size_t groundMaterial =
-        materials_.size() > kPortfolioGroundMaterialIndex ? kPortfolioGroundMaterialIndex : 0;
+    const size_t groundMaterial = materials_.size() > kPortfolioGroundMaterialIndex ? kPortfolioGroundMaterialIndex : 0;
 
     // Wide and flat, so a low sun has somewhere to throw a long shadow. The
     // shadow is the subject here, not the geometry.
-    addObject("Sunlit Yard Ground", cubeMesh_, materialAt(groundMaterial), {0.0f, -0.1f, -1.0f},
-              {30.0f, 0.2f, 30.0f});
+    addObject("Sunlit Yard Ground", cubeMesh_, materialAt(groundMaterial), {0.0f, -0.1f, -1.0f}, {30.0f, 0.2f, 30.0f});
 
     // Catches the spot light's shadow. Without a vertical surface behind the
     // scene, a punctual shadow lands on the ground at a grazing angle and is
     // almost impossible to read.
-    addObject("Sunlit Yard Wall", cubeMesh_, materialAt(groundMaterial),
-              {0.0f, 3.5f, kSunlitYardWallZ}, {24.0f, 7.0f, 0.4f});
+    addObject(
+        "Sunlit Yard Wall", cubeMesh_, materialAt(groundMaterial), {0.0f, 3.5f, kSunlitYardWallZ}, {24.0f, 7.0f, 0.4f});
 
     // Three pillars of different heights: the long shadows are the primary
     // subject, and the height spread means one of them is always crossing a
@@ -711,8 +697,8 @@ bool SceneBuilder::hasOcclusionTest(const std::vector<RenderObject>& objects)
     bool hasHiddenObject = false;
 
     for (const RenderObject& object : objects) {
-        if (object.sourceType != RenderObjectSourceType::OcclusionTest || !object.mesh ||
-            !object.mesh->valid() || !object.material) {
+        if (object.sourceType != RenderObjectSourceType::OcclusionTest || !object.mesh || !object.mesh->valid() ||
+            !object.material) {
             continue;
         }
 

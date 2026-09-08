@@ -78,10 +78,8 @@ struct BlockCompressionCaps {
 // darkens every mip, and the error compounds down the chain. Alpha is always
 // linear. Odd extents halve with floor and clamp at 1, matching the extents the
 // KTX2 level index and Vulkan both assume.
-[[nodiscard]] std::vector<std::vector<uint8_t>> generateMipChainRgba8(std::span<const uint8_t> basePixels,
-                                                                      uint32_t width,
-                                                                      uint32_t height,
-                                                                      bool srgb);
+[[nodiscard]] std::vector<std::vector<uint8_t>>
+generateMipChainRgba8(std::span<const uint8_t> basePixels, uint32_t width, uint32_t height, bool srgb);
 
 // Copies one 4x4 RGBA8 texel block out of an image into `block` (64 bytes, row
 // major). Extents are not required to be multiples of four: a trailing partial

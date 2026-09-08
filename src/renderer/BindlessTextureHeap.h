@@ -52,9 +52,18 @@ public:
 
     [[nodiscard]] uint32_t registerTexture(TextureKind textureKind, const rhi::VulkanTexture& texture);
 
-    [[nodiscard]] VkDescriptorSetLayout descriptorSetLayout() const { return descriptorSetLayout_.handle(); }
-    [[nodiscard]] VkDescriptorSet descriptorSet() const { return descriptorSet_; }
-    [[nodiscard]] uint32_t maxTextures() const { return maxTextures_; }
+    [[nodiscard]] VkDescriptorSetLayout descriptorSetLayout() const
+    {
+        return descriptorSetLayout_.handle();
+    }
+    [[nodiscard]] VkDescriptorSet descriptorSet() const
+    {
+        return descriptorSet_;
+    }
+    [[nodiscard]] uint32_t maxTextures() const
+    {
+        return maxTextures_;
+    }
     [[nodiscard]] bool valid() const
     {
         return device_ != VK_NULL_HANDLE && descriptorSetLayout_.handle() != VK_NULL_HANDLE &&
