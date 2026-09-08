@@ -15,15 +15,11 @@
 
 namespace ve {
 
-Application::Application()
-    : Application(Config{})
-{
-}
+Application::Application() : Application(Config{})
+{}
 
-Application::Application(Config config)
-    : config_(std::move(config))
-{
-}
+Application::Application(Config config) : config_(std::move(config))
+{}
 
 Application::~Application()
 {
@@ -85,7 +81,8 @@ void Application::initialize()
         renderer_->loadScenePreset(config_.scene);
     }
     if (config_.captureFrame != 0) {
-        renderer_->requestFrameCaptureAt(config_.captureFrame, config_.captureOutput, config_.captureIncludeUi);
+        renderer_->requestFrameCaptureAt(config_.captureFrame, config_.captureOutput, config_.captureIncludeUi);
+
         if (!config_.vsmDumpPool.empty()) {
             renderer_->requestVsmPagePoolDumpAt(config_.captureFrame, config_.vsmDumpPool);
         }
@@ -144,8 +141,7 @@ void Application::mainLoop()
         // Bounds that extension. Without it, a capture that can never be
         // recorded (an unsupported swapchain format, say) would spin.
         if (captureOutstanding && framesDrawn >= config_.captureFrame + kCaptureReadbackGraceFrames) {
-            Logger::error("Frame capture never completed; giving up after " + std::to_string(framesDrawn) +
-                          " frames.");
+            Logger::error("Frame capture never completed; giving up after " + std::to_string(framesDrawn) + " frames.");
             break;
         }
     }
