@@ -54,6 +54,7 @@
 #include <utility>
 #include <vector>
 
+
 namespace ve {
 
 void Renderer::recordPortfolioScreenshotCopy(VkCommandBuffer commandBuffer, uint32_t imageIndex)
@@ -91,8 +92,8 @@ void Renderer::recordPortfolioScreenshotCopy(VkCommandBuffer commandBuffer, uint
     const VkExtent2D extent = swapchain_.extent();
     const VkFormat format = swapchain_.colorFormat();
     if (extent.width == 0 || extent.height == 0 || !supportedScreenshotFormat(format)) {
-        screenshotCapture_.setStatus(std::string("Screenshot failed: unsupported extent or format ") +
-                                     vkFormatName(format) + ".");
+        screenshotCapture_.setStatus(
+            std::string("Screenshot failed: unsupported extent or format ") + vkFormatName(format) + ".");
         Logger::warn(screenshotCapture_.status());
         return;
     }
@@ -166,8 +167,9 @@ bool Renderer::isGpuPunctualShadowCullingActive() const
     const size_t batchCount = gpuShadowMeshDrawBatches_.size();
     return useGpuPunctualShadowCulling_ && isGpuShadowCullingActive() && punctualShadows_.cullAvailable() &&
            punctualShadows_.valid() && usePunctualShadows_ && punctualShadows_.slotCount() > 0 &&
-           !allDrawItems_.empty() && batchCount > 0 && batchCount <= renderer::PunctualShadows::kMaxGpuCulledBatches &&
-           !punctualShadowCacheHit_ && context_.device().drawIndirectFirstInstanceEnabled();
+           !allDrawItems_.empty() && batchCount > 0 &&
+           batchCount <= renderer::PunctualShadows::kMaxGpuCulledBatches && !punctualShadowCacheHit_ &&
+           context_.device().drawIndirectFirstInstanceEnabled();
 }
 
 bool Renderer::isProbeCaptureActive() const
@@ -200,7 +202,8 @@ void Renderer::recordProbeCapturePass(VkCommandBuffer commandBuffer)
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, probeCapturePipeline_.pipeline());
 
-    const std::array<VkDescriptorSet, 2> descriptorSets{globalDescriptorSet, bindlessTextureHeap_.descriptorSet()};
+    const std::array<VkDescriptorSet, 2> descriptorSets{globalDescriptorSet,
+                                                        bindlessTextureHeap_.descriptorSet()};
     vkCmdBindDescriptorSets(commandBuffer,
                             VK_PIPELINE_BIND_POINT_GRAPHICS,
                             probeCapturePipeline_.layout(),
@@ -318,8 +321,9 @@ void Renderer::recordProbeCapturePass(VkCommandBuffer commandBuffer)
         }
     }
 
-    probeCaptureCpuMicroseconds_ =
-        std::chrono::duration<float, std::micro>(std::chrono::high_resolution_clock::now() - captureCpuStart).count();
+    probeCaptureCpuMicroseconds_ = std::chrono::duration<float, std::micro>(
+                                       std::chrono::high_resolution_clock::now() - captureCpuStart)
+                                       .count();
 
     renderGraph_.endProbeCapturePass();
     probeCaptureDrawsRecorded_ = recordedDraws;
@@ -583,7 +587,8 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuC
                 boundMesh = drawItem.mesh;
             }
 
-            vkCmdDrawIndexed(commandBuffer, drawItem.indexCount, 1, drawItem.firstIndex, drawItem.vertexOffset, 0);
+            vkCmdDrawIndexed(
+                commandBuffer, drawItem.indexCount, 1, drawItem.firstIndex, drawItem.vertexOffset, 0);
             ++recordedDraws;
         }
     }
@@ -613,8 +618,8 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuC
     // now describes contents that no longer exist.
     if (clearWholeAtlas) {
         for (auto it = punctualShadowResidentTiles_.begin(); it != punctualShadowResidentTiles_.end();) {
-            const bool redrawn =
-                std::any_of(punctualShadowDirtySlots_.begin(), punctualShadowDirtySlots_.end(), [&](uint32_t slot) {
+            const bool redrawn = std::any_of(
+                punctualShadowDirtySlots_.begin(), punctualShadowDirtySlots_.end(), [&](uint32_t slot) {
                     return renderer::packShadowAtlasRect(punctualShadows_.slotRect(slot)) == it->first;
                 });
             it = redrawn ? std::next(it) : punctualShadowResidentTiles_.erase(it);
@@ -622,8 +627,9 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuC
     }
     punctualShadowNeedsFullClear_ = false;
 
-    rhi::debug::beginLabel(
-        commandBuffer, "PunctualShadowSlots " + std::to_string(slotCount) + " draws " + std::to_string(recordedDraws));
+    rhi::debug::beginLabel(commandBuffer,
+                           "PunctualShadowSlots " + std::to_string(slotCount) + " draws " +
+                               std::to_string(recordedDraws));
     rhi::debug::endLabel(commandBuffer);
     rhi::debug::endLabel(commandBuffer);
     if (profileScope) {
@@ -677,8 +683,8 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         };
     };
 
-    const auto bloomResource = [&bloomClear,
-                                this](const char* name, const rhi::VulkanImage& image, VkImageLayout& layout) {
+    const auto bloomResource = [&bloomClear, this](
+                                   const char* name, const rhi::VulkanImage& image, VkImageLayout& layout) {
         const VkExtent3D extent = image.extent();
         return renderer::RenderGraphImageResource{
             .name = name,
@@ -698,25 +704,25 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         };
     };
 
-    const auto taaHistoryResource =
-        [&bloomClear](const char* name, const rhi::VulkanImage& image, VkImageLayout& layout) {
-            const VkExtent3D extent = image.extent();
-            return renderer::RenderGraphImageResource{
-                .name = name,
-                .image = image.image(),
-                .imageView = image.imageView(),
-                .extent = VkExtent2D{extent.width, extent.height},
-                .layout = &layout,
-                .format = image.format(),
-                .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                .mipLevels = 1,
-                .arrayLayers = 1,
-                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                .clearValue = bloomClear,
-                .hasClearValue = true,
-                .imported = true,
-            };
+    const auto taaHistoryResource = [&bloomClear](
+                                        const char* name, const rhi::VulkanImage& image, VkImageLayout& layout) {
+        const VkExtent3D extent = image.extent();
+        return renderer::RenderGraphImageResource{
+            .name = name,
+            .image = image.image(),
+            .imageView = image.imageView(),
+            .extent = VkExtent2D{extent.width, extent.height},
+            .layout = &layout,
+            .format = image.format(),
+            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .clearValue = bloomClear,
+            .hasClearValue = true,
+            .imported = true,
         };
+    };
 
     std::vector<renderer::RenderGraphImageResource> bloomDownsampleResources;
     bloomDownsampleResources.reserve(postProcess_.bloomMipDownsampleImages().size());
@@ -1157,7 +1163,8 @@ void Renderer::recordSkinnedCascadeCaster(VkCommandBuffer commandBuffer, uint32_
             return;
         }
 
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, skinnedLayeredShadowPipeline_.pipeline());
+        vkCmdBindPipeline(
+            commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, skinnedLayeredShadowPipeline_.pipeline());
 
         SkinnedLayeredShadowPushConstants layeredPushConstants{};
         layeredPushConstants.objectFrameDataAddress =
@@ -1246,8 +1253,8 @@ void Renderer::recordVsmPageMarkPass(VkCommandBuffer commandBuffer)
 
 void Renderer::recordVsmPageCull(VkCommandBuffer commandBuffer)
 {
-    if (!isVsmPageRenderingActive() || !virtualShadowMap_.cullAvailable() || virtualShadowMap_.dirtyPages().empty() ||
-        allDrawItems_.empty()) {
+    if (!isVsmPageRenderingActive() || !virtualShadowMap_.cullAvailable() ||
+        virtualShadowMap_.dirtyPages().empty() || allDrawItems_.empty()) {
         return;
     }
 
@@ -1258,16 +1265,60 @@ void Renderer::recordVsmPageCull(VkCommandBuffer commandBuffer)
     // and without one it falls back to the opaque bucket and throws a solid
     // silhouette -- the same fallback the cascades use when the bindless heap is
     // missing.
+    // Batch the draw list the way every other indirect path does, because the
+    // page pass now has to bind per batch: a batch is uniform in mesh and in
+    // bucket, so its slice names both the buffers to bind and the pipeline to
+    // bind them with.
+    vsmCasterBatches_.clear();
+    buildMeshDrawBatchesForItems(allDrawItems_, vsmCasterBatches_);
+    if (vsmCasterBatches_.size() > renderer::kMaxVsmCasterBatches) {
+        vsmCasterBatches_.resize(renderer::kMaxVsmCasterBatches);
+    }
+
+    vsmCasterBatchItemCounts_.assign(vsmCasterBatches_.size(), 0u);
+    for (size_t batchIndex = 0; batchIndex < vsmCasterBatches_.size(); ++batchIndex) {
+        vsmCasterBatchItemCounts_[batchIndex] = vsmCasterBatches_[batchIndex].drawItemCount;
+    }
+    vsmPageCommandStride_ = renderer::vsmBuildCasterBatchSlices(
+        std::span<const uint32_t>(vsmCasterBatchItemCounts_.data(), vsmCasterBatchItemCounts_.size()),
+        renderer::kMaxVsmCastersPerPage,
+        vsmCasterBatchSlices_);
+
+    // Four uints per draw item. Everything starts non-casting: an item outside
+    // every batch -- one with no mesh, which buildMeshDrawBatches skips -- has
+    // no slice to write into, and must not be given one.
     const bool maskedPagesAvailable = vsmMaskedPagePipeline_.pipeline() != VK_NULL_HANDLE;
-    vsmCasterFlags_.assign(allDrawItems_.size(), renderer::kVsmOpaqueCasterBucket + 1u);
-    for (size_t drawIndex = 0; drawIndex < allDrawItems_.size(); ++drawIndex) {
-        const DrawItem& drawItem = allDrawItems_[drawIndex];
-        if (drawItem.bucket == RenderBucket::Blend || drawItem.mesh == nullptr || drawItem.indexCount == 0) {
-            vsmCasterFlags_[drawIndex] = 0u;
-        } else if (drawItem.bucket == RenderBucket::Mask && maskedPagesAvailable) {
-            vsmCasterFlags_[drawIndex] = renderer::kVsmMaskedCasterBucket + 1u;
+    vsmCasterFlags_.assign(allDrawItems_.size() * 4u, 0u);
+    for (size_t batchIndex = 0; batchIndex < vsmCasterBatches_.size(); ++batchIndex) {
+        const MeshDrawBatch& batch = vsmCasterBatches_[batchIndex];
+        const renderer::VsmCasterBatchSlice& slice = vsmCasterBatchSlices_[batchIndex];
+        const size_t end = std::min<size_t>(batch.beginDrawItem + batch.drawItemCount, allDrawItems_.size());
+        for (size_t drawIndex = batch.beginDrawItem; drawIndex < end; ++drawIndex) {
+            const DrawItem& drawItem = allDrawItems_[drawIndex];
+            // Blended geometry only depth-tests in the main pass; letting it
+            // cast would put an opaque silhouette into the pool.
+            if (drawItem.bucket == RenderBucket::Blend || drawItem.mesh == nullptr || drawItem.indexCount == 0) {
+                continue;
+            }
+            // Diagnostic isolation: every other caster is dropped for this run.
+            // Applied here rather than in the cull shader so this array stays
+            // the single place that decides what casts, and so an isolated run
+            // still exercises the real cull and page pass.
+            if (vsmSettings_.debugOnlyCasterObject >= 0 &&
+                drawItem.objectIndex != static_cast<uint32_t>(vsmSettings_.debugOnlyCasterObject)) {
+                continue;
+            }
+            if (slice.capacity == 0) {
+                continue;
+            }
+            uint32_t* entry = vsmCasterFlags_.data() + drawIndex * 4u;
+            entry[0] = 1u;
+            entry[1] = static_cast<uint32_t>(batchIndex);
+            entry[2] = slice.offset;
+            entry[3] = slice.capacity;
         }
     }
+    (void)maskedPagesAvailable;
 
     rhi::VulkanBuffer& cullInput = gpuCulling_.shadowCullInputBuffer(currentFrame_);
     virtualShadowMap_.recordPageCull(commandBuffer,
@@ -1277,7 +1328,9 @@ void Renderer::recordVsmPageCull(VkCommandBuffer commandBuffer)
                                      static_cast<uint32_t>(allDrawItems_.size()),
                                      vsmClipmapSettings(),
                                      renderer::vsmLightView(directionalLightSettings_.direction),
-                                     std::span<const uint32_t>(vsmCasterFlags_.data(), vsmCasterFlags_.size()));
+                                     std::span<const uint32_t>(vsmCasterFlags_.data(), vsmCasterFlags_.size()),
+                                     static_cast<uint32_t>(vsmCasterBatches_.size()),
+                                     vsmPageCommandStride_);
 }
 
 void Renderer::recordVsmPagePass(VkCommandBuffer commandBuffer)
@@ -1295,8 +1348,7 @@ void Renderer::recordVsmPagePass(VkCommandBuffer commandBuffer)
     }
 
     const VkBuffer indirectBuffer = virtualShadowMap_.cullIndirectBuffer(currentFrame_);
-    const renderer::Mesh* indirectMesh = allDrawItems_.front().mesh;
-    if (indirectBuffer == VK_NULL_HANDLE || indirectMesh == nullptr) {
+    if (indirectBuffer == VK_NULL_HANDLE || vsmCasterBatches_.empty() || vsmPageCommandStride_ == 0) {
         return;
     }
 
@@ -1341,15 +1393,15 @@ void Renderer::recordVsmPagePass(VkCommandBuffer commandBuffer)
         }
     }
 
-    const VkBuffer vertexBuffers[] = {indirectMesh->vertexBuffer()};
-    const VkDeviceSize vertexOffsets[] = {0};
-    vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
-    vkCmdBindIndexBuffer(commandBuffer, indirectMesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
-
-    // Two passes over the dirty pages rather than two draws interleaved per
-    // page: the pipeline switch is the expensive part, and the masked one also
-    // rebinds a descriptor set. Every page's viewport is set again in the second
-    // sweep, which is cheap next to a pipeline bind.
+    // Bound per BATCH, not once for the whole pass. This used to bind
+    // allDrawItems_.front().mesh and draw every caster out of it, which is
+    // meaningless here: meshes own their vertex and index buffers rather than
+    // suballocating from one pool, so a draw item's firstIndex and vertexOffset
+    // only address its own mesh. On the showcase scene the first item is a cube,
+    // so every sphere was drawn as the cube under its own transform -- which,
+    // the primitives being a unit cube and a unit-diameter sphere, is exactly
+    // its bounding box. Every other indirect path here already rebinds per
+    // batch; this one now does too.
     const bool maskedPagesAvailable = vsmMaskedPagePipeline_.pipeline() != VK_NULL_HANDLE;
 
     const VkDeviceAddress objectFrameDataBaseAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
@@ -1357,60 +1409,100 @@ void Renderer::recordVsmPagePass(VkCommandBuffer commandBuffer)
     const glm::mat4 lightView = renderer::vsmLightView(directionalLightSettings_.direction);
     const uint32_t pageCommandStride = virtualShadowMap_.pageCommandStride();
 
-    const auto drawPages = [&](uint32_t bucket, rhi::PipelineRef pipeline) {
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline());
-        if (bucket == renderer::kVsmMaskedCasterBucket) {
-            const VkDescriptorSet bindlessSet = bindlessTextureHeap_.descriptorSet();
-            vkCmdBindDescriptorSets(
-                commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout(), 0, 1, &bindlessSet, 0, nullptr);
-        }
+    // Batch outer, page inner: both orders set the same number of viewports,
+    // and this one binds each mesh once instead of once per page.
+    const auto drawBatches = [&](bool masked, rhi::PipelineRef pipeline) {
+        bool pipelineBound = false;
+        const renderer::Mesh* boundMesh = nullptr;
+        for (size_t batchIndex = 0; batchIndex < vsmCasterBatches_.size(); ++batchIndex) {
+            const MeshDrawBatch& batch = vsmCasterBatches_[batchIndex];
+            const renderer::VsmCasterBatchSlice& slice = vsmCasterBatchSlices_[batchIndex];
+            if (batch.mesh == nullptr || slice.capacity == 0) {
+                continue;
+            }
+            // A batch is bucket-uniform by construction, so the bucket that used
+            // to pick a region now picks the pipeline for the whole batch.
+            const bool batchMasked = batch.bucket == RenderBucket::Mask && maskedPagesAvailable;
+            if (batchMasked != masked) {
+                continue;
+            }
 
-        for (size_t pageIndex = 0; pageIndex < dirtyPages.size(); ++pageIndex) {
-            const renderer::VsmDirtyPage& page = dirtyPages[pageIndex];
-            const renderer::VsmPageRect rect = renderer::vsmPagePoolRect(page.physicalPage);
+            if (!pipelineBound) {
+                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline());
+                if (masked) {
+                    const VkDescriptorSet bindlessSet = bindlessTextureHeap_.descriptorSet();
+                    vkCmdBindDescriptorSets(commandBuffer,
+                                            VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                            pipeline.layout(),
+                                            0,
+                                            1,
+                                            &bindlessSet,
+                                            0,
+                                            nullptr);
+                }
+                pipelineBound = true;
+            }
+            if (boundMesh != batch.mesh) {
+                const VkBuffer vertexBuffers[] = {batch.mesh->vertexBuffer()};
+                const VkDeviceSize vertexOffsets[] = {0};
+                vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
+                vkCmdBindIndexBuffer(commandBuffer, batch.mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+                boundMesh = batch.mesh;
+            }
 
-            VkViewport viewport{};
-            viewport.x = static_cast<float>(rect.x);
-            viewport.y = static_cast<float>(rect.y);
-            viewport.width = static_cast<float>(rect.size);
-            viewport.height = static_cast<float>(rect.size);
-            viewport.minDepth = 0.0f;
-            viewport.maxDepth = 1.0f;
-            vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+            for (size_t pageIndex = 0; pageIndex < dirtyPages.size(); ++pageIndex) {
+                const renderer::VsmDirtyPage& page = dirtyPages[pageIndex];
+                const renderer::VsmPageRect rect = renderer::vsmPagePoolRect(page.physicalPage);
 
-            VkRect2D scissor{};
-            scissor.offset = {static_cast<int32_t>(rect.x), static_cast<int32_t>(rect.y)};
-            scissor.extent = {rect.size, rect.size};
-            vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+                VkViewport viewport{};
+                viewport.x = static_cast<float>(rect.x);
+                viewport.y = static_cast<float>(rect.y);
+                viewport.width = static_cast<float>(rect.size);
+                viewport.height = static_cast<float>(rect.size);
+                viewport.minDepth = 0.0f;
+                viewport.maxDepth = 1.0f;
+                vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
 
-            PunctualShadowPushConstants pushConstants{};
-            pushConstants.objectFrameDataAddress = objectFrameDataBaseAddress;
-            pushConstants.lightViewProjection =
-                renderer::vsmPageViewProjection(clipmap, lightView, page.level, page.absolutePage);
-            vkCmdPushConstants(commandBuffer,
-                               pipeline.layout(),
-                               VK_SHADER_STAGE_VERTEX_BIT,
-                               0,
-                               static_cast<uint32_t>(sizeof(pushConstants)),
-                               &pushConstants);
+                VkRect2D scissor{};
+                scissor.offset = {static_cast<int32_t>(rect.x), static_cast<int32_t>(rect.y)};
+                scissor.extent = {rect.size, rect.size};
+                vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-            // The cull dispatch compacted this (page, bucket) pair's surviving
-            // casters into its own region, so it is one draw call. There is no
-            // indirect-count on this platform, so the full region stride is
-            // submitted and the zeroed commands the dispatch left behind are
-            // no-ops -- which is exactly why the two buckets cannot share a
-            // region: the opaque draw would run the cutout commands too.
-            const VkDeviceSize indirectOffset =
-                static_cast<VkDeviceSize>(renderer::vsmPageCommandBase(static_cast<uint32_t>(pageIndex), bucket)) *
-                sizeof(VkDrawIndexedIndirectCommand);
-            vkCmdDrawIndexedIndirect(
-                commandBuffer, indirectBuffer, indirectOffset, pageCommandStride, sizeof(VkDrawIndexedIndirectCommand));
+                PunctualShadowPushConstants pushConstants{};
+                pushConstants.objectFrameDataAddress = objectFrameDataBaseAddress;
+                pushConstants.lightViewProjection =
+                    renderer::vsmPageViewProjection(clipmap, lightView, page.level, page.absolutePage);
+                vkCmdPushConstants(commandBuffer,
+                                   pipeline.layout(),
+                                   VK_SHADER_STAGE_VERTEX_BIT,
+                                   0,
+                                   static_cast<uint32_t>(sizeof(pushConstants)),
+                                   &pushConstants);
+
+                // The cull compacted this (page, batch) pair's survivors into
+                // this batch's slice, so it is one draw. There is no
+                // indirect-count on this platform, so the whole slice is
+                // submitted and the zeroed commands the dispatch left behind are
+                // no-ops -- which is why a slice cannot be shared between
+                // batches: this draw has one vertex buffer bound, and another
+                // batch's commands index a different one.
+                const VkDeviceSize indirectOffset =
+                    static_cast<VkDeviceSize>(
+                        renderer::vsmPageCommandBase(static_cast<uint32_t>(pageIndex), pageCommandStride) +
+                        slice.offset) *
+                    sizeof(VkDrawIndexedIndirectCommand);
+                vkCmdDrawIndexedIndirect(commandBuffer,
+                                         indirectBuffer,
+                                         indirectOffset,
+                                         slice.capacity,
+                                         sizeof(VkDrawIndexedIndirectCommand));
+            }
         }
     };
 
-    drawPages(renderer::kVsmOpaqueCasterBucket, vsmPagePipeline_);
+    drawBatches(/*masked=*/false, vsmPagePipeline_);
     if (maskedPagesAvailable) {
-        drawPages(renderer::kVsmMaskedCasterBucket, vsmMaskedPagePipeline_);
+        drawBatches(/*masked=*/true, vsmMaskedPagePipeline_);
     }
 
     recordSkinnedVsmPageCasters(commandBuffer, dirtyPages, clipmap, lightView);
@@ -1664,8 +1756,9 @@ void Renderer::recordCascadeShadowPass(VkCommandBuffer commandBuffer)
         const bool shadowIndirectCountPathActive =
             gpuShadowCullingActive && isShadowIndirectCountPathActive(currentFrame_);
 
-        rhi::debug::beginLabel(
-            commandBuffer, layeredCascades ? "ShadowCascadesLayered" : "ShadowCascade" + std::to_string(cascadeIndex));
+        rhi::debug::beginLabel(commandBuffer,
+                               layeredCascades ? "ShadowCascadesLayered"
+                                               : "ShadowCascade" + std::to_string(cascadeIndex));
         if (layeredCascades) {
             renderGraph_.beginLayeredShadowPass(cascadeCount);
         } else {
@@ -1710,8 +1803,14 @@ void Renderer::recordCascadeShadowPass(VkCommandBuffer commandBuffer)
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline());
             if (wantMasked) {
                 const VkDescriptorSet bindlessSet = bindlessTextureHeap_.descriptorSet();
-                vkCmdBindDescriptorSets(
-                    commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout(), 0, 1, &bindlessSet, 0, nullptr);
+                vkCmdBindDescriptorSets(commandBuffer,
+                                        VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        pipeline.layout(),
+                                        0,
+                                        1,
+                                        &bindlessSet,
+                                        0,
+                                        nullptr);
             }
             boundShadowLayout = pipeline.layout();
             boundShadowBucket = effectiveBucket;
@@ -2185,9 +2284,9 @@ void Renderer::recordMainPassGeometry(VkCommandBuffer commandBuffer)
 
         PushConstants skinnedPush = basePushConstants;
         skinnedPush.frameConstantsAddress = frameConstantsBaseAddress;
-        skinnedPush.objectFrameDataAddress =
-            objectFrameDataBaseAddress +
-            static_cast<VkDeviceAddress>(kSkinnedObjectFrameSlot) * sizeof(ObjectFrameData);
+        skinnedPush.objectFrameDataAddress = objectFrameDataBaseAddress +
+                                             static_cast<VkDeviceAddress>(kSkinnedObjectFrameSlot) *
+                                                 sizeof(ObjectFrameData);
         skinnedPush.jointMatricesAddress = skinnedMesh_.jointPaletteAddress(currentFrame_);
         vkCmdPushConstants(commandBuffer,
                            skinnedPipeline_.layout(),
@@ -2196,8 +2295,7 @@ void Renderer::recordMainPassGeometry(VkCommandBuffer commandBuffer)
                            static_cast<uint32_t>(sizeof(PushConstants)),
                            &skinnedPush);
 
-        const std::array<VkBuffer, 2> skinnedVertexBuffers{skinnedMesh_.geometryBuffer(),
-                                                           skinnedMesh_.skinningBuffer()};
+        const std::array<VkBuffer, 2> skinnedVertexBuffers{skinnedMesh_.geometryBuffer(), skinnedMesh_.skinningBuffer()};
         const std::array<VkDeviceSize, 2> skinnedOffsets{0, 0};
         vkCmdBindVertexBuffers(commandBuffer,
                                0,
@@ -2342,7 +2440,8 @@ void Renderer::recordMainPassGeometry(VkCommandBuffer commandBuffer)
         vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-        const std::array<VkDescriptorSet, 2> transparentSets{globalDescriptorSet, bindlessTextureHeap_.descriptorSet()};
+        const std::array<VkDescriptorSet, 2> transparentSets{globalDescriptorSet,
+                                                             bindlessTextureHeap_.descriptorSet()};
         vkCmdBindDescriptorSets(commandBuffer,
                                 VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 transparentPipeline_.layout(),
@@ -2401,7 +2500,8 @@ void Renderer::recordPunctualShadows(VkCommandBuffer commandBuffer)
     // survive a partial clear. Every slot is therefore culled up front.
     const bool gpuPunctualCullActive = isGpuPunctualShadowCullingActive();
     if (gpuPunctualCullActive) {
-        const renderer::GpuProfileScope cullScope(gpuProfiler_, currentFrame_, commandBuffer, "PunctualShadowGpuCull");
+        const renderer::GpuProfileScope cullScope(
+            gpuProfiler_, currentFrame_, commandBuffer, "PunctualShadowGpuCull");
         rhi::debug::beginLabel(commandBuffer, "PunctualShadowGpuCull");
         punctualShadows_.uploadSlotFrustums(currentFrame_);
 
@@ -2411,7 +2511,8 @@ void Renderer::recordPunctualShadows(VkCommandBuffer commandBuffer)
         punctualShadowCasterFlags_.assign(allDrawItems_.size(), 1u);
         for (size_t drawIndex = 0; drawIndex < allDrawItems_.size(); ++drawIndex) {
             const DrawItem& drawItem = allDrawItems_[drawIndex];
-            if (drawItem.bucket == RenderBucket::Blend || drawItem.mesh == nullptr || drawItem.indexCount == 0) {
+            if (drawItem.bucket == RenderBucket::Blend || drawItem.mesh == nullptr ||
+                drawItem.indexCount == 0) {
                 punctualShadowCasterFlags_[drawIndex] = 0u;
             }
         }
@@ -2490,9 +2591,11 @@ void Renderer::recordIrradianceProbePasses(VkCommandBuffer commandBuffer)
         // collapse to zero here.
         const bool probeShadingActive = giSettings_.enabled && irradianceProbes_.hasAtlases() &&
                                         irradianceProbes_.convolveAvailable() && !giSettings_.debugPattern;
-        probeParams.gridOrigin = glm::vec4{bounds.origin, probeShadingActive ? giSettings_.intensity : 0.0f};
+        probeParams.gridOrigin =
+            glm::vec4{bounds.origin, probeShadingActive ? giSettings_.intensity : 0.0f};
         probeParams.gridSpacing = glm::vec4{bounds.spacing, giSettings_.surfaceBias};
-        probeParams.debug.x = (probeShadingActive && giSettings_.debugIrradianceOnly) ? 1.0f : 0.0f;
+        probeParams.debug.x =
+            (probeShadingActive && giSettings_.debugIrradianceOnly) ? 1.0f : 0.0f;
         irradianceProbes_.updateShadingParams(commandBuffer, probeParams);
     }
 
@@ -2507,7 +2610,8 @@ void Renderer::recordIrradianceProbePasses(VkCommandBuffer commandBuffer)
     }
 
     if (isIrradianceProbeUpdateActive()) {
-        const bool probeProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "IrradianceProbeUpdate");
+        const bool probeProfileScope =
+            gpuProfiler_.beginScope(currentFrame_, commandBuffer, "IrradianceProbeUpdate");
         renderGraph_.beginIrradianceProbePass();
         irradianceProbes_.recordUpdate(commandBuffer, giSettings_.debugPattern);
         renderGraph_.endIrradianceProbePass();

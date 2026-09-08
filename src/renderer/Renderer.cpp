@@ -597,6 +597,15 @@ void Renderer::drawFrame()
         window_.clearResizedFlag();
     }
 
+    // After present, so this frame's page pass is submitted and the pool holds
+    // what the matching capture was shaded against. The dump idles the device
+    // itself, so there is nothing to wait for here.
+    if (vsmPagePoolDumpTargetFrame_ != 0 && frameClock_.frameCount() >= vsmPagePoolDumpTargetFrame_) {
+        vsmPagePoolDumpTargetFrame_ = 0;
+        virtualShadowMap_.dumpPagePool(
+            vsmPagePoolDumpPath_, vsmClipmapSettings(), commandContext_.commandPool(), context_.graphicsQueue());
+    }
+
     // Advance the CPU frame slot, not the swapchain image index. Acquire chooses
     // the latter independently on the next frame.
     currentFrame_ = (currentFrame_ + 1) % static_cast<uint32_t>(frames_.size());
@@ -919,6 +928,19 @@ void Renderer::requestFrameCaptureAt(uint64_t frameNumber, std::filesystem::path
     frameCaptureIncludesUi_ = includeUi;
     Logger::info("Frame capture requested at frame " + std::to_string(frameNumber) + " -> " +
                  frameCaptureOutputPath_.string() + (includeUi ? " (including the ImGui overlay)" : ""));
+}
+
+void Renderer::requestVsmPagePoolDumpAt(uint64_t frameNumber, std::filesystem::path outputPath)
+{
+    if (frameNumber == 0 || outputPath.empty()) {
+        Logger::error("A VSM page pool dump needs a frame number of at least 1 and a non-empty output path.");
+        return;
+    }
+
+    vsmPagePoolDumpTargetFrame_ = frameNumber;
+    vsmPagePoolDumpPath_ = std::move(outputPath);
+    Logger::info("VSM page pool dump requested at frame " + std::to_string(frameNumber) + " -> " +
+                 vsmPagePoolDumpPath_.string());
 }
 
 void Renderer::setPortfolioCaptureMode(bool enabled)

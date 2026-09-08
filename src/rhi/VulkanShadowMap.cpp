@@ -57,7 +57,8 @@ void VulkanShadowMap::create(VulkanContext& context,
                              uint32_t height,
                              uint32_t layerCount,
                              ViewKind viewKind,
-                             const std::string& debugName)
+                             const std::string& debugName,
+                             bool transferSrc)
 {
     reset();
 
@@ -76,6 +77,9 @@ void VulkanShadowMap::create(VulkanContext& context,
     imageInfo.arrayLayers = layerCount;
     imageInfo.format = chooseShadowMapFormat(context.physicalDevice());
     imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    if (transferSrc) {
+        imageInfo.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    }
     imageInfo.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
     const bool arrayView = viewKind == ViewKind::Array;
     imageInfo.viewType = arrayView ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;

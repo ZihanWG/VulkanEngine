@@ -822,6 +822,27 @@ void Renderer::drawShadowsDebugUi()
                               "cascade split.\n\n"
                               "The page depth-delta view above wins over this one when both\n"
                               "are on; this one wins over the level view.");
+        ImGui::InputInt("Debug: only shadow caster object (all paths)",
+                        &csmSettings_.debugOnlyShadowCasterObject);
+        ImGui::SetItemTooltip("Restricts shadow CASTING to one render object, by index.\n"
+                              "-1 casts as usual. Receivers are untouched.\n\n"
+                              "Scene-wide across shadow paths, which is the point: the object\n"
+                              "leaves the cascades, the punctual atlas and the VSM pages\n"
+                              "together, so a --vsm off / --vsm shadows pair renders the same\n"
+                              "single caster on both sides and whatever the removal does to\n"
+                              "the punctual atlas cancels out of the difference.\n\n"
+                              "Use the VSM-only isolation below to attribute what a page\n"
+                              "holds; use this one to compare the two directional paths.");
+        ImGui::InputInt("Debug: only caster object", &vsmSettings_.debugOnlyCasterObject);
+        ImGui::SetItemTooltip("Restricts the page pass to one render object's casters, by index.\n"
+                              "-1 draws every caster as usual.\n\n"
+                              "The views above say what a page holds under a pixel; this says\n"
+                              "WHICH caster put it there, which none of them can -- the pool is\n"
+                              "depth-only, so there is nowhere to write a caster id beside the\n"
+                              "depth. Sweep it and watch where a wrong shadow survives.\n\n"
+                              "Filters the caster side only: receivers and the sampler are\n"
+                              "untouched, so an isolated run still compares against the cascade\n"
+                              "reference at the same pixel.");
         ImGui::Checkbox("Debug: tint by sampled level", &vsmSettings_.debugLevelColors);
         ImGui::SetItemTooltip("One colour per clipmap level -- green, yellow-green, yellow, orange,\n"
                               "red for L0-L4, then brown/blue/cyan/teal/slate/grey/navy out to the\n"

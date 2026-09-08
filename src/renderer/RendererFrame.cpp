@@ -1041,6 +1041,12 @@ void Renderer::buildMeshDrawBatches()
     cullingStats_.batchCount = meshDrawBatches_.size();
 }
 
+bool Renderer::isShadowCasterIsolatedOut(size_t objectIndex) const
+{
+    const int isolated = csmSettings_.debugOnlyShadowCasterObject;
+    return isolated >= 0 && objectIndex != static_cast<size_t>(isolated);
+}
+
 void Renderer::buildShadowDrawItems(uint32_t cascadeIndex, const renderer::Frustum& lightFrustum)
 {
     if (cascadeIndex >= shadowCascadeDrawItems_.size()) {
@@ -1061,6 +1067,13 @@ void Renderer::buildShadowDrawItems(uint32_t cascadeIndex, const renderer::Frust
             continue;
         }
         if (!object.mesh || !object.mesh->valid()) {
+            continue;
+        }
+        // Diagnostic isolation. Filtering the list rather than the recorder also
+        // keeps the cascade cache honest for free: the key is hashed from this
+        // very list, so an isolated cascade cannot serve a cached shadow drawn
+        // from the full caster set.
+        if (isShadowCasterIsolatedOut(objectIndex)) {
             continue;
         }
 
@@ -1095,6 +1108,9 @@ void Renderer::buildUnionShadowDrawItems(uint32_t cascadeCount)
             continue;
         }
         if (!object.mesh || !object.mesh->valid()) {
+            continue;
+        }
+        if (isShadowCasterIsolatedOut(objectIndex)) {
             continue;
         }
 
@@ -1322,6 +1338,12 @@ void Renderer::updateGpuCullInputBuffer(uint32_t frameIndex)
         .upload(std::as_bytes(std::span<const GpuCullDrawItem>(cullDrawItems.data(), cullDrawItems.size())));
 }
 
+// Where an isolated-out shadow caster is sent: far enough outside any cascade
+// or page box that every shadow cull rejects it on bounds alone.
+namespace {
+constexpr float kIsolatedCasterExile = 1.0e9f;
+} // namespace
+
 void Renderer::updateGpuShadowCullInputBuffer(uint32_t frameIndex)
 {
     if (allDrawItems_.empty()) {
@@ -1363,6 +1385,34 @@ void Renderer::updateGpuShadowCullInputBuffer(uint32_t frameIndex)
                     glm::vec4(-kUnboundedCullExtent, -kUnboundedCullExtent, -kUnboundedCullExtent, 0.0f);
                 gpuDrawItem.boundsMax =
                     glm::vec4(kUnboundedCullExtent, kUnboundedCullExtent, kUnboundedCullExtent, 0.0f);
+            }
+
+            // Diagnostic isolation, applied to the SHARED shadow cull input so
+            // the object leaves every shadow path at once -- see
+            // CsmSettings::debugOnlyShadowCasterObject.
+            //
+            // Pushed out of the frustum rather than merely zero-length. Zeroing
+            // indexCount is not enough on its own: cull.comp rewrites it from
+            // the LOD table whenever lodCount > 0, so a mesh with a chain -- most
+            // of them -- would keep casting and the isolation would fail
+            // silently on exactly the casters worth isolating. Bounds no cascade
+            // and no page can contain are the one filter every shadow cull here
+            // already applies. The index range is zeroed too, so a path that
+            // skipped the bounds test still draws nothing.
+            //
+            // The entry stays in place rather than being removed: the buffer is
+            // indexed by draw item, and dropping entries would renumber it under
+            // the batch offsets computed below.
+            if (isShadowCasterIsolatedOut(drawItem.objectIndex)) {
+                gpuDrawItem.boundsMin = glm::vec4(kIsolatedCasterExile);
+                gpuDrawItem.boundsMax = glm::vec4(kIsolatedCasterExile + 1.0f);
+                gpuDrawItem.indexCount = 0;
+                gpuDrawItem.firstIndex = drawItem.firstIndex;
+                gpuDrawItem.vertexOffset = drawItem.vertexOffset;
+                gpuDrawItem.objectFrameDataIndex = drawItem.frameDataIndex;
+                gpuDrawItem.lodBase = 0;
+                gpuDrawItem.lodCount = 0;
+                continue;
             }
 
             gpuDrawItem.indexCount = drawItem.indexCount;
