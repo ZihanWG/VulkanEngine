@@ -780,7 +780,7 @@ GPU:
 | The page grid's world scale sets the error | `level0Extent` 2 / 4 / 8 | **byte identical** -- those three select levels whose pages are the same 0.5 m across, which is the consistency check. 16 (1 m pages) halves it, and the only thing that doubled with it is the world bias |
 | Marking's block stride misses pages, so lookups fall to a coarser level | `markBlockStride` 1 / 2 / 4 / 8 | **byte identical**, and all four request the same 99 pages. The stride-8 default is safe on correctness, not just cost |
 | The affected pixels sample a coarser level than their neighbours | `debugLevelColors`, cross-tabulated over the whole affected population | **L1 80.5%, L2 19.5%** -- the same levels the *unaffected* lit pixels sample (L2 47.8%, L1 43.1%, L3 9.0%) |
-| The VSM shadow is displaced | best-aligning integer shift between the two captures, three regions | **dx=0 dy=0 wins in all three.** Not displaced -- dilated in place |
+| The VSM shadow is displaced *bodily, across the frame* | best-aligning integer shift between the two captures, three regions | **dx=0 dy=0 wins in all three** -- but see the caveat below: this measures whole windows, which static geometry dominates, so it rules out a global shift and **not** a per-caster one |
 
 The delta the bisection reports is also **invariant to `level0Extent` 4 -> 16 and
 `texelsPerPixel` 1 -> 4** (25.8% of a flat-ground patch reads 0.25-1 m, against
@@ -816,13 +816,28 @@ bands overlap. Their false shadow lands **around each isolated caster's own cast
 shadow** -- so this is not one bad object. It is every caster whose shadow falls
 on a lit surface the camera can see, and the three are simply the three that do.
 
+**Dilated or displaced is NOT settled, and the whole-frame correlation above is
+not the evidence that settles it.** Isolating a caster and painting its own VSM
+shadow against the part the cascades disagree with shows the disagreement is the
+**outer rim on one side**, with the core agreeing -- which a one-sided dilation
+and a displacement both produce. The whole-frame shift test cannot separate them
+either: its windows are mostly static geometry, which pins the optimum at zero
+whatever the shadows do. Trying to measure a per-caster shift by overlap does not
+work as posed, because the only cascade reference available carries *every*
+caster's shadow while the isolated VSM capture carries one; the overlap peaks
+weakly (0.357 at zero against a best of 0.395) and for one object the optimum
+runs to the edge of the search range, which means there is no peak to trust. A
+per-object cascade isolation -- the mirror of `debugOnlyCasterObject` on the
+cascade path -- is what that measurement needs, and it does not exist yet.
+
 **Where that leaves it.** The page records a real occluder, at a real height,
-whose silhouette is larger than the cascades' by a world-scale amount that does
-not move when the clipmap's resolution changes by 4x, is not a displacement, and
-needs ~250x the geometric bias to mask. The mesh, the model matrix and the
-orthographic page projection are shared with the path that gets it right, and
-`vsmPageWorldSize` was checked against its GLSL mirror by hand. What dilates the
-silhouette is the open question, and it is now the only one.
+whose recorded extent disagrees with the cascades' by a world-scale amount that
+does not move when the clipmap's resolution changes by 4x, and that needs ~250x
+the geometric bias to mask. The mesh, the model matrix and the orthographic page
+projection are shared with the path that gets it right, and `vsmPageWorldSize`
+was checked against its GLSL mirror by hand. Whether the silhouette is dilated or
+shifted is the next question, and the cascade-side isolation is the instrument it
+needs.
 
 ### A shader hazard found on the way
 
