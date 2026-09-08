@@ -7,6 +7,7 @@
 #include <glm/gtc/matrix_inverse.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <array>
 #include <cmath>
 #include <limits>
 #include <set>
@@ -974,4 +975,84 @@ TEST_CASE("A level past the active count overlaps nothing", "[vsm]")
     // Same rule the page search follows: an inactive level has no pages, so it
     // cannot be asked to hold a caster.
     CHECK_FALSE(vsmPageOverlapsLightSpaceBounds(settings, 5, glm::ivec2{0, 0}, glm::vec2{0.0f}, glm::vec2{0.0f}));
+}
+
+TEST_CASE("Caster batch slices are exact while the draw list fits the budget", "[vsm][cull]")
+{
+    // The common case, and the reason the stride is computed per frame: a batch
+    // of n items can put at most n casters into any one page, so nothing has to
+    // be reserved beyond that and the stride is the item count rather than the
+    // budget.
+    const std::array<uint32_t, 3> counts{4u, 1u, 6u};
+    std::vector<ve::renderer::VsmCasterBatchSlice> slices;
+    const uint32_t stride = ve::renderer::vsmBuildCasterBatchSlices(counts, 256u, slices);
+
+    REQUIRE(stride == 11u);
+    REQUIRE(slices.size() == 3u);
+    CHECK(slices[0].offset == 0u);
+    CHECK(slices[0].capacity == 4u);
+    CHECK(slices[1].offset == 4u);
+    CHECK(slices[1].capacity == 1u);
+    CHECK(slices[2].offset == 5u);
+    CHECK(slices[2].capacity == 6u);
+}
+
+TEST_CASE("Caster batch slices never overlap and stay inside the stride", "[vsm][cull]")
+{
+    // The property the page pass depends on: one batch's commands can never land
+    // in another's slice, because a draw has one vertex buffer bound and another
+    // batch's commands index a different one.
+    const std::array<uint32_t, 5> counts{300u, 1u, 90u, 0u, 45u};
+    std::vector<ve::renderer::VsmCasterBatchSlice> slices;
+    const uint32_t stride = ve::renderer::vsmBuildCasterBatchSlices(counts, 256u, slices);
+
+    REQUIRE(slices.size() == counts.size());
+    CHECK(stride <= 256u);
+
+    uint32_t expectedOffset = 0;
+    for (size_t batch = 0; batch < slices.size(); ++batch) {
+        CHECK(slices[batch].offset == expectedOffset);
+        CHECK(slices[batch].capacity <= counts[batch]);
+        // A non-empty batch must be able to write at least one command, or its
+        // casters would vanish without ever reaching the over-cap counter.
+        if (counts[batch] > 0) {
+            CHECK(slices[batch].capacity >= 1u);
+        } else {
+            CHECK(slices[batch].capacity == 0u);
+        }
+        expectedOffset += slices[batch].capacity;
+    }
+    CHECK(expectedOffset == stride);
+}
+
+TEST_CASE("An over-budget draw list is shared out rather than truncated", "[vsm][cull]")
+{
+    // Every batch keeps a share proportional to its size instead of the first
+    // batches taking the whole budget, so a page whose casters are spread across
+    // meshes does not lose the later ones outright.
+    const std::array<uint32_t, 2> counts{1000u, 1000u};
+    std::vector<ve::renderer::VsmCasterBatchSlice> slices;
+    const uint32_t stride = ve::renderer::vsmBuildCasterBatchSlices(counts, 100u, slices);
+
+    CHECK(stride <= 100u);
+    CHECK(slices[0].capacity > 0u);
+    CHECK(slices[1].capacity > 0u);
+    // Equal batches get equal shares.
+    CHECK(slices[0].capacity == slices[1].capacity);
+}
+
+TEST_CASE("Caster batch slices degenerate safely", "[vsm][cull]")
+{
+    std::vector<ve::renderer::VsmCasterBatchSlice> slices;
+    CHECK(ve::renderer::vsmBuildCasterBatchSlices({}, 256u, slices) == 0u);
+    CHECK(slices.empty());
+
+    const std::array<uint32_t, 2> counts{3u, 5u};
+    CHECK(ve::renderer::vsmBuildCasterBatchSlices(counts, 0u, slices) == 0u);
+    REQUIRE(slices.size() == 2u);
+    CHECK(slices[0].capacity == 0u);
+    CHECK(slices[1].capacity == 0u);
+
+    const std::array<uint32_t, 2> empty{0u, 0u};
+    CHECK(ve::renderer::vsmBuildCasterBatchSlices(empty, 256u, slices) == 0u);
 }

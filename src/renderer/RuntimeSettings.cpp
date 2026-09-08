@@ -493,6 +493,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readFloat(*csm, "cascadeBlend", settings.csm.cascadeBlend);
         readBool(*csm, "enableCascadeCache", settings.csm.enableCascadeCache);
         readBool(*csm, "enableStableCascadeFit", settings.csm.enableStableCascadeFit);
+        readInt(*csm, "debugOnlyShadowCasterObject", settings.csm.debugOnlyShadowCasterObject);
     }
 
     if (const Json* vsm = objectMember(json, "vsm")) {
@@ -508,6 +509,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readBool(*vsm, "debugLevelColors", settings.vsm.debugLevelColors);
         readBool(*vsm, "debugDepthDelta", settings.vsm.debugDepthDelta);
         readBool(*vsm, "debugCascadeDepthDelta", settings.vsm.debugCascadeDepthDelta);
+        readInt(*vsm, "debugOnlyCasterObject", settings.vsm.debugOnlyCasterObject);
     }
 
     if (const Json* gi = objectMember(json, "gi")) {
@@ -655,7 +657,8 @@ Json toJson(const RuntimeSettings& settings)
               {"enableStableCascadeFit", settings.csm.enableStableCascadeFit},
               {"shadowDistance", settings.csm.shadowDistance},
               {"enableTexelSnapping", settings.csm.enableTexelSnapping},
-              {"enableCascadeDebugColors", settings.csm.enableCascadeDebugColors}}},
+              {"enableCascadeDebugColors", settings.csm.enableCascadeDebugColors},
+              {"debugOnlyShadowCasterObject", settings.csm.debugOnlyShadowCasterObject}}},
         {"vsm",
          Json{{"enableMarking", settings.vsm.enableMarking},
               {"enablePageRendering", settings.vsm.enablePageRendering},
@@ -668,7 +671,8 @@ Json toJson(const RuntimeSettings& settings)
               {"depthBiasTexels", settings.vsm.depthBiasTexels},
               {"debugLevelColors", settings.vsm.debugLevelColors},
               {"debugDepthDelta", settings.vsm.debugDepthDelta},
-              {"debugCascadeDepthDelta", settings.vsm.debugCascadeDepthDelta}}},
+              {"debugCascadeDepthDelta", settings.vsm.debugCascadeDepthDelta},
+              {"debugOnlyCasterObject", settings.vsm.debugOnlyCasterObject}}},
         {"gi",
          Json{{"enabled", settings.gi.enabled},
               {"debugPattern", settings.gi.debugPattern},

@@ -117,6 +117,11 @@ struct LaunchOptions {
     // so anything it reports and the log does not -- an amber capacity warning,
     // a colour, a layout -- has no other evidence path.
     bool captureIncludeUi = false;
+    // Dump the VSM page pool to this PNG (plus a .txt page manifest) at the
+    // capture frame. Requires --capture-frame, so the pool and the shaded frame
+    // it produced are from the same moment, and a VSM mode that allocates the
+    // pool at all.
+    std::string vsmDumpPool;
 
     // Reports whether this driver can bind two images into one allocation, and
     // whether they provably share bytes, then continues as normal. Kept as the
