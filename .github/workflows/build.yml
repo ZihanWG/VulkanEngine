@@ -6,6 +6,35 @@ on:
   pull_request:
 
 jobs:
+  # Fast, dependency-free gate that runs alongside the build rather than behind
+  # the Vulkan SDK install, so a formatting slip reports in under a minute.
+  format:
+    name: clang-format
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Pinned to the major the ubuntu-24.04 image ships. clang-format's output
+      # drifts between majors, so a bare `clang-format` would start failing the
+      # day the runner image moves on, against a tree nobody had touched.
+      - name: Install clang-format
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-format-18
+
+      # src/shaders is GLSL and has no C++ headers, so the extension list keeps
+      # clang-format away from it without needing an exclude.
+      - name: Check formatting
+        run: |
+          if ! find src tests tools \
+              \( -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \) \
+              -print0 | xargs -0 clang-format-18 --dry-run -Werror; then
+            echo "::error::Formatting does not match .clang-format. Fix it with: find src tests tools \( -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \) -print0 | xargs -0 clang-format-18 -i"
+            exit 1
+          fi
+
   build:
     name: Ubuntu Vulkan build
     # Pinned so the LunarG package list codename (noble) is deterministic.
