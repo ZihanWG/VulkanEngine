@@ -85,7 +85,10 @@ void Application::initialize()
         renderer_->loadScenePreset(config_.scene);
     }
     if (config_.captureFrame != 0) {
-        renderer_->requestFrameCaptureAt(config_.captureFrame, config_.captureOutput, config_.captureIncludeUi);
+        renderer_->requestFrameCaptureAt(config_.captureFrame, config_.captureOutput, config_.captureIncludeUi);
+        if (!config_.vsmDumpPool.empty()) {
+            renderer_->requestVsmPagePoolDumpAt(config_.captureFrame, config_.vsmDumpPool);
+        }
     }
 
     window_->setEventCallback([this](const SDL_Event& event) {

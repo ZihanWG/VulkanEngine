@@ -34,12 +34,17 @@ public:
     // debugName labels the image, its views, and its sampler. It defaults to the
     // cascaded-shadow naming this class was written for; the punctual shadow
     // atlas passes its own so RenderDoc captures stay readable.
+    // transferSrc adds VK_IMAGE_USAGE_TRANSFER_SRC_BIT so the image can be
+    // copied out for a diagnostic dump. Off by default and opted into by the VSM
+    // page pool alone: the flag can cost a driver its depth compression, and the
+    // cascades and the punctual atlas have no reason to pay for it.
     void create(VulkanContext& context,
                 uint32_t width = 2048,
                 uint32_t height = 2048,
                 uint32_t layerCount = 1,
                 ViewKind viewKind = ViewKind::Single,
-                const std::string& debugName = {});
+                const std::string& debugName = {},
+                bool transferSrc = false);
     void reset();
 
     [[nodiscard]] VkImage image() const { return image_.image(); }
