@@ -133,6 +133,7 @@ Focused technical write-ups for each major subsystem (start with [docs/README.md
 | Scene editing | [scene_editing.md](docs/scene_editing.md) |
 | Portfolio capture | [portfolio_capture.md](docs/portfolio_capture.md) |
 | Build (cross-platform / macOS) | [build.md](docs/build.md), [build_macos.md](docs/build_macos.md) |
+| Branching, commits, formatting, CI gates | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Milestone history | [milestones.md](docs/milestones.md) |
 
 ## How to Demo
