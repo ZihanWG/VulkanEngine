@@ -444,6 +444,19 @@ struct VsmSettings {
     // real occluder, into the same lit pixel. The page depth-delta view
     // wins over this one when both are on; this one wins over the level view.
     bool debugCascadeDepthDelta = false;
+    // Restricts the page pass to the casters belonging to one render object,
+    // by index; -1 draws every caster as usual.
+    //
+    // The other views here all ask "what does the page hold under this pixel".
+    // This one asks the question the depth-delta view cannot: WHICH caster put
+    // it there. Sweeping it and watching where a false shadow survives names the
+    // object, which no per-pixel readout can -- the pool is depth-only, so there
+    // is nowhere to write an id alongside the depth.
+    //
+    // Deliberately filters the CASTER side and leaves the receiving surfaces and
+    // the sampler untouched, so an isolated run is directly comparable to the
+    // cascade reference at the same pixel.
+    int debugOnlyCasterObject = -1;
 
     [[nodiscard]] bool operator==(const VsmSettings&) const = default;
 };

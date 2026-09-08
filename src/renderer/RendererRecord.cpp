@@ -1271,6 +1271,13 @@ void Renderer::recordVsmPageCull(VkCommandBuffer commandBuffer)
         const DrawItem& drawItem = allDrawItems_[drawIndex];
         if (drawItem.bucket == RenderBucket::Blend || drawItem.mesh == nullptr || drawItem.indexCount == 0) {
             vsmCasterFlags_[drawIndex] = 0u;
+        } else if (vsmSettings_.debugOnlyCasterObject >= 0 &&
+                   drawItem.objectIndex != static_cast<uint32_t>(vsmSettings_.debugOnlyCasterObject)) {
+            // Diagnostic isolation: every other caster is dropped for this run.
+            // Applied here rather than in the cull shader so the flag buffer
+            // stays the single place that decides what casts, and so an isolated
+            // run still exercises the real cull, bucket split and page pass.
+            vsmCasterFlags_[drawIndex] = 0u;
         } else if (drawItem.bucket == RenderBucket::Mask && maskedPagesAvailable) {
             vsmCasterFlags_[drawIndex] = renderer::kVsmMaskedCasterBucket + 1u;
         }

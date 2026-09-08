@@ -508,6 +508,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readBool(*vsm, "debugLevelColors", settings.vsm.debugLevelColors);
         readBool(*vsm, "debugDepthDelta", settings.vsm.debugDepthDelta);
         readBool(*vsm, "debugCascadeDepthDelta", settings.vsm.debugCascadeDepthDelta);
+        readInt(*vsm, "debugOnlyCasterObject", settings.vsm.debugOnlyCasterObject);
     }
 
     if (const Json* gi = objectMember(json, "gi")) {
@@ -668,7 +669,8 @@ Json toJson(const RuntimeSettings& settings)
               {"depthBiasTexels", settings.vsm.depthBiasTexels},
               {"debugLevelColors", settings.vsm.debugLevelColors},
               {"debugDepthDelta", settings.vsm.debugDepthDelta},
-              {"debugCascadeDepthDelta", settings.vsm.debugCascadeDepthDelta}}},
+              {"debugCascadeDepthDelta", settings.vsm.debugCascadeDepthDelta},
+              {"debugOnlyCasterObject", settings.vsm.debugOnlyCasterObject}}},
         {"gi",
          Json{{"enabled", settings.gi.enabled},
               {"debugPattern", settings.gi.debugPattern},
