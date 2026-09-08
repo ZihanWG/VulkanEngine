@@ -727,6 +727,362 @@ this face's own depth where the page pool holds something 0.25-1 m in front of
 it.** The remaining question is what put that something into the page, and it is
 now the only one left.
 
+### It is every caster, it is not MoltenVK, and no bias separates it
+
+Re-measured on a second GPU family -- NVIDIA on Windows, against the M3 every
+number above came from. **The gap reproduces**, so it is not a MoltenVK artifact:
+at the three patches recorded above it reads 46.03 against 38.27, 46.90 against
+39.25 and 48.67 against 41.25, a consistent -7.7/255 where the M3 measured -6.98.
+Both configurations still repeat byte for byte (0/3686400 twice), so the control
+holds here too.
+
+**The description this document led with was wrong, and the whole-frame diff is
+what shows it.** "Uniform across each face rather than shaped like a cast shadow"
+came from reading one 32x32 patch. Over the frame the affected pixels are
+**48482** of 3686400, and they are not faces: they lie in **bands hugging the edge
+of every cast shadow**, with a smaller population of **8981** pixels where the VSM
+is *brighter*. Amplify the signed difference and the shape is unmistakable -- red
+where VSM adds shadow, blue where it removes it, both following silhouettes.
+
+The cross-tabulation the patch could only sample is now over the whole
+population, and it agrees with the patch: of the 48482 affected pixels, **44102
+(91%) have the page holding an occluder 0.25-1 m in front while the cascade holds
+the surface itself**, and another 3497 read 1-4 m against the same cascade answer.
+
+**The bias sweep is the new fact, and it is a trade-off with no operating point.**
+Swept whole-frame rather than on one patch, counting both failures at once:
+
+| `depthBiasTexels` | false shadow (VSM darker >5) | leaked umbra (VSM brighter >2) |
+| --- | --- | --- |
+| 8 | 125173 | 458 |
+| 16 | 102957 | 727 |
+| 32 | 72977 | 1369 |
+| **64** (default) | **48482** | **8981** |
+| 128 | 20760 | 41030 |
+| 256 | 876 | 66633 |
+| 512 | 0 | 66629 |
+
+The false shadow is *entirely* removable by bias -- zero pixels at 512 -- but only
+by erasing the shadow with it: the leak saturates at about 66.6k, which is the
+whole umbra. Every value trades one failure for the other monotonically. That
+rules out tuning as an answer and puts a number on what the error costs: **the
+bias needed to mask it is around 1 m**, against a level-1 texel of 3.9 mm and a
+geometric footprint on a 45-degree floor of the same 3.9 mm. **The required bias
+is ~250x what the surface geometry asks for.**
+
+Six more hypotheses died, each with the control that proves its knob reached the
+GPU:
+
+| hypothesis | test | result |
+| --- | --- | --- |
+| Pages draw authored geometry, cascades draw the cull-selected level | `forcedLod = 0` **and** `lod.shadowBias = 0`, whole-frame | **48850 vs 48482 -- nothing.** Control: the knob moved 517 cascade pixels and **0** VSM pixels, which is itself the reason -- the pages were already drawing this geometry |
+| The page depth mapping disagrees with the sampler's | `depthRange` 50 / 100 / 250 / 1000 | **48484 / 48484 / 48482 / 48477** -- invariant across 20x, so encode and decode agree. Confirmed independently by algebra: `glm::orthoRH_ZO` over `[-R, +R]` gives exactly `0.5 - z/(2R)`, which is `vsmPageDepth`, and the negated second row matches `vsmPageLocalUv`'s `1 - local.y` |
+| The page grid's world scale sets the error | `level0Extent` 2 / 4 / 8 | **byte identical** -- those three select levels whose pages are the same 0.5 m across, which is the consistency check. 16 (1 m pages) halves it, and the only thing that doubled with it is the world bias |
+| Marking's block stride misses pages, so lookups fall to a coarser level | `markBlockStride` 1 / 2 / 4 / 8 | **byte identical**, and all four request the same 99 pages. The stride-8 default is safe on correctness, not just cost |
+| The affected pixels sample a coarser level than their neighbours | `debugLevelColors`, cross-tabulated over the whole affected population | **L1 80.5%, L2 19.5%** -- the same levels the *unaffected* lit pixels sample (L2 47.8%, L1 43.1%, L3 9.0%) |
+| The VSM shadow is displaced *bodily, across the frame* | best-aligning integer shift between the two captures, three regions | **dx=0 dy=0 wins in all three** -- but see the caveat below: this measures whole windows, which static geometry dominates, so it rules out a global shift and **not** a per-caster one |
+
+The delta the bisection reports is also **invariant to `level0Extent` 4 -> 16 and
+`texelsPerPixel` 1 -> 4** (25.8% of a flat-ground patch reads 0.25-1 m, against
+25.4% at either), each of which scales the level's world and texel size by four.
+So the recorded depth is not a footprint or a resolution effect at all: it is real
+geometry, at a real height, and the question is why its silhouette is too big.
+
+### Which caster: the page pool is depth-only, so isolate instead
+
+Every view above answers "what does the page hold under this pixel". None of them
+can answer "**which caster put it there**", and none of them can be extended to:
+the pool is a depth image, so there is nowhere to write a caster id beside the
+depth, and a second pool to carry one costs 64 MiB.
+
+`VsmSettings::debugOnlyCasterObject` restricts the page pass to a single render
+object's casters, by index, and -1 draws every caster as usual. It filters the
+caster flag array that already decides what casts, so an isolated run still goes
+through the real cull, the real opaque/cutout split and the real page pass; the
+receivers and the sampler are untouched, which is what keeps an isolated capture
+comparable to the cascade reference at the same pixel.
+
+Swept across the default scene's 11 objects, counting false-shadow pixels:
+
+| isolated object | false shadow |
+| --- | --- |
+| 3 | 24663 |
+| 6 | 21437 |
+| 7 | 4288 |
+| every other object | 882 (the metric's floor) |
+
+Three objects account for 50388 of the 48482 total, the excess being where their
+bands overlap. Their false shadow lands **around each isolated caster's own cast
+shadow** -- so this is not one bad object. It is every caster whose shadow falls
+on a lit surface the camera can see, and the three are simply the three that do.
+
+### The cascade-side mirror, and the answer: dilated, not displaced
+
+Isolating on the VSM side alone cannot answer whether its shadow is displaced or
+dilated, because the only cascade reference available carries *every* caster's
+shadow while the isolated VSM capture carries one. Overlapping the two peaks
+weakly (0.357 at zero shift against a best of 0.395) and for one object the
+optimum runs to the edge of the search range, which is not a peak.
+
+`CsmSettings::debugOnlyShadowCasterObject` is the mirror, and it is deliberately
+**scene-wide across every shadow path** rather than cascade-only: it filters the
+shared shadow cull input, so the object leaves the cascades, the punctual atlas
+and the VSM pages together. That is what makes the measurement valid -- whatever
+the removal does to the punctual atlas it does identically to both sides of a
+`--vsm off` / `--vsm shadows` pair, so it cancels out of the difference and the
+two directional paths are left rendering the same single caster. Receivers are
+untouched, so the geometry a shadow lands on is still drawn.
+
+**A trap worth keeping, found while building it.** The first version marked an
+isolated-out caster by zeroing its `indexCount` in the cull input. That is not
+enough: `cull.comp` rewrites `indexCount` from the LOD table whenever
+`lodCount > 0`, so every mesh with a LOD chain -- most of them -- would have kept
+casting, and the isolation would have failed **silently on exactly the casters
+worth isolating**. An isolated-out caster is now pushed to bounds no cascade and
+no page can contain, which is the one filter every shadow cull here already
+applies, with the index range zeroed as well.
+
+Both paths are byte identical to the unfiltered capture with the setting at -1,
+and the knob demonstrably reaches the cascades (isolating objects 3, 6 and 7
+moves 436337, 400067 and 502717 cascade pixels).
+
+With both paths rendering the same single caster, against each path's own
+no-caster reference:
+
+| object | cascade shadow | VSM shadow | ratio | VSM adds | cascade-only |
+| --- | --- | --- | --- | --- | --- |
+| 3 | 19619 | 48843 | **2.49x** | 29741 | 517 |
+| 6 | 24994 | 46321 | **1.85x** | 22175 | 848 |
+| 7 | 8100 | 12156 | **1.50x** | 5021 | 965 |
+
+**The VSM shadow is a near-superset of the cascade's.** Only 2-11% of the cascade
+shadow is missing from it, while it adds 1.5-2.5x the area around it, and
+re-aligning barely helps -- best-fit IoU improves from 0.387 to 0.401, from 0.512
+to 0.526, and for object 7 the optimum is **at zero shift**. So it is dilated,
+not displaced, and the earlier "not displaced" line -- withdrawn above because
+its test could not support it -- is now actually measured.
+
+**And there is no setting that undoes it.** Holding the world-space bias fixed
+and varying the texel separates the two knobs that were confounded (the bias is
+in texels, so changing the level changes both):
+
+| world bias | texel at the sampled level | VSM px | ratio to cascade | cascade-only |
+| --- | --- | --- | --- | --- |
+| 0.25 m | 3.9 mm | 48843 | 2.49 | 517 |
+| 0.25 m | 7.8 mm | 49874 | 2.54 | 17 |
+| 0.25 m | 15.6 mm | 82318 | 4.20 | 17 |
+| 1.0 m | 3.9 mm | **0** | 0.00 | 19619 |
+| 1.0 m | 7.8 mm | 11034 | 0.56 | 12280 |
+| 1.0 m | 15.6 mm | 34769 | 1.77 | 2554 |
+
+At a fixed world bias a coarser texel dilates more, which is the footprint
+direction and the expected one. More bias shrinks the shadow -- at the finest
+texel 1 m of bias erases it **completely**, all 19619 pixels. Between those the
+shadow goes from 2.5x too big to nothing at all without passing through a match:
+the whole-frame sweep above already showed false shadow and leaked umbra are
+both non-zero at every bias, so even where the areas would cross, the shapes do
+not.
+
+**Where that leaves it.** At the finest texel the page has a 3.9 mm footprint and
+a 45-degree floor asks for 3.9 mm of bias, yet the silhouette comes out 2.5x too
+large in area and needs a bias 250x that to suppress -- which then erases the
+shadow outright. The mesh, the model matrix, the orthographic page projection,
+the PCF radius and the one-texel tap spacing are all shared with, or equal to,
+the path that gets it right, and `vsmPageWorldSize` was checked against its GLSL
+mirror by hand. What remains is to find why a page records an occluder across a
+neighbourhood far wider than the geometry that occupies it.
+
+### Dumping the pool: the record is correct
+
+`--vsm-dump-pool <path>` copies the whole page pool out at the capture frame and
+writes it as a PNG, with a `.txt` manifest naming the world page every populated
+pool rect holds. The image alone cannot say that: a pool slot is a toroidal wrap,
+so neighbouring rects are unrelated places, and without the manifest a crop is
+not addressable.
+
+It runs **out of band** -- it idles the device, uses its own one-shot command
+buffer, and restores the layout it found. The pool is a render-graph resource in
+the modes worth dumping, so threading a copy through the frame would mean
+hand-barriering around the graph's own transitions, which is the case the
+manual-barrier rule here exists to avoid. A dump costs a full pipeline stall, and
+being a debug action it pays that rather than risking the frame path. Only the
+page pool opts into `VK_IMAGE_USAGE_TRANSFER_SRC_BIT`; the cascades and the
+punctual atlas have no reason to risk a driver's depth compression for it.
+
+Depth is written as a **self-scaling ramp over the populated range**, brightest
+nearest the light. A ramp over [0, 1] would render every page one flat grey: the
+scene occupies 0.481-0.507 of a depth axis that spans 500 world units. Cleared
+texels are excluded from the range -- they would define it -- and coloured blue.
+
+Three controls, because a dump that fabricated its contents would look the same:
+`--vsm off` refuses (no pool is allocated); `--vsm mark` reports **16777216**
+populated texels, the whole pool, which is right because that mode deliberately
+never clears it and the memory is undefined; and `--vsm shadows` reports
+**1553063**, against 99 resident pages of 128 squared. Adding the usage flag
+leaves the rendered frame byte identical (0/3686400).
+
+**What it shows is that the page pool is correct.** Fitting a plane to the ground
+texels of one page and comparing against the light basis, computed independently
+from the light direction:
+
+| | dZ/dX | dZ/dY | plane residual |
+| --- | --- | --- | --- |
+| analytic, from `vsmLightView` | +0.00000 | -1.00295 | -- |
+| measured, page L2 abs(-2,0) | -0.00010 | -1.00272 | **14.71 mm rms** |
+
+The residual is below the 51 mm the 8-bit ramp quantizes to, so the agreement is
+as exact as the dump can express. That single fit validates the **light basis,
+the page's absolute origin, `vsmPageWorldSize`, the Y flip in `vsmPageLocalUv`
+and the depth normalization in `vsmPageDepth`, together** -- any one of them
+wrong by a page, a sign or a scale moves that gradient off -1. And the silhouette
+edges are **hard**: a scan across a caster boundary steps from grey 118 to 48 in
+a single texel, four rows running. No blur, no ramp, no dilation in the map.
+
+**So the framing this document has carried since the depth-delta view is wrong,
+and this is the correction.** It said the question had moved "out of the sampler
+entirely" and was "what gets drawn into the page versus into the cascade". The
+page gets the right geometry, in the right place, at the right depth, with clean
+edges. Whatever makes the VSM shadow 1.5-2.5x too large is therefore in the
+**lookup or the comparison**, not in what the page pass records -- the opposite
+of where the last three sections were pointing.
+
+One number worth carrying into that: on a horizontal receiver the ground's depth
+changes by **1 m per 1 m of light-space Y** (the gradient above), so one level-1
+page, 0.5 m across, spans half a metre of depth -- twice the 0.25 m the default
+64-texel bias allows. A lookup landing even a fraction of a page from where it
+should would read a depth error of exactly the 0.25-1 m the delta view reports.
+
+### The cause: the page pass draws every caster out of one mesh's buffers
+
+```cpp
+const renderer::Mesh* indirectMesh = allDrawItems_.front().mesh;
+```
+
+The page pass binds **that** vertex and index buffer once and then issues every
+page's indirect draw against it. Meshes here each own their buffers -- they are
+not suballocations of one merged pool -- so a draw item's `firstIndex` and
+`vertexOffset` only mean anything against its *own* mesh. Every other indirect
+path in the renderer rebinds per mesh batch (`if (boundMesh != batch.mesh)`, in
+the main pass, the cascades and the punctual atlas). The page pass is the only
+one that does not.
+
+In the default scene `allDrawItems_.front()` is the studio floor, a **cube**. So
+every caster is drawn out of the cube's buffers. A sphere's index range runs past
+the cube's 36 indices, and what survives is the cube itself, drawn under the
+sphere's model matrix. The primitives are a unit cube and a unit-*diameter*
+sphere, so "the unit cube under the sphere's transform" is exactly **the sphere's
+axis-aligned bounding box**.
+
+**Measured against that model, on the pool dumped with only the hero sphere
+casting** (object 3, radius 0.41 m at (0, -0.11, 0.08)):
+
+| model | texels explained | residual |
+| --- | --- | --- |
+| ray-entry into the sphere's AABB | **72877 of 72877 (100%)** | **4.91 mm rms** |
+| the sphere's own surface | -- | 75.78 mm rms, +102.52 mm mean |
+
+The AABB residual is *below* the 12.12 mm the 8-bit dump ramp quantizes to, so
+the recorded depth field is that box to the precision the dump can express. The
+silhouette area agrees independently: **1.1120 m² measured against 1.1321 m²
+predicted** for a cube of edge 0.82 projected along the light, and 0.5281 m² for
+the sphere that should have been there.
+
+**Everything the previous sections measured falls out of this.**
+
+- The dilation ratio. An AABB silhouette over its sphere's disc is
+  `a²(|fx|+|fy|+|fz|) / πr²` = **2.14x**, against the 2.49x, 1.85x and 1.50x
+  measured on the three affected objects.
+- **Why only three objects showed up in the isolation sweep.** It is not
+  visibility, which is what that section guessed. A cube *is* its own AABB, so
+  the bug is invisible on every cube caster, and the showcase scene is four cubes
+  and five spheres.
+- Why no bias value works: the recorded occluder is the wrong *shape*, and no
+  depth offset fixes a shape.
+- Why the dilation is invariant to `level0Extent`, `texelsPerPixel`,
+  `depthRange`, LOD and marking stride: none of them changes which buffer is
+  bound.
+- Why the pool nevertheless passed every geometric check. The ground-plane fits
+  that validated the light basis, the page origin, `vsmPageWorldSize`, the Y flip
+  and `vsmPageDepth` were fits to the **floor**, which is a cube and therefore
+  drawn correctly. The encode was never wrong; the geometry fed into it was.
+- Why the cascades are right: they rebind per batch.
+
+### The fix: per-batch slices, and a stride that is not the budget
+
+Each page issued one indirect draw per caster bucket, and the cull compacted
+every surviving caster of that page into one region whatever mesh it came from --
+so one draw covered commands needing different buffers bound. The page's region
+is now divided into a **slice per mesh batch**, and the pass binds per batch the
+way every other indirect path already does.
+
+Two things keep that from costing memory. The **bucket dimension is gone**: a
+batch is uniform in mesh *and* in bucket by construction, so the batch already
+names the pipeline that draws it, and keeping both dimensions would leave half
+the regions permanently empty. And the **stride is computed per frame** by
+`vsmBuildCasterBatchSlices` instead of reserving the per-page cap for every
+batch. A batch of n items can put at most n casters into one page, so while the
+draw list fits the budget every slice is exact and the stride is the item count:
+**11 commands on the showcase scene against a 256-command budget**. Only over
+budget are slices scaled down, proportionally and never below one -- a batch that
+could not write even one command would drop casters without reaching the over-cap
+counter, which is the failure this structure exists to make visible. The indirect
+buffer is sized for the budget as before, so dropping the bucket dimension
+**halves** what it reserves.
+
+The slice travels **per draw item**, in the caster-flag array, rather than as a
+batch table of its own. That keeps the page pass independent of
+`gpuShadowMeshDrawBatches_`, which only exists when GPU shadow culling is on,
+while the page pass has to lay out its regions either way.
+
+**What it fixes, measured the same way the bug was.**
+
+| | before | after |
+| --- | --- | --- |
+| false shadow, whole frame (VSM darker >5) | 48482 | **879** |
+| leaked umbra (VSM brighter >2) | 8981 | **444** |
+| object 3 alone: VSM area / cascade area | 2.49x | **0.947x** |
+| object 3 alone: IoU with the cascade shadow | 0.387 | **0.944** |
+| object 3 alone: pixels the VSM shadows and the cascade does not | 29741 | **29** |
+| recorded silhouette area in the pool | 1.1120 m² (its AABB) | **0.5265 m²** (the sphere is 0.5281) |
+| recorded depth against the sphere's own surface | 75.78 mm rms | **6.26 mm rms** |
+
+879 is not a residue of the bug: with **nothing casting at all** the two paths
+already differ by 880 pixels on that metric, so what is left is the floor. The
+pool now records the sphere to within a third of a percent of its area and well
+inside the dump's own 13.32 mm quantization.
+
+### The bias default was tuned against the bug
+
+`depthBiasTexels` was 64, and the sweep that chose it -- "below ~32 the scene
+self-shadows its own lit surfaces" -- was measuring the phantom bounding box
+being held off the surfaces it covered. Re-swept against correct geometry there
+is no acne to hold back at all:
+
+| `depthBiasTexels` | false shadow (floor is 880) | leaked umbra |
+| --- | --- | --- |
+| 2 | 885 | **4** |
+| 4 | 884 | 123 |
+| **8** (new default) | **879** | **444** |
+| 16 | 879 | 692 |
+| 32 | 879 | 1914 |
+| 64 (old default) | 880 | 13509 |
+| 128 | 876 | 53237 |
+
+The false-shadow column is flat across the whole range and sits on the floor; only
+the leak moves, and it moves monotonically. The old table -- a trade-off with no
+operating point -- was a property of the bug, not of the setting. Geometrically
+only a texel or two is called for (one texel of slope on a 45-degree surface,
+plus the linear compare filter's 2x2), so **8** is margin rather than
+curve-fitting, and the unit test that pins the window was updated with it.
+
+**Verified beyond the numbers above**: the cascade path is byte identical
+(0/3686400, this touches nothing it uses), two VSM runs still reproduce byte for
+byte, `--vsm off|mark|render|shadows` and the default, stress, sunlit and cornell
+scenes all render with **0 validation errors**, the stress scene reports **0
+casters over the per-page cap** so the per-batch slices are sufficient there, and
+the cutout panel still throws a perforated shadow (1079 px against the cascades'
+1363) rather than the solid silhouette a broken masked path would give.
+
 ### A shader hazard found on the way
 
 The first version of the depth view read a **second `out` parameter** from the
@@ -865,6 +1221,13 @@ is the shader-side duplicate, the same arrangement `ClusterGrid.h` /
 | `debugLevelColors` | `false` | tints each surface by the clipmap level its lookup sampled |
 | `debugDepthDelta` | `false` | tints by how far in front of each surface the page's stored depth sits; wins over the level view |
 | `debugCascadeDepthDelta` | `false` | the same bisection against the cascade array, separating "never sampled" and "cleared texel" from a real stored depth; set independently of the VSM path, so it also answers with VSM off |
+| `debugOnlyCasterObject` | -1 | restricts the page pass to one render object's casters, by index; -1 draws every caster. The only view here that attributes page content to a caster |
+| `--vsm-dump-pool <path>` | -- | a command-line flag, not a setting: writes the whole pool as a PNG plus a page manifest at the capture frame |
+
+`CsmSettings::debugOnlyShadowCasterObject` is the companion, and lives with the
+cascade settings because it is not a VSM setting: it restricts shadow **casting**
+to one render object across every shadow path at once, which is what makes a
+cascade-versus-VSM capture at one caster comparable.
 
 The numeric fields are clamped by `renderer::clampVsmClipmapSettings`, which
 `clampRuntimeSettings` delegates to rather than repeating — a second copy of the
@@ -900,18 +1263,22 @@ page rendering.
 
 ## Limitations
 
-- **One lit-surface discrepancy is narrowed to its cause but not yet fixed.**
-  Certain lit faces read ~6.5/255 darker than under the cascades. Thirteen hypotheses
-  about the *lookup* have been measured and eliminated; the depth-delta view then
-  showed a real occluder recorded in the page, 0.25–1 m in front of the surface.
-  The same bisection has since been run against `uShadowMapCompare`, separating
-  the three outcomes the shading path collapses into one lit pixel, and at that
-  face the cascade lookup **does** sample (the UV/Z bounds exit is not taken) and
-  finds a texel that is **not** cleared, holding a depth within 0.01 m of the
-  surface — its own. So the disagreement is entirely in what the two paths
-  *record*: the cascade map holds the face, the page pool holds something in
-  front of it. What puts it there is the one question left. See
-  [What it did not settle, and what was ruled out](#what-it-did-not-settle-and-what-was-ruled-out).
+- ~~Every caster's page shadow is dilated relative to its cascade shadow.~~
+  **FIXED.** The page pass bound one mesh's vertex and index buffers and drew
+  every caster out of them, so on the showcase scene -- whose first draw item is
+  a cube -- each sphere rendered as its own bounding box. A page's region is now
+  divided into a slice per mesh batch and the pass binds per batch. Whole-frame
+  the false shadow went from **48482 pixels to 879**, which is the floor the two
+  paths differ by with nothing casting at all, and one isolated caster now
+  matches the cascades at **0.947x area and 0.944 IoU** against 2.49x and 0.387.
+  `depthBiasTexels` came down 64 -> 8 with it, the old value having been tuned
+  against the bug. The investigation above is kept because most of it is method
+  rather than history: see
+  [It is every caster, it is not MoltenVK, and no bias separates it](#it-is-every-caster-it-is-not-moltenvk-and-no-bias-separates-it),
+  [The cascade-side mirror](#the-cascade-side-mirror-and-the-answer-dilated-not-displaced),
+  [Dumping the pool](#dumping-the-pool-the-record-is-correct),
+  [The cause](#the-cause-the-page-pass-draws-every-caster-out-of-one-meshs-buffers)
+  and [The fix](#the-fix-per-batch-slices-and-a-stride-that-is-not-the-budget).
 - **`texelsPerPixel` below 1.0 does nothing *on this scene*, and that is the
   coverage bound rather than a broken setting.** `vsmSelectLevel` returns
   `max(quality, coverage)`, so a finer request only survives where coverage is

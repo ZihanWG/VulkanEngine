@@ -38,6 +38,24 @@ struct CsmSettings {
     // same texels cover more world. MEASURED: it does NOT help the cascade cache
     // -- see CascadeMath.h. Its value is stability, not cache hits.
     bool enableStableCascadeFit = false;
+    // Restricts SHADOW CASTING to one render object, by index; -1 casts as usual.
+    //
+    // Scene-wide across shadow paths on purpose, and that is the point rather
+    // than a limitation. It filters the shared shadow cull input, so the object
+    // leaves the cascades, the punctual atlas and the VSM pages together --
+    // which is what makes a cascade-versus-VSM capture at one caster mean
+    // something. Whatever the removal does to the punctual atlas it does
+    // identically on both sides of the A/B, so it cancels out of the
+    // difference, and the two directional paths are left rendering the same
+    // single caster.
+    //
+    // The mirror of VsmSettings::debugOnlyCasterObject, which narrows only the
+    // page pass. Use that one to attribute what a page holds; use this one to
+    // compare the two directional paths on the same caster.
+    //
+    // Receivers are untouched: this filters the shadow cull input, not the main
+    // pass, so the geometry a shadow lands on is still drawn.
+    int debugOnlyShadowCasterObject = -1;
 
     // Defaulted rather than written out: a hand-written comparison would have to
     // be extended for every new field, which is exactly the failure that made
@@ -417,10 +435,18 @@ struct VsmSettings {
     // error a texel can hide scales with the level and a single world figure is
     // wrong at all but one of them.
     //
-    // 64 is measured, not guessed: below ~32 the default scene self-shadows its
-    // own lit surfaces, and by 128 the umbra starts lifting again. The table is
-    // in docs/virtual_shadow_maps.md.
-    float depthBiasTexels = 64.0f;
+    // 8, and the 64 it replaces was measured against a bug. The page pass used
+    // to draw every caster's bounding box instead of its mesh, and a bias that
+    // large was what held the resulting phantom occluder off the surfaces it
+    // covered. With the geometry fixed there is no acne to hold back: the false
+    // shadow count is flat from 2 texels to 128 and sits at the floor the two
+    // paths differ by with nothing casting at all, while the leaked umbra grows
+    // monotonically with the bias -- 4 pixels at 2 texels, 495 at 8, 13509 at
+    // the old 64. Geometrically only a texel or two is called for (one texel of
+    // slope on a 45-degree surface, plus the linear compare filter's 2x2), so 8
+    // is margin rather than measurement-chasing. The table is in
+    // docs/virtual_shadow_maps.md.
+    float depthBiasTexels = 8.0f;
     // Tints every surface by the clipmap level its shadow lookup actually
     // sampled, magenta where the walk found nothing resident.
     //
@@ -444,6 +470,19 @@ struct VsmSettings {
     // real occluder, into the same lit pixel. The page depth-delta view
     // wins over this one when both are on; this one wins over the level view.
     bool debugCascadeDepthDelta = false;
+    // Restricts the page pass to the casters belonging to one render object,
+    // by index; -1 draws every caster as usual.
+    //
+    // The other views here all ask "what does the page hold under this pixel".
+    // This one asks the question the depth-delta view cannot: WHICH caster put
+    // it there. Sweeping it and watching where a false shadow survives names the
+    // object, which no per-pixel readout can -- the pool is depth-only, so there
+    // is nowhere to write an id alongside the depth.
+    //
+    // Deliberately filters the CASTER side and leaves the receiving surfaces and
+    // the sampler untouched, so an isolated run is directly comparable to the
+    // cascade reference at the same pixel.
+    int debugOnlyCasterObject = -1;
 
     [[nodiscard]] bool operator==(const VsmSettings&) const = default;
 };

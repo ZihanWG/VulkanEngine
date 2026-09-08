@@ -159,6 +159,10 @@ public:
     // includeUi records the copy after the ImGui pass instead of before it, which
     // is the only way a scripted run can see the debug panel at all.
     void requestFrameCaptureAt(uint64_t frameNumber, std::filesystem::path outputPath, bool includeUi = false);
+    // Dumps the VSM page pool to a PNG (plus a page manifest) at the end of this
+    // frame. Diagnostic: it stalls the device, so it runs once and never on a
+    // frame anyone is timing.
+    void requestVsmPagePoolDumpAt(uint64_t frameNumber, std::filesystem::path outputPath);
 
     // True once the requested capture has been read back and written. The
     // readback lags the recorded frame by the in-flight frame count, so a caller
@@ -379,6 +383,9 @@ private:
     // and the recorder, which must not disagree.
     [[nodiscard]] bool skinnedCasterCastsIntoFrustum(const renderer::Frustum& frustum) const;
     [[nodiscard]] bool skinnedCasterCastsIntoCascade(uint32_t cascadeIndex) const;
+    // True when CsmSettings::debugOnlyShadowCasterObject is isolating some other
+    // object, so this one must not cast into any shadow path this frame.
+    [[nodiscard]] bool isShadowCasterIsolatedOut(size_t objectIndex) const;
     void recordSkinnedCascadeCaster(VkCommandBuffer commandBuffer, uint32_t cascadeIndex, bool layeredCascades);
     // Vertex/index binding plus the draw, shared by every target it casts into.
     void recordSkinnedCasterDraw(VkCommandBuffer commandBuffer);
@@ -856,6 +863,8 @@ private:
     // above because it deliberately skips the showcase-preset policy.
     std::filesystem::path frameCaptureOutputPath_;
     uint64_t frameCaptureTargetFrame_ = 0;
+    uint64_t vsmPagePoolDumpTargetFrame_ = 0;
+    std::filesystem::path vsmPagePoolDumpPath_;
     bool frameCapturePending_ = false;
     bool frameCaptureRecorded_ = false;
     bool frameCaptureComplete_ = false;
@@ -1070,7 +1079,17 @@ private:
     uint32_t vsmCastersChangedThisFrame_ = 0;
     uint32_t vsmDebugLevel_ = 0;
     // Reused per frame so the caster-flag upload does not allocate.
+    // Four uints per draw item -- (casts, batch, sliceOffset, sliceCapacity) --
+    // uploaded to the page cull. The slice rides per item so the pass needs no
+    // batch table of its own on the GPU.
     std::vector<uint32_t> vsmCasterFlags_;
+    // The page pass's own batching of allDrawItems_. Its own rather than the
+    // cascades': gpuShadowMeshDrawBatches_ is only built when GPU shadow culling
+    // is on, and the page pass has to lay out its regions either way.
+    std::vector<renderer::MeshDrawBatch> vsmCasterBatches_;
+    std::vector<renderer::VsmCasterBatchSlice> vsmCasterBatchSlices_;
+    std::vector<uint32_t> vsmCasterBatchItemCounts_;
+    uint32_t vsmPageCommandStride_ = 0;
     std::vector<VkClearRect> vsmPageClearRects_;
     rhi::PipelineRef vsmPagePipeline_;
     rhi::PipelineRef vsmMaskedPagePipeline_;
