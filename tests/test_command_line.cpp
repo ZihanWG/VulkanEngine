@@ -142,7 +142,8 @@ TEST_CASE("A capture frame beyond the frame budget is rejected")
 
     // Otherwise the loop has to choose between dropping the capture and running
     // far past the budget waiting for a frame that never arrives.
-    REQUIRE_FALSE(parse({"--capture-frame", "100", "--capture-output", "out.png", "--exit-after-frames", "10"}, config));
+    REQUIRE_FALSE(
+        parse({"--capture-frame", "100", "--capture-output", "out.png", "--exit-after-frames", "10"}, config));
 
     // Equal is fine: the readback grace window covers the lag.
     LaunchOptions equalConfig{};

@@ -62,9 +62,18 @@ public:
     // Downloads a previously queued readback (if ready) and writes it to PNG.
     void processReadback(uint32_t frameIndex);
 
-    [[nodiscard]] const std::string& status() const { return status_; }
-    void setStatus(std::string status) { status_ = std::move(status); }
-    [[nodiscard]] const std::filesystem::path& lastSavedPath() const { return lastSavedPath_; }
+    [[nodiscard]] const std::string& status() const
+    {
+        return status_;
+    }
+    void setStatus(std::string status)
+    {
+        status_ = std::move(status);
+    }
+    [[nodiscard]] const std::filesystem::path& lastSavedPath() const
+    {
+        return lastSavedPath_;
+    }
 
 private:
     struct Readback {

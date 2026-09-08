@@ -56,7 +56,10 @@ using ve::assets::TextureUsage;
 constexpr double kMinimumVerifyPsnrDb = 20.0;
 
 struct StbFree {
-    void operator()(stbi_uc* pixels) const { stbi_image_free(pixels); }
+    void operator()(stbi_uc* pixels) const
+    {
+        stbi_image_free(pixels);
+    }
 };
 
 struct Options {
@@ -248,11 +251,8 @@ std::vector<uint8_t> readFile(const std::filesystem::path& path)
 // Decodes one level's blocks back into a tightly packed RGBA8 image. Blocks
 // covering the padded edge are clipped here, which is the mirror of the clamping
 // extractRgba8Block does on the way in.
-std::vector<uint8_t> decodeLevel(uint32_t vkFormat,
-                                 std::span<const uint8_t> levelBytes,
-                                 uint32_t width,
-                                 uint32_t height,
-                                 uint32_t blockSizeBytes)
+std::vector<uint8_t> decodeLevel(
+    uint32_t vkFormat, std::span<const uint8_t> levelBytes, uint32_t width, uint32_t height, uint32_t blockSizeBytes)
 {
     const uint32_t blockColumns = ve::assets::rgba8BlockColumnCount(width);
     const uint32_t blockRows = ve::assets::rgba8BlockRowCount(height);
@@ -329,8 +329,8 @@ VerifyResult verifyCookedFile(const std::filesystem::path& path,
         size_t samples = 0;
         for (size_t texel = 0; texel < decoded.size() / 4U; ++texel) {
             for (uint32_t channel = 0; channel < channelCount; ++channel) {
-                const double delta = static_cast<double>(decoded[texel * 4U + channel])
-                                     - static_cast<double>(expected[texel * 4U + channel]);
+                const double delta = static_cast<double>(decoded[texel * 4U + channel]) -
+                                     static_cast<double>(expected[texel * 4U + channel]);
                 squaredError += delta * delta;
                 ++samples;
             }

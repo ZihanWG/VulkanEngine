@@ -55,8 +55,8 @@ std::string ImageCompareResult::summary() const
     std::string text(buffer.data(), static_cast<size_t>(written));
     if (differingPixels > 0) {
         std::array<char, 64> position{};
-        const int positionWritten = std::snprintf(
-            position.data(), position.size(), ", first at (%u, %u)", firstDifferingX, firstDifferingY);
+        const int positionWritten =
+            std::snprintf(position.data(), position.size(), ", first at (%u, %u)", firstDifferingX, firstDifferingY);
         if (positionWritten > 0) {
             text.append(position.data(), static_cast<size_t>(positionWritten));
         }
@@ -130,9 +130,8 @@ std::vector<uint8_t> makeDifferenceImage(std::span<const uint8_t> actual,
         } else {
             // Matching content stays as dim greyscale context so the reader can
             // see *where* in the image the differences are.
-            const uint32_t luminance = (static_cast<uint32_t>(actual[pixelBase + 0]) +
-                                        actual[pixelBase + 1] + actual[pixelBase + 2]) /
-                                       3U;
+            const uint32_t luminance =
+                (static_cast<uint32_t>(actual[pixelBase + 0]) + actual[pixelBase + 1] + actual[pixelBase + 2]) / 3U;
             const auto dimmed = static_cast<uint8_t>(luminance / 4U);
             difference[pixelBase + 0] = dimmed;
             difference[pixelBase + 1] = dimmed;

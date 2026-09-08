@@ -1,0 +1,13 @@
+# Revisions that only reformatted code. `git blame` skips past them so it
+# still points at whoever wrote a line, not at the reformat.
+#
+# Enable locally with:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# GitHub's web blame reads this file on its own; no setup needed there.
+
+# Format the tree with clang-format for the first time
+fa2f4a5d6ae23bd9d7b66f520b65883c57dae6f5
+
+# Format the code the merge brought in
+53ab7777ad235b38b50d0bdb3cff5d3cc2311b53

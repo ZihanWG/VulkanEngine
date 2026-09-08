@@ -294,8 +294,7 @@ TEST_CASE("The stable fit quantizes camera translation", "[cascades][stable-fit]
     moved.cameraTarget += glm::vec3(25.0f, 0.0f, 0.0f);
     const ve::renderer::CascadeBuildOutput movedOutput = ve::renderer::computeShadowCascades(moved);
 
-    REQUIRE_FALSE(bitIdentical(movedOutput.cascades[0].lightViewProjection,
-                               reference.cascades[0].lightViewProjection));
+    REQUIRE_FALSE(bitIdentical(movedOutput.cascades[0].lightViewProjection, reference.cascades[0].lightViewProjection));
 }
 
 TEST_CASE("The stable fit still covers its slice", "[cascades][stable-fit]")
@@ -304,9 +303,8 @@ TEST_CASE("The stable fit still covers its slice", "[cascades][stable-fit]")
     // to shadow, and a snap that rounds the centre away is exactly how that
     // would happen. Every corner of every slice must land inside that cascade's
     // own frustum, from several camera orientations.
-    const std::array<glm::vec3, 3> directions{glm::vec3(0.0f, 0.0f, -1.0f),
-                                              glm::vec3(1.0f, 0.0f, 0.0f),
-                                              glm::vec3(-0.3f, 0.5f, -0.8f)};
+    const std::array<glm::vec3, 3> directions{
+        glm::vec3(0.0f, 0.0f, -1.0f), glm::vec3(1.0f, 0.0f, 0.0f), glm::vec3(-0.3f, 0.5f, -0.8f)};
 
     for (const glm::vec3& direction : directions) {
         ve::renderer::CascadeBuildInput input = stableFitInput();

@@ -92,13 +92,11 @@ float DynamicResolutionController::update(float gpuFrameMs,
 
     float desired = currentScale;
     if (median > target) {
-        desired = std::clamp(snapDown(std::max(requested, currentScale - kDynamicResolutionMaxStepDown)),
-                             minScale,
-                             maxScale);
+        desired =
+            std::clamp(snapDown(std::max(requested, currentScale - kDynamicResolutionMaxStepDown)), minScale, maxScale);
     } else if (median < target * (1.0f - kDynamicResolutionRaiseHeadroom)) {
-        desired = std::clamp(snapUp(std::min(requested, currentScale + kDynamicResolutionMaxStepUp)),
-                             minScale,
-                             maxScale);
+        desired =
+            std::clamp(snapUp(std::min(requested, currentScale + kDynamicResolutionMaxStepUp)), minScale, maxScale);
 
         // Veto a raise that would immediately have to be undone.
         //

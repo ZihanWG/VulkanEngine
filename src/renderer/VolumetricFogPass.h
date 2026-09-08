@@ -121,9 +121,8 @@ public:
 
     // Records injection then integration, with a barrier between them: the
     // second pass reads every froxel the first wrote.
-    void recordCommands(VkCommandBuffer commandBuffer,
-                        uint32_t frameIndex,
-                        const FogInjectPushConstants& pushConstants);
+    void
+    recordCommands(VkCommandBuffer commandBuffer, uint32_t frameIndex, const FogInjectPushConstants& pushConstants);
 
     // Clears the integrated volume to "no fog" and puts it in the layout the
     // material descriptors record. Must be called even on frames where fog is

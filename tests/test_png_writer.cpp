@@ -26,8 +26,7 @@ namespace {
 
 // A scratch path that cleans itself up, so a failing assertion cannot leave the
 // temp directory filling with images across runs.
-class TemporaryPng
-{
+class TemporaryPng {
 public:
     explicit TemporaryPng(const std::string& name)
         : path_(std::filesystem::temp_directory_path() / ("ve_png_test_" + name + ".png"))
@@ -35,18 +34,23 @@ public:
         std::filesystem::remove(path_);
     }
 
-    ~TemporaryPng() { std::filesystem::remove(path_); }
+    ~TemporaryPng()
+    {
+        std::filesystem::remove(path_);
+    }
 
     TemporaryPng(const TemporaryPng&) = delete;
     TemporaryPng& operator=(const TemporaryPng&) = delete;
 
-    const std::filesystem::path& path() const { return path_; }
+    const std::filesystem::path& path() const
+    {
+        return path_;
+    }
 
     std::vector<uint8_t> bytes() const
     {
         std::ifstream input(path_, std::ios::binary);
-        return std::vector<uint8_t>(std::istreambuf_iterator<char>(input),
-                                    std::istreambuf_iterator<char>());
+        return std::vector<uint8_t>(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
     }
 
 private:
@@ -57,8 +61,7 @@ private:
 std::vector<uint8_t> decodeRgba8(const std::vector<uint8_t>& png, int& width, int& height)
 {
     int channels = 0;
-    stbi_uc* pixels = stbi_load_from_memory(png.data(), static_cast<int>(png.size()),
-                                            &width, &height, &channels, 4);
+    stbi_uc* pixels = stbi_load_from_memory(png.data(), static_cast<int>(png.size()), &width, &height, &channels, 4);
     if (pixels == nullptr) {
         return {};
     }
@@ -90,7 +93,7 @@ std::vector<uint8_t> testImage(uint32_t width, uint32_t height, uint32_t seed = 
 
 TEST_CASE("PNG round-trips through a real decoder")
 {
-    constexpr uint32_t kWidth = 97;    // deliberately not a power of two
+    constexpr uint32_t kWidth = 97; // deliberately not a power of two
     constexpr uint32_t kHeight = 53;
 
     const std::vector<uint8_t> source = testImage(kWidth, kHeight);
@@ -141,7 +144,7 @@ TEST_CASE("PNG honours a padded row stride")
 {
     constexpr uint32_t kWidth = 40;
     constexpr uint32_t kHeight = 12;
-    constexpr uint32_t kStride = kWidth * 4U + 37U;   // readback rows are padded
+    constexpr uint32_t kStride = kWidth * 4U + 37U; // readback rows are padded
 
     const std::vector<uint8_t> tight = testImage(kWidth, kHeight, 11);
 
@@ -160,7 +163,7 @@ TEST_CASE("PNG honours a padded row stride")
     const std::vector<uint8_t> decoded = decodeRgba8(file.bytes(), width, height);
 
     REQUIRE(decoded.size() == tight.size());
-    CHECK(decoded == tight);   // the padding must not reach the file
+    CHECK(decoded == tight); // the padding must not reach the file
 }
 
 TEST_CASE("PNG actually compresses")
@@ -190,6 +193,6 @@ TEST_CASE("PNG writer rejects invalid extents")
 
     CHECK_THROWS(writePngRgba8(file.path(), 0, 4, pixels, 16));
     CHECK_THROWS(writePngRgba8(file.path(), 4, 0, pixels, 16));
-    CHECK_THROWS(writePngRgba8(file.path(), 4, 4, pixels, 8));           // stride < width
-    CHECK_THROWS(writePngRgba8(file.path(), 64, 64, pixels, 64 * 4U));   // span too small
+    CHECK_THROWS(writePngRgba8(file.path(), 4, 4, pixels, 8));         // stride < width
+    CHECK_THROWS(writePngRgba8(file.path(), 64, 64, pixels, 64 * 4U)); // span too small
 }

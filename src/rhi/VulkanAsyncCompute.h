@@ -34,8 +34,14 @@ public:
     void initialize(const VulkanContext& context, uint32_t frameCount);
     void cleanup();
 
-    [[nodiscard]] bool available() const { return available_; }
-    [[nodiscard]] VkQueue queue() const { return queue_; }
+    [[nodiscard]] bool available() const
+    {
+        return available_;
+    }
+    [[nodiscard]] VkQueue queue() const
+    {
+        return queue_;
+    }
     [[nodiscard]] VkCommandBuffer commandBuffer(uint32_t frameIndex) const
     {
         return commandBuffers_.at(frameIndex);

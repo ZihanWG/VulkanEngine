@@ -21,10 +21,8 @@ uint32_t addSaturating(uint32_t value, size_t addend)
 } // namespace
 
 FrameCapacityBudget::FrameCapacityBudget(uint32_t maxObjects, uint32_t maxDrawItems)
-    : maxObjects_(maxObjects)
-    , maxDrawItems_(maxDrawItems)
-{
-}
+    : maxObjects_(maxObjects), maxDrawItems_(maxDrawItems)
+{}
 
 size_t FrameCapacityBudget::admitObjects(size_t objectCount)
 {

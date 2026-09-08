@@ -35,15 +35,12 @@ public:
     Mesh(Mesh&&) noexcept = default;
     Mesh& operator=(Mesh&&) noexcept = default;
 
-    [[nodiscard]] static Mesh createCube(
-        rhi::VulkanContext& context,
-        const rhi::VulkanCommandContext& commandContext);
+    [[nodiscard]] static Mesh createCube(rhi::VulkanContext& context, const rhi::VulkanCommandContext& commandContext);
 
-    [[nodiscard]] static Mesh createUvSphere(
-        rhi::VulkanContext& context,
-        const rhi::VulkanCommandContext& commandContext,
-        uint32_t segments = 48,
-        uint32_t rings = 24);
+    [[nodiscard]] static Mesh createUvSphere(rhi::VulkanContext& context,
+                                             const rhi::VulkanCommandContext& commandContext,
+                                             uint32_t segments = 48,
+                                             uint32_t rings = 24);
 
     // `jobSystem` parallelises LOD chain construction, which is the dominant cost
     // of importing a real scene -- 87% of Sponza's import time is
@@ -57,37 +54,68 @@ public:
     // build (renderer/MeshCache.h), which skips assembly and LOD construction
     // entirely. Any mismatch falls back to loading the glTF and logs the reason,
     // so a stale cook is never fatal and never silent.
-    [[nodiscard]] static LoadedGltfAsset createFromGltf(
-        rhi::VulkanContext& context,
-        const rhi::VulkanCommandContext& commandContext,
-        const std::filesystem::path& path,
-        JobSystem* jobSystem = nullptr);
+    [[nodiscard]] static LoadedGltfAsset createFromGltf(rhi::VulkanContext& context,
+                                                        const rhi::VulkanCommandContext& commandContext,
+                                                        const std::filesystem::path& path,
+                                                        JobSystem* jobSystem = nullptr);
 
     // Uploads already-built geometry. This is the only Vulkan step in glTF
     // import, which is what lets the rest of it run offline or on a worker --
     // see renderer/GltfGeometry.h. `geometry` is consumed.
-    [[nodiscard]] static Mesh createFromGeometry(
-        rhi::VulkanContext& context,
-        const rhi::VulkanCommandContext& commandContext,
-        CpuMeshData&& geometry,
-        std::string_view debugNamePrefix);
+    [[nodiscard]] static Mesh createFromGeometry(rhi::VulkanContext& context,
+                                                 const rhi::VulkanCommandContext& commandContext,
+                                                 CpuMeshData&& geometry,
+                                                 std::string_view debugNamePrefix);
 
-    [[nodiscard]] VkBuffer vertexBuffer() const { return vertexBuffer_.buffer(); }
-    [[nodiscard]] VkBuffer indexBuffer() const { return indexBuffer_.buffer(); }
+    [[nodiscard]] VkBuffer vertexBuffer() const
+    {
+        return vertexBuffer_.buffer();
+    }
+    [[nodiscard]] VkBuffer indexBuffer() const
+    {
+        return indexBuffer_.buffer();
+    }
     // Index count of LOD 0, i.e. the authored geometry. Simplified levels live
     // past it in the same buffer and are addressed through lods().
-    [[nodiscard]] uint32_t indexCount() const { return indexCount_; }
-    [[nodiscard]] std::span<const MeshPrimitive> primitives() const { return subMeshes_; }
-    [[nodiscard]] bool hasSubMeshes() const { return !subMeshes_.empty(); }
+    [[nodiscard]] uint32_t indexCount() const
+    {
+        return indexCount_;
+    }
+    [[nodiscard]] std::span<const MeshPrimitive> primitives() const
+    {
+        return subMeshes_;
+    }
+    [[nodiscard]] bool hasSubMeshes() const
+    {
+        return !subMeshes_.empty();
+    }
 
     // Flat LOD table. Sub-meshed meshes address it through MeshPrimitive::lodBase
     // / lodCount; meshes without sub-meshes use lodBase() / lodCount() below.
-    [[nodiscard]] std::span<const MeshLod> lods() const { return lods_; }
-    [[nodiscard]] uint32_t lodBase() const { return lodBase_; }
-    [[nodiscard]] uint32_t lodCount() const { return lodCount_; }
-    [[nodiscard]] const Aabb& localBounds() const { return localBounds_; }
-    [[nodiscard]] const std::string& debugName() const { return debugName_; }
-    [[nodiscard]] bool valid() const { return vertexBuffer_.buffer() != VK_NULL_HANDLE && indexCount_ > 0; }
+    [[nodiscard]] std::span<const MeshLod> lods() const
+    {
+        return lods_;
+    }
+    [[nodiscard]] uint32_t lodBase() const
+    {
+        return lodBase_;
+    }
+    [[nodiscard]] uint32_t lodCount() const
+    {
+        return lodCount_;
+    }
+    [[nodiscard]] const Aabb& localBounds() const
+    {
+        return localBounds_;
+    }
+    [[nodiscard]] const std::string& debugName() const
+    {
+        return debugName_;
+    }
+    [[nodiscard]] bool valid() const
+    {
+        return vertexBuffer_.buffer() != VK_NULL_HANDLE && indexCount_ > 0;
+    }
 
 private:
     // Mesh owns the GPU-local buffers for one drawable piece of geometry.

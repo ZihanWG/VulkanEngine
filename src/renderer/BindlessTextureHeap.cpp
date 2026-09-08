@@ -34,17 +34,16 @@ uint32_t perClassDescriptorBudget(VkPhysicalDevice physicalDevice, bool updateAf
     // total descriptor count is validated against the sampler, sampled-image,
     // and total-resource limits, both per stage and per set.
     const VkPhysicalDeviceLimits& limits = properties.properties.limits;
-    const uint32_t budget = updateAfterBind
-        ? std::min({properties12.maxPerStageDescriptorUpdateAfterBindSamplers,
-                    properties12.maxPerStageDescriptorUpdateAfterBindSampledImages,
-                    properties12.maxDescriptorSetUpdateAfterBindSamplers,
-                    properties12.maxDescriptorSetUpdateAfterBindSampledImages,
-                    properties12.maxPerStageUpdateAfterBindResources})
-        : std::min({limits.maxPerStageDescriptorSamplers,
-                    limits.maxPerStageDescriptorSampledImages,
-                    limits.maxDescriptorSetSamplers,
-                    limits.maxDescriptorSetSampledImages,
-                    limits.maxPerStageResources});
+    const uint32_t budget = updateAfterBind ? std::min({properties12.maxPerStageDescriptorUpdateAfterBindSamplers,
+                                                        properties12.maxPerStageDescriptorUpdateAfterBindSampledImages,
+                                                        properties12.maxDescriptorSetUpdateAfterBindSamplers,
+                                                        properties12.maxDescriptorSetUpdateAfterBindSampledImages,
+                                                        properties12.maxPerStageUpdateAfterBindResources})
+                                            : std::min({limits.maxPerStageDescriptorSamplers,
+                                                        limits.maxPerStageDescriptorSampledImages,
+                                                        limits.maxDescriptorSetSamplers,
+                                                        limits.maxDescriptorSetSampledImages,
+                                                        limits.maxPerStageResources});
 
     if (budget <= kReservedDescriptors) {
         return 0;
@@ -65,8 +64,8 @@ void BindlessTextureHeap::create(rhi::VulkanContext& context, uint32_t maxTextur
     device_ = context.vkDevice();
 
     const bool updateAfterBind = context.device().descriptorUpdateAfterBindEnabled();
-    const uint32_t descriptorBudget = perClassDescriptorBudget(
-        context.physicalDevice(), updateAfterBind, static_cast<uint32_t>(kTextureKindCount));
+    const uint32_t descriptorBudget =
+        perClassDescriptorBudget(context.physicalDevice(), updateAfterBind, static_cast<uint32_t>(kTextureKindCount));
     if (descriptorBudget == 0) {
         throw std::runtime_error("Device descriptor limits are too small for the bindless material texture heap.");
     }
@@ -103,13 +102,14 @@ void BindlessTextureHeap::create(rhi::VulkanContext& context, uint32_t maxTextur
     bindingFlagsInfo.bindingCount = static_cast<uint32_t>(bindingFlags.size());
     bindingFlagsInfo.pBindingFlags = bindingFlags.data();
 
-    descriptorSetLayout_.create(
-        device_,
-        std::span<const VkDescriptorSetLayoutBinding>(bindings.data(), bindings.size()),
-        updateAfterBind ? VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT : 0,
-        &bindingFlagsInfo);
-    rhi::debug::setObjectName(
-        device_, descriptorSetLayout_.handle(), VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, "BindlessMaterialTextureSetLayout");
+    descriptorSetLayout_.create(device_,
+                                std::span<const VkDescriptorSetLayoutBinding>(bindings.data(), bindings.size()),
+                                updateAfterBind ? VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT : 0,
+                                &bindingFlagsInfo);
+    rhi::debug::setObjectName(device_,
+                              descriptorSetLayout_.handle(),
+                              VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
+                              "BindlessMaterialTextureSetLayout");
 
     VkDescriptorPoolSize poolSize{};
     poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -119,7 +119,8 @@ void BindlessTextureHeap::create(rhi::VulkanContext& context, uint32_t maxTextur
                            std::span<const VkDescriptorPoolSize>(&poolSize, 1),
                            1,
                            updateAfterBind ? VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT : 0);
-    rhi::debug::setObjectName(device_, descriptorPool_.handle(), VK_OBJECT_TYPE_DESCRIPTOR_POOL, "BindlessMaterialTexturePool");
+    rhi::debug::setObjectName(
+        device_, descriptorPool_.handle(), VK_OBJECT_TYPE_DESCRIPTOR_POOL, "BindlessMaterialTexturePool");
 
     const VkDescriptorSetLayout setLayout = descriptorSetLayout_.handle();
     VkDescriptorSetAllocateInfo allocateInfo{};
@@ -162,8 +163,8 @@ uint32_t BindlessTextureHeap::registerTexture(TextureKind textureKind, const rhi
 
     uint32_t& nextIndex = nextIndices_[kindIndex];
     if (nextIndex >= maxTextures_) {
-        throw std::runtime_error("Bindless material texture heap capacity exceeded (" +
-                                 std::to_string(maxTextures_) + " descriptors per material texture class).");
+        throw std::runtime_error("Bindless material texture heap capacity exceeded (" + std::to_string(maxTextures_) +
+                                 " descriptors per material texture class).");
     }
 
     const uint32_t textureIndex = nextIndex++;

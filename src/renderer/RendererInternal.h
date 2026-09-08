@@ -235,8 +235,7 @@ constexpr uint32_t kGpuCullStatsLodCounterOffset = kGpuCullStatsBaseCounterCount
 constexpr uint32_t kGpuCullStatsCounterCount = kGpuCullStatsBaseCounterCount + renderer::kMaxMeshLods;
 constexpr uint32_t kGpuCullStatsCounterOffset = kMaxMeshDrawBatches;
 constexpr VkDeviceSize kBatchVisibleCountBufferSize = kMaxMeshDrawBatches * sizeof(uint32_t);
-constexpr VkDeviceSize kGpuCullCountBufferSize =
-    (kMaxMeshDrawBatches + kGpuCullStatsCounterCount) * sizeof(uint32_t);
+constexpr VkDeviceSize kGpuCullCountBufferSize = (kMaxMeshDrawBatches + kGpuCullStatsCounterCount) * sizeof(uint32_t);
 constexpr float kUnboundedCullExtent = 100000000.0f;
 constexpr VkFormat kSceneColorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 constexpr VkFormat kBloomColorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
@@ -651,7 +650,7 @@ struct CompositePushConstants {
     // moved to its own pass; reused rather than grown because the block is
     // already at the 128 bytes Vulkan guarantees.
     glm::vec4 debugParams{0.0f, 0.0f, 0.0f, 0.0f};
-    glm::vec4 ssaoParams1{0.0f, 16.0f, 0.0f, 0.0f};  // enabled, sampleCount
+    glm::vec4 ssaoParams1{0.0f, 16.0f, 0.0f, 0.0f}; // enabled, sampleCount
 };
 
 static_assert(offsetof(CompositePushConstants, exposure) == 0);
@@ -703,7 +702,6 @@ static_assert(offsetof(TaaResolvePushConstants, varianceGamma) == 48);
 static_assert(offsetof(TaaResolvePushConstants, rejectionFeedbackEnabled) == 52);
 static_assert(offsetof(TaaResolvePushConstants, catmullRomHistoryEnabled) == 56);
 static_assert(sizeof(TaaResolvePushConstants) == 60);
-
 
 struct RenderTargetDebugMetadata {
     const char* debugName = "";
@@ -839,8 +837,7 @@ VkExtent2D mipExtent(VkExtent2D baseExtent, uint32_t mipLevel)
 
 VkExtent2D bloomMipExtent(VkExtent2D swapchainExtent, uint32_t mipLevel)
 {
-    const VkExtent2D baseExtent{std::max(1u, swapchainExtent.width / 2u),
-                                std::max(1u, swapchainExtent.height / 2u)};
+    const VkExtent2D baseExtent{std::max(1u, swapchainExtent.width / 2u), std::max(1u, swapchainExtent.height / 2u)};
     return mipExtent(baseExtent, mipLevel);
 }
 
@@ -926,7 +923,6 @@ std::string meshDebugLabel(const renderer::Mesh* mesh)
     stream << "unnamed mesh " << static_cast<const void*>(mesh);
     return stream.str();
 }
-
 
 void setViewportAndScissor(VkCommandBuffer commandBuffer, VkExtent2D extent)
 {
@@ -1491,7 +1487,8 @@ TransformComponents editableTransformComponents(const renderer::Transform& trans
     glm::vec3 translation{0.0f};
     glm::vec3 skew{0.0f};
     glm::vec4 perspective{0.0f};
-    const bool decomposed = glm::decompose(transform.matrixOverride, scale, orientation, translation, skew, perspective);
+    const bool decomposed =
+        glm::decompose(transform.matrixOverride, scale, orientation, translation, skew, perspective);
     if (!decomposed || !isFiniteVec3(translation) || !isFiniteVec3(scale)) {
         return {};
     }
@@ -1574,8 +1571,7 @@ std::string formatVec4(const glm::vec4& value)
     return stream.str();
 }
 
-template <typename Handle>
-uint64_t vulkanHandleValue(Handle handle)
+template <typename Handle> uint64_t vulkanHandleValue(Handle handle)
 {
     if constexpr (std::is_pointer_v<Handle>) {
         return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(handle));

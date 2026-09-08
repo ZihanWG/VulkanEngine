@@ -44,8 +44,7 @@ namespace ve::rhi {
 // vendorID, deviceID, and the pipelineCacheUUID. A blob shorter than the header,
 // or any field mismatch, returns false so the driver is never fed a foreign or
 // truncated cache. Never throws.
-[[nodiscard]] bool pipelineCacheHeaderMatches(std::span<const std::byte> blob,
-                                              const VkPhysicalDeviceProperties& props);
+[[nodiscard]] bool pipelineCacheHeaderMatches(std::span<const std::byte> blob, const VkPhysicalDeviceProperties& props);
 
 // Atomically persist the blob: write to a ".tmp" sibling then rename over the
 // destination, creating parent directories as needed. Returns false on any
@@ -101,8 +100,7 @@ struct PipelineCacheContents {
 // Pure validation of a stored blob: envelope integrity, then shader digest, then
 // device identity. Returns the borrowed driver payload only when every check
 // passes. Never throws.
-[[nodiscard]] PipelineCacheContents decodePipelineCacheBlob(std::span<const std::byte> blob,
-                                                            const VkPhysicalDeviceProperties& props,
-                                                            uint64_t shaderHash);
+[[nodiscard]] PipelineCacheContents
+decodePipelineCacheBlob(std::span<const std::byte> blob, const VkPhysicalDeviceProperties& props, uint64_t shaderHash);
 
 } // namespace ve::rhi

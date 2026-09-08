@@ -173,13 +173,13 @@ struct TaaSettings {
 // circular include.
 struct SsaoSettings {
     bool enabled = false;
-    float radius = 0.5f;      // horizon-search radius in view-space units
-    float intensity = 1.0f;   // occlusion strength multiplier
-    float power = 2.0f;       // contrast curve applied to the visibility term
-    int sliceCount = 3;       // GTAO slices swept around the view direction
-    int stepsPerSlice = 6;    // horizon-march steps per slice, per side
-    float falloff = 0.6f;     // 0..1 fraction of the radius over which samples fade
-    float thickness = 0.5f;   // view-space thickness heuristic (reserved for denoise)
+    float radius = 0.5f;    // horizon-search radius in view-space units
+    float intensity = 1.0f; // occlusion strength multiplier
+    float power = 2.0f;     // contrast curve applied to the visibility term
+    int sliceCount = 3;     // GTAO slices swept around the view direction
+    int stepsPerSlice = 6;  // horizon-march steps per slice, per side
+    float falloff = 0.6f;   // 0..1 fraction of the radius over which samples fade
+    float thickness = 0.5f; // view-space thickness heuristic (reserved for denoise)
     // Applies occlusion to the ambient/indirect term inside the main pass rather
     // than multiplying the whole composited scene colour. The multiply darkens
     // direct lighting too, which is physically wrong -- a crease in full sunlight
@@ -700,8 +700,7 @@ struct RuntimeSettingsSaveResult {
 };
 
 bool loadRuntimeSettings(const std::filesystem::path& path, RuntimeSettings& outSettings);
-RuntimeSettingsLoadResult loadRuntimeSettingsDetailed(const std::filesystem::path& path,
-                                                      RuntimeSettings& outSettings);
+RuntimeSettingsLoadResult loadRuntimeSettingsDetailed(const std::filesystem::path& path, RuntimeSettings& outSettings);
 
 bool saveRuntimeSettings(const std::filesystem::path& path, const RuntimeSettings& settings);
 RuntimeSettingsSaveResult saveRuntimeSettingsDetailed(const std::filesystem::path& path,

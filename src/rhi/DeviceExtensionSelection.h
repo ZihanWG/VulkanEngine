@@ -59,7 +59,10 @@ struct ExtensionOutcome {
     // Which dependency blocked it. Empty unless decision is DependencyUnavailable.
     std::string_view blockedBy;
 
-    [[nodiscard]] bool enabled() const { return decision == ExtensionDecision::Enabled; }
+    [[nodiscard]] bool enabled() const
+    {
+        return decision == ExtensionDecision::Enabled;
+    }
 };
 
 // Decide every request. One outcome per request, in request order.
@@ -70,9 +73,9 @@ struct ExtensionOutcome {
 // property worth having for the same reason TransientMemoryPlan has it: a policy
 // whose answer depends on how the table happens to be written is one that
 // changes when someone reorders it for readability.
-[[nodiscard]] std::vector<ExtensionOutcome> selectOptionalExtensions(
-    std::span<const std::string_view> available,
-    std::span<const OptionalExtensionRequest> requests);
+[[nodiscard]] std::vector<ExtensionOutcome>
+selectOptionalExtensions(std::span<const std::string_view> available,
+                         std::span<const OptionalExtensionRequest> requests);
 
 // Stable spelling for logs and test failure messages.
 [[nodiscard]] const char* extensionDecisionName(ExtensionDecision decision);

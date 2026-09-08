@@ -6,8 +6,7 @@ uint32_t selectTransferQueueFamily(std::span<const QueueFamilyCapabilities> fami
 {
     for (uint32_t family = 0; family < families.size(); ++family) {
         const QueueFamilyCapabilities& capabilities = families[family];
-        if (capabilities.transfer && !capabilities.graphics && !capabilities.compute
-            && capabilities.queueCount >= 1) {
+        if (capabilities.transfer && !capabilities.graphics && !capabilities.compute && capabilities.queueCount >= 1) {
             return family;
         }
     }

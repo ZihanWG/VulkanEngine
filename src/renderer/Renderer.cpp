@@ -80,7 +80,6 @@
 
 namespace ve {
 
-
 void Renderer::DebugHistory::push(float value)
 {
     samples[cursor] = std::isfinite(value) && value >= 0.0f ? value : 0.0f;
@@ -169,8 +168,7 @@ Renderer::Renderer(Window& window, const RendererStartupOverrides& overrides) : 
     // applyRuntimeSettings(Startup) has already clamped it.
     frames_.resize(framesInFlight_);
     frameOcclusionTested_.assign(frames_.size(), 0u);
-    screenshotCapture_.initialize(
-        context_, static_cast<uint32_t>(frames_.size()), portfolioScreenshotDirectory());
+    screenshotCapture_.initialize(context_, static_cast<uint32_t>(frames_.size()), portfolioScreenshotDirectory());
     gpuProfiler_.initialize(context_, static_cast<uint32_t>(frames_.size()));
     swapchain_.initialize(context_, window_.framebufferExtent());
     // Before anything screen-sized is created below: every one of those targets
@@ -235,10 +233,9 @@ Renderer::Renderer(Window& window, const RendererStartupOverrides& overrides) : 
     // After createScene, the one point where every startup material exists. Under
     // bindless this should read 1 however many materials the scene has; anything
     // else means a material took its own copy of the shared environment set.
-    Logger::info("Material descriptor sets allocated: " + std::to_string(materialDescriptorSetsAllocated_) +
-                 " (cap " + std::to_string(kMaxMaterialDescriptorSets) +
-                 (isBindlessMaterialTextureActive() ? ", bindless: one shared environment set)"
-                                                    : ", per material)"));
+    Logger::info("Material descriptor sets allocated: " + std::to_string(materialDescriptorSetsAllocated_) + " (cap " +
+                 std::to_string(kMaxMaterialDescriptorSets) +
+                 (isBindlessMaterialTextureActive() ? ", bindless: one shared environment set)" : ", per material)"));
     assetLoadStats_.timings.sceneCreateMs =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - sceneCreateStart).count();
     createObjectFrameDataBuffers();
@@ -252,10 +249,8 @@ Renderer::Renderer(Window& window, const RendererStartupOverrides& overrides) : 
     updateDemoLights(0.0f);
     // Prefer a rigged glTF if one is present; otherwise fall back to the
     // self-contained procedural bone chain.
-    if (!skinnedMesh_.createFromGltf(context_,
-                                     commandContext_,
-                                     static_cast<uint32_t>(frames_.size()),
-                                     assetPath("models/skinned_rig.gltf"))) {
+    if (!skinnedMesh_.createFromGltf(
+            context_, commandContext_, static_cast<uint32_t>(frames_.size()), assetPath("models/skinned_rig.gltf"))) {
         skinnedMesh_.create(context_, commandContext_, static_cast<uint32_t>(frames_.size()));
     }
     createIndirectDrawBuffers();
@@ -877,8 +872,8 @@ void Renderer::requestPortfolioScreenshot()
         return;
     }
     if (!supportedScreenshotFormat(swapchain_.colorFormat())) {
-        screenshotCapture_.setStatus(
-            std::string("Screenshot unavailable: unsupported swapchain format ") + vkFormatName(swapchain_.colorFormat()) + ".");
+        screenshotCapture_.setStatus(std::string("Screenshot unavailable: unsupported swapchain format ") +
+                                     vkFormatName(swapchain_.colorFormat()) + ".");
         Logger::warn(screenshotCapture_.status());
         return;
     }
@@ -1109,10 +1104,11 @@ void Renderer::emitRecordCpuBreakdown() const
     }
 
     std::vector<renderer::RenderGraphUnitCost> sorted = unitCosts;
-    std::sort(sorted.begin(), sorted.end(), [](const renderer::RenderGraphUnitCost& lhs,
-                                               const renderer::RenderGraphUnitCost& rhs) {
-        return lhs.milliseconds > rhs.milliseconds;
-    });
+    std::sort(sorted.begin(),
+              sorted.end(),
+              [](const renderer::RenderGraphUnitCost& lhs, const renderer::RenderGraphUnitCost& rhs) {
+                  return lhs.milliseconds > rhs.milliseconds;
+              });
 
     // Whole-frame recording time says whether splitting recording across threads
     // could pay at all; this says which units would have to be split for it to,
@@ -1150,16 +1146,14 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
     // removing it would buy no frame time. It was previously visible only in the
     // ImGui panel, which made it unmeasurable in a headless or scripted run.
     if (!framePrepCpuHistory_.empty()) {
-        message << "  Frame prep CPU: " << framePrepCpuHistory_.latest()
-                << " ms (avg " << framePrepCpuHistory_.average() << ", max " << framePrepCpuHistory_.max()
-                << ")\n";
+        message << "  Frame prep CPU: " << framePrepCpuHistory_.latest() << " ms (avg "
+                << framePrepCpuHistory_.average() << ", max " << framePrepCpuHistory_.max() << ")\n";
     }
     // Recording next to prep, for the same reason prep sits next to the GPU
     // total: what matters is the share of the CPU frame that is still serial.
     if (!recordCpuHistory_.empty()) {
-        message << "  Record CPU: " << recordCpuHistory_.latest()
-                << " ms (avg " << recordCpuHistory_.average() << ", max " << recordCpuHistory_.max()
-                << ")\n";
+        message << "  Record CPU: " << recordCpuHistory_.latest() << " ms (avg " << recordCpuHistory_.average()
+                << ", max " << recordCpuHistory_.max() << ")\n";
     }
     // The per-unit breakdown goes out as its own log line, deliberately NOT inside
     // the GPU timings block. tools/dev/measure_gpu.py treats every two-space
@@ -1175,19 +1169,16 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
         message << "  " << scope.name << ": " << scope.elapsedMs << " ms\n";
     }
     if (cullingStats_.gpuCulling) {
-        const uint32_t totalDrawItems = gpuCulling_.available()
-                                            ? gpuCulling_.mainTotalDrawItems(frameIndex)
-                                            : static_cast<uint32_t>(cullingStats_.totalDrawItems);
-        const uint32_t batchCount = gpuCulling_.available()
-                                        ? gpuCulling_.mainBatchCount(frameIndex)
-                                        : static_cast<uint32_t>(cullingStats_.batchCount);
+        const uint32_t totalDrawItems = gpuCulling_.available() ? gpuCulling_.mainTotalDrawItems(frameIndex)
+                                                                : static_cast<uint32_t>(cullingStats_.totalDrawItems);
+        const uint32_t batchCount = gpuCulling_.available() ? gpuCulling_.mainBatchCount(frameIndex)
+                                                            : static_cast<uint32_t>(cullingStats_.batchCount);
         uint32_t visibleDrawItems = 0;
         renderer::GpuCullCounters counters{};
         if (readGpuCullCounters(frameIndex, counters)) {
-            const uint32_t culledDrawItems =
-                counters.totalDrawItems > counters.visibleDrawItems
-                    ? counters.totalDrawItems - counters.visibleDrawItems
-                    : 0;
+            const uint32_t culledDrawItems = counters.totalDrawItems > counters.visibleDrawItems
+                                                 ? counters.totalDrawItems - counters.visibleDrawItems
+                                                 : 0;
             message << "GPU culling:\n"
                     << "  total draw items: " << counters.totalDrawItems << "\n"
                     << "  visible draw items: " << counters.visibleDrawItems << "\n"
@@ -1244,8 +1235,8 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
         message << "VSM page marking:\n"
                 << "  levels: " << clipmap.levelCount << ", level0 extent: " << clipmap.level0Extent
                 << " m, texel0: " << renderer::vsmTexelWorldSize(clipmap, 0) << " m\n"
-                << "  mark threads: " << virtualShadowMap_.lastMarkThreadCount()
-                << " (stride " << vsmSettings_.markBlockStride << ")\n";
+                << "  mark threads: " << virtualShadowMap_.lastMarkThreadCount() << " (stride "
+                << vsmSettings_.markBlockStride << ")\n";
         if (vsmPageRequestStatsValid_) {
             message << "  requested pages: " << vsmPageRequestStats_.requestedPages << "/"
                     << renderer::kVsmMaxVirtualPages << " (peak " << vsmPeakRequestedPages_ << ", pool holds "
@@ -1263,19 +1254,18 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
         if (isVsmPageRenderingActive()) {
             message << "  addressable now: " << vsmResidencyStats_.addressablePages << "/"
                     << vsmResidencyStats_.requestedPages << "\n"
-                    << "  resident: " << vsmResidencyStats_.residentPages << "/"
-                    << renderer::kVsmPagePoolPageCount << ", cached " << vsmResidencyStats_.cachedPages << "\n"
-                    << "  drawn this frame: " << vsmPageDrawsRecorded_ << "/" << renderer::kMaxVsmPagesPerFrame
-                    << " (" << vsmPageDrawsTotal_ << " since start)" 
-                    << ", over budget " << vsmResidencyStats_.overBudgetPages << ", refused "
-                    << vsmResidencyStats_.refusedPages << ", evicted " << vsmResidencyStats_.evictions << "\n"
+                    << "  resident: " << vsmResidencyStats_.residentPages << "/" << renderer::kVsmPagePoolPageCount
+                    << ", cached " << vsmResidencyStats_.cachedPages << "\n"
+                    << "  drawn this frame: " << vsmPageDrawsRecorded_ << "/" << renderer::kMaxVsmPagesPerFrame << " ("
+                    << vsmPageDrawsTotal_ << " since start)" << ", over budget " << vsmResidencyStats_.overBudgetPages
+                    << ", refused " << vsmResidencyStats_.refusedPages << ", evicted " << vsmResidencyStats_.evictions
+                    << "\n"
                     << "  casters over the per-page cap: " << vsmPageCullOverflow_ << "\n"
-                    << "  casters changed: " << vsmCastersChangedThisFrame_ << ", pages they invalidated: "
-                    << vsmResidencyStats_.casterInvalidatedPages << "\n"
+                    << "  casters changed: " << vsmCastersChangedThisFrame_
+                    << ", pages they invalidated: " << vsmResidencyStats_.casterInvalidatedPages << "\n"
                     << "  skinned caster: pages drawn into " << vsmSkinnedPageDrawsRecorded_ << "\n";
             message << "  directional shadows: "
-                    << (isVsmDirectionalShadowActive() ? "sampled from the page pool" : "cascades")
-                    << "\n";
+                    << (isVsmDirectionalShadowActive() ? "sampled from the page pool" : "cascades") << "\n";
         } else {
             message << "  page rendering: disabled\n";
         }
@@ -1347,9 +1337,8 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
             }
         }
         const renderer::Aabb& bounds = skinnedMesh_.worldBounds();
-        message << ", pose " << skinnedMesh_.poseHash() << ", bounds (" << bounds.min.x << ", " << bounds.min.y
-                << ", " << bounds.min.z << ") to (" << bounds.max.x << ", " << bounds.max.y << ", " << bounds.max.z
-                << ")";
+        message << ", pose " << skinnedMesh_.poseHash() << ", bounds (" << bounds.min.x << ", " << bounds.min.y << ", "
+                << bounds.min.z << ") to (" << bounds.max.x << ", " << bounds.max.y << ", " << bounds.max.z << ")";
         if (isLayeredCascadeRenderingActive()) {
             message << " [SKIPPED: layered cascades]";
         }
@@ -1556,10 +1545,12 @@ void Renderer::logTransientPoolReport()
 
     std::string message = "\n=== Transient pool (no aliasing) ===\n";
     for (const Entry& entry : entries) {
-        message += "  " + mib(entry.bytes) + " MiB  align " + std::to_string(entry.alignment) + "  " + entry.name + "\n";
+        message +=
+            "  " + mib(entry.bytes) + " MiB  align " + std::to_string(entry.alignment) + "  " + entry.name + "\n";
     }
     message += "  ----\n";
-    message += "  " + mib(totalBytes) + " MiB  total across " + std::to_string(entries.size()) + " transient textures\n";
+    message +=
+        "  " + mib(totalBytes) + " MiB  total across " + std::to_string(entries.size()) + " transient textures\n";
 
     char bitsBuffer[16] = {};
     std::snprintf(bitsBuffer, sizeof(bitsBuffer), "0x%x", commonMemoryTypeBits);
@@ -1629,9 +1620,7 @@ void Renderer::logImageMemoryAliasingProbe()
 {
     const rhi::AliasingProbeResult probe = rhi::probeImageMemoryAliasing(context_, commandContext_);
 
-    const auto mib = [](VkDeviceSize bytes) {
-        return std::to_string(static_cast<double>(bytes) / (1024.0 * 1024.0));
-    };
+    const auto mib = [](VkDeviceSize bytes) { return std::to_string(static_cast<double>(bytes) / (1024.0 * 1024.0)); };
 
     std::string message = "Image memory aliasing probe: ";
     message += probe.supported ? "SUPPORTED" : "UNSUPPORTED";
@@ -1667,8 +1656,7 @@ void Renderer::useDeterministicFrameClock(double stepSeconds)
     // config/runtime_settings.json can have turned it on.
     dynamicResolutionSettings_.enabled = false;
 
-    Logger::info("Deterministic frame clock enabled: fixed " +
-                 std::to_string(frameClock_.fixedStepSeconds() * 1000.0) +
+    Logger::info("Deterministic frame clock enabled: fixed " + std::to_string(frameClock_.fixedStepSeconds() * 1000.0) +
                  " ms timestep, dynamic resolution pinned off.");
 }
 
@@ -1735,8 +1723,8 @@ Renderer::CullingDebugSnapshot Renderer::cullingDebugSnapshot(uint32_t frameInde
     snapshot.depthPyramidValid = depthPyramid_.valid();
     snapshot.previousFrameDepthValid = previousFrameDepthValidForOcclusion();
     snapshot.depthPyramidMipCount = depthPyramid_.mipLevels();
-    snapshot.totalDrawItems = static_cast<uint32_t>(
-        std::min<size_t>(cullingStats_.totalDrawItems, std::numeric_limits<uint32_t>::max()));
+    snapshot.totalDrawItems =
+        static_cast<uint32_t>(std::min<size_t>(cullingStats_.totalDrawItems, std::numeric_limits<uint32_t>::max()));
     // Straight from the CPU-side budget, not from GPU counters: these count
     // geometry that never reached the GPU at all, so no readback can see them.
     snapshot.droppedObjects = frameCapacityBudget_.droppedObjects();
@@ -1747,9 +1735,8 @@ Renderer::CullingDebugSnapshot Renderer::cullingDebugSnapshot(uint32_t frameInde
 
     snapshot.visibleDrawItems =
         static_cast<uint32_t>(std::min<size_t>(visibleDrawItems_.size(), snapshot.totalDrawItems));
-    snapshot.frustumCulledDrawItems = snapshot.totalDrawItems > snapshot.visibleDrawItems
-                                          ? snapshot.totalDrawItems - snapshot.visibleDrawItems
-                                          : 0;
+    snapshot.frustumCulledDrawItems =
+        snapshot.totalDrawItems > snapshot.visibleDrawItems ? snapshot.totalDrawItems - snapshot.visibleDrawItems : 0;
     uint32_t gpuVisibleDrawItems = 0;
     renderer::GpuCullCounters gpuCounters{};
     if (readGpuCullCounters(frameIndex, gpuCounters)) {
@@ -1760,18 +1747,16 @@ Renderer::CullingDebugSnapshot Renderer::cullingDebugSnapshot(uint32_t frameInde
         snapshot.visibleDrawItems =
             std::min(gpuCounters.visibleDrawItems + gpuCounters.phase2RescuedDrawItems, snapshot.totalDrawItems);
         snapshot.frustumCulledDrawItems = std::min(gpuCounters.frustumCulledDrawItems, snapshot.totalDrawItems);
-        snapshot.occlusionCulledDrawItems =
-            std::min(gpuCounters.occlusionCulledDrawItems - gpuCounters.phase2RescuedDrawItems,
-                     snapshot.totalDrawItems);
+        snapshot.occlusionCulledDrawItems = std::min(
+            gpuCounters.occlusionCulledDrawItems - gpuCounters.phase2RescuedDrawItems, snapshot.totalDrawItems);
     } else if (readGpuVisibleCount(frameIndex, gpuVisibleDrawItems)) {
         snapshot.visibleDrawItems = std::min(gpuVisibleDrawItems, snapshot.totalDrawItems);
         snapshot.frustumCulledDrawItems = snapshot.totalDrawItems > snapshot.visibleDrawItems
                                               ? snapshot.totalDrawItems - snapshot.visibleDrawItems
                                               : 0;
     }
-    snapshot.culledDrawItems = snapshot.totalDrawItems > snapshot.visibleDrawItems
-                                   ? snapshot.totalDrawItems - snapshot.visibleDrawItems
-                                   : 0;
+    snapshot.culledDrawItems =
+        snapshot.totalDrawItems > snapshot.visibleDrawItems ? snapshot.totalDrawItems - snapshot.visibleDrawItems : 0;
     if (!snapshot.gpuCulling) {
         snapshot.frustumCulledDrawItems = snapshot.culledDrawItems;
         snapshot.occlusionCulledDrawItems = 0;
@@ -1785,8 +1770,8 @@ Renderer::CullingDebugSnapshot Renderer::cullingDebugSnapshot(uint32_t frameInde
         snapshot.shadowDrawItems = gpuCulling_.shadowTotalDrawItems(frameIndex);
     }
 
-    snapshot.visibleShadowDrawItems = static_cast<uint32_t>(
-        std::min<size_t>(shadowCullingStats_.visibleDrawItems, snapshot.shadowDrawItems));
+    snapshot.visibleShadowDrawItems =
+        static_cast<uint32_t>(std::min<size_t>(shadowCullingStats_.visibleDrawItems, snapshot.shadowDrawItems));
     uint32_t gpuVisibleShadowDrawItems = 0;
     if (readGpuShadowVisibleCount(frameIndex, gpuVisibleShadowDrawItems)) {
         snapshot.visibleShadowDrawItems = std::min(gpuVisibleShadowDrawItems, snapshot.shadowDrawItems);
@@ -1928,8 +1913,7 @@ void Renderer::loadRuntimeSettingsAtStartup()
     applyRuntimeSettings(settings, RuntimeSettingsApplyMode::Startup);
 
     lastRuntimeSettingsLoadStatus_ = result.message;
-    runtimeSettingsWarning_ =
-        result.status == RuntimeSettingsLoadStatus::Loaded ? std::string{} : result.message;
+    runtimeSettingsWarning_ = result.status == RuntimeSettingsLoadStatus::Loaded ? std::string{} : result.message;
 }
 
 void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSettingsApplyMode mode)
@@ -2074,7 +2058,8 @@ RuntimeSettings Renderer::captureRuntimeSettings() const
 
 void Renderer::saveRuntimeSettingsFromUi()
 {
-    const RuntimeSettingsSaveResult result = saveRuntimeSettingsDetailed(runtimeSettingsPath_, captureRuntimeSettings());
+    const RuntimeSettingsSaveResult result =
+        saveRuntimeSettingsDetailed(runtimeSettingsPath_, captureRuntimeSettings());
     lastRuntimeSettingsSaveStatus_ = result.message;
     if (result.saved) {
         runtimeSettingsWarning_.clear();
@@ -2091,8 +2076,7 @@ void Renderer::reloadRuntimeSettingsFromUi()
 
     lastRuntimeSettingsLoadStatus_ =
         result.message + " Runtime-safe values applied; startup-applied values require restart.";
-    runtimeSettingsWarning_ =
-        result.status == RuntimeSettingsLoadStatus::Loaded ? std::string{} : result.message;
+    runtimeSettingsWarning_ = result.status == RuntimeSettingsLoadStatus::Loaded ? std::string{} : result.message;
 }
 
 void Renderer::resetRuntimeSettingsToDefaults()
@@ -2134,9 +2118,8 @@ void Renderer::resetCameraToOcclusionTestPreset()
 
 void Renderer::resetDirectionalLightToDefault()
 {
-    directionalLightSettings_.direction = {kDirectionalLightDirection.x,
-                                           kDirectionalLightDirection.y,
-                                           kDirectionalLightDirection.z};
+    directionalLightSettings_.direction = {
+        kDirectionalLightDirection.x, kDirectionalLightDirection.y, kDirectionalLightDirection.z};
     directionalLightSettings_.color = {kDirectionalLightColor.x, kDirectionalLightColor.y, kDirectionalLightColor.z};
     directionalLightSettings_.intensity = 1.0f;
 }
@@ -2269,8 +2252,7 @@ void Renderer::updateVsmCasterInvalidation()
                 clipmap, lightView, cameraLightSpaceXy, state.bounds.min, state.bounds.max);
         }
         if (bounds.valid()) {
-            virtualShadowMap_.invalidatePagesForBounds(
-                clipmap, lightView, cameraLightSpaceXy, bounds.min, bounds.max);
+            virtualShadowMap_.invalidatePagesForBounds(clipmap, lightView, cameraLightSpaceXy, bounds.min, bounds.max);
         }
 
         state.key = key;
@@ -2303,11 +2285,8 @@ void Renderer::updateVsmCasterInvalidation()
                                                        skinnedVsmCasterState_.bounds.max);
         }
         if (skinnedCasts && skinnedMesh_.worldBounds().valid()) {
-            virtualShadowMap_.invalidatePagesForBounds(clipmap,
-                                                       lightView,
-                                                       cameraLightSpaceXy,
-                                                       skinnedMesh_.worldBounds().min,
-                                                       skinnedMesh_.worldBounds().max);
+            virtualShadowMap_.invalidatePagesForBounds(
+                clipmap, lightView, cameraLightSpaceXy, skinnedMesh_.worldBounds().min, skinnedMesh_.worldBounds().max);
         }
     }
 
@@ -2342,11 +2321,8 @@ void Renderer::updateVsmResidency(uint32_t frameIndex)
 
     const glm::mat4 lightView = renderer::vsmLightView(directionalLightSettings_.direction);
     const glm::vec2 cameraLightSpaceXy = glm::vec2(lightView * glm::vec4(frameCameraPosition_, 1.0f));
-    vsmResidencyStats_ = virtualShadowMap_.updateResidency(frameIndex,
-                                                           vsmClipmapSettings(),
-                                                           cameraLightSpaceXy,
-                                                           directionalLightSettings_.direction,
-                                                           vsmFrameCounter_);
+    vsmResidencyStats_ = virtualShadowMap_.updateResidency(
+        frameIndex, vsmClipmapSettings(), cameraLightSpaceXy, directionalLightSettings_.direction, vsmFrameCounter_);
 }
 
 bool Renderer::previousFrameDepthValidForOcclusion() const
@@ -2368,10 +2344,19 @@ void Renderer::clampRuntimeSettings()
 {
     // The settings-struct clamping is GPU-independent and lives in
     // RuntimeSettings.cpp (compiled into VulkanEngineCore) so it can be tested.
-    ve::clampRuntimeSettings(
-        renderScaleSettings_, dynamicResolutionSettings_, toneMappingSettings_, bloomSettings_, taaSettings_,
-        ssrSettings_, ssaoSettings_, fogSettings_, csmSettings_, vsmSettings_, lodSettings_, giSettings_,
-        debugUiSettings_);
+    ve::clampRuntimeSettings(renderScaleSettings_,
+                             dynamicResolutionSettings_,
+                             toneMappingSettings_,
+                             bloomSettings_,
+                             taaSettings_,
+                             ssrSettings_,
+                             ssaoSettings_,
+                             fogSettings_,
+                             csmSettings_,
+                             vsmSettings_,
+                             lodSettings_,
+                             giSettings_,
+                             debugUiSettings_);
 
     // Pushed here rather than at each edit site: clampRuntimeSettings runs after
     // every settings change (load, UI edit, reset), so the volume's copy of the
@@ -2450,13 +2435,13 @@ void Renderer::applyRenderScaleChange()
     invalidateDepthPyramid();
     postProcess_.invalidateAmbientOcclusionHistory();
 
-    lastRenderScaleApplyMs_ = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - begin).count();
+    lastRenderScaleApplyMs_ =
+        std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - begin).count();
     const float idleMs = std::chrono::duration<float, std::milli>(afterIdle - begin).count();
     const float rebuildMs = std::chrono::duration<float, std::milli>(afterRebuild - afterIdle).count();
     Logger::info("Render scale applied: " + std::to_string(renderResolution_.extent().width) + "x" +
-                 std::to_string(renderResolution_.extent().height) + " in " +
-                 std::to_string(lastRenderScaleApplyMs_) + " ms (waitIdle " + std::to_string(idleMs) +
-                 " ms, rebuild " + std::to_string(rebuildMs) + " ms" +
+                 std::to_string(renderResolution_.extent().height) + " in " + std::to_string(lastRenderScaleApplyMs_) +
+                 " ms (waitIdle " + std::to_string(idleMs) + " ms, rebuild " + std::to_string(rebuildMs) + " ms" +
                  (allocationUnchanged ? ", sub-rect only" : ", allocation moved") + ")");
 }
 
@@ -2468,8 +2453,7 @@ void Renderer::updateDynamicResolution()
     const float gpuFrameMs = freshGpuFrameMs_;
     freshGpuFrameMs_ = 0.0f;
 
-    const float scale =
-        dynamicResolution_.update(gpuFrameMs, renderScaleSettings_.scale, dynamicResolutionSettings_);
+    const float scale = dynamicResolution_.update(gpuFrameMs, renderScaleSettings_.scale, dynamicResolutionSettings_);
     if (scale == renderScaleSettings_.scale) {
         return;
     }
@@ -2566,8 +2550,8 @@ bool Renderer::isDepthPyramidBuildRequired() const
     // Deliberately does NOT test depthPyramid_.valid() the way
     // isGpuOcclusionCullingActive does: validity is an *output* of the build, so
     // gating the build on it would latch the pyramid off forever after one skip.
-    const bool pyramidUsable = depthPyramid_.buildAvailable() && depthPyramid_.image() != VK_NULL_HANDLE &&
-                               depthPyramid_.mipLevels() > 0;
+    const bool pyramidUsable =
+        depthPyramid_.buildAvailable() && depthPyramid_.image() != VK_NULL_HANDLE && depthPyramid_.mipLevels() > 0;
     if (!pyramidUsable) {
         return false;
     }

@@ -34,33 +34,47 @@ public:
 
     void create(VulkanContext& context, const VulkanBufferCreateInfo& createInfo);
     void createBuffer(VulkanContext& context, const VulkanBufferCreateInfo& createInfo);
-    void createDeviceLocal(
-        VulkanContext& context,
-        const VulkanCommandContext& commandContext,
-        std::span<const std::byte> data,
-        VkBufferUsageFlags usage,
-        bool requestDeviceAddress = false);
+    void createDeviceLocal(VulkanContext& context,
+                           const VulkanCommandContext& commandContext,
+                           std::span<const std::byte> data,
+                           VkBufferUsageFlags usage,
+                           bool requestDeviceAddress = false);
     void reset();
-    void destroy() { reset(); }
+    void destroy()
+    {
+        reset();
+    }
 
-    [[nodiscard]] VkBuffer buffer() const { return buffer_; }
-    [[nodiscard]] VkDeviceSize size() const { return size_; }
-    [[nodiscard]] VkDeviceAddress deviceAddress() const { return deviceAddress_; }
-    [[nodiscard]] bool valid() const { return buffer_ != VK_NULL_HANDLE; }
+    [[nodiscard]] VkBuffer buffer() const
+    {
+        return buffer_;
+    }
+    [[nodiscard]] VkDeviceSize size() const
+    {
+        return size_;
+    }
+    [[nodiscard]] VkDeviceAddress deviceAddress() const
+    {
+        return deviceAddress_;
+    }
+    [[nodiscard]] bool valid() const
+    {
+        return buffer_ != VK_NULL_HANDLE;
+    }
 
     void* map();
     void unmap();
     void upload(std::span<const std::byte> data, VkDeviceSize offset = 0);
     void download(std::span<std::byte> data, VkDeviceSize offset = 0);
 
-    static void copyBuffer(
-        const VulkanContext& context,
-        const VulkanCommandContext& commandContext,
-        VkBuffer source,
-        VkBuffer destination,
-        VkDeviceSize size,
-        VkPipelineStageFlags2 destinationStage = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT,
-        VkAccessFlags2 destinationAccess = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_INDEX_READ_BIT);
+    static void copyBuffer(const VulkanContext& context,
+                           const VulkanCommandContext& commandContext,
+                           VkBuffer source,
+                           VkBuffer destination,
+                           VkDeviceSize size,
+                           VkPipelineStageFlags2 destinationStage = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT,
+                           VkAccessFlags2 destinationAccess = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT |
+                                                              VK_ACCESS_2_INDEX_READ_BIT);
 
 private:
     void moveFrom(VulkanBuffer& other) noexcept;

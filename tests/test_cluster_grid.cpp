@@ -79,8 +79,8 @@ TEST_CASE("sphereIntersectsAabb matches the light-cull overlap test", "[cluster]
     const glm::vec3 boundsMin{-1.0f, -1.0f, -1.0f};
     const glm::vec3 boundsMax{1.0f, 1.0f, 1.0f};
 
-    CHECK(sphereIntersectsAabb(glm::vec3{0.0f}, 0.1f, boundsMin, boundsMax));         // center inside
-    CHECK(sphereIntersectsAabb(glm::vec3{2.0f, 0.0f, 0.0f}, 1.5f, boundsMin, boundsMax)); // reaches the face
+    CHECK(sphereIntersectsAabb(glm::vec3{0.0f}, 0.1f, boundsMin, boundsMax));                   // center inside
+    CHECK(sphereIntersectsAabb(glm::vec3{2.0f, 0.0f, 0.0f}, 1.5f, boundsMin, boundsMax));       // reaches the face
     CHECK_FALSE(sphereIntersectsAabb(glm::vec3{3.0f, 0.0f, 0.0f}, 1.5f, boundsMin, boundsMax)); // just short
     CHECK_FALSE(sphereIntersectsAabb(glm::vec3{5.0f, 5.0f, 5.0f}, 1.0f, boundsMin, boundsMax)); // far corner
     // Touching a corner counts as intersecting (distance == radius).

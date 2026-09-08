@@ -79,7 +79,9 @@ std::vector<uint8_t> convertScreenshotToRgba8(std::span<const std::byte> source,
 
 } // namespace
 
-void ScreenshotCapture::initialize(rhi::VulkanContext& context, uint32_t frameCount, std::filesystem::path outputDirectory)
+void ScreenshotCapture::initialize(rhi::VulkanContext& context,
+                                   uint32_t frameCount,
+                                   std::filesystem::path outputDirectory)
 {
     context_ = &context;
     outputDirectory_ = std::move(outputDirectory);
@@ -208,8 +210,8 @@ void ScreenshotCapture::recordCopy(VkCommandBuffer commandBuffer,
     // Nothing in this submission reads the image after a present restore; the
     // presentation engine is ordered by the semaphore, not by this barrier, so
     // naming a stage here would claim a dependency that does not exist.
-    toColorBarrier.dstStageMask = restoreToPresent ? VK_PIPELINE_STAGE_2_NONE
-                                                   : VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    toColorBarrier.dstStageMask =
+        restoreToPresent ? VK_PIPELINE_STAGE_2_NONE : VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
     toColorBarrier.dstAccessMask =
         restoreToPresent ? VK_ACCESS_2_NONE
                          : (VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);

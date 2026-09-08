@@ -39,18 +39,30 @@ public:
     // Move the camera toward (positive) or away from its target.
     void dolly(renderer::Camera& camera, float amount);
 
-    [[nodiscard]] float yaw() const { return yaw_; }
-    [[nodiscard]] float pitch() const { return pitch_; }
-    void setMoveSpeed(float speed) { moveSpeed_ = speed; }
-    [[nodiscard]] float moveSpeed() const { return moveSpeed_; }
+    [[nodiscard]] float yaw() const
+    {
+        return yaw_;
+    }
+    [[nodiscard]] float pitch() const
+    {
+        return pitch_;
+    }
+    void setMoveSpeed(float speed)
+    {
+        moveSpeed_ = speed;
+    }
+    [[nodiscard]] float moveSpeed() const
+    {
+        return moveSpeed_;
+    }
 
     // Forward direction implied by the current yaw/pitch (normalized).
     [[nodiscard]] glm::vec3 forward() const;
 
 private:
-    float yaw_ = 0.0f;        // radians around world up (+Y)
-    float pitch_ = 0.0f;      // radians, clamped away from straight up/down
-    float moveSpeed_ = 5.0f;  // units per second
+    float yaw_ = 0.0f;       // radians around world up (+Y)
+    float pitch_ = 0.0f;     // radians, clamped away from straight up/down
+    float moveSpeed_ = 5.0f; // units per second
 };
 
 } // namespace ve

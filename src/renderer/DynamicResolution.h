@@ -75,12 +75,21 @@ public:
 
     // Median of the window, or 0 before the first measurement.
     [[nodiscard]] float medianGpuFrameMs() const;
-    [[nodiscard]] bool hasMeasurement() const { return sampleCount_ > 0; }
-    [[nodiscard]] uint32_t changeCount() const { return changeCount_; }
+    [[nodiscard]] bool hasMeasurement() const
+    {
+        return sampleCount_ > 0;
+    }
+    [[nodiscard]] uint32_t changeCount() const
+    {
+        return changeCount_;
+    }
     // Measurements since the last scale change; while below
     // kDynamicResolutionSettleFrames the controller is deliberately not acting.
     // Surfaced so the debug panel can say "settling" rather than looking stuck.
-    [[nodiscard]] uint32_t measurementsSinceChange() const { return measurementsSinceChange_; }
+    [[nodiscard]] uint32_t measurementsSinceChange() const
+    {
+        return measurementsSinceChange_;
+    }
 
 private:
     std::array<float, kDynamicResolutionSampleWindow> samples_{};

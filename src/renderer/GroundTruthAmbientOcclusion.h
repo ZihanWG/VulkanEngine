@@ -71,23 +71,29 @@ public:
     void destroyResources();
 
     // Host-visible write of this frame's matrices + horizon-search parameters.
-    void uploadParams(uint32_t frameIndex,
-                      const glm::mat4& view,
-                      const glm::mat4& projection,
-                      uint32_t frameCounter);
+    void uploadParams(uint32_t frameIndex, const glm::mat4& view, const glm::mat4& projection, uint32_t frameCounter);
 
     // Records the GTAO pass (writes the visibility target owned by
     // PostProcessStack, set up by the render graph).
     void recordCommands(VkCommandBuffer commandBuffer, uint32_t frameIndex, VkExtent2D extent);
 
-    [[nodiscard]] bool available() const { return available_; }
+    [[nodiscard]] bool available() const
+    {
+        return available_;
+    }
 
     // The raw (pre-denoise) AO target is owned here and wrapped by the render
     // graph, mirroring how SSR owns its scene-color copy. The GTAO trace pass
     // writes it and the bilateral blur pass reads it; the denoised result lands
     // in the composite-visible target owned by PostProcessStack.
-    [[nodiscard]] const rhi::VulkanImage& rawAmbientOcclusion() const { return rawAo_; }
-    [[nodiscard]] VkImageLayout* rawAmbientOcclusionLayoutPtr() { return &rawAoLayout_; }
+    [[nodiscard]] const rhi::VulkanImage& rawAmbientOcclusion() const
+    {
+        return rawAo_;
+    }
+    [[nodiscard]] VkImageLayout* rawAmbientOcclusionLayoutPtr()
+    {
+        return &rawAoLayout_;
+    }
 
 private:
     rhi::VulkanContext& context_;

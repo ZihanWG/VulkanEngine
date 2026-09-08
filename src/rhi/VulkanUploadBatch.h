@@ -59,8 +59,14 @@ public:
 
     // Records into this until submitted. Callers add their own barriers; the
     // batch takes no view on what is being copied.
-    [[nodiscard]] VkCommandBuffer commandBuffer() const { return commandBuffer_; }
-    [[nodiscard]] bool recording() const { return commandBuffer_ != VK_NULL_HANDLE; }
+    [[nodiscard]] VkCommandBuffer commandBuffer() const
+    {
+        return commandBuffer_;
+    }
+    [[nodiscard]] bool recording() const
+    {
+        return commandBuffer_ != VK_NULL_HANDLE;
+    }
 
     // Submits and waits if `pendingBytes` would push the batch over budget, then
     // reopens it. Call before recording an upload of that size.
@@ -83,18 +89,30 @@ public:
 
     // Which queue the copies actually ran on, for the asset-load report: a run's
     // evidence should say which path it took rather than leaving it inferred.
-    [[nodiscard]] bool usingTransferQueue() const { return transferQueueFamily_ != graphicsQueueFamily_; }
+    [[nodiscard]] bool usingTransferQueue() const
+    {
+        return transferQueueFamily_ != graphicsQueueFamily_;
+    }
 
     // Submits whatever has been recorded and waits for it. Safe to call on an
     // empty batch. The destructor calls this, so an exception mid-load cannot
     // leave GPU work referencing freed staging.
     void submitAndWait();
 
-    [[nodiscard]] VkDeviceSize retainedStagingBytes() const { return retainedStagingBytes_; }
+    [[nodiscard]] VkDeviceSize retainedStagingBytes() const
+    {
+        return retainedStagingBytes_;
+    }
     // Diagnostics: how many submits the batch actually needed, and the largest
     // amount of staging alive at once. Both are evidence for the budget.
-    [[nodiscard]] uint32_t submitCount() const { return submitCount_; }
-    [[nodiscard]] VkDeviceSize peakStagingBytes() const { return peakStagingBytes_; }
+    [[nodiscard]] uint32_t submitCount() const
+    {
+        return submitCount_;
+    }
+    [[nodiscard]] VkDeviceSize peakStagingBytes() const
+    {
+        return peakStagingBytes_;
+    }
 
 private:
     struct PendingAcquire {

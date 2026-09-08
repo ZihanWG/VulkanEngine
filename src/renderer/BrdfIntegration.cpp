@@ -46,11 +46,7 @@ float dot(Vec3 lhs, Vec3 rhs)
 
 Vec3 cross(Vec3 lhs, Vec3 rhs)
 {
-    return {
-        lhs.y * rhs.z - lhs.z * rhs.y,
-        lhs.z * rhs.x - lhs.x * rhs.z,
-        lhs.x * rhs.y - lhs.y * rhs.x
-    };
+    return {lhs.y * rhs.z - lhs.z * rhs.y, lhs.z * rhs.x - lhs.x * rhs.z, lhs.x * rhs.y - lhs.y * rhs.x};
 }
 
 Vec3 normalize(Vec3 value)
@@ -76,34 +72,23 @@ float radicalInverseVdc(uint32_t bits)
 
 Vec2 hammersley(uint32_t index, uint32_t sampleCount)
 {
-    return {
-        static_cast<float>(index) / static_cast<float>(sampleCount),
-        radicalInverseVdc(index)
-    };
+    return {static_cast<float>(index) / static_cast<float>(sampleCount), radicalInverseVdc(index)};
 }
 
 Vec3 importanceSampleGgx(Vec2 xi, Vec3 normal, float roughness)
 {
     const float alpha = roughness * roughness;
     const float phi = 2.0f * kPi * xi.x;
-    const float cosTheta = std::sqrt(
-        (1.0f - xi.y) / std::max(1.0f + (alpha * alpha - 1.0f) * xi.y, kEpsilon));
+    const float cosTheta = std::sqrt((1.0f - xi.y) / std::max(1.0f + (alpha * alpha - 1.0f) * xi.y, kEpsilon));
     const float sinTheta = std::sqrt(std::max(1.0f - cosTheta * cosTheta, 0.0f));
 
-    const Vec3 halfwayTangent{
-        std::cos(phi) * sinTheta,
-        std::sin(phi) * sinTheta,
-        cosTheta
-    };
+    const Vec3 halfwayTangent{std::cos(phi) * sinTheta, std::sin(phi) * sinTheta, cosTheta};
 
     const Vec3 up = std::abs(normal.z) < 0.999f ? Vec3{0.0f, 0.0f, 1.0f} : Vec3{1.0f, 0.0f, 0.0f};
     const Vec3 tangent = normalize(cross(up, normal));
     const Vec3 bitangent = cross(normal, tangent);
 
-    return normalize(
-        tangent * halfwayTangent.x
-        + bitangent * halfwayTangent.y
-        + normal * halfwayTangent.z);
+    return normalize(tangent * halfwayTangent.x + bitangent * halfwayTangent.y + normal * halfwayTangent.z);
 }
 
 float geometrySchlickGgx(float normalDirection, float roughness)
@@ -143,11 +128,7 @@ void integrateRow(uint32_t y, uint32_t size, std::vector<uint8_t>& pixels)
 std::array<float, 2> integrateBrdf(float normalView, float roughness)
 {
     const Vec3 normal{0.0f, 0.0f, 1.0f};
-    const Vec3 viewDirection{
-        std::sqrt(std::max(1.0f - normalView * normalView, 0.0f)),
-        0.0f,
-        normalView
-    };
+    const Vec3 viewDirection{std::sqrt(std::max(1.0f - normalView * normalView, 0.0f)), 0.0f, normalView};
 
     float scale = 0.0f;
     float bias = 0.0f;
@@ -163,8 +144,7 @@ std::array<float, 2> integrateBrdf(float normalView, float roughness)
 
         if (normalLight > 0.0f) {
             const float geometry = geometrySmith(normalView, normalLight, roughness);
-            const float geometryVisibility =
-                geometry * viewHalf / std::max(normalHalf * normalView, kEpsilon);
+            const float geometryVisibility = geometry * viewHalf / std::max(normalHalf * normalView, kEpsilon);
             const float fresnel = std::pow(1.0f - viewHalf, 5.0f);
 
             scale += (1.0f - fresnel) * geometryVisibility;

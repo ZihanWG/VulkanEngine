@@ -61,10 +61,22 @@ public:
     // that what occlusion culling used to yield says nothing about now.
     void reset();
 
-    [[nodiscard]] bool shouldBuildPyramid() const { return state_ != State::Suspended; }
-    [[nodiscard]] State state() const { return state_; }
-    [[nodiscard]] uint32_t zeroYieldFrames() const { return zeroYieldFrames_; }
-    [[nodiscard]] uint32_t framesSinceProbe() const { return framesSinceProbe_; }
+    [[nodiscard]] bool shouldBuildPyramid() const
+    {
+        return state_ != State::Suspended;
+    }
+    [[nodiscard]] State state() const
+    {
+        return state_;
+    }
+    [[nodiscard]] uint32_t zeroYieldFrames() const
+    {
+        return zeroYieldFrames_;
+    }
+    [[nodiscard]] uint32_t framesSinceProbe() const
+    {
+        return framesSinceProbe_;
+    }
 
 private:
     State state_ = State::Active;

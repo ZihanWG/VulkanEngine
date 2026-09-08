@@ -35,7 +35,6 @@ constexpr VkFormat kSceneColorCopyFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
     return (properties.optimalTilingFeatures & required) == required;
 }
 
-
 // std430 mirror of the SsrParamsBuffer block in ssr_trace.frag.
 struct SsrParams {
     glm::mat4 view{1.0f};
@@ -60,11 +59,9 @@ ScreenSpaceReflections::ScreenSpaceReflections(rhi::VulkanContext& context,
                                                RenderGraph& renderGraph,
                                                GpuProfiler& gpuProfiler,
                                                SsrSettings& settings)
-    : context_(context), swapchain_(swapchain), pipelineStore_(pipelineStore),
-      renderResolution_(renderResolution), renderGraph_(renderGraph), gpuProfiler_(gpuProfiler),
-      settings_(settings)
-{
-}
+    : context_(context), swapchain_(swapchain), pipelineStore_(pipelineStore), renderResolution_(renderResolution),
+      renderGraph_(renderGraph), gpuProfiler_(gpuProfiler), settings_(settings)
+{}
 
 ScreenSpaceReflections::~ScreenSpaceReflections()
 {
@@ -231,8 +228,8 @@ void ScreenSpaceReflections::createResources(VkImageView normalRoughnessView, ui
             paramsInfo.range = sizeof(SsrParams);
 
             std::array<VkWriteDescriptorSet, 4> writes{};
-            const std::array<const VkDescriptorImageInfo*, 3> imageInfos{&depthInfo, &normalRoughnessInfo,
-                                                                         &colorCopyInfo};
+            const std::array<const VkDescriptorImageInfo*, 3> imageInfos{
+                &depthInfo, &normalRoughnessInfo, &colorCopyInfo};
             for (uint32_t bindingIndex = 0; bindingIndex < 3; ++bindingIndex) {
                 writes[bindingIndex].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 writes[bindingIndex].dstSet = descriptorSets_[frameIndex];
@@ -247,7 +244,8 @@ void ScreenSpaceReflections::createResources(VkImageView normalRoughnessView, ui
             writes[3].descriptorCount = 1;
             writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             writes[3].pBufferInfo = &paramsInfo;
-            vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+            vkUpdateDescriptorSets(
+                context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
         }
 
         available_ = true;
@@ -299,10 +297,8 @@ void ScreenSpaceReflections::uploadParams(uint32_t frameIndex,
                                                sceneColorCopyAllocationExtent_)
             : renderResolution_.uvScale();
     params.subRect = glm::vec4(renderResolution_.uvScale(), copyUvScale);
-    params.weightParams = {settings_.intensity,
-                           settings_.maxRoughness,
-                           settings_.screenEdgeFade,
-                           static_cast<float>(frameCounter % 64u)};
+    params.weightParams = {
+        settings_.intensity, settings_.maxRoughness, settings_.screenEdgeFade, static_cast<float>(frameCounter % 64u)};
     frameParamsBuffers_[frameIndex].upload(std::as_bytes(std::span<const SsrParams>(&params, 1)));
 }
 

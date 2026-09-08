@@ -86,8 +86,7 @@ void VulkanUploadBatch::begin(VulkanContext& context, const VulkanCommandContext
     graphicsQueueFamily_ = context.queueFamilies().graphicsFamily.value();
     // Falling back to the graphics family makes usingTransferQueue() false and
     // leaves every path below on the single-submit form.
-    transferQueueFamily_ =
-        context.transferQueueAvailable() ? context.transferQueueFamily() : graphicsQueueFamily_;
+    transferQueueFamily_ = context.transferQueueAvailable() ? context.transferQueueFamily() : graphicsQueueFamily_;
 
     if (usingTransferQueue()) {
         // The transfer family needs its own pool: a command buffer may only be

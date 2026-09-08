@@ -391,8 +391,7 @@ bool vsmPageOverlapsLightSpaceBounds(const VsmClipmapSettings& settings,
     const glm::vec2 pageMin = glm::vec2(absolutePage) * pageWorldSize;
     const glm::vec2 pageMax = pageMin + glm::vec2(pageWorldSize);
 
-    return lightMax.x >= pageMin.x && lightMin.x <= pageMax.x && lightMax.y >= pageMin.y &&
-           lightMin.y <= pageMax.y;
+    return lightMax.x >= pageMin.x && lightMin.x <= pageMax.x && lightMax.y >= pageMin.y && lightMin.y <= pageMax.y;
 }
 
 void vsmPagesOverlappingBounds(const VsmClipmapSettings& settings,
@@ -466,12 +465,8 @@ glm::mat4 vsmPageViewProjection(const VsmClipmapSettings& settings,
     // origin. With GLM_FORCE_DEPTH_ZERO_TO_ONE that maps the end of the range
     // nearest the light to 0 and the far end to 1, which is the normal-Z
     // convention the depth compare (LESS) and every other shadow projection use.
-    glm::mat4 projection = glm::ortho(minX,
-                                      minX + pageWorldSize,
-                                      minY,
-                                      minY + pageWorldSize,
-                                      -clamped.depthRange,
-                                      clamped.depthRange);
+    glm::mat4 projection =
+        glm::ortho(minX, minX + pageWorldSize, minY, minY + pageWorldSize, -clamped.depthRange, clamped.depthRange);
     // Vulkan's clip space has Y pointing the other way. The whole second row is
     // negated, not just the diagonal element: a page's rect is asymmetric about
     // the light-space origin, so glm::ortho leaves a non-zero translation in

@@ -22,14 +22,14 @@ using ve::renderer::kPunctualShadowAtlasSize;
 using ve::renderer::kPunctualShadowMaxTileSize;
 using ve::renderer::kPunctualShadowMinTileSize;
 using ve::renderer::kPunctualShadowSizeClassCount;
-using ve::renderer::punctualShadowSizeClassForRadius;
+using ve::renderer::PunctualShadowAtlasAllocator;
 using ve::renderer::punctualShadowProjectedRadius;
+using ve::renderer::punctualShadowSizeClassForRadius;
 using ve::renderer::punctualShadowSlotFromFloat;
 using ve::renderer::punctualShadowSlotToFloat;
 using ve::renderer::punctualShadowTileSizeForClass;
-using ve::renderer::PunctualShadowAtlasAllocator;
-using ve::renderer::shadowAtlasRectUvOffsetScale;
 using ve::renderer::ShadowAtlasRect;
+using ve::renderer::shadowAtlasRectUvOffsetScale;
 
 namespace {
 
@@ -237,8 +237,7 @@ TEST_CASE("Tile size follows a light's projected size", "[shadowatlas]")
     // Continuous where the two branches meet, so a light drifting across its own
     // radius does not pop between size classes.
     const float justInside = punctualShadowProjectedRadius(glm::vec3{0.0f, 0.0f, 8.0f}, 8.0f, camera, projScaleY);
-    const float justOutside =
-        punctualShadowProjectedRadius(glm::vec3{0.0f, 0.0f, 8.001f}, 8.0f, camera, projScaleY);
+    const float justOutside = punctualShadowProjectedRadius(glm::vec3{0.0f, 0.0f, 8.001f}, 8.0f, camera, projScaleY);
     CHECK(justInside == Approx(justOutside).epsilon(0.001));
 
     CHECK(punctualShadowTileSizeForClass(0) == kPunctualShadowMaxTileSize);
@@ -329,11 +328,9 @@ TEST_CASE("Spot shadow projections stay finite at degenerate inputs", "[shadowat
     // A zero direction falls back to straight down rather than producing NaNs.
     const glm::mat4 zeroDirection = computeSpotShadowViewProjection(position, glm::vec3{0.0f}, 0.5f, 10.0f);
     // A cone at/over 90 degrees clamps under 180 degrees of FOV.
-    const glm::mat4 wideCone =
-        computeSpotShadowViewProjection(position, glm::vec3{0.0f, -1.0f, 0.0f}, 3.0f, 10.0f);
+    const glm::mat4 wideCone = computeSpotShadowViewProjection(position, glm::vec3{0.0f, -1.0f, 0.0f}, 3.0f, 10.0f);
     // A range collapsed onto the near plane still leaves a usable depth range.
-    const glm::mat4 zeroRange =
-        computeSpotShadowViewProjection(position, glm::vec3{0.0f, -1.0f, 0.0f}, 0.5f, 0.0f);
+    const glm::mat4 zeroRange = computeSpotShadowViewProjection(position, glm::vec3{0.0f, -1.0f, 0.0f}, 0.5f, 0.0f);
 
     for (const glm::mat4& matrix : {zeroDirection, wideCone, zeroRange}) {
         for (int column = 0; column < 4; ++column) {
@@ -378,20 +375,19 @@ TEST_CASE("The near plane scales with range to hold depth precision", "[shadowat
     const glm::mat4 derived = computeSpotShadowViewProjection(position, direction, 0.5f, 16.0f);
     const float derivedDepth = projectToShadowUv(derived, glm::vec3{0.0f, 0.0f, 0.0f}).z;
 
-    const glm::mat4 fixedNear =
-        computeSpotShadowViewProjection(position, direction, 0.5f, 16.0f, 0.05f);
+    const glm::mat4 fixedNear = computeSpotShadowViewProjection(position, direction, 0.5f, 16.0f, 0.05f);
     const float fixedDepth = projectToShadowUv(fixedNear, glm::vec3{0.0f, 0.0f, 0.0f}).z;
 
     CHECK(derivedDepth < fixedDepth);
-    CHECK(fixedDepth > 0.99f);  // the old behaviour: crushed against the clear
+    CHECK(fixedDepth > 0.99f); // the old behaviour: crushed against the clear
     CHECK(derivedDepth < 0.98f);
     CHECK(derivedDepth > 0.0f);
 
     // An explicit positive near plane still overrides the derivation.
-    CHECK(fixedDepth == Approx(projectToShadowUv(
-                                   computeSpotShadowViewProjection(position, direction, 0.5f, 16.0f, 0.05f),
+    CHECK(fixedDepth ==
+          Approx(projectToShadowUv(computeSpotShadowViewProjection(position, direction, 0.5f, 16.0f, 0.05f),
                                    glm::vec3{0.0f, 0.0f, 0.0f})
-                                   .z));
+                     .z));
 }
 
 TEST_CASE("Cube face selection and face projections agree", "[shadowatlas]")
@@ -428,8 +424,7 @@ TEST_CASE("Cube face selection and face projections agree", "[shadowatlas]")
                 REQUIRE(face < kPointShadowFaceCount);
                 seenFaces.insert(face);
 
-                const glm::mat4 viewProjection =
-                    computePointShadowFaceViewProjection(position, face, range);
+                const glm::mat4 viewProjection = computePointShadowFaceViewProjection(position, face, range);
                 const glm::vec3 target = position + direction * 4.0f;
                 const glm::vec4 clip = viewProjection * glm::vec4(target, 1.0f);
 
@@ -649,8 +644,8 @@ ve::renderer::PunctualShadowCandidateInput candidate(float projectedRadius, floa
     return input;
 }
 
-std::vector<ve::renderer::PunctualShadowAssignment> rank(
-    const std::vector<ve::renderer::PunctualShadowCandidateInput>& candidates, uint32_t pointBudget = 4)
+std::vector<ve::renderer::PunctualShadowAssignment>
+rank(const std::vector<ve::renderer::PunctualShadowCandidateInput>& candidates, uint32_t pointBudget = 4)
 {
     std::vector<ve::renderer::PunctualShadowAssignment> assignments;
     ve::renderer::rankPunctualShadowAssignments(candidates, pointBudget, assignments);

@@ -110,10 +110,8 @@ uint8_t filteredByte(uint8_t filter, uint8_t raw, uint8_t left, uint8_t above, u
 // magnitudes, and keep the filter with the smallest total. It is a proxy for
 // "how compressible is this row", and a cheap one -- five passes over a row of
 // residuals, no trial compression.
-std::vector<uint8_t> makeFilteredScanlines(uint32_t width,
-                                           uint32_t height,
-                                           std::span<const uint8_t> rgbaPixels,
-                                           uint32_t rowStrideBytes)
+std::vector<uint8_t>
+makeFilteredScanlines(uint32_t width, uint32_t height, std::span<const uint8_t> rgbaPixels, uint32_t rowStrideBytes)
 {
     const size_t tightRowBytes = static_cast<size_t>(width) * kBytesPerPixel;
     const size_t requiredBytes = height == 0 ? 0 : (static_cast<size_t>(height - 1U) * rowStrideBytes) + tightRowBytes;
@@ -182,23 +180,20 @@ constexpr size_t kMaxChainLength = 128;
 
 // RFC 1951 section 3.2.5. Length code 257 + i covers kLengthBase[i] upward,
 // with kLengthExtra[i] literal bits selecting the value inside that run.
-constexpr std::array<uint16_t, 29> kLengthBase = {
-    3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31,
-    35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258};
-constexpr std::array<uint8_t, 29> kLengthExtra = {
-    0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2,
-    3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0};
-constexpr std::array<uint16_t, 30> kDistanceBase = {
-    1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193,
-    257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577};
-constexpr std::array<uint8_t, 30> kDistanceExtra = {
-    0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6,
-    7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13};
+constexpr std::array<uint16_t, 29> kLengthBase = {3,  4,  5,  6,  7,  8,  9,  10, 11,  13,  15,  17,  19,  23, 27,
+                                                  31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258};
+constexpr std::array<uint8_t, 29> kLengthExtra = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2,
+                                                  2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0};
+constexpr std::array<uint16_t, 30> kDistanceBase = {1,    2,    3,    4,    5,    7,    9,    13,    17,    25,
+                                                    33,   49,   65,   97,   129,  193,  257,  385,   513,   769,
+                                                    1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577};
+constexpr std::array<uint8_t, 30> kDistanceExtra = {0, 0, 0, 0, 1, 1, 2, 2,  3,  3,  4,  4,  5,  5,  6,
+                                                    6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13};
 
-class BitWriter
-{
+class BitWriter {
 public:
-    explicit BitWriter(std::vector<uint8_t>& output) : output_(output) {}
+    explicit BitWriter(std::vector<uint8_t>& output) : output_(output)
+    {}
 
     // Deflate fills each byte starting from its least significant bit.
     void putBits(uint32_t value, uint32_t count)
@@ -260,13 +255,13 @@ std::vector<uint8_t> makeZlibDeflateStream(std::span<const uint8_t> data)
 {
     std::vector<uint8_t> stream;
     stream.reserve(data.size() / 2U + 64U);
-    stream.push_back(0x78);   // zlib header: deflate, 32 KiB window
-    stream.push_back(0x01);   // check bits, and "fastest" as the level hint
+    stream.push_back(0x78); // zlib header: deflate, 32 KiB window
+    stream.push_back(0x01); // check bits, and "fastest" as the level hint
 
     {
         BitWriter writer(stream);
-        writer.putBits(1, 1);   // one block, and it is the last
-        writer.putBits(1, 2);   // compressed with fixed Huffman codes
+        writer.putBits(1, 1); // one block, and it is the last
+        writer.putBits(1, 2); // compressed with fixed Huffman codes
 
         // head maps a three-byte hash to the most recent position carrying it;
         // prev chains each position back to the one before it. Together they
@@ -276,8 +271,7 @@ std::vector<uint8_t> makeZlibDeflateStream(std::span<const uint8_t> data)
         std::vector<int32_t> prev(data.size(), -1);
 
         const auto hashAt = [&data](size_t index) {
-            return ((static_cast<uint32_t>(data[index]) << 10U) ^
-                    (static_cast<uint32_t>(data[index + 1U]) << 5U) ^
+            return ((static_cast<uint32_t>(data[index]) << 10U) ^ (static_cast<uint32_t>(data[index + 1U]) << 5U) ^
                     static_cast<uint32_t>(data[index + 2U])) &
                    static_cast<uint32_t>(kHashSize - 1U);
         };
@@ -331,12 +325,10 @@ std::vector<uint8_t> makeZlibDeflateStream(std::span<const uint8_t> data)
                     ++lengthCode;
                 }
                 putLiteralOrLengthCode(writer, static_cast<uint32_t>(257U + lengthCode));
-                writer.putBits(static_cast<uint32_t>(bestLength - kLengthBase[lengthCode]),
-                               kLengthExtra[lengthCode]);
+                writer.putBits(static_cast<uint32_t>(bestLength - kLengthBase[lengthCode]), kLengthExtra[lengthCode]);
 
                 size_t distanceCode = 0;
-                while (distanceCode + 1U < kDistanceBase.size() &&
-                       kDistanceBase[distanceCode + 1U] <= bestDistance) {
+                while (distanceCode + 1U < kDistanceBase.size() && kDistanceBase[distanceCode + 1U] <= bestDistance) {
                     ++distanceCode;
                 }
                 // Distances use a fixed five-bit code, not the literal tree.
@@ -355,7 +347,7 @@ std::vector<uint8_t> makeZlibDeflateStream(std::span<const uint8_t> data)
             }
         }
 
-        putLiteralOrLengthCode(writer, 256);   // end of block
+        putLiteralOrLengthCode(writer, 256); // end of block
         writer.flushToByteBoundary();
     }
 

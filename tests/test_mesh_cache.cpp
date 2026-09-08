@@ -185,13 +185,11 @@ TEST_CASE("Ranges that would reach the GPU are validated", "[mesh-cache]")
 
     CpuMeshData pastLods = makeMesh("M", 4, 6);
     pastLods.primitives[0].lodBase = 5;
-    CHECK_THROWS_AS(readMeshCache(writeMeshCache(std::vector<CpuMeshData>{pastLods}, expectation)),
-                    std::runtime_error);
+    CHECK_THROWS_AS(readMeshCache(writeMeshCache(std::vector<CpuMeshData>{pastLods}, expectation)), std::runtime_error);
 
     CpuMeshData badIndex = makeMesh("M", 4, 6);
     badIndex.indices[3] = 99;
-    CHECK_THROWS_AS(readMeshCache(writeMeshCache(std::vector<CpuMeshData>{badIndex}, expectation)),
-                    std::runtime_error);
+    CHECK_THROWS_AS(readMeshCache(writeMeshCache(std::vector<CpuMeshData>{badIndex}, expectation)), std::runtime_error);
 
     // The valid mesh those were derived from still round-trips, so the checks
     // are not rejecting everything.

@@ -221,24 +221,20 @@ struct VsmClipmapSettings {
 //
 // Returns 0 for a non-positive projScaleY or a degenerate distance, and never
 // returns past levelCount - 1.
-[[nodiscard]] uint32_t vsmSelectLevel(const VsmClipmapSettings& settings,
-                                      float distanceToCamera,
-                                      float projScaleY);
+[[nodiscard]] uint32_t vsmSelectLevel(const VsmClipmapSettings& settings, float distanceToCamera, float projScaleY);
 
 // --- Absolute page grid ---------------------------------------------------
 
 // Absolute page coordinates of the page containing a light-space XY position.
 // These are signed and unbounded: they name a page in the infinite grid, not a
 // slot in the pool.
-[[nodiscard]] glm::ivec2 vsmAbsolutePageCoords(const VsmClipmapSettings& settings,
-                                               uint32_t level,
-                                               const glm::vec2& lightSpaceXy);
+[[nodiscard]] glm::ivec2
+vsmAbsolutePageCoords(const VsmClipmapSettings& settings, uint32_t level, const glm::vec2& lightSpaceXy);
 
 // Minimum corner of the addressable window at this level: the kVsmPagesPerLevelAxis
 // square of absolute pages centred on the camera.
-[[nodiscard]] glm::ivec2 vsmWindowOrigin(const VsmClipmapSettings& settings,
-                                         uint32_t level,
-                                         const glm::vec2& cameraLightSpaceXy);
+[[nodiscard]] glm::ivec2
+vsmWindowOrigin(const VsmClipmapSettings& settings, uint32_t level, const glm::vec2& cameraLightSpaceXy);
 
 // Whether an absolute page is inside the window that starts at `windowOrigin`.
 // A page outside it has no slot and cannot be sampled -- which is exactly what
@@ -369,10 +365,19 @@ public:
     bool invalidate(uint32_t pageId);
 
     // The table, indexed by virtual page id. Uploaded verbatim.
-    [[nodiscard]] const std::vector<VsmPageTableEntry>& entries() const { return entries_; }
+    [[nodiscard]] const std::vector<VsmPageTableEntry>& entries() const
+    {
+        return entries_;
+    }
 
-    [[nodiscard]] uint32_t residentPages() const { return residentPages_; }
-    [[nodiscard]] uint32_t evictionsThisFrame() const { return evictionsThisFrame_; }
+    [[nodiscard]] uint32_t residentPages() const
+    {
+        return residentPages_;
+    }
+    [[nodiscard]] uint32_t evictionsThisFrame() const
+    {
+        return evictionsThisFrame_;
+    }
 
 private:
     [[nodiscard]] uint32_t allocatePhysicalPage();

@@ -24,15 +24,42 @@ public:
     void recreate(VulkanContext& context, WindowExtent desiredExtent);
     void cleanup();
 
-    [[nodiscard]] VkSwapchainKHR handle() const { return swapchain_; }
-    [[nodiscard]] VkFormat colorFormat() const { return colorFormat_; }
-    [[nodiscard]] VkExtent2D extent() const { return extent_; }
-    [[nodiscard]] bool supportsTransferSrc() const { return (imageUsage_ & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0; }
-    [[nodiscard]] uint32_t imageCount() const { return static_cast<uint32_t>(images_.size()); }
-    [[nodiscard]] VkImage image(uint32_t index) const { return images_.at(index); }
-    [[nodiscard]] VkImageView imageView(uint32_t index) const { return imageViews_.at(index); }
-    [[nodiscard]] VkImageLayout imageLayout(uint32_t index) const { return imageLayouts_.at(index); }
-    void setImageLayout(uint32_t index, VkImageLayout layout) { imageLayouts_.at(index) = layout; }
+    [[nodiscard]] VkSwapchainKHR handle() const
+    {
+        return swapchain_;
+    }
+    [[nodiscard]] VkFormat colorFormat() const
+    {
+        return colorFormat_;
+    }
+    [[nodiscard]] VkExtent2D extent() const
+    {
+        return extent_;
+    }
+    [[nodiscard]] bool supportsTransferSrc() const
+    {
+        return (imageUsage_ & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
+    }
+    [[nodiscard]] uint32_t imageCount() const
+    {
+        return static_cast<uint32_t>(images_.size());
+    }
+    [[nodiscard]] VkImage image(uint32_t index) const
+    {
+        return images_.at(index);
+    }
+    [[nodiscard]] VkImageView imageView(uint32_t index) const
+    {
+        return imageViews_.at(index);
+    }
+    [[nodiscard]] VkImageLayout imageLayout(uint32_t index) const
+    {
+        return imageLayouts_.at(index);
+    }
+    void setImageLayout(uint32_t index, VkImageLayout layout)
+    {
+        imageLayouts_.at(index) = layout;
+    }
 
     // The main depth image is sized independently of the presentation images so
     // the scene can be rendered at a reduced internal resolution (see
@@ -42,13 +69,34 @@ public:
     // an image in-flight frames may still reference.
     void resizeDepthImage(VkExtent2D extent);
 
-    [[nodiscard]] VkFormat depthFormat() const { return depthFormat_; }
-    [[nodiscard]] VkExtent2D depthExtent() const { return depthExtent_; }
-    [[nodiscard]] bool depthSupportsSampling() const { return depthSupportsSampling_; }
-    [[nodiscard]] VkImage depthImage() const { return depthImage_.image(); }
-    [[nodiscard]] VkImageView depthImageView() const { return depthImage_.imageView(); }
-    [[nodiscard]] VkImageLayout depthImageLayout() const { return depthImageLayout_; }
-    void setDepthImageLayout(VkImageLayout layout) { depthImageLayout_ = layout; }
+    [[nodiscard]] VkFormat depthFormat() const
+    {
+        return depthFormat_;
+    }
+    [[nodiscard]] VkExtent2D depthExtent() const
+    {
+        return depthExtent_;
+    }
+    [[nodiscard]] bool depthSupportsSampling() const
+    {
+        return depthSupportsSampling_;
+    }
+    [[nodiscard]] VkImage depthImage() const
+    {
+        return depthImage_.image();
+    }
+    [[nodiscard]] VkImageView depthImageView() const
+    {
+        return depthImage_.imageView();
+    }
+    [[nodiscard]] VkImageLayout depthImageLayout() const
+    {
+        return depthImageLayout_;
+    }
+    void setDepthImageLayout(VkImageLayout layout)
+    {
+        depthImageLayout_ = layout;
+    }
 
 private:
     void create(WindowExtent desiredExtent);
@@ -57,7 +105,8 @@ private:
 
     [[nodiscard]] VkSurfaceFormatKHR chooseSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats) const;
     [[nodiscard]] VkPresentModeKHR choosePresentMode(const std::vector<VkPresentModeKHR>& presentModes) const;
-    [[nodiscard]] VkExtent2D chooseExtent(const VkSurfaceCapabilitiesKHR& capabilities, WindowExtent desiredExtent) const;
+    [[nodiscard]] VkExtent2D chooseExtent(const VkSurfaceCapabilitiesKHR& capabilities,
+                                          WindowExtent desiredExtent) const;
     [[nodiscard]] VkFormat findDepthFormat() const;
 
     VulkanContext* context_ = nullptr;

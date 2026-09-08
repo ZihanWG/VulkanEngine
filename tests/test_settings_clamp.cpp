@@ -11,16 +11,16 @@ using ve::BloomSettings;
 using ve::clampRuntimeSettings;
 using ve::CsmSettings;
 using ve::DebugUiSettings;
+using ve::DynamicResolutionSettings;
 using ve::ExposureMode;
+using ve::exposureModeValue;
 using ve::FogSettings;
 using ve::GiSettings;
 using ve::LodSettings;
-using ve::DynamicResolutionSettings;
 using ve::RenderScaleSettings;
-using ve::exposureModeValue;
 using ve::SsaoSettings;
-using ve::TaaSettings;
 using ve::SsrSettings;
+using ve::TaaSettings;
 using ve::ToneMappingSettings;
 using ve::VsmSettings;
 
@@ -399,7 +399,6 @@ TEST_CASE("The VSM depth bias default sits inside its measured window", "[settin
     CHECK(defaults.depthBiasTexels >= 2.0f);
     CHECK(defaults.depthBiasTexels <= 32.0f);
 }
-
 
 TEST_CASE("Frames in flight clamps into the range the renderer can size", "[settings][frames]")
 {

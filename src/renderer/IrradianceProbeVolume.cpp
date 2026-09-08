@@ -193,8 +193,7 @@ void IrradianceProbeVolume::createAtlases()
     // rather than two: the convolution reads both for every texel it visits, so
     // splitting them would double the fetch count in the one loop that matters.
     captureInfo.format = VK_FORMAT_R16G16B16A16_SFLOAT;
-    captureInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
-                        VK_IMAGE_USAGE_SAMPLED_BIT;
+    captureInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     captureInfo.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     captureInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
     captureInfo.debugName = "ProbeCaptureAtlas";
@@ -346,8 +345,7 @@ void IrradianceProbeVolume::createPipelines(const std::filesystem::path& debugFi
         rhi::debug::setObjectName(device, pipeline.pipeline(), VK_OBJECT_TYPE_PIPELINE, debugName);
     };
 
-    makePipeline(
-        debugFillPipeline_, debugFillShaderPath, sizeof(ProbeAtlasPushConstants), "ProbeDebugFillPipeline");
+    makePipeline(debugFillPipeline_, debugFillShaderPath, sizeof(ProbeAtlasPushConstants), "ProbeDebugFillPipeline");
     makePipeline(borderPipeline_, borderShaderPath, sizeof(ProbeAtlasPushConstants), "ProbeBorderPipeline");
 
     // The convolution is what turns a capture into probe tiles, and it is the
@@ -394,8 +392,7 @@ void IrradianceProbeVolume::writeDescriptorSet()
     writes[kBindingDepthAtlas].pImageInfo = &depthInfo;
     writes[kBindingCaptureAtlas].pImageInfo = &captureInfo;
 
-    vkUpdateDescriptorSets(
-        context_->vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    vkUpdateDescriptorSets(context_->vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
 void IrradianceProbeVolume::dispatchAtlas(VkCommandBuffer commandBuffer,
@@ -417,23 +414,15 @@ void IrradianceProbeVolume::dispatchAtlas(VkCommandBuffer commandBuffer,
                        0,
                        sizeof(ProbeAtlasPushConstants),
                        &pushConstants);
-    vkCmdDispatch(commandBuffer,
-                  dispatchCount(atlasSize.x, kProbeLocalSize),
-                  dispatchCount(atlasSize.y, kProbeLocalSize),
-                  1);
+    vkCmdDispatch(
+        commandBuffer, dispatchCount(atlasSize.x, kProbeLocalSize), dispatchCount(atlasSize.y, kProbeLocalSize), 1);
 }
 
 void IrradianceProbeVolume::recordDebugFill(VkCommandBuffer commandBuffer, bool debugPattern)
 {
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, debugFillPipeline_.pipeline());
-    vkCmdBindDescriptorSets(commandBuffer,
-                            VK_PIPELINE_BIND_POINT_COMPUTE,
-                            debugFillPipeline_.layout(),
-                            0,
-                            1,
-                            &descriptorSet_,
-                            0,
-                            nullptr);
+    vkCmdBindDescriptorSets(
+        commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, debugFillPipeline_.layout(), 0, 1, &descriptorSet_, 0, nullptr);
     dispatchAtlas(commandBuffer, debugFillPipeline_, ProbeAtlasTarget::Irradiance, debugPattern);
     dispatchAtlas(commandBuffer, debugFillPipeline_, ProbeAtlasTarget::Depth, debugPattern);
 }
@@ -452,14 +441,8 @@ void IrradianceProbeVolume::recordConvolve(VkCommandBuffer commandBuffer)
     }
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, convolvePipeline_.pipeline());
-    vkCmdBindDescriptorSets(commandBuffer,
-                            VK_PIPELINE_BIND_POINT_COMPUTE,
-                            convolvePipeline_.layout(),
-                            0,
-                            1,
-                            &descriptorSet_,
-                            0,
-                            nullptr);
+    vkCmdBindDescriptorSets(
+        commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, convolvePipeline_.layout(), 0, 1, &descriptorSet_, 0, nullptr);
     vkCmdPushConstants(commandBuffer,
                        convolvePipeline_.layout(),
                        VK_SHADER_STAGE_COMPUTE_BIT,
@@ -474,14 +457,8 @@ void IrradianceProbeVolume::recordConvolve(VkCommandBuffer commandBuffer)
 void IrradianceProbeVolume::recordBorder(VkCommandBuffer commandBuffer)
 {
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, borderPipeline_.pipeline());
-    vkCmdBindDescriptorSets(commandBuffer,
-                            VK_PIPELINE_BIND_POINT_COMPUTE,
-                            borderPipeline_.layout(),
-                            0,
-                            1,
-                            &descriptorSet_,
-                            0,
-                            nullptr);
+    vkCmdBindDescriptorSets(
+        commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, borderPipeline_.layout(), 0, 1, &descriptorSet_, 0, nullptr);
     // Over the whole atlas rather than just the probes that changed. The border
     // is a texel-for-texel copy over ~110k texels; restricting it to this
     // frame's tiles would save a fraction of a very small pass and add a second

@@ -23,7 +23,10 @@ namespace {
 // stay unique without SceneBuilder owning the counter.
 struct IdAllocator {
     uint32_t next = 1;
-    uint32_t operator()() { return next++; }
+    uint32_t operator()()
+    {
+        return next++;
+    }
 };
 
 // Builds a material array sized so every portfolio slot index (up to
@@ -293,8 +296,7 @@ TEST_CASE("Stress object count matches its grid arithmetic", "[scene][stress]")
     // reserve() uses this constant; if it drifts from the loops the vector
     // reallocates mid-build, which is silent but defeats the point of reserving.
     CHECK(ve::renderer::kStressObjectCount ==
-          1 + ve::renderer::kStressOccluderCount +
-              (ve::renderer::kStressGridColumns * ve::renderer::kStressGridRows));
+          1 + ve::renderer::kStressOccluderCount + (ve::renderer::kStressGridColumns * ve::renderer::kStressGridRows));
     CHECK(ve::renderer::kStressObjectCount > 2000);
 }
 
@@ -370,9 +372,8 @@ TEST_CASE("Portfolio objects standing on the floor intersect it rather than rest
     };
 
     for (const char* name : standingObjects) {
-        const auto found = std::find_if(objects.begin(), objects.end(), [name](const RenderObject& object) {
-            return object.debugName == name;
-        });
+        const auto found = std::find_if(
+            objects.begin(), objects.end(), [name](const RenderObject& object) { return object.debugName == name; });
         REQUIRE(found != objects.end());
 
         INFO("object: " << name);

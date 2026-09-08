@@ -65,8 +65,14 @@ public:
     void create(VkDevice device, const VulkanPipelineCreateInfo& createInfo);
     void reset();
 
-    [[nodiscard]] VkPipeline pipeline() const { return pipeline_; }
-    [[nodiscard]] VkPipelineLayout layout() const { return layout_; }
+    [[nodiscard]] VkPipeline pipeline() const
+    {
+        return pipeline_;
+    }
+    [[nodiscard]] VkPipelineLayout layout() const
+    {
+        return layout_;
+    }
 
 private:
     [[nodiscard]] VkShaderModule createShaderModule(const std::filesystem::path& path) const;

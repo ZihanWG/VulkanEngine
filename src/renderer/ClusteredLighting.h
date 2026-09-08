@@ -23,9 +23,9 @@ namespace ve::renderer {
 // vec4 on a 16-byte boundary, so the four members give a 64-byte runtime-array
 // stride that must match the GpuLight struct declared in the GLSL.
 struct GpuLight {
-    glm::vec4 positionRange{0.0f, 0.0f, 0.0f, 10.0f};   // xyz = world position, w = range
-    glm::vec4 colorIntensity{1.0f, 1.0f, 1.0f, 1.0f};   // rgb = color, a = intensity
-    glm::vec4 directionType{0.0f, -1.0f, 0.0f, 0.0f};   // xyz = spot direction, w = type
+    glm::vec4 positionRange{0.0f, 0.0f, 0.0f, 10.0f}; // xyz = world position, w = range
+    glm::vec4 colorIntensity{1.0f, 1.0f, 1.0f, 1.0f}; // rgb = color, a = intensity
+    glm::vec4 directionType{0.0f, -1.0f, 0.0f, 0.0f}; // xyz = spot direction, w = type
     // x = cos(outer), y = 1/(cos(inner)-cos(outer)), z = punctual shadow atlas
     // slot as a float (< 0 = not casting this frame), w = shadow normal-offset
     // bias. The bias lives here rather than in GpuShadowSlot because the shadow

@@ -53,7 +53,8 @@ static_assert(offsetof(VsmMarkParams, sizesAndFlags) == 160);
 static_assert(sizeof(VsmMarkParams) == 176);
 
 constexpr VkDeviceSize kRequestBufferSize = static_cast<VkDeviceSize>(kVsmPageRequestWordCount) * sizeof(uint32_t);
-constexpr VkDeviceSize kPageTableBufferSize = static_cast<VkDeviceSize>(kVsmMaxVirtualPages) * sizeof(VsmPageTableEntry);
+constexpr VkDeviceSize kPageTableBufferSize =
+    static_cast<VkDeviceSize>(kVsmMaxVirtualPages) * sizeof(VsmPageTableEntry);
 constexpr uint32_t kMarkWorkgroupSize = 8;
 
 // Stand-in when a frame slot has no remembered window, which only happens before
@@ -114,8 +115,7 @@ VirtualShadowMapPass::VirtualShadowMapPass(rhi::VulkanContext& context,
                                            DepthPyramid& depthPyramid,
                                            GpuProfiler& gpuProfiler)
     : context_(context), depthPyramid_(depthPyramid), gpuProfiler_(gpuProfiler)
-{
-}
+{}
 
 VirtualShadowMapPass::~VirtualShadowMapPass()
 {
@@ -305,8 +305,8 @@ void VirtualShadowMapPass::createBuffers(uint32_t frameCount)
     for (uint32_t frameIndex = 0; frameIndex < frameCount; ++frameIndex) {
         rhi::VulkanBufferCreateInfo requestInfo{};
         requestInfo.size = kRequestBufferSize;
-        requestInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                            VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        requestInfo.usage =
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
         requestInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
         requestBuffers_[frameIndex].createBuffer(context_, requestInfo);
         rhi::debug::setObjectName(context_.vkDevice(),
@@ -546,9 +546,9 @@ void VirtualShadowMapPass::recordMarkPass(VkCommandBuffer commandBuffer,
 }
 
 bool VirtualShadowMapPass::dumpPagePool(const std::filesystem::path& path,
-                                       const VsmClipmapSettings& settings,
-                                       VkCommandPool commandPool,
-                                       VkQueue queue)
+                                        const VsmClipmapSettings& settings,
+                                        VkCommandPool commandPool,
+                                        VkQueue queue)
 {
     if (!pagePool_.valid()) {
         Logger::error("VSM page pool dump: no pool is allocated. Run with --vsm render or --vsm shadows.");
@@ -603,9 +603,8 @@ bool VirtualShadowMapPass::dumpPagePool(const std::filesystem::path& path,
     // A transition INTO undefined is illegal, so a pool that was never used goes
     // to the layout its descriptor already promises instead of back where it was.
     const VkImageLayout previousLayout = pagePool_.layout();
-    const VkImageLayout restoreLayout = previousLayout == VK_IMAGE_LAYOUT_UNDEFINED
-                                            ? VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL
-                                            : previousLayout;
+    const VkImageLayout restoreLayout =
+        previousLayout == VK_IMAGE_LAYOUT_UNDEFINED ? VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL : previousLayout;
 
     VkImageMemoryBarrier2 barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
@@ -733,11 +732,8 @@ bool VirtualShadowMapPass::dumpPagePool(const std::filesystem::path& path,
     if (path.has_parent_path()) {
         std::filesystem::create_directories(path.parent_path(), directoryError);
     }
-    writePngRgba8(path,
-                  extent.width,
-                  extent.height,
-                  std::span<const uint8_t>(pixels.data(), pixels.size()),
-                  extent.width * 4);
+    writePngRgba8(
+        path, extent.width, extent.height, std::span<const uint8_t>(pixels.data(), pixels.size()), extent.width * 4);
 
     // The image alone cannot say which world page a pool rect holds, and the
     // toroidal slot mapping means neighbouring rects are unrelated places. The
@@ -971,8 +967,7 @@ uint32_t VirtualShadowMapPass::invalidatePagesForBounds(const VsmClipmapSettings
     for (uint32_t level = 0; level < clamped.levelCount; ++level) {
         scratchPageIds_.clear();
         const glm::ivec2 windowOrigin = vsmWindowOrigin(clamped, level, cameraLightSpaceXy);
-        vsmPagesOverlappingBounds(
-            clamped, lightView, level, windowOrigin, boundsMin, boundsMax, scratchPageIds_);
+        vsmPagesOverlappingBounds(clamped, lightView, level, windowOrigin, boundsMin, boundsMax, scratchPageIds_);
         for (const uint32_t pageId : scratchPageIds_) {
             if (allocator_.invalidate(pageId)) {
                 ++invalidated;

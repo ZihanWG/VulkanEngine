@@ -42,8 +42,14 @@ struct RenderBucketRange {
     uint32_t begin = 0;
     uint32_t end = 0;
 
-    [[nodiscard]] uint32_t count() const { return end - begin; }
-    [[nodiscard]] bool empty() const { return end <= begin; }
+    [[nodiscard]] uint32_t count() const
+    {
+        return end - begin;
+    }
+    [[nodiscard]] bool empty() const
+    {
+        return end <= begin;
+    }
 };
 
 struct DrawItem {

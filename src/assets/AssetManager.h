@@ -14,13 +14,19 @@ using AssetHandle = uint64_t;
 struct MaterialAssetHandle {
     AssetHandle id = 0;
 
-    [[nodiscard]] explicit operator bool() const { return id != 0; }
+    [[nodiscard]] explicit operator bool() const
+    {
+        return id != 0;
+    }
 };
 
 struct TextureAssetHandle {
     AssetHandle id = 0;
 
-    [[nodiscard]] explicit operator bool() const { return id != 0; }
+    [[nodiscard]] explicit operator bool() const
+    {
+        return id != 0;
+    }
 };
 
 struct MaterialTexturePaths {

@@ -80,8 +80,8 @@ std::string textureFormatName(VkFormat format)
 bool isBlockCompressedFormat(VkFormat format)
 {
     const int value = static_cast<int>(format);
-    const bool bc = value >= static_cast<int>(VK_FORMAT_BC1_RGB_UNORM_BLOCK) &&
-                    value <= static_cast<int>(VK_FORMAT_BC7_SRGB_BLOCK);
+    const bool bc =
+        value >= static_cast<int>(VK_FORMAT_BC1_RGB_UNORM_BLOCK) && value <= static_cast<int>(VK_FORMAT_BC7_SRGB_BLOCK);
     const bool etcOrEac = value >= static_cast<int>(VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK) &&
                           value <= static_cast<int>(VK_FORMAT_EAC_R11G11_SNORM_BLOCK);
     const bool astc = value >= static_cast<int>(VK_FORMAT_ASTC_4x4_UNORM_BLOCK) &&
@@ -294,9 +294,9 @@ assets::BlockCompressionCaps queryBlockCompressionCaps(VkPhysicalDevice physical
     // feature bit is not enough on its own: it does not promise a filterable
     // sampled image, and an unfilterable texture is no use to a mip chain.
     const auto samplable = [physicalDevice](VkFormat format) {
-        constexpr VkFormatFeatureFlags required = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT
-                                                  | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT
-                                                  | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+        constexpr VkFormatFeatureFlags required = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+                                                  VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
+                                                  VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
         VkFormatProperties properties{};
         vkGetPhysicalDeviceFormatProperties(physicalDevice, format, &properties);
         return (properties.optimalTilingFeatures & required) == required;
@@ -586,9 +586,8 @@ void VulkanTexture::createFromKtx2(VulkanContext& context,
     // Reading off the device thread is worth ~a third of upload time on a real
     // scene, so the caller may have done it already.
     const std::vector<uint8_t> ownedBytes = preloadedBytes.empty() ? readFileBytes(path) : std::vector<uint8_t>{};
-    const std::span<const uint8_t> fileBytes = preloadedBytes.empty()
-                                                   ? std::span<const uint8_t>(ownedBytes)
-                                                   : preloadedBytes;
+    const std::span<const uint8_t> fileBytes =
+        preloadedBytes.empty() ? std::span<const uint8_t>(ownedBytes) : preloadedBytes;
     const assets::Ktx2Info info = assets::parseKtx2(fileBytes);
 
     // Re-checked here and not only at the call site: this is the last point
@@ -597,9 +596,9 @@ void VulkanTexture::createFromKtx2(VulkanContext& context,
     // image that still renders, which is the worst kind.
     const assets::BlockCompressionCaps caps = queryBlockCompressionCaps(context.physicalDevice());
     if (!assets::cookedFormatUsable(caps, info.vkFormat, usage)) {
-        throw std::runtime_error("Cooked texture '" + path.string() + "' holds vkFormat "
-                                 + std::to_string(info.vkFormat) + ", which this device cannot sample for the "
-                                 + std::string(assets::textureUsageName(usage)) + " slot.");
+        throw std::runtime_error("Cooked texture '" + path.string() + "' holds vkFormat " +
+                                 std::to_string(info.vkFormat) + ", which this device cannot sample for the " +
+                                 std::string(assets::textureUsageName(usage)) + " slot.");
     }
 
     const std::vector<assets::Ktx2CopyRegion> regions = assets::ktx2CopyPlan(info);
@@ -714,8 +713,7 @@ void VulkanTexture::uploadPixels(VulkanContext& context,
     // This is the same constraint from the other direction that made the texture
     // cook worth doing first: cooked textures ship their mips and never blit.
     const bool blitsMips = mipLevels_ > 1;
-    const bool batched =
-        batch != nullptr && batch->recording() && !(blitsMips && batch->usingTransferQueue());
+    const bool batched = batch != nullptr && batch->recording() && !(blitsMips && batch->usingTransferQueue());
 
     if (batched) {
         batch->flushIfOverBudget(stagingSize);
@@ -903,8 +901,8 @@ void VulkanTexture::recordLoadStats()
     record.textureId = loadStatsId_;
     // The owner names the texture after construction; amendTextureName fills this
     // in then. Until it does, the placeholder keeps the report readable.
-    record.debugName = debugMetadata_.debugName.empty() ? "unnamed#" + std::to_string(loadStatsId_)
-                                                        : debugMetadata_.debugName;
+    record.debugName =
+        debugMetadata_.debugName.empty() ? "unnamed#" + std::to_string(loadStatsId_) : debugMetadata_.debugName;
     record.sourcePath = debugMetadata_.sourcePath;
     record.formatName = textureFormatName(format_);
     record.width = width_;

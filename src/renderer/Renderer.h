@@ -123,7 +123,10 @@ public:
     // wall clock, first frame) and queries VMA usage through finalize below.
     // Load-time measurement only -- nothing here participates in frame rendering.
     void finalizeAssetLoadStats(double rendererInitMs, double firstFrameMs);
-    [[nodiscard]] const renderer::AssetLoadStats& assetLoadStats() const { return assetLoadStats_; }
+    [[nodiscard]] const renderer::AssetLoadStats& assetLoadStats() const
+    {
+        return assetLoadStats_;
+    }
 
     // Makes the frame path advance by a fixed step per frame instead of by
     // measured wall-clock time, so a rendered frame is a function of the frame
@@ -164,8 +167,14 @@ public:
     // True once the requested capture has been read back and written. The
     // readback lags the recorded frame by the in-flight frame count, so a caller
     // must keep drawing until this goes true rather than exiting at frameNumber.
-    [[nodiscard]] bool frameCaptureComplete() const { return frameCaptureComplete_; }
-    [[nodiscard]] bool frameCaptureRequested() const { return frameCaptureTargetFrame_ != 0; }
+    [[nodiscard]] bool frameCaptureComplete() const
+    {
+        return frameCaptureComplete_;
+    }
+    [[nodiscard]] bool frameCaptureRequested() const
+    {
+        return frameCaptureTargetFrame_ != 0;
+    }
 
 private:
     static constexpr uint32_t kMaxShadowCascades = renderer::kMaxShadowCascades;
@@ -262,7 +271,10 @@ private:
         [[nodiscard]] float average() const;
         [[nodiscard]] float max() const;
         [[nodiscard]] size_t copyChronological(std::array<float, kDebugHistoryCapacity>& output) const;
-        [[nodiscard]] bool empty() const { return count == 0; }
+        [[nodiscard]] bool empty() const
+        {
+            return count == 0;
+        }
     };
 
     struct GpuTimingHistory {
@@ -440,13 +452,13 @@ private:
     // `usage` carries the colour space rather than taking it as a second
     // parameter: the two cannot then disagree, and it is also what selects the
     // cooked sidecar for this slot.
-    [[nodiscard]] const rhi::VulkanTexture* loadMaterialAssetTextureOrFallback(
-        const std::filesystem::path& materialPath,
-        const std::filesystem::path& texturePath,
-        assets::TextureUsage usage,
-        std::string_view slotName,
-        const rhi::VulkanTexture& fallbackTexture,
-        bool& fallbackUsed);
+    [[nodiscard]] const rhi::VulkanTexture*
+    loadMaterialAssetTextureOrFallback(const std::filesystem::path& materialPath,
+                                       const std::filesystem::path& texturePath,
+                                       assets::TextureUsage usage,
+                                       std::string_view slotName,
+                                       const rhi::VulkanTexture& fallbackTexture,
+                                       bool& fallbackUsed);
     [[nodiscard]] assets::MaterialAsset runtimeMaterialToAsset(const renderer::Material& material) const;
     [[nodiscard]] std::filesystem::path makeNewMaterialAssetPath(const renderer::Material& material) const;
     bool saveMaterialAssetFromUi(renderer::Material& material);
@@ -810,10 +822,8 @@ private:
     void pushExposureHistorySample();
     [[nodiscard]] CullingDebugSnapshot cullingDebugSnapshot(uint32_t frameIndex);
     [[nodiscard]] ObjectDrawDebugInfo objectDrawDebugInfo(uint32_t objectIndex) const;
-    [[nodiscard]] std::vector<const renderer::Material*> materialsForObject(
-        const renderer::RenderObject& object) const;
-    [[nodiscard]] const renderer::Material* primaryMaterialForObject(
-        const renderer::RenderObject& object) const;
+    [[nodiscard]] std::vector<const renderer::Material*> materialsForObject(const renderer::RenderObject& object) const;
+    [[nodiscard]] const renderer::Material* primaryMaterialForObject(const renderer::RenderObject& object) const;
     [[nodiscard]] renderer::Material* mutableMaterialFromPointer(const renderer::Material* material);
     [[nodiscard]] renderer::Material* primaryMutableMaterialForObject(renderer::RenderObject& object);
     [[nodiscard]] renderer::Material* findRuntimeMaterialByAssetPath(const std::filesystem::path& path);
@@ -1447,21 +1457,20 @@ private:
     // Screen-space reflections: view-space march against main depth using the
     // thin G-buffer, additively blended into scene color before TAA. Declared
     // after the services + settings it borrows.
-    renderer::ScreenSpaceReflections ssr_{context_, swapchain_, pipelineStore_, renderResolution_, renderGraph_,
-                                          gpuProfiler_,
-                                          ssrSettings_};
+    renderer::ScreenSpaceReflections ssr_{
+        context_, swapchain_, pipelineStore_, renderResolution_, renderGraph_, gpuProfiler_, ssrSettings_};
 
     // Ground-truth ambient occlusion: horizon-search pass reading main depth +
     // the thin G-buffer normal, writing the visibility target the composite
     // multiplies into scene color. Borrows the same services + the SSAO settings.
-    renderer::GroundTruthAmbientOcclusion gtao_{context_,       swapchain_,   pipelineStore_,   renderResolution_,
-                                                renderGraph_, gpuProfiler_, ssaoSettings_};
+    renderer::GroundTruthAmbientOcclusion gtao_{
+        context_, swapchain_, pipelineStore_, renderResolution_, renderGraph_, gpuProfiler_, ssaoSettings_};
 
     // Hi-Z depth pyramid subsystem. Like postProcess_, it owns its GPU resources
     // and borrows the rendering services by reference, so it is declared last to
     // guarantee those are constructed first.
-    renderer::DepthPyramid depthPyramid_{context_, swapchain_, pipelineStore_, renderResolution_, renderGraph_,
-                                         gpuProfiler_};
+    renderer::DepthPyramid depthPyramid_{
+        context_, swapchain_, pipelineStore_, renderResolution_, renderGraph_, gpuProfiler_};
 
     // GPU-driven visibility culling (main frustum/occlusion + per-cascade shadow).
     // Owns its cull pipeline/descriptors/buffers; borrows the services, the depth

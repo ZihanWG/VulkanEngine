@@ -23,7 +23,8 @@ public:
     VulkanSync(VulkanSync&&) = delete;
     VulkanSync& operator=(VulkanSync&&) = delete;
 
-    void initialize(const VulkanContext& context, std::span<renderer::FrameResources> frames, uint32_t swapchainImageCount);
+    void
+    initialize(const VulkanContext& context, std::span<renderer::FrameResources> frames, uint32_t swapchainImageCount);
     void recreateRenderFinishedSemaphores(uint32_t swapchainImageCount);
     void cleanup();
 
@@ -38,7 +39,10 @@ public:
     // that slot's fence -- with the difference that the value is also meaningful
     // to anything else that needs to know how far the GPU has got, which a fence
     // owned by a frame slot is not.
-    [[nodiscard]] VkSemaphore frameTimeline() const { return frameTimeline_; }
+    [[nodiscard]] VkSemaphore frameTimeline() const
+    {
+        return frameTimeline_;
+    }
 
     // Block until the timeline reaches `value`. A value of zero returns
     // immediately, which is what makes a never-submitted slot free to use.

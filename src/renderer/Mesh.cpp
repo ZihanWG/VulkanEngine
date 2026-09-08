@@ -137,20 +137,18 @@ Mesh Mesh::createCube(rhi::VulkanContext& context, const rhi::VulkanCommandConte
     mesh.lodBase_ = 0;
     mesh.lodCount_ = static_cast<uint32_t>(mesh.lods_.size());
 
-    mesh.indexBuffer_.createDeviceLocal(
-        context,
-        commandContext,
-        std::as_bytes(std::span<const uint32_t>(indices.data(), indices.size())),
-        VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+    mesh.indexBuffer_.createDeviceLocal(context,
+                                        commandContext,
+                                        std::as_bytes(std::span<const uint32_t>(indices.data(), indices.size())),
+                                        VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
 
     return mesh;
 }
 
-Mesh Mesh::createUvSphere(
-    rhi::VulkanContext& context,
-    const rhi::VulkanCommandContext& commandContext,
-    uint32_t segments,
-    uint32_t rings)
+Mesh Mesh::createUvSphere(rhi::VulkanContext& context,
+                          const rhi::VulkanCommandContext& commandContext,
+                          uint32_t segments,
+                          uint32_t rings)
 {
     const PrimitiveGeometry geometry = buildUvSphereGeometry(segments, rings);
     const std::vector<Vertex>& vertices = geometry.vertices;
@@ -162,28 +160,21 @@ Mesh Mesh::createUvSphere(
         mesh.localBounds_.expand(vertex.position);
     }
 
-    mesh.vertexBuffer_.createDeviceLocal(
-        context,
-        commandContext,
-        std::as_bytes(std::span<const Vertex>(vertices.data(), vertices.size())),
-        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+    mesh.vertexBuffer_.createDeviceLocal(context,
+                                         commandContext,
+                                         std::as_bytes(std::span<const Vertex>(vertices.data(), vertices.size())),
+                                         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
 
     mesh.indexCount_ = static_cast<uint32_t>(indices.size());
-    mesh.lods_ = buildLodChain(indices,
-                               0,
-                               mesh.indexCount_,
-                               &vertices[0].position.x,
-                               vertices.size(),
-                               sizeof(Vertex),
-                               mesh.debugName_);
+    mesh.lods_ = buildLodChain(
+        indices, 0, mesh.indexCount_, &vertices[0].position.x, vertices.size(), sizeof(Vertex), mesh.debugName_);
     mesh.lodBase_ = 0;
     mesh.lodCount_ = static_cast<uint32_t>(mesh.lods_.size());
 
-    mesh.indexBuffer_.createDeviceLocal(
-        context,
-        commandContext,
-        std::as_bytes(std::span<const uint32_t>(indices.data(), indices.size())),
-        VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+    mesh.indexBuffer_.createDeviceLocal(context,
+                                        commandContext,
+                                        std::as_bytes(std::span<const uint32_t>(indices.data(), indices.size())),
+                                        VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
 
     rhi::debug::setObjectName(
         context.vkDevice(), mesh.vertexBuffer_.buffer(), VK_OBJECT_TYPE_BUFFER, "PortfolioSphereVertexBuffer");
@@ -247,12 +238,12 @@ LoadedGltfAsset Mesh::createFromGltf(rhi::VulkanContext& context,
                 haveCooked = true;
                 Logger::info("Using cooked mesh geometry: " + cookedPath.string());
             } catch (const std::exception& error) {
-                Logger::warn("Cooked mesh geometry '" + cookedPath.string()
-                             + "' could not be read; loading the glTF instead: " + error.what());
+                Logger::warn("Cooked mesh geometry '" + cookedPath.string() +
+                             "' could not be read; loading the glTF instead: " + error.what());
             }
         } else if (status != MeshCacheStatus::Missing) {
-            Logger::warn("Ignoring cooked mesh geometry '" + cookedPath.string()
-                         + "': " + std::string(meshCacheStatusName(status)) + ". Re-run vemeshcook.");
+            Logger::warn("Ignoring cooked mesh geometry '" + cookedPath.string() +
+                         "': " + std::string(meshCacheStatusName(status)) + ". Re-run vemeshcook.");
         }
     }
 
@@ -272,11 +263,8 @@ LoadedGltfAsset Mesh::createFromGltf(rhi::VulkanContext& context,
             continue;
         }
 
-        loadedAsset.meshes[meshIndex] =
-            createFromGeometry(context,
-                               commandContext,
-                               std::move(meshData),
-                               path.stem().string() + "Mesh" + std::to_string(meshIndex));
+        loadedAsset.meshes[meshIndex] = createFromGeometry(
+            context, commandContext, std::move(meshData), path.stem().string() + "Mesh" + std::to_string(meshIndex));
     }
 
     loadedAsset.nodeMeshInstances = std::move(geometry.nodeMeshInstances);

@@ -39,8 +39,7 @@ void PunctualShadows::create(rhi::VulkanContext& context, uint32_t frameCount)
         for (uint32_t frameIndex = 0; frameIndex < frameCount; ++frameIndex) {
             rhi::VulkanBufferCreateInfo bufferInfo{};
             bufferInfo.size = static_cast<VkDeviceSize>(kMaxPunctualShadowSlots) * sizeof(GpuShadowSlot);
-            bufferInfo.usage =
-                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+            bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
             bufferInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
             bufferInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
             bufferInfo.requestDeviceAddress = true;
@@ -56,8 +55,8 @@ void PunctualShadows::create(rhi::VulkanContext& context, uint32_t frameCount)
 
         Logger::info("Punctual shadow atlas enabled: " + std::to_string(kPunctualShadowAtlasSize) + "x" +
                      std::to_string(kPunctualShadowAtlasSize) + ", tiles " +
-                     std::to_string(kPunctualShadowMinTileSize) + "-" +
-                     std::to_string(kPunctualShadowMaxTileSize) + "px.");
+                     std::to_string(kPunctualShadowMinTileSize) + "-" + std::to_string(kPunctualShadowMaxTileSize) +
+                     "px.");
     } catch (const std::exception& error) {
         // Punctual lights still shade, they just do not cast. Matching the
         // clustered path's policy: a missing optional subsystem degrades the
@@ -99,11 +98,8 @@ void PunctualShadows::beginFrame()
     slotRects_.clear();
 }
 
-uint32_t PunctualShadows::addSpotLight(const glm::vec3& position,
-                                       const glm::vec3& direction,
-                                       float outerAngleRadians,
-                                       float range,
-                                       uint32_t sizeClass)
+uint32_t PunctualShadows::addSpotLight(
+    const glm::vec3& position, const glm::vec3& direction, float outerAngleRadians, float range, uint32_t sizeClass)
 {
     if (!valid()) {
         return kInvalidPunctualShadowSlot;
@@ -117,8 +113,7 @@ uint32_t PunctualShadows::addSpotLight(const glm::vec3& position,
     // Slot indices stay sequential even though rects no longer do, which is what
     // keeps the float encoding and the consecutive cube-face property intact.
     const auto slot = static_cast<uint32_t>(slots_.size());
-    const glm::mat4 viewProjection =
-        computeSpotShadowViewProjection(position, direction, outerAngleRadians, range);
+    const glm::mat4 viewProjection = computeSpotShadowViewProjection(position, direction, outerAngleRadians, range);
 
     GpuShadowSlot record{};
     record.viewProjection = viewProjection;
@@ -157,8 +152,8 @@ uint32_t PunctualShadows::addPointLight(const glm::vec3& position, float range, 
         GpuShadowSlot record{};
         record.viewProjection = viewProjection;
         record.atlasUvOffsetScale = shadowAtlasRectUvOffsetScale(pendingFaceRects_[face]);
-        record.params = glm::vec4(
-            constantBias_, normalBias_, 1.0f / static_cast<float>(kPunctualShadowAtlasSize), 0.0f);
+        record.params =
+            glm::vec4(constantBias_, normalBias_, 1.0f / static_cast<float>(kPunctualShadowAtlasSize), 0.0f);
 
         slots_.push_back(record);
         slotFrustums_.push_back(computeSpotShadowFrustum(viewProjection));
@@ -253,8 +248,8 @@ void PunctualShadows::createCullResources(uint32_t frameCount,
         cullPipeline_.create(context_->vkDevice(), pipelineInfo);
 
         cullAvailable_ = true;
-        Logger::info("Punctual shadow GPU caster culling enabled for up to " +
-                     std::to_string(kMaxGpuCulledSlots) + " slots.");
+        Logger::info("Punctual shadow GPU caster culling enabled for up to " + std::to_string(kMaxGpuCulledSlots) +
+                     " slots.");
     } catch (const std::exception& error) {
         cullAvailable_ = false;
         Logger::warn(std::string("Punctual shadow GPU caster culling unavailable; CPU culling stays in use: ") +
@@ -300,8 +295,8 @@ void PunctualShadows::recordCull(VkCommandBuffer commandBuffer,
     // to GpuCulling and is chosen per frame there.
     // Upload the caster mask before the descriptors reference it.
     if (!casterFlags.empty()) {
-        casterFlagBuffers_[frameIndex].upload(std::as_bytes(
-            casterFlags.subspan(0, std::min<size_t>(casterFlags.size(), cullSlotCommandStride_))));
+        casterFlagBuffers_[frameIndex].upload(
+            std::as_bytes(casterFlags.subspan(0, std::min<size_t>(casterFlags.size(), cullSlotCommandStride_))));
     }
 
     std::array<VkDescriptorBufferInfo, 5> bufferInfos{};
@@ -331,8 +326,8 @@ void PunctualShadows::recordCull(VkCommandBuffer commandBuffer,
     //
     // Only the region this frame uses is filled -- slots x batches counters, not
     // the whole 64 KiB the buffer reserves for the worst case.
-    const VkDeviceSize indirectBytes = static_cast<VkDeviceSize>(culledSlots) * cullSlotCommandStride_ *
-                                       sizeof(VkDrawIndexedIndirectCommand);
+    const VkDeviceSize indirectBytes =
+        static_cast<VkDeviceSize>(culledSlots) * cullSlotCommandStride_ * sizeof(VkDrawIndexedIndirectCommand);
     const VkDeviceSize counterBytes = static_cast<VkDeviceSize>(culledSlots) * batchCount * sizeof(uint32_t);
     vkCmdFillBuffer(commandBuffer, cullVisibleCountBuffers_[frameIndex].buffer(), 0, counterBytes, 0);
     vkCmdFillBuffer(commandBuffer, cullIndirectBuffers_[frameIndex].buffer(), 0, indirectBytes, 0);

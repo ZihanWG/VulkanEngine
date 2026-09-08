@@ -22,7 +22,10 @@ public:
                 const void* pNext = nullptr);
     void reset();
 
-    [[nodiscard]] VkDescriptorSetLayout handle() const { return layout_; }
+    [[nodiscard]] VkDescriptorSetLayout handle() const
+    {
+        return layout_;
+    }
 
 private:
     void moveFrom(VulkanDescriptorSetLayout& other) noexcept;
@@ -47,7 +50,10 @@ public:
                 VkDescriptorPoolCreateFlags flags = 0);
     void reset();
 
-    [[nodiscard]] VkDescriptorPool handle() const { return pool_; }
+    [[nodiscard]] VkDescriptorPool handle() const
+    {
+        return pool_;
+    }
 
 private:
     void moveFrom(VulkanDescriptorPool& other) noexcept;

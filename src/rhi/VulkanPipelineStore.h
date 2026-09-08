@@ -84,8 +84,7 @@ class VulkanPipelineStore;
 // A ref is only obtainable from VulkanPipelineStore::get(), so its lifetime
 // question has exactly one answer: it is valid until that store is reset(). It
 // carries the store's generation so that answer is enforced rather than trusted.
-template <typename Pipeline>
-class PipelineRefT {
+template <typename Pipeline> class PipelineRefT {
 public:
     PipelineRefT() = default;
     PipelineRefT(const VulkanPipelineStore& store, const Pipeline& pipeline, uint32_t generation)
@@ -98,15 +97,27 @@ public:
     // a pointer into a destroyed entry. Degrading to the null handle turns that
     // into the "feature unavailable" path every call site already handles, which
     // is a visibly missing effect rather than a use-after-free.
-    [[nodiscard]] VkPipeline pipeline() const { return current() ? pipeline_->pipeline() : VK_NULL_HANDLE; }
+    [[nodiscard]] VkPipeline pipeline() const
+    {
+        return current() ? pipeline_->pipeline() : VK_NULL_HANDLE;
+    }
 
-    [[nodiscard]] VkPipelineLayout layout() const { return current() ? pipeline_->layout() : VK_NULL_HANDLE; }
+    [[nodiscard]] VkPipelineLayout layout() const
+    {
+        return current() ? pipeline_->layout() : VK_NULL_HANDLE;
+    }
 
     // Forgets the pipeline; it stays alive in the store. Named reset() to match
     // what the owning members it replaced were called.
-    void reset() { *this = PipelineRefT{}; }
+    void reset()
+    {
+        *this = PipelineRefT{};
+    }
 
-    [[nodiscard]] bool valid() const { return current(); }
+    [[nodiscard]] bool valid() const
+    {
+        return current();
+    }
 
 private:
     // Defined after VulkanPipelineStore, whose generation it reads.
@@ -182,8 +193,7 @@ public:
     [[nodiscard]] std::vector<std::vector<std::string>> entryDebugNames() const;
 
 private:
-    template <typename Pipeline>
-    struct EntryT {
+    template <typename Pipeline> struct EntryT {
         Pipeline pipeline;
         std::vector<std::string> debugNames;
     };
@@ -198,8 +208,7 @@ private:
     uint32_t generation_ = 0;
 };
 
-template <typename Pipeline>
-inline bool PipelineRefT<Pipeline>::current() const
+template <typename Pipeline> inline bool PipelineRefT<Pipeline>::current() const
 {
     return pipeline_ != nullptr && store_ != nullptr && store_->generation() == generation_;
 }

@@ -182,7 +182,8 @@ bool ImGuiLayer::wantsMouseCapture() const
     return contextInitialized_ && ImGui::GetIO().WantCaptureMouse;
 }
 
-VkDescriptorSet ImGuiLayer::texturePreviewDescriptor(VkImageView imageView, VkSampler sampler, VkImageLayout imageLayout)
+VkDescriptorSet
+ImGuiLayer::texturePreviewDescriptor(VkImageView imageView, VkSampler sampler, VkImageLayout imageLayout)
 {
     if (!rendererInitialized_ || imageView == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) {
         return VK_NULL_HANDLE;
@@ -198,9 +199,8 @@ VkDescriptorSet ImGuiLayer::texturePreviewDescriptor(VkImageView imageView, VkSa
     return descriptorSet;
 }
 
-VkDescriptorSet ImGuiLayer::renderTargetPreviewDescriptor(VkImageView imageView,
-                                                          VkSampler sampler,
-                                                          VkImageLayout imageLayout)
+VkDescriptorSet
+ImGuiLayer::renderTargetPreviewDescriptor(VkImageView imageView, VkSampler sampler, VkImageLayout imageLayout)
 {
     if (!rendererInitialized_ || imageView == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) {
         return VK_NULL_HANDLE;

@@ -59,8 +59,7 @@ public:
 
     // Created once at startup; survives swapchain recreation.
     void createDescriptorSetLayout();
-    void createPipeline(const std::filesystem::path& vertexShaderPath,
-                        const std::filesystem::path& fragmentShaderPath);
+    void createPipeline(const std::filesystem::path& vertexShaderPath, const std::filesystem::path& fragmentShaderPath);
 
     // (Re)creates the scene-color copy image, params buffers, and descriptor
     // sets for the current swapchain extent. normalRoughnessView is the thin
@@ -75,35 +74,47 @@ public:
                               VkSampler brdfLutSampler);
     // False until updateIblDescriptors has landed. While false the trace cannot
     // know what specular the main pass already wrote, so it stays purely additive.
-    [[nodiscard]] bool isIblBound() const { return iblBound_; }
+    [[nodiscard]] bool isIblBound() const
+    {
+        return iblBound_;
+    }
     void destroyResources();
 
     // Host-visible write of this frame's matrices + march/weight parameters.
-    void uploadParams(uint32_t frameIndex,
-                      const glm::mat4& view,
-                      const glm::mat4& projection,
-                      uint32_t frameCounter);
+    void uploadParams(uint32_t frameIndex, const glm::mat4& view, const glm::mat4& projection, uint32_t frameCounter);
 
     // Records the copy pass (scene color -> copy) and the trace pass (additive
     // blend into scene color). sceneColorImage is the main HDR target.
-    void recordCommands(VkCommandBuffer commandBuffer,
-                        uint32_t frameIndex,
-                        VkImage sceneColorImage,
-                        VkExtent2D extent);
+    void recordCommands(VkCommandBuffer commandBuffer, uint32_t frameIndex, VkImage sceneColorImage, VkExtent2D extent);
 
-    [[nodiscard]] bool available() const { return available_; }
+    [[nodiscard]] bool available() const
+    {
+        return available_;
+    }
 
     // Render-graph wiring for the transient scene-color copy resource.
-    [[nodiscard]] const rhi::VulkanImage& sceneColorCopy() const { return sceneColorCopy_; }
-    [[nodiscard]] VkImageLayout* sceneColorCopyLayoutPtr() { return &sceneColorCopyLayout_; }
+    [[nodiscard]] const rhi::VulkanImage& sceneColorCopy() const
+    {
+        return sceneColorCopy_;
+    }
+    [[nodiscard]] VkImageLayout* sceneColorCopyLayoutPtr()
+    {
+        return &sceneColorCopyLayout_;
+    }
 
     // The copy is allocated at half the scene's allocation when the format
     // supports a filtered blit. The trace takes a single point sample from it,
     // and SSR is an approximation to begin with, so quarter the bytes and
     // quarter the per-frame transfer bandwidth is a good trade -- but it is a
     // visible one, so it is reported rather than silent.
-    [[nodiscard]] bool halfResolutionSceneColorCopy() const { return halfResolutionSceneColorCopy_; }
-    [[nodiscard]] VkExtent2D sceneColorCopyAllocationExtent() const { return sceneColorCopyAllocationExtent_; }
+    [[nodiscard]] bool halfResolutionSceneColorCopy() const
+    {
+        return halfResolutionSceneColorCopy_;
+    }
+    [[nodiscard]] VkExtent2D sceneColorCopyAllocationExtent() const
+    {
+        return sceneColorCopyAllocationExtent_;
+    }
 
 private:
     rhi::VulkanContext& context_;

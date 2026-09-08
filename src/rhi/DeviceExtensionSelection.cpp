@@ -62,9 +62,8 @@ std::vector<ExtensionOutcome> selectOptionalExtensions(std::span<const std::stri
             }
             for (const std::string_view dependency : requests[index].dependencies) {
                 const size_t dependencyRequest = requestIndexFor(requests, dependency);
-                const bool satisfied = dependencyRequest < requests.size()
-                                           ? outcomes[dependencyRequest].enabled()
-                                           : contains(available, dependency);
+                const bool satisfied = dependencyRequest < requests.size() ? outcomes[dependencyRequest].enabled()
+                                                                           : contains(available, dependency);
                 if (!satisfied) {
                     outcomes[index].decision = ExtensionDecision::DependencyUnavailable;
                     outcomes[index].blockedBy = dependency;

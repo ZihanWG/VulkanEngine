@@ -43,8 +43,7 @@ constexpr VsmModeName kVsmModeNames[] = {
 
 // Shared by both --scene and --vsm so an unknown value reports what it could
 // have been instead of only what it was.
-template <typename Table>
-std::string knownNames(const Table& table)
+template <typename Table> std::string knownNames(const Table& table)
 {
     std::string known;
     for (const auto& entry : table) {
@@ -266,8 +265,7 @@ bool parseLaunchOptions(int argc, char** argv, LaunchOptions& options)
     // Without this the loop would have to choose between honouring the budget
     // (and dropping the capture) or honouring the capture (and running a million
     // frames). A request that cannot be satisfied is rejected instead.
-    if (options.captureFrame != 0 && options.exitAfterFrames != 0 &&
-        options.captureFrame > options.exitAfterFrames) {
+    if (options.captureFrame != 0 && options.exitAfterFrames != 0 && options.captureFrame > options.exitAfterFrames) {
         Logger::error("--capture-frame (" + std::to_string(options.captureFrame) +
                       ") must not exceed --exit-after-frames (" + std::to_string(options.exitAfterFrames) + ").");
         return false;

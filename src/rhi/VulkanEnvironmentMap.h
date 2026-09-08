@@ -32,81 +32,94 @@ public:
     VulkanEnvironmentMap(VulkanEnvironmentMap&& other) noexcept;
     VulkanEnvironmentMap& operator=(VulkanEnvironmentMap&& other) noexcept;
 
-    [[nodiscard]] static HdrEnvironmentCubeData loadHdrEquirectangularFaces(
-        const std::filesystem::path& path,
-        uint32_t faceSize = 128);
+    [[nodiscard]] static HdrEnvironmentCubeData loadHdrEquirectangularFaces(const std::filesystem::path& path,
+                                                                            uint32_t faceSize = 128);
 
-    void createProcedural(
-        VulkanContext& context,
-        const VulkanCommandContext& commandContext,
-        uint32_t faceSize = 32);
-    void createProceduralDiffuseIrradiance(
-        VulkanContext& context,
-        const VulkanCommandContext& commandContext,
-        uint32_t faceSize = 32);
-    void createProceduralPrefilteredSpecular(
-        VulkanContext& context,
-        const VulkanCommandContext& commandContext,
-        uint32_t faceSize = 64,
-        JobSystem* jobSystem = nullptr);
-    void createFromRgba8Faces(
-        VulkanContext& context,
-        const VulkanCommandContext& commandContext,
-        uint32_t faceSize,
-        std::span<const uint8_t> pixels,
-        VkFormat format = VK_FORMAT_R8G8B8A8_UNORM);
-    void createFromRgba8MipFaces(
-        VulkanContext& context,
-        const VulkanCommandContext& commandContext,
-        uint32_t faceSize,
-        uint32_t mipLevels,
-        std::span<const uint8_t> pixels,
-        VkFormat format = VK_FORMAT_R8G8B8A8_UNORM);
-    void createFromHdrEquirectangular(
-        VulkanContext& context,
-        const VulkanCommandContext& commandContext,
-        const std::filesystem::path& path,
-        uint32_t faceSize = 128);
-    void createFromRgba32fFaces(
-        VulkanContext& context,
-        const VulkanCommandContext& commandContext,
-        uint32_t faceSize,
-        std::span<const float> pixels);
-    void createFromRgba32fMipFaces(
-        VulkanContext& context,
-        const VulkanCommandContext& commandContext,
-        uint32_t faceSize,
-        uint32_t mipLevels,
-        std::span<const float> pixels);
-    void createDiffuseIrradianceFromRgba32fFaces(
-        VulkanContext& context,
-        const VulkanCommandContext& commandContext,
-        uint32_t sourceFaceSize,
-        std::span<const float> sourcePixels,
-        uint32_t faceSize = 32);
-    void createPrefilteredSpecularFromRgba32fFaces(
-        VulkanContext& context,
-        const VulkanCommandContext& commandContext,
-        uint32_t sourceFaceSize,
-        std::span<const float> sourcePixels,
-        uint32_t faceSize = 64);
+    void createProcedural(VulkanContext& context, const VulkanCommandContext& commandContext, uint32_t faceSize = 32);
+    void createProceduralDiffuseIrradiance(VulkanContext& context,
+                                           const VulkanCommandContext& commandContext,
+                                           uint32_t faceSize = 32);
+    void createProceduralPrefilteredSpecular(VulkanContext& context,
+                                             const VulkanCommandContext& commandContext,
+                                             uint32_t faceSize = 64,
+                                             JobSystem* jobSystem = nullptr);
+    void createFromRgba8Faces(VulkanContext& context,
+                              const VulkanCommandContext& commandContext,
+                              uint32_t faceSize,
+                              std::span<const uint8_t> pixels,
+                              VkFormat format = VK_FORMAT_R8G8B8A8_UNORM);
+    void createFromRgba8MipFaces(VulkanContext& context,
+                                 const VulkanCommandContext& commandContext,
+                                 uint32_t faceSize,
+                                 uint32_t mipLevels,
+                                 std::span<const uint8_t> pixels,
+                                 VkFormat format = VK_FORMAT_R8G8B8A8_UNORM);
+    void createFromHdrEquirectangular(VulkanContext& context,
+                                      const VulkanCommandContext& commandContext,
+                                      const std::filesystem::path& path,
+                                      uint32_t faceSize = 128);
+    void createFromRgba32fFaces(VulkanContext& context,
+                                const VulkanCommandContext& commandContext,
+                                uint32_t faceSize,
+                                std::span<const float> pixels);
+    void createFromRgba32fMipFaces(VulkanContext& context,
+                                   const VulkanCommandContext& commandContext,
+                                   uint32_t faceSize,
+                                   uint32_t mipLevels,
+                                   std::span<const float> pixels);
+    void createDiffuseIrradianceFromRgba32fFaces(VulkanContext& context,
+                                                 const VulkanCommandContext& commandContext,
+                                                 uint32_t sourceFaceSize,
+                                                 std::span<const float> sourcePixels,
+                                                 uint32_t faceSize = 32);
+    void createPrefilteredSpecularFromRgba32fFaces(VulkanContext& context,
+                                                   const VulkanCommandContext& commandContext,
+                                                   uint32_t sourceFaceSize,
+                                                   std::span<const float> sourcePixels,
+                                                   uint32_t faceSize = 64);
     void reset();
-    void destroy() { reset(); }
+    void destroy()
+    {
+        reset();
+    }
 
-    [[nodiscard]] VkImage image() const { return image_; }
-    [[nodiscard]] VkImageView imageView() const { return imageView_; }
-    [[nodiscard]] VkSampler sampler() const { return sampler_; }
-    [[nodiscard]] uint32_t faceSize() const { return faceSize_; }
-    [[nodiscard]] uint32_t mipLevels() const { return mipLevels_; }
-    [[nodiscard]] VkFormat format() const { return format_; }
-    [[nodiscard]] VkImageLayout layout() const { return layout_; }
-    [[nodiscard]] bool valid() const { return image_ != VK_NULL_HANDLE; }
+    [[nodiscard]] VkImage image() const
+    {
+        return image_;
+    }
+    [[nodiscard]] VkImageView imageView() const
+    {
+        return imageView_;
+    }
+    [[nodiscard]] VkSampler sampler() const
+    {
+        return sampler_;
+    }
+    [[nodiscard]] uint32_t faceSize() const
+    {
+        return faceSize_;
+    }
+    [[nodiscard]] uint32_t mipLevels() const
+    {
+        return mipLevels_;
+    }
+    [[nodiscard]] VkFormat format() const
+    {
+        return format_;
+    }
+    [[nodiscard]] VkImageLayout layout() const
+    {
+        return layout_;
+    }
+    [[nodiscard]] bool valid() const
+    {
+        return image_ != VK_NULL_HANDLE;
+    }
 
 private:
-    void uploadMipFaces(
-        VulkanContext& context,
-        const VulkanCommandContext& commandContext,
-        std::span<const std::byte> pixels);
+    void uploadMipFaces(VulkanContext& context,
+                        const VulkanCommandContext& commandContext,
+                        std::span<const std::byte> pixels);
     void createImageView();
     void createSampler();
     void moveFrom(VulkanEnvironmentMap& other) noexcept;

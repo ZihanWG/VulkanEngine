@@ -13,7 +13,6 @@
 #include "renderer/Bounds.h"
 #include "rhi/VulkanDebugUtils.h"
 
-
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -52,7 +51,6 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
-
 
 namespace ve {
 
@@ -270,8 +268,8 @@ void Renderer::createSkyboxDescriptorSetLayout()
     bindings[1].descriptorCount = 1;
     bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    skyboxDescriptorSetLayout_.create(
-        context_.vkDevice(), std::span<const VkDescriptorSetLayoutBinding>(bindings.data(), bindings.size()));
+    skyboxDescriptorSetLayout_.create(context_.vkDevice(),
+                                      std::span<const VkDescriptorSetLayoutBinding>(bindings.data(), bindings.size()));
     rhi::debug::setObjectName(context_.vkDevice(),
                               skyboxDescriptorSetLayout_.handle(),
                               VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
@@ -355,9 +353,8 @@ void Renderer::createShadowMap()
     // material descriptor sets pointing at a destroyed image.
     punctualShadows_.create(context_, static_cast<uint32_t>(frames_.size()));
     // Optional: failure leaves the CPU frustum tests in place.
-    punctualShadows_.createCullResources(static_cast<uint32_t>(frames_.size()),
-                                         shaderPath("punctual_shadow_cull.comp.spv"),
-                                         kMaxDrawItems);
+    punctualShadows_.createCullResources(
+        static_cast<uint32_t>(frames_.size()), shaderPath("punctual_shadow_cull.comp.spv"), kMaxDrawItems);
     // A fresh atlas image has undefined contents, which no input hash can
     // express: the key could match the previous atlas exactly while the memory
     // behind it no longer holds that render.
@@ -450,9 +447,9 @@ void Renderer::logPipelineStoreContents() const
     }
     std::sort(entries.begin(), entries.end());
 
-    Logger::info("Graphics pipeline store: " + std::to_string(pipelineStore_.size()) + " pipelines from "
-                 + std::to_string(pipelineStore_.misses() + pipelineStore_.hits()) + " requests ("
-                 + std::to_string(pipelineStore_.hits()) + " shared)");
+    Logger::info("Graphics pipeline store: " + std::to_string(pipelineStore_.size()) + " pipelines from " +
+                 std::to_string(pipelineStore_.misses() + pipelineStore_.hits()) + " requests (" +
+                 std::to_string(pipelineStore_.hits()) + " shared)");
 
     for (const std::vector<std::string>& names : entries) {
         if (names.size() < 2) {
@@ -549,8 +546,8 @@ void Renderer::createProbeCapturePipeline()
         pipelineInfo.vertexBindings = std::span<const VkVertexInputBindingDescription>(&binding, 1);
         pipelineInfo.vertexAttributes =
             std::span<const VkVertexInputAttributeDescription>(attributes.data(), attributes.size());
-        pipelineInfo.descriptorSetLayouts = std::span<const VkDescriptorSetLayout>(
-            descriptorSetLayouts.data(), descriptorSetLayouts.size());
+        pipelineInfo.descriptorSetLayouts =
+            std::span<const VkDescriptorSetLayout>(descriptorSetLayouts.data(), descriptorSetLayouts.size());
         pipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&pushConstantRange, 1);
         pipelineInfo.enableDepth = true;
         // No back-face culling. A probe sits inside the room it measures, so it
@@ -678,7 +675,8 @@ void Renderer::createSkyboxPipeline()
     skyboxPipelineInfo.vertexShaderPath = shaderPath("skybox.vert.spv");
     skyboxPipelineInfo.fragmentShaderPath = shaderPath("skybox.frag.spv");
     skyboxPipelineInfo.colorFormat = kSceneColorFormat;
-    skyboxPipelineInfo.colorFormats = std::span<const VkFormat>(mainPassColorFormats.data(), mainPassColorFormats.size());
+    skyboxPipelineInfo.colorFormats =
+        std::span<const VkFormat>(mainPassColorFormats.data(), mainPassColorFormats.size());
     skyboxPipelineInfo.depthFormat = swapchain_.depthFormat();
     skyboxPipelineInfo.descriptorSetLayouts = std::span<const VkDescriptorSetLayout>(&skyboxDescriptorSetLayout, 1);
     skyboxPipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&skyboxPushConstantRange, 1);
@@ -705,8 +703,7 @@ void Renderer::createShadowPipeline()
     const uint32_t cascadeViewMask = layeredCascades ? (1u << activeCascadeCount()) - 1u : 0u;
 
     rhi::VulkanPipelineCreateInfo shadowPipelineInfo{};
-    shadowPipelineInfo.vertexShaderPath =
-        shaderPath(layeredCascades ? "shadow_layered.vert.spv" : "shadow.vert.spv");
+    shadowPipelineInfo.vertexShaderPath = shaderPath(layeredCascades ? "shadow_layered.vert.spv" : "shadow.vert.spv");
     shadowPipelineInfo.viewMask = cascadeViewMask;
     shadowPipelineInfo.depthFormat = shadowMap_.format();
     shadowPipelineInfo.vertexBindings = std::span<const VkVertexInputBindingDescription>(&binding, 1);
@@ -757,7 +754,8 @@ void Renderer::createSkinnedShadowPipelines()
         info.vertexShaderPath = shaderPath("shadow_skinned.vert.spv");
         info.depthFormat = depthFormat;
         info.vertexBindings = std::span<const VkVertexInputBindingDescription>(bindings.data(), bindings.size());
-        info.vertexAttributes = std::span<const VkVertexInputAttributeDescription>(attributes.data(), attributes.size());
+        info.vertexAttributes =
+            std::span<const VkVertexInputAttributeDescription>(attributes.data(), attributes.size());
         info.pushConstantRanges = std::span<const VkPushConstantRange>(&pushConstantRange, 1);
         info.enableColorAttachment = false;
         info.enableDepth = true;
@@ -794,8 +792,7 @@ void Renderer::createSkinnedShadowPipelines()
         rhi::VulkanPipelineCreateInfo layeredInfo = makeInfo(shadowMap_.format());
         layeredInfo.vertexShaderPath = shaderPath("shadow_skinned_layered.vert.spv");
         layeredInfo.viewMask = (1u << activeCascadeCount()) - 1u;
-        layeredInfo.pushConstantRanges =
-            std::span<const VkPushConstantRange>(&layeredPushConstantRange, 1);
+        layeredInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&layeredPushConstantRange, 1);
         skinnedLayeredShadowPipeline_ =
             pipelineStore_.get(context_.vkDevice(), layeredInfo, "SkinnedLayeredShadowPipeline");
     }
@@ -1273,8 +1270,7 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     // subsystem allocated one. Nothing samples it: the shader gates on a
     // non-zero fog max distance, which stays zero while fog is off.
     if (!volumetricFog_.hasVolume()) {
-        throw std::runtime_error(
-            "Cannot create a material descriptor set without a fog volume for binding 8.");
+        throw std::runtime_error("Cannot create a material descriptor set without a fog volume for binding 8.");
     }
     VkDescriptorImageInfo fogVolumeInfo{};
     fogVolumeInfo.sampler = volumetricFog_.sampler();
@@ -1331,8 +1327,7 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
 
     const bool punctualAtlasAvailable = punctualShadows_.valid();
     VkDescriptorImageInfo punctualShadowInfo{};
-    punctualShadowInfo.sampler =
-        punctualAtlasAvailable ? punctualShadows_.atlas().sampler() : shadowMap_.sampler();
+    punctualShadowInfo.sampler = punctualAtlasAvailable ? punctualShadows_.atlas().sampler() : shadowMap_.sampler();
     punctualShadowInfo.imageView =
         punctualAtlasAvailable ? punctualShadows_.atlas().imageView() : shadowMap_.layerImageView(0);
     punctualShadowInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;

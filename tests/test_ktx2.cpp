@@ -11,13 +11,13 @@
 #include <utility>
 #include <vector>
 
+using ve::assets::ktx2FullMipChainLength;
 using ve::assets::Ktx2Image;
 using ve::assets::Ktx2Info;
+using ve::assets::ktx2LevelSizeBytes;
 using ve::assets::kVkFormatBc5UnormBlock;
 using ve::assets::kVkFormatBc7SrgbBlock;
 using ve::assets::kVkFormatBc7UnormBlock;
-using ve::assets::ktx2FullMipChainLength;
-using ve::assets::ktx2LevelSizeBytes;
 using ve::assets::parseKtx2;
 using ve::assets::writeKtx2;
 
@@ -41,8 +41,8 @@ constexpr size_t kOffsetLevelIndex = 80;
 
 uint32_t readU32(std::span<const uint8_t> bytes, size_t offset)
 {
-    return static_cast<uint32_t>(bytes[offset]) | (static_cast<uint32_t>(bytes[offset + 1]) << 8U)
-           | (static_cast<uint32_t>(bytes[offset + 2]) << 16U) | (static_cast<uint32_t>(bytes[offset + 3]) << 24U);
+    return static_cast<uint32_t>(bytes[offset]) | (static_cast<uint32_t>(bytes[offset + 1]) << 8U) |
+           (static_cast<uint32_t>(bytes[offset + 2]) << 16U) | (static_cast<uint32_t>(bytes[offset + 3]) << 24U);
 }
 
 uint64_t readU64(std::span<const uint8_t> bytes, size_t offset)
@@ -102,8 +102,8 @@ TEST_CASE("KTX2 header describes a single-face 2D image", "[ktx2]")
     const Ktx2Image image = makeImage(kVkFormatBc7SrgbBlock, 64, 32, 7);
     const std::vector<uint8_t> bytes = writeKtx2(image);
 
-    const std::array<uint8_t, 12> expectedIdentifier = {0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32,
-                                                        0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A};
+    const std::array<uint8_t, 12> expectedIdentifier = {
+        0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A};
     CHECK(std::equal(expectedIdentifier.begin(), expectedIdentifier.end(), bytes.begin()));
 
     CHECK(readU32(bytes, kOffsetVkFormat) == kVkFormatBc7SrgbBlock);
@@ -244,8 +244,8 @@ TEST_CASE("KTX2 data format descriptor matches the format", "[ktx2]")
 
             CHECK((word0 & 0xffffU) == expectedBitOffset);
             CHECK(bitLength == (128U / expectation.sampleCount) - 1U);
-            CHECK(((word0 >> 24U) & 0xffU) == sample); // channel type, no qualifiers
-            CHECK(readU32(bytes, sampleOffset + 8) == 0U);          // sampleLower
+            CHECK(((word0 >> 24U) & 0xffU) == sample);               // channel type, no qualifiers
+            CHECK(readU32(bytes, sampleOffset + 8) == 0U);           // sampleLower
             CHECK(readU32(bytes, sampleOffset + 12) == 0xffffffffU); // sampleUpper
 
             expectedBitOffset += bitLength + 1U;
@@ -266,7 +266,13 @@ TEST_CASE("The copy plan uses level extents, not block-rounded ones", "[ktx2]")
     REQUIRE(plan.size() == 7);
 
     const std::array<std::pair<uint32_t, uint32_t>, 7> expectedExtents = {
-        std::pair<uint32_t, uint32_t>{100, 60}, {50, 30}, {25, 15}, {12, 7}, {6, 3}, {3, 1}, {1, 1},
+        std::pair<uint32_t, uint32_t>{100, 60},
+        {50, 30},
+        {25, 15},
+        {12, 7},
+        {6, 3},
+        {3, 1},
+        {1, 1},
     };
 
     for (uint32_t level = 0; level < plan.size(); ++level) {
@@ -297,8 +303,7 @@ TEST_CASE("The copy plan covers a single level and a BC5 image", "[ktx2]")
     CHECK(singlePlan[0].height == 64);
 
     const Ktx2Image normal = makeImage(kVkFormatBc5UnormBlock, 32, 8, 6);
-    const std::vector<ve::assets::Ktx2CopyRegion> normalPlan =
-        ve::assets::ktx2CopyPlan(parseKtx2(writeKtx2(normal)));
+    const std::vector<ve::assets::Ktx2CopyRegion> normalPlan = ve::assets::ktx2CopyPlan(parseKtx2(writeKtx2(normal)));
     REQUIRE(normalPlan.size() == 6);
     // The short edge clamps at 1 while the long one keeps halving.
     CHECK(normalPlan[5].width == 1);

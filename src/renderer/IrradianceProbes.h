@@ -293,11 +293,8 @@ struct ProbeBlend {
 // at x - j under texel x. Getting that backwards doubles the offset instead of
 // cancelling it, which shows up as a probe whose stored radiance is smeared
 // rather than as anything obviously wrong -- so a round-trip test pins it.
-[[nodiscard]] glm::vec3 probeCubeTexelDirection(uint32_t face,
-                                                uint32_t x,
-                                                uint32_t y,
-                                                uint32_t resolution,
-                                                const glm::vec2& jitterTexels = glm::vec2{0.0f});
+[[nodiscard]] glm::vec3 probeCubeTexelDirection(
+    uint32_t face, uint32_t x, uint32_t y, uint32_t resolution, const glm::vec2& jitterTexels = glm::vec2{0.0f});
 
 // Sub-texel offset for one update, from a low-discrepancy sequence so successive
 // captures spread over the texel instead of clustering the way random values do.
@@ -326,9 +323,8 @@ struct ProbeBlend {
 // bounded -- a scheme that picked probes by importance would let a probe nothing
 // currently looks at go stale indefinitely, and staleness in GI reads as light
 // that lags the scene rather than as a missing update.
-[[nodiscard]] uint32_t probeUpdateBatch(uint32_t cursor,
-                                        uint32_t probesPerFrame,
-                                        std::vector<uint32_t>& outProbeIndices);
+[[nodiscard]] uint32_t
+probeUpdateBatch(uint32_t cursor, uint32_t probesPerFrame, std::vector<uint32_t>& outProbeIndices);
 
 // --- Shading weights ---
 
@@ -349,9 +345,7 @@ struct ProbeBlend {
 // produce a mean square below the squared mean even though no single texel can.
 // The variance then goes negative and the weight comes back negative, which
 // subtracts light -- a black fringe that looks like an occlusion artefact.
-[[nodiscard]] float probeChebyshevVisibility(float meanDistance,
-                                             float meanSquaredDistance,
-                                             float distanceToProbe);
+[[nodiscard]] float probeChebyshevVisibility(float meanDistance, float meanSquaredDistance, float distanceToProbe);
 
 // Smooth rejection of probes sitting behind the shading surface.
 //

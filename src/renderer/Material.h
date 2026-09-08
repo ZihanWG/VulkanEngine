@@ -98,7 +98,10 @@ struct Material {
     bool metallicRoughnessTextureFallback = false;
     bool hasEmissiveTexture = false;
 
-    [[nodiscard]] AlphaMode alphaModeValue() const { return alphaModeFromString(alphaMode); }
+    [[nodiscard]] AlphaMode alphaModeValue() const
+    {
+        return alphaModeFromString(alphaMode);
+    }
 
     // MASK materials clip in the main and shadow passes; OPAQUE and BLEND disable
     // the test. See kNoAlphaTestCutoff.

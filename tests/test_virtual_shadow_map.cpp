@@ -18,6 +18,7 @@ using Catch::Approx;
 using ve::renderer::clampVsmClipmapSettings;
 using ve::renderer::kMaxVsmCastersPerPage;
 using ve::renderer::kMaxVsmPagesPerFrame;
+using ve::renderer::kVsmInvalidPhysicalPage;
 using ve::renderer::kVsmLevelResolution;
 using ve::renderer::kVsmMaxClipmapLevels;
 using ve::renderer::kVsmMaxVirtualPages;
@@ -27,29 +28,28 @@ using ve::renderer::kVsmPageRequestWordCount;
 using ve::renderer::kVsmPageSize;
 using ve::renderer::kVsmPagesPerLevel;
 using ve::renderer::kVsmPagesPerLevelAxis;
-using ve::renderer::VsmClipmapSettings;
-using ve::renderer::kVsmInvalidPhysicalPage;
 using ve::renderer::vsmAbsolutePageCoords;
 using ve::renderer::vsmAbsolutePageForSlot;
-using ve::renderer::vsmLightSpaceBoundsXy;
-using ve::renderer::vsmPageOverlapsLightSpaceBounds;
-using ve::renderer::vsmPagesOverlappingBounds;
-using ve::renderer::VsmPageAllocator;
-using ve::renderer::VsmPageTableEntry;
+using ve::renderer::VsmClipmapSettings;
 using ve::renderer::vsmDecodeRequestStats;
+using ve::renderer::vsmLightSpaceBoundsXy;
 using ve::renderer::vsmLightView;
+using ve::renderer::vsmMinLevelForCoverage;
+using ve::renderer::VsmPageAllocator;
 using ve::renderer::vsmPageId;
 using ve::renderer::vsmPageInWindow;
 using ve::renderer::vsmPageLevel;
+using ve::renderer::vsmPageOverlapsLightSpaceBounds;
 using ve::renderer::vsmPagePoolRect;
 using ve::renderer::vsmPagePoolUvOffsetScale;
 using ve::renderer::VsmPageRect;
 using ve::renderer::vsmPageSlot;
+using ve::renderer::vsmPagesOverlappingBounds;
+using ve::renderer::VsmPageTableEntry;
 using ve::renderer::vsmPageViewProjection;
 using ve::renderer::vsmPageWorldSize;
 using ve::renderer::vsmRequestBitMask;
 using ve::renderer::vsmRequestWordIndex;
-using ve::renderer::vsmMinLevelForCoverage;
 using ve::renderer::vsmSelectLevel;
 using ve::renderer::vsmSlotIndex;
 using ve::renderer::vsmTexelWorldSize;
@@ -472,8 +472,8 @@ TEST_CASE("A page's projection fills clip space with exactly that page's world r
 
     // A point just outside the rect is outside clip space, which is what the
     // page's scissor and this projection have to agree on.
-    const glm::vec3 outside =
-        projectToNdc(pageViewProjection, lightSpaceToWorld(lightView, glm::vec3{minX - pageWorldSize * 0.1f, minY, 0.0f}));
+    const glm::vec3 outside = projectToNdc(
+        pageViewProjection, lightSpaceToWorld(lightView, glm::vec3{minX - pageWorldSize * 0.1f, minY, 0.0f}));
     REQUIRE(outside.x < -1.0f);
 }
 
@@ -534,9 +534,7 @@ TEST_CASE("Request stats decode the bitmask the marking pass writes", "[vsm]")
 {
     std::vector<uint32_t> words(kVsmPageRequestWordCount, 0u);
 
-    const auto request = [&words](uint32_t pageId) {
-        words[vsmRequestWordIndex(pageId)] |= vsmRequestBitMask(pageId);
-    };
+    const auto request = [&words](uint32_t pageId) { words[vsmRequestWordIndex(pageId)] |= vsmRequestBitMask(pageId); };
 
     request(vsmPageId(0, 0));
     request(vsmPageId(0, 17));
@@ -569,7 +567,6 @@ TEST_CASE("An empty request set decodes to zero rather than a stale level", "[vs
     REQUIRE(nullStats.requestedPages == 0u);
     REQUIRE(nullStats.lowestRequestedLevel == 0u);
 }
-
 
 TEST_CASE("A slot plus its window names exactly one absolute page", "[vsm]")
 {
@@ -749,7 +746,6 @@ TEST_CASE("Every page table entry starts unbound", "[vsm]")
     }
 }
 
-
 TEST_CASE("A world box projects to the light-space rect of all eight corners", "[vsm]")
 {
     // Two corners are not enough: the light basis is a rotation, so a world
@@ -861,8 +857,7 @@ TEST_CASE("A level past the active count yields nothing", "[vsm]")
     const glm::ivec2 origin = vsmWindowOrigin(settings, 4, glm::vec2{0.0f, 0.0f});
 
     std::vector<uint32_t> pageIds;
-    vsmPagesOverlappingBounds(
-        settings, lightView, 4, origin, glm::vec3{-1.0f}, glm::vec3{1.0f}, pageIds);
+    vsmPagesOverlappingBounds(settings, lightView, 4, origin, glm::vec3{-1.0f}, glm::vec3{1.0f}, pageIds);
     REQUIRE(pageIds.empty());
 }
 
@@ -898,14 +893,14 @@ TEST_CASE("Invalidating reports only pages that actually held depth", "[vsm]")
     const uint32_t pageId = vsmPageId(0, 3);
 
     allocator.beginFrame(1);
-    REQUIRE_FALSE(allocator.invalidate(pageId));  // owns nothing yet
+    REQUIRE_FALSE(allocator.invalidate(pageId)); // owns nothing yet
 
     allocator.acquire(pageId, glm::ivec2{0, 0});
-    REQUIRE_FALSE(allocator.invalidate(pageId));  // allocated but never drawn
+    REQUIRE_FALSE(allocator.invalidate(pageId)); // allocated but never drawn
 
     allocator.markRendered(pageId);
     REQUIRE(allocator.invalidate(pageId));
-    REQUIRE_FALSE(allocator.invalidate(pageId));  // already invalidated
+    REQUIRE_FALSE(allocator.invalidate(pageId)); // already invalidated
 
     REQUIRE_FALSE(allocator.invalidate(kVsmMaxVirtualPages + 5u));
 }
@@ -946,9 +941,15 @@ TEST_CASE("A caster straddling a page seam reaches both pages", "[vsm]")
     CHECK(vsmPageOverlapsLightSpaceBounds(settings, 0, glm::ivec2{3, 0}, min, max));
     // Drawing into one page too many costs a draw; missing one loses a shadow,
     // so the shared edge counts as overlap on both sides.
-    CHECK(vsmPageOverlapsLightSpaceBounds(settings, 0, glm::ivec2{2, 0}, glm::vec2{3.0f * pageSize, 0.5f * pageSize},
+    CHECK(vsmPageOverlapsLightSpaceBounds(settings,
+                                          0,
+                                          glm::ivec2{2, 0},
+                                          glm::vec2{3.0f * pageSize, 0.5f * pageSize},
                                           glm::vec2{3.0f * pageSize, 0.5f * pageSize}));
-    CHECK(vsmPageOverlapsLightSpaceBounds(settings, 0, glm::ivec2{3, 0}, glm::vec2{3.0f * pageSize, 0.5f * pageSize},
+    CHECK(vsmPageOverlapsLightSpaceBounds(settings,
+                                          0,
+                                          glm::ivec2{3, 0},
+                                          glm::vec2{3.0f * pageSize, 0.5f * pageSize},
                                           glm::vec2{3.0f * pageSize, 0.5f * pageSize}));
 }
 
