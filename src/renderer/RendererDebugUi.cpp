@@ -822,8 +822,7 @@ void Renderer::drawShadowsDebugUi()
                               "cascade split.\n\n"
                               "The page depth-delta view above wins over this one when both\n"
                               "are on; this one wins over the level view.");
-        ImGui::InputInt("Debug: only shadow caster object (all paths)",
-                        &csmSettings_.debugOnlyShadowCasterObject);
+        ImGui::InputInt("Debug: only shadow caster object (all paths)", &csmSettings_.debugOnlyShadowCasterObject);
         ImGui::SetItemTooltip("Restricts shadow CASTING to one render object, by index.\n"
                               "-1 casts as usual. Receivers are untouched.\n\n"
                               "Scene-wide across shadow paths, which is the point: the object\n"

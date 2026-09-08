@@ -142,7 +142,10 @@ public:
     // of which are recreated on resize. Call after DepthPyramid::createResources.
     void refreshDepthPyramidBinding();
 
-    [[nodiscard]] bool available() const { return available_; }
+    [[nodiscard]] bool available() const
+    {
+        return available_;
+    }
 
     // Clears the request bitmask, dispatches the marking shader, and copies the
     // result into this frame slot's readback buffer. Must be called inside the
@@ -156,7 +159,10 @@ public:
     [[nodiscard]] bool readRequestStats(uint32_t frameIndex, uint32_t levelCount, VsmPageRequestStats& stats);
 
     // Threads the last dispatch covered, for the debug UI. Purely informational.
-    [[nodiscard]] uint32_t lastMarkThreadCount() const { return lastMarkThreadCount_; }
+    [[nodiscard]] uint32_t lastMarkThreadCount() const
+    {
+        return lastMarkThreadCount_;
+    }
 
     // --- residency ---------------------------------------------------------
 
@@ -182,7 +188,10 @@ public:
                                       uint64_t frameCounter);
 
     // Pages the last updateResidency queued for drawing.
-    [[nodiscard]] const std::vector<VsmDirtyPage>& dirtyPages() const { return dirtyPages_; }
+    [[nodiscard]] const std::vector<VsmDirtyPage>& dirtyPages() const
+    {
+        return dirtyPages_;
+    }
 
     // Drops the depth of every addressable page a world AABB touches, at every
     // active level, so the next residency update redraws them in place.
@@ -203,7 +212,10 @@ public:
 
     // Pages invalidated by moved casters since the last residency update, and
     // the running total. Reset by updateResidency, which consumes them.
-    [[nodiscard]] uint32_t pagesInvalidatedByCasters() const { return pagesInvalidatedByCasters_; }
+    [[nodiscard]] uint32_t pagesInvalidatedByCasters() const
+    {
+        return pagesInvalidatedByCasters_;
+    }
 
     // Records that every queued page has been drawn. Called after the page pass
     // actually recorded them, not when they were queued -- until the draws are
@@ -215,20 +227,38 @@ public:
     // settings change.
     void invalidateResidency();
 
-    [[nodiscard]] const rhi::VulkanShadowMap& pagePool() const { return pagePool_; }
-    [[nodiscard]] rhi::VulkanShadowMap& pagePool() { return pagePool_; }
-    [[nodiscard]] bool pagePoolValid() const { return pagePool_.valid(); }
+    [[nodiscard]] const rhi::VulkanShadowMap& pagePool() const
+    {
+        return pagePool_;
+    }
+    [[nodiscard]] rhi::VulkanShadowMap& pagePool()
+    {
+        return pagePool_;
+    }
+    [[nodiscard]] bool pagePoolValid() const
+    {
+        return pagePool_.valid();
+    }
     // First frame after the pool is created: its contents are undefined, so the
     // whole image is cleared rather than only the pages being drawn.
-    [[nodiscard]] bool pagePoolNeedsFullClear() const { return pagePoolNeedsFullClear_; }
-    void setPagePoolFullClearDone() { pagePoolNeedsFullClear_ = false; }
+    [[nodiscard]] bool pagePoolNeedsFullClear() const
+    {
+        return pagePoolNeedsFullClear_;
+    }
+    void setPagePoolFullClearDone()
+    {
+        pagePoolNeedsFullClear_ = false;
+    }
     [[nodiscard]] VkDeviceAddress pageTableAddress(uint32_t frameIndex) const;
 
     // The page table as the allocator holds it, for the residency overlay. CPU
     // side: it is the same data the GPU reads, so the overlay shows what the
     // sampler will actually find rather than a separate bookkeeping copy that
     // could drift from it.
-    [[nodiscard]] std::span<const VsmPageTableEntry> pageTable() const { return allocator_.entries(); }
+    [[nodiscard]] std::span<const VsmPageTableEntry> pageTable() const
+    {
+        return allocator_.entries();
+    }
 
     // Copies the whole page pool out and writes it as a PNG, plus a manifest of
     // which world page each populated pool rect holds.
@@ -256,10 +286,16 @@ public:
     // because it needs the draw-item capacity, which the renderer owns. Requires
     // the page pool. Reports capability through cullAvailable().
     void createCullResources(uint32_t frameCount, uint32_t maxDrawItems);
-    [[nodiscard]] bool cullAvailable() const { return cullAvailable_; }
+    [[nodiscard]] bool cullAvailable() const
+    {
+        return cullAvailable_;
+    }
     // The stride recordPageCull last laid the regions out with. Per frame now:
     // it is the sum of this frame's batch slices, not the per-page budget.
-    [[nodiscard]] uint32_t pageCommandStride() const { return pageCommandStride_; }
+    [[nodiscard]] uint32_t pageCommandStride() const
+    {
+        return pageCommandStride_;
+    }
     [[nodiscard]] VkBuffer cullIndirectBuffer(uint32_t frameIndex) const;
 
     // One dispatch over every (dirty page, draw item) pair, recorded before the
