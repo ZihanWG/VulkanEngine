@@ -367,6 +367,9 @@ private:
     // and the recorder, which must not disagree.
     [[nodiscard]] bool skinnedCasterCastsIntoFrustum(const renderer::Frustum& frustum) const;
     [[nodiscard]] bool skinnedCasterCastsIntoCascade(uint32_t cascadeIndex) const;
+    // True when CsmSettings::debugOnlyShadowCasterObject is isolating some other
+    // object, so this one must not cast into any shadow path this frame.
+    [[nodiscard]] bool isShadowCasterIsolatedOut(size_t objectIndex) const;
     void recordSkinnedCascadeCaster(VkCommandBuffer commandBuffer, uint32_t cascadeIndex, bool layeredCascades);
     // Vertex/index binding plus the draw, shared by every target it casts into.
     void recordSkinnedCasterDraw(VkCommandBuffer commandBuffer);

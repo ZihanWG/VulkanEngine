@@ -38,6 +38,24 @@ struct CsmSettings {
     // same texels cover more world. MEASURED: it does NOT help the cascade cache
     // -- see CascadeMath.h. Its value is stability, not cache hits.
     bool enableStableCascadeFit = false;
+    // Restricts SHADOW CASTING to one render object, by index; -1 casts as usual.
+    //
+    // Scene-wide across shadow paths on purpose, and that is the point rather
+    // than a limitation. It filters the shared shadow cull input, so the object
+    // leaves the cascades, the punctual atlas and the VSM pages together --
+    // which is what makes a cascade-versus-VSM capture at one caster mean
+    // something. Whatever the removal does to the punctual atlas it does
+    // identically on both sides of the A/B, so it cancels out of the
+    // difference, and the two directional paths are left rendering the same
+    // single caster.
+    //
+    // The mirror of VsmSettings::debugOnlyCasterObject, which narrows only the
+    // page pass. Use that one to attribute what a page holds; use this one to
+    // compare the two directional paths on the same caster.
+    //
+    // Receivers are untouched: this filters the shadow cull input, not the main
+    // pass, so the geometry a shadow lands on is still drawn.
+    int debugOnlyShadowCasterObject = -1;
 
     // Defaulted rather than written out: a hand-written comparison would have to
     // be extended for every new field, which is exactly the failure that made

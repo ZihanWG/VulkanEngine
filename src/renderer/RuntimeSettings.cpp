@@ -493,6 +493,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readFloat(*csm, "cascadeBlend", settings.csm.cascadeBlend);
         readBool(*csm, "enableCascadeCache", settings.csm.enableCascadeCache);
         readBool(*csm, "enableStableCascadeFit", settings.csm.enableStableCascadeFit);
+        readInt(*csm, "debugOnlyShadowCasterObject", settings.csm.debugOnlyShadowCasterObject);
     }
 
     if (const Json* vsm = objectMember(json, "vsm")) {
@@ -656,7 +657,8 @@ Json toJson(const RuntimeSettings& settings)
               {"enableStableCascadeFit", settings.csm.enableStableCascadeFit},
               {"shadowDistance", settings.csm.shadowDistance},
               {"enableTexelSnapping", settings.csm.enableTexelSnapping},
-              {"enableCascadeDebugColors", settings.csm.enableCascadeDebugColors}}},
+              {"enableCascadeDebugColors", settings.csm.enableCascadeDebugColors},
+              {"debugOnlyShadowCasterObject", settings.csm.debugOnlyShadowCasterObject}}},
         {"vsm",
          Json{{"enableMarking", settings.vsm.enableMarking},
               {"enablePageRendering", settings.vsm.enablePageRendering},

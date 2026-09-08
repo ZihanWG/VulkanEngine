@@ -824,6 +824,17 @@ void Renderer::drawShadowsDebugUi()
                               "cascade split.\n\n"
                               "The page depth-delta view above wins over this one when both\n"
                               "are on; this one wins over the level view.");
+        ImGui::InputInt("Debug: only shadow caster object (all paths)",
+                        &csmSettings_.debugOnlyShadowCasterObject);
+        ImGui::SetItemTooltip("Restricts shadow CASTING to one render object, by index.\n"
+                              "-1 casts as usual. Receivers are untouched.\n\n"
+                              "Scene-wide across shadow paths, which is the point: the object\n"
+                              "leaves the cascades, the punctual atlas and the VSM pages\n"
+                              "together, so a --vsm off / --vsm shadows pair renders the same\n"
+                              "single caster on both sides and whatever the removal does to\n"
+                              "the punctual atlas cancels out of the difference.\n\n"
+                              "Use the VSM-only isolation below to attribute what a page\n"
+                              "holds; use this one to compare the two directional paths.");
         ImGui::InputInt("Debug: only caster object", &vsmSettings_.debugOnlyCasterObject);
         ImGui::SetItemTooltip("Restricts the page pass to one render object's casters, by index.\n"
                               "-1 draws every caster as usual.\n\n"
