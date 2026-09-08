@@ -156,6 +156,10 @@ public:
     // includeUi records the copy after the ImGui pass instead of before it, which
     // is the only way a scripted run can see the debug panel at all.
     void requestFrameCaptureAt(uint64_t frameNumber, std::filesystem::path outputPath, bool includeUi = false);
+    // Dumps the VSM page pool to a PNG (plus a page manifest) at the end of this
+    // frame. Diagnostic: it stalls the device, so it runs once and never on a
+    // frame anyone is timing.
+    void requestVsmPagePoolDumpAt(uint64_t frameNumber, std::filesystem::path outputPath);
 
     // True once the requested capture has been read back and written. The
     // readback lags the recorded frame by the in-flight frame count, so a caller
@@ -849,6 +853,8 @@ private:
     // above because it deliberately skips the showcase-preset policy.
     std::filesystem::path frameCaptureOutputPath_;
     uint64_t frameCaptureTargetFrame_ = 0;
+    uint64_t vsmPagePoolDumpTargetFrame_ = 0;
+    std::filesystem::path vsmPagePoolDumpPath_;
     bool frameCapturePending_ = false;
     bool frameCaptureRecorded_ = false;
     bool frameCaptureComplete_ = false;

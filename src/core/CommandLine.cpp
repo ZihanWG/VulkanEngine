@@ -175,6 +175,15 @@ bool parseLaunchOptions(int argc, char** argv, LaunchOptions& options)
             continue;
         }
 
+        if (argument == "--vsm-dump-pool") {
+            if (index + 1 >= argc) {
+                Logger::error("--vsm-dump-pool requires a file path.");
+                return false;
+            }
+            options.vsmDumpPool = argv[++index];
+            continue;
+        }
+
         if (argument == "--capture-output") {
             if (index + 1 >= argc) {
                 Logger::error("--capture-output requires a file path.");
@@ -244,6 +253,11 @@ bool parseLaunchOptions(int argc, char** argv, LaunchOptions& options)
     // Rejected rather than ignored: a run asking for the overlay in an image it
     // never captures has been misconfigured, and silently dropping the flag
     // would hand back a frame that looks right and answers nothing.
+    if (!options.vsmDumpPool.empty() && options.captureFrame == 0) {
+        Logger::error("--vsm-dump-pool requires --capture-frame, so the pool and the frame it shaded match.");
+        return false;
+    }
+
     if (options.captureIncludeUi && options.captureFrame == 0) {
         Logger::error("--capture-include-ui requires --capture-frame.");
         return false;
