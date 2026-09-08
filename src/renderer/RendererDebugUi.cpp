@@ -824,6 +824,16 @@ void Renderer::drawShadowsDebugUi()
                               "cascade split.\n\n"
                               "The page depth-delta view above wins over this one when both\n"
                               "are on; this one wins over the level view.");
+        ImGui::InputInt("Debug: only caster object", &vsmSettings_.debugOnlyCasterObject);
+        ImGui::SetItemTooltip("Restricts the page pass to one render object's casters, by index.\n"
+                              "-1 draws every caster as usual.\n\n"
+                              "The views above say what a page holds under a pixel; this says\n"
+                              "WHICH caster put it there, which none of them can -- the pool is\n"
+                              "depth-only, so there is nowhere to write a caster id beside the\n"
+                              "depth. Sweep it and watch where a wrong shadow survives.\n\n"
+                              "Filters the caster side only: receivers and the sampler are\n"
+                              "untouched, so an isolated run still compares against the cascade\n"
+                              "reference at the same pixel.");
         ImGui::Checkbox("Debug: tint by sampled level", &vsmSettings_.debugLevelColors);
         ImGui::SetItemTooltip("One colour per clipmap level -- green, yellow-green, yellow, orange,\n"
                               "red for L0-L4, then brown/blue/cyan/teal/slate/grey/navy out to the\n"
