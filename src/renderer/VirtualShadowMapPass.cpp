@@ -61,9 +61,12 @@ constexpr uint32_t kMarkWorkgroupSize = 8;
 // set to interpret either.
 const std::array<glm::ivec2, kVsmMaxClipmapLevels> kZeroOrigins{};
 
-// One counter per (page, bucket) plus a trailing over-cap counter.
-constexpr uint32_t kCullCounterCount = kMaxVsmPagesPerFrame * kVsmCasterBucketCount + 1u;
-constexpr uint32_t kCullOverflowCounterIndex = kMaxVsmPagesPerFrame * kVsmCasterBucketCount;
+// One counter per (page, batch) plus a trailing over-cap counter. The batch
+// dimension replaces the old bucket one: a batch is uniform in mesh AND in
+// bucket by construction, so its slice already names the pipeline to draw it
+// with, and keeping both would leave half the regions permanently empty.
+constexpr uint32_t kCullCounterCount = kMaxVsmPagesPerFrame * kMaxVsmCasterBatches + 1u;
+constexpr uint32_t kCullOverflowCounterIndex = kMaxVsmPagesPerFrame * kMaxVsmCasterBatches;
 constexpr VkDeviceSize kCullCounterBufferSize = static_cast<VkDeviceSize>(kCullCounterCount) * sizeof(uint32_t);
 constexpr uint32_t kCullWorkgroupSize = 64;
 
@@ -73,9 +76,10 @@ struct VsmPageCullPushConstants {
     uint32_t drawItemCount = 0;
     uint32_t pageCommandStride = 0;
     uint32_t overflowCounterIndex = 0;
+    uint32_t batchCount = 0;
 };
 
-static_assert(sizeof(VsmPageCullPushConstants) == 16);
+static_assert(sizeof(VsmPageCullPushConstants) == 20);
 
 void bufferBarrier(VkCommandBuffer commandBuffer,
                    VkBuffer buffer,
@@ -1052,8 +1056,13 @@ void VirtualShadowMapPass::createCullResources(uint32_t frameCount, uint32_t max
             // frame in flight; a page covers a small world rect, so the cap is
             // generous, and going over is counted rather than hidden.
             rhi::VulkanBufferCreateInfo indirectInfo{};
-            indirectInfo.size = static_cast<VkDeviceSize>(kMaxVsmPagesPerFrame) * kVsmCasterBucketCount *
-                                kMaxVsmCastersPerPage * sizeof(VkDrawIndexedIndirectCommand);
+            // Sized for the per-page budget, which vsmBuildCasterBatchSlices
+            // never exceeds. Dropping the bucket dimension halves what the old
+            // (page, bucket) layout reserved, and the stride actually used is
+            // the frame's batch-slice total -- far below the budget on a scene
+            // with few draw items.
+            indirectInfo.size = static_cast<VkDeviceSize>(kMaxVsmPagesPerFrame) * kMaxVsmCastersPerPage *
+                                sizeof(VkDrawIndexedIndirectCommand);
             indirectInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
                                  VK_BUFFER_USAGE_TRANSFER_DST_BIT;
             indirectInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
@@ -1078,7 +1087,7 @@ void VirtualShadowMapPass::createCullResources(uint32_t frameCount, uint32_t max
             cullOverflowReadbackBuffers_[frameIndex].createBuffer(context_, overflowInfo);
 
             rhi::VulkanBufferCreateInfo flagInfo{};
-            flagInfo.size = static_cast<VkDeviceSize>(maxDrawItems) * sizeof(uint32_t);
+            flagInfo.size = static_cast<VkDeviceSize>(maxDrawItems) * 4u * sizeof(uint32_t);
             flagInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
             flagInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
             flagInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
@@ -1123,12 +1132,22 @@ void VirtualShadowMapPass::recordPageCull(VkCommandBuffer commandBuffer,
                                           uint32_t drawItemCount,
                                           const VsmClipmapSettings& clipmap,
                                           const glm::mat4& lightView,
-                                          std::span<const uint32_t> casterFlags)
+                                          std::span<const uint32_t> casterEntries,
+                                          uint32_t batchCount,
+                                          uint32_t pageCommandStride)
 {
+    pageCommandStride_ = 0;
     if (!cullAvailable_ || frameIndex >= cullSets_.size() || dirtyPages_.empty() || drawItemCount == 0 ||
-        cullInputBuffer == VK_NULL_HANDLE) {
+        cullInputBuffer == VK_NULL_HANDLE || batchCount == 0 || pageCommandStride == 0) {
         return;
     }
+
+    // Both are laid out by vsmBuildCasterBatchSlices, which cannot exceed the
+    // budget; clamped anyway because they size writes into a fixed buffer and a
+    // caller that got them wrong must not walk off the end of it.
+    batchCount = std::min(batchCount, kMaxVsmCasterBatches);
+    pageCommandStride = std::min(pageCommandStride, kMaxVsmCastersPerPage);
+    pageCommandStride_ = pageCommandStride;
 
     const uint32_t pageCount = static_cast<uint32_t>(std::min<size_t>(dirtyPages_.size(), kMaxVsmPagesPerFrame));
     const uint32_t items = std::min(drawItemCount, cullDrawItemCapacity_);
@@ -1153,9 +1172,10 @@ void VirtualShadowMapPass::recordPageCull(VkCommandBuffer commandBuffer,
     pageFrustumBuffers_[frameIndex].upload(
         std::as_bytes(std::span<const glm::vec4>(pageFrustumPlanes_.data(), pageFrustumPlanes_.size())));
 
-    if (!casterFlags.empty()) {
-        casterFlagBuffers_[frameIndex].upload(
-            std::as_bytes(casterFlags.subspan(0, std::min<size_t>(casterFlags.size(), cullDrawItemCapacity_))));
+    if (!casterEntries.empty()) {
+        // Four uints per draw item: (casts, batch, sliceOffset, sliceCapacity).
+        casterFlagBuffers_[frameIndex].upload(std::as_bytes(
+            casterEntries.subspan(0, std::min<size_t>(casterEntries.size(), size_t{cullDrawItemCapacity_} * 4u))));
     }
 
     std::array<VkDescriptorBufferInfo, 5> bufferInfos{};
@@ -1179,8 +1199,8 @@ void VirtualShadowMapPass::recordPageCull(VkCommandBuffer commandBuffer,
     // Only the command regions this frame's pages will draw from are cleared.
     // The counters are zeroed in full, because the over-cap counter lives past
     // the per-page ones.
-    const VkDeviceSize clearedCommandBytes = static_cast<VkDeviceSize>(pageCount) * kVsmCasterBucketCount *
-                                             kMaxVsmCastersPerPage * sizeof(VkDrawIndexedIndirectCommand);
+    const VkDeviceSize clearedCommandBytes =
+        static_cast<VkDeviceSize>(pageCount) * pageCommandStride * sizeof(VkDrawIndexedIndirectCommand);
     vkCmdFillBuffer(commandBuffer, cullVisibleCountBuffers_[frameIndex].buffer(), 0, kCullCounterBufferSize, 0);
     vkCmdFillBuffer(commandBuffer, cullIndirectBuffers_[frameIndex].buffer(), 0, clearedCommandBytes, 0);
 
@@ -1209,8 +1229,9 @@ void VirtualShadowMapPass::recordPageCull(VkCommandBuffer commandBuffer,
     VsmPageCullPushConstants push{};
     push.pageCount = pageCount;
     push.drawItemCount = items;
-    push.pageCommandStride = kMaxVsmCastersPerPage;
+    push.pageCommandStride = pageCommandStride;
     push.overflowCounterIndex = kCullOverflowCounterIndex;
+    push.batchCount = batchCount;
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, cullPipeline_.pipeline());
     vkCmdBindDescriptorSets(commandBuffer,

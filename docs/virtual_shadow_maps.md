@@ -1007,14 +1007,81 @@ the sphere that should have been there.
   drawn correctly. The encode was never wrong; the geometry fed into it was.
 - Why the cascades are right: they rebind per batch.
 
-**The fix is not a one-liner**, which is why it is worth stating separately. Each
-page issues one indirect draw per caster bucket, and the cull compacts every
-surviving caster of that page into one region regardless of which mesh it came
-from -- so a single draw covers commands that need different buffers bound.
-Correcting it means compacting per (page, bucket, **mesh batch**) and binding per
-batch the way the cascades do, which multiplies the region count by the batch
-count (7 on the default scene) unless the per-region stride is re-sized at the
-same time.
+### The fix: per-batch slices, and a stride that is not the budget
+
+Each page issued one indirect draw per caster bucket, and the cull compacted
+every surviving caster of that page into one region whatever mesh it came from --
+so one draw covered commands needing different buffers bound. The page's region
+is now divided into a **slice per mesh batch**, and the pass binds per batch the
+way every other indirect path already does.
+
+Two things keep that from costing memory. The **bucket dimension is gone**: a
+batch is uniform in mesh *and* in bucket by construction, so the batch already
+names the pipeline that draws it, and keeping both dimensions would leave half
+the regions permanently empty. And the **stride is computed per frame** by
+`vsmBuildCasterBatchSlices` instead of reserving the per-page cap for every
+batch. A batch of n items can put at most n casters into one page, so while the
+draw list fits the budget every slice is exact and the stride is the item count:
+**11 commands on the showcase scene against a 256-command budget**. Only over
+budget are slices scaled down, proportionally and never below one -- a batch that
+could not write even one command would drop casters without reaching the over-cap
+counter, which is the failure this structure exists to make visible. The indirect
+buffer is sized for the budget as before, so dropping the bucket dimension
+**halves** what it reserves.
+
+The slice travels **per draw item**, in the caster-flag array, rather than as a
+batch table of its own. That keeps the page pass independent of
+`gpuShadowMeshDrawBatches_`, which only exists when GPU shadow culling is on,
+while the page pass has to lay out its regions either way.
+
+**What it fixes, measured the same way the bug was.**
+
+| | before | after |
+| --- | --- | --- |
+| false shadow, whole frame (VSM darker >5) | 48482 | **879** |
+| leaked umbra (VSM brighter >2) | 8981 | **444** |
+| object 3 alone: VSM area / cascade area | 2.49x | **0.947x** |
+| object 3 alone: IoU with the cascade shadow | 0.387 | **0.944** |
+| object 3 alone: pixels the VSM shadows and the cascade does not | 29741 | **29** |
+| recorded silhouette area in the pool | 1.1120 m² (its AABB) | **0.5265 m²** (the sphere is 0.5281) |
+| recorded depth against the sphere's own surface | 75.78 mm rms | **6.26 mm rms** |
+
+879 is not a residue of the bug: with **nothing casting at all** the two paths
+already differ by 880 pixels on that metric, so what is left is the floor. The
+pool now records the sphere to within a third of a percent of its area and well
+inside the dump's own 13.32 mm quantization.
+
+### The bias default was tuned against the bug
+
+`depthBiasTexels` was 64, and the sweep that chose it -- "below ~32 the scene
+self-shadows its own lit surfaces" -- was measuring the phantom bounding box
+being held off the surfaces it covered. Re-swept against correct geometry there
+is no acne to hold back at all:
+
+| `depthBiasTexels` | false shadow (floor is 880) | leaked umbra |
+| --- | --- | --- |
+| 2 | 885 | **4** |
+| 4 | 884 | 123 |
+| **8** (new default) | **879** | **444** |
+| 16 | 879 | 692 |
+| 32 | 879 | 1914 |
+| 64 (old default) | 880 | 13509 |
+| 128 | 876 | 53237 |
+
+The false-shadow column is flat across the whole range and sits on the floor; only
+the leak moves, and it moves monotonically. The old table -- a trade-off with no
+operating point -- was a property of the bug, not of the setting. Geometrically
+only a texel or two is called for (one texel of slope on a 45-degree surface,
+plus the linear compare filter's 2x2), so **8** is margin rather than
+curve-fitting, and the unit test that pins the window was updated with it.
+
+**Verified beyond the numbers above**: the cascade path is byte identical
+(0/3686400, this touches nothing it uses), two VSM runs still reproduce byte for
+byte, `--vsm off|mark|render|shadows` and the default, stress, sunlit and cornell
+scenes all render with **0 validation errors**, the stress scene reports **0
+casters over the per-page cap** so the per-batch slices are sufficient there, and
+the cutout panel still throws a perforated shadow (1079 px against the cascades'
+1363) rather than the solid silhouette a broken masked path would give.
 
 ### A shader hazard found on the way
 
@@ -1196,30 +1263,22 @@ page rendering.
 
 ## Limitations
 
-- **Every caster's page shadow is dilated relative to its cascade shadow, and
-  that is not fixed.** It is not the "one lit face" this section used to
-  describe: whole-frame it is **48482 pixels** in bands hugging every cast
-  shadow's edge, against **8981** where the VSM is brighter, and it reproduces on
-  NVIDIA as well as on the M3. The thirteen lookup-side hypotheses below are
-  dead, and four more went with them -- the depth mapping, the clipmap's world
-  scale, the marking stride and a displacement -- each with a control that proves
-  its knob reached the GPU, and the LOD and level-selection answers were re-run
-  whole-frame rather than on one patch. What the page records is a real occluder at a
-  real height whose silhouette is too big by a world-scale amount that is
-  **invariant to a 4x change in clipmap resolution**, and no `depthBiasTexels`
-  value separates it from real occlusion -- the sweep trades false shadow against
-  a leaked umbra monotonically. With both paths isolated to the same single
-  caster the VSM shadow is a near-superset of the cascade's -- **1.5-2.5x the
-  area, dilated rather than displaced**, with only 2-11% of the cascade shadow
-  missing from it. `debugOnlyCasterObject` attributes page content to a caster,
-  and `CsmSettings::debugOnlyShadowCasterObject` is what makes the two paths
-  comparable at one caster. **The page pool has since been dumped and its
-  contents are correct** -- the recorded ground plane matches the light basis to
-  14.71 mm rms and silhouette edges are hard single-texel steps -- so the cause
-  is in the lookup or the comparison, not in what the page pass records. See
+- ~~Every caster's page shadow is dilated relative to its cascade shadow.~~
+  **FIXED.** The page pass bound one mesh's vertex and index buffers and drew
+  every caster out of them, so on the showcase scene -- whose first draw item is
+  a cube -- each sphere rendered as its own bounding box. A page's region is now
+  divided into a slice per mesh batch and the pass binds per batch. Whole-frame
+  the false shadow went from **48482 pixels to 879**, which is the floor the two
+  paths differ by with nothing casting at all, and one isolated caster now
+  matches the cascades at **0.947x area and 0.944 IoU** against 2.49x and 0.387.
+  `depthBiasTexels` came down 64 -> 8 with it, the old value having been tuned
+  against the bug. The investigation above is kept because most of it is method
+  rather than history: see
   [It is every caster, it is not MoltenVK, and no bias separates it](#it-is-every-caster-it-is-not-moltenvk-and-no-bias-separates-it),
-  [The cascade-side mirror, and the answer](#the-cascade-side-mirror-and-the-answer-dilated-not-displaced)
-  and [Dumping the pool](#dumping-the-pool-the-record-is-correct).
+  [The cascade-side mirror](#the-cascade-side-mirror-and-the-answer-dilated-not-displaced),
+  [Dumping the pool](#dumping-the-pool-the-record-is-correct),
+  [The cause](#the-cause-the-page-pass-draws-every-caster-out-of-one-meshs-buffers)
+  and [The fix](#the-fix-per-batch-slices-and-a-stride-that-is-not-the-budget).
 - **`texelsPerPixel` below 1.0 does nothing *on this scene*, and that is the
   coverage bound rather than a broken setting.** `vsmSelectLevel` returns
   `max(quality, coverage)`, so a finer request only survives where coverage is

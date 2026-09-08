@@ -1069,7 +1069,17 @@ private:
     uint32_t vsmCastersChangedThisFrame_ = 0;
     uint32_t vsmDebugLevel_ = 0;
     // Reused per frame so the caster-flag upload does not allocate.
+    // Four uints per draw item -- (casts, batch, sliceOffset, sliceCapacity) --
+    // uploaded to the page cull. The slice rides per item so the pass needs no
+    // batch table of its own on the GPU.
     std::vector<uint32_t> vsmCasterFlags_;
+    // The page pass's own batching of allDrawItems_. Its own rather than the
+    // cascades': gpuShadowMeshDrawBatches_ is only built when GPU shadow culling
+    // is on, and the page pass has to lay out its regions either way.
+    std::vector<renderer::MeshDrawBatch> vsmCasterBatches_;
+    std::vector<renderer::VsmCasterBatchSlice> vsmCasterBatchSlices_;
+    std::vector<uint32_t> vsmCasterBatchItemCounts_;
+    uint32_t vsmPageCommandStride_ = 0;
     std::vector<VkClearRect> vsmPageClearRects_;
     rhi::PipelineRef vsmPagePipeline_;
     rhi::PipelineRef vsmMaskedPagePipeline_;

@@ -257,7 +257,9 @@ public:
     // the page pool. Reports capability through cullAvailable().
     void createCullResources(uint32_t frameCount, uint32_t maxDrawItems);
     [[nodiscard]] bool cullAvailable() const { return cullAvailable_; }
-    [[nodiscard]] uint32_t pageCommandStride() const { return kMaxVsmCastersPerPage; }
+    // The stride recordPageCull last laid the regions out with. Per frame now:
+    // it is the sum of this frame's batch slices, not the per-page budget.
+    [[nodiscard]] uint32_t pageCommandStride() const { return pageCommandStride_; }
     [[nodiscard]] VkBuffer cullIndirectBuffer(uint32_t frameIndex) const;
 
     // One dispatch over every (dirty page, draw item) pair, recorded before the
@@ -274,7 +276,9 @@ public:
                         uint32_t drawItemCount,
                         const VsmClipmapSettings& clipmap,
                         const glm::mat4& lightView,
-                        std::span<const uint32_t> casterFlags);
+                        std::span<const uint32_t> casterEntries,
+                        uint32_t batchCount,
+                        uint32_t pageCommandStride);
 
     // Casters the per-page command cap refused, read back a frame later. Counted
     // rather than silently dropped, matching the FrameCapacity contract.
@@ -339,6 +343,7 @@ private:
     std::vector<uint8_t> cullReadbackReady_;
     std::vector<glm::vec4> pageFrustumPlanes_;
     uint32_t cullDrawItemCapacity_ = 0;
+    uint32_t pageCommandStride_ = 0;
     bool cullAvailable_ = false;
 
     bool available_ = false;
