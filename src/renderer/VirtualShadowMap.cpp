@@ -485,6 +485,82 @@ glm::mat4 vsmPageViewProjection(const VsmClipmapSettings& settings,
     return projection * lightView;
 }
 
+uint32_t vsmBuildCasterBatchSlices(std::span<const uint32_t> batchDrawItemCounts,
+                                   uint32_t perPageBudget,
+                                   std::vector<VsmCasterBatchSlice>& slices)
+{
+    slices.assign(batchDrawItemCounts.size(), VsmCasterBatchSlice{});
+    if (batchDrawItemCounts.empty() || perPageBudget == 0) {
+        return 0;
+    }
+
+    uint64_t total = 0;
+    for (const uint32_t count : batchDrawItemCounts) {
+        total += count;
+    }
+    if (total == 0) {
+        return 0;
+    }
+
+    // The common case, and the reason this is computed per frame: everything a
+    // batch could contribute fits, so every slice is exact and the stride is the
+    // draw-item count rather than the budget.
+    if (total <= perPageBudget) {
+        uint32_t offset = 0;
+        for (size_t batch = 0; batch < batchDrawItemCounts.size(); ++batch) {
+            slices[batch].offset = offset;
+            slices[batch].capacity = batchDrawItemCounts[batch];
+            offset += batchDrawItemCounts[batch];
+        }
+        return offset;
+    }
+
+    // Over budget: share it out in proportion, but never hand a non-empty batch
+    // a slice of zero -- a batch that cannot write even one command would drop
+    // its casters without ever reaching the over-cap counter, which is the one
+    // failure this whole structure is meant to make visible.
+    uint32_t assigned = 0;
+    for (size_t batch = 0; batch < batchDrawItemCounts.size(); ++batch) {
+        const uint32_t count = batchDrawItemCounts[batch];
+        if (count == 0) {
+            continue;
+        }
+        const uint64_t scaled = (static_cast<uint64_t>(count) * perPageBudget + total - 1) / total;
+        uint32_t capacity = static_cast<uint32_t>(std::max<uint64_t>(scaled, 1));
+        capacity = std::min(capacity, count);
+        slices[batch].capacity = capacity;
+        assigned += capacity;
+    }
+
+    // Rounding up per batch can overshoot. Trim the largest slices first, so the
+    // batches that lose a command are the ones with the most to spare, and never
+    // below one.
+    while (assigned > perPageBudget) {
+        size_t largest = 0;
+        uint32_t largestCapacity = 0;
+        for (size_t batch = 0; batch < slices.size(); ++batch) {
+            if (slices[batch].capacity > largestCapacity) {
+                largestCapacity = slices[batch].capacity;
+                largest = batch;
+            }
+        }
+        if (largestCapacity <= 1) {
+            // Every non-empty batch is down to a single command: the batch count
+            // alone exceeds the budget, and the stride has to grow past it.
+            break;
+        }
+        --slices[largest].capacity;
+        --assigned;
+    }
+
+    uint32_t offset = 0;
+    for (VsmCasterBatchSlice& slice : slices) {
+        slice.offset = offset;
+        offset += slice.capacity;
+    }
+    return offset;
+}
+
 uint32_t vsmRequestWordIndex(uint32_t pageId)
 {
     return std::min(pageId, kVsmMaxVirtualPages - 1u) / 32u;

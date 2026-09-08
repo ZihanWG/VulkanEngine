@@ -385,14 +385,19 @@ TEST_CASE("The VSM depth bias is clamped without losing zero", "[settings][vsm]"
 
 TEST_CASE("The VSM depth bias default sits inside its measured window", "[settings][vsm]")
 {
-    // 64 texels was picked from a sweep on the default scene: below ~32 the
-    // scene self-shadows its own lit surfaces, and by 128 the umbra starts
-    // lifting back toward the leak this setting exists to remove. Pinning the
-    // window here means a casual retune has to argue with the measurement in
-    // docs/virtual_shadow_maps.md.
+    // This window used to be [32, 128], from a sweep taken while the page pass
+    // was drawing every caster's bounding box instead of its mesh: the large
+    // bias was holding that phantom occluder off the surfaces it covered, not
+    // fighting acne. With the geometry fixed the false-shadow count is flat from
+    // 2 texels to 128 -- at the floor the two shadow paths differ by with
+    // nothing casting at all -- while the leaked umbra grows monotonically with
+    // the bias. So the ceiling is what matters now, and it is far lower.
+    //
+    // Pinning the window means a casual retune has to argue with the measurement
+    // in docs/virtual_shadow_maps.md.
     const VsmSettings defaults;
-    CHECK(defaults.depthBiasTexels >= 32.0f);
-    CHECK(defaults.depthBiasTexels <= 128.0f);
+    CHECK(defaults.depthBiasTexels >= 2.0f);
+    CHECK(defaults.depthBiasTexels <= 32.0f);
 }
 
 

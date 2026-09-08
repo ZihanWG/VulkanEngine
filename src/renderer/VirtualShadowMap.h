@@ -24,6 +24,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <vector>
 
 #include <glm/mat4x4.hpp>
@@ -116,11 +117,40 @@ inline constexpr uint32_t kVsmCasterBucketCount = 2;
 inline constexpr uint32_t kVsmOpaqueCasterBucket = 0;
 inline constexpr uint32_t kVsmMaskedCasterBucket = 1;
 
-// Region index of one (page, bucket) pair in the compacted indirect buffer, in
-// commands. Shared by the dispatch that writes it and the pass that draws it.
-[[nodiscard]] constexpr uint32_t vsmPageCommandBase(uint32_t pageIndex, uint32_t bucket)
+// Largest number of mesh batches the page pass lays out regions for. Anything
+// past it is counted as over-cap rather than silently dropped, on the same
+// contract the per-page cap already uses.
+inline constexpr uint32_t kMaxVsmCasterBatches = 64;
+
+// Where one mesh batch's commands live inside a page's region, in commands.
+//
+// A page's casters cannot share one region any more: each batch owns its own
+// vertex and index buffer, and one indirect draw binds one of each. So a page's
+// budget is DIVIDED among the batches present rather than pooled, and each batch
+// gets a slice sized to what it could actually contribute.
+struct VsmCasterBatchSlice {
+    uint32_t offset = 0;
+    uint32_t capacity = 0;
+};
+
+// Divides a page's command budget among the batches; returns the page stride.
+//
+// Exact whenever the draw list fits: a batch of n items can put at most n
+// casters into any one page, so its slice is n and the stride is the item count
+// -- on a small scene a small fraction of the budget, which is the reason to
+// compute this per frame instead of reserving the cap for every batch. Only when
+// the total exceeds the budget are slices scaled down, proportionally and never
+// below one, so the stride stays inside `perPageBudget` and the buffer sized for
+// it. `slices` is resized to the batch count.
+[[nodiscard]] uint32_t vsmBuildCasterBatchSlices(std::span<const uint32_t> batchDrawItemCounts,
+                                                 uint32_t perPageBudget,
+                                                 std::vector<VsmCasterBatchSlice>& slices);
+
+// First command of a page's region in the compacted indirect buffer. The stride
+// is a per-frame quantity now, so it travels rather than being a constant.
+[[nodiscard]] constexpr uint32_t vsmPageCommandBase(uint32_t pageIndex, uint32_t pageCommandStride)
 {
-    return (pageIndex * kVsmCasterBucketCount + bucket) * kMaxVsmCastersPerPage;
+    return pageIndex * pageCommandStride;
 }
 
 // --- Settings -------------------------------------------------------------

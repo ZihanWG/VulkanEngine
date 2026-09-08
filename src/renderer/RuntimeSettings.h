@@ -435,10 +435,18 @@ struct VsmSettings {
     // error a texel can hide scales with the level and a single world figure is
     // wrong at all but one of them.
     //
-    // 64 is measured, not guessed: below ~32 the default scene self-shadows its
-    // own lit surfaces, and by 128 the umbra starts lifting again. The table is
-    // in docs/virtual_shadow_maps.md.
-    float depthBiasTexels = 64.0f;
+    // 8, and the 64 it replaces was measured against a bug. The page pass used
+    // to draw every caster's bounding box instead of its mesh, and a bias that
+    // large was what held the resulting phantom occluder off the surfaces it
+    // covered. With the geometry fixed there is no acne to hold back: the false
+    // shadow count is flat from 2 texels to 128 and sits at the floor the two
+    // paths differ by with nothing casting at all, while the leaked umbra grows
+    // monotonically with the bias -- 4 pixels at 2 texels, 495 at 8, 13509 at
+    // the old 64. Geometrically only a texel or two is called for (one texel of
+    // slope on a 45-degree surface, plus the linear compare filter's 2x2), so 8
+    // is margin rather than measurement-chasing. The table is in
+    // docs/virtual_shadow_maps.md.
+    float depthBiasTexels = 8.0f;
     // Tints every surface by the clipmap level its shadow lookup actually
     // sampled, magenta where the walk found nothing resident.
     //
