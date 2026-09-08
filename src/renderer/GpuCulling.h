@@ -93,10 +93,8 @@ public:
     [[nodiscard]] rhi::VulkanBuffer& meshLodBuffer(uint32_t frameIndex);
     void resetFrameCounters(uint32_t frameIndex, uint32_t mainTotalDrawItems);
     void setMainCullFrameInfo(uint32_t frameIndex, uint32_t batchCount, bool indirectCountPath);
-    void setShadowCullFrameInfo(uint32_t frameIndex,
-                                uint32_t totalDrawItems,
-                                uint32_t batchCount,
-                                bool indirectCountPath);
+    void
+    setShadowCullFrameInfo(uint32_t frameIndex, uint32_t totalDrawItems, uint32_t batchCount, bool indirectCountPath);
 
     // --- recording (called from the frame loop) ---
     // active = Renderer's isGpuCullingActive(); frustumPlanes / drawItemCount come
@@ -125,11 +123,8 @@ public:
     // One dispatch for every cascade. The visible set is the union of the
     // cascade frusta (read from the frame-params buffer, not pushed), because a
     // single indirect list feeds all of them.
-    void recordShadowCull(VkCommandBuffer commandBuffer,
-                          uint32_t frameIndex,
-                          bool active,
-                          uint32_t cascadeCount,
-                          uint32_t drawItemCount);
+    void recordShadowCull(
+        VkCommandBuffer commandBuffer, uint32_t frameIndex, bool active, uint32_t cascadeCount, uint32_t drawItemCount);
 
     // --- readback (results consumed by the debug UI / stats in Renderer) ---
     [[nodiscard]] bool readMainVisibleCount(bool active, uint32_t frameIndex, uint32_t& visibleCount);
@@ -137,8 +132,14 @@ public:
     [[nodiscard]] bool readShadowVisibleCount(bool active, uint32_t frameIndex, uint32_t& visibleCount);
 
     // --- resource readiness (Renderer combines with the use* toggles) ---
-    [[nodiscard]] bool available() const { return gpuCullingAvailable_; }
-    [[nodiscard]] bool shadowAvailable() const { return gpuShadowCullingAvailable_; }
+    [[nodiscard]] bool available() const
+    {
+        return gpuCullingAvailable_;
+    }
+    [[nodiscard]] bool shadowAvailable() const
+    {
+        return gpuShadowCullingAvailable_;
+    }
     [[nodiscard]] bool mainResourcesReady(uint32_t frameCount) const;
     [[nodiscard]] bool shadowResourcesReady(uint32_t frameCount) const;
     [[nodiscard]] bool frameIndirectCountPathActive(uint32_t frameIndex) const;
@@ -154,7 +155,10 @@ public:
 
     // Buffer vectors registered as render-graph resources (mirrors how
     // PostProcessStack exposes exposureBuffers()).
-    [[nodiscard]] const std::vector<rhi::VulkanBuffer>& cullInputBuffers() const { return frameCullInputBuffers_; }
+    [[nodiscard]] const std::vector<rhi::VulkanBuffer>& cullInputBuffers() const
+    {
+        return frameCullInputBuffers_;
+    }
     [[nodiscard]] const std::vector<rhi::VulkanBuffer>& visibleCountBuffers() const
     {
         return frameBatchVisibleCountBuffers_;

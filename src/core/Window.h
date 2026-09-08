@@ -30,11 +30,23 @@ public:
 
     void pollEvents();
     using EventCallback = std::function<void(const SDL_Event&)>;
-    void setEventCallback(EventCallback callback) { eventCallback_ = std::move(callback); }
+    void setEventCallback(EventCallback callback)
+    {
+        eventCallback_ = std::move(callback);
+    }
 
-    [[nodiscard]] bool shouldClose() const { return shouldClose_; }
-    [[nodiscard]] bool wasResized() const { return resized_; }
-    void clearResizedFlag() { resized_ = false; }
+    [[nodiscard]] bool shouldClose() const
+    {
+        return shouldClose_;
+    }
+    [[nodiscard]] bool wasResized() const
+    {
+        return resized_;
+    }
+    void clearResizedFlag()
+    {
+        resized_ = false;
+    }
 
     [[nodiscard]] WindowExtent framebufferExtent() const;
     [[nodiscard]] bool isMinimized() const;
@@ -43,7 +55,10 @@ public:
     [[nodiscard]] VkSurfaceKHR createSurface(VkInstance instance) const;
     [[nodiscard]] PFN_vkGetInstanceProcAddr vulkanGetInstanceProcAddr() const;
 
-    [[nodiscard]] SDL_Window* nativeHandle() const { return window_; }
+    [[nodiscard]] SDL_Window* nativeHandle() const
+    {
+        return window_;
+    }
 
 private:
     SDL_Window* window_ = nullptr;

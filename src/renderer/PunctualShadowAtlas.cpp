@@ -46,10 +46,7 @@ glm::vec4 shadowAtlasRectUvOffsetScale(const ShadowAtlasRect& rect)
 
     constexpr float kAtlasSize = static_cast<float>(kPunctualShadowAtlasSize);
     const float extent = static_cast<float>(rect.size) / kAtlasSize;
-    return glm::vec4{static_cast<float>(rect.x) / kAtlasSize,
-                     static_cast<float>(rect.y) / kAtlasSize,
-                     extent,
-                     extent};
+    return glm::vec4{static_cast<float>(rect.x) / kAtlasSize, static_cast<float>(rect.y) / kAtlasSize, extent, extent};
 }
 
 float punctualShadowProjectedRadius(const glm::vec3& lightPosition,
@@ -267,10 +264,7 @@ uint32_t pointShadowFaceIndex(const glm::vec3& direction)
     return direction.z >= 0.0f ? 4u : 5u;
 }
 
-glm::mat4 computePointShadowFaceViewProjection(const glm::vec3& position,
-                                               uint32_t face,
-                                               float range,
-                                               float nearPlane)
+glm::mat4 computePointShadowFaceViewProjection(const glm::vec3& position, uint32_t face, float range, float nearPlane)
 {
     const glm::vec3 faceDirection = pointShadowFaceDirection(face % kPointShadowFaceCount);
 
@@ -280,17 +274,13 @@ glm::mat4 computePointShadowFaceViewProjection(const glm::vec3& position,
 
     const glm::mat4 view = glm::lookAt(position, position + faceDirection, shadowUpVector(faceDirection));
     // Exactly 90 degrees, so the six faces tile the sphere without gaps.
-    const glm::mat4 projection =
-        glm::perspective(glm::radians(90.0f), 1.0f, clampedNear, clampedFar);
+    const glm::mat4 projection = glm::perspective(glm::radians(90.0f), 1.0f, clampedNear, clampedFar);
 
     return projection * view;
 }
 
-glm::mat4 computeSpotShadowViewProjection(const glm::vec3& position,
-                                          const glm::vec3& direction,
-                                          float outerAngleRadians,
-                                          float range,
-                                          float nearPlane)
+glm::mat4 computeSpotShadowViewProjection(
+    const glm::vec3& position, const glm::vec3& direction, float outerAngleRadians, float range, float nearPlane)
 {
     const float directionLength = glm::length(direction);
     const glm::vec3 normalizedDirection =
@@ -302,8 +292,7 @@ glm::mat4 computeSpotShadowViewProjection(const glm::vec3& position,
     const float clampedFar = std::max(range, clampedNear + 1.0e-3f);
     const float halfAngle = std::clamp(outerAngleRadians, 1.0e-3f, kMaxSpotShadowHalfAngleRadians);
 
-    const glm::mat4 view =
-        glm::lookAt(position, position + normalizedDirection, shadowUpVector(normalizedDirection));
+    const glm::mat4 view = glm::lookAt(position, position + normalizedDirection, shadowUpVector(normalizedDirection));
     // Square tile, so the aspect ratio is always 1.
     const glm::mat4 projection = glm::perspective(halfAngle * 2.0f, 1.0f, clampedNear, clampedFar);
 

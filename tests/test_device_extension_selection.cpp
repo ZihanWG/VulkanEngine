@@ -7,8 +7,8 @@
 #include <vector>
 
 using ve::rhi::ExtensionDecision;
-using ve::rhi::ExtensionOutcome;
 using ve::rhi::extensionDecisionName;
+using ve::rhi::ExtensionOutcome;
 using ve::rhi::OptionalExtensionRequest;
 using ve::rhi::selectOptionalExtensions;
 
@@ -108,12 +108,12 @@ TEST_CASE("A dependency that is itself a refused request refuses the dependent")
     // error, not a degraded path -- so a refusal has to propagate rather than
     // leaving the dependent enabled because the device happened to expose it.
     static constexpr std::array<std::string_view, 1> kDeps{kAccelerationStructure};
-    const std::vector<ExtensionOutcome> outcomes = select(
-        {kRayQuery, kAccelerationStructure},
-        {
-            OptionalExtensionRequest{kAccelerationStructure, {}, false, "BLAS/TLAS"},
-            OptionalExtensionRequest{kRayQuery, kDeps, true, "ray-queried probe capture"},
-        });
+    const std::vector<ExtensionOutcome> outcomes =
+        select({kRayQuery, kAccelerationStructure},
+               {
+                   OptionalExtensionRequest{kAccelerationStructure, {}, false, "BLAS/TLAS"},
+                   OptionalExtensionRequest{kRayQuery, kDeps, true, "ray-queried probe capture"},
+               });
 
     REQUIRE(outcomes.size() == 2);
     CHECK(outcomeFor(outcomes, kAccelerationStructure).decision == ExtensionDecision::FeaturesUnsupported);
@@ -128,13 +128,13 @@ TEST_CASE("A refusal collapses the whole dependency chain")
 
     // Deferred host operations is the one the device lacks; both extensions
     // above it must come down with it.
-    const std::vector<ExtensionOutcome> outcomes = select(
-        {kRayQuery, kAccelerationStructure},
-        {
-            OptionalExtensionRequest{kRayQuery, kRayQueryDeps, true, "ray-queried probe capture"},
-            OptionalExtensionRequest{kAccelerationStructure, kAccelDeps, true, "BLAS/TLAS"},
-            OptionalExtensionRequest{kDeferredHostOperations, {}, true, "parallel AS builds"},
-        });
+    const std::vector<ExtensionOutcome> outcomes =
+        select({kRayQuery, kAccelerationStructure},
+               {
+                   OptionalExtensionRequest{kRayQuery, kRayQueryDeps, true, "ray-queried probe capture"},
+                   OptionalExtensionRequest{kAccelerationStructure, kAccelDeps, true, "BLAS/TLAS"},
+                   OptionalExtensionRequest{kDeferredHostOperations, {}, true, "parallel AS builds"},
+               });
 
     REQUIRE(outcomes.size() == 3);
     CHECK(outcomeFor(outcomes, kDeferredHostOperations).decision == ExtensionDecision::ExtensionUnavailable);
@@ -170,14 +170,13 @@ TEST_CASE("A dependency the table never requests is judged on device availabilit
     // consult the device list rather than demand a redundant table row.
     static constexpr std::array<std::string_view, 1> kDeps{kDeferredHostOperations};
 
-    const std::vector<ExtensionOutcome> present = select(
-        {kAccelerationStructure, kDeferredHostOperations},
-        {OptionalExtensionRequest{kAccelerationStructure, kDeps, true, "BLAS/TLAS"}});
+    const std::vector<ExtensionOutcome> present =
+        select({kAccelerationStructure, kDeferredHostOperations},
+               {OptionalExtensionRequest{kAccelerationStructure, kDeps, true, "BLAS/TLAS"}});
     CHECK(present[0].decision == ExtensionDecision::Enabled);
 
-    const std::vector<ExtensionOutcome> absent = select(
-        {kAccelerationStructure},
-        {OptionalExtensionRequest{kAccelerationStructure, kDeps, true, "BLAS/TLAS"}});
+    const std::vector<ExtensionOutcome> absent =
+        select({kAccelerationStructure}, {OptionalExtensionRequest{kAccelerationStructure, kDeps, true, "BLAS/TLAS"}});
     CHECK(absent[0].decision == ExtensionDecision::DependencyUnavailable);
 }
 

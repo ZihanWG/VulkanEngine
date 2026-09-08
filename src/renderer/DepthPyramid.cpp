@@ -27,10 +27,9 @@ DepthPyramid::DepthPyramid(rhi::VulkanContext& context,
                            const RenderResolution& renderResolution,
                            RenderGraph& renderGraph,
                            GpuProfiler& gpuProfiler)
-    : context_(context), swapchain_(swapchain), pipelineStore_(pipelineStore),
-      renderResolution_(renderResolution), renderGraph_(renderGraph), gpuProfiler_(gpuProfiler)
-{
-}
+    : context_(context), swapchain_(swapchain), pipelineStore_(pipelineStore), renderResolution_(renderResolution),
+      renderGraph_(renderGraph), gpuProfiler_(gpuProfiler)
+{}
 
 DepthPyramid::~DepthPyramid()
 {
@@ -50,8 +49,8 @@ void DepthPyramid::createDescriptorSetLayout()
     bindings[1].descriptorCount = 1;
     bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
-    descriptorSetLayout_.create(
-        context_.vkDevice(), std::span<const VkDescriptorSetLayoutBinding>(bindings.data(), bindings.size()));
+    descriptorSetLayout_.create(context_.vkDevice(),
+                                std::span<const VkDescriptorSetLayoutBinding>(bindings.data(), bindings.size()));
     rhi::debug::setObjectName(context_.vkDevice(),
                               descriptorSetLayout_.handle(),
                               VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
@@ -185,8 +184,7 @@ void DepthPyramid::createResources()
     samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
     samplerInfo.unnormalizedCoordinates = VK_FALSE;
     VK_CHECK(vkCreateSampler(context_.vkDevice(), &samplerInfo, nullptr, &sampler_));
-    rhi::debug::setObjectName(
-        context_.vkDevice(), sampler_, VK_OBJECT_TYPE_SAMPLER, "DepthPyramidNearestClampSampler");
+    rhi::debug::setObjectName(context_.vkDevice(), sampler_, VK_OBJECT_TYPE_SAMPLER, "DepthPyramidNearestClampSampler");
 
     if (!buildAvailable_) {
         if (!swapchain_.depthSupportsSampling()) {
@@ -205,10 +203,8 @@ void DepthPyramid::createResources()
     poolSizes[1].descriptorCount = mipLevels_;
     descriptorPool_.create(
         context_.vkDevice(), std::span<const VkDescriptorPoolSize>(poolSizes.data(), poolSizes.size()), mipLevels_);
-    rhi::debug::setObjectName(context_.vkDevice(),
-                              descriptorPool_.handle(),
-                              VK_OBJECT_TYPE_DESCRIPTOR_POOL,
-                              "DepthPyramidDescriptorPool");
+    rhi::debug::setObjectName(
+        context_.vkDevice(), descriptorPool_.handle(), VK_OBJECT_TYPE_DESCRIPTOR_POOL, "DepthPyramidDescriptorPool");
 
     descriptorSets_.resize(mipLevels_, VK_NULL_HANDLE);
     std::vector<VkDescriptorSetLayout> layouts(mipLevels_, descriptorSetLayout_.handle());
@@ -254,24 +250,22 @@ void DepthPyramid::createResources()
 
 void DepthPyramid::ensureShaderReadLayout(VkCommandBuffer commandBuffer)
 {
-    if (image_.image() == VK_NULL_HANDLE || mipLevels_ == 0 ||
-        layout_ == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+    if (image_.image() == VK_NULL_HANDLE || mipLevels_ == 0 || layout_ == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
         return;
     }
 
     const bool undefined = layout_ == VK_IMAGE_LAYOUT_UNDEFINED;
-    const VkImageMemoryBarrier2 shaderReadBarrier =
-        imageBarrier(image_.image(),
-                     VK_IMAGE_ASPECT_COLOR_BIT,
-                     layout_,
-                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                     undefined ? VK_PIPELINE_STAGE_2_NONE : VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                     undefined ? VK_ACCESS_2_NONE
-                               : (VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT),
-                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                     VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                     0,
-                     mipLevels_);
+    const VkImageMemoryBarrier2 shaderReadBarrier = imageBarrier(
+        image_.image(),
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        layout_,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        undefined ? VK_PIPELINE_STAGE_2_NONE : VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        undefined ? VK_ACCESS_2_NONE : (VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT),
+        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        0,
+        mipLevels_);
     recordImageBarrier(commandBuffer, shaderReadBarrier);
     layout_ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }
@@ -283,8 +277,7 @@ void DepthPyramid::recordCommands(VkCommandBuffer commandBuffer,
                                   bool midFrame)
 {
     if (!buildAvailable_ || image_.image() == VK_NULL_HANDLE || pipeline_.pipeline() == VK_NULL_HANDLE ||
-        pipeline_.layout() == VK_NULL_HANDLE || descriptorSets_.empty() || mipImageViews_.empty() ||
-        mipLevels_ == 0) {
+        pipeline_.layout() == VK_NULL_HANDLE || descriptorSets_.empty() || mipImageViews_.empty() || mipLevels_ == 0) {
         valid_ = false;
         return;
     }
@@ -308,14 +301,8 @@ void DepthPyramid::recordCommands(VkCommandBuffer commandBuffer,
         const VkExtent2D sourceExtent = mipLevel == 0 ? baseExtent : mipExtent(baseExtent, mipLevel - 1);
         const VkExtent2D destinationExtent = mipExtent(baseExtent, mipLevel);
         const VkDescriptorSet descriptorSet = descriptorSets_[mipLevel];
-        vkCmdBindDescriptorSets(commandBuffer,
-                                VK_PIPELINE_BIND_POINT_COMPUTE,
-                                pipeline_.layout(),
-                                0,
-                                1,
-                                &descriptorSet,
-                                0,
-                                nullptr);
+        vkCmdBindDescriptorSets(
+            commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_.layout(), 0, 1, &descriptorSet, 0, nullptr);
 
         const DepthPyramidPushConstants pushConstants{
             glm::uvec4(sourceExtent.width, sourceExtent.height, destinationExtent.width, destinationExtent.height)};
@@ -327,8 +314,7 @@ void DepthPyramid::recordCommands(VkCommandBuffer commandBuffer,
                            &pushConstants);
 
         const uint32_t groupCountX = (destinationExtent.width + kDepthPyramidLocalSizeX - 1) / kDepthPyramidLocalSizeX;
-        const uint32_t groupCountY =
-            (destinationExtent.height + kDepthPyramidLocalSizeY - 1) / kDepthPyramidLocalSizeY;
+        const uint32_t groupCountY = (destinationExtent.height + kDepthPyramidLocalSizeY - 1) / kDepthPyramidLocalSizeY;
         vkCmdDispatch(commandBuffer, groupCountX, groupCountY, 1);
 
         const VkImageMemoryBarrier2 mipWriteToRead = imageBarrier(image_.image(),

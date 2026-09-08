@@ -140,8 +140,7 @@ TEST_CASE("A batch of two-sided items carries the flag its pipeline selection ne
 
 TEST_CASE("compactedCommandOffset is the draw item index the batch starts at")
 {
-    const std::vector<MeshDrawBatch> batches =
-        batchesFor({item(meshA()), item(meshA()), item(meshB()), item(meshA())});
+    const std::vector<MeshDrawBatch> batches = batchesFor({item(meshA()), item(meshA()), item(meshB()), item(meshA())});
 
     REQUIRE(batches.size() == 3);
     CHECK(batches[0].compactedCommandOffset == 0);
@@ -188,10 +187,10 @@ TEST_CASE("Items without a mesh are skipped and break the run")
 
 TEST_CASE("Items past the object-record capacity are skipped and break the run")
 {
-    const std::vector<MeshDrawBatch> batches =
-        batchesFor({item(meshA(), RenderBucket::Opaque, 0), item(meshA(), RenderBucket::Opaque, 16),
-                    item(meshA(), RenderBucket::Opaque, 1)},
-                   /*maxDrawItems=*/16);
+    const std::vector<MeshDrawBatch> batches = batchesFor({item(meshA(), RenderBucket::Opaque, 0),
+                                                           item(meshA(), RenderBucket::Opaque, 16),
+                                                           item(meshA(), RenderBucket::Opaque, 1)},
+                                                          /*maxDrawItems=*/16);
 
     REQUIRE(batches.size() == 2);
     CHECK(batches[0].drawItemCount == 1);
@@ -200,8 +199,8 @@ TEST_CASE("Items past the object-record capacity are skipped and break the run")
 
 TEST_CASE("Every batch's index range stays inside the draw list")
 {
-    const std::vector<DrawItem> items{item(meshA()), item(meshA()), item(meshB()),
-                                      item(meshB(), RenderBucket::Blend), item(meshA())};
+    const std::vector<DrawItem> items{
+        item(meshA()), item(meshA()), item(meshB()), item(meshB(), RenderBucket::Blend), item(meshA())};
     const std::vector<MeshDrawBatch> batches = batchesFor(items);
 
     uint32_t covered = 0;
@@ -216,8 +215,10 @@ TEST_CASE("Every batch's index range stays inside the draw list")
 
 TEST_CASE("Bucket ranges are contiguous and cover a sorted list")
 {
-    const std::vector<DrawItem> items{item(meshA(), RenderBucket::Opaque), item(meshA(), RenderBucket::Opaque),
-                                      item(meshA(), RenderBucket::Mask), item(meshB(), RenderBucket::Blend),
+    const std::vector<DrawItem> items{item(meshA(), RenderBucket::Opaque),
+                                      item(meshA(), RenderBucket::Opaque),
+                                      item(meshA(), RenderBucket::Mask),
+                                      item(meshB(), RenderBucket::Blend),
                                       item(meshB(), RenderBucket::Blend)};
 
     std::array<RenderBucketRange, kRenderBucketCount> ranges{};

@@ -193,8 +193,7 @@ void VulkanSwapchain::createDepthImage()
     depthFormat_ = findDepthFormat();
     VkFormatProperties depthProperties{};
     vkGetPhysicalDeviceFormatProperties(context_->physicalDevice(), depthFormat_, &depthProperties);
-    depthSupportsSampling_ =
-        (depthProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
+    depthSupportsSampling_ = (depthProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
 
     Logger::info(std::string("Selected main depth format: ") + depthFormatName(depthFormat_) +
                  (depthSupportsSampling_ ? " (sampled for Hi-Z)" : " (attachment-only; Hi-Z disabled)") + " at " +
@@ -204,8 +203,8 @@ void VulkanSwapchain::createDepthImage()
     depthInfo.width = depthExtent_.width;
     depthInfo.height = depthExtent_.height;
     depthInfo.format = depthFormat_;
-    depthInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-                      (depthSupportsSampling_ ? VK_IMAGE_USAGE_SAMPLED_BIT : 0);
+    depthInfo.usage =
+        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | (depthSupportsSampling_ ? VK_IMAGE_USAGE_SAMPLED_BIT : 0);
     depthInfo.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
     depthInfo.debugName = "MainDepth";
 

@@ -292,8 +292,8 @@ SkinnedGltf loadSkinnedGltf(const std::filesystem::path& path)
         }
         if (uvs.data != nullptr && vertexIndex < uvs.count) {
             const unsigned char* u = element(uvs, vertexIndex);
-            vertex.uv = glm::vec2(readComponentAsFloat(u, uvs.componentType, 0),
-                                  readComponentAsFloat(u, uvs.componentType, 1));
+            vertex.uv =
+                glm::vec2(readComponentAsFloat(u, uvs.componentType, 0), readComponentAsFloat(u, uvs.componentType, 1));
         }
         if (joints.data != nullptr && vertexIndex < joints.count) {
             const unsigned char* j = element(joints, vertexIndex);

@@ -94,9 +94,8 @@ ProbeBlend probeBlendAt(const glm::vec3& worldPosition, const ProbeGridBounds& b
 {
     ProbeBlend blend{};
 
-    const glm::vec3 spacing{std::max(bounds.spacing.x, 1.0e-4f),
-                            std::max(bounds.spacing.y, 1.0e-4f),
-                            std::max(bounds.spacing.z, 1.0e-4f)};
+    const glm::vec3 spacing{
+        std::max(bounds.spacing.x, 1.0e-4f), std::max(bounds.spacing.y, 1.0e-4f), std::max(bounds.spacing.z, 1.0e-4f)};
     const glm::vec3 gridSpace = (worldPosition - bounds.origin) / spacing;
 
     const glm::vec3 floored{std::floor(gridSpace.x), std::floor(gridSpace.y), std::floor(gridSpace.z)};
@@ -134,10 +133,9 @@ float probeCornerWeight(const ProbeBlend& blend, uint32_t cornerIndex)
 glm::uvec3 probeCornerCoord(const ProbeBlend& blend, uint32_t cornerIndex)
 {
     const uint32_t corner = cornerIndex & 7u;
-    return glm::uvec3{
-        std::min(blend.baseCoord.x + ((corner & 1u) != 0u ? 1u : 0u), kProbeGridX - 1),
-        std::min(blend.baseCoord.y + ((corner & 2u) != 0u ? 1u : 0u), kProbeGridY - 1),
-        std::min(blend.baseCoord.z + ((corner & 4u) != 0u ? 1u : 0u), kProbeGridZ - 1)};
+    return glm::uvec3{std::min(blend.baseCoord.x + ((corner & 1u) != 0u ? 1u : 0u), kProbeGridX - 1),
+                      std::min(blend.baseCoord.y + ((corner & 2u) != 0u ? 1u : 0u), kProbeGridY - 1),
+                      std::min(blend.baseCoord.z + ((corner & 4u) != 0u ? 1u : 0u), kProbeGridZ - 1)};
 }
 
 glm::uvec2 probeTileCoord(uint32_t index)
@@ -240,11 +238,8 @@ glm::mat4 probeCaptureFaceViewProjection(const glm::vec3& probePosition, uint32_
     return clipTranslation * viewProjection;
 }
 
-glm::vec3 probeCubeTexelDirection(uint32_t face,
-                                  uint32_t x,
-                                  uint32_t y,
-                                  uint32_t resolution,
-                                  const glm::vec2& jitterTexels)
+glm::vec3
+probeCubeTexelDirection(uint32_t face, uint32_t x, uint32_t y, uint32_t resolution, const glm::vec2& jitterTexels)
 {
     const float size = static_cast<float>(std::max(resolution, 1u));
     // Texel centre in the face's [-1, 1] plane. The 90-degree projection puts
@@ -269,8 +264,7 @@ glm::vec3 probeCubeTexelDirection(uint32_t face,
     // a reinvention: lookAt degenerates when the view direction is parallel to
     // the up vector, and both +Y and -Y fall back to the same +Z.
     const glm::vec3 forward = pointShadowFaceDirection(face);
-    const glm::vec3 worldUp =
-        std::abs(forward.y) > 0.999f ? glm::vec3{0.0f, 0.0f, 1.0f} : glm::vec3{0.0f, 1.0f, 0.0f};
+    const glm::vec3 worldUp = std::abs(forward.y) > 0.999f ? glm::vec3{0.0f, 0.0f, 1.0f} : glm::vec3{0.0f, 1.0f, 0.0f};
     const glm::vec3 right = glm::normalize(glm::cross(forward, worldUp));
     const glm::vec3 up = glm::cross(right, forward);
 

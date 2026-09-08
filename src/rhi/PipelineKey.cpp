@@ -189,8 +189,8 @@ ComputePipelineKey ComputePipelineKey::from(const VulkanComputePipelineCreateInf
 
 bool operator==(const ComputePipelineKey& lhs, const ComputePipelineKey& rhs)
 {
-    return lhs.shaderPath == rhs.shaderPath && equalSequence(lhs.descriptorSetLayouts, rhs.descriptorSetLayouts)
-        && equalSequence(lhs.pushConstantRanges, rhs.pushConstantRanges);
+    return lhs.shaderPath == rhs.shaderPath && equalSequence(lhs.descriptorSetLayouts, rhs.descriptorSetLayouts) &&
+           equalSequence(lhs.pushConstantRanges, rhs.pushConstantRanges);
 }
 
 bool operator==(const PipelineKey& lhs, const PipelineKey& rhs)

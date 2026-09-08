@@ -25,24 +25,22 @@ void validateBrdfLutFormatSupport(VkPhysicalDevice physicalDevice, VkFormat form
     VkFormatProperties properties{};
     vkGetPhysicalDeviceFormatProperties(physicalDevice, format, &properties);
 
-    constexpr VkFormatFeatureFlags requiredFeatures =
-        VK_FORMAT_FEATURE_TRANSFER_DST_BIT
-        | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT
-        | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+    constexpr VkFormatFeatureFlags requiredFeatures = VK_FORMAT_FEATURE_TRANSFER_DST_BIT |
+                                                      VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+                                                      VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
 
     if ((properties.optimalTilingFeatures & requiredFeatures) != requiredFeatures) {
         throw std::runtime_error("BRDF LUT format does not support sampled linear-filtered uploads.");
     }
 }
 
-VkImageMemoryBarrier2 brdfLutBarrier(
-    VkImage image,
-    VkImageLayout oldLayout,
-    VkImageLayout newLayout,
-    VkPipelineStageFlags2 srcStageMask,
-    VkAccessFlags2 srcAccessMask,
-    VkPipelineStageFlags2 dstStageMask,
-    VkAccessFlags2 dstAccessMask)
+VkImageMemoryBarrier2 brdfLutBarrier(VkImage image,
+                                     VkImageLayout oldLayout,
+                                     VkImageLayout newLayout,
+                                     VkPipelineStageFlags2 srcStageMask,
+                                     VkAccessFlags2 srcAccessMask,
+                                     VkPipelineStageFlags2 dstStageMask,
+                                     VkAccessFlags2 dstAccessMask)
 {
     VkImageMemoryBarrier2 barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
@@ -94,11 +92,10 @@ VulkanBrdfLut& VulkanBrdfLut::operator=(VulkanBrdfLut&& other) noexcept
     return *this;
 }
 
-void VulkanBrdfLut::create(
-    VulkanContext& context,
-    const VulkanCommandContext& commandContext,
-    uint32_t size,
-    JobSystem* jobSystem)
+void VulkanBrdfLut::create(VulkanContext& context,
+                           const VulkanCommandContext& commandContext,
+                           uint32_t size,
+                           JobSystem* jobSystem)
 {
     reset();
 
@@ -168,10 +165,9 @@ void VulkanBrdfLut::reset()
     layout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 }
 
-void VulkanBrdfLut::uploadPixels(
-    VulkanContext& context,
-    const VulkanCommandContext& commandContext,
-    const std::vector<uint8_t>& pixels)
+void VulkanBrdfLut::uploadPixels(VulkanContext& context,
+                                 const VulkanCommandContext& commandContext,
+                                 const std::vector<uint8_t>& pixels)
 {
     VulkanBuffer stagingBuffer;
     VulkanBufferCreateInfo stagingInfo{};
@@ -196,14 +192,13 @@ void VulkanBrdfLut::uploadPixels(
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     VK_CHECK(vkBeginCommandBuffer(commandBuffer, &beginInfo));
 
-    const VkImageMemoryBarrier2 toTransfer = brdfLutBarrier(
-        image_,
-        VK_IMAGE_LAYOUT_UNDEFINED,
-        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        VK_PIPELINE_STAGE_2_NONE,
-        VK_ACCESS_2_NONE,
-        VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-        VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    const VkImageMemoryBarrier2 toTransfer = brdfLutBarrier(image_,
+                                                            VK_IMAGE_LAYOUT_UNDEFINED,
+                                                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                                            VK_PIPELINE_STAGE_2_NONE,
+                                                            VK_ACCESS_2_NONE,
+                                                            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                                                            VK_ACCESS_2_TRANSFER_WRITE_BIT);
     recordImageBarrier(commandBuffer, toTransfer);
 
     VkBufferImageCopy copyRegion{};
@@ -218,21 +213,15 @@ void VulkanBrdfLut::uploadPixels(
     copyRegion.imageExtent = {width_, height_, 1};
 
     vkCmdCopyBufferToImage(
-        commandBuffer,
-        stagingBuffer.buffer(),
-        image_,
-        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        1,
-        &copyRegion);
+        commandBuffer, stagingBuffer.buffer(), image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
 
-    const VkImageMemoryBarrier2 toShaderRead = brdfLutBarrier(
-        image_,
-        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-        VK_ACCESS_2_TRANSFER_WRITE_BIT,
-        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    const VkImageMemoryBarrier2 toShaderRead = brdfLutBarrier(image_,
+                                                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                                              VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                                                              VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                                              VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                                              VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     recordImageBarrier(commandBuffer, toShaderRead);
 
     VK_CHECK(vkEndCommandBuffer(commandBuffer));

@@ -26,7 +26,10 @@ struct DecodedImage {
     uint32_t width = 0;
     uint32_t height = 0;
 
-    [[nodiscard]] bool valid() const { return width > 0 && height > 0 && !pixels.empty(); }
+    [[nodiscard]] bool valid() const
+    {
+        return width > 0 && height > 0 && !pixels.empty();
+    }
 };
 
 enum class TextureColorSpace {
@@ -85,45 +88,39 @@ public:
     VulkanTexture(VulkanTexture&& other) noexcept;
     VulkanTexture& operator=(VulkanTexture&& other) noexcept;
 
-    void createCheckerboard(
-        VulkanContext& context,
-        const VulkanCommandContext& commandContext,
-        uint32_t width = 256,
-        uint32_t height = 256,
-        TextureColorSpace colorSpace = TextureColorSpace::SRGB);
-    void createFromFile(
-        VulkanContext& context,
-        const VulkanCommandContext& commandContext,
-        const std::filesystem::path& path,
-        TextureColorSpace colorSpace = TextureColorSpace::Linear,
-        bool generateMipmaps = true);
-    void createFromFile(
-        VulkanContext& context,
-        const VulkanCommandContext& commandContext,
-        const std::filesystem::path& path,
-        VkFormat format,
-        bool generateMipmaps = true);
-    void createFromEncodedBytes(
-        VulkanContext& context,
-        const VulkanCommandContext& commandContext,
-        std::span<const uint8_t> encodedBytes,
-        TextureColorSpace colorSpace = TextureColorSpace::Linear,
-        bool generateMipmaps = true);
-    void createFromEncodedBytes(
-        VulkanContext& context,
-        const VulkanCommandContext& commandContext,
-        std::span<const uint8_t> encodedBytes,
-        VkFormat format,
-        bool generateMipmaps = true);
-    void createFromRgba8(
-        VulkanContext& context,
-        const VulkanCommandContext& commandContext,
-        uint32_t width,
-        uint32_t height,
-        std::span<const uint8_t> pixels,
-        VkFormat format = VK_FORMAT_R8G8B8A8_UNORM,
-        bool generateMipmaps = true,
-        VulkanUploadBatch* batch = nullptr);
+    void createCheckerboard(VulkanContext& context,
+                            const VulkanCommandContext& commandContext,
+                            uint32_t width = 256,
+                            uint32_t height = 256,
+                            TextureColorSpace colorSpace = TextureColorSpace::SRGB);
+    void createFromFile(VulkanContext& context,
+                        const VulkanCommandContext& commandContext,
+                        const std::filesystem::path& path,
+                        TextureColorSpace colorSpace = TextureColorSpace::Linear,
+                        bool generateMipmaps = true);
+    void createFromFile(VulkanContext& context,
+                        const VulkanCommandContext& commandContext,
+                        const std::filesystem::path& path,
+                        VkFormat format,
+                        bool generateMipmaps = true);
+    void createFromEncodedBytes(VulkanContext& context,
+                                const VulkanCommandContext& commandContext,
+                                std::span<const uint8_t> encodedBytes,
+                                TextureColorSpace colorSpace = TextureColorSpace::Linear,
+                                bool generateMipmaps = true);
+    void createFromEncodedBytes(VulkanContext& context,
+                                const VulkanCommandContext& commandContext,
+                                std::span<const uint8_t> encodedBytes,
+                                VkFormat format,
+                                bool generateMipmaps = true);
+    void createFromRgba8(VulkanContext& context,
+                         const VulkanCommandContext& commandContext,
+                         uint32_t width,
+                         uint32_t height,
+                         std::span<const uint8_t> pixels,
+                         VkFormat format = VK_FORMAT_R8G8B8A8_UNORM,
+                         bool generateMipmaps = true,
+                         VulkanUploadBatch* batch = nullptr);
 
     // Uploads a cooked block-compressed KTX2 (docs/asset_system.md). The file's
     // own format and level count are used as-is, and the mip chain is copied
@@ -137,26 +134,55 @@ public:
     // `preloadedBytes`, when non-empty, is the file's contents already read --
     // the reads are worth doing off the device thread, and `path` is then used
     // only for diagnostics.
-    void createFromKtx2(
-        VulkanContext& context,
-        const VulkanCommandContext& commandContext,
-        const std::filesystem::path& path,
-        assets::TextureUsage usage,
-        VulkanUploadBatch* batch = nullptr,
-        std::span<const uint8_t> preloadedBytes = {});
+    void createFromKtx2(VulkanContext& context,
+                        const VulkanCommandContext& commandContext,
+                        const std::filesystem::path& path,
+                        assets::TextureUsage usage,
+                        VulkanUploadBatch* batch = nullptr,
+                        std::span<const uint8_t> preloadedBytes = {});
 
     void reset();
-    void destroy() { reset(); }
+    void destroy()
+    {
+        reset();
+    }
 
-    [[nodiscard]] VkImage image() const { return image_; }
-    [[nodiscard]] VkImageView imageView() const { return imageView_; }
-    [[nodiscard]] VkSampler sampler() const { return sampler_; }
-    [[nodiscard]] uint32_t width() const { return width_; }
-    [[nodiscard]] uint32_t height() const { return height_; }
-    [[nodiscard]] uint32_t mipLevels() const { return mipLevels_; }
-    [[nodiscard]] VkFormat format() const { return format_; }
-    [[nodiscard]] const TextureDebugMetadata& debugMetadata() const { return debugMetadata_; }
-    [[nodiscard]] bool valid() const { return image_ != VK_NULL_HANDLE; }
+    [[nodiscard]] VkImage image() const
+    {
+        return image_;
+    }
+    [[nodiscard]] VkImageView imageView() const
+    {
+        return imageView_;
+    }
+    [[nodiscard]] VkSampler sampler() const
+    {
+        return sampler_;
+    }
+    [[nodiscard]] uint32_t width() const
+    {
+        return width_;
+    }
+    [[nodiscard]] uint32_t height() const
+    {
+        return height_;
+    }
+    [[nodiscard]] uint32_t mipLevels() const
+    {
+        return mipLevels_;
+    }
+    [[nodiscard]] VkFormat format() const
+    {
+        return format_;
+    }
+    [[nodiscard]] const TextureDebugMetadata& debugMetadata() const
+    {
+        return debugMetadata_;
+    }
+    [[nodiscard]] bool valid() const
+    {
+        return image_ != VK_NULL_HANDLE;
+    }
 
     // Size of the VMA allocation backing the whole mip chain, or 0 when there is
     // no allocation. Queried rather than computed so block-compressed formats
@@ -168,20 +194,18 @@ public:
     void setDebugMetadata(TextureDebugMetadata metadata);
 
 private:
-    void uploadPixels(
-        VulkanContext& context,
-        const VulkanCommandContext& commandContext,
-        std::span<const std::byte> pixels,
-        VulkanUploadBatch* batch);
+    void uploadPixels(VulkanContext& context,
+                      const VulkanCommandContext& commandContext,
+                      std::span<const std::byte> pixels,
+                      VulkanUploadBatch* batch);
     // Copies one region per mip level out of a staging buffer holding the whole
     // cooked file, then transitions every level to SHADER_READ_ONLY in one
     // barrier. Two barriers total, against 2 + 2*(N-1) for the blit path.
-    void uploadCookedLevels(
-        VulkanContext& context,
-        const VulkanCommandContext& commandContext,
-        std::span<const std::byte> fileBytes,
-        const std::vector<assets::Ktx2CopyRegion>& regions,
-        VulkanUploadBatch* batch);
+    void uploadCookedLevels(VulkanContext& context,
+                            const VulkanCommandContext& commandContext,
+                            std::span<const std::byte> fileBytes,
+                            const std::vector<assets::Ktx2CopyRegion>& regions,
+                            VulkanUploadBatch* batch);
     void generateMipmaps(VkCommandBuffer commandBuffer);
     // Load-time instrumentation only; a no-op unless recording is enabled.
     void recordLoadStats();

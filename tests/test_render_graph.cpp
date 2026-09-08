@@ -302,8 +302,8 @@ TEST_CASE("Depth attachment layout depends on stencil presence", "[rendergraph][
     using ve::renderer::RGAccess;
     using ve::renderer::textureAccessState;
 
-    const auto depthOnly = textureAccessState(
-        VK_IMAGE_ASPECT_DEPTH_BIT, RGAccess::DepthStencilAttachmentWrite, VK_IMAGE_LAYOUT_UNDEFINED);
+    const auto depthOnly =
+        textureAccessState(VK_IMAGE_ASPECT_DEPTH_BIT, RGAccess::DepthStencilAttachmentWrite, VK_IMAGE_LAYOUT_UNDEFINED);
     CHECK(depthOnly.layout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
 
     const auto withStencil = textureAccessState(VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
@@ -344,8 +344,7 @@ TEST_CASE("Present asks for the present layout and no scopes", "[rendergraph][ba
 
     // Presentation is synchronized by the semaphore, not by this barrier, so the
     // transition must carry the layout without claiming a stage or access scope.
-    const auto state =
-        textureAccessState(VK_IMAGE_ASPECT_COLOR_BIT, RGAccess::Present, VK_IMAGE_LAYOUT_UNDEFINED);
+    const auto state = textureAccessState(VK_IMAGE_ASPECT_COLOR_BIT, RGAccess::Present, VK_IMAGE_LAYOUT_UNDEFINED);
     CHECK(state.layout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     CHECK(state.stage == VK_PIPELINE_STAGE_2_NONE);
     CHECK(state.access == VK_ACCESS_2_NONE);
@@ -372,13 +371,11 @@ TEST_CASE("Transfer accesses map to their own layouts", "[rendergraph][barriers]
     using ve::renderer::RGAccess;
     using ve::renderer::textureAccessState;
 
-    const auto src =
-        textureAccessState(VK_IMAGE_ASPECT_COLOR_BIT, RGAccess::TransferSrc, VK_IMAGE_LAYOUT_UNDEFINED);
+    const auto src = textureAccessState(VK_IMAGE_ASPECT_COLOR_BIT, RGAccess::TransferSrc, VK_IMAGE_LAYOUT_UNDEFINED);
     CHECK(src.layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     CHECK(src.access == VK_ACCESS_2_TRANSFER_READ_BIT);
 
-    const auto dst =
-        textureAccessState(VK_IMAGE_ASPECT_COLOR_BIT, RGAccess::TransferDst, VK_IMAGE_LAYOUT_UNDEFINED);
+    const auto dst = textureAccessState(VK_IMAGE_ASPECT_COLOR_BIT, RGAccess::TransferDst, VK_IMAGE_LAYOUT_UNDEFINED);
     CHECK(dst.layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     CHECK(dst.access == VK_ACCESS_2_TRANSFER_WRITE_BIT);
 }
@@ -478,8 +475,10 @@ TEST_CASE("Any write on either side needs a buffer barrier", "[rendergraph][barr
     using ve::renderer::RGAccess;
 
     // write -> read
-    CHECK(bufferBarrierRequired(
-        true, RGAccess::StorageBufferWrite, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT));
+    CHECK(bufferBarrierRequired(true,
+                                RGAccess::StorageBufferWrite,
+                                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                                VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT));
     // read -> write
     CHECK(bufferBarrierRequired(
         true, RGAccess::StorageBufferRead, VK_ACCESS_2_SHADER_STORAGE_READ_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT));
@@ -501,10 +500,11 @@ TEST_CASE("An untouched buffer needs no barrier on its first use", "[rendergraph
     // But either half of "has been touched" is enough to require one: a
     // resource carried over from a previous frame has usedThisFrame false while
     // still holding a real last access.
-    CHECK(bufferBarrierRequired(
-        false, RGAccess::StorageBufferWrite, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT));
-    CHECK(bufferBarrierRequired(
-        true, RGAccess::Unknown, VK_ACCESS_2_NONE, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT));
+    CHECK(bufferBarrierRequired(false,
+                                RGAccess::StorageBufferWrite,
+                                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                                VK_ACCESS_2_SHADER_STORAGE_READ_BIT));
+    CHECK(bufferBarrierRequired(true, RGAccess::Unknown, VK_ACCESS_2_NONE, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT));
 }
 
 TEST_CASE("A layout change always needs a texture barrier", "[rendergraph][barriers]")
@@ -1562,7 +1562,8 @@ TEST_CASE("Culled passes do not extend a lifetime")
 TEST_CASE("Lifetimes ignore handles past the texture count")
 {
     std::vector<RenderPassNode> passes = {
-        pass("write", {texture(0, RenderResourceAccess::Write), texture(9, RenderResourceAccess::Read)},
+        pass("write",
+             {texture(0, RenderResourceAccess::Write), texture(9, RenderResourceAccess::Read)},
              /*sideEffect=*/true),
     };
 

@@ -47,10 +47,22 @@ public:
     // old `return false` did, and it is why the size of the loss was unknowable.
     bool admitDrawItem();
 
-    [[nodiscard]] uint32_t emittedDrawItems() const { return emittedDrawItems_; }
-    [[nodiscard]] uint32_t droppedObjects() const { return droppedObjects_; }
-    [[nodiscard]] uint32_t droppedDrawItems() const { return droppedDrawItems_; }
-    [[nodiscard]] bool overflowed() const { return droppedObjects_ != 0 || droppedDrawItems_ != 0; }
+    [[nodiscard]] uint32_t emittedDrawItems() const
+    {
+        return emittedDrawItems_;
+    }
+    [[nodiscard]] uint32_t droppedObjects() const
+    {
+        return droppedObjects_;
+    }
+    [[nodiscard]] uint32_t droppedDrawItems() const
+    {
+        return droppedDrawItems_;
+    }
+    [[nodiscard]] bool overflowed() const
+    {
+        return droppedObjects_ != 0 || droppedDrawItems_ != 0;
+    }
 
 private:
     uint32_t maxObjects_ = 0;

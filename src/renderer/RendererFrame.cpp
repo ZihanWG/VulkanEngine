@@ -53,7 +53,6 @@
 #include <utility>
 #include <vector>
 
-
 namespace ve {
 
 uint32_t Renderer::activeCascadeCount() const
@@ -77,8 +76,7 @@ void Renderer::updateDemoLights(float elapsedSeconds)
     // Minimal HSV->RGB for evenly spread, saturated light colors.
     const auto hueColor = [](float hue) {
         const glm::vec3 k{1.0f, 2.0f / 3.0f, 1.0f / 3.0f};
-        const glm::vec3 p =
-            glm::abs(glm::fract(glm::vec3(hue) + k) * 6.0f - glm::vec3(3.0f));
+        const glm::vec3 p = glm::abs(glm::fract(glm::vec3(hue) + k) * 6.0f - glm::vec3(3.0f));
         return glm::clamp(p - glm::vec3(1.0f), glm::vec3(0.0f), glm::vec3(1.0f));
     };
 
@@ -198,17 +196,16 @@ void Renderer::updateVolumetricFogParams(uint32_t frameIndex, float aspectRatio)
     const glm::vec4 lightDirection = activeDirectionalLightDirection();
     params.lightDirection = glm::vec4(glm::vec3(lightDirection), static_cast<float>(cascadeCount));
     params.lightColor = activeDirectionalLightColor();
-    params.ambientColor =
-        portfolioCaptureMode_ ? kPortfolioAmbientLightColor : kAmbientLightColor;
+    params.ambientColor = portfolioCaptureMode_ ? kPortfolioAmbientLightColor : kAmbientLightColor;
 
     params.fogParams = glm::vec4(std::max(fogSettings_.density, 0.0f),
                                  std::max(fogSettings_.maxDistance, renderer::kFogNearPlane + 1.0f),
                                  std::clamp(fogSettings_.anisotropy, -0.95f, 0.95f),
                                  std::max(fogSettings_.heightFalloff, 0.0f));
     params.fogParams2 = glm::vec4(fogSettings_.baseHeight,
-                                 std::max(fogSettings_.ambientScale, 0.0f),
-                                 std::max(fogSettings_.lightCullThreshold, 0.0f),
-                                 0.0f);
+                                  std::max(fogSettings_.ambientScale, 0.0f),
+                                  std::max(fogSettings_.lightCullThreshold, 0.0f),
+                                  0.0f);
     params.scatteringColor = glm::vec4(glm::max(glm::vec3{fogSettings_.scatteringColor[0],
                                                           fogSettings_.scatteringColor[1],
                                                           fogSettings_.scatteringColor[2]},
@@ -385,8 +382,7 @@ void Renderer::updateCascadeShadowCacheState()
     // written against and which the LOD tests cover.
     const bool gpuLodSelectionActive = isGpuShadowCullingActive() && !allDrawItems_.empty();
     const VkExtent2D renderExtent = renderResolution_.extent();
-    const float projScaleY =
-        0.5f * static_cast<float>(renderExtent.height) * std::abs(frameJitteredProjection_[1][1]);
+    const float projScaleY = 0.5f * static_cast<float>(renderExtent.height) * std::abs(frameJitteredProjection_[1][1]);
     renderer::LodSelectionSettings lodSelection{};
     lodSelection.referenceRadiusPixels = lodSettings_.referenceRadiusPixels;
     // Shadow dispatches add the shadow bias on top of the shared one, matching
@@ -432,8 +428,7 @@ void Renderer::updateCascadeShadowCacheState()
             caster.indexCount = drawItem.indexCount;
             caster.bucket = static_cast<uint32_t>(drawItem.bucket);
             caster.alphaCutoff =
-                drawItem.material != nullptr ? drawItem.material->alphaTestCutoff()
-                                             : renderer::kNoAlphaTestCutoff;
+                drawItem.material != nullptr ? drawItem.material->alphaTestCutoff() : renderer::kNoAlphaTestCutoff;
             if (drawItem.objectIndex < renderObjects_.size()) {
                 caster.modelMatrix = renderObjects_[drawItem.objectIndex].transform.modelMatrix();
             }
@@ -602,8 +597,8 @@ void Renderer::updatePunctualShadowSlots(uint32_t frameIndex, float aspectRatio)
             continue;
         }
 
-        const uint32_t baseSlot = punctualShadows_.addPointLight(
-            glm::vec3(light.positionRange), light.positionRange.w, assignment.sizeClass);
+        const uint32_t baseSlot =
+            punctualShadows_.addPointLight(glm::vec3(light.positionRange), light.positionRange.w, assignment.sizeClass);
         if (baseSlot == renderer::kInvalidPunctualShadowSlot) {
             continue;
         }
@@ -637,11 +632,10 @@ glm::vec4 Renderer::activeDirectionalLightDirection() const
         return kPortfolioLightDirection;
     }
 
-    const glm::vec3 direction =
-        normalizedOrFallback(directionalLightSettings_.direction,
-                             glm::normalize(glm::vec3{kDirectionalLightDirection.x,
-                                                      kDirectionalLightDirection.y,
-                                                      kDirectionalLightDirection.z}));
+    const glm::vec3 direction = normalizedOrFallback(
+        directionalLightSettings_.direction,
+        glm::normalize(
+            glm::vec3{kDirectionalLightDirection.x, kDirectionalLightDirection.y, kDirectionalLightDirection.z}));
     return glm::vec4(direction, 0.0f);
 }
 
@@ -675,8 +669,7 @@ void Renderer::updateCascades(float aspectRatio)
     cascadeInput.cameraTarget = camera_.target;
     cascadeInput.cameraUp = camera_.up;
     cascadeInput.cameraVerticalFovRadians = camera_.verticalFovRadians;
-    cascadeInput.lightDirection =
-        glm::vec3{activeLightDirection.x, activeLightDirection.y, activeLightDirection.z};
+    cascadeInput.lightDirection = glm::vec3{activeLightDirection.x, activeLightDirection.y, activeLightDirection.z};
     cascadeInput.aspectRatio = aspectRatio;
 
     const renderer::CascadeBuildOutput cascadeOutput = renderer::computeShadowCascades(cascadeInput);
@@ -1231,12 +1224,9 @@ void Renderer::uploadGpuCullFrameParams(uint32_t frameIndex, bool occlusionEnabl
                                               gpuOcclusionMinScreenPixels_);
     // Disabling LOD selection is expressed as pinning level 0, so the shader has
     // one code path rather than an extra branch.
-    const float forcedLod =
-        lodSettings_.enabled ? static_cast<float>(lodSettings_.forcedLod) : 0.0f;
-    frameParams.lodSettings = glm::vec4(lodSettings_.referenceRadiusPixels,
-                                        lodSettings_.bias,
-                                        forcedLod,
-                                        lodSettings_.shadowBias);
+    const float forcedLod = lodSettings_.enabled ? static_cast<float>(lodSettings_.forcedLod) : 0.0f;
+    frameParams.lodSettings =
+        glm::vec4(lodSettings_.referenceRadiusPixels, lodSettings_.bias, forcedLod, lodSettings_.shadowBias);
     const uint32_t cascadeCount = activeCascadeCount();
     frameParams.counterAndFlags =
         glm::uvec4(kGpuCullStatsCounterOffset, occlusionEnabledThisFrame ? 1u : 0u, cascadeCount, 0u);
@@ -1251,8 +1241,7 @@ void Renderer::uploadGpuCullFrameParams(uint32_t frameIndex, bool occlusionEnabl
     const VkExtent2D pyramidAllocation = renderResolution_.allocationExtent();
     frameParams.pyramidBaseSizes =
         glm::uvec4(extent.width, extent.height, pyramidAllocation.width, pyramidAllocation.height);
-    gpuCulling_.paramBuffer(frameIndex)
-        .upload(std::as_bytes(std::span<const GpuCullFrameParams>(&frameParams, 1)));
+    gpuCulling_.paramBuffer(frameIndex).upload(std::as_bytes(std::span<const GpuCullFrameParams>(&frameParams, 1)));
 }
 
 void Renderer::updateGpuCullInputBuffer(uint32_t frameIndex)
@@ -1269,8 +1258,7 @@ void Renderer::updateGpuCullInputBuffer(uint32_t frameIndex)
     // any resulting false negatives against the mid-frame rebuild. Single-phase
     // keeps the conservative previous-frame validity gate.
     const bool occlusionEnabledThisFrame =
-        isGpuOcclusionCullingActive() &&
-        (frameTwoPhaseOcclusionActive_ || previousFrameDepthValidForOcclusion());
+        isGpuOcclusionCullingActive() && (frameTwoPhaseOcclusionActive_ || previousFrameDepthValidForOcclusion());
     // Remembered per frame SLOT, not per frame: the counters this slot produces
     // are not read back until it comes round again, and the yield controller has
     // to know whether occlusion was running when they were written.
@@ -1313,9 +1301,8 @@ void Renderer::updateGpuCullInputBuffer(uint32_t frameIndex)
 
             // (base, count) into the per-frame LOD table; (0, 0) when the mesh
             // has no chain, which makes the shader emit the authored range.
-            const glm::uvec2 lodRange = drawIndex < frameDrawItemLodRanges_.size()
-                                            ? frameDrawItemLodRanges_[drawIndex]
-                                            : glm::uvec2(0);
+            const glm::uvec2 lodRange =
+                drawIndex < frameDrawItemLodRanges_.size() ? frameDrawItemLodRanges_[drawIndex] : glm::uvec2(0);
             gpuDrawItem.lodBase = lodRange.x;
             gpuDrawItem.lodCount = lodRange.y;
         }
@@ -1385,9 +1372,8 @@ void Renderer::updateGpuShadowCullInputBuffer(uint32_t frameIndex)
 
             // (base, count) into the per-frame LOD table; (0, 0) when the mesh
             // has no chain, which makes the shader emit the authored range.
-            const glm::uvec2 lodRange = drawIndex < frameDrawItemLodRanges_.size()
-                                            ? frameDrawItemLodRanges_[drawIndex]
-                                            : glm::uvec2(0);
+            const glm::uvec2 lodRange =
+                drawIndex < frameDrawItemLodRanges_.size() ? frameDrawItemLodRanges_[drawIndex] : glm::uvec2(0);
             gpuDrawItem.lodBase = lodRange.x;
             gpuDrawItem.lodCount = lodRange.y;
         }
@@ -1573,8 +1559,7 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     // the specular IBL it replaces, so without those bindings it has no idea what
     // scene colour already contains -- and the descriptors would be statically
     // used while unwritten, which validation rejects outright.
-    frameSsrActive_ =
-        ssrSettings_.enabled && ssr_.available() && ssr_.isIblBound() && !allDrawItems_.empty();
+    frameSsrActive_ = ssrSettings_.enabled && ssr_.available() && ssr_.isIblBound() && !allDrawItems_.empty();
     if (frameSsrActive_) {
         // The trace reconstructs positions from the jitter-rendered depth, so it
         // uses the same jittered projection the rasterizer used.
@@ -1726,8 +1711,7 @@ void Renderer::buildShadowFrameData(uint32_t frameIndex)
     if (parallelFramePrepEnabled_) {
         jobSystem_.parallelFor(cascadeCount, 1, [this](size_t begin, size_t end) {
             for (size_t cascadeIndex = begin; cascadeIndex < end; ++cascadeIndex) {
-                buildShadowDrawItems(static_cast<uint32_t>(cascadeIndex),
-                                     frameCascades_[cascadeIndex].lightFrustum);
+                buildShadowDrawItems(static_cast<uint32_t>(cascadeIndex), frameCascades_[cascadeIndex].lightFrustum);
                 buildMeshDrawBatchesForItems(shadowCascadeDrawItems_[cascadeIndex],
                                              shadowCascadeMeshDrawBatches_[cascadeIndex]);
             }
@@ -1865,8 +1849,7 @@ void Renderer::updateOcclusionYield(uint32_t frameIndex)
     // counters from the suspended frame that last used the slot, so every probe
     // read a yield of zero and re-suspended, and the controller could never
     // recover once suspended.
-    const bool occlusionTestRan =
-        frameIndex < frameOcclusionTested_.size() && frameOcclusionTested_[frameIndex] != 0u;
+    const bool occlusionTestRan = frameIndex < frameOcclusionTested_.size() && frameOcclusionTested_[frameIndex] != 0u;
     renderer::GpuCullCounters counters{};
     if (!occlusionTestRan || !readGpuCullCounters(frameIndex, counters)) {
         occlusionYield_.update(0, /*occlusionTestRan=*/false);
@@ -1944,10 +1927,8 @@ void Renderer::uploadObjectFrameData(uint32_t frameIndex)
             previousFrameViewProjection_ * (previousSkinnedModelValid_ ? previousSkinnedModelMatrix_ : model);
         skinnedData.baseColorFactor = glm::vec4(0.85f, 0.45f, 0.32f, 1.0f);
         skinnedData.materialParams = {0.1f, 0.55f, 1.0f, renderer::kNoAlphaTestCutoff};
-        skinnedData.textureIndices = {bindlessBaseColorFallbackIndex_,
-                                      bindlessNormalFallbackIndex_,
-                                      bindlessMetallicRoughnessFallbackIndex_,
-                                      0};
+        skinnedData.textureIndices = {
+            bindlessBaseColorFallbackIndex_, bindlessNormalFallbackIndex_, bindlessMetallicRoughnessFallbackIndex_, 0};
         frameObjectDataBuffers_.at(frameIndex)
             .upload(std::as_bytes(std::span<const ObjectFrameData>(&skinnedData, 1)),
                     static_cast<VkDeviceSize>(kSkinnedObjectFrameSlot) * sizeof(ObjectFrameData));
@@ -1976,12 +1957,9 @@ void Renderer::uploadFrameConstants(uint32_t frameIndex, uint32_t cascadeCount)
                                 csmSettings_.depthBiasSlope,
                                 shadowSettings_.enablePcf ? 1.0f : 0.0f,
                                 static_cast<float>(std::max(shadowSettings_.pcfRadius, 0))};
-    constants.shadowQuality = {std::max(csmSettings_.normalBias, 0.0f),
-                               std::clamp(csmSettings_.cascadeBlend, 0.0f, 0.5f),
-                               0.0f,
-                               0.0f};
-    constants.cameraPosition =
-        glm::vec4(camera_.position, csmSettings_.enableCascadeDebugColors ? 1.0f : 0.0f);
+    constants.shadowQuality = {
+        std::max(csmSettings_.normalBias, 0.0f), std::clamp(csmSettings_.cascadeBlend, 0.0f, 0.5f), 0.0f, 0.0f};
+    constants.cameraPosition = glm::vec4(camera_.position, csmSettings_.enableCascadeDebugColors ? 1.0f : 0.0f);
     constants.cameraForward =
         glm::vec4(glm::normalize(camera_.target - camera_.position), static_cast<float>(cascadeCount));
 
@@ -1996,19 +1974,19 @@ void Renderer::uploadFrameConstants(uint32_t frameIndex, uint32_t cascadeCount)
         const VkDeviceAddress pageTableAddress = virtualShadowMap_.pageTableAddress(frameIndex);
 
         constants.vsmLightView = lightView;
-        constants.vsmPageTable = glm::uvec4(static_cast<uint32_t>(pageTableAddress & 0xFFFFFFFFull),
-                                            static_cast<uint32_t>(pageTableAddress >> 32),
-                                            clipmap.levelCount,
-                                            // Flag word, not a bool: bit 0 gates the whole path,
-                                            // bit 1 asks the sampler to report which clipmap level
-                                            // it used so the debug view can tint by it, and bit 2
-                                            // tints by what a page stores. Bit 3 is set below,
-                                            // outside this branch, for the reason given there.
-                                            // Mirrored by kVsmFlag*/kShadowFlag* in
-                                            // virtual_shadow_map.glsl.
-                                            (pageTableAddress != 0 ? 1u : 0u) |
-                                                (vsmSettings_.debugLevelColors ? 2u : 0u) |
-                                                (vsmSettings_.debugDepthDelta ? 4u : 0u));
+        constants.vsmPageTable =
+            glm::uvec4(static_cast<uint32_t>(pageTableAddress & 0xFFFFFFFFull),
+                       static_cast<uint32_t>(pageTableAddress >> 32),
+                       clipmap.levelCount,
+                       // Flag word, not a bool: bit 0 gates the whole path,
+                       // bit 1 asks the sampler to report which clipmap level
+                       // it used so the debug view can tint by it, and bit 2
+                       // tints by what a page stores. Bit 3 is set below,
+                       // outside this branch, for the reason given there.
+                       // Mirrored by kVsmFlag*/kShadowFlag* in
+                       // virtual_shadow_map.glsl.
+                       (pageTableAddress != 0 ? 1u : 0u) | (vsmSettings_.debugLevelColors ? 2u : 0u) |
+                           (vsmSettings_.debugDepthDelta ? 4u : 0u));
         constants.vsmParams = glm::vec4(clipmap.level0Extent,
                                         clipmap.texelsPerPixel,
                                         clipmap.depthRange,
@@ -2017,18 +1995,18 @@ void Renderer::uploadFrameConstants(uint32_t frameIndex, uint32_t cascadeCount)
         // extent: a clipmap level's texel size varies by a factor of 2^levels, so
         // there is no single extent to be a fraction of. Scaled by the finest
         // texel so the default reads the same way the cascade setting does.
-        constants.vsmCamera = glm::vec4(cameraLightSpaceXy.x,
-                                        cameraLightSpaceXy.y,
-                                        std::max(csmSettings_.normalBias, 0.0f) *
-                                            renderer::vsmTexelWorldSize(clipmap, 0) *
-                                            static_cast<float>(renderer::kVsmPageSize),
-                                        // In texels of the sampled level; the shader turns it into
-                                        // world units there, because the level is not known until
-                                        // the page walk finds one. This used to pass the cascades'
-                                        // depthBiasConstant straight through, which is a fraction
-                                        // of a cascade's ortho depth and means something ~250x
-                                        // larger against a page's 2*depthRange axis.
-                                        std::max(vsmSettings_.depthBiasTexels, 0.0f));
+        constants.vsmCamera =
+            glm::vec4(cameraLightSpaceXy.x,
+                      cameraLightSpaceXy.y,
+                      std::max(csmSettings_.normalBias, 0.0f) * renderer::vsmTexelWorldSize(clipmap, 0) *
+                          static_cast<float>(renderer::kVsmPageSize),
+                      // In texels of the sampled level; the shader turns it into
+                      // world units there, because the level is not known until
+                      // the page walk finds one. This used to pass the cascades'
+                      // depthBiasConstant straight through, which is a fraction
+                      // of a cascade's ortho depth and means something ~250x
+                      // larger against a page's 2*depthRange axis.
+                      std::max(vsmSettings_.depthBiasTexels, 0.0f));
     }
 
     // Bit 3 rides in the VSM flag word but is deliberately set outside the block
@@ -2041,8 +2019,7 @@ void Renderer::uploadFrameConstants(uint32_t frameIndex, uint32_t cascadeCount)
         constants.vsmPageTable.w |= 8u;
     }
 
-    frameConstantsBuffers_.at(frameIndex)
-        .upload(std::as_bytes(std::span<const FrameConstants>(&constants, 1)));
+    frameConstantsBuffers_.at(frameIndex).upload(std::as_bytes(std::span<const FrameConstants>(&constants, 1)));
 }
 
 } // namespace ve

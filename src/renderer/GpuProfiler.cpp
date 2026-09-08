@@ -95,8 +95,8 @@ void GpuProfiler::initialize(const rhi::VulkanContext& context,
     available_ = true;
     enabled_ = true;
     Logger::info("GPU profiler enabled with " + std::to_string(framesInFlight) + " frame query pool(s), " +
-                 std::to_string(maxTimestampQueriesPerFrame_) + " timestamp queries per frame, timestampPeriod=" +
-                 std::to_string(timestampPeriod_) + " ns.");
+                 std::to_string(maxTimestampQueriesPerFrame_) +
+                 " timestamp queries per frame, timestampPeriod=" + std::to_string(timestampPeriod_) + " ns.");
 }
 
 void GpuProfiler::shutdown()
@@ -253,8 +253,7 @@ bool GpuProfiler::readFrame(uint32_t frameIndex, FrameResults& results)
                                                   sizeof(TimestampQueryResult) * queryResults.size(),
                                                   queryResults.data(),
                                                   sizeof(TimestampQueryResult),
-                                                  VK_QUERY_RESULT_64_BIT |
-                                                      VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+                                                  VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
     if (result == VK_NOT_READY) {
         return false;
     }
@@ -371,9 +370,7 @@ GpuProfileScope::GpuProfileScope(GpuProfiler& profiler,
                                  uint32_t frameIndex,
                                  VkCommandBuffer commandBuffer,
                                  std::string_view name)
-    : profiler_(&profiler),
-      commandBuffer_(commandBuffer),
-      frameIndex_(frameIndex),
+    : profiler_(&profiler), commandBuffer_(commandBuffer), frameIndex_(frameIndex),
       active_(profiler.beginScope(frameIndex, commandBuffer, name))
 {}
 

@@ -42,8 +42,7 @@ void appendUniqueExtension(std::vector<const char*>& extensions, const char* ext
 
 std::string vulkanApiVersionString(uint32_t version)
 {
-    return std::to_string(VK_API_VERSION_MAJOR(version)) + "." +
-           std::to_string(VK_API_VERSION_MINOR(version)) + "." +
+    return std::to_string(VK_API_VERSION_MAJOR(version)) + "." + std::to_string(VK_API_VERSION_MINOR(version)) + "." +
            std::to_string(VK_API_VERSION_PATCH(version));
 }
 

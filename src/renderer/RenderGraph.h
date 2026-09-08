@@ -35,14 +35,20 @@ struct RGTextureHandle {
     uint32_t index = kInvalidRenderGraphHandle;
     uint32_t version = 0;
 
-    [[nodiscard]] bool valid() const { return index != kInvalidRenderGraphHandle; }
+    [[nodiscard]] bool valid() const
+    {
+        return index != kInvalidRenderGraphHandle;
+    }
 };
 
 struct RGBufferHandle {
     uint32_t index = kInvalidRenderGraphHandle;
     uint32_t version = 0;
 
-    [[nodiscard]] bool valid() const { return index != kInvalidRenderGraphHandle; }
+    [[nodiscard]] bool valid() const
+    {
+        return index != kInvalidRenderGraphHandle;
+    }
 };
 
 enum class RGResourceKind {
@@ -195,9 +201,8 @@ struct BufferAccessState {
 // and the presence of stencil picks between the combined and depth-only layouts.
 // `currentLayout` is what an access that says nothing about layout falls back to;
 // the graph passes the resource's tracked layout.
-[[nodiscard]] TextureAccessState textureAccessState(VkImageAspectFlags aspectMask,
-                                                    RGAccess access,
-                                                    VkImageLayout currentLayout);
+[[nodiscard]] TextureAccessState
+textureAccessState(VkImageAspectFlags aspectMask, RGAccess access, VkImageLayout currentLayout);
 
 [[nodiscard]] BufferAccessState bufferAccessState(RGAccess access);
 
@@ -337,7 +342,6 @@ struct RenderGraphPassSchedule {
     // parallel to the pass list.
     bool scheduled = false;
 };
-
 
 // A dependency the proposed order breaks: `passIndex` is placed at or before
 // `predecessorIndex`, which it must follow.
@@ -727,7 +731,10 @@ public:
 
     // Bounds the resource indices computeTextureLifetimes needs; the graph's
     // texture table is rebuilt every frame, so this is a per-frame value.
-    [[nodiscard]] size_t textureCount() const { return textures_.size(); }
+    [[nodiscard]] size_t textureCount() const
+    {
+        return textures_.size();
+    }
 
     [[nodiscard]] const std::vector<RenderGraphResourceDebugInfo>& debugResources() const
     {
@@ -1134,7 +1141,6 @@ struct RenderGraphResourceLifetime {
 validateDeclarations(const std::vector<RenderPassNode>& passes,
                      std::span<const RGResourceValidationInfo> textures,
                      std::span<const RGResourceValidationInfo> buffers);
-
 
 // Derives the schedule above from the declarations. Pure logic next to
 // cullUnusedPasses and validateDeclarations, for the same reason: no device, and

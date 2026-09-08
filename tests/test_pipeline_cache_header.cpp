@@ -22,8 +22,7 @@
 namespace {
 
 constexpr std::array<uint8_t, VK_UUID_SIZE> kUuid = {
-    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-    0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10};
+    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10};
 
 VkPhysicalDeviceProperties makeProps()
 {
@@ -36,8 +35,7 @@ VkPhysicalDeviceProperties makeProps()
 
 // Serialize a valid 32-byte header (+ optional payload) exactly as a driver
 // would write it to disk.
-std::vector<std::byte> makeBlob(const VkPipelineCacheHeaderVersionOne& header,
-                                std::span<const std::byte> payload = {})
+std::vector<std::byte> makeBlob(const VkPipelineCacheHeaderVersionOne& header, std::span<const std::byte> payload = {})
 {
     std::vector<std::byte> blob(sizeof(header) + payload.size());
     std::memcpy(blob.data(), &header, sizeof(header));
@@ -97,8 +95,7 @@ TEST_CASE("Pipeline cache header matches for the originating device", "[pipeline
 TEST_CASE("Pipeline cache header carries a trailing payload without affecting validation", "[pipeline_cache]")
 {
     const VkPhysicalDeviceProperties props = makeProps();
-    const std::array<std::byte, 4> payload = {
-        std::byte{0xde}, std::byte{0xad}, std::byte{0xbe}, std::byte{0xef}};
+    const std::array<std::byte, 4> payload = {std::byte{0xde}, std::byte{0xad}, std::byte{0xbe}, std::byte{0xef}};
     const std::vector<std::byte> blob = makeBlob(makeHeader(props), payload);
     REQUIRE(ve::rhi::pipelineCacheHeaderMatches(blob, props));
 }
@@ -146,8 +143,7 @@ TEST_CASE("Pipeline cache header is rejected on any device/driver mismatch", "[p
 TEST_CASE("Pipeline cache header rejects a blob shorter than the header", "[pipeline_cache]")
 {
     const VkPhysicalDeviceProperties props = makeProps();
-    const std::array<std::byte, 4> tooShort = {
-        std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}};
+    const std::array<std::byte, 4> tooShort = {std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}};
     REQUIRE_FALSE(ve::rhi::pipelineCacheHeaderMatches(tooShort, props));
 
     const std::span<const std::byte> empty{};
@@ -158,8 +154,7 @@ TEST_CASE("Pipeline cache blob survives a write/read round-trip", "[pipeline_cac
 {
     const VkPhysicalDeviceProperties props = makeProps();
     const std::array<std::byte, 6> payload = {
-        std::byte{0x11}, std::byte{0x22}, std::byte{0x33},
-        std::byte{0x44}, std::byte{0x55}, std::byte{0x66}};
+        std::byte{0x11}, std::byte{0x22}, std::byte{0x33}, std::byte{0x44}, std::byte{0x55}, std::byte{0x66}};
     const std::vector<std::byte> original = makeBlob(makeHeader(props), payload);
 
     const std::filesystem::path path =
@@ -288,9 +283,14 @@ TEST_CASE("Pipeline cache envelope rejects device mismatch, damage, and absence"
 
     SECTION("blob shorter than the envelope")
     {
-        const std::array<std::byte, 8> stub = {
-            std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0},
-            std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}};
+        const std::array<std::byte, 8> stub = {std::byte{0},
+                                               std::byte{0},
+                                               std::byte{0},
+                                               std::byte{0},
+                                               std::byte{0},
+                                               std::byte{0},
+                                               std::byte{0},
+                                               std::byte{0}};
         REQUIRE(ve::rhi::decodePipelineCacheBlob(stub, props, kShaderHash).status ==
                 ve::rhi::PipelineCacheStatus::Malformed);
     }

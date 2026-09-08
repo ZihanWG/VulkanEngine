@@ -67,8 +67,7 @@ namespace {
 // correct one and nothing could tell them apart. It only surfaced when
 // back-face culling was measured on an immediate-mode GPU and the spheres
 // rendered their own interiors.
-TEST_CASE("built-in primitives are wound counter-clockwise when seen from outside",
-          "[geometry][winding]")
+TEST_CASE("built-in primitives are wound counter-clockwise when seen from outside", "[geometry][winding]")
 {
     SECTION("cube")
     {

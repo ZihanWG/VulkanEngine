@@ -82,24 +82,69 @@ public:
     void ensureShaderReadLayout(VkCommandBuffer commandBuffer);
 
     // --- accessors for the GPU culling code (binds image/sampler) and debug UI ---
-    [[nodiscard]] VkImage image() const { return image_.image(); }
-    [[nodiscard]] VkImageView imageView() const { return image_.imageView(); }
-    [[nodiscard]] VkExtent3D extent() const { return image_.extent(); }
-    [[nodiscard]] VkFormat format() const { return image_.format(); }
-    [[nodiscard]] VkSampler sampler() const { return sampler_; }
-    [[nodiscard]] VkImageLayout layout() const { return layout_; }
+    [[nodiscard]] VkImage image() const
+    {
+        return image_.image();
+    }
+    [[nodiscard]] VkImageView imageView() const
+    {
+        return image_.imageView();
+    }
+    [[nodiscard]] VkExtent3D extent() const
+    {
+        return image_.extent();
+    }
+    [[nodiscard]] VkFormat format() const
+    {
+        return image_.format();
+    }
+    [[nodiscard]] VkSampler sampler() const
+    {
+        return sampler_;
+    }
+    [[nodiscard]] VkImageLayout layout() const
+    {
+        return layout_;
+    }
     // Mutable pointer to the tracked layout, handed to the render graph so its
     // barrier inference can keep the pyramid's layout in sync (matches the former
     // &depthPyramidLayout_ wiring).
-    [[nodiscard]] VkImageLayout* layoutPtr() { return &layout_; }
-    [[nodiscard]] uint32_t mipLevels() const { return mipLevels_; }
-    [[nodiscard]] bool valid() const { return valid_; }
-    [[nodiscard]] bool buildAvailable() const { return buildAvailable_; }
-    [[nodiscard]] const glm::mat4& viewProjection() const { return viewProjection_; }
-    [[nodiscard]] const glm::vec3& cameraPosition() const { return cameraPosition_; }
-    [[nodiscard]] const std::vector<VkImageView>& mipImageViews() const { return mipImageViews_; }
-    [[nodiscard]] uint32_t selectedDebugMip() const { return selectedDebugMip_; }
-    void setSelectedDebugMip(uint32_t mip) { selectedDebugMip_ = mip; }
+    [[nodiscard]] VkImageLayout* layoutPtr()
+    {
+        return &layout_;
+    }
+    [[nodiscard]] uint32_t mipLevels() const
+    {
+        return mipLevels_;
+    }
+    [[nodiscard]] bool valid() const
+    {
+        return valid_;
+    }
+    [[nodiscard]] bool buildAvailable() const
+    {
+        return buildAvailable_;
+    }
+    [[nodiscard]] const glm::mat4& viewProjection() const
+    {
+        return viewProjection_;
+    }
+    [[nodiscard]] const glm::vec3& cameraPosition() const
+    {
+        return cameraPosition_;
+    }
+    [[nodiscard]] const std::vector<VkImageView>& mipImageViews() const
+    {
+        return mipImageViews_;
+    }
+    [[nodiscard]] uint32_t selectedDebugMip() const
+    {
+        return selectedDebugMip_;
+    }
+    void setSelectedDebugMip(uint32_t mip)
+    {
+        selectedDebugMip_ = mip;
+    }
 
 private:
     rhi::VulkanContext& context_;

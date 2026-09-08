@@ -91,7 +91,8 @@ void hashValue(uint64_t& hash, uint64_t value)
 bool collectShaderModules(const std::filesystem::path& shaderDir, std::vector<std::filesystem::path>& modules)
 {
     std::error_code ec;
-    std::filesystem::directory_iterator entry(shaderDir, std::filesystem::directory_options::skip_permission_denied, ec);
+    std::filesystem::directory_iterator entry(
+        shaderDir, std::filesystem::directory_options::skip_permission_denied, ec);
     if (ec) {
         return false;
     }
@@ -162,11 +163,10 @@ bool pipelineCacheHeaderMatches(std::span<const std::byte> blob, const VkPhysica
     VkPipelineCacheHeaderVersionOne header{};
     std::memcpy(&header, blob.data(), sizeof(header));
 
-    return header.headerSize == sizeof(VkPipelineCacheHeaderVersionOne)
-        && header.headerVersion == VK_PIPELINE_CACHE_HEADER_VERSION_ONE
-        && header.vendorID == props.vendorID
-        && header.deviceID == props.deviceID
-        && std::memcmp(header.pipelineCacheUUID, props.pipelineCacheUUID, VK_UUID_SIZE) == 0;
+    return header.headerSize == sizeof(VkPipelineCacheHeaderVersionOne) &&
+           header.headerVersion == VK_PIPELINE_CACHE_HEADER_VERSION_ONE && header.vendorID == props.vendorID &&
+           header.deviceID == props.deviceID &&
+           std::memcmp(header.pipelineCacheUUID, props.pipelineCacheUUID, VK_UUID_SIZE) == 0;
 }
 
 bool writePipelineCacheBlob(const std::filesystem::path& path, std::span<const std::byte> data)
@@ -272,9 +272,8 @@ std::vector<std::byte> encodePipelineCacheBlob(std::span<const std::byte> driver
     return blob;
 }
 
-PipelineCacheContents decodePipelineCacheBlob(std::span<const std::byte> blob,
-                                              const VkPhysicalDeviceProperties& props,
-                                              uint64_t shaderHash)
+PipelineCacheContents
+decodePipelineCacheBlob(std::span<const std::byte> blob, const VkPhysicalDeviceProperties& props, uint64_t shaderHash)
 {
     if (blob.empty()) {
         return {PipelineCacheStatus::Missing, {}};

@@ -37,11 +37,26 @@ public:
     // to run time backwards.
     void advance(double wallClockSeconds);
 
-    [[nodiscard]] double elapsedSeconds() const { return elapsedSeconds_; }
-    [[nodiscard]] double deltaSeconds() const { return deltaSeconds_; }
-    [[nodiscard]] bool fixedStep() const { return fixedStep_; }
-    [[nodiscard]] double fixedStepSeconds() const { return fixedStepSeconds_; }
-    [[nodiscard]] uint64_t frameCount() const { return frameCount_; }
+    [[nodiscard]] double elapsedSeconds() const
+    {
+        return elapsedSeconds_;
+    }
+    [[nodiscard]] double deltaSeconds() const
+    {
+        return deltaSeconds_;
+    }
+    [[nodiscard]] bool fixedStep() const
+    {
+        return fixedStep_;
+    }
+    [[nodiscard]] double fixedStepSeconds() const
+    {
+        return fixedStepSeconds_;
+    }
+    [[nodiscard]] uint64_t frameCount() const
+    {
+        return frameCount_;
+    }
 
 private:
     double elapsedSeconds_ = 0.0;

@@ -50,8 +50,8 @@ inline constexpr uint32_t kMaxLightsPerCluster = 64;
 
 // Linear cluster index for a framebuffer pixel + view depth (mirrors the fragment
 // shader). screenWidth/Height are the swapchain extent in pixels.
-[[nodiscard]] inline uint32_t clusterIndex(
-    float fragX, float fragY, float viewDepth, float screenWidth, float screenHeight, float zNear, float zFar)
+[[nodiscard]] inline uint32_t
+clusterIndex(float fragX, float fragY, float viewDepth, float screenWidth, float screenHeight, float zNear, float zFar)
 {
     const float tileSizeX = screenWidth / static_cast<float>(kClusterGridX);
     const float tileSizeY = screenHeight / static_cast<float>(kClusterGridY);
@@ -63,19 +63,16 @@ inline constexpr uint32_t kMaxLightsPerCluster = 64;
 
 // Squared distance from a point to an AABB (zero when inside), mirroring the
 // light_cull.comp sphere/AABB test.
-[[nodiscard]] inline float squaredDistancePointAabb(const glm::vec3& point,
-                                                    const glm::vec3& boundsMin,
-                                                    const glm::vec3& boundsMax)
+[[nodiscard]] inline float
+squaredDistancePointAabb(const glm::vec3& point, const glm::vec3& boundsMin, const glm::vec3& boundsMax)
 {
     const glm::vec3 closest = glm::clamp(point, boundsMin, boundsMax);
     const glm::vec3 delta = point - closest;
     return glm::dot(delta, delta);
 }
 
-[[nodiscard]] inline bool sphereIntersectsAabb(const glm::vec3& center,
-                                               float radius,
-                                               const glm::vec3& boundsMin,
-                                               const glm::vec3& boundsMax)
+[[nodiscard]] inline bool
+sphereIntersectsAabb(const glm::vec3& center, float radius, const glm::vec3& boundsMin, const glm::vec3& boundsMax)
 {
     return squaredDistancePointAabb(center, boundsMin, boundsMax) <= radius * radius;
 }
@@ -109,7 +106,8 @@ struct ClusterBounds {
     const float safeFar = std::max(zFar, safeNear + 1.0e-4f);
     const float ratio = safeFar / safeNear;
     const float sliceNear = -safeNear * std::pow(ratio, static_cast<float>(slice) / static_cast<float>(kClusterGridZ));
-    const float sliceFar = -safeNear * std::pow(ratio, static_cast<float>(slice + 1) / static_cast<float>(kClusterGridZ));
+    const float sliceFar =
+        -safeNear * std::pow(ratio, static_cast<float>(slice + 1) / static_cast<float>(kClusterGridZ));
 
     const glm::vec2 corners[4] = {
         {ndcMin.x, ndcMin.y}, {ndcMax.x, ndcMin.y}, {ndcMin.x, ndcMax.y}, {ndcMax.x, ndcMax.y}};

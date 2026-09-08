@@ -253,8 +253,7 @@ Vec3 importanceSampleGgx(const std::array<float, 2>& xi, Vec3 normal, float roug
 {
     const float alpha = roughness * roughness;
     const float phi = 2.0f * kPi * xi[0];
-    const float cosTheta =
-        std::sqrt((1.0f - xi[1]) / std::max(1.0f + (alpha * alpha - 1.0f) * xi[1], 0.0001f));
+    const float cosTheta = std::sqrt((1.0f - xi[1]) / std::max(1.0f + (alpha * alpha - 1.0f) * xi[1], 0.0001f));
     const float sinTheta = std::sqrt(std::max(1.0f - cosTheta * cosTheta, 0.0f));
 
     const Vec3 halfwayTangent{
@@ -412,15 +411,10 @@ uint32_t wrapTexelCoordinate(int32_t coordinate, uint32_t size)
     return static_cast<uint32_t>(wrapped);
 }
 
-Vec3 readRgba32fTexel(std::span<const float> pixels,
-                      uint32_t faceSize,
-                      uint32_t face,
-                      uint32_t x,
-                      uint32_t y)
+Vec3 readRgba32fTexel(std::span<const float> pixels, uint32_t faceSize, uint32_t face, uint32_t x, uint32_t y)
 {
     const size_t offset =
-        ((static_cast<size_t>(face) * faceSize * faceSize) + (static_cast<size_t>(y) * faceSize + x)) *
-        kRgbaChannels;
+        ((static_cast<size_t>(face) * faceSize * faceSize) + (static_cast<size_t>(y) * faceSize + x)) * kRgbaChannels;
     return sanitizeHdrColor({pixels[offset + 0], pixels[offset + 1], pixels[offset + 2]});
 }
 
@@ -451,10 +445,7 @@ Vec3 sampleRgba32fCubemap(std::span<const float> pixels, uint32_t faceSize, Vec3
     return sampleRgba32fFace(pixels, faceSize, coordinate.face, coordinate.u, coordinate.v);
 }
 
-Vec3 readEquirectangularTexel(std::span<const float> pixels,
-                              uint32_t width,
-                              uint32_t x,
-                              uint32_t y)
+Vec3 readEquirectangularTexel(std::span<const float> pixels, uint32_t width, uint32_t x, uint32_t y)
 {
     const size_t offset = (static_cast<size_t>(y) * width + x) * kRgbaChannels;
     return sanitizeHdrColor({pixels[offset + 0], pixels[offset + 1], pixels[offset + 2]});
@@ -474,10 +465,8 @@ Vec3 sampleEquirectangular(std::span<const float> pixels, uint32_t width, uint32
     const int32_t y0 = static_cast<int32_t>(std::floor(sampleY));
     const uint32_t wrappedX0 = wrapTexelCoordinate(x0, width);
     const uint32_t wrappedX1 = wrapTexelCoordinate(x0 + 1, width);
-    const uint32_t clampedY0 =
-        static_cast<uint32_t>(std::clamp(y0, 0, static_cast<int32_t>(height - 1)));
-    const uint32_t clampedY1 =
-        static_cast<uint32_t>(std::clamp(y0 + 1, 0, static_cast<int32_t>(height - 1)));
+    const uint32_t clampedY0 = static_cast<uint32_t>(std::clamp(y0, 0, static_cast<int32_t>(height - 1)));
+    const uint32_t clampedY1 = static_cast<uint32_t>(std::clamp(y0 + 1, 0, static_cast<int32_t>(height - 1)));
     const float tx = sampleX - static_cast<float>(x0);
     const float ty = sampleY - static_cast<float>(y0);
 
@@ -495,8 +484,7 @@ void validateRgba32fFaceData(uint32_t faceSize, std::span<const float> pixels)
         throw std::runtime_error("Cannot create a zero-sized HDR environment map.");
     }
 
-    const size_t expectedFloatCount =
-        static_cast<size_t>(faceSize) * faceSize * kCubeFaceCount * kRgbaChannels;
+    const size_t expectedFloatCount = static_cast<size_t>(faceSize) * faceSize * kCubeFaceCount * kRgbaChannels;
     if (pixels.size() != expectedFloatCount) {
         throw std::runtime_error("HDR environment cubemap RGBA32F data has the wrong float count.");
     }
@@ -657,13 +645,12 @@ std::vector<uint8_t> makeProceduralPrefilteredSpecularFaces(uint32_t faceSize, J
             for (uint32_t x = 0; x < size; ++x) {
                 const float u = size == 1 ? 0.5f : static_cast<float>(x) / static_cast<float>(size - 1);
                 const Vec3 direction = cubemapTexelDirection(face, u, v);
-                const Vec3 color = prefilterSpecularDirection(
-                    direction,
-                    roughness,
-                    [](Vec3 sampleDirection) { return sampleProceduralEnvironment(sampleDirection); });
+                const Vec3 color = prefilterSpecularDirection(direction, roughness, [](Vec3 sampleDirection) {
+                    return sampleProceduralEnvironment(sampleDirection);
+                });
                 const size_t offset =
-                    mipOffset + ((static_cast<size_t>(face) * size * size) + (static_cast<size_t>(y) * size + x)) *
-                                    kRgbaChannels;
+                    mipOffset +
+                    ((static_cast<size_t>(face) * size * size) + (static_cast<size_t>(y) * size + x)) * kRgbaChannels;
                 writeRgba(pixels, offset, color);
             }
         };
@@ -701,9 +688,8 @@ Vec3 averageRgba32fFaceColor(uint32_t face, uint32_t sourceFaceSize, std::span<c
     return color * sampleScale;
 }
 
-std::vector<float> makeHdrDiffuseIrradianceFaces(uint32_t sourceFaceSize,
-                                                 std::span<const float> sourcePixels,
-                                                 uint32_t faceSize)
+std::vector<float>
+makeHdrDiffuseIrradianceFaces(uint32_t sourceFaceSize, std::span<const float> sourcePixels, uint32_t faceSize)
 {
     validateRgba32fFaceData(sourceFaceSize, sourcePixels);
     if (faceSize == 0) {
@@ -747,9 +733,8 @@ std::vector<float> makeHdrDiffuseIrradianceFaces(uint32_t sourceFaceSize,
     return pixels;
 }
 
-std::vector<float> makeHdrPrefilteredSpecularFaces(uint32_t sourceFaceSize,
-                                                   std::span<const float> sourcePixels,
-                                                   uint32_t faceSize)
+std::vector<float>
+makeHdrPrefilteredSpecularFaces(uint32_t sourceFaceSize, std::span<const float> sourcePixels, uint32_t faceSize)
 {
     validateRgba32fFaceData(sourceFaceSize, sourcePixels);
     if (faceSize == 0) {
@@ -773,9 +758,7 @@ std::vector<float> makeHdrPrefilteredSpecularFaces(uint32_t sourceFaceSize,
                     const float u = size == 1 ? 0.5f : static_cast<float>(x) / static_cast<float>(size - 1);
                     const Vec3 direction = cubemapTexelDirection(face, u, v);
                     const Vec3 color = prefilterSpecularDirection(
-                        direction,
-                        roughness,
-                        [sourcePixels, sourceFaceSize](Vec3 sampleDirection) {
+                        direction, roughness, [sourcePixels, sourceFaceSize](Vec3 sampleDirection) {
                             return sampleRgba32fCubemap(sourcePixels, sourceFaceSize, sampleDirection);
                         });
                     const size_t offset =
@@ -1125,10 +1108,7 @@ void VulkanEnvironmentMap::createDiffuseIrradianceFromRgba32fFaces(VulkanContext
                                                                    uint32_t faceSize)
 {
     const std::vector<float> pixels = makeHdrDiffuseIrradianceFaces(sourceFaceSize, sourcePixels, faceSize);
-    createFromRgba32fFaces(context,
-                           commandContext,
-                           faceSize,
-                           std::span<const float>(pixels.data(), pixels.size()));
+    createFromRgba32fFaces(context, commandContext, faceSize, std::span<const float>(pixels.data(), pixels.size()));
 }
 
 void VulkanEnvironmentMap::createPrefilteredSpecularFromRgba32fFaces(VulkanContext& context,
@@ -1139,11 +1119,8 @@ void VulkanEnvironmentMap::createPrefilteredSpecularFromRgba32fFaces(VulkanConte
 {
     const uint32_t mipLevels = calculateMipLevels(faceSize);
     const std::vector<float> pixels = makeHdrPrefilteredSpecularFaces(sourceFaceSize, sourcePixels, faceSize);
-    createFromRgba32fMipFaces(context,
-                              commandContext,
-                              faceSize,
-                              mipLevels,
-                              std::span<const float>(pixels.data(), pixels.size()));
+    createFromRgba32fMipFaces(
+        context, commandContext, faceSize, mipLevels, std::span<const float>(pixels.data(), pixels.size()));
 }
 
 void VulkanEnvironmentMap::reset()

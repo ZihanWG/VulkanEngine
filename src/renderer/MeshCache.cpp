@@ -35,8 +35,7 @@ uint64_t hashBytes(const void* data, size_t size, uint64_t seed = kFnvOffsetBasi
     return hash;
 }
 
-template <typename T>
-void append(std::vector<std::byte>& out, const T& value)
+template <typename T> void append(std::vector<std::byte>& out, const T& value)
 {
     static_assert(std::is_trivially_copyable_v<T>);
     const auto* bytes = reinterpret_cast<const std::byte*>(&value);
@@ -54,10 +53,10 @@ void appendArray(std::vector<std::byte>& out, const void* data, size_t byteCount
 // sized from a garbage count.
 class BlobReader final {
 public:
-    explicit BlobReader(std::span<const std::byte> blob) : blob_(blob) {}
+    explicit BlobReader(std::span<const std::byte> blob) : blob_(blob)
+    {}
 
-    template <typename T>
-    T read()
+    template <typename T> T read()
     {
         static_assert(std::is_trivially_copyable_v<T>);
         T value{};
@@ -236,15 +235,15 @@ MeshCacheStatus meshCacheStatus(std::span<const std::byte> blob, const MeshCache
     if (header.version != kMeshCacheVersion) {
         return MeshCacheStatus::VersionMismatch;
     }
-    if (header.vertexStride != expected.vertexStride || header.primitiveStride != expected.primitiveStride
-        || header.lodStride != expected.lodStride) {
+    if (header.vertexStride != expected.vertexStride || header.primitiveStride != expected.primitiveStride ||
+        header.lodStride != expected.lodStride) {
         return MeshCacheStatus::VertexLayoutMismatch;
     }
     if (header.lodSettingsHash != expected.lodSettingsHash) {
         return MeshCacheStatus::LodSettingsMismatch;
     }
-    if (header.sourceSizeBytes != expected.sourceSizeBytes || header.sourceWriteTime != expected.sourceWriteTime
-        || header.bufferHash != expected.bufferHash) {
+    if (header.sourceSizeBytes != expected.sourceSizeBytes || header.sourceWriteTime != expected.sourceWriteTime ||
+        header.bufferHash != expected.bufferHash) {
         return MeshCacheStatus::SourceChanged;
     }
 

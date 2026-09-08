@@ -43,11 +43,9 @@ GroundTruthAmbientOcclusion::GroundTruthAmbientOcclusion(rhi::VulkanContext& con
                                                          RenderGraph& renderGraph,
                                                          GpuProfiler& gpuProfiler,
                                                          SsaoSettings& settings)
-    : context_(context), swapchain_(swapchain), pipelineStore_(pipelineStore),
-      renderResolution_(renderResolution), renderGraph_(renderGraph), gpuProfiler_(gpuProfiler),
-      settings_(settings)
-{
-}
+    : context_(context), swapchain_(swapchain), pipelineStore_(pipelineStore), renderResolution_(renderResolution),
+      renderGraph_(renderGraph), gpuProfiler_(gpuProfiler), settings_(settings)
+{}
 
 GroundTruthAmbientOcclusion::~GroundTruthAmbientOcclusion()
 {
@@ -206,7 +204,8 @@ void GroundTruthAmbientOcclusion::createResources(VkImageView normalRoughnessVie
             paramsInfo.offset = 0;
             paramsInfo.range = sizeof(GtaoParams);
 
-            const std::array<VkDescriptorSet, 2> targetSets{descriptorSets_[frameIndex], blurDescriptorSets_[frameIndex]};
+            const std::array<VkDescriptorSet, 2> targetSets{descriptorSets_[frameIndex],
+                                                            blurDescriptorSets_[frameIndex]};
             // Binding 1 differs per set: the trace reads the normal, the blur reads raw AO.
             const std::array<const VkDescriptorImageInfo*, 2> secondImageInfos{&normalRoughnessInfo, &rawAoDescInfo};
 
@@ -234,7 +233,8 @@ void GroundTruthAmbientOcclusion::createResources(VkImageView normalRoughnessVie
                 writes[base + 2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
                 writes[base + 2].pBufferInfo = &paramsInfo;
             }
-            vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+            vkUpdateDescriptorSets(
+                context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
         }
 
         available_ = true;
@@ -279,10 +279,10 @@ void GroundTruthAmbientOcclusion::uploadParams(uint32_t frameIndex,
                       static_cast<float>(std::max(settings_.stepsPerSlice, 1))};
     // xy: the thin G-buffer, which shares the scene allocation. zw: the raw AO
     // target, whose used and allocated halves round independently.
-    params.subRect = glm::vec4(renderResolution_.uvScale(),
-                               RenderResolution::subRectUvScale(
-                                   RenderResolution::halved(renderResolution_.extent()),
-                                   RenderResolution::halved(renderResolution_.allocationExtent())));
+    params.subRect =
+        glm::vec4(renderResolution_.uvScale(),
+                  RenderResolution::subRectUvScale(RenderResolution::halved(renderResolution_.extent()),
+                                                   RenderResolution::halved(renderResolution_.allocationExtent())));
     params.params1 = {std::max(settings_.intensity, 0.0f),
                       std::max(settings_.power, 0.0001f),
                       std::max(settings_.thickness, 0.01f),

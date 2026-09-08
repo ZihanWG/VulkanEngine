@@ -156,8 +156,7 @@ void VulkanPipeline::create(VkDevice device, const VulkanPipelineCreateInfo& cre
         // Per-attachment state needs independentBlend; without it every attachment
         // must be identical, so the whole set blends. That only degrades the
         // motion vectors of blended pixels, so it is an acceptable fallback.
-        const size_t blendedAttachmentCount =
-            createInfo.independentBlendAvailable ? 1U : colorBlendAttachments.size();
+        const size_t blendedAttachmentCount = createInfo.independentBlendAvailable ? 1U : colorBlendAttachments.size();
         for (size_t attachment = 0; attachment < blendedAttachmentCount; ++attachment) {
             VkPipelineColorBlendAttachmentState& target = colorBlendAttachments[attachment];
             target.blendEnable = VK_TRUE;

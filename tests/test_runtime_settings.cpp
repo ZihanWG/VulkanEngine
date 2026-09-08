@@ -142,10 +142,8 @@ TEST_CASE("RuntimeSettings save -> load round-trips every persisted field", "[se
     CHECK(loaded.toneMapping.minExposure == Catch::Approx(original.toneMapping.minExposure));
     CHECK(loaded.toneMapping.maxExposure == Catch::Approx(original.toneMapping.maxExposure));
     CHECK(loaded.toneMapping.adaptationRate == Catch::Approx(original.toneMapping.adaptationRate));
-    CHECK(loaded.toneMapping.histogramMinLogLuminance ==
-          Catch::Approx(original.toneMapping.histogramMinLogLuminance));
-    CHECK(loaded.toneMapping.histogramMaxLogLuminance ==
-          Catch::Approx(original.toneMapping.histogramMaxLogLuminance));
+    CHECK(loaded.toneMapping.histogramMinLogLuminance == Catch::Approx(original.toneMapping.histogramMinLogLuminance));
+    CHECK(loaded.toneMapping.histogramMaxLogLuminance == Catch::Approx(original.toneMapping.histogramMaxLogLuminance));
     CHECK(loaded.toneMapping.lowPercentile == Catch::Approx(original.toneMapping.lowPercentile));
     CHECK(loaded.toneMapping.highPercentile == Catch::Approx(original.toneMapping.highPercentile));
     CHECK(loaded.toneMapping.operatorType == original.toneMapping.operatorType);
@@ -224,10 +222,8 @@ TEST_CASE("RuntimeSettings save -> load round-trips every persisted field", "[se
     CHECK(loaded.debugUi.showCullingStats == original.debugUi.showCullingStats);
     CHECK(loaded.debugUi.showExposureGraphs == original.debugUi.showExposureGraphs);
     CHECK(loaded.debugUi.selectedCsmCascade == original.debugUi.selectedCsmCascade);
-    CHECK(loaded.debugUi.renderTargetPreviewExposure ==
-          Catch::Approx(original.debugUi.renderTargetPreviewExposure));
-    CHECK(loaded.debugUi.renderTargetPreviewScale ==
-          Catch::Approx(original.debugUi.renderTargetPreviewScale));
+    CHECK(loaded.debugUi.renderTargetPreviewExposure == Catch::Approx(original.debugUi.renderTargetPreviewExposure));
+    CHECK(loaded.debugUi.renderTargetPreviewScale == Catch::Approx(original.debugUi.renderTargetPreviewScale));
 
     std::error_code removeError;
     std::filesystem::remove(path, removeError);

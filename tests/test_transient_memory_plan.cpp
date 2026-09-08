@@ -16,11 +16,8 @@ namespace {
 
 constexpr uint64_t kMiB = 1024ull * 1024ull;
 
-TransientAllocationRequest request(std::string name,
-                                   uint64_t size,
-                                   uint32_t firstPass,
-                                   uint32_t lastPass,
-                                   uint64_t alignment = 128)
+TransientAllocationRequest
+request(std::string name, uint64_t size, uint32_t firstPass, uint32_t lastPass, uint64_t alignment = 128)
 {
     TransientAllocationRequest value{};
     value.name = std::move(name);

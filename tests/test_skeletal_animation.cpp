@@ -57,9 +57,9 @@ TEST_CASE("Vec3 channel sampling clamps and interpolates", "[skinning]")
     channel.times = {0.0f, 1.0f};
     channel.values = {glm::vec4(0.0f), glm::vec4(10.0f, 0.0f, 0.0f, 0.0f)};
 
-    CHECK(sampleVec3Channel(channel, -1.0f).x == Catch::Approx(0.0f));  // clamp low
-    CHECK(sampleVec3Channel(channel, 2.0f).x == Catch::Approx(10.0f));  // clamp high
-    CHECK(sampleVec3Channel(channel, 0.5f).x == Catch::Approx(5.0f));   // midpoint lerp
+    CHECK(sampleVec3Channel(channel, -1.0f).x == Catch::Approx(0.0f)); // clamp low
+    CHECK(sampleVec3Channel(channel, 2.0f).x == Catch::Approx(10.0f)); // clamp high
+    CHECK(sampleVec3Channel(channel, 0.5f).x == Catch::Approx(5.0f));  // midpoint lerp
     CHECK(sampleVec3Channel(channel, 0.25f).x == Catch::Approx(2.5f));
 }
 
@@ -234,10 +234,8 @@ TEST_CASE("A posed vertex never escapes the bound", "[skinning][bounds]")
     const std::vector<glm::vec3> positions = {
         {0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.5f, 0.25f, 0.0f}, {1.0f, -0.3f, 0.2f}};
     const std::vector<glm::uvec4> joints = {{0, 0, 0, 0}, {1, 0, 0, 0}, {0, 1, 0, 0}, {1, 0, 0, 0}};
-    const std::vector<glm::vec4> weights = {{1.0f, 0.0f, 0.0f, 0.0f},
-                                            {1.0f, 0.0f, 0.0f, 0.0f},
-                                            {0.5f, 0.5f, 0.0f, 0.0f},
-                                            {1.0f, 0.0f, 0.0f, 0.0f}};
+    const std::vector<glm::vec4> weights = {
+        {1.0f, 0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f, 0.0f}, {0.5f, 0.5f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f, 0.0f}};
 
     const std::vector<Aabb> bindBounds = computeJointBindBounds(skeleton.jointCount(), positions, joints, weights);
     const glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(-2.6f, 0.0f, 0.0f));
@@ -255,8 +253,7 @@ TEST_CASE("A posed vertex never escapes the bound", "[skinning][bounds]")
         REQUIRE(bounds.valid());
 
         for (size_t vertex = 0; vertex < positions.size(); ++vertex) {
-            const glm::vec3 skinned =
-                skinVertex(palette, model, positions[vertex], joints[vertex], weights[vertex]);
+            const glm::vec3 skinned = skinVertex(palette, model, positions[vertex], joints[vertex], weights[vertex]);
             INFO("step " << step << " vertex " << vertex);
             CHECK(containsPoint(bounds, skinned));
         }

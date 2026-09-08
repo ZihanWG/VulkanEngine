@@ -69,8 +69,7 @@ ShadowCascade fitStableCascade(const std::array<glm::vec3, 8>& corners,
     // scene-dependent term here would put the projection back in play.
     const float casterExtent = std::max(radius * 4.0f, 10.0f);
 
-    const glm::mat4 lightView =
-        glm::lookAt(snappedCenter - lightDirection * casterExtent, snappedCenter, lightUp);
+    const glm::mat4 lightView = glm::lookAt(snappedCenter - lightDirection * casterExtent, snappedCenter, lightUp);
 
     glm::mat4 lightProjection = glm::ortho(-radius, radius, -radius, radius, 0.0f, casterExtent + radius);
     lightProjection[1][1] *= -1.0f;
@@ -201,8 +200,7 @@ CascadeBuildOutput computeShadowCascades(const CascadeBuildInput& input)
         const float orthoNear = std::max(0.001f, -maxBounds.z - zPadding);
         const float orthoFar = std::max(orthoNear + 0.001f, -minBounds.z + zPadding);
 
-        glm::mat4 lightProjection =
-            glm::ortho(minBounds.x, maxBounds.x, minBounds.y, maxBounds.y, orthoNear, orthoFar);
+        glm::mat4 lightProjection = glm::ortho(minBounds.x, maxBounds.x, minBounds.y, maxBounds.y, orthoNear, orthoFar);
         lightProjection[1][1] *= -1.0f;
 
         ShadowCascade& cascade = output.cascades[cascadeIndex];

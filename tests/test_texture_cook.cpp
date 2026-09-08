@@ -12,7 +12,6 @@
 #include <vector>
 
 using ve::assets::BlockCompressionCaps;
-using ve::assets::TextureUsage;
 using ve::assets::chooseTextureFormat;
 using ve::assets::cookedFormatForUsage;
 using ve::assets::cookedFormatUsable;
@@ -23,6 +22,7 @@ using ve::assets::kVkFormatBc7SrgbBlock;
 using ve::assets::kVkFormatBc7UnormBlock;
 using ve::assets::kVkFormatR8G8B8A8Srgb;
 using ve::assets::kVkFormatR8G8B8A8Unorm;
+using ve::assets::TextureUsage;
 using ve::assets::textureUsageIsSrgb;
 
 namespace {
@@ -61,8 +61,11 @@ TEST_CASE("Cooked format follows the material slot, not the file", "[texture-coo
     CHECK_FALSE(textureUsageIsSrgb(TextureUsage::Occlusion));
 
     // Every cooked format must be one the container can actually describe.
-    for (TextureUsage usage : {TextureUsage::BaseColor, TextureUsage::Emissive, TextureUsage::NormalMap,
-                               TextureUsage::MetallicRoughness, TextureUsage::Occlusion}) {
+    for (TextureUsage usage : {TextureUsage::BaseColor,
+                               TextureUsage::Emissive,
+                               TextureUsage::NormalMap,
+                               TextureUsage::MetallicRoughness,
+                               TextureUsage::Occlusion}) {
         CHECK(ve::assets::ktx2FormatSupported(cookedFormatForUsage(usage)));
     }
 }
@@ -79,8 +82,7 @@ TEST_CASE("The sidecar path carries the slot, not just the source name", "[textu
     const std::filesystem::path source = "/assets/sponza/fabric.png";
     CHECK(ktx2SidecarPath(source, TextureUsage::BaseColor) == "/assets/sponza/fabric.base-color.ktx2");
     CHECK(ktx2SidecarPath(source, TextureUsage::NormalMap) == "/assets/sponza/fabric.normal.ktx2");
-    CHECK(ktx2SidecarPath(source, TextureUsage::MetallicRoughness)
-          == "/assets/sponza/fabric.metallic-roughness.ktx2");
+    CHECK(ktx2SidecarPath(source, TextureUsage::MetallicRoughness) == "/assets/sponza/fabric.metallic-roughness.ktx2");
 
     // The sidecar sits beside its source, whatever the source extension was.
     CHECK(ktx2SidecarPath("/assets/a.jpg", TextureUsage::Emissive) == "/assets/a.emissive.ktx2");
@@ -90,8 +92,11 @@ TEST_CASE("The sidecar path carries the slot, not just the source name", "[textu
 
     // The name is the contract between vecook, the cook driver, and the runtime
     // lookup, so it has to round-trip.
-    for (TextureUsage usage : {TextureUsage::BaseColor, TextureUsage::Emissive, TextureUsage::NormalMap,
-                               TextureUsage::MetallicRoughness, TextureUsage::Occlusion}) {
+    for (TextureUsage usage : {TextureUsage::BaseColor,
+                               TextureUsage::Emissive,
+                               TextureUsage::NormalMap,
+                               TextureUsage::MetallicRoughness,
+                               TextureUsage::Occlusion}) {
         TextureUsage parsed = TextureUsage::Occlusion;
         REQUIRE(parseTextureUsage(textureUsageName(usage), parsed));
         CHECK(parsed == usage);
@@ -134,8 +139,7 @@ TEST_CASE("A cooked file is only used when it matches this device and slot", "[t
 
     // A perfectly valid BC7 file on a device that cannot sample BC7.
     CHECK_FALSE(cookedFormatUsable(kNoCaps, kVkFormatBc7SrgbBlock, TextureUsage::BaseColor));
-    CHECK_FALSE(cookedFormatUsable(BlockCompressionCaps{true, false}, kVkFormatBc5UnormBlock,
-                                   TextureUsage::NormalMap));
+    CHECK_FALSE(cookedFormatUsable(BlockCompressionCaps{true, false}, kVkFormatBc5UnormBlock, TextureUsage::NormalMap));
 }
 
 TEST_CASE("The mip chain runs down to 1x1 with the extents KTX2 expects", "[texture-cook]")
@@ -257,7 +261,7 @@ TEST_CASE("A level is encoded in row-major block order", "[texture-cook]")
     // Block order is invisible to every validation layer: getting it wrong just
     // scrambles the texture. A fake encoder that stamps each block with its
     // top-left texel is enough to pin the order and the output offsets down.
-    constexpr uint32_t kWidth = 9; // 3 block columns, the last one partial
+    constexpr uint32_t kWidth = 9;  // 3 block columns, the last one partial
     constexpr uint32_t kHeight = 5; // 2 block rows, the last one partial
     constexpr uint32_t kBlockSize = 16;
 
@@ -332,11 +336,11 @@ TEST_CASE("Encoded level sizes agree with the KTX2 level index", "[texture-cook]
     for (size_t level = 0; level < mipChain.size(); ++level) {
         const uint32_t levelWidth = std::max(1U, kWidth >> level);
         const uint32_t levelHeight = std::max(1U, kHeight >> level);
-        const size_t blockBytes = static_cast<size_t>(ve::assets::rgba8BlockColumnCount(levelWidth))
-                                  * ve::assets::rgba8BlockRowCount(levelHeight) * 16U;
+        const size_t blockBytes = static_cast<size_t>(ve::assets::rgba8BlockColumnCount(levelWidth)) *
+                                  ve::assets::rgba8BlockRowCount(levelHeight) * 16U;
 
-        CHECK(blockBytes
-              == ve::assets::ktx2LevelSizeBytes(kVkFormatBc7SrgbBlock, kWidth, kHeight, static_cast<uint32_t>(level)));
+        CHECK(blockBytes ==
+              ve::assets::ktx2LevelSizeBytes(kVkFormatBc7SrgbBlock, kWidth, kHeight, static_cast<uint32_t>(level)));
     }
 }
 

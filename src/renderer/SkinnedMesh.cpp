@@ -67,8 +67,7 @@ void SkinnedMesh::buildBuffers(rhi::VulkanContext& context,
         context, commandContext, std::as_bytes(geometry), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
     skinningBuffer_.createDeviceLocal(
         context, commandContext, std::as_bytes(skinning), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-    indexBuffer_.createDeviceLocal(
-        context, commandContext, std::as_bytes(indices), VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+    indexBuffer_.createDeviceLocal(context, commandContext, std::as_bytes(indices), VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
 
     paletteBuffers_.clear();
     paletteBuffers_.resize(frameCount);
@@ -212,8 +211,8 @@ bool SkinnedMesh::createFromGltf(rhi::VulkanContext& context,
     modelMatrix_ = kDemoModelMatrix;
     cacheJointBindBounds(geometry, skinning);
 
-    Logger::info("Loaded skinned glTF '" + sourceName_ + "': " + std::to_string(skeleton_.jointCount()) +
-                 " joints, " + std::to_string(imported.clips.size()) + " clip(s).");
+    Logger::info("Loaded skinned glTF '" + sourceName_ + "': " + std::to_string(skeleton_.jointCount()) + " joints, " +
+                 std::to_string(imported.clips.size()) + " clip(s).");
     return valid();
 }
 

@@ -12,9 +12,9 @@ using ve::renderer::appendLodChain;
 using ve::renderer::buildLodChain;
 using ve::renderer::buildLodChainDetached;
 using ve::renderer::kMaxMeshLods;
-using ve::renderer::LodChainBuild;
 using ve::renderer::kMinLodIndexCount;
 using ve::renderer::LodBuildSettings;
+using ve::renderer::LodChainBuild;
 using ve::renderer::LodSelectionSettings;
 using ve::renderer::MeshLod;
 using ve::renderer::projectedScreenRadius;
@@ -180,12 +180,8 @@ TEST_CASE("A chain built at a non-zero offset preserves level 0's placement", "[
     std::vector<uint32_t> combined(grid.indices.begin(), grid.indices.end());
     combined.insert(combined.end(), grid.indices.begin(), grid.indices.end());
 
-    const std::vector<MeshLod> lods = buildLodChain(combined,
-                                                    primitiveCount,
-                                                    primitiveCount,
-                                                    grid.positions.data(),
-                                                    grid.positions.size() / 3,
-                                                    3 * sizeof(float));
+    const std::vector<MeshLod> lods = buildLodChain(
+        combined, primitiveCount, primitiveCount, grid.positions.data(), grid.positions.size() / 3, 3 * sizeof(float));
 
     REQUIRE(!lods.empty());
     CHECK(lods[0].firstIndex == primitiveCount);
@@ -202,12 +198,8 @@ TEST_CASE("An out-of-range request degrades to a level-0-only chain", "[mesh][lo
     Grid grid = makeGrid(16);
     const uint32_t tooMany = static_cast<uint32_t>(grid.indices.size()) + 300;
 
-    const std::vector<MeshLod> lods = buildLodChain(grid.indices,
-                                                    0,
-                                                    tooMany,
-                                                    grid.positions.data(),
-                                                    grid.positions.size() / 3,
-                                                    3 * sizeof(float));
+    const std::vector<MeshLod> lods =
+        buildLodChain(grid.indices, 0, tooMany, grid.positions.data(), grid.positions.size() / 3, 3 * sizeof(float));
 
     CHECK(lods.size() == 1);
     CHECK(lods[0].indexCount == tooMany);
@@ -354,8 +346,7 @@ TEST_CASE("A detached build never logs from the worker", "[mesh][lod]")
     const std::span<const uint32_t> source(grid.indices.data(), grid.indices.size());
     const size_t vertexCount = grid.positions.size() / 3;
 
-    const LodChainBuild unnamed =
-        buildLodChainDetached(source, grid.positions.data(), vertexCount, 3 * sizeof(float));
+    const LodChainBuild unnamed = buildLodChainDetached(source, grid.positions.data(), vertexCount, 3 * sizeof(float));
     CHECK(unnamed.logMessage.empty());
 
     const LodChainBuild named =

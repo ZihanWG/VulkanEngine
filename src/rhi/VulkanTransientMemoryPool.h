@@ -47,12 +47,24 @@ public:
     bool create(VulkanContext& context, VkDeviceSize sizeBytes, uint32_t memoryTypeBits, VkDeviceSize alignment);
     void reset();
 
-    [[nodiscard]] bool available() const { return allocation_ != VK_NULL_HANDLE; }
-    [[nodiscard]] VmaAllocation allocation() const { return allocation_; }
-    [[nodiscard]] VkDeviceSize size() const { return size_; }
+    [[nodiscard]] bool available() const
+    {
+        return allocation_ != VK_NULL_HANDLE;
+    }
+    [[nodiscard]] VmaAllocation allocation() const
+    {
+        return allocation_;
+    }
+    [[nodiscard]] VkDeviceSize size() const
+    {
+        return size_;
+    }
 
     // Why the pool is unavailable, for the log line that explains a fallback.
-    [[nodiscard]] const char* unavailableReason() const { return unavailableReason_; }
+    [[nodiscard]] const char* unavailableReason() const
+    {
+        return unavailableReason_;
+    }
 
 private:
     VulkanContext* context_ = nullptr;

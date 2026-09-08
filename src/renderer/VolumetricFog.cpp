@@ -47,9 +47,8 @@ float fogSliceThickness(uint32_t slice, float maxDistance)
     return std::max(farDepth - nearDepth, 0.0f);
 }
 
-FogIntegratedSample integrateFogSlice(const FogIntegratedSample& accumulated,
-                                      const FogFroxelSample& slice,
-                                      float sliceThickness)
+FogIntegratedSample
+integrateFogSlice(const FogIntegratedSample& accumulated, const FogFroxelSample& slice, float sliceThickness)
 {
     const float thickness = std::max(sliceThickness, 0.0f);
     const float extinction = std::max(slice.extinction, 0.0f);
@@ -104,12 +103,8 @@ float maxHenyeyGreensteinPhase(float anisotropy)
     return kInverseFourPi * (1.0f - g * g) / std::max(denominator, 1.0e-6f);
 }
 
-uint32_t fogFroxelClusterIndex(uint32_t froxelX,
-                               uint32_t froxelY,
-                               uint32_t froxelZ,
-                               float fogMaxDistance,
-                               float clusterZNear,
-                               float clusterZFar)
+uint32_t fogFroxelClusterIndex(
+    uint32_t froxelX, uint32_t froxelY, uint32_t froxelZ, float fogMaxDistance, float clusterZNear, float clusterZFar)
 {
     // Froxel centre in normalized screen space, matching what the injection
     // shader uses to build its world position.

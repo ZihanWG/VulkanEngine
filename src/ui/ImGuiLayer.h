@@ -48,19 +48,18 @@ public:
     void render(VkCommandBuffer commandBuffer);
     void onSwapchainRecreated(VkFormat colorFormat, uint32_t imageCount);
     [[nodiscard]] VkDescriptorSet texturePreviewDescriptor(
-        VkImageView imageView,
-        VkSampler sampler,
-        VkImageLayout imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        VkImageView imageView, VkSampler sampler, VkImageLayout imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     [[nodiscard]] VkDescriptorSet renderTargetPreviewDescriptor(
-        VkImageView imageView,
-        VkSampler sampler,
-        VkImageLayout imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        VkImageView imageView, VkSampler sampler, VkImageLayout imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     void clearTexturePreviewDescriptors();
     void clearRenderTargetPreviewDescriptors();
 
     [[nodiscard]] bool wantsMouseCapture() const;
     [[nodiscard]] bool wantsKeyboardCapture() const;
-    [[nodiscard]] bool initialized() const { return contextInitialized_ && platformInitialized_ && rendererInitialized_; }
+    [[nodiscard]] bool initialized() const
+    {
+        return contextInitialized_ && platformInitialized_ && rendererInitialized_;
+    }
 
 private:
     struct TexturePreviewKey {

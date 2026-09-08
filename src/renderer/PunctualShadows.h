@@ -53,9 +53,7 @@ public:
     // Optional GPU caster culling. Failure leaves cullAvailable() false and the
     // renderer keeps its CPU frustum tests, matching how every other optional
     // subsystem here degrades.
-    void createCullResources(uint32_t frameCount,
-                             const std::filesystem::path& cullShaderPath,
-                             uint32_t maxDrawItems);
+    void createCullResources(uint32_t frameCount, const std::filesystem::path& cullShaderPath, uint32_t maxDrawItems);
 
     [[nodiscard]] bool cullAvailable() const
     {

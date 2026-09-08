@@ -60,29 +60,62 @@ public:
     // otherwise the procedural bend.
     void update(uint32_t frameIndex, float timeSeconds);
 
-    [[nodiscard]] bool usesImportedClip() const { return hasClip_; }
-    [[nodiscard]] const std::string& sourceName() const { return sourceName_; }
+    [[nodiscard]] bool usesImportedClip() const
+    {
+        return hasClip_;
+    }
+    [[nodiscard]] const std::string& sourceName() const
+    {
+        return sourceName_;
+    }
 
-    [[nodiscard]] bool valid() const { return indexCount_ > 0; }
-    [[nodiscard]] VkBuffer geometryBuffer() const { return geometryBuffer_.buffer(); }
-    [[nodiscard]] VkBuffer skinningBuffer() const { return skinningBuffer_.buffer(); }
-    [[nodiscard]] VkBuffer indexBuffer() const { return indexBuffer_.buffer(); }
-    [[nodiscard]] uint32_t indexCount() const { return indexCount_; }
-    [[nodiscard]] uint32_t jointCount() const { return static_cast<uint32_t>(skeleton_.jointCount()); }
+    [[nodiscard]] bool valid() const
+    {
+        return indexCount_ > 0;
+    }
+    [[nodiscard]] VkBuffer geometryBuffer() const
+    {
+        return geometryBuffer_.buffer();
+    }
+    [[nodiscard]] VkBuffer skinningBuffer() const
+    {
+        return skinningBuffer_.buffer();
+    }
+    [[nodiscard]] VkBuffer indexBuffer() const
+    {
+        return indexBuffer_.buffer();
+    }
+    [[nodiscard]] uint32_t indexCount() const
+    {
+        return indexCount_;
+    }
+    [[nodiscard]] uint32_t jointCount() const
+    {
+        return static_cast<uint32_t>(skeleton_.jointCount());
+    }
     [[nodiscard]] VkDeviceAddress jointPaletteAddress(uint32_t frameIndex) const;
-    [[nodiscard]] const glm::mat4& modelMatrix() const { return modelMatrix_; }
+    [[nodiscard]] const glm::mat4& modelMatrix() const
+    {
+        return modelMatrix_;
+    }
 
     // Conservative world bounds of the pose update() last uploaded, so shadow
     // culling and page invalidation have something that moves when the mesh
     // does. The model matrix does not: that is the whole problem a skinned
     // caster poses. Invalid until the first update().
-    [[nodiscard]] const Aabb& worldBounds() const { return worldBounds_; }
+    [[nodiscard]] const Aabb& worldBounds() const
+    {
+        return worldBounds_;
+    }
 
     // Digest of the palette update() last uploaded. This is what a shadow cache
     // has to key on: mesh pointer, index range and model matrix all hold still
     // while the pose moves, so they cannot tell a cached shadow from a stale
     // one. Never 0 once a pose exists, so callers can use 0 for "no caster".
-    [[nodiscard]] uint64_t poseHash() const { return poseHash_; }
+    [[nodiscard]] uint64_t poseHash() const
+    {
+        return poseHash_;
+    }
 
 private:
     void buildBuffers(rhi::VulkanContext& context,
