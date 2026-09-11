@@ -7,7 +7,7 @@
 # GitHub's web blame reads this file on its own; no setup needed there.
 
 # Format the tree with clang-format for the first time
-717100144b4edf1ffd2150d136fe8f6c60416b10
+6035eeed88a93aa3ee509633b0adac7195f395f8
 
 # Format the code the merge brought in
-12f3af911a8cbda52794f72b05c3295f4f24c29a
+beb1e6bfd50bb7c14385737040ebf31485e504ab
