@@ -239,6 +239,15 @@ were identical across every block of each run rather than merely close, which is
 what a static camera should produce and is itself a check that the request set is
 stable frame to frame.
 
+> **Every number in this section was measured at `kVsmPagesPerLevelAxis = 16`
+> and `kMaxVsmPagesPerFrame = 128`, which are no longer the values in the table
+> above.** It is kept as the record of why the coverage bound exists at all —
+> that reasoning is unchanged. What it does *not* describe is the density
+> ceiling the same bound turned out to impose, which is what later raised the
+> axis to 32; see
+> [`texelsPerPixel` below 1.0](#limitations) in Limitations for the axis-32
+> figures.
+
 The first design used `kVsmPagesPerLevelAxis = 8`. It produced this:
 
 | scene | texels/pixel | requested pages |
@@ -260,7 +269,10 @@ window that selected it,
 axis >= 2 * projScaleY / kVsmPageSize
 ```
 
-which is ~12 at 1080p. Hence `kVsmPagesPerLevelAxis = 16`. And because a constant
+which is ~12 at 1080p, so the axis went to **16** here. (It is **32** now, for
+the ceiling this same relation imposes rather than for reach — the bound above is
+a floor on the axis, and satisfying it barely, as 16 does, is what left quality
+selection inert. Limitations has the arithmetic.) And because a constant
 that has to be right for a resolution is a constant that will be wrong at some
 other resolution, `vsmSelectLevel` now takes the **maximum of the quality level
 and `vsmMinLevelForCoverage`** — a level finer than its window can reach has no
@@ -297,7 +309,8 @@ pixel at 1080p — good quality, but it means **effective resolution is bounded 
 `kVsmPagesPerLevelAxis`, not by `level0Extent`**. Turning `level0Extent` down
 past that point buys nothing.
 
-`kMaxVsmPagesPerFrame` was raised from 64 to 128 on the strength of the 99. A
+`kMaxVsmPagesPerFrame` was raised from 64 to 128 on the strength of the 99 — and
+to **384** later, when axis 32 took the 4K set to 306 pages. A
 budget under the resident set is not wrong — caching is what keeps the per-frame
 redraw far below it — but a cold start has to fill the whole set, and at 64 that
 takes two frames of visibly wrong shadow.
