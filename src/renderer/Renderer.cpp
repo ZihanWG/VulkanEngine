@@ -602,8 +602,11 @@ void Renderer::drawFrame()
     // itself, so there is nothing to wait for here.
     if (vsmPagePoolDumpTargetFrame_ != 0 && frameClock_.frameCount() >= vsmPagePoolDumpTargetFrame_) {
         vsmPagePoolDumpTargetFrame_ = 0;
-        virtualShadowMap_.dumpPagePool(
-            vsmPagePoolDumpPath_, vsmClipmapSettings(), commandContext_.commandPool(), context_.graphicsQueue());
+        // Every failure path inside the dump logs its own reason, so the caller has
+        // nothing to add and the result is discarded deliberately rather than by
+        // omission -- which /W4 reports as C4834.
+        static_cast<void>(virtualShadowMap_.dumpPagePool(
+            vsmPagePoolDumpPath_, vsmClipmapSettings(), commandContext_.commandPool(), context_.graphicsQueue()));
     }
 
     // Advance the CPU frame slot, not the swapchain image index. Acquire chooses

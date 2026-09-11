@@ -40,24 +40,56 @@ namespace ve::renderer {
 // enough that a page is rarely wasted on geometry that only partly covers it.
 inline constexpr uint32_t kVsmPageSize = 128;
 
-// Pages along one edge of a clipmap level's addressable window. Sixteen gives a
-// 2048x2048 virtual texel grid per level.
+// Pages along one edge of a clipmap level's addressable window. Thirty-two gives
+// a 4096x4096 virtual texel grid per level.
 //
-// This is a coverage constant, not a quality one, and eight was measured to be
-// too small. A point at distance d selects a level whose texel is about
-// d/projScaleY across, so that level's window spans roughly
-// (axis/2) * kVsmPageSize * d / projScaleY. For the point to fall inside the
-// window that selected it, the window has to be at least d wide, which needs
+// This constant, alone, sets the ceiling on how fine a shadow texel the clipmap
+// can ever deliver. It is worth being precise about why, because the number
+// looks like it should be about memory and is not.
 //
-//     axis >= 2 * projScaleY / kVsmPageSize
+// vsmSelectLevel returns max(quality, coverage). Coverage exists because a level
+// finer than its own window can reach has no slot for the point that selected
+// it, and eight was measured to be too small outright: the geometry-stress scene
+// requested 38 pages at one texel per pixel and ZERO at a quarter of that, every
+// page it wanted falling outside its own level's window -- which in the sampling
+// phase is not a blurry shadow but no shadow at all.
 //
-// At 1080p that is about 12. With axis = 8 the geometry-stress scene requested
-// 38 pages at one texel per pixel and ZERO at a quarter of that -- every page it
-// wanted was outside its own level's window, which in the sampling phase is not
-// a blurry shadow but no shadow at all. vsmSelectLevel now also enforces the
-// coverage bound directly, so this constant only sets how much quality survives
-// rather than whether anything is addressable.
-inline constexpr uint32_t kVsmPagesPerLevelAxis = 16;
+// Substituting the level coverage picks, the texel it yields is
+//
+//     texel = 2 * d / (kVsmPageSize * axis)
+//
+// independent of level0Extent (which only relabels which index serves a given
+// distance -- measured: 4.0 vs 8.0 gives an identical page set with the levels
+// shifted one index) and independent of texelsPerPixel. So whenever coverage is
+// the larger term the request is CAPPED there, and no setting can ask for more.
+// Coverage stops binding only when
+//
+//     axis > 2 * projScaleY / (kVsmPageSize * texelsPerPixel) + 2
+//
+// At axis = 16 that knee sits at 11.7 for 720p, 16.6 for 1080p and 31.2 for 4K
+// (projScaleY = height * 0.5 * |proj[1][1]|, so 623 / 935 / 1871 at a 60-degree
+// vertical fov). 4K was therefore capped at 0.55 texels per pixel, and measuring
+// it showed exactly that: NINE TIMES the pixel count moved the request set only
+// 94 -> 99 pages with the per-level histogram unchanged, and at 4K a
+// texelsPerPixel sweep of 0.25 / 0.5 / 1.0 / 2.0 returned byte-identical page
+// sets. The subsystem whose purpose is resolution was delivering 720p shadow
+// resolution at 4K, with its own quality knob inert.
+//
+// Thirty-two puts the 4K knee at 31.2 -- one texel per pixel reached and not
+// overshot. Cost at 4K: 99 -> 306 requested pages and 307 of the pool's 1024
+// slots resident (both exactly reproducible run to run), and VsmPageMark
+// 0.017 -> 0.13 ms, which is the only pass that moved -- VsmPagePass and
+// VsmPageCull sit at 0.015 ms either way. Frame total is NOT quoted: this is a
+// compile-time constant, so the two sides are different binaries and
+// measure_gpu.py's A/B cannot reach it, and single runs of each spread wider
+// (10.41 / 10.56 / 11.47 ms) than the ~0.11 ms the pass timings account for.
+// Lower resolutions pay only for what they were being shortchanged: 1080p
+// 97 -> 154 pages (its knee was 16.6, just above 16), 720p 94 -> 94, unchanged.
+//
+// Sixty-four is the next step and does not fit: one more level of texel density
+// is four times the pages, about 1200 against a 1024-page pool. Raising this
+// past 32 means growing kVsmPagePoolSize with it.
+inline constexpr uint32_t kVsmPagesPerLevelAxis = 32;
 inline constexpr uint32_t kVsmPagesPerLevel = kVsmPagesPerLevelAxis * kVsmPagesPerLevelAxis;
 inline constexpr uint32_t kVsmLevelResolution = kVsmPagesPerLevelAxis * kVsmPageSize;
 
@@ -69,8 +101,8 @@ inline constexpr uint32_t kVsmMaxClipmapLevels = 12;
 inline constexpr uint32_t kVsmMaxVirtualPages = kVsmMaxClipmapLevels * kVsmPagesPerLevel;
 
 // The page-request set is a bitmask the marking dispatch atomicOr's into, one
-// bit per virtual page -- a few hundred bytes, small enough to read back every
-// frame without a staging strategy.
+// bit per virtual page -- 1.5 KiB at the current axis, small enough to read back
+// every frame without a staging strategy.
 inline constexpr uint32_t kVsmPageRequestWordCount = (kVsmMaxVirtualPages + 31u) / 32u;
 
 // --- Physical pool --------------------------------------------------------
@@ -82,9 +114,10 @@ inline constexpr uint32_t kVsmPageRequestWordCount = (kVsmMaxVirtualPages + 31u)
 // real indirection and the rendering phase needs a residency policy. That is not
 // a design preference: the coverage bound above forces enough pages per level
 // that a one-to-one mapping would need a pool no GPU here has the memory for.
-// What makes it tractable is the measurement -- the resident set on both the
-// default and geometry-stress scenes is around 40 pages, so an allocator over
-// 1024 slots is never under pressure.
+// What makes it tractable is the measurement -- the resident set is 94 pages on
+// the default scene at 720p and 307 at 4K, so an allocator over 1024 slots still
+// has room, but no longer a wide margin. 4K at axis = 32 is what sizes this now:
+// see kVsmPagesPerLevelAxis, whose next step up would need this grown with it.
 inline constexpr uint32_t kVsmPagePoolSize = 4096;
 inline constexpr uint32_t kVsmPagePoolPagesPerAxis = kVsmPagePoolSize / kVsmPageSize;
 inline constexpr uint32_t kVsmPagePoolPageCount = kVsmPagePoolPagesPerAxis * kVsmPagePoolPagesPerAxis;
@@ -95,12 +128,20 @@ inline constexpr uint32_t kVsmPagePoolPageCount = kVsmPagePoolPagesPerAxis * kVs
 // atlas pass (one rendering scope, one viewport/scissor and one indirect draw
 // per slot), so PunctualShadows::kMaxGpuCulledSlots = 64 was the starting guess.
 //
-// Measured up from it: the page-marking pass requests 99 pages on the default
-// scene and 60 on geometry stress, both at 1080p. A budget below the resident
-// set is not wrong -- caching is what keeps the per-frame redraw far under it --
-// but a COLD start has to fill the whole set, and at 64 that takes two frames of
-// visibly wrong shadow. 128 covers both measured scenes outright.
-inline constexpr uint32_t kMaxVsmPagesPerFrame = 128;
+// Measured up from it twice. A budget below the resident set is not wrong --
+// caching is what keeps the per-frame redraw far under it -- but a COLD start has
+// to fill the whole set, and at 64 that takes two frames of visibly wrong shadow,
+// so 128 was chosen to cover the 99 pages the default scene requested at 1080p.
+//
+// Raising kVsmPagesPerLevelAxis to 32 took the 4K request set to 306, which 128
+// no longer covers, and a cold start is not the rare event it sounds like:
+// updateResidency drops residency wholesale whenever the light direction moves,
+// and the debug UI drags it every frame. At 128 a light drag could only refill
+// 42% of the set per frame, leaving the rest to the sampler's coarse-level
+// fallback -- a visible blur for as long as the drag lasts. 384 covers the
+// measured 306 with margin and keeps the indirect buffer this sizes (this times
+// kMaxVsmCastersPerPage draw commands) under 2 MiB per frame in flight.
+inline constexpr uint32_t kMaxVsmPagesPerFrame = 384;
 
 // Casters whose commands fit in one page's region of the compacted indirect
 // buffer. A page covers a small world rect, so this is generous in practice --
@@ -253,8 +294,8 @@ vsmWindowOrigin(const VsmClipmapSettings& settings, uint32_t level, const glm::v
 //
 // This is the second half of why caching works. Window-relative indexing would
 // renumber every slot the moment the window scrolls by one page, so a scroll of
-// one page would invalidate all 64. Wrapping means a scroll invalidates only the
-// row or column that actually changed identity.
+// one page would invalidate every slot in the level. Wrapping means a scroll
+// invalidates only the row or column that actually changed identity.
 [[nodiscard]] uint32_t vsmSlotIndex(const glm::ivec2& absolutePage);
 
 // Flat page id across every level, and its inverse.
