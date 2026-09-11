@@ -53,23 +53,23 @@ would ever be reusable.
 The camera decides which finite **window** of that infinite grid is addressable:
 `kVsmPagesPerLevelAxis` squared, centred on the camera's own page. A page's slot
 inside the window is its absolute coordinate taken **modulo** the axis, not its
-offset from the window's corner. Window-relative indexing would renumber all 256
-slots the moment the window scrolled by one page; wrapping renumbers only the row
+offset from the window's corner. Window-relative indexing would renumber all
+1024 slots the moment the window scrolled by one page; wrapping renumbers only the row
 or column that actually changed identity.
 
 | constant | value | what it fixes |
 | --- | --- | --- |
 | `kVsmPageSize` | 128 | texels per page edge |
-| `kVsmPagesPerLevelAxis` | 16 | pages per level edge — a **coverage** constant, see below |
+| `kVsmPagesPerLevelAxis` | 32 | pages per level edge — sets the **texel-density ceiling**, see below |
 | `kVsmMaxClipmapLevels` | 12 | ~8 km of reach at a 4 m level-0 extent |
 | `kVsmPagePoolSize` | 4096 | physical pool edge, 1024 pages |
-| `kMaxVsmPagesPerFrame` | 128 | pages the render phase may draw per frame |
+| `kMaxVsmPagesPerFrame` | 384 | pages the render phase may draw per frame |
 
-The virtual set (12 x 256 = 3072 pages) is deliberately **larger** than the pool
+The virtual set (12 x 1024 = 12288 pages) is deliberately **larger** than the pool
 (1024), so the page table is a real indirection and the rendering phase needs a
 residency policy. What makes that tractable is the measurement below: the
-resident set is around 100 pages, so an allocator over 1024 slots is never under
-pressure.
+resident set is 94 pages at 720p and 307 at 4K, so an allocator over 1024 slots
+still has room — but the wide margin is gone, and 4K is now what sizes the pool.
 
 ## The page table checks identity, not just residency
 
@@ -1279,19 +1279,42 @@ page rendering.
   [Dumping the pool](#dumping-the-pool-the-record-is-correct),
   [The cause](#the-cause-the-page-pass-draws-every-caster-out-of-one-meshs-buffers)
   and [The fix](#the-fix-per-batch-slices-and-a-stride-that-is-not-the-budget).
-- **`texelsPerPixel` below 1.0 does nothing *on this scene*, and that is the
-  coverage bound rather than a broken setting.** `vsmSelectLevel` returns
-  `max(quality, coverage)`, so a finer request only survives where coverage is
-  not already the larger bound — which means inside level 0's reach,
-  `(kVsmPagesPerLevelAxis / 2 - 1) * pageWorldSize(0)` = **1.75 m** at the
-  defaults. The default scene has nothing that close: the per-level log reads
-  `L0=0` and levels touched 1..5, so 0.25 and 1.0 land on the identical 99-page
-  set and byte-identical pixels. Move the camera to 1.6 m from geometry and the
-  two diverge — quality asks for L1 at 1.0 and L0 at 0.25, and coverage permits
-  both. Above 1.0 it always works, because coarser is always addressable: 2.0
-  gives 97 pages, 4.0 gives 37, 8.0 gives 18. An earlier note here called the
-  no-op unexplained, having measured only the clamped half of the range on the
-  one scene where it is clamped.
+- **`texelsPerPixel` below 1.0 still does nothing, and the reason is a hard
+  ceiling — `kVsmPagesPerLevelAxis`, which was raised 16 → 32 because of it.**
+  `vsmSelectLevel` returns `max(quality, coverage)`, and substituting the level
+  coverage picks, the texel it yields is `2 * d / (kVsmPageSize * axis)`. That is
+  independent of `level0Extent` **and** of `texelsPerPixel`, so wherever coverage
+  is the larger term the request is capped and no setting can ask for more.
+  Coverage stops binding only when
+  `axis > 2 * projScaleY / (kVsmPageSize * texelsPerPixel) + 2`, which at
+  `texelsPerPixel` 1.0 is a knee of **11.7 at 720p, 16.6 at 1080p and 31.2 at
+  4K** (`projScaleY = height * 0.5 * |proj[1][1]|` = 623 / 935 / 1871 at the
+  60° vertical fov).
+
+  **At axis = 16 that meant 4K got 0.55 texels per pixel and could not ask for
+  more, and the measurement is blunt about it: nine times the pixel count
+  (720p → 4K) moved the request set only 94 → 99 pages with the per-level
+  histogram unchanged (`L1=27/30 L2=36/38 L3=21 L4=9 L5=1`), and at 4K a sweep
+  of `texelsPerPixel` 0.25 / 0.5 / 1.0 / 2.0 returned byte-identical 99-page
+  sets.** The subsystem whose stated purpose is resolution was delivering 720p
+  shadow resolution at 4K with its own quality knob inert.
+
+  Axis 32 puts the 4K knee at 31.2 — one texel per pixel reached, not overshot.
+  The cost is paid only where a resolution was being shortchanged: 4K 99 → 306
+  pages (307 of 1024 pool slots), 1080p 97 → 154, 720p 94 → **94, unchanged**.
+  `VsmPageMark` is the only pass that moved, 0.017 → 0.13 ms; `VsmPagePass` and
+  `VsmPageCull` sit at 0.015 ms either way. `texelsPerPixel` 2.0 now moves the
+  set at 4K (159 pages), which is the knob coming back to life on the coarse
+  side; below 1.0 is still capped, and lifting that needs axis 64 — four times
+  the pages, ~1200 against a 1024-page pool, so `kVsmPagePoolSize` would have to
+  grow with it.
+
+  `level0Extent` is **not** a lever here, which was measured rather than assumed:
+  4.0 vs 8.0 at axis 32 gives an identical page set at every resolution, with the
+  per-level histogram shifted one index. It relabels which level serves a given
+  distance; it does not change the density. An earlier note here called the
+  sub-1.0 no-op a property of the scene, having measured only 720p and 1080p,
+  where the knee happens to sit nearly on top of 16.
 - **The default scene barely shows a directional shadow.** Umbra 31.8/255 against
   a lit floor at 80/255, which is why every measurement above is a patch mean
   from a reproducible capture rather than something visible at a glance. Use
@@ -1314,7 +1337,8 @@ page rendering.
   from the previous frame's depth and because the bitmask is read back when its
   frame slot comes round again.
 - **Effective resolution is capped by `kVsmPagesPerLevelAxis`**, not by
-  `level0Extent`; see the measurement above.
+  `level0Extent`; at 32 the cap is one texel per pixel at 4K, and above 4K the
+  clipmap saturates again. See the measurement above.
 - **A marking block that straddles a page seam only marks the page its centre
   lands in.** The coarser-level mark covers it, at that level's resolution.
 - **Only the default and geometry-stress scenes have been measured**, both with

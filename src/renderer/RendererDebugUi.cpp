@@ -2408,7 +2408,13 @@ void Renderer::drawVsmPageResidency()
     const ImU32 gridColor = IM_COL32(20, 20, 24, 255);
     const ImU32 cameraColor = IM_COL32(240, 200, 60, 255);
 
-    const float cellSize = std::clamp(14.0f * debugUiSettings_.renderTargetPreviewScale, 6.0f, 28.0f);
+    // Budgeted by the whole grid rather than per cell, so the panel keeps its
+    // size when kVsmPagesPerLevelAxis changes. At axis 16 this still works out
+    // to the 14 px cell it used to hardcode; at 32 the cells halve instead of
+    // the grid doubling and pushing everything below it off the panel.
+    const float targetGridSize = 224.0f * debugUiSettings_.renderTargetPreviewScale;
+    const float cellSize =
+        std::clamp(targetGridSize / static_cast<float>(renderer::kVsmPagesPerLevelAxis), 4.0f, 28.0f);
     const float gridSize = cellSize * static_cast<float>(renderer::kVsmPagesPerLevelAxis);
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     ImDrawList* drawList = ImGui::GetWindowDrawList();

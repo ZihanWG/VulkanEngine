@@ -20,7 +20,7 @@
 // rather than as an obvious failure.
 
 const uint kVsmPageSize = 128u;
-const uint kVsmPagesPerLevelAxis = 16u;
+const uint kVsmPagesPerLevelAxis = 32u;
 const uint kVsmPagesPerLevel = kVsmPagesPerLevelAxis * kVsmPagesPerLevelAxis;
 const uint kVsmLevelResolution = kVsmPagesPerLevelAxis * kVsmPageSize;
 const uint kVsmMaxClipmapLevels = 12u;
