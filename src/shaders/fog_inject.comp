@@ -19,12 +19,7 @@
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
-// Must match ve::renderer::kFogGrid*.
-const uint kFogGridX = 160u;
-const uint kFogGridY = 90u;
-const uint kFogGridZ = 64u;
-// Must match ve::renderer::kFogNearPlane.
-const float kFogNearPlane = 0.5;
+#include "volumetric_fog.glsl"
 
 const uint kMaxCascades = 4u;
 const float kInverseFourPi = 0.0795774715;

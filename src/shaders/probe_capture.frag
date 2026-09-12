@@ -96,8 +96,7 @@ layout(push_constant) uniform PushConstants {
     float bounceWeight;
 } pc;
 
-// Must match ve::renderer::kProbeMaxDistance.
-const float kProbeMaxDistance = 64.0;
+#include "irradiance_probes.glsl"
 
 layout(location = 0) out vec4 outRadianceDistance;
 
@@ -279,16 +278,8 @@ vec3 capturePunctualLight(GpuLight light, vec3 worldPosition, vec3 normal)
 // way the camera gathers it would make probes disagree with the shading they
 // feed.
 
-const uint kProbeGridX = 8u;
-const uint kProbeGridY = 4u;
-const uint kProbeGridZ = 8u;
-const int kProbeBorderTexels = 1;
-const int kProbeIrradianceResolution = 8;
-const int kProbeDepthResolution = 16;
-const int kProbeAtlasTilesX = 32;
-const int kProbeAtlasTilesY = 8;
-const float kProbeMinVisibility = 0.02;
-const float kProbeBackfaceFloor = 0.2;
+// Grid, atlas and visibility constants come from irradiance_probes.glsl,
+// included above.
 
 vec2 probeOctEncode(vec3 n)
 {

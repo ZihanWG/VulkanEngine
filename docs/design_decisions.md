@@ -428,6 +428,49 @@ compile error rather than an omission. Timeline semaphores deliberately do not
 belong in this table: they are a mandatory Vulkan 1.2 core feature and the device
 already requires 1.3, so they need enabling, not negotiating.
 
+## Mirrored constants are found by structure, not by comment
+
+**Decision.** `tools/check_shader_constants.py` decides what to check by
+comparing declarations: any constant declared in a GLSL file whose name is also
+a `constexpr` in `src/renderer` or `src/rhi` is a mirror and must be covered by
+an entry in `PAIRS`, or explicitly listed in `COMPLETENESS_EXEMPT`. It also
+checks that a covered file's entry lists *every* such name, not just some.
+
+**Why.** The engine mirrors layout constants by hand across the C++/GLSL
+boundary, and a divergence there does not fail to build and does not trip
+validation -- it silently addresses the wrong froxel, page or tile. The checker
+existed for that, and guarded three groups while its own docstring claimed more.
+
+The first attempt at a completeness check read the `// Must match ve::...`
+comments, on the theory that the comments are a second, independently maintained
+list of what ought to be checked. They are not. The same relationship is written
+"Must match", "Mirrors", and "Keep the two in sync" in different files, so that
+version found two of five groups and reported success -- which is worse than no
+check, because it reads as coverage.
+
+Structure does not have that failure mode. A shader that declares
+`kClusterGridX` is mirroring `kClusterGridX` whether or not anyone wrote a
+comment saying so, and whether or not the wording matched. Switching to the
+declaration as the signal immediately found two mirrors the comment version had
+missed, one of them live: `cluster_build.comp` had been building a 16×9×24 grid
+while every consumer read 32×18×24 (see clustered_lighting.md).
+
+**Trade-offs.** A name that collides by accident rather than by mirroring is a
+false positive. That is the intended cost: the answer is a line in
+`COMPLETENESS_EXEMPT`, which forces someone to decide rather than letting the
+question go unasked. The comparison is textual, so it covers constants and not
+struct layouts or function bodies -- `object_frame_data.glsl` handles layout by
+being shared outright, which is the stronger form where it is available.
+
+Exact equality, no tolerance, including for floats: both languages parse `0.5`
+and `0.5f` to the same double, and a tolerance would hide precisely the small
+divergences this exists to catch.
+
+**More time.** Reflect the compiled SPIR-V instead of parsing text, which would
+also cover descriptor set and binding numbers -- 102 of those are hand-mirrored
+today and nothing checks them either. `spirv-cross --reflect` is already in the
+SDK the CI job installs.
+
 ## Frame pacing is a timeline semaphore, not a fence per slot
 
 **Decision.** One device-level timeline semaphore counts submitted frames. Every

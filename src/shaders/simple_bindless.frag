@@ -55,6 +55,7 @@ layout(buffer_reference, std430) readonly buffer LightIndexBuffer {
 };
 
 #include "cluster_grid.glsl"
+#include "volumetric_fog.glsl"
 
 // Matches ve::PushConstants. The vertex stage reads the leading object-data
 // address + cascade index; the fragment stage reads the punctual-light and
@@ -454,18 +455,7 @@ vec3 cascadeDepthDeltaDebugColor(float deltaWorld)
 // divergence produces lighting that is plausible and wrong rather than obviously
 // broken.
 
-// Must match ve::renderer::kProbeGrid* / kProbe*Resolution / kProbeAtlasTiles*.
-const uint kProbeGridX = 8u;
-const uint kProbeGridY = 4u;
-const uint kProbeGridZ = 8u;
-const int kProbeBorderTexels = 1;
-const int kProbeIrradianceResolution = 8;
-const int kProbeDepthResolution = 16;
-const int kProbeAtlasTilesX = 32;
-const int kProbeAtlasTilesY = 8;
-// Must match ve::renderer::kProbeMinVisibility / kProbeBackfaceFloor.
-const float kProbeMinVisibility = 0.02;
-const float kProbeBackfaceFloor = 0.2;
+#include "irradiance_probes.glsl"
 
 // The engine's octahedral encode, identical to octEncode above; named separately
 // only to keep the probe block self-contained and easy to compare against the
@@ -1076,7 +1066,6 @@ void main()
         // Exponential slice distribution, inverting ve::renderer's
         // fogSliceViewDepth. Its round trip against the injection pass is
         // pinned by a unit test.
-        const float kFogNearPlane = 0.5;
         float fogFar = max(pc.fogMaxDistance, kFogNearPlane + 1.0e-3);
         float fogDepth = clamp(vViewDepth, kFogNearPlane, fogFar);
         float fogW = log(fogDepth / kFogNearPlane) / log(fogFar / kFogNearPlane);

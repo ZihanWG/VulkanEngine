@@ -18,13 +18,7 @@
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
-// Must match ve::renderer::kProbeBorderTexels.
-const int kProbeBorderTexels = 1;
-// Must match ve::renderer::kProbeAtlasTilesX / kProbeAtlasTilesY.
-const int kProbeAtlasTilesX = 32;
-const int kProbeAtlasTilesY = 8;
-// Must match ve::renderer::kProbeMaxDistance.
-const float kProbeMaxDistance = 64.0;
+#include "irradiance_probes.glsl"
 
 // Half-extent of the synthetic box the debug depth is measured against. Well
 // inside kProbeMaxDistance so the clamp is not what shapes the preview.
