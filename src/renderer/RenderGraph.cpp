@@ -1635,6 +1635,26 @@ void RenderGraph::endFrame()
     recordedOrderViolations_ = validatePassOrder(passSchedule_, recordedOrder_);
     unrecordedPassIndices_ = unrecordedPasses(passSchedule_, recordedOrder_);
 
+    // Roll the frame into the run-level summary before the next beginFrame
+    // clears the vectors. Reported once at shutdown; see
+    // RenderGraphBackstopSummary for why peaks and not sums.
+    ++backstopSummary_.framesObserved;
+    backstopSummary_.peakOrderViolations =
+        std::max(backstopSummary_.peakOrderViolations, recordedOrderViolations_.size());
+    backstopSummary_.peakUnrecordedPasses =
+        std::max(backstopSummary_.peakUnrecordedPasses, unrecordedPassIndices_.size());
+    backstopSummary_.peakDeclarationIssues =
+        std::max(backstopSummary_.peakDeclarationIssues, declarationIssues_.size());
+    backstopSummary_.executionOrderCycleDetected =
+        backstopSummary_.executionOrderCycleDetected || executionOrderCycleDetected_;
+    if (!recordedOrderViolations_.empty() || !unrecordedPassIndices_.empty() || !declarationIssues_.empty() ||
+        executionOrderCycleDetected_) {
+        ++backstopSummary_.framesWithIssues;
+        if (backstopSummary_.firstIssueDetails.empty()) {
+            backstopSummary_.firstIssueDetails = describeBackstopFindings();
+        }
+    }
+
     refreshDebugResources();
     VK_CHECK(vkEndCommandBuffer(frame_.commandBuffer));
 
@@ -3153,6 +3173,66 @@ std::vector<uint32_t> unrecordedPasses(const std::vector<RenderGraphPassSchedule
     }
 
     return missing;
+}
+
+std::vector<std::string> RenderGraph::describeBackstopFindings() const
+{
+    // Names, not indices. A pass index is meaningless in a log: it depends on
+    // which passes this configuration declared, which is exactly the thing the
+    // reader does not know yet.
+    const auto passName = [this](uint32_t index) -> std::string {
+        return index < passes_.size() ? passes_[index].name : ("pass#" + std::to_string(index));
+    };
+
+    std::vector<std::string> findings;
+    for (const RenderGraphOrderViolation& violation : recordedOrderViolations_) {
+        findings.push_back("  order violation: " + passName(violation.passIndex) + " was recorded at or before " +
+                           passName(violation.predecessorIndex) + ", which it depends on.");
+    }
+    for (const uint32_t passIndex : unrecordedPassIndices_) {
+        findings.push_back("  unrecorded pass: " + passName(passIndex) +
+                           " was declared and scheduled but never recorded.");
+    }
+    for (const RenderGraphDeclarationIssue& issue : declarationIssues_) {
+        findings.push_back("  declaration issue: " + passName(issue.passIndex) + " -- " +
+                           renderGraphDeclarationIssueName(issue.issue) + ".");
+    }
+    if (executionOrderCycleDetected_) {
+        findings.emplace_back("  execution order: the derived dependency graph could not be fully ordered.");
+    }
+
+    return findings;
+}
+
+std::string formatRenderGraphBackstopSummary(const RenderGraphBackstopSummary& summary)
+{
+    // The prefix and the three count phrases are the CI contract. Keep them
+    // literal and in this order; tests/test_render_graph.cpp pins them, because
+    // a reworded line makes the gate pass by matching nothing.
+    std::string text = "Render graph backstop: ";
+    text += std::to_string(summary.peakOrderViolations);
+    text += " order violations, ";
+    text += std::to_string(summary.peakUnrecordedPasses);
+    text += " unrecorded passes, ";
+    text += std::to_string(summary.peakDeclarationIssues);
+    text += " declaration issues";
+
+    // Counts alone cannot distinguish "clean over 30 frames" from "the graph
+    // never ended a frame", and the second is how a no-op run reads green.
+    text += " over ";
+    text += std::to_string(summary.framesObserved);
+    text += " frames";
+
+    if (summary.framesWithIssues > 0) {
+        text += " (";
+        text += std::to_string(summary.framesWithIssues);
+        text += " affected)";
+    }
+    if (summary.executionOrderCycleDetected) {
+        text += "; execution order cycle detected";
+    }
+
+    return text;
 }
 
 uint32_t longestPassChain(const std::vector<RenderGraphPassSchedule>& schedule)

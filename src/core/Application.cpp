@@ -150,6 +150,19 @@ void Application::mainLoop()
 
     captureCompleted_ = renderer_->frameCaptureComplete();
 
+    // Unconditional, and here rather than in reportValidationTally, which runs
+    // after the renderer is gone. One line, every run: the render graph's
+    // backstop is otherwise reachable only through the ImGui panel, which a
+    // scripted run never draws and a capture never contains.
+    const renderer::RenderGraphBackstopSummary& backstop = renderer_->renderGraphBackstopSummary();
+    Logger::info(renderer::formatRenderGraphBackstopSummary(backstop));
+    // Warn, not info: this is the level a degraded run is expected to be
+    // greppable at, and the counts on the line above are useless for acting on
+    // without the pass names.
+    for (const std::string& finding : backstop.firstIssueDetails) {
+        Logger::warn(finding);
+    }
+
     if (config_.assetLoadStats) {
         renderer_->finalizeAssetLoadStats(rendererInitMs_, firstFrameMs);
         Logger::info(renderer::formatReport(renderer_->assetLoadStats()));

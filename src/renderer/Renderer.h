@@ -176,6 +176,15 @@ public:
         return frameCaptureTargetFrame_ != 0;
     }
 
+    // Whether the render graph's declaration/recording backstop found anything,
+    // rolled up over the whole run. Exposed rather than the graph itself: the
+    // caller wants the once-per-run report, and widening this to the graph would
+    // put every internal it owns on the public surface.
+    [[nodiscard]] const renderer::RenderGraphBackstopSummary& renderGraphBackstopSummary() const
+    {
+        return renderGraph_.backstopSummary();
+    }
+
 private:
     static constexpr uint32_t kMaxShadowCascades = renderer::kMaxShadowCascades;
     static constexpr size_t kDebugHistoryCapacity = 240;

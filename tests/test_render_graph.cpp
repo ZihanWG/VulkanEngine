@@ -1626,3 +1626,62 @@ TEST_CASE("Lifetimes run after culling, matching how the graph will call them")
     // The survivor is the frame's first slot, not its second.
     REQUIRE(lifetimes[1].firstPass == 0);
 }
+
+// ---------------------------------------------------------------------------
+// The once-per-run backstop report.
+//
+// This string is a CI contract, not a log nicety: the headless matrix greps for
+// it, so a reworded prefix or a dropped count makes every leg pass by matching
+// nothing. These cases exist to make that rewording a test failure.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("A clean run reports the exact line CI greps for")
+{
+    ve::renderer::RenderGraphBackstopSummary summary{};
+    summary.framesObserved = 30;
+
+    CHECK(summary.clean());
+    CHECK(ve::renderer::formatRenderGraphBackstopSummary(summary) ==
+          "Render graph backstop: 0 order violations, 0 unrecorded passes, 0 declaration issues over 30 frames");
+}
+
+TEST_CASE("A run that ended no frames does not read like a clean one")
+{
+    // The failure this guards is a gate that goes green because the renderer
+    // exited before drawing anything. The counts are identical to a clean run;
+    // only the frame count separates them, which is why it is in the line.
+    ve::renderer::RenderGraphBackstopSummary summary{};
+
+    CHECK(summary.clean());
+    CHECK(ve::renderer::formatRenderGraphBackstopSummary(summary) ==
+          "Render graph backstop: 0 order violations, 0 unrecorded passes, 0 declaration issues over 0 frames");
+}
+
+TEST_CASE("Each backstop count reaches its own phrase in the report")
+{
+    ve::renderer::RenderGraphBackstopSummary summary{};
+    summary.framesObserved = 10;
+    summary.framesWithIssues = 4;
+    summary.peakOrderViolations = 1;
+    summary.peakUnrecordedPasses = 2;
+    summary.peakDeclarationIssues = 3;
+
+    CHECK_FALSE(summary.clean());
+    CHECK(ve::renderer::formatRenderGraphBackstopSummary(summary) ==
+          "Render graph backstop: 1 order violations, 2 unrecorded passes, 3 declaration issues over 10 frames "
+          "(4 affected)");
+}
+
+TEST_CASE("An unresolvable order is dirty even when every count is zero")
+{
+    // A cycle means the schedule the other three were judged against is itself
+    // unusable, so zero violations against it proves nothing.
+    ve::renderer::RenderGraphBackstopSummary summary{};
+    summary.framesObserved = 30;
+    summary.executionOrderCycleDetected = true;
+
+    CHECK_FALSE(summary.clean());
+    CHECK(ve::renderer::formatRenderGraphBackstopSummary(summary) ==
+          "Render graph backstop: 0 order violations, 0 unrecorded passes, 0 declaration issues over 30 frames"
+          "; execution order cycle detected");
+}
