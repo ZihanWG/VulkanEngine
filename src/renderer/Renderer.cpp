@@ -144,7 +144,11 @@ size_t Renderer::DebugHistory::copyChronological(std::array<float, kDebugHistory
 
 Renderer::Renderer(Window& window, const RendererStartupOverrides& overrides) : window_(window)
 {
-    runtimeSettingsPath_ = defaultRuntimeSettingsPath();
+    // Before the load, not after: this is which file to read, not what to do
+    // with what was read. The debug panel keeps reporting the path it actually
+    // used, so a run started from a sweep configuration says so on screen.
+    runtimeSettingsPathWasRequested_ = overrides.settingsPath.has_value();
+    runtimeSettingsPath_ = runtimeSettingsPathWasRequested_ ? *overrides.settingsPath : defaultRuntimeSettingsPath();
     sceneDocumentPath_ = defaultSceneDocumentPath();
     loadRuntimeSettingsAtStartup();
 
@@ -1913,6 +1917,17 @@ void Renderer::loadRuntimeSettingsAtStartup()
 {
     RuntimeSettings settings{};
     const RuntimeSettingsLoadResult result = loadRuntimeSettingsDetailed(runtimeSettingsPath_, settings);
+
+    // A file nobody asked for by name may be absent or stale -- that is the
+    // per-user path, and defaults are the right answer. A file named on the
+    // command line is different: it was chosen, so running defaults instead
+    // means running a configuration nobody asked for while reporting success,
+    // which is precisely how a configuration sweep goes green without sweeping
+    // anything.
+    if (runtimeSettingsPathWasRequested_ && result.status != RuntimeSettingsLoadStatus::Loaded) {
+        throw std::runtime_error("Could not load the runtime settings named by --settings: " + result.message);
+    }
+
     applyRuntimeSettings(settings, RuntimeSettingsApplyMode::Startup);
 
     lastRuntimeSettingsLoadStatus_ = result.message;

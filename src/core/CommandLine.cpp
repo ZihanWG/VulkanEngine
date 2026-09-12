@@ -183,6 +183,25 @@ bool parseLaunchOptions(int argc, char** argv, LaunchOptions& options)
             continue;
         }
 
+        if (argument == "--settings") {
+            if (index + 1 >= argc) {
+                Logger::error("--settings requires a file path.");
+                return false;
+            }
+            // Existence is checked here rather than at load time so a typo fails
+            // before the window opens, with the path in the message. The loader
+            // treats a missing file as "use defaults", which is right for the
+            // persisted path and wrong for one somebody asked for by name.
+            std::filesystem::path path(argv[++index]);
+            std::error_code error;
+            if (!std::filesystem::is_regular_file(path, error)) {
+                Logger::error("--settings names no readable file: " + path.string());
+                return false;
+            }
+            options.settingsPath = std::move(path);
+            continue;
+        }
+
         if (argument == "--capture-output") {
             if (index + 1 >= argc) {
                 Logger::error("--capture-output requires a file path.");

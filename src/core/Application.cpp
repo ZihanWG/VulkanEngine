@@ -62,6 +62,10 @@ void Application::initialize()
             .shadows = mode == VsmMode::Shadows,
         };
     }
+    // Startup-only for the same reason: the settings file is read inside the
+    // constructor, and several of the values in it size what that constructor
+    // allocates.
+    overrides.settingsPath = config_.settingsPath;
 
     const auto rendererInitStart = std::chrono::steady_clock::now();
     renderer_ = std::make_unique<Renderer>(*window_, overrides);

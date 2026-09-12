@@ -11,6 +11,7 @@
 // because SDL3.dll does not sit next to the test binary.
 
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -134,6 +135,25 @@ struct LaunchOptions {
     // Unset leaves the persisted VSM settings untouched, which is what a normal
     // desktop run wants. Any value overrides all three stage toggles.
     std::optional<VsmMode> vsm;
+
+    // Read runtime settings from here instead of config/runtime_settings.json.
+    //
+    // Exists for the same reason --scene and --vsm do, generalised: those two
+    // were added because a configuration reachable only through ImGui buttons
+    // cannot be scripted, and the same is true of every other persisted setting.
+    // The headless job could therefore only ever run one configuration -- the
+    // default -- which is exactly the blind spot the render-graph backstop
+    // warns about, since a declaration/recording mismatch that only appears with
+    // fog or GI on is invisible to a gate that never turns them on.
+    //
+    // Needs no read-only guard: saving is an ImGui button
+    // (Renderer::saveRuntimeSettingsFromUi), so a headless run never writes back
+    // and a sweep cannot corrupt whoever's settings it borrowed.
+    //
+    // Unset keeps the default path. A path that does not load is a hard failure
+    // rather than a fallback to defaults: a sweep that quietly ran the default
+    // configuration ten times is worse than no sweep, because it reports green.
+    std::optional<std::filesystem::path> settingsPath;
 };
 
 // Parses the recognized flags and leaves defaults in place otherwise. Returns

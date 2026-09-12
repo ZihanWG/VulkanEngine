@@ -96,6 +96,12 @@ struct RendererStartupOverrides {
     };
 
     std::optional<VsmStages> vsmStages;
+
+    // Load runtime settings from here instead of the per-user config path.
+    // Startup-only for the same reason the rest of this struct is: settings are
+    // read once in the constructor, and several of them size resources it
+    // allocates.
+    std::optional<std::filesystem::path> settingsPath;
 };
 
 class Renderer final {
@@ -1221,6 +1227,9 @@ private:
     DebugHistory histogramClippedLuminanceHistory_{};
     renderer::GpuProfiler::FrameResults latestGpuProfilerResults_{};
     std::filesystem::path runtimeSettingsPath_;
+    // True when --settings named the path above. Turns a failed load from
+    // "fall back to defaults" into a hard error; see loadRuntimeSettingsAtStartup.
+    bool runtimeSettingsPathWasRequested_ = false;
     std::filesystem::path sceneDocumentPath_;
     std::string lastRuntimeSettingsLoadStatus_ = "Not loaded yet.";
     std::string lastRuntimeSettingsSaveStatus_ = "Not saved this session.";
