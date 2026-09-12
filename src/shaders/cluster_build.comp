@@ -11,12 +11,9 @@
 // the identical mapping, the grid stays consistent with the rendered image
 // regardless of any projection y-flip.
 
-layout(local_size_x = 64) in;
+#include "cluster_grid.glsl"
 
-const uint kGridX = 16u;
-const uint kGridY = 9u;
-const uint kGridZ = 24u;
-const uint kClusterCount = kGridX * kGridY * kGridZ;
+layout(local_size_x = 64) in;
 
 struct ClusterAabb {
     vec4 minView; // xyz = view-space min, w unused
@@ -50,20 +47,20 @@ void main()
         return;
     }
 
-    uint tileX = clusterIndex % kGridX;
-    uint tileY = (clusterIndex / kGridX) % kGridY;
-    uint slice = clusterIndex / (kGridX * kGridY);
+    uint tileX = clusterIndex % kClusterGridX;
+    uint tileY = (clusterIndex / kClusterGridX) % kClusterGridY;
+    uint slice = clusterIndex / (kClusterGridX * kClusterGridY);
 
     // Tile rectangle in NDC ([-1,1]); uv = tile / dim, ndc = uv * 2 - 1.
-    vec2 ndcMin = vec2(float(tileX) / float(kGridX), float(tileY) / float(kGridY)) * 2.0 - 1.0;
-    vec2 ndcMax = vec2(float(tileX + 1u) / float(kGridX), float(tileY + 1u) / float(kGridY)) * 2.0 - 1.0;
+    vec2 ndcMin = vec2(float(tileX) / float(kClusterGridX), float(tileY) / float(kClusterGridY)) * 2.0 - 1.0;
+    vec2 ndcMax = vec2(float(tileX + 1u) / float(kClusterGridX), float(tileY + 1u) / float(kClusterGridY)) * 2.0 - 1.0;
 
     // Exponential depth slices. View-space z is negative (camera looks down -z).
     float zNear = max(params.zNearFarScreen.x, 1.0e-4);
     float zFar = max(params.zNearFarScreen.y, zNear + 1.0e-4);
     float ratio = zFar / zNear;
-    float sliceNear = -zNear * pow(ratio, float(slice) / float(kGridZ));
-    float sliceFar = -zNear * pow(ratio, float(slice + 1u) / float(kGridZ));
+    float sliceNear = -zNear * pow(ratio, float(slice) / float(kClusterGridZ));
+    float sliceFar = -zNear * pow(ratio, float(slice + 1u) / float(kClusterGridZ));
 
     vec3 aabbMin = vec3(1.0e30);
     vec3 aabbMax = vec3(-1.0e30);
