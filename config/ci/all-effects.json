@@ -1,0 +1,6 @@
+{
+  "fog": { "enabled": true },
+  "gi": { "enabled": true },
+  "ssao": { "enabled": true },
+  "ssr": { "enabled": true }
+}

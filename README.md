@@ -181,7 +181,9 @@ Runtime settings load from `config/runtime_settings.json` when present (user-loc
 
 ## Validated Environment
 
-Validated locally on Windows + Visual Studio 2022 MSVC x64, Vulkan SDK 1.4.328.1, NVIDIA GeForce RTX 3080 Ti Laptop GPU. CI builds on `windows-2022` and `ubuntu-24.04`: it configures CMake, compiles the GLSL shader target through `glslc`, builds the renderer, and runs the full unit-test suite — on Linux twice, the second time under ASan/UBSan with leak detection — plus clang-tidy. The tests need no GPU by design. CI does not run the renderer itself, because GPU/display availability is not guaranteed.
+Validated locally on Windows + Visual Studio 2022 MSVC x64, Vulkan SDK 1.4.328.1, NVIDIA GeForce RTX 3080 Ti Laptop GPU. CI builds on `windows-2022` and `ubuntu-24.04`: it configures CMake, compiles the GLSL shader target through `glslc`, builds the renderer, and runs the full unit-test suite — on Linux twice, the second time under ASan/UBSan with leak detection — plus clang-tidy. The tests need no GPU by design.
+
+A third job does run the renderer, on Mesa's lavapipe software Vulkan driver under a virtual X server, so no GPU is required: it renders 30 deterministic frames with the validation layer on, fails on any validation error, and compares the captured frame against a committed golden image. It then sweeps [26 further configurations](config/ci/README.md) -- fog, GI, GTAO, SSR, the VSM stages, four scene presets, and the toggles that add or remove a pass -- asserting for each that the render graph recorded the frame it declared. See [docs/headless_ci.md](docs/headless_ci.md).
 
 ## Scope and Known Limitations
 

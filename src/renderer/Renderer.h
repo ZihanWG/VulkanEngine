@@ -96,6 +96,12 @@ struct RendererStartupOverrides {
     };
 
     std::optional<VsmStages> vsmStages;
+
+    // Load runtime settings from here instead of the per-user config path.
+    // Startup-only for the same reason the rest of this struct is: settings are
+    // read once in the constructor, and several of them size resources it
+    // allocates.
+    std::optional<std::filesystem::path> settingsPath;
 };
 
 class Renderer final {
@@ -174,6 +180,15 @@ public:
     [[nodiscard]] bool frameCaptureRequested() const
     {
         return frameCaptureTargetFrame_ != 0;
+    }
+
+    // Whether the render graph's declaration/recording backstop found anything,
+    // rolled up over the whole run. Exposed rather than the graph itself: the
+    // caller wants the once-per-run report, and widening this to the graph would
+    // put every internal it owns on the public surface.
+    [[nodiscard]] const renderer::RenderGraphBackstopSummary& renderGraphBackstopSummary() const
+    {
+        return renderGraph_.backstopSummary();
     }
 
 private:
@@ -1212,6 +1227,9 @@ private:
     DebugHistory histogramClippedLuminanceHistory_{};
     renderer::GpuProfiler::FrameResults latestGpuProfilerResults_{};
     std::filesystem::path runtimeSettingsPath_;
+    // True when --settings named the path above. Turns a failed load from
+    // "fall back to defaults" into a hard error; see loadRuntimeSettingsAtStartup.
+    bool runtimeSettingsPathWasRequested_ = false;
     std::filesystem::path sceneDocumentPath_;
     std::string lastRuntimeSettingsLoadStatus_ = "Not loaded yet.";
     std::string lastRuntimeSettingsSaveStatus_ = "Not saved this session.";
@@ -1391,6 +1409,11 @@ private:
     // counters were written? Sized with frames_.
     std::vector<uint8_t> frameOcclusionTested_;
     bool frameTwoPhaseOcclusionActive_ = false;
+    // Whether this frame builds the Hi-Z pyramid. Latched during frame prep for
+    // the same reason as frameProbeCaptureActive_ below: the graph declaration
+    // and the recorder must agree, and isDepthPyramidBuildRequired() reads state
+    // the yield controller can move.
+    bool frameDepthPyramidBuildRequired_ = false;
     bool useAsyncCompute_ = true;
     bool frameAsyncComputeActive_ = false;
     bool frameSsrActive_ = false;

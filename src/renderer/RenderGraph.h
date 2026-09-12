@@ -350,6 +350,51 @@ struct RenderGraphOrderViolation {
     uint32_t predecessorIndex = 0;
 };
 
+// Run-level roll-up of the per-frame backstop results.
+//
+// The per-frame vectors are cleared by every beginFrame, so a violation in
+// frame 7 that clears again by frame 30 leaves nothing behind to find at
+// shutdown. What a scripted run needs to know is "did this ever happen", not
+// "is it happening in the frame that happened to be last", so the peaks are
+// accumulated across the run and reported once.
+//
+// Peaks rather than sums: the same declaration mistake repeats every frame, so
+// a sum would report the frame count multiplied by the fault and read as though
+// the run got progressively worse.
+struct RenderGraphBackstopSummary {
+    uint64_t framesObserved = 0;
+    // Frames where any of the three counts was non-zero, or the order could not
+    // be resolved. The peaks say how bad it got; this says how often.
+    uint64_t framesWithIssues = 0;
+    size_t peakOrderViolations = 0;
+    size_t peakUnrecordedPasses = 0;
+    size_t peakDeclarationIssues = 0;
+    // A cycle means executionOrder_ is a partial order, so the schedule the rest
+    // of the backstop judged against is itself suspect. Latched, never cleared.
+    bool executionOrderCycleDetected = false;
+
+    // Named passes from the first frame that reported anything, one entry per
+    // finding. Counts alone turn a CI failure into a local-repro exercise, and
+    // the configuration that failed is by definition one nobody was running.
+    // Latched on the first offending frame rather than accumulated: the same
+    // fault repeats every frame, so appending would grow without bound.
+    std::vector<std::string> firstIssueDetails;
+
+    [[nodiscard]] bool clean() const
+    {
+        return peakOrderViolations == 0 && peakUnrecordedPasses == 0 && peakDeclarationIssues == 0 &&
+               !executionOrderCycleDetected;
+    }
+};
+
+// The one line a scripted run greps for, in the shape of rhi::ValidationTally's
+// "Validation tally:" report -- a fixed prefix, then counts a matcher can read.
+//
+// Free and pure so tests/test_render_graph.cpp can pin the wording: the string
+// is the CI contract, and a reworded prefix breaks the gate silently rather
+// than loudly.
+[[nodiscard]] std::string formatRenderGraphBackstopSummary(const RenderGraphBackstopSummary& summary);
+
 // What validateDeclarations needs to know about a resource, which is only
 // whether the graph manages its bytes and whether they are shared.
 struct RGResourceValidationInfo {
@@ -425,6 +470,11 @@ struct RenderGraphFrameResources {
     // Declares the two-phase occlusion passes (mid-frame depth pyramid, cull
     // phase 2, second main HDR pass) for this frame.
     bool twoPhaseOcclusionEnabled = false;
+    // Declares the end-of-frame Hi-Z pyramid build. False when the build is
+    // skipped -- occlusion culling off or suspended, and no VSM page marking to
+    // feed -- in which case the recorder only invalidates the pyramid and
+    // records no pass, so declaring one would model work that does not happen.
+    bool depthPyramidBuildEnabled = false;
     // Declares the SSR copy + trace passes for this frame.
     bool ssrEnabled = false;
     // Declares the GTAO horizon-search pass for this frame.
@@ -773,6 +823,13 @@ public:
         return unrecordedPassIndices_;
     }
 
+    // The same three numbers rolled up over every frame this graph has ended,
+    // for the once-per-run report. See RenderGraphBackstopSummary.
+    [[nodiscard]] const RenderGraphBackstopSummary& backstopSummary() const
+    {
+        return backstopSummary_;
+    }
+
     // Last frame's per-unit recording cost, in the order the units ran. Survives
     // the next beginFrame so a once-per-second report can print it.
     [[nodiscard]] const std::vector<RenderGraphUnitCost>& unitRecordCosts() const
@@ -1007,6 +1064,9 @@ private:
     // finds onto the pass nodes, where the debug panel picks it up.
     void validateFrameDeclarations();
     bool beginDeclaredPass(uint32_t passIndex);
+    // One human-readable line per finding in the frame current when this is
+    // called. Latched into backstopSummary_ on the first offending frame.
+    [[nodiscard]] std::vector<std::string> describeBackstopFindings() const;
     // Both record into `batch` instead of submitting, and return the number of
     // barriers they contributed (0 or 1) so the pass's counters keep meaning the
     // same thing they did when every transition submitted on its own. Either may
@@ -1073,6 +1133,9 @@ private:
     std::vector<uint32_t> recordedOrder_;
     std::vector<RenderGraphOrderViolation> recordedOrderViolations_;
     std::vector<uint32_t> unrecordedPassIndices_;
+    // Accumulated across frames, never cleared by beginFrame -- that is the
+    // whole point of it.
+    RenderGraphBackstopSummary backstopSummary_;
     std::vector<RenderGraphUnitCost> unitRecordCosts_;
     bool frameActive_ = false;
     ActivePass activePass_ = ActivePass::None;

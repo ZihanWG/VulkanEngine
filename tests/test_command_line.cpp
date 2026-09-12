@@ -337,3 +337,84 @@ TEST_CASE("Asking for the overlay without a capture is rejected", "[command-line
     // Ignoring it would hand back a frame that looks right and answers nothing.
     REQUIRE_FALSE(parse({"--capture-include-ui"}, config));
 }
+
+// ---------------------------------------------------------------------------
+// --settings: which runtime settings file a run reads.
+//
+// A note on the names below: a TEST_CASE name must not *begin* with "--".
+// catch_discover_tests registers each case with CTest as its own invocation,
+// `VulkanEngineTests "<name>"`, and Catch2 parses a leading "--" as one of its
+// own options -- so such a case fails with "Unrecognised token" under ctest
+// while passing when the binary is run directly. Run ctest, not the binary, or
+// this class of mistake is invisible.
+//
+// The point of the flag is that a configuration sweep can select a
+// configuration. What makes it safe is that a path it cannot use is a refusal
+// rather than a silent fall back to the defaults -- a sweep that ran the
+// default configuration on every leg reports green while sweeping nothing.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("No --settings leaves the per-user path in charge", "[command-line][settings]")
+{
+    LaunchOptions config{};
+    REQUIRE(parse({}, config));
+    CHECK_FALSE(config.settingsPath.has_value());
+}
+
+TEST_CASE("The --settings flag takes the path of a file that exists", "[command-line][settings]")
+{
+    // The repository's own example file, so the case needs no fixture and no
+    // temporary directory.
+    const std::string path = std::string(VULKAN_ENGINE_CONFIG_DIR) + "/runtime_settings.example.json";
+
+    LaunchOptions config{};
+    REQUIRE(parse({"--settings", path}, config));
+    REQUIRE(config.settingsPath.has_value());
+    CHECK(config.settingsPath->filename() == "runtime_settings.example.json");
+}
+
+TEST_CASE("The --settings flag rejects a path that names no file", "[command-line][settings]")
+{
+    // Rejected at parse time rather than at load time, so the run fails before
+    // a window opens and the message carries the path that was wrong.
+    LaunchOptions config{};
+    CHECK_FALSE(parse({"--settings", "no/such/settings.json"}, config));
+    CHECK_FALSE(config.settingsPath.has_value());
+}
+
+TEST_CASE("The --settings flag rejects a directory", "[command-line][settings]")
+{
+    // is_regular_file, not exists: a directory is readable and is not settings.
+    LaunchOptions config{};
+    CHECK_FALSE(parse({"--settings", std::string(VULKAN_ENGINE_CONFIG_DIR)}, config));
+}
+
+TEST_CASE("A --settings flag with no value is rejected", "[command-line][settings]")
+{
+    LaunchOptions config{};
+    CHECK_FALSE(parse({"--settings"}, config));
+}
+
+TEST_CASE("A sweep leg's command line parses as a whole", "[command-line][settings]")
+{
+    // The shape the CI matrix actually runs: one configuration file alongside
+    // the determinism, frame budget and validation gating the default leg uses.
+    const std::string path = std::string(VULKAN_ENGINE_CONFIG_DIR) + "/runtime_settings.example.json";
+
+    LaunchOptions config{};
+    REQUIRE(parse({"--settings",
+                   path,
+                   "--scene",
+                   "sunlit",
+                   "--deterministic",
+                   "--exit-after-frames",
+                   "10",
+                   "--fail-on-validation-error"},
+                  config));
+
+    REQUIRE(config.settingsPath.has_value());
+    CHECK(config.scene == ve::ScenePreset::SunlitYard);
+    CHECK(config.deterministic);
+    CHECK(config.exitAfterFrames == 10);
+    CHECK(config.failOnValidationError);
+}
