@@ -125,7 +125,7 @@
         "enableGpuOcclusionCulling": true,
         "enableTwoPhaseOcclusion": true,
         "enableLayeredCascades": false,
-        "enableBackfaceCulling": false,
+        "enableBackfaceCulling": true,
         "enableAdaptiveOcclusion": true,
         "useClusteredLighting": true,
         "enableAsyncCompute": true,
