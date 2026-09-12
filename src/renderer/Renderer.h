@@ -1409,6 +1409,11 @@ private:
     // counters were written? Sized with frames_.
     std::vector<uint8_t> frameOcclusionTested_;
     bool frameTwoPhaseOcclusionActive_ = false;
+    // Whether this frame builds the Hi-Z pyramid. Latched during frame prep for
+    // the same reason as frameProbeCaptureActive_ below: the graph declaration
+    // and the recorder must agree, and isDepthPyramidBuildRequired() reads state
+    // the yield controller can move.
+    bool frameDepthPyramidBuildRequired_ = false;
     bool useAsyncCompute_ = true;
     bool frameAsyncComputeActive_ = false;
     bool frameSsrActive_ = false;

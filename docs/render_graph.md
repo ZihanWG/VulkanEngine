@@ -457,9 +457,34 @@ unconditionally while its recorder returns early under manual exposure.
 
 Both are now checked in the configurations they live in -- fog and GI on, manual
 exposure, log-average exposure -- and all three report no violations, no
-unrecorded passes and no declaration issues. The headless CI job still exercises
-only the default settings, so a mismatch introduced in a configuration nothing
-runs will still go unnoticed until someone runs it.
+unrecorded passes and no declaration issues.
+
+**Those checks are no longer done by hand.** `endFrame`'s findings are rolled up
+across the run and printed as one greppable line, and the headless job renders
+[26 configurations](../config/ci/README.md) past it rather than only the default
+one. Peaks across the run rather than the last frame's counts, because a
+violation in frame 7 that clears again by frame 30 still has to be reported; and
+the line carries the frame count, because zero findings over zero frames is what
+a run that rendered nothing looks like.
+
+Running the rest of them found two more mismatches of exactly this kind, neither
+visible to any other gate -- the validation layer raises nothing, because each
+individual Vulkan call is still legal:
+
+- **`DepthPyramidPass`** was declared every frame while the recorder skips the
+  build whenever nothing consumes the pyramid, so with occlusion culling off the
+  graph modelled a pass that never ran. Its declaration is now gated on the same
+  latched decision the recorder reads -- latched, because
+  `isDepthPyramidBuildRequired()` reads state the yield controller can move
+  between declaring and recording.
+- **`TransparentPass`** was declared whenever anything was blended, but the
+  transparent pipeline binds the bindless heap as its second descriptor set, so
+  with bindless off the recorder skipped it. `transparentDrawCount` now reports
+  zero in that case.
+
+Both fixes are bookkeeping: the four configurations captured either side of them
+are bit-identical at 0 of 921600 pixels. What changed is that the graph's model
+of the frame now matches the frame that was submitted.
 
 ### What the backstop found on its first run
 

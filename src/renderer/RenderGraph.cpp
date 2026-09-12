@@ -2396,20 +2396,30 @@ void RenderGraph::declareGeometryPasses()
     // reads what this pass writes -- the phase-2 re-test reads the mid-frame build
     // -- and the next frame's page marking and main cull declare history reads on
     // it. cullUnusedPasses keeps the last writer of a history-read resource alive,
-    // so the declarations are what save this pass now, not a hand-set flag.
-    frame_.passIndices.depthPyramid =
-        addPass("DepthPyramidPass",
-                RenderPassType::DepthPyramid,
-                RenderPassExecutionType::Compute,
-                false,
-                [this](RenderGraphBuilder& builder) {
-                    builder.readTexture(
-                        frame_.mainDepth, RGAccess::ShaderRead, "Samples the completed normal-Z main depth buffer.");
-                    frame_.depthPyramid =
-                        builder.writeTexture(frame_.depthPyramid,
-                                             RGAccess::StorageImageWrite,
-                                             "Writes the max-depth Hi-Z pyramid for later-frame occlusion culling.");
-                });
+    // so the declarations are what save this pass from culling, not a hand-set
+    // flag.
+    //
+    // Whether it is declared at all is a different question, and it does need
+    // the flag: the recorder skips the build outright when nothing consumes the
+    // pyramid, so on those frames this used to declare a pass that was never
+    // recorded. The next frame's readers say readHistoryTexture, which means
+    // "the previous frame's contents" and needs no producer this frame, so not
+    // declaring it is honest rather than merely quieter.
+    if (frame_.resources.depthPyramidBuildEnabled) {
+        frame_.passIndices.depthPyramid = addPass(
+            "DepthPyramidPass",
+            RenderPassType::DepthPyramid,
+            RenderPassExecutionType::Compute,
+            false,
+            [this](RenderGraphBuilder& builder) {
+                builder.readTexture(
+                    frame_.mainDepth, RGAccess::ShaderRead, "Samples the completed normal-Z main depth buffer.");
+                frame_.depthPyramid =
+                    builder.writeTexture(frame_.depthPyramid,
+                                         RGAccess::StorageImageWrite,
+                                         "Writes the max-depth Hi-Z pyramid for later-frame occlusion culling.");
+            });
+    }
 }
 
 void RenderGraph::declareBloomAndTaaPasses()

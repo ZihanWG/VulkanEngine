@@ -272,13 +272,49 @@ Note for repo hygiene: `tests/golden/` is the second category of tracked binary
 in this repository, after `screenshots/`. A capture run writes only where
 `--capture-output` points, so it cannot clobber either.
 
+## The configuration sweep
+
+The default configuration is one point in a large space, and for a long time it
+was the only point anything ran -- which is a problem, because the render graph
+declares a frame's passes in one place and records them across nine translation
+units, and the only thing comparing the two is the backstop in
+`RenderGraph::endFrame`. A pass declared and never recorded leaves the graph's
+barriers, resource lifetimes and culling describing work that did not happen,
+and raises no validation error, because each individual Vulkan call is still
+legal.
+
+So after the default leg, the job renders 26 more configurations at ten frames
+each and asserts, for every one: exit status 0, `--fail-on-validation-error`
+clean, a `Validation tally:` line present, and a backstop line reading zero
+order violations, zero unrecorded passes and zero declaration issues over a
+non-zero number of frames. The last clause matters -- zero findings over zero
+frames is what a run that rendered nothing looks like.
+
+The legs live in [`config/ci/`](../config/ci/README.md) as settings deltas, plus
+the VSM stages and scene presets, which take command-line flags. Running the rest
+of the space for the first time found two real declaration/recording mismatches;
+both legs are kept as regression guards.
+
+A sequential loop rather than a job matrix. Per leg the render is small; what is
+expensive is the SDK install, the apt dependencies, the shader compile and the
+Debug build above it, none of which a leg changes. A matrix repeats all of that
+per leg for wall-clock this job does not need.
+
+Only the default leg compares pixels. Goldens are per-configuration and lavapipe
+is not byte-deterministic (see the tolerance discussion above); the other legs
+assert graph shape, which is driver-independent.
+
 ## Limitations
 
-- Ten frames at default settings. Swapchain recreation/resize, screenshot
-  capture, and the many runtime toggles are not exercised.
-- Validation errors, not rendering correctness. Nothing here checks that the
-  image looks right; a golden-image comparison is separate future work and would
-  need a deterministic frame clock first.
+- The default leg is 30 frames; the sweep legs are ten each. Swapchain
+  recreation and resize are still not exercised, and neither is screenshot
+  capture.
+- The sweep gates on validation and on graph shape, not on rendering
+  correctness. Only the default configuration is compared against a golden
+  image, so a rendering regression that appears solely with, say, fog enabled
+  would pass.
+- lavapipe exposes no async compute queue and no dedicated transfer queue, so
+  neither path runs here in any configuration.
 - Software rasterization is slow: roughly 4.5 s of renderer init and 5 s for the
   first frame. These are lavapipe numbers and are not performance data about the
   engine. Never quote them as such.

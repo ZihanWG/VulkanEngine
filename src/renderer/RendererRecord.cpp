@@ -1037,9 +1037,16 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             "ExposureState", postProcess_.exposureBuffers(), currentFrame_, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
         .taaEnabled = postProcess_.isTaaActive(),
         .twoPhaseOcclusionEnabled = frameTwoPhaseOcclusionActive_,
+        .depthPyramidBuildEnabled = frameDepthPyramidBuildRequired_,
         .ssrEnabled = frameSsrActive_,
         .gtaoEnabled = frameGtaoActive_,
-        .transparentDrawCount = frameVisibleBucketRanges_[static_cast<size_t>(RenderBucket::Blend)].count(),
+        // Zero when bindless is off, not only when nothing is blended: the
+        // transparent pipeline binds the bindless heap as its second descriptor
+        // set, so recordMainPassGeometry skips the pass entirely without one.
+        // Declaring it anyway had the graph modelling a pass that never ran.
+        .transparentDrawCount = isBindlessMaterialTextureActive()
+                                    ? frameVisibleBucketRanges_[static_cast<size_t>(RenderBucket::Blend)].count()
+                                    : 0u,
         // Zero on a cache hit, which stops the graph declaring the atlas write
         // pass at all. The main pass still declares its read, so the image keeps
         // the layout it already has and no barrier is emitted for it.
@@ -2705,7 +2712,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
          [this, commandBuffer]() { recordMainPassGeometry(commandBuffer); }},
         {renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::DepthPyramid),
          [this, commandBuffer]() {
-             if (isDepthPyramidBuildRequired()) {
+             if (frameDepthPyramidBuildRequired_) {
                  recordDepthPyramidCommands(commandBuffer);
              } else {
                  // Skipped, so whatever is in the image is from an unknown frame.

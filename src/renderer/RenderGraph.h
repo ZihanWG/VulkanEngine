@@ -470,6 +470,11 @@ struct RenderGraphFrameResources {
     // Declares the two-phase occlusion passes (mid-frame depth pyramid, cull
     // phase 2, second main HDR pass) for this frame.
     bool twoPhaseOcclusionEnabled = false;
+    // Declares the end-of-frame Hi-Z pyramid build. False when the build is
+    // skipped -- occlusion culling off or suspended, and no VSM page marking to
+    // feed -- in which case the recorder only invalidates the pyramid and
+    // records no pass, so declaring one would model work that does not happen.
+    bool depthPyramidBuildEnabled = false;
     // Declares the SSR copy + trace passes for this frame.
     bool ssrEnabled = false;
     // Declares the GTAO horizon-search pass for this frame.

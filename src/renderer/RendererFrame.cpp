@@ -1623,6 +1623,15 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         gtao_.uploadParams(frameIndex, view, frameJitteredProjection_, gtaoFrameCounter_++);
     }
 
+    // Latched for the same reason, and after buildMainCullingFrameData above,
+    // which settles the occlusion state the predicate reads. The graph declares
+    // DepthPyramidPass from this and the recorder records it from this; a
+    // predicate re-evaluated between the two can disagree with itself, and a
+    // pass that is declared and then not recorded leaves the graph modelling
+    // work that did not happen -- its barriers, its resource lifetimes and its
+    // culling all describe a frame that was not the one submitted.
+    frameDepthPyramidBuildRequired_ = isDepthPyramidBuildRequired();
+
     // Latched here rather than recomputed at record time because the batch has
     // to be chosen once: the graph declaration, the capture draws and the
     // convolution all have to agree on which probes this frame is about, and
@@ -1667,6 +1676,7 @@ void Renderer::resetFrameStateForEmptyScene(uint32_t frameIndex)
     cascadeShadowDirty_.fill(false);
     cascadeShadowCascadesRedrawn_ = 0;
     frameTwoPhaseOcclusionActive_ = false;
+    frameDepthPyramidBuildRequired_ = false;
     frameAsyncComputeActive_ = false;
     frameSsrActive_ = false;
     frameGtaoActive_ = false;

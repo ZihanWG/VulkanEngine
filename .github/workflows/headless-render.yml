@@ -38,6 +38,11 @@ jobs:
       CAPTURE_PATH: artifacts/lavapipe_frame30.png
       GOLDEN_PATH: tests/golden/lavapipe_frame30.png
       DIFF_PATH: artifacts/lavapipe_frame30_diff.png
+      # Frames per configuration-sweep leg. The sweep asserts the shape of the
+      # frame graph, not convergence, so it needs only enough frames to clear
+      # first-frame resource setup and reach the steady loop. The default leg
+      # keeps its 30 because it also gates on pixels.
+      SWEEP_FRAMES: 10
 
     steps:
       - name: Checkout
@@ -154,6 +159,129 @@ jobs:
             echo "::error::No validation tally in the log; the run did not reach a clean shutdown."
             exit 1
           }
+
+      # The default configuration is one point in a large space, and until now it
+      # was the only point anything ran. docs/render_graph.md said so out loud:
+      # "a mismatch introduced in a configuration nothing runs will still go
+      # unnoticed until someone runs it". This step runs them.
+      #
+      # What it gates on is the render graph's own backstop, not pixels. The
+      # graph declares a frame's passes in one place and records them across nine
+      # translation units, and nothing but the backstop compares the two. A pass
+      # that is declared and then never recorded leaves the graph's barriers,
+      # resource lifetimes and culling all describing work that did not happen --
+      # and the validation layer sees nothing wrong, because every individual
+      # Vulkan call is still legal. That is exactly what this found on its first
+      # run, in two configurations, both invisible to every other gate here.
+      #
+      # A sequential loop rather than a job matrix, and the reason is cost. Per
+      # leg the render is small: roughly 4.5 s of renderer init and 5 s for the
+      # first frame on lavapipe, then cheaper ones. What is expensive is
+      # everything above this step -- the LunarG SDK install, the apt
+      # dependencies, the shader compile and the Debug build -- none of which a
+      # leg changes. A matrix repeats all of that per leg and multiplies the
+      # billable minutes by the leg count to buy wall-clock this job does not
+      # need.
+      #
+      # Every leg runs even after one fails, so a red run names every broken
+      # configuration instead of only the first.
+      - name: Sweep the configuration matrix
+        run: |
+          mkdir -p artifacts/sweep
+
+          # Legs are "name|arguments". A settings file is a delta against the
+          # defaults (see config/ci/README.md); the VSM stage and the scene
+          # presets take command-line flags because neither is a persisted
+          # setting.
+          cat > artifacts/sweep/legs.txt <<'LEGS'
+          all-effects|--settings config/ci/all-effects.json
+          volumetric-fog|--settings config/ci/volumetric-fog.json
+          irradiance-probes|--settings config/ci/irradiance-probes.json
+          gtao|--settings config/ci/gtao.json
+          ssr|--settings config/ci/ssr.json
+          exposure-manual|--settings config/ci/exposure-manual.json
+          exposure-log-average|--settings config/ci/exposure-log-average.json
+          taa-off|--settings config/ci/taa-off.json
+          bloom-off|--settings config/ci/bloom-off.json
+          bloom-legacy|--settings config/ci/bloom-legacy.json
+          occlusion-off|--settings config/ci/occlusion-off.json
+          two-phase-off|--settings config/ci/two-phase-off.json
+          bindless-off|--settings config/ci/bindless-off.json
+          clustered-off|--settings config/ci/clustered-off.json
+          layered-cascades|--settings config/ci/layered-cascades.json
+          backface-culling|--settings config/ci/backface-culling.json
+          frames-in-flight-1|--settings config/ci/frames-in-flight-1.json
+          transient-aliasing|--settings config/ci/transient-aliasing.json
+          render-scale-half|--settings config/ci/render-scale-half.json
+          vsm-mark|--vsm mark
+          vsm-render|--vsm render
+          vsm-shadows|--vsm shadows
+          scene-sunlit|--scene sunlit
+          scene-cornell|--scene cornell
+          scene-occlusion|--scene occlusion
+          cornell-with-gi|--scene cornell --settings config/ci/irradiance-probes.json
+          LEGS
+
+          summary=artifacts/sweep/summary.txt
+          : > "$summary"
+
+          while IFS='|' read -r name args; do
+            [ -z "$name" ] && continue
+            log="artifacts/sweep/$name.log"
+            echo "=== $name ($args) ==="
+
+            set +e
+            # shellcheck disable=SC2086 -- $args is a deliberate argument list.
+            timeout 600 xvfb-run -a --server-args="-screen 0 1280x720x24" ./build/ci-debug/VulkanEngine --deterministic --exit-after-frames "$SWEEP_FRAMES" --fail-on-validation-error $args > "$log" 2>&1
+            status=$?
+            set -e
+
+            backstop=$(grep -o "Render graph backstop: .*" "$log" || true)
+            # awk rather than a sed backreference: the frame count is a
+            # positional field in a fixed phrase, so this needs no escape.
+            frames=$(echo "$backstop" | awk '{ for (i = 1; i < NF; i++) if ($i == "over") print $(i + 1) }')
+            clean=$(echo "$backstop" | grep -c "0 order violations, 0 unrecorded passes, 0 declaration issues" || true)
+
+            verdict="ok"
+            if [ "$status" -ne 0 ]; then
+              verdict="FAILED (exit $status)"
+            elif ! grep -q "Validation tally:" "$log"; then
+              # A zero exit with no tally means the run never reached a clean
+              # shutdown, which must not read as a pass.
+              verdict="FAILED (no validation tally)"
+            elif [ -z "$backstop" ]; then
+              verdict="FAILED (no backstop line)"
+            elif [ "${frames:-0}" -eq 0 ]; then
+              # Zero counts over zero frames is what a run that rendered nothing
+              # looks like, and it is otherwise indistinguishable from a clean
+              # sweep.
+              verdict="FAILED (ended no frames)"
+            elif [ "$clean" -eq 0 ]; then
+              verdict="FAILED (backstop)"
+            fi
+
+            echo "$name: $verdict" >> "$summary"
+
+            if [ "$verdict" != "ok" ]; then
+              echo "::error::Configuration '$name' $verdict"
+              echo "${backstop:-<no backstop line>}"
+              # The named findings the engine logs beside the summary line.
+              # Without them a red run is a local-repro exercise in a
+              # configuration nobody was running.
+              grep -E "order violation:|unrecorded pass:|declaration issue:|execution order:" "$log" || true
+              tail -n 15 "$log"
+            fi
+          done < artifacts/sweep/legs.txt
+
+          echo ""
+          echo "Configuration sweep, $SWEEP_FRAMES frames each:"
+          cat "$summary"
+
+          if grep -q FAILED "$summary"; then
+            echo "::error::$(grep -c FAILED "$summary") configuration(s) failed. Per-leg logs"
+            echo "::error::are in the headless-render-logs artifact under sweep/."
+            exit 1
+          fi
 
       # A one-unit channel tolerance, and the reason is measured rather than
       # assumed -- it also corrects an earlier claim in this file that zero
