@@ -592,22 +592,28 @@ struct RuntimeSettings {
     // verified by the store reporting MainGraphicsPipeline and
     // MainGraphicsPipelineDoubleSided as shared.
     //
-    // What remains before flipping this default is the golden image. All six
-    // scene presets render with zero validation errors under culling, and the
-    // captures are visually identical, but they are not bit-identical: 1 to 64
-    // pixels of 921600 move per preset (default 40, stress 39, sunlit 64,
-    // fragment-stress 0), which the headless job's --max-differing-fraction 0
-    // rejects. tests/golden/lavapipe_frame30.png has to be regenerated on
-    // lavapipe in the same change that flips this, so the flip belongs in a
-    // Linux run rather than a Windows one.
+    // Re-measured after the cluster-grid producer fix, which changed the
+    // clustered-lighting workload the earlier number was taken against.
+    // RTX 3080 Ti Laptop, --scene stress, A/B/A/B x3, graphics clock pinned at
+    // 1200 MHz, control drift 0.33% against a 1% limit:
     //
-    // Measured on an RTX 3080 Ti Laptop, --scene stress, A/B/A/B x3, control
-    // drift 0.49% against a 1% limit: MainHDRPass 0.321 -> 0.196 ms (-38.9%),
-    // frame total 1.016 -> 0.942 ms (-7.3%). Three later passes move the other
-    // way and are attributable rather than noise -- Transparent +9.0%, SSRTrace
-    // +4.9%, CSMShadowPass +7.1% -- so the frame total, not the pass delta, is
-    // the number to quote.
-    bool enableBackfaceCulling = false;
+    //   MainHDRPass   0.878 -> 0.550 ms  (-37.4%)
+    //   Frame total   1.851 -> 1.575 ms  (-14.9%)
+    //
+    // Absolutes are inflated by the clock pin and are not comparable with
+    // another session's; the percentages are. The pin is what made the series
+    // quotable at all -- unpinned, the same A/B drifted 19% and the gate refused
+    // it twice.
+    //
+    // Two later passes move the other way and clear their own control drift --
+    // SSRTrace +27.4% (+0.046 ms) and ImGuiPass +40% (+0.008 ms). The trace has
+    // a plausible cause: culling removes back faces from the depth the trace
+    // marches against, so rays travel further before they hit. Both are inside
+    // the frame total above, which is the number to quote.
+    //
+    // On by default since the golden was regenerated. It is not pixel-neutral --
+    // that is what kept it off, not any doubt about the win.
+    bool enableBackfaceCulling = true;
     // Suspend Hi-Z occlusion culling (and the pyramid build that feeds it) while
     // it is culling nothing, re-probing periodically. Never changes the image --
     // skipping occlusion culling can only draw more, never less.

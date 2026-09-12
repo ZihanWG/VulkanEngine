@@ -59,9 +59,16 @@ walking over lights that contribute nothing; it is dominated by shading lights
 that do. Fewer PCF taps and a back-face early-out were rejected earlier on the
 same grounds.
 
-## Back-face culling is off, and that is measured
+## Back-face culling is on, and the answer is device-class-specific
 
-**Decision.** Every graphics pipeline uses `VK_CULL_MODE_NONE`.
+**Decision.** The main opaque and skinned pipelines use `VK_CULL_MODE_BACK_BIT`;
+skybox, probe capture and the transparent pass stay `VK_CULL_MODE_NONE` for
+reasons of correctness, documented at each site. `Material::doubleSided` selects
+a second, un-culled main pipeline.
+
+It was off for most of this engine's life, and that was not an oversight either
+-- it was measured, on a tiler, where it really did save nothing. The conclusion
+did not survive the move to an immediate-mode GPU.
 
 **Why.** Not an oversight — it was tested. The standard argument for enabling it
 is that closed geometry generates twice the fragments without it, and the main
@@ -100,21 +107,40 @@ left for the cull to save **there**.
 > culling off the two pipeline requests are byte-identical, so the store returns
 > one pipeline for both refs and the recorded command stream is unchanged.
 >
-> It is still off by default, now for a different reason: the flip is not
-> pixel-neutral, and `tests/golden/lavapipe_frame30.png` is compared with
-> `--max-differing-fraction 0`. All six scene presets render with zero validation
-> errors under culling and the captures are visually identical, but 1 to 64 pixels
-> of 921600 move per preset (default 40, stress 39, sunlit 64, fragment-stress 0).
-> The golden has to be regenerated on lavapipe in the same change, so flipping the
-> default belongs in a Linux run. The runtime toggle is
-> `renderer.enableBackfaceCulling`.
+> **Now on by default.** What kept it off was never doubt about the win: the flip
+> is not pixel-neutral, and `tests/golden/lavapipe_frame30.png` is compared with
+> `--max-differing-fraction 0`, so the golden had to be regenerated on lavapipe in
+> the same change. That is now routine -- the headless job uploads its capture, so
+> a re-baseline is a download and a commit. The runtime toggle is
+> `renderer.enableBackfaceCulling`, and `config/ci/backface-culling-off.json`
+> keeps the off path in the configuration sweep.
 >
-> Re-measured on an RTX 3080 Ti Laptop, `--scene stress`, A/B/A/B x3, control
-> drift 0.49% against the 1% limit: `MainHDRPass` 0.321 -> 0.196 ms (-38.9%),
-> frame total 1.016 -> 0.942 ms (-7.3%). Three later passes move the other way and
-> the gate calls them attributable rather than noise -- `Transparent` +9.0%,
-> `SSRTrace` +4.9%, `CSMShadowPass` +7.1% -- so quote the frame total, not the
-> pass delta alone.
+> Re-measured after the cluster-grid producer fix, which changed the
+> clustered-lighting workload the earlier number was taken against. RTX 3080 Ti
+> Laptop, `--scene stress`, A/B/A/B x3, graphics clock pinned at 1200 MHz,
+> control drift 0.33% against the 1% limit:
+>
+> | | culling off | culling on | |
+> | --- | --- | --- | --- |
+> | `MainHDRPass` | 0.878 ms | 0.550 ms | **-37.4%** |
+> | Frame total | 1.851 ms | 1.575 ms | **-14.9%** |
+>
+> The absolutes are inflated by the clock pin and are not comparable with another
+> session's; the percentages are. **The pin is what made the series quotable at
+> all.** Unpinned, the same A/B drifted 19% and the gate refused it twice --
+> `tools/dev/gpu_clock.ps1` exists for exactly this, and on a load this heavy the
+> pin has to be *lower* than its 1400 MHz default: 1400 still drifted 1.7%, and
+> 1200 landed at 0.33%.
+>
+> Two later passes move the other way and clear their own control drift:
+> `SSRTrace` +27.4% (+0.046 ms) and `ImGuiPass` +40% (+0.008 ms). The trace has a
+> plausible cause -- culling removes back faces from the depth it marches against,
+> so rays travel further before they hit. Both are already inside the frame total,
+> which is the number to quote.
+>
+> The superseded figures, for anyone re-reading older commits: `MainHDRPass`
+> -38.9% and frame total -7.3%. The pass delta reproduced; the frame-level number
+> did not, and it was taken before the cluster-grid fix.
 
 Measured on an Apple M3, default scene at render scale 1.0, A/B/A/B:
 
@@ -128,16 +154,16 @@ this is the default scene, which is geometry-light. On a vertex- or
 binning-bound scene the answer could differ, since culling removes primitives
 before rasterization regardless of HSR.
 
-**Trade-offs.** While the toggle is off, single-sided geometry viewed from behind
-is still shaded with a normal pointing away from the viewer -- honouring
+**Trade-offs.** With the toggle off, single-sided geometry viewed from behind is
+still shaded with a normal pointing away from the viewer -- honouring
 `doubleSided` changes which pipeline a draw binds, not how a back face is shaded.
 The wiring also costs one batch break per bucket where two-sided materials appear,
 which the sort key keeps to one rather than one per alternation.
 
-**More time.** Regenerate `tests/golden/lavapipe_frame30.png` on lavapipe and flip
-the default in the same change. The geometry-heavy re-measure this line used to ask
-for has been done and is quoted above, the UV sphere winding it exposed is fixed,
-and `doubleSided` now reaches the cull mode.
+**More time.** Done: the golden was regenerated and the default flipped in the
+same change. What is left is narrower -- the skybox, probe capture and transparent
+pipelines are still `VK_CULL_MODE_NONE`, and only the transparent one has a reason
+that would survive a second look.
 
 ## Graphics pipelines are looked up by state, not by name
 

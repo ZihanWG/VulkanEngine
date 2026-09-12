@@ -56,6 +56,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SETTINGS_PATH = REPO_ROOT / "config" / "runtime_settings.json"
+SCHEMA_PATH = REPO_ROOT / "config" / "runtime_settings.example.json"
 # The suffix is not cosmetic: ensure_binary() gates every run on
 # RELEASE_BINARY.exists(), so a bare name on Windows fails as "missing binary,
 # rerun with --build" no matter how recently it was built.
@@ -264,11 +265,35 @@ def coerce_like(existing: object, raw: str, key: str) -> object:
     return raw
 
 
+def schema_lookup(key: str) -> object | None:
+    """The value this key has in the committed example settings, or None.
+
+    The example file is what the engine itself writes out, so it carries every
+    key the current build knows. A user's config/runtime_settings.json is only
+    as new as the last time they pressed Save, and a setting added since then is
+    simply absent from it -- which is not the same thing as a typo.
+    """
+    if not SCHEMA_PATH.exists():
+        return None
+    node: object = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    for part in key.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    return node
+
+
 def apply_settings(settings: dict, assignments: list[str]) -> dict[str, object]:
     """Apply dotted assignments in place; return the effective values.
 
     An unknown key aborts. A typo that silently created a new key would measure
     the unchanged configuration twice and read as "no effect".
+
+    "Unknown" is judged against the committed example file rather than against
+    the persisted one. A real setting the user has never saved is absent from
+    their file, and refusing it there sends someone off to hand-edit per-user
+    state to run a measurement -- while a genuine typo is still absent from both
+    and still aborts.
     """
     applied: dict[str, object] = {}
     for assignment in assignments:
@@ -276,13 +301,23 @@ def apply_settings(settings: dict, assignments: list[str]) -> dict[str, object]:
         parts = key.split(".")
         node = settings
         for part in parts[:-1]:
-            if not isinstance(node, dict) or part not in node:
+            if not isinstance(node, dict):
                 raise MeasureError(f"unknown settings key: {key} (no {part!r} section)")
-            node = node[part]
+            node = node.setdefault(part, {}) if schema_lookup(key) is not None else node.get(part)
+            if node is None:
+                raise MeasureError(f"unknown settings key: {key} (no {part!r} section)")
         leaf = parts[-1]
-        if not isinstance(node, dict) or leaf not in node:
-            raise MeasureError(f"unknown settings key: {key} (check config/runtime_settings.json)")
-        value = coerce_like(node[leaf], raw, key)
+        if not isinstance(node, dict):
+            raise MeasureError(f"unknown settings key: {key}")
+        if leaf in node:
+            existing = node[leaf]
+        else:
+            existing = schema_lookup(key)
+            if existing is None:
+                raise MeasureError(
+                    f"unknown settings key: {key} (not in config/runtime_settings.example.json)"
+                )
+        value = coerce_like(existing, raw, key)
         node[leaf] = value
         applied[key] = value
     return applied
@@ -294,17 +329,48 @@ def apply_settings(settings: dict, assignments: list[str]) -> dict[str, object]:
 
 
 def newer_sources() -> list[Path]:
-    """Source files modified after the Release binary was linked."""
+    """Source files modified after the artifact each one actually produces.
+
+    Two artifacts, not one. C++ compiles into the binary, so the binary's link
+    time is the right comparison. Shaders do not: they compile to .spv files the
+    renderer loads at run time, and a shader-only edit therefore never relinks
+    the binary. Comparing GLSL against the binary reports every shader as stale
+    forever after any shader edit, which is a guard that cries wolf -- and one
+    that cries wolf is one that gets bypassed.
+    """
     if not RELEASE_BINARY.exists():
         return []
     binary_mtime = RELEASE_BINARY.stat().st_mtime
     stale: list[Path] = []
-    for pattern in ("*.cpp", "*.h", "*.vert", "*.frag", "*.comp", "*.glsl"):
+
+    for pattern in ("*.cpp", "*.h"):
         for path in (REPO_ROOT / "src").rglob(pattern):
             if path.stat().st_mtime > binary_mtime:
                 stale.append(path)
+
+    # Each shader against its own compiled output. A shared .glsl header has no
+    # .spv of its own, so it is compared against the oldest .spv that could have
+    # included it -- conservative, which is the right direction for a guard.
+    shader_output_dir = RELEASE_BINARY.parent / "shaders"
+    spv_times = [p.stat().st_mtime for p in shader_output_dir.glob("*.spv")] if shader_output_dir.is_dir() else []
+    oldest_spv = min(spv_times) if spv_times else None
+    for pattern in ("*.vert", "*.frag", "*.comp"):
+        for path in (REPO_ROOT / "src" / "shaders").rglob(pattern):
+            compiled = shader_output_dir / (path.name + ".spv")
+            if not compiled.exists() or path.stat().st_mtime > compiled.stat().st_mtime:
+                stale.append(path)
+    if oldest_spv is not None:
+        for path in (REPO_ROOT / "src" / "shaders").rglob("*.glsl"):
+            if path.stat().st_mtime > oldest_spv:
+                stale.append(path)
+
+    # CMakeLists against the build system it generates, not against the binary.
+    # An edit that only adds a shader dependency regenerates build.ninja and
+    # relinks nothing, so comparing it to the binary flags it forever after.
     cmake_lists = REPO_ROOT / "CMakeLists.txt"
-    if cmake_lists.exists() and cmake_lists.stat().st_mtime > binary_mtime:
+    generated = RELEASE_BINARY.parent / "build.ninja"
+    reference = generated.stat().st_mtime if generated.exists() else binary_mtime
+    if cmake_lists.exists() and cmake_lists.stat().st_mtime > reference:
         stale.append(cmake_lists)
     return stale
 
@@ -365,10 +431,15 @@ def run_once(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     log_path = output_dir / f"{label}.log"
+    # The patched configuration goes to its own file and reaches the renderer
+    # through --settings. This used to overwrite config/runtime_settings.json and
+    # put it back in a finally block -- per-user state outside git, restored only
+    # if the process got that far. This harness terminates the renderer on purpose
+    # on every run, so that was a real way to lose somebody's saved settings.
+    settings_path = output_dir / f"{label}.settings.json"
 
     try:
-        if assignments:
-            SETTINGS_PATH.write_text(json.dumps(settings, indent=2) + "\n")
+        settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
         described = ", ".join(f"{k}={v}" for k, v in applied.items()) or "persisted settings"
         print(f"[measure] run {label}: {described}", flush=True)
         print(f"[measure]   warm-up {warmup}s, sample {duration - warmup}s", flush=True)
@@ -383,7 +454,7 @@ def run_once(
             else:
                 group_kwargs = {"start_new_session": True}
             process = subprocess.Popen(
-                [str(RELEASE_BINARY), *(binary_args or [])],
+                [str(RELEASE_BINARY), "--settings", str(settings_path), *(binary_args or [])],
                 cwd=REPO_ROOT,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
@@ -401,8 +472,11 @@ def run_once(
                 f"see {rel(log_path)}"
             )
     finally:
-        if original is not None:
-            SETTINGS_PATH.write_bytes(original)
+        # Nothing to restore: the run never wrote the persisted file. Checked
+        # rather than assumed, since the point of the change is that a
+        # measurement cannot damage per-user state.
+        if original is not None and SETTINGS_PATH.read_bytes() != original:
+            raise MeasureError("the persisted settings file changed during a measurement run")
 
     samples = parse_log(log_path.read_text(errors="replace"), label, warmup)
     # Recorded so the run can be reproduced later: configuration A is "whatever
