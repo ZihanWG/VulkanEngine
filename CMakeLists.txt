@@ -530,6 +530,8 @@ set(SHADER_INCLUDES
     "${SHADER_SOURCE_DIR}/sub_rect.glsl"
     "${SHADER_SOURCE_DIR}/shadow_cascade.glsl"
     "${SHADER_SOURCE_DIR}/virtual_shadow_map.glsl"
+    "${SHADER_SOURCE_DIR}/irradiance_probes.glsl"
+    "${SHADER_SOURCE_DIR}/volumetric_fog.glsl"
 )
 
 if(GLSLC_EXECUTABLE)

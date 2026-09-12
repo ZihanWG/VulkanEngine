@@ -49,6 +49,52 @@ The froxels depend only on the projection, so this pass is a candidate for
 rebuilding only on projection change. It currently runs each frame for simplicity;
 the cost is ~13824 invocations of cheap arithmetic.
 
+### The producer was building a different grid from the consumers
+
+Worth recording, because the shape of the mistake is more interesting than the
+mistake. `cluster_build.comp` kept its own `kGridX = 16u, kGridY = 9u` long after
+the grid became 32×18×24 everywhere else, so:
+
+- it returned early for every `clusterIndex >= 3456`, leaving **10368 of 13824
+  AABBs never written**, and
+- the 3456 it did write used a 16×9 tile mapping, while `light_cull.comp` and
+  `simple_bindless.frag` indexed the same buffer as 32×18.
+
+Nothing caught it. Not the validation layer -- every call was legal. Not the unit
+tests -- `ClusterGrid.h` and its round-trip test are a CPU mirror of the *intended*
+math, and agreeing with the intent is exactly what a stale shader also does. Not a
+visual check, because wrong-but-plausible lighting is what this failure looks like.
+
+The commit that introduced it is the part worth reading twice. It moved the grid
+constants into `cluster_grid.glsl` *specifically* to stop this, and said so:
+
+> The grid constants were duplicated verbatim in simple_bindless.frag,
+> fog_inject.comp and light_cull.comp, which made changing them a four-file edit
+> where missing one is silent.
+
+It then updated those three and missed the fourth -- the one that *builds* what
+the other three read. The shared header prevented every future instance of the
+bug and did not fix the existing one, because a file that does not include the
+header is invisible to it.
+
+So the guard cannot be "share the constants"; that is the fix, not the check.
+`tools/check_shader_constants.py` now derives what to check structurally: any
+GLSL constant whose name is also a C++ constant is a mirror, whether or not
+anyone remembered to say so. That is what found this.
+
+**What the fix is worth.** With the grid shared, clustered shading matches the
+brute-force reference path exactly on the default scene -- 0 of 921600 pixels
+differ -- where before it differed on 145550 (15.8%, max channel delta 18). On
+`--scene fragment-stress` the frame moves on 86% of pixels. Brute force is the
+same light set evaluated per fragment with no froxel involved, so this is the
+one comparison here that has a ground truth.
+
+Note that the numbers in the tile-size commit -- `MainHDRPass 18.71 -> 15.18 ms`
+and the +23% scene luminance it read as a light-cap correctness win -- were taken
+against the broken producer, so they measured 16×9-everywhere against
+32×18-consumers-with-a-16×9-producer, not against a working 32×18. They need
+re-measuring before they are quoted again.
+
 ## Light Assignment
 
 `light_cull.comp` runs one invocation per froxel. It transforms each light into

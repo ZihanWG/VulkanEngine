@@ -25,15 +25,7 @@
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
-// Must match ve::renderer::kProbe*.
-const int kProbeBorderTexels = 1;
-const int kProbeIrradianceResolution = 8;
-const int kProbeDepthResolution = 16;
-const int kProbeAtlasTilesX = 32;
-const int kProbeCaptureFaceCount = 6;
-const int kProbeCaptureFaceResolution = 16;
-const float kProbeMaxDistance = 64.0;
-const float kProbeDepthLobeExponent = 20.0;
+#include "irradiance_probes.glsl"
 
 // Read-write, not write-only: each invocation blends its result against what the
 // tile already holds. Every invocation touches exactly one texel of each atlas
