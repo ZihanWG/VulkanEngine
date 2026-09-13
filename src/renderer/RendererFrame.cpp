@@ -286,7 +286,7 @@ void Renderer::updatePunctualShadowCacheState()
             punctualShadowCacheKey_.add(static_cast<const void*>(drawItem.mesh));
             punctualShadowCacheKey_.add(drawItem.firstIndex);
             punctualShadowCacheKey_.add(drawItem.indexCount);
-            punctualShadowCacheKey_.add(renderObjects_[drawItem.objectIndex].transform.modelMatrix());
+            punctualShadowCacheKey_.add(frameModelMatrices_[drawItem.objectIndex]);
         }
 
         // The skinned caster, on the same rule and for the same reason as the
@@ -429,8 +429,8 @@ void Renderer::updateCascadeShadowCacheState()
             caster.bucket = static_cast<uint32_t>(drawItem.bucket);
             caster.alphaCutoff =
                 drawItem.material != nullptr ? drawItem.material->alphaTestCutoff() : renderer::kNoAlphaTestCutoff;
-            if (drawItem.objectIndex < renderObjects_.size()) {
-                caster.modelMatrix = renderObjects_[drawItem.objectIndex].transform.modelMatrix();
+            if (drawItem.objectIndex < frameModelMatrices_.size()) {
+                caster.modelMatrix = frameModelMatrices_[drawItem.objectIndex];
             }
             caster.lodLevel = gpuLodSelectionActive ? selectedShadowLodLevel(drawItem, projScaleY, lodSelection) : 0u;
 
@@ -830,13 +830,21 @@ void Renderer::framePrepParallelFor(size_t count, const std::function<void(size_
     }
 }
 
-void Renderer::updateFrameWorldBounds()
+void Renderer::updateFrameObjectTransforms()
 {
     const size_t objectCount = renderObjects_.size();
+    frameModelMatrices_.resize(objectCount);
     frameWorldBounds_.resize(objectCount);
     framePrepParallelFor(objectCount, [this](size_t begin, size_t end) {
         for (size_t objectIndex = begin; objectIndex < end; ++objectIndex) {
-            frameWorldBounds_[objectIndex] = renderObjects_[objectIndex].worldBounds();
+            const renderer::RenderObject& object = renderObjects_[objectIndex];
+            // Composed once here and shared from here on. RenderObject::worldBounds()
+            // is deliberately not called: it composes a matrix of its own, which is
+            // exactly the per-use re-derivation this array exists to remove.
+            const glm::mat4 model = object.transform.modelMatrix();
+            frameModelMatrices_[objectIndex] = model;
+            frameWorldBounds_[objectIndex] =
+                object.mesh ? object.mesh->localBounds().transform(model) : renderer::Aabb{};
         }
     });
 }
@@ -1585,11 +1593,16 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         invalidateDepthPyramid();
     }
 
-    // Transforms are final for this frame; cache every object's world AABB once
-    // for the visibility, shadow-cascade, and GPU-cull-input passes below.
+    // Transforms are final for this frame; cache every object's model matrix and
+    // world AABB once for the visibility, shadow-cache, shadow-cascade and
+    // GPU-cull-input passes below.
+    //
+    // The scope keeps the name "world bounds" although it now also builds the
+    // matrices: the measurement corpus in docs/ is stamped with that name, and
+    // renaming it would silently orphan every number recorded against it.
     {
         const ScopedCpuTimer timer = cpuScope(CpuScope::WorldBounds);
-        updateFrameWorldBounds();
+        updateFrameObjectTransforms();
     }
 
     {
@@ -1697,8 +1710,15 @@ void Renderer::capturePreviousFrameMatrices()
     previousFrameViewProjection_ = frameViewProjection_;
     previousFrameView_ = frameView_;
     previousFrameViewProjectionValid_ = true;
-    for (renderer::RenderObject& object : renderObjects_) {
-        object.previousModelMatrix = object.transform.modelMatrix();
+    // frameModelMatrices_ still describes these objects: this runs after recording
+    // and nothing between frame prep and here writes a transform (gizmo edits land
+    // in buildDebugUi, which runs before updateFrameData). The fallback covers the
+    // array being short rather than trusting that coupling silently.
+    for (size_t objectIndex = 0; objectIndex < renderObjects_.size(); ++objectIndex) {
+        renderer::RenderObject& object = renderObjects_[objectIndex];
+        object.previousModelMatrix = objectIndex < frameModelMatrices_.size()
+                                         ? frameModelMatrices_[objectIndex]
+                                         : object.transform.modelMatrix();
         object.previousModelValid = true;
     }
     if (skinnedMesh_.valid()) {
@@ -1976,9 +1996,11 @@ void Renderer::uploadObjectFrameData(uint32_t frameIndex)
     const size_t objectFrameCount = std::min(allDrawItems_.size(), static_cast<size_t>(kMaxDrawItems));
     std::vector<ObjectFrameData> objectFrameData(objectFrameCount);
 
-    // Per-item fill is the heaviest CPU loop of the frame (six mat4 multiplies
-    // per draw item); every iteration writes only objectFrameData[drawIndex] and
-    // reads shared frame state, so it chunks cleanly across the JobSystem.
+    // Per-item fill is one of the heaviest CPU loops of the frame; every iteration
+    // writes only objectFrameData[drawIndex] and reads shared frame state, so it
+    // chunks cleanly across the JobSystem. The model matrix is read from
+    // frameModelMatrices_ rather than composed here, which leaves one mat4
+    // multiply (prevMvpNoJitter) where there used to be six.
     framePrepParallelFor(objectFrameCount, [&](size_t begin, size_t end) {
         for (size_t drawIndex = begin; drawIndex < end; ++drawIndex) {
             const DrawItem& drawItem = allDrawItems_[drawIndex];
@@ -1991,7 +2013,7 @@ void Renderer::uploadObjectFrameData(uint32_t frameIndex)
                 continue;
             }
 
-            const glm::mat4 model = object.transform.modelMatrix();
+            const glm::mat4& model = frameModelMatrices_[drawItem.objectIndex];
             ObjectFrameData& frameData = objectFrameData[drawIndex];
             frameData.model = model;
             frameData.prevMvpNoJitter =

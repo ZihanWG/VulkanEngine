@@ -2374,6 +2374,11 @@ void Renderer::updateVsmCasterInvalidation()
     // settings (hashed by updateResidency, which drops residency wholesale), and
     // a scene switch (resetSceneState clears these keys, because mesh and
     // material are hashed by pointer and only unique within one scene).
+    // Composed here rather than read from frameModelMatrices_, deliberately:
+    // updateVsmResidency runs near the top of drawFrame, before updateFrameData
+    // rebuilds that array, so the cache would still describe the PREVIOUS frame's
+    // transforms. Residency decides which pages to invalidate and the page pass
+    // then draws this frame's pose, so a one-frame-stale key loses shadows.
     vsmCasterKeys_.assign(objectCount, renderer::ShadowCacheKey{});
     for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
         vsmCasterKeys_[objectIndex].reset();

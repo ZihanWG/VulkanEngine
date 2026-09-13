@@ -554,10 +554,14 @@ private:
     // Captures this frame's view-projection and per-object model matrices as the
     // "previous frame" inputs for next frame's motion vectors.
     void capturePreviousFrameMatrices();
-    // Recomputes every active object's world AABB once per frame into
-    // frameWorldBounds_ so visibility, shadow cascades, and GPU-cull input
-    // builds share it instead of re-deriving the model matrix per use.
-    void updateFrameWorldBounds();
+    // Recomputes every active object's model matrix and world AABB once per frame
+    // into frameModelMatrices_ and frameWorldBounds_, so visibility, shadow
+    // cascades, the shadow cache keys and the GPU-cull input build share them
+    // instead of re-deriving the model matrix per use.
+    //
+    // Must run after the last writer of RenderObject::transform in the frame --
+    // today updateAnimatedTransforms, immediately above the call site.
+    void updateFrameObjectTransforms();
     // Runs body(begin, end) over [0, count): chunked across the JobSystem when
     // parallel frame prep is enabled, inline on the calling thread otherwise.
     // Callers must not nest framePrepParallelFor inside a parallel body.
@@ -1324,6 +1328,13 @@ private:
     std::array<float, kCpuScopeCount> cpuScopeFrameMs_{};
     std::array<DebugHistory, kCpuScopeCount> cpuScopeHistory_{};
     std::vector<renderer::Aabb> frameWorldBounds_;
+    // This frame's model matrix per render object, built by the same loop that
+    // builds frameWorldBounds_ and valid from that point to the end of the frame.
+    // Transform::modelMatrix() composes the matrix from TRS on every call -- three
+    // sin/cos pairs and five mat4 multiplies -- and the punctual shadow cache key
+    // used to pay for one compose per (atlas slot, draw item), so up to
+    // kMaxPunctualShadowSlots x kMaxDrawItems of them in a single frame.
+    std::vector<glm::mat4> frameModelMatrices_;
     float currentExposure_ = 1.0f;
     float averageLuminance_ = 0.18f;
     float histogramClippedLuminance_ = 0.18f;
