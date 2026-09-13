@@ -3,6 +3,9 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -11,6 +14,9 @@
 using ve::renderer::appendLodChain;
 using ve::renderer::buildLodChain;
 using ve::renderer::buildLodChainDetached;
+using ve::renderer::buildMeshlets;
+using ve::renderer::MeshletBuild;
+using ve::renderer::Meshlet;
 using ve::renderer::kMaxMeshLods;
 using ve::renderer::kMinLodIndexCount;
 using ve::renderer::LodBuildSettings;
@@ -471,4 +477,206 @@ TEST_CASE("A zero or negative projected radius takes the cheapest level", "[mesh
 {
     CHECK(selectLodIndex(0.0f, 4) == 3);
     CHECK(selectLodIndex(-1.0f, 4) == 3);
+}
+
+// --- Meshlet construction -------------------------------------------------
+//
+// The load-bearing invariant is that meshletizing is a PERMUTATION of each
+// level's triangles, not a rewrite of them. Every level keeps its
+// (firstIndex, indexCount) range, so any primitive or LOD record pointing into
+// the buffer stays valid; only the order inside a range changes. If that ever
+// stopped holding, every later level would shift and the whole buffer would be
+// silently wrong -- which is exactly the failure a cooked mesh cannot show.
+
+namespace {
+
+// Multiset of triangles in a range, each sorted internally so that a change in
+// winding order would be caught by a separate test rather than read here as a
+// different triangle.
+std::vector<std::array<uint32_t, 3>>
+trianglesIn(const std::vector<uint32_t>& indices, uint32_t firstIndex, uint32_t indexCount)
+{
+    std::vector<std::array<uint32_t, 3>> triangles;
+    for (uint32_t i = 0; i < indexCount; i += 3) {
+        std::array<uint32_t, 3> triangle{
+            indices[firstIndex + i], indices[firstIndex + i + 1], indices[firstIndex + i + 2]};
+        std::sort(triangle.begin(), triangle.end());
+        triangles.push_back(triangle);
+    }
+    std::sort(triangles.begin(), triangles.end());
+    return triangles;
+}
+
+// A grid with its LOD chain already built: the state every meshlet test starts
+// from.
+struct LoddedGrid {
+    Grid grid;
+    std::vector<uint32_t> indices;
+    std::vector<MeshLod> lods;
+
+    [[nodiscard]] size_t vertexCount() const
+    {
+        return grid.positions.size() / 3;
+    }
+    [[nodiscard]] const float* positions() const
+    {
+        return grid.positions.data();
+    }
+};
+
+LoddedGrid makeLoddedGrid(uint32_t cells)
+{
+    LoddedGrid lodded;
+    lodded.grid = makeGrid(cells);
+    lodded.indices = lodded.grid.indices;
+    lodded.lods = buildLodChain(lodded.indices,
+                                0,
+                                static_cast<uint32_t>(lodded.grid.indices.size()),
+                                lodded.grid.positions.data(),
+                                lodded.grid.positions.size() / 3,
+                                sizeof(float) * 3);
+    return lodded;
+}
+
+} // namespace
+
+TEST_CASE("Meshletizing permutes each level's triangles and moves no range")
+{
+    LoddedGrid lodded = makeLoddedGrid(24);
+    REQUIRE(lodded.lods.size() > 1);
+
+    const std::vector<uint32_t> beforeIndices = lodded.indices;
+    const std::vector<MeshLod> beforeLods = lodded.lods;
+
+    const MeshletBuild build = buildMeshlets(lodded.indices,
+                                                        std::span<const MeshLod>(lodded.lods),
+                                                        lodded.positions(),
+                                                        lodded.vertexCount(),
+                                                        sizeof(float) * 3);
+
+    REQUIRE_FALSE(build.meshlets.empty());
+    // A permutation of every range leaves the total untouched. If this grew or
+    // shrank, every level after the first would already be pointing at the
+    // wrong triangles.
+    REQUIRE(lodded.indices.size() == beforeIndices.size());
+
+    for (size_t level = 0; level < lodded.lods.size(); ++level) {
+        INFO("level " << level);
+        CHECK(lodded.lods[level].firstIndex == beforeLods[level].firstIndex);
+        CHECK(lodded.lods[level].indexCount == beforeLods[level].indexCount);
+        CHECK(trianglesIn(lodded.indices, lodded.lods[level].firstIndex, lodded.lods[level].indexCount) ==
+              trianglesIn(beforeIndices, beforeLods[level].firstIndex, beforeLods[level].indexCount));
+    }
+}
+
+TEST_CASE("A level's meshlets tile its range exactly")
+{
+    LoddedGrid lodded = makeLoddedGrid(24);
+    const MeshletBuild build = buildMeshlets(lodded.indices,
+                                                        std::span<const MeshLod>(lodded.lods),
+                                                        lodded.positions(),
+                                                        lodded.vertexCount(),
+                                                        sizeof(float) * 3);
+    REQUIRE_FALSE(build.meshlets.empty());
+
+    REQUIRE(build.rangesPerLod.size() == lodded.lods.size());
+    for (size_t levelIndex = 0; levelIndex < lodded.lods.size(); ++levelIndex) {
+        const MeshLod& level = lodded.lods[levelIndex];
+        const glm::uvec2 range = build.rangesPerLod[levelIndex];
+        INFO("level at " << level.firstIndex);
+        REQUIRE(range.y > 0);
+        REQUIRE(static_cast<size_t>(range.x) + range.y <= build.meshlets.size());
+
+        // Contiguous from the level's start, no gaps and no overlaps, ending
+        // exactly at the level's end. A gap drops triangles the level is meant
+        // to draw; an overlap draws them twice.
+        uint32_t cursor = level.firstIndex;
+        for (uint32_t i = 0; i < range.y; ++i) {
+            const Meshlet& meshlet = build.meshlets[range.x + i];
+            CHECK(meshlet.firstIndex == cursor);
+            CHECK(meshlet.indexCount > 0);
+            CHECK(meshlet.indexCount % 3 == 0);
+            CHECK(meshlet.indexCount <= ve::renderer::kMeshletMaxTriangles * 3U);
+            cursor += meshlet.indexCount;
+        }
+        CHECK(cursor == level.firstIndex + level.indexCount);
+    }
+
+    // Every meshlet belongs to exactly one level: a meshlet no level points at
+    // would never be drawn, and the table would be quietly larger than the
+    // geometry it describes.
+    size_t covered = 0;
+    for (const glm::uvec2& range : build.rangesPerLod) {
+        covered += range.y;
+    }
+    CHECK(covered == build.meshlets.size());
+}
+
+TEST_CASE("A meshlet's bounding sphere contains its own triangles")
+{
+    // The sphere is what the frustum and occlusion tests use, so one that does
+    // not contain its geometry culls triangles that are visible.
+    LoddedGrid lodded = makeLoddedGrid(24);
+    const MeshletBuild build = buildMeshlets(lodded.indices,
+                                                        std::span<const MeshLod>(lodded.lods),
+                                                        lodded.positions(),
+                                                        lodded.vertexCount(),
+                                                        sizeof(float) * 3);
+    REQUIRE_FALSE(build.meshlets.empty());
+
+    for (const Meshlet& meshlet : build.meshlets) {
+        for (uint32_t i = 0; i < meshlet.indexCount; ++i) {
+            const uint32_t vertex = lodded.indices[meshlet.firstIndex + i];
+            const float dx = lodded.grid.positions[vertex * 3 + 0] - meshlet.centerRadius.x;
+            const float dy = lodded.grid.positions[vertex * 3 + 1] - meshlet.centerRadius.y;
+            const float dz = lodded.grid.positions[vertex * 3 + 2] - meshlet.centerRadius.z;
+            const float distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+            // A small tolerance: the radius comes back in float, and an
+            // exact-fit sphere is allowed to touch its extreme vertex.
+            CHECK(distance <= meshlet.centerRadius.w + 1.0e-3f);
+        }
+        // Above 1 the GPU cone test stops being merely permissive and becomes
+        // nonsensical; 1 itself is the documented "never reject" value.
+        CHECK(meshlet.coneAxisCutoff.w <= 1.0f);
+    }
+}
+
+TEST_CASE("Meshletizing without positions yields no meshlets, not missing geometry")
+{
+    // The consumer contract is that meshletCount == 0 means "draw the level
+    // whole". Returning an empty table while leaving a stale non-zero count
+    // would read as "draw nothing" and lose the mesh silently.
+    LoddedGrid lodded = makeLoddedGrid(24);
+    const std::vector<uint32_t> before = lodded.indices;
+
+    const MeshletBuild build =
+        buildMeshlets(lodded.indices, std::span<const MeshLod>(lodded.lods), nullptr, 0, sizeof(float) * 3);
+
+    CHECK(build.meshlets.empty());
+    CHECK(lodded.indices == before);
+    // No ranges at all, rather than ranges of zero pointing into an empty
+    // table: the caller must be able to tell "not meshletized" from "meshletized
+    // into nothing".
+    CHECK(build.rangesPerLod.empty());
+}
+
+TEST_CASE("A triangle cap not divisible by four is rounded down rather than trusted")
+{
+    // meshopt requires max_triangles divisible by 4 and leaves a violation
+    // undefined rather than diagnosing it, so the builder normalises instead of
+    // passing the caller's number through.
+    LoddedGrid lodded = makeLoddedGrid(16);
+    ve::renderer::MeshletBuildSettings settings{};
+    settings.maxTriangles = 126;
+
+    const MeshletBuild build = buildMeshlets(lodded.indices,
+                                                        std::span<const MeshLod>(lodded.lods),
+                                                        lodded.positions(),
+                                                        lodded.vertexCount(),
+                                                        sizeof(float) * 3,
+                                                        settings);
+    REQUIRE_FALSE(build.meshlets.empty());
+    for (const Meshlet& meshlet : build.meshlets) {
+        CHECK(meshlet.indexCount <= 124U * 3U);
+    }
 }

@@ -179,8 +179,8 @@ void Renderer::resetSceneState()
 
 void Renderer::createSceneSharedResources()
 {
-    cubeMesh_ = renderer::Mesh::createCube(context_, commandContext_);
-    portfolioSphereMesh_ = renderer::Mesh::createUvSphere(context_, commandContext_);
+    cubeMesh_ = renderer::Mesh::createCube(context_, commandContext_, buildMeshletTables_);
+    portfolioSphereMesh_ = renderer::Mesh::createUvSphere(context_, commandContext_, 48, 24, buildMeshletTables_);
     const std::filesystem::path builtinAssetDir = assetDirectory();
     builtinTextureFactory_.createCheckerboardBaseColor(
         context_, commandContext_, builtinAssetDir, checkerboardTexture_);
@@ -230,7 +230,7 @@ bool Renderer::tryLoadGltfScene()
             // is why the job system is handed in here.
             const auto gltfImportStart = std::chrono::steady_clock::now();
             renderer::LoadedGltfAsset loadedAsset =
-                renderer::Mesh::createFromGltf(context_, commandContext_, modelPath, &jobSystem_);
+                renderer::Mesh::createFromGltf(context_, commandContext_, modelPath, &jobSystem_, buildMeshletTables_);
             assetLoadStats_.timings.gltfImportMs +=
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - gltfImportStart).count();
             createImportedGltfTextures(loadedAsset.textures, loadedAsset.materials);

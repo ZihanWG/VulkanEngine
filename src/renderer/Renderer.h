@@ -102,6 +102,21 @@ struct RendererStartupOverrides {
     // read once in the constructor, and several of them size resources it
     // allocates.
     std::optional<std::filesystem::path> settingsPath;
+
+    // Group every mesh's triangles into meshlets at load time (renderer/MeshLod.h).
+    //
+    // OFF by default, and startup-only, because meshletizing REORDERS each LOD
+    // level's triangles. That is a permutation, so the geometry is identical,
+    // but rasterization order is not: on the default scene it moves 7.45% of
+    // pixels by up to 6/255 through z-fight resolution and the exposure
+    // feedback that follows it. Nothing in the renderer consumes meshlets
+    // today -- meshlet culling was measured and rejected, see
+    // docs/mesh_lod.md -- so paying a golden re-baseline for unread data would
+    // be backwards.
+    //
+    // --meshlet-analysis turns it on, which is what makes that measurement
+    // repeatable on content this engine does not currently ship.
+    bool buildMeshlets = false;
 };
 
 class Renderer final {
@@ -169,6 +184,12 @@ public:
     // frame. Diagnostic: it stalls the device, so it runs once and never on a
     // frame anyone is timing.
     void requestVsmPagePoolDumpAt(uint64_t frameNumber, std::filesystem::path outputPath);
+    // Turns on the meshlet cull analysis (--meshlet-analysis). Reports only;
+    // nothing about the rendered frame changes.
+    void setMeshletAnalysisEnabled(bool enabled)
+    {
+        meshletAnalysisEnabled_ = enabled;
+    }
 
     // True once the requested capture has been read back and written. The
     // readback lags the recorded frame by the in-flight frame count, so a caller
@@ -577,6 +598,13 @@ private:
     void resetGpuCullFrameCounters(uint32_t frameIndex);
     void buildShadowFrameData(uint32_t frameIndex);
     void buildMainCullingFrameData(uint32_t frameIndex, const renderer::Frustum& cameraFrustum);
+    // Measures what a meshlet cull pass would remove, without changing the
+    // frame. See the definition for why the premise is tested before the pass
+    // is built.
+    void analyzeMeshletCulling(const renderer::Frustum& cameraFrustum);
+    // This draw item's LOD chain as (base, count) inside its own mesh's
+    // lods(), which is a different index space from the per-frame LOD table.
+    [[nodiscard]] glm::uvec2 meshLocalLodRange(const DrawItem& drawItem) const;
     void uploadObjectFrameData(uint32_t frameIndex);
     void uploadFrameConstants(uint32_t frameIndex, uint32_t cascadeCount);
     void buildDrawItems();
@@ -1375,6 +1403,24 @@ private:
     bool useGpuPunctualShadowCulling_ = false;
     // Debug view: outputs the punctual shadow visibility term as greyscale.
     bool showPunctualShadowDebug_ = false;
+    // What a meshlet cull pass would have removed this frame. Populated only
+    // when meshletAnalysisEnabled_; every field is a per-frame count.
+    struct MeshletAnalysis {
+        uint64_t drawItemsTested = 0;
+        uint64_t drawItemsWithoutMeshlets = 0;
+        uint64_t meshletsTotal = 0;
+        uint64_t meshletsFrustumCulled = 0;
+        uint64_t meshletsConeCulled = 0;
+        uint64_t meshletsVisible = 0;
+        uint64_t trianglesBefore = 0;
+        uint64_t trianglesAfter = 0;
+    };
+    MeshletAnalysis meshletAnalysis_{};
+    bool meshletAnalysisEnabled_ = false;
+    // Startup-only: meshes are built in the constructor, so this cannot be a
+    // post-construction toggle. See RendererStartupOverrides::buildMeshlets.
+    bool buildMeshletTables_ = false;
+
     // Point lights cost six tiles each against 64 total, so how many may cast is
     // a budget the user can see and set rather than an implicit cap.
     int maxShadowCastingPointLights_ = 4;

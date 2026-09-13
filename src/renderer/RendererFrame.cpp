@@ -1293,20 +1293,9 @@ void Renderer::buildFrameMeshLodTable()
             meshLodBases.emplace(mesh, meshBase);
         }
 
-        // Sub-meshed meshes carry a chain per primitive; the rest use the
-        // whole-mesh range.
-        uint32_t localBase = 0;
-        uint32_t localCount = 0;
-        if (mesh->hasSubMeshes()) {
-            const std::span<const renderer::MeshPrimitive> primitives = mesh->primitives();
-            if (drawItem.submeshIndex < primitives.size()) {
-                localBase = primitives[drawItem.submeshIndex].lodBase;
-                localCount = primitives[drawItem.submeshIndex].lodCount;
-            }
-        } else {
-            localBase = mesh->lodBase();
-            localCount = mesh->lodCount();
-        }
+        const glm::uvec2 local = meshLocalLodRange(drawItem);
+        const uint32_t localBase = local.x;
+        const uint32_t localCount = local.y;
 
         if (localCount == 0 || static_cast<size_t>(localBase) + localCount > meshLods.size()) {
             continue;
@@ -1314,6 +1303,25 @@ void Renderer::buildFrameMeshLodTable()
 
         frameDrawItemLodRanges_[drawIndex] = glm::uvec2(meshBase + localBase, localCount);
     }
+}
+
+glm::uvec2 Renderer::meshLocalLodRange(const DrawItem& drawItem) const
+{
+    // Sub-meshed meshes carry a chain per primitive; the rest use the whole-mesh
+    // range. Returned MESH-LOCAL, i.e. an index into mesh->lods(), not into the
+    // per-frame table -- buildFrameMeshLodTable adds its own base on top, and
+    // conflating the two indexes past the end of a mesh's own chain.
+    if (drawItem.mesh == nullptr) {
+        return glm::uvec2(0);
+    }
+    if (drawItem.mesh->hasSubMeshes()) {
+        const std::span<const renderer::MeshPrimitive> primitives = drawItem.mesh->primitives();
+        if (drawItem.submeshIndex < primitives.size()) {
+            return glm::uvec2(primitives[drawItem.submeshIndex].lodBase, primitives[drawItem.submeshIndex].lodCount);
+        }
+        return glm::uvec2(0);
+    }
+    return glm::uvec2(drawItem.mesh->lodBase(), drawItem.mesh->lodCount());
 }
 
 void Renderer::uploadGpuCullFrameParams(uint32_t frameIndex, bool occlusionEnabledThisFrame)
@@ -1749,6 +1757,10 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         const ScopedCpuTimer timer = cpuScope(CpuScope::MainCullingFrameData);
         buildMainCullingFrameData(frameIndex, cameraFrustum);
     }
+    // Deliberately OUTSIDE every CPU scope: it is an instrument, off by default,
+    // and folding its cost into frame prep would make the numbers it exists to
+    // inform unreadable.
+    analyzeMeshletCulling(cameraFrustum);
     {
         const ScopedCpuTimer timer = cpuScope(CpuScope::ObjectFrameDataUpload);
         uploadObjectFrameData(frameIndex);
@@ -1993,6 +2005,106 @@ void Renderer::buildShadowFrameData(uint32_t frameIndex)
         updateGpuShadowCullInputBuffer(frameIndex);
     } else {
         shadowCullingStats_.indirectDrawing = false;
+    }
+}
+
+// Answers, without rendering anything differently, what a meshlet-level cull
+// pass WOULD remove from this frame.
+//
+// It exists because the case for meshlet culling is content-dependent and this
+// engine's scenes are procedural. Building the GPU pass first and measuring
+// after would have meant writing a second cull stage, a command budget and a
+// counter readback before finding out whether the geometry here has anything to
+// give -- so the premise gets tested first, the same way the persistent GPU
+// scene table and the cascade bounding-sphere fit were.
+//
+// The object-level frustum test comes first on purpose: meshlet culling only
+// ever runs on what the existing pass already kept, so counting a culled
+// object's meshlets would inflate the saving with work nobody was going to do.
+void Renderer::analyzeMeshletCulling(const renderer::Frustum& cameraFrustum)
+{
+    meshletAnalysis_ = {};
+    if (!meshletAnalysisEnabled_ || allDrawItems_.empty()) {
+        return;
+    }
+
+    const VkExtent2D renderExtent = renderResolution_.extent();
+    const float projScaleY = 0.5f * static_cast<float>(renderExtent.height) * std::abs(frameJitteredProjection_[1][1]);
+    renderer::LodSelectionSettings lodSelection{};
+    lodSelection.referenceRadiusPixels = lodSettings_.referenceRadiusPixels;
+    lodSelection.bias = lodSettings_.bias;
+    lodSelection.forcedLod = lodSettings_.enabled ? lodSettings_.forcedLod : 0;
+
+    for (const DrawItem& drawItem : allDrawItems_) {
+        if (!drawItem.mesh || drawItem.indexCount == 0 || drawItem.objectIndex >= frameWorldBounds_.size()) {
+            continue;
+        }
+        if (!cameraFrustum.testAabb(frameWorldBounds_[drawItem.objectIndex])) {
+            continue;
+        }
+
+        ++meshletAnalysis_.drawItemsTested;
+
+        const std::span<const renderer::MeshLod> lods = drawItem.mesh->lods();
+        const std::span<const renderer::Meshlet> meshlets = drawItem.mesh->meshlets();
+        // Mesh-local, not the frame table's index: frameDrawItemLodRanges_ holds
+        // the latter, and using it here indexed past the end of every mesh's own
+        // chain and reported almost every draw item as unmeshletized.
+        const uint32_t level = meshLocalLodRange(drawItem).x + selectedShadowLodLevel(drawItem, projScaleY, lodSelection);
+
+        const std::span<const glm::uvec2> meshletRanges = drawItem.mesh->meshletRangesPerLod();
+        if (meshlets.empty() || level >= lods.size() || level >= meshletRanges.size() ||
+            meshletRanges[level].y == 0) {
+            // Drawn whole. Counted so the "triangles before" total is the whole
+            // frame rather than only its meshletized part -- a saving quoted
+            // against a subset of the frame is not a saving.
+            ++meshletAnalysis_.drawItemsWithoutMeshlets;
+            meshletAnalysis_.trianglesBefore += drawItem.indexCount / 3;
+            meshletAnalysis_.trianglesAfter += drawItem.indexCount / 3;
+            continue;
+        }
+
+        const glm::mat4& model = frameModelMatrices_[drawItem.objectIndex];
+        // Uniform-scale assumption, made safe by taking the largest axis: a
+        // non-uniformly scaled meshlet sphere stays conservative this way, and
+        // the cone axis is renormalised after transform for the same reason.
+        const float scale = std::sqrt(std::max({glm::length2(glm::vec3(model[0])),
+                                                glm::length2(glm::vec3(model[1])),
+                                                glm::length2(glm::vec3(model[2]))}));
+        const glm::mat3 normalBasis = glm::mat3(model);
+
+        const glm::uvec2 meshletRange = meshletRanges[level];
+        for (uint32_t i = 0; i < meshletRange.y; ++i) {
+            const renderer::Meshlet& meshlet = meshlets[meshletRange.x + i];
+            const uint32_t triangles = meshlet.indexCount / 3;
+            ++meshletAnalysis_.meshletsTotal;
+            meshletAnalysis_.trianglesBefore += triangles;
+
+            const glm::vec3 center = glm::vec3(model * glm::vec4(glm::vec3(meshlet.centerRadius), 1.0f));
+            const float radius = meshlet.centerRadius.w * scale;
+
+            const renderer::Aabb meshletBounds{center - glm::vec3(radius), center + glm::vec3(radius)};
+            if (!cameraFrustum.testAabb(meshletBounds)) {
+                ++meshletAnalysis_.meshletsFrustumCulled;
+                continue;
+            }
+
+            const glm::vec3 coneAxis = normalBasis * glm::vec3(meshlet.coneAxisCutoff);
+            const float axisLength = glm::length(coneAxis);
+            const bool coneCulled =
+                axisLength > 0.0f && renderer::meshletConeCulled(center,
+                                                                 radius,
+                                                                 coneAxis / axisLength,
+                                                                 meshlet.coneAxisCutoff.w,
+                                                                 frameCameraPosition_);
+            if (coneCulled) {
+                ++meshletAnalysis_.meshletsConeCulled;
+                continue;
+            }
+
+            ++meshletAnalysis_.meshletsVisible;
+            meshletAnalysis_.trianglesAfter += triangles;
+        }
     }
 }
 
