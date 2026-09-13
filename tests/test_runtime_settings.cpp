@@ -3,11 +3,16 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <json.hpp>
+
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <random>
 #include <string>
 #include <system_error>
+#include <vector>
 
 using ve::RuntimeSettings;
 using ve::RuntimeSettingsLoadStatus;
@@ -264,8 +269,13 @@ TEST_CASE("Loading malformed JSON reports Malformed and yields defaults", "[sett
 // The example file is the only documentation of the settings schema, and it had
 // silently fallen behind twice -- it was missing the `gi` and `lod` sections
 // entirely before GTAO, fog, and punctual shadows were added. Loading it over
-// defaults and demanding nothing changes catches both a missing section and a
-// value that drifted from its default, which reading the file cannot.
+// defaults and demanding nothing changes catches a value that drifted from its
+// default, which reading the file cannot.
+//
+// It does NOT catch a missing section, though it was once believed to: an absent
+// section leaves the defaults in place and every CHECK below passes. The test
+// after this one is the structural half, and it is what actually holds the file
+// complete.
 TEST_CASE("The example settings file documents the current defaults", "[settings]")
 {
     const std::filesystem::path examplePath =
@@ -326,4 +336,109 @@ TEST_CASE("The example settings file documents the current defaults", "[settings
         CHECK(loaded.gi.gridOrigin[axis] == Catch::Approx(defaults.gi.gridOrigin[axis]));
         CHECK(loaded.gi.gridSpacing[axis] == Catch::Approx(defaults.gi.gridSpacing[axis]));
     }
+}
+
+// The test above cannot see a key that is simply absent. Loading a file with no
+// `vsm` section over default-constructed settings yields the defaults, so every
+// CHECK in it passes -- which is how the whole `vsm` section plus four other
+// keys went missing while that guard stayed green. It is not a harmless gap:
+// tools/dev/measure_gpu.py validates `--set` keys against this file, so an
+// undocumented key aborts a measurement instead of running one.
+//
+// Compare structurally instead. What saveRuntimeSettings writes for a
+// default-constructed RuntimeSettings *is* the schema, so the committed example
+// must match it key for key and value for value, and a setting added without
+// documenting it here fails this test rather than sliding past the one above.
+TEST_CASE("The example settings file matches what the engine writes", "[settings]")
+{
+    const std::filesystem::path generatedPath = makeTempSettingsPath();
+    REQUIRE(ve::saveRuntimeSettings(generatedPath, RuntimeSettings{}));
+
+    nlohmann::json written;
+    {
+        std::ifstream input(generatedPath);
+        REQUIRE(input.is_open());
+        input >> written;
+    }
+    std::error_code removeError;
+    std::filesystem::remove(generatedPath, removeError);
+
+    nlohmann::json committed;
+    {
+        const std::filesystem::path examplePath =
+            std::filesystem::path(VULKAN_ENGINE_CONFIG_DIR) / "runtime_settings.example.json";
+        std::ifstream input(examplePath);
+        REQUIRE(input.is_open());
+        input >> committed;
+    }
+
+    // Flattened "section.key" paths, so a failure names the setting that drifted
+    // rather than reporting that two documents differ somewhere.
+    const auto keyPaths = [](const nlohmann::json& document) {
+        std::vector<std::string> paths;
+        for (const auto& section : document.items()) {
+            if (section.value().is_object()) {
+                for (const auto& leaf : section.value().items()) {
+                    paths.push_back(section.key() + "." + leaf.key());
+                }
+            } else {
+                paths.push_back(section.key());
+            }
+        }
+        std::sort(paths.begin(), paths.end());
+        return paths;
+    };
+    const auto join = [](const std::vector<std::string>& paths) {
+        std::string joined;
+        for (const std::string& path : paths) {
+            joined += joined.empty() ? "" : ", ";
+            joined += path;
+        }
+        return joined.empty() ? std::string("(none)") : joined;
+    };
+
+    const std::vector<std::string> writtenKeys = keyPaths(written);
+    const std::vector<std::string> committedKeys = keyPaths(committed);
+
+    std::vector<std::string> undocumented;
+    std::set_difference(writtenKeys.begin(),
+                        writtenKeys.end(),
+                        committedKeys.begin(),
+                        committedKeys.end(),
+                        std::back_inserter(undocumented));
+    std::vector<std::string> stale;
+    std::set_difference(
+        committedKeys.begin(), committedKeys.end(), writtenKeys.begin(), writtenKeys.end(), std::back_inserter(stale));
+
+    INFO("written but undocumented: " << join(undocumented) << "\ndocumented but no longer written: " << join(stale)
+                                      << "\nregenerate with the engine's Save Settings button, or by hand from "
+                                         "toJson() in src/renderer/RuntimeSettings.cpp");
+    CHECK(undocumented.empty());
+    CHECK(stale.empty());
+
+    // Values too: a documented key holding a stale default misleads exactly as
+    // much as a missing one. Compare the two through the writer rather than as
+    // text -- the settings are floats and the writer emits them as doubles, so
+    // the committed 0.1 reads back as 0.10000000149011612 and a literal document
+    // comparison would demand that the file document itself in that form. Saving
+    // what the example loads to puts both sides through the same conversion, so
+    // the comparison is exact without an epsilon and the file stays readable.
+    RuntimeSettings exampleSettings;
+    {
+        const std::filesystem::path examplePath =
+            std::filesystem::path(VULKAN_ENGINE_CONFIG_DIR) / "runtime_settings.example.json";
+        REQUIRE(ve::loadRuntimeSettingsDetailed(examplePath, exampleSettings).status ==
+                RuntimeSettingsLoadStatus::Loaded);
+    }
+    const std::filesystem::path normalizedPath = makeTempSettingsPath();
+    REQUIRE(ve::saveRuntimeSettings(normalizedPath, exampleSettings));
+    nlohmann::json normalized;
+    {
+        std::ifstream input(normalizedPath);
+        REQUIRE(input.is_open());
+        input >> normalized;
+    }
+    std::filesystem::remove(normalizedPath, removeError);
+
+    CHECK(normalized == written);
 }

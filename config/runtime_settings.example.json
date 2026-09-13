@@ -100,7 +100,23 @@
         "enableStableCascadeFit": false,
         "shadowDistance": 40.0,
         "enableTexelSnapping": true,
-        "enableCascadeDebugColors": false
+        "enableCascadeDebugColors": false,
+        "debugOnlyShadowCasterObject": -1
+    },
+    "vsm": {
+        "enableMarking": false,
+        "enablePageRendering": false,
+        "enableShadows": false,
+        "clipmapLevels": 8,
+        "level0Extent": 4.0,
+        "texelsPerPixel": 1.0,
+        "depthRange": 250.0,
+        "markBlockStride": 8,
+        "depthBiasTexels": 8.0,
+        "debugLevelColors": false,
+        "debugDepthDelta": false,
+        "debugCascadeDepthDelta": false,
+        "debugOnlyCasterObject": -1
     },
     "gi": {
         "enabled": false,
@@ -120,6 +136,7 @@
         "gridSpacingZ": 4.0
     },
     "renderer": {
+        "enableTransientAliasing": false,
         "useGpuCulling": true,
         "useGpuShadowCulling": true,
         "enableGpuOcclusionCulling": true,
@@ -134,11 +151,13 @@
         "enableShaderHotReload": false
     },
     "debugUi": {
+        "advancedMode": false,
         "showRenderGraphPanel": true,
         "showSceneHierarchyPanel": true,
         "showMaterialInspectorPanel": true,
         "showTextureDebugPanel": true,
         "showRenderTargetDebugPanel": true,
+        "showIrradianceProbePanel": true,
         "showGpuTimingGraphs": true,
         "showCullingStats": true,
         "showExposureGraphs": true,
