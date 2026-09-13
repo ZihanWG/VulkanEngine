@@ -665,6 +665,59 @@ blended casters, re-measure, and then revisit the `gpuCasterCulling` default.
 Parallel recording only becomes the right lever after that, because only then is
 the remaining recording cost spread widely enough for threading to reach it.
 
+## Specialization constants for the uber-shader: attempted, and the machine refused to answer
+
+**Status: not a decision. The measurement was refused twice and the machinery was
+not built.** Recorded so the next attempt starts from here rather than from the
+hypothesis.
+
+**The question.** `simple_bindless.frag` is 1171 lines and compiles in virtual
+shadow maps (`virtual_shadow_map.glsl`, 524 lines), volumetric fog, irradiance
+probes and the cluster grid unconditionally, gating each on a runtime value --
+eight such branches, and every one of those subsystems is **off by default**. The
+engine uses no specialization constants at all (zero occurrences of
+`constant_id` or `VkSpecializationInfo`). On an immediate-mode GPU a uniform
+branch is cheap to *take*, so the hypothesised win is not the branch: it is
+register pressure, because the compiler allocates for the worst path and a
+lower-occupancy shader hides memory latency worse.
+
+**What was measured.** The ceiling, before building anything: the eight gates
+were replaced with a literal `false` so the driver could eliminate the bodies,
+and the two shaders were run against each other. This is a fair upper bound --
+it is exactly what a specialization constant would give the driver, and nothing
+a runtime flag can. Shaders here are compiled by `glslc --target-env=vulkan1.3`
+with **no `-O`**, so glslc emits the dead code either way and the elimination is
+entirely driver-side; the SPIR-V shrank only 0.8%, which measures the removed
+branch instructions and not the removed bodies.
+
+Two interleaved A/B/A/B series on `--scene gpu-stress`, 14 samples each, p10:
+
+| | control A | B | control A again | drift |
+| --- | --- | --- | --- | --- |
+| cold machine | 1.202 ms | 1.288 | 1.291 | **+7.4%** |
+| warm machine | 1.274 ms | 1.391 | 1.307 | **+2.6%** |
+
+**Both are refused.** The limit is 1% and the clocks were not pinned, because
+pinning needs elevation. `nvidia-smi` reported `sw_thermal_slowdown` and
+`sw_power_cap` Active by the end of the second series.
+
+**What the refused numbers lean towards is worth knowing, and is not evidence.**
+In three of the four pairs, removing the code made `MainHDRPass` *slower*
+(+7.2%, +9.2%, +7.5%), with one pair at -0.9%. That is the opposite of the
+hypothesis, and it is not implausible -- changing what the driver can eliminate
+changes its register allocation and instruction scheduling, and not always in
+the direction that looks obvious from the source. **It is not a result.** A
+drifted control voids a series, and that rule has no exception for a series
+whose direction is interesting.
+
+**What a conclusive answer needs.** `tools/dev/gpu_clock.ps1 lock` at a pin low
+enough for `gpu-stress` -- the documentation's own note is that a heavier load
+needs a *lower* pin, and 1400 MHz already drifted 1.7% on the lighter `stress`
+scene. That requires an elevated shell. Until then this question is open, and
+the machinery it would justify -- specialization constants keyed into
+`PipelineKey` so `VulkanPipelineStore` holds the variants, plus a pipeline
+rebuild when a gated setting toggles -- is deliberately not built.
+
 ## Asynchronous pipeline compilation, measured and not taken
 
 **Decision.** Pipeline creation stays synchronous and `VulkanPipelineStore` stays
