@@ -660,11 +660,36 @@ near-black and reads as a catastrophic bug that is not there.
 - **Invalidation is conservative about frustum membership.** A caster whose
   bounds intersect a tile's frustum dirties it even if it is fully occluded by
   something nearer the light and could not change the result.
-- **Tile assignment is recomputed from scratch every frame**, and priority
-  depends on the camera, so moving the camera reshuffles which lights hold tiles
-  and can flip a light between size classes at a threshold. Both pop visibly.
-  Fixing it needs hysteresis on the size class and stable light identity across
-  frames, neither of which exists yet.
+- **Tile assignment is still recomputed from scratch every frame**, but it is no
+  longer memoryless. `punctualShadows.assignmentHysteresis` (default 0.2) carries
+  the previous frame's per-light size class into the ranking and damps both ways
+  it used to churn: a light keeps its class until its projected radius clears the
+  boundary by the margin, and a light that already holds a tile ranks as if it
+  were `(1 + margin)` larger, so an incumbent has to be beaten by that much
+  before it is displaced. Light identity is the index into the clustered light
+  list, which `updateDemoLights` keeps stable; a scene with dynamic light
+  lifetimes would still need real light IDs.
+
+  Measured over 3000 deterministic frames, both scenes, sweeping the margin:
+
+  | margin | `stress` churn | class churn | `default` churn | peak inversion |
+  | --- | --- | --- | --- | --- |
+  | 0.0 | 166 | 4 | 158 | 1.00 / 1.09 |
+  | 0.1 | 104 | 0 | 112 | 1.10 / 1.18 |
+  | **0.2** | **88** | **0** | **96** | **1.20 / 1.22** |
+  | 0.5 | 6 | 0 | 24 | 1.50 / 1.50 |
+
+  Two things that sweep settles. The size-class flip this section used to lead
+  with was real but **rare** -- 4 events in 3000 frames -- and any margin at all
+  removes it; what actually churns is lights crossing the **point-light budget**,
+  166 times, and the atlas is only 10% full while it happens, so the contention
+  is for the budget rather than for space. And the cost of damping is bounded:
+  peak rank inversion comes out at exactly `1 + margin`, because that is the most
+  an incumbent's rank can be inflated by. 0.2 is the default because a light 20%
+  smaller keeping its shadow is not visible, while the popping it removes is.
+
+  Both numbers are in the once-a-second log block, not just the debug panel, so a
+  scripted run can check them.
 - **Priority ignores occlusion and the view frustum.** A light directly behind
   the camera ranks by projected size like any other, so it can take a tile that
   a visible light then cannot have.

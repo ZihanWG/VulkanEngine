@@ -89,7 +89,8 @@
     "punctualShadows": {
         "enabled": true,
         "gpuCasterCulling": false,
-        "debugView": false
+        "debugView": false,
+        "assignmentHysteresis": 0.2
     },
     "csm": {
         "cascadeCount": 4,

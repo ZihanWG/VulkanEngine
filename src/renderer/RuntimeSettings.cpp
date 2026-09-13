@@ -481,6 +481,12 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readBool(*punctual, "enabled", settings.punctualShadows.enabled);
         readBool(*punctual, "gpuCasterCulling", settings.punctualShadows.gpuCasterCulling);
         readBool(*punctual, "debugView", settings.punctualShadows.debugView);
+        readFloat(*punctual, "assignmentHysteresis", settings.punctualShadows.assignmentHysteresis);
+        // Clamped here rather than in clampRuntimeSettings, which does not take
+        // PunctualShadowSettings. A hand-edited file is the only way this reaches
+        // an out-of-range value, and the UI slider carries the same bounds.
+        settings.punctualShadows.assignmentHysteresis =
+            std::clamp(settings.punctualShadows.assignmentHysteresis, 0.0f, kMaxPunctualAssignmentHysteresis);
     }
 
     if (const Json* csm = objectMember(json, "csm")) {
@@ -646,7 +652,8 @@ Json toJson(const RuntimeSettings& settings)
         {"punctualShadows",
          Json{{"enabled", settings.punctualShadows.enabled},
               {"gpuCasterCulling", settings.punctualShadows.gpuCasterCulling},
-              {"debugView", settings.punctualShadows.debugView}}},
+              {"debugView", settings.punctualShadows.debugView},
+              {"assignmentHysteresis", settings.punctualShadows.assignmentHysteresis}}},
         {"csm",
          Json{{"cascadeCount", settings.csm.cascadeCount},
               {"lambda", settings.csm.lambda},

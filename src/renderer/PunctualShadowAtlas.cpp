@@ -97,6 +97,28 @@ uint32_t punctualShadowSizeClassForRadius(float projectedRadius, bool isPoint)
     return chosen;
 }
 
+uint32_t punctualShadowSizeClassWithHysteresis(float projectedRadius,
+                                               bool isPoint,
+                                               uint32_t previousSizeClass,
+                                               float margin)
+{
+    const uint32_t fresh = punctualShadowSizeClassForRadius(projectedRadius, isPoint);
+    if (previousSizeClass >= kPunctualShadowSizeClassCount || !(margin > 0.0f) || fresh == previousSizeClass) {
+        return fresh;
+    }
+
+    // Re-test with the radius nudged against the direction of the change, so a
+    // light only moves once it has cleared the boundary by the margin. Class 0
+    // is the largest tile, so a smaller class index means the light grew.
+    //
+    // Deliberately re-entering punctualShadowSizeClassForRadius instead of
+    // comparing against a threshold computed here: the boundaries live there,
+    // and a copy of them is exactly the kind of mirror that goes stale.
+    const float scale = (fresh < previousSizeClass) ? (1.0f - margin) : (1.0f + margin);
+    const uint32_t damped = punctualShadowSizeClassForRadius(projectedRadius * scale, isPoint);
+    return damped == fresh ? fresh : previousSizeClass;
+}
+
 float punctualShadowSlotToFloat(uint32_t slot)
 {
     if (slot >= kMaxPunctualShadowSlots) {
@@ -308,6 +330,17 @@ void rankPunctualShadowAssignments(const std::vector<PunctualShadowCandidateInpu
                                    uint32_t pointLightBudget,
                                    std::vector<PunctualShadowAssignment>& assignments)
 {
+    // No previous frame and no margin: the size class falls straight out of the
+    // radius, which is what the overload below collapses to anyway.
+    rankPunctualShadowAssignments(candidates, pointLightBudget, {}, 0.0f, assignments);
+}
+
+void rankPunctualShadowAssignments(const std::vector<PunctualShadowCandidateInput>& candidates,
+                                   uint32_t pointLightBudget,
+                                   std::span<const uint32_t> previousSizeClasses,
+                                   float hysteresisMargin,
+                                   std::vector<PunctualShadowAssignment>& assignments)
+{
     assignments.clear();
     assignments.reserve(candidates.size());
 
@@ -323,11 +356,33 @@ void rankPunctualShadowAssignments(const std::vector<PunctualShadowCandidateInpu
         assignments.push_back(assignment);
     }
 
+    // Rank key: the projected radius, with a light that already held a tile
+    // inflated by the margin. An incumbent then has to be beaten by that much
+    // before it is displaced, which is what stops two lights either side of the
+    // point-light budget trading the last slot as the camera moves.
+    //
+    // The budget, not the atlas, is what makes this matter: at 4 point lights x
+    // 6 tiles plus a spot the demo scene fills 25 of 64 slots -- 10% of the
+    // atlas area -- so nothing is competing for space. It is competing for the
+    // budget, and the cut is where the churn happens.
+    //
+    // Only the ORDER uses this. The size class below is still chosen from the
+    // true radius, so holding on to a tile can never quietly promote a light to
+    // a larger one than it has earned.
+    const auto rankRadius = [&](const PunctualShadowAssignment& assignment) {
+        const bool heldTile = assignment.lightIndex < previousSizeClasses.size() &&
+                              previousSizeClasses[assignment.lightIndex] != kNoPunctualShadowSizeClass;
+        return heldTile ? assignment.projectedRadius * (1.0f + std::max(hysteresisMargin, 0.0f))
+                        : assignment.projectedRadius;
+    };
+
     std::sort(assignments.begin(),
               assignments.end(),
-              [](const PunctualShadowAssignment& left, const PunctualShadowAssignment& right) {
-                  if (left.projectedRadius != right.projectedRadius) {
-                      return left.projectedRadius > right.projectedRadius;
+              [&rankRadius](const PunctualShadowAssignment& left, const PunctualShadowAssignment& right) {
+                  const float leftRank = rankRadius(left);
+                  const float rightRank = rankRadius(right);
+                  if (leftRank != rightRank) {
+                      return leftRank > rightRank;
                   }
                   // Stable tiebreak so a frame's assignment does not shuffle
                   // between equally-ranked lights and flicker their shadows.
@@ -337,7 +392,14 @@ void rankPunctualShadowAssignments(const std::vector<PunctualShadowCandidateInpu
     uint32_t pointLightsAssigned = 0;
     size_t kept = 0;
     for (PunctualShadowAssignment& assignment : assignments) {
-        assignment.sizeClass = punctualShadowSizeClassForRadius(assignment.projectedRadius, !assignment.isSpot);
+        // Indexed by light index, not by rank: rank moves with the camera, which
+        // is the churn this is here to damp, so keying the history on it would
+        // hand each light whichever neighbour happened to outrank it.
+        const uint32_t previousSizeClass = assignment.lightIndex < previousSizeClasses.size()
+                                               ? previousSizeClasses[assignment.lightIndex]
+                                               : kNoPunctualShadowSizeClass;
+        assignment.sizeClass = punctualShadowSizeClassWithHysteresis(
+            assignment.projectedRadius, !assignment.isSpot, previousSizeClass, hysteresisMargin);
         if (!assignment.isSpot) {
             if (pointLightsAssigned >= pointLightBudget) {
                 continue;

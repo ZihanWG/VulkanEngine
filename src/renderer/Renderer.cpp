@@ -1436,7 +1436,11 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
             << "  cull+record CPU: " << punctualShadowCpuMicros_ << " us\n"
             << "  frames served from cache: " << punctualShadowCachedFrames_ << "\n"
             << "  assignment churn this frame: " << punctualShadowAssignmentChurn_
-            << ", cumulative: " << punctualShadowAssignmentChurnTotal_ << "\n";
+            << ", cumulative: " << punctualShadowAssignmentChurnTotal_ << "\n"
+            << "  size class churn this frame: " << punctualShadowSizeClassChurn_
+            << ", cumulative: " << punctualShadowSizeClassChurnTotal_ << " (hysteresis "
+            << punctualShadowAssignmentHysteresis_ << ")\n"
+            << "  peak rank inversion: " << punctualShadowPeakRankInversion_ << "x\n";
     if (irradianceProbes_.available()) {
         message << "Irradiance probes:\n"
                 << "  enabled: " << (giSettings_.enabled ? "yes" : "no") << "\n"
@@ -2104,6 +2108,7 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
     // subsystem actually came up.
     showPunctualShadowDebug_ = settings.punctualShadows.debugView;
     usePunctualShadows_ = settings.punctualShadows.enabled;
+    punctualShadowAssignmentHysteresis_ = settings.punctualShadows.assignmentHysteresis;
     // Unconditional, unlike the culling toggles below: every use site already
     // ANDs this with ClusteredLighting::available(), so there is nothing to
     // guard against here.
@@ -2202,6 +2207,7 @@ RuntimeSettings Renderer::captureRuntimeSettings() const
     settings.punctualShadows.enabled = usePunctualShadows_;
     settings.punctualShadows.gpuCasterCulling = useGpuPunctualShadowCulling_;
     settings.punctualShadows.debugView = showPunctualShadowDebug_;
+    settings.punctualShadows.assignmentHysteresis = punctualShadowAssignmentHysteresis_;
     settings.lod = lodSettings_;
     settings.gi = giSettings_;
     settings.csm = csmSettings_;

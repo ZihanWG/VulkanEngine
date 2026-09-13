@@ -18,6 +18,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <vector>
 
 #include <glm/mat4x4.hpp>
@@ -66,6 +67,30 @@ inline constexpr uint32_t kMaxPunctualShadowSlots =
 // warrants less resolution than the light's whole projected footprint implies --
 // the demotion is a coarse stand-in for that, not just a budget hack.
 [[nodiscard]] uint32_t punctualShadowSizeClassForRadius(float projectedRadius, bool isPoint = false);
+
+// "This light held no tile", for the per-light size class a caller carries
+// across frames. Distinct from every real class so that losing a tile and
+// changing tile size are separable events.
+inline constexpr uint32_t kNoPunctualShadowSizeClass = 0xFFFFFFFFu;
+
+// Size class for a light that already held `previousSizeClass` last frame.
+//
+// Without this, class selection is a bare threshold test, so a light drifting
+// across a boundary changes tile size every frame and its shadow's resolution
+// visibly steps back and forth. `margin` is the fraction of its projected radius
+// a light must clear the boundary by before the change is allowed, applied
+// symmetrically: growing into a larger tile is tested against a slightly smaller
+// radius, shrinking into a smaller one against a slightly larger radius, so the
+// two directions cannot chatter across a single value.
+//
+// margin <= 0, or a previousSizeClass of kNoPunctualShadowSizeClass, reproduces
+// punctualShadowSizeClassForRadius exactly. The thresholds themselves are not
+// duplicated here -- this re-tests through that same function, so a change to
+// the class boundaries cannot leave the hysteresis behind.
+[[nodiscard]] uint32_t punctualShadowSizeClassWithHysteresis(float projectedRadius,
+                                                             bool isPoint,
+                                                             uint32_t previousSizeClass,
+                                                             float margin);
 
 // Floor for the punctual shadow near plane. Small enough that geometry hugging
 // the bulb still rasterizes; see punctualShadowNearPlane for why the plane is
@@ -294,6 +319,23 @@ struct PunctualShadowAssignment {
 // are skipped -- they illuminate nothing, so a tile spent on one is wasted.
 void rankPunctualShadowAssignments(const std::vector<PunctualShadowCandidateInput>& candidates,
                                    uint32_t pointLightBudget,
+                                   std::vector<PunctualShadowAssignment>& assignments);
+
+// As above, but each light's size class is damped against what it held last
+// frame (see punctualShadowSizeClassWithHysteresis).
+//
+// `previousSizeClasses` is indexed by light index -- the same index as
+// `candidates` -- and holds kNoPunctualShadowSizeClass for a light that had no
+// tile. Shorter than `candidates` is allowed and reads as "no previous class"
+// past its end, so a frame where the light count grew needs no special case.
+//
+// The state stays with the caller rather than inside this function on purpose:
+// it keeps this a pure function of its inputs, which is what lets the tests pin
+// the oscillation behaviour directly.
+void rankPunctualShadowAssignments(const std::vector<PunctualShadowCandidateInput>& candidates,
+                                   uint32_t pointLightBudget,
+                                   std::span<const uint32_t> previousSizeClasses,
+                                   float hysteresisMargin,
                                    std::vector<PunctualShadowAssignment>& assignments);
 
 } // namespace ve::renderer

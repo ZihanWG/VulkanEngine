@@ -616,9 +616,20 @@ void Renderer::updatePunctualShadowSlots(uint32_t frameIndex, float aspectRatio)
     // renderer/PunctualShadowAtlas.h, where they are unit-tested. What stays here
     // is the GPU-side half: inserting into the atlas and writing the resulting
     // slot back into the light.
+    //
+    // punctualShadowLightSizeClass_ still holds last frame's classes at this
+    // point -- it is rewritten below, after the assignment -- which is exactly
+    // the history the hysteresis wants.
     renderer::rankPunctualShadowAssignments(punctualShadowCandidates_,
                                             static_cast<uint32_t>(std::max(maxShadowCastingPointLights_, 0)),
+                                            std::span<const uint32_t>(punctualShadowLightSizeClass_),
+                                            punctualShadowAssignmentHysteresis_,
                                             punctualShadowAssignments_);
+
+    // Rebuilt from this frame's assignment below. Sized here so a light that
+    // lost its tile reads as kNoPunctualShadowSizeClass rather than keeping the
+    // stale class it held last frame.
+    punctualShadowLightSizeClass_.assign(lights.size(), renderer::kNoPunctualShadowSizeClass);
 
     for (const renderer::PunctualShadowAssignment& assignment : punctualShadowAssignments_) {
         renderer::GpuLight& light = lights[assignment.lightIndex];
@@ -635,6 +646,12 @@ void Renderer::updatePunctualShadowSlots(uint32_t frameIndex, float aspectRatio)
             // and lower-ranked lights may still fit in a smaller leftover tile,
             // so this keeps walking instead of breaking out.
             light.spotScaleOffset.z = renderer::punctualShadowSlotToFloat(slot);
+            // Recorded only on the slot actually granted: a light the atlas could
+            // not fit held no tile, so feeding its intended class back as history
+            // would let the hysteresis defend a class it never had.
+            if (slot != renderer::kInvalidPunctualShadowSlot) {
+                punctualShadowLightSizeClass_[assignment.lightIndex] = assignment.sizeClass;
+            }
             continue;
         }
 
@@ -645,22 +662,59 @@ void Renderer::updatePunctualShadowSlots(uint32_t frameIndex, float aspectRatio)
         }
 
         light.spotScaleOffset.z = renderer::punctualShadowSlotToFloat(baseSlot);
+        punctualShadowLightSizeClass_[assignment.lightIndex] = assignment.sizeClass;
     }
 
     // Measure how much the assignment moved. Lights popping in and out of the
     // shadowed set frame to frame is what reads as flicker, so it gets counted
-    // rather than eyeballed.
+    // rather than eyeballed -- and so does a light that keeps its shadow while
+    // its tile size steps, which is a separate artifact and was not counted at
+    // all until the sizeClass field below was actually written.
     punctualShadowLightState_.resize(lights.size());
     punctualShadowAssignmentChurn_ = 0;
+    punctualShadowSizeClassChurn_ = 0;
+    float smallestShadowedRadius = std::numeric_limits<float>::max();
+    float largestUnshadowedRadius = 0.0f;
     for (size_t lightIndex = 0; lightIndex < lights.size(); ++lightIndex) {
         const bool shadowed = lights[lightIndex].spotScaleOffset.z >= 0.0f;
+        const uint32_t sizeClass = punctualShadowLightSizeClass_[lightIndex];
         PunctualShadowLightState& state = punctualShadowLightState_[lightIndex];
         if (state.valid && state.shadowed != shadowed) {
             ++punctualShadowAssignmentChurn_;
             ++punctualShadowAssignmentChurnTotal_;
         }
+        // Only for a light shadowed on BOTH frames. One that just gained or lost
+        // its shadow is already counted above, and counting it twice would make
+        // the two numbers move together and hide which artifact is happening.
+        if (state.valid && state.shadowed && shadowed && state.sizeClass != sizeClass) {
+            ++punctualShadowSizeClassChurn_;
+            ++punctualShadowSizeClassChurnTotal_;
+        }
+        // The counterweight to retention, and the reason it is measured rather
+        // than tuned by eye. Damping churn means letting an incumbent hold a tile
+        // that a larger light now deserves, so the inversion it buys has to be
+        // visible next to the churn it removes: this is the worst ratio seen
+        // between an unshadowed light and the smallest shadowed one. 1.0 means
+        // the assignment still respects projected size exactly.
+        if (lightIndex < punctualShadowCandidates_.size() &&
+            punctualShadowCandidates_[lightIndex].range > 0.0f) {
+            const float radius = punctualShadowCandidates_[lightIndex].projectedRadius;
+            if (shadowed) {
+                smallestShadowedRadius = std::min(smallestShadowedRadius, radius);
+            } else {
+                largestUnshadowedRadius = std::max(largestUnshadowedRadius, radius);
+            }
+        }
+        state.sizeClass = sizeClass;
         state.shadowed = shadowed;
         state.valid = true;
+    }
+
+    // Peak rather than current: an inversion lasting a handful of frames is what
+    // this risks, and a per-frame readout sampled once a second would miss it.
+    if (smallestShadowedRadius < std::numeric_limits<float>::max() && smallestShadowedRadius > 0.0f) {
+        punctualShadowPeakRankInversion_ =
+            std::max(punctualShadowPeakRankInversion_, largestUnshadowedRadius / smallestShadowedRadius);
     }
 
     punctualShadowSlotsUsed_ = punctualShadows_.slotCount();

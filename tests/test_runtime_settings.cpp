@@ -95,6 +95,7 @@ RuntimeSettings makeNonDefaultSettings()
     settings.punctualShadows.enabled = false;
     settings.punctualShadows.gpuCasterCulling = true;
     settings.punctualShadows.debugView = true;
+    settings.punctualShadows.assignmentHysteresis = 0.25f;
 
     settings.csm.cascadeCount = 3;
     settings.csm.lambda = 0.7f;
@@ -201,6 +202,7 @@ TEST_CASE("RuntimeSettings save -> load round-trips every persisted field", "[se
     CHECK(loaded.punctualShadows.enabled == original.punctualShadows.enabled);
     CHECK(loaded.punctualShadows.gpuCasterCulling == original.punctualShadows.gpuCasterCulling);
     CHECK(loaded.punctualShadows.debugView == original.punctualShadows.debugView);
+    CHECK(loaded.punctualShadows.assignmentHysteresis == original.punctualShadows.assignmentHysteresis);
 
     CHECK(loaded.csm.cascadeCount == original.csm.cascadeCount);
     CHECK(loaded.csm.lambda == Catch::Approx(original.csm.lambda));
@@ -315,6 +317,7 @@ TEST_CASE("The example settings file documents the current defaults", "[settings
     CHECK(loaded.punctualShadows.enabled == defaults.punctualShadows.enabled);
     CHECK(loaded.punctualShadows.gpuCasterCulling == defaults.punctualShadows.gpuCasterCulling);
     CHECK(loaded.punctualShadows.debugView == defaults.punctualShadows.debugView);
+    CHECK(loaded.punctualShadows.assignmentHysteresis == defaults.punctualShadows.assignmentHysteresis);
 
     CHECK(loaded.useClusteredLighting == defaults.useClusteredLighting);
 

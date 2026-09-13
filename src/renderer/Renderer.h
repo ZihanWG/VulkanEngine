@@ -1378,10 +1378,19 @@ private:
     // Point lights cost six tiles each against 64 total, so how many may cast is
     // a budget the user can see and set rather than an implicit cap.
     int maxShadowCastingPointLights_ = 4;
+    // How far a light must clear a size-class boundary before it may change tile
+    // size. Mirrors PunctualShadowSettings::assignmentHysteresis.
+    float punctualShadowAssignmentHysteresis_ = 0.0f;
     // Scratch for the ranking in renderer/PunctualShadowAtlas.h. Members so the
     // per-frame assignment does not reallocate every frame.
     std::vector<renderer::PunctualShadowCandidateInput> punctualShadowCandidates_;
     std::vector<renderer::PunctualShadowAssignment> punctualShadowAssignments_;
+    // The size class each light ended this frame holding, indexed by light index,
+    // kNoPunctualShadowSizeClass where it got no tile. Fed back into next frame's
+    // ranking as the hysteresis history, and read by the churn counters. Kept
+    // separate from punctualShadowAssignments_ because that one is rank-ordered
+    // and holds only the lights that were assigned.
+    std::vector<uint32_t> punctualShadowLightSizeClass_;
     // Per-light assignment state carried across frames, indexed by light index.
     // Light indices are stable frame to frame because updateDemoLights rebuilds
     // the swarm in a deterministic order; a scene with dynamic light lifetimes
@@ -1397,6 +1406,19 @@ private:
     // guessing at it from the image is how the last few rounds went wrong.
     uint32_t punctualShadowAssignmentChurn_ = 0;
     uint64_t punctualShadowAssignmentChurnTotal_ = 0;
+    // How many lights KEPT their shadow but changed tile size. A different
+    // artifact from the one above -- the shadow stays, its resolution steps --
+    // and counted separately for that reason. It went unmeasured entirely until
+    // 2026-09-13: PunctualShadowLightState carried a sizeClass field that nothing
+    // ever wrote, so the counter beside it looked like it covered assignment
+    // churn while covering half of it.
+    uint32_t punctualShadowSizeClassChurn_ = 0;
+    uint64_t punctualShadowSizeClassChurnTotal_ = 0;
+    // Worst ratio seen this run between an unshadowed light and the smallest
+    // shadowed one. The counterweight to assignment hysteresis: retention buys
+    // stability by letting an incumbent outrank a larger newcomer, and this is
+    // what that costs. 1.0 means the assignment still respects projected size.
+    float punctualShadowPeakRankInversion_ = 1.0f;
     // Slots filled last frame, surfaced in the debug panel.
     uint32_t punctualShadowSlotsUsed_ = 0;
     // Shadow-atlas caching. The atlas is re-rendered only when the hash of its
