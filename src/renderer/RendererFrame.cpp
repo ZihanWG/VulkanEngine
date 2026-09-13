@@ -1538,11 +1538,17 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     // Regenerate the animated demo light swarm, then hand the froxel grid + light
     // culling the current view/inverse-projection and camera planes (view-space
     // work, so it runs regardless of scene contents).
-    updateDemoLights(elapsedSeconds);
+    {
+        const ScopedCpuTimer timer = cpuScope(CpuScope::DemoLights);
+        updateDemoLights(elapsedSeconds);
+    }
     // Assign atlas tiles before the light buffer is uploaded below: this stamps
     // the slot index into each GpuLight, so it has to run between the rebuild
     // and clusteredLighting_.upload().
-    updatePunctualShadowSlots(frameIndex, aspect);
+    {
+        const ScopedCpuTimer timer = cpuScope(CpuScope::PunctualShadowSlots);
+        updatePunctualShadowSlots(frameIndex, aspect);
+    }
     // The skinned pose is NOT advanced here. It has to be in place before
     // updateVsmResidency, which decides which pages to invalidate, and that runs
     // earlier in drawFrame than this does -- see advanceSkinnedAnimation.
@@ -1559,20 +1565,37 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         return;
     }
 
-    updateCascades(aspect);
+    {
+        const ScopedCpuTimer timer = cpuScope(CpuScope::Cascades);
+        updateCascades(aspect);
+    }
     // After updateCascades so the injection pass gets this frame's cascade
     // matrices, and before recording, which reads the uploaded buffer.
-    updateVolumetricFogParams(frameIndex, aspect);
+    {
+        const ScopedCpuTimer timer = cpuScope(CpuScope::VolumetricFogParams);
+        updateVolumetricFogParams(frameIndex, aspect);
+    }
 
-    if (updateAnimatedTransforms(elapsedSeconds)) {
+    bool transformsMoved = false;
+    {
+        const ScopedCpuTimer timer = cpuScope(CpuScope::AnimatedTransforms);
+        transformsMoved = updateAnimatedTransforms(elapsedSeconds);
+    }
+    if (transformsMoved) {
         invalidateDepthPyramid();
     }
 
     // Transforms are final for this frame; cache every object's world AABB once
     // for the visibility, shadow-cascade, and GPU-cull-input passes below.
-    updateFrameWorldBounds();
+    {
+        const ScopedCpuTimer timer = cpuScope(CpuScope::WorldBounds);
+        updateFrameWorldBounds();
+    }
 
-    buildDrawItems();
+    {
+        const ScopedCpuTimer timer = cpuScope(CpuScope::DrawItems);
+        buildDrawItems();
+    }
 
     // Deliberately here and not with the slot assignment above. The hash covers
     // caster transforms and draw items, and both are still the previous frame's
@@ -1580,8 +1603,14 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     // between. Hashing there would notice every change exactly one frame late,
     // which is a single stale shadow frame on every edit: visible, and hard to
     // attribute. The slots are final by now, so nothing is lost by waiting.
-    updatePunctualShadowCacheState();
-    buildFrameMeshLodTable();
+    {
+        const ScopedCpuTimer timer = cpuScope(CpuScope::PunctualShadowCache);
+        updatePunctualShadowCacheState();
+    }
+    {
+        const ScopedCpuTimer timer = cpuScope(CpuScope::MeshLodTable);
+        buildFrameMeshLodTable();
+    }
     resetGpuCullFrameCounters(frameIndex);
 
     const renderer::Frustum cameraFrustum = renderer::Frustum::fromViewProjection(viewProjection);
@@ -1590,13 +1619,25 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         frameFrustumPlanes_[planeIndex] = glm::vec4(cameraPlane.normal, cameraPlane.distance);
     }
 
-    buildShadowFrameData(frameIndex);
+    {
+        const ScopedCpuTimer timer = cpuScope(CpuScope::ShadowFrameData);
+        buildShadowFrameData(frameIndex);
+    }
     // After buildShadowFrameData, which is what fills the per-cascade caster
     // lists the hash reads, and after buildFrameMeshLodTable above, which fills
     // the LOD ranges the mirrored level selection needs.
-    updateCascadeShadowCacheState();
-    buildMainCullingFrameData(frameIndex, cameraFrustum);
-    uploadObjectFrameData(frameIndex);
+    {
+        const ScopedCpuTimer timer = cpuScope(CpuScope::CascadeShadowCache);
+        updateCascadeShadowCacheState();
+    }
+    {
+        const ScopedCpuTimer timer = cpuScope(CpuScope::MainCullingFrameData);
+        buildMainCullingFrameData(frameIndex, cameraFrustum);
+    }
+    {
+        const ScopedCpuTimer timer = cpuScope(CpuScope::ObjectFrameDataUpload);
+        uploadObjectFrameData(frameIndex);
+    }
     clusteredLighting_.upload(frameIndex);
 
     // Resolved here (not in recordRenderCommands) so drawFrame can submit the

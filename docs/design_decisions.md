@@ -41,6 +41,8 @@ per-light slot load being the documented cost of the loop.
 It is not free. Scaling the cull radius uniformly, default scene, control
 repeated:
 
+Hardware is not recorded in the commit that introduced this table (`7fee50f`, 2026-08-14, inside the unlabelled window described in [profiling.md](profiling.md#which-machine-a-number-came-from)). A `MainHDRPass` near 10 ms is M3-class -- the RTX 3080 Ti reads 0.4-0.9 ms on the same pass -- so read this as the tiler. Resolution and statistic are not recorded either; the conclusion is a ratio between rows of one series, which is the part that survives not knowing.
+
 | Cull radius | `MainHDRPass` | Average scene luminance |
 | --- | --- | --- |
 | 100% | 9.85 / 9.81 ms | 0.3129 / 0.3121 |
@@ -662,6 +664,166 @@ as pass timings.
 blended casters, re-measure, and then revisit the `gpuCasterCulling` default.
 Parallel recording only becomes the right lever after that, because only then is
 the remaining recording cost spread widely enough for threading to reach it.
+
+## A depth prepass cannot be evaluated on this tree, and the missing piece is a scene
+
+**Status: not built, and not because it was measured and rejected -- because
+there is nothing here to measure it against.** Recorded so the next attempt
+spends its effort on the prerequisite rather than on the pass.
+
+**The question.** This renderer has no depth prepass -- `vsm_page_mark.comp`
+says so outright, and `docs/gtao.md` names one as the fix for GTAO's one-frame
+occlusion lag. Opaque draw items are sorted by bucket and pipeline so
+multi-draw-indirect can batch them, not front to back; only the transparent
+range is depth-sorted. On a tiler that cost nothing, because hidden-surface
+removal discards the occluded fragments before the fragment shader. On Ampere
+there is no such hardware, `MainHDRPass` is the dominant pass, and overdraw is
+paid in full -- which is the same argument that made back-face culling worth
+-37.4% here after being rejected on the M3.
+
+**Why it stops there.** A depth prepass buys exactly the shading of fragments
+that are later overdrawn, and costs a second submission of all opaque geometry.
+Its value is therefore a function of one number -- the scene's depth complexity
+-- and this repository's scene inventory has no value of that number worth
+optimising for:
+
+| preset | depth complexity | what it is |
+| --- | --- | --- |
+| `default` | ~1 | 11 draw items on an open platform |
+| `stress` | ~1 | 2311 small objects; `SceneBuilder.h` notes it runs *faster* than `default` because its objects are small on screen |
+| `occlusion` | ~1 | object-level occlusion behind 5 walls, which two-phase Hi-Z already removes before rasterization |
+| `fragment-stress` | **6** | six full-frame slabs, "every pixel is shaded several times over" |
+| `gpu-stress` | **24** | the same shape turned up; "layers are overdraw, so they multiply fragment work" |
+
+The two scenes with real depth complexity have it **by construction**, and
+`SceneBuilder.h` is explicit that `gpu-stress` "exists for the measurement
+problem rather than for the renderer". Measuring a depth prepass there would
+measure how the scene was built. It would report an enormous win and mean
+nothing about content.
+
+**The prerequisite is a scene, not a pass.** Sponza is the one asset here with
+realistic depth complexity, and it is not fetched --
+`VULKAN_ENGINE_FETCH_SAMPLE_SCENE` is OFF and nothing under `assets/models/`
+carries it. Fetch it, cook it, measure its depth complexity, and the question
+becomes answerable; until then a prepass would be built against a number nobody
+has.
+
+That also settles the order. The prepass is worth *more* than its own frame time
+if it lands -- it is what would remove GTAO's one-frame lag, and it would give
+VSM page marking a this-frame depth source instead of the previous frame's Hi-Z
+pyramid -- but none of that is a reason to build it before knowing what it saves.
+
+## Specialization constants for the uber-shader, measured and rejected
+
+**Decision: not built. The measured ceiling is negative** -- removing the
+default-off feature code from `simple_bindless.frag` makes `MainHDRPass`
+**4.4% slower**, not faster.
+
+**The hypothesis.** `simple_bindless.frag` is 1171 lines and compiles in virtual
+shadow maps (`virtual_shadow_map.glsl`, 524 lines), volumetric fog, irradiance
+probes and the cluster grid unconditionally, gating each on a runtime value --
+eight such branches, and every one of those subsystems is **off by default**. The
+engine uses no specialization constants at all (zero occurrences of
+`constant_id` or `VkSpecializationInfo`). On an immediate-mode GPU a uniform
+branch is cheap to *take*, so the hypothesised win was never the branch: it was
+register pressure, because the compiler allocates for the worst path and a
+lower-occupancy shader hides memory latency worse.
+
+**The ceiling was measured before anything was designed.** The eight gates were
+replaced with a literal `false` so the driver could eliminate the bodies. That is
+a fair upper bound: it is exactly what a specialization constant gives the
+driver, and strictly more than a runtime flag can. Shaders here are compiled by
+`glslc --target-env=vulkan1.3` with **no `-O`**, so glslc emits the dead code
+either way and every elimination is driver-side -- the SPIR-V shrank only 0.8%,
+which counts the removed branch instructions and not the removed bodies, so
+SPIR-V size is not a proxy for this question.
+
+Graphics clock pinned at 1100 MHz, memory at 7001, no throttle reason active.
+Three interleaved pairs on `--scene gpu-stress`, 19 samples each, p10:
+
+| | A: features compiled in | B: features removed | |
+| --- | --- | --- | --- |
+| `MainHDRPass` | 1.526 / 1.521 / 1.532 ms | 1.590 / 1.596 / 1.593 | **+4.4%** |
+| Frame total | 2.209 / 2.205 / 2.190 ms | 2.266 / 2.262 / 2.251 | **+2.6%** |
+
+The repeated control returns to 0.72% on the pass and 0.87% on the frame, both
+inside the 1% limit, and the effect is 6.1x the drift. Every one of the three
+pairs moves the same way (+4.2%, +4.9%, +4.0%).
+
+Corroborated on a second scene, `--scene fragment-stress`, two pairs, 18 samples:
+`MainHDRPass` 1.560 / 1.560 against 1.627 / 1.628, **+4.3%**, with a 0.00%
+control on the pass. That series' *frame total* drifted 1.76%, so it is quoted
+as corroboration of direction and magnitude rather than as a second gate-passing
+result.
+
+**So the ceiling is negative and the machinery is not worth building.** What
+would have been built -- specialization constants keyed into `PipelineKey` so
+`VulkanPipelineStore` holds the variants, plus a pipeline rebuild whenever a
+gated setting toggles -- is a real amount of lifetime machinery, and it would buy
+a regression.
+
+**The mechanism is not observable from here, and that is worth saying rather than
+guessing.** Changing what the driver may eliminate changes its register
+allocation and instruction scheduling, and the direction is not predictable from
+the source; a shorter shader is not automatically a faster one. Seeing *why*
+needs the register and occupancy figures the driver computes, which means
+`VK_KHR_pipeline_executable_properties` -- an optional extension, and exactly the
+shape `selectOptionalExtensions` exists to add. Until something needs it, the
+measurement stands on its own: the answer is no, and the reason is not required
+for the decision.
+
+**Do not re-derive this from the source.** The uber-shader's size is real, the
+four subsystems really are off by default, and the argument for cutting them out
+is genuinely persuasive. It was measured, three times against a passing gate, and
+it is wrong.
+
+## A depth prepass cannot be evaluated on this tree, and the missing piece is a scene
+
+**Status: not built, and not because it was measured and rejected -- because
+there is nothing here to measure it against.** Recorded so the next attempt
+spends its effort on the prerequisite rather than on the pass.
+
+**The question.** This renderer has no depth prepass -- `vsm_page_mark.comp`
+says so outright, and `docs/gtao.md` names one as the fix for GTAO's one-frame
+occlusion lag. Opaque draw items are sorted by bucket and pipeline so
+multi-draw-indirect can batch them, not front to back; only the transparent
+range is depth-sorted. On a tiler that cost nothing, because hidden-surface
+removal discards the occluded fragments before the fragment shader. On Ampere
+there is no such hardware, `MainHDRPass` is the dominant pass, and overdraw is
+paid in full -- which is the same argument that made back-face culling worth
+-37.4% here after being rejected on the M3.
+
+**Why it stops there.** A depth prepass buys exactly the shading of fragments
+that are later overdrawn, and costs a second submission of all opaque geometry.
+Its value is therefore a function of one number -- the scene's depth complexity
+-- and this repository's scene inventory has no value of that number worth
+optimising for:
+
+| preset | depth complexity | what it is |
+| --- | --- | --- |
+| `default` | ~1 | 11 draw items on an open platform |
+| `stress` | ~1 | 2311 small objects; `SceneBuilder.h` notes it runs *faster* than `default` because its objects are small on screen |
+| `occlusion` | ~1 | object-level occlusion behind 5 walls, which two-phase Hi-Z already removes before rasterization |
+| `fragment-stress` | **6** | six full-frame slabs, "every pixel is shaded several times over" |
+| `gpu-stress` | **24** | the same shape turned up; "layers are overdraw, so they multiply fragment work" |
+
+The two scenes with real depth complexity have it **by construction**, and
+`SceneBuilder.h` is explicit that `gpu-stress` "exists for the measurement
+problem rather than for the renderer". Measuring a depth prepass there would
+measure how the scene was built. It would report an enormous win and mean
+nothing about content.
+
+**The prerequisite is a scene, not a pass.** Sponza is the one asset here with
+realistic depth complexity, and it is not fetched --
+`VULKAN_ENGINE_FETCH_SAMPLE_SCENE` is OFF and nothing under `assets/models/`
+carries it. Fetch it, cook it, measure its depth complexity, and the question
+becomes answerable; until then a prepass would be built against a number nobody
+has.
+
+That also settles the order. The prepass is worth *more* than its own frame time
+if it lands -- it is what would remove GTAO's one-frame lag, and it would give
+VSM page marking a this-frame depth source instead of the previous frame's Hi-Z
+pyramid -- but none of that is a reason to build it before knowing what it saves.
 
 ## Asynchronous pipeline compilation, measured and not taken
 

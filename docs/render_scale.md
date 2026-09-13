@@ -43,12 +43,53 @@ Default scene, Debug build, 2560×1440, Apple M3. One series run back to back,
 medians per run, with the 1.0 control repeated at the end: it came back within
 **0.4%** (17.72 → 17.79 ms), which is what makes the series internally valid.
 
+> **This is a Debug build, and `tools/dev/measure_gpu.py` now refuses one
+> outright — "Debug timings are not evidence."** It is kept because it is the
+> series the design argument was originally made from, and because its *ratios*
+> hold up. The absolutes are inadmissible under the project's current protocol
+> and were taken on hardware that is no longer the target; the re-take below
+> supersedes them. See
+> [profiling.md](profiling.md#which-machine-a-number-came-from).
+
 | Scale | Render extent | Frame total | `MainHDRPass` |
 | --- | --- | --- | --- |
 | 1.00 | 2560×1440 | 17.75 ms | 9.7 ms |
 | 0.75 | 1920×1080 | 11.52 ms (−35%) | 5.78 ms (−40%) |
 | 0.50 | 1280×720 | 6.90 ms (−61%) | 2.66 ms (−73%) |
 | 0.25 | 640×360 | 5.39 ms (−70%) | 1.37 ms (−86%) |
+
+### Re-taken in Release on the RTX 3080 Ti
+
+Same scene, same resolution, same shape of series — 1.0 first, 1.0 repeated last
+— but Release, on the current target, with the graphics clock pinned at 1100 MHz
+and memory at 7001, no throttle reason active. 63 samples per point, p10.
+
+| Scale | Render extent | Frame total | `MainHDRPass` | rest of frame |
+| --- | --- | --- | --- | --- |
+| 1.00 | 2560×1440 | 6.733 ms | 4.395 ms | 2.338 ms |
+| 0.75 | 1920×1080 | 3.925 ms (−41.7%) | 2.650 ms (−39.7%) | 1.275 ms |
+| 0.50 | 1280×720 | 2.101 ms (−68.8%) | 1.255 ms (−71.4%) | 0.846 ms |
+| 0.25 | 640×360 | 1.076 ms (−84.0%) | 0.484 ms (−89.0%) | 0.592 ms |
+
+The repeated 1.0 control returns to **0.81%** on the frame and **0.11%** on the
+pass, both inside the 1% limit, so this series is quotable where the Debug one
+is not.
+
+**`MainHDRPass` scales the same way on both machines** — −40% / −73% / −86% on
+the M3 against −39.7% / −71.4% / −89.0% here. That is the claim this section
+rests on, and it survives the hardware change, which is the useful part.
+
+**The frame total does not.** The M3 series gave −35% / −61% / −70% where this
+one gives −41.7% / −68.8% / −84.0%, because the *fixed* part of the frame is a
+much smaller share here. The M3 note that "~4 ms of the frame never scales" is
+an absolute, and the reason given for keeping the minimum scale at 0.5 — that
+below it you are paying for a floor you cannot shrink — is therefore an
+M3-specific argument. The last column is the whole frame minus `MainHDRPass`,
+and it falls 2.338 → 0.592 ms, because most of what is in it is screen-space and
+sub-rected. Whatever genuinely fixed cost remains is under 0.592 ms on this
+hardware, not 4 ms. **That does not by itself justify lowering the minimum** —
+the floor is only one of the reasons, and image quality at 0.25 is the other —
+but the arithmetic the floor argument was made from no longer holds here.
 
 With temporal upsampling on, which is how a scaled frame should actually be run:
 
