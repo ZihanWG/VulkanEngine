@@ -951,10 +951,16 @@ against the real string lengths and counts: **10.0-11.1 us/frame today, 4.5-4.9
 us/frame after, so 5.5-6.3 us recoverable**.
 
 That is not worth taking. On an RTX 3080 Ti Laptop, `--scene stress`, Release,
-frame prep CPU runs 0.99 ms average against a 1.01 ms GPU frame, so the recovery
-is **0.6% of the CPU frame** -- below the 0.49% control drift the A/B harness
-itself reports on a good run, which means it could not be demonstrated after the
-fact. Against that, the change touches `RGResourceUsage`, `RenderResourceHandle`,
+frame prep CPU ran 0.99 ms average against a 1.01 ms GPU frame when this was
+measured, so the recovery is **0.6% of the CPU frame** -- below the 0.49%
+control drift the A/B harness itself reports on a good run, which means it could
+not be demonstrated after the fact.
+
+The denominator has since moved: the object transform cache and the parallel
+punctual cache-key build took frame prep down about 19% on the same scene, which
+raises the recovery to roughly 0.75% of it. That is still under the drift gate,
+so the conclusion is unchanged -- but the figure above is the one from the day
+it was taken, not a current reading. Against that, the change touches `RGResourceUsage`, `RenderResourceHandle`,
 the debug UI that reads them, and the 1555 lines of tests over the analysis
 functions, and it introduces a lifetime rule (views into `textures_[i].desc.name`
 would dangle when the vector reallocates a short, SSO-stored name) that the

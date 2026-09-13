@@ -57,8 +57,32 @@ runtime toggle (below) and falls back to the inline path when disabled:
    `updateGpuShadowCullInputBuffer`) — per-draw-item AABB/command fill from the
    bounds cache.
 
+6. **Punctual shadow cache keys** (`updatePunctualShadowCacheState`) — one
+   content hash per atlas slot, each walking every draw item. Each slot builds
+   its key in a local `PunctualShadowCacheKey` and writes only its own entry in
+   a per-slot dirty array; the dirty *list* is drained from that array in slot
+   order afterwards, because it decides what the atlas pass records and a list
+   ordered by whichever chunk finished first would make the recorded frame
+   differ run to run.
+
+   This is the one dispatch that does **not** take the default minimum chunk,
+   and it is worth reading for why. Sizing the chunk by slot count is wrong in
+   both directions, and both were measured on this loop:
+
+   | chunking | `--scene stress` | `--scene default` |
+   | --- | --- | --- |
+   | default 64-slot minimum | one chunk, fully serial | correct |
+   | one slot per chunk | **-22.3%** on the scope | **+23.9%** on frame prep |
+
+   With 11 draw items a slot is nearly empty, so ~64 jobs cost more to hand out
+   than to run. The chunk is therefore derived from the **total work** — the
+   number of draw-item tests — rather than from the slot count, so the same
+   expression reaches full parallelism on `stress` and stays serial on
+   `default`. `framePrepParallelFor` has an explicit-minimum overload for this.
+
 Kept serial: draw-item append and the mesh-batch scans (order-dependent),
-`stable_sort` by mesh, buffer uploads, and the skinned-mesh tail slot.
+`stable_sort` by mesh, buffer uploads, the skinned-mesh tail slot, and the
+drain of the punctual dirty-slot list above.
 
 ## Verifying it
 

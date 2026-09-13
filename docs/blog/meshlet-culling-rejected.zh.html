@@ -1,0 +1,657 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="一次 meshlet 剔除的实测与否决：LOD 已经拿走了 87%，留给 meshlet 的只有 0.055%。">
+<style>
+  html { color-scheme: light dark; }
+  body { margin: 0; }
+  img { max-width: 100%; }
+</style>
+<title>被 LOD 吃掉的 Meshlet</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600;700&family=IBM+Plex+Serif:ital,wght@0,400;0,600;1,400&display=swap">
+<style>
+  :root {
+    --ground:      #F7F8FA;
+    --surface:     #FFFFFF;
+    --ink:         #10151B;
+    --ink-muted:   #5A6675;
+    --ink-faint:   #8D97A4;
+    --rule:        #DCE1E8;
+    --rule-strong: #C3CBD6;
+    --lod:         #12707D;
+    --lod-ghost:   #D3E4E6;
+    --meshlet:     #C77A2B;
+    --meshlet-soft:#F0E0CC;
+    --code-bg:     #EEF1F5;
+
+    --measure: 66ch;
+    --wide: 980px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:      #141A21;
+      --surface:     #1B222B;
+      --ink:         #E7ECF2;
+      --ink-muted:   #9BA7B5;
+      --ink-faint:   #6F7C8B;
+      --rule:        #2B343F;
+      --rule-strong: #3B4754;
+      --lod:         #45B3BE;
+      --lod-ghost:   #21343A;
+      --meshlet:     #E0A05A;
+      --meshlet-soft:#382E22;
+      --code-bg:     #222A34;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground:      #141A21;
+    --surface:     #1B222B;
+    --ink:         #E7ECF2;
+    --ink-muted:   #9BA7B5;
+    --ink-faint:   #6F7C8B;
+    --rule:        #2B343F;
+    --rule-strong: #3B4754;
+    --lod:         #45B3BE;
+    --lod-ghost:   #21343A;
+    --meshlet:     #E0A05A;
+    --meshlet-soft:#382E22;
+    --code-bg:     #222A34;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: "IBM Plex Serif", Georgia, "Songti SC", serif;
+    font-size: 17px;
+    line-height: 1.68;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page {
+    max-width: var(--wide);
+    margin: 0 auto;
+    padding: 56px 28px 96px;
+    display: flex;
+    flex-direction: column;
+    gap: 40px;
+  }
+
+  .col { max-width: var(--measure); }
+
+  h1, h2, h3, .eyebrow, .num, table, .stat {
+    font-family: "IBM Plex Sans Condensed", "Helvetica Neue", "PingFang SC", sans-serif;
+  }
+
+  h1 {
+    font-size: clamp(2.4rem, 6vw, 3.5rem);
+    font-weight: 700;
+    line-height: 1.05;
+    letter-spacing: -0.015em;
+    margin: 0;
+    text-wrap: balance;
+  }
+
+  h2 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    line-height: 1.25;
+    margin: 0 0 4px;
+    text-wrap: balance;
+    letter-spacing: -0.01em;
+  }
+
+  h3 {
+    font-size: 1.08rem;
+    font-weight: 600;
+    margin: 0 0 2px;
+    color: var(--ink);
+  }
+
+  p { margin: 0 0 1em; }
+  p:last-child { margin-bottom: 0; }
+
+  .eyebrow {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.72rem;
+    font-weight: 500;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    display: block;
+    margin-bottom: 10px;
+  }
+
+  .dek {
+    font-size: 1.22rem;
+    line-height: 1.5;
+    color: var(--ink-muted);
+    max-width: 54ch;
+    margin: 18px 0 0;
+  }
+
+  .byline {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.76rem;
+    color: var(--ink-faint);
+    letter-spacing: 0.04em;
+    margin-top: 22px;
+    padding-top: 18px;
+    border-top: 1px solid var(--rule);
+    max-width: var(--measure);
+  }
+
+  section { display: flex; flex-direction: column; gap: 14px; }
+
+  .rule-top {
+    border-top: 1px solid var(--rule);
+    padding-top: 32px;
+  }
+
+  code, .mono {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.86em;
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 0.12em 0.36em;
+    border-radius: 2px;
+  }
+
+  strong { font-weight: 600; color: var(--ink); }
+
+  em { font-style: italic; }
+
+  /* --- the thesis chart ------------------------------------------ */
+  figure {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .chart-frame {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    padding: 24px 20px 18px;
+    overflow-x: auto;
+  }
+
+  .chart-frame svg { display: block; min-width: 620px; width: 100%; height: auto; }
+
+  figcaption {
+    font-size: 0.86rem;
+    line-height: 1.55;
+    color: var(--ink-muted);
+    max-width: 64ch;
+  }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 18px;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.74rem;
+    color: var(--ink-muted);
+    letter-spacing: 0.02em;
+  }
+
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .swatch { width: 11px; height: 11px; display: inline-block; }
+
+  /* --- tables ----------------------------------------------------- */
+  .table-wrap { overflow-x: auto; border: 1px solid var(--rule); background: var(--surface); }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.88rem;
+    font-variant-numeric: tabular-nums;
+    min-width: 520px;
+  }
+
+  th, td {
+    text-align: right;
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--rule);
+    white-space: nowrap;
+  }
+
+  th:first-child, td:first-child { text-align: left; }
+
+  thead th {
+    font-weight: 600;
+    font-size: 0.73rem;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    border-bottom: 1px solid var(--rule-strong);
+  }
+
+  tbody tr:last-child td { border-bottom: none; }
+
+  tr.highlight td {
+    background: var(--lod-ghost);
+    font-weight: 600;
+  }
+
+  td.win { color: var(--lod); font-weight: 600; }
+  td.thin { color: var(--meshlet); font-weight: 600; }
+
+  /* --- pull figure ------------------------------------------------ */
+  .pull {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0;
+    border: 1px solid var(--rule);
+    background: var(--surface);
+  }
+
+  .pull > div {
+    flex: 1 1 200px;
+    padding: 20px 22px;
+    border-right: 1px solid var(--rule);
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .pull > div:last-child { border-right: none; }
+
+  .stat {
+    font-size: 2.1rem;
+    font-weight: 700;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+  }
+
+  .stat.lod { color: var(--lod); }
+  .stat.mesh { color: var(--meshlet); }
+
+  .stat-label {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.71rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+
+  .stat-note { font-size: 0.83rem; color: var(--ink-muted); line-height: 1.45; }
+
+  /* --- log block -------------------------------------------------- */
+  pre {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.78rem;
+    line-height: 1.65;
+    background: var(--code-bg);
+    border-left: 2px solid var(--rule-strong);
+    padding: 14px 16px;
+    overflow-x: auto;
+    margin: 0;
+    color: var(--ink-muted);
+  }
+
+  pre b { color: var(--ink); font-weight: 600; }
+
+  /* --- sidebar ---------------------------------------------------- */
+  .sidebar {
+    border: 1px solid var(--rule-strong);
+    background: var(--surface);
+    padding: 26px 26px 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .sidebar h2 { font-size: 1.25rem; }
+
+  ul { margin: 0; padding-left: 1.15em; }
+  li { margin-bottom: 0.45em; }
+  li:last-child { margin-bottom: 0; }
+
+  a { color: var(--lod); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible { outline: 2px solid var(--lod); outline-offset: 2px; }
+
+
+  /* SVG paints via classes: var() in a presentation attribute is not reliable. */
+  .chart-frame .lbl   { fill: var(--ink-faint); font-family: "IBM Plex Mono", monospace; }
+  .chart-frame .val   { fill: var(--ink); font-family: "IBM Plex Sans Condensed", sans-serif; font-weight: 700; }
+  .chart-frame .bar-ghost { fill: var(--lod-ghost); stroke: var(--rule-strong); stroke-width: 1; }
+  .chart-frame .bar-lod   { fill: var(--lod); }
+  .chart-frame .bar-lod-soft { fill: var(--lod); opacity: 0.22; stroke: var(--lod); stroke-width: 1; }
+  .chart-frame .bar-mesh  { fill: var(--meshlet); }
+  .chart-frame .bracket   { stroke: var(--lod); stroke-width: 1; fill: none; }
+  .chart-frame .t-lod     { fill: var(--lod); font-family: "IBM Plex Sans Condensed", sans-serif; font-weight: 700; }
+  .chart-frame .t-mesh    { fill: var(--meshlet); font-family: "IBM Plex Sans Condensed", sans-serif; font-weight: 700; }
+  .chart-frame .guide     { stroke: var(--rule-strong); stroke-width: 1; stroke-dasharray: 3 3; fill: none; }
+  .chart-frame .sep       { stroke: var(--rule); stroke-width: 1; fill: none; }
+  .chart-frame .rule-mesh { stroke: var(--meshlet); stroke-width: 1.5; fill: none; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<div class="page">
+
+  <header class="col">
+    <span class="eyebrow">实测笔记 / GPU-Driven Rendering</span>
+    <h1>被 LOD 吃掉的 Meshlet</h1>
+    <p class="dek">
+      我给一个 Vulkan 渲染器加了 meshlet 剔除的全部前置设施，然后在写 GPU pass 之前先量了一次。
+      它能省下 0.055% 的三角形。这篇讲为什么——以及那个数字其实挺有意思。
+    </p>
+    <p class="byline">Vulkan 1.3 · RTX 3080 Ti Laptop · 锁频 1402/7001 · 每个场景 400 帧确定性回放</p>
+  </header>
+
+  <figure>
+    <div class="chart-frame">
+      <svg viewBox="0 0 900 392" role="img" aria-label="三角形数量在 LOD 选级与 meshlet 剔除下的两级削减对比">
+        <!-- Row 1: all authored geometry -->
+        <text x="0" y="22" class="lbl" font-size="12" letter-spacing="0.06em">提交的全部几何</text>
+        <rect x="0" y="34" width="820" height="30" class="bar-ghost"></rect>
+        <text x="828" y="54" class="val" font-size="14">1,471,956</text>
+
+        <!-- LOD removal bracket -->
+        <line x1="106" y1="72" x2="820" y2="72" class="bracket"></line>
+        <line x1="106" y1="68" x2="106" y2="76" class="bracket"></line>
+        <line x1="820" y1="68" x2="820" y2="76" class="bracket"></line>
+        <text x="463" y="92" text-anchor="middle" class="t-lod" font-size="13">LOD 选级移除 1,281,579 · 87.1%</text>
+
+        <!-- Row 2: after LOD -->
+        <text x="0" y="128" class="lbl" font-size="12" letter-spacing="0.06em">LOD 选级之后（实际绘制）</text>
+        <rect x="0" y="140" width="106" height="30" class="bar-lod"></rect>
+        <text x="114" y="160" class="val" font-size="14">190,377</text>
+        <text x="196" y="160" class="lbl" font-size="11.5">= 全部几何的 12.9%</text>
+
+        <!-- zoom guides -->
+        <line x1="0" y1="176" x2="0" y2="210" class="guide"></line>
+        <line x1="106" y1="176" x2="820" y2="210" class="guide"></line>
+        <text x="410" y="200" text-anchor="middle" class="lbl" font-size="10.5" letter-spacing="0.08em">↓ 把这一段放大 7.7 倍 ↓</text>
+
+        <!-- Row 3: zoomed leftover, meshlet slice -->
+        <text x="0" y="234" class="lbl" font-size="12" letter-spacing="0.06em">meshlet 剔除能从这里再拿走的部分</text>
+        <rect x="0" y="246" width="820" height="30" class="bar-lod-soft"></rect>
+        <rect x="819.55" y="246" width="0.45" height="30" class="bar-mesh"></rect>
+        <line x1="820" y1="246" x2="820" y2="300" class="rule-mesh"></line>
+        <text x="812" y="316" text-anchor="end" class="t-mesh" font-size="13">104 个三角形 · 0.055%</text>
+        <text x="812" y="332" text-anchor="end" class="lbl" font-size="10.5">即使放大到这个尺度，它仍然只有 0.45 px 宽</text>
+
+        <!-- Row 4: contrast, LOD off -->
+        <line x1="0" y1="348" x2="820" y2="348" class="sep"></line>
+        <text x="0" y="370" class="lbl" font-size="12" letter-spacing="0.06em">对照：把 LOD 关掉，同一场景同一机位</text>
+        <rect x="430" y="358" width="192.5" height="18" class="bar-mesh"></rect>
+        <text x="630" y="372" class="t-mesh" font-size="13">345,241 · 23.5%</text>
+      </svg>
+    </div>
+    <div class="legend">
+      <span><i class="swatch" style="background: var(--lod)"></i> LOD 选级</span>
+      <span><i class="swatch" style="background: var(--meshlet)"></i> meshlet 锥体 + 视锥剔除</span>
+      <span><i class="swatch" style="background: var(--lod-ghost); border: 1px solid var(--rule-strong)"></i> 未绘制</span>
+    </div>
+    <figcaption>
+      场景 <code>--scene stress</code>：48×48 网格，交替放置立方体与球体，共 2322 个 draw item。
+      全部四行共用同一个三角形标尺，第三行是第二行的 7.7 倍放大。
+    </figcaption>
+  </figure>
+
+  <section class="col rule-top">
+    <span class="eyebrow">01 / 出发点</span>
+    <h2>为什么想做这件事</h2>
+    <p>
+      对一个已经是 GPU-driven 的渲染器来说，meshlet 剔除几乎是默认的下一步：视锥剔除和两阶段 Hi-Z 遮挡剔除都已经在 compute 里按对象粒度跑了，
+      再往细一层走就是把网格切成 64 顶点 / 124 三角形的簇，每簇带一个包围球和一个法线锥，逐簇拒绝。
+      这也是图形岗面试里最常被追问的一环。
+    </p>
+    <p>
+      我的引擎里已经有 <code>meshoptimizer</code>（它在建 LOD 链），所以 <code>meshopt_buildMeshlets</code> 是零新依赖。
+      设施部分做完了：meshlet 被建成<strong>现有索引缓冲里的连续区间</strong>——
+      meshopt 原生吐的是 meshlet 局部的顶点表和微索引表，那需要第二个索引缓冲或者 mesh shader 才能画；
+      改成重排每个 LOD 级内部的三角形之后，一个 meshlet 就是一对 <code>(firstIndex, indexCount)</code>，
+      和 LOD 级的寻址方式完全一致，幸存的 meshlet 直接变成一条普通的 <code>VkDrawIndexedIndirectCommand</code>，绘制路径一行都不用改。
+    </p>
+    <p>
+      然后我停下来，先量了一次。
+    </p>
+  </section>
+
+  <section class="col">
+    <span class="eyebrow">02 / 方法</span>
+    <h2>在写 GPU pass 之前先量</h2>
+    <p>
+      meshlet 剔除值不值得，完全取决于内容。而我的场景全是程序化生成的——立方体和球体。
+      先把 GPU pass、per-meshlet 的 command 预算、计数器回读全写完再来测，等于赌一个我还没验证的前提。
+    </p>
+    <p>
+      所以我加了一个 CPU 侧的分析开关 <code>--meshlet-analysis</code>：它跑一遍 GPU pass <em>会</em> 跑的那套剔除，
+      但什么都不改变，只汇报。有一个细节是必须的——<strong>先做对象级视锥测试，再统计 meshlet</strong>。
+      meshlet 剔除只会作用在既有 pass 已经保留下来的对象上，把被对象级剔除掉的那些也算进"节省"里，
+      省下的是本来就没人会做的工作。
+    </p>
+  </section>
+
+  <section>
+    <div class="col">
+      <span class="eyebrow">03 / 结果</span>
+      <h2>六个场景，400 帧确定性回放</h2>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>场景</th>
+            <th>draw item</th>
+            <th>meshlet</th>
+            <th>移除的三角形</th>
+            <th>indirect command</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="highlight">
+            <td><code>stress</code></td>
+            <td>1334</td>
+            <td>3323</td>
+            <td class="thin">0.055%</td>
+            <td>1334 → 3321</td>
+          </tr>
+          <tr>
+            <td><code>default</code></td>
+            <td>11</td>
+            <td>100</td>
+            <td>19.0%</td>
+            <td>11 → 82</td>
+          </tr>
+          <tr>
+            <td><code>sunlit</code></td>
+            <td>8</td>
+            <td>34</td>
+            <td>8.5%</td>
+            <td>8 → 32</td>
+          </tr>
+          <tr>
+            <td><code>occlusion</code></td>
+            <td>126</td>
+            <td>126</td>
+            <td>0%</td>
+            <td>不变</td>
+          </tr>
+          <tr>
+            <td><code>fragment-stress</code></td>
+            <td>9</td>
+            <td>9</td>
+            <td>0%</td>
+            <td>不变</td>
+          </tr>
+          <tr>
+            <td><code>cornell</code></td>
+            <td>7</td>
+            <td>7</td>
+            <td>0%</td>
+            <td>不变</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="col">
+      唯一一个几何量值得剔除的场景是 <code>stress</code>。在那里 meshlet 剔除移除 <strong>0.055%</strong> 的三角形，
+      同时把 indirect command 数量<strong>乘了 2.5 倍</strong>。
+      那几个显示两位数百分比的场景，draw item 只有个位数——绝对值是几千个三角形。
+    </p>
+  </section>
+
+  <section class="col">
+    <span class="eyebrow">04 / 解释</span>
+    <h2>为什么这么少：LOD 已经拿走了</h2>
+    <p>
+      第一反应当然是 meshlet 建得不好。不是。把同一场景、同一机位的每个 draw item 强制到 level 0：
+    </p>
+  </section>
+
+  <div class="pull">
+    <div>
+      <span class="stat-label">LOD 移除</span>
+      <span class="stat lod">87.1%</span>
+      <span class="stat-note">1,471,956 → 190,377 个三角形，一次 <code>selectLodIndex</code>，在一个本来就存在的 dispatch 里。</span>
+    </div>
+    <div>
+      <span class="stat-label">meshlet 再移除</span>
+      <span class="stat mesh">0.055%</span>
+      <span class="stat-note">在 LOD 之后的剩余里。需要第二级剔除、独立的 command 预算和计数器回读。</span>
+    </div>
+    <div>
+      <span class="stat-label">关掉 LOD 时</span>
+      <span class="stat mesh">23.5%</span>
+      <span class="stat-note">锥体剔除是有效的——只要它面前还有稠密几何。</span>
+    </div>
+  </div>
+
+  <section class="col">
+    <p>
+      这就是全部答案：<strong>LOD 选级和 meshlet 锥体剔除在抢同一份收益，而 LOD 先到一步。</strong>
+      在同样的剩余量上，LOD 的效率是 meshlet 的 7.7 倍，而且它不需要任何新东西。
+    </p>
+    <p>
+      还有一层更安静的原因。在这些内容实际选到的 LOD 级上，一整个球已经只剩下<em>屈指可数的几个 meshlet</em>，
+      每个 meshlet 因此覆盖了对象的大半个表面，法线朝向散得太开——
+      meshopt 给回来的 <code>cone_cutoff</code> 直接就是 1，也就是"永不拒绝"这个哨兵值。
+    </p>
+    <p>
+      meshlet 剔除想要的是<em>又大、又近、又稠密</em>的对象上的许多小簇。
+      而 LOD 的全部工作，就是保证这样的对象永远不会被提交。
+    </p>
+  </section>
+
+  <section class="col rule-top">
+    <span class="eyebrow">05 / 成本的另一半</span>
+    <h2>不是只有收益需要量</h2>
+    <p>
+      三角形百分比不能单独决定这件事。每个幸存的 meshlet 都是一条 indirect command，
+      而它替代的是原本的一个 draw item。<code>stress</code> 上是 1334 → 3321，2.5 倍。
+    </p>
+    <p>
+      如果关掉 LOD 让 meshlet 剔除去发挥那 23.5%，command 数会变成 <strong>13,931</strong>——
+      而我的 <code>kMaxDrawItems</code> 是 8192。也就是说走这条路要先动容量上限，
+      而且按照这个引擎既有的约定，超出上限的几何必须<strong>被计数上报，而不是静默丢弃</strong>。
+    </p>
+  </section>
+
+  <section class="col">
+    <span class="eyebrow">06 / 边界</span>
+    <h2>什么情况下这个结论会反转</h2>
+    <p>
+      有大块连续网格、而且离相机很近的内容。Sponza 是最典型的那个：
+      一面墙横跨整个屏幕，LOD 拿它没办法——它不是"远处的小物件"，降级会直接看出来。
+      那种情况下 LOD 之后的剩余量远不止 0.055%。
+    </p>
+    <p>
+      所以我<strong>没有把这套设施删掉</strong>。<code>buildMeshlets</code>、
+      锥体测试和 <code>--meshlet-analysis</code> 都留在主干上（有单元测试，包括"meshletize 是每个 LOD 级内部三角形的一个<em>置换</em>"这条不变量）。
+      换内容重测是加一个命令行开关的事，不是重写一遍。
+    </p>
+    <p>
+      默认是<strong>关的</strong>，而且只能在启动时开。原因不是性能，是那个三角形重排：
+      它是三角形的置换，但不是<em>光栅化顺序</em>的置换——在默认场景上它会让 7.45% 的像素发生变化（最大通道差 6/255），
+      来自深度打架的胜负判定和跟在后面的自动曝光反馈。那是一次 golden 图重烘，
+      而为了没有任何 shader 会读的数据去付这个代价，是本末倒置。
+    </p>
+  </section>
+
+  <aside class="sidebar">
+    <span class="eyebrow">附录 / 一个差点骗过我的测量陷阱</span>
+    <h2>不存在的那个 10.7% 回退</h2>
+    <p>
+      顺带说一个在这次测量里踩到的坑，因为它会坑掉任何一个"拿两个二进制做 A/B"的人。
+    </p>
+    <p>
+      我一度想把 meshlet 区间塞进 <code>MeshLod</code> 结构体里（8 字节 → 16 字节）。
+      量下来：<strong>帧时间 +10.7%，对照组漂移 0.43%，可复现，定位到 <code>RenderObjects</code> +31.9%</strong>。
+      看起来铁证如山。
+    </p>
+    <p>
+      它是假的。<code>build/&lt;config&gt;/shaders/*.spv</code> 是<strong>共享的</strong>。
+      我把 <code>VulkanEngine.exe</code> 拷出来、重新编译、再拿两份互相对比——
+      于是旧的那个二进制加载的是<em>新</em>二进制编译出来的 shader。
+      改动恰好动了一个 C++/GLSL 双边镜像的结构体，旧二进制就按错误的 stride 去读 LOD 表，画出了不一样的几何。
+    </p>
+    <p>
+      破绽在这里：<strong>同一个二进制，在一轮里读 1.272 ms，在另一轮里读 1.406 ms。</strong>
+      基线会在两次测量之间漂移，那它就不是基线。
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>二进制</th><th>配自己的 shader</th><th>配对方的 shader</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>8 字节 <code>MeshLod</code></td><td class="win">1.406 ms</td><td>1.272 ms</td></tr>
+          <tr><td>16 字节 <code>MeshLod</code></td><td class="win">1.407 ms</td><td>1.689 ms</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      让每个二进制配自己的 shader 跑，所有配置都是 <strong>1.406 ms</strong>，那个 stride 根本不花钱。
+    </p>
+    <p>
+      确认它是假象的办法，是<strong>预测反方向</strong>：如果机制是我猜的那样，
+      那么拿新二进制去配旧 shader 也应该异常——结果是 +19.9%。对上了。
+    </p>
+    <p>
+      顺带一提，漂移门（drift gate）对这个完全无能为力：它只比较<em>同一轮之内</em>两次对照组的差异，
+      而这里两次对照组都一样地错。
+    </p>
+  </aside>
+
+  <section class="col rule-top">
+    <span class="eyebrow">07 / 收尾</span>
+    <h2>留下了什么</h2>
+    <p>
+      一个被否决的特性，和一个我现在能直接回答的问题。如果有人问"你为什么没做 meshlet 剔除"，
+      答案不是"没来得及"，而是这张表、这个 7.7 倍、和那句
+      <em>LOD 和 meshlet 锥体剔除在抢同一份收益</em>。
+    </p>
+    <p>
+      我觉得这比做出来更有说服力一点。先量前提再写代码，最坏的情况是省下了一个 GPU pass 的工作量；
+      最好的情况是你学到了一件关于自己引擎的、原本不会注意到的事。
+    </p>
+    <ul>
+      <li><strong>已合入主干：</strong><code>buildMeshlets</code> + <code>meshletConeCulled</code>（无 GPU 依赖，可单测）、<code>--meshlet-analysis</code></li>
+      <li><strong>默认关闭：</strong>meshlet 构建本身（启动期开关）</li>
+      <li><strong>保持 8 字节：</strong><code>MeshLod</code>——它是逐帧上传给 GPU 的，不该为一个不存在的特性带两个没人读的字段</li>
+    </ul>
+  </section>
+
+</div>
+
+</body>
+</html>

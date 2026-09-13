@@ -105,7 +105,7 @@ GPU linear-blend vertex skinning (`simple_skinned.vert`) driven by a per-frame j
 - Skeletal animation: GPU linear-blend skinning from a per-frame joint-matrix palette, GPU-free unit-tested animation core, rigged/animated glTF import + procedural fallback.
 - Multi-draw indirect batching by mesh-compatible ranges on the bindless main path and shadow path.
 - GPU timestamp profiler with per-pass timings, frame-latency readback, moving-average ImGui history, and debug labels.
-- Task-parallel CPU frame preparation: a unit-tested `JobSystem::parallelFor` spreads the world-bounds cache, per-object frame data, CPU frustum culling, shadow-cascade visibility, and GPU-cull input builds across worker threads, with an A/B toggle and CPU timing readout in the profiler panel.
+- Task-parallel CPU frame preparation: a unit-tested `JobSystem::parallelFor` spreads the object transform cache, per-object frame data, CPU frustum culling, shadow-cascade visibility, punctual shadow cache keys, and GPU-cull input builds across worker threads, with an A/B toggle and CPU timing readout in the profiler panel. Chunk size is derived from total work rather than item count, because one slot per chunk measured -22.3% on a heavy scene and +23.9% on a light one.
 - Editable scene workflow for runtime object transforms, visibility, camera/light settings, and JSON scene save/load.
 - Dear ImGui debug overlay: runtime render settings with JSON persistence, render graph visualization, profiler/frame timeline, culling/exposure history plots, scene hierarchy + material inspector, render-target/CSM cascade debug views.
 - Portfolio screenshot capture mode with F12 PNG export from the final tonemapped swapchain image before the ImGui overlay.

@@ -17,6 +17,16 @@ overview; these documents describe implementation details and limitations.
 - [Parallel Frame Preparation](parallel_frame_prep.md): JobSystem
   parallelFor, the per-frame world-bounds cache, which frame-prep loops run on
   workers, and the A/B toggle + CPU timing readout.
+- [Discrete Mesh LOD](mesh_lod.md): The per-draw-item LOD chain, why level
+  selection can be a GPU decision, meshlet construction, and the
+  measurement that rejected meshlet culling on this content.
+- [Transparency](transparency.md): The alpha modes, the separate blended
+  pass, back-to-front sorting, and what transparency costs the
+  depth-dependent effects.
+- [Blog: 被 LOD 吃掉的 Meshlet](blog/meshlet-culling-rejected.zh.html)
+  (中文): The meshlet measurement written for a reader rather than a
+  maintainer — LOD removes 87% of the triangles and meshlet culling finds
+  0.055% of the remainder. Same material as mesh_lod.md, different audience.
 - [GPU Profiling](profiling.md): Timestamp query profiler design, frame-latency
   readback model, profiled ranges, and known timing limitations.
 - [Render Graph 2.0](render_graph.md): Logical resource handles, pass

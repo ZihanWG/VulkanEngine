@@ -495,6 +495,14 @@ entirely when that hash is unchanged: no clear, no draws, and no layout
 transition, since the atlas keeps the sampled layout the main pass left it in
 and the main pass wants that same layout next frame.
 
+The key build itself runs **in parallel across slots**: each slot hashes into a
+local key and writes its own entry in a per-slot dirty array, and the dirty list
+is drained from that array in slot order afterwards so the recorded frame stays
+deterministic. It is the one frame-prep dispatch that sizes its chunk from total
+work rather than item count -- see
+[parallel_frame_prep.md](parallel_frame_prep.md), which has the measurement that
+forced that.
+
 Invalidation is **per tile**, not per frame. A tile only cares about the casters
 inside its own frustum, so one moving object re-renders the handful of tiles
 that can see it rather than the whole atlas.
