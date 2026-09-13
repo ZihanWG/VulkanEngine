@@ -28,30 +28,48 @@ If timestamps are unavailable, the panel remains visible and reports the unavail
 
 The profiler uses `vkCmdWriteTimestamp2` because the renderer already uses Vulkan 1.3 and Synchronization2. Scope begin timestamps are written at `VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT`; scope end timestamps are written at `VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT`.
 
-This makes each timing an inclusive elapsed GPU range around the commands recorded between the markers. Nested scopes, such as `RenderObjects` inside `MainHDRPass`, overlap with their parent and must not be summed with parent scopes. On this project's primary target they are worse than redundant — see the next section before reading any nested number.
+This makes each timing an inclusive elapsed GPU range around the commands recorded between the markers. Nested scopes, such as `RenderObjects` inside `MainHDRPass`, overlap with their parent and must not be summed with parent scopes. Whether they mean anything at all depends on the GPU — see the next section before reading any nested number.
 
-## Scopes nested inside a render pass are meaningless on tile-based hardware
+## Scopes nested inside a render pass: meaningless on a tiler, real on an immediate-mode GPU
 
-**A scope recorded between `vkCmdBeginRendering` and `vkCmdEndRendering` does not measure the work inside it.** On Apple GPUs through MoltenVK, and on tile-based deferred architectures generally, the fragment work for a render pass runs when the pass *resolves*. A timestamp written between draw calls inside a pass therefore captures only command recording and vertex work; the entire fragment cost lands at `vkCmdEndRendering`, outside every nested scope.
+**This is a property of the GPU, not of the profiler**, and this document asserted the tiler answer unconditionally for as long as the development machine was an Apple M3.
 
-Measured in Release on the demo scene, medians over ~12 frames:
+**On a tile-based deferred architecture, a scope recorded between `vkCmdBeginRendering` and `vkCmdEndRendering` does not measure the work inside it.** The fragment work for a render pass runs when the pass *resolves*, so a timestamp written between draw calls captures only command recording and vertex work; the entire fragment cost lands at `vkCmdEndRendering`, outside every nested scope.
+
+Measured in Release on an Apple M3 through MoltenVK, demo scene, medians over ~12 frames:
 
 ```
 MainHDRPass       13.512 ms   <- top-level render pass, ACCURATE
   Skybox           0.002 ms
-  RenderObjects    0.073 ms   <- these three sum to 0.09 ms
+  RenderObjects    0.073 ms   <- these three sum to 0.09 ms, 0.7%
   SkinnedMesh      0.017 ms
                    ^ 13.42 ms belongs to no child scope
 ```
 
 The 13.42 ms gap is not missing instrumentation, and `MainHDRPass`'s 13.5 ms is not inflated. Both numbers are correct; the children simply cannot see the work.
 
+**On an immediate-mode GPU the same scopes resolve as recorded.** Measured on an RTX 3080 Ti Laptop, Release, `--scene stress`, medians over ~150 one-second blocks in each of three runs:
+
+```
+             run 1    run 2    run 3
+MainHDRPass  0.425    0.418    0.433 ms
+  Skybox     0.030    0.032    0.033
+  RenderObjects
+             0.382    0.370    0.383
+  SkinnedMesh
+             0.001    0.001    0.001   <- no skinned mesh in this scene
+children     0.413    0.403    0.417   =  97% / 96% / 96% of the parent
+```
+
+The remaining 3-4% is the pass's own begin and end overhead. The two populations are 0.7% and 96%, which is not a difference of degree.
+
 Practical rules:
 
-- **Trust top-level passes.** `SSRTrace`, `Transparent`, `DepthPyramid`, `CompositePass`, `ClusterBuild`, and the rest each own a pass or a dispatch, and their timings are real.
-- **Do not read `Skybox`, `RenderObjects`, or `SkinnedMesh` as a breakdown of `MainHDRPass`.** They read near zero regardless of how much geometry they draw.
-- **To attribute cost inside a render pass, split the pass**, or use a GPU capture tool that understands tile-based scheduling. Adding more nested scopes will not help.
-- Compute dispatches are not affected. A scope around a `vkCmdDispatch` outside a render pass measures that dispatch.
+- **Trust top-level passes everywhere.** `SSRTrace`, `Transparent`, `DepthPyramid`, `CompositePass`, `ClusterBuild`, and the rest each own a pass or a dispatch, and their timings are real on either architecture.
+- **Check before reading a nested scope as a breakdown.** `tools/dev/measure_gpu.py` now decides this per report rather than assuming it: `nested_scope_share` sums `Skybox` + `RenderObjects` + `SkinnedMesh` against `MainHDRPass`, and a report annotates the rows with the share it measured or suppresses them outright below `NESTED_SCOPE_RESOLVED_FRACTION`. You do not have to remember which machine you are on; the report says.
+- **The decision is made at the parent, never per child.** A child can legitimately read zero because its work is absent from the scene -- `SkinnedMesh` on `--scene stress`, which has no skinned mesh -- and that is not the same thing as a child the hardware cannot see.
+- **On a tiler, to attribute cost inside a render pass, split the pass**, or use a capture tool that understands tile-based scheduling. Adding more nested scopes will not help *there*.
+- Compute dispatches are not affected on either architecture. A scope around a `vkCmdDispatch` outside a render pass measures that dispatch.
 
 ### Disproved hypothesis — do not re-try
 
@@ -63,7 +81,7 @@ Single-frame numbers on this hardware swing wide enough to invert a comparison. 
 
 ## Scripted measurement harness
 
-`tools/dev/measure_gpu.py` automates the protocol this document requires for a performance claim, so a pass timing does not depend on remembering the rules by hand. The renderer does parse a command line (`src/core/CommandLine.cpp` — `--scene`, `--vsm`, `--deterministic`, `--exit-after-frames`, `--capture-frame`, and others), but none of those flags reach the toggles an A/B actually varies: there is no general `--set` for a runtime settings key, so SSR, GTAO, fog, render scale and the rest are only reachable through the settings file. That is why the harness patches named keys in `config/runtime_settings.json` and restores the file afterwards. Results come back from the once-per-second `GPU timings:` blocks on stdout, which is the only machine-readable source of per-pass GPU time — the ImGui overlay shows the same numbers but only on screen.
+`tools/dev/measure_gpu.py` automates the protocol this document requires for a performance claim, so a pass timing does not depend on remembering the rules by hand. The renderer does parse a command line (`src/core/CommandLine.cpp` — `--scene`, `--vsm`, `--deterministic`, `--exit-after-frames`, `--capture-frame`, and others), but none of those flags reach the toggles an A/B actually varies: there is no general `--set` for a runtime settings key, so SSR, GTAO, fog, render scale and the rest are only reachable through the settings file. That is why the harness writes a per-label settings file and points the renderer at it with `--settings`. The renderer's own flags are still available through `--args`, which is how a scene preset reaches a measurement. Results come back from the once-per-second `GPU timings:` blocks on stdout, which is the only machine-readable source of per-pass GPU time — the ImGui overlay shows the same numbers but only on screen.
 
 ```bash
 # One configuration, absolute medians.
@@ -78,25 +96,27 @@ python3 tools/dev/measure_gpu.py parse build/measurements/fragment-stress.log
 
 What the harness enforces:
 
-- **Release only, and not a stale one.** It refuses to run a Debug binary, and aborts when any file under `src/` or `CMakeLists.txt` is newer than the linked binary. This is a hard gate, not a warning: an SSR A/B once ran against a binary 17 commits behind and reported `SSRTrace` at 0.805 ms where the rebuilt binary read 0.158 ms.
+- **Release only, and not a stale one.** It runs `build/release/VulkanEngine` and nothing else -- it checks that the path exists rather than inspecting the binary's configuration, so pointing that path at a Debug build would defeat it. Staleness is checked per artifact, not with one timestamp: each `.cpp`/`.h` against the binary, each shader against its own `.spv`, a shared `.glsl` against the oldest `.spv`, and `CMakeLists.txt` against `build.ninja`. This is a hard gate, not a warning: an SSR A/B once ran against a binary 17 commits behind and reported `SSRTrace` at 0.805 ms where the rebuilt binary read 0.158 ms.
 - **A settle period after `--build`.** A parallel build leaves the machine hot and the first control run would absorb all of it. The same series drifted 0.41% from a cold start and 28.5% when it began immediately after a build, so `--build` now idles 90 seconds first (`--settle`).
 - **A fixed scene and camera.** Both are left at their launch defaults, which is what makes separate launches comparable.
 - **A discarded warm-up.** 10 seconds by default, out of a 30-second launch, leaving roughly 20 samples.
-- **Medians, with min and max reported** so a delta smaller than the run-to-run spread is visible as such.
+- **A low percentile, with min and max reported** so a delta smaller than the run-to-run spread is visible as such. `QUOTED_PERCENTILE` is p10, not the median: on this hardware the median got a delta's *sign* wrong where p10 did not (see below). Numbers quoted elsewhere in this repository as medians predate that change and are not comparable with p10 ones.
 - **Per-pass sample coverage.** Every row shows how many sampled frames actually contained that pass. A conditional pass is marked intermittent below 90% coverage, because its median is the cost of the frames that ran it rather than of the configuration. Without this, `DepthPyramid` — built in 1-2 frames out of 29 while occlusion culling is suspended — appeared as a clean `A only` row and read as a pass that one configuration had and the other did not. Coverage is judged only on the sides where the pass runs at all, so a pass genuinely absent from one configuration (`SSRTrace` with SSR off) is not mislabelled as sampling luck.
 - **A stability check on one-sided rows.** A pass present in only one configuration has no delta to test its control drift against, so the drift is compared with the pass's own median and the row is marked unstable above a quarter. `SSRTrace` reported 0.158 ms this way while moving 0.137 ms between the two control runs; it reads between 0.106 and 0.458 ms across runs of an identical build, so no single number is its cost. Passes that swing like this need far more than 30 samples.
 - **A repeated control, checked per pass.** `ab` runs A/B/A/B rather than AA/BB so a thermal ramp cannot land entirely on one configuration, then compares the first and last A run. Drift above 1% in `Frame total` marks the whole series unusable and exits non-zero. Separately, every row carries its own control drift and an `Attributable` verdict: a pass whose control moved at least as much as the A/B delta is reported as inside the noise floor. Frame-level stability is not enough for a sub-millisecond pass — the composite sharpen filter once read 0.416 vs 0.424 ms at frame level while the pass itself tripled.
 - **No implied validation result.** Validation layers are compiled out of Release (`VULKAN_ENGINE_ENABLE_VALIDATION=0`), and the harness only runs Release, so every report says outright that it cannot show validation errors rather than letting silence read as a clean frame.
 - **Typed, validated overrides.** An unknown dotted key or a value of the wrong type aborts, because a silently ignored override would measure the baseline twice and read as "no effect".
-- **Restoring the settings file.** `config/runtime_settings.json` is per-user state; the harness writes it during a run and restores the original afterwards, including on failure.
+- **Never writing the user's settings file.** `config/runtime_settings.json` is per-user state. The harness writes a separate `<label>.settings.json` under `build/measurements/` and passes it with `--settings`, and raises if the persisted file changed underneath a run rather than assuming it owns it.
 
-Logs and a `summary.json` land in `build/measurements/`. The summary records the full effective settings, not just the overrides, because configuration A is "whatever was persisted that day" and that file lives outside git. Nested scopes are parsed but reported as unusable for attribution, for the reason in the previous section.
+Logs and a `summary.json` land in `build/measurements/`. The summary records the full effective settings, not just the overrides, because configuration A is "whatever was persisted that day" and that file lives outside git. Nested scopes are measured rather than assumed: the report sums them against their parent and either annotates the share it found or suppresses them, for the reason in the previous section.
 
-Scene presets are not persisted settings, so `--set` cannot reach them. The renderer's own `--scene` flag can, but the harness does not pass arguments to the binary at all yet, so those runs are still captured by hand and fed to `parse`:
+Scene presets are not persisted settings, so `--set` cannot reach them. `--args` passes the renderer's own flags through instead, applied identically to both sides of an A/B so the scene is never the variable:
 
 ```bash
-./build/release/VulkanEngine --scene fragment-stress > build/measurements/fragment-stress.log
+python3 tools/dev/measure_gpu.py ab --b-set ssr.enabled=false --args --scene fragment-stress
 ```
+
+`--args` is an argparse `REMAINDER`, so it swallows everything after it: `--repeat`, `--warmup` and the rest must come before it. A hand-captured log still works and is still fed to `parse`.
 
 ## Frame Latency
 
