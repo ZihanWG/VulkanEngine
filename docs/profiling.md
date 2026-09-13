@@ -75,6 +75,29 @@ Practical rules:
 
 The `TOP_OF_PIPE` (begin) / `BOTTOM_OF_PIPE` (end) pairing was suspected of making each scope absorb preceding in-flight work. Changing the begin marker to `BOTTOM_OF_PIPE` left the medians essentially unchanged (`MainHDRPass` 13.512 → 13.445, `Transparent` 2.452 → 2.360, `SSRTrace` 0.917 → 0.947). The pairing is not the cause; the experiment was reverted.
 
+### Which machine a number came from
+
+Most of the measured numbers in `docs/` predate this project's move from an Apple M3 through MoltenVK to an RTX 3080 Ti Laptop, and a lot of them do not say so. Two of this repository's conclusions have already failed to survive that move — back-face culling, which was measured and rejected on the tiler and is now on by default at −37.4% `MainHDRPass`, and the nested-scope rule above — so "which machine" is not bookkeeping.
+
+The boundary, from history rather than memory: the last commit that labels a measurement as Apple M3 is `e23a63f` (2026-08-11); the first that labels one as RTX 3080 Ti is `9624e05` (2026-09-07). Numbers introduced between those dates carry no label and cannot be assigned by date.
+
+They can usually be assigned by magnitude, because the two machines are an order of magnitude apart on the same scenes:
+
+| | Apple M3 / MoltenVK | RTX 3080 Ti Laptop |
+| --- | --- | --- |
+| default scene, GPU frame | ~15–16 ms | 1.754 ms |
+| `MainHDRPass` | ~10 ms | 0.4–0.9 ms |
+| `--scene stress`, GPU frame | — | 1.024 ms |
+
+A frame total in the teens is the M3. A `MainHDRPass` under a millisecond is the RTX. Where neither the label nor the magnitude settles it, the table says the hardware is not recorded rather than guessing — an unattributed number is less misleading than a confidently wrong attribution.
+
+**The rule going forward:** every quoted timing carries hardware, scene, resolution and statistic. Three of those are usually implicit and each has bitten:
+
+- **Hardware**, for the reason above.
+- **Scene**, because `--scene stress` is CPU-bound here while `default` and `fragment-stress` are GPU-bound, so the same change reads differently on each.
+- **Resolution**, because the frame is fragment-bound and the harness defaults to 1280x720. `--scene gpu-stress` exists precisely because at that resolution every other preset gives a 1–2 ms frame the drift gate cannot resolve.
+- **Statistic**, because `QUOTED_PERCENTILE` is p10 and everything older is a median. On this hardware the median got a delta's *sign* wrong where p10 did not, so the two are not interchangeable and a number that does not say which it is cannot be compared with one that does.
+
 ### Take medians, not single frames
 
 Single-frame numbers on this hardware swing wide enough to invert a comparison. The first frame captured after the marker experiment above looked twice as bad, purely as an outlier. Sample over at least a few seconds and compare medians — the once-per-second `GPU timings:` block in the log is the easiest source.

@@ -43,6 +43,26 @@ Default scene, Debug build, 2560×1440, Apple M3. One series run back to back,
 medians per run, with the 1.0 control repeated at the end: it came back within
 **0.4%** (17.72 → 17.79 ms), which is what makes the series internally valid.
 
+> **This is a Debug build, and `tools/dev/measure_gpu.py` now refuses one
+> outright — "Debug timings are not evidence."** The series is internally
+> consistent and its *ratios* are the claim this section makes, but the
+> absolutes are inadmissible under the project's current protocol and were taken
+> on hardware that is no longer the target. See
+> [profiling.md](profiling.md#which-machine-a-number-came-from).
+>
+> **A Release re-take on the RTX 3080 Ti was attempted and refused.** Five
+> consecutive runs at 2560×1440 on the default scene, 18 samples each, with the
+> 1.0 control repeated at the end the way the original series did: it came back
+> at **6.157 ms against 5.024 ms, 22.6% drift** against the 1% limit. The GPU
+> had sagged off its boost clock across ~3.5 minutes of sustained 1440p load,
+> which is the failure mode [profiling.md](profiling.md#load-knobs-and-why-they-did-not-fix-the-drift-gate)
+> already documents — and the reason `tools/dev/gpu_clock.ps1` exists. Re-taking
+> this table needs the clocks pinned, at a pin *lower* than the 1400 MHz default
+> because the load is heavier than the `stress` scene it was calibrated on. The
+> refused numbers are deliberately not quoted here: a drifted control voids the
+> series, and that rule does not have an exception for a series whose shape
+> looked plausible.
+
 | Scale | Render extent | Frame total | `MainHDRPass` |
 | --- | --- | --- | --- |
 | 1.00 | 2560×1440 | 17.75 ms | 9.7 ms |

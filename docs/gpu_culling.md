@@ -191,7 +191,7 @@ necessary, never less, so a wrong decision costs frame time and never pixels.
 That is what lets the policy be this aggressive. `enableAdaptiveOcclusion`
 (default on) turns it off for A/B.
 
-Measured A/B/A/B at scale 1.0, default scene, control back within 0.14%:
+Measured A/B/A/B at scale 1.0, default scene, control back within 0.14%. Hardware is not recorded in the commit that introduced this (`ded1c59`, 2026-08-14, inside the unlabelled window described in [profiling.md](profiling.md#which-machine-a-number-came-from)); a 16 ms frame on the default scene is M3-class, against 1.754 ms on the RTX 3080 Ti, so read this as the tiler. The statistic is a median, not the p10 the harness now quotes.
 
 | | Frame total | `DepthPyramid` | `DepthPyramidMid` | Visible draw items |
 | --- | --- | --- | --- | --- |

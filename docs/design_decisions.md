@@ -41,6 +41,8 @@ per-light slot load being the documented cost of the loop.
 It is not free. Scaling the cull radius uniformly, default scene, control
 repeated:
 
+Hardware is not recorded in the commit that introduced this table (`7fee50f`, 2026-08-14, inside the unlabelled window described in [profiling.md](profiling.md#which-machine-a-number-came-from)). A `MainHDRPass` near 10 ms is M3-class -- the RTX 3080 Ti reads 0.4-0.9 ms on the same pass -- so read this as the tiler. Resolution and statistic are not recorded either; the conclusion is a ratio between rows of one series, which is the part that survives not knowing.
+
 | Cull radius | `MainHDRPass` | Average scene luminance |
 | --- | --- | --- |
 | 100% | 9.85 / 9.81 ms | 0.3129 / 0.3121 |
