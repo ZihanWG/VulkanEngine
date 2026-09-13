@@ -15,13 +15,13 @@ using ve::renderer::appendLodChain;
 using ve::renderer::buildLodChain;
 using ve::renderer::buildLodChainDetached;
 using ve::renderer::buildMeshlets;
-using ve::renderer::MeshletBuild;
-using ve::renderer::Meshlet;
 using ve::renderer::kMaxMeshLods;
 using ve::renderer::kMinLodIndexCount;
 using ve::renderer::LodBuildSettings;
 using ve::renderer::LodChainBuild;
 using ve::renderer::LodSelectionSettings;
+using ve::renderer::Meshlet;
+using ve::renderer::MeshletBuild;
 using ve::renderer::MeshLod;
 using ve::renderer::projectedScreenRadius;
 using ve::renderer::selectLodIndex;
@@ -549,10 +549,10 @@ TEST_CASE("Meshletizing permutes each level's triangles and moves no range")
     const std::vector<MeshLod> beforeLods = lodded.lods;
 
     const MeshletBuild build = buildMeshlets(lodded.indices,
-                                                        std::span<const MeshLod>(lodded.lods),
-                                                        lodded.positions(),
-                                                        lodded.vertexCount(),
-                                                        sizeof(float) * 3);
+                                             std::span<const MeshLod>(lodded.lods),
+                                             lodded.positions(),
+                                             lodded.vertexCount(),
+                                             sizeof(float) * 3);
 
     REQUIRE_FALSE(build.meshlets.empty());
     // A permutation of every range leaves the total untouched. If this grew or
@@ -573,10 +573,10 @@ TEST_CASE("A level's meshlets tile its range exactly")
 {
     LoddedGrid lodded = makeLoddedGrid(24);
     const MeshletBuild build = buildMeshlets(lodded.indices,
-                                                        std::span<const MeshLod>(lodded.lods),
-                                                        lodded.positions(),
-                                                        lodded.vertexCount(),
-                                                        sizeof(float) * 3);
+                                             std::span<const MeshLod>(lodded.lods),
+                                             lodded.positions(),
+                                             lodded.vertexCount(),
+                                             sizeof(float) * 3);
     REQUIRE_FALSE(build.meshlets.empty());
 
     REQUIRE(build.rangesPerLod.size() == lodded.lods.size());
@@ -618,10 +618,10 @@ TEST_CASE("A meshlet's bounding sphere contains its own triangles")
     // not contain its geometry culls triangles that are visible.
     LoddedGrid lodded = makeLoddedGrid(24);
     const MeshletBuild build = buildMeshlets(lodded.indices,
-                                                        std::span<const MeshLod>(lodded.lods),
-                                                        lodded.positions(),
-                                                        lodded.vertexCount(),
-                                                        sizeof(float) * 3);
+                                             std::span<const MeshLod>(lodded.lods),
+                                             lodded.positions(),
+                                             lodded.vertexCount(),
+                                             sizeof(float) * 3);
     REQUIRE_FALSE(build.meshlets.empty());
 
     for (const Meshlet& meshlet : build.meshlets) {
@@ -670,11 +670,11 @@ TEST_CASE("A triangle cap not divisible by four is rounded down rather than trus
     settings.maxTriangles = 126;
 
     const MeshletBuild build = buildMeshlets(lodded.indices,
-                                                        std::span<const MeshLod>(lodded.lods),
-                                                        lodded.positions(),
-                                                        lodded.vertexCount(),
-                                                        sizeof(float) * 3,
-                                                        settings);
+                                             std::span<const MeshLod>(lodded.lods),
+                                             lodded.positions(),
+                                             lodded.vertexCount(),
+                                             sizeof(float) * 3,
+                                             settings);
     REQUIRE_FALSE(build.meshlets.empty());
     for (const Meshlet& meshlet : build.meshlets) {
         CHECK(meshlet.indexCount <= 124U * 3U);

@@ -549,11 +549,10 @@ nodeMeshInstanceDebugName(const tinygltf::Model& model, const tinygltf::Node& no
 
 } // namespace
 
-GltfGeometry
-loadGltfGeometry(const std::filesystem::path& path,
-                 JobSystem* jobSystem,
-                 std::vector<CpuMeshData>* cookedMeshes,
-                 bool buildMeshletTable)
+GltfGeometry loadGltfGeometry(const std::filesystem::path& path,
+                              JobSystem* jobSystem,
+                              std::vector<CpuMeshData>* cookedMeshes,
+                              bool buildMeshletTable)
 {
     tinygltf::TinyGLTF loader;
     loader.SetImageLoader(copyEncodedImageData, nullptr);

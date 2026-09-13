@@ -96,20 +96,19 @@ MeshletBuild buildMeshlets(std::vector<uint32_t>& indices,
             // meshlet's local tables: computeClusterBounds takes exactly the
             // (indices, count) pair that was just written, so the bounds
             // describe the geometry the GPU will actually draw for this range.
-            const meshopt_Bounds bounds = meshopt_computeClusterBounds(reordered.data() + (firstIndex - level.firstIndex),
-                                                                       meshlet.indexCount,
-                                                                       vertexPositions,
-                                                                       vertexCount,
-                                                                       vertexStride);
+            const meshopt_Bounds bounds =
+                meshopt_computeClusterBounds(reordered.data() + (firstIndex - level.firstIndex),
+                                             meshlet.indexCount,
+                                             vertexPositions,
+                                             vertexCount,
+                                             vertexStride);
             meshlet.centerRadius = glm::vec4(bounds.center[0], bounds.center[1], bounds.center[2], bounds.radius);
             // meshopt reports an unusable cone as cutoff 1, which is already the
             // "never reject" value, so this needs no special case -- but it is
             // clamped because a cutoff above 1 would make the GPU test
             // nonsensical rather than merely permissive.
-            meshlet.coneAxisCutoff = glm::vec4(bounds.cone_axis[0],
-                                               bounds.cone_axis[1],
-                                               bounds.cone_axis[2],
-                                               std::min(bounds.cone_cutoff, 1.0f));
+            meshlet.coneAxisCutoff = glm::vec4(
+                bounds.cone_axis[0], bounds.cone_axis[1], bounds.cone_axis[2], std::min(bounds.cone_cutoff, 1.0f));
             meshlets.push_back(meshlet);
         }
 
@@ -128,11 +127,8 @@ MeshletBuild buildMeshlets(std::vector<uint32_t>& indices,
     return build;
 }
 
-bool meshletConeCulled(const glm::vec3& center,
-                       float radius,
-                       const glm::vec3& coneAxis,
-                       float coneCutoff,
-                       const glm::vec3& viewPosition)
+bool meshletConeCulled(
+    const glm::vec3& center, float radius, const glm::vec3& coneAxis, float coneCutoff, const glm::vec3& viewPosition)
 {
     // 1 is the "no usable cone" value and would otherwise be widened past 1 by
     // the radius term below into something that rejects nothing anyway -- but

@@ -186,11 +186,8 @@ Mesh Mesh::createUvSphere(rhi::VulkanContext& context,
     mesh.lodBase_ = 0;
     mesh.lodCount_ = static_cast<uint32_t>(mesh.lods_.size());
     if (buildMeshletTable) {
-        MeshletBuild meshletBuild = buildMeshlets(indices,
-                                                  std::span<const MeshLod>(mesh.lods_),
-                                                  &vertices[0].position.x,
-                                                  vertices.size(),
-                                                  sizeof(Vertex));
+        MeshletBuild meshletBuild = buildMeshlets(
+            indices, std::span<const MeshLod>(mesh.lods_), &vertices[0].position.x, vertices.size(), sizeof(Vertex));
         mesh.meshlets_ = std::move(meshletBuild.meshlets);
         mesh.meshletRangesPerLod_ = std::move(meshletBuild.rangesPerLod);
     }

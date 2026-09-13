@@ -135,11 +135,8 @@ struct MeshletBuild {
 // All arguments are in the same space; the caller transforms the meshlet's
 // centre, radius and axis into it. A cutoff of 1 never rejects, which is what
 // the builder leaves when meshopt finds no usable cone.
-[[nodiscard]] bool meshletConeCulled(const glm::vec3& center,
-                                     float radius,
-                                     const glm::vec3& coneAxis,
-                                     float coneCutoff,
-                                     const glm::vec3& viewPosition);
+[[nodiscard]] bool meshletConeCulled(
+    const glm::vec3& center, float radius, const glm::vec3& coneAxis, float coneCutoff, const glm::vec3& viewPosition);
 
 // Upper bound on the chain length, and the floor below which simplifying stops
 // paying for itself (32 triangles).

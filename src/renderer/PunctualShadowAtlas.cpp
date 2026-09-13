@@ -97,10 +97,8 @@ uint32_t punctualShadowSizeClassForRadius(float projectedRadius, bool isPoint)
     return chosen;
 }
 
-uint32_t punctualShadowSizeClassWithHysteresis(float projectedRadius,
-                                               bool isPoint,
-                                               uint32_t previousSizeClass,
-                                               float margin)
+uint32_t
+punctualShadowSizeClassWithHysteresis(float projectedRadius, bool isPoint, uint32_t previousSizeClass, float margin)
 {
     const uint32_t fresh = punctualShadowSizeClassForRadius(projectedRadius, isPoint);
     if (previousSizeClass >= kPunctualShadowSizeClassCount || !(margin > 0.0f) || fresh == previousSizeClass) {

@@ -87,10 +87,8 @@ inline constexpr uint32_t kNoPunctualShadowSizeClass = 0xFFFFFFFFu;
 // punctualShadowSizeClassForRadius exactly. The thresholds themselves are not
 // duplicated here -- this re-tests through that same function, so a change to
 // the class boundaries cannot leave the hysteresis behind.
-[[nodiscard]] uint32_t punctualShadowSizeClassWithHysteresis(float projectedRadius,
-                                                             bool isPoint,
-                                                             uint32_t previousSizeClass,
-                                                             float margin);
+[[nodiscard]] uint32_t
+punctualShadowSizeClassWithHysteresis(float projectedRadius, bool isPoint, uint32_t previousSizeClass, float margin);
 
 // Floor for the punctual shadow near plane. Small enough that geometry hugging
 // the bulb still rasterizes; see punctualShadowNearPlane for why the plane is

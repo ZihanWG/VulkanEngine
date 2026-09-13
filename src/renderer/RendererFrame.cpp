@@ -696,8 +696,7 @@ void Renderer::updatePunctualShadowSlots(uint32_t frameIndex, float aspectRatio)
         // visible next to the churn it removes: this is the worst ratio seen
         // between an unshadowed light and the smallest shadowed one. 1.0 means
         // the assignment still respects projected size exactly.
-        if (lightIndex < punctualShadowCandidates_.size() &&
-            punctualShadowCandidates_[lightIndex].range > 0.0f) {
+        if (lightIndex < punctualShadowCandidates_.size() && punctualShadowCandidates_[lightIndex].range > 0.0f) {
             const float radius = punctualShadowCandidates_[lightIndex].projectedRadius;
             if (shadowed) {
                 smallestShadowedRadius = std::min(smallestShadowedRadius, radius);
@@ -1830,9 +1829,8 @@ void Renderer::capturePreviousFrameMatrices()
     // array being short rather than trusting that coupling silently.
     for (size_t objectIndex = 0; objectIndex < renderObjects_.size(); ++objectIndex) {
         renderer::RenderObject& object = renderObjects_[objectIndex];
-        object.previousModelMatrix = objectIndex < frameModelMatrices_.size()
-                                         ? frameModelMatrices_[objectIndex]
-                                         : object.transform.modelMatrix();
+        object.previousModelMatrix = objectIndex < frameModelMatrices_.size() ? frameModelMatrices_[objectIndex]
+                                                                              : object.transform.modelMatrix();
         object.previousModelValid = true;
     }
     if (skinnedMesh_.valid()) {
@@ -2050,11 +2048,11 @@ void Renderer::analyzeMeshletCulling(const renderer::Frustum& cameraFrustum)
         // Mesh-local, not the frame table's index: frameDrawItemLodRanges_ holds
         // the latter, and using it here indexed past the end of every mesh's own
         // chain and reported almost every draw item as unmeshletized.
-        const uint32_t level = meshLocalLodRange(drawItem).x + selectedShadowLodLevel(drawItem, projScaleY, lodSelection);
+        const uint32_t level =
+            meshLocalLodRange(drawItem).x + selectedShadowLodLevel(drawItem, projScaleY, lodSelection);
 
         const std::span<const glm::uvec2> meshletRanges = drawItem.mesh->meshletRangesPerLod();
-        if (meshlets.empty() || level >= lods.size() || level >= meshletRanges.size() ||
-            meshletRanges[level].y == 0) {
+        if (meshlets.empty() || level >= lods.size() || level >= meshletRanges.size() || meshletRanges[level].y == 0) {
             // Drawn whole. Counted so the "triangles before" total is the whole
             // frame rather than only its meshletized part -- a saving quoted
             // against a subset of the frame is not a saving.
@@ -2068,9 +2066,8 @@ void Renderer::analyzeMeshletCulling(const renderer::Frustum& cameraFrustum)
         // Uniform-scale assumption, made safe by taking the largest axis: a
         // non-uniformly scaled meshlet sphere stays conservative this way, and
         // the cone axis is renormalised after transform for the same reason.
-        const float scale = std::sqrt(std::max({glm::length2(glm::vec3(model[0])),
-                                                glm::length2(glm::vec3(model[1])),
-                                                glm::length2(glm::vec3(model[2]))}));
+        const float scale = std::sqrt(std::max(
+            {glm::length2(glm::vec3(model[0])), glm::length2(glm::vec3(model[1])), glm::length2(glm::vec3(model[2]))}));
         const glm::mat3 normalBasis = glm::mat3(model);
 
         const glm::uvec2 meshletRange = meshletRanges[level];
@@ -2092,11 +2089,9 @@ void Renderer::analyzeMeshletCulling(const renderer::Frustum& cameraFrustum)
             const glm::vec3 coneAxis = normalBasis * glm::vec3(meshlet.coneAxisCutoff);
             const float axisLength = glm::length(coneAxis);
             const bool coneCulled =
-                axisLength > 0.0f && renderer::meshletConeCulled(center,
-                                                                 radius,
-                                                                 coneAxis / axisLength,
-                                                                 meshlet.coneAxisCutoff.w,
-                                                                 frameCameraPosition_);
+                axisLength > 0.0f &&
+                renderer::meshletConeCulled(
+                    center, radius, coneAxis / axisLength, meshlet.coneAxisCutoff.w, frameCameraPosition_);
             if (coneCulled) {
                 ++meshletAnalysis_.meshletsConeCulled;
                 continue;
