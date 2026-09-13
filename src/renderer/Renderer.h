@@ -297,6 +297,64 @@ private:
         DebugHistory history;
     };
 
+    // Named CPU scopes -- the counterpart to GpuProfiler's per-pass scopes.
+    //
+    // The GPU side has had per-pass attribution since milestone 23. The CPU side
+    // had two aggregates, updateFrameData and recordRenderCommands, with the
+    // readback prologue, the skinned pose advance, VSM residency and the entire
+    // ImGui build inside neither -- so the reported CPU total was a lower bound
+    // on the cost that is the frame's ceiling on `--scene stress`: 1.10 ms prep
+    // plus 0.57 ms record against a 1.58 ms GPU frame, and prep does not move
+    // when the GPU load does.
+    //
+    // A fixed array indexed by an enum rather than a name-keyed map, because
+    // this runs every frame inside the thing it measures and must not allocate,
+    // hash, or touch a string. Two steady_clock reads per scope is tens of
+    // nanoseconds against scopes measured in tens of microseconds.
+    enum class CpuScope : uint32_t {
+        Readbacks,
+        SkinnedAnimation,
+        VsmResidency,
+        DebugUi,
+        DemoLights,
+        PunctualShadowSlots,
+        Cascades,
+        VolumetricFogParams,
+        AnimatedTransforms,
+        WorldBounds,
+        DrawItems,
+        PunctualShadowCache,
+        MeshLodTable,
+        ShadowFrameData,
+        CascadeShadowCache,
+        MainCullingFrameData,
+        ObjectFrameDataUpload,
+        Count
+    };
+    static constexpr size_t kCpuScopeCount = static_cast<size_t>(CpuScope::Count);
+
+    // Adds its lifetime to a per-frame accumulator rather than pushing straight
+    // to history, so a scope entered more than once in a frame reports the
+    // frame's total instead of only its last visit.
+    class ScopedCpuTimer {
+    public:
+        explicit ScopedCpuTimer(float& accumulatorMs)
+            : accumulator_(accumulatorMs), start_(std::chrono::steady_clock::now())
+        {}
+        ~ScopedCpuTimer()
+        {
+            accumulator_ += std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start_).count();
+        }
+        ScopedCpuTimer(const ScopedCpuTimer&) = delete;
+        ScopedCpuTimer& operator=(const ScopedCpuTimer&) = delete;
+        ScopedCpuTimer(ScopedCpuTimer&&) = delete;
+        ScopedCpuTimer& operator=(ScopedCpuTimer&&) = delete;
+
+    private:
+        float& accumulator_;
+        std::chrono::steady_clock::time_point start_;
+    };
+
     enum class RuntimeSettingsApplyMode {
         Startup,
         Runtime
@@ -825,6 +883,14 @@ private:
     // Per-unit recording cost, logged separately from the GPU timings block
     // so the measurement harness does not read CPU numbers as GPU scopes.
     void emitRecordCpuBreakdown() const;
+    void emitFrameCpuBreakdown() const;
+    void resetCpuScopeTimers();
+    void flushCpuScopeTimers();
+    [[nodiscard]] static const char* cpuScopeName(CpuScope scope);
+    [[nodiscard]] ScopedCpuTimer cpuScope(CpuScope scope)
+    {
+        return ScopedCpuTimer{cpuScopeFrameMs_[static_cast<size_t>(scope)]};
+    }
     // Rebuild every pipeline when the compiled shader directory changes. Polled,
     // not watched: a digest of a few dozen small files once a second is cheaper
     // than a platform file-watch API and has no per-platform code.
@@ -1252,6 +1318,11 @@ private:
     // on one thread is recording, and whether that is worth splitting across
     // threads is a ratio nobody could read before this existed.
     DebugHistory recordCpuHistory_{};
+    // Per-scope CPU cost, reset at the top of drawFrame and pushed to history at
+    // the end of it, so a frame that returns early (minimized, swapchain out of
+    // date) contributes nothing rather than a partial sample.
+    std::array<float, kCpuScopeCount> cpuScopeFrameMs_{};
+    std::array<DebugHistory, kCpuScopeCount> cpuScopeHistory_{};
     std::vector<renderer::Aabb> frameWorldBounds_;
     float currentExposure_ = 1.0f;
     float averageLuminance_ = 0.18f;

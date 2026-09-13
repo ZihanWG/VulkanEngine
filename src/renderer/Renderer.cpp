@@ -388,6 +388,7 @@ void Renderer::drawFrame()
         return;
     }
 
+    resetCpuScopeTimers();
     updateCpuFrameTime();
     // Fixed step rather than the measured delta when the clock is deterministic:
     // cpuFrameDeltaMs_ is real elapsed time, so feeding it here would let machine
@@ -415,29 +416,50 @@ void Renderer::drawFrame()
     // that the slot's host readbacks are complete; it says nothing about which
     // swapchain image the next acquire will return.
     sync_.waitForTimelineValue(frame.timelineValue);
-    processPortfolioScreenshotReadback(currentFrame_);
-    postProcess_.updateAutoExposureFromReadback(currentFrame_);
+    {
+        // The readbacks the fence just proved complete, plus the controllers that
+        // consume them. None of this was inside either existing timer, so the CPU
+        // total reported below has been a lower bound rather than a measurement.
+        //
+        // The throttled diagnostics below are deliberately left OUT of this
+        // scope. tryPrintExposureStats and tryPrintGpuTimings format and log once
+        // a second, and folding that into a per-frame cost would make "readbacks"
+        // spike on exactly the frames whose numbers get printed -- an instrument
+        // reporting its own cost as the subject's.
+        const ScopedCpuTimer timer = cpuScope(CpuScope::Readbacks);
+        processPortfolioScreenshotReadback(currentFrame_);
+        postProcess_.updateAutoExposureFromReadback(currentFrame_);
+    }
     tryPrintExposureStats();
     tryPrintGpuTimings(currentFrame_);
     tryReloadShaders();
-    // Straight after the readback that refreshes gpuFrameTimeHistory_, so the
-    // controller always sees the freshest GPU frame total available.
-    updateDynamicResolution();
-    // Before resetGpuCullFrameCounters clears this slot's readback-ready flag.
-    updateOcclusionYield(currentFrame_);
-    // Same reason as the line above: this slot's page-request buffer is about to
-    // be cleared and rewritten during recording, so the only chance to read what
-    // it produced last time round is here, after its fence proved the copy
-    // retired.
-    updateVsmPageRequestStats(currentFrame_);
+    {
+        const ScopedCpuTimer timer = cpuScope(CpuScope::Readbacks);
+        // Straight after the readback that refreshes gpuFrameTimeHistory_, so the
+        // controller always sees the freshest GPU frame total available.
+        updateDynamicResolution();
+        // Before resetGpuCullFrameCounters clears this slot's readback-ready flag.
+        updateOcclusionYield(currentFrame_);
+        // Same reason as the line above: this slot's page-request buffer is about
+        // to be cleared and rewritten during recording, so the only chance to
+        // read what it produced last time round is here, after its fence proved
+        // the copy retired.
+        updateVsmPageRequestStats(currentFrame_);
+    }
     // Before residency: it decides which pages to invalidate from the skinned
     // caster's bounds and pose, and the page pass later draws whatever pose the
     // palette holds. Advancing the pose after that decision would let the two
     // disagree by a frame, in the direction that loses a shadow.
-    advanceSkinnedAnimation(currentFrame_);
+    {
+        const ScopedCpuTimer timer = cpuScope(CpuScope::SkinnedAnimation);
+        advanceSkinnedAnimation(currentFrame_);
+    }
     // After the readback above, because it consumes the same request set, and
     // before recording, because the page pass draws what it decides.
-    updateVsmResidency(currentFrame_);
+    {
+        const ScopedCpuTimer timer = cpuScope(CpuScope::VsmResidency);
+        updateVsmResidency(currentFrame_);
+    }
     pushCullingHistorySample(currentFrame_);
     pushExposureHistorySample();
 
@@ -465,10 +487,16 @@ void Renderer::drawFrame()
 
     VK_CHECK(vkResetCommandBuffer(frame.commandBuffer, 0));
 
-    imguiLayer_.beginFrame();
-    buildDebugUi();
-    drawViewportGizmo();
-    imguiLayer_.endFrame();
+    {
+        // Panel construction and draw-data assembly. RendererDebugUi.cpp is 3472
+        // lines of it and none of it was timed, which matters because the debug
+        // UI is built on every frame a measurement run records.
+        const ScopedCpuTimer timer = cpuScope(CpuScope::DebugUi);
+        imguiLayer_.beginFrame();
+        buildDebugUi();
+        drawViewportGizmo();
+        imguiLayer_.endFrame();
+    }
     {
         const auto framePrepStart = std::chrono::steady_clock::now();
         updateFrameData(currentFrame_);
@@ -612,6 +640,8 @@ void Renderer::drawFrame()
         static_cast<void>(virtualShadowMap_.dumpPagePool(
             vsmPagePoolDumpPath_, vsmClipmapSettings(), commandContext_.commandPool(), context_.graphicsQueue()));
     }
+
+    flushCpuScopeTimers();
 
     // Advance the CPU frame slot, not the swapchain image index. Acquire chooses
     // the latter independently on the next frame.
@@ -1103,6 +1133,122 @@ void Renderer::tryReloadShaders()
     }
 }
 
+const char* Renderer::cpuScopeName(CpuScope scope)
+{
+    switch (scope) {
+    case CpuScope::Readbacks:
+        return "readbacks";
+    case CpuScope::SkinnedAnimation:
+        return "skinned animation";
+    case CpuScope::VsmResidency:
+        return "vsm residency";
+    case CpuScope::DebugUi:
+        return "debug ui";
+    case CpuScope::DemoLights:
+        return "demo lights";
+    case CpuScope::PunctualShadowSlots:
+        return "punctual shadow slots";
+    case CpuScope::Cascades:
+        return "cascades";
+    case CpuScope::VolumetricFogParams:
+        return "fog params";
+    case CpuScope::AnimatedTransforms:
+        return "animated transforms";
+    case CpuScope::WorldBounds:
+        return "world bounds";
+    case CpuScope::DrawItems:
+        return "draw items";
+    case CpuScope::PunctualShadowCache:
+        return "punctual shadow cache";
+    case CpuScope::MeshLodTable:
+        return "mesh lod table";
+    case CpuScope::ShadowFrameData:
+        return "shadow frame data";
+    case CpuScope::CascadeShadowCache:
+        return "cascade shadow cache";
+    case CpuScope::MainCullingFrameData:
+        return "main culling frame data";
+    case CpuScope::ObjectFrameDataUpload:
+        return "object frame data upload";
+    case CpuScope::Count:
+        break;
+    }
+    return "unknown";
+}
+
+void Renderer::resetCpuScopeTimers()
+{
+    cpuScopeFrameMs_.fill(0.0f);
+}
+
+void Renderer::flushCpuScopeTimers()
+{
+    for (size_t index = 0; index < kCpuScopeCount; ++index) {
+        cpuScopeHistory_[index].push(cpuScopeFrameMs_[index]);
+    }
+}
+
+void Renderer::emitFrameCpuBreakdown() const
+{
+    // Its own log line, for the same reason emitRecordCpuBreakdown has one:
+    // tools/dev/measure_gpu.py treats every two-space indented "name: N ms" line
+    // after "GPU timings:" as a GPU scope, so a CPU number left inside that block
+    // is reported as a pass and quoted as one.
+    //
+    // Averages rather than the latest sample. These are small enough that a
+    // single frame is noise -- the project's own rule for GPU scopes -- and the
+    // print is throttled to once a second, so the average covers the interval
+    // rather than whichever frame happened to land on the boundary.
+    //
+    // Sorted by cost and truncated below a threshold, because the point is to
+    // find where the milliseconds are. Scopes under the cut are summed into one
+    // line rather than dropped, so the parts still add up to the whole.
+    struct Entry {
+        const char* name;
+        float milliseconds;
+    };
+    std::vector<Entry> entries;
+    entries.reserve(kCpuScopeCount);
+    float total = 0.0f;
+    for (size_t index = 0; index < kCpuScopeCount; ++index) {
+        if (cpuScopeHistory_[index].empty()) {
+            continue;
+        }
+        const float milliseconds = cpuScopeHistory_[index].average();
+        total += milliseconds;
+        entries.push_back({cpuScopeName(static_cast<CpuScope>(index)), milliseconds});
+    }
+    if (entries.empty()) {
+        return;
+    }
+    std::sort(entries.begin(), entries.end(), [](const Entry& lhs, const Entry& rhs) {
+        return lhs.milliseconds > rhs.milliseconds;
+    });
+
+    constexpr float kReportThresholdMs = 0.005f;
+    std::ostringstream message;
+    message << std::fixed << std::setprecision(3) << "Frame CPU by scope (avg over the last second):";
+    float belowThreshold = 0.0f;
+    size_t belowThresholdCount = 0;
+    for (const Entry& entry : entries) {
+        if (entry.milliseconds < kReportThresholdMs) {
+            belowThreshold += entry.milliseconds;
+            ++belowThresholdCount;
+            continue;
+        }
+        message << "\n  " << entry.name << ": " << entry.milliseconds << " ms";
+    }
+    if (belowThresholdCount > 0) {
+        message << "\n  " << belowThresholdCount << " scope(s) under " << kReportThresholdMs
+                << " ms: " << belowThreshold << " ms";
+    }
+    // The sum is not the CPU frame: these scopes cover the instrumented parts of
+    // drawFrame and updateFrameData, not all of either, and the gap is the point
+    // -- it says how much is still unattributed.
+    message << "\n  instrumented total: " << total << " ms";
+    Logger::info(message.str());
+}
+
 void Renderer::emitRecordCpuBreakdown() const
 {
     const std::vector<renderer::RenderGraphUnitCost>& unitCosts = renderGraph_.unitRecordCosts();
@@ -1167,6 +1313,7 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
     // indented line after "GPU timings:" as a GPU scope, so a CPU number left in
     // there is reported as a pass timing and quoted as one.
     emitRecordCpuBreakdown();
+    emitFrameCpuBreakdown();
     message << "  draw items: " << allDrawItems_.size() << ", objects: " << renderObjects_.size() << "\n"
             << "  timestamp queries: " << results.queryCount << "/" << results.maxQueryCount << "\n";
     if (results.queryLimitExceeded) {
