@@ -566,6 +566,10 @@ private:
     // parallel frame prep is enabled, inline on the calling thread otherwise.
     // Callers must not nest framePrepParallelFor inside a parallel body.
     void framePrepParallelFor(size_t count, const std::function<void(size_t, size_t)>& body);
+    // As above, with an explicit minimum chunk size. For bodies whose per-index
+    // cost is large enough that the default minimum would put every index in one
+    // chunk and run the whole dispatch serially.
+    void framePrepParallelFor(size_t count, size_t minChunkSize, const std::function<void(size_t, size_t)>& body);
     // updateFrameData() helpers (see Renderer.cpp); each is a verbatim slice of the
     // former monolithic function, kept private and behaviour-preserving.
     void resetFrameStateForEmptyScene(uint32_t frameIndex);
@@ -1397,10 +1401,14 @@ private:
     uint32_t punctualShadowSlotsUsed_ = 0;
     // Shadow-atlas caching. The atlas is re-rendered only when the hash of its
     // inputs moves, so a static light over static geometry costs nothing.
-    renderer::PunctualShadowCacheKey punctualShadowCacheKey_;
     // Per-slot content hash for this frame, parallel to the slot list.
     std::vector<uint64_t> punctualShadowSlotKeys_;
-    // Which slots actually need redrawing this frame.
+    // Per-slot "needs redrawing", written by the parallel key build and drained
+    // into punctualShadowDirtySlots_ in slot order afterwards. uint8_t rather
+    // than bool because std::vector<bool> packs bits, and neighbouring slots
+    // land on different threads.
+    std::vector<uint8_t> punctualShadowSlotDirty_;
+    // Which slots actually need redrawing this frame, in ascending slot order.
     std::vector<uint32_t> punctualShadowDirtySlots_;
     // What the atlas currently holds, keyed by *tile rect* rather than slot
     // index. Slot indices shift between frames as lights are reordered, but a

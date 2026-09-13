@@ -252,65 +252,106 @@ void Renderer::updatePunctualShadowCacheState()
 {
     const uint32_t slotCount = punctualShadows_.slotCount();
     punctualShadowSlotKeys_.assign(slotCount, 0);
+    punctualShadowSlotDirty_.assign(slotCount, 0);
     punctualShadowDirtySlots_.clear();
 
+    // The chunk size is derived from the total work, not from the slot count.
+    // A slot costs O(draw items), so the useful unit here is the draw-item test,
+    // not the slot: the default minimum of 64 *slots* would put all of them in
+    // one chunk and run this serially, while a flat one-slot-per-chunk dispatches
+    // one job per slot however little each has to do.
+    //
+    // Both ends of that were measured on this loop. One slot per chunk is worth
+    // -22.4% of the scope on --scene stress (2322 draw items) and +23.9% of whole
+    // frame prep on --scene default (11), where ~64 jobs each testing 11 items
+    // cost more to hand out than to run. kMinDrawItemTestsPerChunk is the
+    // crossover expressed in the unit that actually varies.
+    constexpr size_t kMinDrawItemTestsPerChunk = 512;
+    const size_t drawItemsPerSlot = std::max<size_t>(allDrawItems_.size(), 1);
+    const size_t minSlotsPerChunk =
+        std::max<size_t>(1, (kMinDrawItemTestsPerChunk + drawItemsPerSlot - 1) / drawItemsPerSlot);
+
+    // Everything the body touches outside its own slot is read-only for the
+    // duration: the slot list and its frustums, allDrawItems_, frameWorldBounds_,
+    // frameModelMatrices_, the skinned caster, and the resident-tile map. Each
+    // iteration writes only its own entry in the two per-slot arrays.
+    framePrepParallelFor(slotCount, minSlotsPerChunk, [this](size_t begin, size_t end) {
+        for (size_t slotIndex = begin; slotIndex < end; ++slotIndex) {
+            const auto slot = static_cast<uint32_t>(slotIndex);
+            const renderer::ShadowAtlasRect rect = punctualShadows_.slotRect(slot);
+
+            // Local rather than a shared member: the member this used to write
+            // is what kept the loop on one thread.
+            renderer::PunctualShadowCacheKey cacheKey;
+            cacheKey.reset();
+            // The projection carries the light's position, direction, range, cone
+            // and near plane; the rect carries where and at what resolution.
+            cacheKey.add(punctualShadows_.slotViewProjection(slot));
+            cacheKey.add(rect);
+            // Raster depth bias is pipeline state the tile is rendered with.
+            cacheKey.add(shadowSettings_.rasterDepthBiasConstantFactor);
+            cacheKey.add(shadowSettings_.rasterDepthBiasSlopeFactor);
+
+            // Only the casters this tile actually draws. The cull below mirrors
+            // the one in recordPunctualShadowPass exactly -- if the two ever
+            // diverge, the hash stops describing what gets drawn, so they are
+            // kept adjacent in intent even though they live in different
+            // translation units.
+            const renderer::Frustum& slotFrustum = punctualShadows_.slotFrustum(slot);
+            for (const DrawItem& drawItem : allDrawItems_) {
+                if (!drawItem.mesh || drawItem.frameDataIndex >= kMaxDrawItems || drawItem.indexCount == 0) {
+                    continue;
+                }
+                if (drawItem.bucket == RenderBucket::Blend) {
+                    continue;
+                }
+                if (drawItem.objectIndex < frameWorldBounds_.size() &&
+                    !slotFrustum.testAabb(frameWorldBounds_[drawItem.objectIndex])) {
+                    continue;
+                }
+
+                cacheKey.add(static_cast<const void*>(drawItem.mesh));
+                cacheKey.add(drawItem.firstIndex);
+                cacheKey.add(drawItem.indexCount);
+                cacheKey.add(frameModelMatrices_[drawItem.objectIndex]);
+            }
+
+            // The skinned caster, on the same rule and for the same reason as
+            // the cascades: it is in no draw-item list, and what changes about
+            // it is the pose rather than anything the loop above hashes. The
+            // recorder tests the identical frustum, so a tile that draws it
+            // always has it in its key -- and a tile it cannot reach keeps
+            // caching.
+            if (skinnedCasterCastsIntoFrustum(slotFrustum)) {
+                const uint64_t pose = skinnedMesh_.poseHash();
+                cacheKey.addBytes(&pose, sizeof(pose));
+            }
+
+            const uint64_t key = cacheKey.value();
+            punctualShadowSlotKeys_[slot] = key;
+
+            if (punctualShadowNeedsFullClear_) {
+                // Nothing in the image is trustworthy yet, so every tile is
+                // dirty regardless of what the hashes say.
+                punctualShadowSlotDirty_[slot] = 1;
+                continue;
+            }
+
+            // as_const so this reads as the lookup it is. A non-const find()
+            // would compile just as well and say nothing about the map being
+            // shared with every other chunk running right now.
+            const auto& residentTiles = std::as_const(punctualShadowResidentTiles_);
+            const auto resident = residentTiles.find(packShadowAtlasRect(rect));
+            punctualShadowSlotDirty_[slot] = (resident == residentTiles.end() || resident->second != key) ? 1 : 0;
+        }
+    });
+
+    // Drained in slot order on one thread. The dirty list drives what the atlas
+    // pass records, so a list ordered by whichever chunk happened to finish
+    // first would make the recorded frame differ run to run -- the one thing
+    // --deterministic exists to rule out.
     for (uint32_t slot = 0; slot < slotCount; ++slot) {
-        const renderer::ShadowAtlasRect rect = punctualShadows_.slotRect(slot);
-
-        punctualShadowCacheKey_.reset();
-        // The projection carries the light's position, direction, range, cone
-        // and near plane; the rect carries where and at what resolution.
-        punctualShadowCacheKey_.add(punctualShadows_.slotViewProjection(slot));
-        punctualShadowCacheKey_.add(rect);
-        // Raster depth bias is pipeline state the tile is rendered with.
-        punctualShadowCacheKey_.add(shadowSettings_.rasterDepthBiasConstantFactor);
-        punctualShadowCacheKey_.add(shadowSettings_.rasterDepthBiasSlopeFactor);
-
-        // Only the casters this tile actually draws. The cull below mirrors the
-        // one in recordPunctualShadowPass exactly -- if the two ever diverge,
-        // the hash stops describing what gets drawn, so they are kept adjacent
-        // in intent even though they live in different translation units.
-        const renderer::Frustum& slotFrustum = punctualShadows_.slotFrustum(slot);
-        for (const DrawItem& drawItem : allDrawItems_) {
-            if (!drawItem.mesh || drawItem.frameDataIndex >= kMaxDrawItems || drawItem.indexCount == 0) {
-                continue;
-            }
-            if (drawItem.bucket == RenderBucket::Blend) {
-                continue;
-            }
-            if (drawItem.objectIndex < frameWorldBounds_.size() &&
-                !slotFrustum.testAabb(frameWorldBounds_[drawItem.objectIndex])) {
-                continue;
-            }
-
-            punctualShadowCacheKey_.add(static_cast<const void*>(drawItem.mesh));
-            punctualShadowCacheKey_.add(drawItem.firstIndex);
-            punctualShadowCacheKey_.add(drawItem.indexCount);
-            punctualShadowCacheKey_.add(frameModelMatrices_[drawItem.objectIndex]);
-        }
-
-        // The skinned caster, on the same rule and for the same reason as the
-        // cascades: it is in no draw-item list, and what changes about it is the
-        // pose rather than anything the loop above hashes. The recorder tests
-        // the identical frustum, so a tile that draws it always has it in its
-        // key -- and a tile it cannot reach keeps caching.
-        if (skinnedCasterCastsIntoFrustum(slotFrustum)) {
-            const uint64_t pose = skinnedMesh_.poseHash();
-            punctualShadowCacheKey_.addBytes(&pose, sizeof(pose));
-        }
-
-        const uint64_t key = punctualShadowCacheKey_.value();
-        punctualShadowSlotKeys_[slot] = key;
-
-        if (punctualShadowNeedsFullClear_) {
-            // Nothing in the image is trustworthy yet, so every tile is dirty
-            // regardless of what the hashes say.
-            punctualShadowDirtySlots_.push_back(slot);
-            continue;
-        }
-
-        const auto resident = punctualShadowResidentTiles_.find(packShadowAtlasRect(rect));
-        if (resident == punctualShadowResidentTiles_.end() || resident->second != key) {
+        if (punctualShadowSlotDirty_[slot] != 0) {
             punctualShadowDirtySlots_.push_back(slot);
         }
     }
@@ -821,10 +862,17 @@ void Renderer::appendDrawItemsForObject(uint32_t objectIndex,
 
 void Renderer::framePrepParallelFor(size_t count, const std::function<void(size_t, size_t)>& body)
 {
-    // Chunks below this size cost more to dispatch than to run inline.
+    // Chunks below this size cost more to dispatch than to run inline. The right
+    // default for the per-object and per-draw-item loops, whose bodies are a
+    // handful of operations each.
     constexpr size_t kMinChunkSize = 64;
+    framePrepParallelFor(count, kMinChunkSize, body);
+}
+
+void Renderer::framePrepParallelFor(size_t count, size_t minChunkSize, const std::function<void(size_t, size_t)>& body)
+{
     if (parallelFramePrepEnabled_) {
-        jobSystem_.parallelFor(count, kMinChunkSize, body);
+        jobSystem_.parallelFor(count, minChunkSize, body);
     } else if (count > 0) {
         body(0, count);
     }
