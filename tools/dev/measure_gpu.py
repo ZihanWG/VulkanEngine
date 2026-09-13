@@ -105,10 +105,37 @@ def quoted_value(values: list[float]) -> float:
     ordered = sorted(values)
     return ordered[int(QUOTED_PERCENTILE * (len(ordered) - 1))]
 
-# docs/profiling.md: scopes recorded between vkCmdBeginRendering and
-# vkCmdEndRendering read near zero on tile-based hardware regardless of the work
-# they contain. They are parsed so the log stays faithful, but never compared.
-UNRELIABLE_SCOPES = frozenset({"Skybox", "RenderObjects", "SkinnedMesh"})
+# Scopes recorded between vkCmdBeginRendering and vkCmdEndRendering, and the
+# pass they sit inside.
+#
+# Whether they mean anything is a property of the GPU, not of the profiler, and
+# this was hard-coded to "no" for as long as the development machine was an
+# Apple M3. On a tile-based deferred architecture the fragment work resolves at
+# vkCmdEndRendering, so a timestamp written between draw calls captures only
+# recording and vertex work: measured there, Skybox + RenderObjects +
+# SkinnedMesh summed to 0.09 ms inside a 13.512 ms MainHDRPass, 0.7%.
+#
+# On an immediate-mode GPU they resolve as recorded. Measured on an RTX 3080 Ti
+# Laptop, Release, --scene stress, medians over ~150 one-second blocks in each
+# of three runs: MainHDRPass 0.425 / 0.418 / 0.433 ms against children summing
+# to 0.413 / 0.403 / 0.417 -- 96-97%, with the remainder the pass's own begin
+# and end overhead.
+#
+# So the answer is measured per report rather than assumed. The decision is made
+# at the parent, never per child: a child can legitimately read zero because its
+# work is absent from the scene (SkinnedMesh on --scene stress, which has no
+# skinned mesh), and that is not the same thing as a child the hardware cannot
+# see.
+NESTED_SCOPE_PARENTS = {
+    "Skybox": "MainHDRPass",
+    "RenderObjects": "MainHDRPass",
+    "SkinnedMesh": "MainHDRPass",
+}
+
+# Below this share of the parent, the children are not a breakdown of it. The two
+# measured populations are 0.7% and 96%, so anything between them separates them;
+# this sits far from both rather than splitting the difference.
+NESTED_SCOPE_RESOLVED_FRACTION = 0.25
 
 # A pass that runs every frame appears in every block. Anything below this is
 # conditional -- the depth pyramid, for instance, is built in 1-2 blocks out of
@@ -538,6 +565,58 @@ def terminate(process: subprocess.Popen) -> None:
 # --------------------------------------------------------------------------
 
 
+def nested_scope_share(scopes: dict[str, list[float]]) -> dict[str, float]:
+    """For each parent pass, what fraction of it its nested children account for.
+
+    Absent parents and absent children are simply not represented, so a report
+    that never recorded MainHDRPass produces no entry rather than a zero that
+    would read as "the hardware cannot see them".
+    """
+    shares: dict[str, float] = {}
+    parents = set(NESTED_SCOPE_PARENTS.values())
+    for parent in parents:
+        parent_values = scopes.get(parent)
+        if not parent_values:
+            continue
+        parent_value = quoted_value(parent_values)
+        if parent_value <= 0.0:
+            continue
+        children = sum(
+            quoted_value(scopes[child])
+            for child, owner in NESTED_SCOPE_PARENTS.items()
+            if owner == parent and scopes.get(child)
+        )
+        shares[parent] = children / parent_value
+    return shares
+
+
+def nested_scopes_resolve(*scope_sets: dict[str, list[float]]) -> bool:
+    """Whether this GPU resolves scopes recorded inside a render pass.
+
+    Conservative across sides: if either side of an A/B says the children do not
+    add up to their parent, the rows are not treated as a breakdown. A disagreement
+    means something is wrong with the comparison, not that half of it is quotable.
+    """
+    decided = False
+    for scopes in scope_sets:
+        for share in nested_scope_share(scopes).values():
+            decided = True
+            if share < NESTED_SCOPE_RESOLVED_FRACTION:
+                return False
+    return decided
+
+
+def nested_scope_note(resolved: bool, shares: dict[str, float], name: str) -> str:
+    """The annotation a nested row carries, naming the evidence either way."""
+    parent = NESTED_SCOPE_PARENTS[name]
+    share = shares.get(parent)
+    if not resolved:
+        return "  *(nested: reads ~0 on this GPU, not a breakdown)*"
+    if share is None:
+        return "  *(nested)*"
+    return f"  *(nested: children are {share * 100:.0f}% of {parent} here)*"
+
+
 def is_intermittent(count: int, total: int) -> bool:
     return total > 0 and count < total * INTERMITTENT_COVERAGE
 
@@ -552,9 +631,11 @@ def format_single(samples: Samples, release_run: bool = True) -> str:
         "| --- | --- | --- | --- | --- |",
     ]
     intermittent: list[str] = []
+    nested_shares = nested_scope_share(samples.scopes)
+    nested_resolved = nested_scopes_resolve(samples.scopes)
     for name in ordered_scopes(samples.scopes):
         values = samples.scopes[name]
-        note = "  *(nested: reads ~0, not a breakdown)*" if name in UNRELIABLE_SCOPES else ""
+        note = nested_scope_note(nested_resolved, nested_shares, name) if name in NESTED_SCOPE_PARENTS else ""
         coverage = f"{len(values)}/{samples.block_count}"
         if is_intermittent(len(values), samples.block_count):
             coverage = f"**{coverage}**"
@@ -609,6 +690,9 @@ def format_comparison(
         "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     names = ordered_scopes({**a.scopes, **b.scopes})
+    # Decided from both sides together: a disagreement means something is wrong
+    # with the comparison, not that half of it is quotable.
+    nested_resolved = nested_scopes_resolve(a.scopes, b.scopes)
     buried: list[str] = []
     intermittent: list[str] = []
     unstable: list[str] = []
@@ -633,9 +717,12 @@ def format_comparison(
             coverage = f"**{coverage}**"
             intermittent.append(name)
 
-        if name in UNRELIABLE_SCOPES:
+        if name in NESTED_SCOPE_PARENTS and not nested_resolved:
+            # Only suppressed when this GPU is measured not to resolve them. On an
+            # immediate-mode GPU they are a real breakdown and fall through to the
+            # same noise-floor and drift checks every other scope gets.
             lines.append(
-                f"| {name} *(nested: reads ~0, not a breakdown)* | "
+                f"| {name} *(nested: reads ~0 on this GPU, not a breakdown)* | "
                 f"{fmt(value_a)} | {fmt(value_b)} | - | - | - | no | {coverage} |"
             )
             continue

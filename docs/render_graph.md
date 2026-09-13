@@ -806,7 +806,7 @@ disocclusion detection as future work, and that wants the previous frame's depth
 
 ### What it costs, and why it stays off
 
-Measured A/B, interleaved with a repeated control (drift 0.48%, limit 1%):
+Measured A/B, interleaved with a repeated control (drift 0.48%, limit 1%). Hardware is not recorded in the commit that introduced this (`2924483`, 2026-08-16, inside the unlabelled window described in [profiling.md](profiling.md#which-machine-a-number-came-from)); a 15 ms frame on the default scene is M3-class, against 1.754 ms on the RTX 3080 Ti, so read this as the tiler. The statistic is a median, not the p10 the harness now quotes. The conclusion -- a memory saving bought with frame time -- is a ratio and does not depend on which machine it was taken on, but the absolutes do.
 
 | | Frame total |
 | --- | --- |

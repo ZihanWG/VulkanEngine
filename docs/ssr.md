@@ -195,6 +195,13 @@ step — exact, and independent of the projection's `w` row.
 `SSRTrace` fell from 0.627 ms to 0.502 ms: fewer wasted samples, and rays leave
 the screen sooner so the loop exits earlier.
 
+**Hardware, scene, resolution and statistic are all unrecorded here** (`5ed5601`,
+2026-08-14, inside the unlabelled window described in
+[profiling.md](profiling.md#which-machine-a-number-came-from)), and unlike the
+other tables of that period the magnitude does not settle it: `SSRTrace` reads
+0.92 ms on the M3 and 0.155-0.21 ms on the RTX, and 0.627 sits between them.
+Treat the -20% as the claim and the absolutes as unattributed.
+
 The ray origin is biased along the surface normal, scaled by view depth so the
 bias stays constant in pixels. The old march did not need this — its first sample
 sat half a fixed world-space step clear of the surface — but a screen-space step
