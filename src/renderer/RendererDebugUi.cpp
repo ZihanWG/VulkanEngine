@@ -998,6 +998,18 @@ void Renderer::drawShadowsDebugUi()
         // Assignment churn is what popping actually looks like, so it is
         // measured rather than inferred from the image.
         ImGui::Text("Assignment churn: %u this frame", punctualShadowAssignmentChurn_);
+        ImGui::Text("Size class churn: %u this frame", punctualShadowSizeClassChurn_);
+        ImGui::SliderFloat(
+            "Assignment hysteresis", &punctualShadowAssignmentHysteresis_, 0.0f, kMaxPunctualAssignmentHysteresis);
+        ImGui::SetItemTooltip("How far a light must beat an incumbent, or clear a size-class\n"
+                              "boundary, before the assignment changes. 0 is the memoryless\n"
+                              "behaviour. Watch the two churn counters above against the peak\n"
+                              "rank inversion below: the inversion is the price, and it comes\n"
+                              "out at exactly 1 + this value.");
+        ImGui::Text("Peak rank inversion: %.3fx", punctualShadowPeakRankInversion_);
+        ImGui::SetItemTooltip("Worst ratio this run between an unshadowed light and the\n"
+                              "smallest shadowed one. 1.0 means the assignment still respects\n"
+                              "projected size exactly.");
         ImGui::Text("Cull + record CPU: %lld us", punctualShadowCpuMicros_);
         ImGui::SetItemTooltip("What GPU caster culling would remove. Compare against the\n"
                               "PunctualShadowGpuCull and PunctualShadowAtlas rows in the\n"

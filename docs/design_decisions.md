@@ -494,10 +494,42 @@ Exact equality, no tolerance, including for floats: both languages parse `0.5`
 and `0.5f` to the same double, and a tolerance would hide precisely the small
 divergences this exists to catch.
 
-**More time.** Reflect the compiled SPIR-V instead of parsing text, which would
-also cover descriptor set and binding numbers -- 102 of those are hand-mirrored
-today and nothing checks them either. `spirv-cross --reflect` is already in the
-SDK the CI job installs.
+**Done, and the plan above was wrong in two places.** `tools/check_shader_interface.py`
+now reflects every compiled module with `spirv-cross --reflect` and pins the
+result against `tests/golden/shader_interface.txt`. Both checkers run in CI.
+
+It does not *replace* the text comparison, as "instead of parsing text" assumed.
+Reflection cannot see a `const uint` at all -- the compiler folds it away before
+it reaches the SPIR-V -- so the two cover different halves and both are needed.
+
+And "cover descriptor set and binding numbers" turned out not to mean what it
+sounds like. Two rules that sound like the obvious ones were tried against the
+real shaders first, and the data killed both:
+
+- *A resource name must sit at the same (set, binding) everywhere.* 12 of 67
+  names legitimately differ. `uBrdfLut` is binding 5 in one pipeline and 6 in
+  another, because unrelated pipelines bind different inputs at the same slots.
+- *No (set, binding) may hold two different resources.* 7 of 18 slots hold many
+  names, for the same reason.
+
+Either would have needed a hand-maintained exception list of about a dozen
+entries -- the stale mirror this whole discipline exists to avoid, reintroduced
+as the fix for it. The true invariant is per-pipeline, and which shaders form a
+pipeline is not recoverable from the SPIR-V.
+
+So the guard is a *snapshot* instead: it does not prove C++ agrees with GLSL, it
+makes a shader's interface impossible to change silently. Renumber a binding, add
+a descriptor, or move a push-constant member, and the diff lands next to the C++
+change that should accompany it. That last case is the one nothing else reaches:
+reordering two push-constant members shifts their offsets while the block size is
+unchanged, so no `static_assert` on `sizeof` sees it. Both cases were mutation
+tested rather than assumed.
+
+**More time.** The per-pipeline rule is reachable if the C++ side declares its
+set/binding numbers in a shared header that both the descriptor writes and the
+checker read, rather than as loop indices and literals spread across subsystems.
+That is a real refactor of ~134 declarations, and it is what would turn this from
+"changes are visible" into "disagreement is impossible".
 
 ## Frame pacing is a timeline semaphore, not a fence per slot
 

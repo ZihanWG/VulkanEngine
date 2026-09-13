@@ -71,6 +71,7 @@ jobs:
             libxrandr-dev \
             ninja-build \
             pkg-config \
+            spirv-cross \
             wayland-protocols \
             xorg-dev
 
@@ -111,6 +112,17 @@ jobs:
       # validation -- it silently addresses the wrong froxel.
       - name: Shader constant parity
         run: python3 tools/check_shader_constants.py
+
+      # The other half of the same discipline. The constant checker compares
+      # `const uint` values, which reflection cannot see at all -- the compiler
+      # folds them away before they reach the SPIR-V. This one pins the
+      # descriptor and push-constant INTERFACE of every module against a
+      # committed golden, so a renumbered binding or a shifted push-constant
+      # member cannot land without the matching C++ change being visible in the
+      # same diff. Two designs that sound stronger were measured and rejected
+      # first; tools/check_shader_interface.py says why.
+      - name: Shader interface parity
+        run: python3 tools/check_shader_interface.py --build-dir build/ci-debug
 
       # Report-only static analysis over our own sources. Deliberately
       # non-blocking: .clang-tidy sets no WarningsAsErrors, so this surfaces

@@ -9,6 +9,7 @@
 #include <cmath>
 #include <limits>
 #include <set>
+#include <span>
 #include <vector>
 #include <utility>
 
@@ -730,6 +731,176 @@ TEST_CASE("A point light is demoted a size class against a spot of equal footpri
     // Six tiles for a point light against one for a spot, and each cube face
     // covers only 90 degrees, so equal footprints do not earn equal resolution.
     CHECK(point[0].sizeClass > spot[0].sizeClass);
+}
+
+namespace {
+
+using ve::renderer::kNoPunctualShadowSizeClass;
+
+// Ranks with a previous frame's per-light size classes in play.
+std::vector<ve::renderer::PunctualShadowAssignment>
+rankWithHistory(const std::vector<ve::renderer::PunctualShadowCandidateInput>& candidates,
+                const std::vector<uint32_t>& previousSizeClasses,
+                float margin,
+                uint32_t pointBudget = 4)
+{
+    std::vector<ve::renderer::PunctualShadowAssignment> assignments;
+    ve::renderer::rankPunctualShadowAssignments(
+        candidates, pointBudget, std::span<const uint32_t>(previousSizeClasses), margin, assignments);
+    return assignments;
+}
+
+} // namespace
+
+TEST_CASE("Hysteresis holds a light oscillating across a class boundary")
+{
+    // 1024 is a class boundary, so without damping these two radii sit on
+    // opposite sides of it and the light changes tile size every frame. That is
+    // the artifact: the shadow stays, its resolution steps back and forth.
+    constexpr float kJustUnder = 1023.0f;
+    constexpr float kJustOver = 1025.0f;
+
+    const uint32_t classUnder = ve::renderer::punctualShadowSizeClassForRadius(kJustUnder, false);
+    const uint32_t classOver = ve::renderer::punctualShadowSizeClassForRadius(kJustOver, false);
+    REQUIRE(classUnder != classOver);
+
+    // Undamped, the pair alternates -- stated as a REQUIRE so this test fails
+    // loudly if the boundary ever moves away from these radii rather than
+    // quietly passing while testing nothing.
+    REQUIRE(rankWithHistory({candidate(kJustOver)}, {classUnder}, 0.0f)[0].sizeClass == classOver);
+
+    // Damped, a light holding classUnder keeps it at kJustOver, and one holding
+    // classOver keeps that at kJustUnder. Both directions, because hysteresis
+    // that only resists one of them still chatters.
+    constexpr float kMargin = 0.1f;
+    CHECK(rankWithHistory({candidate(kJustOver)}, {classUnder}, kMargin)[0].sizeClass == classUnder);
+    CHECK(rankWithHistory({candidate(kJustUnder)}, {classOver}, kMargin)[0].sizeClass == classOver);
+}
+
+TEST_CASE("Hysteresis still yields to a light that decisively changes size")
+{
+    // Far past the boundary in both directions: damping must slow the change,
+    // not prevent it, or a light that genuinely grew keeps a tile too small for
+    // it forever.
+    constexpr float kMargin = 0.1f;
+    const uint32_t tiny = ve::renderer::punctualShadowSizeClassForRadius(8.0f, false);
+    const uint32_t huge = ve::renderer::punctualShadowSizeClassForRadius(4096.0f, false);
+    REQUIRE(tiny != huge);
+
+    CHECK(rankWithHistory({candidate(4096.0f)}, {tiny}, kMargin)[0].sizeClass == huge);
+    CHECK(rankWithHistory({candidate(8.0f)}, {huge}, kMargin)[0].sizeClass == tiny);
+}
+
+TEST_CASE("A zero margin reproduces the undamped size class exactly")
+{
+    // The default, and what the golden image and every existing expectation are
+    // built on: turning the feature off has to be indistinguishable from it
+    // never having been added.
+    for (const float radius : {1.0f, 255.0f, 256.0f, 511.0f, 512.0f, 1023.0f, 1024.0f, 4096.0f}) {
+        for (const bool isSpot : {true, false}) {
+            const uint32_t expected = ve::renderer::punctualShadowSizeClassForRadius(radius, !isSpot);
+            for (const uint32_t previous : {0u, 1u, 2u, kNoPunctualShadowSizeClass}) {
+                const auto damped = rankWithHistory({candidate(radius, 10.0f, isSpot)}, {previous}, 0.0f);
+                REQUIRE(damped.size() == 1);
+                CHECK(damped[0].sizeClass == expected);
+            }
+        }
+    }
+}
+
+TEST_CASE("A light with no previous class takes the undamped one")
+{
+    // Nothing to defend on the first frame a light is seen, so it must land on
+    // the class its radius asks for rather than on class 0 by accident.
+    constexpr float kRadius = 300.0f;
+    const uint32_t expected = ve::renderer::punctualShadowSizeClassForRadius(kRadius, false);
+    CHECK(rankWithHistory({candidate(kRadius)}, {kNoPunctualShadowSizeClass}, 0.25f)[0].sizeClass == expected);
+    // And a history shorter than the candidate list reads as "no previous
+    // class" past its end rather than running off it.
+    const auto grown = rankWithHistory({candidate(kRadius), candidate(kRadius)}, {}, 0.25f);
+    REQUIRE(grown.size() == 2);
+    CHECK(grown[0].sizeClass == expected);
+    CHECK(grown[1].sizeClass == expected);
+}
+
+TEST_CASE("An incumbent keeps its tile against a marginally larger challenger")
+{
+    // The point-light budget, not the atlas, is what churns in practice: the
+    // demo scene fills 25 of 64 slots, so lights are competing for the budget
+    // cut rather than for space. Two point lights, one slot: without retention
+    // the pair swap every time their radii cross.
+    constexpr float kMargin = 0.2f;
+    const std::vector<ve::renderer::PunctualShadowCandidateInput> lights{
+        candidate(100.0f, 10.0f, /*isSpot=*/false),
+        candidate(105.0f, 10.0f, /*isSpot=*/false),
+    };
+
+    // Undamped the larger light takes the only slot, whoever held it.
+    const auto undamped = rankWithHistory(lights, {0u, kNoPunctualShadowSizeClass}, 0.0f, /*pointBudget=*/1);
+    REQUIRE(undamped.size() == 1);
+    CHECK(undamped[0].lightIndex == 1);
+
+    // Damped, light 0 holds a tile and light 1 is only 5% larger, so the
+    // incumbent keeps it.
+    const auto damped = rankWithHistory(lights, {0u, kNoPunctualShadowSizeClass}, kMargin, /*pointBudget=*/1);
+    REQUIRE(damped.size() == 1);
+    CHECK(damped[0].lightIndex == 0);
+}
+
+TEST_CASE("Retention yields to a challenger that clears the margin")
+{
+    // Same shape as above but the challenger is 50% larger against a 20%
+    // margin. Retention has to be a bias, not a lock, or the first light to
+    // take a slot keeps it no matter what the scene does afterwards.
+    constexpr float kMargin = 0.2f;
+    const std::vector<ve::renderer::PunctualShadowCandidateInput> lights{
+        candidate(100.0f, 10.0f, /*isSpot=*/false),
+        candidate(150.0f, 10.0f, /*isSpot=*/false),
+    };
+
+    const auto damped = rankWithHistory(lights, {0u, kNoPunctualShadowSizeClass}, kMargin, /*pointBudget=*/1);
+    REQUIRE(damped.size() == 1);
+    CHECK(damped[0].lightIndex == 1);
+}
+
+TEST_CASE("Retention does not promote an incumbent to a larger tile")
+{
+    // The inflated radius is a RANK key only. If it leaked into class selection
+    // a light could hold a tile bigger than its footprint earns, indefinitely,
+    // just by having held one first.
+    constexpr float kMargin = 0.5f;
+    constexpr float kRadius = 700.0f;
+    const uint32_t honest = ve::renderer::punctualShadowSizeClassForRadius(kRadius, false);
+    // 700 * 1.5 crosses the 1024 boundary, so a leak would be visible here.
+    REQUIRE(ve::renderer::punctualShadowSizeClassForRadius(kRadius * (1.0f + kMargin), false) != honest);
+
+    const auto damped = rankWithHistory({candidate(kRadius)}, {honest}, kMargin);
+    REQUIRE(damped.size() == 1);
+    CHECK(damped[0].sizeClass == honest);
+}
+
+TEST_CASE("Hysteresis history is keyed by light index, not by rank")
+{
+    // Rank moves with the camera -- that is the churn this damps -- so keying
+    // the history on it would hand each light whichever neighbour outranked it.
+    // Light 0 is the smaller of the two, so it ranks second.
+    //
+    // 520 is just past the 512 boundary, which is the one that matters for a
+    // light holding class 2. Picking a radius near some *other* boundary would
+    // let the hysteresis yield and the test would pass for the wrong reason.
+    constexpr float kMargin = 0.1f;
+    constexpr float kJustPastClass2 = 520.0f;
+    const std::vector<uint32_t> previous{2u, 0u};
+    const auto assignments = rankWithHistory({candidate(kJustPastClass2), candidate(4096.0f)}, previous, kMargin);
+
+    REQUIRE(assignments.size() == 2);
+    CHECK(assignments[0].lightIndex == 1);
+    CHECK(assignments[1].lightIndex == 0);
+    // Undamped this light would take class 1; it held class 2 and has not
+    // cleared the boundary by the margin, so it keeps 2 -- and specifically does
+    // not pick up light 1's class 0 from the rank-ordered slot beside it.
+    REQUIRE(ve::renderer::punctualShadowSizeClassForRadius(kJustPastClass2, false) == 1u);
+    CHECK(assignments[1].sizeClass == 2u);
 }
 
 TEST_CASE("Ranking clears its output rather than appending across calls")

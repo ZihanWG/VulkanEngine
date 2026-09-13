@@ -92,6 +92,11 @@ struct CpuMeshData {
     uint32_t indexCount = 0;
     std::vector<MeshPrimitive> primitives;
     std::vector<MeshLod> lods;
+    // Every level's meshlets, and which of them each level owns (parallel to
+    // `lods`). Both empty on a mesh that was not meshletized, which consumers
+    // read as "draw each level whole".
+    std::vector<Meshlet> meshlets;
+    std::vector<glm::uvec2> meshletRangesPerLod;
     Aabb localBounds{};
 };
 
@@ -116,8 +121,13 @@ struct GltfGeometry {
 // Must not be called from a JobSystem worker. Throws std::runtime_error when the
 // file cannot be read, holds no supported triangle geometry, or (with
 // `cookedMeshes`) disagrees with the cooked data about how many meshes it has.
+// `buildMeshletTable` groups each LOD level's triangles into meshlets. Off by
+// default because it REORDERS triangles inside each level -- a permutation, so
+// the geometry is identical, but not the rasterization order. See
+// RendererStartupOverrides::buildMeshlets.
 [[nodiscard]] GltfGeometry loadGltfGeometry(const std::filesystem::path& path,
                                             JobSystem* jobSystem = nullptr,
-                                            std::vector<CpuMeshData>* cookedMeshes = nullptr);
+                                            std::vector<CpuMeshData>* cookedMeshes = nullptr,
+                                            bool buildMeshletTable = false);
 
 } // namespace ve::renderer

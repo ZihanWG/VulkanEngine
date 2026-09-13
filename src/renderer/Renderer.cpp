@@ -147,6 +147,8 @@ Renderer::Renderer(Window& window, const RendererStartupOverrides& overrides) : 
     // Before the load, not after: this is which file to read, not what to do
     // with what was read. The debug panel keeps reporting the path it actually
     // used, so a run started from a sweep configuration says so on screen.
+    // Before any mesh is created, which is the only moment this can take effect.
+    buildMeshletTables_ = overrides.buildMeshlets;
     runtimeSettingsPathWasRequested_ = overrides.settingsPath.has_value();
     runtimeSettingsPath_ = runtimeSettingsPathWasRequested_ ? *overrides.settingsPath : defaultRuntimeSettingsPath();
     sceneDocumentPath_ = defaultSceneDocumentPath();
@@ -1436,7 +1438,31 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
             << "  cull+record CPU: " << punctualShadowCpuMicros_ << " us\n"
             << "  frames served from cache: " << punctualShadowCachedFrames_ << "\n"
             << "  assignment churn this frame: " << punctualShadowAssignmentChurn_
-            << ", cumulative: " << punctualShadowAssignmentChurnTotal_ << "\n";
+            << ", cumulative: " << punctualShadowAssignmentChurnTotal_ << "\n"
+            << "  size class churn this frame: " << punctualShadowSizeClassChurn_
+            << ", cumulative: " << punctualShadowSizeClassChurnTotal_ << " (hysteresis "
+            << punctualShadowAssignmentHysteresis_ << ")\n"
+            << "  peak rank inversion: " << punctualShadowPeakRankInversion_ << "x\n";
+    if (meshletAnalysisEnabled_) {
+        const MeshletAnalysis& analysis = meshletAnalysis_;
+        const auto percent = [](uint64_t part, uint64_t whole) {
+            return whole == 0 ? 0.0 : 100.0 * static_cast<double>(part) / static_cast<double>(whole);
+        };
+        message << "Meshlet cull analysis (reporting only, nothing culled):\n"
+                << "  draw items past the object cull: " << analysis.drawItemsTested << " ("
+                << analysis.drawItemsWithoutMeshlets << " not meshletized, drawn whole)\n"
+                << "  meshlets: " << analysis.meshletsTotal << " tested, " << analysis.meshletsFrustumCulled
+                << " frustum-culled, " << analysis.meshletsConeCulled << " cone-culled, " << analysis.meshletsVisible
+                << " visible\n"
+                << "  triangles: " << analysis.trianglesBefore << " -> " << analysis.trianglesAfter << " ("
+                << percent(analysis.trianglesBefore - analysis.trianglesAfter, analysis.trianglesBefore)
+                << "% removed)\n"
+                // The other half of the trade, and the reason the triangle
+                // percentage alone cannot decide this: every surviving meshlet
+                // is one indirect command, against the draw items it replaces.
+                << "  indirect commands: " << analysis.drawItemsTested << " -> "
+                << (analysis.meshletsVisible + analysis.drawItemsWithoutMeshlets) << "\n";
+    }
     if (irradianceProbes_.available()) {
         message << "Irradiance probes:\n"
                 << "  enabled: " << (giSettings_.enabled ? "yes" : "no") << "\n"
@@ -2104,6 +2130,7 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
     // subsystem actually came up.
     showPunctualShadowDebug_ = settings.punctualShadows.debugView;
     usePunctualShadows_ = settings.punctualShadows.enabled;
+    punctualShadowAssignmentHysteresis_ = settings.punctualShadows.assignmentHysteresis;
     // Unconditional, unlike the culling toggles below: every use site already
     // ANDs this with ClusteredLighting::available(), so there is nothing to
     // guard against here.
@@ -2202,6 +2229,7 @@ RuntimeSettings Renderer::captureRuntimeSettings() const
     settings.punctualShadows.enabled = usePunctualShadows_;
     settings.punctualShadows.gpuCasterCulling = useGpuPunctualShadowCulling_;
     settings.punctualShadows.debugView = showPunctualShadowDebug_;
+    settings.punctualShadows.assignmentHysteresis = punctualShadowAssignmentHysteresis_;
     settings.lod = lodSettings_;
     settings.gi = giSettings_;
     settings.csm = csmSettings_;
@@ -2374,6 +2402,11 @@ void Renderer::updateVsmCasterInvalidation()
     // settings (hashed by updateResidency, which drops residency wholesale), and
     // a scene switch (resetSceneState clears these keys, because mesh and
     // material are hashed by pointer and only unique within one scene).
+    // Composed here rather than read from frameModelMatrices_, deliberately:
+    // updateVsmResidency runs near the top of drawFrame, before updateFrameData
+    // rebuilds that array, so the cache would still describe the PREVIOUS frame's
+    // transforms. Residency decides which pages to invalidate and the page pass
+    // then draws this frame's pose, so a one-frame-stale key loses shadows.
     vsmCasterKeys_.assign(objectCount, renderer::ShadowCacheKey{});
     for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
         vsmCasterKeys_[objectIndex].reset();

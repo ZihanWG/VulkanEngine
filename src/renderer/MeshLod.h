@@ -11,6 +11,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <glm/vec2.hpp>
+#include <glm/vec3.hpp>
+#include <glm/vec4.hpp>
 #include <span>
 #include <string>
 #include <string_view>
@@ -21,10 +24,119 @@ namespace ve::renderer {
 // One discrete level of detail: a triangle range inside a mesh's index buffer.
 // Level 0 is the authored geometry; simplified levels are appended after every
 // authored index in the same buffer.
+//
+// Deliberately still just the two fields, and meshlet ranges are deliberately
+// NOT among them. This struct is uploaded verbatim into the per-frame GPU LOD
+// table, so its stride IS the table's stride, and nothing on the GPU reads a
+// meshlet: meshlet culling was measured and rejected (docs/mesh_lod.md), and
+// meshlets are built only for the CPU-side analysis that rejected it.
+//
+// Widening it to 16 bytes was tried, and measured as free on frame time -- the
+// cost is not speed but the standing one of shipping two dead uints per LOD
+// entry to the GPU forever, and doubling kMeshLodBufferSize, for a feature that
+// does not exist. buildMeshlets returns the ranges alongside the table instead,
+// which keeps both the upload and cull.comp untouched.
 struct MeshLod {
     uint32_t firstIndex = 0;
     uint32_t indexCount = 0;
 };
+
+// One meshlet: a contiguous triangle range inside a mesh's index buffer, plus
+// what a cull test needs to reject it.
+//
+// Contiguity is the load-bearing choice. meshopt_buildMeshlets natively produces
+// meshlet-local vertex and micro-index arrays, which would need either a second
+// index buffer or a mesh-shader path to draw. Instead the builder REORDERS each
+// LOD level's triangles so a meshlet is just a (firstIndex, indexCount) pair --
+// the identical addressing MeshLod already uses -- which means a surviving
+// meshlet becomes an ordinary VkDrawIndexedIndirectCommand and the existing
+// indirect draw path needs no change at all.
+//
+// Reordering triangles within a level is safe here for the same reason
+// meshopt_optimizeVertexCache (already called on every simplified level) is:
+// opaque geometry is depth-resolved, and transparency is sorted per object, not
+// per triangle.
+//
+// Laid out for std430: two vec4s then four uints, 48 bytes, no padding holes.
+struct Meshlet {
+    // Bounding sphere in mesh-local space. xyz centre, w radius.
+    glm::vec4 centerRadius{0.0f, 0.0f, 0.0f, 0.0f};
+    // Normal cone for backface rejection, as meshopt_computeClusterBounds
+    // defines it: xyz axis, w cos(angle/2). A cutoff of 1 means the triangles
+    // face too many directions for a cone to reject anything, which is the
+    // value the builder leaves when meshopt reports no usable cone -- so a
+    // consumer that ignores the distinction simply never culls it.
+    glm::vec4 coneAxisCutoff{0.0f, 0.0f, 0.0f, 1.0f};
+    uint32_t firstIndex = 0;
+    uint32_t indexCount = 0;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+};
+
+static_assert(sizeof(Meshlet) == 48, "Meshlet is mirrored in GLSL as a 48-byte std430 struct.");
+static_assert(sizeof(MeshLod) == 8, "MeshLod is mirrored in GLSL as an 8-byte std430 struct.");
+
+// Meshlet sizes. 64/124 is the conventional pairing: meshopt caps vertices at
+// 255 and triangles at 512-divisible-by-4, and these are what its own samples
+// and the NVIDIA mesh-shader guidance use.
+inline constexpr uint32_t kMeshletMaxVertices = 64;
+inline constexpr uint32_t kMeshletMaxTriangles = 124;
+// Trades meshlet compactness against normal-cone tightness. 0 ignores normals
+// entirely and packs purely for locality; 1 packs purely for cone tightness and
+// produces more, smaller meshlets. 0.5 is meshopt's suggested middle.
+inline constexpr float kMeshletConeWeight = 0.5f;
+
+struct MeshletBuildSettings {
+    uint32_t maxVertices = kMeshletMaxVertices;
+    uint32_t maxTriangles = kMeshletMaxTriangles;
+    float coneWeight = kMeshletConeWeight;
+};
+
+// A mesh's meshlets, and which of them belong to each LOD level.
+//
+// The two are returned together rather than stored apart so they cannot desync:
+// the only thing that produces either is buildMeshlets, and it produces both.
+struct MeshletBuild {
+    std::vector<Meshlet> meshlets;
+    // One (base, count) into `meshlets` per level, parallel to the `lods` span
+    // that was passed in. A count of 0 means that level was not meshletized and
+    // must be drawn whole -- never "drawn not at all".
+    std::vector<glm::uvec2> rangesPerLod;
+};
+
+// Groups every level in `lods` into meshlets.
+//
+// Rewrites each level's own range of `indices` in place so its meshlets are
+// contiguous. Level ranges themselves do not move: only the order of triangles
+// inside a range changes, so every existing (firstIndex, indexCount) stays valid
+// and the caller's primitives keep pointing at the same geometry. `lods` is read,
+// never written -- the per-level ranges come back in the result instead, which is
+// what keeps MeshLod at the 8-byte stride the GPU table needs.
+//
+// An empty result means nothing could be meshletized (no positions, or no level
+// with triangles).
+[[nodiscard]] MeshletBuild buildMeshlets(std::vector<uint32_t>& indices,
+                                         std::span<const MeshLod> lods,
+                                         const float* vertexPositions,
+                                         size_t vertexCount,
+                                         size_t vertexStride,
+                                         const MeshletBuildSettings& settings = {});
+
+// True when a meshlet's normal cone proves every one of its triangles faces away
+// from `viewPosition`, so the whole meshlet can be rejected before rasterization.
+//
+// This is the conservative *centre* form of meshopt's test rather than the apex
+// form. The apex version is tighter, but it needs the cone apex stored per
+// meshlet -- another 16 bytes -- and its extra reach is worth nothing unless a
+// measurement says cone culling pays at all. The `radius / distance` term is what
+// makes the centre form safe: it widens the cone by the angle the bounding sphere
+// itself subtends, so this can only ever under-cull.
+//
+// All arguments are in the same space; the caller transforms the meshlet's
+// centre, radius and axis into it. A cutoff of 1 never rejects, which is what
+// the builder leaves when meshopt finds no usable cone.
+[[nodiscard]] bool meshletConeCulled(
+    const glm::vec3& center, float radius, const glm::vec3& coneAxis, float coneCutoff, const glm::vec3& viewPosition);
 
 // Upper bound on the chain length, and the floor below which simplifying stops
 // paying for itself (32 triangles).

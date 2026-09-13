@@ -549,8 +549,10 @@ nodeMeshInstanceDebugName(const tinygltf::Model& model, const tinygltf::Node& no
 
 } // namespace
 
-GltfGeometry
-loadGltfGeometry(const std::filesystem::path& path, JobSystem* jobSystem, std::vector<CpuMeshData>* cookedMeshes)
+GltfGeometry loadGltfGeometry(const std::filesystem::path& path,
+                              JobSystem* jobSystem,
+                              std::vector<CpuMeshData>* cookedMeshes,
+                              bool buildMeshletTable)
 {
     tinygltf::TinyGLTF loader;
     loader.SetImageLoader(copyEncodedImageData, nullptr);
@@ -771,6 +773,19 @@ loadGltfGeometry(const std::filesystem::path& path, JobSystem* jobSystem, std::v
             if (!build.logMessage.empty()) {
                 Logger::info(build.logMessage);
             }
+        }
+
+        // After every level exists and before the index buffer is handed over:
+        // this reorders triangles inside each level's range (the ranges
+        // themselves do not move) and fills in each level's meshlet range.
+        if (buildMeshletTable) {
+            MeshletBuild meshletBuild = buildMeshlets(indices,
+                                                      std::span<const MeshLod>(mesh.lods),
+                                                      vertices.empty() ? nullptr : &vertices[0].position.x,
+                                                      vertices.size(),
+                                                      sizeof(Vertex));
+            mesh.meshlets = std::move(meshletBuild.meshlets);
+            mesh.meshletRangesPerLod = std::move(meshletBuild.rangesPerLod);
         }
 
         mesh.vertices = std::move(vertices);

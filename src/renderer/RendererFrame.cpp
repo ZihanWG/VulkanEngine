@@ -252,65 +252,106 @@ void Renderer::updatePunctualShadowCacheState()
 {
     const uint32_t slotCount = punctualShadows_.slotCount();
     punctualShadowSlotKeys_.assign(slotCount, 0);
+    punctualShadowSlotDirty_.assign(slotCount, 0);
     punctualShadowDirtySlots_.clear();
 
+    // The chunk size is derived from the total work, not from the slot count.
+    // A slot costs O(draw items), so the useful unit here is the draw-item test,
+    // not the slot: the default minimum of 64 *slots* would put all of them in
+    // one chunk and run this serially, while a flat one-slot-per-chunk dispatches
+    // one job per slot however little each has to do.
+    //
+    // Both ends of that were measured on this loop. One slot per chunk is worth
+    // -22.4% of the scope on --scene stress (2322 draw items) and +23.9% of whole
+    // frame prep on --scene default (11), where ~64 jobs each testing 11 items
+    // cost more to hand out than to run. kMinDrawItemTestsPerChunk is the
+    // crossover expressed in the unit that actually varies.
+    constexpr size_t kMinDrawItemTestsPerChunk = 512;
+    const size_t drawItemsPerSlot = std::max<size_t>(allDrawItems_.size(), 1);
+    const size_t minSlotsPerChunk =
+        std::max<size_t>(1, (kMinDrawItemTestsPerChunk + drawItemsPerSlot - 1) / drawItemsPerSlot);
+
+    // Everything the body touches outside its own slot is read-only for the
+    // duration: the slot list and its frustums, allDrawItems_, frameWorldBounds_,
+    // frameModelMatrices_, the skinned caster, and the resident-tile map. Each
+    // iteration writes only its own entry in the two per-slot arrays.
+    framePrepParallelFor(slotCount, minSlotsPerChunk, [this](size_t begin, size_t end) {
+        for (size_t slotIndex = begin; slotIndex < end; ++slotIndex) {
+            const auto slot = static_cast<uint32_t>(slotIndex);
+            const renderer::ShadowAtlasRect rect = punctualShadows_.slotRect(slot);
+
+            // Local rather than a shared member: the member this used to write
+            // is what kept the loop on one thread.
+            renderer::PunctualShadowCacheKey cacheKey;
+            cacheKey.reset();
+            // The projection carries the light's position, direction, range, cone
+            // and near plane; the rect carries where and at what resolution.
+            cacheKey.add(punctualShadows_.slotViewProjection(slot));
+            cacheKey.add(rect);
+            // Raster depth bias is pipeline state the tile is rendered with.
+            cacheKey.add(shadowSettings_.rasterDepthBiasConstantFactor);
+            cacheKey.add(shadowSettings_.rasterDepthBiasSlopeFactor);
+
+            // Only the casters this tile actually draws. The cull below mirrors
+            // the one in recordPunctualShadowPass exactly -- if the two ever
+            // diverge, the hash stops describing what gets drawn, so they are
+            // kept adjacent in intent even though they live in different
+            // translation units.
+            const renderer::Frustum& slotFrustum = punctualShadows_.slotFrustum(slot);
+            for (const DrawItem& drawItem : allDrawItems_) {
+                if (!drawItem.mesh || drawItem.frameDataIndex >= kMaxDrawItems || drawItem.indexCount == 0) {
+                    continue;
+                }
+                if (drawItem.bucket == RenderBucket::Blend) {
+                    continue;
+                }
+                if (drawItem.objectIndex < frameWorldBounds_.size() &&
+                    !slotFrustum.testAabb(frameWorldBounds_[drawItem.objectIndex])) {
+                    continue;
+                }
+
+                cacheKey.add(static_cast<const void*>(drawItem.mesh));
+                cacheKey.add(drawItem.firstIndex);
+                cacheKey.add(drawItem.indexCount);
+                cacheKey.add(frameModelMatrices_[drawItem.objectIndex]);
+            }
+
+            // The skinned caster, on the same rule and for the same reason as
+            // the cascades: it is in no draw-item list, and what changes about
+            // it is the pose rather than anything the loop above hashes. The
+            // recorder tests the identical frustum, so a tile that draws it
+            // always has it in its key -- and a tile it cannot reach keeps
+            // caching.
+            if (skinnedCasterCastsIntoFrustum(slotFrustum)) {
+                const uint64_t pose = skinnedMesh_.poseHash();
+                cacheKey.addBytes(&pose, sizeof(pose));
+            }
+
+            const uint64_t key = cacheKey.value();
+            punctualShadowSlotKeys_[slot] = key;
+
+            if (punctualShadowNeedsFullClear_) {
+                // Nothing in the image is trustworthy yet, so every tile is
+                // dirty regardless of what the hashes say.
+                punctualShadowSlotDirty_[slot] = 1;
+                continue;
+            }
+
+            // as_const so this reads as the lookup it is. A non-const find()
+            // would compile just as well and say nothing about the map being
+            // shared with every other chunk running right now.
+            const auto& residentTiles = std::as_const(punctualShadowResidentTiles_);
+            const auto resident = residentTiles.find(packShadowAtlasRect(rect));
+            punctualShadowSlotDirty_[slot] = (resident == residentTiles.end() || resident->second != key) ? 1 : 0;
+        }
+    });
+
+    // Drained in slot order on one thread. The dirty list drives what the atlas
+    // pass records, so a list ordered by whichever chunk happened to finish
+    // first would make the recorded frame differ run to run -- the one thing
+    // --deterministic exists to rule out.
     for (uint32_t slot = 0; slot < slotCount; ++slot) {
-        const renderer::ShadowAtlasRect rect = punctualShadows_.slotRect(slot);
-
-        punctualShadowCacheKey_.reset();
-        // The projection carries the light's position, direction, range, cone
-        // and near plane; the rect carries where and at what resolution.
-        punctualShadowCacheKey_.add(punctualShadows_.slotViewProjection(slot));
-        punctualShadowCacheKey_.add(rect);
-        // Raster depth bias is pipeline state the tile is rendered with.
-        punctualShadowCacheKey_.add(shadowSettings_.rasterDepthBiasConstantFactor);
-        punctualShadowCacheKey_.add(shadowSettings_.rasterDepthBiasSlopeFactor);
-
-        // Only the casters this tile actually draws. The cull below mirrors the
-        // one in recordPunctualShadowPass exactly -- if the two ever diverge,
-        // the hash stops describing what gets drawn, so they are kept adjacent
-        // in intent even though they live in different translation units.
-        const renderer::Frustum& slotFrustum = punctualShadows_.slotFrustum(slot);
-        for (const DrawItem& drawItem : allDrawItems_) {
-            if (!drawItem.mesh || drawItem.frameDataIndex >= kMaxDrawItems || drawItem.indexCount == 0) {
-                continue;
-            }
-            if (drawItem.bucket == RenderBucket::Blend) {
-                continue;
-            }
-            if (drawItem.objectIndex < frameWorldBounds_.size() &&
-                !slotFrustum.testAabb(frameWorldBounds_[drawItem.objectIndex])) {
-                continue;
-            }
-
-            punctualShadowCacheKey_.add(static_cast<const void*>(drawItem.mesh));
-            punctualShadowCacheKey_.add(drawItem.firstIndex);
-            punctualShadowCacheKey_.add(drawItem.indexCount);
-            punctualShadowCacheKey_.add(renderObjects_[drawItem.objectIndex].transform.modelMatrix());
-        }
-
-        // The skinned caster, on the same rule and for the same reason as the
-        // cascades: it is in no draw-item list, and what changes about it is the
-        // pose rather than anything the loop above hashes. The recorder tests
-        // the identical frustum, so a tile that draws it always has it in its
-        // key -- and a tile it cannot reach keeps caching.
-        if (skinnedCasterCastsIntoFrustum(slotFrustum)) {
-            const uint64_t pose = skinnedMesh_.poseHash();
-            punctualShadowCacheKey_.addBytes(&pose, sizeof(pose));
-        }
-
-        const uint64_t key = punctualShadowCacheKey_.value();
-        punctualShadowSlotKeys_[slot] = key;
-
-        if (punctualShadowNeedsFullClear_) {
-            // Nothing in the image is trustworthy yet, so every tile is dirty
-            // regardless of what the hashes say.
-            punctualShadowDirtySlots_.push_back(slot);
-            continue;
-        }
-
-        const auto resident = punctualShadowResidentTiles_.find(packShadowAtlasRect(rect));
-        if (resident == punctualShadowResidentTiles_.end() || resident->second != key) {
+        if (punctualShadowSlotDirty_[slot] != 0) {
             punctualShadowDirtySlots_.push_back(slot);
         }
     }
@@ -429,8 +470,8 @@ void Renderer::updateCascadeShadowCacheState()
             caster.bucket = static_cast<uint32_t>(drawItem.bucket);
             caster.alphaCutoff =
                 drawItem.material != nullptr ? drawItem.material->alphaTestCutoff() : renderer::kNoAlphaTestCutoff;
-            if (drawItem.objectIndex < renderObjects_.size()) {
-                caster.modelMatrix = renderObjects_[drawItem.objectIndex].transform.modelMatrix();
+            if (drawItem.objectIndex < frameModelMatrices_.size()) {
+                caster.modelMatrix = frameModelMatrices_[drawItem.objectIndex];
             }
             caster.lodLevel = gpuLodSelectionActive ? selectedShadowLodLevel(drawItem, projScaleY, lodSelection) : 0u;
 
@@ -575,9 +616,20 @@ void Renderer::updatePunctualShadowSlots(uint32_t frameIndex, float aspectRatio)
     // renderer/PunctualShadowAtlas.h, where they are unit-tested. What stays here
     // is the GPU-side half: inserting into the atlas and writing the resulting
     // slot back into the light.
+    //
+    // punctualShadowLightSizeClass_ still holds last frame's classes at this
+    // point -- it is rewritten below, after the assignment -- which is exactly
+    // the history the hysteresis wants.
     renderer::rankPunctualShadowAssignments(punctualShadowCandidates_,
                                             static_cast<uint32_t>(std::max(maxShadowCastingPointLights_, 0)),
+                                            std::span<const uint32_t>(punctualShadowLightSizeClass_),
+                                            punctualShadowAssignmentHysteresis_,
                                             punctualShadowAssignments_);
+
+    // Rebuilt from this frame's assignment below. Sized here so a light that
+    // lost its tile reads as kNoPunctualShadowSizeClass rather than keeping the
+    // stale class it held last frame.
+    punctualShadowLightSizeClass_.assign(lights.size(), renderer::kNoPunctualShadowSizeClass);
 
     for (const renderer::PunctualShadowAssignment& assignment : punctualShadowAssignments_) {
         renderer::GpuLight& light = lights[assignment.lightIndex];
@@ -594,6 +646,12 @@ void Renderer::updatePunctualShadowSlots(uint32_t frameIndex, float aspectRatio)
             // and lower-ranked lights may still fit in a smaller leftover tile,
             // so this keeps walking instead of breaking out.
             light.spotScaleOffset.z = renderer::punctualShadowSlotToFloat(slot);
+            // Recorded only on the slot actually granted: a light the atlas could
+            // not fit held no tile, so feeding its intended class back as history
+            // would let the hysteresis defend a class it never had.
+            if (slot != renderer::kInvalidPunctualShadowSlot) {
+                punctualShadowLightSizeClass_[assignment.lightIndex] = assignment.sizeClass;
+            }
             continue;
         }
 
@@ -604,22 +662,58 @@ void Renderer::updatePunctualShadowSlots(uint32_t frameIndex, float aspectRatio)
         }
 
         light.spotScaleOffset.z = renderer::punctualShadowSlotToFloat(baseSlot);
+        punctualShadowLightSizeClass_[assignment.lightIndex] = assignment.sizeClass;
     }
 
     // Measure how much the assignment moved. Lights popping in and out of the
     // shadowed set frame to frame is what reads as flicker, so it gets counted
-    // rather than eyeballed.
+    // rather than eyeballed -- and so does a light that keeps its shadow while
+    // its tile size steps, which is a separate artifact and was not counted at
+    // all until the sizeClass field below was actually written.
     punctualShadowLightState_.resize(lights.size());
     punctualShadowAssignmentChurn_ = 0;
+    punctualShadowSizeClassChurn_ = 0;
+    float smallestShadowedRadius = std::numeric_limits<float>::max();
+    float largestUnshadowedRadius = 0.0f;
     for (size_t lightIndex = 0; lightIndex < lights.size(); ++lightIndex) {
         const bool shadowed = lights[lightIndex].spotScaleOffset.z >= 0.0f;
+        const uint32_t sizeClass = punctualShadowLightSizeClass_[lightIndex];
         PunctualShadowLightState& state = punctualShadowLightState_[lightIndex];
         if (state.valid && state.shadowed != shadowed) {
             ++punctualShadowAssignmentChurn_;
             ++punctualShadowAssignmentChurnTotal_;
         }
+        // Only for a light shadowed on BOTH frames. One that just gained or lost
+        // its shadow is already counted above, and counting it twice would make
+        // the two numbers move together and hide which artifact is happening.
+        if (state.valid && state.shadowed && shadowed && state.sizeClass != sizeClass) {
+            ++punctualShadowSizeClassChurn_;
+            ++punctualShadowSizeClassChurnTotal_;
+        }
+        // The counterweight to retention, and the reason it is measured rather
+        // than tuned by eye. Damping churn means letting an incumbent hold a tile
+        // that a larger light now deserves, so the inversion it buys has to be
+        // visible next to the churn it removes: this is the worst ratio seen
+        // between an unshadowed light and the smallest shadowed one. 1.0 means
+        // the assignment still respects projected size exactly.
+        if (lightIndex < punctualShadowCandidates_.size() && punctualShadowCandidates_[lightIndex].range > 0.0f) {
+            const float radius = punctualShadowCandidates_[lightIndex].projectedRadius;
+            if (shadowed) {
+                smallestShadowedRadius = std::min(smallestShadowedRadius, radius);
+            } else {
+                largestUnshadowedRadius = std::max(largestUnshadowedRadius, radius);
+            }
+        }
+        state.sizeClass = sizeClass;
         state.shadowed = shadowed;
         state.valid = true;
+    }
+
+    // Peak rather than current: an inversion lasting a handful of frames is what
+    // this risks, and a per-frame readout sampled once a second would miss it.
+    if (smallestShadowedRadius < std::numeric_limits<float>::max() && smallestShadowedRadius > 0.0f) {
+        punctualShadowPeakRankInversion_ =
+            std::max(punctualShadowPeakRankInversion_, largestUnshadowedRadius / smallestShadowedRadius);
     }
 
     punctualShadowSlotsUsed_ = punctualShadows_.slotCount();
@@ -821,22 +915,37 @@ void Renderer::appendDrawItemsForObject(uint32_t objectIndex,
 
 void Renderer::framePrepParallelFor(size_t count, const std::function<void(size_t, size_t)>& body)
 {
-    // Chunks below this size cost more to dispatch than to run inline.
+    // Chunks below this size cost more to dispatch than to run inline. The right
+    // default for the per-object and per-draw-item loops, whose bodies are a
+    // handful of operations each.
     constexpr size_t kMinChunkSize = 64;
+    framePrepParallelFor(count, kMinChunkSize, body);
+}
+
+void Renderer::framePrepParallelFor(size_t count, size_t minChunkSize, const std::function<void(size_t, size_t)>& body)
+{
     if (parallelFramePrepEnabled_) {
-        jobSystem_.parallelFor(count, kMinChunkSize, body);
+        jobSystem_.parallelFor(count, minChunkSize, body);
     } else if (count > 0) {
         body(0, count);
     }
 }
 
-void Renderer::updateFrameWorldBounds()
+void Renderer::updateFrameObjectTransforms()
 {
     const size_t objectCount = renderObjects_.size();
+    frameModelMatrices_.resize(objectCount);
     frameWorldBounds_.resize(objectCount);
     framePrepParallelFor(objectCount, [this](size_t begin, size_t end) {
         for (size_t objectIndex = begin; objectIndex < end; ++objectIndex) {
-            frameWorldBounds_[objectIndex] = renderObjects_[objectIndex].worldBounds();
+            const renderer::RenderObject& object = renderObjects_[objectIndex];
+            // Composed once here and shared from here on. RenderObject::worldBounds()
+            // is deliberately not called: it composes a matrix of its own, which is
+            // exactly the per-use re-derivation this array exists to remove.
+            const glm::mat4 model = object.transform.modelMatrix();
+            frameModelMatrices_[objectIndex] = model;
+            frameWorldBounds_[objectIndex] =
+                object.mesh ? object.mesh->localBounds().transform(model) : renderer::Aabb{};
         }
     });
 }
@@ -1183,20 +1292,9 @@ void Renderer::buildFrameMeshLodTable()
             meshLodBases.emplace(mesh, meshBase);
         }
 
-        // Sub-meshed meshes carry a chain per primitive; the rest use the
-        // whole-mesh range.
-        uint32_t localBase = 0;
-        uint32_t localCount = 0;
-        if (mesh->hasSubMeshes()) {
-            const std::span<const renderer::MeshPrimitive> primitives = mesh->primitives();
-            if (drawItem.submeshIndex < primitives.size()) {
-                localBase = primitives[drawItem.submeshIndex].lodBase;
-                localCount = primitives[drawItem.submeshIndex].lodCount;
-            }
-        } else {
-            localBase = mesh->lodBase();
-            localCount = mesh->lodCount();
-        }
+        const glm::uvec2 local = meshLocalLodRange(drawItem);
+        const uint32_t localBase = local.x;
+        const uint32_t localCount = local.y;
 
         if (localCount == 0 || static_cast<size_t>(localBase) + localCount > meshLods.size()) {
             continue;
@@ -1204,6 +1302,25 @@ void Renderer::buildFrameMeshLodTable()
 
         frameDrawItemLodRanges_[drawIndex] = glm::uvec2(meshBase + localBase, localCount);
     }
+}
+
+glm::uvec2 Renderer::meshLocalLodRange(const DrawItem& drawItem) const
+{
+    // Sub-meshed meshes carry a chain per primitive; the rest use the whole-mesh
+    // range. Returned MESH-LOCAL, i.e. an index into mesh->lods(), not into the
+    // per-frame table -- buildFrameMeshLodTable adds its own base on top, and
+    // conflating the two indexes past the end of a mesh's own chain.
+    if (drawItem.mesh == nullptr) {
+        return glm::uvec2(0);
+    }
+    if (drawItem.mesh->hasSubMeshes()) {
+        const std::span<const renderer::MeshPrimitive> primitives = drawItem.mesh->primitives();
+        if (drawItem.submeshIndex < primitives.size()) {
+            return glm::uvec2(primitives[drawItem.submeshIndex].lodBase, primitives[drawItem.submeshIndex].lodCount);
+        }
+        return glm::uvec2(0);
+    }
+    return glm::uvec2(drawItem.mesh->lodBase(), drawItem.mesh->lodCount());
 }
 
 void Renderer::uploadGpuCullFrameParams(uint32_t frameIndex, bool occlusionEnabledThisFrame)
@@ -1585,11 +1702,16 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         invalidateDepthPyramid();
     }
 
-    // Transforms are final for this frame; cache every object's world AABB once
-    // for the visibility, shadow-cascade, and GPU-cull-input passes below.
+    // Transforms are final for this frame; cache every object's model matrix and
+    // world AABB once for the visibility, shadow-cache, shadow-cascade and
+    // GPU-cull-input passes below.
+    //
+    // The scope keeps the name "world bounds" although it now also builds the
+    // matrices: the measurement corpus in docs/ is stamped with that name, and
+    // renaming it would silently orphan every number recorded against it.
     {
         const ScopedCpuTimer timer = cpuScope(CpuScope::WorldBounds);
-        updateFrameWorldBounds();
+        updateFrameObjectTransforms();
     }
 
     {
@@ -1634,6 +1756,10 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         const ScopedCpuTimer timer = cpuScope(CpuScope::MainCullingFrameData);
         buildMainCullingFrameData(frameIndex, cameraFrustum);
     }
+    // Deliberately OUTSIDE every CPU scope: it is an instrument, off by default,
+    // and folding its cost into frame prep would make the numbers it exists to
+    // inform unreadable.
+    analyzeMeshletCulling(cameraFrustum);
     {
         const ScopedCpuTimer timer = cpuScope(CpuScope::ObjectFrameDataUpload);
         uploadObjectFrameData(frameIndex);
@@ -1697,8 +1823,14 @@ void Renderer::capturePreviousFrameMatrices()
     previousFrameViewProjection_ = frameViewProjection_;
     previousFrameView_ = frameView_;
     previousFrameViewProjectionValid_ = true;
-    for (renderer::RenderObject& object : renderObjects_) {
-        object.previousModelMatrix = object.transform.modelMatrix();
+    // frameModelMatrices_ still describes these objects: this runs after recording
+    // and nothing between frame prep and here writes a transform (gizmo edits land
+    // in buildDebugUi, which runs before updateFrameData). The fallback covers the
+    // array being short rather than trusting that coupling silently.
+    for (size_t objectIndex = 0; objectIndex < renderObjects_.size(); ++objectIndex) {
+        renderer::RenderObject& object = renderObjects_[objectIndex];
+        object.previousModelMatrix = objectIndex < frameModelMatrices_.size() ? frameModelMatrices_[objectIndex]
+                                                                              : object.transform.modelMatrix();
         object.previousModelValid = true;
     }
     if (skinnedMesh_.valid()) {
@@ -1874,6 +2006,103 @@ void Renderer::buildShadowFrameData(uint32_t frameIndex)
     }
 }
 
+// Answers, without rendering anything differently, what a meshlet-level cull
+// pass WOULD remove from this frame.
+//
+// It exists because the case for meshlet culling is content-dependent and this
+// engine's scenes are procedural. Building the GPU pass first and measuring
+// after would have meant writing a second cull stage, a command budget and a
+// counter readback before finding out whether the geometry here has anything to
+// give -- so the premise gets tested first, the same way the persistent GPU
+// scene table and the cascade bounding-sphere fit were.
+//
+// The object-level frustum test comes first on purpose: meshlet culling only
+// ever runs on what the existing pass already kept, so counting a culled
+// object's meshlets would inflate the saving with work nobody was going to do.
+void Renderer::analyzeMeshletCulling(const renderer::Frustum& cameraFrustum)
+{
+    meshletAnalysis_ = {};
+    if (!meshletAnalysisEnabled_ || allDrawItems_.empty()) {
+        return;
+    }
+
+    const VkExtent2D renderExtent = renderResolution_.extent();
+    const float projScaleY = 0.5f * static_cast<float>(renderExtent.height) * std::abs(frameJitteredProjection_[1][1]);
+    renderer::LodSelectionSettings lodSelection{};
+    lodSelection.referenceRadiusPixels = lodSettings_.referenceRadiusPixels;
+    lodSelection.bias = lodSettings_.bias;
+    lodSelection.forcedLod = lodSettings_.enabled ? lodSettings_.forcedLod : 0;
+
+    for (const DrawItem& drawItem : allDrawItems_) {
+        if (!drawItem.mesh || drawItem.indexCount == 0 || drawItem.objectIndex >= frameWorldBounds_.size()) {
+            continue;
+        }
+        if (!cameraFrustum.testAabb(frameWorldBounds_[drawItem.objectIndex])) {
+            continue;
+        }
+
+        ++meshletAnalysis_.drawItemsTested;
+
+        const std::span<const renderer::MeshLod> lods = drawItem.mesh->lods();
+        const std::span<const renderer::Meshlet> meshlets = drawItem.mesh->meshlets();
+        // Mesh-local, not the frame table's index: frameDrawItemLodRanges_ holds
+        // the latter, and using it here indexed past the end of every mesh's own
+        // chain and reported almost every draw item as unmeshletized.
+        const uint32_t level =
+            meshLocalLodRange(drawItem).x + selectedShadowLodLevel(drawItem, projScaleY, lodSelection);
+
+        const std::span<const glm::uvec2> meshletRanges = drawItem.mesh->meshletRangesPerLod();
+        if (meshlets.empty() || level >= lods.size() || level >= meshletRanges.size() || meshletRanges[level].y == 0) {
+            // Drawn whole. Counted so the "triangles before" total is the whole
+            // frame rather than only its meshletized part -- a saving quoted
+            // against a subset of the frame is not a saving.
+            ++meshletAnalysis_.drawItemsWithoutMeshlets;
+            meshletAnalysis_.trianglesBefore += drawItem.indexCount / 3;
+            meshletAnalysis_.trianglesAfter += drawItem.indexCount / 3;
+            continue;
+        }
+
+        const glm::mat4& model = frameModelMatrices_[drawItem.objectIndex];
+        // Uniform-scale assumption, made safe by taking the largest axis: a
+        // non-uniformly scaled meshlet sphere stays conservative this way, and
+        // the cone axis is renormalised after transform for the same reason.
+        const float scale = std::sqrt(std::max(
+            {glm::length2(glm::vec3(model[0])), glm::length2(glm::vec3(model[1])), glm::length2(glm::vec3(model[2]))}));
+        const glm::mat3 normalBasis = glm::mat3(model);
+
+        const glm::uvec2 meshletRange = meshletRanges[level];
+        for (uint32_t i = 0; i < meshletRange.y; ++i) {
+            const renderer::Meshlet& meshlet = meshlets[meshletRange.x + i];
+            const uint32_t triangles = meshlet.indexCount / 3;
+            ++meshletAnalysis_.meshletsTotal;
+            meshletAnalysis_.trianglesBefore += triangles;
+
+            const glm::vec3 center = glm::vec3(model * glm::vec4(glm::vec3(meshlet.centerRadius), 1.0f));
+            const float radius = meshlet.centerRadius.w * scale;
+
+            const renderer::Aabb meshletBounds{center - glm::vec3(radius), center + glm::vec3(radius)};
+            if (!cameraFrustum.testAabb(meshletBounds)) {
+                ++meshletAnalysis_.meshletsFrustumCulled;
+                continue;
+            }
+
+            const glm::vec3 coneAxis = normalBasis * glm::vec3(meshlet.coneAxisCutoff);
+            const float axisLength = glm::length(coneAxis);
+            const bool coneCulled =
+                axisLength > 0.0f &&
+                renderer::meshletConeCulled(
+                    center, radius, coneAxis / axisLength, meshlet.coneAxisCutoff.w, frameCameraPosition_);
+            if (coneCulled) {
+                ++meshletAnalysis_.meshletsConeCulled;
+                continue;
+            }
+
+            ++meshletAnalysis_.meshletsVisible;
+            meshletAnalysis_.trianglesAfter += triangles;
+        }
+    }
+}
+
 void Renderer::buildMainCullingFrameData(uint32_t frameIndex, const renderer::Frustum& cameraFrustum)
 {
     // This is deliberately hybrid GPU-driven rendering. The CPU still owns the
@@ -1976,9 +2205,11 @@ void Renderer::uploadObjectFrameData(uint32_t frameIndex)
     const size_t objectFrameCount = std::min(allDrawItems_.size(), static_cast<size_t>(kMaxDrawItems));
     std::vector<ObjectFrameData> objectFrameData(objectFrameCount);
 
-    // Per-item fill is the heaviest CPU loop of the frame (six mat4 multiplies
-    // per draw item); every iteration writes only objectFrameData[drawIndex] and
-    // reads shared frame state, so it chunks cleanly across the JobSystem.
+    // Per-item fill is one of the heaviest CPU loops of the frame; every iteration
+    // writes only objectFrameData[drawIndex] and reads shared frame state, so it
+    // chunks cleanly across the JobSystem. The model matrix is read from
+    // frameModelMatrices_ rather than composed here, which leaves one mat4
+    // multiply (prevMvpNoJitter) where there used to be six.
     framePrepParallelFor(objectFrameCount, [&](size_t begin, size_t end) {
         for (size_t drawIndex = begin; drawIndex < end; ++drawIndex) {
             const DrawItem& drawItem = allDrawItems_[drawIndex];
@@ -1991,7 +2222,7 @@ void Renderer::uploadObjectFrameData(uint32_t frameIndex)
                 continue;
             }
 
-            const glm::mat4 model = object.transform.modelMatrix();
+            const glm::mat4& model = frameModelMatrices_[drawItem.objectIndex];
             ObjectFrameData& frameData = objectFrameData[drawIndex];
             frameData.model = model;
             frameData.prevMvpNoJitter =

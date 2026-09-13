@@ -237,7 +237,23 @@ struct PunctualShadowSettings {
     // Renders the punctual shadow visibility term alone. A render debug view,
     // persisted for the same reason GiSettings::debugPattern is.
     bool debugView = false;
+    // How far a light must clear a tile size-class boundary before it is allowed
+    // to change class, as a fraction of its projected radius. Tile assignment is
+    // recomputed from scratch every frame and priority depends on the camera, so
+    // without this a light hovering on a boundary changes tile size every frame
+    // and its shadow's resolution visibly steps back and forth.
+    //
+    // 0 disables it and reproduces the bare threshold test exactly. See
+    // kMaxPunctualAssignmentHysteresis for why the top of the range is where it
+    // is.
+    float assignmentHysteresis = 0.2f;
 };
+
+// Upper bound on PunctualShadowSettings::assignmentHysteresis. The size classes
+// are a factor of two apart, so a margin of 0.5 already spans a whole class:
+// past it the damping stops being hysteresis and becomes a second, hidden
+// class-selection rule.
+inline constexpr float kMaxPunctualAssignmentHysteresis = 0.5f;
 
 struct DebugUiSettings {
     // Master toggle: when false the debug window shows only the common post-process

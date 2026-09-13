@@ -129,6 +129,17 @@ struct LaunchOptions {
     // standing check for that -- see rhi/VulkanAliasingProbe.h.
     bool probeAliasing = false;
 
+    // Reports, once a second, how much meshlet-level culling WOULD remove from
+    // this frame if it ran: meshlets tested, rejected by cone and by frustum,
+    // triangles before and after, and the indirect command count it would need.
+    //
+    // A measurement instrument, not a feature toggle -- nothing about the
+    // rendered frame changes. It exists to answer whether a GPU meshlet cull
+    // pass is worth building on the content that actually exists here, before
+    // any of it is built. Off by default: the analysis is O(visible meshlets)
+    // on the CPU every frame and would otherwise show up in frame prep.
+    bool meshletAnalysis = false;
+
     // Startup scene. Default keeps whatever createScene() builds on its own.
     ScenePreset scene = ScenePreset::Default;
 

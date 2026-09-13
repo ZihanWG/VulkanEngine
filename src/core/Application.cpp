@@ -66,6 +66,9 @@ void Application::initialize()
     // constructor, and several of the values in it size what that constructor
     // allocates.
     overrides.settingsPath = config_.settingsPath;
+    // The analysis is the only consumer of meshlets today, so it is also what
+    // turns their construction on -- see RendererStartupOverrides::buildMeshlets.
+    overrides.buildMeshlets = config_.meshletAnalysis;
 
     const auto rendererInitStart = std::chrono::steady_clock::now();
     renderer_ = std::make_unique<Renderer>(*window_, overrides);
@@ -84,9 +87,11 @@ void Application::initialize()
     if (config_.scene != ScenePreset::Default) {
         renderer_->loadScenePreset(config_.scene);
     }
+    // Independent of --capture-frame: the analysis reports into the log every
+    // second and has nothing to do with capturing a frame.
+    renderer_->setMeshletAnalysisEnabled(config_.meshletAnalysis);
     if (config_.captureFrame != 0) {
         renderer_->requestFrameCaptureAt(config_.captureFrame, config_.captureOutput, config_.captureIncludeUi);
-
         if (!config_.vsmDumpPool.empty()) {
             renderer_->requestVsmPagePoolDumpAt(config_.captureFrame, config_.vsmDumpPool);
         }

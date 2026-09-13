@@ -105,7 +105,9 @@ std::array<VkVertexInputAttributeDescription, 5> vertexAttributeDescriptions()
     return attributes;
 }
 
-Mesh Mesh::createCube(rhi::VulkanContext& context, const rhi::VulkanCommandContext& commandContext)
+Mesh Mesh::createCube(rhi::VulkanContext& context,
+                      const rhi::VulkanCommandContext& commandContext,
+                      bool buildMeshletTable)
 {
     const PrimitiveGeometry geometry = buildCubeGeometry();
 
@@ -136,6 +138,18 @@ Mesh Mesh::createCube(rhi::VulkanContext& context, const rhi::VulkanCommandConte
                                mesh.debugName_);
     mesh.lodBase_ = 0;
     mesh.lodCount_ = static_cast<uint32_t>(mesh.lods_.size());
+    // Before the index buffer is uploaded: this reorders triangles inside each
+    // level's range, so building it after the upload would leave the GPU holding
+    // an order the meshlet ranges do not describe.
+    if (buildMeshletTable) {
+        MeshletBuild meshletBuild = buildMeshlets(indices,
+                                                  std::span<const MeshLod>(mesh.lods_),
+                                                  &geometry.vertices[0].position.x,
+                                                  geometry.vertices.size(),
+                                                  sizeof(Vertex));
+        mesh.meshlets_ = std::move(meshletBuild.meshlets);
+        mesh.meshletRangesPerLod_ = std::move(meshletBuild.rangesPerLod);
+    }
 
     mesh.indexBuffer_.createDeviceLocal(context,
                                         commandContext,
@@ -148,7 +162,8 @@ Mesh Mesh::createCube(rhi::VulkanContext& context, const rhi::VulkanCommandConte
 Mesh Mesh::createUvSphere(rhi::VulkanContext& context,
                           const rhi::VulkanCommandContext& commandContext,
                           uint32_t segments,
-                          uint32_t rings)
+                          uint32_t rings,
+                          bool buildMeshletTable)
 {
     const PrimitiveGeometry geometry = buildUvSphereGeometry(segments, rings);
     const std::vector<Vertex>& vertices = geometry.vertices;
@@ -170,6 +185,12 @@ Mesh Mesh::createUvSphere(rhi::VulkanContext& context,
         indices, 0, mesh.indexCount_, &vertices[0].position.x, vertices.size(), sizeof(Vertex), mesh.debugName_);
     mesh.lodBase_ = 0;
     mesh.lodCount_ = static_cast<uint32_t>(mesh.lods_.size());
+    if (buildMeshletTable) {
+        MeshletBuild meshletBuild = buildMeshlets(
+            indices, std::span<const MeshLod>(mesh.lods_), &vertices[0].position.x, vertices.size(), sizeof(Vertex));
+        mesh.meshlets_ = std::move(meshletBuild.meshlets);
+        mesh.meshletRangesPerLod_ = std::move(meshletBuild.rangesPerLod);
+    }
 
     mesh.indexBuffer_.createDeviceLocal(context,
                                         commandContext,
@@ -193,6 +214,8 @@ Mesh Mesh::createFromGeometry(rhi::VulkanContext& context,
     mesh.indexCount_ = geometry.indexCount;
     mesh.subMeshes_ = std::move(geometry.primitives);
     mesh.lods_ = std::move(geometry.lods);
+    mesh.meshlets_ = std::move(geometry.meshlets);
+    mesh.meshletRangesPerLod_ = std::move(geometry.meshletRangesPerLod);
     mesh.localBounds_ = geometry.localBounds;
 
     mesh.vertexBuffer_.createDeviceLocal(
@@ -218,7 +241,8 @@ Mesh Mesh::createFromGeometry(rhi::VulkanContext& context,
 LoadedGltfAsset Mesh::createFromGltf(rhi::VulkanContext& context,
                                      const rhi::VulkanCommandContext& commandContext,
                                      const std::filesystem::path& path,
-                                     JobSystem* jobSystem)
+                                     JobSystem* jobSystem,
+                                     bool buildMeshletTable)
 {
     // A cooked sidecar removes assembly and LOD construction -- ~333 ms of a
     // ~349 ms Sponza import. Any reason it does not match falls back to the glTF
@@ -248,7 +272,7 @@ LoadedGltfAsset Mesh::createFromGltf(rhi::VulkanContext& context,
     }
 
     // Everything expensive happens without a device; this is only the upload.
-    GltfGeometry geometry = loadGltfGeometry(path, jobSystem, haveCooked ? &cookedMeshes : nullptr);
+    GltfGeometry geometry = loadGltfGeometry(path, jobSystem, haveCooked ? &cookedMeshes : nullptr, buildMeshletTable);
 
     LoadedGltfAsset loadedAsset{};
     loadedAsset.meshes.resize(geometry.meshes.size());

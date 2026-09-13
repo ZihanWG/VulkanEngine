@@ -4,12 +4,152 @@
 
 #include <meshoptimizer.h>
 
+#include <glm/geometric.hpp>
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <string>
 
 namespace ve::renderer {
+
+MeshletBuild buildMeshlets(std::vector<uint32_t>& indices,
+                           std::span<const MeshLod> lods,
+                           const float* vertexPositions,
+                           size_t vertexCount,
+                           size_t vertexStride,
+                           const MeshletBuildSettings& settings)
+{
+    MeshletBuild build;
+    if (vertexPositions == nullptr || vertexCount == 0 || lods.empty()) {
+        return build;
+    }
+    build.rangesPerLod.assign(lods.size(), glm::uvec2(0));
+    std::vector<Meshlet>& meshlets = build.meshlets;
+
+    // meshopt's documented limits. Violating them is undefined rather than
+    // diagnosed, so they are enforced here instead of trusted from the caller.
+    const size_t maxVertices = std::clamp<size_t>(settings.maxVertices, 3, 255);
+    // Must stay divisible by 4, which is why this rounds down rather than
+    // clamping: a caller asking for 100 gets 100, one asking for 126 gets 124.
+    const size_t maxTriangles = std::min<size_t>((settings.maxTriangles / 4U) * 4U, 512);
+    if (maxTriangles == 0) {
+        return build;
+    }
+
+    std::vector<meshopt_Meshlet> rawMeshlets;
+    std::vector<uint32_t> meshletVertices;
+    std::vector<unsigned char> meshletTriangles;
+    std::vector<uint32_t> reordered;
+
+    for (size_t levelIndex = 0; levelIndex < lods.size(); ++levelIndex) {
+        const MeshLod& level = lods[levelIndex];
+        const size_t rangeEnd = static_cast<size_t>(level.firstIndex) + level.indexCount;
+        if (level.indexCount < 3 || rangeEnd > indices.size()) {
+            continue;
+        }
+
+        const uint32_t* levelIndices = indices.data() + level.firstIndex;
+        const size_t bound = meshopt_buildMeshletsBound(level.indexCount, maxVertices, maxTriangles);
+        rawMeshlets.resize(bound);
+        meshletVertices.resize(bound * maxVertices);
+        meshletTriangles.resize(bound * maxTriangles * 3);
+
+        const size_t produced = meshopt_buildMeshlets(rawMeshlets.data(),
+                                                      meshletVertices.data(),
+                                                      meshletTriangles.data(),
+                                                      levelIndices,
+                                                      level.indexCount,
+                                                      vertexPositions,
+                                                      vertexCount,
+                                                      vertexStride,
+                                                      maxVertices,
+                                                      maxTriangles,
+                                                      settings.coneWeight);
+        if (produced == 0) {
+            continue;
+        }
+
+        // Rebuild the level's range grouped by meshlet. Written into scratch and
+        // copied back rather than shuffled in place: the expansion below reads
+        // the meshlet's own vertex table, which indexes the ORIGINAL range, so
+        // overwriting as we go would read indices we had already replaced.
+        reordered.clear();
+        reordered.reserve(level.indexCount);
+
+        const auto meshletBase = static_cast<uint32_t>(meshlets.size());
+        for (size_t index = 0; index < produced; ++index) {
+            const meshopt_Meshlet& raw = rawMeshlets[index];
+            const auto firstIndex = static_cast<uint32_t>(level.firstIndex + reordered.size());
+
+            const uint32_t* localVertices = meshletVertices.data() + raw.vertex_offset;
+            const unsigned char* localTriangles = meshletTriangles.data() + raw.triangle_offset;
+            for (uint32_t triangle = 0; triangle < raw.triangle_count * 3U; ++triangle) {
+                reordered.push_back(localVertices[localTriangles[triangle]]);
+            }
+
+            Meshlet meshlet{};
+            meshlet.firstIndex = firstIndex;
+            meshlet.indexCount = raw.triangle_count * 3U;
+
+            // Computed from the emitted contiguous range rather than from the
+            // meshlet's local tables: computeClusterBounds takes exactly the
+            // (indices, count) pair that was just written, so the bounds
+            // describe the geometry the GPU will actually draw for this range.
+            const meshopt_Bounds bounds =
+                meshopt_computeClusterBounds(reordered.data() + (firstIndex - level.firstIndex),
+                                             meshlet.indexCount,
+                                             vertexPositions,
+                                             vertexCount,
+                                             vertexStride);
+            meshlet.centerRadius = glm::vec4(bounds.center[0], bounds.center[1], bounds.center[2], bounds.radius);
+            // meshopt reports an unusable cone as cutoff 1, which is already the
+            // "never reject" value, so this needs no special case -- but it is
+            // clamped because a cutoff above 1 would make the GPU test
+            // nonsensical rather than merely permissive.
+            meshlet.coneAxisCutoff = glm::vec4(
+                bounds.cone_axis[0], bounds.cone_axis[1], bounds.cone_axis[2], std::min(bounds.cone_cutoff, 1.0f));
+            meshlets.push_back(meshlet);
+        }
+
+        // The grouping is a permutation of the level's triangles, so the range
+        // must come back exactly the size it went in. Anything else would move
+        // every later level and silently corrupt the whole buffer.
+        if (reordered.size() != level.indexCount) {
+            meshlets.resize(meshletBase);
+            continue;
+        }
+
+        std::copy(reordered.begin(), reordered.end(), indices.begin() + level.firstIndex);
+        build.rangesPerLod[levelIndex] = glm::uvec2(meshletBase, static_cast<uint32_t>(produced));
+    }
+
+    return build;
+}
+
+bool meshletConeCulled(
+    const glm::vec3& center, float radius, const glm::vec3& coneAxis, float coneCutoff, const glm::vec3& viewPosition)
+{
+    // 1 is the "no usable cone" value and would otherwise be widened past 1 by
+    // the radius term below into something that rejects nothing anyway -- but
+    // taking the early out keeps that an explicit contract rather than an
+    // accident of the arithmetic.
+    if (coneCutoff >= 1.0f) {
+        return false;
+    }
+
+    const glm::vec3 toCenter = center - viewPosition;
+    const float distance = glm::length(toCenter);
+    // Inside the meshlet's own sphere there is no single view direction to test
+    // against, and the cone says nothing useful. Never reject.
+    if (!(distance > radius) || !(distance > 0.0f)) {
+        return false;
+    }
+
+    // Widened by the angle the bounding sphere subtends, so a meshlet whose
+    // cone only just faces away is kept rather than wrongly dropped.
+    return glm::dot(toCenter / distance, coneAxis) >= coneCutoff + radius / distance;
+}
 
 LodChainBuild buildLodChainDetached(std::span<const uint32_t> sourceIndices,
                                     const float* vertexPositions,

@@ -102,6 +102,21 @@ struct RendererStartupOverrides {
     // read once in the constructor, and several of them size resources it
     // allocates.
     std::optional<std::filesystem::path> settingsPath;
+
+    // Group every mesh's triangles into meshlets at load time (renderer/MeshLod.h).
+    //
+    // OFF by default, and startup-only, because meshletizing REORDERS each LOD
+    // level's triangles. That is a permutation, so the geometry is identical,
+    // but rasterization order is not: on the default scene it moves 7.45% of
+    // pixels by up to 6/255 through z-fight resolution and the exposure
+    // feedback that follows it. Nothing in the renderer consumes meshlets
+    // today -- meshlet culling was measured and rejected, see
+    // docs/mesh_lod.md -- so paying a golden re-baseline for unread data would
+    // be backwards.
+    //
+    // --meshlet-analysis turns it on, which is what makes that measurement
+    // repeatable on content this engine does not currently ship.
+    bool buildMeshlets = false;
 };
 
 class Renderer final {
@@ -169,6 +184,12 @@ public:
     // frame. Diagnostic: it stalls the device, so it runs once and never on a
     // frame anyone is timing.
     void requestVsmPagePoolDumpAt(uint64_t frameNumber, std::filesystem::path outputPath);
+    // Turns on the meshlet cull analysis (--meshlet-analysis). Reports only;
+    // nothing about the rendered frame changes.
+    void setMeshletAnalysisEnabled(bool enabled)
+    {
+        meshletAnalysisEnabled_ = enabled;
+    }
 
     // True once the requested capture has been read back and written. The
     // readback lags the recorded frame by the in-flight frame count, so a caller
@@ -554,14 +575,22 @@ private:
     // Captures this frame's view-projection and per-object model matrices as the
     // "previous frame" inputs for next frame's motion vectors.
     void capturePreviousFrameMatrices();
-    // Recomputes every active object's world AABB once per frame into
-    // frameWorldBounds_ so visibility, shadow cascades, and GPU-cull input
-    // builds share it instead of re-deriving the model matrix per use.
-    void updateFrameWorldBounds();
+    // Recomputes every active object's model matrix and world AABB once per frame
+    // into frameModelMatrices_ and frameWorldBounds_, so visibility, shadow
+    // cascades, the shadow cache keys and the GPU-cull input build share them
+    // instead of re-deriving the model matrix per use.
+    //
+    // Must run after the last writer of RenderObject::transform in the frame --
+    // today updateAnimatedTransforms, immediately above the call site.
+    void updateFrameObjectTransforms();
     // Runs body(begin, end) over [0, count): chunked across the JobSystem when
     // parallel frame prep is enabled, inline on the calling thread otherwise.
     // Callers must not nest framePrepParallelFor inside a parallel body.
     void framePrepParallelFor(size_t count, const std::function<void(size_t, size_t)>& body);
+    // As above, with an explicit minimum chunk size. For bodies whose per-index
+    // cost is large enough that the default minimum would put every index in one
+    // chunk and run the whole dispatch serially.
+    void framePrepParallelFor(size_t count, size_t minChunkSize, const std::function<void(size_t, size_t)>& body);
     // updateFrameData() helpers (see Renderer.cpp); each is a verbatim slice of the
     // former monolithic function, kept private and behaviour-preserving.
     void resetFrameStateForEmptyScene(uint32_t frameIndex);
@@ -569,6 +598,13 @@ private:
     void resetGpuCullFrameCounters(uint32_t frameIndex);
     void buildShadowFrameData(uint32_t frameIndex);
     void buildMainCullingFrameData(uint32_t frameIndex, const renderer::Frustum& cameraFrustum);
+    // Measures what a meshlet cull pass would remove, without changing the
+    // frame. See the definition for why the premise is tested before the pass
+    // is built.
+    void analyzeMeshletCulling(const renderer::Frustum& cameraFrustum);
+    // This draw item's LOD chain as (base, count) inside its own mesh's
+    // lods(), which is a different index space from the per-frame LOD table.
+    [[nodiscard]] glm::uvec2 meshLocalLodRange(const DrawItem& drawItem) const;
     void uploadObjectFrameData(uint32_t frameIndex);
     void uploadFrameConstants(uint32_t frameIndex, uint32_t cascadeCount);
     void buildDrawItems();
@@ -1324,6 +1360,13 @@ private:
     std::array<float, kCpuScopeCount> cpuScopeFrameMs_{};
     std::array<DebugHistory, kCpuScopeCount> cpuScopeHistory_{};
     std::vector<renderer::Aabb> frameWorldBounds_;
+    // This frame's model matrix per render object, built by the same loop that
+    // builds frameWorldBounds_ and valid from that point to the end of the frame.
+    // Transform::modelMatrix() composes the matrix from TRS on every call -- three
+    // sin/cos pairs and five mat4 multiplies -- and the punctual shadow cache key
+    // used to pay for one compose per (atlas slot, draw item), so up to
+    // kMaxPunctualShadowSlots x kMaxDrawItems of them in a single frame.
+    std::vector<glm::mat4> frameModelMatrices_;
     float currentExposure_ = 1.0f;
     float averageLuminance_ = 0.18f;
     float histogramClippedLuminance_ = 0.18f;
@@ -1360,13 +1403,40 @@ private:
     bool useGpuPunctualShadowCulling_ = false;
     // Debug view: outputs the punctual shadow visibility term as greyscale.
     bool showPunctualShadowDebug_ = false;
+    // What a meshlet cull pass would have removed this frame. Populated only
+    // when meshletAnalysisEnabled_; every field is a per-frame count.
+    struct MeshletAnalysis {
+        uint64_t drawItemsTested = 0;
+        uint64_t drawItemsWithoutMeshlets = 0;
+        uint64_t meshletsTotal = 0;
+        uint64_t meshletsFrustumCulled = 0;
+        uint64_t meshletsConeCulled = 0;
+        uint64_t meshletsVisible = 0;
+        uint64_t trianglesBefore = 0;
+        uint64_t trianglesAfter = 0;
+    };
+    MeshletAnalysis meshletAnalysis_{};
+    bool meshletAnalysisEnabled_ = false;
+    // Startup-only: meshes are built in the constructor, so this cannot be a
+    // post-construction toggle. See RendererStartupOverrides::buildMeshlets.
+    bool buildMeshletTables_ = false;
+
     // Point lights cost six tiles each against 64 total, so how many may cast is
     // a budget the user can see and set rather than an implicit cap.
     int maxShadowCastingPointLights_ = 4;
+    // How far a light must clear a size-class boundary before it may change tile
+    // size. Mirrors PunctualShadowSettings::assignmentHysteresis.
+    float punctualShadowAssignmentHysteresis_ = 0.0f;
     // Scratch for the ranking in renderer/PunctualShadowAtlas.h. Members so the
     // per-frame assignment does not reallocate every frame.
     std::vector<renderer::PunctualShadowCandidateInput> punctualShadowCandidates_;
     std::vector<renderer::PunctualShadowAssignment> punctualShadowAssignments_;
+    // The size class each light ended this frame holding, indexed by light index,
+    // kNoPunctualShadowSizeClass where it got no tile. Fed back into next frame's
+    // ranking as the hysteresis history, and read by the churn counters. Kept
+    // separate from punctualShadowAssignments_ because that one is rank-ordered
+    // and holds only the lights that were assigned.
+    std::vector<uint32_t> punctualShadowLightSizeClass_;
     // Per-light assignment state carried across frames, indexed by light index.
     // Light indices are stable frame to frame because updateDemoLights rebuilds
     // the swarm in a deterministic order; a scene with dynamic light lifetimes
@@ -1382,14 +1452,31 @@ private:
     // guessing at it from the image is how the last few rounds went wrong.
     uint32_t punctualShadowAssignmentChurn_ = 0;
     uint64_t punctualShadowAssignmentChurnTotal_ = 0;
+    // How many lights KEPT their shadow but changed tile size. A different
+    // artifact from the one above -- the shadow stays, its resolution steps --
+    // and counted separately for that reason. It went unmeasured entirely until
+    // 2026-09-13: PunctualShadowLightState carried a sizeClass field that nothing
+    // ever wrote, so the counter beside it looked like it covered assignment
+    // churn while covering half of it.
+    uint32_t punctualShadowSizeClassChurn_ = 0;
+    uint64_t punctualShadowSizeClassChurnTotal_ = 0;
+    // Worst ratio seen this run between an unshadowed light and the smallest
+    // shadowed one. The counterweight to assignment hysteresis: retention buys
+    // stability by letting an incumbent outrank a larger newcomer, and this is
+    // what that costs. 1.0 means the assignment still respects projected size.
+    float punctualShadowPeakRankInversion_ = 1.0f;
     // Slots filled last frame, surfaced in the debug panel.
     uint32_t punctualShadowSlotsUsed_ = 0;
     // Shadow-atlas caching. The atlas is re-rendered only when the hash of its
     // inputs moves, so a static light over static geometry costs nothing.
-    renderer::PunctualShadowCacheKey punctualShadowCacheKey_;
     // Per-slot content hash for this frame, parallel to the slot list.
     std::vector<uint64_t> punctualShadowSlotKeys_;
-    // Which slots actually need redrawing this frame.
+    // Per-slot "needs redrawing", written by the parallel key build and drained
+    // into punctualShadowDirtySlots_ in slot order afterwards. uint8_t rather
+    // than bool because std::vector<bool> packs bits, and neighbouring slots
+    // land on different threads.
+    std::vector<uint8_t> punctualShadowSlotDirty_;
+    // Which slots actually need redrawing this frame, in ascending slot order.
     std::vector<uint32_t> punctualShadowDirtySlots_;
     // What the atlas currently holds, keyed by *tile rect* rather than slot
     // index. Slot indices shift between frames as lights are reordered, but a

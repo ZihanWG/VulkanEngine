@@ -24,11 +24,22 @@ distribution, empty range, exception propagation).
 All dispatches go through `Renderer::framePrepParallelFor`, which honors the
 runtime toggle (below) and falls back to the inline path when disabled:
 
-1. **World-bounds cache** (`updateFrameWorldBounds`) — every active object's
-   world AABB is computed once per frame into `frameWorldBounds_`. Before this
-   existed, `RenderObject::worldBounds()` (a model-matrix build + 8-corner AABB
-   transform) was re-derived up to seven times per object per frame across
-   visibility, four shadow cascades, and the two GPU-cull input builds.
+1. **Object transform cache** (`updateFrameObjectTransforms`) — every active
+   object's model matrix and world AABB are computed once per frame into
+   `frameModelMatrices_` and `frameWorldBounds_`. Before the bounds half existed,
+   `RenderObject::worldBounds()` (a model-matrix build + 8-corner AABB transform)
+   was re-derived up to seven times per object per frame across visibility, four
+   shadow cascades, and the two GPU-cull input builds.
+
+   The matrix half came later, and for a larger reason: the punctual shadow cache
+   key composed one matrix per *(atlas slot, draw item)* pair rather than per
+   object, so the cost scaled with the atlas rather than the scene. The 17-scope
+   CPU profile put `updatePunctualShadowCacheState` at 30% of frame prep, three
+   times the next builder, which is what sent anyone looking here.
+
+   One consumer deliberately stays off the cache: `updateVsmResidency` runs near
+   the top of `drawFrame`, before `updateFrameData` rebuilds the array, so it
+   composes its own matrices rather than hashing the previous frame's.
 2. **Per-object frame data** (`uploadObjectFrameData`) — the heaviest loop:
    six mat4 multiplies (jittered MVP, unjittered current/previous MVP for
    motion vectors, four cascade light MVPs) plus material lookups per draw

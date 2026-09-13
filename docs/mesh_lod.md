@@ -236,3 +236,123 @@ stream was still buffered when verification read the file.
   draws to preserve back-to-front sort order (see
   [docs/transparency.md](transparency.md)), so they never pass through the cull
   shader and always render level 0.
+
+## Meshlets, and why meshlet culling was rejected
+
+Geometry can also be grouped into **meshlets** — clusters of at most 64 vertices
+and 124 triangles, each with a bounding sphere and a normal cone. `buildMeshlets`
+(`renderer/MeshLod.{h,cpp}`) builds them, and `--meshlet-analysis` reports what
+culling them would remove. Nothing in the renderer culls them, and the default
+build does not even construct them. This section is why.
+
+### The shape it would have taken
+
+Meshlets here are **contiguous ranges of the existing index buffer**, exactly like
+LOD levels. `meshopt_buildMeshlets` natively emits meshlet-local vertex and
+micro-index arrays, which would need either a second index buffer or a mesh-shader
+path to draw; instead the builder *reorders* each level's triangles so a meshlet
+is a `(firstIndex, indexCount)` pair. A surviving meshlet would then become an
+ordinary `VkDrawIndexedIndirectCommand` and the existing indirect draw path would
+not change at all.
+
+That reordering is a permutation of each level's triangles — the level's own range
+never moves, so every primitive and LOD record stays valid. It is safe for the same
+reason `meshopt_optimizeVertexCache` already is: opaque geometry is depth-resolved,
+and transparency is sorted per object rather than per triangle.
+
+### The measurement that stopped it
+
+`--meshlet-analysis` runs the cull that a GPU pass would run — object frustum test
+first, so it only ever counts meshlets the existing pass would have kept — and
+reports what it would remove. Over 400 deterministic frames per scene:
+
+| scene | draw items | meshlets | triangles removed | indirect commands |
+| --- | --- | --- | --- | --- |
+| `stress` | 1334 | 3323 | **0.055%** | 1334 → 3321 |
+| `default` | 11 | 100 | 19.0% | 11 → 82 |
+| `sunlit` | 8 | 34 | 8.5% | 8 → 32 |
+| `occlusion` | 126 | 126 | 0% | 126 → 126 |
+| `fragment-stress` | 9 | 9 | 0% | 9 → 9 |
+| `cornell` | 7 | 7 | 0% | 7 → 7 |
+
+On `stress` — the only scene here with geometry worth culling — meshlet culling
+removes **0.055% of triangles while multiplying the indirect command count by
+2.5**. The scenes that show a double-digit percentage are the ones with eleven
+draw items, where the absolute saving is a few thousand triangles.
+
+### Why it finds so little: LOD already took it
+
+The obvious suspicion is that the meshlets are poor. They are not. Forcing every
+draw item to level 0 on the same scene and camera:
+
+| `--scene stress` | triangles drawn | meshlets | removed by meshlet cull |
+| --- | --- | --- | --- |
+| LOD as shipped | 190,377 | 3,323 | 0.055% |
+| `lod.forcedLod = 0` | 1,471,956 | 17,909 | **23.5%** |
+
+The cone culling works — it finds 23.5% when there is dense geometry in front of
+it. But **LOD selection and meshlet cone culling compete for the same win, and LOD
+gets there first**: it already cut 1,471,956 triangles to 190,377, an 87%
+reduction, and meshlet culling then finds 0.055% of the remainder. LOD is 7.7x
+more effective on this content, it costs one `selectLodIndex` per draw item inside
+a dispatch that already exists, and it needs no second cull stage, no per-meshlet
+command budget and no counter readback.
+
+There is a second, quieter reason the leftover is so small. At the levels this
+content actually selects, a whole sphere is down to a handful of meshlets, so each
+meshlet spans most of the object and its normal cone is too wide to reject
+anything — `meshopt` reports a cutoff of 1, the "never reject" value. Meshlet
+culling wants many small clusters on a large, dense, near object. LOD's entire job
+is to make sure no such object is ever submitted.
+
+### What would flip this
+
+Content with large contiguous meshes that stay near the camera — Sponza is the
+obvious one, and `-DVULKAN_ENGINE_FETCH_SAMPLE_SCENE=ON` fetches it. A single mesh
+spanning the screen cannot be LOD'd away, so the leftover after LOD would be much
+larger than 0.055%. The analysis is kept, and the builder with it, so that
+measurement is a command-line flag rather than a re-implementation.
+
+The capacity ceiling would also have to move first: `stress` at level 0 wants
+13,931 indirect commands against a `kMaxDrawItems` of 8192, so a meshlet path needs
+its own budget with over-cap geometry **counted rather than dropped**, the way
+`FrameCapacityBudget` already does for draw items.
+
+### What is shipped
+
+- `buildMeshlets` and `meshletConeCulled`, GPU-free and unit-tested, including the
+  invariant that meshletizing is a permutation of each level's triangles.
+- `--meshlet-analysis`, which turns on meshlet construction and the reporting.
+
+Meshlet construction is **off by default** and startup-only, because the triangle
+reorder changes rasterization order: on the default scene it moves 7.45% of pixels
+by up to 6/255 through z-fight resolution and the exposure feedback that follows.
+That is not a bug, but it is a golden re-baseline, and paying one for data no shader
+reads would be backwards. `MeshLod` stays 8 bytes for the same reason — the meshlet
+ranges come back from `buildMeshlets` beside the table rather than inside the struct
+that gets uploaded to the GPU every frame.
+
+### A measurement trap found on the way
+
+The first attempt to price the `MeshLod` widening reported a **10.7% frame-time
+regression**, isolated to the stride change, reproducible at 0.43% control drift.
+It was an artifact, and the mechanism is worth knowing because it will catch
+anything that A/Bs two binaries built from this tree.
+
+`build/<config>/shaders/*.spv` is **shared**. Building binary B recompiles the
+shaders in place, so a later run of binary A loads *B's* shaders. When the two
+differ in a GPU/CPU mirrored struct, the older binary reads the LOD table at the
+wrong stride and draws different geometry — faster or slower, but not the thing
+being measured.
+
+The tell is that the same binary read 1.272 ms in one session and 1.406 ms in
+another. Running each binary against the shaders it was built with, every
+configuration reads **1.406 ms** and the stride costs nothing:
+
+| binary | with its own shaders | with the other's |
+| --- | --- | --- |
+| 8-byte `MeshLod` | 1.406 ms | 1.272 ms |
+| 16-byte `MeshLod` | 1.407 ms | 1.689 ms |
+
+Rebuild the shaders for whichever binary is about to run, or give each side its own
+build tree.

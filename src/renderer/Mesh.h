@@ -35,12 +35,18 @@ public:
     Mesh(Mesh&&) noexcept = default;
     Mesh& operator=(Mesh&&) noexcept = default;
 
-    [[nodiscard]] static Mesh createCube(rhi::VulkanContext& context, const rhi::VulkanCommandContext& commandContext);
+    // See RendererStartupOverrides::buildMeshlets for why meshletizing is
+    // opt-in: it reorders triangles inside each LOD level, which is a
+    // permutation of the geometry but not of the rasterization order.
+    [[nodiscard]] static Mesh createCube(rhi::VulkanContext& context,
+                                         const rhi::VulkanCommandContext& commandContext,
+                                         bool buildMeshletTable = false);
 
     [[nodiscard]] static Mesh createUvSphere(rhi::VulkanContext& context,
                                              const rhi::VulkanCommandContext& commandContext,
                                              uint32_t segments = 48,
-                                             uint32_t rings = 24);
+                                             uint32_t rings = 24,
+                                             bool buildMeshletTable = false);
 
     // `jobSystem` parallelises LOD chain construction, which is the dominant cost
     // of importing a real scene -- 87% of Sponza's import time is
@@ -57,7 +63,8 @@ public:
     [[nodiscard]] static LoadedGltfAsset createFromGltf(rhi::VulkanContext& context,
                                                         const rhi::VulkanCommandContext& commandContext,
                                                         const std::filesystem::path& path,
-                                                        JobSystem* jobSystem = nullptr);
+                                                        JobSystem* jobSystem = nullptr,
+                                                        bool buildMeshletTable = false);
 
     // Uploads already-built geometry. This is the only Vulkan step in glTF
     // import, which is what lets the rest of it run offline or on a worker --
@@ -96,6 +103,20 @@ public:
     {
         return lods_;
     }
+
+    // Every level's meshlets. Empty when the mesh was not meshletized.
+    [[nodiscard]] std::span<const Meshlet> meshlets() const
+    {
+        return meshlets_;
+    }
+
+    // Which meshlets each LOD level owns, as (base, count) parallel to lods().
+    // Kept here rather than inside MeshLod because MeshLod is uploaded verbatim
+    // into the per-frame GPU table, and no shader reads a meshlet.
+    [[nodiscard]] std::span<const glm::uvec2> meshletRangesPerLod() const
+    {
+        return meshletRangesPerLod_;
+    }
     [[nodiscard]] uint32_t lodBase() const
     {
         return lodBase_;
@@ -124,6 +145,8 @@ private:
     uint32_t indexCount_ = 0;
     std::vector<MeshPrimitive> subMeshes_;
     std::vector<MeshLod> lods_;
+    std::vector<Meshlet> meshlets_;
+    std::vector<glm::uvec2> meshletRangesPerLod_;
     // LOD range for the whole-mesh path; unused when subMeshes_ is populated.
     uint32_t lodBase_ = 0;
     uint32_t lodCount_ = 0;
