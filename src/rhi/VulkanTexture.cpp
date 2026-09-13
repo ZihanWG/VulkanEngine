@@ -1011,10 +1011,20 @@ void VulkanTexture::createSampler()
     samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 
-    // Anisotropy requires enabling the samplerAnisotropy device feature. This milestone
-    // keeps sampler creation minimal and leaves anisotropy disabled.
-    samplerInfo.anisotropyEnable = VK_FALSE;
-    samplerInfo.maxAnisotropy = 1.0f;
+    // Anisotropic filtering, for material textures only. A surface seen at a
+    // grazing angle has a footprint that is long in one axis and short in the
+    // other; isotropic mip selection has to take the long one or alias, so it
+    // takes the long one and the ground plane reads its blurriest mip. The
+    // device reports 1.0 when it cannot do better, which is also the value that
+    // disables the feature, so there is no separate fallback branch here.
+    //
+    // Deliberately not applied to the engine's other samplers. The depth
+    // pyramid, probe atlas, fog volume, BRDF LUT and shadow maps sample data
+    // rather than images, and filtering their texels along a screen-space
+    // footprint would be wrong rather than merely wasteful.
+    const float maxAnisotropy = context_->device().maxSamplerAnisotropy();
+    samplerInfo.anisotropyEnable = maxAnisotropy > 1.0f ? VK_TRUE : VK_FALSE;
+    samplerInfo.maxAnisotropy = maxAnisotropy;
 
     samplerInfo.compareEnable = VK_FALSE;
     samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;

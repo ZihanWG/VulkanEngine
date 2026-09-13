@@ -67,6 +67,12 @@ struct DeviceExtensionPlan {
     std::vector<ExtensionOutcome> optionalOutcomes;
 };
 
+// The anisotropy ratio material samplers ask for, before the device limit is
+// applied. 16x is where the quality curve flattens and is the minimum a device
+// supporting the feature must offer, so a larger request would only be portable
+// by accident.
+constexpr float kMaxSamplerAnisotropy = 16.0f;
+
 DeviceExtensionPlan planDeviceExtensions(VkPhysicalDevice physicalDevice)
 {
     DeviceExtensionPlan plan{};
@@ -176,6 +182,8 @@ void VulkanDevice::cleanup()
     drawIndirectFirstInstanceEnabled_ = false;
     multiviewEnabled_ = false;
     independentBlendEnabled_ = false;
+    samplerAnisotropyEnabled_ = false;
+    maxSamplerAnisotropy_ = 1.0f;
     drawIndexedIndirectCountAvailable_ = false;
     maxDrawIndirectCount_ = 0;
 }
@@ -375,10 +383,17 @@ void VulkanDevice::createLogicalDevice()
     // renderer falls back to one pass per cascade, which is what it always did.
     multiviewEnabled_ = supported11.multiview == VK_TRUE;
 
+    // Anisotropic filtering for material textures. Optional in Vulkan, and off
+    // for this renderer's whole life because Milestone 9 kept sampler creation
+    // minimal and never came back to it -- a ground plane at a grazing angle has
+    // been reading its blurriest mip since then.
+    samplerAnisotropyEnabled_ = supportedFeatures.features.samplerAnisotropy == VK_TRUE;
+
     VkPhysicalDeviceFeatures enabledCore{};
     enabledCore.multiDrawIndirect = multiDrawIndirectEnabled_ ? VK_TRUE : VK_FALSE;
     enabledCore.drawIndirectFirstInstance = drawIndirectFirstInstanceEnabled_ ? VK_TRUE : VK_FALSE;
     enabledCore.independentBlend = independentBlendEnabled_ ? VK_TRUE : VK_FALSE;
+    enabledCore.samplerAnisotropy = samplerAnisotropyEnabled_ ? VK_TRUE : VK_FALSE;
 
     VkPhysicalDeviceVulkan13Features enabled13{};
     enabled13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
@@ -457,6 +472,12 @@ void VulkanDevice::createLogicalDevice()
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
     maxDrawIndirectCount_ = properties.limits.maxDrawIndirectCount;
+    // 16x is the conventional ceiling and the minimum the spec guarantees when
+    // the feature is supported, so asking for more buys nothing portable. The
+    // device limit still wins, because exceeding it is a validation error rather
+    // than a silently clamped request.
+    maxSamplerAnisotropy_ =
+        samplerAnisotropyEnabled_ ? std::min(properties.limits.maxSamplerAnisotropy, kMaxSamplerAnisotropy) : 1.0f;
     drawIndexedIndirectCountAvailable_ = supported12.drawIndirectCount == VK_TRUE &&
                                          vkCmdDrawIndexedIndirectCount != nullptr && maxDrawIndirectCount_ > 0;
 
@@ -501,6 +522,11 @@ void VulkanDevice::logCapabilityReport(std::span<const ExtensionOutcome> optiona
                     independentBlendEnabled_,
                     independentBlendEnabled_ ? "per-attachment blend state"
                                              : "falling back to uniform blend state across attachments"});
+    rows.push_back({"anisotropic filtering",
+                    samplerAnisotropyEnabled_,
+                    samplerAnisotropyEnabled_
+                        ? std::to_string(static_cast<int>(maxSamplerAnisotropy_)) + "x on material samplers"
+                        : "falling back to trilinear on material samplers"});
     rows.push_back({"async compute queue",
                     asyncComputeAvailable_,
                     asyncComputeAvailable_ ? (asyncComputeDedicatedFamily_ ? "dedicated compute-only family "
