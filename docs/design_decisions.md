@@ -665,6 +665,54 @@ blended casters, re-measure, and then revisit the `gpuCasterCulling` default.
 Parallel recording only becomes the right lever after that, because only then is
 the remaining recording cost spread widely enough for threading to reach it.
 
+## A depth prepass cannot be evaluated on this tree, and the missing piece is a scene
+
+**Status: not built, and not because it was measured and rejected -- because
+there is nothing here to measure it against.** Recorded so the next attempt
+spends its effort on the prerequisite rather than on the pass.
+
+**The question.** This renderer has no depth prepass -- `vsm_page_mark.comp`
+says so outright, and `docs/gtao.md` names one as the fix for GTAO's one-frame
+occlusion lag. Opaque draw items are sorted by bucket and pipeline so
+multi-draw-indirect can batch them, not front to back; only the transparent
+range is depth-sorted. On a tiler that cost nothing, because hidden-surface
+removal discards the occluded fragments before the fragment shader. On Ampere
+there is no such hardware, `MainHDRPass` is the dominant pass, and overdraw is
+paid in full -- which is the same argument that made back-face culling worth
+-37.4% here after being rejected on the M3.
+
+**Why it stops there.** A depth prepass buys exactly the shading of fragments
+that are later overdrawn, and costs a second submission of all opaque geometry.
+Its value is therefore a function of one number -- the scene's depth complexity
+-- and this repository's scene inventory has no value of that number worth
+optimising for:
+
+| preset | depth complexity | what it is |
+| --- | --- | --- |
+| `default` | ~1 | 11 draw items on an open platform |
+| `stress` | ~1 | 2311 small objects; `SceneBuilder.h` notes it runs *faster* than `default` because its objects are small on screen |
+| `occlusion` | ~1 | object-level occlusion behind 5 walls, which two-phase Hi-Z already removes before rasterization |
+| `fragment-stress` | **6** | six full-frame slabs, "every pixel is shaded several times over" |
+| `gpu-stress` | **24** | the same shape turned up; "layers are overdraw, so they multiply fragment work" |
+
+The two scenes with real depth complexity have it **by construction**, and
+`SceneBuilder.h` is explicit that `gpu-stress` "exists for the measurement
+problem rather than for the renderer". Measuring a depth prepass there would
+measure how the scene was built. It would report an enormous win and mean
+nothing about content.
+
+**The prerequisite is a scene, not a pass.** Sponza is the one asset here with
+realistic depth complexity, and it is not fetched --
+`VULKAN_ENGINE_FETCH_SAMPLE_SCENE` is OFF and nothing under `assets/models/`
+carries it. Fetch it, cook it, measure its depth complexity, and the question
+becomes answerable; until then a prepass would be built against a number nobody
+has.
+
+That also settles the order. The prepass is worth *more* than its own frame time
+if it lands -- it is what would remove GTAO's one-frame lag, and it would give
+VSM page marking a this-frame depth source instead of the previous frame's Hi-Z
+pyramid -- but none of that is a reason to build it before knowing what it saves.
+
 ## Specialization constants for the uber-shader: attempted, and the machine refused to answer
 
 **Status: not a decision. The measurement was refused twice and the machinery was
