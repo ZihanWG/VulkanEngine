@@ -142,6 +142,14 @@ public:
     {
         return maxDrawIndirectCount_;
     }
+    // The anisotropy ratio material samplers may ask for. 1.0 means the feature
+    // is unavailable and is also the value that disables it, so a caller can
+    // pass this straight into VkSamplerCreateInfo and check it against 1.0 for
+    // the enable bit rather than carrying a separate flag.
+    [[nodiscard]] float maxSamplerAnisotropy() const
+    {
+        return maxSamplerAnisotropy_;
+    }
 
     [[nodiscard]] SwapchainSupportDetails querySwapchainSupport() const;
 
@@ -189,6 +197,8 @@ private:
     bool multiviewEnabled_ = false;
     bool drawIndexedIndirectCountAvailable_ = false;
     uint32_t maxDrawIndirectCount_ = 0;
+    bool samplerAnisotropyEnabled_ = false;
+    float maxSamplerAnisotropy_ = 1.0f;
 };
 
 } // namespace ve::rhi

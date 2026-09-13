@@ -15,6 +15,29 @@ option(VULKAN_ENGINE_FETCH_DEPS "Fetch missing third-party dependencies with Fet
 option(VULKAN_ENGINE_BUILD_MACOS_BUNDLE "Build VulkanEngine as a macOS .app bundle" OFF)
 option(VULKAN_ENGINE_BUILD_TESTS "Build unit tests for GPU-independent engine logic" ON)
 option(VULKAN_ENGINE_ENABLE_SANITIZERS "Build with AddressSanitizer + UndefinedBehaviorSanitizer (GCC/Clang)" OFF)
+option(VULKAN_ENGINE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors (CI opts in; local builds do not)" OFF)
+
+# Every first-party target takes the same warning policy, so it is written once
+# here rather than repeated at each target. Vendored imgui and bc7enc are
+# deliberately excluded -- see the notes at their targets.
+#
+# Warnings-as-errors is a CI switch rather than a default. A warning surfacing
+# mid-edit should not stop a local build; a warning reaching main should not be
+# possible. Off by default keeps `cmake --preset debug` usable and makes the gate
+# something a job turns on deliberately.
+function(ve_set_warning_options target)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4 /permissive- /EHsc /utf-8)
+        if(VULKAN_ENGINE_WARNINGS_AS_ERRORS)
+            target_compile_options(${target} PRIVATE /WX)
+        endif()
+    else()
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+        if(VULKAN_ENGINE_WARNINGS_AS_ERRORS)
+            target_compile_options(${target} PRIVATE -Werror)
+        endif()
+    endif()
+endfunction()
 
 if(VULKAN_ENGINE_BUILD_MACOS_BUNDLE AND NOT APPLE)
     message(WARNING "VULKAN_ENGINE_BUILD_MACOS_BUNDLE is only supported on Apple platforms; building a normal executable.")
@@ -270,11 +293,7 @@ target_compile_definitions(VulkanEngineCore PUBLIC
     GLM_FORCE_DEPTH_ZERO_TO_ONE
 )
 
-if(MSVC)
-    target_compile_options(VulkanEngineCore PRIVATE /W4 /permissive- /EHsc /utf-8)
-else()
-    target_compile_options(VulkanEngineCore PRIVATE -Wall -Wextra -Wpedantic)
-endif()
+ve_set_warning_options(VulkanEngineCore)
 
 # The renderer/rhi/core engine code is built as a static library so that both the
 # VulkanEngine executable and the unit-test target can link it. Linking is
@@ -352,11 +371,7 @@ add_executable(compare_images
 target_link_libraries(compare_images PRIVATE VulkanEngineCore)
 target_include_directories(compare_images SYSTEM PRIVATE external)
 
-if(MSVC)
-    target_compile_options(compare_images PRIVATE /W4 /permissive- /EHsc /utf-8)
-else()
-    target_compile_options(compare_images PRIVATE -Wall -Wextra -Wpedantic)
-endif()
+ve_set_warning_options(compare_images)
 
 # Offline texture cook (docs/asset_system.md). Links VulkanEngineCore for the cook
 # policy and the KTX2 container, plus the vendored encoder. Deliberately no
@@ -368,11 +383,7 @@ add_executable(vecook
 target_link_libraries(vecook PRIVATE VulkanEngineCore bc7enc)
 target_include_directories(vecook SYSTEM PRIVATE external)
 
-if(MSVC)
-    target_compile_options(vecook PRIVATE /W4 /permissive- /EHsc /utf-8)
-else()
-    target_compile_options(vecook PRIVATE -Wall -Wextra -Wpedantic)
-endif()
+ve_set_warning_options(vecook)
 
 # Offline mesh cook (docs/mesh_lod.md). Like vecook it links VulkanEngineCore
 # alone: parse, vertex assembly and LOD construction all live in Core precisely so
@@ -382,11 +393,7 @@ add_executable(vemeshcook
 )
 target_link_libraries(vemeshcook PRIVATE VulkanEngineCore)
 
-if(MSVC)
-    target_compile_options(vemeshcook PRIVATE /W4 /permissive- /EHsc /utf-8)
-else()
-    target_compile_options(vemeshcook PRIVATE -Wall -Wextra -Wpedantic)
-endif()
+ve_set_warning_options(vemeshcook)
 
 if(APPLE AND VULKAN_ENGINE_BUILD_MACOS_BUNDLE)
     set_target_properties(VulkanEngine PROPERTIES
@@ -435,13 +442,8 @@ target_compile_definitions(VulkanEngineRuntime PRIVATE
 
 target_link_libraries(VulkanEngine PRIVATE VulkanEngineRuntime)
 
-if(MSVC)
-    target_compile_options(VulkanEngineRuntime PRIVATE /W4 /permissive- /EHsc /utf-8)
-    target_compile_options(VulkanEngine PRIVATE /W4 /permissive- /EHsc /utf-8)
-else()
-    target_compile_options(VulkanEngineRuntime PRIVATE -Wall -Wextra -Wpedantic)
-    target_compile_options(VulkanEngine PRIVATE -Wall -Wextra -Wpedantic)
-endif()
+ve_set_warning_options(VulkanEngineRuntime)
+ve_set_warning_options(VulkanEngine)
 
 set(SHADER_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders")
 set(SHADER_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")

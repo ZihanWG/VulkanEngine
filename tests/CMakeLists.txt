@@ -87,11 +87,7 @@ target_link_libraries(VulkanEngineTests PRIVATE
     Catch2::Catch2WithMain
 )
 
-if(MSVC)
-    target_compile_options(VulkanEngineTests PRIVATE /W4 /permissive- /EHsc /utf-8)
-else()
-    target_compile_options(VulkanEngineTests PRIVATE -Wall -Wextra -Wpedantic)
-endif()
+ve_set_warning_options(VulkanEngineTests)
 
 # Register every TEST_CASE with CTest so `ctest` reports them individually.
 if(DEFINED catch2_SOURCE_DIR)

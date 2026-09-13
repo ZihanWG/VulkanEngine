@@ -268,10 +268,20 @@ def coerce_like(existing: object, raw: str, key: str) -> object:
 def schema_lookup(key: str) -> object | None:
     """The value this key has in the committed example settings, or None.
 
-    The example file is what the engine itself writes out, so it carries every
-    key the current build knows. A user's config/runtime_settings.json is only
-    as new as the last time they pressed Save, and a setting added since then is
-    simply absent from it -- which is not the same thing as a typo.
+    The example file is meant to be exactly what the engine writes out, so it
+    carries every key the current build knows. That is an assumption this script
+    cannot check, and it was false for a while -- the whole ``vsm`` section plus
+    four other keys were missing, so ``--set vsm.enableShadows=...`` aborted as a
+    typo and the subsystem could not be measured through this harness at all. It
+    is now held true by "The example settings file matches what the engine
+    writes" in tests/test_runtime_settings.cpp, which diffs the committed file
+    against ``saveRuntimeSettings`` on default-constructed settings. If a key is
+    refused here and you are sure it exists, run that test before hand-editing
+    anything.
+
+    A user's config/runtime_settings.json is only as new as the last time they
+    pressed Save, and a setting added since then is simply absent from it --
+    which is not the same thing as a typo.
     """
     if not SCHEMA_PATH.exists():
         return None
