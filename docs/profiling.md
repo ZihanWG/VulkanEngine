@@ -75,6 +75,27 @@ Practical rules:
 
 The `TOP_OF_PIPE` (begin) / `BOTTOM_OF_PIPE` (end) pairing was suspected of making each scope absorb preceding in-flight work. Changing the begin marker to `BOTTOM_OF_PIPE` left the medians essentially unchanged (`MainHDRPass` 13.512 → 13.445, `Transparent` 2.452 → 2.360, `SSRTrace` 0.917 → 0.947). The pairing is not the cause; the experiment was reverted.
 
+### p10 needs more samples than the default duration gives
+
+`QUOTED_PERCENTILE` is p10 because the median got a delta's sign wrong here (see [Load knobs](#load-knobs-and-why-they-did-not-fix-the-drift-gate)). That choice has a cost the default 30-second duration does not pay for.
+
+At the default duration a run yields about 18 samples, so p10 is the second-smallest of them — which makes it a function of how many anomalously fast blocks a run happened to catch. Measured while re-taking the render-scale table, two runs of the *same* configuration with the clock pinned and no throttle active:
+
+```
+1.00a  6.76 6.81 7.09 5.95 6.76 7.13 7.17 6.79 6.78 7.39 6.86 6.82 6.77 6.76 6.86 6.09 6.81 6.72
+1.00b  6.78 6.71 7.11 6.82 6.83 7.29 7.60 6.87 6.96 6.83 6.22 6.86 6.90 6.83 6.82 6.76 6.84 6.68
+```
+
+The bodies are the same distribution — medians 6.801 and 6.829, 0.4% apart. But `1.00a` caught two low outliers and `1.00b` one, so p10 read 6.087 against 6.679 and the control-drift gate refused the series at **9.7%**. `MainHDRPass` in the same two runs drifted 0.16%, because its distribution has no such tail.
+
+It was not a bimodality worth finding: the low blocks are not frames missing a pass. `DepthPyramid` and `DepthPyramidMid` are absent from *every* block of both runs, the occlusion-yield controller having suspended the pyramid for the whole run on a scene that culls nothing.
+
+Raising the duration to 75 seconds — 63 samples — moved p10 onto the body and the same comparison returned **0.81%**, inside the limit, with the per-scale numbers unchanged. So:
+
+- **A refused frame-level control on a sub-1% real effect is worth diagnosing before believing.** Print the raw blocks; if the medians agree and only p10 disagrees, the gate tripped on the statistic.
+- **Do not switch statistics to rescue a series.** Raise the sample count instead. Re-reading the same data with the number that gives the answer you want is how a measurement protocol stops meaning anything.
+- Budget roughly 60+ samples when the frame total is the gate. The pass-level control is far more robust at the default and usually passes when the frame level does not.
+
 ### Which machine a number came from
 
 Most of the measured numbers in `docs/` predate this project's move from an Apple M3 through MoltenVK to an RTX 3080 Ti Laptop, and a lot of them do not say so. Two of this repository's conclusions have already failed to survive that move — back-face culling, which was measured and rejected on the tiler and is now on by default at −37.4% `MainHDRPass`, and the nested-scope rule above — so "which machine" is not bookkeeping.
