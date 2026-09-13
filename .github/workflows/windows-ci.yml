@@ -135,12 +135,22 @@ jobs:
             throw "Vulkan SDK is installed or extracted incorrectly. Missing Include\vulkan\vulkan.h, Bin\glslc.exe, or Lib\vulkan-1.lib."
           }
 
+      # VULKAN_ENGINE_WARNINGS_AS_ERRORS is on here and not in the Linux job.
+      # A full clean /W4 build of all 582 targets on MSVC 2022 emits zero
+      # warnings today, so this leg costs nothing and keeps it that way. GCC's
+      # -Wall -Wextra -Wpedantic surface has not been measured -- and cannot be
+      # from a Windows development machine -- and src/renderer/RendererInternal.h
+      # suppresses -Wunused-function/-Wunused-variable for GCC and Clang across
+      # the seven translation units that include it, so the true count there is
+      # unknown rather than zero. Turning it on for Linux is a separate change
+      # that has to start with that measurement.
       - name: Configure CMake
         shell: pwsh
         run: >
           cmake -S . -B build
           -G "Visual Studio 17 2022" -A x64
           -DVULKAN_ENGINE_FETCH_DEPS=ON
+          -DVULKAN_ENGINE_WARNINGS_AS_ERRORS=ON
           -DVulkan_INCLUDE_DIR="$env:VULKAN_SDK\Include"
           -DVulkan_LIBRARY="$env:VULKAN_SDK\Lib\vulkan-1.lib"
           -DVulkan_GLSLC_EXECUTABLE="$env:VULKAN_SDK\Bin\glslc.exe"
