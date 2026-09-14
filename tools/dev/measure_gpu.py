@@ -155,6 +155,11 @@ FRAME_TOTAL = "Frame total"
 BLOCK_START_RE = re.compile(r"^(?:\[\w+\s*\]\s+)?GPU timings:\s*$")
 SCOPE_RE = re.compile(r"^ {2,}(.+?):\s*([0-9]+(?:\.[0-9]+)?)\s*ms\s*$")
 QUERY_LIMIT_RE = re.compile(r"^ {2,}warning: timestamp query capacity was exceeded\s*$")
+# The renderer stamps the scene it actually built, and the resolution it built it
+# at, on its own unindented line (see Application::initialize). Two of the four
+# things docs/profiling.md requires every quoted timing to carry; the other two
+# are the machine and the statistic, which this report already knows.
+SCENE_RE = re.compile(r"^(?:\[\w+\s*\]\s+)?Scene:\s*(\S+)\s+at\s+(\d+x\d+)\s*$")
 
 
 class MeasureError(RuntimeError):
@@ -184,6 +189,11 @@ class Samples:
     query_limit_exceeded: bool = False
     validation_errors: list[str] = field(default_factory=list)
     effective_settings: dict = field(default_factory=dict)
+    # Every distinct "<scene> at <WxH>" seen across the runs pooled here. A set
+    # rather than one value: pooling two runs that rendered different scenes is
+    # the failure this exists to catch, so the disagreement has to survive being
+    # merged.
+    scenes: set[str] = field(default_factory=set)
 
     def add(self, other: "Samples") -> None:
         for name, values in other.scopes.items():
@@ -191,8 +201,14 @@ class Samples:
         self.block_count += other.block_count
         self.query_limit_exceeded |= other.query_limit_exceeded
         self.validation_errors.extend(other.validation_errors)
+        self.scenes |= other.scenes
         if not self.effective_settings:
             self.effective_settings = other.effective_settings
+
+    def scene_label(self) -> str:
+        if not self.scenes:
+            return "unreported"
+        return ", ".join(sorted(self.scenes))
 
     def quoted(self, scope: str) -> float | None:
         values = self.scopes.get(scope)
@@ -216,6 +232,10 @@ def parse_log(text: str, label: str, warmup_blocks: int) -> Samples:
             continue
 
         if current is None:
+            scene_match = SCENE_RE.match(line)
+            if scene_match:
+                result.scenes.add(f"{scene_match.group(1)} at {scene_match.group(2)}")
+                continue
             if "error" in line.lower() and "validation" in line.lower():
                 result.validation_errors.append(line.strip())
             continue
@@ -625,6 +645,8 @@ def format_single(samples: Samples, release_run: bool = True) -> str:
     lines = [
         f"## {samples.label}",
         "",
+        f"Scene: {samples.scene_label()}.",
+        "",
         f"{samples.block_count} samples, {QUOTED_LABEL} in ms.",
         "",
         f"| Pass | {QUOTED_LABEL} | Min | Max | Blocks |",
@@ -682,6 +704,8 @@ def format_comparison(
     scope_drift = scope_drift or {}
     lines = [
         f"## {a.label} vs {b.label}",
+        "",
+        f"Scene: {a.scene_label()}.",
         "",
         f"{QUOTED_LABEL} in ms over {a.block_count} and {b.block_count} samples. "
         "The median is not used here: see QUOTED_PERCENTILE.",
@@ -847,12 +871,45 @@ def caveats(samples: Samples, release_run: bool) -> list[str]:
     lines.extend(
         [
             "",
-            "Scene and camera are at launch defaults. Absolute numbers late in a "
-            "session run thermally inflated -- compare within a series, not across "
-            "sessions.",
+            "The camera is the scene preset's own, which is what makes separate "
+            "launches comparable. Absolute numbers late in a session run thermally "
+            "inflated -- compare within a series, not across sessions.",
         ]
     )
+    if not samples.scenes:
+        lines.extend(
+            [
+                "",
+                "**The run reported no scene.** A binary older than the scene stamp "
+                "cannot say what it rendered, so this report carries no scene and "
+                "the numbers cannot be filed against one. Rebuild before quoting.",
+            ]
+        )
     return lines
+
+
+def scene_mismatch_error(scenes: set[str]) -> str | None:
+    """Reject a series whose runs did not all render the same scene.
+
+    Every run has to agree, or the deltas are a comparison of two workloads
+    rather than of two configurations -- and no other column in the report would
+    show it. The drift gate cannot: it compares the control against itself, so
+    two configurations rendering two different scenes can both be perfectly
+    stable and still be uncomparable.
+
+    An empty set is not a mismatch. It means the binary predates the scene stamp,
+    which is reported as a caveat instead -- refusing there would break every
+    series run against an older build for a reason that is not about the numbers.
+    """
+    if len(scenes) <= 1:
+        return None
+    return (
+        "the runs in this series did not render the same scene: "
+        + ", ".join(sorted(scenes))
+        + ". --args is applied to both sides identically, so this means one side was "
+        "launched differently, or a binary or its settings changed underneath the "
+        "series. Nothing in the comparison is meaningful; rerun."
+    )
 
 
 def ordered_scopes(scopes: dict[str, list[float]]) -> list[str]:
@@ -883,6 +940,10 @@ def samples_to_json(samples: Samples) -> dict:
         "label": samples.label,
         "sample_count": samples.block_count,
         "query_limit_exceeded": samples.query_limit_exceeded,
+        # Two of the four stamps docs/profiling.md requires. Recorded per run as
+        # well as once per series, so a summary.json read on its own says what was
+        # measured rather than requiring the log beside it.
+        "scene": sorted(samples.scenes),
         "statistic": QUOTED_LABEL,
         "p10_ms": {
             name: round(quoted_value(values), 4) for name, values in samples.scopes.items()
@@ -949,6 +1010,11 @@ def cmd_ab(args: argparse.Namespace) -> int:
             drift = abs(repeated - baseline) / baseline
         scope_drift = scope_control_drift(first_a, last_a)
 
+    scenes = pooled_a.scenes | pooled_b.scenes
+    mismatch = scene_mismatch_error(scenes)
+    if mismatch:
+        raise MeasureError(mismatch)
+
     print()
     print(format_comparison(pooled_a, pooled_b, drift, scope_drift))
     summary = write_summary(
@@ -956,6 +1022,7 @@ def cmd_ab(args: argparse.Namespace) -> int:
         {
             "mode": "ab",
             "repeat": args.repeat,
+            "scene": sorted(scenes),
             "control_drift": drift,
             "control_drift_limit": CONTROL_DRIFT_LIMIT,
             "scope_control_drift_ms": {k: round(v, 4) for k, v in sorted(scope_drift.items())},

@@ -125,6 +125,22 @@ void Application::initialize()
             throw SceneLoadError(sceneStatus);
         }
     }
+    // The scene stamp, for whatever reads this log afterwards.
+    //
+    // docs/profiling.md's rule is that every quoted timing carries hardware,
+    // scene, resolution and statistic, and until now the scene was the one of the
+    // four that a log could not be asked for: tools/dev/measure_gpu.py passes
+    // --scene through to both sides of an A/B and then had no way to confirm it
+    // arrived. Emitted after the preset has actually been built, so it reports
+    // what is on screen rather than what was requested.
+    //
+    // Its own line, NOT inside the "GPU timings:" block -- everything
+    // two-space-indented in there is parsed as a GPU scope. Resolution rides
+    // along because it is the other half of a comparison that two runs can
+    // silently disagree about.
+    Logger::info("Scene: " + std::string(scenePresetName(config_.scene)) + " at " + std::to_string(config_.width) +
+                 "x" + std::to_string(config_.height));
+
     // Independent of --capture-frame: the analysis reports into the log every
     // second and has nothing to do with capturing a frame.
     renderer_->setMeshletAnalysisEnabled(config_.meshletAnalysis);
