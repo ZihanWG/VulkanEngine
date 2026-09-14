@@ -509,7 +509,7 @@ void Renderer::createMainGraphicsPipeline()
     // trouble that causes). Switching only with the prepass keeps the feature
     // inert when it is off, which is what makes the A/B a measurement of the
     // prepass rather than of a tie-break rule.
-    pipelineInfo.depthCompareOp = useDepthPrepass_ ? VK_COMPARE_OP_LESS_OR_EQUAL : VK_COMPARE_OP_LESS;
+    pipelineInfo.depthCompareOp = isDepthPrepassSupported() ? VK_COMPARE_OP_LESS_OR_EQUAL : VK_COMPARE_OP_LESS;
 
     pipelineInfo.pipelineCache = context_.pipelineCache();
     pipeline_ = pipelineStore_.get(context_.vkDevice(), pipelineInfo, "MainGraphicsPipeline");
@@ -532,9 +532,11 @@ void Renderer::createDepthPrepassPipelines()
     depthPrepassDoubleSidedPipeline_.reset();
     maskedDepthPrepassPipeline_.reset();
     maskedDepthPrepassDoubleSidedPipeline_.reset();
-    if (!useDepthPrepass_) {
-        // Not built when off, so the feature costs nothing it does not use --
-        // including two pipeline compilations at startup.
+    if (!isDepthPrepassSupported()) {
+        // Not built when off or unsupported, so the feature costs nothing it
+        // does not use -- including two pipeline compilations at startup. The
+        // same predicate decides the main pipeline's compare op, so the two
+        // cannot end up disagreeing about whether a prepass exists.
         return;
     }
 

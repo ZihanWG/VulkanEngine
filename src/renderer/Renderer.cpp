@@ -2844,6 +2844,11 @@ bool Renderer::isMainPassMultiDrawIndirectActive() const
            context_.device().drawIndirectFirstInstanceEnabled();
 }
 
+bool Renderer::isDepthPrepassSupported() const
+{
+    return useDepthPrepass_ && isMainPassMultiDrawIndirectActive();
+}
+
 bool Renderer::isMainPassIndirectCountSupported() const
 {
     return isGpuCullingActive() && isMainPassMultiDrawIndirectActive() &&
