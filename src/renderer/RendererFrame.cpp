@@ -2158,14 +2158,20 @@ void Renderer::buildMainCullingFrameData(uint32_t frameIndex, const renderer::Fr
         // batch regions; without it, phase 2 rewrites the fixed per-item slots.
         frameTwoPhaseOcclusionActive_ =
             useTwoPhaseOcclusion_ && isMainPassMultiDrawIndirectActive() && isGpuOcclusionCullingActive();
-        // Same requirement as two-phase occlusion, for the same reason: the
-        // prepass replays the compacted per-batch indirect commands, which only
-        // the multi-draw path produces. It also needs opaque geometry to replay
-        // -- declaring the pass for an empty bucket would model a pass that
-        // records no draws.
-        frameDepthPrepassActive_ = useDepthPrepass_ && isMainPassMultiDrawIndirectActive() &&
-                                   depthPrepassPipeline_.pipeline() != VK_NULL_HANDLE &&
-                                   frameVisibleBucketRanges_[static_cast<size_t>(RenderBucket::Opaque)].count() > 0;
+        // isDepthPrepassSupported() carries the setting and the multi-draw
+        // indirect requirement, and is the same predicate the main pipeline's
+        // depth compare op is baked from. What is left here is per-frame: a
+        // pipeline, and something to replay -- declaring the pass for an empty
+        // bucket would model a pass that records no draws.
+        //
+        // Masked counts as something to replay. It is prepassed through the
+        // alpha-tested variant when the bindless heap exists, so a frame that is
+        // all foliage and no opaque geometry still has work for this pass.
+        const uint32_t prepassableDrawItems =
+            frameVisibleBucketRanges_[static_cast<size_t>(RenderBucket::Opaque)].count() +
+            frameVisibleBucketRanges_[static_cast<size_t>(RenderBucket::Mask)].count();
+        frameDepthPrepassActive_ =
+            isDepthPrepassSupported() && depthPrepassPipeline_.pipeline() != VK_NULL_HANDLE && prepassableDrawItems > 0;
         updateGpuCullInputBuffer(frameIndex);
     } else {
         frameTwoPhaseOcclusionActive_ = false;

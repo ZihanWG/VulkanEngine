@@ -231,7 +231,8 @@ do with content.
 
 ### `DepthPrepass`
 
-Present only when `renderer.enableDepthPrepass` is on, which is off by default.
+Present unless `renderer.enableDepthPrepass` is turned off, and it is **on** by
+default.
 It replays the opaque and masked buckets depth-only ahead of `MainHDRPass` so
 early-Z rejects fragments that pass would otherwise shade and overwrite. On
 `--scene sponza` it costs **0.071 ms** and takes **1.221 ms** off `MainHDRPass`;
@@ -239,11 +240,17 @@ see `design_decisions.md` for the full A/B and for why a 0.071 ms pass was
 predicted to cost 2.9.
 
 It is a runtime setting rather than a build flag precisely so this harness can
-A/B it inside one binary:
+A/B it inside one binary. **Set B to `false`**: A is the unchanged persisted
+configuration, which now has the prepass on, so asking for `=true` on the B side
+compares a configuration against itself and reports a null result as though it
+were a measurement.
 
 ```bash
-python3 tools/dev/measure_gpu.py ab --repeat 2 --duration 75 --b-set renderer.enableDepthPrepass=true --args --scene sponza --deterministic
+python3 tools/dev/measure_gpu.py ab --repeat 2 --duration 75 --b-set renderer.enableDepthPrepass=false --args --scene sponza --deterministic
 ```
+
+The delta then reads with the sign flipped from the table in
+`design_decisions.md`, which quotes off-to-on: B is the slower side here.
 
 ### Take medians, not single frames
 

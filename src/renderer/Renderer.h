@@ -503,6 +503,19 @@ private:
     void createShadowPipeline();
     // Depth-only pipelines for the opaque prepass. No fragment shader and no
     // colour attachment: the pass exists to populate depth, nothing else.
+    // Everything the depth prepass needs that does NOT change per frame: the
+    // setting, and the multi-draw indirect path it replays the main pass's
+    // compacted commands through.
+    //
+    // The main pipeline's depth compare op is baked from this, so it must stay
+    // free of per-frame state -- a pipeline cannot follow a predicate that moves
+    // between frames. That is also why it exists as one function rather than two
+    // conditions: the pipeline and the per-frame decision disagreeing is exactly
+    // the bug it prevents. A device without the indirect path would otherwise
+    // compile LESS_OR_EQUAL into the main pipeline, changing how coplanar
+    // surfaces resolve, while never being able to run the prepass that pays for
+    // it.
+    [[nodiscard]] bool isDepthPrepassSupported() const;
     void createDepthPrepassPipelines();
     void createMaskedDepthPrepassPipeline(const VkVertexInputBindingDescription& binding,
                                           const std::array<VkVertexInputAttributeDescription, 5>& attributes);
