@@ -5,7 +5,7 @@
 # has to be accompanied by the matching C++ descriptor or push-constant
 # change, which is the pairing this file exists to make visible.
 #
-# 42 modules.
+# 44 modules.
 
 bloom_blur.frag
   push_constant pc : BloomBlurPushConstants{texelSize:vec2@0, horizontal:uint@8, padding:uint@12, sourceUvScale:vec2@16}
@@ -45,6 +45,12 @@ cull.comp
   set=0 binding=4   ssbos        CullFrameParamsBuffer : CullFrameParamsBuffer{occlusionViewProjection:mat4@0, occlusionViewProjectionPhase2:mat4@64, cameraPosition:vec4@128, viewportAndMipCount:vec4@144, occlusionSettings:vec4@160, lodSettings:vec4@176, counterAndFlags:uvec4@192, pyramidBaseSizes:uvec4@208, shadowCascadePlanes[24]:vec4@224}
   set=0 binding=5   ssbos        PhaseResultBuffer : PhaseResultBuffer{results[0]:uint@0}
   set=0 binding=6   ssbos        MeshLodBuffer : MeshLodBuffer{lods[0]:MeshLod{firstIndex:uint@0, indexCount:uint@4}@0}
+
+depth_prepass.vert
+  push_constant pc : PushConstants{objectFrameData:ObjectFrameDataBuffer{objects[0]:ObjectFrameData{model:mat4@0, baseColorFactor:vec4@64, materialParams:vec4@80, textureIndices:uvec4@96, emissiveFactor:vec4@112, prevMvpNoJitter:mat4@128}@0}*@0, cascadeIndex:uint@8, frameConstants:FrameConstantsBuffer{values:FrameConstants{cascadeViewProjection[4]:mat4@0, jitteredViewProjection:mat4@256, viewProjection:mat4@320, lightDirection:vec4@384, lightColor:vec4@400, ambientColor:vec4@416, cascadeSplits:vec4@432, shadowSettings:vec4@448, cameraPosition:vec4@464, cameraForward:vec4@480, shadowQuality:vec4@496, vsmLightView:mat4@512, vsmPageTable:uvec4@576, vsmParams:vec4@592, vsmCamera:vec4@608}@0}*@112}
+
+depth_prepass_masked.vert
+  push_constant pc : PushConstants{objectFrameData:ObjectFrameDataBuffer{objects[0]:ObjectFrameData{model:mat4@0, baseColorFactor:vec4@64, materialParams:vec4@80, textureIndices:uvec4@96, emissiveFactor:vec4@112, prevMvpNoJitter:mat4@128}@0}*@0, cascadeIndex:uint@8, frameConstants:FrameConstantsBuffer{values:FrameConstants{cascadeViewProjection[4]:mat4@0, jitteredViewProjection:mat4@256, viewProjection:mat4@320, lightDirection:vec4@384, lightColor:vec4@400, ambientColor:vec4@416, cascadeSplits:vec4@432, shadowSettings:vec4@448, cameraPosition:vec4@464, cameraForward:vec4@480, shadowQuality:vec4@496, vsmLightView:mat4@512, vsmPageTable:uvec4@576, vsmParams:vec4@592, vsmCamera:vec4@608}@0}*@112}
 
 depth_pyramid.comp
   push_constant pc : DepthPyramidPushConstants{sizes:uvec4@0}
