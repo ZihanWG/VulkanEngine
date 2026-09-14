@@ -504,6 +504,8 @@ private:
     // Depth-only pipelines for the opaque prepass. No fragment shader and no
     // colour attachment: the pass exists to populate depth, nothing else.
     void createDepthPrepassPipelines();
+    void createMaskedDepthPrepassPipeline(const VkVertexInputBindingDescription& binding,
+                                          const std::array<VkVertexInputAttributeDescription, 5>& attributes);
     // Replays the opaque bucket depth-only, before MainHDRPass. No-op unless
     // frameDepthPrepassActive_.
     void recordDepthPrepass(VkCommandBuffer commandBuffer);
@@ -1110,6 +1112,12 @@ private:
     // the store returns one pipeline and reports it shared.
     rhi::PipelineRef depthPrepassPipeline_;
     rhi::PipelineRef depthPrepassDoubleSidedPipeline_;
+    // Alpha-tested variant, for the MASK bucket. Exists only when the bindless
+    // heap does -- the cutout test samples the base-color array -- so a device
+    // without it prepasses opaque geometry alone, which is what this pass did
+    // before the masked variant was added and is still correct.
+    rhi::PipelineRef maskedDepthPrepassPipeline_;
+    rhi::PipelineRef maskedDepthPrepassDoubleSidedPipeline_;
     // Depth-only pipeline for the punctual shadow atlas. Separate from
     // shadowPipeline_ because its push-constant layout carries the slot's
     // view-projection instead of a cascade index.

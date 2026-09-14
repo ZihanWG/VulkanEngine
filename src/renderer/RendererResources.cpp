@@ -530,6 +530,8 @@ void Renderer::createDepthPrepassPipelines()
 {
     depthPrepassPipeline_.reset();
     depthPrepassDoubleSidedPipeline_.reset();
+    maskedDepthPrepassPipeline_.reset();
+    maskedDepthPrepassDoubleSidedPipeline_.reset();
     if (!useDepthPrepass_) {
         // Not built when off, so the feature costs nothing it does not use --
         // including two pipeline compilations at startup.
@@ -572,6 +574,61 @@ void Renderer::createDepthPrepassPipelines()
     pipelineInfo.cullMode = VK_CULL_MODE_NONE;
     depthPrepassDoubleSidedPipeline_ =
         pipelineStore_.get(context_.vkDevice(), pipelineInfo, "DepthPrepassPipelineDoubleSided");
+
+    createMaskedDepthPrepassPipeline(binding, attributes);
+}
+
+void Renderer::createMaskedDepthPrepassPipeline(const VkVertexInputBindingDescription& binding,
+                                                const std::array<VkVertexInputAttributeDescription, 5>& attributes)
+{
+    // Same gate as createMaskedShadowPipeline: the cutout test reads the bindless
+    // base-color array, so without the heap there is no way to run it. MASK
+    // geometry then stays out of the prepass, which costs a saving and breaks
+    // nothing.
+    if (!isBindlessMaterialTextureActive() || bindlessTextureHeap_.descriptorSetLayout() == VK_NULL_HANDLE) {
+        maskedDepthPrepassPipeline_.reset();
+        maskedDepthPrepassDoubleSidedPipeline_.reset();
+        return;
+    }
+
+    // Position drives the depth write, UV feeds the cutout sample. Locations 0
+    // and 2, so this cannot be a prefix subspan of the shared attribute list.
+    const std::array<VkVertexInputAttributeDescription, 2> maskedAttributes{attributes[0], attributes[2]};
+    const VkDescriptorSetLayout bindlessLayout = bindlessTextureHeap_.descriptorSetLayout();
+    const VkPushConstantRange maskedPushConstantRange{
+        VK_SHADER_STAGE_VERTEX_BIT, 0, static_cast<uint32_t>(sizeof(PushConstants))};
+
+    rhi::VulkanPipelineCreateInfo maskedInfo{};
+    maskedInfo.vertexShaderPath = shaderPath("depth_prepass_masked.vert.spv");
+    // Shared with the shadow path unchanged: the cutout test is the same test
+    // whatever wrote the depth, and it reads the array at set 0 either way.
+    maskedInfo.fragmentShaderPath = shaderPath("shadow_masked.frag.spv");
+    maskedInfo.enableColorAttachment = false;
+    maskedInfo.depthFormat = swapchain_.depthFormat();
+    maskedInfo.vertexBindings = std::span<const VkVertexInputBindingDescription>(&binding, 1);
+    maskedInfo.vertexAttributes =
+        std::span<const VkVertexInputAttributeDescription>(maskedAttributes.data(), maskedAttributes.size());
+    maskedInfo.descriptorSetLayouts = std::span<const VkDescriptorSetLayout>(&bindlessLayout, 1);
+    maskedInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&maskedPushConstantRange, 1);
+    maskedInfo.enableDepth = true;
+    maskedInfo.depthWriteEnable = true;
+    // No depth bias, unlike the masked SHADOW pipeline this borrows a fragment
+    // stage from. Its bias separates caster from receiver; the depth written here
+    // has to equal what the main pass computes, or LESS_OR_EQUAL rejects the very
+    // surface that wrote it.
+    //
+    // Two cull modes, exactly as the opaque pair has, and for the same reason:
+    // the prepass must cull whatever the main pass culls for that batch. Cutout
+    // foliage is usually authored two-sided, but "usually" is not a guarantee the
+    // recorder can rely on, and getting it wrong for a single-sided batch writes
+    // a back face in front of its own front face and loses the surface.
+    maskedInfo.cullMode = useBackfaceCulling_ ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
+    maskedInfo.pipelineCache = context_.pipelineCache();
+    maskedDepthPrepassPipeline_ = pipelineStore_.get(context_.vkDevice(), maskedInfo, "MaskedDepthPrepassPipeline");
+
+    maskedInfo.cullMode = VK_CULL_MODE_NONE;
+    maskedDepthPrepassDoubleSidedPipeline_ =
+        pipelineStore_.get(context_.vkDevice(), maskedInfo, "MaskedDepthPrepassPipelineDoubleSided");
 }
 
 void Renderer::createProbeCapturePipeline()

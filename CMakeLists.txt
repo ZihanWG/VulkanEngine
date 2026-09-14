@@ -465,6 +465,7 @@ set(SHADER_SOURCES
     "${SHADER_SOURCE_DIR}/skybox.vert"
     "${SHADER_SOURCE_DIR}/skybox.frag"
     "${SHADER_SOURCE_DIR}/depth_prepass.vert"
+    "${SHADER_SOURCE_DIR}/depth_prepass_masked.vert"
     "${SHADER_SOURCE_DIR}/shadow.vert"
     "${SHADER_SOURCE_DIR}/shadow_layered.vert"
     "${SHADER_SOURCE_DIR}/shadow_masked.vert"

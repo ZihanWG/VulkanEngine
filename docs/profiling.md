@@ -232,11 +232,11 @@ do with content.
 ### `DepthPrepass`
 
 Present only when `renderer.enableDepthPrepass` is on, which is off by default.
-It replays the opaque bucket depth-only ahead of `MainHDRPass` so early-Z rejects
-fragments that pass would otherwise shade and overwrite. On `--scene sponza` it
-costs **0.063 ms** and takes **1.163 ms** off `MainHDRPass`; see
-`design_decisions.md` for the full A/B and for why a 0.063 ms pass was predicted
-to cost 2.9.
+It replays the opaque and masked buckets depth-only ahead of `MainHDRPass` so
+early-Z rejects fragments that pass would otherwise shade and overwrite. On
+`--scene sponza` it costs **0.071 ms** and takes **1.221 ms** off `MainHDRPass`;
+see `design_decisions.md` for the full A/B and for why a 0.071 ms pass was
+predicted to cost 2.9.
 
 It is a runtime setting rather than a build flag precisely so this harness can
 A/B it inside one binary:

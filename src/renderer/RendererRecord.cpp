@@ -1996,18 +1996,38 @@ void Renderer::recordDepthPrepass(VkCommandBuffer commandBuffer)
 
     // Only the two buffer addresses are read by depth_prepass.vert, but the range
     // the pipeline layout declares is the whole struct, so the whole struct is
-    // what gets pushed. Its own layout, not the main pass's: that one covers the
-    // fragment stage too, and pushing through a layout the bound pipeline does
-    // not use is undefined.
+    // what gets pushed.
     PushConstants pushConstants{};
     pushConstants.objectFrameDataAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
     pushConstants.frameConstantsAddress = frameConstantsBuffers_.at(currentFrame_).deviceAddress();
-    vkCmdPushConstants(commandBuffer,
-                       depthPrepassPipeline_.layout(),
-                       VK_SHADER_STAGE_VERTEX_BIT,
-                       0,
-                       static_cast<uint32_t>(sizeof(PushConstants)),
-                       &pushConstants);
+
+    // The masked variant takes the bindless base-color array as its only
+    // descriptor set, so it has a DIFFERENT pipeline layout from the opaque one.
+    // Push constants and descriptor sets are bound per layout, not globally, so
+    // both are re-issued when the loop crosses from one bucket to the other --
+    // pushing through a layout the bound pipeline does not use is undefined, and
+    // this is the pass where that is easy to get wrong because the two pipelines
+    // are otherwise so alike.
+    const bool maskedPrepassAvailable = maskedDepthPrepassPipeline_.pipeline() != VK_NULL_HANDLE &&
+                                        bindlessTextureHeap_.descriptorSet() != VK_NULL_HANDLE;
+    VkPipelineLayout boundLayout = VK_NULL_HANDLE;
+    const auto bindLayoutState = [&](VkPipelineLayout layout, bool masked) {
+        if (boundLayout == layout) {
+            return;
+        }
+        boundLayout = layout;
+        vkCmdPushConstants(commandBuffer,
+                           layout,
+                           VK_SHADER_STAGE_VERTEX_BIT,
+                           0,
+                           static_cast<uint32_t>(sizeof(PushConstants)),
+                           &pushConstants);
+        if (masked) {
+            const VkDescriptorSet bindlessSet = bindlessTextureHeap_.descriptorSet();
+            vkCmdBindDescriptorSets(
+                commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &bindlessSet, 0, nullptr);
+        }
+    };
 
     const VkBuffer indirectDrawBuffer = frameIndirectDrawBuffers_.at(currentFrame_).buffer();
     const bool indirectCountPathActive = isFrameIndirectCountPathActive(currentFrame_);
@@ -2021,21 +2041,21 @@ void Renderer::recordDepthPrepass(VkCommandBuffer commandBuffer)
         if (!batch.mesh || batch.drawItemCount == 0) {
             continue;
         }
-        // OPAQUE ONLY, and the omissions are deliberate rather than unfinished.
-        //
-        // Blend must never write depth -- it is composited later, and depth from
-        // a transparent surface would occlude what is meant to show through it.
-        //
-        // Mask is excluded because a depth-only replay has no fragment shader to
-        // run the alpha test with, so a cutout leaf would write the depth of its
-        // whole quad and the main pass would then reject everything behind it --
-        // the "leaves cast a rectangle" artifact, in depth rather than in shadow.
-        // Running them through the alpha-tested path would work and is the
-        // obvious extension; leaving them out is CORRECT, just less effective.
-        // Depth from a subset is still true depth: geometry left out of the
-        // prepass simply draws in the main pass as it always did, and misses the
-        // early-Z saving.
-        if (batch.bucket != RenderBucket::Opaque) {
+        // Blend is never prepassed: it is composited later, and depth from a
+        // transparent surface would occlude what is meant to show through it.
+        if (batch.bucket == RenderBucket::Blend) {
+            continue;
+        }
+        // Mask needs the alpha-tested variant. Without it -- no bindless heap --
+        // the bucket stays out of the prepass rather than being replayed
+        // depth-only, because a cutout leaf with no alpha test writes the depth
+        // of its whole quad and the main pass then rejects everything behind it:
+        // the "leaves cast a rectangle" artifact, moved from shadow into depth.
+        // Skipping is correct, just less effective -- depth from a subset is
+        // still true depth, and what is left out draws in the main pass exactly
+        // as it always did.
+        const bool masked = batch.bucket == RenderBucket::Mask;
+        if (masked && !maskedPrepassAvailable) {
             continue;
         }
 
@@ -2044,14 +2064,20 @@ void Renderer::recordDepthPrepass(VkCommandBuffer commandBuffer)
         // costs a saving; failing to cull a single-sided one would write a back
         // face in front of its own front face, and the main pass would reject
         // the front face and the surface would disappear.
-        const VkPipeline batchPipeline =
-            batch.doubleSided && depthPrepassDoubleSidedPipeline_.pipeline() != VK_NULL_HANDLE
-                ? depthPrepassDoubleSidedPipeline_.pipeline()
-                : depthPrepassPipeline_.pipeline();
+        const rhi::PipelineRef& singleSidedRef = masked ? maskedDepthPrepassPipeline_ : depthPrepassPipeline_;
+        const rhi::PipelineRef& doubleSidedRef =
+            masked ? maskedDepthPrepassDoubleSidedPipeline_ : depthPrepassDoubleSidedPipeline_;
+        const rhi::PipelineRef& selectedRef =
+            batch.doubleSided && doubleSidedRef.pipeline() != VK_NULL_HANDLE ? doubleSidedRef : singleSidedRef;
+        const VkPipeline batchPipeline = selectedRef.pipeline();
+        if (batchPipeline == VK_NULL_HANDLE) {
+            continue;
+        }
         if (boundPipeline != batchPipeline) {
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, batchPipeline);
             boundPipeline = batchPipeline;
         }
+        bindLayoutState(selectedRef.layout(), masked);
 
         if (boundMesh != batch.mesh) {
             const VkBuffer vertexBuffers[] = {batch.mesh->vertexBuffer()};
@@ -2092,9 +2118,11 @@ void Renderer::recordDepthPrepass(VkCommandBuffer commandBuffer)
         const uint32_t opaqueItems = frameVisibleBucketRanges_[static_cast<size_t>(RenderBucket::Opaque)].count();
         const uint32_t maskItems = frameVisibleBucketRanges_[static_cast<size_t>(RenderBucket::Mask)].count();
         const uint32_t blendItems = frameVisibleBucketRanges_[static_cast<size_t>(RenderBucket::Blend)].count();
+        const uint32_t prepassedMask = maskedPrepassAvailable ? maskItems : 0u;
         Logger::info("Depth prepass: " + std::to_string(drawnBatches) + " of " +
                      std::to_string(meshDrawBatches_.size()) + " batches, covering " + std::to_string(opaqueItems) +
-                     " opaque draw items (" + std::to_string(maskItems) + " masked and " + std::to_string(blendItems) +
+                     " opaque and " + std::to_string(prepassedMask) + " masked draw items (" +
+                     std::to_string(maskItems - prepassedMask) + " masked and " + std::to_string(blendItems) +
                      " blended are not prepassed).");
     }
     depthPrepassBatchesDrawn_ = drawnBatches;

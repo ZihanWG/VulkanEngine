@@ -645,9 +645,9 @@ struct RuntimeSettings {
     // Laptop, 1280x720, clocks pinned 800/7001, ab --repeat 2 --duration 75
     // --deterministic, p10:
     //
-    //   --scene sponza   Frame total 8.282 -> 7.162 ms (-13.5%), control drift 0.87%
-    //                    MainHDRPass 6.841 -> 5.678 ms (-17.0%)
-    //                    DepthPrepass costs 0.063 ms
+    //   --scene sponza   Frame total 8.215 -> 7.145 ms (-13.0%), control drift 0.22%
+    //                    MainHDRPass 6.803 -> 5.582 ms (-17.9%)
+    //                    DepthPrepass costs 0.071 ms, covering all 103 draw items
     //   --scene stress   Frame total 2.096 -> 2.009 ms  (-4.2%), control drift 0.24%
     //                    MainHDRPass 0.791 -> 0.692 ms (-12.5%)
     //                    DepthPrepass costs 0.032 ms

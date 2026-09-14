@@ -706,14 +706,16 @@ complexity. `--scene sponza` supplied the scene, `--overdraw` supplied the
 number, and the pass supplied the rest.
 
 **The result.** RTX 3080 Ti Laptop, 1280x720, clocks pinned 800/7001,
-`ab --repeat 2 --duration 75 --deterministic`, p10:
+`ab --repeat 2 --duration 75 --deterministic`, p10. The sponza column covers the
+opaque and masked buckets; the stress column was taken when the pass was opaque
+only:
 
 | | `--scene sponza` | `--scene stress` |
 | --- | --- | --- |
-| `Frame total` | 8.282 -> 7.162 ms (**-13.5%**) | 2.096 -> 2.009 ms (**-4.2%**) |
-| `MainHDRPass` | 6.841 -> 5.678 ms (-17.0%) | 0.791 -> 0.692 ms (-12.5%) |
-| `DepthPrepass` costs | 0.063 ms | 0.032 ms |
-| control drift | 0.87% | 0.24% |
+| `Frame total` | 8.215 -> 7.145 ms (**-13.0%**) | 2.096 -> 2.009 ms (**-4.2%**) |
+| `MainHDRPass` | 6.803 -> 5.582 ms (-17.9%) | 0.791 -> 0.692 ms (-12.5%) |
+| `DepthPrepass` costs | 0.071 ms | 0.032 ms |
+| control drift | 0.22% | 0.24% |
 
 **Two predictions this made and broke, which is the part worth keeping.**
 
@@ -745,15 +747,34 @@ lost surface. Turning it on by default is a committed-golden re-baseline, the
 same gate `enableBackfaceCulling` went through, and that has to be done against
 CI's lavapipe rather than locally.
 
-**What it does not cover yet.** The prepass replays the **opaque bucket only** --
-89 of Sponza's 103 visible draw items; the 14 masked ones are skipped. A
-depth-only replay has no fragment shader to run the alpha test with, so a cutout
-leaf would write the depth of its whole quad and the main pass would reject
-everything behind it -- the "leaves cast a rectangle" artifact, in depth rather
-than in shadow. Excluding them is correct rather than unfinished: depth from a
-subset is still true depth, and geometry left out simply draws as it always did
-and misses the saving. The alpha-tested path already exists for shadows
-(`shadow_masked.vert` / `.frag`) and is the obvious extension.
+**What it covers.** Opaque and masked, which on Sponza is all 103 visible draw
+items. Blended geometry is never prepassed and never will be: it is composited
+later, and depth from a transparent surface would occlude what is meant to show
+through it.
+
+Masked needed its own variant. A depth-only replay has no fragment shader to run
+the alpha test with, so a cutout leaf would write the depth of its whole quad and
+the main pass would reject everything behind it -- the "leaves cast a rectangle"
+artifact, in depth rather than in shadow. `depth_prepass_masked.vert` forwards
+what the cutout test needs and reuses `shadow_masked.frag` unchanged, since the
+test is the same test whatever wrote the depth. Where the bindless heap is
+unavailable the masked bucket drops out of the prepass rather than being replayed
+without its alpha test; that costs a saving and breaks nothing, because depth
+from a subset is still true depth.
+
+**What the masked half is worth, measured the honest way.** It moves the
+`MainHDRPass` saving from 1.163 ms to 1.221, for a prepass that goes from 0.063
+to 0.071 ms. That is two gated series compared against each other rather than one
+A/B, which the protocol counts as weaker evidence -- and the difference is small
+enough to matter: 5% apart on the delta, against per-pass control drifts of 0.019
+and 0.088 ms. Read it as "masked is a small net positive, and the opaque bucket
+is where nearly all of the win is", not as a precise 0.058 ms.
+
+The image says the extension is correct: adding masked geometry to the prepass
+renders **bit-identically** to the opaque-only version, 0 of 921600 pixels. The
+alpha test reproduces the cutout holes exactly, so nothing new appears or
+disappears -- the only pixels that differ from a prepass-free frame are the same
+40 coplanar ones.
 
 The argument that used to live here is kept below, because it is what the
 measurement was judged against.
