@@ -313,6 +313,17 @@ spanning the screen cannot be LOD'd away, so the leftover after LOD would be muc
 larger than 0.055%. The analysis is kept, and the builder with it, so that
 measurement is a command-line flag rather than a re-implementation.
 
+**That re-measurement is now runnable**: the scene is `--scene sponza`, so
+`--meshlet-analysis --scene sponza` is the whole setup. One thing to know before
+reading its output. Sponza imports as one object per primitive; it used to import
+as one object for the entire file, and because a draw item's LOD is chosen from
+its object's projected size, that meant all 103 primitives were measured against
+the bounds of the whole building and every one of them selected level 0. An
+analysis run before that change would have compared meshlet culling against a
+scene with LOD effectively disabled, which is the comparison this page says is
+the wrong one — turning LOD off is exactly how the 0.055% became 23.5% on
+`stress`.
+
 The capacity ceiling would also have to move first: `stress` at level 0 wants
 13,931 indirect commands against a `kMaxDrawItems` of 8192, so a meshlet path needs
 its own budget with over-cap geometry **counted rather than dropped**, the way

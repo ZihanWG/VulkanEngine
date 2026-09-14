@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -52,12 +53,17 @@ def find_vecook(explicit: str | None) -> Path:
         return path
 
     repo_root = Path(__file__).resolve().parent.parent
+    # ".exe" first on Windows, where the bare name never matches and this search
+    # used to fall through every candidate to "could not find vecook" no matter
+    # how many builds were sitting in the tree.
+    suffixes = (".exe", "") if os.name == "nt" else ("",)
     # Release first: the cook is compute bound, and a Debug vecook is roughly an
     # order of magnitude slower for identical output.
     for candidate in ("build/release/vecook", "build/debug/vecook", "build/vecook"):
-        path = repo_root / candidate
-        if path.is_file():
-            return path
+        for suffix in suffixes:
+            path = repo_root / (candidate + suffix)
+            if path.is_file():
+                return path
 
     found = shutil.which("vecook")
     if found:

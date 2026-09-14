@@ -288,21 +288,27 @@ keeps comparing against the small deterministic scene it was captured from. It i
 a measurement and screenshot facility, not a change to what the engine renders by
 default.
 
+**It is also no longer the startup scene.** It was, whenever the fetch had been
+configured on, and that made "the default scene" name two different scenes
+depending on a build flag -- which defeats the stamp `docs/profiling.md` requires
+every quoted timing to carry. `--scene sponza` selects it; the default scene
+renders identically whether or not the fetch ran. Naming the preset on a build
+without the asset exits non-zero with the cmake flag in the message, rather than
+falling back to a scene that is not the one that was asked for.
+
+The fetched files live in `build/fetched-assets/`, shared by every preset, so
+deleting one build directory does not cost a re-download and a re-cook, and the
+debug and release builds cannot end up with separately encoded copies of the same
+lossy BC7 textures.
+
 ## Limitations
 
-- The fetched scene is one glTF node holding one mesh of 103 primitives, so it
-  presents as a **single render object**. It exercises materials, textures, and
-  draw submission at scale, but not object-level frustum culling, which has one
-  thing to cull.
-- The startup camera is framed from the scene's bounds
-  (`renderer::framedCamera`), which guarantees the scene is on screen but does
-  not compose a shot. For an interior scene that means viewing the building from
-  outside. Placing the camera inside from bounds alone was tried and abandoned:
-  Sponza's bounds include its own outer walls, so an inset from the edge lands in
-  masonry. Use the editor camera to compose a screenshot.
 - `--asset-load-stats` covers `VulkanTexture` only. `VulkanEnvironmentMap`
   cubemaps and the BRDF LUT have their own allocations and their own
   `vkQueueWaitIdle` calls; they are visible in the VMA totals but not itemized.
+- The scene's depth complexity is still unmeasured. It is the reason the scene
+  was wanted (`design_decisions.md` on the depth prepass) and the engine has no
+  overdraw counter to answer it with.
 - "glTF import" times parse and mesh buffer upload together, because
   `Mesh::createFromGltf` does both behind one boundary.
 - Wall-clock segments only. No GPU timestamps are involved; these are not

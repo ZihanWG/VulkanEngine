@@ -699,9 +699,12 @@ the remaining recording cost spread widely enough for threading to reach it.
 
 ## A depth prepass cannot be evaluated on this tree, and the missing piece is a scene
 
-**Status: not built, and not because it was measured and rejected -- because
-there is nothing here to measure it against.** Recorded so the next attempt
-spends its effort on the prerequisite rather than on the pass.
+**Status: still not built, but the prerequisite is now in place.** This section
+recorded that the pass could not be evaluated because no scene here had realistic
+depth complexity. That is no longer true: `--scene sponza` exists, and the
+remaining work is to measure its depth complexity rather than to argue about
+whether a scene is available. The reasoning below is kept because it is what
+decides the answer once that number exists.
 
 **The question.** This renderer has no depth prepass -- `vsm_page_mark.comp`
 says so outright, and `docs/gtao.md` names one as the fix for GTAO's one-frame
@@ -733,12 +736,30 @@ problem rather than for the renderer". Measuring a depth prepass there would
 measure how the scene was built. It would report an enormous win and mean
 nothing about content.
 
-**The prerequisite is a scene, not a pass.** Sponza is the one asset here with
-realistic depth complexity, and it is not fetched --
-`VULKAN_ENGINE_FETCH_SAMPLE_SCENE` is OFF and nothing under `assets/models/`
-carries it. Fetch it, cook it, measure its depth complexity, and the question
-becomes answerable; until then a prepass would be built against a number nobody
-has.
+**The prerequisite was a scene, not a pass, and the scene now exists.** Sponza is
+the one asset here with realistic depth complexity. It is fetched with
+`-DVULKAN_ENGINE_FETCH_SAMPLE_SCENE=ON` and selected with `--scene sponza`,
+which puts it in the measurement protocol alongside the procedural presets --
+see `docs/profiling.md`. It is still off by default: the fetch is a
+configure-time download, and naming the preset on a build without it is a hard
+failure rather than a fallback, so a series can never quietly measure something
+else.
+
+**What is left is the number.** The engine has no overdraw counter, so Sponza's
+depth complexity is not yet known -- the row is missing from the table above
+rather than filled in. `VK_QUERY_TYPE_PIPELINE_STATISTICS` with
+`FRAGMENT_SHADER_INVOCATIONS` gives it without touching a shader: depth
+complexity is invocations divided by the rendered pixel count. Measure that
+first. A prepass built before it would still be built against a number nobody
+has, which is the same mistake this section was written to prevent -- only the
+excuse for making it has changed.
+
+One thing already known about the scene is worth carrying into that measurement:
+its 103 primitives are one glTF node, and until they were imported as separate
+objects every one of them selected LOD 0, because the projected size that picks a
+level came from the bounds of the whole building. Any depth-complexity number
+taken before that change would have been measured against geometry at full
+detail everywhere.
 
 That also settles the order. The prepass is worth *more* than its own frame time
 if it lands -- it is what would remove GTAO's one-frame lag, and it would give
@@ -808,54 +829,6 @@ for the decision.
 four subsystems really are off by default, and the argument for cutting them out
 is genuinely persuasive. It was measured, three times against a passing gate, and
 it is wrong.
-
-## A depth prepass cannot be evaluated on this tree, and the missing piece is a scene
-
-**Status: not built, and not because it was measured and rejected -- because
-there is nothing here to measure it against.** Recorded so the next attempt
-spends its effort on the prerequisite rather than on the pass.
-
-**The question.** This renderer has no depth prepass -- `vsm_page_mark.comp`
-says so outright, and `docs/gtao.md` names one as the fix for GTAO's one-frame
-occlusion lag. Opaque draw items are sorted by bucket and pipeline so
-multi-draw-indirect can batch them, not front to back; only the transparent
-range is depth-sorted. On a tiler that cost nothing, because hidden-surface
-removal discards the occluded fragments before the fragment shader. On Ampere
-there is no such hardware, `MainHDRPass` is the dominant pass, and overdraw is
-paid in full -- which is the same argument that made back-face culling worth
--37.4% here after being rejected on the M3.
-
-**Why it stops there.** A depth prepass buys exactly the shading of fragments
-that are later overdrawn, and costs a second submission of all opaque geometry.
-Its value is therefore a function of one number -- the scene's depth complexity
--- and this repository's scene inventory has no value of that number worth
-optimising for:
-
-| preset | depth complexity | what it is |
-| --- | --- | --- |
-| `default` | ~1 | 11 draw items on an open platform |
-| `stress` | ~1 | 2311 small objects; `SceneBuilder.h` notes it runs *faster* than `default` because its objects are small on screen |
-| `occlusion` | ~1 | object-level occlusion behind 5 walls, which two-phase Hi-Z already removes before rasterization |
-| `fragment-stress` | **6** | six full-frame slabs, "every pixel is shaded several times over" |
-| `gpu-stress` | **24** | the same shape turned up; "layers are overdraw, so they multiply fragment work" |
-
-The two scenes with real depth complexity have it **by construction**, and
-`SceneBuilder.h` is explicit that `gpu-stress` "exists for the measurement
-problem rather than for the renderer". Measuring a depth prepass there would
-measure how the scene was built. It would report an enormous win and mean
-nothing about content.
-
-**The prerequisite is a scene, not a pass.** Sponza is the one asset here with
-realistic depth complexity, and it is not fetched --
-`VULKAN_ENGINE_FETCH_SAMPLE_SCENE` is OFF and nothing under `assets/models/`
-carries it. Fetch it, cook it, measure its depth complexity, and the question
-becomes answerable; until then a prepass would be built against a number nobody
-has.
-
-That also settles the order. The prepass is worth *more* than its own frame time
-if it lands -- it is what would remove GTAO's one-frame lag, and it would give
-VSM page marking a this-frame depth source instead of the previous frame's Hi-Z
-pyramid -- but none of that is a reason to build it before knowing what it saves.
 
 ## Asynchronous pipeline compilation, measured and not taken
 

@@ -109,6 +109,7 @@ They can usually be assigned by magnitude, because the two machines are an order
 | default scene, GPU frame | ~15–16 ms | 1.754 ms |
 | `MainHDRPass` | ~10 ms | 0.4–0.9 ms |
 | `--scene stress`, GPU frame | — | 1.024 ms |
+| `--scene sponza`, GPU frame | — | 5.363 ms |
 
 A frame total in the teens is the M3. A `MainHDRPass` under a millisecond is the RTX. Where neither the label nor the magnitude settles it, the table says the hardware is not recorded rather than guessing — an unattributed number is less misleading than a confidently wrong attribution.
 
@@ -118,6 +119,77 @@ A frame total in the teens is the M3. A `MainHDRPass` under a millisecond is the
 - **Scene**, because `--scene stress` is CPU-bound here while `default` and `fragment-stress` are GPU-bound, so the same change reads differently on each.
 - **Resolution**, because the frame is fragment-bound and the harness defaults to 1280x720. `--scene gpu-stress` exists precisely because at that resolution every other preset gives a 1–2 ms frame the drift gate cannot resolve.
 - **Statistic**, because `QUOTED_PERCENTILE` is p10 and everything older is a median. On this hardware the median got a delta's *sign* wrong where p10 did not, so the two are not interchangeable and a number that does not say which it is cannot be compared with one that does.
+
+### The scene is now stamped on the run, not inferred from it
+
+Of the four stamps below, the scene was the one a log could not be asked for.
+`measure_gpu.py` passes `--scene` through to both sides of an A/B and then had no
+way to confirm it arrived, and its caveat section said only that the scene was
+"at launch defaults" — which stopped being true once a preset could be named on
+the command line.
+
+The renderer prints `Scene: <preset> at <WxH>` after the preset is built, so it
+reports what is on screen rather than what was asked for. The harness reads it
+into the report header and into `summary.json`, and **refuses to summarise an
+`ab` series whose runs disagree**. Nothing else in the report could catch that:
+the drift gate compares the control against itself, so two configurations
+rendering two different scenes can both be perfectly stable and still be
+uncomparable. A report that says `Scene: unreported` came from a binary older
+than the stamp and should not be quoted.
+
+### `--scene sponza`: the only preset that is content rather than construction
+
+Every other preset is procedural cubes and spheres laid out to provoke a
+particular bottleneck. Sponza is 103 primitives and 25 materials of real
+authored content, and it is the scene to reach for when the question is about
+content: depth complexity, material variety, LOD selection, or object-level
+culling on geometry that was not arranged to make the answer come out a
+particular way.
+
+It needs `-DVULKAN_ENGINE_FETCH_SAMPLE_SCENE=ON` and a cook (see
+`docs/asset_load_baseline.md`). Naming it on a build without the asset exits
+non-zero rather than falling back, so a series cannot quietly measure something
+else. It is not in CI: it has no usable pixel gate, and the sweep's admission
+rule is that a leg must change the shape of the frame graph rather than the
+volume of content.
+
+**Measured, RTX 3080 Ti Laptop, 1280x720, clocks pinned 1200/7001, p10 over 63
+samples:** `Frame total` 5.363 ms, `MainHDRPass` 4.270 ms, `RenderObjects` 4.195
+ms (99% of its parent, which is the immediate-mode behaviour described above).
+That is roughly three times the default scene and five times `--scene stress`,
+so the frame is comfortably large enough to measure against — which was the open
+question when the scene was added.
+
+**But its `Frame total` does not pass the drift gate on this machine, and its
+per-pass numbers do.** Two independent `ab --repeat 2 --duration 75` series, both
+at the 1200/7001 pin with no throttle reason active:
+
+| series | `Frame total` drift | `MainHDRPass` drift | `RenderObjects` drift |
+| --- | --- | --- | --- |
+| default frame clock, 128 samples/side | **3.8%** | 0.048 ms | 0.049 ms |
+| `--deterministic`, 379 samples/side | **5.1%** | **0.003 ms** | 0.016 ms |
+
+Three things that were checked rather than assumed. The clocks held at 1200 MHz
+throughout and no throttle reason was ever active, so this is not the clock
+wander that the pin exists to remove. `--deterministic` was tried on the theory
+that the orbiting demo lights and the exposure feedback made the content itself
+vary across a 75-second window; it tripled the sample count and improved every
+per-pass drift by an order of magnitude, and made the frame-total drift **worse**,
+so that theory is wrong. And the drift is not a thermal ramp: p10 over the
+thirds of a single run goes 5.829 / 5.547 / 5.776, which is a band rather than a
+slope.
+
+So the usable reading is the protocol's own carve-out: a row whose own control
+drift is orders of magnitude below its delta, and which reproduces across two
+independent series, is evidence even when the frame-level gate is refused — and
+`Frame total` on this scene is not quotable. Per-pass drifts of 0.003–0.016 ms
+against passes of 0.3–4.3 ms are a better noise floor than any other preset here
+offers.
+
+**Untried, and the obvious next step:** a lower pin. The rule established for
+`--scene stress` is that heavier load wants a *lower* ceiling, and Sponza at 5.4
+ms is the heaviest scene in the repository — 1200 MHz was chosen before that was
+known.
 
 ### Take medians, not single frames
 
@@ -347,6 +419,11 @@ Both scenes now pass, at the same 1100/7001 pin:
 | --- | --- |
 | `--scene stress` | **0.14%** |
 | `--scene gpu-stress` | **0.50%** |
+
+`--scene sponza` does not, at 1200/7001, for frame total only — 3.8% and 5.1%
+across two independent series, while its per-pass drifts came in at 0.003–0.016
+ms. See the section on that preset above for what was ruled out and what is
+still untried.
 
 Until a comparison passes the gate it is directional at best, and the honest
 thing is to report a refused comparison as refused. Absolute numbers, per-pass
