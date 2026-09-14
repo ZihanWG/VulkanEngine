@@ -87,6 +87,33 @@ Above 1.0 it now means "reach full replacement at lower confidence".
 Requires a samplable main depth image (same gate as SSAO); otherwise the panel
 reports unavailable and the passes are skipped.
 
+## What it costs, on real content
+
+**RTX 3080 Ti Laptop, `--scene sponza`, 1280x720, clocks pinned 800/7001, p10 over
+261 and 286 samples, `ab --repeat 2 --duration 75 --deterministic`, control drift
+0.16%:**
+
+| | `ssr.enabled` on | off | delta |
+| --- | --- | --- | --- |
+| `Frame total` | 8.254 ms | 7.661 ms | **−0.593 ms, −7.2%** |
+| `SSRTrace` | 0.523 ms | — | on only |
+| `SSRCopy` | 0.022 ms | — | on only |
+
+The two SSR passes account for 0.545 ms of the 0.593; the remainder is
+`MainHDRPass` at −0.047 ms, which is the pass that consumes the reflection.
+
+This is the first SSR cost here measured on authored content rather than on
+procedural spheres, and the first that passed the control-drift gate, so it
+supersedes nothing above — the earlier numbers are a different machine and a
+different scene, and both are labelled as such.
+
+**One device-class caveat is worth carrying.** On the M3 `SSRTrace` swung by 4x
+across identical runs and had no quotable cost, which is why the older notes here
+quote a frame total rather than a pass split. On this immediate-mode GPU the same
+scope has a control drift of 0.000 ms. As with the nested-scope rule in
+[profiling.md](profiling.md), that is a property of the device rather than of the
+pass, so do not carry either conclusion across.
+
 ## Limitations
 
 - Screen-space only: anything off-screen or occluded contributes nothing. This is

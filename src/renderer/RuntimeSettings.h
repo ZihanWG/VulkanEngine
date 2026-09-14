@@ -630,6 +630,59 @@ struct RuntimeSettings {
     // On by default since the golden was regenerated. It is not pixel-neutral --
     // that is what kept it off, not any doubt about the win.
     bool enableBackfaceCulling = true;
+    // Render the opaque bucket depth-only before MainHDRPass, so that pass's
+    // fragments are rejected by early-Z instead of shaded and overwritten.
+    //
+    // OFF by default, and this is the setting the whole question hangs on rather
+    // than a preference. docs/design_decisions.md carried a section for months
+    // saying the pass could not be evaluated because no scene here had realistic
+    // depth complexity; --scene sponza and --overdraw between them supply the
+    // number, and it is 2.187 shaded fragments per rendered pixel -- higher than
+    // gpu-stress, which was built to manufacture overdraw and only reaches 1.276
+    // because early-Z already eats stacked full-screen quads.
+    //
+    // MEASURED, and it wins on both scenes it has been run on. RTX 3080 Ti
+    // Laptop, 1280x720, clocks pinned 800/7001, ab --repeat 2 --duration 75
+    // --deterministic, p10:
+    //
+    //   --scene sponza   Frame total 8.215 -> 7.145 ms (-13.0%), control drift 0.22%
+    //                    MainHDRPass 6.803 -> 5.582 ms (-17.9%)
+    //                    DepthPrepass costs 0.071 ms, covering all 103 draw items
+    //   --scene stress   Frame total 2.096 -> 2.009 ms  (-4.2%), control drift 0.24%
+    //                    MainHDRPass 0.791 -> 0.692 ms (-12.5%)
+    //                    DepthPrepass costs 0.032 ms
+    //
+    // The cost is the surprise and it is worth stating plainly, because the
+    // estimate that preceded the implementation was wrong. The worry was that a
+    // second submission of the same geometry would cost what the first one's
+    // non-fragment half costs -- 2.898 of MainHDRPass's 7.422 ms at LOD 0, found
+    // by holding geometry fixed and quartering the pixel count. It costs 0.063.
+    // A depth-only vertex stage reads one attribute and writes no varyings,
+    // where simple.vert reads five and writes twenty-six, so the two submissions
+    // are nowhere near the same price.
+    //
+    // `stress` was expected to lose outright: 2311 objects, and --overdraw puts
+    // it at 0.901 invocations per rendered pixel. It wins anyway, which says
+    // that figure is diluted by background pixels rather than describing what
+    // happens where objects actually overlap.
+    //
+    // ON by default. It is not pixel-neutral -- LESS_OR_EQUAL resolves coplanar
+    // surfaces the other way from LESS -- but the scenes that move are the ones
+    // with coplanar geometry, and the committed golden's scene is not among
+    // them. Every preset, prepass on versus off, RTX 3080 Ti, frame 30 at
+    // tolerance 0:
+    //
+    //   default, occlusion, cornell, fragment-stress, gpu-stress   0 pixels
+    //   stress                                                     1 pixel
+    //   sponza                                                    60 pixels
+    //   sunlit                                                   132 pixels
+    //
+    // `default` is the scene tests/golden/lavapipe_frame30.png was captured
+    // from, and it is unchanged -- the portfolio scene sinks its objects into
+    // the floor rather than letting them touch it (kPortfolioFloorSinkDepth), so
+    // there is no coplanar pair for the tie-break to resolve differently. The
+    // three scenes that do move are the ones with authored contact surfaces.
+    bool enableDepthPrepass = true;
     // Suspend Hi-Z occlusion culling (and the pyramid build that feeds it) while
     // it is culling nothing, re-probing periodically. Never changes the image --
     // skipping occlusion culling can only draw more, never less.

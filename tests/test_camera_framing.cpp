@@ -7,10 +7,13 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <cmath>
+
 using Catch::Approx;
 using ve::renderer::Aabb;
 using ve::renderer::Camera;
 using ve::renderer::framedCamera;
+using ve::renderer::interiorCamera;
 
 namespace {
 
@@ -141,4 +144,116 @@ TEST_CASE("An unnormalised direction is handled")
     const Camera scaled = framedCamera(bounds, 16.0f / 9.0f, glm::vec3(0.0f, 0.0f, -37.0f));
 
     REQUIRE(scaled.position.z == Approx(unit.position.z));
+}
+
+// interiorCamera: the shot for a scene you stand inside rather than look at.
+//
+// framedCamera fits a volume in frame, which for Sponza shows the outside of the
+// building. These pin the properties that make the interior version usable, so a
+// future tweak to the framing constants cannot quietly move the camera into a
+// wall again.
+
+namespace {
+
+Aabb hallBounds()
+{
+    // Long in X, short in Z, floor at y = 0 -- the shape of an interior with an
+    // open axis running down it.
+    Aabb bounds{};
+    bounds.expand(glm::vec3(-20.0f, 0.0f, -6.0f));
+    bounds.expand(glm::vec3(20.0f, 12.0f, 6.0f));
+    return bounds;
+}
+
+bool insideHorizontally(const Aabb& bounds, const glm::vec3& point)
+{
+    return point.x >= bounds.min.x && point.x <= bounds.max.x && point.z >= bounds.min.z && point.z <= bounds.max.z;
+}
+
+} // namespace
+
+TEST_CASE("The interior camera stands inside the bounds")
+{
+    const Aabb bounds = hallBounds();
+    const Camera camera = interiorCamera(bounds);
+
+    // The whole point: framedCamera puts the eye outside the volume, and this one
+    // must not.
+    REQUIRE(insideHorizontally(bounds, camera.position));
+    REQUIRE(camera.position.y > bounds.min.y);
+    REQUIRE(camera.position.y < bounds.max.y);
+}
+
+TEST_CASE("The interior camera looks along the long axis")
+{
+    const Aabb bounds = hallBounds();
+    const Camera camera = interiorCamera(bounds);
+
+    const glm::vec3 forward = camera.target - camera.position;
+    // Down the hall, not across it: looking along the short axis would face a
+    // wall a few metres away and measure nothing about depth.
+    REQUIRE(std::abs(forward.x) > std::abs(forward.z));
+    REQUIRE(forward.y == Approx(0.0f));
+}
+
+TEST_CASE("The interior camera follows the long axis when it is Z")
+{
+    // Same hall turned ninety degrees. The axis is chosen from the bounds, so the
+    // shot must turn with it rather than staying pinned to X.
+    Aabb bounds{};
+    bounds.expand(glm::vec3(-6.0f, 0.0f, -20.0f));
+    bounds.expand(glm::vec3(6.0f, 12.0f, 20.0f));
+
+    const Camera camera = interiorCamera(bounds);
+    const glm::vec3 forward = camera.target - camera.position;
+
+    REQUIRE(std::abs(forward.z) > std::abs(forward.x));
+}
+
+TEST_CASE("Eye height is measured from the floor of the bounds")
+{
+    // A scene whose floor is not at y = 0. Measuring the fraction from the origin
+    // instead of from bounds.min would put the camera underground here.
+    Aabb bounds{};
+    bounds.expand(glm::vec3(-20.0f, 100.0f, -6.0f));
+    bounds.expand(glm::vec3(20.0f, 112.0f, 6.0f));
+
+    const Camera camera = interiorCamera(bounds, 0.25f);
+
+    REQUIRE(camera.position.y == Approx(103.0f));
+}
+
+TEST_CASE("The interior camera clip planes scale with the scene")
+{
+    const Camera small = interiorCamera(hallBounds());
+
+    Aabb large{};
+    large.expand(glm::vec3(-2000.0f, 0.0f, -600.0f));
+    large.expand(glm::vec3(2000.0f, 1200.0f, 600.0f));
+    const Camera big = interiorCamera(large);
+
+    REQUIRE(big.farPlane > small.farPlane);
+    REQUIRE(big.nearPlane > small.nearPlane);
+    // The far plane has to reach the end of the hall the camera is looking down,
+    // or the shot ends in clipped geometry.
+    REQUIRE(small.farPlane > glm::length(small.target - small.position));
+}
+
+TEST_CASE("An invalid bounds yields a usable interior camera rather than NaNs")
+{
+    const Camera camera = interiorCamera(Aabb{});
+
+    REQUIRE(camera.position.x == camera.position.x);
+    REQUIRE(camera.nearPlane > 0.0f);
+    REQUIRE(camera.farPlane > camera.nearPlane);
+}
+
+TEST_CASE("A degenerate interior bounds does not divide by zero")
+{
+    Aabb bounds{};
+    bounds.expand(glm::vec3(3.0f));
+    const Camera camera = interiorCamera(bounds);
+
+    REQUIRE(camera.position != camera.target);
+    REQUIRE(camera.nearPlane > 0.0f);
 }

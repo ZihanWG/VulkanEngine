@@ -47,6 +47,20 @@ struct MeshPrimitive {
     // primitive that produced geometry, because level 0 always exists.
     uint32_t lodBase = 0;
     uint32_t lodCount = 0;
+    // This primitive's own extent, in mesh-local space.
+    //
+    // The mesh-wide bounds are the union of these, which is all a whole-mesh
+    // draw needs. A scene that imports one RenderObject per primitive needs them
+    // apart: an object culled against the union of an entire building is an
+    // object that is never culled. Costs nothing to record -- the import already
+    // computed each primitive's extent on its way to the union.
+    //
+    // Last in the struct so the positional initialisers that predate it still
+    // mean what they say. That is a readability choice, not a compatibility one:
+    // the cooked .vemesh stores this struct verbatim and MeshCacheExpectation
+    // carries sizeof(MeshPrimitive) as primitiveStride, so growing it invalidates
+    // every existing cook rather than reading one at the wrong stride.
+    Aabb localBounds{};
 };
 
 struct GltfTextureInfo {

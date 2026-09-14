@@ -283,7 +283,7 @@ barriers, resource lifetimes and culling describing work that did not happen,
 and raises no validation error, because each individual Vulkan call is still
 legal.
 
-So after the default leg, the job renders 26 more configurations at ten frames
+So after the default leg, the job renders 27 more configurations at ten frames
 each and asserts, for every one: exit status 0, `--fail-on-validation-error`
 clean, a `Validation tally:` line present, and a backstop line reading zero
 order violations, zero unrecorded passes and zero declaration issues over a

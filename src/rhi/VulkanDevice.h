@@ -112,6 +112,13 @@ public:
     {
         return independentBlendEnabled_;
     }
+    // Counts fragment shader invocations, which is what the overdraw readout
+    // divides by pixel count. Optional in Vulkan and purely diagnostic: nothing
+    // in the frame path depends on it.
+    [[nodiscard]] bool pipelineStatisticsQueryEnabled() const
+    {
+        return pipelineStatisticsQueryEnabled_;
+    }
     [[nodiscard]] bool descriptorUpdateAfterBindEnabled() const
     {
         return descriptorUpdateAfterBindEnabled_;
@@ -199,6 +206,7 @@ private:
     uint32_t maxDrawIndirectCount_ = 0;
     bool samplerAnisotropyEnabled_ = false;
     float maxSamplerAnisotropy_ = 1.0f;
+    bool pipelineStatisticsQueryEnabled_ = false;
 };
 
 } // namespace ve::rhi

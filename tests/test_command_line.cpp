@@ -2,6 +2,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstddef>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -183,29 +185,80 @@ TEST_CASE("Scene preset defaults to the built-in scene", "[command-line][scene]"
 
 TEST_CASE("Every scene preset name parses", "[command-line][scene]")
 {
-    struct Case {
-        const char* name;
-        ve::ScenePreset preset;
-    };
+    // Walks ve::scenePresets() rather than a list copied into this file. The
+    // copied version of this test named six of the seven presets that existed
+    // when it was written -- gpu-stress was missing -- and still reported
+    // success, so it certified coverage it did not have. A test whose subject is
+    // "every X" must read the set of X from the code under test.
+    const std::span<const ve::ScenePresetName> presets = ve::scenePresets();
+    REQUIRE(presets.size() >= 7);
 
-    const Case cases[] = {
-        {"default", ve::ScenePreset::Default},
-        {"stress", ve::ScenePreset::Stress},
-        {"fragment-stress", ve::ScenePreset::FragmentStress},
-        {"occlusion", ve::ScenePreset::Occlusion},
-        {"cornell", ve::ScenePreset::CornellBox},
-        {"sunlit", ve::ScenePreset::SunlitYard},
-    };
-
-    for (const Case& testCase : cases) {
+    for (const ve::ScenePresetName& entry : presets) {
         LaunchOptions config{};
-        REQUIRE(parse({"--scene", testCase.name}, config));
-        REQUIRE(config.scene == testCase.preset);
+        REQUIRE(parse({"--scene", std::string(entry.name)}, config));
+        REQUIRE(config.scene == entry.preset);
 
         // Round trip: the name a preset reports must parse back to that preset,
         // or an error message would name a different scene than the one running.
-        REQUIRE(ve::scenePresetName(testCase.preset) == testCase.name);
+        REQUIRE(ve::scenePresetName(entry.preset) == entry.name);
     }
+}
+
+TEST_CASE("Every scene preset round-trips through its own name", "[command-line][scene]")
+{
+    // Walks the ENUM, where the test above walks the table -- the two together
+    // are what make "every preset" true in both directions. A preset added to the
+    // enum and forgotten in the table is not a parse error: scenePresetName falls
+    // back to "default" for it, so it would run under the default scene's name
+    // and be quoted as a measurement of the default scene.
+    for (size_t index = 0; index < static_cast<size_t>(ve::ScenePreset::Count); ++index) {
+        const auto preset = static_cast<ve::ScenePreset>(index);
+        INFO("preset index " << index);
+
+        ve::ScenePreset roundTripped = ve::ScenePreset::Count;
+        REQUIRE(ve::parseScenePreset(ve::scenePresetName(preset), roundTripped));
+        CHECK(roundTripped == preset);
+    }
+}
+
+TEST_CASE("The scene preset table has no duplicate names or presets", "[command-line][scene]")
+{
+    // The round trip above passes for a table that maps two names onto one
+    // preset: the first entry wins the lookup and the second never parses back to
+    // itself. Checking both directions for uniqueness is what makes "one table,
+    // read both directions" an actual guarantee.
+    const std::span<const ve::ScenePresetName> presets = ve::scenePresets();
+
+    for (size_t i = 0; i < presets.size(); ++i) {
+        for (size_t j = i + 1; j < presets.size(); ++j) {
+            CHECK(presets[i].name != presets[j].name);
+            CHECK(presets[i].preset != presets[j].preset);
+        }
+    }
+}
+
+TEST_CASE("The overdraw readout is off unless asked for", "[command-line]")
+{
+    // It brackets the main geometry with a pipeline statistics query, so it is
+    // not something a measurement run should carry unasked.
+    LaunchOptions defaults{};
+    CHECK_FALSE(defaults.overdraw);
+
+    LaunchOptions config{};
+    REQUIRE(parse({"--overdraw"}, config));
+    CHECK(config.overdraw);
+}
+
+TEST_CASE("The sample scene is selectable by name", "[command-line][scene]")
+{
+    // Parsing must succeed on every build, including one without the fetched
+    // asset: whether the scene can be LOADED is a property of the build, and it
+    // is reported at load time with a message that says how to fix it. Refusing
+    // the name here instead would make --scene's error say the preset does not
+    // exist, which is a different and wronger thing.
+    LaunchOptions config{};
+    REQUIRE(parse({"--scene", "sponza"}, config));
+    REQUIRE(config.scene == ve::ScenePreset::Sponza);
 }
 
 TEST_CASE("An unknown scene name is rejected", "[command-line][scene]")

@@ -408,6 +408,7 @@ void Renderer::createPipeline()
     const auto pipelineBuildStart = std::chrono::steady_clock::now();
 
     createMainGraphicsPipeline();
+    createDepthPrepassPipelines();
     createSkinnedPipeline();
     createTransparentPipeline();
     createSkyboxPipeline();
@@ -498,6 +499,17 @@ void Renderer::createMainGraphicsPipeline()
     // from a tiler, not a general one. The store keys on cullMode, so flipping
     // this is a different pipeline rather than a mutated one.
     pipelineInfo.cullMode = useBackfaceCulling_ ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
+    // LESS_OR_EQUAL only when a prepass has already written this geometry's
+    // depth: every opaque fragment then arrives at a depth exactly equal to the
+    // one in the buffer, and LESS would reject all of them.
+    //
+    // Not made unconditional. LESS and LESS_OR_EQUAL differ for coplanar
+    // surfaces -- first writer wins versus last writer wins -- and this scene
+    // has authored coplanar geometry (see kPortfolioFloorSinkDepth for the
+    // trouble that causes). Switching only with the prepass keeps the feature
+    // inert when it is off, which is what makes the A/B a measurement of the
+    // prepass rather than of a tie-break rule.
+    pipelineInfo.depthCompareOp = useDepthPrepass_ ? VK_COMPARE_OP_LESS_OR_EQUAL : VK_COMPARE_OP_LESS;
 
     pipelineInfo.pipelineCache = context_.pipelineCache();
     pipeline_ = pipelineStore_.get(context_.vkDevice(), pipelineInfo, "MainGraphicsPipeline");
@@ -512,6 +524,111 @@ void Renderer::createMainGraphicsPipeline()
     // stay valid across a switch between them.
     pipelineInfo.cullMode = VK_CULL_MODE_NONE;
     pipelineDoubleSided_ = pipelineStore_.get(context_.vkDevice(), pipelineInfo, "MainGraphicsPipelineDoubleSided");
+}
+
+void Renderer::createDepthPrepassPipelines()
+{
+    depthPrepassPipeline_.reset();
+    depthPrepassDoubleSidedPipeline_.reset();
+    maskedDepthPrepassPipeline_.reset();
+    maskedDepthPrepassDoubleSidedPipeline_.reset();
+    if (!useDepthPrepass_) {
+        // Not built when off, so the feature costs nothing it does not use --
+        // including two pipeline compilations at startup.
+        return;
+    }
+
+    const VkVertexInputBindingDescription binding = renderer::vertexBindingDescription();
+    const std::array<VkVertexInputAttributeDescription, 5> attributes = renderer::vertexAttributeDescriptions();
+    const VkPushConstantRange pushConstantRange{
+        VK_SHADER_STAGE_VERTEX_BIT, 0, static_cast<uint32_t>(sizeof(PushConstants))};
+
+    rhi::VulkanPipelineCreateInfo pipelineInfo{};
+    pipelineInfo.vertexShaderPath = shaderPath("depth_prepass.vert.spv");
+    // No fragment shader and no colour attachment. That is the entire point: the
+    // prepass pays vertex and rasterization cost to save the main pass its
+    // fragment cost, so adding either back would defeat it.
+    pipelineInfo.enableColorAttachment = false;
+    pipelineInfo.depthFormat = swapchain_.depthFormat();
+    pipelineInfo.vertexBindings = std::span<const VkVertexInputBindingDescription>(&binding, 1);
+    // Position only. The remaining four attributes are declared by the vertex
+    // layout but unread here, and binding them would make the pipeline fetch
+    // normals and tangents nothing consumes.
+    pipelineInfo.vertexAttributes = std::span<const VkVertexInputAttributeDescription>(attributes.data(), 1);
+    pipelineInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&pushConstantRange, 1);
+    pipelineInfo.enableDepth = true;
+    pipelineInfo.depthWriteEnable = true;
+    // No depth bias, unlike the shadow pipelines. Their bias exists to separate
+    // caster from receiver; here the depth this writes has to be the SAME value
+    // the main pass computes, or its LESS_OR_EQUAL test rejects the surface that
+    // wrote it.
+    pipelineInfo.cullMode = useBackfaceCulling_ ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
+    pipelineInfo.pipelineCache = context_.pipelineCache();
+    depthPrepassPipeline_ = pipelineStore_.get(context_.vkDevice(), pipelineInfo, "DepthPrepassPipeline");
+
+    // The cull mode has to track the main pass's per-batch choice exactly. A
+    // double-sided batch culled here would leave holes in the prepass depth,
+    // which costs a saving; a single-sided batch NOT culled here would write a
+    // back face's depth in front of its own front face, and the main pass would
+    // then reject the front face and the surface would vanish.
+    pipelineInfo.cullMode = VK_CULL_MODE_NONE;
+    depthPrepassDoubleSidedPipeline_ =
+        pipelineStore_.get(context_.vkDevice(), pipelineInfo, "DepthPrepassPipelineDoubleSided");
+
+    createMaskedDepthPrepassPipeline(binding, attributes);
+}
+
+void Renderer::createMaskedDepthPrepassPipeline(const VkVertexInputBindingDescription& binding,
+                                                const std::array<VkVertexInputAttributeDescription, 5>& attributes)
+{
+    // Same gate as createMaskedShadowPipeline: the cutout test reads the bindless
+    // base-color array, so without the heap there is no way to run it. MASK
+    // geometry then stays out of the prepass, which costs a saving and breaks
+    // nothing.
+    if (!isBindlessMaterialTextureActive() || bindlessTextureHeap_.descriptorSetLayout() == VK_NULL_HANDLE) {
+        maskedDepthPrepassPipeline_.reset();
+        maskedDepthPrepassDoubleSidedPipeline_.reset();
+        return;
+    }
+
+    // Position drives the depth write, UV feeds the cutout sample. Locations 0
+    // and 2, so this cannot be a prefix subspan of the shared attribute list.
+    const std::array<VkVertexInputAttributeDescription, 2> maskedAttributes{attributes[0], attributes[2]};
+    const VkDescriptorSetLayout bindlessLayout = bindlessTextureHeap_.descriptorSetLayout();
+    const VkPushConstantRange maskedPushConstantRange{
+        VK_SHADER_STAGE_VERTEX_BIT, 0, static_cast<uint32_t>(sizeof(PushConstants))};
+
+    rhi::VulkanPipelineCreateInfo maskedInfo{};
+    maskedInfo.vertexShaderPath = shaderPath("depth_prepass_masked.vert.spv");
+    // Shared with the shadow path unchanged: the cutout test is the same test
+    // whatever wrote the depth, and it reads the array at set 0 either way.
+    maskedInfo.fragmentShaderPath = shaderPath("shadow_masked.frag.spv");
+    maskedInfo.enableColorAttachment = false;
+    maskedInfo.depthFormat = swapchain_.depthFormat();
+    maskedInfo.vertexBindings = std::span<const VkVertexInputBindingDescription>(&binding, 1);
+    maskedInfo.vertexAttributes =
+        std::span<const VkVertexInputAttributeDescription>(maskedAttributes.data(), maskedAttributes.size());
+    maskedInfo.descriptorSetLayouts = std::span<const VkDescriptorSetLayout>(&bindlessLayout, 1);
+    maskedInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&maskedPushConstantRange, 1);
+    maskedInfo.enableDepth = true;
+    maskedInfo.depthWriteEnable = true;
+    // No depth bias, unlike the masked SHADOW pipeline this borrows a fragment
+    // stage from. Its bias separates caster from receiver; the depth written here
+    // has to equal what the main pass computes, or LESS_OR_EQUAL rejects the very
+    // surface that wrote it.
+    //
+    // Two cull modes, exactly as the opaque pair has, and for the same reason:
+    // the prepass must cull whatever the main pass culls for that batch. Cutout
+    // foliage is usually authored two-sided, but "usually" is not a guarantee the
+    // recorder can rely on, and getting it wrong for a single-sided batch writes
+    // a back face in front of its own front face and loses the surface.
+    maskedInfo.cullMode = useBackfaceCulling_ ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
+    maskedInfo.pipelineCache = context_.pipelineCache();
+    maskedDepthPrepassPipeline_ = pipelineStore_.get(context_.vkDevice(), maskedInfo, "MaskedDepthPrepassPipeline");
+
+    maskedInfo.cullMode = VK_CULL_MODE_NONE;
+    maskedDepthPrepassDoubleSidedPipeline_ =
+        pipelineStore_.get(context_.vkDevice(), maskedInfo, "MaskedDepthPrepassPipelineDoubleSided");
 }
 
 void Renderer::createProbeCapturePipeline()

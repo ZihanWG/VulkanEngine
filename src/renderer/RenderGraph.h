@@ -84,6 +84,7 @@ enum class RenderPassType {
     IrradianceProbes,
     MainGpuCulling,
     DepthPyramid,
+    DepthPrepass,
     MainHdr,
     Ssr,
     Gtao,
@@ -470,6 +471,10 @@ struct RenderGraphFrameResources {
     // Declares the two-phase occlusion passes (mid-frame depth pyramid, cull
     // phase 2, second main HDR pass) for this frame.
     bool twoPhaseOcclusionEnabled = false;
+    // Declares the depth prepass for this frame. See
+    // RuntimeSettings::enableDepthPrepass; it also selects the main pass's depth
+    // load op, because the prepass is what filled the buffer.
+    bool depthPrepassEnabled = false;
     // Declares the end-of-frame Hi-Z pyramid build. False when the build is
     // skipped -- occlusion culling off or suspended, and no VSM page marking to
     // feed -- in which case the recorder only invalidates the pyramid and
@@ -693,6 +698,17 @@ public:
     void endProbeCapturePass();
     void beginMainGpuCullingPass();
     void endMainGpuCullingPass();
+    // Depth-only replay of the opaque bucket. Declared and recorded only when
+    // RuntimeSettings::enableDepthPrepass is on; when it is off the pass does not
+    // exist in the graph at all, so the backstop's "declared but never recorded"
+    // check keeps meaning what it says.
+    void beginDepthPrepass();
+    void endDepthPrepass();
+    [[nodiscard]] bool hasDepthPrepass() const
+    {
+        return frame_.passIndices.depthPrepass != kInvalidRenderGraphHandle;
+    }
+
     void beginMainHdrPass();
     void endMainHdrPass();
     // Two-phase occlusion: mid-frame pyramid build, candidate re-test, and the
@@ -876,6 +892,7 @@ private:
         ProbeCapture,
         IrradianceProbes,
         MainGpuCulling,
+        DepthPrepass,
         MainHdr,
         MainGpuCullingPhase2,
         MainHdrPhase2,
@@ -964,6 +981,7 @@ private:
         uint32_t probeCapture = kInvalidRenderGraphHandle;
         uint32_t irradianceProbes = kInvalidRenderGraphHandle;
         uint32_t mainGpuCulling = kInvalidRenderGraphHandle;
+        uint32_t depthPrepass = kInvalidRenderGraphHandle;
         uint32_t mainHdr = kInvalidRenderGraphHandle;
         uint32_t depthPyramidMid = kInvalidRenderGraphHandle;
         uint32_t mainGpuCullingPhase2 = kInvalidRenderGraphHandle;
@@ -1107,7 +1125,10 @@ private:
     [[nodiscard]] VkExtent2D sceneRenderArea(VkExtent2D resourceExtent) const;
     // Shared main-HDR dynamic-rendering setup; loadExisting selects LOAD ops for
     // the phase-2 pass instead of the phase-1 clears.
-    void beginMainHdrRendering(bool loadExisting);
+    // `loadExisting` covers the colour attachments; `loadDepth` is separate
+    // because the depth prepass makes the two differ -- it has already written
+    // depth that must be kept, while the colour targets still need clearing.
+    void beginMainHdrRendering(bool loadExisting, bool loadDepth);
     void beginSwapchainRendering(VkClearValue clearValue, VkAttachmentLoadOp loadOp);
 
     FrameState frame_{};

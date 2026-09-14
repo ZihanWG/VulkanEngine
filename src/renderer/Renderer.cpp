@@ -149,6 +149,7 @@ Renderer::Renderer(Window& window, const RendererStartupOverrides& overrides) : 
     // used, so a run started from a sweep configuration says so on screen.
     // Before any mesh is created, which is the only moment this can take effect.
     buildMeshletTables_ = overrides.buildMeshlets;
+    sampleSceneRequested_ = overrides.loadSampleScene;
     runtimeSettingsPathWasRequested_ = overrides.settingsPath.has_value();
     runtimeSettingsPath_ = runtimeSettingsPathWasRequested_ ? *overrides.settingsPath : defaultRuntimeSettingsPath();
     sceneDocumentPath_ = defaultSceneDocumentPath();
@@ -176,6 +177,7 @@ Renderer::Renderer(Window& window, const RendererStartupOverrides& overrides) : 
     frameOcclusionTested_.assign(frames_.size(), 0u);
     screenshotCapture_.initialize(context_, static_cast<uint32_t>(frames_.size()), portfolioScreenshotDirectory());
     gpuProfiler_.initialize(context_, static_cast<uint32_t>(frames_.size()));
+    overdrawQuery_.initialize(context_, static_cast<uint32_t>(frames_.size()));
     swapchain_.initialize(context_, window_.framebufferExtent());
     // Before anything screen-sized is created below: every one of those targets
     // reads its size from renderResolution_.
@@ -606,6 +608,7 @@ void Renderer::drawFrame()
     imagesInFlight_[imageIndex] = submitTimelineValue;
 
     gpuProfiler_.markFrameSubmitted(currentFrame_);
+    overdrawQuery_.markFrameSubmitted(currentFrame_);
     capturePreviousFrameMatrices();
 
     VkPresentInfoKHR presentInfo{};
@@ -1277,6 +1280,33 @@ void Renderer::emitRecordCpuBreakdown() const
     Logger::info(message.str());
 }
 
+void Renderer::emitOverdrawReadout(uint32_t frameIndex)
+{
+    if (!overdrawReadoutEnabled_) {
+        return;
+    }
+    if (!overdrawQuery_.available()) {
+        // Once, not every second: a device without the feature would otherwise
+        // fill the log with the same sentence.
+        if (!overdrawUnavailableReported_) {
+            overdrawUnavailableReported_ = true;
+            Logger::warn("Overdraw readout unavailable: " + overdrawQuery_.unavailableReason());
+        }
+        return;
+    }
+
+    renderer::OverdrawQuery::FrameResult overdraw{};
+    if (!overdrawQuery_.readFrame(frameIndex, overdraw) || !overdraw.valid) {
+        return;
+    }
+
+    std::ostringstream message;
+    message << std::fixed << std::setprecision(3) << "Overdraw: " << overdraw.invocationsPerPixel()
+            << " fragment shader invocations per rendered pixel (" << overdraw.fragmentInvocations
+            << " invocations over " << overdraw.renderedPixels << " pixels, opaque scene geometry only)";
+    Logger::info(message.str());
+}
+
 void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
 {
     renderer::GpuProfiler::FrameResults results{};
@@ -1292,6 +1322,11 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
     }
 
     lastGpuTimingPrintSeconds_ = now;
+
+    // Before the GPU timings block and as its own line. Anything two-space
+    // indented inside that block is parsed as a GPU pass by
+    // tools/dev/measure_gpu.py, and this is a ratio rather than a time.
+    emitOverdrawReadout(frameIndex);
 
     std::ostringstream message;
     message << std::fixed << std::setprecision(3) << "GPU timings:\n"
@@ -2013,7 +2048,9 @@ std::string Renderer::materialDebugLabel(const renderer::RenderObject& object) c
     if (!primitives.empty()) {
         std::vector<const renderer::Material*> uniqueMaterials;
         uniqueMaterials.reserve(primitives.size());
-        for (const renderer::MeshPrimitive& primitive : primitives) {
+        const size_t primitiveEnd = object.primitiveEndIndex();
+        for (size_t index = object.firstPrimitiveIndex(); index < primitiveEnd; ++index) {
+            const renderer::MeshPrimitive& primitive = primitives[index];
             const renderer::Material* material = resolveMaterial(object, &primitive);
             if (!material) {
                 continue;
@@ -2173,6 +2210,10 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
         useTwoPhaseOcclusion_ = settings.enableTwoPhaseOcclusion;
         useLayeredCascades_ = settings.enableLayeredCascades;
         useBackfaceCulling_ = settings.enableBackfaceCulling;
+        // Startup-only for the same reason: it selects the main pipeline's depth
+        // compare op, and the store keys on that, so a runtime flip would need
+        // every main pipeline rebuilt rather than a flag re-read.
+        useDepthPrepass_ = settings.enableDepthPrepass;
         useAdaptiveOcclusion_ = settings.enableAdaptiveOcclusion;
         useAsyncCompute_ = settings.enableAsyncCompute;
         useBindlessMaterialTextures_ = settings.enableBindlessMaterialTextures;
@@ -2242,6 +2283,7 @@ RuntimeSettings Renderer::captureRuntimeSettings() const
     settings.enableTwoPhaseOcclusion = useTwoPhaseOcclusion_;
     settings.enableLayeredCascades = useLayeredCascades_;
     settings.enableBackfaceCulling = useBackfaceCulling_;
+    settings.enableDepthPrepass = useDepthPrepass_;
     settings.enableAdaptiveOcclusion = useAdaptiveOcclusion_;
     settings.useClusteredLighting = useClusteredLighting_;
     settings.enableAsyncCompute = useAsyncCompute_;

@@ -46,7 +46,19 @@ CpuMeshData makeMesh(std::string name, uint32_t vertexCount, uint32_t indexCount
         mesh.indices[i] = i % vertexCount;
     }
     mesh.indexCount = indexCount;
-    mesh.primitives.push_back(MeshPrimitive{0, indexCount, 3, 0, 1});
+    MeshPrimitive primitive{};
+    primitive.firstIndex = 0;
+    primitive.indexCount = indexCount;
+    primitive.materialIndex = 3;
+    primitive.lodBase = 0;
+    primitive.lodCount = 1;
+    // Set to something asymmetric and non-default: the per-primitive bounds are
+    // what a per-primitive RenderObject culls against, so a cook that dropped
+    // them would turn every such object into one that is never culled, and a
+    // round trip that left them at their default would not notice.
+    primitive.localBounds.expand({-0.5f, -1.5f, -2.5f});
+    primitive.localBounds.expand({3.5f, 4.5f, 5.5f});
+    mesh.primitives.push_back(primitive);
     mesh.lods.push_back(MeshLod{0, indexCount});
     mesh.localBounds.expand({-1.0f, -2.0f, -3.0f});
     mesh.localBounds.expand({4.0f, 5.0f, 6.0f});
@@ -76,6 +88,8 @@ TEST_CASE("A cooked mesh round-trips exactly", "[mesh-cache]")
         }
         REQUIRE(read[mesh].primitives.size() == 1);
         CHECK(read[mesh].primitives[0].materialIndex == 3);
+        CHECK(read[mesh].primitives[0].localBounds.min == written[mesh].primitives[0].localBounds.min);
+        CHECK(read[mesh].primitives[0].localBounds.max == written[mesh].primitives[0].localBounds.max);
         REQUIRE(read[mesh].lods.size() == 1);
         CHECK(read[mesh].lods[0].indexCount == written[mesh].indexCount);
         CHECK(read[mesh].localBounds.min == written[mesh].localBounds.min);

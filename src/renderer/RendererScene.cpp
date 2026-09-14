@@ -76,42 +76,29 @@ void Renderer::createScene()
     resetSceneState();
     createSceneSharedResources();
 
-#if defined(VULKAN_ENGINE_SAMPLE_SCENE)
-    // A fetched production-scale scene is the reason someone turned the fetch on,
-    // so it becomes the startup scene when present. tryLoadGltfScene appends the
-    // portfolio showcase itself, and returns false without disturbing anything if
-    // the import fails, in which case the normal default below still runs.
-    if (tryLoadGltfScene()) {
-        // Framed from the scene's own bounds, not from the portfolio preset. That
-        // preset is positioned for the sphere showcase, and pointing it at a
-        // fetched scene puts the near plane inside the geometry.
-        renderer::Aabb sceneBounds{};
-        for (const renderer::RenderObject& object : renderObjects_) {
-            if (object.sourceType == renderer::RenderObjectSourceType::ImportedGltf) {
-                sceneBounds.merge(object.worldBounds());
-            }
+    // The fetched scene is built here rather than swapped in later, because the
+    // bindless heap and the material descriptor set are sized by the constructor
+    // and neither has a resize path. It is deliberately NOT the default: it was
+    // once the startup scene whenever the fetch had run, which made "the default
+    // scene" name two different scenes depending on a configure flag, and
+    // docs/profiling.md's corpus rule -- every quoted timing carries hardware,
+    // scene, resolution and statistic -- cannot hold if a scene stamp is
+    // ambiguous. --scene sponza is now the only way in.
+    if (sampleSceneRequested_) {
+        std::string status;
+        if (buildSampleScene(status)) {
+            sampleSceneLoaded_ = true;
+            Logger::info(status);
+            return;
         }
-
-        const VkExtent2D extent = renderResolution_.extent();
-        const float aspect =
-            extent.height == 0 ? 1.0f : static_cast<float>(extent.width) / static_cast<float>(extent.height);
-        // A starting point that guarantees the scene is visible, not a composed
-        // shot. Framing the whole volume of an interior scene shows it from
-        // outside; an attempt to place the camera inside instead put it in the
-        // masonry, because Sponza's bounds include its own outer walls. Bounds
-        // alone cannot compose an interior view, so this stops at "you can see
-        // it" and leaves composition to the editor camera.
-        camera_ = renderer::framedCamera(sceneBounds, aspect, glm::vec3(0.55f, -0.28f, -1.0f));
-        csmSettings_.nearPlane = camera_.nearPlane;
-        csmSettings_.farPlane = camera_.farPlane;
-        return;
+        // Not fatal here: the caller checked sampleSceneAvailable() before
+        // construction and reports the failure with a better exit code than an
+        // exception out of a constructor would give. Falling through leaves a
+        // renderable scene behind, and loadScenePreset refuses to call it Sponza.
+        Logger::error(status);
     }
-    Logger::warn("Fetched sample scene failed to import; falling back to the portfolio showcase.");
-#endif
 
-    // The portfolio sphere showcase is the default editor scene. The glTF import
-    // (tryLoadGltfScene) and the cube fallback remain available through the
-    // scene-loading UI; they are just no longer the startup default.
+    // The portfolio sphere showcase is the default editor scene, in every build.
     makeSceneBuilder().appendPortfolioShowcase(renderObjects_);
     if (renderObjects_.empty()) {
         Logger::warn("Portfolio showcase scene unavailable; using built-in cube fallback scene.");
@@ -204,80 +191,161 @@ void Renderer::createSceneSharedResources()
     csmSettings_.farPlane = camera_.farPlane;
 }
 
-bool Renderer::tryLoadGltfScene()
+bool sampleSceneAvailable()
 {
-    // The optionally fetched production-scale scene first, then the committed
-    // test mesh. VULKAN_ENGINE_SAMPLE_SCENE is only defined when the configure-time
-    // fetch produced a complete scene (see cmake/FetchSampleScene.cmake), so an
-    // ordinary build behaves exactly as before.
-    std::vector<std::filesystem::path> modelCandidates;
 #if defined(VULKAN_ENGINE_SAMPLE_SCENE)
-    modelCandidates.emplace_back(VULKAN_ENGINE_SAMPLE_SCENE);
+    std::error_code error;
+    return std::filesystem::is_regular_file(std::filesystem::path(VULKAN_ENGINE_SAMPLE_SCENE), error);
+#else
+    return false;
 #endif
-    modelCandidates.emplace_back(assetPath("models/test_mesh.gltf"));
-    modelCandidates.emplace_back(assetPath("models/test_mesh.glb"));
+}
 
-    for (const std::filesystem::path& modelPath : modelCandidates) {
-        if (!std::filesystem::exists(modelPath)) {
-            continue;
-        }
+std::string sampleSceneUnavailableMessage()
+{
+#if defined(VULKAN_ENGINE_SAMPLE_SCENE)
+    return "--scene sponza: this build was configured to fetch the sample scene, but " +
+           std::string(VULKAN_ENGINE_SAMPLE_SCENE) +
+           " is not there. Re-run cmake to fetch it again, or delete the fetched-assets directory and reconfigure.";
+#else
+    return std::string("--scene sponza: this build has no sample scene. Reconfigure with "
+                       "-DVULKAN_ENGINE_FETCH_SAMPLE_SCENE=ON (a configure-time download) and rebuild. "
+                       "See docs/asset_load_baseline.md.");
+#endif
+}
 
-        try {
-            // Parse, LOD construction, and mesh buffer upload -- Mesh::createFromGltf
-            // does all three, so this is deliberately reported as one "import"
-            // number rather than split into a parse figure the boundary cannot
-            // actually support. A profile says LOD construction dominates it, which
-            // is why the job system is handed in here.
-            const auto gltfImportStart = std::chrono::steady_clock::now();
-            renderer::LoadedGltfAsset loadedAsset =
-                renderer::Mesh::createFromGltf(context_, commandContext_, modelPath, &jobSystem_, buildMeshletTables_);
-            assetLoadStats_.timings.gltfImportMs +=
-                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - gltfImportStart).count();
-            createImportedGltfTextures(loadedAsset.textures, loadedAsset.materials);
-            createImportedGltfMaterials(loadedAsset.materials);
-            importedMeshes_ = std::move(loadedAsset.meshes);
+bool Renderer::buildSampleScene([[maybe_unused]] std::string& status)
+{
+#if !defined(VULKAN_ENGINE_SAMPLE_SCENE)
+    status = sampleSceneUnavailableMessage();
+    return false;
+#else
+    const std::filesystem::path modelPath(VULKAN_ENGINE_SAMPLE_SCENE);
+    if (!sampleSceneAvailable()) {
+        status = sampleSceneUnavailableMessage();
+        return false;
+    }
 
-            renderObjects_.reserve(loadedAsset.nodeMeshInstances.size() + 8);
-            for (const renderer::GltfNodeMeshInstance& instance : loadedAsset.nodeMeshInstances) {
-                if (instance.meshIndex >= importedMeshes_.size() || !importedMeshes_[instance.meshIndex].valid()) {
-                    Logger::warn("Skipping imported glTF RenderObject with invalid mesh index " +
-                                 std::to_string(instance.meshIndex) + ".");
-                    continue;
-                }
+    try {
+        // Parse, LOD construction, and mesh buffer upload -- Mesh::createFromGltf
+        // does all three, so this is deliberately reported as one "import"
+        // number rather than split into a parse figure the boundary cannot
+        // actually support. A profile says LOD construction dominates it, which
+        // is why the job system is handed in here.
+        const auto gltfImportStart = std::chrono::steady_clock::now();
+        renderer::LoadedGltfAsset loadedAsset =
+            renderer::Mesh::createFromGltf(context_, commandContext_, modelPath, &jobSystem_, buildMeshletTables_);
+        assetLoadStats_.timings.gltfImportMs +=
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - gltfImportStart).count();
+        createImportedGltfTextures(loadedAsset.textures, loadedAsset.materials);
+        createImportedGltfMaterials(loadedAsset.materials);
+        importedMeshes_ = std::move(loadedAsset.meshes);
 
+        // One object PER PRIMITIVE, not per node. Sponza is a single node holding
+        // 103 primitives, and as one object it gave every per-object decision in
+        // the engine exactly one thing to decide: frustum culling tested the
+        // bounds of the whole building, occlusion culling had one AABB, and the
+        // punctual and cascade shadow caches held one key. The three CPU-side
+        // questions this scene was fetched to answer are all per-object, so on a
+        // single object they would have measured nothing.
+        //
+        // Draw submission does not change -- collectDrawItemsForObject already
+        // emitted one DrawItem per primitive, so the same 103 draws are issued
+        // from the same two buffers. What changes is how many independent things
+        // the frame has to reason about before it issues them.
+        for (const renderer::GltfNodeMeshInstance& instance : loadedAsset.nodeMeshInstances) {
+            if (instance.meshIndex >= importedMeshes_.size() || !importedMeshes_[instance.meshIndex].valid()) {
+                Logger::warn("Skipping imported glTF RenderObject with invalid mesh index " +
+                             std::to_string(instance.meshIndex) + ".");
+                continue;
+            }
+
+            const renderer::Mesh& instanceMesh = importedMeshes_[instance.meshIndex];
+            const size_t primitiveCount = instanceMesh.primitives().size();
+            // A mesh with no primitive table draws whole, as one object. That is
+            // the built-in and skinned geometry, not an imported scene.
+            const size_t objectCount = primitiveCount == 0 ? 1 : primitiveCount;
+            renderObjects_.reserve(renderObjects_.size() + objectCount);
+
+            for (size_t primitive = 0; primitive < objectCount; ++primitive) {
                 renderer::RenderObject importedObject{};
                 importedObject.debugId = allocateRenderObjectDebugId();
                 importedObject.sceneObjectId = importedObject.debugId;
-                importedObject.mesh = &importedMeshes_[instance.meshIndex];
+                importedObject.mesh = &instanceMesh;
+                importedObject.primitiveIndex = primitiveCount == 0 ? -1 : static_cast<int>(primitive);
                 importedObject.material =
                     importedMaterials_.empty() ? &materialVariants_.at(0) : &importedMaterials_.front();
                 if (!importedMaterials_.empty()) {
                     importedObject.materialTable = importedMaterials_.data();
                     importedObject.materialCount = importedMaterials_.size();
                 }
-                importedObject.debugName = instance.debugName.empty() ? "Imported glTF Node" : instance.debugName;
+                const std::string baseName = instance.debugName.empty() ? "Imported glTF Node" : instance.debugName;
+                importedObject.debugName =
+                    primitiveCount == 0 ? baseName : baseName + " [" + std::to_string(primitive) + "]";
                 importedObject.sourceType = renderer::RenderObjectSourceType::ImportedGltf;
                 importedObject.transform = renderer::Transform::fromMatrix(instance.transform);
                 importedObject.hideInPortfolio = true;
                 renderObjects_.push_back(std::move(importedObject));
             }
+        }
 
-            if (renderObjects_.empty()) {
-                throw std::runtime_error("Loaded glTF asset did not produce any valid RenderObjects.");
-            }
+        if (renderObjects_.empty()) {
+            throw std::runtime_error("Loaded glTF asset did not produce any valid RenderObjects.");
+        }
 
-            Logger::info("Loaded glTF scene: " + modelPath.string() + " with " +
-                         std::to_string(importedMeshes_.size()) + " mesh slot(s), " +
-                         std::to_string(renderObjects_.size()) + " render object(s), and " +
-                         std::to_string(importedMaterials_.size()) + " material(s).");
-            makeSceneBuilder().appendPortfolioShowcase(renderObjects_);
-            return true;
-        } catch (const std::exception& error) {
-            Logger::warn("Failed to load glTF mesh '" + modelPath.string() + "': " + error.what());
+        // Deliberately NO appendPortfolioShowcase here, which is what the old
+        // startup path did. A measurement scene that also contains the sphere
+        // showcase reports draw items, object counts and a frame time that belong
+        // to two scenes at once.
+        //
+        // The skinned demo rig goes for the same reason, and it is the one thing
+        // here that is not a RenderObject -- it lives in its own subsystem, so it
+        // does not show up in the object count and would have been easy to miss.
+        // It is a two-joint feature demo that stands at the origin, which inside
+        // Sponza is the middle of the atrium: it occludes the shot and puts an
+        // animated caster in a scene whose whole value is being static, real
+        // content. Still reachable from the debug UI checkbox.
+        showSkinnedMesh_ = false;
+
+        pinSampleSceneCamera();
+
+        status = "Loaded sample scene: " + modelPath.string() + " with " + std::to_string(importedMeshes_.size()) +
+                 " mesh slot(s), " + std::to_string(renderObjects_.size()) + " render object(s), and " +
+                 std::to_string(importedMaterials_.size()) + " material(s).";
+        return true;
+    } catch (const std::exception& error) {
+        status = "Failed to load sample scene '" + modelPath.string() + "': " + error.what();
+        return false;
+    }
+#endif
+}
+
+void Renderer::pinSampleSceneCamera()
+{
+    renderer::Aabb sceneBounds{};
+    for (const renderer::RenderObject& object : renderObjects_) {
+        if (object.sourceType == renderer::RenderObjectSourceType::ImportedGltf) {
+            sceneBounds.merge(object.worldBounds());
         }
     }
 
-    return false;
+    // An interior shot down the scene's long axis, not framedCamera's fit of the
+    // whole volume -- that one shows Sponza from outside the building, which is
+    // not a measurement of an interior and not a portfolio screenshot either.
+    // See renderer::interiorCamera for why the axis is what makes this safe.
+    camera_ = renderer::interiorCamera(sceneBounds);
+    editorCamera_.syncFromCamera(camera_);
+    csmSettings_.nearPlane = camera_.nearPlane;
+    csmSettings_.farPlane = camera_.farPlane;
+
+    // Logged because it is derived rather than authored: a measurement has to be
+    // able to say which camera produced it, and the next person to compose a shot
+    // needs somewhere to start from that is not a screenshot.
+    const auto vec3 = [](const glm::vec3& v) {
+        return "(" + std::to_string(v.x) + ", " + std::to_string(v.y) + ", " + std::to_string(v.z) + ")";
+    };
+    Logger::info("Sample scene camera: position " + vec3(camera_.position) + ", target " + vec3(camera_.target) +
+                 ", near " + std::to_string(camera_.nearPlane) + ", far " + std::to_string(camera_.farPlane) + ".");
 }
 
 void Renderer::resetPortfolioShowcaseObjectsToPreset()
@@ -1308,7 +1376,9 @@ std::vector<const renderer::Material*> Renderer::materialsForObject(const render
     if (object.mesh && object.mesh->hasSubMeshes()) {
         const std::span<const renderer::MeshPrimitive> primitives = object.mesh->primitives();
         materials.reserve(primitives.size());
-        for (const renderer::MeshPrimitive& primitive : primitives) {
+        const size_t primitiveEnd = object.primitiveEndIndex();
+        for (size_t index = object.firstPrimitiveIndex(); index < primitiveEnd; ++index) {
+            const renderer::MeshPrimitive& primitive = primitives[index];
             const renderer::Material* material = resolveMaterial(object, &primitive);
             if (!material) {
                 continue;
@@ -1411,7 +1481,7 @@ void Renderer::loadOcclusionTestScene()
     Logger::info(occlusionTestSceneStatus_);
 }
 
-void Renderer::loadScenePreset(ScenePreset preset)
+bool Renderer::loadScenePreset(ScenePreset preset, std::string& status)
 {
     // Not every loader tears the scene down through resetSceneState, so the
     // scene-policy lighting is put back here too. Cheap, and the failure it
@@ -1422,27 +1492,41 @@ void Renderer::loadScenePreset(ScenePreset preset)
     switch (preset) {
     case ScenePreset::Stress:
         loadStressScene();
-        return;
+        return true;
     case ScenePreset::FragmentStress:
         loadFragmentStressScene();
-        return;
+        return true;
     case ScenePreset::Occlusion:
         loadOcclusionTestScene();
-        return;
+        return true;
     case ScenePreset::CornellBox:
         loadCornellBoxScene();
-        return;
+        return true;
     case ScenePreset::SunlitYard:
         loadSunlitYardScene();
-        return;
+        return true;
     case ScenePreset::GpuStress:
         // Same scene, same camera, same loader -- only the two knobs differ.
         loadFragmentStressScene(renderer::kGpuStressLayerCount, renderer::kGpuStressLightCount);
-        return;
+        return true;
+    case ScenePreset::Sponza:
+        // Already built, by the constructor -- see
+        // RendererStartupOverrides::loadSampleScene for why it cannot be built
+        // here. This is not a no-op though: it confirms that the scene standing
+        // in front of the camera is the one that was named. Without the check, a
+        // caller that forgot to set the override would measure the portfolio
+        // showcase and report it under the name "sponza".
+        if (!sampleSceneLoaded_) {
+            status = sampleSceneUnavailableMessage();
+            return false;
+        }
+        return true;
     case ScenePreset::Default:
+    case ScenePreset::Count:
         break;
     }
     // Default is whatever createScene() already built; nothing to do.
+    return true;
 }
 
 void Renderer::loadStressScene()

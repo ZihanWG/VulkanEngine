@@ -147,10 +147,13 @@ Scene JSON does not currently serialize or restore:
 
 ## glTF And Portfolio Mode
 
-glTF loading remains unchanged. `Renderer::createScene()` still tries
-`assets/models/test_mesh.gltf`, then `.glb`, then the built-in fallback scene.
-Scene loading is applied after the runtime scene exists, so it edits matching
-objects rather than replacing the glTF or fallback creation path.
+`Renderer::createScene()` builds the portfolio showcase, falling back to the
+built-in cube scene if its materials are unavailable. The glTF path it used to
+try on startup is now reached only through `--scene sponza`, which imports the
+optionally fetched sample scene (see `docs/asset_load_baseline.md`);
+`assets/models/test_mesh.gltf` is no longer loaded automatically. Scene loading
+is applied after the runtime scene exists, so it edits matching objects rather
+than replacing the creation path.
 
 Portfolio showcase objects are still appended by
 `Renderer::addPortfolioShowcaseObjects()`. The save file may include those

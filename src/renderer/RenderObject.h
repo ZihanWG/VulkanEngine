@@ -4,8 +4,10 @@
 #include "renderer/Mesh.h"
 #include "renderer/Transform.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 
 namespace ve::renderer {
@@ -53,13 +55,88 @@ struct RenderObject {
     bool portfolioOnly = false;
     bool hideInPortfolio = false;
 
-    [[nodiscard]] Aabb worldBounds() const
+    // Which of the mesh's primitives this object draws. -1, the default, is the
+    // whole mesh, which is every procedural scene in the repository.
+    //
+    // A glTF scene can instead import one object PER PRIMITIVE. Sponza is one
+    // node holding 103 primitives, so as a single object it presented the culling
+    // and shadow-caching paths with exactly one thing to consider, whatever its
+    // real content was -- a frustum test against the bounds of an entire building
+    // rejects nothing, and the per-object shadow caches had one key. Draw
+    // submission was already per primitive (collectDrawItemsForObject), so this
+    // changes the granularity of the decisions ABOUT objects, not of the draws.
+    int primitiveIndex = -1;
+
+    // Half-open range of indices into mesh->primitives() that this object draws:
+    // [0, n) for a whole-mesh object, [k, k+1) for one primitive of one.
+    //
+    // The index matters, not just the primitive: DrawItem::submeshIndex addresses
+    // the mesh's own table, and meshLocalLodRange looks the LOD chain up through
+    // it. One accessor rather than the test repeated at each site, because a site
+    // that iterated mesh->primitives() directly would draw, light or label the
+    // whole building for an object that is one arch of it.
+    [[nodiscard]] size_t firstPrimitiveIndex() const
+    {
+        return primitiveIndex < 0 ? 0 : static_cast<size_t>(primitiveIndex);
+    }
+
+    [[nodiscard]] size_t primitiveEndIndex() const
+    {
+        if (!mesh) {
+            return 0;
+        }
+        const size_t available = mesh->primitives().size();
+        if (primitiveIndex < 0) {
+            return available;
+        }
+        // Clamped rather than trusted: a stale index would otherwise read past
+        // the span.
+        return std::min(available, firstPrimitiveIndex() + 1);
+    }
+
+    // The local extent this object is culled and lit against: the mesh's, or the
+    // single primitive's when it draws one.
+    //
+    // Every bounds this object has goes through here. The alternative -- each
+    // caller transforming mesh->localBounds() itself -- is what the per-primitive
+    // split had to repair: updateObjectTransformCache re-derived bounds that way
+    // for a good reason (it already had the matrix composed and did not want a
+    // second one), and so it kept handing the GPU cull the bounds of the whole
+    // building for every object. The frustum then rejected nothing, which looks
+    // exactly like a scene that happens to be fully visible. Hence the overload
+    // below: a caller with a matrix in hand can pass it in instead of opting out.
+    [[nodiscard]] Aabb localBounds() const
     {
         if (!mesh) {
             return {};
         }
 
-        return mesh->localBounds().transform(transform.modelMatrix());
+        if (primitiveIndex >= 0) {
+            const std::span<const MeshPrimitive> primitives = mesh->primitives();
+            const size_t index = firstPrimitiveIndex();
+            if (index < primitives.size() && primitives[index].localBounds.valid()) {
+                return primitives[index].localBounds;
+            }
+            // Falls through to the mesh bounds when the primitive has none -- an
+            // older cook, or geometry whose accessor carried no min/max. Too large
+            // a box over-includes rather than wrongly culling, which is the only
+            // safe direction to be wrong in here.
+        }
+
+        return mesh->localBounds();
+    }
+
+    [[nodiscard]] Aabb worldBounds(const glm::mat4& model) const
+    {
+        if (!mesh) {
+            return {};
+        }
+        return localBounds().transform(model);
+    }
+
+    [[nodiscard]] Aabb worldBounds() const
+    {
+        return worldBounds(transform.modelMatrix());
     }
 };
 

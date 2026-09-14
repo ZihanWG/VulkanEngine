@@ -109,6 +109,7 @@ They can usually be assigned by magnitude, because the two machines are an order
 | default scene, GPU frame | ~15–16 ms | 1.754 ms |
 | `MainHDRPass` | ~10 ms | 0.4–0.9 ms |
 | `--scene stress`, GPU frame | — | 1.024 ms |
+| `--scene sponza`, GPU frame | — | 5.363 ms at a 1200 MHz pin, 8.254 at 800 |
 
 A frame total in the teens is the M3. A `MainHDRPass` under a millisecond is the RTX. Where neither the label nor the magnitude settles it, the table says the hardware is not recorded rather than guessing — an unattributed number is less misleading than a confidently wrong attribution.
 
@@ -118,6 +119,131 @@ A frame total in the teens is the M3. A `MainHDRPass` under a millisecond is the
 - **Scene**, because `--scene stress` is CPU-bound here while `default` and `fragment-stress` are GPU-bound, so the same change reads differently on each.
 - **Resolution**, because the frame is fragment-bound and the harness defaults to 1280x720. `--scene gpu-stress` exists precisely because at that resolution every other preset gives a 1–2 ms frame the drift gate cannot resolve.
 - **Statistic**, because `QUOTED_PERCENTILE` is p10 and everything older is a median. On this hardware the median got a delta's *sign* wrong where p10 did not, so the two are not interchangeable and a number that does not say which it is cannot be compared with one that does.
+
+### The scene is now stamped on the run, not inferred from it
+
+Of the four stamps below, the scene was the one a log could not be asked for.
+`measure_gpu.py` passes `--scene` through to both sides of an A/B and then had no
+way to confirm it arrived, and its caveat section said only that the scene was
+"at launch defaults" — which stopped being true once a preset could be named on
+the command line.
+
+The renderer prints `Scene: <preset> at <WxH>` after the preset is built, so it
+reports what is on screen rather than what was asked for. The harness reads it
+into the report header and into `summary.json`, and **refuses to summarise an
+`ab` series whose runs disagree**. Nothing else in the report could catch that:
+the drift gate compares the control against itself, so two configurations
+rendering two different scenes can both be perfectly stable and still be
+uncomparable. A report that says `Scene: unreported` came from a binary older
+than the stamp and should not be quoted.
+
+### `--scene sponza`: the only preset that is content rather than construction
+
+Every other preset is procedural cubes and spheres laid out to provoke a
+particular bottleneck. Sponza is 103 primitives and 25 materials of real
+authored content, and it is the scene to reach for when the question is about
+content: depth complexity, material variety, LOD selection, or object-level
+culling on geometry that was not arranged to make the answer come out a
+particular way.
+
+It needs `-DVULKAN_ENGINE_FETCH_SAMPLE_SCENE=ON` and a cook (see
+`docs/asset_load_baseline.md`). Naming it on a build without the asset exits
+non-zero rather than falling back, so a series cannot quietly measure something
+else. It is not in CI: it has no usable pixel gate, and the sweep's admission
+rule is that a leg must change the shape of the frame graph rather than the
+volume of content.
+
+**Measured, RTX 3080 Ti Laptop, 1280x720, clocks pinned 1200/7001, p10 over 63
+samples:** `Frame total` 5.363 ms, `MainHDRPass` 4.270 ms, `RenderObjects` 4.195
+ms (99% of its parent, which is the immediate-mode behaviour described above).
+That is roughly three times the default scene and five times `--scene stress`,
+so the frame is comfortably large enough to measure against — which was the open
+question when the scene was added.
+
+#### It needs a much lower clock pin than any other scene: 800 MHz
+
+The gate is reachable here, but only well below the ceiling every other preset
+uses. Four `ab --repeat 2 --duration 75 --args --scene sponza --deterministic`
+series, identical but for the pin, each started from a 63 °C card:
+
+| graphics pin (memory 7001) | `Frame total` control drift |
+| --- | --- |
+| 1200 MHz | 5.1% |
+| 1000 MHz | 1.7% |
+| 900 MHz | 1.1% |
+| **800 MHz** | **0.16%** ✅ |
+
+This is the `--scene stress` rule taken further than it had been before: a pin is
+a ceiling, heavier load wants a lower one, and Sponza at 5–8 ms is the heaviest
+scene in the repository. 1200 was chosen before that was known, and 1100 — the
+value that works for `gpu-stress` — was never going to be enough.
+
+**Use `-Mhz 800 -MemMhz 7001` for this scene.** Absolutes move a lot with the
+pin (the same frame reads 5.363 ms at 1200 and 8.254 ms at 800), so they are only
+comparable within one pin; percentages and deltas are what carry across.
+
+Three other explanations were tested first and all three are wrong, so they do
+not need re-testing. The clocks held at their pin throughout with no throttle
+reason ever active, so this was never the clock wander the pin exists to remove.
+`--deterministic` was tried on the theory that the orbiting demo lights and the
+exposure feedback made the content vary across a 75-second window: it tripled the
+sample count and improved every per-pass drift by an order of magnitude, and made
+frame-total drift **worse**. And it is not a ramp *within* a run — at the 900 pin
+each run is flat across its own thirds (7.447 / 7.427 / 7.344) and the whole
+drift is a step *between* runs, which is why reducing the heat the series
+generates is what fixed it rather than sampling longer.
+
+### `--overdraw`: how many times the average pixel is shaded
+
+`VK_QUERY_TYPE_PIPELINE_STATISTICS` counting
+`FRAGMENT_SHADER_INVOCATIONS`, bracketed around the opaque scene geometry and
+printed once a second as its own log line:
+
+```
+Overdraw: 2.187 fragment shader invocations per rendered pixel (2015242 invocations over 921600 pixels, opaque scene geometry only)
+```
+
+Off unless asked for, and diagnostic only — nothing in the frame path reads it,
+and it is verified not to change the frame (0 of 921600 pixels differ with it on
+and off). `pipelineStatisticsQuery` is optional in Vulkan; a device without it
+loses the line and says so once in the capability report.
+
+**What it counts, and why that is the useful number.** Invocations are what
+survives early depth testing, so this is the shading that actually happens rather
+than the geometric layer count — which is exactly the work a depth prepass could
+remove. The two differ far more than expected here: `gpu-stress` is built from
+twenty-four full-frame slabs and shades **1.276** fragments per pixel, because
+stacked full-screen quads occlude each other perfectly and early-Z rejects nearly
+all of it. `--scene sponza` shades **2.187**, more than any scene in the
+repository including the ones built to stress fragment shading. See
+`design_decisions.md` on the depth prepass for the full table and what it bounds.
+
+**The denominator is the whole render extent, not the covered area**, so a scene
+that does not fill the frame reads below 1.0 (`cornell` is 0.647) and that says
+"sky in frame", not "negative overdraw". It still supports a rigorous bound in
+the other direction: covered pixels cannot exceed the extent, so
+`invocations − extent` is a floor on what a prepass would remove.
+
+Bracketed around the opaque geometry only, deliberately. The skybox writes one
+fragment per uncovered pixel and the post-process chain writes several per pixel
+regardless of the scene; counting them would add a constant that has nothing to
+do with content.
+
+### `DepthPrepass`
+
+Present only when `renderer.enableDepthPrepass` is on, which is off by default.
+It replays the opaque and masked buckets depth-only ahead of `MainHDRPass` so
+early-Z rejects fragments that pass would otherwise shade and overwrite. On
+`--scene sponza` it costs **0.071 ms** and takes **1.221 ms** off `MainHDRPass`;
+see `design_decisions.md` for the full A/B and for why a 0.071 ms pass was
+predicted to cost 2.9.
+
+It is a runtime setting rather than a build flag precisely so this harness can
+A/B it inside one binary:
+
+```bash
+python3 tools/dev/measure_gpu.py ab --repeat 2 --duration 75 --b-set renderer.enableDepthPrepass=true --args --scene sponza --deterministic
+```
 
 ### Take medians, not single frames
 
@@ -184,6 +310,7 @@ The current frame records timestamp scopes for:
 - `MainGpuCullingPass` when main GPU culling is active
 - `ClusterBuild` and `LightCull` when clustered lighting is active
 - `IrradianceProbeUpdate` and `ProbeCapture` when irradiance probes are active
+- `DepthPrepass` when `renderer.enableDepthPrepass` is on
 - `MainHDRPass`
 - `Skybox`, `RenderObjects`, and `SkinnedMesh`, recorded inside `MainHDRPass`
 - `DepthPyramidMid`, `MainGpuCullingPhase2`, and `MainHDRPhase2` when two-phase occlusion culling is active
@@ -234,6 +361,14 @@ across a fixed depth span rather than at a fixed spacing, so more layers means
 denser overdraw rather than a longer tunnel whose far end shrinks out of frame; at
 six layers that arithmetic is identical to what it replaced, so `fragment-stress`
 is bit-identical and keeps the measurements taken on it.
+
+Worth knowing what those 24 layers actually buy, now that `--overdraw` can say:
+**1.276 shaded fragments per pixel, against `--scene sponza`'s 2.187.** Stacked
+full-screen quads occlude each other perfectly, so early-Z rejects nearly all of
+the manufactured overdraw before it reaches a fragment shader. The preset still
+works as a load knob — it makes the GPU frame large enough for the drift gate,
+which is what it was built for — but it is not a scene with high shading
+overdraw, and it should not be used as a stand-in for one.
 
 **`--window-size WIDTHxHEIGHT`** is the lever with no ceiling. `renderScale` only
 scales *down*, the scene presets are bounded by early-Z and by
@@ -347,6 +482,11 @@ Both scenes now pass, at the same 1100/7001 pin:
 | --- | --- |
 | `--scene stress` | **0.14%** |
 | `--scene gpu-stress` | **0.50%** |
+
+`--scene sponza` needs a lower pin than either, and passes at **800/7001** with
+**0.16%** drift. It refuses at 1200 (5.1%), 1000 (1.7%) and 900 (1.1%) — the
+scene is heavy enough that the ceiling that works for `gpu-stress` does not work
+for it. See the section on that preset above.
 
 Until a comparison passes the gate it is directional at best, and the honest
 thing is to report a refused comparison as refused. Absolute numbers, per-pass

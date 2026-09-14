@@ -646,7 +646,9 @@ GltfGeometry loadGltfGeometry(const std::filesystem::path& path,
             const GltfAccessorView tangents = makeOptionalAttributeView(model, primitive, "TANGENT", 4, vertexCount);
             const Aabb positionAccessorBounds = accessorMinMaxBounds(*positions.accessor);
             const bool hasPositionAccessorBounds = positionAccessorBounds.valid();
+            Aabb primitiveBounds{};
             if (hasPositionAccessorBounds) {
+                primitiveBounds = positionAccessorBounds;
                 localBounds.merge(positionAccessorBounds);
             }
 
@@ -669,7 +671,11 @@ GltfGeometry loadGltfGeometry(const std::filesystem::path& path,
                 vertex.normal = glm::vec3(normal);
                 vertex.tangent = tangent;
                 if (!hasPositionAccessorBounds) {
+                    // Both, not just the mesh union: a primitive whose accessor
+                    // omits min/max still has to know its own extent, or the
+                    // object built from it would cull against an empty box.
                     localBounds.expand(vertex.position);
+                    primitiveBounds.expand(vertex.position);
                 }
                 vertices.push_back(vertex);
             }
@@ -697,7 +703,12 @@ GltfGeometry loadGltfGeometry(const std::filesystem::path& path,
 
             const uint32_t indexCount = static_cast<uint32_t>(indices.size()) - firstIndex;
             if (indexCount > 0) {
-                subMeshes.push_back({firstIndex, indexCount, materialIndex});
+                MeshPrimitive subMesh{};
+                subMesh.firstIndex = firstIndex;
+                subMesh.indexCount = indexCount;
+                subMesh.materialIndex = materialIndex;
+                subMesh.localBounds = primitiveBounds;
+                subMeshes.push_back(subMesh);
             }
         }
 

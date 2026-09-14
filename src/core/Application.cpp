@@ -10,10 +10,23 @@
 #include <chrono>
 #include <cstdint>
 #include <exception>
+#include <stdexcept>
+#include <string>
 #include <string_view>
 #include <utility>
 
 namespace ve {
+namespace {
+
+// A named --scene preset that this build cannot load. Its own type rather than a
+// bare runtime_error so run() can give it a distinct exit code: "no such scene in
+// this build" and "the renderer crashed" need to be told apart by a harness that
+// only sees the exit status.
+struct SceneLoadError final : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+
+} // namespace
 
 Application::Application() : Application(Config{})
 {}
@@ -33,6 +46,12 @@ int Application::run()
         mainLoop();
         shutdown();
         return reportValidationTally();
+    } catch (const SceneLoadError& error) {
+        // Reported by the preset loader itself, which knows what is missing and
+        // how to get it; repeating it here would only say it twice.
+        Logger::error(error.what());
+        shutdown();
+        return kSceneFailureExitCode;
     } catch (const std::exception& exception) {
         Logger::error(exception.what());
         shutdown();
@@ -69,6 +88,20 @@ void Application::initialize()
     // The analysis is the only consumer of meshlets today, so it is also what
     // turns their construction on -- see RendererStartupOverrides::buildMeshlets.
     overrides.buildMeshlets = config_.meshletAnalysis;
+    // The sample scene is the one preset built during construction rather than
+    // selected after it, because it is a fetched asset: importing its textures
+    // and materials needs a bindless heap and a material descriptor set sized for
+    // them, and neither has a resize path.
+    //
+    // Checked here, before the renderer and therefore before any Vulkan device,
+    // so a build that cannot load it fails in milliseconds with an actionable
+    // message instead of part way through construction.
+    if (config_.scene == ScenePreset::Sponza) {
+        if (!sampleSceneAvailable()) {
+            throw SceneLoadError(sampleSceneUnavailableMessage());
+        }
+        overrides.loadSampleScene = true;
+    }
 
     const auto rendererInitStart = std::chrono::steady_clock::now();
     renderer_ = std::make_unique<Renderer>(*window_, overrides);
@@ -85,11 +118,33 @@ void Application::initialize()
     // Before the capture request and the first frame, so a preset's own camera is
     // in place for every frame that gets measured or captured.
     if (config_.scene != ScenePreset::Default) {
-        renderer_->loadScenePreset(config_.scene);
+        std::string sceneStatus;
+        if (!renderer_->loadScenePreset(config_.scene, sceneStatus)) {
+            // Fatal, not a warning. Continuing here would render the startup
+            // scene under the name of the one that was asked for.
+            throw SceneLoadError(sceneStatus);
+        }
     }
+    // The scene stamp, for whatever reads this log afterwards.
+    //
+    // docs/profiling.md's rule is that every quoted timing carries hardware,
+    // scene, resolution and statistic, and until now the scene was the one of the
+    // four that a log could not be asked for: tools/dev/measure_gpu.py passes
+    // --scene through to both sides of an A/B and then had no way to confirm it
+    // arrived. Emitted after the preset has actually been built, so it reports
+    // what is on screen rather than what was requested.
+    //
+    // Its own line, NOT inside the "GPU timings:" block -- everything
+    // two-space-indented in there is parsed as a GPU scope. Resolution rides
+    // along because it is the other half of a comparison that two runs can
+    // silently disagree about.
+    Logger::info("Scene: " + std::string(scenePresetName(config_.scene)) + " at " + std::to_string(config_.width) +
+                 "x" + std::to_string(config_.height));
+
     // Independent of --capture-frame: the analysis reports into the log every
     // second and has nothing to do with capturing a frame.
     renderer_->setMeshletAnalysisEnabled(config_.meshletAnalysis);
+    renderer_->setOverdrawReadoutEnabled(config_.overdraw);
     if (config_.captureFrame != 0) {
         renderer_->requestFrameCaptureAt(config_.captureFrame, config_.captureOutput, config_.captureIncludeUi);
         if (!config_.vsmDumpPool.empty()) {

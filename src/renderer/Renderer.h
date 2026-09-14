@@ -21,6 +21,7 @@
 #include "renderer/DynamicResolution.h"
 #include "renderer/FrameClock.h"
 #include "renderer/OcclusionYield.h"
+#include "renderer/OverdrawQuery.h"
 #include "renderer/GpuCulling.h"
 #include "renderer/FrameResources.h"
 #include "renderer/GpuProfiler.h"
@@ -117,7 +118,25 @@ struct RendererStartupOverrides {
     // --meshlet-analysis turns it on, which is what makes that measurement
     // repeatable on content this engine does not currently ship.
     bool buildMeshlets = false;
+
+    // Build the fetched sample scene (Sponza) instead of the portfolio showcase.
+    //
+    // Startup-only, and not for the usual reason. Sponza imports 77 textures and
+    // 25 materials; the bindless heap and the material descriptor set are both
+    // sized during construction and neither has a resize path, so a scene swap
+    // afterwards would have to grow structures that cannot grow. Every other
+    // preset is procedural geometry over resources the constructor already made,
+    // which is why they can be selected after it.
+    bool loadSampleScene = false;
 };
+
+// Whether this build carries the fetched sample scene, and what to do when it
+// does not. Defined in RendererScene.cpp, which is compiled with the macro the
+// configure-time fetch sets (see cmake/FetchSampleScene.cmake) -- one place that
+// knows, so the answer cannot differ between the caller that checks and the code
+// that loads.
+[[nodiscard]] bool sampleSceneAvailable();
+[[nodiscard]] std::string sampleSceneUnavailableMessage();
 
 class Renderer final {
 public:
@@ -137,7 +156,14 @@ public:
     // private because they are ImGui button handlers; this is the one entry
     // point that exists so a preset can be selected from the command line, which
     // is what makes the heavier scenes measurable without a human driving the UI.
-    void loadScenePreset(ScenePreset preset);
+    //
+    // Returns false when the named preset could not be built, writing the reason
+    // to `status`. Only ScenePreset::Sponza can fail: it is the one preset backed
+    // by a fetched asset rather than by procedural geometry. The caller must
+    // treat that as fatal -- a run that silently rendered a different scene than
+    // the one named would report a clean number for the wrong question, which is
+    // the same failure --scene already refuses for an unknown name.
+    [[nodiscard]] bool loadScenePreset(ScenePreset preset, std::string& status);
 
     // Startup asset-load instrumentation (renderer/AssetLoadStats.h). Populated
     // during construction; the caller stamps the timings it owns (renderer init
@@ -184,6 +210,19 @@ public:
     // frame. Diagnostic: it stalls the device, so it runs once and never on a
     // frame anyone is timing.
     void requestVsmPagePoolDumpAt(uint64_t frameNumber, std::filesystem::path outputPath);
+    // Turns on the overdraw readout (--overdraw): fragment shader invocations
+    // over the main opaque geometry, divided by rendered pixels, printed once a
+    // second. Reports only.
+    // Prints the overdraw ratio for `frameIndex` if --overdraw is on and the
+    // frame's query has landed. Its own log line, never inside the GPU timings
+    // block.
+    void emitOverdrawReadout(uint32_t frameIndex);
+
+    void setOverdrawReadoutEnabled(bool enabled)
+    {
+        overdrawReadoutEnabled_ = enabled;
+    }
+
     // Turns on the meshlet cull analysis (--meshlet-analysis). Reports only;
     // nothing about the rendered frame changes.
     void setMeshletAnalysisEnabled(bool enabled)
@@ -462,6 +501,14 @@ private:
     void createSkyboxPipeline();
     void createTransparentPipeline();
     void createShadowPipeline();
+    // Depth-only pipelines for the opaque prepass. No fragment shader and no
+    // colour attachment: the pass exists to populate depth, nothing else.
+    void createDepthPrepassPipelines();
+    void createMaskedDepthPrepassPipeline(const VkVertexInputBindingDescription& binding,
+                                          const std::array<VkVertexInputAttributeDescription, 5>& attributes);
+    // Replays the opaque bucket depth-only, before MainHDRPass. No-op unless
+    // frameDepthPrepassActive_.
+    void recordDepthPrepass(VkCommandBuffer commandBuffer);
     // Casters for the skinned mesh: cascades and VSM pages. Both read the same
     // shader and push block; only the depth target differs.
     // Advances the skinned pose and uploads its palette, bounds and digest.
@@ -507,7 +554,12 @@ private:
     // The CPU-side scene-object layout itself lives in renderer::SceneBuilder.
     void resetSceneState();
     void createSceneSharedResources();
-    [[nodiscard]] bool tryLoadGltfScene();
+    // Imports the fetched sample scene into renderObjects_ and pins its camera.
+    // Returns false with a reason in `status`; never throws past this boundary,
+    // because it runs inside the constructor.
+    [[nodiscard]] bool buildSampleScene(std::string& status);
+    // The interior shot for the sample scene, derived from the imported bounds.
+    void pinSampleSceneCamera();
     // Constructs a SceneBuilder borrowing the renderer's shared meshes, material
     // array, and debug-id allocator. Cheap; call per scene-build operation.
     [[nodiscard]] renderer::SceneBuilder makeSceneBuilder();
@@ -992,6 +1044,9 @@ private:
     rhi::VulkanContext context_;
     std::vector<renderer::FrameResources> frames_;
     renderer::GpuProfiler gpuProfiler_;
+    renderer::OverdrawQuery overdrawQuery_;
+    bool overdrawReadoutEnabled_ = false;
+    bool overdrawUnavailableReported_ = false;
     rhi::VulkanSwapchain swapchain_;
     // The internal render resolution, recomputed in recreateSwapchain and
     // borrowed by every subsystem that sizes a screen-space target. Declared
@@ -1051,6 +1106,18 @@ private:
     // depth-only pipeline has no fragment stage at all; this one adds the cutout
     // discard and therefore needs the bindless base-color array bound.
     rhi::PipelineRef maskedShadowPipeline_;
+    // Depth-only replay of the opaque bucket, ahead of MainHDRPass. Two refs for
+    // the same reason the main pipeline has two: Material::doubleSided decides
+    // which, and with back-face culling off both requests are byte-identical so
+    // the store returns one pipeline and reports it shared.
+    rhi::PipelineRef depthPrepassPipeline_;
+    rhi::PipelineRef depthPrepassDoubleSidedPipeline_;
+    // Alpha-tested variant, for the MASK bucket. Exists only when the bindless
+    // heap does -- the cutout test samples the base-color array -- so a device
+    // without it prepasses opaque geometry alone, which is what this pass did
+    // before the masked variant was added and is still correct.
+    rhi::PipelineRef maskedDepthPrepassPipeline_;
+    rhi::PipelineRef maskedDepthPrepassDoubleSidedPipeline_;
     // Depth-only pipeline for the punctual shadow atlas. Separate from
     // shadowPipeline_ because its push-constant layout carries the slot's
     // view-projection instead of a cascade index.
@@ -1420,6 +1487,11 @@ private:
     // Startup-only: meshes are built in the constructor, so this cannot be a
     // post-construction toggle. See RendererStartupOverrides::buildMeshlets.
     bool buildMeshletTables_ = false;
+    // What was asked for, and what was actually built. Kept apart so
+    // loadScenePreset can answer "is the scene on screen the one that was named"
+    // rather than assume it -- see RendererStartupOverrides::loadSampleScene.
+    bool sampleSceneRequested_ = false;
+    bool sampleSceneLoaded_ = false;
 
     // Point lights cost six tiles each against 64 total, so how many may cast is
     // a budget the user can see and set rather than an implicit cap.
@@ -1561,12 +1633,23 @@ private:
     bool useTwoPhaseOcclusion_ = true;
     bool useLayeredCascades_ = false;
     bool useBackfaceCulling_ = false;
+    // See RuntimeSettings::enableDepthPrepass. Startup-only: it selects the main
+    // pipeline's depth compare op.
+    bool useDepthPrepass_ = false;
     bool useAdaptiveOcclusion_ = true;
     renderer::OcclusionYieldController occlusionYield_;
     // Per frame slot: was occlusion culling running when this slot's cull
     // counters were written? Sized with frames_.
     std::vector<uint8_t> frameOcclusionTested_;
     bool frameTwoPhaseOcclusionActive_ = false;
+    // Per-frame resolution of useDepthPrepass_: also requires the multi-draw
+    // indirect path and a pipeline, so a device that falls back to per-draw
+    // recording simply does not get the prepass.
+    bool frameDepthPrepassActive_ = false;
+    // How many batches the prepass actually replayed, for the debug UI and for
+    // the log line that proves the pass did something.
+    uint32_t depthPrepassBatchesDrawn_ = 0;
+    bool depthPrepassCoverageReported_ = false;
     // Whether this frame builds the Hi-Z pyramid. Latched during frame prep for
     // the same reason as frameProbeCaptureActive_ below: the graph declaration
     // and the recorder must agree, and isDepthPyramidBuildRequired() reads state

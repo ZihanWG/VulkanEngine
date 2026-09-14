@@ -188,11 +188,25 @@ macOS is supported through the LunarG Vulkan SDK + MoltenVK for portability and 
 
 Runtime settings load from `config/runtime_settings.json` when present (user-local, git-ignored; generate it with the ImGui `Save Settings` button). `config/runtime_settings.example.json` documents the format.
 
+### The optional sample scene
+
+Every built-in scene is procedural cubes and spheres. `-DVULKAN_ENGINE_FETCH_SAMPLE_SCENE=ON` adds a configure-time download of Sponza (pinned to a commit of `KhronosGroup/glTF-Sample-Assets`, CC BY 4.0), which is the only real authored content here and the one scene with depth complexity that was not built to order:
+
+```sh
+cmake --preset release -DVULKAN_ENGINE_FETCH_SAMPLE_SCENE=ON
+cmake --build build/release
+./build/release/vemeshcook build/fetched-assets/sponza/Sponza.gltf
+python3 tools/cook_textures.py build/fetched-assets/sponza/Sponza.gltf
+./build/release/VulkanEngine --scene sponza
+```
+
+Off by default: it is a network fetch, and CI has no use for it. It does not change what the engine renders by default, and `--scene sponza` on a build without the asset exits non-zero naming the flag rather than falling back to a different scene. The cook is optional but worth the ten seconds — uncooked, the same scene spends 3.9 s in glTF import and 366 MiB on textures instead of 34 ms and 91 MiB. See [docs/asset_load_baseline.md](docs/asset_load_baseline.md) and [docs/profiling.md](docs/profiling.md).
+
 ## Validated Environment
 
 Validated locally on Windows + Visual Studio 2022 MSVC x64, Vulkan SDK 1.4.328.1, NVIDIA GeForce RTX 3080 Ti Laptop GPU. CI builds on `windows-2022` and `ubuntu-24.04`: it configures CMake, compiles the GLSL shader target through `glslc`, builds the renderer, and runs the full unit-test suite — on Linux twice, the second time under ASan/UBSan with leak detection — plus clang-tidy. The tests need no GPU by design.
 
-A third job does run the renderer, on Mesa's lavapipe software Vulkan driver under a virtual X server, so no GPU is required: it renders 30 deterministic frames with the validation layer on, fails on any validation error, and compares the captured frame against a committed golden image. It then sweeps [26 further configurations](config/ci/README.md) -- fog, GI, GTAO, SSR, the VSM stages, four scene presets, and the toggles that add or remove a pass -- asserting for each that the render graph recorded the frame it declared. See [docs/headless_ci.md](docs/headless_ci.md).
+A third job does run the renderer, on Mesa's lavapipe software Vulkan driver under a virtual X server, so no GPU is required: it renders 30 deterministic frames with the validation layer on, fails on any validation error, and compares the captured frame against a committed golden image. It then sweeps [27 further configurations](config/ci/README.md) -- fog, GI, GTAO, SSR, the VSM stages, four scene presets, and the toggles that add or remove a pass -- asserting for each that the render graph recorded the frame it declared. See [docs/headless_ci.md](docs/headless_ci.md).
 
 ## Scope and Known Limitations
 

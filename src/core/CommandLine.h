@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -38,7 +39,41 @@ enum class ScenePreset {
     // fragment-stress turned up until the GPU frame is large enough to measure
     // against. See kGpuStressLayerCount.
     GpuStress,
+    // The fetched Sponza scene. Unlike every preset above it, this one is not
+    // procedural: it needs -DVULKAN_ENGINE_FETCH_SAMPLE_SCENE=ON at configure
+    // time, so it is the only preset that can be named on a build that cannot
+    // load it. That case is a hard failure, never a fallback -- see
+    // Renderer::loadScenePreset.
+    Sponza,
+
+    // Not a scene. One past the last preset, so a test can walk every value and
+    // check it round-trips through its name.
+    //
+    // It is here because the obvious guard does not work: scenePresetName falls
+    // back to "default" for a preset with no table entry, so a scene added to
+    // this enum and forgotten in kScenePresetNames would report itself as the
+    // one scene it is not -- the "measured the wrong scene" failure --scene was
+    // written to prevent. The switch over this enum does not catch it either:
+    // MSVC at /W4 compiles an unhandled enum case without a warning, which was
+    // measured rather than assumed.
+    Count,
 };
+
+// One table, read by both directions, so a name can never parse to one preset
+// and print back as another.
+struct ScenePresetName {
+    std::string_view name;
+    ScenePreset preset;
+};
+
+// Every --scene spelling, in the order the error message lists them.
+//
+// Public so a test can walk the real table instead of a copy of it. The
+// hand-maintained version of that test named six of the seven presets and
+// reported success, which is the failure mode a coverage test is supposed to be
+// immune to. Enum values with no entry here are caught separately, by the
+// switch in Renderer::loadScenePreset having no default case.
+[[nodiscard]] std::span<const ScenePresetName> scenePresets();
 
 // Parses a --scene value. Returns false for an unknown name rather than
 // silently falling back to the default, which would measure the wrong scene.
@@ -104,6 +139,13 @@ struct LaunchOptions {
     // gets rendered depends on the frame number and not on machine speed.
     // Required for any frame-to-frame image comparison.
     bool deterministic = false;
+
+    // Report fragment shader invocations per rendered pixel once a second
+    // (renderer/OverdrawQuery.h). Off by default: it is a diagnostic for the
+    // depth-prepass question, it needs an optional device feature, and a query
+    // bracketing the main geometry is not something a measurement run should
+    // carry unasked.
+    bool overdraw = false;
 
     // Capture the swapchain image of this frame (1-based) to captureOutput. The
     // loop keeps drawing past it until the readback lands, then exits.
