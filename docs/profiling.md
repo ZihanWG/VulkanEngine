@@ -109,7 +109,7 @@ They can usually be assigned by magnitude, because the two machines are an order
 | default scene, GPU frame | ~15–16 ms | 1.754 ms |
 | `MainHDRPass` | ~10 ms | 0.4–0.9 ms |
 | `--scene stress`, GPU frame | — | 1.024 ms |
-| `--scene sponza`, GPU frame | — | 5.363 ms |
+| `--scene sponza`, GPU frame | — | 5.363 ms at a 1200 MHz pin, 8.254 at 800 |
 
 A frame total in the teens is the M3. A `MainHDRPass` under a millisecond is the RTX. Where neither the label nor the magnitude settles it, the table says the hardware is not recorded rather than guessing — an unattributed number is less misleading than a confidently wrong attribution.
 
@@ -160,36 +160,38 @@ That is roughly three times the default scene and five times `--scene stress`,
 so the frame is comfortably large enough to measure against — which was the open
 question when the scene was added.
 
-**But its `Frame total` does not pass the drift gate on this machine, and its
-per-pass numbers do.** Two independent `ab --repeat 2 --duration 75` series, both
-at the 1200/7001 pin with no throttle reason active:
+#### It needs a much lower clock pin than any other scene: 800 MHz
 
-| series | `Frame total` drift | `MainHDRPass` drift | `RenderObjects` drift |
-| --- | --- | --- | --- |
-| default frame clock, 128 samples/side | **3.8%** | 0.048 ms | 0.049 ms |
-| `--deterministic`, 379 samples/side | **5.1%** | **0.003 ms** | 0.016 ms |
+The gate is reachable here, but only well below the ceiling every other preset
+uses. Four `ab --repeat 2 --duration 75 --args --scene sponza --deterministic`
+series, identical but for the pin, each started from a 63 °C card:
 
-Three things that were checked rather than assumed. The clocks held at 1200 MHz
-throughout and no throttle reason was ever active, so this is not the clock
-wander that the pin exists to remove. `--deterministic` was tried on the theory
-that the orbiting demo lights and the exposure feedback made the content itself
-vary across a 75-second window; it tripled the sample count and improved every
-per-pass drift by an order of magnitude, and made the frame-total drift **worse**,
-so that theory is wrong. And the drift is not a thermal ramp: p10 over the
-thirds of a single run goes 5.829 / 5.547 / 5.776, which is a band rather than a
-slope.
+| graphics pin (memory 7001) | `Frame total` control drift |
+| --- | --- |
+| 1200 MHz | 5.1% |
+| 1000 MHz | 1.7% |
+| 900 MHz | 1.1% |
+| **800 MHz** | **0.16%** ✅ |
 
-So the usable reading is the protocol's own carve-out: a row whose own control
-drift is orders of magnitude below its delta, and which reproduces across two
-independent series, is evidence even when the frame-level gate is refused — and
-`Frame total` on this scene is not quotable. Per-pass drifts of 0.003–0.016 ms
-against passes of 0.3–4.3 ms are a better noise floor than any other preset here
-offers.
+This is the `--scene stress` rule taken further than it had been before: a pin is
+a ceiling, heavier load wants a lower one, and Sponza at 5–8 ms is the heaviest
+scene in the repository. 1200 was chosen before that was known, and 1100 — the
+value that works for `gpu-stress` — was never going to be enough.
 
-**Untried, and the obvious next step:** a lower pin. The rule established for
-`--scene stress` is that heavier load wants a *lower* ceiling, and Sponza at 5.4
-ms is the heaviest scene in the repository — 1200 MHz was chosen before that was
-known.
+**Use `-Mhz 800 -MemMhz 7001` for this scene.** Absolutes move a lot with the
+pin (the same frame reads 5.363 ms at 1200 and 8.254 ms at 800), so they are only
+comparable within one pin; percentages and deltas are what carry across.
+
+Three other explanations were tested first and all three are wrong, so they do
+not need re-testing. The clocks held at their pin throughout with no throttle
+reason ever active, so this was never the clock wander the pin exists to remove.
+`--deterministic` was tried on the theory that the orbiting demo lights and the
+exposure feedback made the content vary across a 75-second window: it tripled the
+sample count and improved every per-pass drift by an order of magnitude, and made
+frame-total drift **worse**. And it is not a ramp *within* a run — at the 900 pin
+each run is flat across its own thirds (7.447 / 7.427 / 7.344) and the whole
+drift is a step *between* runs, which is why reducing the heat the series
+generates is what fixed it rather than sampling longer.
 
 ### Take medians, not single frames
 
@@ -420,10 +422,10 @@ Both scenes now pass, at the same 1100/7001 pin:
 | `--scene stress` | **0.14%** |
 | `--scene gpu-stress` | **0.50%** |
 
-`--scene sponza` does not, at 1200/7001, for frame total only — 3.8% and 5.1%
-across two independent series, while its per-pass drifts came in at 0.003–0.016
-ms. See the section on that preset above for what was ruled out and what is
-still untried.
+`--scene sponza` needs a lower pin than either, and passes at **800/7001** with
+**0.16%** drift. It refuses at 1200 (5.1%), 1000 (1.7%) and 900 (1.1%) — the
+scene is heavy enough that the ceiling that works for `gpu-stress` does not work
+for it. See the section on that preset above.
 
 Until a comparison passes the gate it is directional at best, and the honest
 thing is to report a refused comparison as refused. Absolute numbers, per-pass
