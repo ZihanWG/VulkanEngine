@@ -241,7 +241,18 @@ bool Renderer::buildSampleScene([[maybe_unused]] std::string& status)
         createImportedGltfMaterials(loadedAsset.materials);
         importedMeshes_ = std::move(loadedAsset.meshes);
 
-        renderObjects_.reserve(loadedAsset.nodeMeshInstances.size());
+        // One object PER PRIMITIVE, not per node. Sponza is a single node holding
+        // 103 primitives, and as one object it gave every per-object decision in
+        // the engine exactly one thing to decide: frustum culling tested the
+        // bounds of the whole building, occlusion culling had one AABB, and the
+        // punctual and cascade shadow caches held one key. The three CPU-side
+        // questions this scene was fetched to answer are all per-object, so on a
+        // single object they would have measured nothing.
+        //
+        // Draw submission does not change -- collectDrawItemsForObject already
+        // emitted one DrawItem per primitive, so the same 103 draws are issued
+        // from the same two buffers. What changes is how many independent things
+        // the frame has to reason about before it issues them.
         for (const renderer::GltfNodeMeshInstance& instance : loadedAsset.nodeMeshInstances) {
             if (instance.meshIndex >= importedMeshes_.size() || !importedMeshes_[instance.meshIndex].valid()) {
                 Logger::warn("Skipping imported glTF RenderObject with invalid mesh index " +
@@ -249,21 +260,33 @@ bool Renderer::buildSampleScene([[maybe_unused]] std::string& status)
                 continue;
             }
 
-            renderer::RenderObject importedObject{};
-            importedObject.debugId = allocateRenderObjectDebugId();
-            importedObject.sceneObjectId = importedObject.debugId;
-            importedObject.mesh = &importedMeshes_[instance.meshIndex];
-            importedObject.material =
-                importedMaterials_.empty() ? &materialVariants_.at(0) : &importedMaterials_.front();
-            if (!importedMaterials_.empty()) {
-                importedObject.materialTable = importedMaterials_.data();
-                importedObject.materialCount = importedMaterials_.size();
+            const renderer::Mesh& instanceMesh = importedMeshes_[instance.meshIndex];
+            const size_t primitiveCount = instanceMesh.primitives().size();
+            // A mesh with no primitive table draws whole, as one object. That is
+            // the built-in and skinned geometry, not an imported scene.
+            const size_t objectCount = primitiveCount == 0 ? 1 : primitiveCount;
+            renderObjects_.reserve(renderObjects_.size() + objectCount);
+
+            for (size_t primitive = 0; primitive < objectCount; ++primitive) {
+                renderer::RenderObject importedObject{};
+                importedObject.debugId = allocateRenderObjectDebugId();
+                importedObject.sceneObjectId = importedObject.debugId;
+                importedObject.mesh = &instanceMesh;
+                importedObject.primitiveIndex = primitiveCount == 0 ? -1 : static_cast<int>(primitive);
+                importedObject.material =
+                    importedMaterials_.empty() ? &materialVariants_.at(0) : &importedMaterials_.front();
+                if (!importedMaterials_.empty()) {
+                    importedObject.materialTable = importedMaterials_.data();
+                    importedObject.materialCount = importedMaterials_.size();
+                }
+                const std::string baseName = instance.debugName.empty() ? "Imported glTF Node" : instance.debugName;
+                importedObject.debugName =
+                    primitiveCount == 0 ? baseName : baseName + " [" + std::to_string(primitive) + "]";
+                importedObject.sourceType = renderer::RenderObjectSourceType::ImportedGltf;
+                importedObject.transform = renderer::Transform::fromMatrix(instance.transform);
+                importedObject.hideInPortfolio = true;
+                renderObjects_.push_back(std::move(importedObject));
             }
-            importedObject.debugName = instance.debugName.empty() ? "Imported glTF Node" : instance.debugName;
-            importedObject.sourceType = renderer::RenderObjectSourceType::ImportedGltf;
-            importedObject.transform = renderer::Transform::fromMatrix(instance.transform);
-            importedObject.hideInPortfolio = true;
-            renderObjects_.push_back(std::move(importedObject));
         }
 
         if (renderObjects_.empty()) {
@@ -1353,7 +1376,9 @@ std::vector<const renderer::Material*> Renderer::materialsForObject(const render
     if (object.mesh && object.mesh->hasSubMeshes()) {
         const std::span<const renderer::MeshPrimitive> primitives = object.mesh->primitives();
         materials.reserve(primitives.size());
-        for (const renderer::MeshPrimitive& primitive : primitives) {
+        const size_t primitiveEnd = object.primitiveEndIndex();
+        for (size_t index = object.firstPrimitiveIndex(); index < primitiveEnd; ++index) {
+            const renderer::MeshPrimitive& primitive = primitives[index];
             const renderer::Material* material = resolveMaterial(object, &primitive);
             if (!material) {
                 continue;

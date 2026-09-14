@@ -2014,7 +2014,9 @@ std::string Renderer::materialDebugLabel(const renderer::RenderObject& object) c
     if (!primitives.empty()) {
         std::vector<const renderer::Material*> uniqueMaterials;
         uniqueMaterials.reserve(primitives.size());
-        for (const renderer::MeshPrimitive& primitive : primitives) {
+        const size_t primitiveEnd = object.primitiveEndIndex();
+        for (size_t index = object.firstPrimitiveIndex(); index < primitiveEnd; ++index) {
+            const renderer::MeshPrimitive& primitive = primitives[index];
             const renderer::Material* material = resolveMaterial(object, &primitive);
             if (!material) {
                 continue;

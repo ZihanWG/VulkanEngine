@@ -54,6 +54,7 @@ add_executable(VulkanEngineTests
     test_mesh_lod.cpp
     test_skeletal_animation.cpp
     test_gltf_skinned_import.cpp
+    test_gltf_geometry.cpp
     test_job_system.cpp
     test_editor_camera.cpp
     test_scene_builder.cpp

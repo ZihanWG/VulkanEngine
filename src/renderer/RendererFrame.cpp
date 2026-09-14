@@ -866,7 +866,10 @@ void Renderer::appendDrawItemsForObject(uint32_t objectIndex,
 
     if (mesh->hasSubMeshes()) {
         const std::span<const renderer::MeshPrimitive> primitives = mesh->primitives();
-        for (size_t primitiveIndex = 0; primitiveIndex < primitives.size(); ++primitiveIndex) {
+        // The object's own range, not the whole table: an object imported from a
+        // single primitive draws that one. See RenderObject::primitiveIndex.
+        const size_t primitiveEnd = object.primitiveEndIndex();
+        for (size_t primitiveIndex = object.firstPrimitiveIndex(); primitiveIndex < primitiveEnd; ++primitiveIndex) {
             const renderer::MeshPrimitive& primitive = primitives[primitiveIndex];
             // Order matters: an empty primitive is charged to nothing, so it can
             // neither consume a slot nor be reported as dropped geometry.
@@ -939,13 +942,17 @@ void Renderer::updateFrameObjectTransforms()
     framePrepParallelFor(objectCount, [this](size_t begin, size_t end) {
         for (size_t objectIndex = begin; objectIndex < end; ++objectIndex) {
             const renderer::RenderObject& object = renderObjects_[objectIndex];
-            // Composed once here and shared from here on. RenderObject::worldBounds()
-            // is deliberately not called: it composes a matrix of its own, which is
-            // exactly the per-use re-derivation this array exists to remove.
+            // Composed once here and shared from here on. The no-argument
+            // RenderObject::worldBounds() is deliberately not called: it composes
+            // a matrix of its own, which is exactly the per-use re-derivation this
+            // array exists to remove. The overload that takes the matrix keeps
+            // that saving while still asking the object which local bounds are
+            // its own -- transforming mesh->localBounds() here instead handed the
+            // GPU cull the whole mesh's extent for an object that draws one
+            // primitive of it.
             const glm::mat4 model = object.transform.modelMatrix();
             frameModelMatrices_[objectIndex] = model;
-            frameWorldBounds_[objectIndex] =
-                object.mesh ? object.mesh->localBounds().transform(model) : renderer::Aabb{};
+            frameWorldBounds_[objectIndex] = object.worldBounds(model);
         }
     });
 }
