@@ -697,14 +697,65 @@ blended casters, re-measure, and then revisit the `gpuCasterCulling` default.
 Parallel recording only becomes the right lever after that, because only then is
 the remaining recording cost spread widely enough for threading to reach it.
 
-## A depth prepass cannot be evaluated on this tree, and the missing piece is a scene
+## A depth prepass now has a number, and it is the best case this repository has produced
 
-**Status: still not built, but the prerequisite is now in place.** This section
-recorded that the pass could not be evaluated because no scene here had realistic
-depth complexity. That is no longer true: `--scene sponza` exists, and the
-remaining work is to measure its depth complexity rather than to argue about
-whether a scene is available. The reasoning below is kept because it is what
-decides the answer once that number exists.
+**Status: still not built, but it is no longer unevaluated.** This section used to
+say the pass could not be judged because no scene here had realistic depth
+complexity. Both halves of that have been fixed: `--scene sponza` supplies the
+scene and `--overdraw` supplies the measurement, and the answer is more
+interesting than the argument was.
+
+**Measured with `--overdraw`** (fragment shader invocations over the opaque scene
+geometry, divided by the rendered pixels; RTX 3080 Ti Laptop, 1280x720,
+`--deterministic`, mean of three consecutive readouts):
+
+| preset | shaded invocations / pixel | geometric layers, as built |
+| --- | --- | --- |
+| `cornell` | 0.647 | ~1 |
+| `occlusion` | 0.656 | ~1 |
+| `sunlit` | 0.872 | ~1 |
+| `stress` | 0.901 | ~1 |
+| `default` | 1.191 | ~1 |
+| `fragment-stress` | 1.260 | **6** |
+| `gpu-stress` | 1.276 | **24** |
+| **`sponza`** | **2.187** | authored |
+
+**The two columns disagree, and the left one is the one that matters.**
+`gpu-stress` was built with twenty-four full-frame slabs specifically to
+manufacture overdraw, and it shades 1.28 fragments per pixel. Early depth testing
+is already rejecting almost all of it: stacked full-screen quads occlude each
+other perfectly, so whatever the submission order, most of those twenty-four
+layers never reach a fragment shader. The layer count is a property of how the
+scene was built; the invocation count is what the hardware actually pays, and a
+depth prepass can only ever recover the second.
+
+So the old conclusion inverts. It was that the artificial scenes had depth
+complexity but measuring a prepass there would be meaningless. In fact they have
+the *least* effective overdraw in the repository, and the real content has the
+most — **Sponza shades 1.7x as many fragments per pixel as the scene built to
+stress fragment shading.**
+
+**What that is worth, stated as a bound rather than an estimate.** A perfect
+prepass shades each covered pixel once, so it removes
+`invocations - covered_pixels`. Covered pixels cannot exceed the render extent,
+which gives a floor without needing to know coverage at all: on Sponza,
+2,014,135 invocations against at most 921,600 covered pixels means **at least
+54% of opaque fragment shading is fragments a prepass would not have shaded**.
+`MainHDRPass` is 4.27 ms of a 5.36 ms frame there, and `RenderObjects` is 4.20 ms
+of that, so the ceiling is worth low single-digit milliseconds against the cost
+of a second depth-only submission of 103 draw items.
+
+That is the first number in this repository that argues *for* building the pass.
+It is still a ceiling and not a measurement of the pass itself -- the prepass has
+its own vertex and draw cost, and the shading it removes is not uniformly
+expensive -- but the question has moved from "nothing to measure against" to "an
+upper bound worth 54% of the dominant pass".
+
+One caveat that belongs with the table. For any preset below 1.0 the ratio is
+dominated by coverage rather than overdraw: the denominator is the whole render
+extent, so sky counts against it. Those rows say "this scene does not fill the
+frame", not "this scene has negative overdraw", and no prepass bound can be read
+from them.
 
 **The question.** This renderer has no depth prepass -- `vsm_page_mark.comp`
 says so outright, and `docs/gtao.md` names one as the fix for GTAO's one-frame
@@ -716,50 +767,30 @@ there is no such hardware, `MainHDRPass` is the dominant pass, and overdraw is
 paid in full -- which is the same argument that made back-face culling worth
 -37.4% here after being rejected on the M3.
 
-**Why it stops there.** A depth prepass buys exactly the shading of fragments
-that are later overdrawn, and costs a second submission of all opaque geometry.
-Its value is therefore a function of one number -- the scene's depth complexity
--- and this repository's scene inventory has no value of that number worth
-optimising for:
+**Why the scene inventory could not answer it.** A depth prepass buys exactly the
+shading of fragments that are later overdrawn, and costs a second submission of
+all opaque geometry. Every procedural preset here is either an open platform with
+one layer of geometry, or a stack of full-frame slabs built to manufacture
+overdraw -- and `SceneBuilder.h` is explicit that `gpu-stress` "exists for the
+measurement problem rather than for the renderer". Measuring a prepass on those
+would have measured how the scene was built. The table above is what that
+argument was missing, and it shows the manufactured scenes were not even
+succeeding at manufacturing the thing they were built for.
 
-| preset | depth complexity | what it is |
-| --- | --- | --- |
-| `default` | ~1 | 11 draw items on an open platform |
-| `stress` | ~1 | 2311 small objects; `SceneBuilder.h` notes it runs *faster* than `default` because its objects are small on screen |
-| `occlusion` | ~1 | object-level occlusion behind 5 walls, which two-phase Hi-Z already removes before rasterization |
-| `fragment-stress` | **6** | six full-frame slabs, "every pixel is shaded several times over" |
-| `gpu-stress` | **24** | the same shape turned up; "layers are overdraw, so they multiply fragment work" |
+Sponza supplies the content. It is fetched with
+`-DVULKAN_ENGINE_FETCH_SAMPLE_SCENE=ON` and selected with `--scene sponza`, which
+puts it in the measurement protocol alongside the procedural presets -- see
+`docs/profiling.md`. It stays off by default: the fetch is a configure-time
+download, and naming the preset on a build without it is a hard failure rather
+than a fallback, so a series can never quietly measure something else.
 
-The two scenes with real depth complexity have it **by construction**, and
-`SceneBuilder.h` is explicit that `gpu-stress` "exists for the measurement
-problem rather than for the renderer". Measuring a depth prepass there would
-measure how the scene was built. It would report an enormous win and mean
-nothing about content.
-
-**The prerequisite was a scene, not a pass, and the scene now exists.** Sponza is
-the one asset here with realistic depth complexity. It is fetched with
-`-DVULKAN_ENGINE_FETCH_SAMPLE_SCENE=ON` and selected with `--scene sponza`,
-which puts it in the measurement protocol alongside the procedural presets --
-see `docs/profiling.md`. It is still off by default: the fetch is a
-configure-time download, and naming the preset on a build without it is a hard
-failure rather than a fallback, so a series can never quietly measure something
-else.
-
-**What is left is the number.** The engine has no overdraw counter, so Sponza's
-depth complexity is not yet known -- the row is missing from the table above
-rather than filled in. `VK_QUERY_TYPE_PIPELINE_STATISTICS` with
-`FRAGMENT_SHADER_INVOCATIONS` gives it without touching a shader: depth
-complexity is invocations divided by the rendered pixel count. Measure that
-first. A prepass built before it would still be built against a number nobody
-has, which is the same mistake this section was written to prevent -- only the
-excuse for making it has changed.
-
-One thing already known about the scene is worth carrying into that measurement:
-its 103 primitives are one glTF node, and until they were imported as separate
-objects every one of them selected LOD 0, because the projected size that picks a
-level came from the bounds of the whole building. Any depth-complexity number
-taken before that change would have been measured against geometry at full
-detail everywhere.
+One property of the scene is load-bearing for the number above. Its 103
+primitives are a single glTF node, and until they were imported as separate
+objects every one of them selected LOD 0 -- the projected size that picks a level
+came from the bounds of the whole building. The 2.187 was measured after that
+change, on geometry at its selected detail. A reading taken before it would have
+been against everything at full detail, and would not describe what the renderer
+actually draws.
 
 That also settles the order. The prepass is worth *more* than its own frame time
 if it lands -- it is what would remove GTAO's one-frame lag, and it would give

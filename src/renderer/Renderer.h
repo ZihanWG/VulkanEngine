@@ -21,6 +21,7 @@
 #include "renderer/DynamicResolution.h"
 #include "renderer/FrameClock.h"
 #include "renderer/OcclusionYield.h"
+#include "renderer/OverdrawQuery.h"
 #include "renderer/GpuCulling.h"
 #include "renderer/FrameResources.h"
 #include "renderer/GpuProfiler.h"
@@ -209,6 +210,19 @@ public:
     // frame. Diagnostic: it stalls the device, so it runs once and never on a
     // frame anyone is timing.
     void requestVsmPagePoolDumpAt(uint64_t frameNumber, std::filesystem::path outputPath);
+    // Turns on the overdraw readout (--overdraw): fragment shader invocations
+    // over the main opaque geometry, divided by rendered pixels, printed once a
+    // second. Reports only.
+    // Prints the overdraw ratio for `frameIndex` if --overdraw is on and the
+    // frame's query has landed. Its own log line, never inside the GPU timings
+    // block.
+    void emitOverdrawReadout(uint32_t frameIndex);
+
+    void setOverdrawReadoutEnabled(bool enabled)
+    {
+        overdrawReadoutEnabled_ = enabled;
+    }
+
     // Turns on the meshlet cull analysis (--meshlet-analysis). Reports only;
     // nothing about the rendered frame changes.
     void setMeshletAnalysisEnabled(bool enabled)
@@ -1022,6 +1036,9 @@ private:
     rhi::VulkanContext context_;
     std::vector<renderer::FrameResources> frames_;
     renderer::GpuProfiler gpuProfiler_;
+    renderer::OverdrawQuery overdrawQuery_;
+    bool overdrawReadoutEnabled_ = false;
+    bool overdrawUnavailableReported_ = false;
     rhi::VulkanSwapchain swapchain_;
     // The internal render resolution, recomputed in recreateSwapchain and
     // borrowed by every subsystem that sizes a screen-space target. Declared

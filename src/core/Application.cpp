@@ -144,6 +144,7 @@ void Application::initialize()
     // Independent of --capture-frame: the analysis reports into the log every
     // second and has nothing to do with capturing a frame.
     renderer_->setMeshletAnalysisEnabled(config_.meshletAnalysis);
+    renderer_->setOverdrawReadoutEnabled(config_.overdraw);
     if (config_.captureFrame != 0) {
         renderer_->requestFrameCaptureAt(config_.captureFrame, config_.captureOutput, config_.captureIncludeUi);
         if (!config_.vsmDumpPool.empty()) {

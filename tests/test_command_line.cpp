@@ -237,6 +237,18 @@ TEST_CASE("The scene preset table has no duplicate names or presets", "[command-
     }
 }
 
+TEST_CASE("The overdraw readout is off unless asked for", "[command-line]")
+{
+    // It brackets the main geometry with a pipeline statistics query, so it is
+    // not something a measurement run should carry unasked.
+    LaunchOptions defaults{};
+    CHECK_FALSE(defaults.overdraw);
+
+    LaunchOptions config{};
+    REQUIRE(parse({"--overdraw"}, config));
+    CHECK(config.overdraw);
+}
+
 TEST_CASE("The sample scene is selectable by name", "[command-line][scene]")
 {
     // Parsing must succeed on every build, including one without the fetched

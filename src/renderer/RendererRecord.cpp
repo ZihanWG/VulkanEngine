@@ -2048,6 +2048,16 @@ void Renderer::recordMainPassGeometry(VkCommandBuffer commandBuffer)
                                                   "/" + std::to_string(cullingStats_.totalObjects) + " batches " +
                                                   std::to_string(meshDrawBatches_.size());
     const bool renderObjectsProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "RenderObjects");
+    // Brackets the opaque scene geometry only. Deliberately not the whole frame:
+    // the skybox writes one fragment per uncovered pixel and the post-process
+    // chain writes several per pixel regardless of the scene, and neither is
+    // work a depth prepass could remove. Counting them would inflate the ratio
+    // by a constant that has nothing to do with the content.
+    if (overdrawReadoutEnabled_) {
+        const VkExtent2D overdrawExtent = renderResolution_.extent();
+        overdrawQuery_.begin(
+            currentFrame_, commandBuffer, static_cast<uint64_t>(overdrawExtent.width) * overdrawExtent.height);
+    }
     rhi::debug::beginLabel(commandBuffer, objectDrawLabel);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.pipeline());
 
@@ -2252,6 +2262,9 @@ void Renderer::recordMainPassGeometry(VkCommandBuffer commandBuffer)
         }
     }
     rhi::debug::endLabel(commandBuffer);
+    if (overdrawReadoutEnabled_) {
+        overdrawQuery_.end(currentFrame_, commandBuffer);
+    }
     if (renderObjectsProfileScope) {
         gpuProfiler_.endScope(currentFrame_, commandBuffer);
     }
@@ -2629,6 +2642,11 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
                             renderGraphFrameResources());
     rhi::debug::beginLabel(commandBuffer, "Frame");
     gpuProfiler_.beginFrame(currentFrame_, commandBuffer);
+    // Here and not beside the begin/end pair: vkCmdResetQueryPool is forbidden
+    // inside a render pass, and the pair brackets draws that are inside one.
+    if (overdrawReadoutEnabled_) {
+        overdrawQuery_.resetFrame(currentFrame_, commandBuffer);
+    }
 
     // The probe-only view is a view of a linear radiance value, so it bypasses
     // the display pipeline entirely. Auto-exposure would otherwise cancel

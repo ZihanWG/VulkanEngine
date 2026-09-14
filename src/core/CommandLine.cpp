@@ -179,6 +179,11 @@ bool parseLaunchOptions(int argc, char** argv, LaunchOptions& options)
             continue;
         }
 
+        if (argument == "--overdraw") {
+            options.overdraw = true;
+            continue;
+        }
+
         if (argument == "--vsm-dump-pool") {
             if (index + 1 >= argc) {
                 Logger::error("--vsm-dump-pool requires a file path.");

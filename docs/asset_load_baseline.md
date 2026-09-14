@@ -306,9 +306,9 @@ lossy BC7 textures.
 - `--asset-load-stats` covers `VulkanTexture` only. `VulkanEnvironmentMap`
   cubemaps and the BRDF LUT have their own allocations and their own
   `vkQueueWaitIdle` calls; they are visible in the VMA totals but not itemized.
-- The scene's depth complexity is still unmeasured. It is the reason the scene
-  was wanted (`design_decisions.md` on the depth prepass) and the engine has no
-  overdraw counter to answer it with.
+- Its depth complexity is **2.187 shaded fragments per rendered pixel**
+  (`--overdraw`), the highest of any preset here. That was the reason the scene
+  was wanted; see `design_decisions.md` on the depth prepass.
 - "glTF import" times parse and mesh buffer upload together, because
   `Mesh::createFromGltf` does both behind one boundary.
 - Wall-clock segments only. No GPU timestamps are involved; these are not

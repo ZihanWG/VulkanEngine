@@ -312,6 +312,7 @@ add_library(VulkanEngineRuntime STATIC
     src/renderer/GroundTruthAmbientOcclusion.cpp
     src/renderer/SkinnedMesh.cpp
     src/renderer/Mesh.cpp
+    src/renderer/OverdrawQuery.cpp
     src/renderer/PostProcessStack.cpp
     src/renderer/PunctualShadows.cpp
     src/renderer/VolumetricFogPass.cpp

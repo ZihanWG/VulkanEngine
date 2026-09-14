@@ -55,6 +55,7 @@ add_executable(VulkanEngineTests
     test_skeletal_animation.cpp
     test_gltf_skinned_import.cpp
     test_gltf_geometry.cpp
+    test_overdraw_query.cpp
     test_job_system.cpp
     test_editor_camera.cpp
     test_scene_builder.cpp

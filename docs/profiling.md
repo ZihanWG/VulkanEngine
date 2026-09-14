@@ -193,6 +193,42 @@ each run is flat across its own thirds (7.447 / 7.427 / 7.344) and the whole
 drift is a step *between* runs, which is why reducing the heat the series
 generates is what fixed it rather than sampling longer.
 
+### `--overdraw`: how many times the average pixel is shaded
+
+`VK_QUERY_TYPE_PIPELINE_STATISTICS` counting
+`FRAGMENT_SHADER_INVOCATIONS`, bracketed around the opaque scene geometry and
+printed once a second as its own log line:
+
+```
+Overdraw: 2.187 fragment shader invocations per rendered pixel (2015242 invocations over 921600 pixels, opaque scene geometry only)
+```
+
+Off unless asked for, and diagnostic only — nothing in the frame path reads it,
+and it is verified not to change the frame (0 of 921600 pixels differ with it on
+and off). `pipelineStatisticsQuery` is optional in Vulkan; a device without it
+loses the line and says so once in the capability report.
+
+**What it counts, and why that is the useful number.** Invocations are what
+survives early depth testing, so this is the shading that actually happens rather
+than the geometric layer count — which is exactly the work a depth prepass could
+remove. The two differ far more than expected here: `gpu-stress` is built from
+twenty-four full-frame slabs and shades **1.276** fragments per pixel, because
+stacked full-screen quads occlude each other perfectly and early-Z rejects nearly
+all of it. `--scene sponza` shades **2.187**, more than any scene in the
+repository including the ones built to stress fragment shading. See
+`design_decisions.md` on the depth prepass for the full table and what it bounds.
+
+**The denominator is the whole render extent, not the covered area**, so a scene
+that does not fill the frame reads below 1.0 (`cornell` is 0.647) and that says
+"sky in frame", not "negative overdraw". It still supports a rigorous bound in
+the other direction: covered pixels cannot exceed the extent, so
+`invocations − extent` is a floor on what a prepass would remove.
+
+Bracketed around the opaque geometry only, deliberately. The skybox writes one
+fragment per uncovered pixel and the post-process chain writes several per pixel
+regardless of the scene; counting them would add a constant that has nothing to
+do with content.
+
 ### Take medians, not single frames
 
 Single-frame numbers on this hardware swing wide enough to invert a comparison. The first frame captured after the marker experiment above looked twice as bad, purely as an outlier. Sample over at least a few seconds and compare medians — the once-per-second `GPU timings:` block in the log is the easiest source.
@@ -308,6 +344,14 @@ across a fixed depth span rather than at a fixed spacing, so more layers means
 denser overdraw rather than a longer tunnel whose far end shrinks out of frame; at
 six layers that arithmetic is identical to what it replaced, so `fragment-stress`
 is bit-identical and keeps the measurements taken on it.
+
+Worth knowing what those 24 layers actually buy, now that `--overdraw` can say:
+**1.276 shaded fragments per pixel, against `--scene sponza`'s 2.187.** Stacked
+full-screen quads occlude each other perfectly, so early-Z rejects nearly all of
+the manufactured overdraw before it reaches a fragment shader. The preset still
+works as a load knob — it makes the GPU frame large enough for the drift gate,
+which is what it was built for — but it is not a scene with high shading
+overdraw, and it should not be used as a stand-in for one.
 
 **`--window-size WIDTHxHEIGHT`** is the lever with no ceiling. `renderScale` only
 scales *down*, the scene presets are bounded by early-Z and by

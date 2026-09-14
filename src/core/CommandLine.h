@@ -140,6 +140,13 @@ struct LaunchOptions {
     // Required for any frame-to-frame image comparison.
     bool deterministic = false;
 
+    // Report fragment shader invocations per rendered pixel once a second
+    // (renderer/OverdrawQuery.h). Off by default: it is a diagnostic for the
+    // depth-prepass question, it needs an optional device feature, and a query
+    // bracketing the main geometry is not something a measurement run should
+    // carry unasked.
+    bool overdraw = false;
+
     // Capture the swapchain image of this frame (1-based) to captureOutput. The
     // loop keeps drawing past it until the readback lands, then exits.
     uint64_t captureFrame = 0;

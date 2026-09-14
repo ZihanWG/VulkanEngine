@@ -177,6 +177,7 @@ Renderer::Renderer(Window& window, const RendererStartupOverrides& overrides) : 
     frameOcclusionTested_.assign(frames_.size(), 0u);
     screenshotCapture_.initialize(context_, static_cast<uint32_t>(frames_.size()), portfolioScreenshotDirectory());
     gpuProfiler_.initialize(context_, static_cast<uint32_t>(frames_.size()));
+    overdrawQuery_.initialize(context_, static_cast<uint32_t>(frames_.size()));
     swapchain_.initialize(context_, window_.framebufferExtent());
     // Before anything screen-sized is created below: every one of those targets
     // reads its size from renderResolution_.
@@ -607,6 +608,7 @@ void Renderer::drawFrame()
     imagesInFlight_[imageIndex] = submitTimelineValue;
 
     gpuProfiler_.markFrameSubmitted(currentFrame_);
+    overdrawQuery_.markFrameSubmitted(currentFrame_);
     capturePreviousFrameMatrices();
 
     VkPresentInfoKHR presentInfo{};
@@ -1278,6 +1280,33 @@ void Renderer::emitRecordCpuBreakdown() const
     Logger::info(message.str());
 }
 
+void Renderer::emitOverdrawReadout(uint32_t frameIndex)
+{
+    if (!overdrawReadoutEnabled_) {
+        return;
+    }
+    if (!overdrawQuery_.available()) {
+        // Once, not every second: a device without the feature would otherwise
+        // fill the log with the same sentence.
+        if (!overdrawUnavailableReported_) {
+            overdrawUnavailableReported_ = true;
+            Logger::warn("Overdraw readout unavailable: " + overdrawQuery_.unavailableReason());
+        }
+        return;
+    }
+
+    renderer::OverdrawQuery::FrameResult overdraw{};
+    if (!overdrawQuery_.readFrame(frameIndex, overdraw) || !overdraw.valid) {
+        return;
+    }
+
+    std::ostringstream message;
+    message << std::fixed << std::setprecision(3) << "Overdraw: " << overdraw.invocationsPerPixel()
+            << " fragment shader invocations per rendered pixel (" << overdraw.fragmentInvocations
+            << " invocations over " << overdraw.renderedPixels << " pixels, opaque scene geometry only)";
+    Logger::info(message.str());
+}
+
 void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
 {
     renderer::GpuProfiler::FrameResults results{};
@@ -1293,6 +1322,11 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
     }
 
     lastGpuTimingPrintSeconds_ = now;
+
+    // Before the GPU timings block and as its own line. Anything two-space
+    // indented inside that block is parsed as a GPU pass by
+    // tools/dev/measure_gpu.py, and this is a ratio rather than a time.
+    emitOverdrawReadout(frameIndex);
 
     std::ostringstream message;
     message << std::fixed << std::setprecision(3) << "GPU timings:\n"

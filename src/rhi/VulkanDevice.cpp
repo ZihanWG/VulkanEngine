@@ -183,6 +183,7 @@ void VulkanDevice::cleanup()
     multiviewEnabled_ = false;
     independentBlendEnabled_ = false;
     samplerAnisotropyEnabled_ = false;
+    pipelineStatisticsQueryEnabled_ = false;
     maxSamplerAnisotropy_ = 1.0f;
     drawIndexedIndirectCountAvailable_ = false;
     maxDrawIndirectCount_ = 0;
@@ -389,11 +390,17 @@ void VulkanDevice::createLogicalDevice()
     // been reading its blurriest mip since then.
     samplerAnisotropyEnabled_ = supportedFeatures.features.samplerAnisotropy == VK_TRUE;
 
+    // Fragment shader invocation counting, for the overdraw readout
+    // (renderer/OverdrawQuery.h). Diagnostic only -- no pass, pipeline or
+    // resource depends on it, so a device without it loses one log line.
+    pipelineStatisticsQueryEnabled_ = supportedFeatures.features.pipelineStatisticsQuery == VK_TRUE;
+
     VkPhysicalDeviceFeatures enabledCore{};
     enabledCore.multiDrawIndirect = multiDrawIndirectEnabled_ ? VK_TRUE : VK_FALSE;
     enabledCore.drawIndirectFirstInstance = drawIndirectFirstInstanceEnabled_ ? VK_TRUE : VK_FALSE;
     enabledCore.independentBlend = independentBlendEnabled_ ? VK_TRUE : VK_FALSE;
     enabledCore.samplerAnisotropy = samplerAnisotropyEnabled_ ? VK_TRUE : VK_FALSE;
+    enabledCore.pipelineStatisticsQuery = pipelineStatisticsQueryEnabled_ ? VK_TRUE : VK_FALSE;
 
     VkPhysicalDeviceVulkan13Features enabled13{};
     enabled13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
@@ -527,6 +534,10 @@ void VulkanDevice::logCapabilityReport(std::span<const ExtensionOutcome> optiona
                     samplerAnisotropyEnabled_
                         ? std::to_string(static_cast<int>(maxSamplerAnisotropy_)) + "x on material samplers"
                         : "falling back to trilinear on material samplers"});
+    rows.push_back({"pipeline statistics",
+                    pipelineStatisticsQueryEnabled_,
+                    pipelineStatisticsQueryEnabled_ ? "fragment invocation counting for --overdraw"
+                                                    : "--overdraw reports nothing on this device"});
     rows.push_back({"async compute queue",
                     asyncComputeAvailable_,
                     asyncComputeAvailable_ ? (asyncComputeDedicatedFamily_ ? "dedicated compute-only family "

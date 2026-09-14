@@ -121,11 +121,18 @@ constexpr float kFragmentStressDepthSpan = 21.0f;
 // its own docs: a heavier preset pins the clock and the comparison becomes
 // quotable.
 //
-// Both knobs cost GPU and almost no CPU, which is the point. Layers are
-// overdraw, so they multiply fragment work while adding one draw item each;
+// Both knobs cost GPU and almost no CPU, which is the point. Layers add one draw
+// item each while multiplying the fragment work the rasterizer must consider;
 // lights feed the per-froxel loop, and the light list is a fixed-size upload
 // whatever its length. A preset that scaled draw items instead would just move
 // the bottleneck back onto the CPU, where `stress` already is.
+//
+// What the layers do NOT buy is shading overdraw, which was the assumption until
+// --overdraw could check it: full-screen quads occlude each other perfectly, so
+// early depth testing rejects nearly all of them and the preset shades 1.276
+// fragments per pixel against --scene sponza's 2.187. It is a load knob for the
+// drift gate, not a stand-in for a scene with real depth complexity. See
+// docs/design_decisions.md on the depth prepass.
 constexpr int kGpuStressLayerCount = 24;
 constexpr int kGpuStressObjectCount = kGpuStressLayerCount + 1;
 // Past saturating kMaxLightsPerCluster (64) per froxel, more lights buy nothing:
