@@ -1037,6 +1037,7 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             "ExposureState", postProcess_.exposureBuffers(), currentFrame_, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
         .taaEnabled = postProcess_.isTaaActive(),
         .twoPhaseOcclusionEnabled = frameTwoPhaseOcclusionActive_,
+        .depthPrepassEnabled = frameDepthPrepassActive_,
         .depthPyramidBuildEnabled = frameDepthPyramidBuildRequired_,
         .ssrEnabled = frameSsrActive_,
         .gtaoEnabled = frameGtaoActive_,
@@ -1968,6 +1969,143 @@ void Renderer::recordCascadeShadowPass(VkCommandBuffer commandBuffer)
     }
 }
 
+void Renderer::recordDepthPrepass(VkCommandBuffer commandBuffer)
+{
+    if (!frameDepthPrepassActive_) {
+        return;
+    }
+
+    const bool prepassProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "DepthPrepass");
+    rhi::debug::beginLabel(commandBuffer, "DepthPrepass");
+    renderGraph_.beginDepthPrepass();
+
+    const VkExtent2D extent = renderResolution_.extent();
+    VkViewport viewport{};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = static_cast<float>(extent.width);
+    viewport.height = static_cast<float>(extent.height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+
+    VkRect2D scissor{};
+    scissor.offset = {0, 0};
+    scissor.extent = extent;
+    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+    // Only the two buffer addresses are read by depth_prepass.vert, but the range
+    // the pipeline layout declares is the whole struct, so the whole struct is
+    // what gets pushed. Its own layout, not the main pass's: that one covers the
+    // fragment stage too, and pushing through a layout the bound pipeline does
+    // not use is undefined.
+    PushConstants pushConstants{};
+    pushConstants.objectFrameDataAddress = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
+    pushConstants.frameConstantsAddress = frameConstantsBuffers_.at(currentFrame_).deviceAddress();
+    vkCmdPushConstants(commandBuffer,
+                       depthPrepassPipeline_.layout(),
+                       VK_SHADER_STAGE_VERTEX_BIT,
+                       0,
+                       static_cast<uint32_t>(sizeof(PushConstants)),
+                       &pushConstants);
+
+    const VkBuffer indirectDrawBuffer = frameIndirectDrawBuffers_.at(currentFrame_).buffer();
+    const bool indirectCountPathActive = isFrameIndirectCountPathActive(currentFrame_);
+    const VkBuffer batchVisibleCountBuffer =
+        indirectCountPathActive ? gpuCulling_.visibleCountBuffer(currentFrame_).buffer() : VK_NULL_HANDLE;
+
+    VkPipeline boundPipeline = VK_NULL_HANDLE;
+    const renderer::Mesh* boundMesh = nullptr;
+    uint32_t drawnBatches = 0;
+    for (const MeshDrawBatch& batch : meshDrawBatches_) {
+        if (!batch.mesh || batch.drawItemCount == 0) {
+            continue;
+        }
+        // OPAQUE ONLY, and the omissions are deliberate rather than unfinished.
+        //
+        // Blend must never write depth -- it is composited later, and depth from
+        // a transparent surface would occlude what is meant to show through it.
+        //
+        // Mask is excluded because a depth-only replay has no fragment shader to
+        // run the alpha test with, so a cutout leaf would write the depth of its
+        // whole quad and the main pass would then reject everything behind it --
+        // the "leaves cast a rectangle" artifact, in depth rather than in shadow.
+        // Running them through the alpha-tested path would work and is the
+        // obvious extension; leaving them out is CORRECT, just less effective.
+        // Depth from a subset is still true depth: geometry left out of the
+        // prepass simply draws in the main pass as it always did, and misses the
+        // early-Z saving.
+        if (batch.bucket != RenderBucket::Opaque) {
+            continue;
+        }
+
+        // Must match the main pass's choice for this batch exactly. Culling a
+        // double-sided batch here would leave holes in the prepass depth, which
+        // costs a saving; failing to cull a single-sided one would write a back
+        // face in front of its own front face, and the main pass would reject
+        // the front face and the surface would disappear.
+        const VkPipeline batchPipeline =
+            batch.doubleSided && depthPrepassDoubleSidedPipeline_.pipeline() != VK_NULL_HANDLE
+                ? depthPrepassDoubleSidedPipeline_.pipeline()
+                : depthPrepassPipeline_.pipeline();
+        if (boundPipeline != batchPipeline) {
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, batchPipeline);
+            boundPipeline = batchPipeline;
+        }
+
+        if (boundMesh != batch.mesh) {
+            const VkBuffer vertexBuffers[] = {batch.mesh->vertexBuffer()};
+            const VkDeviceSize vertexOffsets[] = {0};
+            vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
+            vkCmdBindIndexBuffer(commandBuffer, batch.mesh->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+            boundMesh = batch.mesh;
+        }
+
+        // The same compacted buffer and the same offsets the main pass replays,
+        // so the two passes draw the same geometry by construction rather than by
+        // two lists agreeing.
+        const VkDeviceSize indirectOffset =
+            static_cast<VkDeviceSize>(batch.compactedCommandOffset * sizeof(VkDrawIndexedIndirectCommand));
+        if (indirectCountPathActive && batchVisibleCountBuffer != VK_NULL_HANDLE) {
+            vkCmdDrawIndexedIndirectCount(commandBuffer,
+                                          indirectDrawBuffer,
+                                          indirectOffset,
+                                          batchVisibleCountBuffer,
+                                          batch.visibleCountOffset,
+                                          batch.drawItemCount,
+                                          sizeof(VkDrawIndexedIndirectCommand));
+        } else {
+            vkCmdDrawIndexedIndirect(commandBuffer,
+                                     indirectDrawBuffer,
+                                     indirectOffset,
+                                     batch.drawItemCount,
+                                     sizeof(VkDrawIndexedIndirectCommand));
+        }
+        ++drawnBatches;
+    }
+    // Logged once, because "the prepass is enabled" and "the prepass is drawing
+    // most of the scene" are different claims and only the second one makes a
+    // measurement mean anything. Sponza's opaque bucket is not obviously the
+    // whole scene -- its curtains and foliage are MASK, which this pass skips.
+    if (!depthPrepassCoverageReported_) {
+        depthPrepassCoverageReported_ = true;
+        const uint32_t opaqueItems = frameVisibleBucketRanges_[static_cast<size_t>(RenderBucket::Opaque)].count();
+        const uint32_t maskItems = frameVisibleBucketRanges_[static_cast<size_t>(RenderBucket::Mask)].count();
+        const uint32_t blendItems = frameVisibleBucketRanges_[static_cast<size_t>(RenderBucket::Blend)].count();
+        Logger::info("Depth prepass: " + std::to_string(drawnBatches) + " of " +
+                     std::to_string(meshDrawBatches_.size()) + " batches, covering " + std::to_string(opaqueItems) +
+                     " opaque draw items (" + std::to_string(maskItems) + " masked and " + std::to_string(blendItems) +
+                     " blended are not prepassed).");
+    }
+    depthPrepassBatchesDrawn_ = drawnBatches;
+
+    renderGraph_.endDepthPrepass();
+    rhi::debug::endLabel(commandBuffer);
+    if (prepassProfileScope) {
+        gpuProfiler_.endScope(currentFrame_, commandBuffer);
+    }
+}
+
 void Renderer::recordMainPassGeometry(VkCommandBuffer commandBuffer)
 {
     // The main HDR pass, the two-phase occlusion re-test, the screen-space
@@ -1986,6 +2124,11 @@ void Renderer::recordMainPassGeometry(VkCommandBuffer commandBuffer)
     const size_t mainDrawItemCount = visibleDrawItems_.size();
     const bool clusteredLightingActive = clusteredLighting_.available() && useClusteredLighting_ &&
                                          clusteredLighting_.lightCount() > 0 && !allDrawItems_.empty();
+
+    // Before the main pass begins its own rendering: this opens and closes a
+    // render pass of its own, and the depth it leaves behind is what the main
+    // pass loads instead of clearing.
+    recordDepthPrepass(commandBuffer);
 
     const bool mainHdrProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "MainHDRPass");
     rhi::debug::beginLabel(commandBuffer, "MainHDRPass");

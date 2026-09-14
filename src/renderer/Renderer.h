@@ -501,6 +501,12 @@ private:
     void createSkyboxPipeline();
     void createTransparentPipeline();
     void createShadowPipeline();
+    // Depth-only pipelines for the opaque prepass. No fragment shader and no
+    // colour attachment: the pass exists to populate depth, nothing else.
+    void createDepthPrepassPipelines();
+    // Replays the opaque bucket depth-only, before MainHDRPass. No-op unless
+    // frameDepthPrepassActive_.
+    void recordDepthPrepass(VkCommandBuffer commandBuffer);
     // Casters for the skinned mesh: cascades and VSM pages. Both read the same
     // shader and push block; only the depth target differs.
     // Advances the skinned pose and uploads its palette, bounds and digest.
@@ -1098,6 +1104,12 @@ private:
     // depth-only pipeline has no fragment stage at all; this one adds the cutout
     // discard and therefore needs the bindless base-color array bound.
     rhi::PipelineRef maskedShadowPipeline_;
+    // Depth-only replay of the opaque bucket, ahead of MainHDRPass. Two refs for
+    // the same reason the main pipeline has two: Material::doubleSided decides
+    // which, and with back-face culling off both requests are byte-identical so
+    // the store returns one pipeline and reports it shared.
+    rhi::PipelineRef depthPrepassPipeline_;
+    rhi::PipelineRef depthPrepassDoubleSidedPipeline_;
     // Depth-only pipeline for the punctual shadow atlas. Separate from
     // shadowPipeline_ because its push-constant layout carries the slot's
     // view-projection instead of a cascade index.
@@ -1613,12 +1625,23 @@ private:
     bool useTwoPhaseOcclusion_ = true;
     bool useLayeredCascades_ = false;
     bool useBackfaceCulling_ = false;
+    // See RuntimeSettings::enableDepthPrepass. Startup-only: it selects the main
+    // pipeline's depth compare op.
+    bool useDepthPrepass_ = false;
     bool useAdaptiveOcclusion_ = true;
     renderer::OcclusionYieldController occlusionYield_;
     // Per frame slot: was occlusion culling running when this slot's cull
     // counters were written? Sized with frames_.
     std::vector<uint8_t> frameOcclusionTested_;
     bool frameTwoPhaseOcclusionActive_ = false;
+    // Per-frame resolution of useDepthPrepass_: also requires the multi-draw
+    // indirect path and a pipeline, so a device that falls back to per-draw
+    // recording simply does not get the prepass.
+    bool frameDepthPrepassActive_ = false;
+    // How many batches the prepass actually replayed, for the debug UI and for
+    // the log line that proves the pass did something.
+    uint32_t depthPrepassBatchesDrawn_ = 0;
+    bool depthPrepassCoverageReported_ = false;
     // Whether this frame builds the Hi-Z pyramid. Latched during frame prep for
     // the same reason as frameProbeCaptureActive_ below: the graph declaration
     // and the recorder must agree, and isDepthPyramidBuildRequired() reads state

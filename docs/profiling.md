@@ -229,6 +229,22 @@ fragment per uncovered pixel and the post-process chain writes several per pixel
 regardless of the scene; counting them would add a constant that has nothing to
 do with content.
 
+### `DepthPrepass`
+
+Present only when `renderer.enableDepthPrepass` is on, which is off by default.
+It replays the opaque bucket depth-only ahead of `MainHDRPass` so early-Z rejects
+fragments that pass would otherwise shade and overwrite. On `--scene sponza` it
+costs **0.063 ms** and takes **1.163 ms** off `MainHDRPass`; see
+`design_decisions.md` for the full A/B and for why a 0.063 ms pass was predicted
+to cost 2.9.
+
+It is a runtime setting rather than a build flag precisely so this harness can
+A/B it inside one binary:
+
+```bash
+python3 tools/dev/measure_gpu.py ab --repeat 2 --duration 75 --b-set renderer.enableDepthPrepass=true --args --scene sponza --deterministic
+```
+
 ### Take medians, not single frames
 
 Single-frame numbers on this hardware swing wide enough to invert a comparison. The first frame captured after the marker experiment above looked twice as bad, purely as an outlier. Sample over at least a few seconds and compare medians — the once-per-second `GPU timings:` block in the log is the easiest source.
@@ -294,6 +310,7 @@ The current frame records timestamp scopes for:
 - `MainGpuCullingPass` when main GPU culling is active
 - `ClusterBuild` and `LightCull` when clustered lighting is active
 - `IrradianceProbeUpdate` and `ProbeCapture` when irradiance probes are active
+- `DepthPrepass` when `renderer.enableDepthPrepass` is on
 - `MainHDRPass`
 - `Skybox`, `RenderObjects`, and `SkinnedMesh`, recorded inside `MainHDRPass`
 - `DepthPyramidMid`, `MainGpuCullingPhase2`, and `MainHDRPhase2` when two-phase occlusion culling is active

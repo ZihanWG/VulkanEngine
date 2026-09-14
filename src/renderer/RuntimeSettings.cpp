@@ -544,6 +544,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readBool(*renderer, "enableTwoPhaseOcclusion", settings.enableTwoPhaseOcclusion);
         readBool(*renderer, "enableLayeredCascades", settings.enableLayeredCascades);
         readBool(*renderer, "enableBackfaceCulling", settings.enableBackfaceCulling);
+        readBool(*renderer, "enableDepthPrepass", settings.enableDepthPrepass);
         readBool(*renderer, "enableAdaptiveOcclusion", settings.enableAdaptiveOcclusion);
         readBool(*renderer, "useClusteredLighting", settings.useClusteredLighting);
         readBool(*renderer, "enableAsyncCompute", settings.enableAsyncCompute);
@@ -703,6 +704,7 @@ Json toJson(const RuntimeSettings& settings)
               {"enableTwoPhaseOcclusion", settings.enableTwoPhaseOcclusion},
               {"enableLayeredCascades", settings.enableLayeredCascades},
               {"enableBackfaceCulling", settings.enableBackfaceCulling},
+              {"enableDepthPrepass", settings.enableDepthPrepass},
               {"enableAdaptiveOcclusion", settings.enableAdaptiveOcclusion},
               {"useClusteredLighting", settings.useClusteredLighting},
               {"enableAsyncCompute", settings.enableAsyncCompute},

@@ -29,19 +29,20 @@ _Detailed per-frame pass ordering and the descriptor-set layout contract, moved 
    That equality is worth re-checking after any change to this path, because the way it broke before was not visible in timings. The skinned caster used to push a per-cascade matrix, which `gl_ViewIndex` cannot answer, so it was skipped here entirely -- and since its pose then had to stay out of the cascade cache key as well, nothing dirtied the cascades. `CSMShadowPass` read 0.000 ms with 3263 consecutive cached frames, which looks like multiview paying off and was a frozen shadow map missing the caster's whole ground shadow (11491 pixels, every one brighter).
 10. If any punctual light was assigned an atlas tile, run `PunctualShadowAtlasPass`: let the graph transition the punctual shadow atlas, open one depth-only Dynamic Rendering scope over the whole atlas, and draw each slot's casters under that slot's viewport/scissor.
 11. Reset the main-pass batch visible-count buffer, dispatch the camera-frustum compute culling pass, optionally sample the previous completed Hi-Z depth pyramid for conservative occlusion, manually barrier visible counts for the immediate readback copy, and let the graph barrier culling outputs for later indirect/count reads in `MainHDRPass`.
-12. Let the graph transition the HDR scene color image, cascaded shadow map, punctual shadow atlas, and main depth image for `MainHDRPass`.
-13. Begin `MainHDRPass`, draw the skybox, bind global and bindless material descriptors when available, and issue indirect indexed mesh draws into `sceneColor_`.
-14. Run `DepthPyramidPass` to sample the stored normal-Z main depth image and write the max-depth Hi-Z pyramid for later-frame culling.
-15. If TAA is enabled, run `TAAResolvePass` to resolve jittered `sceneColor_` into the current HDR history target; otherwise keep `sceneColor_` as the active post-process source.
-16. Run the legacy bloom extract/blur fallback into `BloomPong`.
-17. Run the mip-chain bloom downsample passes at 1/2, 1/4, 1/8, and 1/16 resolution when practical, then progressively upsample into the final mip-chain bloom target.
-18. Run `LuminancePass` to reduce log luminance from the active HDR scene source into per-frame GPU storage.
-19. Run `HistogramExposurePass` to bin HDR scene luminance, reduce the selected exposure mode into the GPU exposure state buffer, manually preserve host readback visibility, and let the graph make the exposure buffer visible to `CompositePass`.
-20. Run `CompositePass` to combine active HDR scene color + selected bloom * intensity, apply manual or GPU exposure, apply Reinhard or ACES tone mapping, and write the final color to the swapchain. This is where a reduced render scale is upscaled: every step above runs at the internal render extent, and the composite is the first pass whose viewport is the swapchain (see [render_scale.md](render_scale.md)).
-21. If a portfolio screenshot was requested, transition the composited swapchain image to transfer source, copy it into a per-frame readback buffer, then return it to color-attachment layout.
-22. Run `ImGuiPass` to load the composited swapchain image as a color attachment and draw the debug UI overlay.
-23. Let the graph transition the swapchain image to present, submit with `vkQueueSubmit2`, and present.
-24. Recreate the swapchain, post-process images, TAA history, depth pyramid resources, and ImGui swapchain-dependent backend state if presentation reports an out-of-date or resized surface.
+12. When `renderer.enableDepthPrepass` is on (off by default), replay the opaque bucket depth-only into the main depth image as `DepthPrepass`, so the pass below loads that depth instead of clearing it and its `LESS_OR_EQUAL` test lets early-Z reject fragments it would otherwise shade and overwrite. Masked and blended buckets are skipped; see `design_decisions.md`.
+13. Let the graph transition the HDR scene color image, cascaded shadow map, punctual shadow atlas, and main depth image for `MainHDRPass`.
+14. Begin `MainHDRPass`, draw the skybox, bind global and bindless material descriptors when available, and issue indirect indexed mesh draws into `sceneColor_`.
+15. Run `DepthPyramidPass` to sample the stored normal-Z main depth image and write the max-depth Hi-Z pyramid for later-frame culling.
+16. If TAA is enabled, run `TAAResolvePass` to resolve jittered `sceneColor_` into the current HDR history target; otherwise keep `sceneColor_` as the active post-process source.
+17. Run the legacy bloom extract/blur fallback into `BloomPong`.
+18. Run the mip-chain bloom downsample passes at 1/2, 1/4, 1/8, and 1/16 resolution when practical, then progressively upsample into the final mip-chain bloom target.
+19. Run `LuminancePass` to reduce log luminance from the active HDR scene source into per-frame GPU storage.
+20. Run `HistogramExposurePass` to bin HDR scene luminance, reduce the selected exposure mode into the GPU exposure state buffer, manually preserve host readback visibility, and let the graph make the exposure buffer visible to `CompositePass`.
+21. Run `CompositePass` to combine active HDR scene color + selected bloom * intensity, apply manual or GPU exposure, apply Reinhard or ACES tone mapping, and write the final color to the swapchain. This is where a reduced render scale is upscaled: every step above runs at the internal render extent, and the composite is the first pass whose viewport is the swapchain (see [render_scale.md](render_scale.md)).
+22. If a portfolio screenshot was requested, transition the composited swapchain image to transfer source, copy it into a per-frame readback buffer, then return it to color-attachment layout.
+23. Run `ImGuiPass` to load the composited swapchain image as a color attachment and draw the debug UI overlay.
+24. Let the graph transition the swapchain image to present, submit with `vkQueueSubmit2`, and present.
+25. Recreate the swapchain, post-process images, TAA history, depth pyramid resources, and ImGui swapchain-dependent backend state if presentation reports an out-of-date or resized surface.
 
 ## Current Descriptor Contract
 

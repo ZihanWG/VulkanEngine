@@ -935,11 +935,64 @@ void RenderGraph::beginMainHdrPass()
         throw std::logic_error("RenderGraph::beginMainHdrPass was culled but the renderer attempted to record it.");
     }
 
-    beginMainHdrRendering(false);
+    // Colour is cleared as always; depth is kept when the prepass has already
+    // filled it. Clearing it here instead would throw away the entire pass.
+    beginMainHdrRendering(false, hasDepthPrepass());
     activePass_ = ActivePass::MainHdr;
 }
 
-void RenderGraph::beginMainHdrRendering(bool loadExisting)
+void RenderGraph::beginDepthPrepass()
+{
+    requireFrameActive("RenderGraph::beginDepthPrepass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginDepthPrepass called while another pass is active.");
+    }
+    if (!beginDeclaredPass(frame_.passIndices.depthPrepass)) {
+        throw std::logic_error("RenderGraph::beginDepthPrepass was culled but the renderer attempted to record it.");
+    }
+
+    VkClearValue depthClear{};
+    depthClear.depthStencil.depth = 1.0f;
+    depthClear.depthStencil.stencil = 0;
+
+    // Depth only: no colour attachment at all, which is what makes this cheaper
+    // than the pass it exists to speed up.
+    VkRenderingAttachmentInfo depthAttachment{};
+    depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    depthAttachment.imageView = frame_.swapchain->depthImageView();
+    depthAttachment.imageLayout = depthAttachmentLayout(VK_IMAGE_ASPECT_DEPTH_BIT);
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    depthAttachment.clearValue = depthClear;
+
+    const TextureResource& sceneColor = textures_.at(frame_.sceneColor.index);
+    VkRenderingInfo renderingInfo{};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea.offset = {0, 0};
+    // The same sub-rect the main pass uses, so a render-scale change moves both
+    // together. A prepass covering a different area than the pass reading its
+    // depth would leave a band of stale or cleared depth along the seam.
+    renderingInfo.renderArea.extent = sceneRenderArea(sceneColor.desc.extent);
+    renderingInfo.layerCount = 1;
+    renderingInfo.colorAttachmentCount = 0;
+    renderingInfo.pDepthAttachment = &depthAttachment;
+
+    vkCmdBeginRendering(frame_.commandBuffer, &renderingInfo);
+    activePass_ = ActivePass::DepthPrepass;
+}
+
+void RenderGraph::endDepthPrepass()
+{
+    requireFrameActive("RenderGraph::endDepthPrepass");
+    if (activePass_ != ActivePass::DepthPrepass) {
+        throw std::logic_error("RenderGraph::endDepthPrepass called without an active depth prepass.");
+    }
+
+    vkCmdEndRendering(frame_.commandBuffer);
+    activePass_ = ActivePass::None;
+}
+
+void RenderGraph::beginMainHdrRendering(bool loadExisting, bool loadDepth)
 {
     VkClearValue clearColor{};
     clearColor.color.float32[0] = 0.03f;
@@ -984,7 +1037,7 @@ void RenderGraph::beginMainHdrRendering(bool loadExisting)
     depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     depthAttachment.imageView = frame_.swapchain->depthImageView();
     depthAttachment.imageLayout = depthAttachmentLayout(VK_IMAGE_ASPECT_DEPTH_BIT);
-    depthAttachment.loadOp = loadExisting ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAttachment.loadOp = loadDepth ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
     depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     depthAttachment.clearValue = depthClear;
 
@@ -1022,7 +1075,8 @@ void RenderGraph::beginMainHdrPhase2Pass()
             "RenderGraph::beginMainHdrPhase2Pass was culled but the renderer attempted to record it.");
     }
 
-    beginMainHdrRendering(true);
+    // Phase 2 keeps everything phase 1 left behind, depth included.
+    beginMainHdrRendering(true, true);
     activePass_ = ActivePass::MainHdrPhase2;
 }
 
@@ -2106,6 +2160,39 @@ void RenderGraph::declareGeometryPasses()
                 }
             });
     }
+    if (frame_.resources.depthPrepassEnabled) {
+        frame_.passIndices.depthPrepass =
+            addPass("DepthPrepass",
+                    RenderPassType::DepthPrepass,
+                    RenderPassExecutionType::Graphics,
+                    // sideEffect, so liveness cannot drop it. Its only product
+                    // is depth, and the pass after it LOADS that depth rather
+                    // than reading it as a texture -- an attachment hand-off the
+                    // graph does not model as a dependency. Declared without
+                    // this the graph culls the pass as dead (its write is
+                    // followed by another write and never read), and the first
+                    // build did exactly that: the renderer then tried to record
+                    // a culled pass and threw.
+                    //
+                    // Worth noting what the failure would have been had it not
+                    // thrown: the main pass would test LESS_OR_EQUAL against
+                    // cleared depth, draw the scene correctly, and measure
+                    // nothing.
+                    true,
+                    [this](RenderGraphBuilder& builder) {
+                        frame_.mainDepth =
+                            builder.writeTexture(frame_.mainDepth,
+                                                 RGAccess::DepthStencilAttachmentWrite,
+                                                 "Clears and writes opaque depth ahead of the main pass.");
+                        builder.readBuffer(frame_.mainCullIndirectOutput,
+                                           RGAccess::IndirectRead,
+                                           "Replays the main pass's indirect draw commands, depth only.");
+                        builder.readBuffer(frame_.mainCullVisibleCounts,
+                                           RGAccess::IndirectRead,
+                                           "Reads per-batch visible counts when indirect-count drawing is active.");
+                    });
+    }
+
     frame_.passIndices.mainHdr = addPass(
         "MainHDRPass",
         RenderPassType::MainHdr,
@@ -2163,9 +2250,11 @@ void RenderGraph::declareGeometryPasses()
                 builder.writeTexture(frame_.normalRoughness,
                                      RGAccess::ColorAttachmentWrite,
                                      "Writes the thin G-buffer (normal, roughness, metallic) for SSR.");
-            frame_.mainDepth = builder.writeTexture(frame_.mainDepth,
-                                                    RGAccess::DepthStencilAttachmentWrite,
-                                                    "Clears and writes the main depth attachment.");
+            frame_.mainDepth = builder.writeTexture(
+                frame_.mainDepth,
+                RGAccess::DepthStencilAttachmentWrite,
+                frame_.resources.depthPrepassEnabled ? "Loads the prepass depth and writes the main depth attachment."
+                                                     : "Clears and writes the main depth attachment.");
             builder.readBuffer(frame_.mainCullIndirectOutput,
                                RGAccess::IndirectRead,
                                "Reads CPU- or GPU-generated indirect draw commands.");

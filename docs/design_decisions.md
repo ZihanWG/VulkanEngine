@@ -697,13 +697,68 @@ blended casters, re-measure, and then revisit the `gpuCasterCulling` default.
 Parallel recording only becomes the right lever after that, because only then is
 the remaining recording cost spread widely enough for threading to reach it.
 
-## A depth prepass now has a number, and it is the best case this repository has produced
+## A depth prepass, measured and BUILT
 
-**Status: still not built, but it is no longer unevaluated.** This section used to
-say the pass could not be judged because no scene here had realistic depth
-complexity. Both halves of that have been fixed: `--scene sponza` supplies the
-scene and `--overdraw` supplies the measurement, and the answer is more
-interesting than the argument was.
+**Status: built, measured, and it wins -- `renderer.enableDepthPrepass`, off by
+default for a reason that is not about the win.** This section spent months
+saying the pass could not be judged because no scene here had realistic depth
+complexity. `--scene sponza` supplied the scene, `--overdraw` supplied the
+number, and the pass supplied the rest.
+
+**The result.** RTX 3080 Ti Laptop, 1280x720, clocks pinned 800/7001,
+`ab --repeat 2 --duration 75 --deterministic`, p10:
+
+| | `--scene sponza` | `--scene stress` |
+| --- | --- | --- |
+| `Frame total` | 8.282 -> 7.162 ms (**-13.5%**) | 2.096 -> 2.009 ms (**-4.2%**) |
+| `MainHDRPass` | 6.841 -> 5.678 ms (-17.0%) | 0.791 -> 0.692 ms (-12.5%) |
+| `DepthPrepass` costs | 0.063 ms | 0.032 ms |
+| control drift | 0.87% | 0.24% |
+
+**Two predictions this made and broke, which is the part worth keeping.**
+
+The cost estimate was wrong by a factor of forty. The reasoning before building
+was that re-submitting the same geometry would cost what the first submission's
+non-fragment half costs, and that half was measured at 2.898 ms of MainHDRPass's
+7.422 at LOD 0 -- by holding geometry fixed and quartering the pixel count, so
+that whatever does not scale with resolution separates out. On that basis the
+prepass looked marginal: a prize of at most 54% of the 4.524 ms that does scale,
+against a cost near 2.9. It costs **0.063 ms**. A depth-only vertex stage reads
+one attribute and writes no varyings; `simple.vert` reads five and writes
+twenty-six. "A second submission of the same geometry" is the same triangles at
+a completely different price, and the fixed/variable split of the *main* pass
+does not predict the cost of a *depth-only* one.
+
+`--scene stress` was expected to lose outright and did not. It has 2311 objects
+and `--overdraw` puts it at 0.901 invocations per rendered pixel -- below one,
+which reads as "nothing for a prepass to save". It still gains 4.2%. The lesson
+is about the metric, not the pass: that figure divides by the whole render
+extent, so a scene of small objects on a large background has its real overdraw
+where the objects are diluted by the pixels where there are none.
+
+**Why it is off by default anyway.** Not doubt about the win: it is not
+pixel-neutral. The main pass has to test `LESS_OR_EQUAL` instead of `LESS` to
+admit fragments at exactly the depth the prepass wrote, and those two resolve
+coplanar surfaces the opposite way -- first writer wins versus last writer wins.
+That moves **40 of 921600 pixels** on Sponza, isolated pixels rather than any
+lost surface. Turning it on by default is a committed-golden re-baseline, the
+same gate `enableBackfaceCulling` went through, and that has to be done against
+CI's lavapipe rather than locally.
+
+**What it does not cover yet.** The prepass replays the **opaque bucket only** --
+89 of Sponza's 103 visible draw items; the 14 masked ones are skipped. A
+depth-only replay has no fragment shader to run the alpha test with, so a cutout
+leaf would write the depth of its whole quad and the main pass would reject
+everything behind it -- the "leaves cast a rectangle" artifact, in depth rather
+than in shadow. Excluding them is correct rather than unfinished: depth from a
+subset is still true depth, and geometry left out simply draws as it always did
+and misses the saving. The alpha-tested path already exists for shadows
+(`shadow_masked.vert` / `.frag`) and is the obvious extension.
+
+The argument that used to live here is kept below, because it is what the
+measurement was judged against.
+
+### What the scene inventory looks like once overdraw is measured
 
 **Measured with `--overdraw`** (fragment shader invocations over the opaque scene
 geometry, divided by the rendered pixels; RTX 3080 Ti Laptop, 1280x720,
@@ -745,11 +800,10 @@ which gives a floor without needing to know coverage at all: on Sponza,
 of that, so the ceiling is worth low single-digit milliseconds against the cost
 of a second depth-only submission of 103 draw items.
 
-That is the first number in this repository that argues *for* building the pass.
-It is still a ceiling and not a measurement of the pass itself -- the prepass has
-its own vertex and draw cost, and the shading it removes is not uniformly
-expensive -- but the question has moved from "nothing to measure against" to "an
-upper bound worth 54% of the dominant pass".
+That was the first number in this repository that argued *for* building the pass,
+and the pass was then built and came in at -17.0% of `MainHDRPass` -- inside the
+bound, as it must be, and short of it partly because the prepass covers the
+opaque bucket only.
 
 One caveat that belongs with the table. For any preset below 1.0 the ratio is
 dominated by coverage rather than overdraw: the denominator is the whole render

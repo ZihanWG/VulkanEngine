@@ -1856,6 +1856,7 @@ void Renderer::resetFrameStateForEmptyScene(uint32_t frameIndex)
     cascadeShadowDirty_.fill(false);
     cascadeShadowCascadesRedrawn_ = 0;
     frameTwoPhaseOcclusionActive_ = false;
+    frameDepthPrepassActive_ = false;
     frameDepthPyramidBuildRequired_ = false;
     frameAsyncComputeActive_ = false;
     frameSsrActive_ = false;
@@ -2157,9 +2158,18 @@ void Renderer::buildMainCullingFrameData(uint32_t frameIndex, const renderer::Fr
         // batch regions; without it, phase 2 rewrites the fixed per-item slots.
         frameTwoPhaseOcclusionActive_ =
             useTwoPhaseOcclusion_ && isMainPassMultiDrawIndirectActive() && isGpuOcclusionCullingActive();
+        // Same requirement as two-phase occlusion, for the same reason: the
+        // prepass replays the compacted per-batch indirect commands, which only
+        // the multi-draw path produces. It also needs opaque geometry to replay
+        // -- declaring the pass for an empty bucket would model a pass that
+        // records no draws.
+        frameDepthPrepassActive_ = useDepthPrepass_ && isMainPassMultiDrawIndirectActive() &&
+                                   depthPrepassPipeline_.pipeline() != VK_NULL_HANDLE &&
+                                   frameVisibleBucketRanges_[static_cast<size_t>(RenderBucket::Opaque)].count() > 0;
         updateGpuCullInputBuffer(frameIndex);
     } else {
         frameTwoPhaseOcclusionActive_ = false;
+        frameDepthPrepassActive_ = false;
         updateIndirectDrawBuffer(frameIndex);
     }
 }

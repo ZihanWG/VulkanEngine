@@ -2210,6 +2210,10 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
         useTwoPhaseOcclusion_ = settings.enableTwoPhaseOcclusion;
         useLayeredCascades_ = settings.enableLayeredCascades;
         useBackfaceCulling_ = settings.enableBackfaceCulling;
+        // Startup-only for the same reason: it selects the main pipeline's depth
+        // compare op, and the store keys on that, so a runtime flip would need
+        // every main pipeline rebuilt rather than a flag re-read.
+        useDepthPrepass_ = settings.enableDepthPrepass;
         useAdaptiveOcclusion_ = settings.enableAdaptiveOcclusion;
         useAsyncCompute_ = settings.enableAsyncCompute;
         useBindlessMaterialTextures_ = settings.enableBindlessMaterialTextures;
@@ -2279,6 +2283,7 @@ RuntimeSettings Renderer::captureRuntimeSettings() const
     settings.enableTwoPhaseOcclusion = useTwoPhaseOcclusion_;
     settings.enableLayeredCascades = useLayeredCascades_;
     settings.enableBackfaceCulling = useBackfaceCulling_;
+    settings.enableDepthPrepass = useDepthPrepass_;
     settings.enableAdaptiveOcclusion = useAdaptiveOcclusion_;
     settings.useClusteredLighting = useClusteredLighting_;
     settings.enableAsyncCompute = useAsyncCompute_;
