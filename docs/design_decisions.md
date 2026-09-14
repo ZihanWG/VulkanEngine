@@ -738,14 +738,39 @@ is about the metric, not the pass: that figure divides by the whole render
 extent, so a scene of small objects on a large background has its real overdraw
 where the objects are diluted by the pixels where there are none.
 
-**Why it is off by default anyway.** Not doubt about the win: it is not
-pixel-neutral. The main pass has to test `LESS_OR_EQUAL` instead of `LESS` to
-admit fragments at exactly the depth the prepass wrote, and those two resolve
-coplanar surfaces the opposite way -- first writer wins versus last writer wins.
-That moves **40 of 921600 pixels** on Sponza, isolated pixels rather than any
-lost surface. Turning it on by default is a committed-golden re-baseline, the
-same gate `enableBackfaceCulling` went through, and that has to be done against
-CI's lavapipe rather than locally.
+**On by default, and what that cost.** It is not pixel-neutral: the main pass has
+to test `LESS_OR_EQUAL` instead of `LESS` to admit fragments at exactly the depth
+the prepass wrote, and those two resolve coplanar surfaces the opposite way --
+first writer wins versus last writer wins. Rather than assume what that does to
+the committed golden, every preset was captured both ways (RTX 3080 Ti, frame 30,
+tolerance 0):
+
+| moves 0 pixels | moves |
+| --- | --- |
+| `default`, `occlusion`, `cornell`, `fragment-stress`, `gpu-stress` | `stress` 1, `sponza` 60, `sunlit` 132 |
+
+The split is the mechanism showing through. Only scenes with authored contact
+surfaces move; the ones built from separated geometry do not. **`default` is the
+scene the committed golden was captured from, and it is unchanged** -- the
+portfolio scene deliberately sinks its objects into the floor instead of letting
+them touch it (`kPortfolioFloorSinkDepth`, added because TAA turned coplanar
+z-fighting from cosmetic into visible), so there is no coplanar pair for the
+tie-break to resolve differently.
+
+**So the prediction is that the golden does not need re-baking, and CI is what
+confirms it.** That prediction is made on an RTX through the NVIDIA driver, and
+the golden is a lavapipe capture; the argument that carries across is the
+mechanism rather than the bytes, since a tie-break cannot fire where nothing
+ties. If the pixel gate goes red anyway, the captured frame is uploaded as a
+`headless-render-logs` artifact and that is the new golden -- but it should not,
+and it going red would mean the mechanism above is incomplete rather than that a
+re-bake was simply due.
+
+`config/ci/depth-prepass-off.json` joins the sweep, because the prepass is now
+the default and it is the *off* path that needs covering. It earns a leg by the
+sweep's own admission rule: turning it off removes a pass from the graph, which
+is a change in the shape of the frame rather than a number moving through a
+shader.
 
 **What it covers.** Opaque and masked, which on Sponza is all 103 visible draw
 items. Blended geometry is never prepassed and never will be: it is composited

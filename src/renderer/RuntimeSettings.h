@@ -666,13 +666,23 @@ struct RuntimeSettings {
     // that figure is diluted by background pixels rather than describing what
     // happens where objects actually overlap.
     //
-    // OFF by default nonetheless, and for one specific reason rather than doubt
-    // about the win: it is not pixel-neutral. LESS_OR_EQUAL resolves coplanar
-    // surfaces the other way from LESS, which moves 40 of 921600 pixels on
-    // Sponza -- isolated pixels, no surface lost. Turning it on by default is a
-    // committed-golden re-baseline, the same gate enableBackfaceCulling passed
-    // through, and that has to happen on CI's lavapipe rather than here.
-    bool enableDepthPrepass = false;
+    // ON by default. It is not pixel-neutral -- LESS_OR_EQUAL resolves coplanar
+    // surfaces the other way from LESS -- but the scenes that move are the ones
+    // with coplanar geometry, and the committed golden's scene is not among
+    // them. Every preset, prepass on versus off, RTX 3080 Ti, frame 30 at
+    // tolerance 0:
+    //
+    //   default, occlusion, cornell, fragment-stress, gpu-stress   0 pixels
+    //   stress                                                     1 pixel
+    //   sponza                                                    60 pixels
+    //   sunlit                                                   132 pixels
+    //
+    // `default` is the scene tests/golden/lavapipe_frame30.png was captured
+    // from, and it is unchanged -- the portfolio scene sinks its objects into
+    // the floor rather than letting them touch it (kPortfolioFloorSinkDepth), so
+    // there is no coplanar pair for the tie-break to resolve differently. The
+    // three scenes that do move are the ones with authored contact surfaces.
+    bool enableDepthPrepass = true;
     // Suspend Hi-Z occlusion culling (and the pyramid build that feeds it) while
     // it is culling nothing, re-probing periodically. Never changes the image --
     // skipping occlusion culling can only draw more, never less.

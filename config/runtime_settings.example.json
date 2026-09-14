@@ -144,7 +144,7 @@
         "enableTwoPhaseOcclusion": true,
         "enableLayeredCascades": false,
         "enableBackfaceCulling": true,
-        "enableDepthPrepass": false,
+        "enableDepthPrepass": true,
         "enableAdaptiveOcclusion": true,
         "useClusteredLighting": true,
         "enableAsyncCompute": true,
