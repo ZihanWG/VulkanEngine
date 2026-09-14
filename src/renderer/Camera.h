@@ -99,4 +99,76 @@ struct Camera {
     return camera;
 }
 
+// Places a camera INSIDE an axis-aligned volume, looking along its longest
+// horizontal axis at eye height.
+//
+// framedCamera above fits a volume in frame, which is the wrong shot for an
+// interior: framing the whole of Sponza shows the outside of the building, and
+// the obvious repair -- inset from the bounds -- lands in masonry, because the
+// bounds include the outer walls. The axis is the repair. An interior scene's
+// long horizontal axis runs down its open space (Sponza's atrium, a corridor,
+// a nave), so standing on that axis and looking along it is inside the building
+// by construction, whatever the asset's units are.
+//
+// `eyeHeightFraction` is measured up from the floor of the bounds, so 0.18 is
+// standing height in a tall hall rather than a fixed number of metres that would
+// be wrong for any other scale.
+//
+// `standBack` is how far along the axis to step back from the centre, as a
+// fraction of the half-extent, and it is SMALL on purpose. The first version
+// used 0.82 and put the camera inside Sponza's end wall -- the bounds include
+// the outer masonry, so the open floor is considerably shorter than they are,
+// which is the same trap that defeated insetting from the bounds. Staying near
+// the middle is what makes "inside the building" true without knowing where the
+// walls of any particular asset happen to be; the shot loses nothing, because a
+// camera looking down the long axis already has the whole length in front of it.
+//
+// Pure, for the same reason framedCamera is: the shot is unit tested rather than
+// eyeballed once and trusted.
+[[nodiscard]] inline Camera interiorCamera(const Aabb& bounds,
+                                           float eyeHeightFraction = 0.18f,
+                                           float standBack = 0.35f,
+                                           float verticalFovRadians = glm::radians(60.0f))
+{
+    Camera camera{};
+    camera.verticalFovRadians = verticalFovRadians;
+    if (!bounds.valid()) {
+        return camera;
+    }
+
+    const glm::vec3 center = (bounds.min + bounds.max) * 0.5f;
+    const glm::vec3 extent = bounds.max - bounds.min;
+
+    // Whichever horizontal axis is longer. Ties go to X, which only matters for a
+    // square floor plan, where neither choice is better than the other.
+    const bool alongX = extent.x >= extent.z;
+    const glm::vec3 axis = alongX ? glm::vec3(1.0f, 0.0f, 0.0f) : glm::vec3(0.0f, 0.0f, 1.0f);
+    const float halfLength = (alongX ? extent.x : extent.z) * 0.5f;
+    if (!(halfLength > 0.0f)) {
+        camera.position = center + glm::vec3(0.0f, 0.0f, 1.0f);
+        camera.target = center;
+        return camera;
+    }
+
+    const float clampedStandBack = glm::clamp(standBack, 0.0f, 0.9f);
+    const float eyeY = bounds.min.y + glm::clamp(eyeHeightFraction, 0.0f, 1.0f) * extent.y;
+
+    camera.position = center - axis * (halfLength * clampedStandBack);
+    camera.position.y = eyeY;
+    // The target only sets the direction, so it is placed a full half-length
+    // ahead rather than mirrored around the centre. Mirroring tied how far the
+    // camera looks to how far back it stands, which meant stepping closer to the
+    // middle also shortened the shot.
+    camera.target = camera.position + axis * halfLength;
+    camera.target.y = eyeY;
+
+    // Near plane from the scene's own scale, so a model authored in millimetres
+    // and one authored in metres both get a usable depth range. Far reaches the
+    // whole length plus margin -- the camera is looking down the long axis, so
+    // that is the distance it must actually resolve.
+    camera.nearPlane = std::max(halfLength * 0.002f, 0.01f);
+    camera.farPlane = halfLength * 4.0f;
+    return camera;
+}
+
 } // namespace ve::renderer

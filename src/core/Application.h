@@ -24,6 +24,14 @@ public:
     // A capture was requested but never written: the run must not report success.
     static constexpr int kCaptureFailureExitCode = 3;
 
+    // --scene named a preset this build cannot load, which today means
+    // ScenePreset::Sponza without -DVULKAN_ENGINE_FETCH_SAMPLE_SCENE=ON. Distinct
+    // from the -1 a crash returns so a measurement harness can tell "this build
+    // has no such scene" apart from "the renderer fell over", and distinct from
+    // success because a run that quietly rendered a different scene than the one
+    // named would report a clean number for the wrong question.
+    static constexpr int kSceneFailureExitCode = 4;
+
     // How far past the capture frame to keep drawing before declaring the
     // readback lost. Comfortably above the in-flight frame count.
     static constexpr uint64_t kCaptureReadbackGraceFrames = 16;

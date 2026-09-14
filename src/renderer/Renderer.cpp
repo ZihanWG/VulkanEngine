@@ -149,6 +149,7 @@ Renderer::Renderer(Window& window, const RendererStartupOverrides& overrides) : 
     // used, so a run started from a sweep configuration says so on screen.
     // Before any mesh is created, which is the only moment this can take effect.
     buildMeshletTables_ = overrides.buildMeshlets;
+    sampleSceneRequested_ = overrides.loadSampleScene;
     runtimeSettingsPathWasRequested_ = overrides.settingsPath.has_value();
     runtimeSettingsPath_ = runtimeSettingsPathWasRequested_ ? *overrides.settingsPath : defaultRuntimeSettingsPath();
     sceneDocumentPath_ = defaultSceneDocumentPath();

@@ -117,7 +117,25 @@ struct RendererStartupOverrides {
     // --meshlet-analysis turns it on, which is what makes that measurement
     // repeatable on content this engine does not currently ship.
     bool buildMeshlets = false;
+
+    // Build the fetched sample scene (Sponza) instead of the portfolio showcase.
+    //
+    // Startup-only, and not for the usual reason. Sponza imports 77 textures and
+    // 25 materials; the bindless heap and the material descriptor set are both
+    // sized during construction and neither has a resize path, so a scene swap
+    // afterwards would have to grow structures that cannot grow. Every other
+    // preset is procedural geometry over resources the constructor already made,
+    // which is why they can be selected after it.
+    bool loadSampleScene = false;
 };
+
+// Whether this build carries the fetched sample scene, and what to do when it
+// does not. Defined in RendererScene.cpp, which is compiled with the macro the
+// configure-time fetch sets (see cmake/FetchSampleScene.cmake) -- one place that
+// knows, so the answer cannot differ between the caller that checks and the code
+// that loads.
+[[nodiscard]] bool sampleSceneAvailable();
+[[nodiscard]] std::string sampleSceneUnavailableMessage();
 
 class Renderer final {
 public:
@@ -137,7 +155,14 @@ public:
     // private because they are ImGui button handlers; this is the one entry
     // point that exists so a preset can be selected from the command line, which
     // is what makes the heavier scenes measurable without a human driving the UI.
-    void loadScenePreset(ScenePreset preset);
+    //
+    // Returns false when the named preset could not be built, writing the reason
+    // to `status`. Only ScenePreset::Sponza can fail: it is the one preset backed
+    // by a fetched asset rather than by procedural geometry. The caller must
+    // treat that as fatal -- a run that silently rendered a different scene than
+    // the one named would report a clean number for the wrong question, which is
+    // the same failure --scene already refuses for an unknown name.
+    [[nodiscard]] bool loadScenePreset(ScenePreset preset, std::string& status);
 
     // Startup asset-load instrumentation (renderer/AssetLoadStats.h). Populated
     // during construction; the caller stamps the timings it owns (renderer init
@@ -507,7 +532,12 @@ private:
     // The CPU-side scene-object layout itself lives in renderer::SceneBuilder.
     void resetSceneState();
     void createSceneSharedResources();
-    [[nodiscard]] bool tryLoadGltfScene();
+    // Imports the fetched sample scene into renderObjects_ and pins its camera.
+    // Returns false with a reason in `status`; never throws past this boundary,
+    // because it runs inside the constructor.
+    [[nodiscard]] bool buildSampleScene(std::string& status);
+    // The interior shot for the sample scene, derived from the imported bounds.
+    void pinSampleSceneCamera();
     // Constructs a SceneBuilder borrowing the renderer's shared meshes, material
     // array, and debug-id allocator. Cheap; call per scene-build operation.
     [[nodiscard]] renderer::SceneBuilder makeSceneBuilder();
@@ -1420,6 +1450,11 @@ private:
     // Startup-only: meshes are built in the constructor, so this cannot be a
     // post-construction toggle. See RendererStartupOverrides::buildMeshlets.
     bool buildMeshletTables_ = false;
+    // What was asked for, and what was actually built. Kept apart so
+    // loadScenePreset can answer "is the scene on screen the one that was named"
+    // rather than assume it -- see RendererStartupOverrides::loadSampleScene.
+    bool sampleSceneRequested_ = false;
+    bool sampleSceneLoaded_ = false;
 
     // Point lights cost six tiles each against 64 total, so how many may cast is
     // a budget the user can see and set rather than an implicit cap.

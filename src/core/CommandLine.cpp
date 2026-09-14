@@ -3,6 +3,7 @@
 #include "core/Logger.h"
 
 #include <charconv>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -10,13 +11,6 @@
 namespace ve {
 
 namespace {
-
-// One table, read by both directions, so a name can never parse to one preset
-// and print back as another.
-struct ScenePresetName {
-    std::string_view name;
-    ScenePreset preset;
-};
 
 constexpr ScenePresetName kScenePresetNames[] = {
     {"default", ScenePreset::Default},
@@ -26,6 +20,7 @@ constexpr ScenePresetName kScenePresetNames[] = {
     {"cornell", ScenePreset::CornellBox},
     {"sunlit", ScenePreset::SunlitYard},
     {"gpu-stress", ScenePreset::GpuStress},
+    {"sponza", ScenePreset::Sponza},
 };
 
 // Same one-table rule as the scene presets, for the same reason.
@@ -76,6 +71,11 @@ std::string_view vsmModeName(VsmMode mode)
         }
     }
     return "off";
+}
+
+std::span<const ScenePresetName> scenePresets()
+{
+    return kScenePresetNames;
 }
 
 bool parseScenePreset(std::string_view name, ScenePreset& preset)

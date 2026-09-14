@@ -12,8 +12,14 @@
 #
 #   cmake --preset debug -DVULKAN_ENGINE_FETCH_SAMPLE_SCENE=ON
 #
-# Files land in the build tree, not the source tree, so nothing has to be
-# gitignored and a clean build directory removes them.
+# Files land under <source>/build/fetched-assets, which is inside the already
+# gitignored build directory but OUTSIDE any one preset's binary directory.
+# They used to live in ${CMAKE_BINARY_DIR}, which meant deleting build/release
+# cost a ~300 MiB re-download and a re-cook of 69 textures, and meant the debug
+# and release builds each kept their own copy and their own BC7 encode of it.
+# Two copies is also a measurement hazard: a cross-tree A/B compares binaries
+# against assets that were encoded separately (see docs/asset_system.md on the
+# lossy cook). One copy, shared, removes both problems.
 #
 # Sponza, from KhronosGroup/glTF-Sample-Assets, pinned to a commit rather than a
 # branch so the bytes cannot move underneath a measurement. CC BY 4.0: see the
@@ -21,6 +27,11 @@
 
 option(VULKAN_ENGINE_FETCH_SAMPLE_SCENE
        "Download the Sponza sample scene at configure time (off by default; adds a network fetch)" OFF)
+
+# Overridable so a machine with the assets already on disk, or one that keeps
+# them off the project drive, does not have to re-download them.
+set(VULKAN_ENGINE_SAMPLE_SCENE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/build/fetched-assets"
+    CACHE PATH "Where the fetched sample scene and its cooked sidecars live")
 
 set(VULKAN_ENGINE_SAMPLE_SCENE_COMMIT "5bad5aaa0bbb5d0f9cdc934e626f27d0df1e79b8")
 set(VULKAN_ENGINE_SAMPLE_SCENE_SHA256 "646c10cbc8fab990ca29f363e90e2d65155f3a3569506852eb1434a9465b9501")
@@ -33,7 +44,9 @@ function(ve_fetch_sample_scene OUT_SCENE_PATH)
 
     set(base_url
         "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/${VULKAN_ENGINE_SAMPLE_SCENE_COMMIT}/Models/Sponza/glTF")
-    set(destination "${CMAKE_BINARY_DIR}/fetched-assets/sponza")
+    # Shared by every preset, so the download and the cooked sidecars beside it
+    # survive deleting one build directory.
+    set(destination "${VULKAN_ENGINE_SAMPLE_SCENE_DIR}/sponza")
     set(scene_file "${destination}/Sponza.gltf")
 
     file(MAKE_DIRECTORY "${destination}")
