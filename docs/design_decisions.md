@@ -757,14 +757,17 @@ them touch it (`kPortfolioFloorSinkDepth`, added because TAA turned coplanar
 z-fighting from cosmetic into visible), so there is no coplanar pair for the
 tie-break to resolve differently.
 
-**So the prediction is that the golden does not need re-baking, and CI is what
-confirms it.** That prediction is made on an RTX through the NVIDIA driver, and
-the golden is a lavapipe capture; the argument that carries across is the
-mechanism rather than the bytes, since a tie-break cannot fire where nothing
-ties. If the pixel gate goes red anyway, the captured frame is uploaded as a
-`headless-render-logs` artifact and that is the new golden -- but it should not,
-and it going red would mean the mechanism above is incomplete rather than that a
-re-bake was simply due.
+**The golden was not re-baked, and CI confirms it was not needed.** The
+prediction above was made on an RTX through the NVIDIA driver while the golden is
+a lavapipe capture, so what had to carry across was the mechanism rather than the
+bytes. It did: the lavapipe pixel gate reports **0 of 921600 pixels differing,
+max channel delta 0** against the unchanged golden, with 0 validation errors and
+0 warnings.
+
+The run also settles the question of whether the pass engages there at all --
+lavapipe exposes multi-draw indirect, and the job's own log reports the prepass
+covering 8 opaque and 1 masked draw items, the same coverage it reports locally.
+So the gate passed with the pass running, not because it quietly did nothing.
 
 `config/ci/depth-prepass-off.json` joins the sweep, because the prepass is now
 the default and it is the *off* path that needs covering. It earns a leg by the
