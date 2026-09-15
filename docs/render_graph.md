@@ -982,8 +982,14 @@ the default.
   default** (`enableTransientAliasing`). See "Transient memory aliasing" below.
 - No resource pooling overhaul.
 - Transient scene/bloom resources and persistent TAA history resources are graph-described but still physically allocated by `Renderer`.
-- Shadow GPU culling buffers are not graph-declared yet, so their reset/dispatch/draw/readback barriers remain manual.
-- Intra-pass buffer sequencing remains manual when a buffer is filled, dispatched against, copied, or made host-visible inside one renderer command block.
+- Intra-pass sequencing remains manual, and always will: the graph emits at pass
+  boundaries, so a buffer filled, dispatched against, copied and made
+  host-visible inside one pass carries its own barriers between those steps. The
+  same is true of the depth pyramid's per-mip chain. What is no longer manual is
+  the boundary work -- see "What subsystems still write by hand".
+- The punctual shadow atlas cull, the VSM page cull and the probe shading
+  parameter buffer still write their own consumer edges. They have the same
+  shape as the shadow caster cull did and are the next conversions.
 - Portfolio screenshot copy remains manual because it temporarily transitions the swapchain between `CompositePass` and `ImGuiPass`.
 - Barriers are conservative and not heavily optimized. They are batched per
   pass (see "Barrier batching"), but their stage/access scopes are unchanged.
@@ -1001,6 +1007,41 @@ the default.
 - Versions, layouts and barriers are per resource, not per subresource. See
   "Per-subresource tracking has no consumer here" for the survey that says this
   costs nothing today and for what would change that.
+
+### What subsystems still write by hand
+
+A barrier belongs to the graph when it sits between two passes, and to the
+subsystem when it sits between two commands inside one. That line is what the
+conversions follow, and it is why the manual count will never reach zero.
+
+Now declared, so the graph emits the handoff:
+
+| Resource | Producer | Consumer |
+| --- | --- | --- |
+| The three froxel volumes | `VolumetricFogPass` | `MainHDRPass` samples the integrated one |
+| Shadow cull indirect commands and counts | `ShadowGpuCullingPass` | `CSMShadowPass` draws them indirectly |
+
+The froxel volumes also removed `VolumetricFogPass`'s `sideEffect` exemption.
+It had one because nothing downstream declared a read on its outputs and
+liveness would have culled it; the main pass declares one now, so the pass is
+kept for the reason it actually runs.
+
+Still manual, and correctly so:
+
+- `DepthPyramid`'s per-mip chain. Consecutive dispatches inside one pass.
+- The fog's injection-to-integration edge, for the same reason.
+- Each cull's fill-to-dispatch reset, its copy to the readback buffer and the
+  host-visibility barrier after it. All inside the pass that owns them.
+- `ensureVolumeInitialized`, the fog's one-time clear. Frame setup, not a pass,
+  which is why its scheduled unit has no anchor.
+- The portfolio screenshot copy, which transitions the swapchain image between
+  `CompositePass` and `ImGuiPass` and back.
+
+Still manual and not yet converted: the punctual shadow atlas cull, the VSM page
+cull, and the probe shading parameter buffer. The first two have the same shape
+as the shadow caster cull -- a compute dispatch writing indirect commands that a
+later pass draws -- and the third is a uniform buffer written with
+`vkCmdUpdateBuffer` inside the frame that reads it.
 
 ### Per-subresource tracking has no consumer here, surveyed
 
