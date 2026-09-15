@@ -233,13 +233,41 @@ void IrradianceProbeVolume::updateShadingParams(VkCommandBuffer commandBuffer, c
         return;
     }
 
+    // One buffer serves every frame in flight (see createResources), so the
+    // write below lands on bytes the previous frame's fragment shader may still
+    // be reading and its own update may still be writing. Nothing ordered the
+    // two: the barrier after the update covers this frame's read and says
+    // nothing about the last one. A pipeline barrier's first scope covers
+    // everything submitted earlier on the queue, which is what makes this
+    // enough without a buffer per frame.
+    VkBufferMemoryBarrier2 previousFrameBarrier{};
+    previousFrameBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+    previousFrameBarrier.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+    previousFrameBarrier.srcAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    previousFrameBarrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+    previousFrameBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    previousFrameBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    previousFrameBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    previousFrameBarrier.buffer = shadingParamsBuffer_.buffer();
+    previousFrameBarrier.offset = 0;
+    previousFrameBarrier.size = sizeof(ProbeShadingParams);
+
+    VkDependencyInfo previousFrameDependency{};
+    previousFrameDependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    previousFrameDependency.bufferMemoryBarrierCount = 1;
+    previousFrameDependency.pBufferMemoryBarriers = &previousFrameBarrier;
+    vkCmdPipelineBarrier2(commandBuffer, &previousFrameDependency);
+
     vkCmdUpdateBuffer(commandBuffer, shadingParamsBuffer_.buffer(), 0, sizeof(ProbeShadingParams), &params);
 
     // The buffer is not a render-graph resource, so the barrier is written by
     // hand the way VolumetricFogPass does for its own volumes.
+    //
+    // ALL_TRANSFER, not COPY: vkCmdUpdateBuffer executes in the clear stage, so
+    // a source scope of COPY covers none of the write it is meant to publish.
     VkBufferMemoryBarrier2 barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-    barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
     barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
     barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
     barrier.dstAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;

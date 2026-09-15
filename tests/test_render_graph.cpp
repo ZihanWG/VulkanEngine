@@ -378,6 +378,23 @@ TEST_CASE("Transfer accesses map to their own layouts", "[rendergraph][barriers]
     const auto dst = textureAccessState(VK_IMAGE_ASPECT_COLOR_BIT, RGAccess::TransferDst, VK_IMAGE_LAYOUT_UNDEFINED);
     CHECK(dst.layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     CHECK(dst.access == VK_ACCESS_2_TRANSFER_WRITE_BIT);
+
+    // The stage, not just the layout and the access. A declaration says a
+    // transfer touches the image and never which transfer command does it, so a
+    // scope narrower than ALL_TRANSFER silently excludes whichever commands it
+    // leaves out: COPY_BIT here meant the SSR half-res blit was ordered against
+    // nothing, with every call still legal and the pixels still arriving.
+    CHECK(src.stage == VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT);
+    CHECK(dst.stage == VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT);
+}
+
+TEST_CASE("Transfer buffer accesses use the same stage scope as textures", "[rendergraph][barriers]")
+{
+    using ve::renderer::bufferAccessState;
+    using ve::renderer::RGAccess;
+
+    CHECK(bufferAccessState(RGAccess::TransferSrc).stage == VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT);
+    CHECK(bufferAccessState(RGAccess::TransferDst).stage == VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT);
 }
 
 TEST_CASE("Indirect buffer reads sync against the draw-indirect stage", "[rendergraph][barriers]")

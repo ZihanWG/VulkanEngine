@@ -105,17 +105,26 @@ RenderGraph::TextureAccessState accessStateFromLayout(VkImageLayout layout, VkIm
         state.declaredAccess = RGAccess::StorageImageReadWrite;
         break;
     case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
-        state.stage = VK_PIPELINE_STAGE_2_COPY_BIT;
+        state.stage = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
         state.access = VK_ACCESS_2_TRANSFER_READ_BIT;
         state.declaredAccess = RGAccess::TransferSrc;
         break;
     case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
-        state.stage = VK_PIPELINE_STAGE_2_COPY_BIT;
+        state.stage = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
         state.access = VK_ACCESS_2_TRANSFER_WRITE_BIT;
         state.declaredAccess = RGAccess::TransferDst;
         break;
+    // Leaving PRESENT_SRC is the one source scope that is not about a previous
+    // command in this command buffer: the previous reader is the presentation
+    // engine, and what orders the frame against it is the image-available
+    // semaphore, which Renderer waits at COLOR_ATTACHMENT_OUTPUT.
+    //
+    // NONE here meant the layout transition was ordered against nothing and
+    // could execute before that wait was satisfied -- a write racing the
+    // presentation engine's read of the same image. Naming the stage the
+    // semaphore is waited at is what puts the transition after it.
     case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR:
-        state.stage = VK_PIPELINE_STAGE_2_NONE;
+        state.stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
         state.access = VK_ACCESS_2_NONE;
         state.declaredAccess = RGAccess::Present;
         break;
@@ -316,6 +325,8 @@ const char* rgAccessName(RGAccess access)
         return "StorageBufferWrite";
     case RGAccess::StorageBufferReadWrite:
         return "StorageBufferReadWrite";
+    case RGAccess::StorageBufferClearAndReadWrite:
+        return "StorageBufferClearAndReadWrite";
     case RGAccess::IndirectRead:
         return "IndirectRead";
     case RGAccess::HostRead:
@@ -2039,7 +2050,7 @@ void RenderGraph::declareGeometryPasses()
                                                                 "Writes indirect draw commands for the main pass.");
             frame_.mainCullVisibleCounts =
                 builder.writeBuffer(frame_.mainCullVisibleCounts,
-                                    RGAccess::StorageBufferReadWrite,
+                                    RGAccess::StorageBufferClearAndReadWrite,
                                     "Clears and writes visible counts plus culling debug counters.");
             frame_.mainCullReadback =
                 builder.writeBuffer(frame_.mainCullReadback,
@@ -2297,7 +2308,7 @@ void RenderGraph::declareGeometryPasses()
                                                 "Writes indirect draw commands for rescued (disoccluded) draws.");
                         frame_.mainCullVisibleCounts =
                             builder.writeBuffer(frame_.mainCullVisibleCounts,
-                                                RGAccess::StorageBufferReadWrite,
+                                                RGAccess::StorageBufferClearAndReadWrite,
                                                 "Resets per-batch counts and appends the rescued stats counter.");
                         frame_.mainCullReadback =
                             builder.writeBuffer(frame_.mainCullReadback,
@@ -2653,7 +2664,7 @@ void RenderGraph::declareExposureCompositePasses()
                                             "Samples active scene color for log2 luminance histogram binning.");
                         frame_.luminanceHistogram =
                             builder.writeBuffer(frame_.luminanceHistogram,
-                                                RGAccess::StorageBufferReadWrite,
+                                                RGAccess::StorageBufferClearAndReadWrite,
                                                 "Clears and writes 256 luminance histogram bins.");
                         builder.readBuffer(frame_.luminancePartials,
                                            RGAccess::StorageBufferRead,
@@ -3431,6 +3442,18 @@ uint32_t RenderGraph::transitionTexture(RGTextureHandle handle, RGAccess access,
         previous = accessStateFromLayout(oldLayout, resource.desc.aspectMask);
     }
 
+    // The swapchain image's previous reader is the presentation engine, not a
+    // command this graph recorded, and what orders the frame against it is the
+    // image-available semaphore Renderer waits at COLOR_ATTACHMENT_OUTPUT. The
+    // first transition of the frame therefore has to name that stage as its
+    // source whatever the tracked layout says -- including on the frame where
+    // the layout is still UNDEFINED, which is exactly when the mapping from
+    // PRESENT_SRC does not apply and the transition would otherwise be ordered
+    // against nothing at all.
+    if (resource.owner == TextureOwner::SwapchainColor && !resource.usedThisFrame) {
+        previous.stage |= VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    }
+
     // Alias handoff. The first use of a pool-bound resource in a frame inherits
     // bytes that another resource owned earlier, so two things must hold that do
     // not for a privately allocated image:
@@ -3590,14 +3613,22 @@ TextureAccessState textureAccessState(VkImageAspectFlags aspectMask, RGAccess ac
         state.stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         state.access = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
         break;
+    // ALL_TRANSFER rather than COPY: the declaration says "a transfer touches
+    // this", not which transfer command does it. COPY covers vkCmdCopy* and
+    // nothing else, so a barrier built from it establishes no dependency at all
+    // against the blit the SSR half-res copy actually records -- both the
+    // barrier and the blit are individually legal, and only synchronization
+    // validation can see that they never meet. ALL_TRANSFER covers copy, blit,
+    // resolve and clear alike, which is the conservative scope this graph's
+    // barriers are documented to use.
     case RGAccess::TransferSrc:
         state.layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        state.stage = VK_PIPELINE_STAGE_2_COPY_BIT;
+        state.stage = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
         state.access = VK_ACCESS_2_TRANSFER_READ_BIT;
         break;
     case RGAccess::TransferDst:
         state.layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        state.stage = VK_PIPELINE_STAGE_2_COPY_BIT;
+        state.stage = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
         state.access = VK_ACCESS_2_TRANSFER_WRITE_BIT;
         break;
     case RGAccess::Present:
@@ -3609,6 +3640,7 @@ TextureAccessState textureAccessState(VkImageAspectFlags aspectMask, RGAccess ac
     case RGAccess::StorageBufferRead:
     case RGAccess::StorageBufferWrite:
     case RGAccess::StorageBufferReadWrite:
+    case RGAccess::StorageBufferClearAndReadWrite:
     case RGAccess::IndirectRead:
     case RGAccess::HostRead:
         state.layout = currentLayout;
@@ -3677,16 +3709,25 @@ BufferAccessState bufferAccessState(RGAccess access)
         state.stage = kShaderBufferStages;
         state.access = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
         break;
+    case RGAccess::StorageBufferClearAndReadWrite:
+        state.stage = kShaderBufferStages | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+        state.access =
+            VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        break;
     case RGAccess::IndirectRead:
         state.stage = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
         state.access = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
         break;
+    // The same scope as the texture mapping above, and for the same reason. The
+    // two spellings used to disagree here -- the source side named COPY and the
+    // destination side named TRANSFER -- which is the shape of the bug the
+    // texture side actually had.
     case RGAccess::TransferSrc:
-        state.stage = VK_PIPELINE_STAGE_2_COPY_BIT;
+        state.stage = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
         state.access = VK_ACCESS_2_TRANSFER_READ_BIT;
         break;
     case RGAccess::TransferDst:
-        state.stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        state.stage = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
         state.access = VK_ACCESS_2_TRANSFER_WRITE_BIT;
         break;
     case RGAccess::HostRead:

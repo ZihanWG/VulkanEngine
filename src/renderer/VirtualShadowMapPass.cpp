@@ -475,10 +475,13 @@ void VirtualShadowMapPass::recordMarkPass(VkCommandBuffer commandBuffer,
     // frame is not evidence it is needed now, and carrying stale bits over would
     // make the measurement monotonically grow toward "everything".
     vkCmdFillBuffer(commandBuffer, requestBuffer, 0, kRequestBufferSize, 0);
+    // ALL_TRANSFER, not COPY: vkCmdFillBuffer executes in the clear stage, which
+    // COPY does not cover, so a barrier naming COPY orders the dispatch below
+    // against nothing the fill did.
     bufferBarrier(commandBuffer,
                   requestBuffer,
                   kRequestBufferSize,
-                  VK_PIPELINE_STAGE_2_COPY_BIT,
+                  VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
                   VK_ACCESS_2_TRANSFER_WRITE_BIT,
                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                   VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
@@ -511,13 +514,15 @@ void VirtualShadowMapPass::recordMarkPass(VkCommandBuffer commandBuffer,
                       VK_PIPELINE_STAGE_2_COPY_BIT,
                       VK_ACCESS_2_TRANSFER_READ_BIT);
     } else {
-        // Nothing wrote it, but the fill did; the copy below still needs the
-        // fill's write visible to the transfer read.
+        // No dispatch wrote it, but the fill did; the copy below still needs the
+        // fill's write visible to the transfer read. The source scope is
+        // therefore the fill's own -- naming the compute stage here waited on
+        // work this branch is defined by not having done.
         bufferBarrier(commandBuffer,
                       requestBuffer,
                       kRequestBufferSize,
-                      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                      VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                      VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                      VK_ACCESS_2_TRANSFER_WRITE_BIT,
                       VK_PIPELINE_STAGE_2_COPY_BIT,
                       VK_ACCESS_2_TRANSFER_READ_BIT);
     }
@@ -1202,7 +1207,10 @@ void VirtualShadowMapPass::recordPageCull(VkCommandBuffer commandBuffer,
     std::array<VkBufferMemoryBarrier2, 2> resetBarriers{};
     for (VkBufferMemoryBarrier2& barrier : resetBarriers) {
         barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-        barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+        // ALL_TRANSFER, not COPY: the two fills above execute in the clear
+        // stage, so COPY here published neither of them and the indirect draw
+        // downstream was reading counts nothing had made visible.
+        barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
         barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
         barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         barrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
