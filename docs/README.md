@@ -27,6 +27,11 @@ overview; these documents describe implementation details and limitations.
   (中文): The meshlet measurement written for a reader rather than a
   maintainer — LOD removes 87% of the triangles and meshlet culling finds
   0.055% of the remainder. Same material as mesh_lod.md, different audience.
+- [Blog: 三次否决，一次放行](blog/measured-and-rejected.zh.html)
+  (中文): Three proposals that measurement rejected — meshlet culling, uber-shader
+  specialization constants, parallel command recording — and the depth prepass the
+  same method greenlit at -13.0%. Three different ways a plausible idea dies,
+  collected from design_decisions.md and mesh_lod.md for a reader.
 - [GPU Profiling](profiling.md): Timestamp query profiler design, frame-latency
   readback model, profiled ranges, and known timing limitations.
 - [Render Graph 2.0](render_graph.md): Logical resource handles, pass
