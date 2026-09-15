@@ -166,6 +166,7 @@ Buffer declarations use existing buffer-oriented `RGAccess` values such as:
 - `StorageBufferRead`
 - `StorageBufferWrite`
 - `StorageBufferReadWrite`
+- `StorageBufferClearAndReadWrite`
 - `IndirectRead`
 - `TransferSrc`
 - `TransferDst`
@@ -174,6 +175,68 @@ Buffer declarations use existing buffer-oriented `RGAccess` values such as:
 At pass begin, the graph maps buffer accesses to conservative Synchronization2 buffer barriers. It tracks the previous stage/access for each imported buffer during the frame and emits full-buffer barriers when a declared pass-to-pass dependency includes a write-after-read, read-after-write, or write-after-write hazard. Read-after-read usage does not emit a barrier.
 
 The implementation favors correctness and debug readability over barrier minimization. Same-layout write-after-write or write-after-read cases can still emit ordering barriers.
+
+### Checking the inferred barriers against something
+
+Everything above is inference, and until recently nothing checked the result.
+The unit tests cover the pure derivation functions, the golden gate compares
+pixels, and the validation layer's core checks confirm each call is well formed.
+None of the three can see a dependency that is missing: a barrier naming the
+wrong pipeline stage is a legal barrier, and the frame it fails to order still
+renders correctly on hardware that happened to serialize the work anyway.
+
+Synchronization validation can see it, and `--sync-validation` turns it on
+(`VK_EXT_layer_settings`, `validate_sync`, set at instance creation because there
+is no runtime toggle). Asking for it on a build with the validation layer
+compiled out, or against a layer too old to provide the extension, is a hard
+failure rather than a quiet downgrade -- a run that skipped the check and
+rendered a clean frame would otherwise read as evidence about synchronization it
+never examined.
+
+`--sync-validation-selftest` is the negative control. It records two overlapping
+writes to one buffer with no barrier between them, reports whether the layer
+caught it, and exits without rendering. Both writes are individually legal, so
+core validation has nothing to say about them. Without this, "rendered a frame,
+nothing reported" and "the setting was ignored" are the same observation.
+
+Sync hazards are tallied apart from other validation errors -- on the layer's own
+`SYNC-` message id, not on message text -- and the `Validation tally:` line
+carries the count.
+
+#### What the first run found
+
+Thirty hazards on the default scene, in four classes, all of them the same
+mistake: a barrier naming a narrower pipeline stage than the command it was
+meant to order.
+
+| Class | Count | Cause |
+| --- | --- | --- |
+| SSR half-res copy | 22 | `TransferSrc`/`TransferDst` mapped to `COPY`, and the pass records `vkCmdBlitImage`, which runs in the blit stage |
+| GPU culling count buffers | 3 | a pass that clears with `vkCmdFillBuffer` and then dispatches declared only the shader scope |
+| Swapchain acquire | 3 | the transition out of `PRESENT_SRC` had a source scope of `NONE`, so it was ordered against nothing and could run ahead of the semaphore wait |
+| Probe shading params | 2 | one buffer served every frame in flight, and the barrier after the update said nothing about the previous frame's read |
+
+`VK_PIPELINE_STAGE_2_COPY_BIT` covers `vkCmdCopy*` and nothing else;
+`vkCmdBlitImage` is in the blit stage and `vkCmdFillBuffer`/`vkCmdUpdateBuffer`
+are in the clear stage. The graph now maps both transfer accesses to
+`ALL_TRANSFER`, which covers copy, blit, resolve and clear alike, and a test pins
+the stage for textures and buffers alike. The same narrow spelling was repeated
+by hand in `VirtualShadowMapPass` and `IrradianceProbeVolume`; both are fixed.
+
+`RGAccess::StorageBufferClearAndReadWrite` is new, and exists because a pass
+declares a resource once while these passes genuinely touch it twice -- a
+transfer clear and then a shader read-write. It names the union of the two
+scopes. Three declarations used it wrongly (both GPU culling passes and the
+histogram pass); only two produced a hazard, because the third's previous use was
+separated by a frame wait.
+
+None of the four changed a pixel: the frame 30 capture is byte-identical before
+and after. That is the expected result and the reason the class survived -- this
+hardware was already serializing the work these barriers failed to order.
+
+All 28 configurations the headless job sweeps now run clean under
+`--sync-validation`, and the sweep runs with it (see
+[headless_ci.md](headless_ci.md)).
 
 ### Barrier batching
 
@@ -924,6 +987,8 @@ the default.
 - Portfolio screenshot copy remains manual because it temporarily transitions the swapchain between `CompositePass` and `ImGuiPass`.
 - Barriers are conservative and not heavily optimized. They are batched per
   pass (see "Barrier batching"), but their stage/access scopes are unchanged.
+  They are now checked, however: see "Checking the inferred barriers against
+  something".
 - Not all descriptor-driven sampled resources are graph-owned yet, including material textures, IBL cubemaps, BRDF LUT, and render-target preview descriptors.
 - There is no node-editor view yet.
 - Declaration validation does not model cross-frame liveness; see "What it does
