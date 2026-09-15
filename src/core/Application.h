@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace ve {
@@ -31,6 +32,13 @@ public:
     // success because a run that quietly rendered a different scene than the one
     // named would report a clean number for the wrong question.
     static constexpr int kSceneFailureExitCode = 4;
+
+    // --sync-validation-selftest ran and the layer did NOT report the hazard it
+    // was handed, so synchronization validation is not actually watching. Its
+    // own code because it is the opposite kind of failure from the ones above:
+    // nothing is wrong with the frame, the check itself is dead, and a run that
+    // treated that as success would be reporting on nothing.
+    static constexpr int kSyncValidationSelfTestFailureExitCode = 5;
 
     // How far past the capture frame to keep drawing before declaring the
     // readback lost. Comfortably above the in-flight frame count.
@@ -66,6 +74,12 @@ private:
     // Latched in mainLoop, because reportValidationTally runs after the renderer
     // has already been destroyed.
     bool captureCompleted_ = false;
+
+    // Set by initialize() when --sync-validation-selftest ran. Its presence also
+    // means the run ends there: the self-test deliberately produces validation
+    // errors, so the frames and the tally that would follow could only describe
+    // the probe rather than the renderer.
+    std::optional<int> syncValidationSelfTestExitCode_;
 };
 
 } // namespace ve

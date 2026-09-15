@@ -135,6 +135,25 @@ struct LaunchOptions {
     // layer at all.
     bool failOnValidationError = false;
 
+    // Turns on the validation layer's synchronization validation, which is the
+    // only thing that checks the render graph's inferred barriers against what
+    // the frame actually does. Off by default: it costs real CPU time inside the
+    // layer, and it is a scripted-run check rather than a launch-time one.
+    //
+    // Instance-creation policy, so it takes effect only at startup and there is
+    // no runtime equivalent.
+    bool syncValidation = false;
+
+    // Provoke a deliberate hazard at startup, report whether the layer caught
+    // it, and exit without rendering.
+    //
+    // The negative control for the flag above. "Rendered a frame, no hazards
+    // reported" is only evidence if something was watching, and a setting the
+    // layer ignored looks identical to a frame with nothing wrong in it. Implies
+    // --sync-validation, because a self-test with the check off would report the
+    // failure it was built to detect and mean nothing by it.
+    bool syncValidationSelfTest = false;
+
     // Fixed-timestep frame clock plus dynamic resolution pinned off, so what
     // gets rendered depends on the frame number and not on machine speed.
     // Required for any frame-to-frame image comparison.

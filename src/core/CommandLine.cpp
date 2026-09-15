@@ -119,6 +119,19 @@ bool parseLaunchOptions(int argc, char** argv, LaunchOptions& options)
             continue;
         }
 
+        if (argument == "--sync-validation") {
+            options.syncValidation = true;
+            continue;
+        }
+
+        if (argument == "--sync-validation-selftest") {
+            // Both, always: the self-test only means something with the check it
+            // is testing turned on. See LaunchOptions::syncValidationSelfTest.
+            options.syncValidationSelfTest = true;
+            options.syncValidation = true;
+            continue;
+        }
+
         if (argument == "--scene") {
             if (index + 1 >= argc) {
                 Logger::error("--scene requires a preset name.");

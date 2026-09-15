@@ -12,6 +12,27 @@ class Window;
 
 namespace ve::rhi {
 
+// Instance-creation policy the caller decides, rather than the context.
+struct VulkanContextOptions {
+    // Turns on the validation layer's synchronization validation, which checks
+    // that the ordering between accesses to a resource is actually established
+    // by a barrier or a semaphore rather than merely happening to work.
+    //
+    // OFF by default, and not because it is optional in principle. It is the only
+    // independent oracle for the render graph's inferred barriers -- the unit
+    // tests cover the pure derivation functions, and core validation checks that
+    // each call is well formed, but neither can see a missing dependency. It
+    // costs real CPU time inside the layer, so it belongs on a scripted run
+    // rather than on every launch.
+    //
+    // Requested on a build with the validation layer compiled out, or on a
+    // loader that has no VK_EXT_layer_settings to configure it through, this is
+    // a hard failure. Continuing would render a normal frame and report success
+    // for a check that never ran, which is the one outcome worse than not
+    // checking.
+    bool synchronizationValidation = false;
+};
+
 class VulkanContext final {
 public:
     VulkanContext() = default;
@@ -24,7 +45,7 @@ public:
 
     // shaderDirectory is forwarded to VulkanDevice, which hashes the compiled
     // SPIR-V in it to key the persisted pipeline cache.
-    void initialize(const Window& window, std::filesystem::path shaderDirectory);
+    void initialize(const Window& window, std::filesystem::path shaderDirectory, VulkanContextOptions options = {});
     void cleanup();
     void waitIdle() const;
 
@@ -101,6 +122,8 @@ private:
 
     [[nodiscard]] bool validationLayersAvailable() const;
     [[nodiscard]] std::vector<const char*> requiredInstanceExtensions(const Window& window) const;
+
+    VulkanContextOptions options_{};
 
     VkInstance instance_ = VK_NULL_HANDLE;
 

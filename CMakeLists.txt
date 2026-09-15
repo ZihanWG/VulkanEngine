@@ -350,6 +350,7 @@ add_library(VulkanEngineRuntime STATIC
     src/rhi/VulkanShadowMap.cpp
     src/rhi/VulkanSwapchain.cpp
     src/rhi/VulkanSync.cpp
+    src/rhi/VulkanSyncValidationProbe.cpp
     src/rhi/VulkanTimestampQuery.cpp
     src/rhi/DeviceExtensionSelection.cpp
     src/rhi/TransferQueueSelection.cpp

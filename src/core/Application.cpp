@@ -43,6 +43,12 @@ int Application::run()
 {
     try {
         initialize();
+        // The self-test answers its own question and nothing else: rendering on
+        // past it would tally errors the probe caused on purpose.
+        if (syncValidationSelfTestExitCode_.has_value()) {
+            shutdown();
+            return *syncValidationSelfTestExitCode_;
+        }
         mainLoop();
         shutdown();
         return reportValidationTally();
@@ -71,6 +77,9 @@ void Application::initialize()
     // is allocated inside the constructor and gated on the marking stage, so the
     // decision has to be in hand by then.
     RendererStartupOverrides overrides{};
+    // Instance-creation policy, so it has to be in hand before the renderer is
+    // constructed -- there is no way to turn the layer's checks on afterwards.
+    overrides.synchronizationValidation = config_.syncValidation;
     if (config_.vsm.has_value()) {
         // The stages are cumulative, which is what makes one mode name safe to
         // expand into three booleans here.
@@ -114,6 +123,13 @@ void Application::initialize()
     }
     if (config_.probeAliasing) {
         renderer_->logImageMemoryAliasingProbe();
+    }
+    // Before the scene is built and before any frame: the probe needs nothing
+    // from either, and a self-test run should pay for neither.
+    if (config_.syncValidationSelfTest) {
+        syncValidationSelfTestExitCode_ =
+            renderer_->runSynchronizationValidationSelfTest() ? 0 : kSyncValidationSelfTestFailureExitCode;
+        return;
     }
     // Before the capture request and the first frame, so a preset's own camera is
     // in place for every frame that gets measured or captured.
@@ -255,9 +271,15 @@ int Application::reportValidationTally() const
 
     const uint64_t errors = rhi::ValidationTally::errorCount();
     const uint64_t warnings = rhi::ValidationTally::warningCount();
+    const uint64_t syncHazards = rhi::ValidationTally::syncHazardCount();
 
+    // The hazard count is appended rather than spliced in: "Validation tally:" is
+    // what CI greps for to prove the run reached a clean shutdown, and the count
+    // is a subset of the errors already reported, not a new category of failure.
+    // Zero on a run without --sync-validation means nothing was looking, which is
+    // why the enabling line is logged separately at instance creation.
     Logger::info("Validation tally: " + std::to_string(errors) + " error(s), " + std::to_string(warnings) +
-                 " warning(s).");
+                 " warning(s), " + std::to_string(syncHazards) + " sync hazard(s).");
 
     // Warnings are reported but do not fail. They move with layer and loader
     // versions, and a CI that goes red because the validation layer was updated

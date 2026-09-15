@@ -81,11 +81,21 @@ VKAPI_ATTR VkBool32 VKAPI_CALL validationCallback(VkDebugUtilsMessageSeverityFla
     const char* message =
         callbackData && callbackData->pMessage ? callbackData->pMessage : "Unknown validation message";
 
+    // Every synchronization-validation finding is named SYNC-HAZARD-...; the id
+    // name is the layer's own classification, so reading it is cheaper and
+    // steadier than matching on the message text. See
+    // ValidationTally::recordSyncHazard for why these are counted apart.
+    const char* messageId = callbackData != nullptr ? callbackData->pMessageIdName : nullptr;
+    const bool syncHazard = messageId != nullptr && std::strncmp(messageId, "SYNC-", 5) == 0;
+
     // Tally before logging so a message is counted even if logging is filtered.
     // Counting is unconditional; whether a non-zero tally fails the process is
     // Application's policy (--fail-on-validation-error).
     if ((severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) {
         ValidationTally::recordError();
+        if (syncHazard) {
+            ValidationTally::recordSyncHazard();
+        }
         Logger::error(message);
     } else if ((severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) != 0) {
         ValidationTally::recordWarning();
@@ -118,8 +128,13 @@ VulkanContext::~VulkanContext()
     cleanup();
 }
 
-void VulkanContext::initialize(const Window& window, std::filesystem::path shaderDirectory)
+void VulkanContext::initialize(const Window& window,
+                               std::filesystem::path shaderDirectory,
+                               VulkanContextOptions options)
 {
+    // Before createInstance, which is the only place they can take effect.
+    options_ = options;
+
     PFN_vkGetInstanceProcAddr getInstanceProcAddr = window.vulkanGetInstanceProcAddr();
     if (getInstanceProcAddr == nullptr) {
         throw std::runtime_error("SDL Vulkan vkGetInstanceProcAddr is unavailable.");
@@ -181,6 +196,15 @@ void VulkanContext::createInstance(const Window& window)
         throw std::runtime_error("Validation layers were requested but VK_LAYER_KHRONOS_validation is not available.");
     }
 
+    // A build with the layer compiled out cannot run the check at all, and a run
+    // that silently skipped it would report a clean frame as evidence of
+    // synchronization it never examined.
+    if (options_.synchronizationValidation && !kEnableValidationLayers) {
+        throw std::runtime_error(
+            "Synchronization validation was requested but this build has the validation layer compiled out. "
+            "Build a Debug configuration (VULKAN_ENGINE_ENABLE_VALIDATION).");
+    }
+
     VkApplicationInfo appInfo{};
     appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     appInfo.pApplicationName = "VulkanEngine";
@@ -196,12 +220,37 @@ void VulkanContext::createInstance(const Window& window)
 #endif
     VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo = debugMessengerCreateInfo();
 
+    // The layer reads this at instance creation, which is the only moment
+    // synchronization validation can be turned on -- there is no runtime toggle.
+    // VK_EXT_layer_settings replaced the deprecated VK_EXT_validation_features
+    // for exactly this; requiredInstanceExtensions has already established that
+    // the extension is there, so reaching here means it can be set.
+    const VkBool32 syncValidationEnabled = VK_TRUE;
+    VkLayerSettingEXT syncValidationSetting{};
+    syncValidationSetting.pLayerName = kValidationLayers[0];
+    syncValidationSetting.pSettingName = "validate_sync";
+    syncValidationSetting.type = VK_LAYER_SETTING_TYPE_BOOL32_EXT;
+    syncValidationSetting.valueCount = 1;
+    syncValidationSetting.pValues = &syncValidationEnabled;
+
+    VkLayerSettingsCreateInfoEXT layerSettingsCreateInfo{};
+    layerSettingsCreateInfo.sType = VK_STRUCTURE_TYPE_LAYER_SETTINGS_CREATE_INFO_EXT;
+    layerSettingsCreateInfo.settingCount = 1;
+    layerSettingsCreateInfo.pSettings = &syncValidationSetting;
+    if (options_.synchronizationValidation) {
+        layerSettingsCreateInfo.pNext = &debugCreateInfo;
+    }
+
     VkInstanceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
 #if defined(__APPLE__)
     createInfo.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
 #endif
-    createInfo.pNext = kEnableValidationLayers ? &debugCreateInfo : nullptr;
+    if (options_.synchronizationValidation) {
+        createInfo.pNext = &layerSettingsCreateInfo;
+    } else {
+        createInfo.pNext = kEnableValidationLayers ? &debugCreateInfo : nullptr;
+    }
     createInfo.pApplicationInfo = &appInfo;
     createInfo.enabledLayerCount = kEnableValidationLayers ? static_cast<uint32_t>(kValidationLayers.size()) : 0;
     createInfo.ppEnabledLayerNames = kEnableValidationLayers ? kValidationLayers.data() : nullptr;
@@ -209,6 +258,14 @@ void VulkanContext::createInstance(const Window& window)
     createInfo.ppEnabledExtensionNames = extensions.data();
 
     VK_CHECK(vkCreateInstance(&createInfo, nullptr, &instance_));
+
+    // Said out loud so a scripted run has machine-checkable evidence of which
+    // check it was running. A log that cannot distinguish "clean under
+    // synchronization validation" from "clean without it" makes the two look
+    // like the same result.
+    if (options_.synchronizationValidation) {
+        Logger::info("Synchronization validation enabled via VK_EXT_layer_settings (validate_sync).");
+    }
 }
 
 void VulkanContext::setupDebugMessenger()
@@ -293,11 +350,48 @@ std::vector<const char*> VulkanContext::requiredInstanceExtensions(const Window&
                                  VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     }
 
+    // VK_EXT_layer_settings is provided by the validation layer itself, so it
+    // does not appear in the driver's own extension list -- it has to be asked
+    // for by layer name. Missing means the installed layer predates it and
+    // synchronization validation cannot be configured through the API, which is
+    // a hard failure rather than a quiet downgrade: see
+    // VulkanContextOptions::synchronizationValidation.
+    if (options_.synchronizationValidation) {
+        bool layerSettingsAvailable = hasExtension(VK_EXT_LAYER_SETTINGS_EXTENSION_NAME);
+        if (!layerSettingsAvailable) {
+            uint32_t layerExtensionCount = 0;
+            VK_CHECK(vkEnumerateInstanceExtensionProperties(kValidationLayers[0], &layerExtensionCount, nullptr));
+            std::vector<VkExtensionProperties> layerExtensions(layerExtensionCount);
+            VK_CHECK(vkEnumerateInstanceExtensionProperties(
+                kValidationLayers[0], &layerExtensionCount, layerExtensions.data()));
+            layerSettingsAvailable =
+                std::find_if(
+                    layerExtensions.begin(), layerExtensions.end(), [](const VkExtensionProperties& extension) {
+                        return std::strcmp(extension.extensionName, VK_EXT_LAYER_SETTINGS_EXTENSION_NAME) == 0;
+                    }) != layerExtensions.end();
+        }
+
+        if (!layerSettingsAvailable) {
+            throw std::runtime_error(
+                std::string("Synchronization validation was requested but the installed validation layer does not "
+                            "provide ") +
+                VK_EXT_LAYER_SETTINGS_EXTENSION_NAME + ". Update the Vulkan SDK.");
+        }
+    }
+
     for (const char* requiredExtension : extensions) {
         if (!hasExtension(requiredExtension)) {
             throw std::runtime_error(std::string("Required Vulkan instance extension is missing: ") +
                                      requiredExtension);
         }
+    }
+
+    // After the loop above, not before it: that check reads the driver's own
+    // extension list, and a layer-provided extension is absent from it by
+    // construction. Its availability was established against the layer a few
+    // lines up, which is the list that can actually answer for it.
+    if (options_.synchronizationValidation) {
+        appendUniqueExtension(extensions, VK_EXT_LAYER_SETTINGS_EXTENSION_NAME);
     }
 
     return extensions;
