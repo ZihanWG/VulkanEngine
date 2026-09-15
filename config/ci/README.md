@@ -64,8 +64,12 @@ The same legs, against a real GPU rather than lavapipe:
 
 ```bash
 ./build/release/VulkanEngine --settings config/ci/occlusion-off.json \
-    --deterministic --exit-after-frames 10 --fail-on-validation-error
+    --deterministic --exit-after-frames 10 --fail-on-validation-error --sync-validation
 ```
+
+`--sync-validation` is what CI runs every leg with, and it needs a Debug build
+to do anything -- the validation layer is compiled out otherwise, and asking for
+it there is a hard failure rather than a silent skip.
 
 A clean leg prints `Render graph backstop: 0 order violations, 0 unrecorded
 passes, 0 declaration issues over 10 frames`. A dirty one names each finding on

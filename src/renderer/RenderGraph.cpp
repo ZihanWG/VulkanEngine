@@ -588,6 +588,8 @@ void RenderGraph::importFrameBuffers()
     frame_.shadowCullIndirectOutput = importBuffer(frame_.resources.shadowCullIndirectOutput);
     frame_.shadowCullVisibleCounts = importBuffer(frame_.resources.shadowCullVisibleCounts);
     frame_.shadowCullReadback = importBuffer(frame_.resources.shadowCullReadback);
+    frame_.punctualCullIndirectOutput = importBuffer(frame_.resources.punctualCullIndirectOutput);
+    frame_.punctualCullVisibleCounts = importBuffer(frame_.resources.punctualCullVisibleCounts);
     frame_.luminancePartials = importBuffer(frame_.resources.luminancePartials);
     frame_.luminanceReadback = importBuffer(frame_.resources.luminanceReadback);
     frame_.luminanceHistogram = importBuffer(frame_.resources.luminanceHistogram);
@@ -942,6 +944,31 @@ void RenderGraph::endMainGpuCullingPass()
     requireFrameActive("RenderGraph::endMainGpuCullingPass");
     if (activePass_ != ActivePass::MainGpuCulling) {
         throw std::logic_error("RenderGraph::endMainGpuCullingPass called without an active main GPU culling pass.");
+    }
+
+    activePass_ = ActivePass::None;
+}
+
+void RenderGraph::beginPunctualShadowCullPass()
+{
+    requireFrameActive("RenderGraph::beginPunctualShadowCullPass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginPunctualShadowCullPass called while another pass is active.");
+    }
+    if (!beginDeclaredPass(frame_.passIndices.punctualShadowCull)) {
+        throw std::logic_error(
+            "RenderGraph::beginPunctualShadowCullPass was culled but the renderer attempted to record it.");
+    }
+
+    activePass_ = ActivePass::PunctualShadowCull;
+}
+
+void RenderGraph::endPunctualShadowCullPass()
+{
+    requireFrameActive("RenderGraph::endPunctualShadowCullPass");
+    if (activePass_ != ActivePass::PunctualShadowCull) {
+        throw std::logic_error(
+            "RenderGraph::endPunctualShadowCullPass called without an active punctual shadow cull pass.");
     }
 
     activePass_ = ActivePass::None;
@@ -2100,17 +2127,48 @@ void RenderGraph::declareGeometryPasses()
     // Only declared when a light actually got a tile. The atlas texture is
     // still imported and still read by the main pass below, so a frame that
     // casts nothing gets the read-layout transition without the write pass.
+    // Ahead of the atlas pass, because that is where it records: the cull cannot
+    // run inside the atlas's rendering scope, so every slot is culled up front.
+    const bool punctualCullDeclared = frame_.resources.punctualShadowCullEnabled &&
+                                      frame_.punctualCullIndirectOutput.valid() &&
+                                      frame_.punctualCullVisibleCounts.valid();
+    if (punctualCullDeclared) {
+        frame_.passIndices.punctualShadowCull =
+            addPass("PunctualShadowCullPass",
+                    RenderPassType::ShadowGpuCulling,
+                    RenderPassExecutionType::Compute,
+                    false,
+                    [this](RenderGraphBuilder& builder) {
+                        frame_.punctualCullIndirectOutput =
+                            builder.writeBuffer(frame_.punctualCullIndirectOutput,
+                                                RGAccess::StorageBufferClearAndReadWrite,
+                                                "Clears and writes per-slot indirect draw commands for the atlas.");
+                        frame_.punctualCullVisibleCounts =
+                            builder.writeBuffer(frame_.punctualCullVisibleCounts,
+                                                RGAccess::StorageBufferClearAndReadWrite,
+                                                "Clears and writes per-slot, per-batch caster counts.");
+                    });
+    }
+
     if (frame_.punctualShadowAtlas != nullptr && frame_.resources.punctualShadowSlotCount > 0) {
         frame_.passIndices.punctualShadow =
             addPass("PunctualShadowAtlasPass",
                     RenderPassType::Shadow,
                     RenderPassExecutionType::Graphics,
                     false,
-                    [this](RenderGraphBuilder& builder) {
+                    [this, punctualCullDeclared](RenderGraphBuilder& builder) {
                         frame_.punctualShadowAtlasDepth = builder.writeTexture(
                             frame_.punctualShadowAtlasDepth,
                             RGAccess::DepthStencilAttachmentWrite,
                             "Writes per-slot spot-light depth tiles into the punctual shadow atlas.");
+                        if (punctualCullDeclared) {
+                            builder.readBuffer(frame_.punctualCullIndirectOutput,
+                                               RGAccess::IndirectRead,
+                                               "Replays the culled caster list as per-slot indirect draws.");
+                            builder.readBuffer(frame_.punctualCullVisibleCounts,
+                                               RGAccess::IndirectRead,
+                                               "Reads per-slot caster counts as the indirect draw count.");
+                        }
                     });
     }
 

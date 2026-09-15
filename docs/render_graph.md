@@ -987,9 +987,9 @@ the default.
   host-visible inside one pass carries its own barriers between those steps. The
   same is true of the depth pyramid's per-mip chain. What is no longer manual is
   the boundary work -- see "What subsystems still write by hand".
-- The punctual shadow atlas cull, the VSM page cull and the probe shading
-  parameter buffer still write their own consumer edges. They have the same
-  shape as the shadow caster cull did and are the next conversions.
+- The VSM page cull and the probe shading parameter buffer still write their own
+  consumer edges. Neither is blocked by the graph; see "What subsystems still
+  write by hand" for what each needs first.
 - Portfolio screenshot copy remains manual because it temporarily transitions the swapchain between `CompositePass` and `ImGuiPass`.
 - Barriers are conservative and not heavily optimized. They are batched per
   pass (see "Barrier batching"), but their stage/access scopes are unchanged.
@@ -1020,6 +1020,7 @@ Now declared, so the graph emits the handoff:
 | --- | --- | --- |
 | The three froxel volumes | `VolumetricFogPass` | `MainHDRPass` samples the integrated one |
 | Shadow cull indirect commands and counts | `ShadowGpuCullingPass` | `CSMShadowPass` draws them indirectly |
+| Punctual cull indirect commands and counts | `PunctualShadowCullPass` | `PunctualShadowAtlasPass` draws them indirectly |
 
 The froxel volumes also removed `VolumetricFogPass`'s `sideEffect` exemption.
 It had one because nothing downstream declared a read on its outputs and
@@ -1037,11 +1038,31 @@ Still manual, and correctly so:
 - The portfolio screenshot copy, which transitions the swapchain image between
   `CompositePass` and `ImGuiPass` and back.
 
-Still manual and not yet converted: the punctual shadow atlas cull, the VSM page
-cull, and the probe shading parameter buffer. The first two have the same shape
-as the shadow caster cull -- a compute dispatch writing indirect commands that a
-later pass draws -- and the third is a uniform buffer written with
-`vkCmdUpdateBuffer` inside the frame that reads it.
+The punctual cull needed one thing the others did not: a predicate the
+declaration and the recorder could share. `recordCull` returns early on half a
+dozen conditions, and a declaration that reproduced them by hand would be a
+second copy to keep in step. `PunctualShadows::willRecordCull` is that predicate,
+asked by both.
+
+Two more have the shape of a conversion and are blocked by something other than
+the graph. Both are worth stating precisely, because "not done yet" and "needs
+this first" are different entries:
+
+- **The VSM page cull.** Its predicate is not knowable when declarations are
+  built. `recordVsmPageCull` builds the caster batches and the per-page command
+  stride inside the recorder, and `recordPageCull` returns early when either
+  comes out empty -- so a declaration made in `beginFrame` would be guessing, and
+  a pass declared and never recorded is exactly what the backstop reports.
+  Hoisting that batch build into frame prep is the prerequisite, and it is a
+  change to where CPU work happens rather than a graph change.
+- **The probe shading parameter buffer.** Its `vkCmdUpdateBuffer` is recorded
+  outside every declared pass and on every frame, including ones where neither
+  the capture nor the convolution runs. Declaring it means giving a single buffer
+  update a pass of its own, which is more model than the thing deserves. Its
+  cross-frame hazard -- one buffer serving every frame in flight -- is handled by
+  a barrier before the update, and would not be the graph's to emit in any case:
+  buffer state is rebuilt every frame, so the graph has nothing to order a
+  frame's first write against.
 
 ### Per-subresource tracking has no consumer here, surveyed
 

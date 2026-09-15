@@ -147,6 +147,15 @@ VkPipeline Renderer::mainPipelineFor(bool doubleSided) const
     return twoSided != VK_NULL_HANDLE ? twoSided : pipeline_.pipeline();
 }
 
+bool Renderer::willRecordPunctualShadowCull()
+{
+    return isGpuPunctualShadowCullingActive() &&
+           punctualShadows_.willRecordCull(currentFrame_,
+                                           static_cast<uint32_t>(allDrawItems_.size()),
+                                           static_cast<uint32_t>(gpuShadowMeshDrawBatches_.size()),
+                                           gpuCulling_.shadowCullInputBuffer(currentFrame_).buffer() != VK_NULL_HANDLE);
+}
+
 bool Renderer::isGpuPunctualShadowCullingActive() const
 {
     // Requires the CSM GPU shadow cull to be active, because it borrows two of
@@ -1063,6 +1072,16 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
                                              gpuCulling_.shadowVisibleCountReadbackBuffers(),
                                              currentFrame_,
                                              VK_BUFFER_USAGE_TRANSFER_DST_BIT),
+        .punctualCullIndirectOutput =
+            bufferResource("PunctualCullIndirectOutput",
+                           punctualShadows_.cullIndirectBuffers(),
+                           currentFrame_,
+                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT),
+        .punctualCullVisibleCounts =
+            bufferResource("PunctualCullVisibleCounts",
+                           punctualShadows_.cullVisibleCountBuffers(),
+                           currentFrame_,
+                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT),
         .luminancePartials = bufferResource(
             "LuminancePartials", postProcess_.luminanceBuffers(), currentFrame_, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
         .luminanceReadback = bufferResource("LuminanceReadback",
@@ -1107,6 +1126,7 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         // declaration that outlives its recorder is what the backstop reports.
         .shadowGpuCullingEnabled =
             isGpuShadowCullingActive() && anyCascadeShadowRedrawRequired() && !allDrawItems_.empty(),
+        .punctualShadowCullEnabled = willRecordPunctualShadowCull(),
         .cascadeShadowRedrawRequired = anyCascadeShadowRedrawRequired(),
         .luminancePassEnabled = postProcess_.willRecordLuminancePass(),
         .mipChainBloomSelected = postProcess_.willRecordMipChainBloom(),
@@ -2724,9 +2744,11 @@ void Renderer::recordPunctualShadows(VkCommandBuffer commandBuffer)
     // inside recordPunctualShadowPass because compute cannot run inside a
     // dynamic-rendering scope, and that pass is one scope so its cached tiles
     // survive a partial clear. Every slot is therefore culled up front.
-    const bool gpuPunctualCullActive = isGpuPunctualShadowCullingActive();
+    // The same predicate the declaration used, for the reason named on it.
+    const bool gpuPunctualCullActive = willRecordPunctualShadowCull();
     if (gpuPunctualCullActive) {
         const renderer::GpuProfileScope cullScope(gpuProfiler_, currentFrame_, commandBuffer, "PunctualShadowGpuCull");
+        renderGraph_.beginPunctualShadowCullPass();
         rhi::debug::beginLabel(commandBuffer, "PunctualShadowGpuCull");
         punctualShadows_.uploadSlotFrustums(currentFrame_);
 
@@ -2751,6 +2773,7 @@ void Renderer::recordPunctualShadows(VkCommandBuffer commandBuffer)
             static_cast<uint32_t>(gpuShadowMeshDrawBatches_.size()),
             std::span<const uint32_t>(punctualShadowCasterFlags_.data(), punctualShadowCasterFlags_.size()));
         rhi::debug::endLabel(commandBuffer);
+        renderGraph_.endPunctualShadowCullPass();
     }
 
     // Punctual casters go into the atlas right after the directional cascades,

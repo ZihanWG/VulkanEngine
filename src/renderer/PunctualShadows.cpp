@@ -277,6 +277,16 @@ void PunctualShadows::uploadSlotFrustums(uint32_t frameIndex)
         std::as_bytes(std::span<const glm::vec4>(slotFrustumPlanes_.data(), slotFrustumPlanes_.size())));
 }
 
+bool PunctualShadows::willRecordCull(uint32_t frameIndex,
+                                     uint32_t drawItemCount,
+                                     uint32_t batchCount,
+                                     bool cullInputAvailable) const
+{
+    const uint32_t culledSlots = std::min<uint32_t>(slotCount(), kMaxGpuCulledSlots);
+    return cullAvailable_ && frameIndex < cullSets_.size() && culledSlots != 0 && drawItemCount != 0 &&
+           batchCount != 0 && batchCount <= kMaxGpuCulledBatches && cullInputAvailable;
+}
+
 void PunctualShadows::recordCull(VkCommandBuffer commandBuffer,
                                  uint32_t frameIndex,
                                  VkBuffer cullInputBuffer,
@@ -285,11 +295,11 @@ void PunctualShadows::recordCull(VkCommandBuffer commandBuffer,
                                  uint32_t batchCount,
                                  std::span<const uint32_t> casterFlags)
 {
-    const uint32_t culledSlots = std::min<uint32_t>(slotCount(), kMaxGpuCulledSlots);
-    if (!cullAvailable_ || frameIndex >= cullSets_.size() || culledSlots == 0 || drawItemCount == 0 ||
-        batchCount == 0 || batchCount > kMaxGpuCulledBatches || cullInputBuffer == VK_NULL_HANDLE) {
+    if (!willRecordCull(frameIndex, drawItemCount, batchCount, cullInputBuffer != VK_NULL_HANDLE)) {
         return;
     }
+
+    const uint32_t culledSlots = std::min<uint32_t>(slotCount(), kMaxGpuCulledSlots);
 
     // Descriptors are rewritten each frame because the cull input buffer belongs
     // to GpuCulling and is chosen per frame there.
@@ -378,27 +388,9 @@ void PunctualShadows::recordCull(VkCommandBuffer commandBuffer,
     vkCmdDispatch(commandBuffer, (threadCount + kLocalSize - 1) / kLocalSize, 1, 1);
 
     // The atlas pass consumes the commands as indirect draws and the counters as
-    // the indirect draw count, so both need the same transition.
-    std::array<VkBufferMemoryBarrier2, 2> toIndirect{};
-    for (VkBufferMemoryBarrier2& barrier : toIndirect) {
-        barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-        barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        barrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-        barrier.dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
-        barrier.dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.offset = 0;
-        barrier.size = VK_WHOLE_SIZE;
-    }
-    toIndirect[0].buffer = cullIndirectBuffers_[frameIndex].buffer();
-    toIndirect[1].buffer = cullVisibleCountBuffers_[frameIndex].buffer();
-
-    VkDependencyInfo indirectDependency{};
-    indirectDependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    indirectDependency.bufferMemoryBarrierCount = static_cast<uint32_t>(toIndirect.size());
-    indirectDependency.pBufferMemoryBarriers = toIndirect.data();
-    vkCmdPipelineBarrier2(commandBuffer, &indirectDependency);
+    // the indirect draw count. That is a pass boundary, so both edges are
+    // declared on PunctualShadowAtlasPass and the graph emits them there; this
+    // pass ends with its dispatch.
 }
 
 VkBuffer PunctualShadows::cullVisibleCountBuffer(uint32_t frameIndex) const

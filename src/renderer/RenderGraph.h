@@ -498,6 +498,10 @@ struct RenderGraphFrameResources {
     RenderGraphBufferResource shadowCullIndirectOutput;
     RenderGraphBufferResource shadowCullVisibleCounts;
     RenderGraphBufferResource shadowCullReadback;
+    // The punctual atlas cull's pair. One dispatch covers every slot, because
+    // compute cannot run inside the atlas's single rendering scope.
+    RenderGraphBufferResource punctualCullIndirectOutput;
+    RenderGraphBufferResource punctualCullVisibleCounts;
     RenderGraphBufferResource luminancePartials;
     RenderGraphBufferResource luminanceReadback;
     RenderGraphBufferResource luminanceHistogram;
@@ -557,6 +561,10 @@ struct RenderGraphFrameResources {
     // recorded leaves the graph describing work that did not happen, which is
     // what the endFrame backstop exists to catch.
     bool shadowGpuCullingEnabled = false;
+    // Declares the punctual atlas caster cull. Comes from
+    // PunctualShadows::willRecordCull rather than from a condition rebuilt here,
+    // so the declaration and the recorder cannot drift.
+    bool punctualShadowCullEnabled = false;
     // Whether any cascade will be redrawn this frame. False skips declaring the
     // cascaded shadow pass, but the shadow map is still imported and still read
     // by the main pass -- the same asymmetry the punctual atlas uses. A fully
@@ -744,6 +752,10 @@ public:
     // is a reordering the graph would then act on.
     void beginShadowGpuCullingPass();
     void endShadowGpuCullingPass();
+    // The punctual atlas caster cull, recorded ahead of the atlas pass for the
+    // same reason the cascade cull is recorded ahead of the shadow passes.
+    void beginPunctualShadowCullPass();
+    void endPunctualShadowCullPass();
     // Depth-only replay of the opaque bucket. Declared and recorded only when
     // RuntimeSettings::enableDepthPrepass is on; when it is off the pass does not
     // exist in the graph at all, so the backstop's "declared but never recorded"
@@ -939,6 +951,7 @@ private:
         IrradianceProbes,
         MainGpuCulling,
         ShadowGpuCulling,
+        PunctualShadowCull,
         DepthPrepass,
         MainHdr,
         MainGpuCullingPhase2,
@@ -1029,6 +1042,7 @@ private:
         uint32_t irradianceProbes = kInvalidRenderGraphHandle;
         uint32_t mainGpuCulling = kInvalidRenderGraphHandle;
         uint32_t shadowGpuCulling = kInvalidRenderGraphHandle;
+        uint32_t punctualShadowCull = kInvalidRenderGraphHandle;
         uint32_t depthPrepass = kInvalidRenderGraphHandle;
         uint32_t mainHdr = kInvalidRenderGraphHandle;
         uint32_t depthPyramidMid = kInvalidRenderGraphHandle;
@@ -1103,6 +1117,8 @@ private:
         RGBufferHandle shadowCullIndirectOutput{};
         RGBufferHandle shadowCullVisibleCounts{};
         RGBufferHandle shadowCullReadback{};
+        RGBufferHandle punctualCullIndirectOutput{};
+        RGBufferHandle punctualCullVisibleCounts{};
         RGBufferHandle luminancePartials{};
         RGBufferHandle luminanceReadback{};
         RGBufferHandle luminanceHistogram{};
