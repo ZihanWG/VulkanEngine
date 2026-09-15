@@ -1,0 +1,609 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="VulkanEngine 里三个测过并否决的优化提案，以及同一套方法放行的第四个：meshlet 锥体剔除、uber-shader 特化常量、并行命令录制，对照深度预通道。">
+<style>
+  html { color-scheme: light dark; }
+  body { margin: 0; }
+  img { max-width: 100%; }
+</style>
+<title>三次否决，一次放行</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+SC:wght@400;500;600&family=IBM+Plex+Serif:ital,wght@0,500;0,600;1,400&display=swap">
+
+<style>
+  :root {
+    /* Continuous with docs/blog/meshlet-culling-rejected.zh.html: the teal is
+       the thing that won, the amber the thing that lost. */
+    --ground:      #F7F8FA;
+    --surface:     #FFFFFF;
+    --ink:         #10151B;
+    --ink-muted:   #5A6675;
+    --ink-faint:   #8D97A4;
+    --rule:        #DCE1E8;
+    --rule-strong: #C3CBD6;
+    --ship:        #12707D;
+    --ship-soft:   #E4EFF0;
+    --reject:      #B4682A;
+    --reject-soft: #F4E9DC;
+    --code-bg:     #EEF1F5;
+
+    --sans: "IBM Plex Sans SC", "IBM Plex Sans", -apple-system, "PingFang SC",
+            "Microsoft YaHei", system-ui, sans-serif;
+    --serif: "IBM Plex Serif", "Songti SC", Georgia, serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:      #0E1216;
+      --surface:     #161C23;
+      --ink:         #E6EBF1;
+      --ink-muted:   #9AA7B5;
+      --ink-faint:   #6F7C8A;
+      --rule:        #27303A;
+      --rule-strong: #3A4552;
+      --ship:        #4FB8C4;
+      --ship-soft:   #153034;
+      --reject:      #D79553;
+      --reject-soft: #2E2418;
+      --code-bg:     #1C242D;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground:      #0E1216;
+    --surface:     #161C23;
+    --ink:         #E6EBF1;
+    --ink-muted:   #9AA7B5;
+    --ink-faint:   #6F7C8A;
+    --rule:        #27303A;
+    --rule-strong: #3A4552;
+    --ship:        #4FB8C4;
+    --ship-soft:   #153034;
+    --reject:      #D79553;
+    --reject-soft: #2E2418;
+    --code-bg:     #1C242D;
+  }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 47rem;
+    margin: 0 auto;
+    padding-inline: 24px;
+    padding-block: 72px 96px;
+  }
+
+  /* ---- masthead ---------------------------------------------------- */
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+
+  h1 {
+    font-family: var(--serif);
+    font-weight: 600;
+    font-size: clamp(2rem, 6vw, 2.9rem);
+    line-height: 1.2;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+    margin: 14px 0 0;
+  }
+
+  .standfirst {
+    font-size: 1.06rem;
+    color: var(--ink-muted);
+    margin: 18px 0 0;
+    max-width: 38rem;
+  }
+
+  .masthead-rule {
+    height: 2px;
+    background: var(--rule-strong);
+    margin-block: 40px 0;
+  }
+
+  /* ---- verdict ledger ---------------------------------------------- */
+
+  .ledger {
+    display: grid;
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    margin-block: 40px;
+  }
+
+  .ledger-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 8px 20px;
+    align-items: baseline;
+    background: var(--surface);
+    padding: 16px 20px;
+  }
+
+  .ledger-name { font-weight: 500; }
+
+  .ledger-figure {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 1.02rem;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  .ledger-row[data-verdict="reject"] .ledger-figure { color: var(--reject); }
+  .ledger-row[data-verdict="ship"] .ledger-figure { color: var(--ship); }
+
+  .ledger-note {
+    grid-column: 1 / -1;
+    font-size: 0.88rem;
+    color: var(--ink-muted);
+    line-height: 1.6;
+  }
+
+  /* ---- cases -------------------------------------------------------- */
+
+  .case { margin-block: 64px; }
+
+  .case-kind {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--reject);
+    padding-bottom: 6px;
+    border-bottom: 2px solid var(--reject-soft);
+    display: inline-block;
+  }
+
+  .case-coda .case-kind {
+    color: var(--ship);
+    border-bottom-color: var(--ship-soft);
+  }
+
+  h2 {
+    font-family: var(--serif);
+    font-weight: 600;
+    font-size: clamp(1.45rem, 4vw, 1.8rem);
+    line-height: 1.3;
+    text-wrap: balance;
+    margin: 18px 0 0;
+  }
+
+  .verdict {
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: 1.1rem;
+    color: var(--ink-muted);
+    margin: 10px 0 0;
+  }
+
+  .case p { margin: 18px 0 0; }
+
+  h3 {
+    font-family: var(--sans);
+    font-size: 0.95rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    margin: 32px 0 0;
+  }
+
+  /* ---- data --------------------------------------------------------- */
+
+  .scroller { overflow-x: auto; margin-block: 18px; }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-family: var(--mono);
+    font-size: 0.86rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  caption {
+    caption-side: top;
+    text-align: left;
+    font-family: var(--sans);
+    font-size: 0.82rem;
+    color: var(--ink-faint);
+    padding-bottom: 8px;
+  }
+
+  th, td {
+    text-align: right;
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--rule);
+    white-space: nowrap;
+  }
+
+  th:first-child, td:first-child { text-align: left; }
+
+  thead th {
+    font-weight: 500;
+    color: var(--ink-faint);
+    font-size: 0.78rem;
+    letter-spacing: 0.04em;
+    border-bottom-color: var(--rule-strong);
+  }
+
+  tbody tr:last-child td { border-bottom: none; }
+
+  td.figure-reject { color: var(--reject); font-weight: 600; }
+  td.figure-ship   { color: var(--ship);   font-weight: 600; }
+
+  /* ---- conditions --------------------------------------------------- */
+
+  .conditions {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    line-height: 1.7;
+    color: var(--ink-muted);
+    background: var(--code-bg);
+    border-left: 2px solid var(--rule-strong);
+    padding: 12px 16px;
+    margin-block: 20px;
+  }
+
+  .conditions b {
+    font-weight: 500;
+    color: var(--ink);
+  }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.88em;
+    background: var(--code-bg);
+    padding: 1px 5px;
+    border-radius: 2px;
+  }
+
+  strong { font-weight: 600; }
+
+  .pull {
+    font-family: var(--serif);
+    font-size: 1.15rem;
+    line-height: 1.55;
+    color: var(--ink);
+    border-left: 2px solid var(--reject);
+    padding-left: 20px;
+    margin-block: 28px;
+  }
+
+  .case-coda .pull { border-left-color: var(--ship); }
+
+  /* ---- closing ------------------------------------------------------ */
+
+  .closing {
+    margin-top: 72px;
+    padding-top: 32px;
+    border-top: 2px solid var(--rule-strong);
+  }
+
+  .closing h2 { font-size: 1.3rem; }
+
+  footer {
+    margin-top: 48px;
+    font-family: var(--mono);
+    font-size: 0.76rem;
+    color: var(--ink-faint);
+    line-height: 1.8;
+  }
+
+  @media (max-width: 30rem) {
+    .wrap { padding-block: 48px 64px; }
+    .ledger-row { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow">VulkanEngine · 决策记录</div>
+    <h1>三次否决，一次放行</h1>
+    <p class="standfirst">
+      四个看起来都该做的优化，都先量了再说。三个被数字劝退，而且是三种不同的死法；
+      第四个原本连"可测的对象"都没有，补上之后测出 −13.0%，于是做了。
+    </p>
+    <div class="masthead-rule"></div>
+  </header>
+
+  <section class="ledger" aria-label="四项裁决一览">
+    <div class="ledger-row" data-verdict="reject">
+      <div class="ledger-name">Meshlet 锥体剔除</div>
+      <div class="ledger-figure">省下 0.055%</div>
+      <p class="ledger-note">LOD 已经先拿走了同一份收益，效率是它的 7.7 倍。</p>
+    </div>
+    <div class="ledger-row" data-verdict="reject">
+      <div class="ledger-name">Uber-shader 特化常量</div>
+      <div class="ledger-figure">+4.4%（更慢）</div>
+      <p class="ledger-note">上限本身是负的——把特性代码整段删掉，主 pass 反而变慢。</p>
+    </div>
+    <div class="ledger-row" data-verdict="reject">
+      <div class="ledger-name">并行命令录制</div>
+      <div class="ledger-figure">63% 在一个单元</div>
+      <p class="ledger-note">成本不在假设的地方；一个开关比十七个录制器的重构更划算。</p>
+    </div>
+    <div class="ledger-row" data-verdict="ship">
+      <div class="ledger-name">深度预通道</div>
+      <div class="ledger-figure">−13.0%</div>
+      <p class="ledger-note">同一套方法，这次说的是"做"。前提是先补上一个能测它的场景。</p>
+    </div>
+  </section>
+
+  <article class="case">
+    <div class="case-kind">死法一 · 收益已被别人拿走</div>
+    <h2>Meshlet 锥体剔除</h2>
+    <p class="verdict">设施做完了，GPU pass 没建——因为 LOD 先到一步。</p>
+
+    <p>
+      先把 meshlet 建出来（落在现有索引缓冲里的连续区间，幸存者直接就是普通的
+      <code>VkDrawIndexedIndirectCommand</code>），然后在写 GPU pass 之前，
+      用 <code>--meshlet-analysis</code> 在六个场景上跑了 400 帧确定性回放，
+      先量"还剩多少可剔"。
+    </p>
+
+    <div class="scroller">
+      <table>
+        <caption>唯一几何量有意义的场景：<code>--scene stress</code></caption>
+        <thead>
+          <tr><th>配置</th><th>绘制三角形</th><th>meshlet 数</th><th>锥体剔除掉</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>LOD 按出厂设置</td><td>190,377</td><td>3,323</td><td class="figure-reject">0.055%</td></tr>
+          <tr><td><code>lod.forcedLod = 0</code></td><td>1,471,956</td><td>17,909</td><td>23.5%</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      两行差异就是全部答案。锥体剔除本身没问题——在稠密几何面前它能找到 23.5%。
+      但 <strong>LOD 选级和 meshlet 锥体剔除在抢同一份收益，而 LOD 先到</strong>：
+      它已经把 1,471,956 个三角形砍到 190,377（−87%），meshlet 再去找，只剩 0.055%。
+    </p>
+
+    <p class="pull">
+      LOD 在这套内容上的效率是 meshlet 剔除的 7.7 倍，代价是每个 draw item 一次
+      <code>selectLodIndex</code>，跑在一个本来就存在的 dispatch 里。
+    </p>
+
+    <p>
+      还有个更安静的原因：在这套内容实际选中的 LOD 级上，一整个球体只剩几个 meshlet，
+      每个 meshlet 都横跨物体大半，法锥宽到拒绝不了任何东西——<code>meshopt</code>
+      报的 <code>cone_cutoff</code> 直接是 1，也就是"永不拒绝"。
+      Meshlet 剔除想要的是"又大又密又近"的物体上的许多小簇，而
+      <strong>LOD 的全部工作就是保证这种物体永远不会被提交</strong>。
+    </p>
+
+    <p>
+      代价那一侧也记下来了：indirect command 数会 ×2.5。设施保留在主干、有单测、
+      默认关闭，所以将来换一套内容重测是一个命令行开关，不是一次重写。
+    </p>
+  </article>
+
+  <article class="case">
+    <div class="case-kind">死法二 · 上限是负的</div>
+    <h2>Uber-shader 特化常量</h2>
+    <p class="verdict">先量了最好情况，发现最好情况比现状还慢。</p>
+
+    <p>
+      <code>simple_bindless.frag</code> 有 1171 行，把虚拟阴影贴图、体积雾、
+      辐照度探针、cluster 网格全部无条件编进来，各自用运行时值开关——八个这样的分支，
+      而这些子系统<strong>默认全是关的</strong>。假设不是"分支本身贵"（在 IMR 上一个
+      uniform 分支很便宜），而是<strong>寄存器压力</strong>：编译器按最坏路径分配，
+      占用率一低，隐藏访存延迟的能力就变差。
+    </p>
+
+    <p>
+      关键在于没有先去实现特化常量，而是<strong>先测它的上限</strong>：把八个 gate
+      直接换成字面量 <code>false</code>，让驱动把分支体整段消除。这是一个公平的上界——
+      特化常量能给驱动的就是这个，而且比运行时开关能给的更多。
+    </p>
+
+    <div class="scroller">
+      <table>
+        <caption>三对交错样本，<code>--scene gpu-stress</code>，每次 19 个样本，p10</caption>
+        <thead>
+          <tr><th></th><th>A：特性编进来</th><th>B：特性删掉</th><th>差异</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>MainHDRPass</code></td><td>1.526 / 1.521 / 1.532 ms</td><td>1.590 / 1.596 / 1.593</td><td class="figure-reject">+4.4%</td></tr>
+          <tr><td>整帧</td><td>2.209 / 2.205 / 2.190 ms</td><td>2.266 / 2.262 / 2.251</td><td class="figure-reject">+2.6%</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="conditions">
+      <b>测量条件</b><br>
+      显卡时钟钉在 1100 MHz、显存 7001，全程无 throttle 原因触发。
+      重复的对照回到 0.72%（pass）和 0.87%（整帧），都在 1% 门槛内，
+      而效应是漂移的 <b>6.1 倍</b>。三对样本方向全部一致：+4.2% / +4.9% / +4.0%。
+      在第二个场景 <code>fragment-stress</code> 上佐证到 +4.3%，pass 的对照漂移 0.00%——
+      但那组的<b>整帧</b>漂了 1.76%，所以它只作为方向与量级的佐证，不作为第二个过门禁的结果。
+    </p>
+
+    <p class="pull">
+      删掉本来就不执行的代码，让这个 pass 慢了 4.4%。所以要建的那套机器，
+      天花板在零以下。
+    </p>
+
+    <p>
+      顺带一个容易踩的坑：这里的 shader 由 <code>glslc --target-env=vulkan1.3</code>
+      编译，<strong>没有加 <code>-O</code></strong>，所以死代码两种情况下都会被 glslc 原样发出，
+      消除全发生在驱动侧——SPIR-V 只缩了 0.8%，那点缩减算的是被删掉的分支指令而不是分支体。
+      <strong>SPIR-V 体积在这个问题上不是代理指标。</strong>
+      机制层面要继续追需要 <code>VK_KHR_pipeline_executable_properties</code>，
+      所以结论写的是"不要从源码重新推导"。
+    </p>
+  </article>
+
+  <article class="case">
+    <div class="case-kind">死法三 · 成本不在假设的地方</div>
+    <h2>并行命令录制</h2>
+    <p class="verdict">量完之后，问题没变小，但解法换了一个——而且便宜得多。</p>
+
+    <p>
+      "把录制拆到多线程"这个提案依赖一个当时没人有的数字。先补上仪表
+      （<code>Record CPU</code> 挨着已有的 <code>Frame prep CPU</code>，
+      外加一份逐单元的分解），答案的形状被改了两次。
+    </p>
+
+    <h3>第一次：录制确实值得动</h3>
+
+    <div class="scroller">
+      <table>
+        <caption>RTX 3080 Ti Laptop，Release</caption>
+        <thead>
+          <tr><th>场景</th><th>GPU 帧</th><th>prep CPU</th><th>record CPU</th><th>录制占 CPU</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>stress</code></td><td>1.024 ms</td><td>1.079 ms</td><td>0.530 ms</td><td>33%</td></tr>
+          <tr><td><code>default</code></td><td>1.754 ms</td><td>0.059 ms</td><td>0.150 ms</td><td>72%</td></tr>
+          <tr><td><code>fragment-stress</code></td><td>2.149 ms</td><td>0.089 ms</td><td>0.182 ms</td><td>67%</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <code>stress</code> 是有意思的那一行：CPU 合计 1.6 ms 对上 1.0 ms 的 GPU 帧，
+      这个场景是 CPU-bound 的，而录制占了三分之一。另外两个舒舒服服地 GPU-bound，
+      在那里省 CPU 录制时间买不到任何东西。
+    </p>
+
+    <h3>第二次，也是决定性的：成本是集中的</h3>
+
+    <p>
+      逐单元分解显示，成本<strong>不是</strong>摊在十七个调度单元上的。
+      <strong>一个单元占了 63%，其余每个都在 0.015 ms 以下。</strong>
+      把十七个录制器拆成 primary/secondary 两半，等于去并行一个按构造就近乎串行的负载——
+      Amdahl 把录制这一侧的上限压在 <strong>1.6 倍</strong> 左右，
+      而代价是一次触及帧内每一个录制器的重构。
+    </p>
+
+    <p class="pull">
+      那个贵的单元是 punctual 阴影图集，它的成本是 CPU 侧的 caster cull，
+      而移除它的开关<strong>本来就存在</strong>。
+    </p>
+
+    <div class="scroller">
+      <table>
+        <caption>打开 <code>punctualShadows.gpuCasterCulling</code></caption>
+        <thead>
+          <tr><th></th><th>之前</th><th>之后</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>那个单元</td><td>0.33 ms</td><td class="figure-ship">0.02 ms</td></tr>
+          <tr><td>整帧录制总计</td><td>0.52 ms</td><td class="figure-ship">0.21 ms</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      一个设置开关，对上一次十七个录制器的重构，拿到的比线程化能给的还多。
+      录制保持单线程，<strong>真正交付的是那套让这个问题可回答的仪表</strong>。
+    </p>
+  </article>
+
+  <article class="case case-coda">
+    <div class="case-kind">对照 · 同一套方法说"做"</div>
+    <h2>深度预通道</h2>
+    <p class="verdict">它一度不是"测了否决"，而是"没有可测的对象"。</p>
+
+    <p>
+      深度预通道买的是"后来被覆盖掉的片元的着色"，所以它的价值是场景深度复杂度的函数。
+      而仓库里的场景要么深度复杂度约等于 1，要么是人为堆出来的六层、二十四层全屏板子——
+      在后者上测，量的是"场景是怎么搭的"，不是内容。这个结论在文档里挂了几个月：
+      <strong>缺的是一个场景，不是一个 pass。</strong>
+    </p>
+
+    <p>
+      补上 Sponza 并加上一个过绘读数（pipeline statistics 计 fragment shader invocation）
+      之后，出来的数字把原来的场景清单整个推翻了：
+    </p>
+
+    <div class="scroller">
+      <table>
+        <caption>每个渲染像素被着色的次数，1280×720</caption>
+        <thead>
+          <tr><th>场景</th><th>实际着色 inv/px</th><th>构造时的几何层数</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>fragment-stress</code></td><td>1.260</td><td>6</td></tr>
+          <tr><td><code>gpu-stress</code></td><td>1.276</td><td>24</td></tr>
+          <tr><td><code>sponza</code></td><td class="figure-ship">2.187</td><td>真实内容</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <strong>专门用来制造过绘的两个场景，恰恰是整个仓库里有效过绘最低的。</strong>
+      堆叠的全屏四边形彼此完全遮挡，early-Z 在片元着色器之前就把绝大部分拒掉了。
+      几何层数是"场景是怎么搭的"的属性；invocation 才是硬件真正付的钱，
+      而预通道只能回收后者。
+    </p>
+
+    <div class="scroller">
+      <table>
+        <caption><code>--scene sponza</code>，钉频 800/7001，<code>ab --repeat 2 --duration 75</code>，p10，对照漂移 0.22%</caption>
+        <thead>
+          <tr><th></th><th>关</th><th>开</th><th>差异</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>整帧</td><td>8.215 ms</td><td>7.145 ms</td><td class="figure-ship">−13.0%</td></tr>
+          <tr><td><code>MainHDRPass</code></td><td>6.803 ms</td><td>5.582 ms</td><td class="figure-ship">−17.9%</td></tr>
+          <tr><td><code>DepthPrepass</code> 成本</td><td>—</td><td>0.071 ms</td><td></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="pull">
+      动手前我估它要花 2.9 ms，实际 0.071 ms——差四十倍。深度专用的顶点阶段读 1 个属性、
+      输出 0 个 varying；主 pass 的顶点着色器读 5 个、输出 26 个。
+      "第二次提交同样的几何"不是同样的价钱。
+    </p>
+  </article>
+
+  <section class="closing">
+    <h2>这四条合起来说明什么</h2>
+    <p>
+      三种死法是三种不同的东西：<strong>收益已经被别的机制拿走</strong>、
+      <strong>最好情况本身是负的</strong>、<strong>成本不在设计假设的位置上</strong>。
+      三次都不是"觉得不值得"，是量完之后数字不支持。
+    </p>
+    <p>
+      而第四条是同一套流程的另一个出口。它之所以有说服力，恰恰因为前三条存在：
+      一个只会说"做"的流程不是流程。
+    </p>
+    <p>
+      每一条被否决的结论都写进了 <code>docs/design_decisions.md</code>，
+      连同测量条件和"什么情况下结论会翻"——meshlet 那条明确写着
+      "在 Sponza 那种大块近处网格上会反转"，所以复测是一个命令行开关。
+    </p>
+  </section>
+
+  <footer>
+    全部数字取自 RTX 3080 Ti Laptop，1280×720，Release。<br>
+    绝对值只在同一钉频内可比，百分比与 delta 才跨得过去。<br>
+    每组 A/B 都是交错取样并带重复对照，对照漂移超过 1% 的序列一律作废，不引用。
+  </footer>
+
+</div>
+
+</body>
+</html>
