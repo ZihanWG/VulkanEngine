@@ -68,7 +68,11 @@ TEST_CASE("Synchronization validation is off unless asked for")
     REQUIRE_FALSE(config.syncValidationSelfTest);
 }
 
-TEST_CASE("--sync-validation turns on the check without the self-test")
+// The names below deliberately do not start with "--": catch_discover_tests
+// registers each case as its own `VulkanEngineTests "<name>"` invocation and
+// Catch2 reads a leading "--" as an option, so such a case passes when the
+// binary is run directly and fails only under ctest.
+TEST_CASE("The sync validation flag turns on the check without the self-test")
 {
     LaunchOptions config{};
     REQUIRE(parse({"--sync-validation"}, config));
@@ -77,7 +81,7 @@ TEST_CASE("--sync-validation turns on the check without the self-test")
     REQUIRE_FALSE(config.syncValidationSelfTest);
 }
 
-TEST_CASE("--sync-validation-selftest implies the check it tests")
+TEST_CASE("The self-test flag implies the check it tests")
 {
     // A self-test with synchronization validation off would report the exact
     // failure it exists to detect and mean nothing by it, so the two cannot be
