@@ -18,6 +18,7 @@
 
 #include "renderer/TransientMemoryPlan.h"
 #include "rhi/VulkanAliasingProbe.h"
+#include "rhi/VulkanSyncValidationProbe.h"
 
 #include <cstdio>
 #include "renderer/RendererInternal.h"
@@ -169,7 +170,9 @@ Renderer::Renderer(Window& window, const RendererStartupOverrides& overrides) : 
                      " shadows=" + (vsmSettings_.enableShadows ? "on" : "off"));
     }
 
-    context_.initialize(window_, shaderDirectory());
+    rhi::VulkanContextOptions contextOptions{};
+    contextOptions.synchronizationValidation = overrides.synchronizationValidation;
+    context_.initialize(window_, shaderDirectory(), contextOptions);
 
     // Startup-only, and read here rather than from the settings struct because
     // applyRuntimeSettings(Startup) has already clamped it.
@@ -1829,6 +1832,27 @@ void Renderer::logTransientPoolReport()
     message += "\n=== end transient pool ===";
 
     Logger::info(message);
+}
+
+bool Renderer::runSynchronizationValidationSelfTest()
+{
+    const rhi::SyncValidationProbeResult probe = rhi::probeSynchronizationValidation(context_, commandContext_);
+
+    // One line, fixed prefix, counts a matcher can read -- the same shape as the
+    // validation tally and the render graph backstop, because a CI step has to
+    // be able to assert on this without parsing prose.
+    const std::string summary = std::string("Sync validation self-test: ") +
+                                (probe.hazardReported ? "HAZARD REPORTED" : "NO HAZARD REPORTED") + " (" +
+                                std::to_string(probe.syncHazardsObserved) + " sync hazard(s), " +
+                                std::to_string(probe.otherErrorsObserved) + " other error(s)) -- " + probe.detail;
+
+    if (probe.hazardReported) {
+        Logger::info(summary);
+    } else {
+        Logger::error(summary);
+    }
+
+    return probe.hazardReported;
 }
 
 void Renderer::logImageMemoryAliasingProbe()

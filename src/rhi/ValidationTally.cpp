@@ -21,6 +21,12 @@ std::atomic<uint64_t>& warningCounter()
     return counter;
 }
 
+std::atomic<uint64_t>& syncHazardCounter()
+{
+    static std::atomic<uint64_t> counter{0};
+    return counter;
+}
+
 } // namespace
 
 void ValidationTally::recordError()
@@ -33,6 +39,11 @@ void ValidationTally::recordWarning()
     warningCounter().fetch_add(1, std::memory_order_relaxed);
 }
 
+void ValidationTally::recordSyncHazard()
+{
+    syncHazardCounter().fetch_add(1, std::memory_order_relaxed);
+}
+
 uint64_t ValidationTally::errorCount()
 {
     return errorCounter().load(std::memory_order_relaxed);
@@ -43,10 +54,16 @@ uint64_t ValidationTally::warningCount()
     return warningCounter().load(std::memory_order_relaxed);
 }
 
+uint64_t ValidationTally::syncHazardCount()
+{
+    return syncHazardCounter().load(std::memory_order_relaxed);
+}
+
 void ValidationTally::reset()
 {
     errorCounter().store(0, std::memory_order_relaxed);
     warningCounter().store(0, std::memory_order_relaxed);
+    syncHazardCounter().store(0, std::memory_order_relaxed);
 }
 
 } // namespace ve::rhi

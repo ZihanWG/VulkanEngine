@@ -70,6 +70,18 @@ enum class RGAccess {
     StorageBufferRead,
     StorageBufferWrite,
     StorageBufferReadWrite,
+    // A pass that clears the buffer with vkCmdFillBuffer and then reads and
+    // writes it from a shader. The union of the transfer and shader scopes,
+    // because a pass declares a resource once and this one genuinely touches it
+    // in both.
+    //
+    // Plain StorageBufferReadWrite here builds a barrier that names the compute
+    // stage while the first thing the pass does is a transfer write, so the
+    // clear is ordered against nothing that came before. Every call stays legal,
+    // which is why only synchronization validation ever saw it: the two GPU
+    // culling passes and the histogram pass all described their reset as
+    // "clears and writes" and none of their barriers covered the clear.
+    StorageBufferClearAndReadWrite,
     IndirectRead,
     HostRead
 };

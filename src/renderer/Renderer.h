@@ -128,6 +128,12 @@ struct RendererStartupOverrides {
     // preset is procedural geometry over resources the constructor already made,
     // which is why they can be selected after it.
     bool loadSampleScene = false;
+
+    // Turn the validation layer's synchronization validation on for this run.
+    // Instance-creation policy, so like everything else here it can only be
+    // decided before the renderer exists. See
+    // rhi::VulkanContextOptions::synchronizationValidation.
+    bool synchronizationValidation = false;
 };
 
 // Whether this build carries the fetched sample scene, and what to do when it
@@ -188,6 +194,16 @@ public:
     // cannot tell a real alias from a driver quietly handing out private
     // memory, and this can.
     void logImageMemoryAliasingProbe();
+
+    // Provokes a deliberate synchronization hazard and reports whether the
+    // validation layer caught it. True means synchronization validation is
+    // live, and only then does a clean run mean anything; false means nothing
+    // was watching. Logs either way.
+    //
+    // Deliberately produces validation errors of its own, so a run that calls
+    // this is a self-test run and not a measurement of the frame. See
+    // rhi/VulkanSyncValidationProbe.h.
+    [[nodiscard]] bool runSynchronizationValidationSelfTest();
 
     // Phase 1 "before" number for the transient allocator: the real device size
     // of every graph-transient texture, queried from the driver rather than

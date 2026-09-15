@@ -19,9 +19,20 @@ class ValidationTally final {
 public:
     static void recordError();
     static void recordWarning();
+    // A synchronization-validation finding. Counted separately from, and in
+    // addition to, the error it already is.
+    //
+    // Apart because it answers a different question. An ordinary validation
+    // error says a Vulkan call was malformed; a sync hazard says every call was
+    // legal and the ordering between them was not, which is the one class of
+    // mistake the render graph's inferred barriers can make. Separating them is
+    // also what lets the self-test assert it provoked the hazard it meant to
+    // rather than some unrelated error.
+    static void recordSyncHazard();
 
     [[nodiscard]] static uint64_t errorCount();
     [[nodiscard]] static uint64_t warningCount();
+    [[nodiscard]] static uint64_t syncHazardCount();
 
     static void reset();
 };

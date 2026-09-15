@@ -59,6 +59,40 @@ TEST_CASE("The boolean flags are recognized")
     REQUIRE(config.deterministic);
 }
 
+TEST_CASE("Synchronization validation is off unless asked for")
+{
+    LaunchOptions config{};
+    REQUIRE(parse({"--deterministic"}, config));
+
+    REQUIRE_FALSE(config.syncValidation);
+    REQUIRE_FALSE(config.syncValidationSelfTest);
+}
+
+// The names below deliberately do not start with "--": catch_discover_tests
+// registers each case as its own `VulkanEngineTests "<name>"` invocation and
+// Catch2 reads a leading "--" as an option, so such a case passes when the
+// binary is run directly and fails only under ctest.
+TEST_CASE("The sync validation flag turns on the check without the self-test")
+{
+    LaunchOptions config{};
+    REQUIRE(parse({"--sync-validation"}, config));
+
+    REQUIRE(config.syncValidation);
+    REQUIRE_FALSE(config.syncValidationSelfTest);
+}
+
+TEST_CASE("The self-test flag implies the check it tests")
+{
+    // A self-test with synchronization validation off would report the exact
+    // failure it exists to detect and mean nothing by it, so the two cannot be
+    // spelled apart.
+    LaunchOptions config{};
+    REQUIRE(parse({"--sync-validation-selftest"}, config));
+
+    REQUIRE(config.syncValidationSelfTest);
+    REQUIRE(config.syncValidation);
+}
+
 TEST_CASE("An unrecognized argument is rejected rather than ignored")
 {
     LaunchOptions config{};

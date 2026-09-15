@@ -38,6 +38,7 @@ The workflow distinguishes the failure modes rather than collapsing them:
 | --- | --- |
 | 0 | Completed the requested frames with no validation errors |
 | 2 | Validation errors were reported (the log has the `[Error]` lines) |
+| 5 | `--sync-validation-selftest` ran and the layer reported nothing, so synchronization validation is not actually watching |
 | 124 | Hit the `timeout` backstop instead of exiting on its own |
 | other | Crashed or threw before completing the frames |
 
@@ -283,12 +284,20 @@ barriers, resource lifetimes and culling describing work that did not happen,
 and raises no validation error, because each individual Vulkan call is still
 legal.
 
-So after the default leg, the job renders 27 more configurations at ten frames
-each and asserts, for every one: exit status 0, `--fail-on-validation-error`
-clean, a `Validation tally:` line present, and a backstop line reading zero
-order violations, zero unrecorded passes and zero declaration issues over a
-non-zero number of frames. The last clause matters -- zero findings over zero
-frames is what a run that rendered nothing looks like.
+So after the default leg, the job renders 28 configurations at ten frames each
+and asserts, for every one: exit status 0, `--fail-on-validation-error` clean, a
+`Validation tally:` line present, and a backstop line reading zero order
+violations, zero unrecorded passes and zero declaration issues over a non-zero
+number of frames. The last clause matters -- zero findings over zero frames is
+what a run that rendered nothing looks like.
+
+Every leg also runs with `--sync-validation`, which is the only thing here that
+checks the barriers the render graph infers rather than the calls it makes. The
+default configuration is a leg of its own for that reason: the pixel gate covers
+its image and nothing covered its synchronization. What the first run of this
+found is in [render_graph.md](render_graph.md) -- four classes of hazard, every
+one a barrier naming a narrower pipeline stage than the command it was ordering,
+all of them legal calls producing correct pixels.
 
 The legs live in [`config/ci/`](../config/ci/README.md) as settings deltas, plus
 the VSM stages and scene presets, which take command-line flags. Running the rest
@@ -303,6 +312,20 @@ per leg for wall-clock this job does not need.
 Only the default leg compares pixels. Goldens are per-configuration and lavapipe
 is not byte-deterministic (see the tolerance discussion above); the other legs
 assert graph shape, which is driver-independent.
+
+## Proving the check can fail
+
+Synchronization validation is a setting on a layer, and a setting the layer
+ignored looks exactly like a frame with nothing wrong in it. A sweep that ran
+with it silently off would report 28 clean configurations and have checked the
+ordering in none of them -- the same shape of failure as a gate that renders no
+frames and passes.
+
+So the job runs `--sync-validation-selftest` before anything gates on the check
+being quiet. It records two overlapping writes to one buffer with no barrier
+between them and fails (exit 5) if the layer reports nothing. It exits before
+building a scene or rendering a frame, so it costs a few seconds, and it runs
+first because a dead check makes every step below it meaningless.
 
 ## Limitations
 

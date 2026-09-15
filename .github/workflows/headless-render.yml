@@ -117,6 +117,38 @@ jobs:
       - name: Build the image comparison tool
         run: cmake --build --preset ci-debug --target compare_images --parallel
 
+      # Before anything gates on synchronization validation being quiet, prove it
+      # can speak. The self-test records two overlapping writes to one buffer
+      # with no barrier between them and fails if the layer says nothing: a
+      # sweep that ran with the setting silently ignored would report 28 clean
+      # configurations and have checked the ordering in none of them.
+      #
+      # First, because a dead check makes every step below it meaningless, and
+      # cheap, because it exits before building a scene or rendering a frame.
+      - name: Prove synchronization validation is live
+        run: |
+          set +e
+          timeout 300 xvfb-run -a --server-args="-screen 0 1280x720x24" \
+            ./build/ci-debug/VulkanEngine --sync-validation-selftest \
+            > syncval-selftest.log 2>&1
+          status=$?
+          cat syncval-selftest.log
+          echo "=== self-test exit status: $status ==="
+
+          if [ "$status" -eq 5 ]; then
+            echo "::error::Synchronization validation reported nothing for a deliberate hazard. The sweep below would prove nothing."
+            exit 1
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "::error::The synchronization validation self-test exited with status $status."
+            exit 1
+          fi
+
+          grep -q "Sync validation self-test: HAZARD REPORTED" syncval-selftest.log || {
+            echo "::error::No self-test verdict in the log; the run did not reach the probe."
+            exit 1
+          }
+
       # The gate. --fail-on-validation-error makes the engine exit 2 when the
       # validation layer reported any error, including during teardown; the log
       # is captured either way. `timeout` bounds a hang.
@@ -165,6 +197,18 @@ jobs:
       # "a mismatch introduced in a configuration nothing runs will still go
       # unnoticed until someone runs it". This step runs them.
       #
+      # It also runs with --sync-validation, which is the only thing that checks
+      # the barriers the graph infers. The first run of it found four classes of
+      # hazard on the default configuration alone, every one of them a barrier
+      # naming a narrower pipeline stage than the command it was ordering -- all
+      # legal calls, correct pixels, and invisible to every other gate here. The
+      # sweep is where it belongs rather than on the pixel gate above: the
+      # configurations are what vary the barriers, and a hazard reported here
+      # names the configuration that produced it.
+      #
+      # The default configuration is a leg of its own for that reason -- the
+      # pixel gate covers its image, and nothing covered its synchronization.
+      #
       # What it gates on is the render graph's own backstop, not pixels. The
       # graph declares a frame's passes in one place and records them across nine
       # translation units, and nothing but the backstop compares the two. A pass
@@ -194,6 +238,7 @@ jobs:
           # presets take command-line flags because neither is a persisted
           # setting.
           cat > artifacts/sweep/legs.txt <<'LEGS'
+          default|
           all-effects|--settings config/ci/all-effects.json
           volumetric-fog|--settings config/ci/volumetric-fog.json
           irradiance-probes|--settings config/ci/irradiance-probes.json
@@ -233,7 +278,7 @@ jobs:
 
             set +e
             # shellcheck disable=SC2086 -- $args is a deliberate argument list.
-            timeout 600 xvfb-run -a --server-args="-screen 0 1280x720x24" ./build/ci-debug/VulkanEngine --deterministic --exit-after-frames "$SWEEP_FRAMES" --fail-on-validation-error $args > "$log" 2>&1
+            timeout 600 xvfb-run -a --server-args="-screen 0 1280x720x24" ./build/ci-debug/VulkanEngine --deterministic --exit-after-frames "$SWEEP_FRAMES" --fail-on-validation-error --sync-validation $args > "$log" 2>&1
             status=$?
             set -e
 
