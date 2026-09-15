@@ -169,6 +169,31 @@ public:
         return &integratedVolumeLayout_;
     }
 
+    // The scatter pair by role rather than by index, because which image is
+    // which swaps every frame. Read before recordCommands, which is where the
+    // parity flips: what these call the write volume is what this frame injects
+    // into, and the read volume is what the previous frame left behind.
+    //
+    // They exist so the render graph can declare the pair the way it declares
+    // the TAA history pair, and so the layout the graph tracks is the same
+    // variable this pass reads.
+    [[nodiscard]] const rhi::VulkanImage& scatterWriteVolume() const
+    {
+        return scatterVolumes_[historyParity_];
+    }
+    [[nodiscard]] const rhi::VulkanImage& scatterReadVolume() const
+    {
+        return scatterVolumes_[1 - historyParity_];
+    }
+    [[nodiscard]] VkImageLayout* scatterWriteVolumeLayoutPtr()
+    {
+        return &scatterVolumeLayouts_[historyParity_];
+    }
+    [[nodiscard]] VkImageLayout* scatterReadVolumeLayoutPtr()
+    {
+        return &scatterVolumeLayouts_[1 - historyParity_];
+    }
+
 private:
     void createVolumes();
     void createSampler();

@@ -504,6 +504,7 @@ void RenderGraph::createTransientFrameTextures()
         desc.name = resource.name;
         desc.format = resource.format;
         desc.extent = resource.extent;
+        desc.depth = resource.depth;
         desc.usage = resource.usage;
         desc.mipLevels = resource.mipLevels;
         desc.arrayLayers = resource.arrayLayers;
@@ -558,6 +559,13 @@ void RenderGraph::createTransientFrameTextures()
         }
     }
     frame_.depthPyramid = importTexture(frame_.resources.depthPyramid);
+    // Imported whenever the volumes exist, not only when fog runs: the material
+    // descriptor set binds the integrated volume unconditionally, so the main
+    // pass declares a layout-only read of it on a frame with fog off and the
+    // graph needs the resource to declare against.
+    frame_.fogScatterWrite = importTexture(frame_.resources.fogScatterWrite);
+    frame_.fogScatterRead = importTexture(frame_.resources.fogScatterRead);
+    frame_.fogIntegrated = importTexture(frame_.resources.fogIntegrated);
     // Imported rather than transient: the probe atlases persist across frames --
     // that is the point of amortising probe updates -- so the graph must not
     // treat their contents as discardable.
@@ -1765,6 +1773,7 @@ RGTextureHandle RenderGraph::importTexture(const RenderGraphImageResource& resou
     texture.desc.name = resource.name;
     texture.desc.format = resource.format;
     texture.desc.extent = resource.extent;
+    texture.desc.depth = resource.depth;
     texture.desc.usage = resource.usage;
     texture.desc.mipLevels = resource.mipLevels;
     texture.desc.arrayLayers = resource.arrayLayers;
@@ -2073,10 +2082,11 @@ void RenderGraph::declareGeometryPasses()
             addPass("VolumetricFogPass",
                     RenderPassType::VolumetricFog,
                     RenderPassExecutionType::Compute,
-                    // Side effect: its output volumes are not graph resources, so
-                    // nothing downstream declares a read on them and liveness analysis
-                    // would otherwise cull the pass away.
-                    true,
+                    // No side effect any more. The volumes it writes are graph
+                    // resources now and the main pass declares a read on the
+                    // integrated one, so liveness keeps the pass for the reason it
+                    // actually runs rather than because it was exempted.
+                    false,
                     [this](RenderGraphBuilder& builder) {
                         builder.readTexture(frame_.shadowMapDepth,
                                             RGAccess::ShaderRead,
@@ -2089,6 +2099,23 @@ void RenderGraph::declareGeometryPasses()
                                                 RGAccess::ShaderRead,
                                                 "Samples the punctual shadow atlas for fog light shafts.");
                         }
+                        // One declaration per resource per pass, so the scatter
+                        // target is read-write: injection writes every froxel and
+                        // integration marches back through them.
+                        frame_.fogScatterWrite =
+                            builder.readWriteTexture(frame_.fogScatterWrite,
+                                                     RGAccess::StorageImageReadWrite,
+                                                     "Injects scattering and extinction, then integrates it.");
+                        // The other half of the ping-pong, holding what the previous
+                        // frame injected. A history read: reading it before anything
+                        // wrote it this frame is the intent, not an ordering mistake.
+                        builder.readHistoryTexture(frame_.fogScatterRead,
+                                                   RGAccess::ShaderRead,
+                                                   "Samples the previous frame's froxels for temporal reprojection.");
+                        frame_.fogIntegrated =
+                            builder.writeTexture(frame_.fogIntegrated,
+                                                 RGAccess::StorageImageWrite,
+                                                 "Writes the front-to-back integrated scattering volume.");
                     });
     }
 
@@ -2251,6 +2278,25 @@ void RenderGraph::declareGeometryPasses()
                 builder.readHistoryTexture(frame_.ambientOcclusion,
                                            RGAccess::ShaderRead,
                                            "Samples the previous frame's ambient occlusion for the ambient term.");
+            }
+            if (frame_.fogIntegrated.valid()) {
+                // Binding 8 of the material set is a sampler3D bound to this
+                // volume on every frame the subsystem allocated one, so the image
+                // has to hold the layout that descriptor claims whether or not
+                // fog ran. With fog off the shader's max-distance gate is zero
+                // and the sample never happens, which is exactly a layout-only
+                // read -- and declaring it that way keeps no producer alive, so
+                // it cannot resurrect the fog pass on a frame that skipped it.
+                if (frame_.resources.volumetricFogEnabled) {
+                    builder.readTexture(frame_.fogIntegrated,
+                                        RGAccess::ShaderRead,
+                                        "Samples the integrated froxel volume for in-scattering.");
+                } else {
+                    builder.readTextureForLayout(frame_.fogIntegrated,
+                                                 RGAccess::ShaderRead,
+                                                 "Bound as the fog volume while fog is off, so the sample is gated "
+                                                 "out and only the layout matters.");
+                }
             }
             frame_.sceneColor = builder.writeTexture(
                 frame_.sceneColor, RGAccess::ColorAttachmentWrite, "Writes linear HDR skybox and mesh lighting.");
@@ -3912,6 +3958,7 @@ void RenderGraph::refreshDebugResources()
             RGResourceKind::Texture,
             texture.desc.format,
             texture.desc.extent,
+            texture.desc.depth,
             0,
             texture.desc.usage,
             0,
@@ -3931,6 +3978,7 @@ void RenderGraph::refreshDebugResources()
             RGResourceKind::Buffer,
             VK_FORMAT_UNDEFINED,
             {},
+            1,
             bufferResource.desc.size,
             0,
             bufferResource.desc.usage,

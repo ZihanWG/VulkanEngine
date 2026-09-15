@@ -820,6 +820,30 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         };
     };
 
+    // The froxel volumes are the first 3D graph resources, so this is the first
+    // description that carries a depth. Everything else about them is ordinary:
+    // storage image while the fog computes, sampled image while the main pass
+    // reads.
+    const auto fogVolumeResource = [](const char* name, const rhi::VulkanImage& image, VkImageLayout* layout) {
+        const VkExtent3D extent = image.extent();
+        return renderer::RenderGraphImageResource{
+            .name = name,
+            .image = image.image(),
+            .imageView = image.imageView(),
+            .extent = VkExtent2D{extent.width, extent.height},
+            .depth = extent.depth,
+            .layout = layout,
+            .format = image.format(),
+            .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .clearValue = VkClearValue{},
+            .hasClearValue = false,
+            .imported = true,
+        };
+    };
+
     const auto probeAtlasResource = [](const char* name, const rhi::VulkanImage& image, VkImageLayout* layout) {
         const VkExtent3D extent = image.extent();
         return renderer::RenderGraphImageResource{
@@ -986,6 +1010,12 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
                 .hasClearValue = false,
                 .imported = true,
             },
+        .fogScatterWrite = fogVolumeResource(
+            "FogScatterWrite", volumetricFog_.scatterWriteVolume(), volumetricFog_.scatterWriteVolumeLayoutPtr()),
+        .fogScatterRead = fogVolumeResource(
+            "FogScatterRead", volumetricFog_.scatterReadVolume(), volumetricFog_.scatterReadVolumeLayoutPtr()),
+        .fogIntegrated = fogVolumeResource(
+            "FogIntegratedVolume", volumetricFog_.integratedVolume(), volumetricFog_.integratedVolumeLayoutPtr()),
         .probeIrradianceAtlas = probeAtlasResource(
             "ProbeIrradianceAtlas", irradianceProbes_.irradianceAtlas(), irradianceProbes_.irradianceAtlasLayoutPtr()),
         .probeDepthAtlas = probeAtlasResource(
