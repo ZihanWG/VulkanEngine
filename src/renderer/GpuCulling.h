@@ -167,6 +167,21 @@ public:
     {
         return frameBatchVisibleCountReadbackBuffers_;
     }
+    // The shadow cull's three, for the same reason: the graph declares them so
+    // the edge from the dispatch to the cascade replay's indirect draws is an
+    // inferred barrier rather than a hand-written one.
+    [[nodiscard]] const std::vector<rhi::VulkanBuffer>& shadowIndirectDrawBuffers() const
+    {
+        return frameShadowIndirectDrawBuffers_;
+    }
+    [[nodiscard]] const std::vector<rhi::VulkanBuffer>& shadowVisibleCountBuffers() const
+    {
+        return frameShadowBatchVisibleCountBuffers_;
+    }
+    [[nodiscard]] const std::vector<rhi::VulkanBuffer>& shadowVisibleCountReadbackBuffers() const
+    {
+        return frameShadowBatchVisibleCountReadbackBuffers_;
+    }
 
 private:
     // Barrier + copy of the visible-count/stats buffer into the host-readable

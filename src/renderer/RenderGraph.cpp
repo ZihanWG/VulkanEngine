@@ -504,6 +504,7 @@ void RenderGraph::createTransientFrameTextures()
         desc.name = resource.name;
         desc.format = resource.format;
         desc.extent = resource.extent;
+        desc.depth = resource.depth;
         desc.usage = resource.usage;
         desc.mipLevels = resource.mipLevels;
         desc.arrayLayers = resource.arrayLayers;
@@ -558,6 +559,13 @@ void RenderGraph::createTransientFrameTextures()
         }
     }
     frame_.depthPyramid = importTexture(frame_.resources.depthPyramid);
+    // Imported whenever the volumes exist, not only when fog runs: the material
+    // descriptor set binds the integrated volume unconditionally, so the main
+    // pass declares a layout-only read of it on a frame with fog off and the
+    // graph needs the resource to declare against.
+    frame_.fogScatterWrite = importTexture(frame_.resources.fogScatterWrite);
+    frame_.fogScatterRead = importTexture(frame_.resources.fogScatterRead);
+    frame_.fogIntegrated = importTexture(frame_.resources.fogIntegrated);
     // Imported rather than transient: the probe atlases persist across frames --
     // that is the point of amortising probe updates -- so the graph must not
     // treat their contents as discardable.
@@ -577,6 +585,11 @@ void RenderGraph::importFrameBuffers()
     frame_.mainCullIndirectOutput = importBuffer(frame_.resources.mainCullIndirectOutput);
     frame_.mainCullVisibleCounts = importBuffer(frame_.resources.mainCullVisibleCounts);
     frame_.mainCullReadback = importBuffer(frame_.resources.mainCullReadback);
+    frame_.shadowCullIndirectOutput = importBuffer(frame_.resources.shadowCullIndirectOutput);
+    frame_.shadowCullVisibleCounts = importBuffer(frame_.resources.shadowCullVisibleCounts);
+    frame_.shadowCullReadback = importBuffer(frame_.resources.shadowCullReadback);
+    frame_.punctualCullIndirectOutput = importBuffer(frame_.resources.punctualCullIndirectOutput);
+    frame_.punctualCullVisibleCounts = importBuffer(frame_.resources.punctualCullVisibleCounts);
     frame_.luminancePartials = importBuffer(frame_.resources.luminancePartials);
     frame_.luminanceReadback = importBuffer(frame_.resources.luminanceReadback);
     frame_.luminanceHistogram = importBuffer(frame_.resources.luminanceHistogram);
@@ -931,6 +944,56 @@ void RenderGraph::endMainGpuCullingPass()
     requireFrameActive("RenderGraph::endMainGpuCullingPass");
     if (activePass_ != ActivePass::MainGpuCulling) {
         throw std::logic_error("RenderGraph::endMainGpuCullingPass called without an active main GPU culling pass.");
+    }
+
+    activePass_ = ActivePass::None;
+}
+
+void RenderGraph::beginPunctualShadowCullPass()
+{
+    requireFrameActive("RenderGraph::beginPunctualShadowCullPass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginPunctualShadowCullPass called while another pass is active.");
+    }
+    if (!beginDeclaredPass(frame_.passIndices.punctualShadowCull)) {
+        throw std::logic_error(
+            "RenderGraph::beginPunctualShadowCullPass was culled but the renderer attempted to record it.");
+    }
+
+    activePass_ = ActivePass::PunctualShadowCull;
+}
+
+void RenderGraph::endPunctualShadowCullPass()
+{
+    requireFrameActive("RenderGraph::endPunctualShadowCullPass");
+    if (activePass_ != ActivePass::PunctualShadowCull) {
+        throw std::logic_error(
+            "RenderGraph::endPunctualShadowCullPass called without an active punctual shadow cull pass.");
+    }
+
+    activePass_ = ActivePass::None;
+}
+
+void RenderGraph::beginShadowGpuCullingPass()
+{
+    requireFrameActive("RenderGraph::beginShadowGpuCullingPass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginShadowGpuCullingPass called while another pass is active.");
+    }
+    if (!beginDeclaredPass(frame_.passIndices.shadowGpuCulling)) {
+        throw std::logic_error(
+            "RenderGraph::beginShadowGpuCullingPass was culled but the renderer attempted to record it.");
+    }
+
+    activePass_ = ActivePass::ShadowGpuCulling;
+}
+
+void RenderGraph::endShadowGpuCullingPass()
+{
+    requireFrameActive("RenderGraph::endShadowGpuCullingPass");
+    if (activePass_ != ActivePass::ShadowGpuCulling) {
+        throw std::logic_error(
+            "RenderGraph::endShadowGpuCullingPass called without an active shadow GPU culling pass.");
     }
 
     activePass_ = ActivePass::None;
@@ -1765,6 +1828,7 @@ RGTextureHandle RenderGraph::importTexture(const RenderGraphImageResource& resou
     texture.desc.name = resource.name;
     texture.desc.format = resource.format;
     texture.desc.extent = resource.extent;
+    texture.desc.depth = resource.depth;
     texture.desc.usage = resource.usage;
     texture.desc.mipLevels = resource.mipLevels;
     texture.desc.arrayLayers = resource.arrayLayers;
@@ -2003,33 +2067,108 @@ void RenderGraph::declareGeometryPasses()
     // Skipped on a fully cached frame, when the renderer redraws no cascade.
     // The shadow map stays imported and the main pass still declares its read,
     // so it keeps the layout its sampler claims; only the write pass goes away.
+    // Ahead of CSMShadowPass, because that is where it records: the cull is
+    // hoisted out of the cascade loop inside recordCascadeShadowPass. One
+    // dispatch produces the union of every cascade frustum, so there is one of
+    // these however many cascades are redrawn.
+    const bool shadowCullDeclared = frame_.resources.shadowGpuCullingEnabled &&
+                                    frame_.shadowCullIndirectOutput.valid() && frame_.shadowCullVisibleCounts.valid();
+    if (shadowCullDeclared) {
+        frame_.passIndices.shadowGpuCulling =
+            addPass("ShadowGpuCullingPass",
+                    RenderPassType::ShadowGpuCulling,
+                    RenderPassExecutionType::Compute,
+                    false,
+                    [this](RenderGraphBuilder& builder) {
+                        builder.readTexture(frame_.depthPyramid,
+                                            RGAccess::ShaderRead,
+                                            "Samples the previous-frame Hi-Z pyramid for caster occlusion tests.");
+                        frame_.shadowCullIndirectOutput =
+                            builder.writeBuffer(frame_.shadowCullIndirectOutput,
+                                                RGAccess::StorageBufferClearAndReadWrite,
+                                                "Clears and writes indirect draw commands for the cascade union.");
+                        frame_.shadowCullVisibleCounts =
+                            builder.writeBuffer(frame_.shadowCullVisibleCounts,
+                                                RGAccess::StorageBufferClearAndReadWrite,
+                                                "Clears and writes per-batch visible caster counts.");
+                        if (frame_.shadowCullReadback.valid()) {
+                            frame_.shadowCullReadback =
+                                builder.writeBuffer(frame_.shadowCullReadback,
+                                                    RGAccess::TransferDst,
+                                                    "Receives the caster counts for CPU readback.");
+                        }
+                    });
+    }
+
     if (frame_.resources.cascadeShadowRedrawRequired) {
         frame_.passIndices.shadow =
             addPass("CSMShadowPass",
                     RenderPassType::Shadow,
                     RenderPassExecutionType::Graphics,
                     false,
-                    [this](RenderGraphBuilder& builder) {
+                    [this, shadowCullDeclared](RenderGraphBuilder& builder) {
                         frame_.shadowMapDepth = builder.writeTexture(frame_.shadowMapDepth,
                                                                      RGAccess::DepthStencilAttachmentWrite,
                                                                      "Writes cascaded shadow-map depth array layers.");
+                        if (shadowCullDeclared) {
+                            // The consumer edge the cull's own barriers used to
+                            // carry: compute writes the commands, the cascade
+                            // replay reads them as indirect draws.
+                            builder.readBuffer(frame_.shadowCullIndirectOutput,
+                                               RGAccess::IndirectRead,
+                                               "Replays the culled caster list as indirect draws per cascade.");
+                            builder.readBuffer(frame_.shadowCullVisibleCounts,
+                                               RGAccess::IndirectRead,
+                                               "Reads per-batch caster counts for indirect-count drawing.");
+                        }
                     });
     }
 
     // Only declared when a light actually got a tile. The atlas texture is
     // still imported and still read by the main pass below, so a frame that
     // casts nothing gets the read-layout transition without the write pass.
+    // Ahead of the atlas pass, because that is where it records: the cull cannot
+    // run inside the atlas's rendering scope, so every slot is culled up front.
+    const bool punctualCullDeclared = frame_.resources.punctualShadowCullEnabled &&
+                                      frame_.punctualCullIndirectOutput.valid() &&
+                                      frame_.punctualCullVisibleCounts.valid();
+    if (punctualCullDeclared) {
+        frame_.passIndices.punctualShadowCull =
+            addPass("PunctualShadowCullPass",
+                    RenderPassType::ShadowGpuCulling,
+                    RenderPassExecutionType::Compute,
+                    false,
+                    [this](RenderGraphBuilder& builder) {
+                        frame_.punctualCullIndirectOutput =
+                            builder.writeBuffer(frame_.punctualCullIndirectOutput,
+                                                RGAccess::StorageBufferClearAndReadWrite,
+                                                "Clears and writes per-slot indirect draw commands for the atlas.");
+                        frame_.punctualCullVisibleCounts =
+                            builder.writeBuffer(frame_.punctualCullVisibleCounts,
+                                                RGAccess::StorageBufferClearAndReadWrite,
+                                                "Clears and writes per-slot, per-batch caster counts.");
+                    });
+    }
+
     if (frame_.punctualShadowAtlas != nullptr && frame_.resources.punctualShadowSlotCount > 0) {
         frame_.passIndices.punctualShadow =
             addPass("PunctualShadowAtlasPass",
                     RenderPassType::Shadow,
                     RenderPassExecutionType::Graphics,
                     false,
-                    [this](RenderGraphBuilder& builder) {
+                    [this, punctualCullDeclared](RenderGraphBuilder& builder) {
                         frame_.punctualShadowAtlasDepth = builder.writeTexture(
                             frame_.punctualShadowAtlasDepth,
                             RGAccess::DepthStencilAttachmentWrite,
                             "Writes per-slot spot-light depth tiles into the punctual shadow atlas.");
+                        if (punctualCullDeclared) {
+                            builder.readBuffer(frame_.punctualCullIndirectOutput,
+                                               RGAccess::IndirectRead,
+                                               "Replays the culled caster list as per-slot indirect draws.");
+                            builder.readBuffer(frame_.punctualCullVisibleCounts,
+                                               RGAccess::IndirectRead,
+                                               "Reads per-slot caster counts as the indirect draw count.");
+                        }
                     });
     }
 
@@ -2073,10 +2212,11 @@ void RenderGraph::declareGeometryPasses()
             addPass("VolumetricFogPass",
                     RenderPassType::VolumetricFog,
                     RenderPassExecutionType::Compute,
-                    // Side effect: its output volumes are not graph resources, so
-                    // nothing downstream declares a read on them and liveness analysis
-                    // would otherwise cull the pass away.
-                    true,
+                    // No side effect any more. The volumes it writes are graph
+                    // resources now and the main pass declares a read on the
+                    // integrated one, so liveness keeps the pass for the reason it
+                    // actually runs rather than because it was exempted.
+                    false,
                     [this](RenderGraphBuilder& builder) {
                         builder.readTexture(frame_.shadowMapDepth,
                                             RGAccess::ShaderRead,
@@ -2089,6 +2229,23 @@ void RenderGraph::declareGeometryPasses()
                                                 RGAccess::ShaderRead,
                                                 "Samples the punctual shadow atlas for fog light shafts.");
                         }
+                        // One declaration per resource per pass, so the scatter
+                        // target is read-write: injection writes every froxel and
+                        // integration marches back through them.
+                        frame_.fogScatterWrite =
+                            builder.readWriteTexture(frame_.fogScatterWrite,
+                                                     RGAccess::StorageImageReadWrite,
+                                                     "Injects scattering and extinction, then integrates it.");
+                        // The other half of the ping-pong, holding what the previous
+                        // frame injected. A history read: reading it before anything
+                        // wrote it this frame is the intent, not an ordering mistake.
+                        builder.readHistoryTexture(frame_.fogScatterRead,
+                                                   RGAccess::ShaderRead,
+                                                   "Samples the previous frame's froxels for temporal reprojection.");
+                        frame_.fogIntegrated =
+                            builder.writeTexture(frame_.fogIntegrated,
+                                                 RGAccess::StorageImageWrite,
+                                                 "Writes the front-to-back integrated scattering volume.");
                     });
     }
 
@@ -2251,6 +2408,25 @@ void RenderGraph::declareGeometryPasses()
                 builder.readHistoryTexture(frame_.ambientOcclusion,
                                            RGAccess::ShaderRead,
                                            "Samples the previous frame's ambient occlusion for the ambient term.");
+            }
+            if (frame_.fogIntegrated.valid()) {
+                // Binding 8 of the material set is a sampler3D bound to this
+                // volume on every frame the subsystem allocated one, so the image
+                // has to hold the layout that descriptor claims whether or not
+                // fog ran. With fog off the shader's max-distance gate is zero
+                // and the sample never happens, which is exactly a layout-only
+                // read -- and declaring it that way keeps no producer alive, so
+                // it cannot resurrect the fog pass on a frame that skipped it.
+                if (frame_.resources.volumetricFogEnabled) {
+                    builder.readTexture(frame_.fogIntegrated,
+                                        RGAccess::ShaderRead,
+                                        "Samples the integrated froxel volume for in-scattering.");
+                } else {
+                    builder.readTextureForLayout(frame_.fogIntegrated,
+                                                 RGAccess::ShaderRead,
+                                                 "Bound as the fog volume while fog is off, so the sample is gated "
+                                                 "out and only the layout matters.");
+                }
             }
             frame_.sceneColor = builder.writeTexture(
                 frame_.sceneColor, RGAccess::ColorAttachmentWrite, "Writes linear HDR skybox and mesh lighting.");
@@ -3912,6 +4088,7 @@ void RenderGraph::refreshDebugResources()
             RGResourceKind::Texture,
             texture.desc.format,
             texture.desc.extent,
+            texture.desc.depth,
             0,
             texture.desc.usage,
             0,
@@ -3931,6 +4108,7 @@ void RenderGraph::refreshDebugResources()
             RGResourceKind::Buffer,
             VK_FORMAT_UNDEFINED,
             {},
+            1,
             bufferResource.desc.size,
             0,
             bufferResource.desc.usage,

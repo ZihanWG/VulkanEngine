@@ -982,8 +982,14 @@ the default.
   default** (`enableTransientAliasing`). See "Transient memory aliasing" below.
 - No resource pooling overhaul.
 - Transient scene/bloom resources and persistent TAA history resources are graph-described but still physically allocated by `Renderer`.
-- Shadow GPU culling buffers are not graph-declared yet, so their reset/dispatch/draw/readback barriers remain manual.
-- Intra-pass buffer sequencing remains manual when a buffer is filled, dispatched against, copied, or made host-visible inside one renderer command block.
+- Intra-pass sequencing remains manual, and always will: the graph emits at pass
+  boundaries, so a buffer filled, dispatched against, copied and made
+  host-visible inside one pass carries its own barriers between those steps. The
+  same is true of the depth pyramid's per-mip chain. What is no longer manual is
+  the boundary work -- see "What subsystems still write by hand".
+- The VSM page cull and the probe shading parameter buffer still write their own
+  consumer edges. Neither is blocked by the graph; see "What subsystems still
+  write by hand" for what each needs first.
 - Portfolio screenshot copy remains manual because it temporarily transitions the swapchain between `CompositePass` and `ImGuiPass`.
 - Barriers are conservative and not heavily optimized. They are batched per
   pass (see "Barrier batching"), but their stage/access scopes are unchanged.
@@ -998,8 +1004,108 @@ the default.
 - The unit granularity is coarser than the pass granularity in two places: the
   main-pass recorder covers six declared passes and the mip-chain bloom recorder
   seven, because each is one region of shared recording state.
-- Versions are per frame and per resource, not per subresource, so a pass writing
-  one mip of an image advances the version of the whole image.
+- Versions, layouts and barriers are per resource, not per subresource. See
+  "Per-subresource tracking has no consumer here" for the survey that says this
+  costs nothing today and for what would change that.
+
+### What subsystems still write by hand
+
+A barrier belongs to the graph when it sits between two passes, and to the
+subsystem when it sits between two commands inside one. That line is what the
+conversions follow, and it is why the manual count will never reach zero.
+
+Now declared, so the graph emits the handoff:
+
+| Resource | Producer | Consumer |
+| --- | --- | --- |
+| The three froxel volumes | `VolumetricFogPass` | `MainHDRPass` samples the integrated one |
+| Shadow cull indirect commands and counts | `ShadowGpuCullingPass` | `CSMShadowPass` draws them indirectly |
+| Punctual cull indirect commands and counts | `PunctualShadowCullPass` | `PunctualShadowAtlasPass` draws them indirectly |
+
+The froxel volumes also removed `VolumetricFogPass`'s `sideEffect` exemption.
+It had one because nothing downstream declared a read on its outputs and
+liveness would have culled it; the main pass declares one now, so the pass is
+kept for the reason it actually runs.
+
+Still manual, and correctly so:
+
+- `DepthPyramid`'s per-mip chain. Consecutive dispatches inside one pass.
+- The fog's injection-to-integration edge, for the same reason.
+- Each cull's fill-to-dispatch reset, its copy to the readback buffer and the
+  host-visibility barrier after it. All inside the pass that owns them.
+- `ensureVolumeInitialized`, the fog's one-time clear. Frame setup, not a pass,
+  which is why its scheduled unit has no anchor.
+- The portfolio screenshot copy, which transitions the swapchain image between
+  `CompositePass` and `ImGuiPass` and back.
+
+The punctual cull needed one thing the others did not: a predicate the
+declaration and the recorder could share. `recordCull` returns early on half a
+dozen conditions, and a declaration that reproduced them by hand would be a
+second copy to keep in step. `PunctualShadows::willRecordCull` is that predicate,
+asked by both.
+
+Two more have the shape of a conversion and are blocked by something other than
+the graph. Both are worth stating precisely, because "not done yet" and "needs
+this first" are different entries:
+
+- **The VSM page cull.** Its predicate is not knowable when declarations are
+  built. `recordVsmPageCull` builds the caster batches and the per-page command
+  stride inside the recorder, and `recordPageCull` returns early when either
+  comes out empty -- so a declaration made in `beginFrame` would be guessing, and
+  a pass declared and never recorded is exactly what the backstop reports.
+  Hoisting that batch build into frame prep is the prerequisite, and it is a
+  change to where CPU work happens rather than a graph change.
+- **The probe shading parameter buffer.** Its `vkCmdUpdateBuffer` is recorded
+  outside every declared pass and on every frame, including ones where neither
+  the capture nor the convolution runs. Declaring it means giving a single buffer
+  update a pass of its own, which is more model than the thing deserves. Its
+  cross-frame hazard -- one buffer serving every frame in flight -- is handled by
+  a barrier before the update, and would not be the graph's to emit in any case:
+  buffer state is rebuilt every frame, so the graph has nothing to order a
+  frame's first write against.
+
+### Per-subresource tracking has no consumer here, surveyed
+
+Barriers cover the whole image -- `baseMipLevel = 0, levelCount = mipLevels`,
+`baseArrayLayer = 0, layerCount = arrayLayers` -- and a write advances the
+version of the whole resource. That reads like a gap. It was surveyed across all
+27 configurations the headless job runs, by logging every graph texture with more
+than one subresource together with every pass that declares it:
+
+| Resource | Subresources | Declared by |
+| --- | --- | --- |
+| `DepthPyramidHiZ` | 11 mips | `DepthPyramidPass` (storage write), plus `MainGpuCullingPass`, `MainGpuCullingPhase2`, `VsmPageMarkPass` (sampled reads) |
+| `CascadedShadowMapArray` | 4 layers | `CSMShadowPass` (depth write), plus `MainHDRPass`, `VolumetricFogPass`, `ProbeCapture` (sampled reads) |
+
+Those two are the whole list, in every configuration, and **every declaration on
+them covers the entire resource**. The pyramid build writes every mip and its
+readers sample every mip; the cascade pass declares the whole array and its
+readers sample every cascade. Nothing asks for a subset, so nothing is lost by
+not offering one.
+
+Three things make it more than a coincidence:
+
+- The bloom mip chain is not a mip chain in the Vulkan sense. Each level is its
+  own `VulkanImage` and its own graph resource, so it is already tracked
+  separately.
+- `DepthPyramid`'s per-mip barriers are not layout transitions. They are
+  `GENERAL` to `GENERAL` write-to-read dependencies between consecutive
+  dispatches, inside a single pass. Pass-boundary tracking, however fine-grained,
+  would not remove one of them.
+- Every owner of a multi-subresource image stores exactly one `VkImageLayout` --
+  `VulkanShadowMap::layout_`, `DepthPyramid::layout_` -- and the graph points at
+  that field. The engine cannot represent a divergent image at all, so
+  subresource state in the graph alone would be state nothing else could honour.
+
+What would change the answer is a pass that touches part of an image and leaves
+it divergent at a pass boundary: per-cascade shadow rendering that skips cached
+layers rather than declaring the array, a mip-chain effect built as mips rather
+than as separate images, or per-layer VSM page rendering. Any of those needs the
+owners' single layout field to go first.
+
+Until then the assumption is not resting on this document: a wrong layout in an
+inferred barrier is exactly what synchronization validation reports, and every
+configuration in the sweep runs under it.
 
 ### Declaration allocates for debug text, measured and left alone
 

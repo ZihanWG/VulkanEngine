@@ -152,6 +152,11 @@ struct RGTextureDesc {
     std::string name;
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkExtent2D extent{};
+    // Slices of a 3D image; 1 for everything else. Descriptive only -- barriers
+    // name a subresource range, which has no depth -- but a volume reported as
+    // its base slice reads as a 2D texture in the debug table, and the froxel
+    // volumes are the first graph resources that are not flat.
+    uint32_t depth = 1;
     VkImageUsageFlags usage = 0;
     uint32_t mipLevels = 1;
     uint32_t arrayLayers = 1;
@@ -423,6 +428,8 @@ struct RenderGraphImageResource {
     VkImage image = VK_NULL_HANDLE;
     VkImageView imageView = VK_NULL_HANDLE;
     VkExtent2D extent{};
+    // See RGTextureDesc::depth.
+    uint32_t depth = 1;
     VkImageLayout* layout = nullptr;
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkImageUsageFlags usage = 0;
@@ -466,6 +473,17 @@ struct RenderGraphFrameResources {
     std::vector<RenderGraphImageResource> bloomDownsampleChain;
     std::vector<RenderGraphImageResource> bloomUpsampleChain;
     RenderGraphImageResource depthPyramid;
+    // The froxel volumes. Present whenever the subsystem allocated them, which
+    // is not the same as fog being enabled: the material descriptor set binds
+    // the integrated volume unconditionally, so it has to hold the layout that
+    // sampler3D claims even on a frame that computes no fog.
+    //
+    // The two scatter volumes ping-pong -- this frame's injection target becomes
+    // next frame's reprojection history -- so they are named by role rather than
+    // by index, the way the TAA history pair is.
+    RenderGraphImageResource fogScatterWrite;
+    RenderGraphImageResource fogScatterRead;
+    RenderGraphImageResource fogIntegrated;
     RenderGraphImageResource probeIrradianceAtlas;
     RenderGraphImageResource probeDepthAtlas;
     RenderGraphImageResource probeCaptureAtlas;
@@ -474,6 +492,16 @@ struct RenderGraphFrameResources {
     RenderGraphBufferResource mainCullIndirectOutput;
     RenderGraphBufferResource mainCullVisibleCounts;
     RenderGraphBufferResource mainCullReadback;
+    // The shadow cull's own three. One dispatch produces the union of every
+    // cascade frustum, so unlike the main cull there is one set for all four
+    // cascades rather than one per pass.
+    RenderGraphBufferResource shadowCullIndirectOutput;
+    RenderGraphBufferResource shadowCullVisibleCounts;
+    RenderGraphBufferResource shadowCullReadback;
+    // The punctual atlas cull's pair. One dispatch covers every slot, because
+    // compute cannot run inside the atlas's single rendering scope.
+    RenderGraphBufferResource punctualCullIndirectOutput;
+    RenderGraphBufferResource punctualCullVisibleCounts;
     RenderGraphBufferResource luminancePartials;
     RenderGraphBufferResource luminanceReadback;
     RenderGraphBufferResource luminanceHistogram;
@@ -515,10 +543,7 @@ struct RenderGraphFrameResources {
     // so a frame that redraws nothing keeps the layout its sampler claims -- the
     // same asymmetry the punctual shadow atlas uses.
     uint32_t vsmDirtyPageCount = 0;
-    // Declares the volumetric fog compute pass for this frame. It only needs to
-    // exist so the graph moves the cascaded shadow map into a sampled layout
-    // before the injection dispatch reads it -- without it the fog runs while
-    // the map is still a depth attachment.
+    // Declares the volumetric fog compute pass for this frame.
     bool volumetricFogEnabled = false;
     // Declares the probe-atlas update compute pass for this frame. The two
     // atlases are imported and read by the main pass whenever they exist, the
@@ -530,6 +555,16 @@ struct RenderGraphFrameResources {
     // runs on frames with nothing to capture -- the cold-start seed, and the
     // debug-pattern path.
     bool probeCaptureEnabled = false;
+    // Declares the GPU shadow caster cull. Must be exactly the condition the
+    // recorder uses -- GPU shadow culling active, at least one cascade needing a
+    // redraw, and a non-empty draw list -- because a pass declared and never
+    // recorded leaves the graph describing work that did not happen, which is
+    // what the endFrame backstop exists to catch.
+    bool shadowGpuCullingEnabled = false;
+    // Declares the punctual atlas caster cull. Comes from
+    // PunctualShadows::willRecordCull rather than from a condition rebuilt here,
+    // so the declaration and the recorder cannot drift.
+    bool punctualShadowCullEnabled = false;
     // Whether any cascade will be redrawn this frame. False skips declaring the
     // cascaded shadow pass, but the shadow map is still imported and still read
     // by the main pass -- the same asymmetry the punctual atlas uses. A fully
@@ -556,6 +591,7 @@ struct RenderGraphResourceDebugInfo {
     RGResourceKind kind = RGResourceKind::Texture;
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkExtent2D extent{};
+    uint32_t depth = 1;
     VkDeviceSize size = 0;
     VkImageUsageFlags imageUsage = 0;
     VkBufferUsageFlags bufferUsage = 0;
@@ -710,6 +746,16 @@ public:
     void endProbeCapturePass();
     void beginMainGpuCullingPass();
     void endMainGpuCullingPass();
+    // The GPU shadow caster cull. Recorded inside the cascade shadow recorder,
+    // ahead of the first cascade, which is why its declaration sits immediately
+    // before CSMShadowPass: a declared order that disagrees with the recorded one
+    // is a reordering the graph would then act on.
+    void beginShadowGpuCullingPass();
+    void endShadowGpuCullingPass();
+    // The punctual atlas caster cull, recorded ahead of the atlas pass for the
+    // same reason the cascade cull is recorded ahead of the shadow passes.
+    void beginPunctualShadowCullPass();
+    void endPunctualShadowCullPass();
     // Depth-only replay of the opaque bucket. Declared and recorded only when
     // RuntimeSettings::enableDepthPrepass is on; when it is off the pass does not
     // exist in the graph at all, so the backstop's "declared but never recorded"
@@ -904,6 +950,8 @@ private:
         ProbeCapture,
         IrradianceProbes,
         MainGpuCulling,
+        ShadowGpuCulling,
+        PunctualShadowCull,
         DepthPrepass,
         MainHdr,
         MainGpuCullingPhase2,
@@ -993,6 +1041,8 @@ private:
         uint32_t probeCapture = kInvalidRenderGraphHandle;
         uint32_t irradianceProbes = kInvalidRenderGraphHandle;
         uint32_t mainGpuCulling = kInvalidRenderGraphHandle;
+        uint32_t shadowGpuCulling = kInvalidRenderGraphHandle;
+        uint32_t punctualShadowCull = kInvalidRenderGraphHandle;
         uint32_t depthPrepass = kInvalidRenderGraphHandle;
         uint32_t mainHdr = kInvalidRenderGraphHandle;
         uint32_t depthPyramidMid = kInvalidRenderGraphHandle;
@@ -1053,6 +1103,9 @@ private:
         std::vector<RGTextureHandle> bloomDownsampleChain;
         std::vector<RGTextureHandle> bloomUpsampleChain;
         RGTextureHandle depthPyramid{};
+        RGTextureHandle fogScatterWrite{};
+        RGTextureHandle fogScatterRead{};
+        RGTextureHandle fogIntegrated{};
         RGTextureHandle probeIrradianceAtlas{};
         RGTextureHandle probeDepthAtlas{};
         RGTextureHandle probeCaptureAtlas{};
@@ -1061,6 +1114,11 @@ private:
         RGBufferHandle mainCullIndirectOutput{};
         RGBufferHandle mainCullVisibleCounts{};
         RGBufferHandle mainCullReadback{};
+        RGBufferHandle shadowCullIndirectOutput{};
+        RGBufferHandle shadowCullVisibleCounts{};
+        RGBufferHandle shadowCullReadback{};
+        RGBufferHandle punctualCullIndirectOutput{};
+        RGBufferHandle punctualCullVisibleCounts{};
         RGBufferHandle luminancePartials{};
         RGBufferHandle luminanceReadback{};
         RGBufferHandle luminanceHistogram{};

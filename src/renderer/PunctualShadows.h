@@ -60,6 +60,16 @@ public:
         return cullAvailable_;
     }
 
+    // Whether recordCull will record anything for these arguments.
+    //
+    // Exists so the render graph's declaration and the recorder ask the same
+    // object the same question. recordCull returns early on half a dozen
+    // conditions, and a declaration that reproduced them by hand would be a
+    // second copy to keep in step -- which is the mistake the endFrame backstop
+    // was built to catch rather than one worth making again.
+    [[nodiscard]] bool
+    willRecordCull(uint32_t frameIndex, uint32_t drawItemCount, uint32_t batchCount, bool cullInputAvailable) const;
+
     // Uploads this frame's per-slot frustum planes for the cull to read.
     void uploadSlotFrustums(uint32_t frameIndex);
 
@@ -80,6 +90,17 @@ public:
                     uint32_t drawItemCount,
                     uint32_t batchCount,
                     std::span<const uint32_t> casterFlags);
+
+    // The two buffers the graph declares, so the edge from the cull dispatch to
+    // the atlas pass's indirect draws is an inferred barrier.
+    [[nodiscard]] const std::vector<rhi::VulkanBuffer>& cullIndirectBuffers() const
+    {
+        return cullIndirectBuffers_;
+    }
+    [[nodiscard]] const std::vector<rhi::VulkanBuffer>& cullVisibleCountBuffers() const
+    {
+        return cullVisibleCountBuffers_;
+    }
 
     [[nodiscard]] VkBuffer cullIndirectBuffer(uint32_t frameIndex) const;
     // Survivor count per (slot, batch), consumed by vkCmdDrawIndexedIndirectCount.

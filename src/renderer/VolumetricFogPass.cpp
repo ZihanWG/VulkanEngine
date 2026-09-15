@@ -552,39 +552,12 @@ void VolumetricFogPass::recordCommands(VkCommandBuffer commandBuffer,
     rhi::debug::beginLabel(commandBuffer, "VolumetricFog");
 
     const size_t writeParity = historyParity_;
-    const size_t readParity = 1 - historyParity_;
 
-    // Three transitions. The volume being written and the integrated volume
-    // become storage images; the *other* scatter volume becomes sampled, since
-    // injection reads it as this frame's reprojected history. The integrated
-    // volume also has to come back from SHADER_READ_ONLY, where the previous
-    // frame's main pass left it.
-    std::array<VkImageMemoryBarrier2, 3> toGeneral{
-        volumeBarrier(scatterVolumes_[writeParity].image(),
-                      scatterVolumeLayouts_[writeParity],
-                      VK_IMAGE_LAYOUT_GENERAL,
-                      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                      VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-                      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                      VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT),
-        volumeBarrier(scatterVolumes_[readParity].image(),
-                      scatterVolumeLayouts_[readParity],
-                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                      VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                      VK_ACCESS_2_SHADER_SAMPLED_READ_BIT),
-        volumeBarrier(integratedVolume_.image(),
-                      integratedVolumeLayout_,
-                      VK_IMAGE_LAYOUT_GENERAL,
-                      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                      VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                      VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT)};
-    submitImageBarriers(commandBuffer, std::span<const VkImageMemoryBarrier2>(toGeneral.data(), toGeneral.size()));
-    scatterVolumeLayouts_[writeParity] = VK_IMAGE_LAYOUT_GENERAL;
-    scatterVolumeLayouts_[readParity] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    integratedVolumeLayout_ = VK_IMAGE_LAYOUT_GENERAL;
+    // The three transitions this pass used to open with -- the write volume and
+    // the integrated volume into GENERAL, the read volume into SHADER_READ_ONLY
+    // -- are the graph's now. All three are declared by VolumetricFogPass and
+    // emitted at beginVolumetricFogPass, from the same layout variables this
+    // pass reads, so the handoff happens before anything below executes.
 
     rhi::debug::beginLabel(commandBuffer, "FogInject");
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, injectPipeline_.pipeline());
@@ -632,16 +605,9 @@ void VolumetricFogPass::recordCommands(VkCommandBuffer commandBuffer,
     vkCmdDispatch(commandBuffer, dispatchCount(kFogGridX, kFogLocalSize), dispatchCount(kFogGridY, kFogLocalSize), 1);
     rhi::debug::endLabel(commandBuffer);
 
-    // Hand the integrated volume to the composite pass as a sampled image.
-    const VkImageMemoryBarrier2 toSampled = volumeBarrier(integratedVolume_.image(),
-                                                          VK_IMAGE_LAYOUT_GENERAL,
-                                                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                                          VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                                          VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                                                          VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                                                          VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-    submitImageBarriers(commandBuffer, std::span<const VkImageMemoryBarrier2>(&toSampled, 1));
-    integratedVolumeLayout_ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    // Handing the integrated volume back to the main pass as a sampled image is
+    // the graph's job too: the main pass declares the read, so the transition is
+    // emitted at its boundary rather than here.
 
     // Swap: what this frame wrote becomes next frame's history.
     historyParity_ = 1 - historyParity_;

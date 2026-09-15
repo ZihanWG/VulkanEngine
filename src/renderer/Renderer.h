@@ -907,6 +907,14 @@ private:
     void recordPunctualShadows(VkCommandBuffer commandBuffer);
     void recordMainPassGeometry(VkCommandBuffer commandBuffer);
     [[nodiscard]] bool isGpuPunctualShadowCullingActive() const;
+    // isGpuPunctualShadowCullingActive plus every condition PunctualShadows
+    // itself returns early on. One function because two callers need the same
+    // answer and must not disagree: the graph declares PunctualShadowCullPass on
+    // it, and the recorder brackets the dispatch with it. Declared without
+    // recorded is a backstop finding; recorded without declared throws.
+    // Not const: the cull-input buffer it asks about is handed out by reference
+    // from GpuCulling, which has no const accessor for it.
+    [[nodiscard]] bool willRecordPunctualShadowCull();
     [[nodiscard]] glm::vec4 activeDirectionalLightDirection() const;
     [[nodiscard]] glm::vec4 activeDirectionalLightColor() const;
     void loadOcclusionTestScene();

@@ -259,6 +259,7 @@ jobs:
           frames-in-flight-1|--settings config/ci/frames-in-flight-1.json
           transient-aliasing|--settings config/ci/transient-aliasing.json
           render-scale-half|--settings config/ci/render-scale-half.json
+          punctual-gpu-cull|--settings config/ci/punctual-gpu-cull.json
           vsm-mark|--vsm mark
           vsm-render|--vsm render
           vsm-shadows|--vsm shadows
