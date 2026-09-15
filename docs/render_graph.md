@@ -998,8 +998,52 @@ the default.
 - The unit granularity is coarser than the pass granularity in two places: the
   main-pass recorder covers six declared passes and the mip-chain bloom recorder
   seven, because each is one region of shared recording state.
-- Versions are per frame and per resource, not per subresource, so a pass writing
-  one mip of an image advances the version of the whole image.
+- Versions, layouts and barriers are per resource, not per subresource. See
+  "Per-subresource tracking has no consumer here" for the survey that says this
+  costs nothing today and for what would change that.
+
+### Per-subresource tracking has no consumer here, surveyed
+
+Barriers cover the whole image -- `baseMipLevel = 0, levelCount = mipLevels`,
+`baseArrayLayer = 0, layerCount = arrayLayers` -- and a write advances the
+version of the whole resource. That reads like a gap. It was surveyed across all
+27 configurations the headless job runs, by logging every graph texture with more
+than one subresource together with every pass that declares it:
+
+| Resource | Subresources | Declared by |
+| --- | --- | --- |
+| `DepthPyramidHiZ` | 11 mips | `DepthPyramidPass` (storage write), plus `MainGpuCullingPass`, `MainGpuCullingPhase2`, `VsmPageMarkPass` (sampled reads) |
+| `CascadedShadowMapArray` | 4 layers | `CSMShadowPass` (depth write), plus `MainHDRPass`, `VolumetricFogPass`, `ProbeCapture` (sampled reads) |
+
+Those two are the whole list, in every configuration, and **every declaration on
+them covers the entire resource**. The pyramid build writes every mip and its
+readers sample every mip; the cascade pass declares the whole array and its
+readers sample every cascade. Nothing asks for a subset, so nothing is lost by
+not offering one.
+
+Three things make it more than a coincidence:
+
+- The bloom mip chain is not a mip chain in the Vulkan sense. Each level is its
+  own `VulkanImage` and its own graph resource, so it is already tracked
+  separately.
+- `DepthPyramid`'s per-mip barriers are not layout transitions. They are
+  `GENERAL` to `GENERAL` write-to-read dependencies between consecutive
+  dispatches, inside a single pass. Pass-boundary tracking, however fine-grained,
+  would not remove one of them.
+- Every owner of a multi-subresource image stores exactly one `VkImageLayout` --
+  `VulkanShadowMap::layout_`, `DepthPyramid::layout_` -- and the graph points at
+  that field. The engine cannot represent a divergent image at all, so
+  subresource state in the graph alone would be state nothing else could honour.
+
+What would change the answer is a pass that touches part of an image and leaves
+it divergent at a pass boundary: per-cascade shadow rendering that skips cached
+layers rather than declaring the array, a mip-chain effect built as mips rather
+than as separate images, or per-layer VSM page rendering. Any of those needs the
+owners' single layout field to go first.
+
+Until then the assumption is not resting on this document: a wrong layout in an
+inferred barrier is exactly what synchronization validation reports, and every
+configuration in the sweep runs under it.
 
 ### Declaration allocates for debug text, measured and left alone
 
