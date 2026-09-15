@@ -585,6 +585,9 @@ void RenderGraph::importFrameBuffers()
     frame_.mainCullIndirectOutput = importBuffer(frame_.resources.mainCullIndirectOutput);
     frame_.mainCullVisibleCounts = importBuffer(frame_.resources.mainCullVisibleCounts);
     frame_.mainCullReadback = importBuffer(frame_.resources.mainCullReadback);
+    frame_.shadowCullIndirectOutput = importBuffer(frame_.resources.shadowCullIndirectOutput);
+    frame_.shadowCullVisibleCounts = importBuffer(frame_.resources.shadowCullVisibleCounts);
+    frame_.shadowCullReadback = importBuffer(frame_.resources.shadowCullReadback);
     frame_.luminancePartials = importBuffer(frame_.resources.luminancePartials);
     frame_.luminanceReadback = importBuffer(frame_.resources.luminanceReadback);
     frame_.luminanceHistogram = importBuffer(frame_.resources.luminanceHistogram);
@@ -939,6 +942,31 @@ void RenderGraph::endMainGpuCullingPass()
     requireFrameActive("RenderGraph::endMainGpuCullingPass");
     if (activePass_ != ActivePass::MainGpuCulling) {
         throw std::logic_error("RenderGraph::endMainGpuCullingPass called without an active main GPU culling pass.");
+    }
+
+    activePass_ = ActivePass::None;
+}
+
+void RenderGraph::beginShadowGpuCullingPass()
+{
+    requireFrameActive("RenderGraph::beginShadowGpuCullingPass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginShadowGpuCullingPass called while another pass is active.");
+    }
+    if (!beginDeclaredPass(frame_.passIndices.shadowGpuCulling)) {
+        throw std::logic_error(
+            "RenderGraph::beginShadowGpuCullingPass was culled but the renderer attempted to record it.");
+    }
+
+    activePass_ = ActivePass::ShadowGpuCulling;
+}
+
+void RenderGraph::endShadowGpuCullingPass()
+{
+    requireFrameActive("RenderGraph::endShadowGpuCullingPass");
+    if (activePass_ != ActivePass::ShadowGpuCulling) {
+        throw std::logic_error(
+            "RenderGraph::endShadowGpuCullingPass called without an active shadow GPU culling pass.");
     }
 
     activePass_ = ActivePass::None;
@@ -2012,16 +2040,60 @@ void RenderGraph::declareGeometryPasses()
     // Skipped on a fully cached frame, when the renderer redraws no cascade.
     // The shadow map stays imported and the main pass still declares its read,
     // so it keeps the layout its sampler claims; only the write pass goes away.
+    // Ahead of CSMShadowPass, because that is where it records: the cull is
+    // hoisted out of the cascade loop inside recordCascadeShadowPass. One
+    // dispatch produces the union of every cascade frustum, so there is one of
+    // these however many cascades are redrawn.
+    const bool shadowCullDeclared = frame_.resources.shadowGpuCullingEnabled &&
+                                    frame_.shadowCullIndirectOutput.valid() && frame_.shadowCullVisibleCounts.valid();
+    if (shadowCullDeclared) {
+        frame_.passIndices.shadowGpuCulling =
+            addPass("ShadowGpuCullingPass",
+                    RenderPassType::ShadowGpuCulling,
+                    RenderPassExecutionType::Compute,
+                    false,
+                    [this](RenderGraphBuilder& builder) {
+                        builder.readTexture(frame_.depthPyramid,
+                                            RGAccess::ShaderRead,
+                                            "Samples the previous-frame Hi-Z pyramid for caster occlusion tests.");
+                        frame_.shadowCullIndirectOutput =
+                            builder.writeBuffer(frame_.shadowCullIndirectOutput,
+                                                RGAccess::StorageBufferClearAndReadWrite,
+                                                "Clears and writes indirect draw commands for the cascade union.");
+                        frame_.shadowCullVisibleCounts =
+                            builder.writeBuffer(frame_.shadowCullVisibleCounts,
+                                                RGAccess::StorageBufferClearAndReadWrite,
+                                                "Clears and writes per-batch visible caster counts.");
+                        if (frame_.shadowCullReadback.valid()) {
+                            frame_.shadowCullReadback =
+                                builder.writeBuffer(frame_.shadowCullReadback,
+                                                    RGAccess::TransferDst,
+                                                    "Receives the caster counts for CPU readback.");
+                        }
+                    });
+    }
+
     if (frame_.resources.cascadeShadowRedrawRequired) {
         frame_.passIndices.shadow =
             addPass("CSMShadowPass",
                     RenderPassType::Shadow,
                     RenderPassExecutionType::Graphics,
                     false,
-                    [this](RenderGraphBuilder& builder) {
+                    [this, shadowCullDeclared](RenderGraphBuilder& builder) {
                         frame_.shadowMapDepth = builder.writeTexture(frame_.shadowMapDepth,
                                                                      RGAccess::DepthStencilAttachmentWrite,
                                                                      "Writes cascaded shadow-map depth array layers.");
+                        if (shadowCullDeclared) {
+                            // The consumer edge the cull's own barriers used to
+                            // carry: compute writes the commands, the cascade
+                            // replay reads them as indirect draws.
+                            builder.readBuffer(frame_.shadowCullIndirectOutput,
+                                               RGAccess::IndirectRead,
+                                               "Replays the culled caster list as indirect draws per cascade.");
+                            builder.readBuffer(frame_.shadowCullVisibleCounts,
+                                               RGAccess::IndirectRead,
+                                               "Reads per-batch caster counts for indirect-count drawing.");
+                        }
                     });
     }
 

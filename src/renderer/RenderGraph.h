@@ -492,6 +492,12 @@ struct RenderGraphFrameResources {
     RenderGraphBufferResource mainCullIndirectOutput;
     RenderGraphBufferResource mainCullVisibleCounts;
     RenderGraphBufferResource mainCullReadback;
+    // The shadow cull's own three. One dispatch produces the union of every
+    // cascade frustum, so unlike the main cull there is one set for all four
+    // cascades rather than one per pass.
+    RenderGraphBufferResource shadowCullIndirectOutput;
+    RenderGraphBufferResource shadowCullVisibleCounts;
+    RenderGraphBufferResource shadowCullReadback;
     RenderGraphBufferResource luminancePartials;
     RenderGraphBufferResource luminanceReadback;
     RenderGraphBufferResource luminanceHistogram;
@@ -545,6 +551,12 @@ struct RenderGraphFrameResources {
     // runs on frames with nothing to capture -- the cold-start seed, and the
     // debug-pattern path.
     bool probeCaptureEnabled = false;
+    // Declares the GPU shadow caster cull. Must be exactly the condition the
+    // recorder uses -- GPU shadow culling active, at least one cascade needing a
+    // redraw, and a non-empty draw list -- because a pass declared and never
+    // recorded leaves the graph describing work that did not happen, which is
+    // what the endFrame backstop exists to catch.
+    bool shadowGpuCullingEnabled = false;
     // Whether any cascade will be redrawn this frame. False skips declaring the
     // cascaded shadow pass, but the shadow map is still imported and still read
     // by the main pass -- the same asymmetry the punctual atlas uses. A fully
@@ -726,6 +738,12 @@ public:
     void endProbeCapturePass();
     void beginMainGpuCullingPass();
     void endMainGpuCullingPass();
+    // The GPU shadow caster cull. Recorded inside the cascade shadow recorder,
+    // ahead of the first cascade, which is why its declaration sits immediately
+    // before CSMShadowPass: a declared order that disagrees with the recorded one
+    // is a reordering the graph would then act on.
+    void beginShadowGpuCullingPass();
+    void endShadowGpuCullingPass();
     // Depth-only replay of the opaque bucket. Declared and recorded only when
     // RuntimeSettings::enableDepthPrepass is on; when it is off the pass does not
     // exist in the graph at all, so the backstop's "declared but never recorded"
@@ -920,6 +938,7 @@ private:
         ProbeCapture,
         IrradianceProbes,
         MainGpuCulling,
+        ShadowGpuCulling,
         DepthPrepass,
         MainHdr,
         MainGpuCullingPhase2,
@@ -1009,6 +1028,7 @@ private:
         uint32_t probeCapture = kInvalidRenderGraphHandle;
         uint32_t irradianceProbes = kInvalidRenderGraphHandle;
         uint32_t mainGpuCulling = kInvalidRenderGraphHandle;
+        uint32_t shadowGpuCulling = kInvalidRenderGraphHandle;
         uint32_t depthPrepass = kInvalidRenderGraphHandle;
         uint32_t mainHdr = kInvalidRenderGraphHandle;
         uint32_t depthPyramidMid = kInvalidRenderGraphHandle;
@@ -1080,6 +1100,9 @@ private:
         RGBufferHandle mainCullIndirectOutput{};
         RGBufferHandle mainCullVisibleCounts{};
         RGBufferHandle mainCullReadback{};
+        RGBufferHandle shadowCullIndirectOutput{};
+        RGBufferHandle shadowCullVisibleCounts{};
+        RGBufferHandle shadowCullReadback{};
         RGBufferHandle luminancePartials{};
         RGBufferHandle luminanceReadback{};
         RGBufferHandle luminanceHistogram{};

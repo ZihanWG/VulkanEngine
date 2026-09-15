@@ -1049,6 +1049,20 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
                                            gpuCulling_.visibleCountReadbackBuffers(),
                                            currentFrame_,
                                            VK_BUFFER_USAGE_TRANSFER_DST_BIT),
+        .shadowCullIndirectOutput =
+            bufferResource("ShadowCullIndirectOutput",
+                           gpuCulling_.shadowIndirectDrawBuffers(),
+                           currentFrame_,
+                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT),
+        .shadowCullVisibleCounts =
+            bufferResource("ShadowCullVisibleCounts",
+                           gpuCulling_.shadowVisibleCountBuffers(),
+                           currentFrame_,
+                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT),
+        .shadowCullReadback = bufferResource("ShadowCullReadback",
+                                             gpuCulling_.shadowVisibleCountReadbackBuffers(),
+                                             currentFrame_,
+                                             VK_BUFFER_USAGE_TRANSFER_DST_BIT),
         .luminancePartials = bufferResource(
             "LuminancePartials", postProcess_.luminanceBuffers(), currentFrame_, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
         .luminanceReadback = bufferResource("LuminanceReadback",
@@ -1088,6 +1102,11 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         .volumetricFogEnabled = isVolumetricFogActive(),
         .irradianceProbeUpdateEnabled = isIrradianceProbeUpdateActive(),
         .probeCaptureEnabled = frameProbeCaptureActive_,
+        // Exactly the condition recordCascadeShadowPass uses to record the cull,
+        // including the empty-draw-list case recordShadowCull returns on. A
+        // declaration that outlives its recorder is what the backstop reports.
+        .shadowGpuCullingEnabled =
+            isGpuShadowCullingActive() && anyCascadeShadowRedrawRequired() && !allDrawItems_.empty(),
         .cascadeShadowRedrawRequired = anyCascadeShadowRedrawRequired(),
         .luminancePassEnabled = postProcess_.willRecordLuminancePass(),
         .mipChainBloomSelected = postProcess_.willRecordMipChainBloom(),

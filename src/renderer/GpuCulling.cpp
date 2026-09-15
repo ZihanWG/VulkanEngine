@@ -926,6 +926,7 @@ void GpuCulling::recordShadowCull(
     }
 
     const renderer::GpuProfileScope profileScope(gpuProfiler_, frameIndex, commandBuffer, "ShadowGpuCulling");
+    renderGraph_.beginShadowGpuCullingPass();
     rhi::debug::beginLabel(commandBuffer, "GpuShadowCulling");
     depthPyramid_.ensureShaderReadLayout(commandBuffer);
     vkCmdFillBuffer(commandBuffer, visibleCountBuffer, 0, kGpuCullCountBufferSize, 0);
@@ -986,33 +987,25 @@ void GpuCulling::recordShadowCull(
     vkCmdDispatch(commandBuffer, groupCount, 1, 1);
     rhi::debug::endLabel(commandBuffer);
 
-    std::array<VkBufferMemoryBarrier2, 2> computeBarriers{};
-    computeBarriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-    computeBarriers[0].srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    computeBarriers[0].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-    computeBarriers[0].dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
-    computeBarriers[0].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
-    computeBarriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    computeBarriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    computeBarriers[0].buffer = shadowIndirectDrawBuffer;
-    computeBarriers[0].offset = 0;
-    computeBarriers[0].size = shadowIndirectBufferSize;
-
-    computeBarriers[1].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-    computeBarriers[1].srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    computeBarriers[1].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-    computeBarriers[1].dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_COPY_BIT;
-    computeBarriers[1].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_TRANSFER_READ_BIT;
-    computeBarriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    computeBarriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    computeBarriers[1].buffer = visibleCountBuffer;
-    computeBarriers[1].offset = 0;
-    computeBarriers[1].size = kGpuCullCountBufferSize;
+    // Only the copy below is ordered here. The other consumer of both buffers is
+    // the cascade replay's indirect draws, which is a different pass -- the graph
+    // declares that edge on CSMShadowPass and emits it at that boundary.
+    VkBufferMemoryBarrier2 countToCopyBarrier{};
+    countToCopyBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+    countToCopyBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    countToCopyBarrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    countToCopyBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    countToCopyBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    countToCopyBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    countToCopyBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    countToCopyBarrier.buffer = visibleCountBuffer;
+    countToCopyBarrier.offset = 0;
+    countToCopyBarrier.size = kGpuCullCountBufferSize;
 
     VkDependencyInfo dependencyInfo{};
     dependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dependencyInfo.bufferMemoryBarrierCount = static_cast<uint32_t>(computeBarriers.size());
-    dependencyInfo.pBufferMemoryBarriers = computeBarriers.data();
+    dependencyInfo.bufferMemoryBarrierCount = 1;
+    dependencyInfo.pBufferMemoryBarriers = &countToCopyBarrier;
     vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
 
     VkBufferCopy visibleCountCopy{};
@@ -1039,6 +1032,7 @@ void GpuCulling::recordShadowCull(
 
     frameGpuShadowCullReadbackReady_[frameIndex] = 1;
     rhi::debug::endLabel(commandBuffer);
+    renderGraph_.endShadowGpuCullingPass();
 }
 
 bool GpuCulling::readMainVisibleCount(bool active, uint32_t frameIndex, uint32_t& visibleCount)
