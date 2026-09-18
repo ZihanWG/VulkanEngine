@@ -16,10 +16,14 @@ Default is 1.0 (native) — this changes nothing unless the slider is moved.
 By 2026-08 the frame was thoroughly fragment-bound and had been mapped in
 detail: `MainHDRPass` is 56% of the default scene's frame and 78% of the
 fragment stress scene's, and roughly two thirds of the pass is the clustered
-punctual light loop. That loop is **real shading work, not waste** — the cheap
-wins (a duplicated debug shadow lookup, a duplicated 96-byte slot load) were
-already found and taken, and two further micro-optimisations were measured and
-rejected because the cost is memory traffic per light, not tap count.
+punctual light loop. Those are Apple M3 numbers against procedural scenes; the
+same pass on an RTX 3080 Ti against `--scene sponza` splits differently -- 55%
+of it is shadow filtering, most of that inside the same loop. See
+[profiling.md](profiling.md). That loop is **real shading work, not waste** —
+the cheap wins (a duplicated debug shadow lookup, a duplicated 96-byte slot
+load) were already found and taken, and two further micro-optimisations were
+measured and rejected because the cost is memory traffic per light, not tap
+count.
 
 When per-pixel cost cannot go down, the remaining lever is the pixel count. That
 is an architectural knob rather than a local one, and unlike the alternatives it
