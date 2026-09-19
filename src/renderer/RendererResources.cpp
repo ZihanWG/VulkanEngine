@@ -110,7 +110,7 @@ void Renderer::destroyShadowCompareSampler()
 void Renderer::createMaterialDescriptorSetLayout()
 {
     createShadowCompareSampler();
-    std::array<VkDescriptorSetLayoutBinding, 15> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 16> bindings{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[0].descriptorCount = 1;
@@ -204,6 +204,15 @@ void Renderer::createMaterialDescriptorSetLayout()
     bindings[14].descriptorCount = 1;
     bindings[14].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     bindings[14].pImmutableSamplers = &shadowCompareSampler_;
+
+    // The punctual shadow atlas again, through the same immutable compare
+    // sampler, for hardware PCF on the spot/point path. Binding 7 stays a plain
+    // sampler2D because probe capture reads raw stored depth through it.
+    bindings[15].binding = 15;
+    bindings[15].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[15].descriptorCount = 1;
+    bindings[15].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[15].pImmutableSamplers = &shadowCompareSampler_;
 
     // Set 0 binding 0 is the base color texture, binding 1 is the cascaded
     // shadow-map array, binding 2 is the tangent-space normal map, and binding 3 is the
@@ -1317,9 +1326,12 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     // Twelve samplers and one uniform buffer per set.
     std::array<VkDescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    // 13 combined image samplers per set: bindings 0-10 and 12-13. Binding 11
-    // is the probe params uniform buffer and is counted below.
-    poolSizes[0].descriptorCount = kMaxMaterialDescriptorSets * 13;
+    // 15 combined image samplers per set: bindings 0-10 and 12-15. Binding 11
+    // is the probe params uniform buffer and is counted below. This count was
+    // already one short before binding 15 existed -- binding 14, the VSM page
+    // pool, was added without updating it, which only stayed invisible because
+    // far fewer than kMaxMaterialDescriptorSets sets are ever allocated.
+    poolSizes[0].descriptorCount = kMaxMaterialDescriptorSets * 15;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSizes[1].descriptorCount = kMaxMaterialDescriptorSets;
 
@@ -1451,7 +1463,13 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
         punctualAtlasAvailable ? punctualShadows_.atlas().imageView() : shadowMap_.layerImageView(0);
     punctualShadowInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
 
-    std::array<VkWriteDescriptorSet, 15> writes{};
+    // The same image and layout as binding 7. The sampler is left null because
+    // the layout supplies an immutable compare sampler, exactly as binding 13
+    // does for the cascades.
+    VkDescriptorImageInfo punctualCompareInfo = punctualShadowInfo;
+    punctualCompareInfo.sampler = VK_NULL_HANDLE;
+
+    std::array<VkWriteDescriptorSet, 16> writes{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = material.descriptorSet;
     writes[0].dstBinding = 0;
@@ -1544,6 +1562,8 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     writes[13].pImageInfo = &shadowCompareInfo;
     makeWrite(14, 14, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
     writes[14].pImageInfo = &vsmPagePoolInfo;
+    makeWrite(15, 15, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+    writes[15].pImageInfo = &punctualCompareInfo;
 
     // The material descriptor stores sampled images only: base color at binding 0,
     // cascaded shadow-map array at binding 1, normal map at binding 2, and metallic-roughness

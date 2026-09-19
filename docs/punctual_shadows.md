@@ -194,8 +194,25 @@ Fragments that project outside the slot's frustum return "lit". For a spot that
 is exactly the region outside the lit cone, where the falloff has already
 reached zero, so it changes nothing visually.
 
-Filtering is a 3x3 PCF in atlas UV space, with every tap **clamped into the
-slot's own tile**.
+### Filtering: four hardware comparison taps
+
+The atlas is sampled twice over, through two descriptors pointing at the same
+image. Binding 7 stays a plain `sampler2D` because probe capture reads raw
+stored depth through it. Binding 15 is a `sampler2DShadow` on the **immutable
+compare sampler the cascades already own**, which binding 14 (the VSM page pool)
+also reuses — a sampler carries no per-image state, and all three want the same
+LINEAR compare with the same `LESS_OR_EQUAL` op.
+
+That makes each tap a hardware 2x2 comparison fetch: the sampler compares four
+texels against the reference and returns their bilinear average in one fetch.
+**Four taps at half-texel offsets therefore cover the neighbourhood the old
+filter walked with nine**, and each of the four is filtered rather than a 0/1
+verdict.
+
+Every tap is still **clamped into the slot's own tile**, and the clamp now
+insets by a whole texel rather than stopping inside the last one. A LINEAR
+compare tap gathers its own 2x2 around the sample point, so a tap clamped to the
+final texel still reaches one texel past the tile.
 
 That clamp is load-bearing rather than defensive. Neighbouring atlas texels
 belong to a different tile — for a cube face the adjacent face, and with the
@@ -205,6 +222,45 @@ edge, where the falloff is already zero, so it was invisible and the original
 code skipped the clamp on exactly that reasoning. On a cube face the tile border
 is the *middle* of the lit scene, and the same mismatch draws hard seams along
 every face boundary.
+
+#### Why it changed, and what it cost
+
+The old filter was nine `texture()` fetches of stored depth with the comparison
+written out in the shader. It was measured, twice, on two machines that disagree:
+
+**RTX 3080 Ti Laptop, `--scene sponza` at 1280x720, clocks pinned 800/7001, p10.
+A/B/A/B with the control repeated; the binary is identical across variants and
+only the compiled shader differs:**
+
+| Filter | `MainHDRPass` | vs shipped | Fetches |
+| --- | --- | --- | --- |
+| 3x3 manual compare (was shipped) | 5.070 / 5.053 ms | — | 9 |
+| **4 hardware comparison taps** | **3.941 / 3.965 ms** | **-1.109 ms (-21.9%)** | 4 |
+| 1 manual tap (ablation, not shippable) | 3.842 / 3.872 ms | -1.22 ms (-24.0%) | 1 |
+
+The control returned to 0.34%, inside the 1% the harness demands. The single tap
+is there to bound the idea rather than to ship: it is the fewest fetches
+possible, so **the hardware filter captures 91% of what dropping taps entirely
+could have bought** — and does it without the hard-edged shadow a single tap
+gives. Whole frame, same series: 6.816 -> 5.524 ms.
+
+`PunctualShadowAtlasPass` reads 0.379-0.384 ms in every run of that series. The
+draw side is untouched; all of the saving is on the sampling side, which is
+where [profiling.md](profiling.md) had already put the cost — the atlas was
+about six times more expensive to read than to fill.
+
+**On an Apple M3 the same idea had been measured and rejected.** There, cutting
+9 taps to 1 saved 0.51 ms of the 2.88 ms the whole lookup cost, and the
+conclusion recorded was that the cost is the per-light memory traffic around the
+taps rather than the taps themselves. That conclusion did not survive the move to
+an immediate-mode GPU, which is now the second one that has not
+([design_decisions.md](design_decisions.md)).
+
+The image is not identical and is not meant to be: on the default scene 1749 of
+921600 pixels move, none by more than 8 of 255, every one of them on a shadow
+boundary — the terminator on the spheres, the contact shadows under them, the
+lattice silhouette and the edge of the spot cone. Nothing off a shadow edge
+changes. The lavapipe golden was re-baselined for it.
 
 ## Render graph integration
 

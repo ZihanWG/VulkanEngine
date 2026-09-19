@@ -92,6 +92,7 @@ layout(set = 0, binding = 4) uniform samplerCube uDiffuseIrradianceMap;
 layout(set = 0, binding = 5) uniform samplerCube uPrefilteredEnvMap;
 layout(set = 0, binding = 6) uniform sampler2D uBrdfLut;
 layout(set = 0, binding = 7) uniform sampler2D uPunctualShadowAtlas;
+layout(set = 0, binding = 15) uniform sampler2DShadow uPunctualShadowAtlasCompare;
 // Integrated fog volume: rgb = light gathered in front of this froxel,
 // a = how much of the background still shows through.
 layout(set = 0, binding = 8) uniform sampler3D uFogVolume;
@@ -726,17 +727,28 @@ float punctualShadowFactor(GpuLight light, vec3 worldPosition, vec3 normal)
     // within the final texel is enough to keep the fetch inside.
     vec2 tileMax = tileMin + slot.atlasUvOffsetScale.zw - vec2(texel);
 
+    // The sampler does the compare and the bilinear weighting of its own 2x2 in
+    // one fetch, so four taps at half-texel offsets cover the neighbourhood the
+    // manual loop walked with nine.
+    //
+    // The clamp insets by a whole texel rather than stopping inside the last
+    // one: a LINEAR compare tap gathers a 2x2 around its sample point, so a tap
+    // clamped to the tile's final texel still reaches one texel past it -- which
+    // for a cube face is the adjacent face, and with the quadtree allocator can
+    // be an unrelated light.
+    vec2 compareMin = tileMin + vec2(texel);
+    vec2 compareMax = max(tileMax - vec2(texel), compareMin);
+
     float litSamples = 0.0;
-    for (int y = -1; y <= 1; ++y) {
-        for (int x = -1; x <= 1; ++x) {
-            vec2 offset = vec2(float(x), float(y)) * texel;
-            vec2 sampleUv = clamp(atlasUv + offset, tileMin, tileMax);
-            float closestDepth = texture(uPunctualShadowAtlas, sampleUv).r;
-            litSamples += currentDepth <= closestDepth ? 1.0 : 0.0;
+    for (int y = 0; y < 2; ++y) {
+        for (int x = 0; x < 2; ++x) {
+            vec2 offset = (vec2(float(x), float(y)) - 0.5) * texel;
+            vec2 sampleUv = clamp(atlasUv + offset, compareMin, compareMax);
+            litSamples += texture(uPunctualShadowAtlasCompare, vec3(sampleUv, currentDepth));
         }
     }
 
-    return litSamples / 9.0;
+    return litSamples * 0.25;
 }
 
 // Shadow term for the debug view, gated on the light actually reaching this
