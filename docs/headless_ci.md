@@ -284,8 +284,10 @@ barriers, resource lifetimes and culling describing work that did not happen,
 and raises no validation error, because each individual Vulkan call is still
 legal.
 
-So after the default leg, the job renders 28 configurations at ten frames each
-and asserts, for every one: exit status 0, `--fail-on-validation-error` clean, a
+So after the default leg, the job renders every other leg in the list at ten
+frames each -- deliberately not a count here, because one added leg would make a
+number in this paragraph false -- and asserts, for every one: exit status 0,
+`--fail-on-validation-error` clean, a
 `Validation tally:` line present, and a backstop line reading zero order
 violations, zero unrecorded passes and zero declaration issues over a non-zero
 number of frames. The last clause matters -- zero findings over zero frames is
@@ -304,6 +306,26 @@ the VSM stages and scene presets, which take command-line flags. Running the res
 of the space for the first time found two real declaration/recording mismatches;
 both legs are kept as regression guards.
 
+### What the sweep covers, counted rather than assumed
+
+A green sweep says nothing about how much of the space it visited, and this one
+visited less of it than it looked like. Measured against the tracked settings
+schema: twenty-one leg files moved twenty-one of 137 keys off their defaults,
+and of the settings that select a code path rather than tune one, well under
+half were ever rendered both ways. Two legs set a key to the value it already
+held, so they rendered the defaults under another name -- which is why the TAA
+resolve pass had never run in this job at all.
+
+One of the unvisited configurations was wrong. `renderer.useGpuCulling = false`,
+the CPU culling fallback, declared `MainGpuCullingPass` and never recorded it,
+on every frame.
+
+`tools/check_ci_settings_coverage.py` now runs as its own job ahead of the
+render and fails on an unexercised path-selecting setting, a no-op leg, or a
+leg list that disagrees with the files on disk. Adding a setting without adding
+a leg for it is a red pull request rather than a quiet hole; the rules and the
+exemptions are in [`config/ci/README.md`](../config/ci/README.md).
+
 A sequential loop rather than a job matrix. Per leg the render is small; what is
 expensive is the SDK install, the apt dependencies, the shader compile and the
 Debug build above it, none of which a leg changes. A matrix repeats all of that
@@ -317,9 +339,9 @@ assert graph shape, which is driver-independent.
 
 Synchronization validation is a setting on a layer, and a setting the layer
 ignored looks exactly like a frame with nothing wrong in it. A sweep that ran
-with it silently off would report 29 clean configurations and have checked the
-ordering in none of them -- the same shape of failure as a gate that renders no
-frames and passes.
+with it silently off would report a full list of clean configurations and have
+checked the ordering in none of them -- the same shape of failure as a gate that
+renders no frames and passes.
 
 So the job runs `--sync-validation-selftest` before anything gates on the check
 being quiet. It records two overlapping writes to one buffer with no barrier
@@ -337,7 +359,10 @@ first because a dead check makes every step below it meaningless.
   image, so a rendering regression that appears solely with, say, fog enabled
   would pass.
 - lavapipe exposes no async compute queue and no dedicated transfer queue, so
-  neither path runs here in any configuration.
+  neither path runs here in any configuration. The `async-compute-off` leg is
+  therefore a settings deviation this job cannot tell apart from the default:
+  it exists so the coverage check is honest and so the leg is there to run
+  locally, on hardware that does expose the queue, where it was verified.
 - Software rasterization is slow: roughly 4.5 s of renderer init and 5 s for the
   first frame. These are lavapipe numbers and are not performance data about the
   engine. Never quote them as such.

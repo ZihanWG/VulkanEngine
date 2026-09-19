@@ -1,0 +1,3 @@
+{
+  "taa": { "enabled": true, "varianceClipping": true, "rejectionFeedback": true }
+}

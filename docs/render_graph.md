@@ -106,7 +106,7 @@ The currently declared passes are:
 - `CSMShadowPass`
 - `PunctualShadowAtlasPass` when at least one punctual light was assigned an atlas tile
 - `VolumetricFogPass` when fog is enabled; it declares only its shadow-map read, since its output volumes are not graph resources
-- `MainGpuCullingPass`
+- `MainGpuCullingPass` when GPU culling will record this frame, i.e. not on the CPU culling fallback and not on an empty draw list
 - `MainHDRPass`
 - `DepthPyramidPass`
 - `TAAResolvePass` when TAA is enabled
@@ -557,6 +557,36 @@ individual Vulkan call is still legal:
 Both fixes are bookkeeping: the four configurations captured either side of them
 are bit-identical at 0 of 921600 pixels. What changed is that the graph's model
 of the frame now matches the frame that was submitted.
+
+#### And then the configurations that still did not run
+
+"every swept configuration" was doing more work in that sentence than it had
+earned. The leg list had grown one entry at a time as features shipped, and
+nothing had ever counted what it reached: twenty-one legs moving twenty-one of
+137 settings keys, with most of the settings that select a code path rendered
+one way only. A sweep of green legs looks identical whether it covers the space
+or a third of it.
+
+Counting it found a third mismatch, of exactly the same kind and older than
+either of the two above:
+
+- **`MainGpuCullingPass`** was declared unconditionally, while
+  `GpuCulling::recordMainCull` returns without recording on the CPU culling
+  fallback (`renderer.useGpuCulling` off) and on an empty draw list. Every frame
+  of that configuration reported one unrecorded pass and one order violation --
+  `MainHDRPass` recorded at or before a pass it depends on. No leg turned GPU
+  culling off, so nothing had ever looked.
+
+It is declared from `GpuCulling::willRecordMainCull` now, the predicate the
+recorder itself returns on, in the shape `PunctualShadows::willRecordCull`
+already used. The main pass keeps its indirect-command read either way -- the
+CPU path uploads the identical commands from the host, so the read is real and
+only its in-frame producer goes away. Bookkeeping again: the default
+configuration is bit-identical across the fix at 0 of 921600 pixels.
+
+The sweep's coverage is now checked rather than assumed, by
+`tools/check_ci_settings_coverage.py` in a job of its own -- see
+[headless_ci.md](headless_ci.md) and [`config/ci/`](../config/ci/README.md).
 
 ### What the backstop found on its first run
 
