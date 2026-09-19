@@ -97,6 +97,13 @@ public:
     setShadowCullFrameInfo(uint32_t frameIndex, uint32_t totalDrawItems, uint32_t batchCount, bool indirectCountPath);
 
     // --- recording (called from the frame loop) ---
+    // Whether recordMainCull would record anything for this frame. The render
+    // graph declares MainGpuCullingPass from this and recordMainCull returns on
+    // it, so the declaration and the recorder cannot drift -- the same shape as
+    // PunctualShadows::willRecordCull, and for the same reason: a pass declared
+    // and never recorded leaves the graph's barriers, resource lifetimes and
+    // pass culling describing work that did not happen.
+    [[nodiscard]] bool willRecordMainCull(uint32_t frameIndex, bool active, uint32_t drawItemCount) const;
     // active = Renderer's isGpuCullingActive(); frustumPlanes / drawItemCount come
     // from the frame; mainPassMultiDrawIndirect = isMainPassMultiDrawIndirectActive().
     // copyReadback: copies the stats counters to the readback buffer at the end

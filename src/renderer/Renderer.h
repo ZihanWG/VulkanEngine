@@ -907,6 +907,11 @@ private:
     void recordPunctualShadows(VkCommandBuffer commandBuffer);
     void recordMainPassGeometry(VkCommandBuffer commandBuffer);
     [[nodiscard]] bool isGpuPunctualShadowCullingActive() const;
+    // isGpuCullingActive plus every condition GpuCulling::recordMainCull returns
+    // early on, asked of GpuCulling rather than rebuilt here. The graph declares
+    // MainGpuCullingPass on it; the recorder tests the same call. Const because
+    // nothing it reads is handed out by non-const reference.
+    [[nodiscard]] bool willRecordMainGpuCull() const;
     // isGpuPunctualShadowCullingActive plus every condition PunctualShadows
     // itself returns early on. One function because two callers need the same
     // answer and must not disagree: the graph declares PunctualShadowCullPass on

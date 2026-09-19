@@ -147,6 +147,12 @@ VkPipeline Renderer::mainPipelineFor(bool doubleSided) const
     return twoSided != VK_NULL_HANDLE ? twoSided : pipeline_.pipeline();
 }
 
+bool Renderer::willRecordMainGpuCull() const
+{
+    return gpuCulling_.willRecordMainCull(
+        currentFrame_, isGpuCullingActive(), static_cast<uint32_t>(allDrawItems_.size()));
+}
+
 bool Renderer::willRecordPunctualShadowCull()
 {
     return isGpuPunctualShadowCullingActive() &&
@@ -1121,6 +1127,10 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         .volumetricFogEnabled = isVolumetricFogActive(),
         .irradianceProbeUpdateEnabled = isIrradianceProbeUpdateActive(),
         .probeCaptureEnabled = frameProbeCaptureActive_,
+        // GpuCulling's own answer to "will recordMainCull record anything", not a
+        // restatement of it. False on the CPU culling fallback, where the pass
+        // used to be declared and then skipped on every frame.
+        .mainGpuCullingEnabled = willRecordMainGpuCull(),
         // Exactly the condition recordCascadeShadowPass uses to record the cull,
         // including the empty-draw-list case recordShadowCull returns on. A
         // declaration that outlives its recorder is what the backstop reports.

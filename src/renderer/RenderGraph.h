@@ -555,6 +555,15 @@ struct RenderGraphFrameResources {
     // runs on frames with nothing to capture -- the cold-start seed, and the
     // debug-pattern path.
     bool probeCaptureEnabled = false;
+    // Declares the main compute frustum/occlusion cull. Comes from
+    // GpuCulling::willRecordMainCull rather than from a condition rebuilt here,
+    // so the declaration and the recorder cannot drift. False on the CPU culling
+    // fallback (renderer.useGpuCulling off) and on an empty draw list, both of
+    // which the recorder returns on -- this pass was declared unconditionally
+    // until the backstop was pointed at that configuration and reported it
+    // unrecorded on every frame. The main pass still reads the indirect command
+    // buffer either way: the CPU path uploads the same commands from the host.
+    bool mainGpuCullingEnabled = false;
     // Declares the GPU shadow caster cull. Must be exactly the condition the
     // recorder uses -- GPU shadow culling active, at least one cascade needing a
     // redraw, and a non-empty draw list -- because a pass declared and never
