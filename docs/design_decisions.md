@@ -58,8 +58,9 @@ the image, so there is no threshold that is both worth having and invisible.
 The sweep also bounds the whole idea: even at a 50% radius -- throwing away 87%
 of the light volume -- `MainHDRPass` only falls 13%. The pass is not dominated by
 walking over lights that contribute nothing; it is dominated by shading lights
-that do. Fewer PCF taps and a back-face early-out were rejected earlier on the
-same grounds.
+that do. A back-face early-out was rejected earlier on the same grounds. Fewer
+PCF taps was too, and that one **did not survive the move to an immediate-mode
+GPU** -- see below.
 
 ## Back-face culling is on, and the answer is device-class-specific
 
@@ -166,6 +167,58 @@ which the sort key keeps to one rather than one per alternation.
 same change. What is left is narrower -- the skybox, probe capture and transparent
 pipelines are still `VK_CULL_MODE_NONE`, and only the transparent one has a reason
 that would survive a second look.
+
+## Punctual shadows are filtered by the sampler, not by the shader
+
+**Decision.** The punctual shadow atlas is sampled through a second descriptor
+carrying the immutable depth-comparison sampler the cascades already use, and
+the filter is four hardware 2x2 comparison fetches rather than nine manual
+fetches with the comparison written out in the shader.
+
+**Why.** Because the taps turned out to be the cost here, which is the opposite
+of what this repository had recorded.
+
+The earlier measurement, on an Apple M3 through MoltenVK, cut the 3x3 loop to a
+single tap and saw only 0.51 ms of the 2.88 ms the lookup cost. The conclusion
+was that the function is memory-bound on per-light data -- the 96-byte slot
+load, the projection, the bounds tests -- and that "any future attempt should
+attack the slot load, not the tap count". The slot load was duly attacked and
+won 0.76 ms.
+
+Re-measured on an RTX 3080 Ti against `--scene sponza`, the same ablation saves
+**1.22 ms of a 5.07 ms `MainHDRPass`**. The taps are the cost on this machine.
+
+**That is the second conclusion of this project's to flip on the move from a
+tiler to an immediate-mode GPU**, after back-face culling above, and it flipped
+the same way: the tiler's behaviour made a real cost invisible. The rule the two
+of them leave is the one now at the top of
+[profiling.md](profiling.md#which-machine-a-number-came-from) -- a measured
+number without its hardware is not a result, it is an anecdote.
+
+**What was built instead of fewer taps.** Dropping to one tap is the ceiling of
+the idea and it is not shippable: the shadow edge goes hard. Handing the compare
+to the sampler buys most of the same saving *and* improves the filter, because
+each hardware tap is a bilinear average of four comparisons rather than one 0/1
+verdict. Four of them cover what nine manual taps covered:
+
+| Filter | `MainHDRPass` | Fetches |
+| --- | --- | --- |
+| 3x3 manual compare | 5.070 / 5.053 ms | 9 |
+| 4 hardware comparison taps | 3.941 / 3.965 ms | 4 |
+| 1 manual tap (bound, not shippable) | 3.842 / 3.872 ms | 1 |
+
+**Trade-offs.** A second descriptor for an image already bound, and one more
+binding in a set that is written per material. The filter footprint is not
+identical to the old one, so the image moves on shadow boundaries and the pixel
+golden had to be re-baselined. The clamp that keeps every tap inside its own
+atlas tile has to inset further than before, because a LINEAR compare tap
+gathers its own 2x2.
+
+**More time.** The cascades take a `pcfRadius` from settings and the atlas does
+not; one filter-quality knob covering both paths would make this A/B-able at
+runtime instead of through a shader edit. A rotated-Poisson or variable-radius
+filter is the next step up in quality, and now costs four fetches to start from
+rather than nine.
 
 ## Graphics pipelines are looked up by state, not by name
 

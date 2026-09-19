@@ -189,6 +189,7 @@ simple_bindless.frag
   set=0 binding=12  textures     uAmbientOcclusion : sampler2D
   set=0 binding=13  textures     uShadowMapCompare : sampler2DArrayShadow
   set=0 binding=14  textures     uVsmPagePool : sampler2DShadow
+  set=0 binding=15  textures     uPunctualShadowAtlasCompare : sampler2DShadow
   set=0 binding=4   textures     uDiffuseIrradianceMap : samplerCube
   set=0 binding=5   textures     uPrefilteredEnvMap : samplerCube
   set=0 binding=6   textures     uBrdfLut : sampler2D
