@@ -221,6 +221,28 @@ the file back off disk and matching it field by field against what was just
 built. It earned its place immediately by catching a bug in the tool: the output
 stream was still buffered when verification read the file.
 
+## What LOD is worth on real content
+
+Measured on an RTX 3080 Ti against `--scene sponza` at 1280x720, clocks pinned
+700/7001, p10, forcing every draw to one level so the comparison has no second
+variable:
+
+| | forced LOD 0 | forced LOD 3 | delta |
+| --- | --- | --- | --- |
+| full resolution | 4.920 ms | 2.357 ms | **-2.563 ms (-52.1%)** |
+| a sixteenth of the pixels | 1.853 ms | 0.653 ms | -1.200 ms (-64.8%) |
+
+**Level selection is the largest single lever on `MainHDRPass` on this scene**,
+and roughly half of what it buys is per-triangle work that no resolution change
+can reach. The second row is what separates the two halves: vertex shading and
+triangle setup do not care about resolution, and quad overshading cares about
+nothing else. See [profiling.md](profiling.md) for the full attribution and for
+why the "fixed third" that earlier framing named does not exist.
+
+That is a bound on what a more aggressive `lod.bias` or a smaller
+`lod.referenceRadiusPixels` could win, not a recommendation to spend it: the
+2.563 ms is paid for in silhouettes.
+
 ## Limitations
 
 - **Transparent draws bypass LOD selection entirely** (see below).

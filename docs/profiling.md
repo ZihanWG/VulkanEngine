@@ -256,16 +256,74 @@ over 267 and 485 samples, control drift 0.44%:** `MainHDRPass` goes 6.354 ->
 per-pixel pass would give.** Absolutes here are not comparable with the 800-pin
 rows above; the percentages are.
 
-Taking those two points as a line, **68% of the pass scales with pixel count and
-32% does not** -- about 2.0 ms at this pin. Two points cannot establish that the
-relationship is linear, so read that as the split a linear model gives rather
-than as a measured constant.
+Taking those two points as a line gives 68% of the pass scaling with pixel count
+and 32% not -- about 2.0 ms at this pin. **A third point has since falsified that
+model; the paragraph below retracts it.** Two points cannot establish that a
+relationship is linear, and here it is not.
 
-The fixed third is what resolution cannot buy back, and it is the part nothing
-here has attributed yet: vertex work for the LOD-selected geometry, per-draw
-submission across 103 draw items, and descriptor and state changes. The shadow
-filtering above is per-pixel work and sits inside the other two thirds, which is
-consistent -- 55% of the pass is less than 68% of it.
+#### The third point, and the retraction
+
+Measured after the hardware-PCF change landed, so these absolutes belong to the
+current `MainHDRPass` rather than to the one above. Three scale points at default
+LOD, with the full-resolution control repeated last -- 4.445 then 4.457 ms, a
+0.27% return:
+
+| `renderScale.scale` | pixels | `MainHDRPass` |
+| --- | --- | --- |
+| 1.00 | 1 | 4.451 |
+| 0.50 | 1/4 | 2.421 |
+| 0.25 | 1/16 | 1.322 |
+
+Fit a line through any two of them and the answers disagree: slopes of 2.71,
+3.34 and 5.86, intercepts of 1.744, 1.113 and 0.956. Least squares over all three
+leaves residuals of +-0.28 ms on a 4.45 ms pass. **The cost per pixel rises as
+the pixels get fewer**, which is what quad overshading does: a triangle covering
+fewer pixels wastes a larger fraction of every 2x2 quad it touches, and
+per-triangle setup stops being amortised.
+
+So there is no "fixed third" to read off. What survives is a **bound**: at a
+sixteenth of the pixels the pass still costs **1.322 ms, 29.7% of full
+resolution**, and since a sixteenth of the pixels still does per-pixel work, the
+resolution-independent part is smaller than that.
+
+#### What the bound is made of: triangles, not draw calls
+
+Same question asked twice, at two resolutions, changing only the LOD level so the
+pixel count is identical on both sides of each comparison:
+
+| | forced LOD 0 | forced LOD 3 | delta | control drift |
+| --- | --- | --- | --- | --- |
+| full resolution | 4.920 ms | 2.357 ms | **-2.563 ms (-52.1%)** | 0.30% |
+| a sixteenth of the pixels | 1.853 ms | 0.653 ms | **-1.200 ms (-64.8%)** | 0.61% |
+
+**The LOD win keeps 47% of its absolute size when 15/16 of the pixels go away.**
+Neither extreme: vertex shading and triangle setup do not care about resolution
+and quad overshading cares about nothing else, so the split says roughly half of
+what LOD buys here is per-triangle work and roughly half is overshading the finer
+triangles caused.
+
+The corner of that table is the useful number. **LOD 3 at a sixteenth of the
+pixels costs 0.653 ms -- 15% of the full-resolution pass -- and that bounds
+everything which is neither per-pixel nor per-triangle**: draw submission across
+103 items, descriptor and state changes, and the render pass itself. It is an
+upper bound and still contains per-pixel and per-triangle work of its own, so the
+true figure is lower.
+
+**That closes the "per-draw overhead" line of attack before it was opened.** This
+document previously named submission across 103 draw items as a candidate for a
+~2 ms fixed cost. There is no such cost: submission and state are at most 15% of
+the pass and in fact less. The lever on this scene is triangle count, and the
+machinery for it already ships -- `lod.bias` and `lod.referenceRadiusPixels`
+decide how aggressively it is pulled. Forcing every draw to the lowest level
+takes 2.1 ms off the pass at full resolution, which bounds what a more aggressive
+selection could win before any of it is paid for in image quality.
+
+Two method notes from this series, both already bitten once. The LOD comparison
+was run twice: the first attempt opened five runs into a script, drifted 1.6% and
+was discarded; the rerun opened with its own throwaway and returned 0.30%. And
+both sides of it force a level rather than comparing against automatic selection,
+because the automatic side would move with the camera and the render extent --
+that is not a control, it is a second variable.
 
 ### `--overdraw`: how many times the average pixel is shaded
 
