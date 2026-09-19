@@ -340,6 +340,44 @@ compressed, decode wait goes to zero, and upload halves.
 - **Upload is not overlapped with anything.** The load flow still waits for the
   copies before continuing, so the transfer queue buys the capability and frees
   the graphics queue without shortening startup.
+
+### The ownership transfer was unordered, and nothing could have caught it
+
+Found 2026-09-19, while checking something else: `--scene sponza` in Debug under
+`--sync-validation` reported ten `WRITE_AFTER_WRITE` hazards, one per glTF
+texture, each saying that a layout transition on one queue conflicted with a
+prior layout transition on another. Ten is the layer's duplicate-message cap
+rather than the total.
+
+Both halves of the transfer were correct in themselves -- same layouts, same
+family indices, built by one helper so they cannot drift, with a semaphore
+between the two submissions. **The gap was the semaphore's own scope.** The
+signal was `VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT`, and the release barrier's
+second synchronization scope is `NONE` -- correctly, because the spec ignores it
+for a release operation. A transition that sits in no narrower stage is not
+inside an `ALL_TRANSFER` signal, so nothing ordered the release's transition
+before the acquire's.
+
+The fix is one line: the signal is `VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT`.
+
+An alternative also silences the layer -- giving the release barrier a
+`dstStageMask` of `ALL_TRANSFER` -- and was rejected. It feeds the validation
+layer's model through a field the spec says is ignored for a release, so a driver
+is free to disregard it. Widening the signal strengthens a dependency the spec
+does honour.
+
+**What is worth keeping is why it survived.** CI runs synchronization validation
+over the whole sweep, but on lavapipe, which exposes no TRANSFER-only family, so
+the path never executes there; and `--scene sponza`, the only scene that drives
+the batched upload loop, is not in the sweep. Two independent reasons, either one
+sufficient. `tools/dev/verify_renderer.sh sync` now runs the renderer under
+synchronization validation on a machine that has the queues, including Sponza
+when the asset is present -- the gate this class of bug had been missing.
+
+It was checked against the bug rather than trusted for passing: with the
+one-line fix reverted, `verify_renderer.sh sync` exits 2; with it in place, 0.
+A guard that has never been seen to fire is the thing this repository keeps
+finding out the hard way.
 - No visual A/B has been composed yet. The Sponza startup camera frames the
   building from outside (see the limitations above), and the default portfolio
   scene *loads* the checker textures but does not sample them in the composed

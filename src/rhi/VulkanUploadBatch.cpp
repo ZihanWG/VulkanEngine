@@ -206,10 +206,20 @@ void VulkanUploadBatch::submitRecorded()
             // The semaphore is not optional: a queue family ownership transfer
             // needs an execution dependency between the two submissions, or the
             // acquire can run before the release.
+            //
+            // ALL_COMMANDS rather than ALL_TRANSFER, and the difference is a real
+            // hazard rather than caution. The release barrier's second
+            // synchronization scope is ignored -- the spec says so for a release
+            // operation, which is why it is written as NONE above -- so the
+            // layout transition it performs sits in no narrower stage. A signal
+            // scoped to ALL_TRANSFER therefore does not contain it, and nothing
+            // orders the release's transition before the acquire's. Widening the
+            // signal is what closes that; widening the barrier's ignored dst
+            // scope instead only satisfies the validation layer's model.
             VkSemaphoreSubmitInfo signalInfo{};
             signalInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
             signalInfo.semaphore = transferComplete_;
-            signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+            signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
             submitInfo.signalSemaphoreInfoCount = 1;
             submitInfo.pSignalSemaphoreInfos = &signalInfo;
             VK_CHECK(vkQueueSubmit2(context_->transferQueue(), 1, &submitInfo, VK_NULL_HANDLE));
