@@ -2172,30 +2172,43 @@ void RenderGraph::declareGeometryPasses()
                     });
     }
 
-    frame_.passIndices.mainGpuCulling = addPass(
-        "MainGpuCullingPass",
-        RenderPassType::MainGpuCulling,
-        RenderPassExecutionType::Compute,
-        true,
-        [this](RenderGraphBuilder& builder) {
-            builder.readBuffer(frame_.mainCullInput,
-                               RGAccess::StorageBufferRead,
-                               "Reads per-draw AABB, draw-command, and batch metadata.");
-            builder.readHistoryTexture(frame_.depthPyramid,
-                                       RGAccess::ShaderRead,
-                                       "Optionally samples the previous-frame Hi-Z depth pyramid for occlusion tests.");
-            frame_.mainCullIndirectOutput = builder.writeBuffer(frame_.mainCullIndirectOutput,
-                                                                RGAccess::StorageBufferWrite,
-                                                                "Writes indirect draw commands for the main pass.");
-            frame_.mainCullVisibleCounts =
-                builder.writeBuffer(frame_.mainCullVisibleCounts,
-                                    RGAccess::StorageBufferClearAndReadWrite,
-                                    "Clears and writes visible counts plus culling debug counters.");
-            frame_.mainCullReadback =
-                builder.writeBuffer(frame_.mainCullReadback,
-                                    RGAccess::TransferDst,
-                                    "Receives copied culling counters for frame-latency CPU readback.");
-        });
+    // Skipped on the CPU culling fallback (renderer.useGpuCulling off) and on an
+    // empty draw list -- GpuCulling::recordMainCull returns on both, and this
+    // pass was declared unconditionally until the backstop was finally pointed
+    // at that configuration and reported it unrecorded on every frame.
+    //
+    // The main pass keeps reading the indirect command buffer either way, unlike
+    // the shadow and punctual culls above whose consumers drop their reads with
+    // the pass: the CPU path uploads the identical commands from the host, so
+    // the read is real, it just has no producer inside the frame.
+    if (frame_.resources.mainGpuCullingEnabled) {
+        frame_.passIndices.mainGpuCulling =
+            addPass("MainGpuCullingPass",
+                    RenderPassType::MainGpuCulling,
+                    RenderPassExecutionType::Compute,
+                    true,
+                    [this](RenderGraphBuilder& builder) {
+                        builder.readBuffer(frame_.mainCullInput,
+                                           RGAccess::StorageBufferRead,
+                                           "Reads per-draw AABB, draw-command, and batch metadata.");
+                        builder.readHistoryTexture(
+                            frame_.depthPyramid,
+                            RGAccess::ShaderRead,
+                            "Optionally samples the previous-frame Hi-Z depth pyramid for occlusion tests.");
+                        frame_.mainCullIndirectOutput =
+                            builder.writeBuffer(frame_.mainCullIndirectOutput,
+                                                RGAccess::StorageBufferWrite,
+                                                "Writes indirect draw commands for the main pass.");
+                        frame_.mainCullVisibleCounts =
+                            builder.writeBuffer(frame_.mainCullVisibleCounts,
+                                                RGAccess::StorageBufferClearAndReadWrite,
+                                                "Clears and writes visible counts plus culling debug counters.");
+                        frame_.mainCullReadback =
+                            builder.writeBuffer(frame_.mainCullReadback,
+                                                RGAccess::TransferDst,
+                                                "Receives copied culling counters for frame-latency CPU readback.");
+                    });
+    }
 
     // Declared after the main cull, which is where the renderer records them.
     // They used to be declared before it and recorded after, a disagreement that

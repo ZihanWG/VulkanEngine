@@ -1,0 +1,9 @@
+{
+  "taa": {
+    "enabled": true,
+    "jitterEnabled": false,
+    "neighborhoodClampEnabled": false,
+    "reprojectionEnabled": false,
+    "catmullRomHistory": false
+  }
+}

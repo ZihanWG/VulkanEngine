@@ -687,6 +687,25 @@ void GpuCulling::setShadowCullFrameInfo(uint32_t frameIndex,
     }
 }
 
+// Every reason recordMainCull has for recording nothing, in one place so the
+// render graph can be told before it declares the pass. Split out of the
+// recorder rather than restated beside it: a second copy of this condition is
+// exactly the drift the endFrame backstop had to catch once already.
+bool GpuCulling::willRecordMainCull(uint32_t frameIndex, bool active, uint32_t drawItemCount) const
+{
+    if (!active || drawItemCount == 0) {
+        return false;
+    }
+    if (frameIndex >= gpuCullDescriptorSets_.size() || frameIndex >= frameBatchVisibleCountBuffers_.size() ||
+        frameIndex >= frameBatchVisibleCountReadbackBuffers_.size() ||
+        frameIndex >= frameGpuCullReadbackReady_.size()) {
+        return false;
+    }
+
+    return frameBatchVisibleCountBuffers_.at(frameIndex).buffer() != VK_NULL_HANDLE &&
+           frameBatchVisibleCountReadbackBuffers_.at(frameIndex).buffer() != VK_NULL_HANDLE;
+}
+
 void GpuCulling::recordMainCull(VkCommandBuffer commandBuffer,
                                 uint32_t frameIndex,
                                 bool active,
@@ -695,20 +714,13 @@ void GpuCulling::recordMainCull(VkCommandBuffer commandBuffer,
                                 bool mainPassMultiDrawIndirect,
                                 bool copyReadback)
 {
-    if (!active || drawItemCount == 0) {
-        return;
-    }
-    if (frameIndex >= gpuCullDescriptorSets_.size() || frameIndex >= frameBatchVisibleCountBuffers_.size() ||
-        frameIndex >= frameBatchVisibleCountReadbackBuffers_.size() ||
-        frameIndex >= frameGpuCullReadbackReady_.size()) {
+    if (!willRecordMainCull(frameIndex, active, drawItemCount)) {
         return;
     }
 
+    // The readback buffer is fetched where it is copied to, below: its handle is
+    // checked in willRecordMainCull and nothing between here and there needs it.
     VkBuffer visibleCountBuffer = frameBatchVisibleCountBuffers_.at(frameIndex).buffer();
-    VkBuffer visibleCountReadbackBuffer = frameBatchVisibleCountReadbackBuffers_.at(frameIndex).buffer();
-    if (visibleCountBuffer == VK_NULL_HANDLE || visibleCountReadbackBuffer == VK_NULL_HANDLE) {
-        return;
-    }
 
     const bool indirectCountPathActive = frameIndirectCountPathActive(frameIndex);
 

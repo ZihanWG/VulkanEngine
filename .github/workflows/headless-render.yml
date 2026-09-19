@@ -20,6 +20,21 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Its own job, ahead of the render, because it needs nothing this workflow
+  # installs and a wrong leg list should report in seconds rather than behind a
+  # Vulkan SDK install and a Debug build. It reads the sweep's leg list out of
+  # this file, so it lives here rather than beside the other Python checks.
+  sweep-coverage:
+    name: configuration sweep coverage
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Check what the sweep covers
+        run: python3 tools/check_ci_settings_coverage.py
+
   headless-render:
     name: lavapipe render + validation gate
     runs-on: ubuntu-24.04
@@ -243,10 +258,10 @@ jobs:
           volumetric-fog|--settings config/ci/volumetric-fog.json
           irradiance-probes|--settings config/ci/irradiance-probes.json
           gtao|--settings config/ci/gtao.json
-          ssr|--settings config/ci/ssr.json
+          ssr-off|--settings config/ci/ssr-off.json
           exposure-manual|--settings config/ci/exposure-manual.json
           exposure-log-average|--settings config/ci/exposure-log-average.json
-          taa-off|--settings config/ci/taa-off.json
+          taa-on|--settings config/ci/taa-on.json
           bloom-off|--settings config/ci/bloom-off.json
           bloom-legacy|--settings config/ci/bloom-legacy.json
           occlusion-off|--settings config/ci/occlusion-off.json
@@ -260,9 +275,26 @@ jobs:
           transient-aliasing|--settings config/ci/transient-aliasing.json
           render-scale-half|--settings config/ci/render-scale-half.json
           punctual-gpu-cull|--settings config/ci/punctual-gpu-cull.json
+          gpu-culling-off|--settings config/ci/gpu-culling-off.json
+          shadow-culling-off|--settings config/ci/shadow-culling-off.json
+          async-compute-off|--settings config/ci/async-compute-off.json
+          adaptive-occlusion-off|--settings config/ci/adaptive-occlusion-off.json
+          dynamic-resolution|--settings config/ci/dynamic-resolution.json
+          lod-off|--settings config/ci/lod-off.json
+          cascade-cache-off|--settings config/ci/cascade-cache-off.json
+          stable-cascade-fit|--settings config/ci/stable-cascade-fit.json
+          taa-ghost-guards|--settings config/ci/taa-ghost-guards.json
+          taa-history-plain|--settings config/ci/taa-history-plain.json
+          gtao-full|--settings config/ci/gtao-full.json
+          fog-temporal-off|--settings config/ci/fog-temporal-off.json
+          tonemap-aces|--settings config/ci/tonemap-aces.json
+          debug-views|--settings config/ci/debug-views.json
+          punctual-shadows-off|--settings config/ci/punctual-shadows-off.json
+          shader-hot-reload|--settings config/ci/shader-hot-reload.json
           vsm-mark|--vsm mark
           vsm-render|--vsm render
           vsm-shadows|--vsm shadows
+          vsm-debug-views|--vsm shadows --settings config/ci/vsm-debug-views.json
           scene-sunlit|--scene sunlit
           scene-cornell|--scene cornell
           scene-occlusion|--scene occlusion
