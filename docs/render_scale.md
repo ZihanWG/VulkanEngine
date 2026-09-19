@@ -25,6 +25,14 @@ load) were already found and taken, and two further micro-optimisations were
 measured and rejected because the cost is memory traffic per light, not tap
 count.
 
+**The tap-count half of that has since been retracted, on the same grounds it
+was made: measurement.** On the RTX the punctual filter's taps are the cost --
+cutting nine to one takes 1.22 ms off a 5.07 ms `MainHDRPass` on
+`--scene sponza`, against 0.51 of 2.88 on the M3. The saving was taken by
+handing the comparison to the sampler rather than by filtering less; see
+[punctual_shadows.md](punctual_shadows.md). The memory-traffic half stands:
+the slot load was real and removing it won 0.76 ms.
+
 When per-pixel cost cannot go down, the remaining lever is the pixel count. That
 is an architectural knob rather than a local one, and unlike the alternatives it
 is cheap to build and cheap to reverse:
