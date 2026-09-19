@@ -193,6 +193,80 @@ each run is flat across its own thirds (7.447 / 7.427 / 7.344) and the whole
 drift is a step *between* runs, which is why reducing the heat the series
 generates is what fixed it rather than sampling longer.
 
+#### What `MainHDRPass` is made of here: more than half is shadow filtering
+
+`MainHDRPass` is 5.6 ms of a 7.1 ms frame on this scene at the 800 pin, and the
+only decomposition of that pass this repository had was taken on an Apple M3
+against
+the default scene, where it read as roughly two thirds clustered punctual light
+loop. Neither the machine nor the scene carries over -- the nested-scope rule and
+back-face culling are both conclusions that already failed to survive that move
+-- so the pass was ablated again here. Each row removes one contributor through a
+runtime setting and measures what the pass loses.
+
+**RTX 3080 Ti Laptop, `--scene sponza` at 1280x720, clocks pinned 800/7001, p10
+over ~300 (A) and ~460 (B) samples,
+`ab --repeat 2 --duration 75 --args --scene sponza --deterministic`:**
+
+| Removed | `MainHDRPass` | Delta | Share of the pass | Control drift |
+| --- | --- | --- | --- | --- |
+| nothing (control) | 5.60 ms | -- | -- | -- |
+| punctual shadow sampling (`punctualShadows.enabled=false`) | 3.437 ms | **-2.163 ms** | **38.6%** | 0.36% |
+| cascade shadow sampling (`csm.shadowDistance=1.0`) | 4.652 ms | **-0.935 ms** | **16.7%** | 0.77% |
+
+Each ablation removes the lookup and nothing else. `punctualShadows.enabled`
+false leaves every light in the cluster list and only marks its atlas slot
+invalid (`updatePunctualShadowSlots`), so the lights still shade and what goes
+away is the atlas fetch inside the loop. A one-metre `shadowDistance` puts every
+fragment past the last split, where `selectShadowCascade()` returns -1 and
+`sampleShadowFactor()` returns lit without touching `uShadowMapCompare`.
+
+Together, **55% of `MainHDRPass` is shadow filtering.** The remaining ~2.5 ms is
+material fetches, the BRDF, the light loop's own arithmetic, and IBL.
+
+**The punctual atlas costs about six times more to read than to write.**
+`PunctualShadowAtlasPass` -- every caster drawn into every tile -- is 0.380 ms.
+Sampling what it wrote costs 2.163 ms in the main pass. `CSMShadowPass` reads
+0.000 ms on this scene because the cascade cache is fully hit under a static
+camera, so the sun's shadow cost is *entirely* on the sampling side as well.
+
+That reorders the shadow work worth doing. Drawing fewer casters -- GPU caster
+culling, tighter cascade fits, per-tile invalidation -- is aimed at the 0.4 ms
+that is already the small half. The 3.1 ms is filter cost: tap count, filter
+width, and whether a fragment needs a filtered lookup at all.
+
+Three things this does not say. It does not predict what a cheaper filter would
+save -- removing the lookups also unshadows the image, so each row bounds its
+contributor rather than costing a replacement for it. It is not a correctness
+result: validation layers are compiled out of Release. And in the punctual series
+`CompositePass` and `DepthPrepass` also moved, by 0.032 and 0.013 ms, in a
+direction the change cannot cause; `CompositePass` read 0.052 ms on that series'
+control against 0.020 ms on the other two, so that row is unstable rather than
+affected. Both are treated as artifacts and are not reported as effects.
+
+**Quartering the pixels does not quarter the pass.** A third series varied
+`renderScale.scale` rather than a feature. It needed a 700 MHz pin: two attempts
+at 800 were voided by control drift of 1.1% and 4.3%, because the half-scale side
+drives the card at a different rate and the control could not return between
+them. Dropping the pin is the remedy the sweep above found, one step further.
+
+**RTX 3080 Ti Laptop, `--scene sponza` at 1280x720, clocks pinned 700/7001, p10
+over 267 and 485 samples, control drift 0.44%:** `MainHDRPass` goes 6.354 ->
+3.102 ms at a quarter of the pixels. That is **-51.2%, not the -75% a purely
+per-pixel pass would give.** Absolutes here are not comparable with the 800-pin
+rows above; the percentages are.
+
+Taking those two points as a line, **68% of the pass scales with pixel count and
+32% does not** -- about 2.0 ms at this pin. Two points cannot establish that the
+relationship is linear, so read that as the split a linear model gives rather
+than as a measured constant.
+
+The fixed third is what resolution cannot buy back, and it is the part nothing
+here has attributed yet: vertex work for the LOD-selected geometry, per-draw
+submission across 103 draw items, and descriptor and state changes. The shadow
+filtering above is per-pixel work and sits inside the other two thirds, which is
+consistent -- 55% of the pass is less than 68% of it.
+
 ### `--overdraw`: how many times the average pixel is shaded
 
 `VK_QUERY_TYPE_PIPELINE_STATISTICS` counting

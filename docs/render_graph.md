@@ -234,7 +234,7 @@ None of the four changed a pixel: the frame 30 capture is byte-identical before
 and after. That is the expected result and the reason the class survived -- this
 hardware was already serializing the work these barriers failed to order.
 
-All 28 configurations the headless job sweeps now run clean under
+All 29 configurations the headless job sweeps now run clean under
 `--sync-validation`, and the sweep runs with it (see
 [headless_ci.md](headless_ci.md)).
 
@@ -437,18 +437,27 @@ sequenced by the graph from end to end.
 | synchronous cluster build and light cull | *none* |
 | fog volume first-use clear | *none* |
 | `recordVolumetricFogPass` | `VolumetricFogPass` |
-| `recordIrradianceProbePasses` | `ProbeCapturePass` |
+| `recordIrradianceProbePasses` | `ProbeCapture` |
 | `recordMainPassGeometry` | `MainHDRPass` |
 | the seven post-process recorders | `DepthPyramidPass` … `CompositePass` |
 | screenshot copies and the ImGui overlay | `ImGuiPass` |
 
-A recorder spanning several declared passes anchors on the first of them.
-`recordMainPassGeometry` covers six — the main pass, the two-phase occlusion
-re-test, SSR, GTAO and the transparent pass — because they are one region as far
-as state goes: the viewport, the global descriptor set, the indirect buffers, the
-base push constants and a mutable flag tracking whether the bindless sets are
-currently bound are all set up by the main pass and reused by the rest. The
-mip-chain bloom recorder covers seven for the same kind of reason.
+A recorder spanning several declared passes anchors on the first of them, with
+one exception below. `recordMainPassGeometry` covers everything from the depth
+prepass to the transparent pass — the prepass, the main pass, the two-phase
+occlusion re-test, SSR, GTAO and the transparent pass — because they are one
+region as far as state goes: the viewport, the global descriptor set, the
+indirect buffers, the base push constants and a mutable flag tracking whether
+the bindless sets are currently bound are all set up by the main pass and
+reused by the rest. The mip-chain bloom recorder covers seven for the same kind
+of reason.
+
+The exception is `DepthPrepass`, which is declared immediately before
+`MainHDRPass` and recorded inside its unit, so that unit anchors on the second
+pass it covers rather than the first. The two are adjacent in the declaration
+order and no reordering happens, so the scheduled position is the same either
+way; the prepass opens and closes its own rendering scope and the main pass
+loads the depth it leaves, which is why they are one recorder at all.
 
 The two units with no anchor have no declared pass to name. The synchronous
 cluster build is the fallback path for work the renderer submits on the compute
@@ -524,8 +533,8 @@ unrecorded passes and no declaration issues.
 
 **Those checks are no longer done by hand.** `endFrame`'s findings are rolled up
 across the run and printed as one greppable line, and the headless job renders
-[26 configurations](../config/ci/README.md) past it rather than only the default
-one. Peaks across the run rather than the last frame's counts, because a
+[every swept configuration](../config/ci/README.md) past it rather than only
+the default one. Peaks across the run rather than the last frame's counts, because a
 violation in frame 7 that clears again by frame 30 still has to be reported; and
 the line carries the frame count, because zero findings over zero frames is what
 a run that rendered nothing looks like.
@@ -1069,8 +1078,9 @@ this first" are different entries:
 Barriers cover the whole image -- `baseMipLevel = 0, levelCount = mipLevels`,
 `baseArrayLayer = 0, layerCount = arrayLayers` -- and a write advances the
 version of the whole resource. That reads like a gap. It was surveyed across all
-27 configurations the headless job runs, by logging every graph texture with more
-than one subresource together with every pass that declares it:
+27 configurations the headless job ran at the time, by logging every graph
+texture with more than one subresource together with every pass that declares
+it:
 
 | Resource | Subresources | Declared by |
 | --- | --- | --- |

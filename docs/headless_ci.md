@@ -317,7 +317,7 @@ assert graph shape, which is driver-independent.
 
 Synchronization validation is a setting on a layer, and a setting the layer
 ignored looks exactly like a frame with nothing wrong in it. A sweep that ran
-with it silently off would report 28 clean configurations and have checked the
+with it silently off would report 29 clean configurations and have checked the
 ordering in none of them -- the same shape of failure as a gate that renders no
 frames and passes.
 
