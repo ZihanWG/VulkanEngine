@@ -59,6 +59,13 @@ run_fast() {
 # --scene sponza is what drives the batched upload path; the default scene loads
 # too few textures to reach it. It is skipped when the asset has not been fetched
 # rather than failing, because it is optional by design.
+#
+# What it cannot see: anything read through a buffer device address. The layer
+# tracks descriptor-bound accesses, so the cluster grid and light index list --
+# written by descriptor on the async queue, read by address on the graphics one
+# -- are invisible to it. Fog injection read them unordered for as long as both
+# existed and this mode, run with fog on, reported 0 hazards. There is no fog
+# run here for that reason: it would pass whether or not the ordering is right.
 run_sync() {
     # Either Debug build will do. What this mode needs is validation layers
     # and the machine's real queue families, not a particular preset, and a

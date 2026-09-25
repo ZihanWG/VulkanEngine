@@ -512,10 +512,12 @@ void Renderer::drawFrame()
     }
 
     // Async compute: cluster build + light cull go to the compute queue before
-    // the graphics command buffer is even recorded, so the GPU overlaps them
+    // the graphics command buffer is even recorded, so the GPU can overlap them
     // with the shadow passes (and with this CPU recording). The graphics submit
-    // below waits on the semaphore at FRAGMENT_SHADER -- the first stage that
-    // reads the cluster buffers -- so shadow/culling work is never blocked.
+    // below waits on the semaphore only at the stages that read the cluster
+    // buffers, so work ahead of those readers is not blocked by the contract --
+    // whether a driver actually starts it early is its own business (see
+    // async_compute.md).
     if (frameAsyncComputeActive_) {
         const VkCommandBuffer asyncCommandBuffer = asyncCompute_.commandBuffer(currentFrame_);
         VK_CHECK(vkResetCommandBuffer(asyncCommandBuffer, 0));
@@ -526,7 +528,8 @@ void Renderer::drawFrame()
         VK_CHECK(vkBeginCommandBuffer(asyncCommandBuffer, &asyncBeginInfo));
         rhi::debug::beginLabel(asyncCommandBuffer, "AsyncClusteredLighting");
         clusteredLighting_.recordClusterBuild(asyncCommandBuffer, currentFrame_, /*asyncQueue=*/true);
-        clusteredLighting_.recordLightCull(asyncCommandBuffer, currentFrame_, /*asyncQueue=*/true);
+        clusteredLighting_.recordLightCull(
+            asyncCommandBuffer, currentFrame_, frameClusterConsumerStages_, /*asyncQueue=*/true);
         rhi::debug::endLabel(asyncCommandBuffer);
         VK_CHECK(vkEndCommandBuffer(asyncCommandBuffer));
 
@@ -567,9 +570,11 @@ void Renderer::drawFrame()
     if (frameAsyncComputeActive_) {
         waitSemaphores[waitSemaphoreCount].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
         waitSemaphores[waitSemaphoreCount].semaphore = asyncCompute_.semaphore(currentFrame_);
-        // First stage that reads the cluster grid / light index buffers; shadow
-        // depth-only rasterization and the culling compute run unblocked.
-        waitSemaphores[waitSemaphoreCount].stageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        // Every stage that reads the cluster grid / light index buffers: the main
+        // pass's fragment shader always, and fog injection's compute dispatch
+        // when fog is on. FRAGMENT_SHADER alone left that dispatch unordered
+        // against the cull it reads.
+        waitSemaphores[waitSemaphoreCount].stageMask = frameClusterConsumerStages_;
         ++waitSemaphoreCount;
     }
 

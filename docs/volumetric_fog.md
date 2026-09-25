@@ -95,7 +95,11 @@ tiles from the punctual shadow atlas. Fog builds neither of its own.
 
 That also fixes the pass ordering. Fog injection has to run *after* the cluster
 build and light cull, because it walks their output, and *before* the main HDR
-pass, which samples the volume. It sits between them.
+pass, which samples the volume. It sits between them. Sitting after them in the
+command buffer is not what orders it, though: the light cull's barrier -- or,
+when the cluster passes run on the async compute queue, the graphics
+submission's semaphore wait -- has to name the compute stage, and for a long
+time it named only the fragment stage. See [async_compute.md](async_compute.md).
 
 The shadow lookup is deliberately simpler than the surface one in
 `simple_bindless.frag`: no normal-offset bias, no slope scaling, and a single

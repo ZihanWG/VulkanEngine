@@ -1790,6 +1790,12 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     const bool clusteredLightingActiveThisFrame = clusteredLighting_.available() && useClusteredLighting_ &&
                                                   clusteredLighting_.lightCount() > 0 && !allDrawItems_.empty();
     frameAsyncComputeActive_ = clusteredLightingActiveThisFrame && useAsyncCompute_ && asyncCompute_.available();
+    // Same reason: the async submit is built before recording, and its wait
+    // scope has to name every reader the recording will produce.
+    frameClusterConsumerStages_ = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    if (clusteredLightingActiveThisFrame && isVolumetricFogActive()) {
+        frameClusterConsumerStages_ |= VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    }
 
     // isIblBound() is part of the gate, not an optimisation: the trace subtracts
     // the specular IBL it replaces, so without those bindings it has no idea what
@@ -1871,6 +1877,7 @@ void Renderer::resetFrameStateForEmptyScene(uint32_t frameIndex)
     frameDepthPrepassActive_ = false;
     frameDepthPyramidBuildRequired_ = false;
     frameAsyncComputeActive_ = false;
+    frameClusterConsumerStages_ = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
     frameSsrActive_ = false;
     frameGtaoActive_ = false;
     frameProbeCaptureActive_ = false;

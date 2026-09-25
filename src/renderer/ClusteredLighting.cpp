@@ -338,7 +338,10 @@ void ClusteredLighting::recordClusterBuild(VkCommandBuffer commandBuffer, uint32
     submitBufferBarriers(commandBuffer, std::span<const VkBufferMemoryBarrier2>(&barrier, 1));
 }
 
-void ClusteredLighting::recordLightCull(VkCommandBuffer commandBuffer, uint32_t frameIndex, bool asyncQueue)
+void ClusteredLighting::recordLightCull(VkCommandBuffer commandBuffer,
+                                        uint32_t frameIndex,
+                                        VkPipelineStageFlags2 consumerStages,
+                                        bool asyncQueue)
 {
     if (!available_ || frameIndex >= descriptorSets_.size()) {
         return;
@@ -353,23 +356,25 @@ void ClusteredLighting::recordLightCull(VkCommandBuffer commandBuffer, uint32_t 
     vkCmdDispatch(commandBuffer, groupCount, 1, 1);
 
     // On the async compute queue the fragment stage is not a valid barrier
-    // destination; the graphics submit's semaphore wait (at FRAGMENT_SHADER)
-    // provides the cross-queue execution + memory dependency instead.
+    // destination; the graphics submit's semaphore wait, at the same
+    // consumerStages, provides the cross-queue execution + memory dependency
+    // instead.
     if (asyncQueue) {
         return;
     }
 
-    // The grid + index list are read by the main HDR fragment shader (via BDA).
+    // The grid + index list are read through BDA, so no descriptor tells the
+    // validation layer who reads them -- consumerStages is the whole record.
     const std::array<VkBufferMemoryBarrier2, 2> barriers{
         storageBufferBarrier(clusterGridBuffers_[frameIndex].buffer(),
                              VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                              VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                             VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                             consumerStages,
                              VK_ACCESS_2_SHADER_STORAGE_READ_BIT),
         storageBufferBarrier(lightIndexBuffers_[frameIndex].buffer(),
                              VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                              VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                             VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                             consumerStages,
                              VK_ACCESS_2_SHADER_STORAGE_READ_BIT),
     };
     submitBufferBarriers(commandBuffer, std::span<const VkBufferMemoryBarrier2>(barriers.data(), barriers.size()));
