@@ -253,6 +253,20 @@ atlases, the reprojected AO lookup, and the same three lookups in
 was fixed -- probe GI and the VSM depth-delta view -- which is what showed the
 atlas was one instance of a pattern rather than the whole of it.
 
+The post passes follow the same rule: the SSR trace (past its per-fragment
+early-outs and inside a march that breaks per fragment), the TAA resolve's
+history fetches (behind the per-fragment check that the reprojected UV is on
+screen), GTAO's normal fetch (past the sky early-out), and the cascade lookup in
+the legacy `simple.frag`. None of those reproduced the device loss on the same
+Intel driver -- they are there because the derivatives are undefined, not
+because a crash was seen -- and each image is single-mip under a sampler whose
+min and mag filters match, so the captures are bit-identical on the RTX. Two
+kinds of `texture()` are deliberately left alone: calls in uniform control
+flow, including branches on push constants and on `flat` inputs, which are
+constant across a quad because a quad never spans two primitives; and material
+texture fetches, which have mip chains and need the derivatives to pick a
+level.
+
 #### Why it changed, and what it cost
 
 The old filter was nine `texture()` fetches of stored depth with the comparison

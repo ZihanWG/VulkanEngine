@@ -107,7 +107,15 @@ vec3 cascadeDebugColor(int cascadeIndex)
 
 float compareShadowDepth(vec2 shadowUV, float currentDepth, float bias, int cascadeIndex)
 {
-    float closestDepth = texture(uShadowMap, vec3(shadowUV, float(cascadeIndex))).r;
+    // Explicit LOD: the cascade is chosen per fragment and sampleShadowFactor
+    // returns early per fragment, so every caller is in non-uniform control
+    // flow, where the quad derivatives an implicit-LOD texture() needs are
+    // undefined -- the pattern that lost the device on an Intel UHD 770 in
+    // simple_bindless.frag (docs/punctual_shadows.md, "Every tap takes an
+    // explicit LOD"). The cascade array is single-mip under its NEAREST/NEAREST
+    // sampler, so level 0 through the same filter is what the implicit form
+    // resolved to wherever it was defined.
+    float closestDepth = textureLod(uShadowMap, vec3(shadowUV, float(cascadeIndex)), 0.0).r;
     return currentDepth - bias <= closestDepth ? 1.0 : 0.0;
 }
 
