@@ -254,6 +254,12 @@ void Renderer::updatePunctualShadowCacheState()
     punctualShadowSlotKeys_.assign(slotCount, 0);
     punctualShadowSlotDirty_.assign(slotCount, 0);
     punctualShadowDirtySlots_.clear();
+    // Grown, never shrunk: a shrink would free the inner vectors' capacity only
+    // for the next frame with more lights to allocate it again. Entries past
+    // slotCount are stale and nothing reads them.
+    if (punctualShadowSlotCasters_.size() < slotCount) {
+        punctualShadowSlotCasters_.resize(slotCount);
+    }
 
     // The chunk size is derived from the total work, not from the slot count.
     // A slot costs O(draw items), so the useful unit here is the draw-item test,
@@ -274,7 +280,7 @@ void Renderer::updatePunctualShadowCacheState()
     // Everything the body touches outside its own slot is read-only for the
     // duration: the slot list and its frustums, allDrawItems_, frameWorldBounds_,
     // frameModelMatrices_, the skinned caster, and the resident-tile map. Each
-    // iteration writes only its own entry in the two per-slot arrays.
+    // iteration writes only its own entry in the three per-slot arrays.
     framePrepParallelFor(slotCount, minSlotsPerChunk, [this](size_t begin, size_t end) {
         for (size_t slotIndex = begin; slotIndex < end; ++slotIndex) {
             const auto slot = static_cast<uint32_t>(slotIndex);
@@ -292,13 +298,18 @@ void Renderer::updatePunctualShadowCacheState()
             cacheKey.add(shadowSettings_.rasterDepthBiasConstantFactor);
             cacheKey.add(shadowSettings_.rasterDepthBiasSlopeFactor);
 
-            // Only the casters this tile actually draws. The cull below mirrors
-            // the one in recordPunctualShadowPass exactly -- if the two ever
-            // diverge, the hash stops describing what gets drawn, so they are
-            // kept adjacent in intent even though they live in different
-            // translation units.
+            // Only the casters this tile actually draws, and the list below is
+            // literally what recordPunctualShadowPass draws on the CPU path. It
+            // used to repeat this cull on its own -- every slot against every
+            // draw item a second time, single-threaded, for a result this loop
+            // already had -- and the two had to be kept identical by hand, or
+            // the hash would describe casters the tile did not contain.
             const renderer::Frustum& slotFrustum = punctualShadows_.slotFrustum(slot);
-            for (const DrawItem& drawItem : allDrawItems_) {
+            std::vector<uint32_t>& slotCasters = punctualShadowSlotCasters_[slot];
+            slotCasters.clear();
+            const std::span<const DrawItem> drawItems(allDrawItems_);
+            for (size_t drawItemIndex = 0; drawItemIndex < drawItems.size(); ++drawItemIndex) {
+                const DrawItem& drawItem = drawItems[drawItemIndex];
                 if (!drawItem.mesh || drawItem.frameDataIndex >= kMaxDrawItems || drawItem.indexCount == 0) {
                     continue;
                 }
@@ -314,6 +325,7 @@ void Renderer::updatePunctualShadowCacheState()
                 cacheKey.add(drawItem.firstIndex);
                 cacheKey.add(drawItem.indexCount);
                 cacheKey.add(frameModelMatrices_[drawItem.objectIndex]);
+                slotCasters.push_back(static_cast<uint32_t>(drawItemIndex));
             }
 
             // The skinned caster, on the same rule and for the same reason as
