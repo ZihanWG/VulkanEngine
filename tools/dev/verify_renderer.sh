@@ -92,12 +92,21 @@ run_sync() {
     printf '%s\n' '[verify] renderer under synchronization validation: default scene'
     "$binary" --deterministic --exit-after-frames 40 --sync-validation --fail-on-validation-error
 
-    if [[ -f "$VERIFY_ROOT/build/fetched-assets/sponza/Sponza.gltf" ]]; then
+    # The asset is fetched once into a directory every preset shares, but only a
+    # build configured with the flag compiles the scene in; any other exits 4 on
+    # --scene sponza. Ask the chosen binary's own cache rather than fall back to
+    # a different build, which may be stale and would gate the wrong code.
+    local cache
+    cache="$(dirname "$binary")/CMakeCache.txt"
+    if [[ ! -f "$VERIFY_ROOT/build/fetched-assets/sponza/Sponza.gltf" ]]; then
+        printf '%s\n' '[verify] sync: skipping --scene sponza, asset not fetched'
+    elif ! grep -q '^VULKAN_ENGINE_FETCH_SAMPLE_SCENE:BOOL=ON$' "$cache" 2>/dev/null; then
+        printf '[verify] sync: skipping --scene sponza, %s was configured without VULKAN_ENGINE_FETCH_SAMPLE_SCENE\n' \
+            "${cache#"$VERIFY_ROOT/"}"
+    else
         printf '%s\n' '[verify] renderer under synchronization validation: --scene sponza'
         "$binary" --deterministic --exit-after-frames 40 --sync-validation --fail-on-validation-error \
             --scene sponza
-    else
-        printf '%s\n' '[verify] sync: skipping --scene sponza, asset not fetched'
     fi
 }
 
