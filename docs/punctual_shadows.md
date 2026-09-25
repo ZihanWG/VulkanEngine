@@ -321,9 +321,11 @@ three runs of each configuration measured the atlas pass's *recording* time:
 
 That is a 94% cut to this pass's recording and a ~60% cut to the frame's total
 recording, on a scene where CPU frame work already exceeds the GPU frame. The
-`~40us` in the table above was the demo scene; this pass is the single largest
+`~40us` in the table above was the demo scene; this pass was the single largest
 recording cost in the frame once the scene is big enough to matter, which is what
-`Record CPU by unit` in the log now shows directly.
+`Record CPU by unit` in the log now shows directly. It no longer is: most of that
+cost turned out to be a redundant second cull, removed on the CPU path itself --
+see "The CPU path stopped culling twice" below.
 
 **The blended-caster trap described below is already handled, and the note about
 "no spare field" is stale.** The mask exists: `punctualShadowCasterFlags_` is built
@@ -543,6 +545,47 @@ then. Without a separate per-draw-item caster mask, enabling GPU culling
 silently reintroduces alpha-blended geometry casting opaque shadows — a bug this
 engine already had and fixed once.
 
+### The CPU path stopped culling twice, and that trade went away
+
+Most of the ~0.31 ms the GPU cull removes from recording was not recording. The
+cache-key build in frame prep already culled every slot against every draw item
+to decide what to hash, and `recordPunctualShadowPass` then ran the identical
+cull again -- single-threaded, 25 slots x 2322 draw items on `--scene stress`,
+about 58k frustum tests to find roughly 220 draws. That scene redraws all 25
+tiles every frame, so the cache never spares it.
+
+The key build now keeps each slot's surviving draw-item indices, and the CPU
+path draws that list. The same change removes the hazard described under
+Caching below: the hash and the draws are one list, not two culls kept equal by
+hand.
+
+RTX 3080 Ti Laptop, `--scene stress`, 1280x720, Release, three A/B pairs
+alternated after a discarded warm-up run, p10 of the per-second log blocks:
+
+| | before | after |
+| --- | --- | --- |
+| Atlas unit record CPU | 0.342 / 0.364 / 0.431 ms | 0.021 / 0.019 / 0.023 ms |
+| Whole-frame record CPU | 0.573 / 0.566 / 0.661 ms | 0.292 / 0.248 / 0.297 ms |
+| `punctual shadow cache` prep scope | 0.149 / 0.153 / 0.177 ms | 0.172 / 0.174 / 0.223 ms |
+
+Clocks were not pinned and the control moved by up to 27% between its own runs,
+which is why only the first two rows are claims: each drop is three to four
+times the largest control-to-control movement in its row, and all three pairs
+agree. The prep scope rises in all three pairs, but by 0.021-0.046 ms against a
+control that itself moved 0.028 ms, so read it as roughly +0.02 ms paid for
+-0.3 ms rather than as a measured cost.
+
+Frames are unchanged: `--deterministic --capture-frame 30` is 0/921600 pixels
+different from the previous build on `default`, `stress` and `sunlit`, on the
+CPU path and with `punctual-gpu-cull.json`. The gate can fire -- disabling
+punctual shadows moves 4.8%, 0.52% and 4.7% of those same frames.
+
+**The CPU path now records the atlas at the cost GPU culling does** (0.019-0.022
+ms in the tables above), without the +0.8-1.6% of GPU frame that path adds. On
+this scene the GPU cull no longer buys anything the CPU path does not already
+have, which makes its default-off status the right answer on performance as
+well as correctness.
+
 ## Caching
 
 Every allocated tile used to re-render every frame, including for a static light
@@ -592,9 +635,10 @@ that is either complete or not. What is hashed:
 | Raster depth bias settings | Pipeline state the tiles are rendered with |
 
 Only the casters that survive *that tile's* frustum cull are hashed, and that
-cull mirrors the one the recording pass performs. If the two ever diverge the
-hash stops describing what actually gets drawn, which is the one way this can
-silently go wrong.
+cull's result is the list the CPU recording path draws. It used to be a second,
+separate cull in the recording pass that had to be kept identical by hand, since
+a divergence would make the hash stop describing what actually gets drawn; one
+list makes that divergence impossible rather than merely unlikely.
 
 The per-slot frustum cull is a pure function of the slot projections and caster
 transforms, so its result needs no separate hashing. Floats are hashed by exact

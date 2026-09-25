@@ -1592,6 +1592,12 @@ private:
     std::vector<uint8_t> punctualShadowSlotDirty_;
     // Which slots actually need redrawing this frame, in ascending slot order.
     std::vector<uint32_t> punctualShadowDirtySlots_;
+    // Per-slot casters, as indices into allDrawItems_: what the key build found
+    // inside each slot's frustum, and what the CPU atlas path then draws. One
+    // cull feeding both, so the hash cannot describe a different set of casters
+    // from the one recorded. Indexed by slot and written by the same parallel
+    // chunk as that slot's key; the inner vectors keep their capacity.
+    std::vector<std::vector<uint32_t>> punctualShadowSlotCasters_;
     // What the atlas currently holds, keyed by *tile rect* rather than slot
     // index. Slot indices shift between frames as lights are reordered, but a
     // tile is a fixed region of the image: if the tile at rect R holds the

@@ -556,24 +556,20 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuC
             continue;
         }
 
-        const renderer::Frustum& slotFrustum = punctualShadows_.slotFrustum(slot);
-
-        for (const DrawItem& drawItem : allDrawItems_) {
-            if (!drawItem.mesh || drawItem.frameDataIndex >= kMaxDrawItems || drawItem.indexCount == 0) {
+        // The casters updatePunctualShadowCacheState found inside this slot's
+        // frustum while hashing it -- already past the null-mesh, index-count and
+        // Blend filters (blended geometry writes no depth in the main pass, so
+        // it must not cast an opaque shadow here). Drawing from that list rather
+        // than culling again is what makes the tile's key and its contents one
+        // fact instead of two that have to agree.
+        if (slot >= punctualShadowSlotCasters_.size()) {
+            continue;
+        }
+        for (const uint32_t drawItemIndex : punctualShadowSlotCasters_[slot]) {
+            if (drawItemIndex >= allDrawItems_.size()) {
                 continue;
             }
-            // Blended geometry does not write depth in the main pass, so letting
-            // it cast an opaque shadow here would be wrong.
-            if (drawItem.bucket == RenderBucket::Blend) {
-                continue;
-            }
-            // CPU cull against the slot's own frustum. With one tile per light
-            // this is a handful of sphere tests per slot; moving punctual slots
-            // onto the existing GPU shadow-cull path is a follow-up.
-            if (drawItem.objectIndex < frameWorldBounds_.size() &&
-                !slotFrustum.testAabb(frameWorldBounds_[drawItem.objectIndex])) {
-                continue;
-            }
+            const DrawItem& drawItem = allDrawItems_[drawItemIndex];
 
             PunctualShadowPushConstants pushConstants{};
             // Offsetting the base address per draw lets the vertex stage read
