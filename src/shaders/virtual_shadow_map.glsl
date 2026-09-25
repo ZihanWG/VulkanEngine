@@ -252,7 +252,7 @@ float vsmProbeStoredDepth(sampler2DShadow pagePool, vec2 poolUv)
     float hi = 1.0;
     for (int iteration = 0; iteration < 16; ++iteration) {
         float mid = 0.5 * (lo + hi);
-        if (texture(pagePool, vec3(poolUv, mid)) >= 0.5) {
+        if (textureLod(pagePool, vec3(poolUv, mid), 0.0) >= 0.5) {
             lo = mid;
         } else {
             hi = mid;
@@ -361,7 +361,12 @@ float vsmShadowFactorLevel(FrameConstants frame,
                 vec2 offset = vec2(float(x), float(y)) * (poolTexel / poolRect.z);
                 vec2 clamped = clamp(pageUv + offset, vec2(halfTexel), vec2(1.0 - halfTexel));
                 vec2 poolUv = poolRect.xy + clamped * poolRect.zw;
-                litSamples += texture(pagePool, vec3(poolUv, depth));
+                // Explicit LOD: the level loop above exits per fragment, so this
+                // is non-uniform control flow, where implicit-LOD derivatives are
+                // undefined -- an Intel UHD 770 lost the device here. The pool is
+                // single-mip under a LINEAR/LINEAR compare sampler, so level 0 is
+                // what the implicit form resolved to wherever it was defined.
+                litSamples += textureLod(pagePool, vec3(poolUv, depth), 0.0);
                 sampleCount += 1.0;
             }
         }

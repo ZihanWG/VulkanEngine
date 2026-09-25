@@ -278,7 +278,16 @@ float compareShadowDepth(vec2 shadowUV, float currentDepth, float bias, int casc
 {
     // The reference value rides in .w; the hardware does the compare and the
     // bilinear weighting of its four results in one fetch.
-    return texture(uShadowMapCompare, vec4(shadowUV, float(cascadeIndex), currentDepth - bias));
+    //
+    // Zero gradients rather than texture(): the cascade is chosen per fragment,
+    // so callers reach this in non-uniform control flow, where implicit-LOD
+    // derivatives are undefined (see punctualShadowFactor for the device loss
+    // that cost). Core GLSL has no textureLod for sampler2DArrayShadow; zero
+    // gradients select level 0 just the same, and the array has one mip under
+    // LINEAR min and mag filters, so the result is unchanged wherever the
+    // implicit form was defined.
+    return textureGrad(uShadowMapCompare, vec4(shadowUV, float(cascadeIndex), currentDepth - bias), vec2(0.0),
+                       vec2(0.0));
 }
 
 float sampleShadowFactor(vec3 normal, int cascadeIndex)
@@ -363,7 +372,7 @@ float probeCascadeStoredDepth(vec2 shadowUV, int cascadeIndex)
     float hi = 1.0;
     for (int iteration = 0; iteration < 16; ++iteration) {
         float mid = 0.5 * (lo + hi);
-        if (texture(uShadowMapCompare, vec4(shadowUV, float(cascadeIndex), mid)) >= 0.5) {
+        if (textureGrad(uShadowMapCompare, vec4(shadowUV, float(cascadeIndex), mid), vec2(0.0), vec2(0.0)) >= 0.5) {
             lo = mid;
         } else {
             hi = mid;
@@ -543,16 +552,19 @@ vec3 sampleProbeIrradiance(vec3 worldPosition, vec3 normal, vec3 viewDirection)
         weight *= wrapped * wrapped + kProbeBackfaceFloor;
 
         // Visibility from the probe's own stored depth.
-        vec2 moments = texture(uProbeDepthAtlas, probeAtlasUv(probeIndex, -directionToProbe,
-                                                              kProbeDepthResolution)).rg;
+        // Explicit LOD: this loop continues past zero-weight probes per fragment,
+        // so its fetches are in non-uniform control flow (see
+        // punctualShadowFactor). The atlases are single-mip with maxLod 0.
+        vec2 moments = textureLod(uProbeDepthAtlas, probeAtlasUv(probeIndex, -directionToProbe,
+                                                                 kProbeDepthResolution), 0.0).rg;
         weight *= probeChebyshevVisibility(moments, distanceToProbe);
 
         if (weight <= 0.0) {
             continue;
         }
 
-        total += texture(uProbeIrradianceAtlas, probeAtlasUv(probeIndex, normal,
-                                                             kProbeIrradianceResolution)).rgb * weight;
+        total += textureLod(uProbeIrradianceAtlas, probeAtlasUv(probeIndex, normal,
+                                                                kProbeIrradianceResolution), 0.0).rgb * weight;
         totalWeight += weight;
     }
 
@@ -739,12 +751,21 @@ float punctualShadowFactor(GpuLight light, vec3 worldPosition, vec3 normal)
     vec2 compareMin = tileMin + vec2(texel);
     vec2 compareMax = max(tileMax - vec2(texel), compareMin);
 
+    // Explicit LOD, never texture(). This runs inside the clustered light loop,
+    // behind per-light early-outs, so the four lanes of a quad are routinely in
+    // different iterations or have already returned -- non-uniform control
+    // flow, where implicit-LOD derivatives are undefined. NVIDIA tolerated it.
+    // An Intel UHD 770 (driver 101.4146) faulted on the first frame that
+    // sampled the atlas: the whole frame went black and the next submit
+    // returned VK_ERROR_DEVICE_LOST. The atlas has one mip level and the
+    // compare sampler's min and mag filters are both LINEAR, so level 0 is
+    // exactly what the implicit form resolved to wherever it was defined.
     float litSamples = 0.0;
     for (int y = 0; y < 2; ++y) {
         for (int x = 0; x < 2; ++x) {
             vec2 offset = (vec2(float(x), float(y)) - 0.5) * texel;
             vec2 sampleUv = clamp(atlasUv + offset, compareMin, compareMax);
-            litSamples += texture(uPunctualShadowAtlasCompare, vec3(sampleUv, currentDepth));
+            litSamples += textureLod(uPunctualShadowAtlasCompare, vec3(sampleUv, currentDepth), 0.0);
         }
     }
 
@@ -993,8 +1014,12 @@ void main()
         vec2 aoUv = screenUv - computeVelocity();
         float occlusion = 1.0;
         if (aoUv == clamp(aoUv, vec2(0.0), vec2(1.0))) {
-            occlusion =
-                texture(uAmbientOcclusion, veSubRectUv(aoUv, pc.aoUvScale, vec2(textureSize(uAmbientOcclusion, 0)))).r;
+            // Explicit LOD: this branch is taken per fragment, so the fetch is in
+            // non-uniform control flow (see punctualShadowFactor). Single mip.
+            occlusion = textureLod(uAmbientOcclusion,
+                                   veSubRectUv(aoUv, pc.aoUvScale, vec2(textureSize(uAmbientOcclusion, 0))),
+                                   0.0)
+                            .r;
         }
         ambientDiffuse *= mix(1.0, occlusion, clamp(pc.aoAmbientStrength, 0.0, 1.0));
     }
