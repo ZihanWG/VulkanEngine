@@ -183,7 +183,7 @@ struct SsaoSettings {
     int sliceCount = 3;     // GTAO slices swept around the view direction
     int stepsPerSlice = 6;  // horizon-march steps per slice, per side
     float falloff = 0.6f;   // 0..1 fraction of the radius over which samples fade
-    float thickness = 0.5f; // view-space thickness heuristic (reserved for denoise)
+    float thickness = 0.5f; // scales the upsample's depth rejection (gtao_blur.frag); the trace ignores it
     // Applies occlusion to the ambient/indirect term inside the main pass rather
     // than multiplying the whole composited scene colour. The multiply darkens
     // direct lighting too, which is physically wrong -- a crease in full sunlight

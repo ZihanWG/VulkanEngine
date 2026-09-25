@@ -384,6 +384,12 @@ void Renderer::drawToneMappingDebugUi()
     ImGui::DragFloat("Adaptation rate", &toneMappingSettings_.adaptationRate, 0.01f, 0.0f, 16.0f, "%.3f");
     ImGui::SliderFloat("Histogram low percentile", &toneMappingSettings_.lowPercentile, 0.0f, 1.0f, "%.3f");
     ImGui::SliderFloat("Histogram high percentile", &toneMappingSettings_.highPercentile, 0.0f, 1.0f, "%.3f");
+    ImGui::DragFloat(
+        "Histogram min log2 luminance", &toneMappingSettings_.histogramMinLogLuminance, 0.05f, -20.0f, 20.0f, "%.2f");
+    ImGui::DragFloat(
+        "Histogram max log2 luminance", &toneMappingSettings_.histogramMaxLogLuminance, 0.05f, -20.0f, 20.0f, "%.2f");
+    ImGui::SetItemTooltip("The luminance range the histogram's bins span. Anything outside it\n"
+                          "lands in the end bins; an inverted range is sanitised where it is used.");
 }
 
 void Renderer::drawBloomDebugUi()
@@ -785,6 +791,20 @@ void Renderer::drawShadowsDebugUi()
         }
         ImGui::SetItemTooltip("Above 1 asks for coarser levels (fewer, larger pages); below 1 asks\n"
                               "for finer ones. This is the single biggest lever on the page count.");
+        if (ImGui::DragFloat("Depth range (m)",
+                             &vsmSettings_.depthRange,
+                             1.0f,
+                             1.0f,
+                             100000.0f,
+                             "%.0f",
+                             ImGuiSliderFlags_Logarithmic)) {
+            clampRuntimeSettings();
+            vsmPeakRequestedPages_ = 0;
+        }
+        ImGui::SetItemTooltip("Half-thickness of every level's depth range along the light, in world\n"
+                              "units. Casters outside it do not shadow; a longer range spreads the\n"
+                              "depth precision thinner. A change drops every resident page, since\n"
+                              "each one's depth mapping moved.");
         int stride = static_cast<int>(vsmSettings_.markBlockStride);
         if (ImGui::SliderInt("Mark block stride (px)", &stride, 1, 32)) {
             vsmSettings_.markBlockStride = static_cast<uint32_t>(stride);
@@ -1341,6 +1361,10 @@ void Renderer::drawGpuCullingDebugUi()
     }
     ImGui::Checkbox("GPU occlusion culling enabled", &useGpuOcclusionCulling_);
     ImGui::Checkbox("Two-phase occlusion (Hi-Z re-test)", &useTwoPhaseOcclusion_);
+    ImGui::Checkbox("Adaptive occlusion (suspend when it culls nothing)", &useAdaptiveOcclusion_);
+    ImGui::SetItemTooltip("Stops building the Hi-Z pyramid after 60 tested frames that culled\n"
+                          "nothing, and probes every 180 frames to notice when it would pay again.\n"
+                          "Off keeps occlusion running every frame, whatever it yields.");
     ImGui::SliderFloat("Occlusion depth bias", &gpuOcclusionDepthBias_, 0.0f, 0.05f, "%.4f");
     ImGui::SliderFloat("Near-object skip distance", &gpuOcclusionNearDisableDistance_, 0.0f, 10.0f, "%.2f");
     ImGui::SliderFloat("Max occlusion screen coverage", &gpuOcclusionMaxScreenCoverage_, 0.01f, 1.0f, "%.2f");
@@ -1597,6 +1621,7 @@ void Renderer::drawSsrDebugUi()
     changed |= ImGui::SliderFloat("Thickness##ssr", &ssrSettings_.thickness, 0.01f, 2.0f, "%.3f");
     changed |= ImGui::SliderFloat("Intensity##ssr", &ssrSettings_.intensity, 0.0f, 4.0f, "%.2f");
     changed |= ImGui::SliderFloat("Max roughness##ssr", &ssrSettings_.maxRoughness, 0.05f, 1.0f, "%.2f");
+    changed |= ImGui::SliderFloat("Screen edge fade##ssr", &ssrSettings_.screenEdgeFade, 0.01f, 0.49f, "%.2f");
     if (changed) {
         clampRuntimeSettings();
     }
