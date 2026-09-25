@@ -208,4 +208,24 @@ Aabb skinnedWorldBounds(std::span<const Aabb> jointBindBounds,
     return bounds.transform(model);
 }
 
+std::span<const glm::mat4> JointPaletteHistory::advance(std::span<const glm::mat4> current)
+{
+    if (!hasPrevious_ || previous_.size() != current.size()) {
+        previous_.assign(current.begin(), current.end());
+    }
+    // Swap rather than copy: returned_ takes the remembered palette, and its old
+    // storage is reused to remember this one.
+    std::swap(previous_, returned_);
+    previous_.assign(current.begin(), current.end());
+    hasPrevious_ = true;
+    return returned_;
+}
+
+void JointPaletteHistory::reset()
+{
+    previous_.clear();
+    returned_.clear();
+    hasPrevious_ = false;
+}
+
 } // namespace ve::renderer

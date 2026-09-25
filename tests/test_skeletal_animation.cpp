@@ -5,12 +5,15 @@
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <span>
+#include <vector>
 
 using ve::renderer::AnimationChannel;
 using ve::renderer::AnimationClip;
 using ve::renderer::AnimationPath;
 using ve::renderer::computeJointMatrices;
 using ve::renderer::computeJointMatricesAtTime;
+using ve::renderer::JointPaletteHistory;
 using ve::renderer::JointPose;
 using ve::renderer::sampleQuatChannel;
 using ve::renderer::sampleVec3Channel;
@@ -266,4 +269,86 @@ TEST_CASE("An empty rig produces an invalid bound rather than a huge one", "[ski
     // Invalid is the honest answer, and callers skip it. A zero-size box at the
     // origin would be a bound that silently covers nothing while looking real.
     CHECK_FALSE(bounds.valid());
+}
+
+namespace {
+
+std::vector<glm::mat4> translatedPalette(size_t jointCount, float offset)
+{
+    std::vector<glm::mat4> palette(jointCount);
+    for (size_t joint = 0; joint < jointCount; ++joint) {
+        palette[joint] = glm::translate(glm::mat4(1.0f), glm::vec3(offset + static_cast<float>(joint), 0.0f, 0.0f));
+    }
+    return palette;
+}
+
+} // namespace
+
+TEST_CASE("The first palette is its own previous one", "[skinning][velocity]")
+{
+    JointPaletteHistory history;
+    const std::vector<glm::mat4> first = translatedPalette(3, 1.0f);
+
+    // Nothing came before it, so the honest velocity is zero joint motion --
+    // not a velocity measured from an identity or zeroed palette, which would
+    // smear the whole mesh on its first frame.
+    const std::span<const glm::mat4> previous = history.advance(first);
+    REQUIRE(previous.size() == first.size());
+    for (size_t joint = 0; joint < first.size(); ++joint) {
+        CHECK(previous[joint] == first[joint]);
+    }
+}
+
+TEST_CASE("Each frame's previous palette is the one before it", "[skinning][velocity]")
+{
+    JointPaletteHistory history;
+    const std::vector<glm::mat4> frame0 = translatedPalette(4, 0.0f);
+    const std::vector<glm::mat4> frame1 = translatedPalette(4, 10.0f);
+    const std::vector<glm::mat4> frame2 = translatedPalette(4, 20.0f);
+
+    (void)history.advance(frame0);
+    // Copied out before the next advance(), which reuses the storage behind the
+    // returned span.
+    const std::span<const glm::mat4> lag1 = history.advance(frame1);
+    const std::vector<glm::mat4> previousAt1(lag1.begin(), lag1.end());
+    const std::span<const glm::mat4> previousAt2 = history.advance(frame2);
+
+    // Lagging by exactly one frame, never two: a history that fell a frame
+    // further behind would still produce plausible-looking, too-large motion.
+    REQUIRE(previousAt1.size() == frame0.size());
+    REQUIRE(previousAt2.size() == frame1.size());
+    for (size_t joint = 0; joint < frame0.size(); ++joint) {
+        CHECK(previousAt1[joint] == frame0[joint]);
+        CHECK(previousAt2[joint] == frame1[joint]);
+    }
+}
+
+TEST_CASE("A changed joint count is treated as having no previous pose", "[skinning][velocity]")
+{
+    JointPaletteHistory history;
+    (void)history.advance(translatedPalette(2, 0.0f));
+
+    // A different rig: its joint 1 need not be the old rig's joint 1, so
+    // pairing them would produce a velocity between two unrelated bones.
+    const std::vector<glm::mat4> rebuilt = translatedPalette(5, 7.0f);
+    const std::span<const glm::mat4> previous = history.advance(rebuilt);
+    REQUIRE(previous.size() == rebuilt.size());
+    for (size_t joint = 0; joint < rebuilt.size(); ++joint) {
+        CHECK(previous[joint] == rebuilt[joint]);
+    }
+}
+
+TEST_CASE("reset() forgets the previous palette", "[skinning][velocity]")
+{
+    JointPaletteHistory history;
+    (void)history.advance(translatedPalette(3, 0.0f));
+    history.reset();
+
+    // Same joint count as before the reset, so only reset() can be what makes
+    // this read as a first frame.
+    const std::vector<glm::mat4> after = translatedPalette(3, 50.0f);
+    const std::span<const glm::mat4> previous = history.advance(after);
+    for (size_t joint = 0; joint < after.size(); ++joint) {
+        CHECK(previous[joint] == after[joint]);
+    }
 }

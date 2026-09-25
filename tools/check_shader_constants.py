@@ -87,6 +87,14 @@ PAIRS: list[tuple[str, str, list[str]]] = [
             "kProbeBackfaceFloor",
         ],
     ),
+    # The palette buffer's two halves. A mismatched offset would not fail to
+    # build: the main pass would read its previous pose from the wrong matrices
+    # and the velocity buffer would carry motion that never happened.
+    (
+        "src/renderer/SkeletalAnimation.h",
+        "src/shaders/joint_palette.glsl",
+        ["kMaxSkinJoints", "kSkinPreviousPaletteOffset"],
+    ),
 ]
 
 # Constants whose two copies deliberately carry different names, as

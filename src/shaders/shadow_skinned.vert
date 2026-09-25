@@ -21,9 +21,7 @@
 
 #include "object_frame_data.glsl"
 
-layout(buffer_reference, std430) readonly buffer JointPalette {
-    mat4 jointMatrices[];
-};
+#include "joint_palette.glsl"
 
 // The mat4 sits at offset 16, not 8: push-constant layout rounds the 8-byte
 // buffer reference up to the matrix's 16-byte alignment. The palette reference

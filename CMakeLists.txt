@@ -538,6 +538,7 @@ set(SHADER_INCLUDES
     "${SHADER_SOURCE_DIR}/virtual_shadow_map.glsl"
     "${SHADER_SOURCE_DIR}/irradiance_probes.glsl"
     "${SHADER_SOURCE_DIR}/volumetric_fog.glsl"
+    "${SHADER_SOURCE_DIR}/joint_palette.glsl"
 )
 
 if(GLSLC_EXECUTABLE)

@@ -113,4 +113,45 @@ computeJointMatricesAtTime(const Skeleton& skeleton, const AnimationClip& clip, 
                                       std::span<const glm::mat4> jointMatrices,
                                       const glm::mat4& model);
 
+// --- Previous-frame palette, for motion vectors -------------------------------
+//
+// The velocity buffer needs where a vertex was last frame as well as where it
+// is. For a rigid object the previous model matrix answers that; a skinned
+// vertex also moves with its joints while the model matrix holds still, so it
+// needs last frame's palette too.
+//
+// Each per-frame palette buffer carries both, this frame's matrices first and
+// the previous frame's at kSkinPreviousPaletteOffset. Keeping the pair inside
+// one buffer is what makes it safe to read: that buffer is guarded by its own
+// frame slot's fence, where reading "last frame's" slot instead would race the
+// CPU rewriting it for the frame after -- and with one frame in flight there
+// is no other slot at all. Mirrored in joint_palette.glsl.
+inline constexpr uint32_t kMaxSkinJoints = 64;
+inline constexpr uint32_t kSkinPreviousPaletteOffset = kMaxSkinJoints;
+static_assert(kSkinPreviousPaletteOffset >= kMaxSkinJoints,
+              "the previous palette must start past the last current joint, or the halves overlap");
+
+// Remembers the palette last passed to advance(), so the next frame can upload
+// it as the previous one.
+class JointPaletteHistory {
+public:
+    // Returns the palette to upload as the previous frame's, then remembers
+    // `current` for the next call. With nothing to compare against -- the first
+    // call after reset(), or a joint count that changed -- it returns `current`
+    // itself: zero joint motion is the honest answer there, where a palette
+    // from an unrelated pose would be a large, wrong velocity.
+    //
+    // The returned span stays valid until the next advance() or reset().
+    [[nodiscard]] std::span<const glm::mat4> advance(std::span<const glm::mat4> current);
+
+    // Forget the previous palette. For a rebuilt rig, whose joints need not mean
+    // what the remembered matrices meant.
+    void reset();
+
+private:
+    std::vector<glm::mat4> previous_;
+    std::vector<glm::mat4> returned_;
+    bool hasPrevious_ = false;
+};
+
 } // namespace ve::renderer

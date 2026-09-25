@@ -26,9 +26,7 @@
 
 #include "object_frame_data.glsl"
 
-layout(buffer_reference, std430) readonly buffer JointPalette {
-    mat4 jointMatrices[];
-};
+#include "joint_palette.glsl"
 
 // Three buffer references and nothing else. The non-layered variant's mat4 is
 // gone -- that is the entire point of this shader -- so the layout is a plain
