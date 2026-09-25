@@ -2312,6 +2312,11 @@ RuntimeSettings Renderer::captureRuntimeSettings() const
     settings.useClusteredLighting = useClusteredLighting_;
     settings.enableAsyncCompute = useAsyncCompute_;
     settings.enableBindlessMaterialTextures = useBindlessMaterialTextures_;
+    // Both were saved without being captured, so Save Settings wrote their
+    // defaults over whatever the file said. tools/check_settings_capture.py now
+    // fails the build when a field is missing from here or from the apply above.
+    settings.enableShaderHotReload = shaderHotReloadEnabled_;
+    settings.framesInFlight = framesInFlight_;
     return settings;
 }
 
