@@ -9,9 +9,7 @@
 // ve::PushConstants::jointMatricesAddress).
 
 #include "object_frame_data.glsl"
-layout(buffer_reference, std430) readonly buffer JointPalette {
-    mat4 jointMatrices[];
-};
+#include "joint_palette.glsl"
 
 layout(push_constant) uniform PushConstants {
     ObjectFrameDataBuffer objectFrameData;
@@ -122,9 +120,20 @@ void main()
     vCascadeCount = uint(max(pc.frameConstants.values.cameraForward.w, 1.0) + 0.5);
     vCascadeDebugEnabled = pc.frameConstants.values.cameraPosition.w;
     vEmissiveFactor = objectData.emissiveFactor;
-    // Motion vectors reuse this frame's skinned position for both projections,
-    // so they capture camera + rigid object motion but not joint-space motion
-    // (that would need the previous frame's joint palette).
+    // Motion vectors: the previous position is this vertex skinned by last
+    // frame's palette and projected by last frame's model and view-projection,
+    // so they carry joint-space motion as well as camera and rigid object
+    // motion. The previous palette sits in the same buffer at
+    // kSkinPreviousPaletteOffset; on a first frame it equals the current one,
+    // which reads as zero joint motion. Position only -- nothing downstream
+    // wants the previous normal.
+    const uint prev = kSkinPreviousPaletteOffset;
+    mat4 prevSkinMatrix = inJointWeights.x * pc.jointPalette.jointMatrices[prev + inJointIndices.x] +
+                          inJointWeights.y * pc.jointPalette.jointMatrices[prev + inJointIndices.y] +
+                          inJointWeights.z * pc.jointPalette.jointMatrices[prev + inJointIndices.z] +
+                          inJointWeights.w * pc.jointPalette.jointMatrices[prev + inJointIndices.w];
+    vec4 prevSkinnedPosition = prevSkinMatrix * vec4(inPosition, 1.0);
+
     vCurrClipPos = pc.frameConstants.values.viewProjection * worldPosition;
-    vPrevClipPos = objectData.prevMvpNoJitter * skinnedPosition;
+    vPrevClipPos = objectData.prevMvpNoJitter * prevSkinnedPosition;
 }

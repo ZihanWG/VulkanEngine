@@ -46,9 +46,15 @@ render-extent `R16G16_SFLOAT` velocity buffer holding UV-space motion vectors
   frame submission and stores the unjittered view-projection plus each
   `RenderObject::previousModelMatrix`. After a history reset the first frame
   reprojects with zero motion.
-- **Skinned meshes**: velocity uses the current frame's skinned position with the
-  previous rigid MVP, so it captures camera + rigid object motion but not
-  joint-space motion (that would need the previous frame's joint palette).
+- **Skinned meshes**: the previous clip position is the vertex skinned by the
+  *previous* frame's joint palette and projected by the previous rigid MVP, so
+  velocity carries joint-space motion as well as camera and rigid object motion.
+  Each per-frame palette buffer holds both palettes -- this frame's, then the
+  previous frame's at `kSkinPreviousPaletteOffset` -- so the pair is guarded by
+  the one fence that already guards the slot. Reading the previous frame's
+  *slot* instead would race the CPU rewriting it for the next frame, and with
+  one frame in flight there is no other slot. A rebuilt rig, or the first frame,
+  reports zero joint motion rather than a velocity from an unrelated pose.
 - **Skybox**: the fragment shader projects the view direction with `w = 0` through
   the previous view-projection (translation drops out), producing rotation-only sky
   motion — correct for an infinitely distant environment.
@@ -199,7 +205,9 @@ whether the pixel has the surface on it at all.
 
 ## Limitations
 
-- Skinned joint-space motion is not captured (previous-palette velocity is future work).
+- Skinned velocity reflects the pose last *uploaded*, which is the pose last
+  rendered except across a frame that advanced the animation and then did not
+  submit (a swapchain recreate). That frame's motion is folded into the next one.
 - No confidence weighting from the reconstruction: an output pixel that no
   sample landed near is blended the same as one a sample landed on.
 - Not FSR2 or DLSS. The upsampling here is reconstruction plus the existing

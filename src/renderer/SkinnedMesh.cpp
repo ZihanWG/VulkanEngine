@@ -69,11 +69,14 @@ void SkinnedMesh::buildBuffers(rhi::VulkanContext& context,
         context, commandContext, std::as_bytes(skinning), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
     indexBuffer_.createDeviceLocal(context, commandContext, std::as_bytes(indices), VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
 
+    // A rebuilt rig starts with no previous pose: its joints need not mean what
+    // the old rig's did, so the first frame reports zero joint motion.
+    paletteHistory_.reset();
     paletteBuffers_.clear();
     paletteBuffers_.resize(frameCount);
     for (uint32_t frameIndex = 0; frameIndex < frameCount; ++frameIndex) {
         rhi::VulkanBufferCreateInfo bufferInfo{};
-        bufferInfo.size = static_cast<VkDeviceSize>(kMaxJoints) * sizeof(glm::mat4);
+        bufferInfo.size = static_cast<VkDeviceSize>(kSkinPreviousPaletteOffset + kMaxJoints) * sizeof(glm::mat4);
         bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
         bufferInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
         bufferInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
@@ -275,7 +278,14 @@ void SkinnedMesh::update(uint32_t frameIndex, float timeSeconds)
     key.addBytes(jointMatrices.data(), jointMatrices.size() * sizeof(glm::mat4));
     poseHash_ = key.value();
 
-    paletteBuffers_[frameIndex].upload(std::as_bytes(std::span<const glm::mat4>(jointMatrices)));
+    // Both halves go into this slot's own buffer, which this slot's fence
+    // already guards. Taking the previous palette from the previous slot's
+    // buffer would race the CPU rewriting it for the frame after this one.
+    const std::span<const glm::mat4> previousMatrices = paletteHistory_.advance(jointMatrices);
+    rhi::VulkanBuffer& palette = paletteBuffers_[frameIndex];
+    palette.upload(std::as_bytes(std::span<const glm::mat4>(jointMatrices)));
+    palette.upload(std::as_bytes(previousMatrices),
+                   static_cast<VkDeviceSize>(kSkinPreviousPaletteOffset) * sizeof(glm::mat4));
 }
 
 VkDeviceAddress SkinnedMesh::jointPaletteAddress(uint32_t frameIndex) const

@@ -42,7 +42,7 @@ struct SkinningVertex {
 
 class SkinnedMesh final {
 public:
-    static constexpr uint32_t kMaxJoints = 64;
+    static constexpr uint32_t kMaxJoints = kMaxSkinJoints;
 
     // Builds the procedural bone-chain demo.
     void create(rhi::VulkanContext& context, const rhi::VulkanCommandContext& commandContext, uint32_t frameCount);
@@ -57,7 +57,8 @@ public:
 
     // Recomputes the joint-matrix palette for the frame and uploads it to
     // paletteBuffers_[frameIndex]: samples the imported clip when one is loaded,
-    // otherwise the procedural bend.
+    // otherwise the procedural bend. The previous frame's palette goes into the
+    // same buffer at kSkinPreviousPaletteOffset, for the velocity buffer.
     void update(uint32_t frameIndex, float timeSeconds);
 
     [[nodiscard]] bool usesImportedClip() const
@@ -139,7 +140,10 @@ private:
     rhi::VulkanBuffer skinningBuffer_;
     rhi::VulkanBuffer indexBuffer_;
     uint32_t indexCount_ = 0;
+    // Per frame slot, 2 * kMaxJoints matrices: this frame's palette, then the
+    // previous frame's (see kSkinPreviousPaletteOffset).
     std::vector<rhi::VulkanBuffer> paletteBuffers_;
+    JointPaletteHistory paletteHistory_;
     std::vector<Aabb> jointBindBounds_;
     Aabb worldBounds_{};
     uint64_t poseHash_ = 0;

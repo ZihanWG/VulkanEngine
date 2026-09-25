@@ -258,8 +258,8 @@ screenshots.
 - TAA reprojects along a real velocity buffer, and its resolve doubles as the
   temporal upsampler, reconstructing at presentation resolution from the
   jittered low-resolution samples. It has no depth-based disocclusion
-  classification, no reactive masks and no broad camera-cut detection, and
-  skinned joint-space motion is still not captured.
+  classification, no reactive masks and no broad camera-cut detection.
+  Skinned meshes carry joint-space motion through a previous-frame palette.
 - Reflections are environment IBL plus screen-space reflections. There is no ray
   tracing, planar reflection, local reflection probe, or glass
   transmission/refraction, and SSR only finds what is on screen.

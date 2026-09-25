@@ -48,6 +48,11 @@ Skinning is an additive path; the static mesh/pipeline is untouched.
   palette buffer per frame-in-flight. Each frame it recomputes the joint matrices
   from the animation core and uploads them; the address is handed to the vertex
   shader through the shared push constant (`PushConstants::jointMatricesAddress`).
+  The buffer holds two palettes: this frame's at `[0, kMaxSkinJoints)` and the
+  previous frame's at `kSkinPreviousPaletteOffset`, which only the main pass reads,
+  for motion vectors. The layout lives in `SkeletalAnimation.h` and
+  `joint_palette.glsl`, which every skinning stage includes, and
+  `tools/check_shader_constants.py` compares the two.
 - **`simple_skinned.vert`** computes a linear-blend skinning matrix
   `Σ weight[i] * palette[jointIndex[i]]`, applies it to the position and to the
   normal/tangent (via its upper 3×3), then runs the usual model/MVP transforms and
