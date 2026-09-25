@@ -71,9 +71,17 @@ void main()
     }
 
     const vec3 P = viewPositionFromDepth(vUV, depth);
+    // Explicit LOD, like the depth taps: this is past the per-fragment sky
+    // return, so it runs in non-uniform control flow, where the quad derivatives
+    // an implicit-LOD texture() needs are undefined -- the pattern that lost the
+    // device on an Intel UHD 770 in the main pass (docs/punctual_shadows.md,
+    // "Every tap takes an explicit LOD"). The thin G-buffer is single-mip under
+    // GtaoNearestClampSampler, whose min and mag filters are both NEAREST, so
+    // level 0 through the same filter is what the implicit form resolved to.
     const vec3 N = normalize(mat3(params.view) *
-                             octDecode(texture(uNormalRoughness,
-                                               veSubRectUv(vUV, params.subRect.xy, vec2(textureSize(uNormalRoughness, 0))))
+                             octDecode(textureLod(uNormalRoughness,
+                                                  veSubRectUv(vUV, params.subRect.xy, vec2(textureSize(uNormalRoughness, 0))),
+                                                  0.0)
                                            .xy));
     const vec3 V = normalize(-P); // view-space camera looks down -Z, so -P points at the eye
 

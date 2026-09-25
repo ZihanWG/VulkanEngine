@@ -223,6 +223,50 @@ code skipped the clamp on exactly that reasoning. On a cube face the tile border
 is the *middle* of the lit scene, and the same mismatch draws hard seams along
 every face boundary.
 
+#### Every tap takes an explicit LOD
+
+The taps use `textureLod(..., 0.0)`, not `texture()`, and that is a correctness
+requirement rather than style. The lookup runs inside the clustered light loop,
+behind per-light early-outs, so the four fragments of a 2x2 quad are routinely
+in different iterations or have already returned. That is non-uniform control
+flow, where the quad-derivatives an implicit-LOD fetch depends on are undefined.
+
+NVIDIA tolerated it. An Intel UHD 770 (driver 101.4146) did not: the first
+frame that sampled the atlas rendered solid black, and the next submit returned
+`VK_ERROR_DEVICE_LOST`, on every scene and every CI configuration. The
+validation layer reported nothing, because nothing about the API usage was
+wrong. It was isolated one shader edit at a time -- the crash survived
+replacing the compare sampler with a plain one, disappeared when the fetch was
+removed, and disappeared again when a real fetch was given a constant
+coordinate that the compiler could hoist out of the divergent code. An explicit
+LOD was the one change that kept the real fetch and fixed it.
+
+It changes no pixels. The atlas has one mip level and the compare sampler's
+min and mag filters are both LINEAR, so level 0 is exactly what the implicit
+form resolved to wherever it was defined; thirteen scene and configuration
+captures on the RTX are bit-identical before and after. The same rule now
+covers every other fetch in divergent code on the shading path: the cascade
+compare (zero-gradient `textureGrad`, since core GLSL has no `textureLod` for
+`sampler2DArrayShadow`), the virtual shadow map page pool, the irradiance probe
+atlases, the reprojected AO lookup, and the same three lookups in
+`probe_capture.frag`. Two of those also lost the device on Intel once the atlas
+was fixed -- probe GI and the VSM depth-delta view -- which is what showed the
+atlas was one instance of a pattern rather than the whole of it.
+
+The post passes follow the same rule: the SSR trace (past its per-fragment
+early-outs and inside a march that breaks per fragment), the TAA resolve's
+history fetches (behind the per-fragment check that the reprojected UV is on
+screen), GTAO's normal fetch (past the sky early-out), and the cascade lookup in
+the legacy `simple.frag`. None of those reproduced the device loss on the same
+Intel driver -- they are there because the derivatives are undefined, not
+because a crash was seen -- and each image is single-mip under a sampler whose
+min and mag filters match, so the captures are bit-identical on the RTX. Two
+kinds of `texture()` are deliberately left alone: calls in uniform control
+flow, including branches on push constants and on `flat` inputs, which are
+constant across a quad because a quad never spans two primitives; and material
+texture fetches, which have mip chains and need the derivatives to pick a
+level.
+
 #### Why it changed, and what it cost
 
 The old filter was nine `texture()` fetches of stored depth with the comparison

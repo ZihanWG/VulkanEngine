@@ -47,6 +47,9 @@ layout(push_constant) uniform TaaResolvePushConstants {
 // are folded into one weighted fetch, which is exact for a separable filter.
 // The outer lobes are negative, so the result is clamped at zero -- and when
 // neighbourhood clamping is on, any remaining ringing is bounded by it anyway.
+//
+// The taps take an explicit LOD because the only caller sits behind the
+// per-fragment historyUsable test (see the history fetch in main).
 vec3 sampleHistoryCatmullRom(vec2 uv, vec2 historySize)
 {
     const vec2 samplePos = uv * historySize;
@@ -67,17 +70,17 @@ vec3 sampleHistoryCatmullRom(vec2 uv, vec2 historySize)
     const vec2 uv12 = (texPos1 + offset12) * invSize;
 
     vec3 result = vec3(0.0);
-    result += texture(uHistoryColor, vec2(uv0.x, uv0.y)).rgb * (w0.x * w0.y);
-    result += texture(uHistoryColor, vec2(uv12.x, uv0.y)).rgb * (w12.x * w0.y);
-    result += texture(uHistoryColor, vec2(uv3.x, uv0.y)).rgb * (w3.x * w0.y);
+    result += textureLod(uHistoryColor, vec2(uv0.x, uv0.y), 0.0).rgb * (w0.x * w0.y);
+    result += textureLod(uHistoryColor, vec2(uv12.x, uv0.y), 0.0).rgb * (w12.x * w0.y);
+    result += textureLod(uHistoryColor, vec2(uv3.x, uv0.y), 0.0).rgb * (w3.x * w0.y);
 
-    result += texture(uHistoryColor, vec2(uv0.x, uv12.y)).rgb * (w0.x * w12.y);
-    result += texture(uHistoryColor, vec2(uv12.x, uv12.y)).rgb * (w12.x * w12.y);
-    result += texture(uHistoryColor, vec2(uv3.x, uv12.y)).rgb * (w3.x * w12.y);
+    result += textureLod(uHistoryColor, vec2(uv0.x, uv12.y), 0.0).rgb * (w0.x * w12.y);
+    result += textureLod(uHistoryColor, vec2(uv12.x, uv12.y), 0.0).rgb * (w12.x * w12.y);
+    result += textureLod(uHistoryColor, vec2(uv3.x, uv12.y), 0.0).rgb * (w3.x * w12.y);
 
-    result += texture(uHistoryColor, vec2(uv0.x, uv3.y)).rgb * (w0.x * w3.y);
-    result += texture(uHistoryColor, vec2(uv12.x, uv3.y)).rgb * (w12.x * w3.y);
-    result += texture(uHistoryColor, vec2(uv3.x, uv3.y)).rgb * (w3.x * w3.y);
+    result += textureLod(uHistoryColor, vec2(uv0.x, uv3.y), 0.0).rgb * (w0.x * w3.y);
+    result += textureLod(uHistoryColor, vec2(uv12.x, uv3.y), 0.0).rgb * (w12.x * w3.y);
+    result += textureLod(uHistoryColor, vec2(uv3.x, uv3.y), 0.0).rgb * (w3.x * w3.y);
 
     return max(result, vec3(0.0));
 }
@@ -216,9 +219,12 @@ void main()
         }
     }
 
+    // The fallback is selected per fragment, so it takes an explicit LOD like the
+    // history fetches below. Scene colour is single-mip under the same sampler.
     vec3 currentColor = weightTotal > 0.0 ? weightedSum / weightTotal
-                                          : texture(uCurrentColor,
-                                                    veSubRectUv(vUV, pc.sourceUvScale, currentAllocatedSize))
+                                          : textureLod(uCurrentColor,
+                                                       veSubRectUv(vUV, pc.sourceUvScale, currentAllocatedSize),
+                                                       0.0)
                                                 .rgb;
     vec3 resolvedColor = currentColor;
 
@@ -240,10 +246,20 @@ void main()
             // The history is written in full at output resolution, so it needs
             // no scaling and no sub-rect clamp -- it is the one source here that
             // is not low-resolution.
+            //
+            // Explicit LOD: historyUsable depends on this fragment's velocity,
+            // so this branch is non-uniform control flow, where the quad
+            // derivatives an implicit-LOD texture() needs are undefined -- the
+            // pattern that lost the device on an Intel UHD 770 in the main pass
+            // (docs/punctual_shadows.md, "Every tap takes an explicit LOD"). It
+            // changes no output: the history is single-mip under
+            // PostProcessLinearClampSampler, whose min and mag filters are both
+            // LINEAR, so level 0 through the same filter is what the implicit
+            // form resolved to wherever it was defined.
             vec3 historyColor =
                 pc.catmullRomHistoryEnabled != 0u
                     ? sampleHistoryCatmullRom(historyUV, vec2(textureSize(uHistoryColor, 0)))
-                    : texture(uHistoryColor, historyUV).rgb;
+                    : textureLod(uHistoryColor, historyUV, 0.0).rgb;
 
             // How far out of the neighbourhood the history was, before any
             // correction. This is the ghosting signal: a ghost is precisely a

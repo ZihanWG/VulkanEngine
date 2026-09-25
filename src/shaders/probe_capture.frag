@@ -150,7 +150,13 @@ float sampleShadowFactor(vec3 normal, int cascadeIndex)
     // Single tap, no PCF. The capture is 16x16 per face and then convolved over
     // a cosine lobe, so softening the shadow edge here would be filtered away
     // several times over.
-    float closestDepth = texture(uShadowMap, vec3(shadowUV, float(cascadeIndex))).r;
+    // Explicit LOD throughout this shader: every fetch here sits behind a
+    // per-fragment early-out or inside a loop that continues per fragment, which
+    // is non-uniform control flow, where implicit-LOD derivatives are undefined.
+    // The main pass lost the device on an Intel UHD 770 over exactly this (see
+    // punctualShadowFactor in simple_bindless.frag). Every image read here is
+    // single-mip, so level 0 is what the implicit form resolved to anyway.
+    float closestDepth = textureLod(uShadowMap, vec3(shadowUV, float(cascadeIndex)), 0.0).r;
     return shadowCoord.z - shadowDepthBias(normal) <= closestDepth ? 1.0 : 0.0;
 }
 
@@ -221,7 +227,7 @@ float capturePunctualShadow(GpuLight light, vec3 worldPosition, vec3 normal)
 
     float currentDepth = projected.z - slot.params.x * (1.0 + grazing * 7.0);
     vec2 atlasUv = slot.atlasUvOffsetScale.xy + tileUv * slot.atlasUvOffsetScale.zw;
-    float closestDepth = texture(uPunctualShadowAtlas, atlasUv).r;
+    float closestDepth = textureLod(uPunctualShadowAtlas, atlasUv, 0.0).r;
     return currentDepth <= closestDepth ? 1.0 : 0.0;
 }
 
@@ -343,16 +349,16 @@ vec3 sampleProbeIrradiance(vec3 worldPosition, vec3 normal, vec3 viewDirection)
         float wrapped = (dot(normal, directionToProbe) + 1.0) * 0.5;
         weight *= wrapped * wrapped + kProbeBackfaceFloor;
 
-        vec2 moments = texture(uProbeDepthAtlas,
-                               probeAtlasUv(probeIndex, -directionToProbe, kProbeDepthResolution)).rg;
+        vec2 moments = textureLod(uProbeDepthAtlas,
+                                  probeAtlasUv(probeIndex, -directionToProbe, kProbeDepthResolution), 0.0).rg;
         weight *= probeChebyshevVisibility(moments, distanceToProbe);
 
         if (weight <= 0.0) {
             continue;
         }
 
-        total += texture(uProbeIrradianceAtlas,
-                         probeAtlasUv(probeIndex, normal, kProbeIrradianceResolution)).rgb * weight;
+        total += textureLod(uProbeIrradianceAtlas,
+                            probeAtlasUv(probeIndex, normal, kProbeIrradianceResolution), 0.0).rgb * weight;
         totalWeight += weight;
     }
 

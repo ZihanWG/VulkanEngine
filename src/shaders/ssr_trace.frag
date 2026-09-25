@@ -29,6 +29,16 @@
 // the earlier claim here that an imprecise F0 "cannot reintroduce the
 // double-count", which overstated the factorisation.
 
+// Every fetch after the first takes an explicit LOD. The sky, roughness and
+// ray-direction early-outs are per fragment, and the march breaks per fragment,
+// so everything below them runs in non-uniform control flow, where the quad
+// derivatives an implicit-LOD texture() needs are undefined. An Intel UHD 770
+// lost the device over exactly this in the main pass (docs/punctual_shadows.md,
+// "Every tap takes an explicit LOD"). It changes no output: depth, the thin
+// G-buffer and the scene-colour copy are single-mip under SsrLinearClampSampler
+// (LINEAR min and mag, maxLod 0), and the BRDF LUT is single-mip under its own
+// LINEAR/LINEAR sampler, so level 0 through the same filter is what the
+// implicit form resolved to wherever it was defined.
 layout(set = 0, binding = 0) uniform sampler2D uDepth;
 layout(set = 0, binding = 1) uniform sampler2D uNormalRoughness;
 layout(set = 0, binding = 2) uniform sampler2D uSceneColorCopy;
@@ -99,7 +109,9 @@ void main()
         return; // sky
     }
 
-    vec4 normalRoughness = texture(uNormalRoughness, veSubRectUv(vUV, params.subRect.xy, vec2(textureSize(uNormalRoughness, 0))));
+    // Past the per-fragment sky return: explicit LOD (see the bindings).
+    vec4 normalRoughness =
+        textureLod(uNormalRoughness, veSubRectUv(vUV, params.subRect.xy, vec2(textureSize(uNormalRoughness, 0))), 0.0);
     float roughness = normalRoughness.z;
     float metallic = normalRoughness.w;
     float maxRoughness = max(params.weightParams.y, 0.0001);
@@ -189,7 +201,8 @@ void main()
             break;
         }
 
-        float sceneDepth = texture(uDepth, veSubRectUv(uv, params.subRect.xy, vec2(textureSize(uDepth, 0)))).r;
+        // The loop breaks per fragment: explicit LOD (see the bindings).
+        float sceneDepth = textureLod(uDepth, veSubRectUv(uv, params.subRect.xy, vec2(textureSize(uDepth, 0))), 0.0).r;
         vec3 scenePos = viewPositionFromDepth(uv, sceneDepth);
 
         // Depth increases away from the camera along -Z in view space.
@@ -206,7 +219,7 @@ void main()
                 vec2 midUV = mix(startUV, endUV, mid);
                 float midRayDepth = 1.0 / mix(invStartDepth, invEndDepth, mid);
                 float midSceneDepth =
-                    texture(uDepth, veSubRectUv(midUV, params.subRect.xy, vec2(textureSize(uDepth, 0)))).r;
+                    textureLod(uDepth, veSubRectUv(midUV, params.subRect.xy, vec2(textureSize(uDepth, 0))), 0.0).r;
                 vec3 midScenePos = viewPositionFromDepth(midUV, midSceneDepth);
                 if (midRayDepth > -midScenePos.z) {
                     hi = mid;
@@ -231,7 +244,8 @@ void main()
     vec3 reflectedColor =
         // .zw, not .xy: the scene-colour copy is half size and rounds its own
         // way, so its written/allocated ratio drifts from the full-size sources.
-        texture(uSceneColorCopy, veSubRectUv(hitUV, params.subRect.zw, vec2(textureSize(uSceneColorCopy, 0)))).rgb;
+        textureLod(uSceneColorCopy, veSubRectUv(hitUV, params.subRect.zw, vec2(textureSize(uSceneColorCopy, 0))), 0.0)
+            .rgb;
 
     // Fresnel with a grayscale F0 approximation (metal tint is not stored in
     // the thin G-buffer; documented limitation).
@@ -254,7 +268,7 @@ void main()
 
     // The same split-sum weighting the main pass applied to its specular IBL.
     // Reconstructed here so the two terms cancel rather than accumulate.
-    const vec2 brdf = texture(uBrdfLut, vec2(clamp(normalView, 0.0, 1.0), roughness)).rg;
+    const vec2 brdf = textureLod(uBrdfLut, vec2(clamp(normalView, 0.0, 1.0), roughness), 0.0).rg;
     const vec3 specularWeight = vec3(fresnel * brdf.x + brdf.y);
 
     // What the main pass already put here, in world space: the cubemap is
