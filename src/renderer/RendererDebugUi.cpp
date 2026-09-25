@@ -679,6 +679,14 @@ void Renderer::drawShadowsDebugUi()
                           "each cascade's own extent. Lets the depth bias come down, which is\n"
                           "what causes peter-panning. 0 = depth bias only.");
     }
+    ImGui::SliderFloat("Depth bias (constant)", &csmSettings_.depthBiasConstant, 0.0f, 0.02f, "%.4f");
+    ImGui::SliderFloat("Depth bias (slope)", &csmSettings_.depthBiasSlope, 0.0f, 0.02f, "%.4f");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Receiver-side compare bias in the cascade's normalized depth:\n"
+                          "max(constant, slope * (1 - N.L)). Too little shows acne, too much\n"
+                          "detaches shadows from their casters. Separate from the raster depth\n"
+                          "bias the shadow pipelines bake in.");
+    }
     ImGui::SliderFloat("Cascade blend band", &csmSettings_.cascadeBlend, 0.0f, 0.5f, "%.2f");
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Cross-fades each cascade into the next over this fraction of its\n"

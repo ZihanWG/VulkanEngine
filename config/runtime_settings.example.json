@@ -96,6 +96,8 @@
         "cascadeCount": 4,
         "lambda": 0.5,
         "normalBias": 0.0,
+        "depthBiasConstant": 0.002,
+        "depthBiasSlope": 0.005,
         "cascadeBlend": 0.0,
         "enableCascadeCache": true,
         "enableStableCascadeFit": false,

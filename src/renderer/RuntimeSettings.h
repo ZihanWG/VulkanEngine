@@ -14,6 +14,10 @@ struct CsmSettings {
     float shadowDistance = 40.0f;
     bool enableTexelSnapping = true;
     bool enableCascadeDebugColors = false;
+    // Receiver-side compare bias in the cascade's normalized light-space depth:
+    // the shader takes max(constant, slope * (1 - N.L)). It complements the
+    // raster depth bias baked into the shadow pipelines, and too much of it is
+    // what detaches a shadow from its caster.
     float depthBiasConstant = 0.002f;
     float depthBiasSlope = 0.005f;
     // Offsets the shadow lookup along the surface normal instead of only along
