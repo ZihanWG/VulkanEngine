@@ -87,7 +87,8 @@ and the passes are skipped.
   because GTAO needs the depth and normals that pass produces. Static scenes are
   unaffected; under fast camera motion contact shadows trail slightly, and newly
   disoccluded pixels have no history and read as unoccluded until the next frame.
-  A depth prepass would avoid this at the cost of submitting all geometry twice.
+  The depth prepass that now runs before the main pass does not remove this: it
+  writes depth only, and GTAO needs the thin G-buffer normal as well.
 - `SsaoSettings::ambientOnly` (default on) selects this. Turning it off restores
   the older whole-scene multiply in the composite, which also darkens direct
   lighting -- physically wrong, but kept as an A/B reference.

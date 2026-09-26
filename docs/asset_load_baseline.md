@@ -4,9 +4,11 @@ Phase 0 of the asset cook / async upload initiative. This page records what
 startup asset loading costs **today**, so any later claim about a cook step or a
 transfer queue has something to be measured against.
 
-It also records the reason the rest of that initiative is currently on hold: on
-the scenes this repository ships, startup asset loading costs approximately
-nothing.
+It also records why the rest of that initiative was first put on hold -- on the
+scenes this repository ships, startup asset loading costs approximately
+nothing -- and what happened once an optional production-scale scene removed
+that blocker: the texture cook, the mesh cook and the upload work, each with its
+before-and-after numbers below.
 
 ## How to reproduce
 
@@ -71,16 +73,17 @@ integration steps for the BRDF table alone, on one thread. See
 [After parallel IBL precompute](#after-parallel-ibl-precompute) below, which took
 it from 166 ms to 60 ms without touching the GPU.
 
-**The glTF import path does not run.** `Renderer::tryLoadGltfScene()` is defined
-but has no caller; the default portfolio scene is procedural geometry. The only
-glTF touched at startup is `assets/models/skinned_rig.gltf` (3.8 KiB) through
-`SkinnedMesh::createFromGltf`, a separate path.
+**The glTF import path does not run on the procedural presets.** They are built
+from primitive geometry; the only glTF they touch at startup is
+`assets/models/skinned_rig.gltf` (3.8 KiB) through `SkinnedMesh::createFromGltf`,
+a separate path. Scene import runs only for `--scene sponza`, below.
 
 ## With a production-scale scene
 
 `-DVULKAN_ENGINE_FETCH_SAMPLE_SCENE=ON` downloads Sponza at configure time (see
-`cmake/FetchSampleScene.cmake`) and makes it the startup scene. The same one
-command then measures a completely different engine:
+`cmake/FetchSampleScene.cmake`), and `--scene sponza` selects it (it was the
+startup scene when this was first measured; see below). The same one command then
+measures a completely different engine:
 
 | | procedural default | Sponza |
 | --- | --- | --- |

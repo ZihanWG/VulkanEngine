@@ -14,10 +14,16 @@ and on manual dispatch.
 ```
 xvfb-run -a --server-args="-screen 0 1280x720x24" \
   ./build/ci-debug/VulkanEngine \
-    --exit-after-frames 10 \
+    --deterministic \
+    --exit-after-frames 30 \
+    --capture-frame 30 \
+    --capture-output artifacts/lavapipe_frame30.png \
     --fail-on-validation-error \
     --asset-load-stats
 ```
+
+That is the pixel-gate render. It is preceded by the synchronization-validation
+self-test and followed by the configuration sweep, both described below.
 
 Because Xvfb provides a real X display, SDL3 creates a real surface and the job
 exercises the same swapchain and presentation path a desktop run takes. No
@@ -249,16 +255,19 @@ When the change is intended, or when the runner's Mesa version moved:
 
 The failure output prints the driver version to make that distinction possible.
 
-The golden has been re-baselined once, for the skinned shadow caster: the mesh
+The golden has been re-baselined several times, each in the commit that changed
+the image and each saying why in its message (`git log --
+tests/golden/lavapipe_frame30.png` lists them). The skinned shadow caster is the
+one worth reading as an example: the mesh
 had thrown no shadow at all, and giving it one moved 811 of 921600 pixels at a
 maximum channel delta of 8. Mesa was 25.2.8 on both sides, so it was the change
 and not the runner. The difference image is the whole argument: the changed
 pixels are the row of perforations the new shadow falls across and the caster's
 own silhouette, and nothing else in the frame moved.
 
-The committed golden is re-encoded with real deflate compression (305 KB rather
-than the 3.6 MB the engine's stored-block PNG writer emits). Only the encoding
-differs; the comparison decodes both sides, so pixels are what is compared.
+The committed golden is deflate-compressed, as is everything the engine's own
+PNG writer emits since it gained a deflate encoder. Encoding never matters to the
+gate: the comparison decodes both sides, so pixels are what is compared.
 
 **Goldens are driver-specific.** This one was captured on lavapipe and is only
 meaningful against lavapipe. A capture from any development machine -- MoltenVK
@@ -277,8 +286,8 @@ in this repository, after `screenshots/`. A capture run writes only where
 
 The default configuration is one point in a large space, and for a long time it
 was the only point anything ran -- which is a problem, because the render graph
-declares a frame's passes in one place and records them across nine translation
-units, and the only thing comparing the two is the backstop in
+declares a frame's passes in one place and records them across several
+translation units, and the only thing comparing the two is the backstop in
 `RenderGraph::endFrame`. A pass declared and never recorded leaves the graph's
 barriers, resource lifetimes and culling describing work that did not happen,
 and raises no validation error, because each individual Vulkan call is still
@@ -351,7 +360,8 @@ first because a dead check makes every step below it meaningless.
 
 ## Limitations
 
-- The default leg is 30 frames; the sweep legs are ten each. Swapchain
+- The pixel-gate render is 30 frames; every sweep leg, the default one
+  included, is ten. Swapchain
   recreation and resize are still not exercised, and neither is screenshot
   capture.
 - The sweep gates on validation and on graph shape, not on rendering

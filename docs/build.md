@@ -26,8 +26,8 @@ behavior for SDL3, GLM, Volk, and Vulkan Memory Allocator. Dear ImGui,
 
 The renderer includes Vulkan headers at build time and compiles GLSL shaders with
 `glslc`. The full LunarG Vulkan SDK is the most consistent option on Windows and
-macOS. On Linux, CI uses Ubuntu packages for `vulkan-headers`, `libvulkan-dev`,
-and `glslc`.
+macOS. On Linux, CI installs the same SDK from LunarG's apt repository (the
+`vulkan-sdk` package), which provides `glslc`, the headers and the loader.
 
 CMake fails early if the Vulkan headers cannot be found. It also fails early if
 `glslc` is missing, because the executable depends on compiled SPIR-V shader
@@ -110,5 +110,7 @@ runs the full Catch2 suite on both Linux and Windows -- those tests create no
 Vulkan device by design, which is what makes them runnable on a hosted runner.
 Linux then re-runs the suite under AddressSanitizer + UndefinedBehaviorSanitizer
 with leak detection, and reports clang-tidy findings without gating on them.
-What CI does *not* do is run the renderer itself, because hosted runners do not
-guarantee Vulkan GPU/display availability.
+Hosted runners have no Vulkan GPU, so the job that runs the renderer itself uses
+Mesa's lavapipe software driver under a virtual X server: it renders a golden
+image and sweeps the configuration list under validation and synchronization
+validation. See [headless_ci.md](headless_ci.md).

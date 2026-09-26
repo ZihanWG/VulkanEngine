@@ -12,9 +12,9 @@ says only what it changes:
 }
 ```
 
-That is deliberate. A full dump would be ~140 lines per file, twenty near-identical
-copies of the defaults, and a review could not see which line was the point of the
-file. It also means these files do not drift when a default changes — which is the
+That is deliberate. A full dump would be ~140 lines per file, a near-identical
+copy of the defaults in every leg, and a review could not see which line was the
+point of the file. It also means these files do not drift when a default changes — which is the
 right behaviour, because a leg exists to pin one deviation from the defaults, not
 to freeze the defaults themselves.
 
@@ -23,7 +23,7 @@ back, so these files omit it.
 
 ## What the legs are for
 
-The renderer's frame graph is declared in one place and recorded across nine
+The renderer's frame graph is declared in one place and recorded across several
 translation units, and the only thing that compares the two is the render graph's
 backstop (`RenderGraph::endFrame`). A pass that is declared and then never
 recorded leaves the graph's barriers, resource lifetimes and pass culling all

@@ -392,8 +392,11 @@ transitions.
 **Why.** Hand-written barriers across a dozen passes are where renderers rot. Even
 a compact graph that infers the common transitions removes a class of bugs and
 documents pass dependencies. It is deliberately *not* an async-compute or
-memory-aliasing scheduler — that complexity wasn't worth it for a single-queue
-renderer.
+memory-aliasing scheduler. That was decided when the renderer had one queue, and
+it held once there were more: the async compute and transfer queues are submitted
+and synchronized by the renderer rather than the graph (see `async_compute.md`),
+and aliasing arrived as a measured, off-by-default allocator that plans from the
+graph's lifetimes rather than as scheduling (see `render_graph.md`).
 
 **Trade-offs.** A few barriers (shadow culling resets, intra-pass copies, host
 readbacks, the clustered build→cull→fragment chain) are still explicit where the
@@ -752,8 +755,8 @@ the remaining recording cost spread widely enough for threading to reach it.
 
 ## A depth prepass, measured and BUILT
 
-**Status: built, measured, and it wins -- `renderer.enableDepthPrepass`, off by
-default for a reason that is not about the win.** This section spent months
+**Status: built, measured, and it wins -- `renderer.enableDepthPrepass`, on by
+default; the end of this section says what that cost.** This section spent months
 saying the pass could not be judged because no scene here had realistic depth
 complexity. `--scene sponza` supplied the scene, `--overdraw` supplied the
 number, and the pass supplied the rest.
@@ -903,9 +906,9 @@ of that, so the ceiling is worth low single-digit milliseconds against the cost
 of a second depth-only submission of 103 draw items.
 
 That was the first number in this repository that argued *for* building the pass,
-and the pass was then built and came in at -17.0% of `MainHDRPass` -- inside the
-bound, as it must be, and short of it partly because the prepass covers the
-opaque bucket only.
+and the pass was then built and came in at -17.0% of `MainHDRPass` over the
+opaque bucket alone, and -17.9% once masked geometry joined it -- inside the
+bound, as it must be.
 
 One caveat that belongs with the table. For any preset below 1.0 the ratio is
 dominated by coverage rather than overdraw: the denominator is the whole render
@@ -913,9 +916,9 @@ extent, so sky counts against it. Those rows say "this scene does not fill the
 frame", not "this scene has negative overdraw", and no prepass bound can be read
 from them.
 
-**The question.** This renderer has no depth prepass -- `vsm_page_mark.comp`
-says so outright, and `docs/gtao.md` names one as the fix for GTAO's one-frame
-occlusion lag. Opaque draw items are sorted by bucket and pipeline so
+**The question, as it stood before the pass existed.** This renderer had no
+depth prepass -- `vsm_page_mark.comp` said so outright, and `docs/gtao.md` named
+one as the fix for GTAO's one-frame occlusion lag. Opaque draw items are sorted by bucket and pipeline so
 multi-draw-indirect can batch them, not front to back; only the transparent
 range is depth-sorted. On a tiler that cost nothing, because hidden-surface
 removal discards the occluded fragments before the fragment shader. On Ampere
@@ -953,6 +956,12 @@ if it lands -- it is what would remove GTAO's one-frame lag, and it would give
 VSM page marking a this-frame depth source instead of the previous frame's Hi-Z
 pyramid -- but none of that is a reason to build it before knowing what it saves.
 
+Neither of those two followed once it was built, and both for the same reason:
+the pass that exists is depth-only and runs where the main pass does. GTAO needs
+the thin G-buffer's normal, which the prepass does not write, so it still applies
+the previous frame's term; and page marking is scheduled ahead of the prepass,
+so it still reads the previous frame's pyramid.
+
 ## Specialization constants for the uber-shader, measured and rejected
 
 **Decision: not built. The measured ceiling is negative** -- removing the
@@ -960,9 +969,11 @@ default-off feature code from `simple_bindless.frag` makes `MainHDRPass`
 **4.4% slower**, not faster.
 
 **The hypothesis.** `simple_bindless.frag` is 1171 lines and compiles in virtual
-shadow maps (`virtual_shadow_map.glsl`, 524 lines), volumetric fog, irradiance
-probes and the cluster grid unconditionally, gating each on a runtime value --
-eight such branches, and every one of those subsystems is **off by default**. The
+shadow maps (`virtual_shadow_map.glsl`, 524 lines), volumetric fog and irradiance
+probes unconditionally, gating each on a runtime value -- eight such branches,
+each behind a feature that is **off by default**. (The cluster grid is compiled
+in too, but clustered shading is on by default, so it is not among the eight
+default-off gates.) The
 engine uses no specialization constants at all (zero occurrences of
 `constant_id` or `VkSpecializationInfo`). On an immediate-mode GPU a uniform
 branch is cheap to *take*, so the hypothesised win was never the branch: it was
@@ -1013,7 +1024,7 @@ measurement stands on its own: the answer is no, and the reason is not required
 for the decision.
 
 **Do not re-derive this from the source.** The uber-shader's size is real, the
-four subsystems really are off by default, and the argument for cutting them out
+gated features really are off by default, and the argument for cutting them out
 is genuinely persuasive. It was measured, three times against a passing gate, and
 it is wrong.
 

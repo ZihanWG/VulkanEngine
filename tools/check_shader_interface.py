@@ -5,8 +5,9 @@ The engine hand-mirrors 134 `layout(set = , binding = )` declarations in GLSL
 against descriptor writes in C++, plus push-constant blocks whose member offsets
 have to agree across the language boundary where no static_assert can reach. A
 mismatch there does not fail to build. Some of it the validation layer catches at
-pipeline creation, and CI does run validation over 26 configurations -- but only
-for the code paths those configurations actually execute, and never for "the
+pipeline creation, and CI does run validation over every configuration in the
+sweep -- but only for the code paths those configurations actually execute, and
+never for "the
 right slot, filled with the wrong resource".
 
 What this adds is narrower than "verify C++ against GLSL" and worth stating

@@ -7,7 +7,8 @@
 // bit per virtual page, atomicOr'd from every covered screen block.
 //
 // The depth it reads is the PREVIOUS frame's, because shadows have to be
-// rendered before the main pass and this renderer has no depth prepass. That is
+// rendered before the main pass, and this dispatch runs ahead of the depth
+// prepass too -- this frame's depth does not exist yet when it runs. That is
 // the same previous-frame depth the Hi-Z occlusion test already trusts, read
 // through the same pyramid and paired with the view-projection stored when the
 // pyramid was built (params.depthViewProjectionInverse inverts exactly that

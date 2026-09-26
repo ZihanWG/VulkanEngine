@@ -167,7 +167,10 @@ the renderer.
 - **Lights (Clustered) panel:** toggles the clustered path on/off (the brute-force
   comparison) and the heatmap, drives the demo light count (0–512), and animates the
   swarm. The count slider is the clustered-path stress test.
-- **GPU profiler:** `ClusterBuild` and `LightCull` appear as per-pass timing rows.
+- **GPU profiler:** `ClusterBuild` and `LightCull` appear as per-pass timing rows
+  when the passes run on the graphics queue. With async compute active -- the
+  default where the device has an async queue -- they are not timed (see
+  [async_compute.md](async_compute.md)).
 
 ## Limitations and Future Work
 

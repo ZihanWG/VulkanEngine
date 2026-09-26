@@ -234,8 +234,8 @@ None of the four changed a pixel: the frame 30 capture is byte-identical before
 and after. That is the expected result and the reason the class survived -- this
 hardware was already serializing the work these barriers failed to order.
 
-All 29 configurations the headless job sweeps now run clean under
-`--sync-validation`, and the sweep runs with it (see
+All 29 configurations the headless job swept at the time ran clean under
+`--sync-validation`, and the sweep has run with it ever since (see
 [headless_ci.md](headless_ci.md)).
 
 ### Barrier batching
@@ -507,7 +507,7 @@ exactly that reason.
 ### The backstop
 
 The declarations in `buildFrameGraphDeclarations` and the recording spread across
-nine translation units are two sequences kept in step by hand. Nothing compared
+several translation units are two sequences kept in step by hand. Nothing compared
 them. `beginDeclaredPass` now records the order passes were actually begun in,
 and `endFrame` checks it:
 
@@ -803,8 +803,8 @@ position in the execution order, not by declaration index -- and
 `VulkanImage::createAliased` binds images into.
 
 Measured at 2560x1440: the whole transient set is 123.74 MiB and would pack into
-82.62 MiB. Only the bloom chain is wired -- 41.12 MiB of images into a 23.64 MiB
-pool, **17.48 MiB saved**.
+82.62 MiB. At the time only the bloom chain was wired -- 41.12 MiB of images into
+a 23.64 MiB pool, **17.48 MiB saved**; the G-buffer pair joined it later, below.
 
 ### It regressed to never activating at all, and that is now fixed
 
@@ -927,7 +927,8 @@ trustworthy here; the frame total is.
 So the trade is 17.48 MiB for 1.2% of frame time, on a machine reporting a
 13 GiB device-local budget. That is a bad trade, and it is why
 `enableTransientAliasing` **defaults off** and why the remaining transients were
-not wired up: more aliased resources means more handoffs, so the cost would grow
+not wired up then (the G-buffer pair above joined afterwards, because that is
+where the memory turned out to be): more aliased resources means more handoffs, so the cost would grow
 while the memory it buys stays unscarce.
 
 The conservative source scope on the handoff barrier is the prime suspect -- it
@@ -1013,12 +1014,14 @@ the default.
 ## Known Limitations
 
 - The graph does not schedule across queues. Async compute exists in the engine --
-  `ClusterBuild` and `LightCull` run on a dedicated compute queue overlapping the
-  shadow passes (see [async_compute.md](async_compute.md)) -- but the renderer
-  owns that submission and its semaphores, not the graph. The graph records those
-  passes as ordinary compute nodes.
-- Memory aliasing is implemented for the bloom chain only, and is **off by
-  default** (`enableTransientAliasing`). See "Transient memory aliasing" below.
+  `ClusterBuild` and `LightCull` run on a dedicated compute queue so they can
+  overlap the shadow passes (see [async_compute.md](async_compute.md)) -- but the
+  renderer owns that submission and its semaphores, not the graph. Those passes
+  have no graph pass of their own: on the graphics-queue fallback they record
+  inside the culling unit and carry their own barrier to their readers.
+- Memory aliasing covers the bloom chain and the velocity/thin-G-buffer pair, and
+  is **off by default** (`enableTransientAliasing`). See "Transient memory
+  aliasing" below.
 - No resource pooling overhaul.
 - Transient scene/bloom resources and persistent TAA history resources are graph-described but still physically allocated by `Renderer`.
 - Intra-pass sequencing remains manual, and always will: the graph emits at pass

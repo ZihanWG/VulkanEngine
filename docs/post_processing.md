@@ -14,7 +14,7 @@ TAA is disabled by default and is controlled from the `Temporal AA` ImGui panel 
 
 - Main skybox and mesh rendering use an 8-sample Halton jitter applied to the projection matrix.
 - CPU frustum culling, CSM setup, and depth-pyramid validity continue to use the unjittered view-projection matrix.
-- Two `VK_FORMAT_R16G16B16A16_SFLOAT` history images at the render extent ping-pong across frames.
+- Two `VK_FORMAT_R16G16B16A16_SFLOAT` history images at the presentation extent ping-pong across frames, because the resolve reconstructs at output resolution and so doubles as the temporal upsampler (see [taa.md](taa.md)).
 - The first valid frame, resize, camera reset/edit, scene load, portfolio mode transition, material save/reload, and explicit UI reset invalidate history.
 - The resolve shader clamps previous history to the current frame's 3x3 color neighborhood before feedback blending.
 - Bloom, exposure, and composite descriptor variants select either `SceneColorHDR` or resolved TAA history as the active HDR source.
@@ -47,7 +47,7 @@ Automatic exposure uses the active HDR source:
 
 Between the shared-memory histogram and the parallel reduction, `Histogram Exposure` went from 6.07 ms to 0.33 ms on the demo scene. Both changes preserve output: `average luminance` and `histogram clipped luminance` are logged once per second and are the direct assertion on these two shaders.
 
-`CompositePass` reads `ExposureStateBufferN` directly for auto exposure modes. The CPU reads that small exposure state only after the frame fence for ImGui/debug history. Manual exposure remains available and portfolio mode forces stable manual exposure.
+`CompositePass` reads `ExposureStateBufferN` directly for auto exposure modes. The CPU reads that small exposure state only after the frame slot's timeline wait, for ImGui/debug history. Manual exposure remains available and portfolio mode forces stable manual exposure.
 
 ## Composite Pass
 
@@ -57,8 +57,9 @@ Between the shared-memory histogram and the parallel reduction, `Histogram Expos
 - legacy bloom
 - mip-chain bloom
 - GPU exposure state
+- the GTAO visibility term, read only on the non-default whole-scene reference path
 
-The shader selects the active bloom method, multiplies bloom by strength, applies manual or GPU exposure, and then runs Reinhard or ACES tone mapping before writing the swapchain image. F12 portfolio screenshots still copy the swapchain after `CompositePass` and before `ImGuiPass`.
+The shader selects the active bloom method, multiplies bloom by strength, applies manual or GPU exposure, and then runs Reinhard or ACES tone mapping; when the frame is being upscaled it finishes with contrast-adaptive sharpening (see [render_scale.md](render_scale.md)) before writing the swapchain image. F12 portfolio screenshots still copy the swapchain after `CompositePass` and before `ImGuiPass`.
 
 ## Render Graph And Profiler
 
@@ -72,7 +73,7 @@ Render Graph metadata now includes:
 - GPU exposure state buffer
 - Composite reads of scene color, bloom, and exposure state
 
-GPU profiler scopes include optional `TAAResolvePass`, `Bloom Downsample Chain`, `Bloom Upsample Chain`, `Histogram Exposure`, and `CompositePass`. Buffer barriers for histogram reset, exposure reduce, and debug readback remain manual in `RendererRecord.cpp`.
+GPU profiler scopes include optional `TAAResolvePass`, `Bloom Downsample Chain`, `Bloom Upsample Chain`, `Histogram Exposure`, and `CompositePass`. Buffer barriers for histogram reset, exposure reduce, and debug readback are intra-pass and stay manual, in `PostProcessStack.cpp`.
 
 ## Debug UI
 
