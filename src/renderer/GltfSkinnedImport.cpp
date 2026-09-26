@@ -26,6 +26,9 @@ struct AccessorView {
     size_t count = 0;
     int componentType = 0;
     int type = 0;
+    // An integer accessor flagged normalized stores a fraction, not a count:
+    // KHR_mesh_quantization weights, normals and rotations all arrive this way.
+    bool normalized = false;
 };
 
 [[nodiscard]] AccessorView accessorView(const tinygltf::Model& model, int accessorIndex)
@@ -44,25 +47,42 @@ struct AccessorView {
     view.count = accessor.count;
     view.componentType = accessor.componentType;
     view.type = accessor.type;
+    view.normalized = accessor.normalized;
     const int stride = accessor.ByteStride(bufferView);
     view.stride = stride > 0 ? static_cast<size_t>(stride) : 0;
     return view;
 }
 
-[[nodiscard]] float readComponentAsFloat(const unsigned char* element, int componentType, size_t component)
+// Takes the view rather than its component type so the normalized flag cannot be
+// dropped at a call site. Normalized integers decode as glTF specifies: unsigned
+// c / max, signed max(c / max, -1), so the most negative code maps to -1 rather
+// than just past it.
+[[nodiscard]] float readComponentAsFloat(const AccessorView& view, const unsigned char* element, size_t component)
 {
-    switch (componentType) {
+    switch (view.componentType) {
     case TINYGLTF_COMPONENT_TYPE_FLOAT: {
         float value = 0.0f;
         std::memcpy(&value, element + component * sizeof(float), sizeof(float));
         return value;
     }
-    case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
-        return static_cast<float>(element[component]);
+    case TINYGLTF_COMPONENT_TYPE_BYTE: {
+        int8_t value = 0;
+        std::memcpy(&value, element + component * sizeof(int8_t), sizeof(int8_t));
+        return view.normalized ? std::max(static_cast<float>(value) / 127.0f, -1.0f) : static_cast<float>(value);
+    }
+    case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE: {
+        const float value = static_cast<float>(element[component]);
+        return view.normalized ? value / 255.0f : value;
+    }
+    case TINYGLTF_COMPONENT_TYPE_SHORT: {
+        int16_t value = 0;
+        std::memcpy(&value, element + component * sizeof(int16_t), sizeof(int16_t));
+        return view.normalized ? std::max(static_cast<float>(value) / 32767.0f, -1.0f) : static_cast<float>(value);
+    }
     case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT: {
         uint16_t value = 0;
         std::memcpy(&value, element + component * sizeof(uint16_t), sizeof(uint16_t));
-        return static_cast<float>(value);
+        return view.normalized ? static_cast<float>(value) / 65535.0f : static_cast<float>(value);
     }
     default:
         return 0.0f;
@@ -92,8 +112,10 @@ struct AccessorView {
 [[nodiscard]] size_t componentSize(int componentType)
 {
     switch (componentType) {
+    case TINYGLTF_COMPONENT_TYPE_BYTE:
     case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
         return 1;
+    case TINYGLTF_COMPONENT_TYPE_SHORT:
     case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
         return 2;
     case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:
@@ -239,7 +261,7 @@ SkinnedGltf loadSkinnedGltf(const std::filesystem::path& path)
             const unsigned char* matrixData = element(ibmView, jointIndex);
             glm::mat4 matrix(1.0f);
             for (size_t component = 0; component < 16; ++component) {
-                const float value = readComponentAsFloat(matrixData, ibmView.componentType, component);
+                const float value = readComponentAsFloat(ibmView, matrixData, component);
                 matrix[static_cast<int>(component / 4)][static_cast<int>(component % 4)] = value;
             }
             skeleton.inverseBind[jointIndex] = matrix;
@@ -274,26 +296,25 @@ SkinnedGltf loadSkinnedGltf(const std::filesystem::path& path)
     for (size_t vertexIndex = 0; vertexIndex < positions.count; ++vertexIndex) {
         SkinnedImportVertex& vertex = result.vertices[vertexIndex];
         const unsigned char* p = element(positions, vertexIndex);
-        vertex.position = glm::vec3(readComponentAsFloat(p, positions.componentType, 0),
-                                    readComponentAsFloat(p, positions.componentType, 1),
-                                    readComponentAsFloat(p, positions.componentType, 2));
+        vertex.position = glm::vec3(readComponentAsFloat(positions, p, 0),
+                                    readComponentAsFloat(positions, p, 1),
+                                    readComponentAsFloat(positions, p, 2));
         if (normals.data != nullptr && vertexIndex < normals.count) {
             const unsigned char* n = element(normals, vertexIndex);
-            vertex.normal = glm::vec3(readComponentAsFloat(n, normals.componentType, 0),
-                                      readComponentAsFloat(n, normals.componentType, 1),
-                                      readComponentAsFloat(n, normals.componentType, 2));
+            vertex.normal = glm::vec3(readComponentAsFloat(normals, n, 0),
+                                      readComponentAsFloat(normals, n, 1),
+                                      readComponentAsFloat(normals, n, 2));
         }
         if (tangents.data != nullptr && vertexIndex < tangents.count) {
             const unsigned char* t = element(tangents, vertexIndex);
-            vertex.tangent = glm::vec4(readComponentAsFloat(t, tangents.componentType, 0),
-                                       readComponentAsFloat(t, tangents.componentType, 1),
-                                       readComponentAsFloat(t, tangents.componentType, 2),
-                                       readComponentAsFloat(t, tangents.componentType, 3));
+            vertex.tangent = glm::vec4(readComponentAsFloat(tangents, t, 0),
+                                       readComponentAsFloat(tangents, t, 1),
+                                       readComponentAsFloat(tangents, t, 2),
+                                       readComponentAsFloat(tangents, t, 3));
         }
         if (uvs.data != nullptr && vertexIndex < uvs.count) {
             const unsigned char* u = element(uvs, vertexIndex);
-            vertex.uv =
-                glm::vec2(readComponentAsFloat(u, uvs.componentType, 0), readComponentAsFloat(u, uvs.componentType, 1));
+            vertex.uv = glm::vec2(readComponentAsFloat(uvs, u, 0), readComponentAsFloat(uvs, u, 1));
         }
         if (joints.data != nullptr && vertexIndex < joints.count) {
             const unsigned char* j = element(joints, vertexIndex);
@@ -304,10 +325,10 @@ SkinnedGltf loadSkinnedGltf(const std::filesystem::path& path)
         }
         if (weights.data != nullptr && vertexIndex < weights.count) {
             const unsigned char* w = element(weights, vertexIndex);
-            vertex.weights = glm::vec4(readComponentAsFloat(w, weights.componentType, 0),
-                                       readComponentAsFloat(w, weights.componentType, 1),
-                                       readComponentAsFloat(w, weights.componentType, 2),
-                                       readComponentAsFloat(w, weights.componentType, 3));
+            vertex.weights = glm::vec4(readComponentAsFloat(weights, w, 0),
+                                       readComponentAsFloat(weights, w, 1),
+                                       readComponentAsFloat(weights, w, 2),
+                                       readComponentAsFloat(weights, w, 3));
         }
     }
 
@@ -343,7 +364,7 @@ SkinnedGltf loadSkinnedGltf(const std::filesystem::path& path)
             outChannel.path = pathFromString(channel.target_path);
             outChannel.times.resize(input.count);
             for (size_t k = 0; k < input.count; ++k) {
-                outChannel.times[k] = readComponentAsFloat(element(input, k), input.componentType, 0);
+                outChannel.times[k] = readComponentAsFloat(input, element(input, k), 0);
                 clip.duration = std::max(clip.duration, outChannel.times[k]);
             }
 
@@ -353,8 +374,7 @@ SkinnedGltf loadSkinnedGltf(const std::filesystem::path& path)
                 const unsigned char* valueData = element(output, k);
                 glm::vec4 value(0.0f);
                 for (size_t component = 0; component < componentsPerValue; ++component) {
-                    value[static_cast<int>(component)] =
-                        readComponentAsFloat(valueData, output.componentType, component);
+                    value[static_cast<int>(component)] = readComponentAsFloat(output, valueData, component);
                 }
                 outChannel.values[k] = value;
             }
