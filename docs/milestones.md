@@ -2,6 +2,150 @@
 
 _Moved out of the top-level README to keep it scannable. These notes preserve the incremental build history and design decisions behind the current renderer._
 
+_Timings in Milestones 85 and later were taken on an RTX 3080 Ti Laptop; in 84 and earlier, on an Apple M3 through MoltenVK, unless an entry says otherwise. Each figure's full conditions -- scene, resolution, clock pin, statistic -- are in the subsystem document it came from, and `docs/profiling.md` records how the figures whose machine was not written down at the time were attributed._
+
+## Milestone 93: Audit Fixes -- Queue Ordering, Settings Round Trip, glTF Conformance
+
+An audit of the engine against its own documents found three defects, fixed here, and a documentation sweep that followed them.
+
+Fog injection reads the per-cluster light lists from a compute dispatch, but the light cull was ordered before its readers at the fragment stage only -- both the async-compute semaphore wait and, when the cluster passes run on the graphics queue, the barrier after the cull. The frame now latches every stage that reads the lists (fragment always, compute when fog is on) and uses that one value for both, and fog reads the lists only when it carries the compute stage. No gate here could have seen it: the reads go through buffer device addresses, which synchronization validation does not track, and lavapipe has no async queue. A probe that delayed the async work and zeroed the grid could not make it show on the RTX either, which appears to hold the whole graphics submission until the semaphore signals; `async_compute.md` records that and what it means for overlap.
+
+Save Settings wrote the defaults of `framesInFlight` and `enableShaderHotReload` over the file on every save, because capture never copied them. `tools/check_settings_capture.py` now fails the Linux job when any `RuntimeSettings` field is missing from capture or from apply. The cascades' receiver depth bias became a clamped, persisted setting, and four settings that were saved but had no control got one. The skinned glTF import now decodes normalized integer accessors -- quantized weights had been read as 0-255 -- honours STEP and CUBICSPLINE sampling, and skips and reports channels it cannot honour instead of misreading them.
+
+## Milestone 92: Punctual Caster Lists, Skinned Motion Vectors, and Explicit LOD
+
+The punctual atlas culled every slot against every draw item twice a frame -- once to build each tile's cache key and again, on one thread, to decide what to draw -- and the two had to be kept identical by hand. The key build now keeps each slot's caster list and the atlas draws from it. On `--scene stress` the atlas unit's recording fell from 0.34-0.43 ms to about 0.02 ms, and the hash and the draws can no longer disagree.
+
+Skinned motion vectors projected this frame's skinned position through the previous MVP, so a bending arm under a still camera reported zero velocity. Each per-frame palette buffer now holds the previous frame's palette as well, inside the buffer its own frame slot guards; a velocity probe went from zero on all 38733 mesh-body pixels to non-zero on 38701.
+
+An Intel UHD 770 lost the device on its first frame that sampled the punctual atlas. The cause was implicit-LOD `texture()` in non-uniform control flow, where the derivatives it needs are undefined; NVIDIA tolerated it and Intel faulted. Every fetch in divergent code now takes an explicit LOD. All 38 CI configurations run on the Intel part, and 75 RTX captures are bit-identical before and after.
+
+## Milestone 91: Correctness Found by Widening the Gates
+
+`--scene sponza` under synchronization validation reported the texture upload's queue-family ownership transfer as unordered. Both barrier halves were right; the semaphore between them signalled at `ALL_TRANSFER`, and the release barrier's layout transition -- whose second scope is legitimately `NONE` -- sat in no narrower stage, so nothing ordered it. The signal is `ALL_COMMANDS` now. CI cannot see this path (lavapipe has no transfer-only family and Sponza is not swept), so `tools/dev/verify_renderer.sh sync` runs it on a machine that can, and was checked against the bug: exit 2 with it, 0 without.
+
+Nothing had ever counted which settings the configuration sweep exercised. Counted against the schema, it reached 19 of the 49 settings that select a code path, and one of the other 30 was live: with `renderer.useGpuCulling = false`, `MainGpuCullingPass` was declared every frame and never recorded. Two legs set a key to its default, so the TAA resolve had never run in CI at all. The main cull is now declared from the predicate its recorder returns on, `tools/check_ci_settings_coverage.py` counts instead of trusting, and the sweep grew to cover every path-selecting setting.
+
+## Milestone 90: What the Main Pass Is Made Of on Real Content
+
+The only decomposition of `MainHDRPass` came from the M3 against the default scene, so it was ablated again on Sponza: 55% of the pass is shadow filtering -- 38.6% punctual, 16.7% cascades -- and the punctual atlas costs about six times more to sample (2.163 ms) than to fill (0.380 ms). Caster-side work was aimed at the small half.
+
+The filter half was then taken. The atlas was filtered with nine manual depth fetches; it is now four hardware comparison fetches through a second descriptor on the same image, reusing the cascades' immutable compare sampler. `MainHDRPass` fell 21.9% on Sponza. That reverses the M3's conclusion that the taps were not the cost -- the second such reversal after back-face culling, for the same reason: the tiler hid a real cost. The tile clamp had to inset a whole texel, because a linear compare tap gathers its own 2x2 and would otherwise reach the neighbouring cube face.
+
+A two-point resolution fit had called about a third of the pass fixed cost. A third scale point falsified it -- cost per pixel rises as pixels get fewer, which is quad overshading -- and it was retracted. What survives is a bound: at a sixteenth of the pixels and the lowest LOD the pass costs 15% of full resolution, which caps everything that is neither per-pixel nor per-triangle. The lever left on this scene is triangle count.
+
+## Milestone 89: Synchronization Validation and Graph-Owned Barriers
+
+The render graph infers every barrier in the frame and nothing had checked the result: unit tests cover the derivation functions, the golden compares pixels, and core validation cannot see a missing dependency. `--sync-validation` enables synchronization validation through `VK_EXT_layer_settings`, and a self-test records two unordered writes and exits 5 if the layer stays silent. Its first run found thirty hazards in four classes on the default scene, every one a barrier naming a narrower stage than the command it ordered -- `COPY` does not cover a blit, and fills and updates run in the clear stage. The graph now maps transfer access to `ALL_TRANSFER`. Every sweep leg runs under it, and no pixel changed, which is why the class had survived.
+
+A barrier belongs to the graph when it sits between two passes and to the subsystem when it sits between two commands inside one. Three subsystems wrote boundary barriers by hand; the froxel volumes and both shadow culls' indirect outputs are graph resources now. Per-subresource tracking was surveyed across every swept configuration and not built: the only multi-subresource images are always declared whole.
+
+## Milestone 88: Sponza as a Measurement Scene, and the Depth Prepass
+
+Sponza had been a compile-time startup hijack; it is `--scene sponza` now, one render object per glTF primitive. That split found two live bugs: every primitive had measured LOD against the bounds of the whole building (`L0=103` before, `L0=46 L1=9 L2=8 L3=4` after), and the transform cache kept handing culling those same bounds, so nothing was ever rejected. `--overdraw` counts fragment invocations per pixel and falsified the scene inventory: Sponza shades 2.187 per pixel, while the scene built with twenty-four overdraw layers shades 1.276, because early-Z already rejects stacked full-screen quads.
+
+That was the number a depth prepass had been waiting for. Built over the opaque and masked buckets, it takes 13.0% off the Sponza frame, at a cost of 0.071 ms, and 4.2% off `--scene stress`; it is on by default. It is not pixel-neutral -- the main pass tests `LESS_OR_EQUAL` -- but only scenes with authored contact surfaces move, and the golden's scene is not one of them. Review then tied the compare op to whether a prepass can actually run, and the measured-and-rejected decisions were collected into a page for readers.
+
+## Milestone 87: CPU Frame Attribution, Frame Prep, and Guards That Can Fire
+
+The CPU frame gained seventeen named scopes. They name `updatePunctualShadowCacheState` as 30% of frame preparation, and on `--scene stress` the CPU, not the GPU, is the ceiling. The same work found that scopes nested inside a render pass read near zero on the M3's tiler but 96-97% of the parent on the RTX, so the profiler rule became per report rather than per project, and every quoted timing now carries its machine, scene, resolution and statistic. Frame preparation then fell 19% by caching each object's model matrix once per frame and building the punctual cache keys in parallel, with a chunk size derived from total work because one slot per chunk won on one scene and lost on another. Shadow-slot churn was damped with hysteresis.
+
+Two proposals were measured and rejected. Specialization constants for the uber-shader have a negative ceiling: removing the default-off code makes `MainHDRPass` 4.4% slower. Meshlet culling finds 0.055% of the triangles LOD leaves behind, because LOD already removes 87% of them.
+
+Four guards were made to work: the settings-schema test could not fire (the example file was missing seventeen keys and the test passed with a whole section deleted), every shader's descriptor and push-constant interface is pinned against a golden, the Windows leg builds with warnings as errors, and anisotropic filtering -- off since Milestone 9 behind a stale comment -- is on for material samplers.
+
+## Milestone 86: The Configuration Sweep, a Froxel Producer Fix, and Back-Face Culling
+
+The render graph's backstop reported only through the ImGui panel and only for the default configuration. It now logs a line, `--settings` lets a run name its settings file, and CI renders a list of configurations past it. The first sweep found two passes declared every frame and never recorded -- the depth pyramid with occlusion culling off, and the transparent pass with bindless off.
+
+`cluster_build.comp` still built a 16x9 grid long after every consumer read 32x18x24, so 10368 of 13824 cluster bounds were never written. Clustered shading now matches the brute-force reference exactly, where it had differed on 15.8% of the default scene's pixels. It was found by making the constant checker read declarations rather than comments: the comment-based version had found two of five mirror groups and reported success.
+
+Back-face culling, measured and rejected on the M3, was re-measured on the RTX: `MainHDRPass` -37.4% and frame total -14.9% on `--scene stress`. It is on by default.
+
+## Milestone 85: Measurement on a Pinned Clock, Tooling Hygiene, and Two VSM Fixes
+
+Frame pacing moved from a fence per frame slot to one device timeline semaphore, optional device extensions got a selection step and a startup capability report, and shader hot reload and a frames-in-flight setting landed. GPU clocks can be pinned for measurement and `measure_gpu.py` quotes p10, because on this hardware the median got the sign of a delta wrong where p10 did not. The PNG writer gained a deflate encoder (12.78x smaller, verified lossless), all first-party translation units compile clean at `/W4`, and the formatting config is enforced in CI.
+
+The virtual shadow map's long-open lit-face discrepancy was not a bias or a filter: the page pass drew every caster from the first draw item's mesh buffers, so spheres were drawn as their bounding boxes. Each page's casters now draw from their own mesh, and the false shadow fell from 48482 pixels to 879 -- the floor two correct shadow paths already differ by. Separately, the clipmap's pages-per-level axis went from 16 to 32, because at 16 a 4K frame was capped at 0.55 shadow texels per pixel and its quality setting did nothing.
+
+## Milestone 84: Pipelines Looked Up by State
+
+Graphics and compute pipelines are looked up through a hashable `PipelineKey` instead of held in named members, so identical state compiles once: five named shadow-caster pipelines turned out to be two objects, and format-change detection stopped being hand-maintained. Membership is decided by lifetime rather than pipeline type -- only what the pipeline rebuild recreates may live in the store -- and references are generation-guarded, because that invariant broke within one commit of being written. The change is required to be pixel-identical and is, across sixteen configurations.
+
+## Milestone 83: Skinned Shadow Casters, and a Scene Built to Show Shadows
+
+The skinned mesh was lit by the sun while throwing no shadow at all. It now casts into the cascades, the punctual atlas and the virtual shadow map's pages. Every shadow cache and cull here keys on a transform, and a skinned mesh deforms while its transform holds still, so it carries a pose digest and a conservative per-joint world bound taken from the palette it uploads. `--capture-include-ui` lets a scripted run capture the debug overlay, which the first check of a UI-only warning needed.
+
+Every preset was ambient-dominated, with directional shadows at about 2.5:1 against the lit floor. `--scene sunlit` measures 5.92:1, and it immediately verified the skinned caster's punctual shadow, which the default scene could not show. A depth readback of the page pool then moved the VSM lit-face question from the sampler to what gets drawn into a page, which is where Milestone 85 found it.
+
+## Milestone 82: The Render Graph Drives the Frame
+
+The graph described the frame and nothing checked the description. It now has a declaration validator, versioned handles, a dependency graph derived from the declarations, and an end-of-frame backstop comparing the recorded order against it -- and then the whole frame was handed to the checked declarations: `recordRenderCommands` went from 979 lines to 162. The checks found six defects with no symptom, among them a stale handle that shortened the derived dependency chain from 17 passes to 9, passes declared and never recorded, fog declared ahead of the cluster build, and a bloom chain computed and discarded every frame. No reordering is applied; the scheduled order is verified equal to the recorded one every frame.
+
+## Milestone 81: Virtual Shadow Maps
+
+A clipmap of 128-texel pages for the directional light on an absolute grid, so a page's world rect never moves with the camera and a warm clipmap on a static scene draws no pages at all. It was built in four measured stages -- marking, residency, page rendering, sampling -- each off by default, and the staging surfaced five design errors before anything depended on them. Moving casters dirty the pages under their old and new bounds; cutout casters draw through the alpha-tested pipeline; the page pool got a depth bias in its own units after reusing the cascades' constant, which is scaled to a cascade's depth box rather than a page's, lifted every umbra by about 15% of the sun. Page LOD was deliberately not built: the steady state draws nothing, so there is no time for it to save.
+
+## Milestone 80: Scriptable Scene Presets and Frame Capacity Counting
+
+`--scene` selects any preset from the command line, and CPU frame preparation is printed beside the GPU frame total. A persistent GPU scene table was measured and rejected as a performance change: frame preparation was 9-14% of the GPU frame on `--scene stress`. Geometry past the frame's object and draw-item caps is now counted and reported rather than silently dropped.
+
+## Milestone 79: Per-Cascade Shadow Caching
+
+The cascades were the one shadow path that redrew unconditionally. Each cascade now hashes what it draws -- its fitted matrix, the raster depth bias, and every caster's geometry, selected LOD level, transform and alpha cutoff -- and is skipped outright when the hash still matches. A bounding-sphere fit meant to make the cache hit under camera motion was built and measured not to: it survives 0.0025-0.041 degrees of yaw, against 0.17 per frame for a camera turning at ten degrees a second. It ships off, for the rotation shimmer it does remove. Two older bugs came out of it: the cascades' normal bias and blend band were saved and then never applied, and both shadow caches keyed casters by pointers a scene switch could reuse.
+
+## Milestone 78: The Asset Pipeline
+
+An optional configure-time fetch of Sponza gave the asset work something to measure: 366 MiB of uncompressed textures, 0 of 77 block-compressed, and four seconds of glTF import. An offline BC7/BC5 KTX2 cook took textures to 91.06 MiB (4.02x) and removed runtime decoding and mip generation. Import turned out to be 87% mesh simplification, so the LOD build went parallel (3.30x) and then offline in a mesh cook (glTF import 331.49 ms to 15.50 ms, 21x), with a header that refuses a stale cook. Texture upload was batched (69 submits to 2, -71%, staging bounded at 64 MiB), a dedicated transfer queue was added and documented as a capability rather than a speedup, and the IBL precompute -- found to be CPU work, not GPU as the docs had said -- went parallel (-64%). `docs/asset_load_baseline.md` carries each measurement.
+
+## Milestone 77: Transient Memory, Measured, Built, and Left Off
+
+The graph now knows what its transient resources cost and where they could share memory. The measurement found the cheapest win first: the SSR scene-colour copy was full resolution for a single point sample, and halving it saves 21.13 MiB with no aliasing at all. Aliasing itself was then built and verified -- a probe writes through one alias and reads through the other -- and measured: 17.48 MiB saved for 1.2% of frame time, on a device with memory to spare. It ships off. The golden gate was found to be flaky at zero tolerance and now allows a delta of 1.
+
+## Milestone 76: Headless Rendering in CI
+
+CI runs the renderer instead of only compiling it: on Mesa's lavapipe under Xvfb it renders 30 deterministic frames, fails on any validation error, and pixel-compares the captured frame against a committed golden. That needed a frame clock with a fixed-timestep mode (`--deterministic`), a capture path that never touches the portfolio screenshots, an image-comparison tool, and command-line parsing moved out of the SDL-dependent code. Each gate was shown able to fail -- an injected validation error, a zeroed readback window, a perturbed golden -- before it was trusted to pass.
+
+## Milestone 75: A Scripted Measurement Protocol
+
+`tools/dev/measure_gpu.py` enforces the rules a performance claim here has to meet: a fixed scene and camera, a warm-up, and A/B/A/B with the control repeated and a drift gate. Each reported pass carries its own control drift and an attributable verdict, a stale Release binary is a hard abort, and a pass that runs in only one configuration is judged against its own spread rather than skipped. Every one of those came out of an A/B that the missing rule had answered wrongly.
+
+## Milestone 74: Tested Seams and Constant Parity
+
+Arithmetic whose failure mode is silence moved to where it can be tested. Draw-item batching -- every indirect command offset the cull shader, the indirect draws and the readback share -- became a Vulkan-free unit with tests checked against deliberate mutations, one of which exposed a dead loop. The punctual shadow assignment policy was lifted out of the Vulkan work the same way. `tools/check_shader_constants.py` compares the constants mirrored by hand between C++ and GLSL, since a mismatch neither fails the build nor trips validation. The build went to zero warnings, the Windows CI job started running the tests, and the README and docs were corrected where the day's work had made them false.
+
+## Milestone 73: Shadow, TAA and SSR Quality
+
+TAA history is resampled with Catmull-Rom instead of one bilinear tap, which had been re-blurring the history every frame. The cascades are filtered through a hardware comparison sampler, which needed a second, immutable sampler in the descriptor layout because MoltenVK only permits a mutable one behind a portability feature. Normal-offset bias and cascade blending were added to the CSM path, both defaulting to zero. SSR stopped double-counting specular energy by emitting a signed correction toward the traced colour rather than adding on top of the IBL, and its march went from fixed view-space steps to uniform screen-space steps, which closed the holes near the camera. Back-face culling was measured and rejected on the M3's tiler, which already discards those fragments; Milestone 86 reversed that on an immediate-mode GPU.
+
+## Milestone 72: Occlusion Yield and a Single Exposure Scan
+
+The depth pyramid now builds only when something will read it, and Hi-Z occlusion suspends itself while it culls nothing, probing every 180 frames to notice when it starts paying again -- 9.2% off the default scene with identical draw counts. Histogram exposure no longer runs the log-average pass; it derives the geometric mean from the bins it already walks. Culling lights at an "effective" radius was measured and rejected: the image darkens faster than the pass shortens, and even a 50% radius only takes 13% off the pass.
+
+## Milestone 71: Shadow Cascade Cost
+
+Shadow-map resolution turned out not to be a lever -- 2048, 1024 and 512 all cost the same -- while cascade count was, because the cost is per-pass encoder work. One GPU caster cull now serves every cascade, halving `CSMShadowPass`. A multiview pass rendering all cascades at once is implemented and ships off: pixel-identical and about 20% slower under MoltenVK. A single-cascade configuration also produced a wrongly-typed image view and 22 validation errors per run; the view type is now explicit.
+
+## Milestone 70: Sub-Rect Rendering and Temporal Upsampling
+
+Every screen-space target is allocated at the maximum render resolution and written only in a sub-rect, with each consumer scaling its UVs into the written region. A render-scale change used to cost a ~15 ms rebuild hitch, most of it an unavoidable idle wait; it now costs 0.008 ms, because nothing is reallocated. The TAA resolve then became the upsampler: it runs at presentation resolution and reconstructs each output pixel from the jittered low-resolution samples nearest to it. Its two stricter ghosting guards ship off, since they were built for a report that was retracted. The debug panel was reorganised into task tabs under a status strip.
+
+## Milestone 69: Render Scale, Dynamic Resolution and Sharpening
+
+The scene shades at a fraction of the window and the composite upscales, trading fragment cost for sharpness. A GPU-free, tested controller drives the scale from measured GPU frame time; its first version ping-ponged between two steps forever, and a raise is now vetoed when the predicted cost would be over budget. A contrast-adaptive sharpen runs only when the frame is upscaled. The frame-cost series was later re-taken in Release on the RTX at 2560x1440, clocks pinned, 63 samples a point: 6.733 ms at full scale, 2.101 ms at half, 1.076 ms at a quarter. A floor-contact z-fight that TAA jitter had turned into flicker was fixed on the way.
+
+## Milestone 68: Stress Scenes and a Finer Cluster Grid
+
+Eleven draw items could not show occlusion culling, LOD or the parallel frame-prep loops, so a 2311-object geometry stress scene was added (occlusion culling goes from 0 to 670 rejections) and the draw-item cap rose from 1024 to 8192. A fragment stress scene with 192 densely packed lights loads the opposite axis. On it the cluster grid went from 16x9x24 to 32x18x24, -19% on `MainHDRPass`, which was also a correctness fix: 160-pixel tiles were hitting the per-cluster light cap and silently dropping lights. The grid constants moved into a shared shader header.
+
+## Milestone 67: Leaner Per-Object Data
+
+The punctual shadow lookup read the 96-byte slot record twice per light per fragment, the first time only to reach a normal bias that is one global value; it now rides in the light record, -7% on `MainHDRPass`. The per-draw-item `ObjectFrameData` went from 688 bytes to 192 over three rounds by moving everything identical across the frame -- view-projections and cascade matrices -- into a `FrameConstants` record written once, after its six verbatim shader copies were deduplicated into one header. Two toggles whose initializers and persistence disagreed with their settings were brought into line.
+
+## Milestone 66: Ambient-Only Ambient Occlusion
+
+GTAO had been multiplied into the whole composited image, darkening direct light too. The main pass now samples the previous frame's AO, reprojected along the motion vector TAA already computes, and applies it to the ambient term alone; the composite multiply stays as an A/B reference. It exposed a latent hazard: the AO target was the first swapchain-sized image in the material descriptor set, and nothing had ever rewritten those sets after a resize.
+
 ## Milestone 65: Render Graph Test Coverage
 
 The render graph's two pieces of non-trivial CPU logic gained unit tests. Both were reachable only from private methods, so each had its body lifted into a pure free function with the method left as a one-line forwarder — the split the GPU-free cores (`ClusterGrid.h`, `CascadeMath.h`, `VolumetricFog.h`) already used.
