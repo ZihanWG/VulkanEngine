@@ -2793,6 +2793,12 @@ void Renderer::recordVolumetricFogPass(VkCommandBuffer commandBuffer)
     // needs it, and the frame no longer keeps a copy for anyone else.
     const bool clusteredLightingActive = clusteredLighting_.available() && useClusteredLighting_ &&
                                          clusteredLighting_.lightCount() > 0 && !allDrawItems_.empty();
+    // The lists are read only if frame prep put the compute stage into the light
+    // cull's consumer scope, since that scope -- a barrier on this queue, the
+    // semaphore wait on the async one -- is all that orders this dispatch after
+    // the cull. Without it, the brute-force loop below reads no list at all.
+    const bool fogReadsClusterLists =
+        clusteredLightingActive && (frameClusterConsumerStages_ & VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT) != 0;
 
     // Fog runs here, not with the shadow passes: injection walks the per-cluster
     // light lists, so it has to follow the cluster build and light cull above.
@@ -2808,13 +2814,13 @@ void Renderer::recordVolumetricFogPass(VkCommandBuffer commandBuffer)
         renderer::FogInjectPushConstants fogPushConstants{};
         fogPushConstants.lightBufferAddress = clusteredLighting_.lightBufferAddress(currentFrame_);
         fogPushConstants.clusterGridAddress =
-            clusteredLightingActive ? clusteredLighting_.clusterGridAddress(currentFrame_) : 0;
+            fogReadsClusterLists ? clusteredLighting_.clusterGridAddress(currentFrame_) : 0;
         fogPushConstants.lightIndexListAddress =
-            clusteredLightingActive ? clusteredLighting_.lightIndexListAddress(currentFrame_) : 0;
+            fogReadsClusterLists ? clusteredLighting_.lightIndexListAddress(currentFrame_) : 0;
         fogPushConstants.punctualShadowSlotAddress =
             punctualShadows_.slotCount() > 0 ? punctualShadows_.slotBufferAddress(currentFrame_) : 0;
         fogPushConstants.lightCount = clusteredLighting_.lightCount();
-        fogPushConstants.useClustered = clusteredLightingActive ? 1u : 0u;
+        fogPushConstants.useClustered = fogReadsClusterLists ? 1u : 0u;
         fogPushConstants.clusterZNear = camera_.nearPlane;
         fogPushConstants.clusterZFar = camera_.farPlane;
 
@@ -2950,9 +2956,10 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
          [this, commandBuffer]() {
              // Clustered (Forward+) light assignment: rebuild the froxel AABBs, then
              // cull every light into its froxels. Both write buffers the main HDR
-             // fragment shader reads. No graph pass of its own -- the async path
-             // submits these on the compute queue, which the renderer owns -- so it
-             // runs with the culling unit above.
+             // fragment shader reads, and fog injection too when fog is on --
+             // frameClusterConsumerStages_ names both. No graph pass of its own --
+             // the async path submits these on the compute queue, which the
+             // renderer owns -- so it runs with the culling unit above.
              const bool clusteredLightingActive = clusteredLighting_.available() && useClusteredLighting_ &&
                                                   clusteredLighting_.lightCount() > 0 && !allDrawItems_.empty();
              if (!clusteredLightingActive || frameAsyncComputeActive_) {
@@ -2967,7 +2974,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
              {
                  const renderer::GpuProfileScope cullScope(gpuProfiler_, currentFrame_, commandBuffer, "LightCull");
                  rhi::debug::beginLabel(commandBuffer, "LightCull");
-                 clusteredLighting_.recordLightCull(commandBuffer, currentFrame_);
+                 clusteredLighting_.recordLightCull(commandBuffer, currentFrame_, frameClusterConsumerStages_);
                  rhi::debug::endLabel(commandBuffer);
              }
          }},

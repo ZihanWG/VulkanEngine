@@ -1705,6 +1705,14 @@ private:
     bool frameDepthPyramidBuildRequired_ = false;
     bool useAsyncCompute_ = true;
     bool frameAsyncComputeActive_ = false;
+    // Every stage that reads the cluster grid and light index list this frame,
+    // latched during frame prep. It is the light cull's consumer scope on either
+    // queue: the barrier after it on the graphics queue, and the async
+    // semaphore's wait scope on the compute queue -- and fog injection reads the
+    // lists only when it carries the compute stage, so the scope and the reads
+    // cannot disagree. The main pass reads them from its fragment shader, fog
+    // from a compute dispatch that a FRAGMENT_SHADER-only scope leaves unordered.
+    VkPipelineStageFlags2 frameClusterConsumerStages_ = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
     bool frameSsrActive_ = false;
     bool frameGtaoActive_ = false;
     // Whether this frame captures probes. Latched during frame prep alongside

@@ -59,6 +59,13 @@ run_fast() {
 # --scene sponza is what drives the batched upload path; the default scene loads
 # too few textures to reach it. It is skipped when the asset has not been fetched
 # rather than failing, because it is optional by design.
+#
+# What it cannot see: anything read through a buffer device address. The layer
+# tracks descriptor-bound accesses, so the cluster grid and light index list --
+# written by descriptor on the async queue, read by address on the graphics one
+# -- are invisible to it. Fog injection read them unordered for as long as both
+# existed and this mode, run with fog on, reported 0 hazards. There is no fog
+# run here for that reason: it would pass whether or not the ordering is right.
 run_sync() {
     # Either Debug build will do. What this mode needs is validation layers
     # and the machine's real queue families, not a particular preset, and a
@@ -85,12 +92,21 @@ run_sync() {
     printf '%s\n' '[verify] renderer under synchronization validation: default scene'
     "$binary" --deterministic --exit-after-frames 40 --sync-validation --fail-on-validation-error
 
-    if [[ -f "$VERIFY_ROOT/build/fetched-assets/sponza/Sponza.gltf" ]]; then
+    # The asset is fetched once into a directory every preset shares, but only a
+    # build configured with the flag compiles the scene in; any other exits 4 on
+    # --scene sponza. Ask the chosen binary's own cache rather than fall back to
+    # a different build, which may be stale and would gate the wrong code.
+    local cache
+    cache="$(dirname "$binary")/CMakeCache.txt"
+    if [[ ! -f "$VERIFY_ROOT/build/fetched-assets/sponza/Sponza.gltf" ]]; then
+        printf '%s\n' '[verify] sync: skipping --scene sponza, asset not fetched'
+    elif ! grep -q '^VULKAN_ENGINE_FETCH_SAMPLE_SCENE:BOOL=ON$' "$cache" 2>/dev/null; then
+        printf '[verify] sync: skipping --scene sponza, %s was configured without VULKAN_ENGINE_FETCH_SAMPLE_SCENE\n' \
+            "${cache#"$VERIFY_ROOT/"}"
+    else
         printf '%s\n' '[verify] renderer under synchronization validation: --scene sponza'
         "$binary" --deterministic --exit-after-frames 40 --sync-validation --fail-on-validation-error \
             --scene sponza
-    else
-        printf '%s\n' '[verify] sync: skipping --scene sponza, asset not fetched'
     fi
 }
 

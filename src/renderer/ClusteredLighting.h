@@ -128,13 +128,19 @@ public:
 
     // Records the froxel build + light assignment compute passes for the frame.
     // Each method emits its own Synchronization2 barriers; the assignment pass
-    // ends with a barrier that makes its output visible to the fragment shader.
+    // ends with a barrier that makes its output visible to consumerStages --
+    // every stage that reads the grid or the index list this frame, which is
+    // the main pass's fragment shader and, with fog on, fog injection's
+    // compute dispatch.
     // asyncQueue: recording happens on the async compute queue. The trailing
-    // compute->fragment barriers are skipped there (FRAGMENT is not a valid
-    // stage on a compute-only queue; the submit semaphore provides the
-    // cross-queue memory dependency instead).
+    // barrier is skipped there (FRAGMENT is not a valid stage on a compute-only
+    // queue); the graphics submit waits on the semaphore at the same
+    // consumerStages instead, which provides the cross-queue dependency.
     void recordClusterBuild(VkCommandBuffer commandBuffer, uint32_t frameIndex, bool asyncQueue = false);
-    void recordLightCull(VkCommandBuffer commandBuffer, uint32_t frameIndex, bool asyncQueue = false);
+    void recordLightCull(VkCommandBuffer commandBuffer,
+                         uint32_t frameIndex,
+                         VkPipelineStageFlags2 consumerStages,
+                         bool asyncQueue = false);
 
     [[nodiscard]] bool available() const
     {
