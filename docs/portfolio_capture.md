@@ -68,7 +68,7 @@ The swapchain is created with `VK_IMAGE_USAGE_TRANSFER_SRC_BIT` when the surface
 3. Barrier the buffer for host read after queue completion.
 4. Transition the swapchain image back to color attachment for the ImGui pass.
 
-The CPU reads and writes the PNG later, after the existing frame fence for that frame slot has completed. The normal frame loop does not add a permanent `vkDeviceWaitIdle`.
+The CPU reads and writes the PNG later, after the frame loop's existing timeline wait for that frame slot has completed. The normal frame loop does not add a permanent `vkDeviceWaitIdle`.
 
 ## Limitations
 

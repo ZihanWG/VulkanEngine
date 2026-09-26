@@ -36,8 +36,9 @@ the problem on this renderer; shadow *sampling* and shadow *resolution* are.
 
 So the reason to want a VSM here is resolution and stability — a clipmap puts
 millimetre-scale texels near the camera and removes the cascade split entirely —
-not frame time. No performance claim appears in this document, because none has
-been measured.
+not frame time. The timings this document does quote -- page marking, culling
+and drawing -- are what the feature costs, measured once it existed; none of them
+is a claim that it makes the frame faster.
 
 ## The model
 
@@ -201,8 +202,9 @@ so they still cast, solidly. That is the same fallback the cascades use.
 ## Page marking reads the *previous* frame's depth
 
 Shadows have to be rendered before the main pass, but "which pages are needed" is
-a question about this frame's visible surfaces. This renderer has no depth
-prepass, so `vsm_page_mark.comp` reads the depth the Hi-Z pyramid already holds,
+a question about this frame's visible surfaces. Marking runs before this frame's
+depth prepass has written anything, so `vsm_page_mark.comp` reads the depth the
+Hi-Z pyramid already holds,
 paired with the view-projection stored when that pyramid was built — exactly the
 pairing the phase-1 occlusion test in [`cull.comp`](../src/shaders/cull.comp)
 already relies on.
@@ -1354,6 +1356,7 @@ page rendering.
   clipmap saturates again. See the measurement above.
 - **A marking block that straddles a page seam only marks the page its centre
   lands in.** The coarser-level mark covers it, at that level's resolution.
-- **Only the default and geometry-stress scenes have been measured**, both with
-  a static camera. No moving-camera or Sponza page churn number exists yet, and
+- **Page counts have only been measured on the default and geometry-stress
+  scenes**, both with a static camera; `sunlit` and `cornell` have been rendered
+  and compared by pixels, not counted. No moving-camera or Sponza page churn number exists yet, and
   churn is what decides whether the per-frame budget is the right shape.

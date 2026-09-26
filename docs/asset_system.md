@@ -392,8 +392,8 @@ finding out the hard way.
 ## Not Implemented
 
 - asset browser
-- mesh/geometry cooker
-- async transfer-queue upload (now legal, see above, but not done)
+- upload overlapped with the rest of loading: the dedicated transfer queue
+  exists, but the load flow still waits for its copies before moving on
 - shader permutation system
 - material graph
 - full texture or descriptor hot reload

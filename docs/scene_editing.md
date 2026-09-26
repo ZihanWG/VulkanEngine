@@ -156,7 +156,7 @@ is applied after the runtime scene exists, so it edits matching objects rather
 than replacing the creation path.
 
 Portfolio showcase objects are still appended by
-`Renderer::addPortfolioShowcaseObjects()`. The save file may include those
+`SceneBuilder::appendPortfolioShowcase()`. The save file may include those
 runtime objects if they exist, but the portfolio screenshot scene is not moved
 to a separate asset system in this phase.
 
@@ -169,16 +169,16 @@ directional light; portfolio lighting remains preset-driven.
 ## ImGuizmo
 
 ImGuizmo is vendored under `external/imguizmo/` and compiled into the `imgui`
-target (`CMakeLists.txt:187`), so it carries no new fetch step and no new
-find_package. The viewport gizmo ships: `Renderer::drawViewportGizmo()`
-(`src/renderer/Renderer.cpp:783`) draws a translate/rotate/scale manipulator for
-the current selection onto the background draw list, with W/E/R switching
-operation and X toggling world versus local space (`Renderer.cpp:655-668`); the
-same three operations and the space toggle are also radio buttons and a checkbox
-in the Selection & Gizmo section of the debug UI (`RendererDebugUi.cpp:1996-2007`).
+target in `CMakeLists.txt`, so it carries no new fetch step and no new
+find_package. The viewport gizmo ships: `Renderer::drawViewportGizmo()` draws a
+translate/rotate/scale manipulator for the current selection onto the background
+draw list, with W/E/R switching operation and X toggling world versus local space
+(both in `Renderer::handleEvent`); the same three operations and the space toggle
+are also radio buttons and a checkbox in the Selection & Gizmo section of the
+debug UI.
 
 The gizmo and click-to-pick share the mouse, so picking is gated on
-`ImGuizmo::IsOver()` and `ImGuizmo::IsUsing()` (`Renderer.cpp:599-622`) --
+`ImGuizmo::IsOver()` and `ImGuizmo::IsUsing()` in `Renderer::handleEvent` --
 without that, releasing a drag on the manipulator would reselect whatever
 happened to be under the cursor.
 

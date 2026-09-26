@@ -213,8 +213,10 @@ whether the pixel has the surface on it at all.
 - Not FSR2 or DLSS. The upsampling here is reconstruction plus the existing
   neighbourhood rejection; the hand-tuned machinery those spend most of their
   complexity on -- locks, reactive masks, shading-change detection -- is absent.
-- No disocclusion detection. Doing it properly needs the previous frame's depth,
-  which the engine does not keep.
+- No disocclusion detection. The resolve reads no previous-frame depth. Hi-Z
+  mip 0 is a copy of it, but the pyramid is built only when something reads it
+  (the occlusion-yield controller can suspend it), so the resolve could not rely
+  on it as things stand.
 - No per-material reactive mask.
 - Editor object teleports produce one frame of large velocity (clamped by the
   neighborhood bound) rather than a per-object history reset.

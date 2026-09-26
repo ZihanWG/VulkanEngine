@@ -198,12 +198,13 @@ shows whether back-to-front ordering actually holds.
 
 ## Known limitations
 
-- **Ambient occlusion bleeds onto transparents.** The composite multiplies the
-  GTAO term into scene color after the transparent pass has already blended into
-  it, so blended pixels are darkened by the AO of whatever opaque surface is
-  behind them. Fixing it means applying AO before the transparent pass, which
-  would also change how AO interacts with bloom — a deliberate deferral rather
-  than an oversight.
+- **Ambient occlusion bleeds onto transparents.** GTAO is computed from opaque
+  depth, and the transparent pass shares the main pass's fragment shader and its
+  push constants. So under the default ambient-only path a blended surface
+  darkens its own ambient term by the occlusion of whatever opaque surface lies
+  behind it, and on the composite reference path the whole blended pixel is
+  multiplied after blending. Giving the transparent pass its own AO strength
+  would stop the first; it is a look decision and has not been made.
 - **No order-independent transparency.** Sorting is per object, not per triangle,
   so intersecting or concave transparent geometry can still composite wrongly.
   Weighted-blended OIT would remove the sort entirely and is the natural follow-up.

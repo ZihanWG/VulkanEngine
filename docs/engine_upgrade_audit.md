@@ -100,7 +100,8 @@ not a full game engine. Implemented systems include:
 - Render graph with logical handles, pass read/write declarations, conservative
   barrier inference, pass liveness, an execution order derived from the declared
   dependencies, a backstop comparing declared passes against recorded ones, and
-  optional bloom-chain memory aliasing.
+  optional transient memory aliasing of the bloom chain and the
+  velocity/thin-G-buffer pair.
 - Per-pass GPU timestamp profiling with frame-latency readback, seventeen CPU
   frame-preparation scopes, and ImGui timing history.
 - Editable runtime scene workflow for object names, visibility, transforms,
@@ -169,8 +170,9 @@ Most of those are conditional, and the condition is the interesting part. A pass
 declared on a frame that never records it leaves the graph's barriers, liveness
 and resource lifetimes describing work that did not happen, and no validation
 error is raised because each individual Vulkan call is still legal.
-`RenderGraph::endFrame` is what catches that, and the headless job renders 28
-configurations past it beyond the default one.
+`RenderGraph::endFrame` is what catches that, and the headless job renders
+[every configuration in its sweep](../config/ci/README.md) past it, with a check
+that fails when a path-selecting setting is left out of the sweep.
 
 It tracks logical texture and buffer handles, imported and transient resource
 metadata, declared access, conservative image transitions and buffer barriers,
@@ -238,11 +240,13 @@ screenshots.
   asset browser, material graph, or texture import pipeline.
 - The render graph does not schedule across queues. Async compute exists, but
   the renderer owns that submission rather than the graph (see
-  async_compute.md). Memory aliasing is implemented for the bloom chain only
-  and is off by default, and transient resources are graph-described but still
+  async_compute.md). Memory aliasing covers the bloom chain and the
+  velocity/thin-G-buffer pair and is off by default, measured as not worth its
+  frame cost here, and transient resources are graph-described but still
   physically allocated by `Renderer`.
-- Both shadow paths cache: the punctual atlas per tile and the cascades per
-  cascade, each redrawing only when a content hash of its own inputs moves. The
+- Every shadow path caches: the punctual atlas per tile, the cascades per
+  cascade and the virtual shadow map per page, each redrawing only when what it
+  holds moved. The
   cascade cache is a static-scene win and, as measured, nothing else: the
   cascades are fitted to the camera, so any camera motion dirties all of them.
   The optional bounding-sphere fit does not change that -- it makes the ortho

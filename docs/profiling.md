@@ -429,9 +429,9 @@ python3 tools/dev/measure_gpu.py ab --b-set ssr.enabled=false --args --scene fra
 
 ## Frame Latency
 
-The frame loop already waits the fence for `currentFrame_` before reusing that frame slot. The profiler reads timestamp results for that same completed slot immediately after the fence wait and before command-buffer reset:
+The frame loop already waits on the device timeline semaphore for `currentFrame_`'s previous submission before reusing that frame slot. The profiler reads timestamp results for that same completed slot immediately after that wait and before command-buffer reset:
 
-1. Wait the current frame slot fence.
+1. Wait on the timeline value the current frame slot last submitted.
 2. Read query results from that completed slot with `VK_QUERY_RESULT_WITH_AVAILABILITY_BIT`.
 3. Skip the update if results are not ready.
 4. Reset and record the command buffer for the next use of the slot.
@@ -444,10 +444,12 @@ The profiler does not add `vkDeviceWaitIdle` to the runtime frame loop and does 
 The current frame records timestamp scopes for:
 
 - `CSMShadowPass`
-- `ShadowGpuCullingCascade0` through `ShadowGpuCullingCascadeN` when shadow GPU culling is active
+- `VsmPageMark`, `VsmPageCull` and `VsmPagePass` when the virtual shadow map stages are on
+- `ShadowGpuCulling` when shadow GPU culling is active and some cascade needs redrawing -- one dispatch covers every cascade
+- `PunctualShadowGpuCull` when punctual GPU caster culling is on
 - `PunctualShadowAtlas` when spot or point shadows are active
 - `MainGpuCullingPass` when main GPU culling is active
-- `ClusterBuild` and `LightCull` when clustered lighting is active
+- `ClusterBuild` and `LightCull` when clustered lighting runs on the graphics queue -- not while async compute is active, which is the default wherever an async queue exists
 - `IrradianceProbeUpdate` and `ProbeCapture` when irradiance probes are active
 - `DepthPrepass` when `renderer.enableDepthPrepass` is on
 - `MainHDRPass`
@@ -479,7 +481,7 @@ The same major ranges also use `VK_EXT_debug_utils` labels through the existing 
 - Parent scopes include child scope work, and on tile-based hardware a scope nested inside a render pass measures almost none of its own work. See the nested-scope section above.
 - Top-of-pipe and bottom-of-pipe markers are simple pass-range estimates, not detailed pipeline-stage attribution.
 - The profiler has a fixed per-frame query capacity. The UI reports query usage and warns if the frame exceeds the configured capacity.
-- Passes that run on the async compute queue are timestamped on that queue, so their rows are not directly comparable with graphics-queue rows on the same timeline. The debug UI notes this next to `ClusterBuild`/`LightCull`.
+- Passes that run on the async compute queue are not timestamped at all: the query pools are written from the graphics command buffer, so `ClusterBuild` and `LightCull` have no rows while async compute is active. The debug UI notes this next to them.
 - Timeline lane visualization and RenderDoc capture automation are future work.
 
 ## Load knobs, and why they did not fix the drift gate

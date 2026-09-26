@@ -37,7 +37,9 @@ The renderer uses normal-Z depth:
 
 - clear depth is `1.0`
 - nearer depth values are smaller
-- depth compare is `LESS`
+- depth compare is `LESS`, or `LESS_OR_EQUAL` when the depth prepass runs (the
+  default), so the main pass admits fragments at exactly the depth the prepass
+  wrote
 
 The Hi-Z pyramid stores the maximum depth in each source footprint. For normal-Z, that is conservative for occlusion because the stored value represents the farthest depth among the sampled occluder texels. An object is culled only when its nearest projected depth is greater than the sampled max depth plus bias.
 
@@ -90,7 +92,7 @@ The shader and renderer keep objects visible when the test is uncertain. Occlusi
 - stale or invalid depth-pyramid state
 - unavailable sampled depth or depth-pyramid resources
 
-Previous-frame depth is used. The renderer invalidates the pyramid after swapchain resize/resource recreation, scene loads, portfolio camera/preset changes, camera resets, UI transform/visibility edits, and animated transform updates. Camera matrix and camera-position thresholds also disable occlusion for the current cull dispatch if the previous pyramid was built from a different view. These fallbacks intentionally allow false negatives. False positives are avoided to prevent visible popping.
+Previous-frame depth is used. The renderer invalidates the pyramid after swapchain resize/resource recreation, scene loads, portfolio camera/preset changes, camera resets, UI transform/visibility edits, and animated transform updates. In single-phase mode, camera matrix and camera-position thresholds also disable occlusion for the current cull dispatch if the previous pyramid was built from a different view. Two-phase mode, the default, keeps testing under camera motion, because phase 2 re-tests every rejection against a pyramid built from this frame's depth. These fallbacks intentionally allow false negatives. False positives are avoided to prevent visible popping.
 
 ## Debug Counters and UI
 
