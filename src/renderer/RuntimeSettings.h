@@ -14,6 +14,10 @@ struct CsmSettings {
     float shadowDistance = 40.0f;
     bool enableTexelSnapping = true;
     bool enableCascadeDebugColors = false;
+    // Receiver-side compare bias in the cascade's normalized light-space depth:
+    // the shader takes max(constant, slope * (1 - N.L)). It complements the
+    // raster depth bias baked into the shadow pipelines, and too much of it is
+    // what detaches a shadow from its caster.
     float depthBiasConstant = 0.002f;
     float depthBiasSlope = 0.005f;
     // Offsets the shadow lookup along the surface normal instead of only along
@@ -179,7 +183,7 @@ struct SsaoSettings {
     int sliceCount = 3;     // GTAO slices swept around the view direction
     int stepsPerSlice = 6;  // horizon-march steps per slice, per side
     float falloff = 0.6f;   // 0..1 fraction of the radius over which samples fade
-    float thickness = 0.5f; // view-space thickness heuristic (reserved for denoise)
+    float thickness = 0.5f; // scales the upsample's depth rejection (gtao_blur.frag); the trace ignores it
     // Applies occlusion to the ambient/indirect term inside the main pass rather
     // than multiplying the whole composited scene colour. The multiply darkens
     // direct lighting too, which is physically wrong -- a crease in full sunlight

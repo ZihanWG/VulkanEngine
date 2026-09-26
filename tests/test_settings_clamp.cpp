@@ -150,6 +150,21 @@ TEST_CASE("Cascade settings and selected-cascade index are clamped", "[settings]
         s.clamp();
         CHECK(s.csm.shadowDistance == Catch::Approx(100.0f));
     }
+
+    SECTION("receiver depth biases clamp into [0, 0.05] and keep zero")
+    {
+        Settings s;
+        s.csm.depthBiasConstant = -1.0f;
+        s.csm.depthBiasSlope = 3.0f;
+        s.clamp();
+        CHECK(s.csm.depthBiasConstant == 0.0f);
+        CHECK(s.csm.depthBiasSlope == Catch::Approx(0.05f));
+
+        Settings defaults;
+        defaults.clamp();
+        CHECK(defaults.csm.depthBiasConstant == CsmSettings{}.depthBiasConstant);
+        CHECK(defaults.csm.depthBiasSlope == CsmSettings{}.depthBiasSlope);
+    }
 }
 
 TEST_CASE("Debug-UI preview ranges are clamped", "[settings]")

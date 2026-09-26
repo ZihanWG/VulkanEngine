@@ -31,6 +31,10 @@ struct SkinnedImportVertex {
 struct SkinnedGltf {
     bool valid = false;
     std::string error;
+    // Non-fatal: animation channels the import skipped, and why -- a morph-target
+    // channel, an unknown interpolation, or a sampler whose value count does not
+    // fit its keyframes. The load still succeeds without them.
+    std::vector<std::string> warnings;
     std::vector<SkinnedImportVertex> vertices;
     std::vector<uint32_t> indices;
     Skeleton skeleton;
@@ -38,7 +42,10 @@ struct SkinnedGltf {
 };
 
 // Loads the first skinned mesh + its skin and all animations from an ASCII or
-// binary glTF. On failure returns { valid = false, error = ... }.
+// binary glTF. On failure returns { valid = false, error = ... }. Normalized
+// integer accessors (KHR_mesh_quantization-style weights, normals, rotations)
+// decode to their fractional values, and each channel keeps its sampler's
+// interpolation.
 [[nodiscard]] SkinnedGltf loadSkinnedGltf(const std::filesystem::path& path);
 
 } // namespace ve::renderer

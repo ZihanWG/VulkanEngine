@@ -124,6 +124,13 @@ jobs:
       - name: Shader interface parity
         run: python3 tools/check_shader_interface.py --build-dir build/ci-debug
 
+      # Save Settings writes whatever captureRuntimeSettings hands it, starting
+      # from defaults, so a field missing there is reset on every save -- two
+      # were, for as long as they existed. Both functions are Renderer members
+      # no headless test can call; this reads their source instead.
+      - name: Settings capture parity
+        run: python3 tools/check_settings_capture.py
+
       # Report-only static analysis over our own sources. Deliberately
       # non-blocking: .clang-tidy sets no WarningsAsErrors, so this surfaces
       # findings in the log rather than gating the build. Read the log; do not
