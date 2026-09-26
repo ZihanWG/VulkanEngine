@@ -249,3 +249,113 @@ TEST_CASE("Normalized signed rotation keys decode, down to the most negative cod
     const glm::vec3 fullTurn = sampleQuatChannel(channel, 2.0f) * glm::vec3(1.0f, 0.0f, 0.0f);
     CHECK(fullTurn.x == Catch::Approx(1.0f).margin(1e-4));
 }
+
+TEST_CASE("A STEP sampler holds each keyframe until the next", "[gltf][skinning]")
+{
+    SkinnedGltfBuilder builder;
+    builder.triangle(floatWeights(builder));
+    const std::vector<float> times = {0.0f, 1.0f};
+    const std::vector<float> translations = {0.0f, 0.0f, 0.0f, 2.0f, 0.0f, 0.0f};
+    builder.channel("translation",
+                    builder.accessor(times, kFloat, "SCALAR", 2),
+                    builder.accessor(translations, kFloat, "VEC3", 2),
+                    "STEP");
+    const SkinnedGltf rig = builder.load("step_translation");
+    REQUIRE(rig.valid);
+    REQUIRE(rig.clips.size() == 1);
+    REQUIRE(rig.clips[0].channels.size() == 1);
+    const auto& channel = rig.clips[0].channels[0];
+
+    // Linear would give 1.0 at the midpoint.
+    CHECK(sampleVec3Channel(channel, 0.5f).x == Catch::Approx(0.0f));
+    CHECK(sampleVec3Channel(channel, 0.999f).x == Catch::Approx(0.0f));
+    CHECK(sampleVec3Channel(channel, 1.0f).x == Catch::Approx(2.0f));
+}
+
+TEST_CASE("A CUBICSPLINE sampler reads the tangents around each keyframe", "[gltf][skinning]")
+{
+    SkinnedGltfBuilder builder;
+    builder.triangle(floatWeights(builder));
+    const std::vector<float> times = {0.0f, 1.0f};
+    // Per keyframe: in-tangent, value, out-tangent. From 0 to 1 along X, leaving
+    // the first key with slope 2 and arriving at the second with slope 0.
+    const std::vector<float> output = {
+        0.0f,
+        0.0f,
+        0.0f,
+        0.0f,
+        0.0f,
+        0.0f,
+        2.0f,
+        0.0f,
+        0.0f, // key 0
+        0.0f,
+        0.0f,
+        0.0f,
+        1.0f,
+        0.0f,
+        0.0f,
+        0.0f,
+        0.0f,
+        0.0f, // key 1
+    };
+    builder.channel("translation",
+                    builder.accessor(times, kFloat, "SCALAR", 2),
+                    builder.accessor(output, kFloat, "VEC3", 6),
+                    "CUBICSPLINE");
+    const SkinnedGltf rig = builder.load("cubic_translation");
+    REQUIRE(rig.valid);
+    REQUIRE(rig.clips.size() == 1);
+    REQUIRE(rig.clips[0].channels.size() == 1);
+    const auto& channel = rig.clips[0].channels[0];
+
+    // The curve passes through the values, never the tangents stored beside them.
+    CHECK(sampleVec3Channel(channel, 0.0f).x == Catch::Approx(0.0f));
+    CHECK(sampleVec3Channel(channel, 1.0f).x == Catch::Approx(1.0f));
+    // Hermite at t = 0.5: h01 * 1 + h10 * 2 * (1 s) = 0.5 + 0.125 * 2. Linear
+    // would give 0.5.
+    CHECK(sampleVec3Channel(channel, 0.5f).x == Catch::Approx(0.75f));
+}
+
+TEST_CASE("Channels the importer cannot honour are skipped and reported", "[gltf][skinning]")
+{
+    const std::vector<float> times = {0.0f, 1.0f};
+
+    SECTION("a morph-target weights channel")
+    {
+        SkinnedGltfBuilder builder;
+        builder.triangle(floatWeights(builder));
+        const std::vector<float> morphWeights = {0.0f, 1.0f};
+        builder.channel("weights",
+                        builder.accessor(times, kFloat, "SCALAR", 2),
+                        builder.accessor(morphWeights, kFloat, "SCALAR", 2),
+                        "LINEAR");
+        const SkinnedGltf rig = builder.load("morph_weights_channel");
+        REQUIRE(rig.valid);
+        CHECK(rig.clips.empty());
+        REQUIRE(rig.warnings.size() == 1);
+        CHECK(rig.warnings[0].find("morph") != std::string::npos);
+    }
+
+    SECTION("a sampler with the wrong number of values for its keyframes")
+    {
+        SkinnedGltfBuilder builder;
+        builder.triangle(floatWeights(builder));
+        // Three linear values for two keyframes, and a cubic sampler with one
+        // value per keyframe instead of three.
+        const std::vector<float> threeValues = {0, 0, 0, 1, 0, 0, 2, 0, 0};
+        const std::vector<float> twoValues = {0, 0, 0, 1, 0, 0};
+        builder.channel("translation",
+                        builder.accessor(times, kFloat, "SCALAR", 2),
+                        builder.accessor(threeValues, kFloat, "VEC3", 3),
+                        "LINEAR");
+        builder.channel("scale",
+                        builder.accessor(times, kFloat, "SCALAR", 2),
+                        builder.accessor(twoValues, kFloat, "VEC3", 2),
+                        "CUBICSPLINE");
+        const SkinnedGltf rig = builder.load("mismatched_value_counts");
+        REQUIRE(rig.valid);
+        CHECK(rig.clips.empty());
+        CHECK(rig.warnings.size() == 2);
+    }
+}

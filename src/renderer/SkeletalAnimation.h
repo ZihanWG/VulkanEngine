@@ -49,12 +49,22 @@ enum class AnimationPath : uint8_t {
     Scale,
 };
 
+// glTF's three sampler interpolations.
+enum class AnimationInterpolation : uint8_t {
+    Linear,      // lerp, or slerp for rotation
+    Step,        // hold each keyframe until the next
+    CubicSpline, // cubic Hermite through the keyframes, with authored tangents
+};
+
 // Keyframes for a single joint's translation, rotation, or scale. times is sorted
 // ascending; values holds vec3 data in xyz for Translation/Scale and a quaternion
-// (x, y, z, w) for Rotation. times.size() == values.size().
+// (x, y, z, w) for Rotation. Linear and Step hold one value per keyframe
+// (values.size() == times.size()); CubicSpline holds three, in glTF's order --
+// in-tangent, value, out-tangent -- so values.size() == 3 * times.size().
 struct AnimationChannel {
     uint32_t joint = 0;
     AnimationPath path = AnimationPath::Translation;
+    AnimationInterpolation interpolation = AnimationInterpolation::Linear;
     std::vector<float> times;
     std::vector<glm::vec4> values;
 };
@@ -65,8 +75,12 @@ struct AnimationClip {
     std::vector<AnimationChannel> channels;
 };
 
-// Sample a channel at time t. vec3 channels interpolate linearly; rotation
-// channels slerp. Times outside the range clamp to the first/last keyframe.
+// Sample a channel at time t, by its interpolation. Linear vec3 channels lerp and
+// linear rotations slerp; Step holds the keyframe at or before t; CubicSpline
+// evaluates the Hermite segment, and a rotation is renormalised afterwards, as
+// glTF specifies. Times outside the range clamp to the first/last keyframe. A
+// channel whose value count does not fit its interpolation returns the default
+// (zero, or the identity rotation) rather than reading out of step.
 [[nodiscard]] glm::vec3 sampleVec3Channel(const AnimationChannel& channel, float time);
 [[nodiscard]] glm::quat sampleQuatChannel(const AnimationChannel& channel, float time);
 

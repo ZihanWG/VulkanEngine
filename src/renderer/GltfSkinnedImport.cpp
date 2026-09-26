@@ -12,6 +12,8 @@
 #include <array>
 #include <cstring>
 #include <glm/gtc/quaternion.hpp>
+#include <optional>
+#include <string>
 #include <unordered_map>
 #include <utility>
 
@@ -172,15 +174,36 @@ JointPose nodeLocalPose(const tinygltf::Node& node)
     return pose;
 }
 
-AnimationPath pathFromString(const std::string& path)
+// Empty for "weights" -- a morph-target channel has one scalar per target, not a
+// transform, and read as a translation it would move the joint by garbage -- and
+// for any path this importer does not know.
+std::optional<AnimationPath> pathFromString(const std::string& path)
 {
+    if (path == "translation") {
+        return AnimationPath::Translation;
+    }
     if (path == "rotation") {
         return AnimationPath::Rotation;
     }
     if (path == "scale") {
         return AnimationPath::Scale;
     }
-    return AnimationPath::Translation;
+    return std::nullopt;
+}
+
+// glTF's default is LINEAR, and tinygltf fills that in when the file omits it.
+std::optional<AnimationInterpolation> interpolationFromString(const std::string& interpolation)
+{
+    if (interpolation == "LINEAR" || interpolation.empty()) {
+        return AnimationInterpolation::Linear;
+    }
+    if (interpolation == "STEP") {
+        return AnimationInterpolation::Step;
+    }
+    if (interpolation == "CUBICSPLINE") {
+        return AnimationInterpolation::CubicSpline;
+    }
+    return std::nullopt;
 }
 
 } // namespace
@@ -359,9 +382,34 @@ SkinnedGltf loadSkinnedGltf(const std::filesystem::path& path)
                 continue;
             }
 
+            const std::string where = "animation '" + animation.name + "', channel on joint " +
+                                      std::to_string(jointIt->second) + " (" + channel.target_path + ")";
+            const std::optional<AnimationPath> animationPath = pathFromString(channel.target_path);
+            if (!animationPath) {
+                result.warnings.push_back(where + (channel.target_path == "weights"
+                                                       ? ": skipped, morph-target weights are not supported."
+                                                       : ": skipped, unknown target path."));
+                continue;
+            }
+            const std::optional<AnimationInterpolation> interpolation = interpolationFromString(sampler.interpolation);
+            if (!interpolation) {
+                result.warnings.push_back(where + ": skipped, unknown interpolation '" + sampler.interpolation + "'.");
+                continue;
+            }
+            // A cubic sampler stores in-tangent, value and out-tangent for every
+            // keyframe. Anything else is malformed, and sampling it would read
+            // tangents as values.
+            const size_t valuesPerKeyframe = *interpolation == AnimationInterpolation::CubicSpline ? 3 : 1;
+            if (output.count != input.count * valuesPerKeyframe) {
+                result.warnings.push_back(where + ": skipped, " + std::to_string(output.count) + " output values for " +
+                                          std::to_string(input.count) + " keyframes.");
+                continue;
+            }
+
             AnimationChannel outChannel;
             outChannel.joint = jointIt->second;
-            outChannel.path = pathFromString(channel.target_path);
+            outChannel.path = *animationPath;
+            outChannel.interpolation = *interpolation;
             outChannel.times.resize(input.count);
             for (size_t k = 0; k < input.count; ++k) {
                 outChannel.times[k] = readComponentAsFloat(input, element(input, k), 0);

@@ -10,6 +10,7 @@
 
 using ve::renderer::AnimationChannel;
 using ve::renderer::AnimationClip;
+using ve::renderer::AnimationInterpolation;
 using ve::renderer::AnimationPath;
 using ve::renderer::computeJointMatrices;
 using ve::renderer::computeJointMatricesAtTime;
@@ -81,6 +82,91 @@ TEST_CASE("Rotation channel slerps between keyframes", "[skinning]")
     const glm::vec3 rotated = mid * glm::vec3(1.0f, 0.0f, 0.0f);
     CHECK(rotated.x == Catch::Approx(std::cos(glm::radians(45.0f))).margin(1e-5));
     CHECK(rotated.y == Catch::Approx(std::sin(glm::radians(45.0f))).margin(1e-5));
+}
+
+TEST_CASE("Step channels hold the keyframe at or before the sample time", "[skinning]")
+{
+    AnimationChannel translation;
+    translation.interpolation = AnimationInterpolation::Step;
+    translation.times = {0.0f, 1.0f, 2.0f};
+    translation.values = {glm::vec4(0.0f), glm::vec4(4.0f, 0.0f, 0.0f, 0.0f), glm::vec4(8.0f, 0.0f, 0.0f, 0.0f)};
+
+    CHECK(sampleVec3Channel(translation, 0.5f).x == Catch::Approx(0.0f));
+    CHECK(sampleVec3Channel(translation, 1.0f).x == Catch::Approx(4.0f)); // exactly on a key
+    CHECK(sampleVec3Channel(translation, 1.9f).x == Catch::Approx(4.0f));
+    CHECK(sampleVec3Channel(translation, 5.0f).x == Catch::Approx(8.0f)); // clamp high
+
+    AnimationChannel rotation;
+    rotation.path = AnimationPath::Rotation;
+    rotation.interpolation = AnimationInterpolation::Step;
+    rotation.times = {0.0f, 1.0f};
+    const glm::quat ninety = glm::angleAxis(glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+    rotation.values = {glm::vec4(0.0f, 0.0f, 0.0f, 1.0f), glm::vec4(ninety.x, ninety.y, ninety.z, ninety.w)};
+
+    const glm::vec3 held = sampleQuatChannel(rotation, 0.9f) * glm::vec3(1.0f, 0.0f, 0.0f);
+    CHECK(held.x == Catch::Approx(1.0f).margin(1e-5)); // still the identity key
+}
+
+TEST_CASE("Cubic channels pass through their keyframes and follow the tangents between", "[skinning]")
+{
+    // Per key: in-tangent, value, out-tangent. A 2-second segment from 0 to 1
+    // leaving with slope 1 and arriving with slope 0.
+    AnimationChannel channel;
+    channel.interpolation = AnimationInterpolation::CubicSpline;
+    channel.times = {0.0f, 2.0f};
+    channel.values = {glm::vec4(9.0f, 0.0f, 0.0f, 0.0f), // in-tangent 0: never used, and never a value
+                      glm::vec4(0.0f),
+                      glm::vec4(1.0f, 0.0f, 0.0f, 0.0f),
+                      glm::vec4(0.0f),
+                      glm::vec4(1.0f, 0.0f, 0.0f, 0.0f),
+                      glm::vec4(9.0f, 0.0f, 0.0f, 0.0f)}; // out-tangent 1: likewise
+
+    CHECK(sampleVec3Channel(channel, -1.0f).x == Catch::Approx(0.0f));
+    CHECK(sampleVec3Channel(channel, 0.0f).x == Catch::Approx(0.0f));
+    CHECK(sampleVec3Channel(channel, 2.0f).x == Catch::Approx(1.0f));
+    CHECK(sampleVec3Channel(channel, 3.0f).x == Catch::Approx(1.0f));
+    // t = 0.25 of the segment: h01 = 0.15625, h10 = 0.140625, and the tangent is
+    // scaled by the 2 s duration: 0.15625 + 0.140625 * 1 * 2 = 0.4375.
+    CHECK(sampleVec3Channel(channel, 0.5f).x == Catch::Approx(0.4375f));
+}
+
+TEST_CASE("Cubic rotations come back unit length", "[skinning]")
+{
+    const glm::quat ninety = glm::angleAxis(glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+    AnimationChannel channel;
+    channel.path = AnimationPath::Rotation;
+    channel.interpolation = AnimationInterpolation::CubicSpline;
+    channel.times = {0.0f, 1.0f};
+    channel.values = {glm::vec4(0.0f),
+                      glm::vec4(0.0f, 0.0f, 0.0f, 1.0f),
+                      glm::vec4(0.0f),
+                      glm::vec4(0.0f),
+                      glm::vec4(ninety.x, ninety.y, ninety.z, ninety.w),
+                      glm::vec4(0.0f)};
+
+    // Between two unit quaternions a component-wise cubic is shorter than unit;
+    // glTF says renormalise.
+    const glm::quat mid = sampleQuatChannel(channel, 0.5f);
+    CHECK(glm::length(mid) == Catch::Approx(1.0f));
+    const glm::vec3 rotated = mid * glm::vec3(1.0f, 0.0f, 0.0f);
+    CHECK(rotated.x == Catch::Approx(std::cos(glm::radians(45.0f))).margin(1e-5));
+    CHECK(rotated.y == Catch::Approx(std::sin(glm::radians(45.0f))).margin(1e-5));
+}
+
+TEST_CASE("A channel whose value count does not fit its interpolation samples the default", "[skinning]")
+{
+    AnimationChannel cubic;
+    cubic.interpolation = AnimationInterpolation::CubicSpline;
+    cubic.times = {0.0f, 1.0f};
+    cubic.values = {glm::vec4(5.0f), glm::vec4(5.0f)}; // one value per key, not three
+    CHECK(sampleVec3Channel(cubic, 0.5f) == glm::vec3(0.0f));
+
+    AnimationChannel rotation;
+    rotation.path = AnimationPath::Rotation;
+    rotation.times = {0.0f, 1.0f};
+    rotation.values = {glm::vec4(0.0f, 0.0f, 0.0f, 1.0f)}; // two keys, one value
+    const glm::quat sampled = sampleQuatChannel(rotation, 0.5f);
+    CHECK(sampled.w == Catch::Approx(1.0f));
 }
 
 TEST_CASE("Bind pose yields identity skinning matrices", "[skinning]")

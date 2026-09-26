@@ -36,6 +36,41 @@ bool keyframeSegment(const std::vector<float>& times, float time, size_t& index,
     return true;
 }
 
+// Entries per keyframe for the channel's interpolation, or 0 when the value
+// array does not fit it -- which is exactly the channel that would otherwise
+// sample a tangent as a value, or run off the end.
+size_t valuesPerKey(const AnimationChannel& channel)
+{
+    const size_t stride = channel.interpolation == AnimationInterpolation::CubicSpline ? 3 : 1;
+    if (channel.times.empty() || channel.values.size() != channel.times.size() * stride) {
+        return 0;
+    }
+    return stride;
+}
+
+// The keyframe's own value, stepping over the tangents a cubic channel stores
+// on either side of it.
+glm::vec4 keyValue(const AnimationChannel& channel, size_t key, size_t stride)
+{
+    return channel.values[key * stride + (stride == 3 ? 1 : 0)];
+}
+
+// Cubic Hermite from key `index` to the next, per glTF: the first key's
+// out-tangent and the second's in-tangent, each scaled by the segment's length.
+glm::vec4 cubicSegment(const AnimationChannel& channel, size_t index, float factor)
+{
+    const float t = factor;
+    const float t2 = t * t;
+    const float t3 = t2 * t;
+    const float duration = channel.times[index + 1] - channel.times[index];
+    const glm::vec4 p0 = channel.values[index * 3 + 1];
+    const glm::vec4 m0 = channel.values[index * 3 + 2] * duration;
+    const glm::vec4 p1 = channel.values[(index + 1) * 3 + 1];
+    const glm::vec4 m1 = channel.values[(index + 1) * 3] * duration;
+    return (2.0f * t3 - 3.0f * t2 + 1.0f) * p0 + (t3 - 2.0f * t2 + t) * m0 + (-2.0f * t3 + 3.0f * t2) * p1 +
+           (t3 - t2) * m1;
+}
+
 } // namespace
 
 glm::mat4 JointPose::matrix() const
@@ -48,14 +83,18 @@ glm::mat4 JointPose::matrix() const
 
 glm::vec3 sampleVec3Channel(const AnimationChannel& channel, float time)
 {
-    if (channel.values.empty()) {
+    const size_t stride = valuesPerKey(channel);
+    if (stride == 0) {
         return glm::vec3(0.0f);
     }
 
     size_t index = 0;
     float factor = 0.0f;
-    if (!keyframeSegment(channel.times, time, index, factor)) {
-        return glm::vec3(channel.values[index]);
+    if (!keyframeSegment(channel.times, time, index, factor) || channel.interpolation == AnimationInterpolation::Step) {
+        return glm::vec3(keyValue(channel, index, stride));
+    }
+    if (channel.interpolation == AnimationInterpolation::CubicSpline) {
+        return glm::vec3(cubicSegment(channel, index, factor));
     }
 
     const glm::vec3 a{channel.values[index]};
@@ -65,7 +104,8 @@ glm::vec3 sampleVec3Channel(const AnimationChannel& channel, float time)
 
 glm::quat sampleQuatChannel(const AnimationChannel& channel, float time)
 {
-    if (channel.values.empty()) {
+    const size_t stride = valuesPerKey(channel);
+    if (stride == 0) {
         return glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
     }
 
@@ -76,8 +116,14 @@ glm::quat sampleQuatChannel(const AnimationChannel& channel, float time)
 
     size_t index = 0;
     float factor = 0.0f;
-    if (!keyframeSegment(channel.times, time, index, factor)) {
-        return glm::normalize(toQuat(channel.values[index]));
+    if (!keyframeSegment(channel.times, time, index, factor) || channel.interpolation == AnimationInterpolation::Step) {
+        return glm::normalize(toQuat(keyValue(channel, index, stride)));
+    }
+    if (channel.interpolation == AnimationInterpolation::CubicSpline) {
+        // Hermite on the raw components, then renormalised: what glTF specifies
+        // for cubic rotations, since a cubic through unit quaternions leaves the
+        // unit sphere between keys.
+        return glm::normalize(toQuat(cubicSegment(channel, index, factor)));
     }
 
     return glm::normalize(glm::slerp(toQuat(channel.values[index]), toQuat(channel.values[index + 1]), factor));

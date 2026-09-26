@@ -180,6 +180,9 @@ bool SkinnedMesh::createFromGltf(rhi::VulkanContext& context,
         }
         return false;
     }
+    for (const std::string& warning : imported.warnings) {
+        Logger::warn("Skinned glTF '" + path.filename().string() + "': " + warning);
+    }
 
     std::vector<Vertex> geometry(imported.vertices.size());
     std::vector<SkinningVertex> skinning(imported.vertices.size());
