@@ -826,8 +826,9 @@ private:
     {
         return virtualShadowMap_.available() && vsmSettings_.enableMarking;
     }
-    // Whether pages are allocated and drawn this frame. Still nothing samples
-    // them -- the cascades remain the only directional shadow source.
+    // Whether pages are allocated and drawn this frame. Drawing them is not
+    // sampling them: the main pass reads the pool instead of the cascades only
+    // under isVsmDirectionalShadowActive() below.
     [[nodiscard]] bool isVsmPageRenderingActive() const
     {
         return isVsmPageMarkingActive() && vsmSettings_.enablePageRendering && virtualShadowMap_.pagePoolValid() &&
@@ -1680,10 +1681,10 @@ private:
     // path; frameTwoPhaseOcclusionActive_ is the per-frame resolved predicate.
     bool useTwoPhaseOcclusion_ = true;
     bool useLayeredCascades_ = false;
-    bool useBackfaceCulling_ = false;
+    bool useBackfaceCulling_ = true;
     // See RuntimeSettings::enableDepthPrepass. Startup-only: it selects the main
     // pipeline's depth compare op.
-    bool useDepthPrepass_ = false;
+    bool useDepthPrepass_ = true;
     bool useAdaptiveOcclusion_ = true;
     renderer::OcclusionYieldController occlusionYield_;
     // Per frame slot: was occlusion culling running when this slot's cull

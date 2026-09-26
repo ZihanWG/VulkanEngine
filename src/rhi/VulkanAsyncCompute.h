@@ -6,9 +6,9 @@
 //
 // Synchronization model: the renderer records compute work into commandBuffer(f)
 // and submits it to the async queue signaling semaphore(f) BEFORE the frame's
-// graphics submission, which waits on semaphore(f) at the pipeline stage that
-// first consumes the compute results. Command-buffer reuse is safe because the
-// graphics submission's frame fence transitively covers the async work it
+// graphics submission, which waits on semaphore(f) at every pipeline stage that
+// consumes the compute results. Command-buffer reuse is safe because the
+// graphics submission's timeline signal transitively covers the async work it
 // waited on.
 
 #include "rhi/VulkanCommon.h"

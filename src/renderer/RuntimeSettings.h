@@ -170,7 +170,9 @@ struct TaaSettings {
 
 // Ground-truth ambient occlusion (Jimenez et al. 2016): a dedicated horizon-
 // search pass consumes the main depth buffer and the thin G-buffer normal and
-// writes a visibility texture the composite pass multiplies into scene color.
+// writes a visibility texture. By default (ambientOnly) the main pass applies
+// the previous frame's, reprojected, to the ambient term alone; the composite
+// multiply into scene color is kept only as the A/B reference.
 // Disabled by default; the toggle is only honoured when the depth image supports
 // sampling (Renderer::ssaoAvailable_). Lives with the other post-process
 // settings structs so PostProcessStack and Renderer share the type without a
@@ -401,11 +403,10 @@ struct DynamicResolutionSettings {
 
 // Virtual shadow map (docs/virtual_shadow_maps.md).
 //
-// Phase 1 scope: enableMarking only turns on the page-MARKING measurement pass.
-// It changes nothing the renderer draws -- directional shadows still come
-// entirely from the cascades. The point of the phase is to find out how many
-// pages a real frame asks for before a physical pool, a per-frame page budget,
-// or a sampling path is committed to.
+// Three cumulative stages, all off by default. enableMarking alone turns on the
+// page-MARKING pass and changes nothing the renderer draws -- it measures how
+// many pages a frame asks for. enablePageRendering allocates and draws those
+// pages; enableShadows makes the main pass sample them instead of the cascades.
 //
 // The numeric fields mirror renderer::VsmClipmapSettings, which is where they
 // are clamped and unit-tested; this header stays glm-free by design, so the
@@ -413,7 +414,8 @@ struct DynamicResolutionSettings {
 struct VsmSettings {
     // Nested on purpose, each an A/B point: marking measures which pages a frame
     // needs and changes nothing drawn; page rendering additionally allocates and
-    // draws them into the pool. Neither replaces the cascades.
+    // draws them into the pool. Neither replaces the cascades -- only
+    // enableShadows below does that.
     //
     // enableMarking is STARTUP-ONLY, like CsmSettings::cascadeCount: it decides
     // whether the page pool (4096x4096 D32 = 64 MiB) and its per-frame buffers
@@ -533,11 +535,12 @@ struct RuntimeSettings {
     LodSettings lod;
     GiSettings gi;
     DebugUiSettings debugUi;
-    // Bind the bloom chain into one shared transient allocation, so resources
-    // whose lifetimes do not overlap share bytes. OFF by default until the frame
-    // cost of the alias-handoff barriers has been measured -- the memory it
-    // saves is not scarce here, so an unmeasured cost is not worth paying by
-    // default. Startup/resize applied: it changes how images are allocated.
+    // Bind the bloom chain, the velocity buffer and the thin G-buffer into one
+    // shared transient allocation, so resources whose lifetimes do not overlap
+    // share bytes. OFF by default because it was measured and lost: the bloom
+    // chain alone saved 17.48 MiB for +1.2% of frame time, and the memory is not
+    // scarce here (docs/render_graph.md). Startup/resize applied: it changes how
+    // images are allocated.
     bool enableTransientAliasing = false;
     bool useGpuCulling = true;
     bool useGpuShadowCulling = true;
@@ -634,11 +637,12 @@ struct RuntimeSettings {
     // On by default since the golden was regenerated. It is not pixel-neutral --
     // that is what kept it off, not any doubt about the win.
     bool enableBackfaceCulling = true;
-    // Render the opaque bucket depth-only before MainHDRPass, so that pass's
-    // fragments are rejected by early-Z instead of shaded and overwritten.
+    // Render the opaque and masked buckets depth-only before MainHDRPass, so that
+    // pass's fragments are rejected by early-Z instead of shaded and overwritten.
     //
-    // OFF by default, and this is the setting the whole question hangs on rather
-    // than a preference. docs/design_decisions.md carried a section for months
+    // ON by default -- the end of this comment says why that is safe for the
+    // golden. Whether it should be was the whole question rather than a
+    // preference: docs/design_decisions.md carried a section for months
     // saying the pass could not be evaluated because no scene here had realistic
     // depth complexity; --scene sponza and --overdraw between them supply the
     // number, and it is 2.187 shaded fragments per rendered pixel -- higher than

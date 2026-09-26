@@ -42,9 +42,10 @@ jobs:
 
     env:
       VK_LOADER_DEBUG: warn
-      # Frames to render. Ten is enough to get past first-frame resource setup
-      # and into a steady loop; software rasterization makes each one expensive,
-      # and this job gates on validation, not on convergence.
+      # Frames to render for the pixel gate. Thirty, because the capture below
+      # is taken at the last one and wants TAA history and exposure settled;
+      # the sweep legs, which gate on validation and graph shape rather than
+      # pixels, use SWEEP_FRAMES instead.
       RENDER_FRAMES: 30
       # Captured near the end of the run so TAA history and exposure have
       # settled. Determinism does not require a converged frame, but a converged
@@ -135,8 +136,8 @@ jobs:
       # Before anything gates on synchronization validation being quiet, prove it
       # can speak. The self-test records two overlapping writes to one buffer
       # with no barrier between them and fails if the layer says nothing: a
-      # sweep that ran with the setting silently ignored would report 29 clean
-      # configurations and have checked the ordering in none of them.
+      # sweep that ran with the setting silently ignored would report every
+      # configuration clean and have checked the ordering in none of them.
       #
       # First, because a dead check makes every step below it meaningless, and
       # cheap, because it exits before building a scene or rendering a frame.
