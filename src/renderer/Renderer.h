@@ -239,6 +239,13 @@ public:
         overdrawReadoutEnabled_ = enabled;
     }
 
+    // Yaw the camera around its target by this much every frame
+    // (--camera-orbit). 0 turns it off.
+    void setScriptedCameraOrbit(float radiansPerFrame)
+    {
+        scriptedCameraOrbitRadiansPerFrame_ = radiansPerFrame;
+    }
+
     // Turns on the meshlet cull analysis (--meshlet-analysis). Reports only;
     // nothing about the rendered frame changes.
     void setMeshletAnalysisEnabled(bool enabled)
@@ -1489,6 +1496,8 @@ private:
     bool cameraFlying_ = false;   // RMB held: free-fly look + WASD
     bool cameraOrbiting_ = false; // Alt+LMB: orbit around target
     bool cameraPanning_ = false;  // MMB: pan
+    // --camera-orbit: radians of yaw per frame, 0 when still.
+    float scriptedCameraOrbitRadiansPerFrame_ = 0.0f;
     bool leftMouseDown_ = false;
     bool leftMouseDragged_ = false;
     glm::vec2 leftMouseDownPosition_{0.0f, 0.0f};

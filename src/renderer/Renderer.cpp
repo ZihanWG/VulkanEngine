@@ -762,6 +762,13 @@ void Renderer::handleEvent(const SDL_Event& event)
 
 void Renderer::updateEditorCamera(float deltaSeconds)
 {
+    // A scripted orbit is not live input: it turns by a fixed angle per frame,
+    // so it runs ahead of the deterministic drop below and a run stays
+    // reproducible from the frame number.
+    if (scriptedCameraOrbitRadiansPerFrame_ != 0.0f) {
+        editorCamera_.orbit(camera_, scriptedCameraOrbitRadiansPerFrame_, 0.0f);
+    }
+
     // A deterministic run must be reproducible from the frame number alone, and
     // live input is the one remaining thing that is not. This is not theoretical:
     // a stray scroll over the window dollies the camera through the branch at the

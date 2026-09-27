@@ -161,6 +161,8 @@ void Application::initialize()
     // second and has nothing to do with capturing a frame.
     renderer_->setMeshletAnalysisEnabled(config_.meshletAnalysis);
     renderer_->setOverdrawReadoutEnabled(config_.overdraw);
+    // After the preset, so the orbit turns the preset's own camera.
+    renderer_->setScriptedCameraOrbit(config_.cameraOrbitRadiansPerFrame);
     if (config_.captureFrame != 0) {
         renderer_->requestFrameCaptureAt(config_.captureFrame, config_.captureOutput, config_.captureIncludeUi);
         if (!config_.vsmDumpPool.empty()) {
