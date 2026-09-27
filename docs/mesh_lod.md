@@ -30,8 +30,18 @@ bookkeeping is unit-testable without a device — the same split already used by
   previous level's triangles, and the chain stops below 32 triangles. Small
   geometry (the 12-triangle cube) correctly yields a **level-0-only chain** rather
   than levels that cost index memory and a table entry while buying nothing.
+- Each level records its **geometric error**: how far its surface strays from the
+  authored one, in the mesh's own units. `meshopt_simplify` reports it relative
+  to the extent of the position stream it was handed -- for a glTF primitive, the
+  whole mesh's shared vertex buffer -- so it is multiplied back by
+  `meshopt_simplifyScale` of that same stream. Levels are simplified from the
+  authored geometry independently, so nothing forces a coarser level to measure
+  worse; the builder raises any level that measured better to its predecessor's
+  error, which is what lets selection treat the chain as ordered.
 
-The portfolio sphere builds `2208 → 1104 → 552 → 275` triangles.
+The portfolio sphere (radius 0.5) builds `2208 → 1103 → 552 → 275` triangles at
+errors of `0.0059 → 0.0081 → 0.030`, about 1.2%, 1.6% and 6% of its radius. The
+chain log prints each level's error beside its triangle count.
 
 glTF meshes get one chain per primitive, since primitives are drawn independently
 and each needs its own range per level. They share the mesh's flat LOD table,
@@ -46,9 +56,11 @@ are the record's **former padding**, so adding GPU LOD selection did not grow th
 The table itself is a new SSBO at cull binding 6, rebuilt each frame next to the
 cull input (scene edits add and remove meshes) and deduped by mesh, so a mesh's
 chain uploads once no matter how many draw items reference it.
-`renderer::MeshLod` uploads unchanged — two tightly packed `uint32`s is already
-the std430 layout the shader expects — so there is no GPU mirror type to keep in
-sync.
+`renderer::MeshLod` uploads unchanged -- `firstIndex`, `indexCount` and the
+level's `error`, three 4-byte scalars, which std430 lays out at a 12-byte stride
+because it aligns a struct of scalars to 4 -- so there is no GPU mirror type to
+keep in sync. `static_assert`s pin the offsets and the shader interface golden
+pins the GLSL side.
 
 The main and shadow cull dispatches **share** the table: levels belong to the
 mesh, only the selection bias differs per pass.
@@ -83,6 +95,62 @@ Meshes with no chain (`lodCount == 0`) fall through to the authored range carrie
 on the draw item, so a missing LOD table degrades to full detail rather than an
 out-of-range read.
 
+### Selecting by screen-space error (opt-in)
+
+The radius rule steps one level per halving of the on-screen radius, whatever each
+level actually cost in accuracy: a level that barely moved the surface and one
+that visibly dented it switch at the same distance. `lod.screenSpaceError` asks the
+question directly -- how many pixels would this level be wrong by, from here --
+and takes the coarsest level that stays inside `lod.maxErrorPixels` (default 1):
+
+```
+worldError  = level.error * maxAxisScale(model)
+errorPixels = worldError / distanceToBounds * projScaleY
+level       = the last level with errorPixels <= maxErrorPixels * 2^bias
+```
+
+- **Scale.** An object-space error becomes a world-space one through the model
+  matrix's longest basis column, which bounds the stretch in any direction. It
+  rides in `GpuCullDrawItem::boundsMin.w`, which nothing else read, so the record
+  keeps its 64 bytes.
+- **Distance.** From the camera to the nearest point of the draw item's world
+  AABB, not to its centre. Every triangle lies in the box, so no part of the
+  object can be nearer, and the error projected there bounds the error anywhere
+  on it. Inside the box the distance is 0: only a level with zero error -- one
+  whose collapses were coplanar -- is taken, which is right, because it is exact.
+- **Bias.** `bias` and `shadowBias` scale the budget by `2^bias` instead of adding
+  levels, so one unit still means roughly one level coarser: each level roughly
+  doubles its error.
+- **One reference, three callers.** `selectLodIndexByError` in
+  `renderer/MeshLod.h` is the unit-tested reference; `cull.comp` mirrors it for
+  the main and shadow dispatches, and `Renderer::selectedShadowLodLevel` calls it
+  directly for the cascade cache's caster hash and the meshlet analysis. With the
+  rule on, the default and sunlit scenes render bit-identically with the cascade
+  cache on and off, so the CPU hash and the GPU choice agree.
+
+What it does, on the RTX 3080 Ti Laptop at 1280x720, `--deterministic`, 240
+frames, counted by the cull pass itself (the `emitted triangles` line):
+
+| scene | radius rule | error ≤ 1 px | |
+| --- | --- | --- | --- |
+| default | 7,797 | 5,590 | -28% |
+| `--scene sunlit` | 2,278 | 1,176 | -48% |
+| `--scene stress` | 94,232 | 94,232 | 0 |
+| `--scene sponza` | 185,889 | 137,669 | -26% |
+
+On Sponza the budget trades as expected: 157,978 triangles at 0.5 px, 115,090 at
+2 px. `stress` does not move: every chained draw it emits sits at level 0 or
+level 3 under both rules (336 and 328), and the two rules agree on which.
+
+**Why it is off by default.** These are triangle counts, not frame time: the GPU
+cost has not been measured with pinned clocks, and a timing claim needs that. And
+the error is *geometric*. It bounds where the surface is, not how it shades:
+normals interpolated across coarser triangles move a sharp specular highlight
+further than the silhouette moves. On the default scene the rule changes 1.7% of
+pixels against the radius rule -- thin rings at sphere silhouettes, and the
+reflected highlights inside the chrome sphere. Turning it on by default would also
+re-baseline the committed golden image.
+
 ## Debugging
 
 The **Mesh LOD** panel exposes the selection knobs (all of them are just fields of
@@ -91,9 +159,12 @@ The **Mesh LOD** panel exposes the selection knobs (all of them are just fields 
 - **Selected levels** — emitted draws per level, read back from the cull stats
   block. Meshes without a chain are not counted, so the total can sit below the
   visible draw count.
-- **Mesh chains** — what each loaded mesh actually built, including an explicit
-  *"too small to simplify"* note. This is usually the answer to "why does my scene
-  show no level variety".
+- **Mesh chains** — what each loaded mesh actually built, with each simplified
+  level's error in mesh units, and an explicit *"too small to simplify"* note.
+  This is usually the answer to "why does my scene show no level variety".
+- **Emitted triangles** — in the GPU culling block of the once-a-second report:
+  the triangles of every draw the main cull emitted, at the level it chose. It is
+  the number two selection rules are compared on, and needs no timer.
 - **Color by LOD** — green → yellow → orange → red as detail drops, modulated by
   scene luminance so silhouettes and shading still read through the tint.
 
@@ -251,9 +322,13 @@ That is a bound on what a more aggressive `lod.bias` or a smaller
   granular selection is the direction modern engines went.
 - **No cross-fade or dithered transition.** A switch is a hard pop. Screen-space
   dithering between adjacent levels is the usual cheap fix.
-- **No screen-space error metric.** Selection uses projected bounding-sphere
-  radius, which ignores how much geometric error a given level actually
-  introduced. `meshopt_simplify` reports that error and it is currently discarded.
+- **Screen-space error selection is opt-in and geometric.** It bounds where the
+  surface is, not how it shades; an attribute-aware error
+  (`meshopt_simplifyWithAttributes` over normals) would bound highlights too, and
+  would change the chains themselves. The default is still the radius rule.
+- **The error projection is conservative.** It uses the object's largest axis
+  scale and its nearest bounds point for the whole object, so a long object seen
+  end-on keeps the detail its nearest end needs.
 - **Transparent draws bypass LOD selection entirely.** They are issued as direct
   draws to preserve back-to-front sort order (see
   [docs/transparency.md](transparency.md)), so they never pass through the cull
@@ -361,11 +436,14 @@ Meshlet construction is **off by default** and startup-only, because the triangl
 reorder changes rasterization order: on the default scene it moves 7.45% of pixels
 by up to 6/255 through z-fight resolution and the exposure feedback that follows.
 That is not a bug, but it is a golden re-baseline, and paying one for data no shader
-reads would be backwards. `MeshLod` stays 8 bytes for the same reason — the meshlet
-ranges come back from `buildMeshlets` beside the table rather than inside the struct
-that gets uploaded to the GPU every frame.
+reads would be backwards. `MeshLod` carries no meshlet data for the same reason --
+the meshlet ranges come back from `buildMeshlets` beside the table rather than
+inside the struct that gets uploaded to the GPU every frame.
 
 ### A measurement trap found on the way
+
+(`MeshLod` has since grown to 12 bytes, for the per-level error that screen-space
+selection reads. The trap below is unchanged.)
 
 The first attempt to price the `MeshLod` widening reported a **10.7% frame-time
 regression**, isolated to the stride change, reproducible at 0.43% control drift.
