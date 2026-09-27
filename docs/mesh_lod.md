@@ -212,9 +212,28 @@ way shading error does. It is a heuristic, not a bound: shading depends on the
 light and the material as well as the normal.
 
 **What it costs.** Normal-aware chains draw 164,927 triangles on Sponza where
-position-only chains drew 137,669 (+20%). The -15.4% frame-time saving above was
-measured with position-only chains, so part of it is given back; how much has not
-been measured with clocks pinned. The default scene barely moves (5,592 against
+position-only chains drew 137,669 (+20%), and the -15.4% above was measured with
+position-only chains, so part of it is given back. Measured on the RTX 3080 Ti
+Laptop with clocks pinned at 800/7001 MHz, `--scene sponza` at 1280x720, p10 over
+about 126 samples a side, interleaved A/B/A/B after a throwaway run:
+
+| comparison | frame total | `MainHDRPass` |
+| --- | --- | --- |
+| old default (radius rule, position-only chains) -> new default (error rule, normal-aware chains) | **6.011 -> 5.734 ms (-4.6%)** | 4.531 -> 4.313 ms (-4.8%) |
+| error rule, position-only -> normal-aware chains (two series) | +10.5% / +10.6%, not quoted | **+0.463 / +0.473 ms (+12.0% / +12.3%)** |
+
+The first row passed its drift gate (0.40%) and is the net answer: the default
+now draws 11% fewer triangles than the old one and runs 4.6% faster, where
+position-only chains had run 15.4% faster -- so weighing normals gives back about
+two thirds of the saving for the shading it buys. The second row is what the
+normals cost on their own. Neither of its series passed the frame-level gate --
+the position-only control drifted 1.7% and 2.3% -- so the frame totals are not
+quoted, but `MainHDRPass` rose by the same amount in both, with its own drift at
+0.094 ms or less, and that is quoted at pass level. The absolute times are from a
+later session than the -15.4% and do not compare with it directly; the
+percentages do.
+
+The default scene barely moves (5,592 against
 5,590 triangles) but its sphere chain changed, so its golden image was
 re-baselined. Position-only chains stay one startup setting away
 (`lod.normalAwareSimplification`, on by default), and a cooked `.vemesh` records
