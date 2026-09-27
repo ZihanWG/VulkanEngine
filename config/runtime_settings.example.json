@@ -53,7 +53,8 @@
         "forcedLod": -1,
         "debugHeatmap": false,
         "screenSpaceError": true,
-        "maxErrorPixels": 1.0
+        "maxErrorPixels": 1.0,
+        "transitionSeconds": 0.25
     },
     "ssr": {
         "enabled": true,

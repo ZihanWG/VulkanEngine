@@ -2044,6 +2044,21 @@ void Renderer::recordCascadeShadowPass(VkCommandBuffer commandBuffer)
     }
 }
 
+// Where a main-pass batch's commands start in the indirect buffer, and how many
+// it may hold. The GPU cull gives each draw item kLodCommandSlotsPerDrawItem
+// slots -- the second for the outgoing level of a LOD cross-fade -- while the
+// CPU fallback writes one; frameMainCommandSlots_ says which this frame used.
+VkDeviceSize Renderer::mainBatchCommandOffset(const MeshDrawBatch& batch) const
+{
+    return static_cast<VkDeviceSize>(batch.compactedCommandOffset) * frameMainCommandSlots_ *
+           sizeof(VkDrawIndexedIndirectCommand);
+}
+
+uint32_t Renderer::mainBatchCommandCapacity(const MeshDrawBatch& batch) const
+{
+    return batch.drawItemCount * frameMainCommandSlots_;
+}
+
 void Renderer::recordDepthPrepass(VkCommandBuffer commandBuffer)
 {
     if (!frameDepthPrepassActive_) {
@@ -2165,21 +2180,20 @@ void Renderer::recordDepthPrepass(VkCommandBuffer commandBuffer)
         // The same compacted buffer and the same offsets the main pass replays,
         // so the two passes draw the same geometry by construction rather than by
         // two lists agreeing.
-        const VkDeviceSize indirectOffset =
-            static_cast<VkDeviceSize>(batch.compactedCommandOffset * sizeof(VkDrawIndexedIndirectCommand));
+        const VkDeviceSize indirectOffset = mainBatchCommandOffset(batch);
         if (indirectCountPathActive && batchVisibleCountBuffer != VK_NULL_HANDLE) {
             vkCmdDrawIndexedIndirectCount(commandBuffer,
                                           indirectDrawBuffer,
                                           indirectOffset,
                                           batchVisibleCountBuffer,
                                           batch.visibleCountOffset,
-                                          batch.drawItemCount,
+                                          mainBatchCommandCapacity(batch),
                                           sizeof(VkDrawIndexedIndirectCommand));
         } else {
             vkCmdDrawIndexedIndirect(commandBuffer,
                                      indirectDrawBuffer,
                                      indirectOffset,
-                                     batch.drawItemCount,
+                                     mainBatchCommandCapacity(batch),
                                      sizeof(VkDrawIndexedIndirectCommand));
         }
         ++drawnBatches;
@@ -2420,21 +2434,20 @@ void Renderer::recordMainPassGeometry(VkCommandBuffer commandBuffer)
                                                         : "MeshBatchDraw commands ") +
                     std::to_string(batch.drawItemCount);
                 rhi::debug::beginLabel(commandBuffer, batchLabel);
-                const VkDeviceSize indirectOffset =
-                    static_cast<VkDeviceSize>(batch.compactedCommandOffset * sizeof(VkDrawIndexedIndirectCommand));
+                const VkDeviceSize indirectOffset = mainBatchCommandOffset(batch);
                 if (indirectCountPathActive && batchVisibleCountBuffer != VK_NULL_HANDLE) {
                     vkCmdDrawIndexedIndirectCount(commandBuffer,
                                                   indirectDrawBuffer,
                                                   indirectOffset,
                                                   batchVisibleCountBuffer,
                                                   batch.visibleCountOffset,
-                                                  batch.drawItemCount,
+                                                  mainBatchCommandCapacity(batch),
                                                   sizeof(VkDrawIndexedIndirectCommand));
                 } else {
                     vkCmdDrawIndexedIndirect(commandBuffer,
                                              indirectDrawBuffer,
                                              indirectOffset,
-                                             batch.drawItemCount,
+                                             mainBatchCommandCapacity(batch),
                                              sizeof(VkDrawIndexedIndirectCommand));
                 }
                 rhi::debug::endLabel(commandBuffer);
@@ -2640,21 +2653,20 @@ void Renderer::recordMainPassGeometry(VkCommandBuffer commandBuffer)
                     phase2BoundMesh = batch.mesh;
                 }
 
-                const VkDeviceSize indirectOffset =
-                    static_cast<VkDeviceSize>(batch.compactedCommandOffset * sizeof(VkDrawIndexedIndirectCommand));
+                const VkDeviceSize indirectOffset = mainBatchCommandOffset(batch);
                 if (indirectCountPathActive && batchVisibleCountBuffer != VK_NULL_HANDLE) {
                     vkCmdDrawIndexedIndirectCount(commandBuffer,
                                                   indirectDrawBuffer,
                                                   indirectOffset,
                                                   batchVisibleCountBuffer,
                                                   batch.visibleCountOffset,
-                                                  batch.drawItemCount,
+                                                  mainBatchCommandCapacity(batch),
                                                   sizeof(VkDrawIndexedIndirectCommand));
                 } else {
                     vkCmdDrawIndexedIndirect(commandBuffer,
                                              indirectDrawBuffer,
                                              indirectOffset,
-                                             batch.drawItemCount,
+                                             mainBatchCommandCapacity(batch),
                                              sizeof(VkDrawIndexedIndirectCommand));
                 }
             }

@@ -239,6 +239,13 @@ public:
         overdrawReadoutEnabled_ = enabled;
     }
 
+    // Yaw the camera around its target by this much every frame
+    // (--camera-orbit). 0 turns it off.
+    void setScriptedCameraOrbit(float radiansPerFrame)
+    {
+        scriptedCameraOrbitRadiansPerFrame_ = radiansPerFrame;
+    }
+
     // Turns on the meshlet cull analysis (--meshlet-analysis). Reports only;
     // nothing about the rendered frame changes.
     void setMeshletAnalysisEnabled(bool enabled)
@@ -538,6 +545,8 @@ private:
     // Replays the opaque bucket depth-only, before MainHDRPass. No-op unless
     // frameDepthPrepassActive_.
     void recordDepthPrepass(VkCommandBuffer commandBuffer);
+    [[nodiscard]] VkDeviceSize mainBatchCommandOffset(const MeshDrawBatch& batch) const;
+    [[nodiscard]] uint32_t mainBatchCommandCapacity(const MeshDrawBatch& batch) const;
     // Casters for the skinned mesh: cascades and VSM pages. Both read the same
     // shader and push block; only the depth target differs.
     // Advances the skinned pose and uploads its palette, bounds and digest.
@@ -1489,6 +1498,8 @@ private:
     bool cameraFlying_ = false;   // RMB held: free-fly look + WASD
     bool cameraOrbiting_ = false; // Alt+LMB: orbit around target
     bool cameraPanning_ = false;  // MMB: pan
+    // --camera-orbit: radians of yaw per frame, 0 when still.
+    float scriptedCameraOrbitRadiansPerFrame_ = 0.0f;
     bool leftMouseDown_ = false;
     bool leftMouseDragged_ = false;
     glm::vec2 leftMouseDownPosition_{0.0f, 0.0f};
@@ -1692,6 +1703,15 @@ private:
     // counters were written? Sized with frames_.
     std::vector<uint8_t> frameOcclusionTested_;
     bool frameTwoPhaseOcclusionActive_ = false;
+    // Indirect command slots per draw item in this frame's main buffer:
+    // renderer::kLodCommandSlotsPerDrawItem when the GPU cull wrote it (room for
+    // a LOD cross-fade's outgoing level), 1 when the CPU fallback did.
+    uint32_t frameMainCommandSlots_ = 1;
+    // renderer::advanceLodTransition's frame serial and the progress one frame
+    // buys. The serial starts at 2 so a zeroed record never reads as last
+    // frame's; it only has to advance by exactly one per rendered frame.
+    uint32_t lodTransitionFrame_ = 1;
+    float frameLodTransitionStep_ = 0.0f;
     // Per-frame resolution of useDepthPrepass_: also requires the multi-draw
     // indirect path and a pipeline, so a device that falls back to per-draw
     // recording simply does not get the prepass.

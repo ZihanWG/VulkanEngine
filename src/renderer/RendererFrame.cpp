@@ -1401,9 +1401,10 @@ void Renderer::uploadGpuCullFrameParams(uint32_t frameIndex, bool occlusionEnabl
     frameParams.lodSettings =
         glm::vec4(lodSettings_.referenceRadiusPixels, lodSettings_.bias, forcedLod, lodSettings_.shadowBias);
     frameParams.lodErrorSettings = glm::vec4(lodSettings_.screenSpaceError ? lodSettings_.maxErrorPixels : 0.0f);
+    frameParams.lodErrorSettings.y = frameLodTransitionStep_;
     const uint32_t cascadeCount = activeCascadeCount();
     frameParams.counterAndFlags =
-        glm::uvec4(kGpuCullStatsCounterOffset, occlusionEnabledThisFrame ? 1u : 0u, cascadeCount, 0u);
+        glm::uvec4(kGpuCullStatsCounterOffset, occlusionEnabledThisFrame ? 1u : 0u, cascadeCount, lodTransitionFrame_);
     // Cascade-major, active cascades only; the shader reads counterAndFlags.z of
     // them. Inactive slots stay zeroed rather than carrying a stale frustum.
     for (uint32_t cascadeIndex = 0; cascadeIndex < cascadeCount; ++cascadeIndex) {
@@ -1493,7 +1494,9 @@ void Renderer::updateGpuCullInputBuffer(uint32_t frameIndex)
             std::min<uint32_t>(batch.beginDrawItem + batch.drawItemCount, static_cast<uint32_t>(cullDrawItems.size()));
         for (uint32_t drawItemIndex = batch.beginDrawItem; drawItemIndex < endDrawItem; ++drawItemIndex) {
             cullDrawItems[drawItemIndex].batchIndex = static_cast<uint32_t>(batchIndex);
-            cullDrawItems[drawItemIndex].batchOutputBase = batch.compactedCommandOffset;
+            // In commands, at the main pass's slots per draw item, so a batch's
+            // region also fits the outgoing halves of its cross-fades.
+            cullDrawItems[drawItemIndex].batchOutputBase = batch.compactedCommandOffset * frameMainCommandSlots_;
         }
     }
 
@@ -1674,6 +1677,15 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     // light orbit, the skeletal animation delta, and every animated object
     // transform, so it is the single biggest determinism lever in the renderer.
     const float elapsedSeconds = static_cast<float>(frameClock_.elapsedSeconds());
+
+    // LOD cross-fades advance by frame time over the transition time, so a fade
+    // lasts the same wall time at any frame rate and the same number of frames
+    // under the fixed step. The serial moves by exactly one per prepared frame:
+    // that is what tells the cull a record was advanced last frame.
+    lodTransitionFrame_ = std::max(lodTransitionFrame_ + 1u, 2u);
+    frameLodTransitionStep_ = lodSettings_.enabled && lodSettings_.transitionSeconds > 0.0f
+                                  ? static_cast<float>(frameClock_.deltaSeconds()) / lodSettings_.transitionSeconds
+                                  : 0.0f;
 
     // Render extent, not swapchain: this feeds the TAA jitter (an NDC offset of
     // half a *render* pixel) and the cluster grid's screen dimensions. Aspect is
@@ -2195,12 +2207,13 @@ void Renderer::buildMainCullingFrameData(uint32_t frameIndex, const renderer::Fr
     updateVisibleBucketRanges();
     buildMeshDrawBatches();
 
+    frameMainCommandSlots_ = gpuCullingActive ? renderer::kLodCommandSlotsPerDrawItem : 1u;
     if (gpuCullingActive) {
         bool indirectCountPathActive = isMainPassIndirectCountSupported();
         if (indirectCountPathActive) {
             const uint32_t maxDrawIndirectCount = context_.device().maxDrawIndirectCount();
             for (const MeshDrawBatch& batch : meshDrawBatches_) {
-                if (batch.drawItemCount > maxDrawIndirectCount) {
+                if (mainBatchCommandCapacity(batch) > maxDrawIndirectCount) {
                     indirectCountPathActive = false;
                     break;
                 }

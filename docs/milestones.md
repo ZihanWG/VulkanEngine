@@ -4,6 +4,12 @@ _Moved out of the top-level README to keep it scannable. These notes preserve th
 
 _Timings in Milestones 85 and later were taken on an RTX 3080 Ti Laptop; in 84 and earlier, on an Apple M3 through MoltenVK, unless an entry says otherwise. Each figure's full conditions -- scene, resolution, clock pin, statistic -- are in the subsystem document it came from, and `docs/profiling.md` records how the figures whose machine was not written down at the time were attributed._
 
+## Milestone 97: LOD Cross-Fades and a Scripted Camera
+
+A LOD switch popped. It now cross-fades for a quarter of a second: both levels are drawn, each discarding a complementary half of its pixels by one per-pixel noise, and the split sweeps from the old level to the new. The cull pass keeps a 16-byte record per draw item in a persistent buffer -- levels, progress, the frame it was last advanced and an identity -- so a renumbered draw item or one returning from culling snaps instead of fading out of a stale level, and a camera turning back mid-fade runs the fade backwards rather than restarting it. A fading item emits two indirect commands, so the main pass's batch regions hold two slots per draw item; the fade reaches the fragment shader in `firstInstance`'s high half, and fading draws stay out of the depth prepass. Shadows still switch outright.
+
+Nothing that depends on camera motion could be exercised from a script, because a deterministic run drops live input. `--camera-orbit` yaws the camera by a fixed angle per frame, and a sweep leg now runs the cross-fade path under validation with it. With a still camera the default scene is bit-identical to before; orbiting, the fades show as a stipple along the switching silhouettes and nowhere else.
+
 ## Milestone 96: Error-Based LOD by Default
 
 Measured with clocks pinned, selecting LOD by projected error at 1 px took Sponza's frame from 6.537 to 5.528 ms at 1280x720 (-15.4%, p10, RTX 3080 Ti Laptop), and disocclusion rejection was priced at 0.029 ms of `TAAResolvePass`. The error rule is now the default. What it costs in the image is sharper highlights shifting on coarser levels, since the error bounds position and not shading; the lavapipe golden was re-baselined for it, and the radius rule stays one setting away with a sweep leg of its own.

@@ -540,6 +540,7 @@ set(SHADER_INCLUDES
     "${SHADER_SOURCE_DIR}/volumetric_fog.glsl"
     "${SHADER_SOURCE_DIR}/joint_palette.glsl"
     "${SHADER_SOURCE_DIR}/taa_disocclusion.glsl"
+    "${SHADER_SOURCE_DIR}/lod_transition.glsl"
 )
 
 if(GLSLC_EXECUTABLE)

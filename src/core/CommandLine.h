@@ -201,6 +201,16 @@ struct LaunchOptions {
     // on the CPU every frame and would otherwise show up in frame prep.
     bool meshletAnalysis = false;
 
+    // Orbit the camera around its target by this many radians of yaw every
+    // frame. 0 leaves it still.
+    //
+    // The only camera motion a scripted run can have. Live input is dropped in a
+    // deterministic run, which left every motion-dependent path -- TAA
+    // disocclusion, LOD transitions, the two-phase occlusion rescue -- testable
+    // only by hand or by a patch that was never committed. A fixed angle per
+    // frame keeps the run reproducible from the frame number alone.
+    float cameraOrbitRadiansPerFrame = 0.0f;
+
     // Startup scene. Default keeps whatever createScene() builds on its own.
     ScenePreset scene = ScenePreset::Default;
 

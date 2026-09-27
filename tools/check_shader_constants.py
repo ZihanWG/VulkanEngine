@@ -106,6 +106,18 @@ PAIRS: list[tuple[str, str, list[str]]] = [
         ["kTaaHistoryDepthOffset", "kTaaHistorySkyDepth"],
     ),
     (
+        "src/renderer/LodTransition.h",
+        "src/shaders/lod_transition.glsl",
+        [
+            "kLodCommandSlotsPerDrawItem",
+            "kLodInstanceLevelMask",
+            "kLodInstanceFading",
+            "kLodInstanceOutgoing",
+            "kLodInstanceFadeShift",
+            "kLodFadeSteps",
+        ],
+    ),
+    (
         "src/renderer/RendererInternal.h",
         "src/shaders/taa_disocclusion.glsl",
         ["kTaaDisocclusionReject", "kTaaDisocclusionDebug"],
@@ -125,6 +137,7 @@ RENAMED_PAIRS: list[tuple[str, str, dict[str, str]]] = [
         {
             "kStatsLodCounterOffset": "kGpuCullStatsLodCounterOffset",
             "kStatsTriangleCounterOffset": "kGpuCullStatsTriangleCounterOffset",
+            "kStatsFadingCounterOffset": "kGpuCullStatsFadingCounterOffset",
         },
     ),
 ]

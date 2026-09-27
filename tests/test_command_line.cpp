@@ -283,6 +283,30 @@ TEST_CASE("The overdraw readout is off unless asked for", "[command-line]")
     CHECK(config.overdraw);
 }
 
+TEST_CASE("The camera stays still unless an orbit is asked for", "[command-line]")
+{
+    LaunchOptions defaults{};
+    CHECK(defaults.cameraOrbitRadiansPerFrame == 0.0f);
+
+    LaunchOptions config{};
+    REQUIRE(parse({"--camera-orbit", "0.01"}, config));
+    CHECK(config.cameraOrbitRadiansPerFrame == 0.01f);
+
+    LaunchOptions reverse{};
+    REQUIRE(parse({"--camera-orbit", "-0.02"}, reverse));
+    CHECK(reverse.cameraOrbitRadiansPerFrame == -0.02f);
+}
+
+TEST_CASE("A camera orbit must be a small non-zero angle", "[command-line]")
+{
+    for (const char* bad : {"0", "0.0", "0.6", "-1", "abc", "0.01rad", "nan", "inf"}) {
+        LaunchOptions rejected{};
+        CHECK_FALSE(parse({"--camera-orbit", bad}, rejected));
+    }
+    LaunchOptions missingValue{};
+    CHECK_FALSE(parse({"--camera-orbit"}, missingValue));
+}
+
 TEST_CASE("The sample scene is selectable by name", "[command-line][scene]")
 {
     // Parsing must succeed on every build, including one without the fetched

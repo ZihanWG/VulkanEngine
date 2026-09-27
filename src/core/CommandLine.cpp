@@ -3,6 +3,7 @@
 #include "core/Logger.h"
 
 #include <charconv>
+#include <cmath>
 #include <span>
 #include <string>
 #include <string_view>
@@ -194,6 +195,27 @@ bool parseLaunchOptions(int argc, char** argv, LaunchOptions& options)
 
         if (argument == "--overdraw") {
             options.overdraw = true;
+            continue;
+        }
+
+        if (argument == "--camera-orbit") {
+            if (index + 1 >= argc) {
+                Logger::error("--camera-orbit requires an angle in radians per frame.");
+                return false;
+            }
+            const std::string_view value(argv[++index]);
+            float radians = 0.0f;
+            const auto result = std::from_chars(value.data(), value.data() + value.size(), radians);
+            // Bounded, not just finite: past half a radian a frame the camera
+            // spins faster than any history or transition could follow, which
+            // is a typo rather than a test.
+            if (result.ec != std::errc{} || result.ptr != value.data() + value.size() || !std::isfinite(radians) ||
+                radians == 0.0f || std::abs(radians) > 0.5f) {
+                Logger::error("--camera-orbit expects a non-zero angle within [-0.5, 0.5] radians, got: " +
+                              std::string(value));
+                return false;
+            }
+            options.cameraOrbitRadiansPerFrame = radians;
             continue;
         }
 

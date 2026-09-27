@@ -239,7 +239,10 @@ constexpr uint32_t kGpuCullStatsLodCounterOffset = kGpuCullStatsBaseCounterCount
 // that header; the static_assert holds the two together instead.
 constexpr uint32_t kGpuCullStatsTriangleCounterOffset = 9;
 static_assert(kGpuCullStatsTriangleCounterOffset == kGpuCullStatsLodCounterOffset + renderer::kMaxMeshLods);
-constexpr uint32_t kGpuCullStatsCounterCount = kGpuCullStatsTriangleCounterOffset + 1;
+// Draw items emitted mid cross-fade, each of which drew two levels. The only
+// headless sign that LOD transitions happen at all.
+constexpr uint32_t kGpuCullStatsFadingCounterOffset = 10;
+constexpr uint32_t kGpuCullStatsCounterCount = kGpuCullStatsFadingCounterOffset + 1;
 constexpr uint32_t kGpuCullStatsCounterOffset = kMaxMeshDrawBatches;
 constexpr VkDeviceSize kBatchVisibleCountBufferSize = kMaxMeshDrawBatches * sizeof(uint32_t);
 constexpr VkDeviceSize kGpuCullCountBufferSize = (kMaxMeshDrawBatches + kGpuCullStatsCounterCount) * sizeof(uint32_t);
@@ -540,6 +543,8 @@ struct GpuCullFrameParams {
     glm::vec4 viewportAndMipCount{0.0f};
     glm::vec4 occlusionSettings{0.0f};
     glm::vec4 lodSettings{0.0f};
+    // w = the LOD transition frame serial (renderer::advanceLodTransition's
+    // `frame`), which tells a record advanced last frame from a stale one.
     glm::uvec4 counterAndFlags{0, 0, 0, 0};
     // xy = the depth pyramid's written base size, zw = its allocated base size.
     // The pyramid is sub-rected and every mip halves both independently, so the
@@ -548,8 +553,9 @@ struct GpuCullFrameParams {
     glm::uvec4 pyramidBaseSizes{0, 0, 0, 0};
     // x = the screen-space error budget in pixels, before bias, when LOD selects
     // by error (renderer::selectLodIndexByError); 0 selects by projected radius
-    // with lodSettings.x as before. yzw unused. A vec4 of its own because
-    // lodSettings has no free lane.
+    // with lodSettings.x as before. y = the LOD cross-fade progress one frame
+    // buys (frame time over lod.transitionSeconds), 0 when transitions are off.
+    // zw unused. A vec4 of its own because lodSettings has no free lane.
     glm::vec4 lodErrorSettings{0.0f};
     // Every active cascade's light frustum, six planes each, cascade-major.
     //
