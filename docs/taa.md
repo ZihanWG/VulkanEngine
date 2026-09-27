@@ -24,6 +24,11 @@ Runtime fields:
 - `neighborhoodClampEnabled`: bounds previous history by the current nine-tap neighbourhood.
 - `varianceClipping`, `varianceGamma`, `rejectionFeedback`: stricter rejection,
   both toggles off by default -- see [Ghosting rejection](#ghosting-rejection).
+- `disocclusionRejection`, `disocclusionTolerance`, `debugDisocclusion`: drop the
+  history where depth says it shows a surface that is no longer there. On by
+  default at a relative tolerance of `0.05` (clamped to `0.005..0.5`); the debug
+  toggle paints rejected pixels red -- see
+  [Disocclusion rejection](#disocclusion-rejection).
 - `reprojectionEnabled`: reprojects the history sample along the velocity buffer
   (camera + rigid object motion). Off falls back to the Phase 6B same-UV sampling
   for A/B comparison of ghosting under motion.
@@ -84,6 +89,12 @@ Two `VK_FORMAT_R16G16B16A16_SFLOAT` images at the **presentation** extent, recre
 
 `TAAResolvePass` reads the previous history and writes the current history. Later post-process passes read the current history through descriptor variants.
 
+The history's alpha channel is not colour. With disocclusion rejection on, the
+resolve writes `1 + view depth` of the surface each pixel shows into it, for the
+next frame's test; otherwise it writes `1`. Every downstream consumer reads
+`.rgb` only, and the offset keeps the render-target preview, which draws the
+image through ImGui's alpha blend, opaque.
+
 History is invalidated on swapchain/post-process recreation, runtime TAA setting changes, camera resets/edits, scene load, portfolio mode application/restoration, material asset save/reload, and explicit debug reset. With reprojection active, ordinary camera motion no longer needs a reset — the resets remain for discontinuities (cuts, scene swaps).
 
 ## Resolve Shader
@@ -95,6 +106,7 @@ History is invalidated on swapchain/post-process recreation, runtime TAA setting
 - closest-depth 3x3 velocity dilation (silhouette edges reproject with the
   foreground object's motion); skipped when the main depth image cannot be sampled
 - history sample at the velocity-reprojected UV, rejected when it lands off-screen
+  or when depth says it is disoccluded (see below)
 - a neighbourhood box from the same nine taps -- one gather, two jobs
 - optional clamp of history into that box
 - bounded feedback blend
@@ -167,6 +179,69 @@ ghosting is a real failure mode and content with object motion will produce it.
   ghosting signal, and that distance drives its feedback down. It is equally the
   mechanism that costs most when there is no ghost.
 
+## Disocclusion rejection
+
+A pixel is disoccluded when the surface it shows now was hidden last frame,
+behind something that has since moved off it. Its reprojected history then holds
+the occluder, not the surface. The neighbourhood clamp catches that only when the
+occluder's colour falls outside the current neighbourhood; one that happens to
+sit inside it survives and trails. Depth does not have that blind spot, because
+the occluder was at a different distance.
+
+**Where the previous depth comes from.** Not the Hi-Z pyramid. Its mip 0 is a
+copy of main depth, but by the time the resolve runs, the two-phase mid-frame
+rebuild and the end-of-frame build have both refilled it from *this* frame, and
+the occlusion-yield controller can suspend the build altogether. The history
+carries it instead: the resolve records, in the history's alpha, the view depth
+of the reconstruction tap that dominates each output pixel -- the surface that
+pixel's colour is mostly made of. Sky records as `60000`, far past any surface
+and still inside 16-bit float range. At the format's 11-bit mantissa a recorded
+depth is good to about 0.05%, two orders of magnitude inside the default
+tolerance.
+
+**What it is compared with.** For each of the nine source taps, the depth that
+surface *would* have had last frame if it had stood still: the previous frame's
+clip `w` at the tap's world position. The CPU folds that into two rows once a
+frame (`taaPreviousDepthRows` in `src/renderer/TaaDisocclusion.h`), so per tap it
+is two dot products and a divide, with no matrix inverse in the shader. The rows
+are built from the *jittered* view-projection, because that is what rasterised
+the depth buffer; jitter shears only x and y, so it leaves the depths alone.
+
+**The test.** The four history texels of the bilinear footprint at the
+reprojected position are gathered, and the history is rejected when *none* of
+them lies inside the range of expected depths across the 3x3, widened by the
+tolerance. Four texels and a range rather than one depth against one, because
+the test also runs on silhouettes, where both the footprint and the
+neighbourhood straddle an edge -- demanding that every texel match would reject
+history exactly where anti-aliasing needs it. Sky in the neighbourhood leaves the
+range open above. A texel with no recorded depth (alpha `1`, from a history
+written with the test off) cannot disagree, so turning the test on never
+rejects the frame it was turned on.
+
+A rejected pixel takes the current frame's reconstruction alone, the same as an
+off-screen reprojection. The test needs a samplable main depth and reprojection;
+without either, and with the setting off, the resolve reads no depth for it and
+writes alpha `1`.
+
+**What it does on the scenes here.** RTX 3080 Ti Laptop, 1280x720,
+`--deterministic`, frame 30 of 40. With the camera still, rejection changes
+pixels only around the animated skinned mesh: 20 on the default scene, 117 on
+`--scene sunlit`. There is no headless camera-motion flag, so the camera was
+orbited by a patch applied locally for the run (0.01 rad and a 0.3% dolly per
+frame, not committed); rejection then changed 0.29% and 0.14% of the frame, and
+the debug view shows single-pixel lines along the trailing edge of each
+silhouette and nothing across flat surfaces. Its GPU cost has not been measured
+-- nine depth fetches and one gather per output pixel, beside the nine depth
+reads velocity dilation already makes.
+
+**Rejection off is not bit-identical to before the test existed.** With the
+setting off, a TAA frame differs from the previous resolve on 941 of 921600
+pixels on the default scene, almost all by at most one level. The difference is in the
+compiled shader, not the logic: the same source with the depth path compiled
+out matches the old output exactly, and writing a constant alpha with the path
+left in reproduces the drift, so nothing the alpha carries reaches colour. A
+larger shader rounds a little differently, and TAA feedback carries it forward.
+
 ## Validation Surface
 
 Expected debug signals:
@@ -178,6 +253,9 @@ Expected debug signals:
 - Toggling TAA or pressing reset makes history invalid for the next resolve.
 - Toggling `Motion reprojection` off while orbiting the camera brings back the
   Phase 6B ghosting; on, moving objects and camera motion stay sharp.
+- `Debug: paint disoccluded pixels` paints each rejected pixel red. Orbiting the
+  camera draws thin lines along the trailing edges of silhouettes; red across a
+  flat surface, or everywhere at once, means the expected depth is wrong.
 
 ## TAA makes latent depth bugs visible
 
@@ -213,10 +291,15 @@ whether the pixel has the surface on it at all.
 - Not FSR2 or DLSS. The upsampling here is reconstruction plus the existing
   neighbourhood rejection; the hand-tuned machinery those spend most of their
   complexity on -- locks, reactive masks, shading-change detection -- is absent.
-- No disocclusion detection. The resolve reads no previous-frame depth. Hi-Z
-  mip 0 is a copy of it, but the pyramid is built only when something reads it
-  (the occlusion-yield controller can suspend it), so the resolve could not rely
-  on it as things stand.
+- Disocclusion rejection reprojects the expected depth through the camera only.
+  Velocity is two-dimensional and carries no change in depth, so an object that
+  moves along the view direction by more than the tolerance in one frame
+  rejects its own history and loses its accumulated anti-aliasing while it does.
+- The tolerance is relative, so two surfaces within it of each other -- a contact
+  shadow line, a thin gap -- cannot be told apart by depth; the neighbourhood
+  clamp is the only guard there.
+- Blended surfaces write no depth. Across glass the test judges the opaque
+  surface behind it, reprojected along the glass's own velocity.
 - No per-material reactive mask.
 - Editor object teleports produce one frame of large velocity (clamped by the
   neighborhood bound) rather than a per-object history reset.

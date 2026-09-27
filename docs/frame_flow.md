@@ -44,7 +44,7 @@ declared, so it is not recorded either.
 18. With two-phase occlusion active, rebuild the pyramid from this frame's depth (`DepthPyramidMidPass`), re-test phase 1's rejects (`MainGpuCullingPhase2`), and draw the rescued items in a load-op pass (`MainHDRPhase2`).
 19. If SSR is active, copy scene colour at half resolution and trace (`SSRCopyPass`, `SSRTracePass`); if GTAO is on, trace and upsample it (`GTAOPass`, `GTAOBlurPass`). Then draw the blended bucket, sorted back to front, in `TransparentPass`.
 20. Run `DepthPyramidPass` to write the max-depth Hi-Z pyramid for the next frame's culling and page marking, unless nothing will read it.
-21. If TAA is enabled, run `TAAResolvePass`, which reconstructs at presentation resolution from the jittered render-resolution samples and so also performs the upscale; otherwise keep `sceneColor_` as the active post-process source.
+21. If TAA is enabled, run `TAAResolvePass`, which reconstructs at presentation resolution from the jittered render-resolution samples and so also performs the upscale, drops history that depth says is disoccluded, and records each pixel's view depth in the history's alpha for the next frame; otherwise keep `sceneColor_` as the active post-process source.
 22. Run bloom: the mip-chain downsample and upsample passes by default, or the legacy extract and separable blur when the mip chain is off.
 23. Run the exposure reduction for the selected mode: `HistogramExposurePass` bins HDR luminance and reduces it into the GPU exposure state buffer (the default), or `LuminancePass` reduces log-average luminance; the reduce stage manually preserves host readback visibility, and the graph makes the exposure buffer visible to `CompositePass`.
 24. Run `CompositePass` to combine the active HDR source + selected bloom * intensity, apply manual or GPU exposure, apply Reinhard or ACES tone mapping and, when the frame is upscaled, contrast-adaptive sharpening, and write the final color to the swapchain. With TAA off this is where a reduced render scale is upscaled (see [render_scale.md](render_scale.md)).
@@ -102,7 +102,7 @@ Post-process descriptor sets, separate from material/bindless descriptors:
 - TAA resolve set binding 0 = current jittered HDR scene color combined image sampler
 - TAA resolve set binding 1 = previous HDR history combined image sampler
 - TAA resolve set binding 2 = velocity buffer combined image sampler
-- TAA resolve set binding 3 = main depth combined image sampler, for closest-depth velocity dilation
+- TAA resolve set binding 3 = main depth combined image sampler, for closest-depth velocity dilation and the disocclusion test
 - bloom extract/blur set binding 0 = one combined image sampler for the current post-process input
 - bloom upsample set binding 0 = current bloom mip combined image sampler
 - bloom upsample set binding 1 = lower accumulated bloom combined image sampler
