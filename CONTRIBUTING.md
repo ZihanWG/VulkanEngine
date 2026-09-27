@@ -162,6 +162,11 @@ is worth reading. Tighten it once the tree is clean under the current set.
   ctest --preset ci-debug
   ```
 
+  `tools/dev/verify_renderer.sh fast` runs the same three steps and is the same
+  command on Windows and macOS. On Windows run it from Git Bash; when `cl.exe`
+  is not already on `PATH` it finds Visual Studio with `vswhere` and imports the
+  x64 build environment itself, so no developer prompt is needed.
+
 - Anything a reader would have to take on trust — a measurement, a claim about
   behaviour — is either verified in the commit body or not claimed.
 
