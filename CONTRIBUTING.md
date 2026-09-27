@@ -140,10 +140,11 @@ is worth reading. Tighten it once the tree is clean under the current set.
 | --- | --- | --- |
 | clang-format | `build.yml` | Yes |
 | Ubuntu build + unit tests | `build.yml` | Yes |
-| Shader constant parity | `build.yml`, `windows-ci.yml` | Yes |
+| Shader constant parity | `build.yml`, `windows-ci.yml`, `macos-ci.yml` | Yes |
 | ASan/UBSan build + tests | `build.yml` | Yes |
 | clang-tidy | `build.yml` | No — report only |
 | MSVC build + tests | `windows-ci.yml` | Yes |
+| AppleClang build + tests | `macos-ci.yml` | Yes |
 | lavapipe render, validation + golden image | `headless-render.yml` | Yes |
 
 ## Before pushing

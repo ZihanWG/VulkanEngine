@@ -2,10 +2,11 @@
 
 [![Linux Build](https://github.com/ZihanWG/VulkanEngine/actions/workflows/build.yml/badge.svg)](https://github.com/ZihanWG/VulkanEngine/actions/workflows/build.yml)
 [![Windows CI](https://github.com/ZihanWG/VulkanEngine/actions/workflows/windows-ci.yml/badge.svg)](https://github.com/ZihanWG/VulkanEngine/actions/workflows/windows-ci.yml)
+[![macOS CI](https://github.com/ZihanWG/VulkanEngine/actions/workflows/macos-ci.yml/badge.svg)](https://github.com/ZihanWG/VulkanEngine/actions/workflows/macos-ci.yml)
 
 A **C++20 / Vulkan 1.3 real-time renderer** built as a graphics- and engine-programming portfolio. It pairs explicit GPU ownership with a **GPU-driven** pipeline — bindless materials, multi-draw indirect, compute frustum culling — and **clustered (Forward+) lighting** that scales to hundreds of dynamic lights, plus a render graph, PBR + IBL, cascaded shadows, GPU skeletal animation, HDR post-processing, a per-pass GPU profiler, and an ImGui editor. Everything runs on Dynamic Rendering + Synchronization2.
 
-> Not a full game engine by design. It favors readable Vulkan ownership, clear resource contracts, and small, verifiable milestones — backed by headless unit tests, Linux + Windows CI, and ASan/UBSan runs.
+> Not a full game engine by design. It favors readable Vulkan ownership, clear resource contracts, and small, verifiable milestones — backed by headless unit tests, Linux + Windows + macOS CI, and ASan/UBSan runs.
 
 ## Demo
 
@@ -27,7 +28,7 @@ A **C++20 / Vulkan 1.3 real-time renderer** built as a graphics- and engine-prog
 | **Render scale** | The scene shades at a fraction of the window and the composite upscales, trading fragment cost close to linearly for sharpness — `MainHDRPass` is 45-68% of the frame across the scale range on an RTX 3080 Ti, so this is the lever that is left — plus a unit-tested dynamic-resolution controller that drives it from measured GPU frame time |
 | **Post-processing** | HDR scene color, screen-space reflections, ground-truth ambient occlusion (GTAO), mip-chain bloom, histogram auto-exposure, ACES/Reinhard tonemap, motion-vector TAA with reprojected history |
 | **Architecture** | Render graph (logical handles + conservative barrier inference), RAII Vulkan RHI, task-parallel frame prep on a job system, per-pass GPU timestamp profiler, ImGui scene/material editor |
-| **Engineering** | C++20, Catch2 unit tests, Linux + Windows CI, AddressSanitizer/UBSan, clang-tidy/clang-format |
+| **Engineering** | C++20, Catch2 unit tests, Linux + Windows + macOS CI, AddressSanitizer/UBSan, clang-tidy/clang-format |
 
 ## Architecture
 
@@ -214,7 +215,7 @@ Off by default: it is a network fetch, and CI has no use for it. It does not cha
 
 ## Validated Environment
 
-Validated locally on Windows + Visual Studio 2022 MSVC x64, Vulkan SDK 1.4.328.1, NVIDIA GeForce RTX 3080 Ti Laptop GPU. CI builds on `windows-2022` and `ubuntu-24.04`: it configures CMake, compiles the GLSL shader target through `glslc`, builds the renderer, and runs the full unit-test suite — on Linux twice, the second time under ASan/UBSan with leak detection — plus clang-tidy. The tests need no GPU by design.
+Validated locally on Windows + Visual Studio 2022 MSVC x64, Vulkan SDK 1.4.328.1, NVIDIA GeForce RTX 3080 Ti Laptop GPU. CI builds on `windows-2022` (MSVC), `ubuntu-24.04` (GCC) and `macos-15` (AppleClang on Apple Silicon): it configures CMake, compiles the GLSL shader target through `glslc`, builds the renderer, and runs the full unit-test suite — on Linux twice, the second time under ASan/UBSan with leak detection — plus clang-tidy. The tests need no GPU by design.
 
 A third job does run the renderer, on Mesa's lavapipe software Vulkan driver under a virtual X server, so no GPU is required: it renders 30 deterministic frames with the validation layer on, fails on any validation error, and compares the captured frame against a committed golden image. It then sweeps [a list of further configurations](config/ci/README.md) -- fog, GI, GTAO, SSR, the VSM stages, the scene presets, and every toggle that adds or removes a pass, with a check that fails when a path-selecting setting is left unswept -- asserting for each that the render graph recorded the frame it declared, under synchronization validation. See [docs/headless_ci.md](docs/headless_ci.md).
 
@@ -258,4 +259,4 @@ Resume bullets:
 - Built three shadow paths: cascades with one caster cull for all four and per-cascade content-hash caching, the punctual atlas with per-tile caching, and virtual shadow maps over an absolute clipmap page grid that draws no pages once warm on a static scene.
 - Implemented TAA with motion vectors and Catmull-Rom history that doubles as a temporal upsampler, render scale with a dynamic-resolution controller, energy-conserving SSR, ambient-only GTAO, irradiance-probe GI, froxel volumetric fog, and GPU skeletal animation with joint-aware motion vectors and shadows.
 - Built an offline asset pipeline: a BC7/KTX2 texture cook (Sponza textures 4.02x smaller) and a mesh + LOD cook (glTF import 21x faster), over batched uploads with an optional dedicated transfer queue.
-- Backed it with engineering discipline: a Catch2 suite that needs no GPU, Linux and Windows CI with ASan/UBSan, a lavapipe job that renders a golden image and sweeps every path-selecting setting under synchronization validation, structural checks that pin CPU/GLSL constants and shader interfaces, and a measurement harness that enforces pinned clocks, warm-up and A/B/A/B with a control-drift gate.
+- Backed it with engineering discipline: a Catch2 suite that needs no GPU, Linux, Windows and macOS CI with ASan/UBSan, a lavapipe job that renders a golden image and sweeps every path-selecting setting under synchronization validation, structural checks that pin CPU/GLSL constants and shader interfaces, and a measurement harness that enforces pinned clocks, warm-up and A/B/A/B with a control-drift gate.

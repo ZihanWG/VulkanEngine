@@ -148,6 +148,21 @@ existing repository/build paths.
 - Logical device creation always requires `VK_KHR_swapchain` and enables
   `VK_KHR_portability_subset` only when the selected physical device reports it.
 
+## Continuous Integration
+
+The `macOS CI` workflow (`.github/workflows/macos-ci.yml`) builds the shaders,
+the renderer and the headless tests on a `macos-15` Apple Silicon runner with
+AppleClang and libc++, with warnings as errors, and runs the test suite. It
+exists because the Linux and Windows jobs cannot see a libc++ difference:
+its first run found `std::from_chars` into a `float`, which the libc++ in
+Xcode 16 deletes, so the Mac build had stopped compiling without any check
+failing.
+
+The Vulkan headers, loader and `glslc` come from Homebrew there rather than
+from the LunarG SDK, and MoltenVK is not installed: the job never runs the
+renderer. Runtime behaviour on macOS -- validation, the MoltenVK-only fallback
+paths, what the frame looks like -- still needs a run on a real Mac.
+
 ## Packaging Limitations
 
 - `VulkanEngine.app` is not signed or notarized.
