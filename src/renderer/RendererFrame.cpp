@@ -442,6 +442,8 @@ void Renderer::updateCascadeShadowCacheState()
     // the `pc.params.w & 4` branch in cull.comp.
     lodSelection.bias = lodSettings_.bias + lodSettings_.shadowBias;
     lodSelection.forcedLod = lodSettings_.enabled ? lodSettings_.forcedLod : 0;
+    lodSelection.screenSpaceError = lodSettings_.screenSpaceError;
+    lodSelection.maxErrorPixels = lodSettings_.maxErrorPixels;
 
     for (uint32_t cascadeIndex = 0; cascadeIndex < cascadeCount; ++cascadeIndex) {
         renderer::CascadeShadowPassState state{};
@@ -561,6 +563,25 @@ uint32_t Renderer::selectedShadowLodLevel(const DrawItem& drawItem,
     const renderer::Aabb& worldBounds = frameWorldBounds_[drawItem.objectIndex];
     if (!worldBounds.valid()) {
         return 0;
+    }
+
+    if (settings.screenSpaceError) {
+        // The same inputs cull.comp's error branch reads: this item's slice of
+        // the frame LOD table, the object's scale (boundsMin.w there), and the
+        // camera's distance to the world bounds.
+        const glm::uvec2 range = frameDrawItemLodRanges_[drawIndex];
+        if (static_cast<size_t>(range.x) + range.y > frameMeshLodTable_.size()) {
+            return 0;
+        }
+        const float worldScale = drawItem.objectIndex < frameModelMatrices_.size()
+                                     ? renderer::maxAxisScale(frameModelMatrices_[drawItem.objectIndex])
+                                     : 1.0f;
+        return renderer::selectLodIndexByError(
+            std::span<const renderer::MeshLod>(frameMeshLodTable_).subspan(range.x, range.y),
+            worldScale,
+            renderer::distanceToAabb(frameCameraPosition_, worldBounds.min, worldBounds.max),
+            projScaleY,
+            settings);
     }
 
     const glm::vec3 center = (worldBounds.min + worldBounds.max) * 0.5f;
@@ -1379,6 +1400,7 @@ void Renderer::uploadGpuCullFrameParams(uint32_t frameIndex, bool occlusionEnabl
     const float forcedLod = lodSettings_.enabled ? static_cast<float>(lodSettings_.forcedLod) : 0.0f;
     frameParams.lodSettings =
         glm::vec4(lodSettings_.referenceRadiusPixels, lodSettings_.bias, forcedLod, lodSettings_.shadowBias);
+    frameParams.lodErrorSettings = glm::vec4(lodSettings_.screenSpaceError ? lodSettings_.maxErrorPixels : 0.0f);
     const uint32_t cascadeCount = activeCascadeCount();
     frameParams.counterAndFlags =
         glm::uvec4(kGpuCullStatsCounterOffset, occlusionEnabledThisFrame ? 1u : 0u, cascadeCount, 0u);
@@ -1436,12 +1458,17 @@ void Renderer::updateGpuCullInputBuffer(uint32_t frameIndex)
                 worldBounds = frameWorldBounds_[drawItem.objectIndex];
             }
 
+            // w carries the object's scale for screen-space-error LOD; the
+            // culling tests read xyz only.
+            const float worldScale = drawItem.objectIndex < frameModelMatrices_.size()
+                                         ? renderer::maxAxisScale(frameModelMatrices_[drawItem.objectIndex])
+                                         : 1.0f;
             if (worldBounds.valid()) {
-                gpuDrawItem.boundsMin = glm::vec4(worldBounds.min, 0.0f);
+                gpuDrawItem.boundsMin = glm::vec4(worldBounds.min, worldScale);
                 gpuDrawItem.boundsMax = glm::vec4(worldBounds.max, 0.0f);
             } else {
                 gpuDrawItem.boundsMin =
-                    glm::vec4(-kUnboundedCullExtent, -kUnboundedCullExtent, -kUnboundedCullExtent, 0.0f);
+                    glm::vec4(-kUnboundedCullExtent, -kUnboundedCullExtent, -kUnboundedCullExtent, worldScale);
                 gpuDrawItem.boundsMax =
                     glm::vec4(kUnboundedCullExtent, kUnboundedCullExtent, kUnboundedCullExtent, 0.0f);
             }
@@ -1513,12 +1540,17 @@ void Renderer::updateGpuShadowCullInputBuffer(uint32_t frameIndex)
                 worldBounds = frameWorldBounds_[drawItem.objectIndex];
             }
 
+            // w carries the object's scale for screen-space-error LOD; the
+            // culling tests read xyz only.
+            const float worldScale = drawItem.objectIndex < frameModelMatrices_.size()
+                                         ? renderer::maxAxisScale(frameModelMatrices_[drawItem.objectIndex])
+                                         : 1.0f;
             if (worldBounds.valid()) {
-                gpuDrawItem.boundsMin = glm::vec4(worldBounds.min, 0.0f);
+                gpuDrawItem.boundsMin = glm::vec4(worldBounds.min, worldScale);
                 gpuDrawItem.boundsMax = glm::vec4(worldBounds.max, 0.0f);
             } else {
                 gpuDrawItem.boundsMin =
-                    glm::vec4(-kUnboundedCullExtent, -kUnboundedCullExtent, -kUnboundedCullExtent, 0.0f);
+                    glm::vec4(-kUnboundedCullExtent, -kUnboundedCullExtent, -kUnboundedCullExtent, worldScale);
                 gpuDrawItem.boundsMax =
                     glm::vec4(kUnboundedCullExtent, kUnboundedCullExtent, kUnboundedCullExtent, 0.0f);
             }
@@ -2063,6 +2095,8 @@ void Renderer::analyzeMeshletCulling(const renderer::Frustum& cameraFrustum)
     lodSelection.referenceRadiusPixels = lodSettings_.referenceRadiusPixels;
     lodSelection.bias = lodSettings_.bias;
     lodSelection.forcedLod = lodSettings_.enabled ? lodSettings_.forcedLod : 0;
+    lodSelection.screenSpaceError = lodSettings_.screenSpaceError;
+    lodSelection.maxErrorPixels = lodSettings_.maxErrorPixels;
 
     for (const DrawItem& drawItem : allDrawItems_) {
         if (!drawItem.mesh || drawItem.indexCount == 0 || drawItem.objectIndex >= frameWorldBounds_.size()) {

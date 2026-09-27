@@ -122,7 +122,10 @@ RENAMED_PAIRS: list[tuple[str, str, dict[str, str]]] = [
     (
         "src/renderer/RendererInternal.h",
         "src/shaders/cull.comp",
-        {"kStatsLodCounterOffset": "kGpuCullStatsLodCounterOffset"},
+        {
+            "kStatsLodCounterOffset": "kGpuCullStatsLodCounterOffset",
+            "kStatsTriangleCounterOffset": "kGpuCullStatsTriangleCounterOffset",
+        },
     ),
 ]
 

@@ -11,6 +11,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
@@ -21,24 +22,29 @@
 
 namespace ve::renderer {
 
-// One discrete level of detail: a triangle range inside a mesh's index buffer.
-// Level 0 is the authored geometry; simplified levels are appended after every
-// authored index in the same buffer.
+// One discrete level of detail: a triangle range inside a mesh's index buffer,
+// and how far that range strays from the authored surface. Level 0 is the
+// authored geometry; simplified levels are appended after every authored index
+// in the same buffer.
 //
-// Deliberately still just the two fields, and meshlet ranges are deliberately
-// NOT among them. This struct is uploaded verbatim into the per-frame GPU LOD
-// table, so its stride IS the table's stride, and nothing on the GPU reads a
-// meshlet: meshlet culling was measured and rejected (docs/mesh_lod.md), and
-// meshlets are built only for the CPU-side analysis that rejected it.
+// This struct is uploaded verbatim into the per-frame GPU LOD table, so its
+// stride IS the table's stride: every field here is one the cull shader reads.
+// That is why meshlet ranges are NOT among them -- nothing on the GPU reads a
+// meshlet (meshlet culling was measured and rejected, docs/mesh_lod.md), so
+// buildMeshlets returns the ranges alongside the table instead. The error earns
+// its place because screen-space selection projects it per draw item.
 //
-// Widening it to 16 bytes was tried, and measured as free on frame time -- the
-// cost is not speed but the standing one of shipping two dead uints per LOD
-// entry to the GPU forever, and doubling kMeshLodBufferSize, for a feature that
-// does not exist. buildMeshlets returns the ranges alongside the table instead,
-// which keeps both the upload and cull.comp untouched.
+// Twelve bytes, not sixteen: std430 aligns a struct of scalars to 4, so the
+// GLSL array stride is 12 as well. A 16-byte stride was tried and measured as
+// free on frame time; the point is not to ship a dead word per entry.
 struct MeshLod {
     uint32_t firstIndex = 0;
     uint32_t indexCount = 0;
+    // The farthest this level's surface strays from the authored one, in the
+    // mesh's own units -- meshopt_simplify's error, turned from relative into
+    // absolute. Zero for level 0, and never smaller than the previous level's,
+    // so the coarsest level within an error budget is a prefix search.
+    float error = 0.0f;
 };
 
 // One meshlet: a contiguous triangle range inside a mesh's index buffer, plus
@@ -74,7 +80,7 @@ struct Meshlet {
 };
 
 static_assert(sizeof(Meshlet) == 48, "Meshlet is mirrored in GLSL as a 48-byte std430 struct.");
-static_assert(sizeof(MeshLod) == 8, "MeshLod is mirrored in GLSL as an 8-byte std430 struct.");
+static_assert(sizeof(MeshLod) == 12, "MeshLod is mirrored in GLSL as a 12-byte std430 struct.");
 
 // Meshlet sizes. 64/124 is the conventional pairing: meshopt caps vertices at
 // 255 and triangles at 512-divisible-by-4, and these are what its own samples
@@ -111,7 +117,7 @@ struct MeshletBuild {
 // inside a range changes, so every existing (firstIndex, indexCount) stays valid
 // and the caller's primitives keep pointing at the same geometry. `lods` is read,
 // never written -- the per-level ranges come back in the result instead, which is
-// what keeps MeshLod at the 8-byte stride the GPU table needs.
+// what keeps meshlet data out of the GPU table's stride.
 //
 // An empty result means nothing could be meshletized (no positions, or no level
 // with triangles).
@@ -242,6 +248,14 @@ struct LodSelectionSettings {
     float bias = 0.0f;
     // >= 0 pins every draw item to that level, for the debug view.
     int32_t forcedLod = -1;
+    // Select by each level's projected geometric error (selectLodIndexByError)
+    // rather than by projected radius. referenceRadiusPixels is then unused.
+    bool screenSpaceError = false;
+    // The most a selected level may stray from the authored surface on screen,
+    // in pixels, before bias. Bias scales it by 2^bias, so one unit of bias
+    // still means "one level coarser" in the sense the radius rule gave it:
+    // each level roughly doubles the error it is allowed.
+    float maxErrorPixels = 1.0f;
 };
 
 // Radius in pixels that a bounding sphere of `radius` at `distance` from the
@@ -254,5 +268,40 @@ struct LodSelectionSettings {
 // geometry rather than to an out-of-range read.
 [[nodiscard]] uint32_t
 selectLodIndex(float projectedRadiusPixels, uint32_t lodCount, const LodSelectionSettings& settings = {});
+
+// --- Screen-space error selection ----------------------------------------
+//
+// The radius rule above steps one level per halving of the on-screen radius,
+// whatever each level actually cost in accuracy: a level that barely moved the
+// surface and one that visibly dented it switch at the same distance. Selecting
+// by error asks the question directly -- how many pixels would this level be
+// wrong by, from here -- and takes the coarsest level that stays inside a pixel
+// budget. Mirrored by selectLodIndex() in cull.comp's error branch.
+
+// How much the model matrix can stretch a length: its longest basis column. An
+// object-space error times this bounds the world-space error in any direction.
+[[nodiscard]] float maxAxisScale(const glm::mat4& model);
+
+// Distance from `point` to the nearest point of an axis-aligned box; zero
+// inside it. Every triangle of the draw lies in the box, so no part of it can be
+// closer than this, and an error projected at this distance bounds the error
+// anywhere on the object.
+[[nodiscard]] float distanceToAabb(const glm::vec3& point, const glm::vec3& boundsMin, const glm::vec3& boundsMax);
+
+// Pixels a world-space length covers at `distance`, with the same projScaleY
+// the radius rule uses. A camera at distance 0 (inside the bounds) reports
+// infinity, so any non-zero error is too much there.
+[[nodiscard]] float projectedErrorPixels(float worldError, float distance, float projScaleY);
+
+// The coarsest level of `lods` whose error, scaled by `worldScale` and projected
+// at `distance`, stays within settings.maxErrorPixels * 2^settings.bias. Level 0
+// when the chain has one level, the inputs are degenerate, or nothing coarser
+// fits; forcedLod overrides as it does for the radius rule. Relies on errors
+// never decreasing along the chain, which buildLodChainDetached guarantees.
+[[nodiscard]] uint32_t selectLodIndexByError(std::span<const MeshLod> lods,
+                                             float worldScale,
+                                             float distance,
+                                             float projScaleY,
+                                             const LodSelectionSettings& settings);
 
 } // namespace ve::renderer

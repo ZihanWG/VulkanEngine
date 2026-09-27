@@ -2,6 +2,7 @@
 
 #include <json.hpp>
 
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <system_error>
@@ -339,6 +340,12 @@ std::vector<CpuMeshData> readMeshCache(std::span<const std::byte> blob)
         for (const MeshLod& lod : mesh.lods) {
             if (static_cast<size_t>(lod.firstIndex) + lod.indexCount > mesh.indices.size()) {
                 throw std::runtime_error("Cooked mesh has a LOD level pointing past its index buffer.");
+            }
+            // Not a memory hazard, but screen-space selection compares these
+            // directly, and a NaN or negative error would pin a mesh to one
+            // level without any other sign that the cook is bad.
+            if (!(lod.error >= 0.0f) || !std::isfinite(lod.error)) {
+                throw std::runtime_error("Cooked mesh has a LOD level with an invalid error.");
             }
         }
         for (const MeshPrimitive& primitive : mesh.primitives) {

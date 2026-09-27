@@ -1104,6 +1104,7 @@ bool GpuCulling::readMainCounters(bool active, uint32_t frameIndex, GpuCullCount
     for (size_t level = 0; level < counters.lodDrawItems.size(); ++level) {
         counters.lodDrawItems[level] = values[kGpuCullStatsLodCounterOffset + level];
     }
+    counters.emittedTriangles = values[kGpuCullStatsTriangleCounterOffset];
     if (frameIndex < frameGpuCullTotalDrawItems_.size()) {
         counters.totalDrawItems = std::min(counters.totalDrawItems, frameGpuCullTotalDrawItems_[frameIndex]);
         counters.visibleDrawItems = std::min(counters.visibleDrawItems, counters.totalDrawItems);

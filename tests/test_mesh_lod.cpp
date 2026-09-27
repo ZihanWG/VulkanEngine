@@ -7,6 +7,9 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <glm/ext/matrix_transform.hpp>
+#include <glm/mat4x4.hpp>
+#include <limits>
 #include <span>
 #include <string>
 #include <vector>
@@ -15,16 +18,20 @@ using ve::renderer::appendLodChain;
 using ve::renderer::buildLodChain;
 using ve::renderer::buildLodChainDetached;
 using ve::renderer::buildMeshlets;
+using ve::renderer::distanceToAabb;
 using ve::renderer::kMaxMeshLods;
 using ve::renderer::kMinLodIndexCount;
 using ve::renderer::LodBuildSettings;
 using ve::renderer::LodChainBuild;
 using ve::renderer::LodSelectionSettings;
+using ve::renderer::maxAxisScale;
 using ve::renderer::Meshlet;
 using ve::renderer::MeshletBuild;
 using ve::renderer::MeshLod;
+using ve::renderer::projectedErrorPixels;
 using ve::renderer::projectedScreenRadius;
 using ve::renderer::selectLodIndex;
+using ve::renderer::selectLodIndexByError;
 
 namespace {
 
@@ -135,6 +142,47 @@ TEST_CASE("LOD levels shrink monotonically", "[mesh][lod]")
     REQUIRE(lods.size() > 1);
     for (size_t level = 1; level < lods.size(); ++level) {
         CHECK(lods[level].indexCount < lods[level - 1].indexCount);
+    }
+}
+
+TEST_CASE("Level 0 has no error and simplified levels never measure better than finer ones", "[mesh][lod]")
+{
+    Grid grid = makeGrid(24);
+    const std::vector<MeshLod> lods = buildFor(grid);
+    REQUIRE(lods.size() >= 3);
+
+    CHECK(lods[0].error == 0.0f);
+    for (size_t level = 1; level < lods.size(); ++level) {
+        // The bump makes every collapse move the surface a little.
+        CHECK(lods[level].error > 0.0f);
+        CHECK(lods[level].error >= lods[level - 1].error);
+    }
+}
+
+TEST_CASE("Recorded error is in the mesh's own units, not relative to its extent", "[mesh][lod]")
+{
+    // meshopt normalises positions before simplifying, so scaling the mesh makes
+    // the same collapses. Its reported error is relative; the recorded one must
+    // scale with the geometry, because selection multiplies it by the object's
+    // world scale and projects it.
+    Grid unit = makeGrid(24);
+    Grid scaled = makeGrid(24);
+    for (float& coordinate : scaled.positions) {
+        coordinate *= 10.0f;
+    }
+
+    const std::vector<MeshLod> unitLods = buildFor(unit);
+    const std::vector<MeshLod> scaledLods = buildFor(scaled);
+    REQUIRE(unitLods.size() == scaledLods.size());
+    REQUIRE(unitLods.size() >= 2);
+    for (size_t level = 1; level < unitLods.size(); ++level) {
+        CHECK(scaledLods[level].indexCount == unitLods[level].indexCount);
+        // Not exact: normalising the scaled positions rounds differently, and
+        // on this bumpy grid that breaks ties between equal-cost collapses
+        // differently too (one level measured 9.32 against 10.02). The property
+        // is the factor of ten -- a relative error would read the same at both
+        // scales -- and 15% leaves no doubt about which one this is.
+        CHECK(scaledLods[level].error == Catch::Approx(unitLods[level].error * 10.0f).epsilon(0.15));
     }
 }
 
@@ -477,6 +525,133 @@ TEST_CASE("A zero or negative projected radius takes the cheapest level", "[mesh
 {
     CHECK(selectLodIndex(0.0f, 4) == 3);
     CHECK(selectLodIndex(-1.0f, 4) == 3);
+}
+
+// --- screen-space error selection ---------------------------------------
+// The reference for the error branch of selectLodIndex() in cull.comp.
+
+namespace {
+
+// A chain whose error quadruples per level. At projScaleY 500 and scale 1, level
+// n fits a one-pixel budget from distance 500 * error onward: 5, 20 and 80.
+const std::array<MeshLod, 4> kChain = {{
+    {0, 96, 0.0f},
+    {96, 48, 0.01f},
+    {144, 24, 0.04f},
+    {168, 12, 0.16f},
+}};
+constexpr float kProjScaleY = 500.0f;
+
+LodSelectionSettings errorSettings(float maxErrorPixels = 1.0f)
+{
+    LodSelectionSettings settings{};
+    settings.screenSpaceError = true;
+    settings.maxErrorPixels = maxErrorPixels;
+    return settings;
+}
+
+} // namespace
+
+TEST_CASE("Error selection takes the coarsest level within the pixel budget", "[mesh][lod]")
+{
+    const LodSelectionSettings settings = errorSettings();
+
+    CHECK(selectLodIndexByError(kChain, 1.0f, 1.0f, kProjScaleY, settings) == 0);
+    CHECK(selectLodIndexByError(kChain, 1.0f, 4.9f, kProjScaleY, settings) == 0);
+    CHECK(selectLodIndexByError(kChain, 1.0f, 5.0f, kProjScaleY, settings) == 1);
+    CHECK(selectLodIndexByError(kChain, 1.0f, 19.9f, kProjScaleY, settings) == 1);
+    CHECK(selectLodIndexByError(kChain, 1.0f, 20.0f, kProjScaleY, settings) == 2);
+    CHECK(selectLodIndexByError(kChain, 1.0f, 80.0f, kProjScaleY, settings) == 3);
+    // Past the last level it stays there rather than reading off the table.
+    CHECK(selectLodIndexByError(kChain, 1.0f, 1.0e6f, kProjScaleY, settings) == 3);
+}
+
+TEST_CASE("World scale, budget and bias move the switch distance proportionally", "[mesh][lod]")
+{
+    // An object scaled up twice is wrong by twice as much, so it needs twice the
+    // distance for the same level.
+    CHECK(selectLodIndexByError(kChain, 2.0f, 5.0f, kProjScaleY, errorSettings()) == 0);
+    CHECK(selectLodIndexByError(kChain, 2.0f, 10.0f, kProjScaleY, errorSettings()) == 1);
+
+    // Twice the budget halves it.
+    CHECK(selectLodIndexByError(kChain, 1.0f, 2.5f, kProjScaleY, errorSettings(2.0f)) == 1);
+
+    // One unit of bias doubles the budget -- the shadow dispatch adds its bias
+    // here -- and a negative bias tightens it.
+    LodSelectionSettings biased = errorSettings();
+    biased.bias = 1.0f;
+    CHECK(selectLodIndexByError(kChain, 1.0f, 2.5f, kProjScaleY, biased) == 1);
+    biased.bias = -1.0f;
+    CHECK(selectLodIndexByError(kChain, 1.0f, 5.0f, kProjScaleY, biased) == 0);
+    CHECK(selectLodIndexByError(kChain, 1.0f, 10.0f, kProjScaleY, biased) == 1);
+}
+
+TEST_CASE("A camera inside the bounds keeps every level that moved the surface out", "[mesh][lod]")
+{
+    CHECK(selectLodIndexByError(kChain, 1.0f, 0.0f, kProjScaleY, errorSettings()) == 0);
+
+    // A level that removed triangles without moving the surface -- coplanar
+    // collapses -- is exact at any distance, so it is taken even from inside.
+    const std::array<MeshLod, 3> lossless = {{{0, 96, 0.0f}, {96, 48, 0.0f}, {144, 24, 0.5f}}};
+    CHECK(selectLodIndexByError(lossless, 1.0f, 0.0f, kProjScaleY, errorSettings()) == 1);
+}
+
+TEST_CASE("Error selection degrades to full detail on unusable inputs", "[mesh][lod]")
+{
+    // One level, or none: nothing to choose.
+    CHECK(selectLodIndexByError(
+              std::span<const MeshLod>(kChain.data(), 1), 1.0f, 1.0e6f, kProjScaleY, errorSettings()) == 0);
+    CHECK(selectLodIndexByError({}, 1.0f, 1.0e6f, kProjScaleY, errorSettings()) == 0);
+    // No scale, the Y-flipped projScaleY mistake, and a zero budget all mean
+    // the error cannot be judged; full detail is the safe answer.
+    CHECK(selectLodIndexByError(kChain, 0.0f, 1.0e6f, kProjScaleY, errorSettings()) == 0);
+    CHECK(selectLodIndexByError(kChain, 1.0f, 1.0e6f, -kProjScaleY, errorSettings()) == 0);
+    CHECK(selectLodIndexByError(kChain, 1.0f, 1.0e6f, kProjScaleY, errorSettings(0.0f)) == 0);
+    // A NaN error stops the search at the level before it.
+    std::array<MeshLod, 4> poisoned = kChain;
+    poisoned[2].error = std::numeric_limits<float>::quiet_NaN();
+    CHECK(selectLodIndexByError(poisoned, 1.0f, 1.0e6f, kProjScaleY, errorSettings()) == 1);
+}
+
+TEST_CASE("A forced level overrides the error budget too", "[mesh][lod]")
+{
+    LodSelectionSettings settings = errorSettings();
+    settings.forcedLod = 2;
+    CHECK(selectLodIndexByError(kChain, 1.0f, 0.0f, kProjScaleY, settings) == 2);
+    settings.forcedLod = 9;
+    CHECK(selectLodIndexByError(kChain, 1.0f, 0.0f, kProjScaleY, settings) == 3);
+}
+
+TEST_CASE("The largest basis column bounds how far the model stretches a length", "[mesh][lod]")
+{
+    CHECK(maxAxisScale(glm::mat4(1.0f)) == Catch::Approx(1.0f));
+
+    // Non-uniform, rotated and translated: rotation and translation change no
+    // lengths, so the answer is the largest scale factor.
+    glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(5.0f, -2.0f, 7.0f));
+    model = glm::rotate(model, 0.7f, glm::normalize(glm::vec3(1.0f, 2.0f, 3.0f)));
+    model = glm::scale(model, glm::vec3(2.0f, 3.0f, 0.5f));
+    CHECK(maxAxisScale(model) == Catch::Approx(3.0f));
+}
+
+TEST_CASE("Distance to a box is zero inside and Euclidean outside", "[mesh][lod]")
+{
+    const glm::vec3 boundsMin(-1.0f, -1.0f, -1.0f);
+    const glm::vec3 boundsMax(1.0f, 1.0f, 1.0f);
+
+    CHECK(distanceToAabb(glm::vec3(0.0f), boundsMin, boundsMax) == 0.0f);
+    CHECK(distanceToAabb(glm::vec3(1.0f, 0.5f, -1.0f), boundsMin, boundsMax) == 0.0f);
+    CHECK(distanceToAabb(glm::vec3(4.0f, 0.0f, 0.0f), boundsMin, boundsMax) == Catch::Approx(3.0f));
+    // Past a corner the nearest point is the corner itself.
+    CHECK(distanceToAabb(glm::vec3(4.0f, -5.0f, 1.0f), boundsMin, boundsMax) == Catch::Approx(5.0f));
+}
+
+TEST_CASE("Projected error falls off with distance and is unbounded at zero", "[mesh][lod]")
+{
+    CHECK(projectedErrorPixels(0.01f, 5.0f, kProjScaleY) == Catch::Approx(1.0f));
+    CHECK(projectedErrorPixels(0.01f, 10.0f, kProjScaleY) == Catch::Approx(0.5f));
+    CHECK(projectedErrorPixels(0.0f, 0.0f, kProjScaleY) == 0.0f);
+    CHECK(projectedErrorPixels(0.01f, 0.0f, kProjScaleY) == std::numeric_limits<float>::infinity());
 }
 
 // --- Meshlet construction -------------------------------------------------

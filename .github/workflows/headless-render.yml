@@ -282,6 +282,7 @@ jobs:
           adaptive-occlusion-off|--settings config/ci/adaptive-occlusion-off.json
           dynamic-resolution|--settings config/ci/dynamic-resolution.json
           lod-off|--settings config/ci/lod-off.json
+          lod-screen-space-error|--settings config/ci/lod-screen-space-error.json
           cascade-cache-off|--settings config/ci/cascade-cache-off.json
           stable-cascade-fit|--settings config/ci/stable-cascade-fit.json
           taa-ghost-guards|--settings config/ci/taa-ghost-guards.json

@@ -29,10 +29,14 @@ struct GpuCullDrawItem {
 // One level of a mesh's LOD chain: a triangle range in the shared index buffer.
 // Because every level lives in that one buffer, switching level is only a change
 // of the emitted (indexCount, firstIndex) -- no rebind, so it can be decided
-// here, per draw item, instead of on the CPU.
+// here, per draw item, instead of on the CPU. `error` is how far the level
+// strays from the authored surface, in mesh units, never decreasing along a
+// chain. std430 aligns a struct of scalars to 4, so the stride is 12 bytes,
+// matching renderer::MeshLod.
 struct MeshLod {
     uint firstIndex;
     uint indexCount;
+    float error;
 };
 
 // Matches VkDrawIndexedIndirectCommand exactly. std430 keeps the runtime array
@@ -53,6 +57,9 @@ const uint kPhaseOcclusionCandidate = 2u;
 // Offset of the per-LOD counters inside the stats block; mirrors
 // kGpuCullStatsLodCounterOffset in RendererInternal.h.
 const uint kStatsLodCounterOffset = 5u;
+// Offset of the emitted-triangle counter; mirrors
+// kGpuCullStatsTriangleCounterOffset in RendererInternal.h.
+const uint kStatsTriangleCounterOffset = 9u;
 
 layout(set = 0, binding = 0, std430) readonly buffer CullInputBuffer {
     GpuCullDrawItem drawItems[];
@@ -78,6 +85,7 @@ layout(set = 0, binding = 4, std430) readonly buffer CullFrameParamsBuffer {
     uvec4 counterAndFlags; // x = stats counter base, y bit 0 = occlusion enabled for this frame,
                            // z = active shadow cascade count (shadow dispatch only)
     uvec4 pyramidBaseSizes; // xy = pyramid written base size, zw = allocated base size
+    vec4 lodErrorSettings; // x = screen-space error budget px (> 0 selects by error), yzw unused
     // Six planes per cascade, cascade-major. Only the shadow dispatch reads them.
     vec4 shadowCascadePlanes[4 * 6];
 } cullFrame;
@@ -106,10 +114,41 @@ layout(push_constant) uniform CullPushConstants {
     uvec4 params;
 } pc;
 
+// Mirrors selectLodIndexByError() in renderer/MeshLod.h: the coarsest level
+// whose error, scaled into world space and projected at the camera's distance
+// to the bounds, fits the pixel budget. The budget is turned back into mesh
+// units once so the loop compares stored errors directly; a camera inside the
+// bounds gets a budget of 0, which only an exact level fits.
+uint selectLodIndexByError(vec3 boundsMin, vec3 boundsMax, float worldScale, uint lodBase, uint lodCount, float bias)
+{
+    float projScaleY = cullFrame.viewportAndMipCount.w;
+    if (!(worldScale > 0.0) || !(projScaleY > 0.0)) {
+        return 0u;
+    }
+    float budgetPixels = cullFrame.lodErrorSettings.x * exp2(bias);
+    if (!(budgetPixels > 0.0)) {
+        return 0u;
+    }
+
+    vec3 camera = cullFrame.cameraPosition.xyz;
+    float distanceToBounds = length(max(max(boundsMin - camera, camera - boundsMax), vec3(0.0)));
+    float budget = budgetPixels * distanceToBounds / (projScaleY * worldScale);
+
+    uint level = 0u;
+    for (uint candidate = 1u; candidate < lodCount; ++candidate) {
+        if (!(meshLods.lods[lodBase + candidate].error <= budget)) {
+            break;
+        }
+        level = candidate;
+    }
+    return level;
+}
+
 // Mirrors projectedScreenRadius()/selectLodIndex() in renderer/MeshLod.h, which
-// is the unit-tested reference copy. Keep the two in sync -- same arrangement as
+// is the unit-tested reference copy, and hands off to the error rule above when
+// lodErrorSettings.x selects it. Keep the two in sync -- same arrangement as
 // ClusterGrid.h and cluster_build.comp.
-uint selectLodIndex(vec3 boundsMin, vec3 boundsMax, uint lodCount)
+uint selectLodIndex(vec4 boundsMin, vec4 boundsMax, uint lodBase, uint lodCount)
 {
     if (lodCount <= 1u) {
         return 0u;
@@ -122,8 +161,19 @@ uint selectLodIndex(vec3 boundsMin, vec3 boundsMax, uint lodCount)
         return min(uint(forcedLod), maxLod);
     }
 
-    vec3 center = (boundsMin + boundsMax) * 0.5;
-    float radius = length(boundsMax - center);
+    float bias = cullFrame.lodSettings.y;
+    // Shadow dispatches drop extra detail: shadow-map resolution and PCF hide
+    // simplification far better than the main pass does.
+    if ((pc.params.w & 4u) != 0u) {
+        bias += cullFrame.lodSettings.w;
+    }
+
+    if (cullFrame.lodErrorSettings.x > 0.0) {
+        return selectLodIndexByError(boundsMin.xyz, boundsMax.xyz, boundsMin.w, lodBase, lodCount, bias);
+    }
+
+    vec3 center = (boundsMin.xyz + boundsMax.xyz) * 0.5;
+    float radius = length(boundsMax.xyz - center);
     float projScaleY = cullFrame.viewportAndMipCount.w;
     if (radius <= 0.0 || projScaleY <= 0.0) {
         return 0u;
@@ -138,13 +188,6 @@ uint selectLodIndex(vec3 boundsMin, vec3 boundsMax, uint lodCount)
     float projectedRadiusPixels = radius / distanceToCamera * projScaleY;
     if (!(projectedRadiusPixels > 0.0)) {
         return maxLod;
-    }
-
-    float bias = cullFrame.lodSettings.y;
-    // Shadow dispatches drop extra detail: shadow-map resolution and PCF hide
-    // simplification far better than the main pass does.
-    if ((pc.params.w & 4u) != 0u) {
-        bias += cullFrame.lodSettings.w;
     }
 
     // Each level covers one halving of the on-screen radius, matching the chain
@@ -336,7 +379,7 @@ void emitCommand(GpuCullDrawItem drawItem, uint drawIndex, bool compactCommands)
     uint firstIndex = drawItem.firstIndex;
     uint selectedLod = 0u;
     if (drawItem.lodCount > 0u) {
-        selectedLod = selectLodIndex(drawItem.boundsMin.xyz, drawItem.boundsMax.xyz, drawItem.lodCount);
+        selectedLod = selectLodIndex(drawItem.boundsMin, drawItem.boundsMax, drawItem.lodBase, drawItem.lodCount);
         MeshLod lod = meshLods.lods[drawItem.lodBase + selectedLod];
         indexCount = lod.indexCount;
         firstIndex = lod.firstIndex;
@@ -347,6 +390,10 @@ void emitCommand(GpuCullDrawItem drawItem, uint drawIndex, bool compactCommands)
         uint statsBase = cullFrame.counterAndFlags.x;
         atomicAdd(batchVisibleCounts.visibleCounts[statsBase + kStatsLodCounterOffset + min(selectedLod, 3u)], 1u);
     }
+    // Every emitted draw, chain or not: the frame's triangle count as the cull
+    // left it, which is what two LOD selection rules are compared on.
+    atomicAdd(batchVisibleCounts.visibleCounts[cullFrame.counterAndFlags.x + kStatsTriangleCounterOffset],
+              indexCount / 3u);
 
     DrawIndexedIndirectCommand command;
     command.indexCount = indexCount;

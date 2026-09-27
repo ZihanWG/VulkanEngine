@@ -158,6 +158,9 @@ void clampRuntimeSettings(RenderScaleSettings& renderScale,
     lod.bias = std::clamp(lod.bias, -4.0f, 4.0f);
     lod.shadowBias = std::clamp(lod.shadowBias, -4.0f, 4.0f);
     lod.forcedLod = std::clamp(lod.forcedLod, -1, static_cast<int>(renderer::kMaxMeshLods) - 1);
+    // Below a tenth of a pixel no level but an exact one is ever chosen, which
+    // is the same as switching LOD off; past sixteen the dents are plain to see.
+    lod.maxErrorPixels = std::clamp(lod.maxErrorPixels, 0.1f, 16.0f);
 
     // Probe spacing is a divisor in the grid-space lookup, so a zero or negative
     // value would fold the whole volume onto one probe. The upper bound keeps the
@@ -445,6 +448,8 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readFloat(*lod, "shadowBias", settings.lod.shadowBias);
         readInt(*lod, "forcedLod", settings.lod.forcedLod);
         readBool(*lod, "debugHeatmap", settings.lod.debugHeatmap);
+        readBool(*lod, "screenSpaceError", settings.lod.screenSpaceError);
+        readFloat(*lod, "maxErrorPixels", settings.lod.maxErrorPixels);
     }
 
     if (const Json* ssr = objectMember(json, "ssr")) {
@@ -630,7 +635,9 @@ Json toJson(const RuntimeSettings& settings)
               {"bias", settings.lod.bias},
               {"shadowBias", settings.lod.shadowBias},
               {"forcedLod", settings.lod.forcedLod},
-              {"debugHeatmap", settings.lod.debugHeatmap}}},
+              {"debugHeatmap", settings.lod.debugHeatmap},
+              {"screenSpaceError", settings.lod.screenSpaceError},
+              {"maxErrorPixels", settings.lod.maxErrorPixels}}},
         {"ssr",
          Json{{"enabled", settings.ssr.enabled},
               {"maxSteps", settings.ssr.maxSteps},
