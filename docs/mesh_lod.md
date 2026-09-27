@@ -235,9 +235,31 @@ at 0.01-0.03 rad a frame, 14 at 0.05 -- and synchronization validation reports
 no hazards with fades in flight. On the default scene orbiting at 0.03 rad a
 frame, fading changes 0.69% of frame 30 against the same run with fades off, all
 of it on the two spheres that were switching and almost all on their silhouettes;
-up close the edge is a stipple of both outlines, and the interior is unbroken. What it costs
-in frame time has not been measured; the extra work is bounded by the fading
-items, which draw twice and skip the prepass for a quarter of a second.
+up close the edge is a stipple of both outlines, and the interior is unbroken.
+
+**What it costs.** A fade only exists while the camera moves, so it is measured
+orbiting: RTX 3080 Ti Laptop with clocks pinned at 800/7001 MHz, `--scene sponza
+--camera-orbit 0.01` at 1280x720, fades off (`transitionSeconds 0`) against on,
+p10 over 128 samples a side, interleaved A/B/A/B after a throwaway run. The orbit
+swings through the whole view mix around the preset's target, whose frames run
+about 1.5 ms -- cheaper than the preset's own view -- and the once-a-second report
+counts how many draw items are mid-fade in each run.
+
+| fade length | draw items mid-fade | `MainHDRPass` | frame total |
+| --- | --- | --- | --- |
+| 0.25 s (default) | 5.1 on average, 12 at most | +0.004 / +0.005 ms, inside its drift | +0.028 / -0.027 ms |
+| 2.0 s | 7.4 on average, 14 at most | **+0.078 / +0.065 ms (+22% / +19%)** | +0.063 ms (+4.1%) |
+
+Each cell is two independent series. **At the default length the cost does not
+resolve**: both frame-level series passed the drift gate (0.20%, 0.44%) and still
+disagreed in sign, so a moving camera puts the floor around 0.03 ms, and the fade
+sits under it. Stretching every fade eightfold does resolve: `MainHDRPass` rose in
+both series with its own drift at 0.003 ms or less, and the frame total in the one
+series whose control came back (0.96%; the other drifted 4.1% and is not quoted).
+The cost is where the design puts it -- a fading draw is drawn twice and its
+fragments are not pre-culled by the depth prepass -- and it does not scale from
+one row to the other by fade count alone, because long fades on a fast orbit
+catch large, near objects that short ones do not.
 
 **Seeing it headlessly.** Live input is dropped in a `--deterministic` run, so
 `--camera-orbit R` yaws the camera around its target by `R` radians a frame
@@ -426,8 +448,9 @@ Selecting by error at 1 px is what the default spends of it (see above).
   The noise is fixed per pixel, so it does not crawl -- and for the same reason
   TAA does not average it away either.
 - **Shadow maps still pop**, and a fading draw pays full main-pass cost for its
-  fade, since it draws twice and is left out of the depth prepass. The frame-time
-  cost is not measured.
+  fade, since it draws twice and is left out of the depth prepass. At the default
+  length that cost is below what a moving-camera measurement resolves; with
+  eightfold fades it is a fifth of `MainHDRPass` (see above).
 - **Screen-space error selection is geometric.** It bounds where the surface is,
   not how it shades; an attribute-aware error (`meshopt_simplifyWithAttributes`
   over normals) would bound highlights too, and would change the chains
