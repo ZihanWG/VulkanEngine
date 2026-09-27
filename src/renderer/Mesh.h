@@ -38,15 +38,20 @@ public:
     // See RendererStartupOverrides::buildMeshlets for why meshletizing is
     // opt-in: it reorders triangles inside each LOD level, which is a
     // permutation of the geometry but not of the rasterization order.
+    //
+    // `lodBuildSettings` decides what the LOD chains contain; the renderer
+    // latches it at startup from lod.normalAwareSimplification.
     [[nodiscard]] static Mesh createCube(rhi::VulkanContext& context,
                                          const rhi::VulkanCommandContext& commandContext,
-                                         bool buildMeshletTable = false);
+                                         bool buildMeshletTable = false,
+                                         const LodBuildSettings& lodBuildSettings = {});
 
     [[nodiscard]] static Mesh createUvSphere(rhi::VulkanContext& context,
                                              const rhi::VulkanCommandContext& commandContext,
                                              uint32_t segments = 48,
                                              uint32_t rings = 24,
-                                             bool buildMeshletTable = false);
+                                             bool buildMeshletTable = false,
+                                             const LodBuildSettings& lodBuildSettings = {});
 
     // `jobSystem` parallelises LOD chain construction, which is the dominant cost
     // of importing a real scene -- 87% of Sponza's import time is
@@ -64,7 +69,8 @@ public:
                                                         const rhi::VulkanCommandContext& commandContext,
                                                         const std::filesystem::path& path,
                                                         JobSystem* jobSystem = nullptr,
-                                                        bool buildMeshletTable = false);
+                                                        bool buildMeshletTable = false,
+                                                        const LodBuildSettings& lodBuildSettings = {});
 
     // Uploads already-built geometry. This is the only Vulkan step in glTF
     // import, which is what lets the rest of it run offline or on a worker --

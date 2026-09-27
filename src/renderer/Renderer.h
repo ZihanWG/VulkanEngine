@@ -1542,6 +1542,12 @@ private:
     // Startup-only: meshes are built in the constructor, so this cannot be a
     // post-construction toggle. See RendererStartupOverrides::buildMeshlets.
     bool buildMeshletTables_ = false;
+    // What the LOD chains are built with, latched from
+    // lod.normalAwareSimplification once the startup settings are loaded. Every
+    // mesh this session builds -- built-in or imported -- uses the same value,
+    // so a mid-session settings change cannot leave two kinds of chain in one
+    // scene; the setting applies at the next launch.
+    renderer::LodBuildSettings meshLodBuildSettings_{};
     // What was asked for, and what was actually built. Kept apart so
     // loadScenePreset can answer "is the scene on screen the one that was named"
     // rather than assume it -- see RendererStartupOverrides::loadSampleScene.

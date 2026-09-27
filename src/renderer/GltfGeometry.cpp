@@ -552,7 +552,8 @@ nodeMeshInstanceDebugName(const tinygltf::Model& model, const tinygltf::Node& no
 GltfGeometry loadGltfGeometry(const std::filesystem::path& path,
                               JobSystem* jobSystem,
                               std::vector<CpuMeshData>* cookedMeshes,
-                              bool buildMeshletTable)
+                              bool buildMeshletTable,
+                              const LodBuildSettings& lodBuildSettings)
 {
     tinygltf::TinyGLTF loader;
     loader.SetImageLoader(copyEncodedImageData, nullptr);
@@ -747,7 +748,9 @@ GltfGeometry loadGltfGeometry(const std::filesystem::path& path,
                 &vertices[0].position.x,
                 vertices.size(),
                 sizeof(Vertex),
-                mesh.debugName);
+                &vertices[0].normal.x,
+                mesh.debugName,
+                lodBuildSettings);
         };
 
         if (jobSystem != nullptr && subMeshes.size() > 1) {

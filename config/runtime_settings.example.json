@@ -54,7 +54,8 @@
         "debugHeatmap": false,
         "screenSpaceError": true,
         "maxErrorPixels": 1.0,
-        "transitionSeconds": 0.25
+        "transitionSeconds": 0.25,
+        "normalAwareSimplification": true
     },
     "ssr": {
         "enabled": true,

@@ -166,8 +166,9 @@ void Renderer::resetSceneState()
 
 void Renderer::createSceneSharedResources()
 {
-    cubeMesh_ = renderer::Mesh::createCube(context_, commandContext_, buildMeshletTables_);
-    portfolioSphereMesh_ = renderer::Mesh::createUvSphere(context_, commandContext_, 48, 24, buildMeshletTables_);
+    cubeMesh_ = renderer::Mesh::createCube(context_, commandContext_, buildMeshletTables_, meshLodBuildSettings_);
+    portfolioSphereMesh_ =
+        renderer::Mesh::createUvSphere(context_, commandContext_, 48, 24, buildMeshletTables_, meshLodBuildSettings_);
     const std::filesystem::path builtinAssetDir = assetDirectory();
     builtinTextureFactory_.createCheckerboardBaseColor(
         context_, commandContext_, builtinAssetDir, checkerboardTexture_);
@@ -233,8 +234,8 @@ bool Renderer::buildSampleScene([[maybe_unused]] std::string& status)
         // actually support. A profile says LOD construction dominates it, which
         // is why the job system is handed in here.
         const auto gltfImportStart = std::chrono::steady_clock::now();
-        renderer::LoadedGltfAsset loadedAsset =
-            renderer::Mesh::createFromGltf(context_, commandContext_, modelPath, &jobSystem_, buildMeshletTables_);
+        renderer::LoadedGltfAsset loadedAsset = renderer::Mesh::createFromGltf(
+            context_, commandContext_, modelPath, &jobSystem_, buildMeshletTables_, meshLodBuildSettings_);
         assetLoadStats_.timings.gltfImportMs +=
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - gltfImportStart).count();
         createImportedGltfTextures(loadedAsset.textures, loadedAsset.materials);

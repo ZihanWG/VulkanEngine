@@ -454,6 +454,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readBool(*lod, "screenSpaceError", settings.lod.screenSpaceError);
         readFloat(*lod, "maxErrorPixels", settings.lod.maxErrorPixels);
         readFloat(*lod, "transitionSeconds", settings.lod.transitionSeconds);
+        readBool(*lod, "normalAwareSimplification", settings.lod.normalAwareSimplification);
     }
 
     if (const Json* ssr = objectMember(json, "ssr")) {
@@ -642,7 +643,8 @@ Json toJson(const RuntimeSettings& settings)
               {"debugHeatmap", settings.lod.debugHeatmap},
               {"screenSpaceError", settings.lod.screenSpaceError},
               {"maxErrorPixels", settings.lod.maxErrorPixels},
-              {"transitionSeconds", settings.lod.transitionSeconds}}},
+              {"transitionSeconds", settings.lod.transitionSeconds},
+              {"normalAwareSimplification", settings.lod.normalAwareSimplification}}},
         {"ssr",
          Json{{"enabled", settings.ssr.enabled},
               {"maxSteps", settings.ssr.maxSteps},

@@ -178,7 +178,9 @@ std::filesystem::path meshCacheSidecarPath(const std::filesystem::path& gltfPath
     return sidecar;
 }
 
-bool makeMeshCacheExpectation(const std::filesystem::path& gltfPath, MeshCacheExpectation& expectation)
+bool makeMeshCacheExpectation(const std::filesystem::path& gltfPath,
+                              MeshCacheExpectation& expectation,
+                              const LodBuildSettings& lodBuildSettings)
 {
     std::error_code error;
     const auto size = std::filesystem::file_size(gltfPath, error);
@@ -192,7 +194,7 @@ bool makeMeshCacheExpectation(const std::filesystem::path& gltfPath, MeshCacheEx
     }
 
     expectation = MeshCacheExpectation{};
-    expectation.lodSettingsHash = hashLodBuildSettings(LodBuildSettings{});
+    expectation.lodSettingsHash = hashLodBuildSettings(lodBuildSettings);
     expectation.sourceSizeBytes = static_cast<uint64_t>(size);
     expectation.sourceWriteTime = writeTime.time_since_epoch().count();
     // An ASCII glTF holds no vertex data of its own -- Sponza's lives in
@@ -213,6 +215,9 @@ uint64_t hashLodBuildSettings(const LodBuildSettings& settings)
     hash = hashBytes(&settings.targetError, sizeof(settings.targetError), hash);
     hash = hashBytes(&settings.indexRatio, sizeof(settings.indexRatio), hash);
     hash = hashBytes(&settings.minReduction, sizeof(settings.minReduction), hash);
+    // The chains a normal weight builds are different chains, so a cook made
+    // with another weight -- or with none -- must not load.
+    hash = hashBytes(&settings.normalWeight, sizeof(settings.normalWeight), hash);
     return hash;
 }
 
