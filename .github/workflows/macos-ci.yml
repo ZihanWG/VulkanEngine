@@ -1,0 +1,65 @@
+name: macOS CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    name: AppleClang Vulkan build
+    # Apple Silicon, the same architecture as the MoltenVK development machine.
+    # The Linux and Windows legs cannot see an AppleClang or libc++ difference:
+    # GCC and MSVC each ship their own standard library, and a header that one
+    # of them includes transitively is exactly what libc++ does not.
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # This job compiles and runs the headless tests, so it needs the Vulkan
+      # headers, a loader to satisfy find_package(Vulkan), and glslc -- not
+      # MoltenVK, which only a run of the renderer would load. Homebrew has all
+      # three without the LunarG installer's download and unpack step.
+      - name: Install the Vulkan headers, loader and shader compiler
+        run: brew install ninja vulkan-headers vulkan-loader shaderc
+
+      # FindVulkan reads VULKAN_SDK the way it does on a machine with the LunarG
+      # SDK sourced, so the Homebrew prefix stands in for the SDK root. Pointing
+      # CMAKE_PREFIX_PATH at the whole prefix instead would also let
+      # find_package pick up whatever else the runner image has installed there.
+      - name: Locate the Vulkan installation for CMake
+        run: echo "VULKAN_SDK=$(brew --prefix)" >> "$GITHUB_ENV"
+
+      - name: Verify toolchain
+        run: |
+          cmake --version
+          ninja --version
+          c++ --version
+          test -f "$VULKAN_SDK/include/vulkan/vulkan.h" || {
+            echo "Vulkan headers are unavailable under $VULKAN_SDK." >&2
+            exit 1
+          }
+          command -v glslc || {
+            echo "glslc is unavailable; the shaderc formula did not provide it." >&2
+            exit 1
+          }
+          glslc --version
+
+      - name: Configure CMake
+        run: cmake --preset ci-debug -DVULKAN_ENGINE_FETCH_DEPS=ON
+
+      - name: Compile GLSL shaders
+        run: cmake --build --preset ci-debug-shaders --parallel
+
+      - name: Build renderer
+        run: cmake --build --preset ci-debug --parallel
+
+      # The tests create no Vulkan device, which is what lets them run on a
+      # hosted runner with no usable GPU. The renderer itself is not run here:
+      # runtime evidence comes from the real Mac and from the lavapipe job.
+      - name: Run unit tests
+        run: ctest --preset ci-debug
+
+      - name: Shader constant parity
+        run: python3 tools/check_shader_constants.py
