@@ -80,6 +80,8 @@ void Application::initialize()
     // Instance-creation policy, so it has to be in hand before the renderer is
     // constructed -- there is no way to turn the layer's checks on afterwards.
     overrides.synchronizationValidation = config_.syncValidation;
+    // Device-creation policy, decided before the renderer for the same reason.
+    overrides.portabilityFallbacks = config_.portabilityFallbacks;
     if (config_.vsm.has_value()) {
         // The stages are cumulative, which is what makes one mode name safe to
         // expand into three booleans here.

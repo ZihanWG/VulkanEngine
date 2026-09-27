@@ -31,6 +31,12 @@ struct VulkanContextOptions {
     // for a check that never ran, which is the one outcome worse than not
     // checking.
     bool synchronizationValidation = false;
+
+    // Present the device as MoltenVK does by default: no indirect draw count, no
+    // async compute queue, no transfer queue. The fallback paths for those three
+    // otherwise run only on a Mac; this puts them in reach of any GPU and of the
+    // lavapipe CI job. See rhi/PortabilityFallbacks.h.
+    bool portabilityFallbacks = false;
 };
 
 class VulkanContext final {

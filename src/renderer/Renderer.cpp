@@ -173,6 +173,7 @@ Renderer::Renderer(Window& window, const RendererStartupOverrides& overrides) : 
 
     rhi::VulkanContextOptions contextOptions{};
     contextOptions.synchronizationValidation = overrides.synchronizationValidation;
+    contextOptions.portabilityFallbacks = overrides.portabilityFallbacks;
     context_.initialize(window_, shaderDirectory(), contextOptions);
 
     // Startup-only, and read here rather than from the settings struct because

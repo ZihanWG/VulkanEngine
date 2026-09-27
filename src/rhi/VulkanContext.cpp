@@ -148,7 +148,7 @@ void VulkanContext::initialize(const Window& window,
     setupDebugMessenger();
     surface_ = window.createSurface(instance_);
 
-    device_.initialize(instance_, surface_, std::move(shaderDirectory));
+    device_.initialize(instance_, surface_, std::move(shaderDirectory), options_.portabilityFallbacks);
     createAllocator();
 }
 
