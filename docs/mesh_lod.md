@@ -171,6 +171,80 @@ highlights inside the chrome sphere -- and making it the default re-baselined th
 lavapipe golden for the same reason. `lod.screenSpaceError = false` restores the
 radius rule, and the `lod-radius-rule` sweep leg keeps it running in CI.
 
+## Cross-faded transitions
+
+A level switch used to be a pop: one frame drew level *n*, the next level *n+1*,
+and the silhouette jumped. It now cross-fades over `lod.transitionSeconds`
+(default 0.25 s; 0 pops): for those frames **both** levels are drawn, each
+discarding a complementary half of its pixels by a per-pixel noise threshold, and
+the threshold sweeps from one level to the other. Every surviving fragment is
+opaque and depth-tested as usual, so nothing is blended or sorted.
+
+**The state lives on the GPU, per draw item.** Only the cull pass knows which
+level it picked, so it keeps one 16-byte record per draw item in a persistent
+buffer (cull binding 7) -- current and outgoing level, fade progress, the frame it
+was last advanced, and an identity -- and advances it with the reference in
+`renderer/LodTransition.h` each time it emits the item. The buffer is one
+allocation, not one per frame slot, because a fade is a run of consecutive frames:
+each frame's cull reads what the previous one wrote. A compute-to-compute barrier
+before each main cull dispatch (and before phase 2, which writes the records of
+what it rescues) makes those writes visible; queue submission order already puts
+them first. It is zeroed once, before its first use.
+
+Three rules keep the record honest:
+
+- **Identity.** Draw items are renumbered whenever the scene changes, so the record
+  carries a hash of the object slot and the authored index range. A mismatch
+  snaps: a record must never fade a new object out of somebody else's level.
+- **Continuity.** An item culled for a while comes back at whatever level suits it
+  now; fading in from a level last seen seconds ago would be a transition nobody
+  watched start. A record not advanced on the previous frame snaps.
+- **Reversal.** A camera that turns back mid-fade selects the outgoing level
+  again; the fade then runs backwards from where it stands rather than restarting,
+  so the turn does not pop either. A third level arriving mid-fade fades out of
+  whichever level dominates the screen at that moment.
+
+**Two command slots per draw item.** A fading item emits two indirect commands,
+so on the GPU-cull path every batch's region in the main indirect buffer is sized
+at two slots per draw item (`kLodCommandSlotsPerDrawItem`) and the buffer doubled
+to match; the compacted path consumes the second slot only while fading, the
+fixed-slot path writes an empty command into it. The CPU fallback still writes
+one slot per item, and the shadow dispatches -- which never fade -- keep their
+own one-slot layout. The fade reaches the fragment shader in the high half of
+`firstInstance`, next to the level: a fading flag, an outgoing flag and a 7-bit
+fade. Seven, not eight, because `gl_InstanceIndex` is a signed int and a fade in
+bit 31 would turn it negative.
+
+**What the passes do with it.**
+
+- The main fragment shader discards its half first, before any texture work.
+  That is safe ahead of implicit-LOD sampling because `discard` compiles to
+  `OpDemoteToHelperInvocation` here, so a quad's derivatives survive it.
+- The depth prepass leaves fading draws out -- their vertices land outside the
+  clip volume -- because a full-coverage prepass depth would let the main pass
+  keep neither half where the two levels' outlines disagree. The main pass,
+  which tests `LESS_OR_EQUAL` and writes depth, lays down theirs.
+- Shadows switch outright. Shadow-map resolution and filtering hide the pop far
+  better than the main view does, and fading them would double the casters'
+  work for nothing visible.
+
+**What it does.** With a still camera nothing fades: the default scene renders
+bit-identically to before the change. Under `--camera-orbit` (below), the
+once-a-second report counts the draw items mid-fade -- up to 7 on `--scene stress`
+at 0.01-0.03 rad a frame, 14 at 0.05 -- and synchronization validation reports
+no hazards with fades in flight. On the default scene orbiting at 0.03 rad a
+frame, fading changes 0.69% of frame 30 against the same run with fades off, all
+of it on the two spheres that were switching and almost all on their silhouettes;
+up close the edge is a stipple of both outlines, and the interior is unbroken. What it costs
+in frame time has not been measured; the extra work is bounded by the fading
+items, which draw twice and skip the prepass for a quarter of a second.
+
+**Seeing it headlessly.** Live input is dropped in a `--deterministic` run, so
+`--camera-orbit R` yaws the camera around its target by `R` radians a frame
+instead -- the one camera motion a script can have, reproducible from the frame
+number. The `lod-crossfade-orbit` sweep leg runs `--scene stress --camera-orbit
+0.05` under validation in CI.
+
 ## Debugging
 
 The **Mesh LOD** panel exposes the selection knobs (all of them are just fields of
@@ -183,8 +257,11 @@ The **Mesh LOD** panel exposes the selection knobs (all of them are just fields 
   level's error in mesh units, and an explicit *"too small to simplify"* note.
   This is usually the answer to "why does my scene show no level variety".
 - **Emitted triangles** — in the GPU culling block of the once-a-second report:
-  the triangles of every draw the main cull emitted, at the level it chose. It is
-  the number two selection rules are compared on, and needs no timer.
+  the triangles of every draw the main cull emitted, at the level it chose (both
+  levels, for a draw mid cross-fade). It is the number two selection rules are
+  compared on, and needs no timer.
+- **LOD cross-fades** — in the same block: draw items that were mid-fade, each
+  drawn at two levels that frame.
 - **Color by LOD** — green → yellow → orange → red as detail drops, modulated by
   scene luminance so silhouettes and shading still read through the tint.
 
@@ -196,8 +273,12 @@ Only the cull shader knows which level it picked, so it packs the level into the
 **high bits of `firstInstance`**:
 
 ```glsl
-command.firstInstance = objectFrameDataIndex | (selectedLod << 16);
+command.firstInstance = objectFrameDataIndex | (instanceHigh << 16);
 ```
+
+`instanceHigh` is the level in its low four bits, plus the cross-fade flags and
+fade described [above](#cross-faded-transitions); `lod_transition.glsl` lays it
+out and the heatmap masks the level back out of it.
 
 Draw-item indices stay below 65536, so the high half is always free. The
 guarantee is that ceiling, not the current cap: `kMaxDrawItems` is 8192 today and
@@ -340,8 +421,13 @@ Selecting by error at 1 px is what the default spends of it (see above).
 - **Selection is per draw item, not per cluster.** Large meshes switch as a whole,
   so a big object popping between levels is visible at the silhouette. Meshlet-
   granular selection is the direction modern engines went.
-- **No cross-fade or dithered transition.** A switch is a hard pop. Screen-space
-  dithering between adjacent levels is the usual cheap fix.
+- **A cross-fade is a stipple.** The dither is the whole transition: for
+  `lod.transitionSeconds` the silhouette shows both outlines as a fine pattern.
+  The noise is fixed per pixel, so it does not crawl -- and for the same reason
+  TAA does not average it away either.
+- **Shadow maps still pop**, and a fading draw pays full main-pass cost for its
+  fade, since it draws twice and is left out of the depth prepass. The frame-time
+  cost is not measured.
 - **Screen-space error selection is geometric.** It bounds where the surface is,
   not how it shades; an attribute-aware error (`meshopt_simplifyWithAttributes`
   over normals) would bound highlights too, and would change the chains

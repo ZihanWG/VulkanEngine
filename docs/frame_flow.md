@@ -128,6 +128,7 @@ GPU culling compute descriptor set:
 - binding 4 = per-frame cull parameters (viewport, occlusion and LOD settings -- the radius rule's, or the screen-space error budget -- and the cascade planes for the shadow dispatch)
 - binding 5 = per-draw-item phase result, which phase 2 re-tests
 - binding 6 = flat per-mesh LOD table the dispatch selects levels from: each level's index range and geometric error
+- binding 7 = one LOD cross-fade record per draw item, persistent across frames; read and written by the main dispatch only
 
 The shadow cull reuses `cull.comp` and this layout, with its own per-frame input,
 compacted command and visible-count buffers at bindings 0-2; it culls against the

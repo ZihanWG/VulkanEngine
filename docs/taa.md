@@ -226,9 +226,10 @@ writes alpha `1`.
 **What it does on the scenes here.** RTX 3080 Ti Laptop, 1280x720,
 `--deterministic`, frame 30 of 40. With the camera still, rejection changes
 pixels only around the animated skinned mesh: 20 on the default scene, 117 on
-`--scene sunlit`. There is no headless camera-motion flag, so the camera was
-orbited by a patch applied locally for the run (0.01 rad and a 0.3% dolly per
-frame, not committed); rejection then changed 0.29% and 0.14% of the frame, and
+`--scene sunlit`. There was no headless camera-motion flag then, so the camera
+was orbited by a patch applied locally for the run (0.01 rad and a 0.3% dolly per
+frame, not committed); `--camera-orbit` now covers the orbit half of that.
+Rejection then changed 0.29% and 0.14% of the frame, and
 the debug view shows single-pixel lines along the trailing edge of each
 silhouette and nothing across flat surfaces.
 
