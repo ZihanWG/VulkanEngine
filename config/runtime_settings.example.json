@@ -52,7 +52,7 @@
         "shadowBias": 1.0,
         "forcedLod": -1,
         "debugHeatmap": false,
-        "screenSpaceError": false,
+        "screenSpaceError": true,
         "maxErrorPixels": 1.0
     },
     "ssr": {

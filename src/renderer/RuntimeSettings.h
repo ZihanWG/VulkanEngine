@@ -318,8 +318,9 @@ struct SsrSettings {
 // selection math itself lives in renderer/MeshLod.h.
 struct LodSettings {
     bool enabled = true;
-    // Projected sphere radius, in pixels, at which level 0 is still the right
-    // choice. Each halving of the on-screen radius steps one level down.
+    // Radius rule only (screenSpaceError off): projected sphere radius, in
+    // pixels, at which level 0 is still the right choice. Each halving of the
+    // on-screen radius steps one level down.
     float referenceRadiusPixels = 220.0f;
     // Positive biases toward lower detail.
     float bias = 0.0f;
@@ -335,7 +336,13 @@ struct LodSettings {
     // of by projected radius. referenceRadiusPixels is unused while this is on;
     // bias and shadowBias scale the pixel budget by 2^bias. See
     // renderer/MeshLod.h.
-    bool screenSpaceError = false;
+    //
+    // On by default: on Sponza at 1280x720 it takes the frame from 6.537 to
+    // 5.528 ms (p10, RTX 3080 Ti Laptop, clocks pinned) by drawing 26% fewer
+    // triangles, with no level more than a pixel off the authored surface. The
+    // error is geometric, so sharp highlights can still shift; off restores the
+    // radius rule (docs/mesh_lod.md).
+    bool screenSpaceError = true;
     float maxErrorPixels = 1.0f;
 };
 
