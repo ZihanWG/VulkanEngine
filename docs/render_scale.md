@@ -495,7 +495,8 @@ render-resolution scale, per the table above.
   sub-pixel detail. With TAA **on** the resolve reconstructs at presentation
   resolution instead and the composite stops stretching, which is why the sharpen
   gate is "is the composite stretching" rather than "is the frame native".
-  It is not FSR2 or DLSS -- no locks, reactive masks or disocclusion detection.
+  It is not FSR2 or DLSS -- no locks or reactive masks, and a disocclusion test
+  that reprojects depth through the camera only.
 - A 0.5-scale frame owns four times the texels it writes. That is the price of
   the sub-rect design, and it is paid in memory rather than in time.
 - The controller only sees GPU frame time, so it cannot respond to a CPU-bound

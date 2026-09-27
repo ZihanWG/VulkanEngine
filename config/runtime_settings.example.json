@@ -40,7 +40,10 @@
         "varianceClipping": false,
         "varianceGamma": 1.0,
         "rejectionFeedback": false,
-        "catmullRomHistory": true
+        "catmullRomHistory": true,
+        "disocclusionRejection": true,
+        "disocclusionTolerance": 0.05,
+        "debugDisocclusion": false
     },
     "lod": {
         "enabled": true,

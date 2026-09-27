@@ -4,6 +4,12 @@ _Moved out of the top-level README to keep it scannable. These notes preserve th
 
 _Timings in Milestones 85 and later were taken on an RTX 3080 Ti Laptop; in 84 and earlier, on an Apple M3 through MoltenVK, unless an entry says otherwise. Each figure's full conditions -- scene, resolution, clock pin, statistic -- are in the subsystem document it came from, and `docs/profiling.md` records how the figures whose machine was not written down at the time were attributed._
 
+## Milestone 94: TAA Disocclusion Rejection
+
+The TAA resolve could only reject history by colour, so an occluder that moved off a surface left a ghost wherever its colour happened to fall inside the current neighbourhood. It now rejects by depth too. The previous frame's depth could not come from the Hi-Z pyramid -- the two-phase rebuild and the end-of-frame build both refill it from the current frame before the resolve runs -- so the history carries it: the resolve records the view depth of each pixel's dominant reconstruction tap in the history's alpha, which had held a constant 1 that nothing read. The next frame compares the four gathered texels at the reprojected position with the range of depths the current 3x3 would have had last frame, from two rows the CPU folds out of the jittered and previous view-projections.
+
+On by default whenever TAA is, with a relative tolerance and a debug view that paints rejected pixels. With a still camera it changes only the pixels around the animated skinned mesh; under a camera orbit patched in for the check, 0.29% of the frame, as lines along trailing silhouettes. The expected depth assumes the surface stood still, so an object moving along the view direction faster than the tolerance loses its own history; `taa.md` records that and the remaining limits. Its GPU cost is not yet measured.
+
 ## Milestone 93: Audit Fixes -- Queue Ordering, Settings Round Trip, glTF Conformance
 
 An audit of the engine against its own documents found three defects, fixed here, and a documentation sweep that followed them.

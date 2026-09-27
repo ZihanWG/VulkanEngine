@@ -106,6 +106,10 @@ void clampRuntimeSettings(RenderScaleSettings& renderScale,
     // neighbourhood's own noise and rejects everything; past three it contains
     // the whole neighbourhood and rejects nothing.
     taa.varianceGamma = std::clamp(taa.varianceGamma, 0.25f, 3.0f);
+    // Relative. The floor stays ten times above the 16-bit history depth's own
+    // rounding (about 0.05%); past a half, a surface would have to halve its
+    // distance before anything was rejected.
+    taa.disocclusionTolerance = std::clamp(taa.disocclusionTolerance, 0.005f, 0.5f);
 
     ssr.maxSteps = std::clamp(ssr.maxSteps, 8, 128);
     ssr.refinementSteps = std::clamp(ssr.refinementSteps, 0, 8);
@@ -428,6 +432,9 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readFloat(*taa, "varianceGamma", settings.taa.varianceGamma);
         readBool(*taa, "rejectionFeedback", settings.taa.rejectionFeedback);
         readBool(*taa, "catmullRomHistory", settings.taa.catmullRomHistory);
+        readBool(*taa, "disocclusionRejection", settings.taa.disocclusionRejection);
+        readFloat(*taa, "disocclusionTolerance", settings.taa.disocclusionTolerance);
+        readBool(*taa, "debugDisocclusion", settings.taa.debugDisocclusion);
         readFloat(*taa, "feedback", settings.taa.feedback);
     }
 
@@ -613,6 +620,9 @@ Json toJson(const RuntimeSettings& settings)
               {"varianceGamma", settings.taa.varianceGamma},
               {"rejectionFeedback", settings.taa.rejectionFeedback},
               {"catmullRomHistory", settings.taa.catmullRomHistory},
+              {"disocclusionRejection", settings.taa.disocclusionRejection},
+              {"disocclusionTolerance", settings.taa.disocclusionTolerance},
+              {"debugDisocclusion", settings.taa.debugDisocclusion},
               {"feedback", settings.taa.feedback}}},
         {"lod",
          Json{{"enabled", settings.lod.enabled},

@@ -113,6 +113,18 @@ TEST_CASE("Bloom and TAA settings are clamped", "[settings]")
     CHECK(s.bloom.intensity == Catch::Approx(0.0f));
     CHECK(s.bloom.radius == Catch::Approx(4.0f));
     CHECK(s.taa.feedback == Catch::Approx(0.98f));
+
+    Settings tolerance;
+    tolerance.taa.disocclusionTolerance = 0.0f;
+    tolerance.clamp();
+    CHECK(tolerance.taa.disocclusionTolerance == Catch::Approx(0.005f));
+    tolerance.taa.disocclusionTolerance = 3.0f;
+    tolerance.clamp();
+    CHECK(tolerance.taa.disocclusionTolerance == Catch::Approx(0.5f));
+
+    Settings defaults;
+    defaults.clamp();
+    CHECK(defaults.taa.disocclusionTolerance == ve::TaaSettings{}.disocclusionTolerance);
 }
 
 TEST_CASE("Cascade settings and selected-cascade index are clamped", "[settings]")

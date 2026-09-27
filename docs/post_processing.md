@@ -97,9 +97,9 @@ The ImGui debug UI exposes:
 
 ## Known Limitations
 
-- TAA reprojects along the velocity buffer (see [taa.md](taa.md)), but there is no depth-based disocclusion classification -- a disoccluded pixel is caught by the neighborhood clamp rather than identified and rejected outright.
-- Not FSR2/DLSS/XeSS: the upsampling is reconstruction plus neighbourhood
-  rejection, without locks, reactive masks or disocclusion detection.
+- TAA reprojects along the velocity buffer and rejects disoccluded history by depth (see [taa.md](taa.md)), but the expected depth is reprojected through the camera only, so an object moving along the view direction faster than the tolerance rejects its own history.
+- Not FSR2/DLSS/XeSS: the upsampling is reconstruction plus neighbourhood and
+  depth rejection, without locks or reactive masks.
 - No per-material reactive masks.
 - No ray tracing.
 - No local exposure.

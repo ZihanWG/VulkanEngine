@@ -903,8 +903,10 @@ still gets its tight interval -- the guard has to be specific, or it would forbi
 the sharing the allocator exists to do.
 
 Today that covers `AmbientOcclusion`, `DepthPyramid` and the TAA history, none of
-which are in the alias list. It matters for what comes next: the README lists
-disocclusion detection as future work, and that wants the previous frame's depth.
+which are in the alias list. The TAA disocclusion test leans on it: the previous
+frame's view depth travels in the history's alpha
+([taa.md](taa.md#disocclusion-rejection)), which is only right if nothing reuses
+the history's bytes between the frame that writes it and the frame that reads it.
 
 ### What it costs, and why it stays off
 

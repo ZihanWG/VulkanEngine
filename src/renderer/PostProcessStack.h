@@ -25,6 +25,7 @@
 
 #include "renderer/RenderResolution.h"
 #include "renderer/RuntimeSettings.h"
+#include "renderer/TaaDisocclusion.h"
 #include "rhi/VulkanBuffer.h"
 #include "rhi/VulkanCommon.h"
 #include "rhi/VulkanComputePipeline.h"
@@ -302,6 +303,13 @@ public:
     [[nodiscard]] glm::vec2 taaCurrentJitterNdc() const
     {
         return taaCurrentJitterNdc_;
+    }
+    // This frame's rows for the disocclusion test, built by frame prep from the
+    // jittered view-projection and the previous frame's. Set every frame before
+    // recording; the resolve reads them as push constants.
+    void setTaaPreviousDepthRows(const TaaPreviousDepthRows& rows)
+    {
+        taaPreviousDepthRows_ = rows;
     }
 
     // Mutable layout/handle access used by render-graph transition tracking.
@@ -700,6 +708,7 @@ private:
     glm::vec2 taaPreviousJitterPixels_{0.0f, 0.0f};
     glm::vec2 taaCurrentJitterNdc_{0.0f, 0.0f};
     glm::vec2 taaPreviousJitterNdc_{0.0f, 0.0f};
+    TaaPreviousDepthRows taaPreviousDepthRows_;
     uint32_t taaJitterIndex_ = 0;
     uint32_t taaHistoryWriteIndex_ = 0;
     uint32_t taaPostProcessHistoryIndex_ = 0;

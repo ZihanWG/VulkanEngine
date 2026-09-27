@@ -1571,14 +1571,27 @@ void Renderer::drawTaaDebugUi()
     ImGui::SetItemTooltip("Half-width of that box in standard deviations. Lower rejects more history:\n"
                           "less ghosting, and less of the accumulated detail upsampling exists to gather.");
     changed |= ImGui::Checkbox("Rejection feedback", &taaSettings_.rejectionFeedback);
-    changed |= ImGui::Checkbox("Catmull-Rom history", &taaSettings_.catmullRomHistory);
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Resample history with Catmull-Rom instead of one bilinear tap.\n"
-                          "Off reproduces the repeated-bilinear softening this replaces.");
-    }
     ImGui::SetItemTooltip("Lowers a pixel's feedback by how far its history had to be pulled to become\n"
                           "acceptable. Clipping alone leaves a ghost at the nearest plausible colour and\n"
                           "still gives it most of the pixel; this is what actually removes it.");
+    changed |= ImGui::Checkbox("Catmull-Rom history", &taaSettings_.catmullRomHistory);
+    ImGui::SetItemTooltip("Resample history with Catmull-Rom instead of one bilinear tap.\n"
+                          "Off reproduces the repeated-bilinear softening this replaces.");
+    changed |= ImGui::Checkbox("Disocclusion rejection", &taaSettings_.disocclusionRejection);
+    ImGui::SetItemTooltip("Drops a pixel's history when the depth recorded with it cannot be the surface\n"
+                          "there now -- the surface was hidden last frame. Needs motion reprojection\n"
+                          "and a samplable main depth.");
+    changed |= ImGui::SliderFloat("Disocclusion tolerance",
+                                  &taaSettings_.disocclusionTolerance,
+                                  0.005f,
+                                  0.5f,
+                                  "%.3f",
+                                  ImGuiSliderFlags_Logarithmic);
+    ImGui::SetItemTooltip("Relative depth mismatch that still counts as the same surface.\n"
+                          "Lower rejects more: fast-moving objects start losing their history too.");
+    changed |= ImGui::Checkbox("Debug: paint disoccluded pixels", &taaSettings_.debugDisocclusion);
+    ImGui::SetItemTooltip("Paints every pixel whose history was rejected red. The paint goes into the\n"
+                          "history, so leaving this on smears it; history is reset on toggle.");
     if (changed) {
         clampRuntimeSettings();
         invalidateTaaHistory();

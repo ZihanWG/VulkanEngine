@@ -64,6 +64,7 @@ add_executable(VulkanEngineTests
     test_primitive_geometry.cpp
     test_render_graph.cpp
     test_render_scale.cpp
+    test_taa_disocclusion.cpp
     test_dynamic_resolution.cpp
     test_occlusion_yield.cpp
     test_draw_batching.cpp

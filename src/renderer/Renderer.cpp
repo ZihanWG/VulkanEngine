@@ -2279,7 +2279,8 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
         (previousTaaSettings.enabled != taaSettings_.enabled ||
          previousTaaSettings.jitterEnabled != taaSettings_.jitterEnabled ||
          previousTaaSettings.neighborhoodClampEnabled != taaSettings_.neighborhoodClampEnabled ||
-         previousTaaSettings.feedback != taaSettings_.feedback)) {
+         previousTaaSettings.feedback != taaSettings_.feedback ||
+         previousTaaSettings.debugDisocclusion != taaSettings_.debugDisocclusion)) {
         invalidateTaaHistory();
     }
     postProcess_.resetAutoExposureTimer();

@@ -2243,21 +2243,39 @@ void PostProcessStack::recordTaaResolveCommands(VkCommandBuffer commandBuffer)
     vkCmdBindDescriptorSets(
         commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, taaResolvePipeline_.layout(), 0, 1, &descriptorSet, 0, nullptr);
 
+    // Depth dilation and the disocclusion test both need a samplable main depth;
+    // otherwise binding 3 holds the checkerboard fallback and the shader must
+    // skip every depth read. Rejecting also needs reprojection -- without it the
+    // history is read at the same pixel, and a depth mismatch there says the
+    // camera moved, not that a surface was uncovered.
+    const bool depthSamplable = swapchain_.depthSupportsSampling();
+    const bool rejectDisoccluded =
+        depthSamplable && taaSettings_.reprojectionEnabled && taaSettings_.disocclusionRejection;
+    uint32_t disocclusionFlags = 0u;
+    if (rejectDisoccluded) {
+        disocclusionFlags |= kTaaDisocclusionReject;
+        if (taaSettings_.debugDisocclusion) {
+            disocclusionFlags |= kTaaDisocclusionDebug;
+        }
+    }
+
     const TaaResolvePushConstants pushConstants{
         glm::vec2{1.0f / static_cast<float>(sceneExtent.width), 1.0f / static_cast<float>(sceneExtent.height)},
         taaSettings_.feedback,
         taaHistoryValid_ ? 1u : 0u,
         taaSettings_.neighborhoodClampEnabled ? 1u : 0u,
         taaSettings_.reprojectionEnabled ? 1u : 0u,
-        // Depth dilation needs a samplable main depth; otherwise binding 3 holds
-        // the checkerboard fallback and the shader must skip the depth reads.
-        swapchain_.depthSupportsSampling() ? 1u : 0u,
+        depthSamplable ? 1u : 0u,
         taaSettings_.varianceClipping ? 1u : 0u,
         sourceUvScale,
         taaCurrentJitterPixels_,
         taaSettings_.varianceGamma,
         taaSettings_.rejectionFeedback ? 1u : 0u,
-        taaSettings_.catmullRomHistory ? 1u : 0u};
+        taaSettings_.catmullRomHistory ? 1u : 0u,
+        disocclusionFlags,
+        taaPreviousDepthRows_.numerator,
+        taaPreviousDepthRows_.denominator,
+        taaSettings_.disocclusionTolerance};
     vkCmdPushConstants(commandBuffer,
                        taaResolvePipeline_.layout(),
                        VK_SHADER_STAGE_FRAGMENT_BIT,
