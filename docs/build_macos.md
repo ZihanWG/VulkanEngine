@@ -72,6 +72,24 @@ export SDL_VIDEODRIVER=cocoa
 
 This remains the simplest way to run a non-bundle Debug build.
 
+## Verifying
+
+With the SDK sourced, the same entrypoint as on Windows builds and checks the
+tree:
+
+```sh
+tools/dev/verify_renderer.sh fast   # shaders, renderer, headless tests
+tools/dev/verify_renderer.sh sync   # the renderer under synchronization validation
+tools/dev/verify_renderer.sh full   # fast, sync, ASan/UBSan tests, Release build
+```
+
+`sync` sets `MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES=1` unless the variable is
+already set. Without it MoltenVK exposes no compute-only or transfer-only queue
+family, the async compute and upload paths fall back to the graphics queue, and
+the queue-family ownership transfers `sync` exists to check never run. `full`
+runs the ASan/UBSan leg here; on Windows it is skipped, because MSVC builds
+without the sanitizers.
+
 ## Running with `run_vulkan_engine.command`
 
 The repository includes a double-clickable Terminal launcher:
