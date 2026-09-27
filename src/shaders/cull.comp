@@ -29,10 +29,14 @@ struct GpuCullDrawItem {
 // One level of a mesh's LOD chain: a triangle range in the shared index buffer.
 // Because every level lives in that one buffer, switching level is only a change
 // of the emitted (indexCount, firstIndex) -- no rebind, so it can be decided
-// here, per draw item, instead of on the CPU.
+// here, per draw item, instead of on the CPU. `error` is how far the level
+// strays from the authored surface, in mesh units, never decreasing along a
+// chain. std430 aligns a struct of scalars to 4, so the stride is 12 bytes,
+// matching renderer::MeshLod.
 struct MeshLod {
     uint firstIndex;
     uint indexCount;
+    float error;
 };
 
 // Matches VkDrawIndexedIndirectCommand exactly. std430 keeps the runtime array

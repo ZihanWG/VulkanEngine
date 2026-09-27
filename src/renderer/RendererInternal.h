@@ -393,12 +393,14 @@ static_assert(sizeof(GpuCullDrawItem) == 64);
 // unchanged: two tightly packed uint32s is exactly the std430 layout the shader's
 // MeshLod struct expects, so there is no separate GPU mirror of the type to keep
 // in sync.
-static_assert(sizeof(renderer::MeshLod) == 8);
+static_assert(sizeof(renderer::MeshLod) == 12);
 static_assert(offsetof(renderer::MeshLod, firstIndex) == 0);
 static_assert(offsetof(renderer::MeshLod, indexCount) == 4);
+static_assert(offsetof(renderer::MeshLod, error) == 8);
 
 // Worst case is every draw item contributing a full chain; meshes are deduped
-// when the table is built, so this is a generous upper bound (32 KB).
+// when the table is built, so this is a generous upper bound (32K entries,
+// 384 KB).
 constexpr uint32_t kMaxMeshLodEntries = kMaxDrawItems * renderer::kMaxMeshLods;
 constexpr VkDeviceSize kMeshLodBufferSize = kMaxMeshLodEntries * sizeof(renderer::MeshLod);
 

@@ -1383,8 +1383,9 @@ private:
     // (base, count) range into it. Rebuilt every frame alongside the cull input
     // because scene edits add and remove meshes; deduped by mesh so a mesh's
     // chain is uploaded once no matter how many draw items reference it.
-    // renderer::MeshLod is already the GPU record: two uint32s, std430-compatible
-    // (static_assert'd in Renderer.cpp), so the table uploads without conversion.
+    // renderer::MeshLod is already the GPU record: two uint32s and the level's
+    // error, std430-compatible (static_assert'd in RendererInternal.h), so the
+    // table uploads without conversion.
     std::vector<renderer::MeshLod> frameMeshLodTable_;
     std::vector<glm::uvec2> frameDrawItemLodRanges_;
 

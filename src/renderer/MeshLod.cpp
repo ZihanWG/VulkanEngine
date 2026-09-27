@@ -7,7 +7,9 @@
 #include <glm/geometric.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <string>
 
@@ -170,6 +172,12 @@ LodChainBuild buildLodChainDetached(std::span<const uint32_t> sourceIndices,
 
     std::vector<uint32_t> simplified;
     size_t previousCount = sourceIndices.size();
+    // meshopt reports error relative to the extent of the whole position stream
+    // it was handed, which for a glTF primitive is the mesh's shared vertex
+    // buffer, not the primitive. Multiplying by the same extent it divided by
+    // turns it back into mesh units, which is what screen-space selection needs.
+    const float errorScale = meshopt_simplifyScale(vertexPositions, vertexCount, vertexStride);
+    float previousError = 0.0f;
 
     for (uint32_t level = 1; level < settings.maxLods; ++level) {
         // Keep the target a multiple of 3 so the simplifier is never asked for a
@@ -204,11 +212,18 @@ LodChainBuild buildLodChainDetached(std::span<const uint32_t> sourceIndices,
 
         meshopt_optimizeVertexCache(simplified.data(), simplified.data(), resultCount, vertexCount);
 
+        // Each level is simplified from the authored geometry, not from the
+        // level before, so nothing forces its error above its predecessor's.
+        // Selection assumes it never falls, so a coarser level that happened to
+        // measure better inherits the finer level's error instead.
+        const float levelError = std::max(resultError * errorScale, previousError);
+
         // Relative to this build's own buffer. appendLodChain rebases it.
         build.simplifiedLods.push_back(
-            {static_cast<uint32_t>(build.simplifiedIndices.size()), static_cast<uint32_t>(resultCount)});
+            {static_cast<uint32_t>(build.simplifiedIndices.size()), static_cast<uint32_t>(resultCount), levelError});
         build.simplifiedIndices.insert(build.simplifiedIndices.end(), simplified.begin(), simplified.end());
         previousCount = resultCount;
+        previousError = levelError;
     }
 
     // Composed, not printed: this can run on a worker and Logger has no mutex.
@@ -216,8 +231,12 @@ LodChainBuild buildLodChainDetached(std::span<const uint32_t> sourceIndices,
         build.logMessage =
             "LOD chain for '" + std::string(debugName) + "': L0=" + std::to_string(build.sourceIndexCount / 3) + "tri";
         for (size_t level = 0; level < build.simplifiedLods.size(); ++level) {
+            // The error beside each count, in mesh units: it is what screen-space
+            // selection projects, and a chain whose errors jump is visible here.
+            std::array<char, 32> error{};
+            std::snprintf(error.data(), error.size(), "(err %.3g)", build.simplifiedLods[level].error);
             build.logMessage += " L" + std::to_string(level + 1) + "=" +
-                                std::to_string(build.simplifiedLods[level].indexCount / 3) + "tri";
+                                std::to_string(build.simplifiedLods[level].indexCount / 3) + "tri" + error.data();
         }
     }
 
@@ -232,13 +251,13 @@ std::vector<MeshLod> appendLodChain(std::vector<uint32_t>& indices, uint32_t fir
     }
 
     lods.reserve(build.simplifiedLods.size() + 1);
-    lods.push_back({firstIndex, build.sourceIndexCount});
+    lods.push_back({firstIndex, build.sourceIndexCount, 0.0f});
 
     // Captured before the insert: every simplified level is offset from where this
     // build's block starts, and appending would move the end.
     const auto base = static_cast<uint32_t>(indices.size());
     for (const MeshLod& level : build.simplifiedLods) {
-        lods.push_back({base + level.firstIndex, level.indexCount});
+        lods.push_back({base + level.firstIndex, level.indexCount, level.error});
     }
 
     indices.insert(indices.end(), build.simplifiedIndices.begin(), build.simplifiedIndices.end());
@@ -262,7 +281,7 @@ std::vector<MeshLod> buildLodChain(std::vector<uint32_t>& indices,
     // what the caller asked for.
     const size_t rangeEnd = static_cast<size_t>(firstIndex) + indexCount;
     if (rangeEnd > indices.size()) {
-        return {{firstIndex, indexCount}};
+        return {{firstIndex, indexCount, 0.0f}};
     }
 
     const LodChainBuild build =
@@ -326,6 +345,68 @@ uint32_t selectLodIndex(float projectedRadiusPixels, uint32_t lodCount, const Lo
     }
 
     return static_cast<uint32_t>(level);
+}
+
+float maxAxisScale(const glm::mat4& model)
+{
+    return std::max(
+        {glm::length(glm::vec3(model[0])), glm::length(glm::vec3(model[1])), glm::length(glm::vec3(model[2]))});
+}
+
+float distanceToAabb(const glm::vec3& point, const glm::vec3& boundsMin, const glm::vec3& boundsMax)
+{
+    const glm::vec3 outside = glm::max(glm::max(boundsMin - point, point - boundsMax), glm::vec3(0.0f));
+    return glm::length(outside);
+}
+
+float projectedErrorPixels(float worldError, float distance, float projScaleY)
+{
+    if (!(worldError > 0.0f)) {
+        return 0.0f;
+    }
+    if (!(distance > 0.0f)) {
+        return std::numeric_limits<float>::infinity();
+    }
+    return worldError / distance * projScaleY;
+}
+
+uint32_t selectLodIndexByError(std::span<const MeshLod> lods,
+                               float worldScale,
+                               float distance,
+                               float projScaleY,
+                               const LodSelectionSettings& settings)
+{
+    const auto lodCount = static_cast<uint32_t>(lods.size());
+    if (lodCount <= 1) {
+        return 0;
+    }
+
+    const uint32_t maxLod = lodCount - 1;
+    if (settings.forcedLod >= 0) {
+        return std::min(static_cast<uint32_t>(settings.forcedLod), maxLod);
+    }
+
+    if (!(worldScale > 0.0f) || !(projScaleY > 0.0f)) {
+        return 0;
+    }
+    const float budgetPixels = settings.maxErrorPixels * std::exp2(settings.bias);
+    if (!(budgetPixels > 0.0f)) {
+        return 0;
+    }
+
+    // The error budget turned back into the mesh's own units at this distance,
+    // so the loop compares stored errors directly. Written as a product rather
+    // than dividing each level's projected error: distance 0 then gives a budget
+    // of 0, which admits only levels that did not move the surface at all.
+    const float budget = budgetPixels * std::max(distance, 0.0f) / (projScaleY * worldScale);
+    uint32_t level = 0;
+    for (uint32_t candidate = 1; candidate < lodCount; ++candidate) {
+        if (!(lods[candidate].error <= budget)) {
+            break;
+        }
+        level = candidate;
+    }
+    return level;
 }
 
 } // namespace ve::renderer

@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -51,7 +52,7 @@ CpuMeshData makeMesh(std::string name, uint32_t vertexCount, uint32_t indexCount
     primitive.indexCount = indexCount;
     primitive.materialIndex = 3;
     primitive.lodBase = 0;
-    primitive.lodCount = 1;
+    primitive.lodCount = 2;
     // Set to something asymmetric and non-default: the per-primitive bounds are
     // what a per-primitive RenderObject culls against, so a cook that dropped
     // them would turn every such object into one that is never culled, and a
@@ -59,7 +60,9 @@ CpuMeshData makeMesh(std::string name, uint32_t vertexCount, uint32_t indexCount
     primitive.localBounds.expand({-0.5f, -1.5f, -2.5f});
     primitive.localBounds.expand({3.5f, 4.5f, 5.5f});
     mesh.primitives.push_back(primitive);
-    mesh.lods.push_back(MeshLod{0, indexCount});
+    mesh.lods.push_back(MeshLod{0, indexCount, 0.0f});
+    // A non-zero error, so a cook that dropped or misread the field would show.
+    mesh.lods.push_back(MeshLod{0, 3, 0.125f});
     mesh.localBounds.expand({-1.0f, -2.0f, -3.0f});
     mesh.localBounds.expand({4.0f, 5.0f, 6.0f});
     return mesh;
@@ -90,8 +93,10 @@ TEST_CASE("A cooked mesh round-trips exactly", "[mesh-cache]")
         CHECK(read[mesh].primitives[0].materialIndex == 3);
         CHECK(read[mesh].primitives[0].localBounds.min == written[mesh].primitives[0].localBounds.min);
         CHECK(read[mesh].primitives[0].localBounds.max == written[mesh].primitives[0].localBounds.max);
-        REQUIRE(read[mesh].lods.size() == 1);
+        REQUIRE(read[mesh].lods.size() == 2);
         CHECK(read[mesh].lods[0].indexCount == written[mesh].indexCount);
+        CHECK(read[mesh].lods[1].indexCount == 3);
+        CHECK(read[mesh].lods[1].error == 0.125f);
         CHECK(read[mesh].localBounds.min == written[mesh].localBounds.min);
         CHECK(read[mesh].localBounds.max == written[mesh].localBounds.max);
     }
@@ -204,6 +209,17 @@ TEST_CASE("Ranges that would reach the GPU are validated", "[mesh-cache]")
     CpuMeshData badIndex = makeMesh("M", 4, 6);
     badIndex.indices[3] = 99;
     CHECK_THROWS_AS(readMeshCache(writeMeshCache(std::vector<CpuMeshData>{badIndex}, expectation)), std::runtime_error);
+
+    // Not a memory hazard, but screen-space LOD selection compares errors
+    // directly, so a NaN or negative one would silently pin the mesh.
+    CpuMeshData nanError = makeMesh("M", 4, 6);
+    nanError.lods[1].error = std::numeric_limits<float>::quiet_NaN();
+    CHECK_THROWS_AS(readMeshCache(writeMeshCache(std::vector<CpuMeshData>{nanError}, expectation)), std::runtime_error);
+
+    CpuMeshData negativeError = makeMesh("M", 4, 6);
+    negativeError.lods[1].error = -1.0f;
+    CHECK_THROWS_AS(readMeshCache(writeMeshCache(std::vector<CpuMeshData>{negativeError}, expectation)),
+                    std::runtime_error);
 
     // The valid mesh those were derived from still round-trips, so the checks
     // are not rejecting everything.
