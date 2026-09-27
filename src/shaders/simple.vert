@@ -47,6 +47,10 @@ layout(location = 24) flat out uint vLodIndex;
 // fragment stage needs y to know how wide the cross-fade at each split is.
 layout(location = 25) flat out vec4 vShadowQuality;
 
+// The main pass tests LESS_OR_EQUAL against the depth prepass, so this position
+// must match depth_prepass.vert's bit for bit; see the note there.
+invariant gl_Position;
+
 void main()
 {
     ObjectFrameData objectData = pc.objectFrameData.objects[gl_InstanceIndex & kObjectIndexMask];

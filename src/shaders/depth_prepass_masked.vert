@@ -38,6 +38,9 @@ layout(location = 1) flat out uint vBaseColorTextureIndex;
 layout(location = 2) flat out float vAlphaCutoff;
 layout(location = 3) flat out float vBaseColorAlpha;
 
+// Same depth as simple.vert, bit for bit; see depth_prepass.vert.
+invariant gl_Position;
+
 void main()
 {
     // Half of a LOD cross-fade: leave it out. Its fragments are dithered in the
