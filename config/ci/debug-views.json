@@ -2,5 +2,6 @@
   "csm": { "enableCascadeDebugColors": true },
   "lod": { "debugHeatmap": true },
   "punctualShadows": { "debugView": true },
-  "gi": { "enabled": true, "debugPattern": true, "debugIrradianceOnly": true }
+  "gi": { "enabled": true, "debugPattern": true, "debugIrradianceOnly": true },
+  "taa": { "enabled": true, "debugDisocclusion": true }
 }

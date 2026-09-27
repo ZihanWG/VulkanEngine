@@ -4,6 +4,7 @@
     "jitterEnabled": false,
     "neighborhoodClampEnabled": false,
     "reprojectionEnabled": false,
-    "catmullRomHistory": false
+    "catmullRomHistory": false,
+    "disocclusionRejection": false
   }
 }

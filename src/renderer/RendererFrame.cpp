@@ -1670,6 +1670,10 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         previousFrameView_ = view;
         previousFrameViewProjectionValid_ = true;
     }
+    // After the line above, so a reset reads as "no camera motion" here too: the
+    // expected previous depth of every surface is then its current depth.
+    postProcess_.setTaaPreviousDepthRows(
+        renderer::taaPreviousDepthRows(frameJitteredViewProjection_, previousFrameViewProjection_));
 
     // Regenerate the animated demo light swarm, then hand the froxel grid + light
     // culling the current view/inverse-projection and camera planes (view-space

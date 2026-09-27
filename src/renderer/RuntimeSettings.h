@@ -166,6 +166,21 @@ struct TaaSettings {
     // the detail temporal upsampling is trying to reconstruct. On by default
     // because it only affects how history is *read*; nothing else changes.
     bool catmullRomHistory = true;
+    // Drop the history of a pixel whose surface was hidden last frame. The
+    // resolve records each history texel's view depth and compares it with the
+    // depth the current surface would have had last frame; when no texel of the
+    // reprojected footprint is within `disocclusionTolerance` (relative) of the
+    // current neighbourhood's range, the history shows something that is no
+    // longer there. Unlike the two guards above it fires only where depth
+    // disagrees -- where geometry was uncovered, or where an object moved along
+    // the view direction faster than the tolerance -- so a still surface keeps
+    // every frame of history it has gathered, which is why it is on by default.
+    // See renderer/TaaDisocclusion.h.
+    bool disocclusionRejection = true;
+    float disocclusionTolerance = 0.05f;
+    // Debug view: paints rejected pixels red. Invalidates history when toggled,
+    // since the paint is written into the history like any resolved colour.
+    bool debugDisocclusion = false;
 };
 
 // Ground-truth ambient occlusion (Jimenez et al. 2016): a dedicated horizon-

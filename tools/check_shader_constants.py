@@ -95,6 +95,21 @@ PAIRS: list[tuple[str, str, list[str]]] = [
         "src/shaders/joint_palette.glsl",
         ["kMaxSkinJoints", "kSkinPreviousPaletteOffset"],
     ),
+    # TAA disocclusion. The encoding is a contract between two frames' resolves
+    # rather than between C++ and GLSL at the same moment, but the unit tests pin
+    # the C++ copy, so the shader copy has to be held to it here. A mismatched
+    # offset would decode every recorded depth wrong and reject history
+    # everywhere -- or, worse, nowhere.
+    (
+        "src/renderer/TaaDisocclusion.h",
+        "src/shaders/taa_disocclusion.glsl",
+        ["kTaaHistoryDepthOffset", "kTaaHistorySkyDepth"],
+    ),
+    (
+        "src/renderer/RendererInternal.h",
+        "src/shaders/taa_disocclusion.glsl",
+        ["kTaaDisocclusionReject", "kTaaDisocclusionDebug"],
+    ),
 ]
 
 # Constants whose two copies deliberately carry different names, as

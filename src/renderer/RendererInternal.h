@@ -688,7 +688,23 @@ struct TaaResolvePushConstants {
     uint32_t rejectionFeedbackEnabled = 1;
     // Catmull-Rom history resampling instead of a single bilinear tap.
     uint32_t catmullRomHistoryEnabled = 1;
+    // Bit 0: reject history the depth recorded in its alpha says is
+    // disoccluded. The resolve records depth only while this is set, so the test
+    // reads nothing extra when it is off, and a history written without it
+    // decodes as "unknown" and is kept. Bit 1: paint rejected pixels (debug view).
+    uint32_t disocclusionFlags = 0;
+    // renderer::TaaPreviousDepthRows, flattened: view depths from a clip-space
+    // point of this frame's depth buffer (see TaaDisocclusion.h).
+    glm::vec4 previousDepthNumerator{0.0f, 0.0f, 0.0f, 0.0f};
+    glm::vec4 previousDepthDenominator{0.0f, 0.0f, 0.0f, 1.0f};
+    float disocclusionTolerance = 0.05f;
 };
+
+// Written as plain values rather than shifts: tools/check_shader_constants.py
+// compares them with taa_disocclusion.glsl, and its evaluator reads sums and
+// products, not shifts.
+inline constexpr uint32_t kTaaDisocclusionReject = 1u;
+inline constexpr uint32_t kTaaDisocclusionDebug = 2u;
 
 static_assert(offsetof(TaaResolvePushConstants, texelSize) == 0);
 static_assert(offsetof(TaaResolvePushConstants, feedback) == 8);
@@ -701,7 +717,15 @@ static_assert(offsetof(TaaResolvePushConstants, jitterPixels) == 40);
 static_assert(offsetof(TaaResolvePushConstants, varianceGamma) == 48);
 static_assert(offsetof(TaaResolvePushConstants, rejectionFeedbackEnabled) == 52);
 static_assert(offsetof(TaaResolvePushConstants, catmullRomHistoryEnabled) == 56);
-static_assert(sizeof(TaaResolvePushConstants) == 60);
+static_assert(offsetof(TaaResolvePushConstants, disocclusionFlags) == 60);
+// std430 puts a vec4 on a 16-byte boundary; 64 is the next one after the flags,
+// so the C++ side lands there with no padding to keep in step.
+static_assert(offsetof(TaaResolvePushConstants, previousDepthNumerator) == 64);
+static_assert(offsetof(TaaResolvePushConstants, previousDepthDenominator) == 80);
+static_assert(offsetof(TaaResolvePushConstants, disocclusionTolerance) == 96);
+static_assert(sizeof(TaaResolvePushConstants) == 100);
+// The guaranteed minimum maxPushConstantsSize.
+static_assert(sizeof(TaaResolvePushConstants) <= 128);
 
 struct RenderTargetDebugMetadata {
     const char* debugName = "";

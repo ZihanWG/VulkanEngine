@@ -220,7 +220,7 @@ ssr_trace.frag
   set=0 binding=5   textures     uBrdfLut : sampler2D
 
 taa_resolve.frag
-  push_constant pc : TaaResolvePushConstants{texelSize:vec2@0, feedback:float@8, historyValid:uint@12, neighborhoodClampEnabled:uint@16, reprojectionEnabled:uint@20, depthDilationEnabled:uint@24, varianceClippingEnabled:uint@28, sourceUvScale:vec2@32, jitterPixels:vec2@40, varianceGamma:float@48, rejectionFeedbackEnabled:uint@52, catmullRomHistoryEnabled:uint@56}
+  push_constant pc : TaaResolvePushConstants{texelSize:vec2@0, feedback:float@8, historyValid:uint@12, neighborhoodClampEnabled:uint@16, reprojectionEnabled:uint@20, depthDilationEnabled:uint@24, varianceClippingEnabled:uint@28, sourceUvScale:vec2@32, jitterPixels:vec2@40, varianceGamma:float@48, rejectionFeedbackEnabled:uint@52, catmullRomHistoryEnabled:uint@56, disocclusionFlags:uint@60, previousDepthNumerator:vec4@64, previousDepthDenominator:vec4@80, disocclusionTolerance:float@96}
   set=0 binding=0   textures     uCurrentColor : sampler2D
   set=0 binding=1   textures     uHistoryColor : sampler2D
   set=0 binding=2   textures     uVelocity : sampler2D

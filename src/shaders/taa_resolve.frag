@@ -1,5 +1,6 @@
 #version 460
 #include "sub_rect.glsl"
+#include "taa_disocclusion.glsl"
 
 layout(set = 0, binding = 0) uniform sampler2D uCurrentColor;
 layout(set = 0, binding = 1) uniform sampler2D uHistoryColor;
@@ -32,6 +33,14 @@ layout(push_constant) uniform TaaResolvePushConstants {
     uint rejectionFeedbackEnabled;
     // Catmull-Rom history resampling instead of a single bilinear tap.
     uint catmullRomHistoryEnabled;
+    // kTaaDisocclusion* bits: reject disoccluded history (which also records
+    // depth into the history's alpha for the next frame), paint rejected pixels.
+    uint disocclusionFlags;
+    // renderer::TaaPreviousDepthRows: view depths from a clip-space point of this
+    // frame's depth buffer (taa_disocclusion.glsl).
+    vec4 previousDepthNumerator;
+    vec4 previousDepthDenominator;
+    float disocclusionTolerance;
 } pc;
 
 // Catmull-Rom history resampling.
@@ -191,6 +200,17 @@ void main()
     vec3 momentSum = vec3(0.0);
     vec3 momentSquaredSum = vec3(0.0);
 
+    // Disocclusion inputs, from the same nine taps: the range of view depths the
+    // surfaces around this pixel had LAST frame, whether any of them is sky, and
+    // the current view depth of the tap that dominates the reconstruction, which
+    // is what this pixel's history texel is recorded as showing.
+    const bool disocclusionTest = (pc.disocclusionFlags & kTaaDisocclusionReject) != 0u;
+    float expectedMin = 3.0e38;
+    float expectedMax = 0.0;
+    bool neighbourhoodHasSky = false;
+    float recordedViewDepth = 0.0;
+    float recordedWeight = -1.0;
+
     for (int y = 0; y < 3; ++y) {
         for (int x = 0; x < 3; ++x) {
             // Clamped in texel space rather than UV space: the written region is
@@ -216,6 +236,32 @@ void main()
             const vec3 sampleYCoCg = rgbToYCoCg(sampleColor);
             momentSum += sampleYCoCg;
             momentSquaredSum += sampleYCoCg * sampleYCoCg;
+
+            if (disocclusionTest) {
+                // The same texel of the depth buffer: it shares the render
+                // extent with scene colour, so the texel index carries over.
+                // texelFetch takes no derivatives and no filtering, which is
+                // what a depth comparison wants anyway.
+                const float depth = texelFetch(uDepth, ivec2(texel), 0).r;
+                // Jitter needs no correction here: the rows come from the
+                // jittered view-projection, which is what put this depth at
+                // this texel centre.
+                const vec2 ndc = (texel + 0.5) / sourceSize * 2.0 - 1.0;
+                float viewDepth = kTaaHistorySkyDepth;
+                if (depth < 1.0) {
+                    const float expected =
+                        taaPreviousViewDepth(pc.previousDepthNumerator, pc.previousDepthDenominator, ndc, depth);
+                    expectedMin = min(expectedMin, expected);
+                    expectedMax = max(expectedMax, expected);
+                    viewDepth = taaCurrentViewDepth(pc.previousDepthDenominator, ndc, depth);
+                } else {
+                    neighbourhoodHasSky = true;
+                }
+                if (weight > recordedWeight) {
+                    recordedWeight = weight;
+                    recordedViewDepth = viewDepth;
+                }
+            }
         }
     }
 
@@ -227,6 +273,7 @@ void main()
                                                        0.0)
                                                 .rgb;
     vec3 resolvedColor = currentColor;
+    bool disoccluded = false;
 
     if (pc.historyValid != 0u) {
         vec2 historyUV = vUV;
@@ -240,6 +287,22 @@ void main()
             historyUV = vUV - velocity;
             historyUsable = all(greaterThanEqual(historyUV, vec2(0.0))) &&
                             all(lessThanEqual(historyUV, vec2(1.0)));
+        }
+
+        // Before any colour work, so a rejected history is never fetched. The
+        // four alphas of the bilinear footprint, not one: at a silhouette that
+        // footprint straddles the edge, and one texel matching is enough to keep
+        // the history (TaaDisocclusion.h says why). textureGather takes no
+        // derivatives, so it is safe behind the per-fragment historyUsable test.
+        if (historyUsable && disocclusionTest) {
+            const vec4 recorded = textureGather(uHistoryColor, historyUV, 3);
+            const vec4 historyDepths = vec4(taaDecodeHistoryDepth(recorded.x),
+                                            taaDecodeHistoryDepth(recorded.y),
+                                            taaDecodeHistoryDepth(recorded.z),
+                                            taaDecodeHistoryDepth(recorded.w));
+            disoccluded = taaHistoryDisoccluded(
+                historyDepths, expectedMin, expectedMax, neighbourhoodHasSky, pc.disocclusionTolerance);
+            historyUsable = !disoccluded;
         }
 
         if (historyUsable) {
@@ -306,5 +369,14 @@ void main()
         }
     }
 
-    outColor = vec4(max(resolvedColor, vec3(0.0)), 1.0);
+    if (disoccluded && (pc.disocclusionFlags & kTaaDisocclusionDebug) != 0u) {
+        resolvedColor = vec3(4.0, 0.0, 0.0);
+    }
+
+    // Alpha carries the view depth of the surface this pixel shows, for the next
+    // frame's test. Nothing downstream reads the history's alpha; with the test
+    // off it stays at the offset, which decodes to "unknown".
+    const float historyAlpha = disocclusionTest && recordedWeight >= 0.0 ? taaEncodeHistoryDepth(recordedViewDepth)
+                                                                         : kTaaHistoryDepthOffset;
+    outColor = vec4(max(resolvedColor, vec3(0.0)), historyAlpha);
 }

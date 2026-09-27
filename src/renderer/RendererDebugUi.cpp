@@ -1577,6 +1577,21 @@ void Renderer::drawTaaDebugUi()
     changed |= ImGui::Checkbox("Catmull-Rom history", &taaSettings_.catmullRomHistory);
     ImGui::SetItemTooltip("Resample history with Catmull-Rom instead of one bilinear tap.\n"
                           "Off reproduces the repeated-bilinear softening this replaces.");
+    changed |= ImGui::Checkbox("Disocclusion rejection", &taaSettings_.disocclusionRejection);
+    ImGui::SetItemTooltip("Drops a pixel's history when the depth recorded with it cannot be the surface\n"
+                          "there now -- the surface was hidden last frame. Needs motion reprojection\n"
+                          "and a samplable main depth.");
+    changed |= ImGui::SliderFloat("Disocclusion tolerance",
+                                  &taaSettings_.disocclusionTolerance,
+                                  0.005f,
+                                  0.5f,
+                                  "%.3f",
+                                  ImGuiSliderFlags_Logarithmic);
+    ImGui::SetItemTooltip("Relative depth mismatch that still counts as the same surface.\n"
+                          "Lower rejects more: fast-moving objects start losing their history too.");
+    changed |= ImGui::Checkbox("Debug: paint disoccluded pixels", &taaSettings_.debugDisocclusion);
+    ImGui::SetItemTooltip("Paints every pixel whose history was rejected red. The paint goes into the\n"
+                          "history, so leaving this on smears it; history is reset on toggle.");
     if (changed) {
         clampRuntimeSettings();
         invalidateTaaHistory();
