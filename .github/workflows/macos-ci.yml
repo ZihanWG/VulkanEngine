@@ -52,8 +52,11 @@ jobs:
       - name: Compile GLSL shaders
         run: cmake --build --preset ci-debug-shaders --parallel
 
+      # `-k 0` keeps Ninja going past a failed translation unit. The breaks this
+      # job exists to find are portability breaks, which tend to arrive several
+      # at a time, and stopping at the first would report one per run.
       - name: Build renderer
-        run: cmake --build --preset ci-debug --parallel
+        run: cmake --build --preset ci-debug --parallel -- -k 0
 
       # The tests create no Vulkan device, which is what lets them run on a
       # hosted runner with no usable GPU. The renderer itself is not run here:
