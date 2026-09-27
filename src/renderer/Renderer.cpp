@@ -1397,6 +1397,7 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
             }
             message << "\n"
                     << "  emitted triangles: " << counters.emittedTriangles << "\n"
+                    << "  LOD cross-fades: " << counters.fadingDrawItems << "\n"
                     << "  depth pyramid mips: " << depthPyramid_.mipLevels() << "\n"
                     << "  occlusion culling: " << (isGpuOcclusionCullingActive() ? "enabled" : "disabled") << "\n"
                     << "  occlusion yield: " << occlusionYieldStateName()

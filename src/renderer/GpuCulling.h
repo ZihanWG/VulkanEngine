@@ -19,6 +19,7 @@
 // Renderer predicates combine the toggles with mainResourcesReady()/
 // shadowResourcesReady().
 
+#include "renderer/LodTransition.h"
 #include "renderer/MeshLod.h"
 #include "rhi/VulkanBuffer.h"
 #include "rhi/VulkanCommon.h"
@@ -58,6 +59,8 @@ struct GpuCullCounters {
     std::array<uint32_t, kMaxMeshLods> lodDrawItems{};
     // Triangles across every emitted draw, at the level the cull chose.
     uint32_t emittedTriangles = 0;
+    // Draw items emitted mid cross-fade, each drawn at two levels.
+    uint32_t fadingDrawItems = 0;
 };
 
 class GpuCulling final {
@@ -204,6 +207,9 @@ private:
     void createShadowCullBuffers(uint32_t frameCount);
     void createShadowCullDescriptorSets(uint32_t frameCount);
     void destroyShadowCullingResources();
+    // Makes the previous dispatch's writes to the LOD transition records visible
+    // to the next one, clearing the buffer first the first time.
+    void recordLodTransitionStateBarrier(VkCommandBuffer commandBuffer);
 
     rhi::VulkanContext& context_;
     DepthPyramid& depthPyramid_;
@@ -222,6 +228,13 @@ private:
     std::vector<rhi::VulkanBuffer> framePhaseResultBuffers_;
     // Per-frame LOD table (binding 6), shared by the main and shadow cull sets.
     std::vector<rhi::VulkanBuffer> frameMeshLodBuffers_;
+    // One renderer::LodTransitionState per draw item (binding 7). ONE buffer,
+    // not one per frame slot: a cross-fade is a run of consecutive frames and
+    // each frame's cull advances what the previous frame's wrote. Bound to the
+    // shadow sets too, because they share the layout, but only the main
+    // dispatch touches it.
+    rhi::VulkanBuffer lodTransitionStateBuffer_;
+    bool lodTransitionStateCleared_ = false;
     std::vector<rhi::VulkanBuffer> frameShadowCullInputBuffers_;
     std::vector<rhi::VulkanBuffer> frameGpuCullParamBuffers_;
     std::vector<rhi::VulkanBuffer> frameBatchVisibleCountBuffers_;

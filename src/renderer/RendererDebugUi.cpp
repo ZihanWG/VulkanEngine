@@ -1216,6 +1216,10 @@ void Renderer::drawMeshLodDebugUi()
         ImGui::SetItemTooltip("Projected sphere radius at which level 0 is still chosen.\n"
                               "Each halving of the on-screen radius steps one level down.");
     }
+    ImGui::SliderFloat("Transition (s)", &lodSettings_.transitionSeconds, 0.0f, 2.0f, "%.2f");
+    ImGui::SetItemTooltip("How long a level switch cross-fades instead of popping: both levels are\n"
+                          "drawn, dithered into complementary halves of the pixels. 0 pops.\n"
+                          "Main pass only -- the shadow maps switch outright.");
     ImGui::DragFloat("Bias", &lodSettings_.bias, 0.05f, -4.0f, 4.0f, "%.2f");
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Positive biases toward lower detail. One unit is one level, or with\n"

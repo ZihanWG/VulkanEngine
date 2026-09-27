@@ -232,9 +232,18 @@ TEST_CASE("LOD settings clamp into usable ranges", "[settings][lod]")
     settings.clamp();
     CHECK(settings.lod.maxErrorPixels == Catch::Approx(16.0f));
 
+    // Negative time is meaningless; past two seconds a fade outstays its use.
+    settings.lod.transitionSeconds = -1.0f;
+    settings.clamp();
+    CHECK(settings.lod.transitionSeconds == 0.0f);
+    settings.lod.transitionSeconds = 30.0f;
+    settings.clamp();
+    CHECK(settings.lod.transitionSeconds == Catch::Approx(2.0f));
+
     Settings defaults;
     defaults.clamp();
     CHECK(defaults.lod.maxErrorPixels == ve::LodSettings{}.maxErrorPixels);
+    CHECK(defaults.lod.transitionSeconds == ve::LodSettings{}.transitionSeconds);
 }
 
 TEST_CASE("Forced LOD keeps its select-by-distance sentinel", "[settings][lod]")

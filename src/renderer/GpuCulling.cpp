@@ -82,7 +82,7 @@ void GpuCulling::createResources(uint32_t frameCount, bool wantMainCull, bool wa
 
 void GpuCulling::createCullDescriptorLayout()
 {
-    std::array<VkDescriptorSetLayoutBinding, 7> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 8> bindings{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     bindings[0].descriptorCount = 1;
@@ -121,6 +121,13 @@ void GpuCulling::createCullDescriptorLayout()
     bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     bindings[6].descriptorCount = 1;
     bindings[6].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    // Per-draw-item LOD transition records, read and written by the main
+    // dispatch only.
+    bindings[7].binding = 7;
+    bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[7].descriptorCount = 1;
+    bindings[7].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
     gpuCullDescriptorSetLayout_.create(context_.vkDevice(),
                                        std::span<const VkDescriptorSetLayoutBinding>(bindings.data(), bindings.size()));
@@ -192,6 +199,19 @@ void GpuCulling::createCullBuffers(uint32_t frameCount)
                                   "GpuCullMeshLodBuffer" + std::to_string(frameIndex));
     }
 
+    {
+        rhi::VulkanBufferCreateInfo bufferInfo{};
+        bufferInfo.size = static_cast<VkDeviceSize>(kMaxDrawItems * sizeof(renderer::LodTransitionState));
+        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        bufferInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+        lodTransitionStateBuffer_.createBuffer(context_, bufferInfo);
+        lodTransitionStateCleared_ = false;
+        rhi::debug::setObjectName(context_.vkDevice(),
+                                  lodTransitionStateBuffer_.buffer(),
+                                  VK_OBJECT_TYPE_BUFFER,
+                                  "GpuCullLodTransitionStateBuffer");
+    }
+
     framePhaseResultBuffers_.resize(frameCount);
     for (size_t frameIndex = 0; frameIndex < framePhaseResultBuffers_.size(); ++frameIndex) {
         rhi::VulkanBufferCreateInfo bufferInfo{};
@@ -240,7 +260,7 @@ void GpuCulling::createCullDescriptorSets(uint32_t frameCount)
 {
     std::array<VkDescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[0].descriptorCount = static_cast<uint32_t>(frameCount * 6);
+    poolSizes[0].descriptorCount = static_cast<uint32_t>(frameCount * 7);
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     poolSizes[1].descriptorCount = static_cast<uint32_t>(frameCount);
 
@@ -295,7 +315,12 @@ void GpuCulling::createCullDescriptorSets(uint32_t frameCount)
         meshLodBufferInfo.offset = 0;
         meshLodBufferInfo.range = frameMeshLodBuffers_[frameIndex].size();
 
-        std::array<VkWriteDescriptorSet, 7> writes{};
+        VkDescriptorBufferInfo lodTransitionBufferInfo{};
+        lodTransitionBufferInfo.buffer = lodTransitionStateBuffer_.buffer();
+        lodTransitionBufferInfo.offset = 0;
+        lodTransitionBufferInfo.range = lodTransitionStateBuffer_.size();
+
+        std::array<VkWriteDescriptorSet, 8> writes{};
         writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstSet = gpuCullDescriptorSets_[frameIndex];
         writes[0].dstBinding = 0;
@@ -345,6 +370,13 @@ void GpuCulling::createCullDescriptorSets(uint32_t frameCount)
         writes[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writes[6].pBufferInfo = &meshLodBufferInfo;
 
+        writes[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[7].dstSet = gpuCullDescriptorSets_[frameIndex];
+        writes[7].dstBinding = 7;
+        writes[7].descriptorCount = 1;
+        writes[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[7].pBufferInfo = &lodTransitionBufferInfo;
+
         vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
         rhi::debug::setObjectName(context_.vkDevice(),
                                   gpuCullDescriptorSets_[frameIndex],
@@ -368,6 +400,8 @@ void GpuCulling::destroyResources()
     frameBatchVisibleCountBuffers_.clear();
     framePhaseResultBuffers_.clear();
     frameMeshLodBuffers_.clear();
+    lodTransitionStateBuffer_.reset();
+    lodTransitionStateCleared_ = false;
     frameGpuCullParamBuffers_.clear();
     frameCullInputBuffers_.clear();
     gpuCullPipeline_.reset();
@@ -450,7 +484,7 @@ void GpuCulling::createShadowCullDescriptorSets(uint32_t frameCount)
 {
     std::array<VkDescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[0].descriptorCount = static_cast<uint32_t>(frameCount * 6);
+    poolSizes[0].descriptorCount = static_cast<uint32_t>(frameCount * 7);
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     poolSizes[1].descriptorCount = static_cast<uint32_t>(frameCount);
 
@@ -509,7 +543,12 @@ void GpuCulling::createShadowCullDescriptorSets(uint32_t frameCount)
         meshLodBufferInfo.offset = 0;
         meshLodBufferInfo.range = frameMeshLodBuffers_[frameIndex].size();
 
-        std::array<VkWriteDescriptorSet, 7> writes{};
+        VkDescriptorBufferInfo lodTransitionBufferInfo{};
+        lodTransitionBufferInfo.buffer = lodTransitionStateBuffer_.buffer();
+        lodTransitionBufferInfo.offset = 0;
+        lodTransitionBufferInfo.range = lodTransitionStateBuffer_.size();
+
+        std::array<VkWriteDescriptorSet, 8> writes{};
         writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstSet = shadowCullDescriptorSets_[frameIndex];
         writes[0].dstBinding = 0;
@@ -558,6 +597,15 @@ void GpuCulling::createShadowCullDescriptorSets(uint32_t frameCount)
         writes[6].descriptorCount = 1;
         writes[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writes[6].pBufferInfo = &meshLodBufferInfo;
+
+        // Same layout, so the binding must be valid; the shadow dispatch never
+        // reads it (cull.comp cross-fades the main pass only).
+        writes[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[7].dstSet = shadowCullDescriptorSets_[frameIndex];
+        writes[7].dstBinding = 7;
+        writes[7].descriptorCount = 1;
+        writes[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[7].pBufferInfo = &lodTransitionBufferInfo;
 
         vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
         rhi::debug::setObjectName(context_.vkDevice(),
@@ -747,6 +795,7 @@ void GpuCulling::recordMainCull(VkCommandBuffer commandBuffer,
     resetDependencyInfo.bufferMemoryBarrierCount = 1;
     resetDependencyInfo.pBufferMemoryBarriers = &resetCountBarrier;
     vkCmdPipelineBarrier2(commandBuffer, &resetDependencyInfo);
+    recordLodTransitionStateBarrier(commandBuffer);
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, gpuCullPipeline_.pipeline());
 
@@ -775,6 +824,43 @@ void GpuCulling::recordMainCull(VkCommandBuffer commandBuffer,
     }
     rhi::debug::endLabel(commandBuffer);
     renderGraph_.endMainGpuCullingPass();
+}
+
+void GpuCulling::recordLodTransitionStateBarrier(VkCommandBuffer commandBuffer)
+{
+    const VkBuffer stateBuffer = lodTransitionStateBuffer_.buffer();
+    if (stateBuffer == VK_NULL_HANDLE) {
+        return;
+    }
+
+    // Zeroed once, so the first frame reads records that match no draw item and
+    // snap, rather than whatever the allocation held.
+    if (!lodTransitionStateCleared_) {
+        vkCmdFillBuffer(commandBuffer, stateBuffer, 0, VK_WHOLE_SIZE, 0);
+        lodTransitionStateCleared_ = true;
+    }
+
+    // The previous writer is either that clear or an earlier cull dispatch --
+    // this frame's phase 1, or the previous frame's last dispatch. Queue
+    // submission order already puts it first; the barrier is what makes its
+    // writes visible, and what stops this dispatch's writes racing its reads.
+    VkBufferMemoryBarrier2 barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.buffer = stateBuffer;
+    barrier.offset = 0;
+    barrier.size = VK_WHOLE_SIZE;
+
+    VkDependencyInfo dependencyInfo{};
+    dependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dependencyInfo.bufferMemoryBarrierCount = 1;
+    dependencyInfo.pBufferMemoryBarriers = &barrier;
+    vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
 }
 
 void GpuCulling::recordMainVisibleCountReadback(VkCommandBuffer commandBuffer, uint32_t frameIndex)
@@ -878,6 +964,10 @@ void GpuCulling::recordMainCullPhase2(VkCommandBuffer commandBuffer,
         resetDependencyInfo.pBufferMemoryBarriers = &resetCountBarrier;
         vkCmdPipelineBarrier2(commandBuffer, &resetDependencyInfo);
     }
+    // Phase 1 wrote the records of what it emitted and phase 2 writes those of
+    // what it rescues. Different records, but the same buffer, and nothing
+    // else orders the two dispatches' writes to it.
+    recordLodTransitionStateBarrier(commandBuffer);
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, gpuCullPipeline_.pipeline());
 
@@ -1105,6 +1195,7 @@ bool GpuCulling::readMainCounters(bool active, uint32_t frameIndex, GpuCullCount
         counters.lodDrawItems[level] = values[kGpuCullStatsLodCounterOffset + level];
     }
     counters.emittedTriangles = values[kGpuCullStatsTriangleCounterOffset];
+    counters.fadingDrawItems = values[kGpuCullStatsFadingCounterOffset];
     if (frameIndex < frameGpuCullTotalDrawItems_.size()) {
         counters.totalDrawItems = std::min(counters.totalDrawItems, frameGpuCullTotalDrawItems_[frameIndex]);
         counters.visibleDrawItems = std::min(counters.visibleDrawItems, counters.totalDrawItems);

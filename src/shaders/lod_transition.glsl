@@ -15,7 +15,7 @@ const uint kLodInstanceLevelMask = 15u;
 const uint kLodInstanceFading = 16u;
 const uint kLodInstanceOutgoing = 32u;
 const uint kLodInstanceFadeShift = 8u;
-const uint kLodFadeSteps = 255u;
+const uint kLodFadeSteps = 127u;
 
 // renderer::LodTransitionState, 16 bytes.
 struct LodTransitionState {

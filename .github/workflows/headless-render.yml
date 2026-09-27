@@ -300,6 +300,7 @@ jobs:
           scene-sunlit|--scene sunlit
           scene-cornell|--scene cornell
           scene-occlusion|--scene occlusion
+          lod-crossfade-orbit|--scene stress --camera-orbit 0.05
           cornell-with-gi|--scene cornell --settings config/ci/irradiance-probes.json
           LEGS
 

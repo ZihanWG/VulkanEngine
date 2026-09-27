@@ -161,6 +161,9 @@ void clampRuntimeSettings(RenderScaleSettings& renderScale,
     // Below a tenth of a pixel no level but an exact one is ever chosen, which
     // is the same as switching LOD off; past sixteen the dents are plain to see.
     lod.maxErrorPixels = std::clamp(lod.maxErrorPixels, 0.1f, 16.0f);
+    // Two seconds is already a fade the eye follows as motion; anything longer
+    // keeps two levels on screen for no benefit. 0 is the off switch.
+    lod.transitionSeconds = std::clamp(lod.transitionSeconds, 0.0f, 2.0f);
 
     // Probe spacing is a divisor in the grid-space lookup, so a zero or negative
     // value would fold the whole volume onto one probe. The upper bound keeps the
@@ -450,6 +453,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readBool(*lod, "debugHeatmap", settings.lod.debugHeatmap);
         readBool(*lod, "screenSpaceError", settings.lod.screenSpaceError);
         readFloat(*lod, "maxErrorPixels", settings.lod.maxErrorPixels);
+        readFloat(*lod, "transitionSeconds", settings.lod.transitionSeconds);
     }
 
     if (const Json* ssr = objectMember(json, "ssr")) {
@@ -637,7 +641,8 @@ Json toJson(const RuntimeSettings& settings)
               {"forcedLod", settings.lod.forcedLod},
               {"debugHeatmap", settings.lod.debugHeatmap},
               {"screenSpaceError", settings.lod.screenSpaceError},
-              {"maxErrorPixels", settings.lod.maxErrorPixels}}},
+              {"maxErrorPixels", settings.lod.maxErrorPixels},
+              {"transitionSeconds", settings.lod.transitionSeconds}}},
         {"ssr",
          Json{{"enabled", settings.ssr.enabled},
               {"maxSteps", settings.ssr.maxSteps},

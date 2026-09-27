@@ -32,12 +32,14 @@ inline constexpr uint32_t kLodCommandSlotsPerDrawItem = 2;
 //   bits 0-3   the level this command draws
 //   bit 4      the command is half of a cross-fade, so the fragment dithers
 //   bit 5      it is the outgoing half (keeps the pixels the incoming one drops)
-//   bits 8-15  the fade: how much of the screen the incoming level covers, 0-255
+//   bits 8-14  the fade: how much of the screen the incoming level covers, 0-127
+// Bit 15 stays clear, which keeps firstInstance below 2^31: gl_InstanceIndex is
+// a signed int, and a fade in the top bit would turn it negative.
 inline constexpr uint32_t kLodInstanceLevelMask = 15;
 inline constexpr uint32_t kLodInstanceFading = 16;
 inline constexpr uint32_t kLodInstanceOutgoing = 32;
 inline constexpr uint32_t kLodInstanceFadeShift = 8;
-inline constexpr uint32_t kLodFadeSteps = 255;
+inline constexpr uint32_t kLodFadeSteps = 127;
 
 // One draw item's transition, 16 bytes in a std430 array.
 //

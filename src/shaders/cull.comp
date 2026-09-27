@@ -1,5 +1,7 @@
 #version 460
 
+#include "lod_transition.glsl"
+
 layout(local_size_x = 64) in;
 
 // std430 layout:
@@ -60,6 +62,9 @@ const uint kStatsLodCounterOffset = 5u;
 // Offset of the emitted-triangle counter; mirrors
 // kGpuCullStatsTriangleCounterOffset in RendererInternal.h.
 const uint kStatsTriangleCounterOffset = 9u;
+// Offset of the cross-fading draw item counter; mirrors
+// kGpuCullStatsFadingCounterOffset in RendererInternal.h.
+const uint kStatsFadingCounterOffset = 10u;
 
 layout(set = 0, binding = 0, std430) readonly buffer CullInputBuffer {
     GpuCullDrawItem drawItems[];
@@ -83,9 +88,11 @@ layout(set = 0, binding = 4, std430) readonly buffer CullFrameParamsBuffer {
     vec4 occlusionSettings; // x = normal-Z depth bias, y = near disable distance, z = max coverage, w = min pixels
     vec4 lodSettings; // x = reference radius px, y = bias, z = forced level (< 0 = off), w = shadow bias
     uvec4 counterAndFlags; // x = stats counter base, y bit 0 = occlusion enabled for this frame,
-                           // z = active shadow cascade count (shadow dispatch only)
+                           // z = active shadow cascade count (shadow dispatch only),
+                           // w = LOD transition frame serial
     uvec4 pyramidBaseSizes; // xy = pyramid written base size, zw = allocated base size
-    vec4 lodErrorSettings; // x = screen-space error budget px (> 0 selects by error), yzw unused
+    vec4 lodErrorSettings; // x = screen-space error budget px (> 0 selects by error),
+                           // y = cross-fade progress per frame (0 = off), zw unused
     // Six planes per cascade, cascade-major. Only the shadow dispatch reads them.
     vec4 shadowCascadePlanes[4 * 6];
 } cullFrame;
@@ -103,6 +110,12 @@ layout(set = 0, binding = 5, std430) buffer PhaseResultBuffer {
 layout(set = 0, binding = 6, std430) readonly buffer MeshLodBuffer {
     MeshLod lods[];
 } meshLods;
+
+// One cross-fade record per draw item, persistent across frames (see
+// renderer/LodTransition.h). Only the main dispatch reads or writes it.
+layout(set = 0, binding = 7, std430) buffer LodTransitionStateBuffer {
+    LodTransitionState states[];
+} lodTransitions;
 
 // The renderer reuses this shader for camera-frustum main culling and
 // directional-light-frustum shadow culling by pushing the relevant planes.
@@ -361,55 +374,137 @@ bool testOcclusion(vec3 boundsMin, vec3 boundsMax, mat4 occlusionViewProjection)
     return hizDepth + depthBias < objectNearestDepth;
 }
 
+// Command slots a draw item owns in this dispatch's output. The main pass keeps
+// a second one for the outgoing level of a cross-fade; the shadow dispatches
+// never fade and keep one.
+uint commandSlotsPerDrawItem()
+{
+    return (pc.params.w & 4u) != 0u ? 1u : kLodCommandSlotsPerDrawItem;
+}
+
+DrawIndexedIndirectCommand makeCommand(uint indexCount, uint firstIndex, int vertexOffset, uint firstInstance)
+{
+    DrawIndexedIndirectCommand command;
+    command.indexCount = indexCount;
+    command.instanceCount = 1;
+    command.firstIndex = firstIndex;
+    command.vertexOffset = vertexOffset;
+    command.firstInstance = firstInstance;
+    return command;
+}
+
+DrawIndexedIndirectCommand emptyCommand()
+{
+    return makeCommand(0u, 0u, 0, 0u);
+}
+
+// firstInstance carries the object-data slot in the low 16 bits and, in the
+// high 16, what lod_transition.glsl lays out: the level this command draws and,
+// mid cross-fade, which half of the fade it is and how far the fade has gone.
+// What makes the high half free is that draw-item indices stay below 65536, not
+// any particular cap value: kMaxDrawItems is 8192 today and a static_assert on
+// the C++ side pins it at <= 0xFFFF, so raising it stays safe until it would
+// cross that ceiling. Packing here is how the level, which is only known in this
+// shader, reaches the vertex stage without an extra buffer, descriptor, or push
+// constant. Every vertex shader that indexes object data masks with 0xFFFF.
+uint packFirstInstance(uint objectFrameDataIndex, uint instanceHigh)
+{
+    return pc.params.y != 0 ? (objectFrameDataIndex | (instanceHigh << 16)) : 0u;
+}
+
 void emitCommand(GpuCullDrawItem drawItem, uint drawIndex, bool compactCommands)
 {
-    uint outputIndex = drawIndex;
-    if (compactCommands) {
-        uint localVisibleIndex = atomicAdd(batchVisibleCounts.visibleCounts[drawItem.batchIndex], 1);
-        outputIndex = drawItem.batchOutputBase + localVisibleIndex;
-    } else {
-        atomicAdd(batchVisibleCounts.visibleCounts[0], 1);
-    }
-
     // LOD selection is a pure rewrite of the emitted index range: same vertex
     // buffer, same vertexOffset, just a different slice of the index buffer.
     // lodCount == 0 means the mesh has no chain, so fall back to the authored
     // range carried on the draw item.
     uint indexCount = drawItem.indexCount;
     uint firstIndex = drawItem.firstIndex;
-    uint selectedLod = 0u;
+    uint level = 0u;
+    uint previousLevel = 0u;
+    uint fade = kLodFadeSteps;
     if (drawItem.lodCount > 0u) {
-        selectedLod = selectLodIndex(drawItem.boundsMin, drawItem.boundsMax, drawItem.lodBase, drawItem.lodCount);
-        MeshLod lod = meshLods.lods[drawItem.lodBase + selectedLod];
+        uint selected = selectLodIndex(drawItem.boundsMin, drawItem.boundsMax, drawItem.lodBase, drawItem.lodCount);
+        level = selected;
+        previousLevel = selected;
+
+        // Only the main pass cross-fades, and only when the fragment shader can
+        // be told it is fading: the flags ride in firstInstance, which carries
+        // anything only with object-data indexing. Every emitted item advances
+        // its record, fading or not, so the next frame knows where it stood.
+        if ((pc.params.w & 4u) == 0u && pc.params.y != 0u) {
+            LodTransitionState next;
+            fade = advanceLodTransition(lodTransitions.states[drawIndex],
+                                        lodTransitionIdentity(drawItem.objectFrameDataIndex, drawItem.firstIndex),
+                                        selected,
+                                        cullFrame.counterAndFlags.w,
+                                        cullFrame.lodErrorSettings.y,
+                                        next,
+                                        level,
+                                        previousLevel);
+            lodTransitions.states[drawIndex] = next;
+        }
+
+        MeshLod lod = meshLods.lods[drawItem.lodBase + level];
         indexCount = lod.indexCount;
         firstIndex = lod.firstIndex;
 
         // Per-level emitted-draw histogram, read back for the debug UI. Without
         // it there is no way to tell selection apart from silently always
-        // picking level 0.
+        // picking level 0. Counts the level being faded in, once per item.
         uint statsBase = cullFrame.counterAndFlags.x;
-        atomicAdd(batchVisibleCounts.visibleCounts[statsBase + kStatsLodCounterOffset + min(selectedLod, 3u)], 1u);
+        atomicAdd(batchVisibleCounts.visibleCounts[statsBase + kStatsLodCounterOffset + min(level, 3u)], 1u);
     }
-    // Every emitted draw, chain or not: the frame's triangle count as the cull
-    // left it, which is what two LOD selection rules are compared on.
-    atomicAdd(batchVisibleCounts.visibleCounts[cullFrame.counterAndFlags.x + kStatsTriangleCounterOffset],
-              indexCount / 3u);
+    bool fading = level != previousLevel;
 
-    DrawIndexedIndirectCommand command;
-    command.indexCount = indexCount;
-    command.instanceCount = 1;
-    command.firstIndex = firstIndex;
-    command.vertexOffset = drawItem.vertexOffset;
-    // firstInstance carries the object-data slot in the low 16 bits and the
-    // selected LOD level in the high bits. What makes the high half free is that
-    // draw-item indices stay below 65536, not any particular cap value:
-    // kMaxDrawItems is 8192 today and a static_assert on the C++ side pins it at
-    // <= 0xFFFF, so raising it stays safe until it would cross that ceiling.
-    // Packing here is how the level, which is only known in this shader, reaches
-    // the vertex stage without an extra buffer, descriptor, or push constant.
-    // Every vertex shader that indexes object data masks with 0xFFFF.
-    command.firstInstance = pc.params.y != 0 ? (drawItem.objectFrameDataIndex | (selectedLod << 16)) : 0;
-    indirectOutput.commands[outputIndex] = command;
+    uint outputIndex = drawIndex * commandSlotsPerDrawItem();
+    if (compactCommands) {
+        // A fading item takes two consecutive commands; the batch region was
+        // sized for kLodCommandSlotsPerDrawItem per item, so this cannot overflow.
+        uint localVisibleIndex = atomicAdd(batchVisibleCounts.visibleCounts[drawItem.batchIndex], fading ? 2u : 1u);
+        outputIndex = drawItem.batchOutputBase + localVisibleIndex;
+    } else {
+        atomicAdd(batchVisibleCounts.visibleCounts[0], 1);
+    }
+
+    uint instanceHigh = level;
+    if (fading) {
+        instanceHigh |= kLodInstanceFading | (fade << kLodInstanceFadeShift);
+    }
+    indirectOutput.commands[outputIndex] = makeCommand(
+        indexCount, firstIndex, drawItem.vertexOffset, packFirstInstance(drawItem.objectFrameDataIndex, instanceHigh));
+
+    // Every emitted draw, chain or not: the frame's triangle count as the cull
+    // left it, which is what two LOD selection rules are compared on -- and, mid
+    // fade, both levels' triangles, because both are drawn.
+    uint statsBase = cullFrame.counterAndFlags.x;
+    uint triangles = indexCount / 3u;
+
+    if (fading) {
+        MeshLod outgoing = meshLods.lods[drawItem.lodBase + previousLevel];
+        uint outgoingHigh =
+            previousLevel | kLodInstanceFading | kLodInstanceOutgoing | (fade << kLodInstanceFadeShift);
+        indirectOutput.commands[outputIndex + 1u] =
+            makeCommand(outgoing.indexCount,
+                        outgoing.firstIndex,
+                        drawItem.vertexOffset,
+                        packFirstInstance(drawItem.objectFrameDataIndex, outgoingHigh));
+        triangles += outgoing.indexCount / 3u;
+        atomicAdd(batchVisibleCounts.visibleCounts[statsBase + kStatsFadingCounterOffset], 1u);
+    } else if (!compactCommands && commandSlotsPerDrawItem() > 1u) {
+        // Fixed slots are replayed whole, so the unused second one must be empty.
+        indirectOutput.commands[outputIndex + 1u] = emptyCommand();
+    }
+    atomicAdd(batchVisibleCounts.visibleCounts[statsBase + kStatsTriangleCounterOffset], triangles);
+}
+
+// Empties every fixed slot a draw item owns, for the non-compacted paths.
+void emitEmptySlots(uint drawIndex)
+{
+    uint slots = commandSlotsPerDrawItem();
+    for (uint slot = 0u; slot < slots; ++slot) {
+        indirectOutput.commands[drawIndex * slots + slot] = emptyCommand();
+    }
 }
 
 void main()
@@ -439,13 +534,7 @@ void main()
             // Non-compacted phase 2 owns every fixed command slot: zero the
             // non-rescued ones so the replayed multi-draw skips items phase 1
             // already drew or culled.
-            DrawIndexedIndirectCommand command;
-            command.indexCount = 0;
-            command.instanceCount = 0;
-            command.firstIndex = 0;
-            command.vertexOffset = 0;
-            command.firstInstance = 0;
-            indirectOutput.commands[drawIndex] = command;
+            emitEmptySlots(drawIndex);
         }
         return;
     }
@@ -473,14 +562,8 @@ void main()
     } else if (compactCommands) {
         return;
     } else {
-        // Non-compacted paths keep one command slot per draw item; zero it so the
-        // fixed-slot indirect draw skips this item.
-        DrawIndexedIndirectCommand command;
-        command.indexCount = 0;
-        command.instanceCount = 0;
-        command.firstIndex = drawItem.firstIndex;
-        command.vertexOffset = drawItem.vertexOffset;
-        command.firstInstance = 0;
-        indirectOutput.commands[drawIndex] = command;
+        // Non-compacted paths keep fixed command slots per draw item; zero them
+        // so the fixed-slot indirect draw skips this item.
+        emitEmptySlots(drawIndex);
     }
 }

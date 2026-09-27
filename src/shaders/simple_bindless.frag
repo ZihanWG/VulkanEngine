@@ -7,6 +7,7 @@
 // FrameConstants and its buffer reference, needed by the push block below and by
 // the virtual shadow map lookup. The fragment stage reads the same block the
 // vertex stage does; see the note on the frameConstants push field.
+#include "lod_transition.glsl"
 #include "object_frame_data.glsl"
 #include "virtual_shadow_map.glsl"
 
@@ -884,6 +885,20 @@ vec3 clusterHeatmapColor(uint count)
 
 void main()
 {
+    // Half of a LOD cross-fade (lod_transition.glsl): keep only this level's
+    // share of the pixels. The other half is drawn by the other level with the
+    // complementary test on the same per-pixel noise, so each pixel survives in
+    // exactly one. First, before any texture work, so a dropped fragment costs
+    // nothing else -- and safe ahead of implicit-LOD sampling, because discard
+    // compiles to OpDemoteToHelperInvocation here and the quad's derivatives
+    // survive it.
+    if ((vLodIndex & kLodInstanceFading) != 0u &&
+        !lodDitherKeeps((vLodIndex & kLodInstanceOutgoing) != 0u,
+                        lodDitherNoise(gl_FragCoord.xy),
+                        (vLodIndex >> kLodInstanceFadeShift) & kLodFadeSteps)) {
+        discard;
+    }
+
     vec4 texColor = texture(uBaseColorTextures[nonuniformEXT(vTextureIndices.x)], vUV);
     vec4 materialColor = texColor * vBaseColorFactor;
     vec3 baseColor = materialColor.rgb;
@@ -1146,7 +1161,8 @@ void main()
     // through the tint, rather than flattening the scene into blocks of colour.
     if (pc.debugLodHeatmap != 0u) {
         float luminance = dot(finalColor, vec3(0.2126, 0.7152, 0.0722));
-        outColor = vec4(lodDebugColor(vLodIndex) * (0.35 + 0.65 * clamp(luminance, 0.0, 1.0)), alpha);
+        outColor = vec4(lodDebugColor(vLodIndex & kLodInstanceLevelMask) * (0.35 + 0.65 * clamp(luminance, 0.0, 1.0)),
+                        alpha);
         outVelocity = computeVelocity();
         outNormalRoughness = vec4(octEncode(normal), roughness, metallic);
         return;

@@ -1679,7 +1679,10 @@ void Renderer::createIndirectDrawBuffers()
     for (size_t frameIndex = 0; frameIndex < frameIndirectDrawBuffers_.size(); ++frameIndex) {
         rhi::VulkanBuffer& indirectDrawBuffer = frameIndirectDrawBuffers_[frameIndex];
         rhi::VulkanBufferCreateInfo bufferInfo{};
-        bufferInfo.size = static_cast<VkDeviceSize>(kMaxDrawItems * sizeof(VkDrawIndexedIndirectCommand));
+        // Room for the GPU cull's layout, which gives every draw item a second
+        // slot for the outgoing level of a LOD cross-fade.
+        bufferInfo.size = static_cast<VkDeviceSize>(kMaxDrawItems) * renderer::kLodCommandSlotsPerDrawItem *
+                          sizeof(VkDrawIndexedIndirectCommand);
         bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
         bufferInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
         bufferInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;

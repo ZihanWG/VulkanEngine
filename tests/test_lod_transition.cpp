@@ -51,7 +51,7 @@ TEST_CASE("A level change fades across the configured number of frames", "[lod][
     REQUIRE(step.fading);
     CHECK(step.level == 2);
     CHECK(step.previousLevel == 1);
-    CHECK(step.fade == 64); // a quarter of 255, rounded
+    CHECK(step.fade == 32); // a quarter of 127, rounded
 
     // Three more frames at a quarter each: the fourth completes it.
     for (int i = 0; i < 2; ++i) {

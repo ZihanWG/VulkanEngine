@@ -137,6 +137,7 @@ RENAMED_PAIRS: list[tuple[str, str, dict[str, str]]] = [
         {
             "kStatsLodCounterOffset": "kGpuCullStatsLodCounterOffset",
             "kStatsTriangleCounterOffset": "kGpuCullStatsTriangleCounterOffset",
+            "kStatsFadingCounterOffset": "kGpuCullStatsFadingCounterOffset",
         },
     ),
 ]

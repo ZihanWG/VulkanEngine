@@ -344,6 +344,11 @@ struct LodSettings {
     // radius rule (docs/mesh_lod.md).
     bool screenSpaceError = true;
     float maxErrorPixels = 1.0f;
+    // Seconds a level switch cross-fades over instead of popping: both levels
+    // are drawn, dithered into complementary halves of the pixels, and the
+    // split sweeps from one to the other (renderer/LodTransition.h). 0 pops.
+    // Main pass only; the shadow maps switch outright.
+    float transitionSeconds = 0.25f;
 };
 
 // Irradiance-probe global illumination. A grid of probes stores incoming
