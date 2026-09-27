@@ -56,6 +56,8 @@ struct GpuCullCounters {
     // Emitted draws per LOD level, counted by the cull shader as it selects.
     // Meshes with no chain are not counted, so this sums to <= visibleDrawItems.
     std::array<uint32_t, kMaxMeshLods> lodDrawItems{};
+    // Triangles across every emitted draw, at the level the cull chose.
+    uint32_t emittedTriangles = 0;
 };
 
 class GpuCulling final {

@@ -229,10 +229,17 @@ constexpr uint32_t kGpuCullLocalSize = 64;
 constexpr uint32_t kMaxMeshDrawBatches = kMaxDrawItems;
 // [total, visible, frustum-culled, occlusion-culled, phase-2 rescued] followed by
 // one emitted-draw counter per LOD level, which is how the debug UI reports the
-// level distribution the cull pass actually chose.
+// level distribution the cull pass actually chose, and then the triangles every
+// emitted draw carries -- what the level choice is ultimately for, and the one
+// number that compares two selection rules without a timer.
 constexpr uint32_t kGpuCullStatsBaseCounterCount = 5;
 constexpr uint32_t kGpuCullStatsLodCounterOffset = kGpuCullStatsBaseCounterCount;
-constexpr uint32_t kGpuCullStatsCounterCount = kGpuCullStatsBaseCounterCount + renderer::kMaxMeshLods;
+// Written out rather than derived from kMaxMeshLods, because
+// tools/check_shader_constants.py compares it with cull.comp and cannot see
+// that header; the static_assert holds the two together instead.
+constexpr uint32_t kGpuCullStatsTriangleCounterOffset = 9;
+static_assert(kGpuCullStatsTriangleCounterOffset == kGpuCullStatsLodCounterOffset + renderer::kMaxMeshLods);
+constexpr uint32_t kGpuCullStatsCounterCount = kGpuCullStatsTriangleCounterOffset + 1;
 constexpr uint32_t kGpuCullStatsCounterOffset = kMaxMeshDrawBatches;
 constexpr VkDeviceSize kBatchVisibleCountBufferSize = kMaxMeshDrawBatches * sizeof(uint32_t);
 constexpr VkDeviceSize kGpuCullCountBufferSize = (kMaxMeshDrawBatches + kGpuCullStatsCounterCount) * sizeof(uint32_t);
@@ -361,6 +368,9 @@ static_assert(sizeof(PushConstants) <= 128);
 // stride. objectFrameDataIndex becomes VkDrawIndexedIndirectCommand::firstInstance
 // on the bindless main and material-independent shadow indirect paths.
 struct GpuCullDrawItem {
+    // World-space AABB in xyz. boundsMin.w is the object's largest axis scale
+    // (renderer::maxAxisScale), which turns a LOD level's object-space error
+    // into a world-space one; boundsMax.w is unused. Culling reads xyz only.
     glm::vec4 boundsMin{0.0f};
     glm::vec4 boundsMax{0.0f};
     uint32_t indexCount = 0;
@@ -536,6 +546,11 @@ struct GpuCullFrameParams {
     // written fraction drifts per level and cull.comp recomputes it rather than
     // being handed one ratio. Zero reads as 1:1, which is the un-sub-rected case.
     glm::uvec4 pyramidBaseSizes{0, 0, 0, 0};
+    // x = the screen-space error budget in pixels, before bias, when LOD selects
+    // by error (renderer::selectLodIndexByError); 0 selects by projected radius
+    // with lodSettings.x as before. yzw unused. A vec4 of its own because
+    // lodSettings has no free lane.
+    glm::vec4 lodErrorSettings{0.0f};
     // Every active cascade's light frustum, six planes each, cascade-major.
     //
     // The shadow dispatch culls against the *union* of these rather than one
@@ -554,8 +569,9 @@ static_assert(offsetof(GpuCullFrameParams, occlusionSettings) == 160);
 static_assert(offsetof(GpuCullFrameParams, lodSettings) == 176);
 static_assert(offsetof(GpuCullFrameParams, counterAndFlags) == 192);
 static_assert(offsetof(GpuCullFrameParams, pyramidBaseSizes) == 208);
-static_assert(offsetof(GpuCullFrameParams, shadowCascadePlanes) == 224);
-static_assert(sizeof(GpuCullFrameParams) == 608);
+static_assert(offsetof(GpuCullFrameParams, lodErrorSettings) == 224);
+static_assert(offsetof(GpuCullFrameParams, shadowCascadePlanes) == 240);
+static_assert(sizeof(GpuCullFrameParams) == 624);
 
 struct DepthPyramidPushConstants {
     glm::uvec4 sizes{0, 0, 0, 0};

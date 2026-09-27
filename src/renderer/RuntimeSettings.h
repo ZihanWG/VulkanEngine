@@ -330,6 +330,13 @@ struct LodSettings {
     int forcedLod = -1;
     // Tints geometry by the level the cull pass actually chose.
     bool debugHeatmap = false;
+    // Select each draw item's level by the geometric error it would show on
+    // screen -- the coarsest level that stays within maxErrorPixels -- instead
+    // of by projected radius. referenceRadiusPixels is unused while this is on;
+    // bias and shadowBias scale the pixel budget by 2^bias. See
+    // renderer/MeshLod.h.
+    bool screenSpaceError = false;
+    float maxErrorPixels = 1.0f;
 };
 
 // Irradiance-probe global illumination. A grid of probes stores incoming

@@ -223,6 +223,18 @@ TEST_CASE("LOD settings clamp into usable ranges", "[settings][lod]")
     CHECK(settings.lod.referenceRadiusPixels >= 8.0f);
     CHECK(settings.lod.bias <= 4.0f);
     CHECK(settings.lod.shadowBias >= -4.0f);
+
+    // A zero budget would admit only exact levels; a huge one, any dent at all.
+    settings.lod.maxErrorPixels = 0.0f;
+    settings.clamp();
+    CHECK(settings.lod.maxErrorPixels == Catch::Approx(0.1f));
+    settings.lod.maxErrorPixels = 1000.0f;
+    settings.clamp();
+    CHECK(settings.lod.maxErrorPixels == Catch::Approx(16.0f));
+
+    Settings defaults;
+    defaults.clamp();
+    CHECK(defaults.lod.maxErrorPixels == ve::LodSettings{}.maxErrorPixels);
 }
 
 TEST_CASE("Forced LOD keeps its select-by-distance sentinel", "[settings][lod]")

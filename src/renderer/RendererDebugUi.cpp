@@ -9,6 +9,9 @@
 
 #include <imgui.h>
 
+#include <array>
+#include <cstdio>
+
 namespace ve {
 
 void Renderer::buildDebugUi()
@@ -1199,14 +1202,24 @@ void Renderer::drawMeshLodDebugUi()
 
     ImGui::BeginDisabled(!lodSettings_.enabled);
 
-    ImGui::DragFloat("Reference radius (px)", &lodSettings_.referenceRadiusPixels, 1.0f, 8.0f, 4096.0f, "%.0f");
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Projected sphere radius at which level 0 is still chosen.\n"
-                          "Each halving of the on-screen radius steps one level down.");
+    ImGui::Checkbox("Select by screen-space error", &lodSettings_.screenSpaceError);
+    ImGui::SetItemTooltip("Take the coarsest level whose geometric error, projected from here,\n"
+                          "stays within the pixel budget -- instead of stepping one level per\n"
+                          "halving of the projected radius, whatever each level actually cost.");
+    if (lodSettings_.screenSpaceError) {
+        ImGui::SliderFloat(
+            "Max error (px)", &lodSettings_.maxErrorPixels, 0.1f, 16.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+        ImGui::SetItemTooltip("How far a selected level may stray from the authored surface on screen,\n"
+                              "measured at the nearest point of the object's bounds.");
+    } else {
+        ImGui::DragFloat("Reference radius (px)", &lodSettings_.referenceRadiusPixels, 1.0f, 8.0f, 4096.0f, "%.0f");
+        ImGui::SetItemTooltip("Projected sphere radius at which level 0 is still chosen.\n"
+                              "Each halving of the on-screen radius steps one level down.");
     }
     ImGui::DragFloat("Bias", &lodSettings_.bias, 0.05f, -4.0f, 4.0f, "%.2f");
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Positive biases toward lower detail. One unit is one level.");
+        ImGui::SetTooltip("Positive biases toward lower detail. One unit is one level, or with\n"
+                          "screen-space error on, twice the pixel budget.");
     }
     ImGui::DragFloat("Shadow bias", &lodSettings_.shadowBias, 0.05f, -4.0f, 4.0f, "%.2f");
     if (ImGui::IsItemHovered()) {
@@ -1284,6 +1297,12 @@ void Renderer::drawMeshLodDebugUi()
         std::string summary;
         for (size_t level = 0; level < lods.size(); ++level) {
             summary += (level == 0 ? "" : " -> ") + std::to_string(lods[level].indexCount / 3) + "tri";
+            // Level 0 is the authored surface; its error is zero by definition.
+            if (level > 0) {
+                std::array<char, 24> error{};
+                std::snprintf(error.data(), error.size(), " (%.3g)", lods[level].error);
+                summary += error.data();
+            }
         }
         if (lods.size() <= 1) {
             summary += " (too small to simplify)";

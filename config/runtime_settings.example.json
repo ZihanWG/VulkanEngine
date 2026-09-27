@@ -51,7 +51,9 @@
         "bias": 0.0,
         "shadowBias": 1.0,
         "forcedLod": -1,
-        "debugHeatmap": false
+        "debugHeatmap": false,
+        "screenSpaceError": false,
+        "maxErrorPixels": 1.0
     },
     "ssr": {
         "enabled": true,
