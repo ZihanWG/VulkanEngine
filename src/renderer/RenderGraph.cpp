@@ -223,6 +223,8 @@ const char* renderPassTypeName(RenderPassType type)
         return "Main GPU Culling";
     case RenderPassType::DepthPyramid:
         return "Depth Pyramid";
+    case RenderPassType::DepthPrepass:
+        return "Depth Prepass";
     case RenderPassType::MainHdr:
         return "Main HDR";
     case RenderPassType::Ssr:

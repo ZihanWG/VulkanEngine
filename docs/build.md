@@ -106,7 +106,7 @@ Wayland, EGL, xkbcommon, and ibus development packages.
 Builds do not prove that the renderer can create a Vulkan device. Running the
 renderer requires a GPU and driver that support the Vulkan features used by the
 engine. GitHub Actions CI builds the shaders, the renderer and the tests, and
-runs the full Catch2 suite on both Linux and Windows -- those tests create no
+runs the full Catch2 suite on Linux, Windows and macOS -- those tests create no
 Vulkan device by design, which is what makes them runnable on a hosted runner.
 Linux then re-runs the suite under AddressSanitizer + UndefinedBehaviorSanitizer
 with leak detection, and reports clang-tidy findings without gating on them.

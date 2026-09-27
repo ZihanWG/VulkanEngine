@@ -299,7 +299,7 @@ TEST_CASE("The camera stays still unless an orbit is asked for", "[command-line]
 
 TEST_CASE("A camera orbit must be a small non-zero angle", "[command-line]")
 {
-    for (const char* bad : {"0", "0.0", "0.6", "-1", "abc", "0.01rad", "nan", "inf"}) {
+    for (const char* bad : {"0", "0.0", "0.6", "-1", "abc", "0.01rad", "nan", "inf", " 0.01", ""}) {
         LaunchOptions rejected{};
         CHECK_FALSE(parse({"--camera-orbit", bad}, rejected));
     }

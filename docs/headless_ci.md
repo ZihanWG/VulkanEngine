@@ -1,6 +1,6 @@
 # Headless Render CI
 
-The Linux and Windows CI jobs compile the renderer and run the headless unit
+The Linux, Windows and macOS CI jobs compile the renderer and run the headless unit
 tests. Neither ever executes a frame. The `Headless render` workflow does: it
 runs the real renderer on Mesa's lavapipe software Vulkan driver under a virtual
 X server, with the validation layer enabled, and fails if validation reports
