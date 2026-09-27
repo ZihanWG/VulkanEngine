@@ -28,7 +28,6 @@ std::filesystem::path rigPath()
 
 // glTF component types, spelled out rather than pulled from tinygltf so the
 // test states the encoding it exercises.
-constexpr int kByte = 5120;
 constexpr int kUnsignedByte = 5121;
 constexpr int kShort = 5122;
 constexpr int kUnsignedShort = 5123;
