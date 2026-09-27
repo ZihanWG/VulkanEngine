@@ -12,6 +12,14 @@
 // different association order is a different rounding and would leave surfaces
 // failing their own depth test.
 //
+// Matching source is necessary but not sufficient: without `invariant` a
+// compiler may contract or reorder the same expression differently in two
+// shaders. Metal's does -- on MoltenVK the spheres failed their own depth test
+// in hatched patches showing the clear colour -- while llvmpipe happened to
+// agree, so the lavapipe golden could not see it. Every stage that writes or
+// tests this depth declares gl_Position invariant: this one,
+// depth_prepass_masked.vert and simple.vert.
+//
 // TAA jitter changes that matrix every frame, which is harmless here: both passes
 // in one frame read the same FrameConstants.
 
@@ -32,6 +40,8 @@ layout(push_constant) uniform PushConstants {
 const uint kObjectIndexMask = 0xFFFFu;
 
 layout(location = 0) in vec3 inPosition;
+
+invariant gl_Position;
 
 void main()
 {
