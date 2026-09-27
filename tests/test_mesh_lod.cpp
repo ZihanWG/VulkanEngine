@@ -77,6 +77,7 @@ std::vector<MeshLod> buildFor(Grid& grid, const LodBuildSettings& settings = {})
                          grid.positions.data(),
                          grid.positions.size() / 3,
                          3 * sizeof(float),
+                         nullptr,
                          /*debugName=*/{},
                          settings);
 }
@@ -86,7 +87,7 @@ std::vector<MeshLod> buildFor(Grid& grid, const LodBuildSettings& settings = {})
 TEST_CASE("An empty index range produces no LOD chain", "[mesh][lod]")
 {
     std::vector<uint32_t> indices;
-    const std::vector<MeshLod> lods = buildLodChain(indices, 0, 0, nullptr, 0, 0);
+    const std::vector<MeshLod> lods = buildLodChain(indices, 0, 0, nullptr, 0, 0, nullptr);
     CHECK(lods.empty());
 }
 
@@ -186,6 +187,108 @@ TEST_CASE("Recorded error is in the mesh's own units, not relative to its extent
     }
 }
 
+namespace {
+
+// makeGrid's positions interleaved with a normal per vertex, as the renderer's
+// Vertex carries them: position, then normal, 24 bytes a vertex. `bend` tilts
+// each normal by a pattern that varies across the grid; 0 leaves them all
+// pointing straight up, which is what a flat surface's normals really are.
+struct ShadedGrid {
+    std::vector<float> vertices;
+    std::vector<uint32_t> indices;
+};
+
+ShadedGrid makeShadedGrid(uint32_t cells, float bumpHeight, float bend)
+{
+    const Grid grid = makeGrid(cells);
+    ShadedGrid shaded;
+    shaded.indices = grid.indices;
+    const uint32_t verticesPerSide = cells + 1;
+    for (size_t vertex = 0; vertex < grid.positions.size() / 3; ++vertex) {
+        const float x = grid.positions[vertex * 3 + 0];
+        const float y = grid.positions[vertex * 3 + 1];
+        const float z = grid.positions[vertex * 3 + 2] * (bumpHeight / 0.25f);
+        const auto column = static_cast<float>(vertex % verticesPerSide);
+        const auto row = static_cast<float>(vertex / verticesPerSide);
+        const float nx = bend * std::sin(column * 0.9f);
+        const float ny = bend * std::cos(row * 1.3f);
+        const float length = std::sqrt(nx * nx + ny * ny + 1.0f);
+        shaded.vertices.insert(shaded.vertices.end(), {x, y, z, nx / length, ny / length, 1.0f / length});
+    }
+    return shaded;
+}
+
+std::vector<MeshLod> buildShaded(ShadedGrid& grid, bool withNormals, float normalWeight)
+{
+    LodBuildSettings settings{};
+    settings.normalWeight = normalWeight;
+    return buildLodChain(grid.indices,
+                         0,
+                         static_cast<uint32_t>(grid.indices.size()),
+                         grid.vertices.data(),
+                         grid.vertices.size() / 6,
+                         6 * sizeof(float),
+                         withNormals ? grid.vertices.data() + 3 : nullptr,
+                         /*debugName=*/{},
+                         settings);
+}
+
+} // namespace
+
+TEST_CASE("Without a normal stream or a normal weight the chain is the position-only one", "[mesh][lod]")
+{
+    // The off switch has to be exactly the old behaviour, or turning
+    // normal-aware simplification off would not be a fallback.
+    ShadedGrid noStream = makeShadedGrid(24, 0.25f, 0.05f);
+    ShadedGrid zeroWeight = makeShadedGrid(24, 0.25f, 0.05f);
+    const std::vector<MeshLod> a = buildShaded(noStream, /*withNormals=*/false, 0.5f);
+    const std::vector<MeshLod> b = buildShaded(zeroWeight, /*withNormals=*/true, 0.0f);
+
+    REQUIRE(a.size() == b.size());
+    for (size_t level = 0; level < a.size(); ++level) {
+        CHECK(a[level].indexCount == b[level].indexCount);
+        CHECK(a[level].error == b[level].error);
+    }
+    CHECK(noStream.indices == zeroWeight.indices);
+}
+
+TEST_CASE("Bent normals on a flat surface count as error only when normals are weighed", "[mesh][lod]")
+{
+    // Perfectly flat, so moving a vertex within the plane changes nothing the
+    // position quadric can see -- but the normals the surface is shaded with
+    // vary across it, and collapsing them away changes the shading.
+    // A gentle bend: steep enough to cost error, shallow enough that the 5%
+    // target error still lets the simplifier make a level at all.
+    ShadedGrid positionsOnly = makeShadedGrid(24, 0.0f, 0.05f);
+    ShadedGrid normalAware = makeShadedGrid(24, 0.0f, 0.05f);
+    const std::vector<MeshLod> blind = buildShaded(positionsOnly, /*withNormals=*/false, 0.5f);
+    const std::vector<MeshLod> seeing = buildShaded(normalAware, /*withNormals=*/true, 0.5f);
+
+    REQUIRE(blind.size() >= 2);
+    REQUIRE(seeing.size() >= 2);
+    // Blind to the shading, the simplifier reports the flat grid as free.
+    CHECK(blind[1].error < 1.0e-4f);
+    // Weighing normals, the same collapse costs something, and that cost is what
+    // screen-space selection will project.
+    CHECK(seeing[1].error > 1.0e-3f);
+}
+
+TEST_CASE("A surface whose normals are all alike simplifies the same either way", "[mesh][lod]")
+{
+    // Flat and uniformly lit: weighing normals has nothing to protect, so the
+    // normal-aware chain may not keep triangles the position-only one drops.
+    ShadedGrid positionsOnly = makeShadedGrid(24, 0.0f, 0.0f);
+    ShadedGrid normalAware = makeShadedGrid(24, 0.0f, 0.0f);
+    const std::vector<MeshLod> blind = buildShaded(positionsOnly, /*withNormals=*/false, 0.5f);
+    const std::vector<MeshLod> seeing = buildShaded(normalAware, /*withNormals=*/true, 0.5f);
+
+    REQUIRE(blind.size() == seeing.size());
+    for (size_t level = 1; level < blind.size(); ++level) {
+        CHECK(seeing[level].indexCount == blind[level].indexCount);
+        CHECK(seeing[level].error < 1.0e-4f);
+    }
+}
+
 TEST_CASE("Every LOD range holds whole triangles and valid vertex indices", "[mesh][lod]")
 {
     Grid grid = makeGrid(16);
@@ -234,8 +337,13 @@ TEST_CASE("A chain built at a non-zero offset preserves level 0's placement", "[
     std::vector<uint32_t> combined(grid.indices.begin(), grid.indices.end());
     combined.insert(combined.end(), grid.indices.begin(), grid.indices.end());
 
-    const std::vector<MeshLod> lods = buildLodChain(
-        combined, primitiveCount, primitiveCount, grid.positions.data(), grid.positions.size() / 3, 3 * sizeof(float));
+    const std::vector<MeshLod> lods = buildLodChain(combined,
+                                                    primitiveCount,
+                                                    primitiveCount,
+                                                    grid.positions.data(),
+                                                    grid.positions.size() / 3,
+                                                    3 * sizeof(float),
+                                                    nullptr);
 
     REQUIRE(!lods.empty());
     CHECK(lods[0].firstIndex == primitiveCount);
@@ -252,8 +360,8 @@ TEST_CASE("An out-of-range request degrades to a level-0-only chain", "[mesh][lo
     Grid grid = makeGrid(16);
     const uint32_t tooMany = static_cast<uint32_t>(grid.indices.size()) + 300;
 
-    const std::vector<MeshLod> lods =
-        buildLodChain(grid.indices, 0, tooMany, grid.positions.data(), grid.positions.size() / 3, 3 * sizeof(float));
+    const std::vector<MeshLod> lods = buildLodChain(
+        grid.indices, 0, tooMany, grid.positions.data(), grid.positions.size() / 3, 3 * sizeof(float), nullptr);
 
     CHECK(lods.size() == 1);
     CHECK(lods[0].indexCount == tooMany);
@@ -265,7 +373,7 @@ TEST_CASE("A null position stream degrades to a level-0-only chain", "[mesh][lod
     const size_t indicesBefore = grid.indices.size();
 
     const std::vector<MeshLod> lods =
-        buildLodChain(grid.indices, 0, static_cast<uint32_t>(grid.indices.size()), nullptr, 0, 0);
+        buildLodChain(grid.indices, 0, static_cast<uint32_t>(grid.indices.size()), nullptr, 0, 0, nullptr);
 
     CHECK(lods.size() == 1);
     CHECK(grid.indices.size() == indicesBefore);
@@ -288,13 +396,15 @@ TEST_CASE("Detached build plus append equals the serial chain", "[mesh][lod]")
                                                           indexCount,
                                                           serialGrid.positions.data(),
                                                           serialGrid.positions.size() / 3,
-                                                          3 * sizeof(float));
+                                                          3 * sizeof(float),
+                                                          nullptr);
 
     const LodChainBuild build =
         buildLodChainDetached(std::span<const uint32_t>(detachedGrid.indices.data(), indexCount),
                               detachedGrid.positions.data(),
                               detachedGrid.positions.size() / 3,
-                              3 * sizeof(float));
+                              3 * sizeof(float),
+                              nullptr);
     const std::vector<MeshLod> detachedLods = appendLodChain(detachedGrid.indices, 0, build);
 
     REQUIRE(serialLods.size() == detachedLods.size());
@@ -331,7 +441,8 @@ TEST_CASE("Appending in a fixed order is what fixes the layout", "[mesh][lod]")
                                            primitiveIndexCount,
                                            grid.positions.data(),
                                            grid.positions.size() / 3,
-                                           3 * sizeof(float)));
+                                           3 * sizeof(float),
+                                           nullptr));
     }
 
     // Build all of them before appending any -- the ordering the pool imposes.
@@ -341,7 +452,8 @@ TEST_CASE("Appending in a fixed order is what fixes the layout", "[mesh][lod]")
             std::span<const uint32_t>(batchedIndices.data() + primitive * primitiveIndexCount, primitiveIndexCount),
             grid.positions.data(),
             grid.positions.size() / 3,
-            3 * sizeof(float)));
+            3 * sizeof(float),
+            nullptr));
     }
 
     std::vector<std::vector<MeshLod>> batchedLods;
@@ -367,7 +479,8 @@ TEST_CASE("A detached build carries its own relative offsets", "[mesh][lod]")
         buildLodChainDetached(std::span<const uint32_t>(grid.indices.data(), grid.indices.size()),
                               grid.positions.data(),
                               grid.positions.size() / 3,
-                              3 * sizeof(float));
+                              3 * sizeof(float),
+                              nullptr);
 
     REQUIRE(!build.simplifiedLods.empty());
     CHECK(build.sourceIndexCount == static_cast<uint32_t>(grid.indices.size()));
@@ -400,11 +513,12 @@ TEST_CASE("A detached build never logs from the worker", "[mesh][lod]")
     const std::span<const uint32_t> source(grid.indices.data(), grid.indices.size());
     const size_t vertexCount = grid.positions.size() / 3;
 
-    const LodChainBuild unnamed = buildLodChainDetached(source, grid.positions.data(), vertexCount, 3 * sizeof(float));
+    const LodChainBuild unnamed =
+        buildLodChainDetached(source, grid.positions.data(), vertexCount, 3 * sizeof(float), nullptr);
     CHECK(unnamed.logMessage.empty());
 
     const LodChainBuild named =
-        buildLodChainDetached(source, grid.positions.data(), vertexCount, 3 * sizeof(float), "GridMesh");
+        buildLodChainDetached(source, grid.positions.data(), vertexCount, 3 * sizeof(float), nullptr, "GridMesh");
     REQUIRE(!named.simplifiedLods.empty());
     CHECK(named.logMessage.find("GridMesh") != std::string::npos);
     CHECK(named.logMessage.find("L0=") != std::string::npos);
@@ -414,7 +528,7 @@ TEST_CASE("A detached build never logs from the worker", "[mesh][lod]")
     std::vector<uint32_t> tiny(3, 0);
     const std::vector<float> position(9, 0.0f);
     const LodChainBuild trivial = buildLodChainDetached(
-        std::span<const uint32_t>(tiny.data(), tiny.size()), position.data(), 3, 3 * sizeof(float), "Tiny");
+        std::span<const uint32_t>(tiny.data(), tiny.size()), position.data(), 3, 3 * sizeof(float), nullptr, "Tiny");
     CHECK(trivial.logMessage.empty());
     CHECK(trivial.simplifiedLods.empty());
     CHECK(trivial.sourceIndexCount == 3);
@@ -422,7 +536,7 @@ TEST_CASE("A detached build never logs from the worker", "[mesh][lod]")
 
 TEST_CASE("An empty source range produces no chain at all", "[mesh][lod]")
 {
-    const LodChainBuild build = buildLodChainDetached(std::span<const uint32_t>{}, nullptr, 0, 0);
+    const LodChainBuild build = buildLodChainDetached(std::span<const uint32_t>{}, nullptr, 0, 0, nullptr);
     CHECK(build.sourceIndexCount == 0);
     CHECK(build.simplifiedLods.empty());
 
@@ -709,7 +823,8 @@ LoddedGrid makeLoddedGrid(uint32_t cells)
                                 static_cast<uint32_t>(lodded.grid.indices.size()),
                                 lodded.grid.positions.data(),
                                 lodded.grid.positions.size() / 3,
-                                sizeof(float) * 3);
+                                sizeof(float) * 3,
+                                nullptr);
     return lodded;
 }
 

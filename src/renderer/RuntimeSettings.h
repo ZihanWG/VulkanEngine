@@ -349,6 +349,12 @@ struct LodSettings {
     // split sweeps from one to the other (renderer/LodTransition.h). 0 pops.
     // Main pass only; the shadow maps switch outright.
     float transitionSeconds = 0.25f;
+    // Build the LOD chains counting bent normals as error, not just moved
+    // positions (renderer::kLodNormalWeight). Off simplifies by position alone:
+    // more triangles removed, and curved normal-mapped surfaces shade visibly
+    // differently at the coarser levels. Startup-only -- the chains are built
+    // when meshes load.
+    bool normalAwareSimplification = true;
 };
 
 // Irradiance-probe global illumination. A grid of probes stores incoming

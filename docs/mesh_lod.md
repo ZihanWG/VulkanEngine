@@ -21,9 +21,14 @@ cube and sphere and for every glTF primitive. It is GPU-free so the index
 bookkeeping is unit-testable without a device — the same split already used by
 `ClusterGrid.h`, `CascadeMath.h`, and `SkeletalAnimation.h`.
 
-- Each level is simplified with `meshopt_simplify` from the **authored** geometry,
-  not from the previous level: chaining simplifications compounds error, and
-  build-time simplification is cheap enough that there is no reason to pay that.
+- Each level is simplified from the **authored** geometry, not from the previous
+  level: chaining simplifications compounds error, and build-time simplification
+  is cheap enough that there is no reason to pay that.
+- The simplifier weighs **normals** as well as positions
+  (`meshopt_simplifyWithAttributes`, weight `kLodNormalWeight` = 0.5, meshopt's
+  own choice), so a collapse that bends the shading costs error the way one that
+  moves the surface does. See [below](#normals-count-as-error) for why and what it
+  costs; `lod.normalAwareSimplification = false` builds position-only chains.
 - Each level is then vertex-cache optimized.
 - Level `n` targets `1/2^n` of the authored index count.
 - A level is rejected when the simplifier could not remove at least 15% of the
@@ -37,11 +42,13 @@ bookkeeping is unit-testable without a device — the same split already used by
   `meshopt_simplifyScale` of that same stream. Levels are simplified from the
   authored geometry independently, so nothing forces a coarser level to measure
   worse; the builder raises any level that measured better to its predecessor's
-  error, which is what lets selection treat the chain as ordered.
+  error, which is what lets selection treat the chain as ordered. With normals
+  weighed, the reported error is meshopt's sum of the two, so the bend is in it.
 
-The portfolio sphere (radius 0.5) builds `2208 → 1103 → 552 → 275` triangles at
-errors of `0.0059 → 0.0081 → 0.030`, about 1.2%, 1.6% and 6% of its radius. The
-chain log prints each level's error beside its triangle count.
+The portfolio sphere (radius 0.5) builds `2208 → 1104 → 552 → 275` triangles at
+errors of `0.0060 → 0.0086 → 0.038`, about 1.2%, 1.7% and 7.5% of its radius
+(position-only: `1103 → 552 → 275` at `0.0059 → 0.0081 → 0.030`). The chain log
+prints each level's error beside its triangle count.
 
 glTF meshes get one chain per primitive, since primitives are drawn independently
 and each needs its own range per level. They share the mesh's flat LOD table,
@@ -133,8 +140,10 @@ level       = the last level with errorPixels <= maxErrorPixels * 2^bias
   rule on, the default and sunlit scenes render bit-identically with the cascade
   cache on and off, so the CPU hash and the GPU choice agree.
 
-What it does, on the RTX 3080 Ti Laptop at 1280x720, `--deterministic`, 240
-frames, counted by the cull pass itself (the `emitted triangles` line):
+What it did when it became the default, with **position-only** chains, on the
+RTX 3080 Ti Laptop at 1280x720, `--deterministic`, 240 frames, counted by the
+cull pass itself (the `emitted triangles` line) -- normal-aware chains, since the
+default, keep more triangles; [below](#normals-count-as-error):
 
 | scene | radius rule | error ≤ 1 px | |
 | --- | --- | --- | --- |
@@ -162,14 +171,55 @@ The control came back within 0.11%. An earlier series that failed the gate at
 same effect, -16.1% on the frame, so the saving reproduces; it is the triangle
 count doing it, and the selection loop itself costs the cull pass about 2 µs.
 
-**It is the default, and this is what it changes in the image.** The error is
-*geometric*. It bounds where the surface is, not how it shades: normals
-interpolated across coarser triangles move a sharp specular highlight further
-than the silhouette moves. On the default scene the rule changes 1.7% of pixels
-against the radius rule -- thin rings at sphere silhouettes, and the reflected
-highlights inside the chrome sphere -- and making it the default re-baselined the
-lavapipe golden for the same reason. `lod.screenSpaceError = false` restores the
-radius rule, and the `lod-radius-rule` sweep leg keeps it running in CI.
+**It is the default, and this is what it changes in the image.** On the default
+scene the rule changes 1.7% of pixels against the radius rule -- thin rings at
+sphere silhouettes, and the reflected highlights inside the chrome sphere -- and
+making it the default re-baselined the lavapipe golden for the same reason.
+`lod.screenSpaceError = false` restores the radius rule, and the
+`lod-radius-rule` sweep leg keeps it running in CI.
+
+### Normals count as error
+
+With position-only chains the error above was purely *geometric*: it bounded where
+the surface is, not how it shades. That was checked on the default scene and
+missed on Sponza, where it mattered. Scored against a frame forced to level 0 --
+the image LOD is meant to approximate -- on Sponza at 1280x720, frame 200 of 240:
+
+| chains | pixels off by > 2 | summed difference | triangles |
+| --- | --- | --- | --- |
+| level 0 everywhere (the reference) | 0 | 0 | 219,420 |
+| error rule, position-only | 106,383 (11.5%) | 1,078,344 | 137,669 |
+| **error rule, normals weighed 0.5** | **6,063 (0.7%)** | **101,994** | **164,927** |
+| error rule, UVs weighed 1.0 | 98,653 | 959,484 | 138,822 |
+| error rule, normals and UVs | 5,182 | 90,922 | 164,928 |
+| radius rule, position-only | 4,553 | 56,757 | 185,889 |
+
+The position-only difference sat on the curtains and the arches: curved,
+normal-mapped cloth whose folds the simplifier flattened because flattening them
+barely moved the silhouette, and whose shading changed with every fold it
+removed. Weighing normals cuts the pixels that are off by 94% and the summed
+difference by 91%, and keeps the triangles that carry the folds -- still 11%
+fewer than the radius rule draws. UVs were not the
+cause -- weighing them alone barely helps -- and adding them to normals gains
+little on Sponza while doing slightly worse on the default scene, so the chains
+weigh normals only.
+
+How the bend reaches selection: meshopt adds each collapse's weighted normal
+error to its positional error, in the same extent-relative units, and reports the
+sum. Scaled back by the extent, a bend of `dn` counts as `0.5 * dn * extent` of
+surface error, so once projected it grows with the object's size on screen, the
+way shading error does. It is a heuristic, not a bound: shading depends on the
+light and the material as well as the normal.
+
+**What it costs.** Normal-aware chains draw 164,927 triangles on Sponza where
+position-only chains drew 137,669 (+20%). The -15.4% frame-time saving above was
+measured with position-only chains, so part of it is given back; how much has not
+been measured with clocks pinned. The default scene barely moves (5,592 against
+5,590 triangles) but its sphere chain changed, so its golden image was
+re-baselined. Position-only chains stay one startup setting away
+(`lod.normalAwareSimplification`, on by default), and a cooked `.vemesh` records
+which it holds: the build settings' fingerprint includes the normal weight, so a
+cook of the other kind is refused with a reason and the glTF is loaded instead.
 
 ## Cross-faded transitions
 
@@ -451,10 +501,10 @@ Selecting by error at 1 px is what the default spends of it (see above).
   fade, since it draws twice and is left out of the depth prepass. At the default
   length that cost is below what a moving-camera measurement resolves; with
   eightfold fades it is a fifth of `MainHDRPass` (see above).
-- **Screen-space error selection is geometric.** It bounds where the surface is,
-  not how it shades; an attribute-aware error (`meshopt_simplifyWithAttributes`
-  over normals) would bound highlights too, and would change the chains
-  themselves.
+- **The error weighs positions and normals, nothing else.** Texture
+  coordinates, tangents and material are not in it (UVs were measured and left
+  out; see above), and the normal term is a heuristic scaled by object size, not
+  a bound on shading.
 - **The error projection is conservative.** It uses the object's largest axis
   scale and its nearest bounds point for the whole object, so a long object seen
   end-on keeps the detail its nearest end needs.

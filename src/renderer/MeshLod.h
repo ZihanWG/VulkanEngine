@@ -156,6 +156,16 @@ inline constexpr double kLodIndexRatio = 0.5;
 // A level is rejected outright unless the simplifier removed at least this
 // fraction of the previous level's triangles.
 inline constexpr double kLodMinReduction = 0.15;
+// How much a bent vertex normal costs the simplifier next to a moved position,
+// per unit of normal. meshopt's own demos use 0.5.
+//
+// Without it the simplifier sees only positions, so it flattens curved,
+// normal-mapped surfaces -- Sponza's curtains -- whose silhouettes barely move
+// while their shading does: at a 1 px budget that left 11.5% of Sponza's frame
+// off the full-detail image. With it, a collapse that bends normals costs error
+// like one that moves the surface, the chains keep that detail, and the error
+// recorded for each level counts the bend too (docs/mesh_lod.md).
+inline constexpr float kLodNormalWeight = 0.5f;
 
 struct LodBuildSettings {
     uint32_t maxLods = kMaxMeshLods;
@@ -163,6 +173,9 @@ struct LodBuildSettings {
     float targetError = kLodTargetError;
     double indexRatio = kLodIndexRatio;
     double minReduction = kLodMinReduction;
+    // 0 simplifies by position alone, as the chains were built before normals
+    // counted; so does a build given no normal stream.
+    float normalWeight = kLodNormalWeight;
 };
 
 // Builds the LOD chain for the [firstIndex, firstIndex + indexCount) range of
@@ -175,14 +188,17 @@ struct LodBuildSettings {
 // cheap enough at build time that there is no reason to pay that quality cost.
 //
 // vertexPositions/vertexCount/vertexStride describe the position stream the
-// simplifier reads; the caller keeps ownership. When debugName is non-empty a
-// multi-level chain is logged.
+// simplifier reads; vertexNormals, when not null, is a unit normal per vertex in
+// the same interleaved layout (same stride), weighed by settings.normalWeight.
+// The caller keeps ownership of both. When debugName is non-empty a multi-level
+// chain is logged.
 [[nodiscard]] std::vector<MeshLod> buildLodChain(std::vector<uint32_t>& indices,
                                                  uint32_t firstIndex,
                                                  uint32_t indexCount,
                                                  const float* vertexPositions,
                                                  size_t vertexCount,
                                                  size_t vertexStride,
+                                                 const float* vertexNormals,
                                                  std::string_view debugName = {},
                                                  const LodBuildSettings& settings = {});
 
@@ -210,12 +226,13 @@ struct LodChainBuild {
     std::string logMessage;
 };
 
-// Pure and thread-safe: reads `sourceIndices` and the position stream, writes
+// Pure and thread-safe: reads `sourceIndices` and the vertex streams, writes
 // only into the returned value. Safe to run on a JobSystem worker.
 [[nodiscard]] LodChainBuild buildLodChainDetached(std::span<const uint32_t> sourceIndices,
                                                   const float* vertexPositions,
                                                   size_t vertexCount,
                                                   size_t vertexStride,
+                                                  const float* vertexNormals,
                                                   std::string_view debugName = {},
                                                   const LodBuildSettings& settings = {});
 

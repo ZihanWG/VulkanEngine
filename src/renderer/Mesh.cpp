@@ -107,7 +107,8 @@ std::array<VkVertexInputAttributeDescription, 5> vertexAttributeDescriptions()
 
 Mesh Mesh::createCube(rhi::VulkanContext& context,
                       const rhi::VulkanCommandContext& commandContext,
-                      bool buildMeshletTable)
+                      bool buildMeshletTable,
+                      const LodBuildSettings& lodBuildSettings)
 {
     const PrimitiveGeometry geometry = buildCubeGeometry();
 
@@ -135,7 +136,9 @@ Mesh Mesh::createCube(rhi::VulkanContext& context,
                                &geometry.vertices[0].position.x,
                                geometry.vertices.size(),
                                sizeof(Vertex),
-                               mesh.debugName_);
+                               &geometry.vertices[0].normal.x,
+                               mesh.debugName_,
+                               lodBuildSettings);
     mesh.lodBase_ = 0;
     mesh.lodCount_ = static_cast<uint32_t>(mesh.lods_.size());
     // Before the index buffer is uploaded: this reorders triangles inside each
@@ -163,7 +166,8 @@ Mesh Mesh::createUvSphere(rhi::VulkanContext& context,
                           const rhi::VulkanCommandContext& commandContext,
                           uint32_t segments,
                           uint32_t rings,
-                          bool buildMeshletTable)
+                          bool buildMeshletTable,
+                          const LodBuildSettings& lodBuildSettings)
 {
     const PrimitiveGeometry geometry = buildUvSphereGeometry(segments, rings);
     const std::vector<Vertex>& vertices = geometry.vertices;
@@ -181,8 +185,15 @@ Mesh Mesh::createUvSphere(rhi::VulkanContext& context,
                                          VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
 
     mesh.indexCount_ = static_cast<uint32_t>(indices.size());
-    mesh.lods_ = buildLodChain(
-        indices, 0, mesh.indexCount_, &vertices[0].position.x, vertices.size(), sizeof(Vertex), mesh.debugName_);
+    mesh.lods_ = buildLodChain(indices,
+                               0,
+                               mesh.indexCount_,
+                               &vertices[0].position.x,
+                               vertices.size(),
+                               sizeof(Vertex),
+                               &vertices[0].normal.x,
+                               mesh.debugName_,
+                               lodBuildSettings);
     mesh.lodBase_ = 0;
     mesh.lodCount_ = static_cast<uint32_t>(mesh.lods_.size());
     if (buildMeshletTable) {
@@ -242,7 +253,8 @@ LoadedGltfAsset Mesh::createFromGltf(rhi::VulkanContext& context,
                                      const rhi::VulkanCommandContext& commandContext,
                                      const std::filesystem::path& path,
                                      JobSystem* jobSystem,
-                                     bool buildMeshletTable)
+                                     bool buildMeshletTable,
+                                     const LodBuildSettings& lodBuildSettings)
 {
     // A cooked sidecar removes assembly and LOD construction -- ~333 ms of a
     // ~349 ms Sponza import. Any reason it does not match falls back to the glTF
@@ -252,7 +264,7 @@ LoadedGltfAsset Mesh::createFromGltf(rhi::VulkanContext& context,
     bool haveCooked = false;
 
     MeshCacheExpectation expectation{};
-    if (makeMeshCacheExpectation(path, expectation)) {
+    if (makeMeshCacheExpectation(path, expectation, lodBuildSettings)) {
         const std::filesystem::path cookedPath = meshCacheSidecarPath(path);
         const std::vector<std::byte> blob = readFileBytes(cookedPath);
         const MeshCacheStatus status = meshCacheStatus(blob, expectation);
@@ -272,7 +284,8 @@ LoadedGltfAsset Mesh::createFromGltf(rhi::VulkanContext& context,
     }
 
     // Everything expensive happens without a device; this is only the upload.
-    GltfGeometry geometry = loadGltfGeometry(path, jobSystem, haveCooked ? &cookedMeshes : nullptr, buildMeshletTable);
+    GltfGeometry geometry =
+        loadGltfGeometry(path, jobSystem, haveCooked ? &cookedMeshes : nullptr, buildMeshletTable, lodBuildSettings);
 
     LoadedGltfAsset loadedAsset{};
     loadedAsset.meshes.resize(geometry.meshes.size());

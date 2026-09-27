@@ -139,9 +139,14 @@ struct GltfGeometry {
 // default because it REORDERS triangles inside each level -- a permutation, so
 // the geometry is identical, but not the rasterization order. See
 // RendererStartupOverrides::buildMeshlets.
+//
+// `lodBuildSettings` decides what the LOD chains contain, normal weight
+// included; vemeshcook cooks with the defaults, and the cook's fingerprint
+// records them.
 [[nodiscard]] GltfGeometry loadGltfGeometry(const std::filesystem::path& path,
                                             JobSystem* jobSystem = nullptr,
                                             std::vector<CpuMeshData>* cookedMeshes = nullptr,
-                                            bool buildMeshletTable = false);
+                                            bool buildMeshletTable = false,
+                                            const LodBuildSettings& lodBuildSettings = {});
 
 } // namespace ve::renderer

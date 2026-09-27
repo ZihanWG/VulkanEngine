@@ -145,10 +145,15 @@ TEST_CASE("Changed LOD settings are rejected", "[mesh-cache]")
     ratio.indexRatio += 0.1;
     LodBuildSettings reduction{};
     reduction.minReduction += 0.1;
+    // Position-only chains are different chains: a cook built without normals
+    // must not load where normal-aware chains are expected, or the reverse.
+    LodBuildSettings positionsOnly{};
+    positionsOnly.normalWeight = 0.0f;
     CHECK(hashLodBuildSettings(maxLods) != base);
     CHECK(hashLodBuildSettings(minIndex) != base);
     CHECK(hashLodBuildSettings(ratio) != base);
     CHECK(hashLodBuildSettings(reduction) != base);
+    CHECK(hashLodBuildSettings(positionsOnly) != base);
 
     // And it must be stable, or it would reject every cook it should accept.
     CHECK(hashLodBuildSettings(LodBuildSettings{}) == base);

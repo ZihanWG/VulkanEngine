@@ -283,6 +283,7 @@ jobs:
           dynamic-resolution|--settings config/ci/dynamic-resolution.json
           lod-off|--settings config/ci/lod-off.json
           lod-radius-rule|--settings config/ci/lod-radius-rule.json
+          lod-positions-only|--settings config/ci/lod-positions-only.json
           cascade-cache-off|--settings config/ci/cascade-cache-off.json
           stable-cascade-fit|--settings config/ci/stable-cascade-fit.json
           taa-ghost-guards|--settings config/ci/taa-ghost-guards.json

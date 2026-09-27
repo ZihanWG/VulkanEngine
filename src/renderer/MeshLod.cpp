@@ -157,6 +157,7 @@ LodChainBuild buildLodChainDetached(std::span<const uint32_t> sourceIndices,
                                     const float* vertexPositions,
                                     size_t vertexCount,
                                     size_t vertexStride,
+                                    const float* vertexNormals,
                                     std::string_view debugName,
                                     const LodBuildSettings& settings)
 {
@@ -179,6 +180,14 @@ LodChainBuild buildLodChainDetached(std::span<const uint32_t> sourceIndices,
     const float errorScale = meshopt_simplifyScale(vertexPositions, vertexCount, vertexStride);
     float previousError = 0.0f;
 
+    // With normals, meshopt adds each collapse's weighted normal error to its
+    // positional error, in the same extent-relative units, and reports the sum.
+    // Multiplied back by the extent below, a bend of dn radians-ish then counts
+    // as normalWeight * dn * extent of surface error -- so once projected it
+    // grows with the object's size on screen, as shading error does.
+    const bool normalAware = vertexNormals != nullptr && settings.normalWeight > 0.0f;
+    const std::array<float, 3> normalWeights = {settings.normalWeight, settings.normalWeight, settings.normalWeight};
+
     for (uint32_t level = 1; level < settings.maxLods; ++level) {
         // Keep the target a multiple of 3 so the simplifier is never asked for a
         // partial triangle.
@@ -190,16 +199,31 @@ LodChainBuild buildLodChainDetached(std::span<const uint32_t> sourceIndices,
 
         simplified.resize(sourceIndices.size());
         float resultError = 0.0f;
-        const size_t resultCount = meshopt_simplify(simplified.data(),
-                                                    sourceIndices.data(),
-                                                    sourceIndices.size(),
-                                                    vertexPositions,
-                                                    vertexCount,
-                                                    vertexStride,
-                                                    targetCount,
-                                                    settings.targetError,
-                                                    /*options=*/0,
-                                                    &resultError);
+        const size_t resultCount = normalAware ? meshopt_simplifyWithAttributes(simplified.data(),
+                                                                                sourceIndices.data(),
+                                                                                sourceIndices.size(),
+                                                                                vertexPositions,
+                                                                                vertexCount,
+                                                                                vertexStride,
+                                                                                vertexNormals,
+                                                                                vertexStride,
+                                                                                normalWeights.data(),
+                                                                                normalWeights.size(),
+                                                                                /*vertex_lock=*/nullptr,
+                                                                                targetCount,
+                                                                                settings.targetError,
+                                                                                /*options=*/0,
+                                                                                &resultError)
+                                               : meshopt_simplify(simplified.data(),
+                                                                  sourceIndices.data(),
+                                                                  sourceIndices.size(),
+                                                                  vertexPositions,
+                                                                  vertexCount,
+                                                                  vertexStride,
+                                                                  targetCount,
+                                                                  settings.targetError,
+                                                                  /*options=*/0,
+                                                                  &resultError);
         simplified.resize(resultCount);
 
         // Stop as soon as the simplifier stalls. An extra level that barely
@@ -270,6 +294,7 @@ std::vector<MeshLod> buildLodChain(std::vector<uint32_t>& indices,
                                    const float* vertexPositions,
                                    size_t vertexCount,
                                    size_t vertexStride,
+                                   const float* vertexNormals,
                                    std::string_view debugName,
                                    const LodBuildSettings& settings)
 {
@@ -289,6 +314,7 @@ std::vector<MeshLod> buildLodChain(std::vector<uint32_t>& indices,
                               vertexPositions,
                               vertexCount,
                               vertexStride,
+                              vertexNormals,
                               debugName,
                               settings);
 

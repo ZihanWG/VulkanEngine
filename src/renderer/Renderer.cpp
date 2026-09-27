@@ -155,6 +155,7 @@ Renderer::Renderer(Window& window, const RendererStartupOverrides& overrides) : 
     runtimeSettingsPath_ = runtimeSettingsPathWasRequested_ ? *overrides.settingsPath : defaultRuntimeSettingsPath();
     sceneDocumentPath_ = defaultSceneDocumentPath();
     loadRuntimeSettingsAtStartup();
+    meshLodBuildSettings_.normalWeight = lodSettings_.normalAwareSimplification ? renderer::kLodNormalWeight : 0.0f;
 
     // After the file, before anything reads the settings: an override exists to
     // beat what was persisted. Only the three stage toggles are overridden --

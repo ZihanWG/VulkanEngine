@@ -1220,6 +1220,15 @@ void Renderer::drawMeshLodDebugUi()
     ImGui::SetItemTooltip("How long a level switch cross-fades instead of popping: both levels are\n"
                           "drawn, dithered into complementary halves of the pixels. 0 pops.\n"
                           "Main pass only -- the shadow maps switch outright.");
+    // Startup-only: the chains are built when meshes load, so the checkbox
+    // writes the setting for the next launch and the line below it says what
+    // this session was built with.
+    ImGui::Checkbox("Normal-aware simplification (next launch)", &lodSettings_.normalAwareSimplification);
+    ImGui::SetItemTooltip("Build the LOD chains counting bent normals as error, not just moved positions.\n"
+                          "Off removes more triangles, but curved normal-mapped surfaces shade visibly\n"
+                          "differently at the coarser levels. Saved; applies when meshes next load.");
+    ImGui::TextDisabled("This session's chains: %s",
+                        meshLodBuildSettings_.normalWeight > 0.0f ? "normal-aware" : "position only");
     ImGui::DragFloat("Bias", &lodSettings_.bias, 0.05f, -4.0f, 4.0f, "%.2f");
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Positive biases toward lower detail. One unit is one level, or with\n"
