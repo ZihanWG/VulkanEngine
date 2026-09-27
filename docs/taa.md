@@ -230,9 +230,17 @@ pixels only around the animated skinned mesh: 20 on the default scene, 117 on
 orbited by a patch applied locally for the run (0.01 rad and a 0.3% dolly per
 frame, not committed); rejection then changed 0.29% and 0.14% of the frame, and
 the debug view shows single-pixel lines along the trailing edge of each
-silhouette and nothing across flat surfaces. Its GPU cost has not been measured
--- nine depth fetches and one gather per output pixel, beside the nine depth
-reads velocity dilation already makes.
+silhouette and nothing across flat surfaces.
+
+**What it costs.** `TAAResolvePass` goes from 0.172 to 0.201 ms, +0.029 ms
+(+17%): RTX 3080 Ti Laptop with clocks pinned at 800/7001 MHz, `--scene sponza`
+at 1280x720, TAA on in both configurations, p10 over 128 samples a side,
+interleaved A/B/A/B after a throwaway run. Two independent series agree (+0.028
+and +0.029 ms) with the pass's own control drift at 0.001 ms or less; the second
+passed the frame-level gate at 0.33%. That is nine depth fetches and one gather
+per output pixel, beside the nine depth reads velocity dilation already makes.
+The frame total cannot resolve it -- its run-to-run spread is about 0.1 ms, three
+times the effect -- so there is no frame-level figure to quote, only the pass.
 
 **Rejection off is not bit-identical to before the test existed.** With the
 setting off, a TAA frame differs from the previous resolve on 941 of 921600

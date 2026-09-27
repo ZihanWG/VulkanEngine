@@ -142,9 +142,23 @@ On Sponza the budget trades as expected: 157,978 triangles at 0.5 px, 115,090 at
 2 px. `stress` does not move: every chained draw it emits sits at level 0 or
 level 3 under both rules (336 and 328), and the two rules agree on which.
 
-**Why it is off by default.** These are triangle counts, not frame time: the GPU
-cost has not been measured with pinned clocks, and a timing claim needs that. And
-the error is *geometric*. It bounds where the surface is, not how it shades:
+And in frame time, on Sponza at 1280x720, RTX 3080 Ti Laptop with clocks pinned
+at 800/7001 MHz, p10 over 128 samples a side, interleaved A/B/A/B after a
+throwaway run:
+
+| `--scene sponza` | radius rule | error ≤ 1 px | |
+| --- | --- | --- | --- |
+| Frame total | 6.537 ms | 5.528 ms | **-15.4%** |
+| `MainHDRPass` | 4.583 ms | 3.868 ms | **-15.6%** |
+| `MainGpuCullingPass` | 0.015 ms | 0.017 ms | +0.002 ms |
+
+The control came back within 0.11%. An earlier series that failed the gate at
+3.9% -- its first control run read high after the machine had idled -- showed the
+same effect, -16.1% on the frame, so the saving reproduces; it is the triangle
+count doing it, and the selection loop itself costs the cull pass about 2 µs.
+
+**Why it is still off by default.** The error is *geometric*. It bounds where the
+surface is, not how it shades:
 normals interpolated across coarser triangles move a sharp specular highlight
 further than the silhouette moves. On the default scene the rule changes 1.7% of
 pixels against the radius rule -- thin rings at sphere silhouettes, and the
