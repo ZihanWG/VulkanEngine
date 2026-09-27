@@ -4,6 +4,10 @@ _Moved out of the top-level README to keep it scannable. These notes preserve th
 
 _Timings in Milestones 85 and later were taken on an RTX 3080 Ti Laptop; in 84 and earlier, on an Apple M3 through MoltenVK, unless an entry says otherwise. Each figure's full conditions -- scene, resolution, clock pin, statistic -- are in the subsystem document it came from, and `docs/profiling.md` records how the figures whose machine was not written down at the time were attributed._
 
+## Milestone 96: Error-Based LOD by Default
+
+Measured with clocks pinned, selecting LOD by projected error at 1 px took Sponza's frame from 6.537 to 5.528 ms at 1280x720 (-15.4%, p10, RTX 3080 Ti Laptop), and disocclusion rejection was priced at 0.029 ms of `TAAResolvePass`. The error rule is now the default. What it costs in the image is sharper highlights shifting on coarser levels, since the error bounds position and not shading; the lavapipe golden was re-baselined for it, and the radius rule stays one setting away with a sweep leg of its own.
+
 ## Milestone 95: LOD by Screen-Space Error
 
 Discrete LOD picked a level from the projected radius alone, one level per halving, whatever each level had cost in accuracy. `meshopt_simplify` reports that cost and it was being discarded. Each level now records its geometric error in mesh units -- the simplifier's relative error multiplied back by the extent it was relative to, held non-decreasing along the chain -- and `MeshLod` grows from 8 to 12 bytes to carry it to the cull shader. An opt-in rule takes the coarsest level whose error, scaled by the object's largest axis and projected at the camera's distance to its bounds, fits a pixel budget. The GPU cull and the CPU mirror that keys the cascade cache share one unit-tested reference, and the object scale rides in a bounds lane nothing read, so the draw-item record stays 64 bytes.

@@ -67,6 +67,11 @@ mesh, only the selection bias differs per pass.
 
 ## Selecting
 
+Two rules, one setting apart. **By default the level comes from each level's
+projected geometric error** ([below](#selecting-by-screen-space-error-the-default));
+`lod.screenSpaceError = false` selects by projected radius instead, which is the
+rule described first here and the one the engine shipped with.
+
 `projectedScreenRadius` / `selectLodIndex` in `renderer/MeshLod.h` are the
 unit-tested reference; `cull.comp` mirrors them, the same way `ClusterGrid.h`
 mirrors `cluster_build.comp`.
@@ -95,7 +100,7 @@ Meshes with no chain (`lodCount == 0`) fall through to the authored range carrie
 on the draw item, so a missing LOD table degrades to full detail rather than an
 out-of-range read.
 
-### Selecting by screen-space error (opt-in)
+### Selecting by screen-space error (the default)
 
 The radius rule steps one level per halving of the on-screen radius, whatever each
 level actually cost in accuracy: a level that barely moved the surface and one
@@ -157,13 +162,14 @@ The control came back within 0.11%. An earlier series that failed the gate at
 same effect, -16.1% on the frame, so the saving reproduces; it is the triangle
 count doing it, and the selection loop itself costs the cull pass about 2 µs.
 
-**Why it is still off by default.** The error is *geometric*. It bounds where the
-surface is, not how it shades:
-normals interpolated across coarser triangles move a sharp specular highlight
-further than the silhouette moves. On the default scene the rule changes 1.7% of
-pixels against the radius rule -- thin rings at sphere silhouettes, and the
-reflected highlights inside the chrome sphere. Turning it on by default would also
-re-baseline the committed golden image.
+**It is the default, and this is what it changes in the image.** The error is
+*geometric*. It bounds where the surface is, not how it shades: normals
+interpolated across coarser triangles move a sharp specular highlight further
+than the silhouette moves. On the default scene the rule changes 1.7% of pixels
+against the radius rule -- thin rings at sphere silhouettes, and the reflected
+highlights inside the chrome sphere -- and making it the default re-baselined the
+lavapipe golden for the same reason. `lod.screenSpaceError = false` restores the
+radius rule, and the `lod-radius-rule` sweep leg keeps it running in CI.
 
 ## Debugging
 
@@ -324,9 +330,9 @@ triangle setup do not care about resolution, and quad overshading cares about
 nothing else. See [profiling.md](profiling.md) for the full attribution and for
 why the "fixed third" that earlier framing named does not exist.
 
-That is a bound on what a more aggressive `lod.bias` or a smaller
-`lod.referenceRadiusPixels` could win, not a recommendation to spend it: the
-2.563 ms is paid for in silhouettes.
+That is a bound on what a more aggressive `lod.bias` or a looser budget could
+win, not a recommendation to spend it: the 2.563 ms is paid for in silhouettes.
+Selecting by error at 1 px is what the default spends of it (see above).
 
 ## Limitations
 
@@ -336,10 +342,10 @@ That is a bound on what a more aggressive `lod.bias` or a smaller
   granular selection is the direction modern engines went.
 - **No cross-fade or dithered transition.** A switch is a hard pop. Screen-space
   dithering between adjacent levels is the usual cheap fix.
-- **Screen-space error selection is opt-in and geometric.** It bounds where the
-  surface is, not how it shades; an attribute-aware error
-  (`meshopt_simplifyWithAttributes` over normals) would bound highlights too, and
-  would change the chains themselves. The default is still the radius rule.
+- **Screen-space error selection is geometric.** It bounds where the surface is,
+  not how it shades; an attribute-aware error (`meshopt_simplifyWithAttributes`
+  over normals) would bound highlights too, and would change the chains
+  themselves.
 - **The error projection is conservative.** It uses the object's largest axis
   scale and its nearest bounds point for the whole object, so a long object seen
   end-on keeps the detail its nearest end needs.
