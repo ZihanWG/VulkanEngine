@@ -600,9 +600,22 @@ void VulkanDevice::logCapabilityReport(std::span<const ExtensionOutcome> optiona
         }
     }
     if (!degraded.empty()) {
+        // The MoltenVK hint only where acting on it would change something: on a
+        // portability driver, with a queue actually missing, and not because
+        // --portability-fallbacks took it away, which no variable can undo.
+        // Anywhere else it was advice about a driver that is not running, or
+        // about queues that are already there.
+        const bool portabilityDriver =
+            std::any_of(optionalExtensions.begin(), optionalExtensions.end(), [](const ExtensionOutcome& outcome) {
+                return outcome.enabled() && outcome.name == std::string_view(kPortabilitySubsetExtensionName);
+            });
+        const bool queueMissing = !asyncComputeAvailable_ || !transferQueueAvailable_;
+        const bool suggestSpecializedQueues = portabilityDriver && queueMissing && !portabilityFallbacks_;
         Logger::warn("Running on fallback paths for: " + degraded +
-                     ". The capability report above says what each one does instead. "
-                     "(On MoltenVK, MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES=1 exposes the extra queues.)");
+                     ". The capability report above says what each one does instead." +
+                     (suggestSpecializedQueues
+                          ? " (MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES=1 makes MoltenVK expose the missing queues.)"
+                          : ""));
     }
 }
 
