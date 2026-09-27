@@ -74,8 +74,8 @@ not a full game engine. Implemented systems include:
 - Static and skinned mesh rendering: built-in geometry, glTF static meshes, and
   GPU linear-blend skinning from a per-frame joint palette. Discrete LOD chains
   are built at load time, each level carrying its geometric error, and selected
-  per draw item inside the cull dispatch -- by projected radius, or opt-in by
-  projected error.
+  per draw item inside the cull dispatch -- by projected geometric error by
+  default, or by projected radius.
 - glTF import of material factors, base-color/normal/metallic-roughness/emissive
   textures, `MASK` and `BLEND` alpha modes, and skinned animation. Both halves
   of load cost have an optional cooked sidecar: `.vemesh` for geometry, BC7

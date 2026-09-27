@@ -313,7 +313,8 @@ true figure is lower.
 document previously named submission across 103 draw items as a candidate for a
 ~2 ms fixed cost. There is no such cost: submission and state are at most 15% of
 the pass and in fact less. The lever on this scene is triangle count, and the
-machinery for it already ships -- `lod.bias` and `lod.referenceRadiusPixels`
+machinery for it already ships -- `lod.bias` and the selection rule's own knob
+(`lod.maxErrorPixels`, or `lod.referenceRadiusPixels` under the radius rule)
 decide how aggressively it is pulled. Forcing every draw to the lowest level
 takes 2.1 ms off the pass at full resolution, which bounds what a more aggressive
 selection could win before any of it is paid for in image quality.
