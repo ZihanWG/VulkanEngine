@@ -334,7 +334,9 @@ catch large, near objects that short ones do not.
 `--camera-orbit R` yaws the camera around its target by `R` radians a frame
 instead -- the one camera motion a script can have, reproducible from the frame
 number. The `lod-crossfade-orbit` sweep leg runs `--scene stress --camera-orbit
-0.05` under validation in CI.
+0.05` under validation in CI, and `portability-lod-crossfade` runs the same with
+`--portability-fallbacks`, which is the fixed-slot layout above -- the one a Mac
+takes.
 
 ## Debugging
 

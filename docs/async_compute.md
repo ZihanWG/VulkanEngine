@@ -24,6 +24,11 @@ On MoltenVK the default configuration exposes a single queue, so async compute
 reports unavailable; launch with `MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES=1` to
 expose a compute-only family backed by its own `MTLCommandQueue`.
 
+`--portability-fallbacks` gives any GPU that default: the queue families are
+presented to the selection as MoltenVK presents them, one queue in each
+universal family (`rhi/PortabilityFallbacks.h`), so the selection itself
+(`rhi/AsyncComputeQueueSelection.h`) finds nothing and the passes stay inline.
+
 ## Synchronization model
 
 No graphics command buffer split and no render-graph surgery:
