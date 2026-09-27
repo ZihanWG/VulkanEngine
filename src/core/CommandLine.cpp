@@ -2,8 +2,10 @@
 
 #include "core/Logger.h"
 
+#include <cctype>
 #include <charconv>
 #include <cmath>
+#include <cstdlib>
 #include <span>
 #include <string>
 #include <string_view>
@@ -49,6 +51,27 @@ template <typename Table> std::string knownNames(const Table& table)
         known += entry.name;
     }
     return known;
+}
+
+// std::from_chars has no floating-point overload in the libc++ that Xcode 16
+// ships -- the call is deleted, so it fails to compile rather than at run time
+// -- so this is strtof with the same whole-string check the integer options get
+// from from_chars. strtof would also skip leading whitespace, which from_chars
+// never accepted, so that is refused explicitly. The engine never calls
+// setlocale, so the decimal point is the "C" locale's '.'.
+bool parseFloat(std::string_view text, float& value)
+{
+    if (text.empty() || std::isspace(static_cast<unsigned char>(text.front())) != 0) {
+        return false;
+    }
+    const std::string owned(text);
+    char* end = nullptr;
+    const float parsed = std::strtof(owned.c_str(), &end);
+    if (end != owned.c_str() + owned.size()) {
+        return false;
+    }
+    value = parsed;
+    return true;
 }
 
 } // namespace
@@ -205,12 +228,10 @@ bool parseLaunchOptions(int argc, char** argv, LaunchOptions& options)
             }
             const std::string_view value(argv[++index]);
             float radians = 0.0f;
-            const auto result = std::from_chars(value.data(), value.data() + value.size(), radians);
             // Bounded, not just finite: past half a radian a frame the camera
             // spins faster than any history or transition could follow, which
             // is a typo rather than a test.
-            if (result.ec != std::errc{} || result.ptr != value.data() + value.size() || !std::isfinite(radians) ||
-                radians == 0.0f || std::abs(radians) > 0.5f) {
+            if (!parseFloat(value, radians) || !std::isfinite(radians) || radians == 0.0f || std::abs(radians) > 0.5f) {
                 Logger::error("--camera-orbit expects a non-zero angle within [-0.5, 0.5] radians, got: " +
                               std::string(value));
                 return false;
