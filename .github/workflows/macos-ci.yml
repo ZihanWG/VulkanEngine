@@ -46,8 +46,13 @@ jobs:
           }
           glslc --version
 
+      # Warnings are errors here, as on Windows, because the first-party build
+      # is measured clean under AppleClang's -Wall -Wextra -Wpedantic. The two
+      # warnings that first measurement found were both worth having: one was
+      # a pass the render-graph reports named "Unknown". MSVC /W4 does not warn
+      # about an unhandled enumerator, so this leg is the one that can.
       - name: Configure CMake
-        run: cmake --preset ci-debug -DVULKAN_ENGINE_FETCH_DEPS=ON
+        run: cmake --preset ci-debug -DVULKAN_ENGINE_FETCH_DEPS=ON -DVULKAN_ENGINE_WARNINGS_AS_ERRORS=ON
 
       - name: Compile GLSL shaders
         run: cmake --build --preset ci-debug-shaders --parallel
@@ -58,9 +63,9 @@ jobs:
       - name: Build renderer
         run: cmake --build --preset ci-debug --parallel -- -k 0
 
-      # The tests create no Vulkan device, which is what lets them run on a
-      # hosted runner with no usable GPU. The renderer itself is not run here:
-      # runtime evidence comes from the real Mac and from the lavapipe job.
+      # The tests create no Vulkan device, so they need no GPU. The renderer
+      # itself is not run here: runtime evidence comes from a real Mac and from
+      # the lavapipe job.
       - name: Run unit tests
         run: ctest --preset ci-debug
 
