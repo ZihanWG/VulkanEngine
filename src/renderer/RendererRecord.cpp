@@ -2513,8 +2513,12 @@ void Renderer::recordMainPassGeometry(VkCommandBuffer commandBuffer)
             }
 
             if (drawItem.indexCount > 0) {
-                const VkDeviceSize indirectOffset =
-                    static_cast<VkDeviceSize>(drawIndex * sizeof(VkDrawIndexedIndirectCommand));
+                // The GPU cull gives every item frameMainCommandSlots_ fixed slots
+                // even here, where the second is always empty (a fade needs
+                // firstInstance, which this path leaves zero). Stepping by one
+                // command would read half the items' empty slots.
+                const VkDeviceSize indirectOffset = static_cast<VkDeviceSize>(drawIndex) * frameMainCommandSlots_ *
+                                                    sizeof(VkDrawIndexedIndirectCommand);
                 vkCmdDrawIndexedIndirect(
                     commandBuffer, indirectDrawBuffer, indirectOffset, 1, sizeof(VkDrawIndexedIndirectCommand));
             }
