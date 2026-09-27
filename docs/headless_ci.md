@@ -93,6 +93,17 @@ both of the paths below locally.
   compacted `per-cascade indirect count` shadow path, which cannot execute on a
   MoltenVK machine at all. That was the main reason this workflow earned its
   runtime, and it stays the reason for anyone developing on macOS.
+
+  The reverse held too, until `--portability-fallbacks`: the fixed-slot path
+  MoltenVK takes instead -- the one two-phase occlusion and LOD cross-fades run on
+  the Mac -- ran nowhere else. The flag makes the device report no indirect draw
+  count, no async compute queue and no transfer queue whatever it actually has,
+  and logs `Portability fallbacks forced` so a run can assert it took effect. The
+  job renders the golden frame a second time with it and compares that against
+  the **same** golden, since both paths draw the same image (0 of 921,600 pixels
+  differ on the RTX machine, on the default, occlusion and orbiting stress
+  scenes); and the sweep carries three legs with it -- default, `--scene
+  occlusion`, and the cross-fade orbit -- under synchronization validation.
 - **lavapipe exposes no async compute queue.** ClusterBuild and LightCull stay
   on the graphics queue here, so the async-compute submission path is *not*
   covered by CI and remains verifiable only on the development machine.

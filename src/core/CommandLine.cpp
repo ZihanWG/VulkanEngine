@@ -216,6 +216,11 @@ bool parseLaunchOptions(int argc, char** argv, LaunchOptions& options)
             continue;
         }
 
+        if (argument == "--portability-fallbacks") {
+            options.portabilityFallbacks = true;
+            continue;
+        }
+
         if (argument == "--overdraw") {
             options.overdraw = true;
             continue;

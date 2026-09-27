@@ -41,7 +41,14 @@ public:
     // run will load. It is hashed into the persisted pipeline cache so the blob
     // is discarded whenever the shaders change; pass an empty path to fall back
     // to device-identity-only validation.
-    void initialize(VkInstance instance, VkSurfaceKHR surface, std::filesystem::path shaderDirectory);
+    //
+    // portabilityFallbacks forces the capabilities MoltenVK lacks by default off
+    // on whatever GPU this is -- see rhi/PortabilityFallbacks.h and
+    // VulkanContextOptions::portabilityFallbacks.
+    void initialize(VkInstance instance,
+                    VkSurfaceKHR surface,
+                    std::filesystem::path shaderDirectory,
+                    bool portabilityFallbacks = false);
     void cleanup();
 
     [[nodiscard]] VkPhysicalDevice physicalDevice() const
@@ -145,6 +152,10 @@ public:
     {
         return drawIndexedIndirectCountAvailable_;
     }
+    [[nodiscard]] bool portabilityFallbacksForced() const
+    {
+        return portabilityFallbacks_;
+    }
     [[nodiscard]] uint32_t maxDrawIndirectCount() const
     {
         return maxDrawIndirectCount_;
@@ -182,6 +193,7 @@ private:
     VkDevice device_ = VK_NULL_HANDLE;
     VkPipelineCache pipelineCache_ = VK_NULL_HANDLE;
     std::filesystem::path shaderDirectory_;
+    bool portabilityFallbacks_ = false;
     // Digest of shaderDirectory_ taken when the cache was created; reused when
     // saving so the blob is stamped with the shaders its pipelines came from.
     uint64_t shaderHash_ = 0;

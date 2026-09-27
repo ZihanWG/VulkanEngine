@@ -1,6 +1,8 @@
 #include "rhi/VulkanDevice.h"
 
+#include "rhi/AsyncComputeQueueSelection.h"
 #include "rhi/DeviceExtensionSelection.h"
+#include "rhi/PortabilityFallbacks.h"
 #include "rhi/TransferQueueSelection.h"
 
 #include "core/Logger.h"
@@ -143,11 +145,15 @@ VulkanDevice::~VulkanDevice()
     cleanup();
 }
 
-void VulkanDevice::initialize(VkInstance instance, VkSurfaceKHR surface, std::filesystem::path shaderDirectory)
+void VulkanDevice::initialize(VkInstance instance,
+                              VkSurfaceKHR surface,
+                              std::filesystem::path shaderDirectory,
+                              bool portabilityFallbacks)
 {
     instance_ = instance;
     surface_ = surface;
     shaderDirectory_ = std::move(shaderDirectory);
+    portabilityFallbacks_ = portabilityFallbacks;
 
     pickPhysicalDevice();
     createLogicalDevice();
@@ -285,48 +291,40 @@ void VulkanDevice::createLogicalDevice()
 {
     const uint32_t graphicsFamily = queueFamilies_.graphicsFamily.value();
 
-    // Async compute queue selection: a dedicated compute-only family runs on the
-    // GPU's compute ring and overlaps rasterization best; a second queue in the
-    // graphics family still lets the driver interleave. Neither is required.
     uint32_t queueFamilyCount = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice_, &queueFamilyCount, nullptr);
     std::vector<VkQueueFamilyProperties> familyProperties(queueFamilyCount);
     vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice_, &queueFamilyCount, familyProperties.data());
 
-    asyncComputeQueueFamily_ = UINT32_MAX;
-    asyncComputeDedicatedFamily_ = false;
-    uint32_t asyncComputeQueueIndex = 0;
+    std::vector<QueueFamilyCapabilities> familyCapabilities;
+    familyCapabilities.reserve(queueFamilyCount);
     for (uint32_t family = 0; family < queueFamilyCount; ++family) {
         const VkQueueFlags flags = familyProperties[family].queueFlags;
-        if ((flags & VK_QUEUE_COMPUTE_BIT) != 0 && (flags & VK_QUEUE_GRAPHICS_BIT) == 0 &&
-            familyProperties[family].queueCount >= 1) {
-            asyncComputeQueueFamily_ = family;
-            asyncComputeDedicatedFamily_ = true;
-            asyncComputeQueueIndex = 0;
-            break;
-        }
-    }
-    if (asyncComputeQueueFamily_ == UINT32_MAX && graphicsFamily < queueFamilyCount &&
-        familyProperties[graphicsFamily].queueCount >= 2) {
-        asyncComputeQueueFamily_ = graphicsFamily;
-        asyncComputeQueueIndex = 1;
-    }
-
-    // Load-time uploads want a DMA family, not just any transfer-capable one.
-    // The policy is a pure function so it can be unit tested; see
-    // rhi/TransferQueueSelection.h for why there is no graphics-family fallback.
-    std::vector<QueueFamilyCapabilities> transferCandidates;
-    transferCandidates.reserve(queueFamilyCount);
-    for (uint32_t family = 0; family < queueFamilyCount; ++family) {
-        const VkQueueFlags flags = familyProperties[family].queueFlags;
-        transferCandidates.push_back(QueueFamilyCapabilities{
+        familyCapabilities.push_back(QueueFamilyCapabilities{
             (flags & VK_QUEUE_GRAPHICS_BIT) != 0,
             (flags & VK_QUEUE_COMPUTE_BIT) != 0,
             (flags & VK_QUEUE_TRANSFER_BIT) != 0,
             familyProperties[family].queueCount,
         });
     }
-    transferQueueFamily_ = selectTransferQueueFamily(transferCandidates);
+    // Only the two selections below see the rewritten list. The graphics and
+    // present families were picked from the real one and stay as they are.
+    if (portabilityFallbacks_) {
+        familyCapabilities = moltenVkDefaultQueueFamilies(familyCapabilities);
+    }
+
+    // Async compute queue selection: a dedicated compute-only family runs on the
+    // GPU's compute ring and overlaps rasterization best; a second queue in the
+    // graphics family still lets the driver interleave. Neither is required.
+    const AsyncComputeQueueChoice asyncCompute = selectAsyncComputeQueue(familyCapabilities, graphicsFamily);
+    asyncComputeQueueFamily_ = asyncCompute.family;
+    asyncComputeDedicatedFamily_ = asyncCompute.dedicatedFamily;
+    const uint32_t asyncComputeQueueIndex = asyncCompute.queueIndex;
+
+    // Load-time uploads want a DMA family, not just any transfer-capable one.
+    // The policy is a pure function so it can be unit tested; see
+    // rhi/TransferQueueSelection.h for why there is no graphics-family fallback.
+    transferQueueFamily_ = selectTransferQueueFamily(familyCapabilities);
 
     std::map<uint32_t, uint32_t> familyQueueCounts;
     familyQueueCounts[graphicsFamily] = 1;
@@ -485,7 +483,9 @@ void VulkanDevice::createLogicalDevice()
     // than a silently clamped request.
     maxSamplerAnisotropy_ =
         samplerAnisotropyEnabled_ ? std::min(properties.limits.maxSamplerAnisotropy, kMaxSamplerAnisotropy) : 1.0f;
-    drawIndexedIndirectCountAvailable_ = supported12.drawIndirectCount == VK_TRUE &&
+    // Forcing this off leaves the feature enabled on the device and merely
+    // unused, which is also what MoltenVK's missing entry point amounts to.
+    drawIndexedIndirectCountAvailable_ = !portabilityFallbacks_ && supported12.drawIndirectCount == VK_TRUE &&
                                          vkCmdDrawIndexedIndirectCount != nullptr && maxDrawIndirectCount_ > 0;
 
     logCapabilityReport(extensionPlan.optionalOutcomes);
@@ -582,6 +582,13 @@ void VulkanDevice::logCapabilityReport(std::span<const ExtensionOutcome> optiona
         appendRow(outcome.name, outcome.enabled(), detail);
     }
     Logger::info(message);
+
+    // Stated separately so a run can assert it: the report rows alone look the
+    // same as a device that genuinely lacks these capabilities.
+    if (portabilityFallbacks_) {
+        Logger::info("Portability fallbacks forced by --portability-fallbacks: indirect draw count, async compute "
+                     "queue and transfer queue are off, as under MoltenVK's default queue families.");
+    }
 
     // A single warn keeps a degraded run greppable at one level, which is what
     // the individual warn lines used to provide.

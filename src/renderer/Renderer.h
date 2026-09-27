@@ -134,6 +134,10 @@ struct RendererStartupOverrides {
     // decided before the renderer exists. See
     // rhi::VulkanContextOptions::synchronizationValidation.
     bool synchronizationValidation = false;
+
+    // Run on the paths MoltenVK takes by default. Device-creation policy; see
+    // rhi::VulkanContextOptions::portabilityFallbacks.
+    bool portabilityFallbacks = false;
 };
 
 // Whether this build carries the fetched sample scene, and what to do when it

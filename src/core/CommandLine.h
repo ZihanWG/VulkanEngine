@@ -166,6 +166,12 @@ struct LaunchOptions {
     // carry unasked.
     bool overdraw = false;
 
+    // Force off the device capabilities MoltenVK lacks by default -- indirect
+    // draw count, the async compute queue, the transfer queue -- so a GPU that
+    // has them runs the fallback paths only the Mac otherwise takes. See
+    // rhi/PortabilityFallbacks.h. Device-creation policy, so startup only.
+    bool portabilityFallbacks = false;
+
     // Capture the swapchain image of this frame (1-based) to captureOutput. The
     // loop keeps drawing past it until the readback lands, then exits.
     uint64_t captureFrame = 0;

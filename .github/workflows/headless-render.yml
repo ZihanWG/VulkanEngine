@@ -54,6 +54,8 @@ jobs:
       CAPTURE_PATH: artifacts/lavapipe_frame30.png
       GOLDEN_PATH: tests/golden/lavapipe_frame30.png
       DIFF_PATH: artifacts/lavapipe_frame30_diff.png
+      PORTABILITY_CAPTURE_PATH: artifacts/lavapipe_frame30_portability.png
+      PORTABILITY_DIFF_PATH: artifacts/lavapipe_frame30_portability_diff.png
       # Frames per configuration-sweep leg. The sweep asserts the shape of the
       # frame graph, not convergence, so it needs only enough frames to clear
       # first-frame resource setup and reach the steady loop. The default leg
@@ -303,6 +305,9 @@ jobs:
           scene-occlusion|--scene occlusion
           lod-crossfade-orbit|--scene stress --camera-orbit 0.05
           cornell-with-gi|--scene cornell --settings config/ci/irradiance-probes.json
+          portability-fallbacks|--portability-fallbacks
+          portability-occlusion|--scene occlusion --portability-fallbacks
+          portability-lod-crossfade|--scene stress --camera-orbit 0.05 --portability-fallbacks
           LEGS
 
           summary=artifacts/sweep/summary.txt
@@ -408,6 +413,44 @@ jobs:
           echo "Driver version in this run:"
           grep -E "driverInfo|deviceName" lavapipe-summary.txt || true
           exit 1
+
+      # The same frame on the paths MoltenVK takes by default: no indirect draw
+      # count, no async compute queue, no transfer queue. lavapipe has no
+      # dedicated queues to begin with, but it does have indirect draw count, so
+      # without the flag the fixed-slot indirect path -- the one two-phase
+      # occlusion and LOD cross-fades take on the Mac -- runs nowhere in CI, and
+      # a change that broke it could not fail here.
+      #
+      # It is compared against the SAME golden. The fixed-slot indirect path
+      # zeroes the commands it does not use instead of compacting, which draws
+      # the same geometry, and moving compute and uploads onto the graphics
+      # queue changes where work runs rather than what it produces -- so on the
+      # RTX machine the two frames are pixel-identical. A difference here is a
+      # bug in one of the two paths, not a reason to add a second golden.
+      - name: Render on the portability fallbacks and compare against the same golden
+        run: |
+          set +e
+          timeout 1500 xvfb-run -a --server-args="-screen 0 1280x720x24"             ./build/ci-debug/VulkanEngine               --deterministic               --exit-after-frames "$RENDER_FRAMES"               --capture-frame "$CAPTURE_FRAME"               --capture-output "$PORTABILITY_CAPTURE_PATH"               --fail-on-validation-error               --portability-fallbacks             > artifacts/portability-render.log 2>&1
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            tail -n 30 artifacts/portability-render.log
+            echo "::error::The renderer exited with status $status on the portability fallbacks."
+            exit 1
+          fi
+          # Without this a flag that stopped reaching the device would render
+          # the ordinary frame and pass.
+          grep -q "Portability fallbacks forced" artifacts/portability-render.log || {
+            echo "::error::The run did not report forcing the portability fallbacks."
+            exit 1
+          }
+
+          ./build/ci-debug/compare_images             "$PORTABILITY_CAPTURE_PATH" "$GOLDEN_PATH"             --channel-tolerance 1             --max-differing-fraction 0             --diff-output "$PORTABILITY_DIFF_PATH"
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            echo "::error::The frame rendered on the portability fallbacks differs from the golden."
+            echo "::error::Both paths should draw the same image; do not re-baseline for this."
+            exit 1
+          fi
 
       - name: Upload render logs
         if: always()

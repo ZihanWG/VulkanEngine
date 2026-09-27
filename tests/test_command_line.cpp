@@ -81,6 +81,17 @@ TEST_CASE("The sync validation flag turns on the check without the self-test")
     REQUIRE_FALSE(config.syncValidationSelfTest);
 }
 
+TEST_CASE("Portability fallbacks are off unless asked for")
+{
+    LaunchOptions defaults{};
+    REQUIRE(parse({"--deterministic"}, defaults));
+    CHECK_FALSE(defaults.portabilityFallbacks);
+
+    LaunchOptions forced{};
+    REQUIRE(parse({"--portability-fallbacks"}, forced));
+    CHECK(forced.portabilityFallbacks);
+}
+
 TEST_CASE("The self-test flag implies the check it tests")
 {
     // A self-test with synchronization validation off would report the exact

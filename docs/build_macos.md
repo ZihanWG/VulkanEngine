@@ -148,6 +148,24 @@ existing repository/build paths.
 - Logical device creation always requires `VK_KHR_swapchain` and enables
   `VK_KHR_portability_subset` only when the selected physical device reports it.
 
+## The MoltenVK Paths Off a Mac
+
+Under its default configuration MoltenVK lacks three optional capabilities the
+RTX machine and lavapipe both have: `vkCmdDrawIndexedIndirectCount`, an async
+compute queue and a dedicated transfer queue. The renderer has a fallback for
+each, and those fallbacks used to run only here. `--portability-fallbacks`
+forces the three off on any GPU, so they can be exercised on Windows and are in
+CI:
+
+```sh
+./VulkanEngine --portability-fallbacks --deterministic --exit-after-frames 40     --sync-validation --fail-on-validation-error
+```
+
+It is not a MoltenVK emulator. It changes which capabilities the renderer
+selects, not how the GPU executes them, so anything specific to Metal -- a
+tile-based GPU, `VK_KHR_portability_subset` limits, MoltenVK's own translation --
+still needs a Mac.
+
 ## Continuous Integration
 
 The `macOS CI` workflow (`.github/workflows/macos-ci.yml`) builds the shaders,
