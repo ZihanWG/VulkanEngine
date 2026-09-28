@@ -134,6 +134,12 @@ clang-tidy is clean; read the step's log. The check set is deliberately narrow
 (`bugprone-*`, `performance-*`, a few `modernize-*`) so that what it does print
 is worth reading. Tighten it once the tree is clean under the current set.
 
+On a pull request it analyses only the translation units the pull request
+changed (each changed `src/` `.cpp`, plus the `.cpp` beside each changed
+header) and prints that list; the whole tree is analysed on every push to
+`main`. Run `run-clang-tidy -p build/ci-debug 'src/.*'` locally for the full
+pass before a change that touches widely included headers.
+
 ## What CI checks
 
 | Check | Workflow | Blocking |
