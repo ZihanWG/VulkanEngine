@@ -665,6 +665,14 @@ private:
     void uploadGpuCullFrameParams(uint32_t frameIndex, bool occlusionEnabledThisFrame);
     void updateGpuCullInputBuffer(uint32_t frameIndex);
     void updateGpuShadowCullInputBuffer(uint32_t frameIndex);
+    // Shared body of the two cull-input builds above: one GpuCullDrawItem per
+    // draw item, written in place into `buffer`. The main and shadow inputs
+    // differ only in their batch list, the command slots each batch reserves
+    // per draw item, and whether debug caster isolation applies.
+    void writeGpuCullInput(rhi::VulkanBuffer& buffer,
+                           const std::vector<MeshDrawBatch>& batches,
+                           uint32_t commandSlotsPerDrawItem,
+                           bool applyShadowCasterIsolation);
     void updateFrameData(uint32_t frameIndex);
     // Captures this frame's view-projection and per-object model matrices as the
     // "previous frame" inputs for next frame's motion vectors.

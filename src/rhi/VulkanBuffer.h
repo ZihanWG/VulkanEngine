@@ -64,6 +64,13 @@ public:
 
     void* map();
     void unmap();
+    // Maps [offset, offset + size) for the caller to write in place, instead of
+    // building the data elsewhere and copying it in with upload(). Throws if the
+    // range exceeds the buffer. Follow the writes with flush() and unmap().
+    [[nodiscard]] std::span<std::byte> mapRange(VkDeviceSize offset, VkDeviceSize size);
+    // Makes host writes to a mapped range visible to the device; a no-op on
+    // host-coherent memory. upload() does this itself.
+    void flush(VkDeviceSize offset, VkDeviceSize size);
     void upload(std::span<const std::byte> data, VkDeviceSize offset = 0);
     void download(std::span<std::byte> data, VkDeviceSize offset = 0);
 

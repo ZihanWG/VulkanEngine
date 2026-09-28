@@ -958,10 +958,21 @@ void Renderer::framePrepParallelFor(size_t count, const std::function<void(size_
     framePrepParallelFor(count, kMinChunkSize, body);
 }
 
+namespace {
+// Workers one frame prep dispatch may wake. Each loop here is tens of
+// microseconds and several run back to back per frame, so a wake-up is not
+// small next to the work. Waking the whole pool (23 workers on the i9-12900HX
+// this was measured on) made several loops slower than running them serially,
+// and slowed the single-threaded recording that follows as well; 5-8 was the
+// plateau of a sweep and 2-3 left parallelism unused. See
+// docs/parallel_frame_prep.md.
+constexpr size_t kFramePrepMaxHelpers = 6;
+} // namespace
+
 void Renderer::framePrepParallelFor(size_t count, size_t minChunkSize, const std::function<void(size_t, size_t)>& body)
 {
     if (parallelFramePrepEnabled_) {
-        jobSystem_.parallelFor(count, minChunkSize, body);
+        jobSystem_.parallelFor(count, minChunkSize, body, kFramePrepMaxHelpers);
     } else if (count > 0) {
         body(0, count);
     }
@@ -1448,60 +1459,12 @@ void Renderer::updateGpuCullInputBuffer(uint32_t frameIndex)
                 std::span<const renderer::MeshLod>(frameMeshLodTable_.data(), frameMeshLodTable_.size())));
     }
 
-    std::vector<GpuCullDrawItem> cullDrawItems(allDrawItems_.size());
-    framePrepParallelFor(allDrawItems_.size(), [&](size_t begin, size_t end) {
-        for (size_t drawIndex = begin; drawIndex < end; ++drawIndex) {
-            const DrawItem& drawItem = allDrawItems_[drawIndex];
-            GpuCullDrawItem& gpuDrawItem = cullDrawItems[drawIndex];
-
-            renderer::Aabb worldBounds{};
-            if (drawItem.objectIndex < frameWorldBounds_.size()) {
-                worldBounds = frameWorldBounds_[drawItem.objectIndex];
-            }
-
-            // w carries the object's scale for screen-space-error LOD; the
-            // culling tests read xyz only.
-            const float worldScale = drawItem.objectIndex < frameModelMatrices_.size()
-                                         ? renderer::maxAxisScale(frameModelMatrices_[drawItem.objectIndex])
-                                         : 1.0f;
-            if (worldBounds.valid()) {
-                gpuDrawItem.boundsMin = glm::vec4(worldBounds.min, worldScale);
-                gpuDrawItem.boundsMax = glm::vec4(worldBounds.max, 0.0f);
-            } else {
-                gpuDrawItem.boundsMin =
-                    glm::vec4(-kUnboundedCullExtent, -kUnboundedCullExtent, -kUnboundedCullExtent, worldScale);
-                gpuDrawItem.boundsMax =
-                    glm::vec4(kUnboundedCullExtent, kUnboundedCullExtent, kUnboundedCullExtent, 0.0f);
-            }
-
-            gpuDrawItem.indexCount = drawItem.indexCount;
-            gpuDrawItem.firstIndex = drawItem.firstIndex;
-            gpuDrawItem.vertexOffset = drawItem.vertexOffset;
-            gpuDrawItem.objectFrameDataIndex = drawItem.frameDataIndex;
-
-            // (base, count) into the per-frame LOD table; (0, 0) when the mesh
-            // has no chain, which makes the shader emit the authored range.
-            const glm::uvec2 lodRange =
-                drawIndex < frameDrawItemLodRanges_.size() ? frameDrawItemLodRanges_[drawIndex] : glm::uvec2(0);
-            gpuDrawItem.lodBase = lodRange.x;
-            gpuDrawItem.lodCount = lodRange.y;
-        }
-    });
-
-    for (size_t batchIndex = 0; batchIndex < meshDrawBatches_.size(); ++batchIndex) {
-        const MeshDrawBatch& batch = meshDrawBatches_[batchIndex];
-        const uint32_t endDrawItem =
-            std::min<uint32_t>(batch.beginDrawItem + batch.drawItemCount, static_cast<uint32_t>(cullDrawItems.size()));
-        for (uint32_t drawItemIndex = batch.beginDrawItem; drawItemIndex < endDrawItem; ++drawItemIndex) {
-            cullDrawItems[drawItemIndex].batchIndex = static_cast<uint32_t>(batchIndex);
-            // In commands, at the main pass's slots per draw item, so a batch's
-            // region also fits the outgoing halves of its cross-fades.
-            cullDrawItems[drawItemIndex].batchOutputBase = batch.compactedCommandOffset * frameMainCommandSlots_;
-        }
-    }
-
-    gpuCulling_.cullInputBuffer(frameIndex)
-        .upload(std::as_bytes(std::span<const GpuCullDrawItem>(cullDrawItems.data(), cullDrawItems.size())));
+    // At the main pass's slots per draw item, so a batch's region also fits the
+    // outgoing halves of its cross-fades.
+    writeGpuCullInput(gpuCulling_.cullInputBuffer(frameIndex),
+                      meshDrawBatches_,
+                      frameMainCommandSlots_,
+                      /*applyShadowCasterIsolation=*/false);
 }
 
 // Where an isolated-out shadow caster is sent: far enough outside any cascade
@@ -1532,11 +1495,47 @@ void Renderer::updateGpuShadowCullInputBuffer(uint32_t frameIndex)
                 std::span<const renderer::MeshLod>(frameMeshLodTable_.data(), frameMeshLodTable_.size())));
     }
 
-    std::vector<GpuCullDrawItem> cullDrawItems(allDrawItems_.size());
-    framePrepParallelFor(allDrawItems_.size(), [&](size_t begin, size_t end) {
+    writeGpuCullInput(gpuCulling_.shadowCullInputBuffer(frameIndex),
+                      gpuShadowMeshDrawBatches_,
+                      1u,
+                      /*applyShadowCasterIsolation=*/true);
+}
+
+// The records are written in place because of where the buffer lives: it is
+// host-visible memory the device reads directly, which on a discrete GPU means
+// write-combined stores across PCIe. Building a zeroed staging vector and
+// copying it in with upload() paid for an allocation, a fill, and a
+// single-threaded copy at write-combined speed -- the copy alone was bigger than
+// the fill. Here each parallel chunk writes its own records, once, in full.
+void Renderer::writeGpuCullInput(rhi::VulkanBuffer& buffer,
+                                 const std::vector<MeshDrawBatch>& batches,
+                                 uint32_t commandSlotsPerDrawItem,
+                                 bool applyShadowCasterIsolation)
+{
+    const size_t drawItemCount = allDrawItems_.size();
+
+    // Batch membership resolved first, serially, so the parallel fill never
+    // revisits a record: a second pass of partial writes into write-combined
+    // memory is exactly what this function avoids. An item outside every batch
+    // keeps the zero batch fields it always had.
+    constexpr uint32_t kNoBatch = std::numeric_limits<uint32_t>::max();
+    std::vector<uint32_t> drawItemBatch(drawItemCount, kNoBatch);
+    for (size_t batchIndex = 0; batchIndex < batches.size(); ++batchIndex) {
+        const MeshDrawBatch& batch = batches[batchIndex];
+        const size_t endDrawItem =
+            std::min<size_t>(static_cast<size_t>(batch.beginDrawItem) + batch.drawItemCount, drawItemCount);
+        for (size_t drawItemIndex = batch.beginDrawItem; drawItemIndex < endDrawItem; ++drawItemIndex) {
+            drawItemBatch[drawItemIndex] = static_cast<uint32_t>(batchIndex);
+        }
+    }
+
+    const std::span<std::byte> mapped =
+        buffer.mapRange(0, static_cast<VkDeviceSize>(drawItemCount * sizeof(GpuCullDrawItem)));
+    auto* cullDrawItems = reinterpret_cast<GpuCullDrawItem*>(mapped.data());
+    framePrepParallelFor(drawItemCount, [&](size_t begin, size_t end) {
         for (size_t drawIndex = begin; drawIndex < end; ++drawIndex) {
             const DrawItem& drawItem = allDrawItems_[drawIndex];
-            GpuCullDrawItem& gpuDrawItem = cullDrawItems[drawIndex];
+            GpuCullDrawItem gpuDrawItem{};
 
             renderer::Aabb worldBounds{};
             if (drawItem.objectIndex < frameWorldBounds_.size()) {
@@ -1558,6 +1557,24 @@ void Renderer::updateGpuShadowCullInputBuffer(uint32_t frameIndex)
                     glm::vec4(kUnboundedCullExtent, kUnboundedCullExtent, kUnboundedCullExtent, 0.0f);
             }
 
+            gpuDrawItem.indexCount = drawItem.indexCount;
+            gpuDrawItem.firstIndex = drawItem.firstIndex;
+            gpuDrawItem.vertexOffset = drawItem.vertexOffset;
+            gpuDrawItem.objectFrameDataIndex = drawItem.frameDataIndex;
+
+            const uint32_t batchIndex = drawItemBatch[drawIndex];
+            if (batchIndex != kNoBatch) {
+                gpuDrawItem.batchIndex = batchIndex;
+                gpuDrawItem.batchOutputBase = batches[batchIndex].compactedCommandOffset * commandSlotsPerDrawItem;
+            }
+
+            // (base, count) into the per-frame LOD table; (0, 0) when the mesh
+            // has no chain, which makes the shader emit the authored range.
+            const glm::uvec2 lodRange =
+                drawIndex < frameDrawItemLodRanges_.size() ? frameDrawItemLodRanges_[drawIndex] : glm::uvec2(0);
+            gpuDrawItem.lodBase = lodRange.x;
+            gpuDrawItem.lodCount = lodRange.y;
+
             // Diagnostic isolation, applied to the SHARED shadow cull input so
             // the object leaves every shadow path at once -- see
             // CsmSettings::debugOnlyShadowCasterObject.
@@ -1573,45 +1590,20 @@ void Renderer::updateGpuShadowCullInputBuffer(uint32_t frameIndex)
             //
             // The entry stays in place rather than being removed: the buffer is
             // indexed by draw item, and dropping entries would renumber it under
-            // the batch offsets computed below.
-            if (isShadowCasterIsolatedOut(drawItem.objectIndex)) {
+            // the batch offsets computed above.
+            if (applyShadowCasterIsolation && isShadowCasterIsolatedOut(drawItem.objectIndex)) {
                 gpuDrawItem.boundsMin = glm::vec4(kIsolatedCasterExile);
                 gpuDrawItem.boundsMax = glm::vec4(kIsolatedCasterExile + 1.0f);
                 gpuDrawItem.indexCount = 0;
-                gpuDrawItem.firstIndex = drawItem.firstIndex;
-                gpuDrawItem.vertexOffset = drawItem.vertexOffset;
-                gpuDrawItem.objectFrameDataIndex = drawItem.frameDataIndex;
                 gpuDrawItem.lodBase = 0;
                 gpuDrawItem.lodCount = 0;
-                continue;
             }
 
-            gpuDrawItem.indexCount = drawItem.indexCount;
-            gpuDrawItem.firstIndex = drawItem.firstIndex;
-            gpuDrawItem.vertexOffset = drawItem.vertexOffset;
-            gpuDrawItem.objectFrameDataIndex = drawItem.frameDataIndex;
-
-            // (base, count) into the per-frame LOD table; (0, 0) when the mesh
-            // has no chain, which makes the shader emit the authored range.
-            const glm::uvec2 lodRange =
-                drawIndex < frameDrawItemLodRanges_.size() ? frameDrawItemLodRanges_[drawIndex] : glm::uvec2(0);
-            gpuDrawItem.lodBase = lodRange.x;
-            gpuDrawItem.lodCount = lodRange.y;
+            cullDrawItems[drawIndex] = gpuDrawItem;
         }
     });
-
-    for (size_t batchIndex = 0; batchIndex < gpuShadowMeshDrawBatches_.size(); ++batchIndex) {
-        const MeshDrawBatch& batch = gpuShadowMeshDrawBatches_[batchIndex];
-        const uint32_t endDrawItem =
-            std::min<uint32_t>(batch.beginDrawItem + batch.drawItemCount, static_cast<uint32_t>(cullDrawItems.size()));
-        for (uint32_t drawItemIndex = batch.beginDrawItem; drawItemIndex < endDrawItem; ++drawItemIndex) {
-            cullDrawItems[drawItemIndex].batchIndex = static_cast<uint32_t>(batchIndex);
-            cullDrawItems[drawItemIndex].batchOutputBase = batch.compactedCommandOffset;
-        }
-    }
-
-    gpuCulling_.shadowCullInputBuffer(frameIndex)
-        .upload(std::as_bytes(std::span<const GpuCullDrawItem>(cullDrawItems.data(), cullDrawItems.size())));
+    buffer.flush(0, static_cast<VkDeviceSize>(mapped.size()));
+    buffer.unmap();
 }
 
 void Renderer::updateIndirectDrawBuffer(uint32_t frameIndex)
@@ -2296,31 +2288,38 @@ void Renderer::uploadObjectFrameData(uint32_t frameIndex)
     // submission choice rather than a different shader-data contract.
     const uint32_t cascadeCount = activeCascadeCount();
     const size_t objectFrameCount = std::min(allDrawItems_.size(), static_cast<size_t>(kMaxDrawItems));
-    std::vector<ObjectFrameData> objectFrameData(objectFrameCount);
+    rhi::VulkanBuffer& objectDataBuffer = frameObjectDataBuffers_.at(frameIndex);
 
     // Per-item fill is one of the heaviest CPU loops of the frame; every iteration
-    // writes only objectFrameData[drawIndex] and reads shared frame state, so it
-    // chunks cleanly across the JobSystem. The model matrix is read from
+    // writes only its own record and reads shared frame state, so it chunks
+    // cleanly across the JobSystem. The model matrix is read from
     // frameModelMatrices_ rather than composed here, which leaves one mat4
     // multiply (prevMvpNoJitter) where there used to be six.
+    //
+    // Written in place, once per record and in full, for the reason
+    // writeGpuCullInput gives: the single-threaded copy out of a staging vector
+    // into this write-combined memory cost more than the fill. A record with
+    // nothing to describe is still written, zeroed, as the staging vector's
+    // value-initialised slot used to be.
+    const std::span<std::byte> mapped =
+        objectDataBuffer.mapRange(0, static_cast<VkDeviceSize>(objectFrameCount * sizeof(ObjectFrameData)));
+    auto* objectFrameData = reinterpret_cast<ObjectFrameData*>(mapped.data());
     framePrepParallelFor(objectFrameCount, [&](size_t begin, size_t end) {
         for (size_t drawIndex = begin; drawIndex < end; ++drawIndex) {
+            ObjectFrameData frameData{};
             const DrawItem& drawItem = allDrawItems_[drawIndex];
-            if (drawItem.objectIndex >= renderObjects_.size()) {
-                continue;
-            }
-
-            const renderer::RenderObject& object = renderObjects_[drawItem.objectIndex];
-            if (!object.mesh) {
+            const renderer::RenderObject* object =
+                drawItem.objectIndex < renderObjects_.size() ? &renderObjects_[drawItem.objectIndex] : nullptr;
+            if (object == nullptr || !object->mesh) {
+                objectFrameData[drawIndex] = frameData;
                 continue;
             }
 
             const glm::mat4& model = frameModelMatrices_[drawItem.objectIndex];
-            ObjectFrameData& frameData = objectFrameData[drawIndex];
             frameData.model = model;
             frameData.prevMvpNoJitter =
-                previousFrameViewProjection_ * (object.previousModelValid ? object.previousModelMatrix : model);
-            const renderer::Material* material = drawItem.material ? drawItem.material : object.material;
+                previousFrameViewProjection_ * (object->previousModelValid ? object->previousModelMatrix : model);
+            const renderer::Material* material = drawItem.material ? drawItem.material : object->material;
             if (material) {
                 frameData.baseColorFactor = material->baseColorFactor;
                 frameData.materialParams = {material->metallic,
@@ -2334,13 +2333,13 @@ void Renderer::uploadObjectFrameData(uint32_t frameIndex)
                 frameData.emissiveFactor =
                     glm::vec4(material->emissiveFactor, material->hasEmissiveTexture ? 1.0f : 0.0f);
             }
+            objectFrameData[drawIndex] = frameData;
         }
     });
+    objectDataBuffer.flush(0, static_cast<VkDeviceSize>(mapped.size()));
+    objectDataBuffer.unmap();
 
     uploadFrameConstants(frameIndex, cascadeCount);
-
-    frameObjectDataBuffers_.at(frameIndex)
-        .upload(std::as_bytes(std::span<const ObjectFrameData>(objectFrameData.data(), objectFrameData.size())));
 
     // The skinned demo mesh isn't a RenderObject; give it its own ObjectFrameData
     // in the reserved last slot (same lighting/camera state as the scene draws).
@@ -2354,9 +2353,8 @@ void Renderer::uploadObjectFrameData(uint32_t frameIndex)
         skinnedData.materialParams = {0.1f, 0.55f, 1.0f, renderer::kNoAlphaTestCutoff};
         skinnedData.textureIndices = {
             bindlessBaseColorFallbackIndex_, bindlessNormalFallbackIndex_, bindlessMetallicRoughnessFallbackIndex_, 0};
-        frameObjectDataBuffers_.at(frameIndex)
-            .upload(std::as_bytes(std::span<const ObjectFrameData>(&skinnedData, 1)),
-                    static_cast<VkDeviceSize>(kSkinnedObjectFrameSlot) * sizeof(ObjectFrameData));
+        objectDataBuffer.upload(std::as_bytes(std::span<const ObjectFrameData>(&skinnedData, 1)),
+                                static_cast<VkDeviceSize>(kSkinnedObjectFrameSlot) * sizeof(ObjectFrameData));
     }
 }
 

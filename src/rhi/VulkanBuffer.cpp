@@ -163,6 +163,23 @@ void VulkanBuffer::unmap()
     }
 }
 
+std::span<std::byte> VulkanBuffer::mapRange(VkDeviceSize offset, VkDeviceSize size)
+{
+    if (offset > size_ || size > size_ - offset) {
+        throw std::runtime_error("VulkanBuffer mapRange would exceed buffer size.");
+    }
+    auto* mapped = static_cast<std::byte*>(map()) + static_cast<size_t>(offset);
+    return {mapped, static_cast<size_t>(size)};
+}
+
+void VulkanBuffer::flush(VkDeviceSize offset, VkDeviceSize size)
+{
+    if (size == 0) {
+        return;
+    }
+    VK_CHECK(vmaFlushAllocation(context_->allocator(), allocation_, offset, size));
+}
+
 void VulkanBuffer::upload(std::span<const std::byte> data, VkDeviceSize offset)
 {
     if (data.empty()) {
