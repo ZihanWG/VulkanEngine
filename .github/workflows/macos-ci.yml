@@ -34,7 +34,7 @@ jobs:
       # MoltenVK, which only a run of the renderer would load. Homebrew has all
       # three without the LunarG installer's download and unpack step.
       - name: Install the Vulkan headers, loader and shader compiler
-        run: brew install ninja vulkan-headers vulkan-loader shaderc
+        run: brew install ccache ninja vulkan-headers vulkan-loader shaderc
 
       # FindVulkan reads VULKAN_SDK the way it does on a machine with the LunarG
       # SDK sourced, so the Homebrew prefix stands in for the SDK root. Pointing
@@ -57,6 +57,27 @@ jobs:
             exit 1
           }
           glslc --version
+
+      # Compiled objects carried between runs. The key is per commit, so every
+      # run saves what it built, and restore-keys hands the next run the most
+      # recent entry -- on a pull request that includes what main saved. CMake
+      # takes the launcher from the environment, so no configure line changes.
+      - name: Restore the compiler cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-${{ runner.os }}-${{ github.workflow }}-${{ github.job }}-${{ github.sha }}
+          restore-keys: ccache-${{ runner.os }}-${{ github.workflow }}-${{ github.job }}-
+
+      - name: Route the compilers through the cache
+        run: |
+          {
+            echo "CCACHE_DIR=${{ github.workspace }}/.ccache"
+            echo "CCACHE_MAXSIZE=1G"
+            echo "CMAKE_C_COMPILER_LAUNCHER=ccache"
+            echo "CMAKE_CXX_COMPILER_LAUNCHER=ccache"
+          } >> "$GITHUB_ENV"
+          ccache --zero-stats
 
       # Warnings are errors here, as on Windows, because the first-party build
       # is measured clean under AppleClang's -Wall -Wextra -Wpedantic. The two
@@ -83,3 +104,9 @@ jobs:
 
       - name: Shader constant parity
         run: python3 tools/check_shader_constants.py
+
+      # The hit rate is the evidence that the cache is doing anything; a run
+      # that restored nothing reads the same as a warm one otherwise.
+      - name: Compiler cache statistics
+        if: always()
+        run: ccache --show-stats

@@ -156,8 +156,16 @@ jobs:
       # the seven translation units that include it, so the true count there is
       # unknown rather than zero. Turning it on for Linux is a separate change
       # that has to start with that measurement.
+      # /MP lets cl compile a project's files in parallel. Without it MSBuild
+      # runs projects side by side but each one's sources one at a time, so the
+      # test target -- one project, dozens of files -- compiled them one after
+      # another for four minutes. CFLAGS and CXXFLAGS seed the first configure, and CMake keeps
+      # its own defaults after them.
       - name: Configure CMake
         shell: pwsh
+        env:
+          CFLAGS: /MP
+          CXXFLAGS: /MP
         run: >
           cmake -S . -B build
           -G "Visual Studio 17 2022" -A x64
