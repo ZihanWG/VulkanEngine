@@ -68,9 +68,10 @@ jobs:
       # first-frame resource setup and reach the steady loop. The default leg
       # keeps its 30 because it also gates on pixels.
       SWEEP_FRAMES: 10
-      # Sweep legs run this many at a time. The runner has four cores, and a
-      # leg's startup -- llvmpipe compiling every pipeline -- is mostly one of
-      # them, so running them one after another left the rest idle.
+      # Sweep legs run this many at a time on the four-core runner. llvmpipe
+      # already spreads one leg over several cores, so this is not a 4x: on
+      # the first parallel run each leg took 3.3x as long beside three others
+      # as it had alone.
       SWEEP_LANES: 4
 
     steps:
@@ -280,8 +281,9 @@ jobs:
       #
       # Within the job the legs do run concurrently, SWEEP_LANES at a time: a
       # leg is small, but fifty-odd of them one after another had become the
-      # longest step in CI, and the runner's other cores sat idle through it.
-      # That buys the wall-clock without repeating the setup above.
+      # longest step in CI. That buys some wall-clock without repeating the
+      # setup above -- less than the lane count, because one leg already
+      # keeps several of the runner's cores busy.
       #
       # Every leg runs even after one fails, so a red run names every broken
       # configuration instead of only the first.
@@ -360,14 +362,12 @@ jobs:
             local report="artifacts/sweep/$name.report"
 
             set +e
-            # Each lane has its own X display, named rather than picked with -a,
-            # whose free-number probe races when several start at once; and its
-            # own XDG_CACHE_HOME, because the engine saves its pipeline cache
-            # through one fixed .tmp name that two exiting processes would both
-            # write.
+            # DISPLAY is the lane's own X server, started once below. Each lane
+            # also has its own XDG_CACHE_HOME, because the engine saves its
+            # pipeline cache through one fixed .tmp name that two exiting
+            # processes would both write.
             # shellcheck disable=SC2086 -- $args is a deliberate argument list.
             XDG_CACHE_HOME="$RUNNER_TEMP/sweep-cache-$lane" timeout 600 \
-              xvfb-run --server-num=$((90 + lane)) --server-args="-screen 0 1280x720x24" \
               ./build/ci-debug/VulkanEngine --deterministic --exit-after-frames "$SWEEP_FRAMES" --fail-on-validation-error --sync-validation $args > "$log" 2>&1
             local status=$?
             set -e
@@ -425,11 +425,28 @@ jobs:
               fi
             done
             (
+              # One X server per lane for all of its legs. Starting one per
+              # leg with xvfb-run on a fixed display number failed: the
+              # previous leg's server had not always released the display when
+              # the next one asked for it ("Xvfb failed to start").
+              display=$((90 + lane))
+              Xvfb ":$display" -screen 0 1280x720x24 -nolisten tcp > "artifacts/sweep/xvfb-$lane.log" 2>&1 &
+              xvfb_pid=$!
+              for _ in $(seq 100); do
+                [ -S "/tmp/.X11-unix/X$display" ] && break
+                sleep 0.1
+              done
+              if [ ! -S "/tmp/.X11-unix/X$display" ]; then
+                echo "::error::Xvfb :$display for sweep lane $lane did not start; its legs will fail."
+              fi
+              export DISPLAY=":$display"
+
               for ((i = lane; i < ${#legs[@]}; i += SWEEP_LANES)); do
                 IFS='|' read -r name args <<<"${legs[$i]}"
                 echo "=== lane $lane: $name ($args) ==="
                 run_leg "$name" "$args" "$lane"
               done
+              kill "$xvfb_pid" 2>/dev/null || true
             ) &
           done
           wait
