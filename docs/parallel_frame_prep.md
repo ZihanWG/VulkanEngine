@@ -102,10 +102,12 @@ runtime toggle (below) and falls back to the inline path when disabled:
    One consumer deliberately stays off the cache: `updateVsmResidency` runs near
    the top of `drawFrame`, before `updateFrameData` rebuilds the array, so it
    composes its own matrices rather than hashing the previous frame's.
-2. **Per-object frame data** (`uploadObjectFrameData`) — the heaviest loop:
-   six mat4 multiplies (jittered MVP, unjittered current/previous MVP for
-   motion vectors, four cascade light MVPs) plus material lookups per draw
-   item, written into disjoint `ObjectFrameData` slots.
+2. **Per-object frame data** (`uploadObjectFrameData`) — one mat4 multiply
+   (the unjittered previous-frame MVP for motion vectors; everything shared by
+   the frame lives in `FrameConstants`) plus material lookups per draw item.
+   Each chunk writes its 192-byte records **straight into the mapped
+   per-frame buffer**, once and in full (see "Writing GPU records in place"
+   below).
 3. **CPU frustum culling** (`buildVisibleDrawItems`) — per-object AABB tests
    with per-chunk stat counters reduced into atomics. The visibility flags use
    `std::vector<uint8_t>` rather than `std::vector<bool>`: parallel chunks
@@ -117,7 +119,50 @@ runtime toggle (below) and falls back to the inline path when disabled:
    per-object loop stays serial because `parallelFor` must not nest.
 5. **GPU-cull input builds** (`updateGpuCullInputBuffer`,
    `updateGpuShadowCullInputBuffer`) — per-draw-item AABB/command fill from the
-   bounds cache.
+   bounds cache. Both go through one writer, `writeGpuCullInput`, which differs
+   per caller only in the batch list, command slots per draw item, and debug
+   caster isolation. Batch membership is resolved serially first, so the
+   parallel fill writes each 64-byte record exactly once, in place.
+
+### Writing GPU records in place
+
+The object-data and cull-input buffers are host-visible memory the device reads
+directly (`VMA_MEMORY_USAGE_AUTO` with sequential host writes), which on a
+discrete GPU is write-combined memory across PCIe. They used to be built in a
+zeroed `std::vector`, then copied in with `VulkanBuffer::upload`. Timed inside
+the function on `--scene stress` (2322 draw items), the copy cost more than the
+work:
+
+| per frame | allocate + zero | parallel fill | single-threaded copy |
+| --- | --- | --- | --- |
+| object frame data (446 KB) | 0.014 ms | 0.025 ms | **0.068 ms** |
+| main cull input (149 KB) | 0.004 ms | 0.017 ms (+0.006 batch pass) | **0.023 ms** |
+
+The copy ran at ~6.5 GB/s, about what one core gets writing combined stores
+over PCIe. The chunks now write through `VulkanBuffer::mapRange` and the
+function ends with `flush` + `unmap`. Each record is assembled in a local
+and stored whole: a partial or repeated write into write-combined memory is
+the slow case. A record with nothing to describe is written zeroed, as the
+vector's value-initialised slot was. Buffers, lifetimes, the frame-slot fence
+that protects them, and the bytes the GPU reads are all unchanged. Captures of
+`--scene default`, `--scene stress`, and the default scene with
+`csm.debugOnlyShadowCasterObject` set are byte-identical before and after (the
+isolation case differs from a plain capture in 11% of pixels, so it does
+exercise the path).
+
+Same hardware and protocol as above, against the bounded-wake-up build:
+
+| scope | before | after |
+| --- | --- | --- |
+| frame prep CPU | 0.614 / 0.611 / 0.617 ms | **0.541 / 0.547 / 0.541 ms** (-12%) |
+| object frame data upload | 0.108 / 0.108 / 0.109 | 0.075 / 0.075 / 0.076 |
+| shadow frame data | 0.094 / 0.094 / 0.095 | 0.075 / 0.075 / 0.075 |
+| main culling frame data | 0.064 / 0.064 / 0.065 | 0.046 / 0.046 / 0.046 |
+| record CPU | 0.272 / 0.265 / 0.272 | 0.282 / 0.281 / 0.282 |
+
+Record CPU rose by ~0.012 ms in every pair, against 0.07 ms saved in prep. The
+cause is not established; one candidate is PCIe writes still draining while the
+driver writes command memory.
 
 6. **Punctual shadow cache keys** (`updatePunctualShadowCacheState`) — one
    content hash per atlas slot, each walking every draw item. Each slot builds
