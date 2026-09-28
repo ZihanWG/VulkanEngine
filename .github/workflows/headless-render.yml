@@ -68,6 +68,10 @@ jobs:
       # first-frame resource setup and reach the steady loop. The default leg
       # keeps its 30 because it also gates on pixels.
       SWEEP_FRAMES: 10
+      # Sweep legs run this many at a time. The runner has four cores, and a
+      # leg's startup -- llvmpipe compiling every pipeline -- is mostly one of
+      # them, so running them one after another left the rest idle.
+      SWEEP_LANES: 4
 
     steps:
       - name: Checkout
@@ -252,6 +256,11 @@ jobs:
       # billable minutes by the leg count to buy wall-clock this job does not
       # need.
       #
+      # Within the job the legs do run concurrently, SWEEP_LANES at a time: a
+      # leg is small, but fifty-odd of them one after another had become the
+      # longest step in CI, and the runner's other cores sat idle through it.
+      # That buys the wall-clock without repeating the setup above.
+      #
       # Every leg runs even after one fails, so a red run names every broken
       # configuration instead of only the first.
       - name: Sweep the configuration matrix
@@ -320,17 +329,28 @@ jobs:
           summary=artifacts/sweep/summary.txt
           : > "$summary"
 
-          while IFS='|' read -r name args; do
-            [ -z "$name" ] && continue
-            log="artifacts/sweep/$name.log"
-            echo "=== $name ($args) ==="
+          # One leg: render it, judge it, and leave the verdict in
+          # <name>.verdict and any failure detail in <name>.report, so lanes
+          # running concurrently never interleave their output.
+          run_leg() {
+            local name="$1" args="$2" lane="$3"
+            local log="artifacts/sweep/$name.log"
+            local report="artifacts/sweep/$name.report"
 
             set +e
+            # Each lane has its own X display, named rather than picked with -a,
+            # whose free-number probe races when several start at once; and its
+            # own XDG_CACHE_HOME, because the engine saves its pipeline cache
+            # through one fixed .tmp name that two exiting processes would both
+            # write.
             # shellcheck disable=SC2086 -- $args is a deliberate argument list.
-            timeout 600 xvfb-run -a --server-args="-screen 0 1280x720x24" ./build/ci-debug/VulkanEngine --deterministic --exit-after-frames "$SWEEP_FRAMES" --fail-on-validation-error --sync-validation $args > "$log" 2>&1
-            status=$?
+            XDG_CACHE_HOME="$RUNNER_TEMP/sweep-cache-$lane" timeout 600 \
+              xvfb-run --server-num=$((90 + lane)) --server-args="-screen 0 1280x720x24" \
+              ./build/ci-debug/VulkanEngine --deterministic --exit-after-frames "$SWEEP_FRAMES" --fail-on-validation-error --sync-validation $args > "$log" 2>&1
+            local status=$?
             set -e
 
+            local backstop frames clean verdict
             backstop=$(grep -o "Render graph backstop: .*" "$log" || true)
             # awk rather than a sed backreference: the frame count is a
             # positional field in a fixed phrase, so this needs no escape.
@@ -355,18 +375,56 @@ jobs:
               verdict="FAILED (backstop)"
             fi
 
-            echo "$name: $verdict" >> "$summary"
+            echo "$name: $verdict" > "artifacts/sweep/$name.verdict"
 
             if [ "$verdict" != "ok" ]; then
-              echo "::error::Configuration '$name' $verdict"
-              echo "${backstop:-<no backstop line>}"
-              # The named findings the engine logs beside the summary line.
-              # Without them a red run is a local-repro exercise in a
-              # configuration nobody was running.
-              grep -E "order violation:|unrecorded pass:|declaration issue:|execution order:" "$log" || true
-              tail -n 15 "$log"
+              {
+                echo "::error::Configuration '$name' $verdict"
+                echo "${backstop:-<no backstop line>}"
+                # The named findings the engine logs beside the summary line.
+                # Without them a red run is a local-repro exercise in a
+                # configuration nobody was running.
+                grep -E "order violation:|unrecorded pass:|declaration issue:|execution order:" "$log" || true
+                tail -n 15 "$log"
+              } > "$report"
             fi
-          done < artifacts/sweep/legs.txt
+          }
+
+          # Legs are dealt round-robin to SWEEP_LANES lanes that run side by
+          # side, each working through its share in order. Every lane starts
+          # from a copy of the cache the gates above warmed, so no lane pays for
+          # a cold shader cache that the sequential loop never paid for.
+          mapfile -t legs < <(grep -v '^[[:space:]]*$' artifacts/sweep/legs.txt)
+          for ((lane = 0; lane < SWEEP_LANES; lane++)); do
+            mkdir -p "$RUNNER_TEMP/sweep-cache-$lane"
+            for warm in mesa_shader_cache VulkanEngine; do
+              if [ -d "$HOME/.cache/$warm" ]; then
+                cp -r "$HOME/.cache/$warm" "$RUNNER_TEMP/sweep-cache-$lane/"
+              fi
+            done
+            (
+              for ((i = lane; i < ${#legs[@]}; i += SWEEP_LANES)); do
+                IFS='|' read -r name args <<<"${legs[$i]}"
+                echo "=== lane $lane: $name ($args) ==="
+                run_leg "$name" "$args" "$lane"
+              done
+            ) &
+          done
+          wait
+
+          # Reassembled in list order. A leg with no verdict file is a lane that
+          # died before judging it, and that must not read as a pass.
+          for entry in "${legs[@]}"; do
+            name="${entry%%|*}"
+            if [ -f "artifacts/sweep/$name.verdict" ]; then
+              cat "artifacts/sweep/$name.verdict" >> "$summary"
+            else
+              echo "$name: FAILED (no verdict; its lane stopped early)" >> "$summary"
+            fi
+            if [ -f "artifacts/sweep/$name.report" ]; then
+              cat "artifacts/sweep/$name.report"
+            fi
+          done
 
           echo ""
           echo "Configuration sweep, $SWEEP_FRAMES frames each:"
