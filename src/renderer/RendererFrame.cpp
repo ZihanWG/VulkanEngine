@@ -958,10 +958,21 @@ void Renderer::framePrepParallelFor(size_t count, const std::function<void(size_
     framePrepParallelFor(count, kMinChunkSize, body);
 }
 
+namespace {
+// Workers one frame prep dispatch may wake. Each loop here is tens of
+// microseconds and several run back to back per frame, so a wake-up is not
+// small next to the work. Waking the whole pool (23 workers on the i9-12900HX
+// this was measured on) made several loops slower than running them serially,
+// and slowed the single-threaded recording that follows as well; 5-8 was the
+// plateau of a sweep and 2-3 left parallelism unused. See
+// docs/parallel_frame_prep.md.
+constexpr size_t kFramePrepMaxHelpers = 6;
+} // namespace
+
 void Renderer::framePrepParallelFor(size_t count, size_t minChunkSize, const std::function<void(size_t, size_t)>& body)
 {
     if (parallelFramePrepEnabled_) {
-        jobSystem_.parallelFor(count, minChunkSize, body);
+        jobSystem_.parallelFor(count, minChunkSize, body, kFramePrepMaxHelpers);
     } else if (count > 0) {
         body(0, count);
     }

@@ -142,6 +142,104 @@ TEST_CASE("parallelFor distributes large ranges across threads", "[jobs]")
     CHECK(threadIds.size() > 1);
 }
 
+TEST_CASE("parallelFor finishes on the calling thread while every worker is busy", "[jobs]")
+{
+    // Chunks are claimed, not assigned: a worker that cannot start in time must
+    // not hold the range up. Parking every worker on a gate the test only opens
+    // after parallelFor returns makes that the only way the call can return --
+    // a chunk handed to a specific worker up front would never finish.
+    constexpr std::size_t workerCount = 3;
+    JobSystem jobs(workerCount);
+
+    std::promise<void> gate;
+    std::shared_future<void> gateOpen = gate.get_future().share();
+    std::atomic<std::size_t> parked{0};
+    std::vector<std::future<void>> blockers;
+    for (std::size_t worker = 0; worker < workerCount; ++worker) {
+        blockers.push_back(jobs.enqueue([gateOpen, &parked] {
+            parked.fetch_add(1);
+            gateOpen.wait();
+        }));
+    }
+    while (parked.load() < workerCount) {
+        std::this_thread::yield();
+    }
+
+    constexpr std::size_t count = 1000;
+    std::vector<int> touches(count, 0);
+    std::mutex mutex;
+    std::set<std::thread::id> threadIds;
+    jobs.parallelFor(count, 1, [&](std::size_t begin, std::size_t end) {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            threadIds.insert(std::this_thread::get_id());
+        }
+        for (std::size_t i = begin; i < end; ++i) {
+            ++touches[i];
+        }
+    });
+
+    CHECK(std::count(touches.begin(), touches.end(), 1) == static_cast<long>(count));
+    REQUIRE(threadIds.size() == 1);
+    CHECK(*threadIds.begin() == std::this_thread::get_id());
+
+    // The helpers queued behind the blockers run after the call has returned and
+    // must find nothing left to do rather than a destroyed batch.
+    gate.set_value();
+    for (std::future<void>& blocker : blockers) {
+        blocker.get();
+    }
+    jobs.parallelFor(64, 1, [](std::size_t, std::size_t) {});
+}
+
+TEST_CASE("parallelFor runs every chunk even when one throws", "[jobs]")
+{
+    JobSystem jobs(4);
+
+    constexpr std::size_t count = 512;
+    std::vector<std::atomic<int>> touches(count);
+    CHECK_THROWS_AS(jobs.parallelFor(count,
+                                     1,
+                                     [&touches](std::size_t begin, std::size_t end) {
+                                         for (std::size_t i = begin; i < end; ++i) {
+                                             touches[i].fetch_add(1);
+                                         }
+                                         if (begin == 0) {
+                                             throw std::runtime_error("first chunk failure");
+                                         }
+                                     }),
+                    std::runtime_error);
+
+    std::size_t touchedOnce = 0;
+    for (const std::atomic<int>& touch : touches) {
+        touchedOnce += touch.load() == 1 ? 1 : 0;
+    }
+    CHECK(touchedOnce == count);
+}
+
+TEST_CASE("parallelFor wakes no more workers than maxHelpers", "[jobs]")
+{
+    JobSystem jobs(4);
+
+    for (const std::size_t maxHelpers : {std::size_t{0}, std::size_t{1}, std::size_t{2}}) {
+        std::mutex mutex;
+        std::set<std::thread::id> threadIds;
+        jobs.parallelFor(
+            256,
+            1,
+            [&](std::size_t, std::size_t) {
+                // Long enough that every woken helper gets a chunk.
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                std::lock_guard<std::mutex> lock(mutex);
+                threadIds.insert(std::this_thread::get_id());
+            },
+            maxHelpers);
+
+        CHECK(threadIds.size() <= maxHelpers + 1);
+        CHECK(threadIds.count(std::this_thread::get_id()) == 1);
+    }
+}
+
 TEST_CASE("parallelFor is a no-op for an empty range", "[jobs]")
 {
     JobSystem jobs(2);
