@@ -102,6 +102,17 @@ runtime toggle (below) and falls back to the inline path when disabled:
    One consumer deliberately stays off the cache: `updateVsmResidency` runs near
    the top of `drawFrame`, before `updateFrameData` rebuilds the array, so it
    composes its own matrices rather than hashing the previous frame's.
+
+   Across frames, `objectTransformCache_` keeps each object's matrix and world
+   AABB together with the transform and local bounds they came from
+   (`renderer::refreshCachedObjectTransform`, GPU-free and unit-tested), so a
+   static object copies last frame's bits instead of recomposing them. Composing
+   was ~75 ns per object on one thread (49 ns for the TRS matrix, 26 ns for the
+   eight-corner bounds). The key is the inputs' **values compared bit for bit**,
+   not a dirty flag. Every writer of a transform is therefore covered without
+   knowing the cache exists, a slot reused by a different object simply misses,
+   and a hit is exactly the bits a fresh compose would give. That exactness is
+   why -0.0 and 0.0 count as different keys.
 2. **Per-object frame data** (`uploadObjectFrameData`) — one mat4 multiply
    (the unjittered previous-frame MVP for motion vectors; everything shared by
    the frame lives in `FrameConstants`) plus material lookups per draw item.
@@ -187,9 +198,33 @@ driver writes command memory.
    expression reaches full parallelism on `stress` and stays serial on
    `default`. `framePrepParallelFor` has an explicit-minimum overload for this.
 
-Kept serial: draw-item append and the mesh-batch scans (order-dependent),
-`stable_sort` by mesh, buffer uploads, the skinned-mesh tail slot, and the
-drain of the punctual dirty-slot list above.
+Kept serial: draw-item append and the mesh-batch scans (order-dependent), the
+draw-item sort, buffer uploads, the skinned-mesh tail slot, and the drain of
+the punctual dirty-slot list above.
+
+The sort is `renderer::sortDrawItemsForBatching`: a stable counting sort over
+the distinct (bucket, doubleSided, mesh) keys. A frame has a handful of those
+against thousands of items. It produces exactly `std::stable_sort`'s order,
+which the tests check on random inputs, and it falls back to `std::stable_sort`
+past 64 distinct keys. The blend bucket's back-to-front sort computes each
+item's camera distance once instead of twice per comparison.
+
+### Static objects and the sort
+
+Release, `--scene stress`, same hardware and protocol as the tables above,
+against the in-place-records build:
+
+| scope | before | after |
+| --- | --- | --- |
+| frame prep CPU | 0.543 / 0.541 / 0.544 ms | **0.461 / 0.466 / 0.461 ms** (-15%) |
+| world bounds | 0.075 / 0.074 / 0.075 | 0.031 / 0.032 / 0.032 |
+| draw items | 0.088 / 0.087 / 0.088 | 0.049 / 0.050 / 0.049 |
+| record CPU | 0.262 / 0.276 / 0.278 | 0.266 / 0.275 / 0.277 |
+
+On one thread, the stable sort had been 0.044 ms and the blend sort 0.014 ms.
+`--scene default`, whose objects animate and so miss the cache, stayed at
+0.045-0.047 ms. Captures of the default, stress, orbiting-camera stress and
+fragment-stress scenes are byte-identical before and after.
 
 ## Verifying it
 

@@ -28,6 +28,7 @@
 #include "renderer/Material.h"
 #include "renderer/Mesh.h"
 #include "renderer/MeshLod.h"
+#include "renderer/ObjectTransformCache.h"
 #include "renderer/PostProcessStack.h"
 #include "renderer/RenderGraph.h"
 #include "renderer/RenderObject.h"
@@ -1499,6 +1500,13 @@ private:
     // used to pay for one compose per (atlas slot, draw item), so up to
     // kMaxPunctualShadowSlots x kMaxDrawItems of them in a single frame.
     std::vector<glm::mat4> frameModelMatrices_;
+    // Per render object, what the two arrays above were last derived from, so an
+    // object whose transform and local bounds are unchanged reuses its matrix and
+    // bounds instead of recomposing them. Indexed like renderObjects_; keyed by
+    // value, so it needs no invalidation when objects change or move slots.
+    std::vector<renderer::CachedObjectTransform> objectTransformCache_;
+    // Reused by the draw-item sort, which writes the sorted list here and swaps.
+    std::vector<DrawItem> drawItemSortScratch_;
     float currentExposure_ = 1.0f;
     float averageLuminance_ = 0.18f;
     float histogramClippedLuminance_ = 0.18f;
