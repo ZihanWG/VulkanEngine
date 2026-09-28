@@ -1,8 +1,20 @@
 name: Windows CI
 
+# Pushes to main and pull requests, like the Linux workflow. A push to any
+# branch used to trigger it as well, so every pull request built it twice;
+# workflow_dispatch runs it on a branch that has no pull request yet.
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
+
+# A new push to a pull request cancels the run it supersedes, which would
+# otherwise hold runners for a result nobody will read. Runs on main are never
+# cancelled, so every commit there keeps its own result.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:

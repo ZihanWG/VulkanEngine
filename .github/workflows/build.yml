@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
 
+# A new push to a pull request cancels the run it supersedes, which would
+# otherwise hold runners for a result nobody will read. Runs on main are never
+# cancelled, so every commit there keeps its own result.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # Fast, dependency-free gate that runs alongside the build rather than behind
   # the Vulkan SDK install, so a formatting slip reports in under a minute.
@@ -140,11 +147,56 @@ jobs:
       # gone. It ran a second, slower analysis whenever the first one failed and
       # then reported *that* command's status, so a genuine run-clang-tidy
       # failure could be masked by the retry succeeding.
+      #
+      # On a pull request it analyses only the translation units the pull
+      # request touched -- each changed src/ .cpp, and the .cpp beside each
+      # changed header -- because the whole-tree pass was 9.4 of this job's
+      # 16.3 minutes, for a step that gates nothing. A header's other includers
+      # are not followed, so a finding that only shows through one of them waits
+      # for the push to main, which still analyses the whole tree. The step
+      # prints the list, so what was covered is never a guess.
       - name: Static analysis (clang-tidy, report-only)
         continue-on-error: true
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           sudo apt-get install -y --no-install-recommends clang-tidy
-          run-clang-tidy -p build/ci-debug -quiet 'src/.*'
+          if [ -z "$BASE_SHA" ]; then
+            echo "Whole tree: not a pull request."
+            run-clang-tidy -p build/ci-debug -quiet 'src/.*'
+            exit $?
+          fi
+
+          # The checkout is a single merge commit; the base is fetched so the
+          # diff is exactly what this pull request changes.
+          git fetch --quiet --depth=1 origin "$BASE_SHA"
+          files=()
+          while IFS= read -r path; do
+            case "$path" in
+              *.cpp) candidate="$path" ;;
+              *.h | *.hpp) candidate="${path%.*}.cpp" ;;
+              *) continue ;;
+            esac
+            if [ -f "$candidate" ]; then
+              files+=("$candidate")
+            fi
+          done < <(git diff --name-only --diff-filter=d "$BASE_SHA" HEAD -- src | sort -u)
+
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No src/ translation unit changed; nothing to analyse on this pull request."
+            exit 0
+          fi
+          mapfile -t files < <(printf '%s\n' "${files[@]}" | sort -u)
+          echo "Analysing ${#files[@]} changed translation unit(s):"
+          printf '  %s\n' "${files[@]}"
+          # run-clang-tidy takes regexes matched against compile_commands.json;
+          # anchoring each at a path separator and at the end keeps foo.cpp from
+          # also matching barfoo.cpp, and [.] matches only a literal dot.
+          patterns=()
+          for file in "${files[@]}"; do
+            patterns+=("/${file//./[.]}\$")
+          done
+          run-clang-tidy -p build/ci-debug -quiet "${patterns[@]}"
 
       # Re-build and run the headless tests under AddressSanitizer +
       # UndefinedBehaviorSanitizer so memory/UB regressions fail CI.
