@@ -64,6 +64,7 @@ jobs:
         run: |
           sudo apt-get install -y --no-install-recommends \
             build-essential \
+            ccache \
             cmake \
             git \
             libegl-dev \
@@ -95,6 +96,27 @@ jobs:
             exit 1
           }
           glslc --version
+
+      # Compiled objects carried between runs. The key is per commit, so every
+      # run saves what it built, and restore-keys hands the next run the most
+      # recent entry -- on a pull request that includes what main saved. CMake
+      # takes the launcher from the environment, so no configure line changes.
+      - name: Restore the compiler cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-${{ runner.os }}-${{ github.workflow }}-${{ github.job }}-${{ github.sha }}
+          restore-keys: ccache-${{ runner.os }}-${{ github.workflow }}-${{ github.job }}-
+
+      - name: Route the compilers through the cache
+        run: |
+          {
+            echo "CCACHE_DIR=${{ github.workspace }}/.ccache"
+            echo "CCACHE_MAXSIZE=1G"
+            echo "CMAKE_C_COMPILER_LAUNCHER=ccache"
+            echo "CMAKE_CXX_COMPILER_LAUNCHER=ccache"
+          } >> "$GITHUB_ENV"
+          ccache --zero-stats
 
       - name: Configure CMake
         run: cmake --preset ci-debug -DVULKAN_ENGINE_FETCH_DEPS=ON
@@ -211,3 +233,9 @@ jobs:
           ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: ctest --preset ci-asan
+
+      # The hit rate is the evidence that the cache is doing anything; a run
+      # that restored nothing reads the same as a warm one otherwise.
+      - name: Compiler cache statistics
+        if: always()
+        run: ccache --show-stats
