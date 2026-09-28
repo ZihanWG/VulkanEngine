@@ -19,6 +19,13 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A new push to a pull request cancels the run it supersedes, which would
+# otherwise hold runners for a result nobody will read. Runs on main are never
+# cancelled, so every commit there keeps its own result.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # Its own job, ahead of the render, because it needs nothing this workflow
   # installs and a wrong leg list should report in seconds rather than behind a

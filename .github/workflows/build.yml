@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
 
+# A new push to a pull request cancels the run it supersedes, which would
+# otherwise hold runners for a result nobody will read. Runs on main are never
+# cancelled, so every commit there keeps its own result.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # Fast, dependency-free gate that runs alongside the build rather than behind
   # the Vulkan SDK install, so a formatting slip reports in under a minute.
