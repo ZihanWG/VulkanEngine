@@ -305,6 +305,19 @@ void Renderer::updatePunctualShadowCacheState()
             // already had -- and the two had to be kept identical by hand, or
             // the hash would describe casters the tile did not contain.
             const renderer::Frustum& slotFrustum = punctualShadows_.slotFrustum(slot);
+            // A box around the slot's whole view volume, tested before the six
+            // planes. A tile sees a range-limited cone or cube face, so most of
+            // a large scene misses it by a wide margin, and one overlap test is
+            // far cheaper than the plane test it skips. It only rejects boxes
+            // wholly outside the volume, which draw nothing there -- so the
+            // tile's image is what the plane test alone would give, though the
+            // list can lose casters the plane test kept near the volume's
+            // corners, where it is conservative. Empty when the matrix is
+            // unusable, and then only the planes decide.
+            constexpr float kSlotVolumePadding = 1.0e-3f;
+            const renderer::Aabb slotVolume =
+                renderer::clipVolumeBounds(punctualShadows_.slotViewProjection(slot), kSlotVolumePadding);
+            const bool slotVolumeValid = slotVolume.valid();
             std::vector<uint32_t>& slotCasters = punctualShadowSlotCasters_[slot];
             slotCasters.clear();
             const std::span<const DrawItem> drawItems(allDrawItems_);
@@ -316,9 +329,14 @@ void Renderer::updatePunctualShadowCacheState()
                 if (drawItem.bucket == RenderBucket::Blend) {
                     continue;
                 }
-                if (drawItem.objectIndex < frameWorldBounds_.size() &&
-                    !slotFrustum.testAabb(frameWorldBounds_[drawItem.objectIndex])) {
-                    continue;
+                if (drawItem.objectIndex < frameWorldBounds_.size()) {
+                    const renderer::Aabb& casterBounds = frameWorldBounds_[drawItem.objectIndex];
+                    if (slotVolumeValid && casterBounds.valid() && !slotVolume.overlaps(casterBounds)) {
+                        continue;
+                    }
+                    if (!slotFrustum.testAabb(casterBounds)) {
+                        continue;
+                    }
                 }
 
                 cacheKey.add(static_cast<const void*>(drawItem.mesh));

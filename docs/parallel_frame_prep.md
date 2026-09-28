@@ -226,6 +226,29 @@ On one thread, the stable sort had been 0.044 ms and the blend sort 0.014 ms.
 0.045-0.047 ms. Captures of the default, stress, orbiting-camera stress and
 fragment-stress scenes are byte-identical before and after.
 
+### The shadow cache keys
+
+Both shadow caches hash every caster they would draw, 80-100 bytes each (mesh,
+index range, model matrix), thousands of times per frame on this scene.
+`ShadowCacheKey` was byte-wise FNV-1a: one dependent 64-bit multiply per byte.
+It now takes eight bytes per step, with xxHash64's tail round and final
+avalanche. It still hashes the byte stream, so splitting it differently gives
+the same value (tested at every split point), and every bit of the input still
+moves the key. Nothing persists these values, so the algorithm could change
+freely. The punctual key's per-slot cull also gained a view-volume box
+pre-test; see docs/punctual_shadows.md.
+
+| series | scope | before | after |
+| --- | --- | --- | --- |
+| hash | cascade shadow cache | 0.059 / 0.057 / 0.057 ms | **0.024 / 0.024 / 0.024 ms** |
+| hash | frame prep CPU | 0.463 / 0.461 / 0.462 ms | 0.435 / 0.429 / 0.429 ms |
+| box pre-test | punctual shadow cache | 0.096 / 0.093 / 0.096 ms | **0.059 / 0.057 / 0.058 ms** |
+| box pre-test | frame prep CPU | 0.436 / 0.425 / 0.433 ms | **0.391 / 0.392 / 0.392 ms** |
+
+The punctual scope did not move with the hash alone (0.094 ms either way): its
+cost was the 25 x 2322 plane tests, not the hashing. Captures of all four scenes
+stay byte-identical.
+
 ## Verifying it
 
 `GPU Profiler` panel in the debug UI:

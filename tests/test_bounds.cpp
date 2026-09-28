@@ -7,6 +7,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 using ve::renderer::Aabb;
+using ve::renderer::clipVolumeBounds;
 using ve::renderer::Frustum;
 using ve::renderer::Ray;
 using ve::renderer::Sphere;
@@ -187,4 +188,94 @@ TEST_CASE("Aabb frustum test matches sphere expectations", "[bounds][frustum]")
     behind.min = glm::vec3(-1.0f, -1.0f, 49.0f);
     behind.max = glm::vec3(1.0f, 1.0f, 51.0f);
     CHECK_FALSE(frustum.testAabb(behind));
+}
+
+namespace {
+
+// A spot-light-like frustum: 70 degree cone looking down -Z from (2, 1, 3),
+// near plane at a fiftieth of an 8-unit range, as the atlas builds them.
+glm::mat4 spotViewProjection()
+{
+    const glm::vec3 position(2.0f, 1.0f, 3.0f);
+    const glm::mat4 view = glm::lookAt(position, position + glm::vec3(0.0f, 0.0f, -1.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    const glm::mat4 projection = glm::perspective(glm::radians(70.0f), 1.0f, 8.0f / 50.0f, 8.0f);
+    return projection * view;
+}
+
+Aabb boxAt(const glm::vec3& center, float halfExtent)
+{
+    Aabb box;
+    box.min = center - glm::vec3(halfExtent);
+    box.max = center + glm::vec3(halfExtent);
+    return box;
+}
+
+} // namespace
+
+TEST_CASE("Aabb::overlaps is a closed-interval test on every axis", "[bounds]")
+{
+    const Aabb box = unitBox();
+    CHECK(box.overlaps(boxAt(glm::vec3(0.5f), 1.0f)));
+    CHECK(box.overlaps(boxAt(glm::vec3(2.0f, 0.0f, 0.0f), 1.0f))); // touching faces
+    CHECK_FALSE(box.overlaps(boxAt(glm::vec3(2.5f, 0.0f, 0.0f), 1.0f)));
+    CHECK_FALSE(box.overlaps(boxAt(glm::vec3(0.0f, -2.5f, 0.0f), 1.0f)));
+    CHECK_FALSE(box.overlaps(boxAt(glm::vec3(0.0f, 0.0f, 2.5f), 1.0f)));
+}
+
+TEST_CASE("clipVolumeBounds contains every point the frustum sees", "[bounds]")
+{
+    // The pre-cull built on it may only reject what the frustum cannot see, so
+    // sample the clip volume densely -- corners and faces included -- and
+    // require every point back in world space inside the box.
+    const glm::mat4 viewProjection = spotViewProjection();
+    const glm::mat4 inverse = glm::inverse(viewProjection);
+    const Aabb bounds = clipVolumeBounds(viewProjection, 1.0e-3f);
+    REQUIRE(bounds.valid());
+
+    constexpr int kSteps = 8;
+    for (int ix = 0; ix <= kSteps; ++ix) {
+        for (int iy = 0; iy <= kSteps; ++iy) {
+            for (int iz = 0; iz <= kSteps; ++iz) {
+                const glm::vec4 clip(-1.0f + 2.0f * static_cast<float>(ix) / kSteps,
+                                     -1.0f + 2.0f * static_cast<float>(iy) / kSteps,
+                                     static_cast<float>(iz) / kSteps,
+                                     1.0f);
+                const glm::vec4 world = inverse * clip;
+                const glm::vec3 point = glm::vec3(world) / world.w;
+                REQUIRE(bounds.overlaps(boxAt(point, 0.0f)));
+            }
+        }
+    }
+
+    // And it is a useful box, not an unbounded one: the far plane is 8 units
+    // out, so nothing on the volume is much farther than that from the apex.
+    CHECK(bounds.max.z == Catch::Approx(3.0f).margin(0.2f));
+    CHECK(bounds.min.z > 3.0f - 8.0f - 0.2f);
+}
+
+TEST_CASE("Boxes clipVolumeBounds rejects are outside the frustum too", "[bounds]")
+{
+    const glm::mat4 viewProjection = spotViewProjection();
+    const Aabb bounds = clipVolumeBounds(viewProjection, 1.0e-3f);
+    const Frustum frustum = Frustum::fromViewProjection(viewProjection);
+
+    // Behind the light and past its range: both rejected by the box, and the
+    // plane test agrees, so the pre-cull never removes a visible caster.
+    for (const glm::vec3& center :
+         {glm::vec3(2.0f, 1.0f, 6.0f), glm::vec3(2.0f, 1.0f, -9.0f), glm::vec3(30.0f, 1.0f, 0.0f)}) {
+        const Aabb caster = boxAt(center, 0.5f);
+        CHECK_FALSE(bounds.overlaps(caster));
+        CHECK_FALSE(frustum.testAabb(caster));
+    }
+    // In front of the light, inside the range: kept by both.
+    const Aabb visible = boxAt(glm::vec3(2.0f, 1.0f, -1.0f), 0.5f);
+    CHECK(bounds.overlaps(visible));
+    CHECK(frustum.testAabb(visible));
+}
+
+TEST_CASE("clipVolumeBounds is empty for a matrix it cannot invert", "[bounds]")
+{
+    // Empty means "no information" to the caller, which then falls back to the
+    // plane test alone.
+    CHECK_FALSE(clipVolumeBounds(glm::mat4(0.0f), 1.0e-3f).valid());
 }
