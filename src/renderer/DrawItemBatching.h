@@ -96,6 +96,22 @@ void buildMeshDrawBatches(const std::vector<DrawItem>& drawItems,
                           uint32_t maxDrawItems,
                           std::vector<MeshDrawBatch>& batches);
 
+// The order batching and the bucket ranges need: bucket first, so each bucket is
+// one contiguous range; then doubleSided, the other pipeline selector, so the
+// two-sided items of a bucket cost one extra batch rather than one per
+// alternation; then mesh address, so a run coalesces its buffer binds.
+bool drawItemBatchOrderLess(const DrawItem& lhs, const DrawItem& rhs);
+
+// Stable sort of `drawItems` by drawItemBatchOrderLess -- the same result as
+// std::stable_sort with it, which the tests hold it to. A frame has a handful of
+// distinct (bucket, doubleSided, mesh) keys and thousands of items, so this sorts
+// the keys and then places every item with one counting pass instead of
+// comparing items; above kMaxCountingSortKeys distinct keys it falls back to
+// std::stable_sort. `scratch` is reusable storage, and ends up holding the
+// previous contents of `drawItems`.
+inline constexpr size_t kMaxCountingSortKeys = 64;
+void sortDrawItemsForBatching(std::vector<DrawItem>& drawItems, std::vector<DrawItem>& scratch);
+
 // Contiguous per-bucket ranges over a draw-item list that is already sorted by
 // bucket. Scans runs rather than counting, so a list that is *not* sorted yields
 // only the first run of each bucket -- which is the correct way for it to fail:

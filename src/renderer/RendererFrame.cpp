@@ -305,6 +305,19 @@ void Renderer::updatePunctualShadowCacheState()
             // already had -- and the two had to be kept identical by hand, or
             // the hash would describe casters the tile did not contain.
             const renderer::Frustum& slotFrustum = punctualShadows_.slotFrustum(slot);
+            // A box around the slot's whole view volume, tested before the six
+            // planes. A tile sees a range-limited cone or cube face, so most of
+            // a large scene misses it by a wide margin, and one overlap test is
+            // far cheaper than the plane test it skips. It only rejects boxes
+            // wholly outside the volume, which draw nothing there -- so the
+            // tile's image is what the plane test alone would give, though the
+            // list can lose casters the plane test kept near the volume's
+            // corners, where it is conservative. Empty when the matrix is
+            // unusable, and then only the planes decide.
+            constexpr float kSlotVolumePadding = 1.0e-3f;
+            const renderer::Aabb slotVolume =
+                renderer::clipVolumeBounds(punctualShadows_.slotViewProjection(slot), kSlotVolumePadding);
+            const bool slotVolumeValid = slotVolume.valid();
             std::vector<uint32_t>& slotCasters = punctualShadowSlotCasters_[slot];
             slotCasters.clear();
             const std::span<const DrawItem> drawItems(allDrawItems_);
@@ -316,9 +329,14 @@ void Renderer::updatePunctualShadowCacheState()
                 if (drawItem.bucket == RenderBucket::Blend) {
                     continue;
                 }
-                if (drawItem.objectIndex < frameWorldBounds_.size() &&
-                    !slotFrustum.testAabb(frameWorldBounds_[drawItem.objectIndex])) {
-                    continue;
+                if (drawItem.objectIndex < frameWorldBounds_.size()) {
+                    const renderer::Aabb& casterBounds = frameWorldBounds_[drawItem.objectIndex];
+                    if (slotVolumeValid && casterBounds.valid() && !slotVolume.overlaps(casterBounds)) {
+                        continue;
+                    }
+                    if (!slotFrustum.testAabb(casterBounds)) {
+                        continue;
+                    }
                 }
 
                 cacheKey.add(static_cast<const void*>(drawItem.mesh));
@@ -983,20 +1001,22 @@ void Renderer::updateFrameObjectTransforms()
     const size_t objectCount = renderObjects_.size();
     frameModelMatrices_.resize(objectCount);
     frameWorldBounds_.resize(objectCount);
+    objectTransformCache_.resize(objectCount);
     framePrepParallelFor(objectCount, [this](size_t begin, size_t end) {
         for (size_t objectIndex = begin; objectIndex < end; ++objectIndex) {
             const renderer::RenderObject& object = renderObjects_[objectIndex];
-            // Composed once here and shared from here on. The no-argument
-            // RenderObject::worldBounds() is deliberately not called: it composes
-            // a matrix of its own, which is exactly the per-use re-derivation this
-            // array exists to remove. The overload that takes the matrix keeps
-            // that saving while still asking the object which local bounds are
-            // its own -- transforming mesh->localBounds() here instead handed the
-            // GPU cull the whole mesh's extent for an object that draws one
-            // primitive of it.
-            const glm::mat4 model = object.transform.modelMatrix();
-            frameModelMatrices_[objectIndex] = model;
-            frameWorldBounds_[objectIndex] = object.worldBounds(model);
+            // Composed once here and shared from here on, and only when the
+            // object's transform or local bounds changed since the slot was last
+            // refreshed -- a static object reuses last frame's bits. The local
+            // bounds are the object's own (RenderObject::localBounds), not
+            // mesh->localBounds(): the latter handed the GPU cull the whole
+            // mesh's extent for an object that draws one primitive of it. This
+            // is exactly RenderObject::worldBounds(model), whose empty result
+            // for an object with no mesh comes from localBounds() being empty.
+            renderer::CachedObjectTransform& cached = objectTransformCache_[objectIndex];
+            renderer::refreshCachedObjectTransform(cached, object.transform, object.localBounds());
+            frameModelMatrices_[objectIndex] = cached.model;
+            frameWorldBounds_[objectIndex] = cached.worldBounds;
         }
     });
 }
@@ -1059,22 +1079,10 @@ void Renderer::buildDrawItems()
     }
     reportFrameCapacityOverflow();
 
-    // Bucket is the primary key so each bucket is one contiguous range (the pass
-    // and pipeline split reduces to a range walk). doubleSided comes next because
-    // it is the other thing that selects a pipeline, and buildMeshDrawBatches
-    // breaks a run when it changes -- sorting on it keeps the two-sided items of a
-    // bucket contiguous, so the split costs one extra batch per bucket rather than
-    // one per alternation. Mesh stays last so batching inside a run still
-    // coalesces vertex/index buffer binds.
-    std::stable_sort(allDrawItems_.begin(), allDrawItems_.end(), [](const DrawItem& lhs, const DrawItem& rhs) {
-        if (lhs.bucket != rhs.bucket) {
-            return lhs.bucket < rhs.bucket;
-        }
-        if (lhs.doubleSided != rhs.doubleSided) {
-            return static_cast<int>(lhs.doubleSided) < static_cast<int>(rhs.doubleSided);
-        }
-        return std::less<const renderer::Mesh*>{}(lhs.mesh, rhs.mesh);
-    });
+    // (bucket, doubleSided, mesh) -- see drawItemBatchOrderLess for why each key
+    // is there. A counting sort over the few distinct keys; the order is exactly
+    // std::stable_sort's.
+    renderer::sortDrawItemsForBatching(allDrawItems_, drawItemSortScratch_);
 
     // Blend is the last bucket, so its items form a suffix that gets reordered
     // back to front. Runs before frameDataIndex is assigned so the object-data
@@ -1188,9 +1196,25 @@ void Renderer::sortTransparentDrawItems()
         return glm::dot(offset, offset);
     };
 
-    std::stable_sort(blendBegin, allDrawItems_.end(), [&](const DrawItem& lhs, const DrawItem& rhs) {
-        return viewDistanceSquared(lhs) > viewDistanceSquared(rhs);
+    // Each distance computed once rather than twice per comparison. The sort
+    // sees the same key for every element it would have computed on the fly,
+    // so the resulting order is unchanged.
+    struct BlendSortEntry {
+        float distanceSquared = 0.0f;
+        DrawItem drawItem{};
+    };
+    std::vector<BlendSortEntry> entries;
+    entries.reserve(static_cast<size_t>(std::distance(blendBegin, allDrawItems_.end())));
+    for (auto it = blendBegin; it != allDrawItems_.end(); ++it) {
+        entries.push_back({viewDistanceSquared(*it), *it});
+    }
+    std::stable_sort(entries.begin(), entries.end(), [](const BlendSortEntry& lhs, const BlendSortEntry& rhs) {
+        return lhs.distanceSquared > rhs.distanceSquared;
     });
+    auto out = blendBegin;
+    for (const BlendSortEntry& entry : entries) {
+        *out++ = entry.drawItem;
+    }
 }
 
 void Renderer::buildMeshDrawBatches()

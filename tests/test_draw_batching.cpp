@@ -2,17 +2,22 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
+#include <cstdint>
+#include <random>
 #include <vector>
 
 using ve::renderer::buildMeshDrawBatches;
 using ve::renderer::computeVisibleBucketRanges;
 using ve::renderer::DrawItem;
+using ve::renderer::drawItemBatchOrderLess;
 using ve::renderer::kRenderBucketCount;
 using ve::renderer::Mesh;
 using ve::renderer::MeshDrawBatch;
 using ve::renderer::RenderBucket;
 using ve::renderer::RenderBucketRange;
+using ve::renderer::sortDrawItemsForBatching;
 
 namespace {
 
@@ -266,4 +271,85 @@ TEST_CASE("Bucket ranges are reset rather than accumulated across calls")
 
     computeVisibleBucketRanges({item(meshA(), RenderBucket::Opaque)}, ranges);
     CHECK(ranges[0].end == 1);
+}
+
+namespace {
+
+// Random draw items over `meshCount` distinct meshes. objectIndex records the
+// input position, so a comparison of the outputs also checks stability.
+std::vector<DrawItem> randomDrawItems(size_t count, uintptr_t meshCount, uint32_t seed)
+{
+    std::mt19937 random(seed);
+    std::uniform_int_distribution<uintptr_t> meshPick(1, meshCount);
+    std::uniform_int_distribution<int> bucketPick(0, static_cast<int>(kRenderBucketCount) - 1);
+    std::uniform_int_distribution<int> sidedPick(0, 3);
+    std::vector<DrawItem> items;
+    items.reserve(count);
+    for (size_t index = 0; index < count; ++index) {
+        DrawItem drawItem = item(reinterpret_cast<const Mesh*>(meshPick(random) * 0x100),
+                                 static_cast<RenderBucket>(bucketPick(random)),
+                                 0,
+                                 sidedPick(random) == 0);
+        drawItem.objectIndex = static_cast<uint32_t>(index);
+        items.push_back(drawItem);
+    }
+    return items;
+}
+
+void requireSameOrderAsStableSort(std::vector<DrawItem> items)
+{
+    std::vector<DrawItem> expected = items;
+    std::stable_sort(expected.begin(), expected.end(), drawItemBatchOrderLess);
+
+    std::vector<DrawItem> scratch;
+    sortDrawItemsForBatching(items, scratch);
+
+    REQUIRE(items.size() == expected.size());
+    for (size_t index = 0; index < items.size(); ++index) {
+        REQUIRE(items[index].objectIndex == expected[index].objectIndex);
+        REQUIRE(items[index].mesh == expected[index].mesh);
+        REQUIRE(items[index].bucket == expected[index].bucket);
+        REQUIRE(items[index].doubleSided == expected[index].doubleSided);
+    }
+}
+
+} // namespace
+
+TEST_CASE("Draw-item sort matches std::stable_sort, including tie order")
+{
+    for (uint32_t seed = 1; seed <= 20; ++seed) {
+        requireSameOrderAsStableSort(randomDrawItems(2322, 5, seed));
+    }
+    // Runs of one key, the shape a real frame arrives in.
+    std::vector<DrawItem> runs;
+    for (uint32_t index = 0; index < 300; ++index) {
+        DrawItem drawItem =
+            item(index < 150 ? meshB() : meshA(), index % 100 < 50 ? RenderBucket::Blend : RenderBucket::Opaque);
+        drawItem.objectIndex = index;
+        runs.push_back(drawItem);
+    }
+    requireSameOrderAsStableSort(runs);
+}
+
+TEST_CASE("Draw-item sort falls back past the counting-sort key limit and still matches")
+{
+    // More distinct meshes than key slots forces the std::stable_sort path; one
+    // under the limit exercises the counting path at its largest.
+    const size_t keysPerMesh = static_cast<size_t>(kRenderBucketCount) * 2;
+    const uintptr_t underLimit = static_cast<uintptr_t>(ve::renderer::kMaxCountingSortKeys / keysPerMesh);
+    requireSameOrderAsStableSort(randomDrawItems(4000, underLimit, 7));
+    requireSameOrderAsStableSort(randomDrawItems(4000, 200, 8));
+}
+
+TEST_CASE("Draw-item sort leaves empty and single-item lists alone")
+{
+    std::vector<DrawItem> scratch;
+    std::vector<DrawItem> empty;
+    sortDrawItemsForBatching(empty, scratch);
+    CHECK(empty.empty());
+
+    std::vector<DrawItem> single{item(meshA(), RenderBucket::Blend)};
+    sortDrawItemsForBatching(single, scratch);
+    REQUIRE(single.size() == 1);
+    CHECK(single[0].mesh == meshA());
 }

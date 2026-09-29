@@ -13,6 +13,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <array>
+#include <cstdint>
 #include <vector>
 
 using ve::renderer::CascadeShadowCaster;
@@ -281,4 +282,69 @@ TEST_CASE("A cascade the skinned caster cannot reach keeps its key", "[shadow-ca
     explicitlyAbsent.skinnedCasterPose = 0;
 
     CHECK(computeCascadeShadowKey(withoutSkinned, {}) == computeCascadeShadowKey(explicitlyAbsent, {}));
+}
+
+namespace {
+
+std::vector<unsigned char> byteStream(size_t size)
+{
+    std::vector<unsigned char> bytes(size);
+    for (size_t index = 0; index < size; ++index) {
+        bytes[index] = static_cast<unsigned char>((index * 131u + 17u) & 0xFFu);
+    }
+    return bytes;
+}
+
+uint64_t hashOf(const std::vector<unsigned char>& bytes)
+{
+    ShadowCacheKey key;
+    key.reset();
+    key.addBytes(bytes.data(), bytes.size());
+    return key.value();
+}
+
+} // namespace
+
+TEST_CASE("The shadow cache hash depends on the byte stream, not on how it was split", "[shadow-cache]")
+{
+    // The recorders feed 4-, 8- and 64-byte values in varying orders, so the
+    // word-at-a-time path is exercised at every alignment. A split anywhere must
+    // give the same value as the whole stream in one call.
+    const std::vector<unsigned char> bytes = byteStream(157);
+    const uint64_t whole = hashOf(bytes);
+    for (size_t first = 0; first <= bytes.size(); ++first) {
+        for (size_t second = first; second <= bytes.size(); second += 7) {
+            ShadowCacheKey key;
+            key.reset();
+            key.addBytes(bytes.data(), first);
+            key.addBytes(bytes.data() + first, second - first);
+            key.addBytes(bytes.data() + second, bytes.size() - second);
+            REQUIRE(key.value() == whole);
+        }
+    }
+}
+
+TEST_CASE("Every byte and every bit of the stream moves the shadow cache hash", "[shadow-cache]")
+{
+    const std::vector<unsigned char> bytes = byteStream(83);
+    const uint64_t original = hashOf(bytes);
+    for (size_t index = 0; index < bytes.size(); ++index) {
+        for (unsigned bit = 0; bit < 8; ++bit) {
+            std::vector<unsigned char> flipped = bytes;
+            flipped[index] = static_cast<unsigned char>(flipped[index] ^ (1u << bit));
+            REQUIRE(hashOf(flipped) != original);
+        }
+    }
+}
+
+TEST_CASE("Trailing zero bytes are not the same stream as a shorter one", "[shadow-cache]")
+{
+    // The partial last word is zero-padded, so only the folded-in length tells
+    // these apart. Every length through two words, so each padding width is hit.
+    for (size_t size = 0; size < 16; ++size) {
+        std::vector<unsigned char> bytes = byteStream(size);
+        const uint64_t shorter = hashOf(bytes);
+        bytes.push_back(0);
+        REQUIRE(hashOf(bytes) != shorter);
+    }
 }

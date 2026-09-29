@@ -6,6 +6,7 @@
 #include <glm/common.hpp>
 #include <glm/geometric.hpp>
 #include <glm/mat4x4.hpp>
+#include <glm/matrix.hpp>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 #include <limits>
@@ -31,6 +32,13 @@ struct Aabb {
     {
         min = glm::min(min, point);
         max = glm::max(max, point);
+    }
+
+    // Closed-interval overlap: boxes that only touch count as overlapping.
+    [[nodiscard]] bool overlaps(const Aabb& other) const
+    {
+        return min.x <= other.max.x && other.min.x <= max.x && min.y <= other.max.y && other.min.y <= max.y &&
+               min.z <= other.max.z && other.min.z <= max.z;
     }
 
     void merge(const Aabb& other)
@@ -221,5 +229,36 @@ struct Frustum {
         return true;
     }
 };
+
+// World-space AABB of everything `viewProjection` can see: its clip volume's
+// eight corners (x, y in [-1, 1], z in [0, 1] under GLM_FORCE_DEPTH_ZERO_TO_ONE)
+// taken back through the inverse, then grown by `relativePadding` of the box's
+// extent on every side. The padding absorbs the rounding of the inverse, so the
+// box can only be looser than the true volume, never tighter: a box that does
+// not overlap it is outside the frustum. An invalid result (a singular or
+// non-finite matrix) is returned as an empty Aabb, which callers must treat as
+// "no information" rather than "sees nothing".
+inline Aabb clipVolumeBounds(const glm::mat4& viewProjection, float relativePadding)
+{
+    const glm::mat4 inverse = glm::inverse(viewProjection);
+    Aabb bounds{};
+    for (int corner = 0; corner < 8; ++corner) {
+        const glm::vec4 clip(
+            (corner & 1) != 0 ? 1.0f : -1.0f, (corner & 2) != 0 ? 1.0f : -1.0f, (corner & 4) != 0 ? 1.0f : 0.0f, 1.0f);
+        const glm::vec4 world = inverse * clip;
+        if (!(std::abs(world.w) > 0.0f)) {
+            return {};
+        }
+        const glm::vec3 point = glm::vec3(world) / world.w;
+        if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z)) {
+            return {};
+        }
+        bounds.expand(point);
+    }
+    const glm::vec3 padding = (bounds.max - bounds.min) * relativePadding;
+    bounds.min -= padding;
+    bounds.max += padding;
+    return bounds;
+}
 
 } // namespace ve::renderer

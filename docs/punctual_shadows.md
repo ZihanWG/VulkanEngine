@@ -688,6 +688,19 @@ The per-slot frustum cull is a pure function of the slot projections and caster
 transforms, so its result needs no separate hashing. Floats are hashed by exact
 bit pattern, so this is a strict "identical inputs" test and never approximate.
 
+Before the six planes, each caster box is tested against a box around the
+slot's whole view volume (`renderer::clipVolumeBounds`: the clip volume's eight
+corners, taken back to world space and padded by 0.1% of the box's extent to
+absorb the inverse's rounding). A tile sees a range-limited cone or cube face,
+so most of a large scene misses it by a wide margin, and one box overlap is
+cheaper than the plane test it skips. It only rejects casters wholly outside
+the volume, which would draw nothing into the tile. The list can still lose
+casters that the plane test keeps near the volume's corners, where that test is
+conservative: on `--scene stress` the recorded caster draws went from 200 to
+197, and every capture stayed byte-identical. The cache-key scope fell from
+0.095 to 0.058 ms (Release, i9-12900HX, CPU medians of three interleaved runs
+each).
+
 Two things the hash cannot express, handled separately:
 
 - **A recreated atlas image.** Its contents are undefined even when the key
