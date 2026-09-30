@@ -60,6 +60,9 @@ include(FetchContent)
 
 # FetchContent fallbacks are pinned to stable tags so clean checkouts and CI
 # resolve reproducible dependency sources instead of moving default branches.
+# Each is cloned shallow (GIT_SHALLOW), which fetches only the tagged commit --
+# SDL's full history is ten times the size of its source. A shallow clone needs
+# a tag or branch name here; a bare commit hash would fail to fetch.
 set(VULKAN_ENGINE_SDL3_TAG "release-3.4.8")
 set(VULKAN_ENGINE_GLM_TAG "1.0.3")
 set(VULKAN_ENGINE_VOLK_TAG "vulkan-sdk-1.4.328.1")
@@ -80,6 +83,7 @@ if(NOT TARGET SDL3::SDL3 AND NOT TARGET SDL3::SDL3-shared AND NOT TARGET SDL3::S
     FetchContent_Declare(SDL3
         GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
         GIT_TAG ${VULKAN_ENGINE_SDL3_TAG}
+        GIT_SHALLOW TRUE
     )
     FetchContent_MakeAvailable(SDL3)
 endif()
@@ -93,6 +97,7 @@ if(NOT TARGET glm::glm)
     FetchContent_Declare(glm
         GIT_REPOSITORY https://github.com/g-truc/glm.git
         GIT_TAG ${VULKAN_ENGINE_GLM_TAG}
+        GIT_SHALLOW TRUE
     )
     FetchContent_MakeAvailable(glm)
 endif()
@@ -108,6 +113,7 @@ if(VULKAN_ENGINE_FETCH_DEPS)
     FetchContent_Declare(volk
         GIT_REPOSITORY https://github.com/zeux/volk.git
         GIT_TAG ${VULKAN_ENGINE_VOLK_TAG}
+        GIT_SHALLOW TRUE
     )
     FetchContent_MakeAvailable(volk)
 else()
@@ -129,6 +135,7 @@ if(NOT TARGET GPUOpen::VulkanMemoryAllocator AND NOT TARGET VulkanMemoryAllocato
     FetchContent_Declare(vma
         GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
         GIT_TAG ${VULKAN_ENGINE_VMA_TAG}
+        GIT_SHALLOW TRUE
         SYSTEM
     )
     FetchContent_MakeAvailable(vma)
@@ -148,6 +155,7 @@ if(NOT TARGET meshoptimizer AND NOT TARGET meshoptimizer::meshoptimizer)
     FetchContent_Declare(meshoptimizer
         GIT_REPOSITORY https://github.com/zeux/meshoptimizer.git
         GIT_TAG ${VULKAN_ENGINE_MESHOPTIMIZER_TAG}
+        GIT_SHALLOW TRUE
     )
     FetchContent_MakeAvailable(meshoptimizer)
 endif()
