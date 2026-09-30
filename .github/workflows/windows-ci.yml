@@ -205,10 +205,19 @@ jobs:
             throw "ccache.exe was not found after installing it."
           }
           & $ccache --version | Select-Object -First 1
-          "CCACHE_DIR=$env:GITHUB_WORKSPACE\.ccache" >> $env:GITHUB_ENV
+          # GITHUB_ENV reaches later steps only, so this step sets the cache
+          # directory for itself too; otherwise --zero-stats below resets a
+          # different directory and the statistics accumulate across runs.
+          $env:CCACHE_DIR = "$env:GITHUB_WORKSPACE\.ccache"
+          "CCACHE_DIR=$env:CCACHE_DIR" >> $env:GITHUB_ENV
           "CCACHE_MAXSIZE=1G" >> $env:GITHUB_ENV
           "CMAKE_C_COMPILER_LAUNCHER=$ccache" >> $env:GITHUB_ENV
           "CMAKE_CXX_COMPILER_LAUNCHER=$ccache" >> $env:GITHUB_ENV
+          # TEMPORARY: hash inputs for diagnosing zero cache hits.
+          "CCACHE_DEBUG=1" >> $env:GITHUB_ENV
+          "CCACHE_DEBUGDIR=$env:GITHUB_WORKSPACE\ccache-debug" >> $env:GITHUB_ENV
+          "CCACHE_LOGFILE=$env:GITHUB_WORKSPACE\ccache-debug\ccache.log" >> $env:GITHUB_ENV
+          New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE\ccache-debug" | Out-Null
           & $ccache --zero-stats
 
       # VULKAN_ENGINE_WARNINGS_AS_ERRORS is on here and not in the Linux job.
@@ -266,5 +275,27 @@ jobs:
         shell: pwsh
         run: |
           if ($env:CMAKE_CXX_COMPILER_LAUNCHER) {
-            & $env:CMAKE_CXX_COMPILER_LAUNCHER --show-stats
+            & $env:CMAKE_CXX_COMPILER_LAUNCHER --show-stats -v
           }
+
+      # TEMPORARY: one translation unit's hash inputs, to diff across runs.
+      - name: Collect ccache debug files
+        if: always()
+        shell: pwsh
+        run: |
+          $out = "$env:GITHUB_WORKSPACE\ccache-debug-upload"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          Get-ChildItem "$env:GITHUB_WORKSPACE\ccache-debug" -Recurse -File |
+            Where-Object { $_.Name -like 'FrameClock.cpp.obj.*' } |
+            Copy-Item -Destination $out
+          Select-String -Path "$env:GITHUB_WORKSPACE\ccache-debug\ccache.log" -Pattern 'FrameClock' -Context 0,40 |
+            Select-Object -First 1 | Out-String | Set-Content "$out\log-excerpt.txt"
+          Get-ChildItem $out | Format-Table Name, Length -AutoSize
+
+      - name: Upload ccache debug files
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ccache-debug-attempt-${{ github.run_attempt }}
+          path: ccache-debug-upload/
+          if-no-files-found: warn
