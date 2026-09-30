@@ -353,10 +353,21 @@ of that for every leg. Instead the job is a small matrix: each shard repeats the
 setup once -- the compiler cache keeps its build short -- and renders its share of
 the list, dealt round-robin, several legs at a time. Side-by-side legs on one
 runner buy little, because llvmpipe already keeps the runner's cores busy with
-one leg; another runner is another set of cores. Every shard runs the
-synchronization self-test, since every shard's legs rely on it; only the first
-runs the pixel gates, and only its artifact carries the `headless-render-logs`
-name -- the others add a `-shard-N` suffix.
+one leg; another runner is another set of cores. Every job runs the
+synchronization self-test, since every shard's legs rely on it.
+
+The pixel gates -- the golden comparison and the portability-fallback render --
+are a job of their own, shard 0, which renders no sweep legs. They cost about as
+much as a shard's share of the sweep, so while they rode on a sweep shard that
+shard was the slowest job of every run. Only shard 0's artifact carries the
+`headless-render-logs` name; the sweep shards add a `-shard-N` suffix.
+
+The sweep keeps the full 1280x720 even though resolution is most of what a leg
+costs. Timed alone on the runner, a default leg spent 1.5 s in renderer
+initialization and 6.1 s in its ten frames; the same ten frames at 640x360 took
+2.4 s. Rendering the sweep smaller would halve it, but its synchronization and
+graph checks would then run at a size nothing ships at, so the wall-clock comes
+from shards instead.
 
 Only the default leg compares pixels. Goldens are per-configuration and lavapipe
 is not byte-deterministic (see the tolerance discussion above); the other legs
