@@ -42,20 +42,29 @@ jobs:
       - name: Check what the sweep covers
         run: python3 tools/check_ci_settings_coverage.py
 
-  # Split across runners because the sweep outgrew one. Each shard repeats
-  # the setup and the build (the compiler cache keeps the build short) and
-  # renders its share of the legs; shard 1 also runs the pixel gates. Lanes
-  # inside a runner bought little -- llvmpipe already keeps a runner's cores
-  # busy with one leg -- while a second runner is a second set of cores.
+  # Split across runners because the sweep outgrew one. Each job repeats the
+  # setup and the build (the compiler cache keeps the build short). Shard 0
+  # runs the pixel gates and no sweep legs; every other shard renders its
+  # share of the legs. Lanes inside a runner bought little -- llvmpipe already
+  # keeps a runner's cores busy with one leg -- while another runner is
+  # another set of cores.
+  #
+  # The gates have a job of their own because they cost about as much as a
+  # shard's share of the sweep: riding on a sweep shard, they made that shard
+  # the slowest job every run. Measured with each leg alone, ~80% of a leg is
+  # llvmpipe rasterizing its frames at 1280x720 (10 frames at 640x360 took
+  # 2.4 s against 6.1 s); the sweep keeps the full resolution and buys its
+  # wall-clock with shards instead. Past the point where a sweep shard
+  # finishes inside the gate job, more shards buy nothing.
   headless-render:
-    name: lavapipe render + validation gate (${{ matrix.shard }}/${{ strategy.job-total }})
+    name: ${{ matrix.shard == 0 && 'lavapipe render + pixel gates' || format('lavapipe configuration sweep {0}', matrix.shard) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
 
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [0, 1, 2, 3, 4, 5, 6]
 
     env:
       VK_LOADER_DEBUG: warn
@@ -83,12 +92,12 @@ jobs:
       # the first parallel run each leg took 3.3x as long beside three others
       # as it had alone.
       SWEEP_LANES: 4
-      # How many runners share the sweep, taken from the matrix so the two
-      # cannot disagree: a leg belongs to shard (index mod SWEEP_SHARDS) + 1.
-      SWEEP_SHARDS: ${{ strategy.job-total }}
-      # Shard 1 holds the golden capture and diff, so it keeps the artifact name
+      # The size of the matrix, so the sweep's shard count cannot disagree with
+      # it: every job but shard 0 is a sweep shard.
+      MATRIX_JOBS: ${{ strategy.job-total }}
+      # Shard 0 holds the golden capture and diff, so it keeps the artifact name
       # the re-baselining instructions in docs/headless_ci.md refer to.
-      LOGS_ARTIFACT: ${{ matrix.shard == 1 && 'headless-render-logs' || format('headless-render-logs-shard-{0}', matrix.shard) }}
+      LOGS_ARTIFACT: ${{ matrix.shard == 0 && 'headless-render-logs' || format('headless-render-logs-shard-{0}', matrix.shard) }}
 
     steps:
       - name: Checkout
@@ -153,7 +162,7 @@ jobs:
       # recent entry -- on a pull request that includes what main saved. CMake
       # takes the launcher from the environment, so no configure line changes.
       # Every shard builds the same objects, so every shard restores and only
-      # shard 1 saves; four saves of one key would race for it.
+      # shard 0 saves; several saves of one key would race for it.
       - name: Restore the compiler cache
         id: ccache-restore
         uses: actions/cache/restore@v6
@@ -198,14 +207,14 @@ jobs:
       # Saved as soon as the build is done, so a red render below does not
       # throw away a good cache.
       - name: Save the compiler cache
-        if: matrix.shard == 1
+        if: matrix.shard == 0
         uses: actions/cache/save@v6
         with:
           path: ${{ github.workspace }}/.ccache
           key: ${{ steps.ccache-restore.outputs.cache-primary-key }}
 
       - name: Build the image comparison tool
-        if: matrix.shard == 1
+        if: matrix.shard == 0
         run: cmake --build --preset ci-debug --target compare_images --parallel
 
       # Before anything gates on synchronization validation being quiet, prove it
@@ -244,7 +253,7 @@ jobs:
       # validation layer reported any error, including during teardown; the log
       # is captured either way. `timeout` bounds a hang.
       - name: Render and gate on validation
-        if: matrix.shard == 1
+        if: matrix.shard == 0
         run: |
           set +e
           timeout 1500 xvfb-run -a --server-args="-screen 0 1280x720x24" \
@@ -326,7 +335,10 @@ jobs:
       # Every leg runs even after one fails, so a red run names every broken
       # configuration instead of only the first.
       - name: Sweep the configuration matrix
+        if: matrix.shard != 0
         run: |
+          # Expressions have no arithmetic, so the count is worked out here.
+          SWEEP_SHARDS=$((MATRIX_JOBS - 1))
           mkdir -p artifacts/sweep
 
           # Legs are "name|arguments". A settings file is a delta against the
@@ -452,9 +464,8 @@ jobs:
 
           # Legs are dealt round-robin to the shards, and within this shard
           # round-robin to SWEEP_LANES lanes that run side by side, each
-          # working through its share in order. On shard 1 every lane starts
-          # from a copy of the cache the gates above warmed; the other shards
-          # run no gate, so each of their lanes warms its own.
+          # working through its share in order. No sweep shard runs a gate
+          # first, so each lane warms its own shader cache on its first leg.
           mapfile -t legs < <(grep -v '^[[:space:]]*$' artifacts/sweep/legs.txt \
             | awk -v shard="${{ matrix.shard }}" -v shards="$SWEEP_SHARDS" '(NR - 1) % shards == shard - 1')
           if [ "${#legs[@]}" -eq 0 ]; then
@@ -536,7 +547,7 @@ jobs:
       # by up to 14 and would still fail this gate. The differing-pixel budget
       # stays at zero, so anything that clears the tolerance still goes red.
       - name: Compare against the golden image
-        if: matrix.shard == 1
+        if: matrix.shard == 0
         run: |
           set +e
           ./build/ci-debug/compare_images \
@@ -578,7 +589,7 @@ jobs:
       # RTX machine the two frames are pixel-identical. A difference here is a
       # bug in one of the two paths, not a reason to add a second golden.
       - name: Render on the portability fallbacks and compare against the same golden
-        if: matrix.shard == 1
+        if: matrix.shard == 0
         run: |
           set +e
           timeout 1500 xvfb-run -a --server-args="-screen 0 1280x720x24" \
@@ -614,36 +625,6 @@ jobs:
             echo "::error::Both paths should draw the same image; do not re-baseline for this."
             exit 1
           fi
-
-      # TEMPORARY: where one sweep leg's time goes. Each configuration runs
-      # alone, one after another, with every output line stamped with the
-      # seconds since launch.
-      - name: Time sweep legs in isolation
-        if: matrix.shard == 1
-        continue-on-error: true
-        run: |
-          mkdir -p artifacts/leg-timing
-          run_timed() {
-            local name="$1" frames="$2"; shift 2
-            local log="artifacts/leg-timing/$name.log"
-            local start end
-            start=$(date +%s.%N)
-            # shellcheck disable=SC2068 -- deliberate argument list.
-            stdbuf -oL -eL xvfb-run -a --server-args="-screen 0 1280x720x24" \
-              ./build/ci-debug/VulkanEngine --deterministic --exit-after-frames "$frames" \
-                --fail-on-validation-error $@ 2>&1 \
-              | perl -MTime::HiRes=time -ne 'BEGIN { $t0 = time } printf "%7.3f %s", time - $t0, $_' > "$log"
-            end=$(date +%s.%N)
-            printf '%-24s total %6.2f s\n' "$name" "$(echo "$end - $start" | awk '{print $1 - $3}')"
-            grep -E "Selected Vulkan physical device|Pipeline build:|Created procedural environment|Created BRDF LUT|Irradiance probes enabled|Scene: |Render graph backstop|Validation tally" "$log" \
-              | sed 's/^/    /' | cut -c1-120 || true
-          }
-          run_timed A-default-10-sync 10 --sync-validation
-          run_timed B-default-2-sync 2 --sync-validation
-          run_timed C-default-10-nosync 10
-          run_timed D-default-10-sync-640 10 --sync-validation --window-size 640x360
-          run_timed E-all-effects-10-sync 10 --sync-validation --settings config/ci/all-effects.json
-          run_timed A2-default-10-sync 10 --sync-validation
 
       # The hit rate is the evidence that the cache is doing anything; a run
       # that restored nothing reads the same as a warm one otherwise.
