@@ -147,6 +147,79 @@ jobs:
             throw "Vulkan SDK is installed or extracted incorrectly. Missing Include\vulkan\vulkan.h, Bin\glslc.exe, or Lib\vulkan-1.lib."
           }
 
+      # Ninja rather than the Visual Studio generator, so the compiler cache
+      # can sit in front of cl: MSBuild drives cl itself and offers no launcher.
+      # Ninja needs cl, link and the SDK headers on PATH, which is what
+      # VsDevCmd sets up; this step runs it once and hands the variables it
+      # changed to every later step. It also puts the Ninja that ships with
+      # Visual Studio on PATH.
+      - name: Enter the MSVC developer environment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsInstall = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $vsDevCmd = Join-Path $vsInstall "Common7\Tools\VsDevCmd.bat"
+
+          $before = @{}
+          Get-ChildItem env: | ForEach-Object { $before[$_.Name] = $_.Value }
+          $after = cmd /c "call `"$vsDevCmd`" -arch=x64 -host_arch=x64 >nul && set"
+          if ($LASTEXITCODE -ne 0) {
+            throw "VsDevCmd.bat failed with exit code $LASTEXITCODE."
+          }
+          foreach ($line in $after) {
+            if ($line -match '^([^=]+)=(.*)$' -and $before[$Matches[1]] -ne $Matches[2]) {
+              "$($Matches[1])=$($Matches[2])" >> $env:GITHUB_ENV
+            }
+          }
+
+      - name: Verify the Ninja toolchain
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Get-Command cl, link, ninja, cmake | Format-Table Name, Source -AutoSize
+          ninja --version
+          cmake --version
+
+      # Compiled objects carried between runs, as in the Linux and macOS jobs:
+      # the key is per commit, and restore-keys hands the next run the most
+      # recent entry -- on a pull request that includes what main saved.
+      - name: Restore the compiler cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}\.ccache
+          key: ccache-${{ runner.os }}-${{ github.workflow }}-${{ github.job }}-${{ github.sha }}
+          restore-keys: ccache-${{ runner.os }}-${{ github.workflow }}-${{ github.job }}-
+
+      # The launcher is the real ccache.exe rather than Chocolatey's shim in
+      # front of it, so what CMake runs for every compile is ccache itself.
+      - name: Route the compilers through the cache
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          choco install ccache --no-progress -y | Out-Null
+          $ccache = Get-ChildItem "$env:ChocolateyInstall\lib\ccache" -Recurse -Filter ccache.exe |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $ccache) {
+            throw "ccache.exe was not found after installing it."
+          }
+          & $ccache --version | Select-Object -First 1
+          # GITHUB_ENV reaches later steps only, so this step sets the cache
+          # directory for itself too; otherwise --zero-stats below resets a
+          # different directory and the statistics accumulate across runs.
+          $env:CCACHE_DIR = "$env:GITHUB_WORKSPACE\.ccache"
+          "CCACHE_DIR=$env:CCACHE_DIR" >> $env:GITHUB_ENV
+          "CCACHE_MAXSIZE=1G" >> $env:GITHUB_ENV
+          "CMAKE_C_COMPILER_LAUNCHER=$ccache" >> $env:GITHUB_ENV
+          "CMAKE_CXX_COMPILER_LAUNCHER=$ccache" >> $env:GITHUB_ENV
+          # By contents, not mtime: a runner image update reinstalls the same
+          # cl.exe with a new timestamp, which by mtime is a different compiler
+          # and a miss on every object -- measured on a re-run that landed on a
+          # newer image than the run that filled the cache.
+          "CCACHE_COMPILERCHECK=content" >> $env:GITHUB_ENV
+          & $ccache --zero-stats
+
       # VULKAN_ENGINE_WARNINGS_AS_ERRORS is on here and not in the Linux job.
       # A full clean /W4 build of all 582 targets on MSVC 2022 emits zero
       # warnings today, so this leg costs nothing and keeps it that way. GCC's
@@ -156,19 +229,23 @@ jobs:
       # the seven translation units that include it, so the true count there is
       # unknown rather than zero. Turning it on for Linux is a separate change
       # that has to start with that measurement.
-      # /MP lets cl compile a project's files in parallel. Without it MSBuild
-      # runs projects side by side but each one's sources one at a time, so the
-      # test target -- one project, dozens of files -- compiled them one after
-      # another for four minutes. CFLAGS and CXXFLAGS seed the first configure, and CMake keeps
-      # its own defaults after them.
+      #
+      # Debug information goes into the objects (/Z7) rather than a shared PDB
+      # (/Zi): ccache cannot cache a compile that writes into a PDB other
+      # compiles also write. The policy default carries that to dependencies
+      # whose own cmake_minimum_required predates the setting, which would
+      # otherwise keep /Zi and miss the cache on every run. Precompiled
+      # headers are off for the same reason: SDL3 builds its ~240 C sources
+      # against one, and ccache reports each as uncacheable.
       - name: Configure CMake
         shell: pwsh
-        env:
-          CFLAGS: /MP
-          CXXFLAGS: /MP
         run: >
           cmake -S . -B build
-          -G "Visual Studio 17 2022" -A x64
+          -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_POLICY_DEFAULT_CMP0141=NEW
+          -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded
+          -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
           -DVULKAN_ENGINE_FETCH_DEPS=ON
           -DVULKAN_ENGINE_WARNINGS_AS_ERRORS=ON
           -DVulkan_INCLUDE_DIR="$env:VULKAN_SDK\Include"
@@ -176,20 +253,30 @@ jobs:
           -DVulkan_GLSLC_EXECUTABLE="$env:VULKAN_SDK\Bin\glslc.exe"
 
       - name: Compile GLSL shaders
-        run: cmake --build build --config Debug --target VulkanEngineShaders --parallel
-
-      - name: Build renderer
-        run: cmake --build build --config Debug --target VulkanEngine --parallel
+        run: cmake --build build --target VulkanEngineShaders
 
       # MSVC with /permissive- is the compiler most likely to catch a
       # portability bug that GCC and AppleClang accept, so it is worth building
       # and running the suite here and not only on Linux. The tests create no
       # Vulkan device, so no GPU is required on the runner.
+      #
+      # One Ninja invocation for both, so the renderer's and the tests' sources
+      # share the runner's cores instead of taking turns.
+      - name: Build renderer and tests
+        run: cmake --build build --target VulkanEngine VulkanEngineTests
+
       - name: Shader constant parity
         run: python3 tools/check_shader_constants.py
 
-      - name: Build tests
-        run: cmake --build build --config Debug --target VulkanEngineTests --parallel
-
       - name: Run tests
-        run: ctest --test-dir build -C Debug --output-on-failure --no-tests=error --parallel $env:NUMBER_OF_PROCESSORS
+        run: ctest --test-dir build --output-on-failure --no-tests=error --parallel $env:NUMBER_OF_PROCESSORS
+
+      # The hit rate is the evidence that the cache is doing anything; a run
+      # that restored nothing reads the same as a warm one otherwise.
+      - name: Compiler cache statistics
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:CMAKE_CXX_COMPILER_LAUNCHER) {
+            & $env:CMAKE_CXX_COMPILER_LAUNCHER --show-stats -v
+          }

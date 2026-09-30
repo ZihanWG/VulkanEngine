@@ -164,16 +164,26 @@ jobs:
 
       - name: Route the compilers through the cache
         run: |
+          # The compiler is identified by its contents, not its mtime: a runner
+          # image update reinstalls the same compiler with a new timestamp, and
+          # by mtime that is a different compiler and a miss on every object.
           {
             echo "CCACHE_DIR=${{ github.workspace }}/.ccache"
             echo "CCACHE_MAXSIZE=1G"
+            echo "CCACHE_COMPILERCHECK=content"
             echo "CMAKE_C_COMPILER_LAUNCHER=ccache"
             echo "CMAKE_CXX_COMPILER_LAUNCHER=ccache"
           } >> "$GITHUB_ENV"
-          ccache --zero-stats
+          # GITHUB_ENV reaches later steps only; without the directory here
+          # this resets a different cache's statistics, and the numbers below
+          # accumulate across every run that restored this one.
+          CCACHE_DIR="${{ github.workspace }}/.ccache" ccache --zero-stats
 
+      # Precompiled headers are off because ccache does not cache a compile
+      # that uses one, and SDL3 builds its C sources against a PCH -- on the
+      # Windows job ccache reported ~240 of them uncacheable on every run.
       - name: Configure CMake
-        run: cmake --preset ci-debug -DVULKAN_ENGINE_FETCH_DEPS=ON
+        run: cmake --preset ci-debug -DVULKAN_ENGINE_FETCH_DEPS=ON -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
 
       - name: Compile GLSL shaders
         run: cmake --build --preset ci-debug-shaders --parallel
@@ -609,7 +619,7 @@ jobs:
       # that restored nothing reads the same as a warm one otherwise.
       - name: Compiler cache statistics
         if: always()
-        run: ccache --show-stats
+        run: ccache --show-stats -v
 
       - name: Upload render logs
         if: always()
