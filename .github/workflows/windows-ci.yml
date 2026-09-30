@@ -192,4 +192,4 @@ jobs:
         run: cmake --build build --config Debug --target VulkanEngineTests --parallel
 
       - name: Run tests
-        run: ctest --test-dir build -C Debug --output-on-failure --no-tests=error
+        run: ctest --test-dir build -C Debug --output-on-failure --no-tests=error --parallel $env:NUMBER_OF_PROCESSORS

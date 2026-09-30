@@ -42,10 +42,27 @@ jobs:
             exit 1
           fi
 
+  # Two variants side by side rather than one after the other. The sanitizer
+  # build shares nothing with the Debug build but the setup ahead of its
+  # configure step -- its own build tree, objects and test binary -- and run
+  # behind it, it was half of this job's wall-clock.
   build:
-    name: Ubuntu Vulkan build
+    name: ${{ matrix.name }}
     # Pinned so the LunarG package list codename (noble) is deterministic.
     runs-on: ubuntu-24.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: debug
+            name: Ubuntu Vulkan build
+            preset: ci-debug
+          # The headless tests under AddressSanitizer + UndefinedBehaviorSanitizer,
+          # so memory and UB regressions fail CI.
+          - variant: asan
+            name: Ubuntu ASan/UBSan tests
+            preset: ci-asan
 
     steps:
       - name: Checkout
@@ -105,8 +122,8 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/.ccache
-          key: ccache-${{ runner.os }}-${{ github.workflow }}-${{ github.job }}-${{ github.sha }}
-          restore-keys: ccache-${{ runner.os }}-${{ github.workflow }}-${{ github.job }}-
+          key: ccache-${{ runner.os }}-${{ github.workflow }}-${{ github.job }}-${{ matrix.variant }}-${{ github.sha }}
+          restore-keys: ccache-${{ runner.os }}-${{ github.workflow }}-${{ github.job }}-${{ matrix.variant }}-
 
       - name: Route the compilers through the cache
         run: |
@@ -119,9 +136,10 @@ jobs:
           ccache --zero-stats
 
       - name: Configure CMake
-        run: cmake --preset ci-debug -DVULKAN_ENGINE_FETCH_DEPS=ON
+        run: cmake --preset ${{ matrix.preset }} -DVULKAN_ENGINE_FETCH_DEPS=ON
 
       - name: Compile GLSL shaders
+        if: matrix.variant == 'debug'
         run: |
           if cmake --build --preset ci-debug-shaders --parallel; then
             exit 0
@@ -129,17 +147,27 @@ jobs:
           echo "Shader target VulkanEngineShaders failed. Confirm glslc is installed and Vulkan shader sources compile." >&2
           exit 1
 
-      - name: Build renderer
-        run: cmake --build --preset ci-debug --parallel
+      # The Debug preset builds the renderer and the tests; the sanitizer preset
+      # builds only the tests.
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }} --parallel
 
+      # In parallel because each test is its own process: under the sanitizers,
+      # starting 670 of them one at a time was 79 s of test run for well under a
+      # second of testing. Every test that touches the file system names its own
+      # temporary path, so concurrent tests do not collide.
       - name: Run unit tests
-        run: ctest --preset ci-debug
+        env:
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --preset ${{ matrix.preset }} --parallel "$(nproc)"
 
       # Cheap, no GPU, and closes the one real hole in the CPU<->GLSL mirroring
       # discipline: every mirrored constant is commented at both ends but nothing
       # verified they were equal, and a mismatch neither fails the build nor trips
       # validation -- it silently addresses the wrong froxel.
       - name: Shader constant parity
+        if: matrix.variant == 'debug'
         run: python3 tools/check_shader_constants.py
 
       # The other half of the same discipline. The constant checker compares
@@ -151,6 +179,7 @@ jobs:
       # same diff. Two designs that sound stronger were measured and rejected
       # first; tools/check_shader_interface.py says why.
       - name: Shader interface parity
+        if: matrix.variant == 'debug'
         run: python3 tools/check_shader_interface.py --build-dir build/ci-debug
 
       # Save Settings writes whatever captureRuntimeSettings hands it, starting
@@ -158,6 +187,7 @@ jobs:
       # were, for as long as they existed. Both functions are Renderer members
       # no headless test can call; this reads their source instead.
       - name: Settings capture parity
+        if: matrix.variant == 'debug'
         run: python3 tools/check_settings_capture.py
 
       # Report-only static analysis over our own sources. Deliberately
@@ -178,6 +208,7 @@ jobs:
       # for the push to main, which still analyses the whole tree. The step
       # prints the list, so what was covered is never a guess.
       - name: Static analysis (clang-tidy, report-only)
+        if: matrix.variant == 'debug'
         continue-on-error: true
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -219,20 +250,6 @@ jobs:
             patterns+=("/${file//./[.]}\$")
           done
           run-clang-tidy -p build/ci-debug -quiet "${patterns[@]}"
-
-      # Re-build and run the headless tests under AddressSanitizer +
-      # UndefinedBehaviorSanitizer so memory/UB regressions fail CI.
-      - name: Configure CMake (ASan/UBSan)
-        run: cmake --preset ci-asan -DVULKAN_ENGINE_FETCH_DEPS=ON
-
-      - name: Build tests (ASan/UBSan)
-        run: cmake --build --preset ci-asan --parallel
-
-      - name: Run unit tests (ASan/UBSan)
-        env:
-          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
-          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
-        run: ctest --preset ci-asan
 
       # The hit rate is the evidence that the cache is doing anything; a run
       # that restored nothing reads the same as a warm one otherwise.

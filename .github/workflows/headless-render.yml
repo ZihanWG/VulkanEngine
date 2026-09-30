@@ -42,10 +42,20 @@ jobs:
       - name: Check what the sweep covers
         run: python3 tools/check_ci_settings_coverage.py
 
+  # Split across runners because the sweep outgrew one. Each shard repeats
+  # the setup and the build (the compiler cache keeps the build short) and
+  # renders its share of the legs; shard 1 also runs the pixel gates. Lanes
+  # inside a runner bought little -- llvmpipe already keeps a runner's cores
+  # busy with one leg -- while a second runner is a second set of cores.
   headless-render:
-    name: lavapipe render + validation gate
+    name: lavapipe render + validation gate (${{ matrix.shard }}/${{ strategy.job-total }})
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
 
     env:
       VK_LOADER_DEBUG: warn
@@ -73,6 +83,12 @@ jobs:
       # the first parallel run each leg took 3.3x as long beside three others
       # as it had alone.
       SWEEP_LANES: 4
+      # How many runners share the sweep, taken from the matrix so the two
+      # cannot disagree: a leg belongs to shard (index mod SWEEP_SHARDS) + 1.
+      SWEEP_SHARDS: ${{ strategy.job-total }}
+      # Shard 1 holds the golden capture and diff, so it keeps the artifact name
+      # the re-baselining instructions in docs/headless_ci.md refer to.
+      LOGS_ARTIFACT: ${{ matrix.shard == 1 && 'headless-render-logs' || format('headless-render-logs-shard-{0}', matrix.shard) }}
 
     steps:
       - name: Checkout
@@ -136,8 +152,11 @@ jobs:
       # run saves what it built, and restore-keys hands the next run the most
       # recent entry -- on a pull request that includes what main saved. CMake
       # takes the launcher from the environment, so no configure line changes.
+      # Every shard builds the same objects, so every shard restores and only
+      # shard 1 saves; four saves of one key would race for it.
       - name: Restore the compiler cache
-        uses: actions/cache@v6
+        id: ccache-restore
+        uses: actions/cache/restore@v6
         with:
           path: ${{ github.workspace }}/.ccache
           key: ccache-${{ runner.os }}-${{ github.workflow }}-${{ github.job }}-${{ github.sha }}
@@ -166,7 +185,17 @@ jobs:
       - name: Build renderer
         run: cmake --build --preset ci-debug --parallel
 
+      # Saved as soon as the build is done, so a red render below does not
+      # throw away a good cache.
+      - name: Save the compiler cache
+        if: matrix.shard == 1
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ${{ steps.ccache-restore.outputs.cache-primary-key }}
+
       - name: Build the image comparison tool
+        if: matrix.shard == 1
         run: cmake --build --preset ci-debug --target compare_images --parallel
 
       # Before anything gates on synchronization validation being quiet, prove it
@@ -205,6 +234,7 @@ jobs:
       # validation layer reported any error, including during teardown; the log
       # is captured either way. `timeout` bounds a hang.
       - name: Render and gate on validation
+        if: matrix.shard == 1
         run: |
           set +e
           timeout 1500 xvfb-run -a --server-args="-screen 0 1280x720x24" \
@@ -270,20 +300,18 @@ jobs:
       # Vulkan call is still legal. That is exactly what this found on its first
       # run, in two configurations, both invisible to every other gate here.
       #
-      # A sequential loop rather than a job matrix, and the reason is cost. Per
-      # leg the render is small: roughly 4.5 s of renderer init and 5 s for the
+      # A few shards rather than a job per leg, and the reason is cost. Per leg
+      # the render is small: roughly 4.5 s of renderer init and 5 s for the
       # first frame on lavapipe, then cheaper ones. What is expensive is
       # everything above this step -- the LunarG SDK install, the apt
       # dependencies, the shader compile and the Debug build -- none of which a
-      # leg changes. A matrix repeats all of that per leg and multiplies the
-      # billable minutes by the leg count to buy wall-clock this job does not
-      # need.
+      # leg changes. A job per leg would repeat all of that fifty-odd times; a
+      # shard repeats it once and takes a share of the legs.
       #
-      # Within the job the legs do run concurrently, SWEEP_LANES at a time: a
-      # leg is small, but fifty-odd of them one after another had become the
-      # longest step in CI. That buys some wall-clock without repeating the
-      # setup above -- less than the lane count, because one leg already
-      # keeps several of the runner's cores busy.
+      # Within a shard the legs run concurrently, SWEEP_LANES at a time. That
+      # buys less than the lane count, because one leg already keeps several of
+      # the runner's cores busy -- which is why the sweep is also split across
+      # runners.
       #
       # Every leg runs even after one fails, so a red run names every broken
       # configuration instead of only the first.
@@ -412,11 +440,18 @@ jobs:
             fi
           }
 
-          # Legs are dealt round-robin to SWEEP_LANES lanes that run side by
-          # side, each working through its share in order. Every lane starts
-          # from a copy of the cache the gates above warmed, so no lane pays for
-          # a cold shader cache that the sequential loop never paid for.
-          mapfile -t legs < <(grep -v '^[[:space:]]*$' artifacts/sweep/legs.txt)
+          # Legs are dealt round-robin to the shards, and within this shard
+          # round-robin to SWEEP_LANES lanes that run side by side, each
+          # working through its share in order. On shard 1 every lane starts
+          # from a copy of the cache the gates above warmed; the other shards
+          # run no gate, so each of their lanes warms its own.
+          mapfile -t legs < <(grep -v '^[[:space:]]*$' artifacts/sweep/legs.txt \
+            | awk -v shard="${{ matrix.shard }}" -v shards="$SWEEP_SHARDS" '(NR - 1) % shards == shard - 1')
+          if [ "${#legs[@]}" -eq 0 ]; then
+            echo "::error::Sweep shard ${{ matrix.shard }} of $SWEEP_SHARDS was dealt no legs."
+            exit 1
+          fi
+          echo "Sweep shard ${{ matrix.shard }} of $SWEEP_SHARDS: ${#legs[@]} legs."
           for ((lane = 0; lane < SWEEP_LANES; lane++)); do
             mkdir -p "$RUNNER_TEMP/sweep-cache-$lane"
             for warm in mesa_shader_cache VulkanEngine; do
@@ -466,12 +501,12 @@ jobs:
           done
 
           echo ""
-          echo "Configuration sweep, $SWEEP_FRAMES frames each:"
+          echo "Configuration sweep shard ${{ matrix.shard }} of $SWEEP_SHARDS, $SWEEP_FRAMES frames each:"
           cat "$summary"
 
           if grep -q FAILED "$summary"; then
             echo "::error::$(grep -c FAILED "$summary") configuration(s) failed. Per-leg logs"
-            echo "::error::are in the headless-render-logs artifact under sweep/."
+            echo "::error::are in the $LOGS_ARTIFACT artifact under sweep/."
             exit 1
           fi
 
@@ -491,6 +526,7 @@ jobs:
       # by up to 14 and would still fail this gate. The differing-pixel budget
       # stays at zero, so anything that clears the tolerance still goes red.
       - name: Compare against the golden image
+        if: matrix.shard == 1
         run: |
           set +e
           ./build/ci-debug/compare_images \
@@ -532,9 +568,18 @@ jobs:
       # RTX machine the two frames are pixel-identical. A difference here is a
       # bug in one of the two paths, not a reason to add a second golden.
       - name: Render on the portability fallbacks and compare against the same golden
+        if: matrix.shard == 1
         run: |
           set +e
-          timeout 1500 xvfb-run -a --server-args="-screen 0 1280x720x24"             ./build/ci-debug/VulkanEngine               --deterministic               --exit-after-frames "$RENDER_FRAMES"               --capture-frame "$CAPTURE_FRAME"               --capture-output "$PORTABILITY_CAPTURE_PATH"               --fail-on-validation-error               --portability-fallbacks             > artifacts/portability-render.log 2>&1
+          timeout 1500 xvfb-run -a --server-args="-screen 0 1280x720x24" \
+            ./build/ci-debug/VulkanEngine \
+              --deterministic \
+              --exit-after-frames "$RENDER_FRAMES" \
+              --capture-frame "$CAPTURE_FRAME" \
+              --capture-output "$PORTABILITY_CAPTURE_PATH" \
+              --fail-on-validation-error \
+              --portability-fallbacks \
+            > artifacts/portability-render.log 2>&1
           status=$?
           if [ "$status" -ne 0 ]; then
             tail -n 30 artifacts/portability-render.log
@@ -548,7 +593,11 @@ jobs:
             exit 1
           }
 
-          ./build/ci-debug/compare_images             "$PORTABILITY_CAPTURE_PATH" "$GOLDEN_PATH"             --channel-tolerance 1             --max-differing-fraction 0             --diff-output "$PORTABILITY_DIFF_PATH"
+          ./build/ci-debug/compare_images \
+            "$PORTABILITY_CAPTURE_PATH" "$GOLDEN_PATH" \
+            --channel-tolerance 1 \
+            --max-differing-fraction 0 \
+            --diff-output "$PORTABILITY_DIFF_PATH"
           status=$?
           if [ "$status" -ne 0 ]; then
             echo "::error::The frame rendered on the portability fallbacks differs from the golden."
@@ -566,7 +615,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: headless-render-logs
+          name: ${{ env.LOGS_ARTIFACT }}
           path: |
             lavapipe-summary.txt
             headless-render.log

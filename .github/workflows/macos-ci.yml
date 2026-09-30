@@ -100,7 +100,7 @@ jobs:
       # itself is not run here: runtime evidence comes from a real Mac and from
       # the lavapipe job.
       - name: Run unit tests
-        run: ctest --preset ci-debug
+        run: ctest --preset ci-debug --parallel "$(sysctl -n hw.ncpu)"
 
       - name: Shader constant parity
         run: python3 tools/check_shader_constants.py
