@@ -615,6 +615,36 @@ jobs:
             exit 1
           fi
 
+      # TEMPORARY: where one sweep leg's time goes. Each configuration runs
+      # alone, one after another, with every output line stamped with the
+      # seconds since launch.
+      - name: Time sweep legs in isolation
+        if: matrix.shard == 1
+        continue-on-error: true
+        run: |
+          mkdir -p artifacts/leg-timing
+          run_timed() {
+            local name="$1" frames="$2"; shift 2
+            local log="artifacts/leg-timing/$name.log"
+            local start end
+            start=$(date +%s.%N)
+            # shellcheck disable=SC2068 -- deliberate argument list.
+            stdbuf -oL -eL xvfb-run -a --server-args="-screen 0 1280x720x24" \
+              ./build/ci-debug/VulkanEngine --deterministic --exit-after-frames "$frames" \
+                --fail-on-validation-error $@ 2>&1 \
+              | perl -MTime::HiRes=time -ne 'BEGIN { $t0 = time } printf "%7.3f %s", time - $t0, $_' > "$log"
+            end=$(date +%s.%N)
+            printf '%-24s total %6.2f s\n' "$name" "$(echo "$end - $start" | awk '{print $1 - $3}')"
+            grep -E "Selected Vulkan physical device|Pipeline build:|Created procedural environment|Created BRDF LUT|Irradiance probes enabled|Scene: |Render graph backstop|Validation tally" "$log" \
+              | sed 's/^/    /' | cut -c1-120 || true
+          }
+          run_timed A-default-10-sync 10 --sync-validation
+          run_timed B-default-2-sync 2 --sync-validation
+          run_timed C-default-10-nosync 10
+          run_timed D-default-10-sync-640 10 --sync-validation --window-size 640x360
+          run_timed E-all-effects-10-sync 10 --sync-validation --settings config/ci/all-effects.json
+          run_timed A2-default-10-sync 10 --sync-validation
+
       # The hit rate is the evidence that the cache is doing anything; a run
       # that restored nothing reads the same as a warm one otherwise.
       - name: Compiler cache statistics
