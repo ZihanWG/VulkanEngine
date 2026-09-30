@@ -346,10 +346,17 @@ leg list that disagrees with the files on disk. Adding a setting without adding
 a leg for it is a red pull request rather than a quiet hole; the rules and the
 exemptions are in [`config/ci/README.md`](../config/ci/README.md).
 
-A sequential loop rather than a job matrix. Per leg the render is small; what is
+A few shards rather than a job per leg. Per leg the render is small; what is
 expensive is the SDK install, the apt dependencies, the shader compile and the
-Debug build above it, none of which a leg changes. A matrix repeats all of that
-per leg for wall-clock this job does not need.
+Debug build above it, none of which a leg changes. A job per leg would repeat all
+of that for every leg. Instead the job is a small matrix: each shard repeats the
+setup once -- the compiler cache keeps its build short -- and renders its share of
+the list, dealt round-robin, several legs at a time. Side-by-side legs on one
+runner buy little, because llvmpipe already keeps the runner's cores busy with
+one leg; another runner is another set of cores. Every shard runs the
+synchronization self-test, since every shard's legs rely on it; only the first
+runs the pixel gates, and only its artifact carries the `headless-render-logs`
+name -- the others add a `-shard-N` suffix.
 
 Only the default leg compares pixels. Goldens are per-configuration and lavapipe
 is not byte-deterministic (see the tolerance discussion above); the other legs
