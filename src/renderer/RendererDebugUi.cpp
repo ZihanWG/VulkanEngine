@@ -1010,6 +1010,61 @@ void Renderer::drawShadowsDebugUi()
                               "the cascades.");
     }
 
+    ImGui::SeparatorText("Ray-traced (directional)");
+    {
+        // The setting is kept even where it cannot be honoured, so a settings file
+        // moved to a machine without ray query keeps its value; the line below
+        // says which of the reasons applies.
+        ImGui::Checkbox("Ray-traced sun shadows", &rayTracedShadowSettings_.enabled);
+        ImGui::SetItemTooltip("One ray per shaded pixel toward the sun, against an acceleration\n"
+                              "structure of every casting draw item. Replaces the cascades and the\n"
+                              "virtual shadow map in the main pass; both keep rendering underneath,\n"
+                              "because fog, probe capture and the non-bindless shader read them.");
+        if (!context_.rayQueryEnabled()) {
+            ImGui::TextDisabled(context_.device().rayQueryDeclined() ? "Unavailable: --disable-ray-query."
+                                                                     : "Unavailable: the device has no ray query.");
+        } else if (!rayQueryShadingAvailable()) {
+            ImGui::TextDisabled("Unavailable: needs the bindless shading path.");
+        } else if (!rayTracingScene_.ready()) {
+            ImGui::TextDisabled("Unavailable: the bottom-level build failed (see the log).");
+        }
+        if (ImGui::SliderFloat("Ray normal offset", &rayTracedShadowSettings_.normalOffset, 0.0f, 0.2f, "%.3f")) {
+            clampRuntimeSettings();
+        }
+        ImGui::SetItemTooltip("World units the ray starts off the surface, at any distance. Zero shows\n"
+                              "the self-shadowing it exists to hide.");
+        if (ImGui::SliderFloat(
+                "Ray pixel-footprint offset", &rayTracedShadowSettings_.pixelFootprintOffset, 0.0f, 4.0f, "%.2f")) {
+            clampRuntimeSettings();
+        }
+        ImGui::SetItemTooltip("A further offset of this many pixels' world size at the fragment's\n"
+                              "distance, on top of the LOD error budget the renderer adds itself.\n"
+                              "Rays see level 0 of every mesh while the raster pass may have drawn\n"
+                              "a coarser one; this keeps the coarse surface from shadowing itself.");
+        ImGui::Checkbox("Debug: ray-traced visibility", &rayTracedShadowSettings_.debugVisibility);
+        ImGui::Checkbox("Debug: compare with cascades", &rayTracedShadowSettings_.debugCompareCascades);
+        ImGui::SetItemTooltip("Red: only the ray finds an occluder. Blue: only the cascades do.\n"
+                              "Grey: they agree. Past the cascades' shadow distance they report lit,\n"
+                              "so red there is their range limit. Wins over the visibility view.");
+        if (rayTracingScene_.ready()) {
+            const renderer::RayTracingSceneStats& stats = rayTracingScene_.stats();
+            ImGui::Text("BLAS: %u (%llu triangles, %.1f MiB), built in %.1f ms",
+                        stats.bottomLevelCount,
+                        static_cast<unsigned long long>(stats.bottomLevelTriangles),
+                        static_cast<double>(stats.bottomLevelBytes) / (1024.0 * 1024.0),
+                        stats.bottomLevelBuildMs);
+            ImGui::Text("TLAS instances: %u (%u alpha-tested)%s",
+                        stats.instances,
+                        stats.alphaTestedInstances,
+                        isRayTracedShadowActive() ? "" : " -- last frame that traced");
+            if (stats.instancesWithoutBottomLevel > 0) {
+                ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f),
+                                   "%u draw item(s) had no BLAS or no instance slot and cast nothing.",
+                                   stats.instancesWithoutBottomLevel);
+            }
+        }
+    }
+
     ImGui::SeparatorText("Punctual (spot/point)");
     if (!punctualShadows_.valid()) {
         ImGui::TextDisabled("Shadow atlas unavailable; point/spot lights do not cast.");

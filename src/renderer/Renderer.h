@@ -30,6 +30,7 @@
 #include "renderer/MeshLod.h"
 #include "renderer/ObjectTransformCache.h"
 #include "renderer/PostProcessStack.h"
+#include "renderer/RayTracingScene.h"
 #include "renderer/RenderGraph.h"
 #include "renderer/RenderObject.h"
 #include "renderer/RenderResolution.h"
@@ -421,6 +422,7 @@ private:
         CascadeShadowCache,
         MainCullingFrameData,
         ObjectFrameDataUpload,
+        RayTracingInstances,
         Count
     };
     static constexpr size_t kCpuScopeCount = static_cast<size_t>(CpuScope::Count);
@@ -880,6 +882,33 @@ private:
     }
     // Records the page-marking dispatch inside the graph's declared pass.
     void recordVsmPageMarkPass(VkCommandBuffer commandBuffer);
+
+    // --- Ray-traced sun shadows (docs/ray_traced_shadows.md) ---
+    //
+    // The TLAS, its scratch and its per-frame buffers. Before the material
+    // descriptor set layout, which gains binding 16 only when this succeeds,
+    // and before the pipelines, which pick the ray-query fragment shader on the
+    // same condition. A failure here is logged and leaves the device's ray query
+    // unused rather than ending startup.
+    void createRayTracingScene();
+    // One BLAS per mesh primitive. After createScene, the one point at which
+    // every mesh the renderer will ever draw exists.
+    void buildRayTracingBottomLevel();
+    // Whether the shading pipelines were built with the ray-query fragment
+    // shader. Requires the TLAS and the bindless path, the only one that traces.
+    [[nodiscard]] bool rayQueryShadingAvailable() const
+    {
+        return rayTracingScene_.hasTopLevel() && isBindlessMaterialTextureActive();
+    }
+    // The bindless fragment shader, or its ray-query variant when the pipelines
+    // can trace. Both main pipelines and the transparent one share it.
+    [[nodiscard]] std::filesystem::path bindlessFragmentShaderPath() const;
+    // Whether this frame traces sun shadow rays. Latched in frame prep, where
+    // the instances are written, and read by the FrameConstants upload, the
+    // graph declaration and the recorder, which must all agree.
+    [[nodiscard]] bool isRayTracedShadowActive() const;
+    void writeRayTracingInstances(uint32_t frameIndex);
+    void recordRayTracingSceneBuild(VkCommandBuffer commandBuffer);
     // Drops the depth of pages whose casters moved, before residency decides
     // what to draw. Without it a moved object leaves its shadow behind: the page
     // keeps its identity and its physical page, so nothing else notices.
@@ -1767,6 +1796,7 @@ private:
     VkPipelineStageFlags2 frameClusterConsumerStages_ = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
     bool frameSsrActive_ = false;
     bool frameGtaoActive_ = false;
+    bool frameRayTracedShadowsActive_ = false;
     // Whether this frame captures probes. Latched during frame prep alongside
     // the batch it refers to, because the graph declaration and the recording
     // have to agree and choosing the batch advances the round-robin cursor.
@@ -1858,6 +1888,13 @@ private:
     // Virtual shadow map page marking. Reads the depth pyramid, so it follows it
     // in declaration order for the same reason gpuCulling_ does.
     renderer::VirtualShadowMapPass virtualShadowMap_{context_, depthPyramid_, gpuProfiler_};
+
+    // Ray-traced sun shadows. The scene holds its own copy of every mesh's
+    // geometry once built, so it does not depend on the meshes outliving it.
+    renderer::RayTracingScene rayTracingScene_;
+    RayTracedShadowSettings rayTracedShadowSettings_{};
+    // Reused every frame so writing the instances does not allocate.
+    std::vector<renderer::RayTracingInstanceInput> rayTracingInstanceInputs_;
 };
 
 } // namespace ve

@@ -88,6 +88,23 @@ public:
     {
         return indexBuffer_.buffer();
     }
+    // Zero unless the device has ray query, which is the only reason the
+    // buffers are created addressable (see geometryBufferUsage in Mesh.cpp).
+    [[nodiscard]] VkDeviceAddress vertexBufferAddress() const
+    {
+        return vertexBuffer_.deviceAddress();
+    }
+    [[nodiscard]] VkDeviceAddress indexBufferAddress() const
+    {
+        return indexBuffer_.deviceAddress();
+    }
+    // Every vertex in the buffer, across all primitives and LOD levels. An
+    // acceleration-structure build needs the highest index any triangle may
+    // reference, and the index buffer alone does not say.
+    [[nodiscard]] uint32_t vertexCount() const
+    {
+        return vertexCount_;
+    }
     // Index count of LOD 0, i.e. the authored geometry. Simplified levels live
     // past it in the same buffer and are addressed through lods().
     [[nodiscard]] uint32_t indexCount() const
@@ -148,6 +165,7 @@ private:
     // Mesh owns the GPU-local buffers for one drawable piece of geometry.
     rhi::VulkanBuffer vertexBuffer_;
     rhi::VulkanBuffer indexBuffer_;
+    uint32_t vertexCount_ = 0;
     uint32_t indexCount_ = 0;
     std::vector<MeshPrimitive> subMeshes_;
     std::vector<MeshLod> lods_;

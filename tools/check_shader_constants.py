@@ -122,6 +122,20 @@ PAIRS: list[tuple[str, str, list[str]]] = [
         "src/shaders/taa_disocclusion.glsl",
         ["kTaaDisocclusionReject", "kTaaDisocclusionDebug"],
     ),
+    # Ray-traced sun shadows. The flag word is the only thing the shader branches
+    # on, so a bit that disagrees turns the ray off, or a debug view on, with
+    # nothing reported. The vertex layout is read through raw device addresses,
+    # where a stride that disagrees samples the wrong UVs for every cutout.
+    (
+        "src/renderer/RayTracedShadows.h",
+        "src/shaders/object_frame_data.glsl",
+        ["kRtShadowFlagEnabled", "kRtShadowFlagDebugVisibility", "kRtShadowFlagDebugCompareCascades"],
+    ),
+    (
+        "src/renderer/RayTracedShadows.h",
+        "src/shaders/simple_bindless.frag",
+        ["kRtVertexStrideFloats", "kRtVertexUvOffsetFloats"],
+    ),
 ]
 
 # Constants whose two copies deliberately carry different names, as

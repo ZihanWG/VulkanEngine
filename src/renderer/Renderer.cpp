@@ -190,6 +190,9 @@ Renderer::Renderer(Window& window, const RendererStartupOverrides& overrides) : 
     updateRenderResolution();
     imguiLayer_.initialize(
         window_, context_, swapchain_.colorFormat(), swapchain_.imageCount(), defaultDebugUiLayoutPath());
+    // Before the material set layout and the pipelines: both are built
+    // differently when the TLAS exists, and only this decides whether it does.
+    createRayTracingScene();
     createMaterialDescriptorSetLayout();
     createBindlessMaterialTextureHeap();
     createSkyboxDescriptorSetLayout();
@@ -252,6 +255,9 @@ Renderer::Renderer(Window& window, const RendererStartupOverrides& overrides) : 
                  (isBindlessMaterialTextureActive() ? ", bindless: one shared environment set)" : ", per material)"));
     assetLoadStats_.timings.sceneCreateMs =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - sceneCreateStart).count();
+    // Outside sceneCreateMs, which the asset-load baseline compares across
+    // machines that have no ray query at all.
+    buildRayTracingBottomLevel();
     createObjectFrameDataBuffers();
     clusteredLighting_.create(context_,
                               static_cast<uint32_t>(frames_.size()),
@@ -1193,6 +1199,8 @@ const char* Renderer::cpuScopeName(CpuScope scope)
         return "main culling frame data";
     case CpuScope::ObjectFrameDataUpload:
         return "object frame data upload";
+    case CpuScope::RayTracingInstances:
+        return "ray tracing instances";
     case CpuScope::Count:
         break;
     }
@@ -2239,6 +2247,12 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
         virtualShadowMap_.invalidateResidency();
     }
 
+    // Whole-struct and outside the startup/runtime split: it owns no resource.
+    // Availability is decided per frame (isRayTracedShadowActive), so the
+    // setting can be on while the device cannot honour it, and a settings file
+    // carried to a machine without ray query keeps its value.
+    rayTracedShadowSettings_ = settings.rayTracedShadows;
+
     // Outside the startup/runtime split: it owns no resource, so toggling it
     // mid-run just starts or stops the poll.
     shaderHotReloadEnabled_ = settings.enableShaderHotReload;
@@ -2317,6 +2331,7 @@ RuntimeSettings Renderer::captureRuntimeSettings() const
     settings.gi = giSettings_;
     settings.csm = csmSettings_;
     settings.vsm = vsmSettings_;
+    settings.rayTracedShadows = rayTracedShadowSettings_;
     settings.debugUi = debugUiSettings_;
     settings.enableTransientAliasing = useTransientAliasing_;
     settings.useGpuCulling = useGpuCulling_;
@@ -2644,6 +2659,7 @@ void Renderer::clampRuntimeSettings()
                              lodSettings_,
                              giSettings_,
                              debugUiSettings_);
+    ve::clampRayTracedShadowSettings(rayTracedShadowSettings_);
 
     // Pushed here rather than at each edit site: clampRuntimeSettings runs after
     // every settings change (load, UI edit, reset), so the volume's copy of the

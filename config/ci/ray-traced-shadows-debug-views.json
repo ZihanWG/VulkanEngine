@@ -1,0 +1,3 @@
+{
+  "rayTracedShadows": { "enabled": true, "debugVisibility": true, "debugCompareCascades": true }
+}

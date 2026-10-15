@@ -81,7 +81,19 @@ struct FrameConstants {
     vec4 vsmParams;
     // xy = camera in light space, z = normal-offset bias, w = depth bias.
     vec4 vsmCamera;
+    // --- ray-traced sun shadows (docs/ray_traced_shadows.md) ---
+    // xy = geometry-record table address, z = kRtShadowFlag* bits, w spare.
+    uvec4 rayTracedShadow;
+    // x = normal offset, y = offset per unit of camera distance, z = ray length.
+    vec4 rayTracedShadowParams;
 };
+
+// Bits of FrameConstants::rayTracedShadow.z. Mirrors kRtShadowFlag* in
+// src/renderer/RayTracedShadows.h. Zero leaves the main pass on the virtual
+// shadow map or the cascades, exactly as a device without ray query runs.
+const uint kRtShadowFlagEnabled = 1u;
+const uint kRtShadowFlagDebugVisibility = 2u;
+const uint kRtShadowFlagDebugCompareCascades = 4u;
 
 layout(buffer_reference, std430) readonly buffer FrameConstantsBuffer {
     FrameConstants values;

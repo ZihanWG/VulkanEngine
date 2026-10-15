@@ -89,7 +89,10 @@ not a full game engine. Implemented systems include:
 - Three shadow paths: PCF-filtered cascaded shadow maps with texel snapping and
   per-cascade content caching, a quadtree-packed punctual atlas with per-tile
   caching, and optional virtual shadow maps behind their own stage gates.
-  Alpha-tested casters and a shadow LOD bias apply to the cascades.
+  Alpha-tested casters and a shadow LOD bias apply to the cascades. Where the
+  device has ray query, the sun can instead be traced with one ray per pixel
+  against a per-frame top-level acceleration structure; off by default, and the
+  skinned mesh does not cast into it yet.
 - Indirect lighting beyond IBL, all optional: irradiance-probe GI, screen-space
   reflections against the thin G-buffer, GTAO, and volumetric fog.
 - A depth prepass (on by default), GPU frustum culling, two-phase Hi-Z occlusion
@@ -104,7 +107,7 @@ not a full game engine. Implemented systems include:
   dependencies, a backstop comparing declared passes against recorded ones, and
   optional transient memory aliasing of the bloom chain and the
   velocity/thin-G-buffer pair.
-- Per-pass GPU timestamp profiling with frame-latency readback, seventeen CPU
+- Per-pass GPU timestamp profiling with frame-latency readback, named CPU
   frame-preparation scopes, and ImGui timing history.
 - Editable runtime scene workflow for object names, visibility, transforms,
   click-to-pick with a transform gizmo, camera/light settings, JSON scene
@@ -129,7 +132,7 @@ The current frame flow is:
    fog resources, and declare this frame's passes. Which passes are declared
    depends on what is enabled and on what the caches decided -- a frame whose
    cascades are all clean declares no `CSMShadowPass`.
-4. `RenderGraph::recordScheduledUnits` drives the rest as seventeen recorders,
+4. `RenderGraph::recordScheduledUnits` drives the rest as a list of recorders,
    in the order the graph scheduled them:
    - virtual shadow map page marking, page cull, and page render;
    - cascaded shadow maps, with an optional GPU caster cull ahead of them;
@@ -139,6 +142,8 @@ The current frame flow is:
      exposes one and on the graphics queue here when it does not;
    - volumetric fog injection and integration;
    - irradiance probe capture and convolution;
+   - the top-level acceleration structure rebuild, on a frame that traces sun
+     shadows;
    - the main geometry region: depth prepass, then skybox and opaque draws into
      `SceneColorHDR` alongside the velocity and thin G-buffer attachments, the
      phase-two occlusion re-test, SSR, GTAO, and the transparent pass;
@@ -161,7 +166,8 @@ In declaration order it can declare:
 
 `VsmPageMarkPass`, `VsmPagePass`, `ShadowGpuCullingPass`, `CSMShadowPass`,
 `PunctualShadowCullPass`, `PunctualShadowAtlasPass`, `MainGpuCullingPass`,
-`VolumetricFogPass`, `ProbeCapture`, `IrradianceProbeUpdate`, `DepthPrepass`,
+`VolumetricFogPass`, `ProbeCapture`, `IrradianceProbeUpdate`,
+`RayTracingSceneBuild`, `DepthPrepass`,
 `MainHDRPass`, `DepthPyramidMidPass`, `MainGpuCullingPhase2`, `MainHDRPhase2`,
 `SSRCopyPass`, `SSRTracePass`, `GTAOPass`, `GTAOBlurPass`, `TransparentPass`,
 `DepthPyramidPass`, `TAAResolvePass`, the legacy bloom extract and blur passes,
@@ -267,8 +273,8 @@ screenshots.
   with the expected depth reprojected through the camera only, and has no
   reactive masks and no broad camera-cut detection.
   Skinned meshes carry joint-space motion through a previous-frame palette.
-- Reflections are environment IBL plus screen-space reflections. There is no ray
-  tracing, planar reflection, local reflection probe, or glass
+- Reflections are environment IBL plus screen-space reflections. There is no
+  ray-traced reflection, planar reflection, local reflection probe, or glass
   transmission/refraction, and SSR only finds what is on screen.
 - glTF support is narrow but no longer static: skinned meshes with skeletal
   animation import, and `MASK`/`BLEND` alpha modes drive real cutout and

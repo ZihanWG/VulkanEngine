@@ -113,6 +113,12 @@ RuntimeSettings makeNonDefaultSettings()
     settings.enableAsyncCompute = false;
     settings.enableBindlessMaterialTextures = false;
 
+    settings.rayTracedShadows.enabled = true;
+    settings.rayTracedShadows.normalOffset = 0.05f;
+    settings.rayTracedShadows.pixelFootprintOffset = 2.5f;
+    settings.rayTracedShadows.debugVisibility = true;
+    settings.rayTracedShadows.debugCompareCascades = true;
+
     settings.debugUi.showRenderGraphPanel = false;
     settings.debugUi.showSceneHierarchyPanel = false;
     settings.debugUi.showMaterialInspectorPanel = false;
@@ -153,6 +159,13 @@ TEST_CASE("RuntimeSettings save -> load round-trips every persisted field", "[se
     CHECK(loaded.toneMapping.lowPercentile == Catch::Approx(original.toneMapping.lowPercentile));
     CHECK(loaded.toneMapping.highPercentile == Catch::Approx(original.toneMapping.highPercentile));
     CHECK(loaded.toneMapping.operatorType == original.toneMapping.operatorType);
+
+    CHECK(loaded.rayTracedShadows.enabled == original.rayTracedShadows.enabled);
+    CHECK(loaded.rayTracedShadows.normalOffset == Catch::Approx(original.rayTracedShadows.normalOffset));
+    CHECK(loaded.rayTracedShadows.pixelFootprintOffset ==
+          Catch::Approx(original.rayTracedShadows.pixelFootprintOffset));
+    CHECK(loaded.rayTracedShadows.debugVisibility == original.rayTracedShadows.debugVisibility);
+    CHECK(loaded.rayTracedShadows.debugCompareCascades == original.rayTracedShadows.debugCompareCascades);
 
     CHECK(loaded.bloom.enabled == original.bloom.enabled);
     CHECK(loaded.bloom.useMipChain == original.bloom.useMipChain);

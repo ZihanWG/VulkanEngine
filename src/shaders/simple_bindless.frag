@@ -3,6 +3,12 @@
 
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_buffer_reference : require
+// Compiled twice (CMakeLists.txt, SHADER_VARIANTS). simple_bindless_rq.frag is
+// this file with VE_RAY_QUERY defined, and it is the only one a pipeline built on
+// a device without ray query never loads.
+#ifdef VE_RAY_QUERY
+#extension GL_EXT_ray_query : require
+#endif
 
 // FrameConstants and its buffer reference, needed by the push block below and by
 // the virtual shadow map lookup. The fragment stage reads the same block the
@@ -62,6 +68,12 @@ layout(buffer_reference, std430) readonly buffer LightIndexBuffer {
 // address + cascade index; the fragment stage reads the punctual-light and
 // cluster-grid fields, so it declares them at their explicit byte offsets.
 layout(push_constant) uniform PushConstants {
+#ifdef VE_RAY_QUERY
+    // The vertex stage's leading field. The ray-query variant reads other draw
+    // items' records through it: a shadow ray's candidate triangle carries its
+    // own draw item's index, and the alpha test needs that item's material.
+    layout(offset = 0) ObjectFrameDataBuffer objectFrameData;
+#endif
     layout(offset = 20) uint lightCount;
     layout(offset = 24) LightBuffer lightBuffer;
     layout(offset = 32) ClusterGridBuffer clusterGrid;
@@ -132,6 +144,103 @@ layout(set = 0, binding = 14) uniform sampler2DShadow uVsmPagePool;
 layout(set = 1, binding = 0) uniform sampler2D uBaseColorTextures[];
 layout(set = 1, binding = 1) uniform sampler2D uNormalTextures[];
 layout(set = 1, binding = 2) uniform sampler2D uMetallicRoughnessTextures[];
+
+#ifdef VE_RAY_QUERY
+// --- Ray-traced sun shadows (docs/ray_traced_shadows.md) ---------------------
+//
+// The scene's top-level acceleration structure, one instance per casting draw
+// item, rebuilt by RayTracingSceneBuild before this pass. Bound once; the
+// structure is rebuilt in place rather than replaced.
+layout(set = 0, binding = 16) uniform accelerationStructureEXT uSceneTopLevel;
+
+// Where each draw item's geometry lives, indexed by the same frameDataIndex the
+// instance carries as its custom index. Mirrors
+// ve::renderer::RayTracingGeometryRecord.
+struct RtGeometryRecord {
+    uvec2 vertexAddress;
+    // Already advanced to the draw item's firstIndex.
+    uvec2 indexAddress;
+};
+layout(buffer_reference, std430) readonly buffer RtGeometryRecordBuffer {
+    RtGeometryRecord records[];
+};
+layout(buffer_reference, std430) readonly buffer RtVertexFloats {
+    float values[];
+};
+layout(buffer_reference, std430) readonly buffer RtIndices {
+    uint values[];
+};
+
+// renderer::Vertex as floats. Mirrors kRtVertexStrideFloats and
+// kRtVertexUvOffsetFloats in src/renderer/RayTracedShadows.h, which pins both
+// against the C++ struct.
+const uint kRtVertexStrideFloats = 15u;
+const uint kRtVertexUvOffsetFloats = 6u;
+
+vec2 rtVertexUv(RtVertexFloats vertices, uint vertexIndex)
+{
+    uint base = vertexIndex * kRtVertexStrideFloats + kRtVertexUvOffsetFloats;
+    return vec2(vertices.values[base], vertices.values[base + 1u]);
+}
+
+// Whether a candidate triangle of a cutout caster blocks the sun at the point the
+// ray crossed it. The cascades' masked shadow pass, answered for one hit: the
+// same three ObjectFrameData fields and the same comparison as
+// shadow_masked.frag, so a cutout throws the same shape either way. Level 0 of
+// the base colour where the raster pass takes its derivative-selected mip, since
+// a ray has no footprint to select one with.
+bool rtCandidateBlocksLight(uint frameDataIndex, uint primitive, vec2 barycentrics)
+{
+    RtGeometryRecord record =
+        RtGeometryRecordBuffer(pc.frameConstants.values.rayTracedShadow.xy).records[frameDataIndex];
+    RtIndices indices = RtIndices(record.indexAddress);
+    RtVertexFloats vertices = RtVertexFloats(record.vertexAddress);
+    uint first = primitive * 3u;
+    vec2 uv = rtVertexUv(vertices, indices.values[first]) * (1.0 - barycentrics.x - barycentrics.y) +
+              rtVertexUv(vertices, indices.values[first + 1u]) * barycentrics.x +
+              rtVertexUv(vertices, indices.values[first + 2u]) * barycentrics.y;
+
+    uint textureIndex = pc.objectFrameData.objects[frameDataIndex].textureIndices.x;
+    float alpha = textureLod(uBaseColorTextures[nonuniformEXT(textureIndex)], uv, 0.0).a *
+                  pc.objectFrameData.objects[frameDataIndex].baseColorFactor.a;
+    return alpha >= pc.objectFrameData.objects[frameDataIndex].materialParams.w;
+}
+
+// 1.0 when nothing in the scene lies between this surface and the sun, 0.0 when
+// something does. Hard by construction: one ray, toward a light with no extent.
+//
+// The origin moves off the surface by a constant plus a term that grows with
+// distance from the camera (FrameConstants::rayTracedShadowParams). The second
+// is what covers LOD: rays see every mesh at level 0, while the raster pass drew
+// whichever level the cull chose, so a distant simplified surface would
+// otherwise find its own detailed version just above it. The offset goes to the
+// side of the surface facing the sun, so a two-sided caster seen from behind
+// does not start its ray inside itself.
+float rayTracedSunVisibility(vec3 worldPosition, vec3 surfaceNormal, vec3 towardLight)
+{
+    vec4 params = pc.frameConstants.values.rayTracedShadowParams;
+    float offset = params.x + params.y * length(pc.frameConstants.values.cameraPosition.xyz - worldPosition);
+    vec3 normal = dot(surfaceNormal, towardLight) >= 0.0 ? surfaceNormal : -surfaceNormal;
+    vec3 origin = worldPosition + normal * offset;
+
+    rayQueryEXT query;
+    rayQueryInitializeEXT(query, uSceneTopLevel, gl_RayFlagsTerminateOnFirstHitEXT, 0xFFu, origin, 0.0,
+                          towardLight, params.z);
+    // Opaque instances never stop here -- they are FORCE_OPAQUE and commit on
+    // their own. Only cutout instances present candidates.
+    while (rayQueryProceedEXT(query)) {
+        if (rayQueryGetIntersectionTypeEXT(query, false) == gl_RayQueryCandidateIntersectionTriangleEXT) {
+            uint frameDataIndex = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(query, false));
+            uint primitive = uint(rayQueryGetIntersectionPrimitiveIndexEXT(query, false));
+            vec2 barycentrics = rayQueryGetIntersectionBarycentricsEXT(query, false);
+            if (rtCandidateBlocksLight(frameDataIndex, primitive, barycentrics)) {
+                rayQueryConfirmIntersectionEXT(query);
+            }
+        }
+    }
+    return rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionNoneEXT ? 1.0 : 0.0;
+}
+#endif
 
 layout(location = 0) in vec2 vUV;
 layout(location = 1) in vec3 vNormal;
@@ -942,9 +1051,26 @@ void main()
     // Declared outside the branch: the cascade debug overlay below reads it, and
     // -1 is exactly what it should see on the VSM path, which has no cascades.
     int cascadeIndex = -1;
-    float shadowFactor;
+    float shadowFactor = 1.0;
     uint vsmSampledLevel = kVsmNoResidentLevel;
-    if ((pc.frameConstants.values.vsmPageTable.w & kVsmFlagEnabled) != 0u) {
+    // Ray-traced shadows replace both shadow maps when this frame traces. A
+    // uniform branch on a FrameConstants flag, not a pipeline switch, so the
+    // setting flips at runtime without rebuilding anything.
+    uint rayTracedFlags = 0u;
+#ifdef VE_RAY_QUERY
+    rayTracedFlags = pc.frameConstants.values.rayTracedShadow.z;
+#endif
+    if ((rayTracedFlags & kRtShadowFlagEnabled) != 0u) {
+#ifdef VE_RAY_QUERY
+        // Where nothing faces the sun the term multiplies zero, so the ray is
+        // skipped -- unless a debug view is about to show the term itself.
+        bool rayTracedDebug =
+            (rayTracedFlags & (kRtShadowFlagDebugVisibility | kRtShadowFlagDebugCompareCascades)) != 0u;
+        if (normalLight > 0.0 || rayTracedDebug) {
+            shadowFactor = rayTracedSunVisibility(vWorldPosition, normalize(vNormal), lightDirection);
+        }
+#endif
+    } else if ((pc.frameConstants.values.vsmPageTable.w & kVsmFlagEnabled) != 0u) {
         // Virtual shadow maps replace the cascades outright rather than blending
         // with them: the two disagree about texel size everywhere, so mixing
         // them would show the disagreement as a seam instead of hiding it.
@@ -1145,6 +1271,31 @@ void main()
 
     if (pc.debugPunctualShadows != 0u) {
         outColor = vec4(vec3(punctualVisibility), 1.0);
+        outVelocity = computeVelocity();
+        outNormalRoughness = vec4(octEncode(normal), roughness, metallic);
+        return;
+    }
+
+    // The ray-traced sun visibility on its own, or its agreement with the
+    // cascades. Same shape as the punctual view above for the first: white lit,
+    // black shadowed. The comparison uses its own cascade lookup, since on this
+    // path the shading never made one, and colours by verdict with scene
+    // luminance kept as brightness: red where only the ray found an occluder,
+    // blue where only the cascades did. Past the cascades' shadow distance the
+    // cascades report lit, so red there is the range limit, not a disagreement
+    // about the scene.
+    if ((rayTracedFlags & kRtShadowFlagEnabled) != 0u &&
+        (rayTracedFlags & (kRtShadowFlagDebugVisibility | kRtShadowFlagDebugCompareCascades)) != 0u) {
+        vec3 debugColor = vec3(shadowFactor);
+        if ((rayTracedFlags & kRtShadowFlagDebugCompareCascades) != 0u) {
+            bool rayLit = shadowFactor > 0.5;
+            bool cascadeLit = sampleShadowFactor(normal, selectShadowCascade()) > 0.5;
+            vec3 verdict = rayLit == cascadeLit ? (rayLit ? vec3(0.85) : vec3(0.2))
+                                                : (rayLit ? vec3(0.15, 0.35, 1.0) : vec3(1.0, 0.15, 0.1));
+            float debugLuminance = dot(finalColor, vec3(0.2126, 0.7152, 0.0722));
+            debugColor = verdict * (0.35 + 0.65 * clamp(debugLuminance, 0.0, 1.0));
+        }
+        outColor = vec4(debugColor, 1.0);
         outVelocity = computeVelocity();
         outNormalRoughness = vec4(octEncode(normal), roughness, metallic);
         return;

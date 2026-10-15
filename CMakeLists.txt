@@ -280,6 +280,7 @@ add_library(VulkanEngineCore STATIC
     src/renderer/IrradianceProbes.cpp
     src/renderer/PrimitiveGeometry.cpp
     src/renderer/PunctualShadowAtlas.cpp
+    src/renderer/RayTracedShadows.cpp
     src/renderer/RenderScale.cpp
     src/renderer/TransientMemoryPlan.cpp
     src/renderer/RuntimeSettings.cpp
@@ -324,6 +325,7 @@ add_library(VulkanEngineRuntime STATIC
     src/renderer/OverdrawQuery.cpp
     src/renderer/PostProcessStack.cpp
     src/renderer/PunctualShadows.cpp
+    src/renderer/RayTracingScene.cpp
     src/renderer/VolumetricFogPass.cpp
     src/renderer/IrradianceProbeVolume.cpp
     src/renderer/RenderGraph.cpp
@@ -572,6 +574,31 @@ if(GLSLC_EXECUTABLE)
             COMMAND "${GLSLC_EXECUTABLE}" "${SHADER}" -o "${SHADER_OUTPUT}" --target-env=vulkan1.3
             DEPENDS "${SHADER}" ${SHADER_INCLUDES}
             COMMENT "Compiling shader ${SHADER_NAME}"
+            VERBATIM
+        )
+        list(APPEND SHADER_OUTPUTS "${SHADER_OUTPUT}")
+    endforeach()
+
+    # Sources compiled a second time under a define, as "source|output|define".
+    # The ray-query variant of the main fragment shader declares binding 16 and
+    # GL_EXT_ray_query, neither of which a device without ray query can load, so
+    # it is its own module rather than a branch; the renderer picks it only on a
+    # device that has ray query (Renderer::bindlessFragmentShaderPath).
+    set(SHADER_VARIANTS
+        "simple_bindless.frag|simple_bindless_rq.frag|VE_RAY_QUERY=1"
+    )
+    foreach(SHADER_VARIANT ${SHADER_VARIANTS})
+        string(REPLACE "|" ";" SHADER_VARIANT_FIELDS "${SHADER_VARIANT}")
+        list(GET SHADER_VARIANT_FIELDS 0 SHADER_VARIANT_SOURCE)
+        list(GET SHADER_VARIANT_FIELDS 1 SHADER_VARIANT_NAME)
+        list(GET SHADER_VARIANT_FIELDS 2 SHADER_VARIANT_DEFINE)
+        set(SHADER_OUTPUT "${SHADER_BINARY_DIR}/${SHADER_VARIANT_NAME}.spv")
+        add_custom_command(
+            OUTPUT "${SHADER_OUTPUT}"
+            COMMAND "${GLSLC_EXECUTABLE}" "${SHADER_SOURCE_DIR}/${SHADER_VARIANT_SOURCE}" "-D${SHADER_VARIANT_DEFINE}"
+                    -o "${SHADER_OUTPUT}" --target-env=vulkan1.3
+            DEPENDS "${SHADER_SOURCE_DIR}/${SHADER_VARIANT_SOURCE}" ${SHADER_INCLUDES}
+            COMMENT "Compiling shader variant ${SHADER_VARIANT_NAME}"
             VERBATIM
         )
         list(APPEND SHADER_OUTPUTS "${SHADER_OUTPUT}")

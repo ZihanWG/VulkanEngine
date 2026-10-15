@@ -390,6 +390,9 @@ jobs:
           vsm-render|--vsm render
           vsm-shadows|--vsm shadows
           vsm-debug-views|--vsm shadows --settings config/ci/vsm-debug-views.json
+          ray-traced-shadows|--settings config/ci/ray-traced-shadows.json
+          ray-traced-shadows-debug-views|--settings config/ci/ray-traced-shadows-debug-views.json
+          ray-traced-shadows-declined|--settings config/ci/ray-traced-shadows.json --disable-ray-query
           scene-sunlit|--scene sunlit
           scene-cornell|--scene cornell
           scene-occlusion|--scene occlusion

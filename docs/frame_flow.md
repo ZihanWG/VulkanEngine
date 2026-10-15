@@ -39,19 +39,20 @@ declared, so it is not recorded either.
 13. If async compute is not active, record the cluster build and light cull inline on the graphics queue.
 14. If volumetric fog is on, run `VolumetricFogPass`: inject, light and temporally filter the froxel volume, then integrate it front to back. Injection walks the per-cluster light lists, which is why it follows the cluster passes.
 15. If irradiance-probe GI is on and probes are due this frame, run `ProbeCapture` and the probe convolution.
-16. With `renderer.enableDepthPrepass` (on by default, and wherever the multi-draw indirect path exists), replay the opaque and masked buckets depth-only into the main depth image as `DepthPrepass`, so the pass below loads that depth instead of clearing it and its `LESS_OR_EQUAL` test lets early-Z reject fragments it would otherwise shade and overwrite. Masked geometry runs the same cutout test the shadow path uses; blended geometry is never prepassed. See `design_decisions.md`.
-17. Let the graph transition the HDR scene color image, the thin G-buffer, the velocity buffer, the shadow images and main depth for `MainHDRPass`; begin it, draw the skybox, bind global and bindless material descriptors when available, and issue indirect indexed mesh draws into `sceneColor_`.
-18. With two-phase occlusion active, rebuild the pyramid from this frame's depth (`DepthPyramidMidPass`), re-test phase 1's rejects (`MainGpuCullingPhase2`), and draw the rescued items in a load-op pass (`MainHDRPhase2`).
-19. If SSR is active, copy scene colour at half resolution and trace (`SSRCopyPass`, `SSRTracePass`); if GTAO is on, trace and upsample it (`GTAOPass`, `GTAOBlurPass`). Then draw the blended bucket, sorted back to front, in `TransparentPass`.
-20. Run `DepthPyramidPass` to write the max-depth Hi-Z pyramid for the next frame's culling and page marking, unless nothing will read it.
-21. If TAA is enabled, run `TAAResolvePass`, which reconstructs at presentation resolution from the jittered render-resolution samples and so also performs the upscale, drops history that depth says is disoccluded, and records each pixel's view depth in the history's alpha for the next frame; otherwise keep `sceneColor_` as the active post-process source.
-22. Run bloom: the mip-chain downsample and upsample passes by default, or the legacy extract and separable blur when the mip chain is off.
-23. Run the exposure reduction for the selected mode: `HistogramExposurePass` bins HDR luminance and reduces it into the GPU exposure state buffer (the default), or `LuminancePass` reduces log-average luminance; the reduce stage manually preserves host readback visibility, and the graph makes the exposure buffer visible to `CompositePass`.
-24. Run `CompositePass` to combine the active HDR source + selected bloom * intensity, apply manual or GPU exposure, apply Reinhard or ACES tone mapping and, when the frame is upscaled, contrast-adaptive sharpening, and write the final color to the swapchain. With TAA off this is where a reduced render scale is upscaled (see [render_scale.md](render_scale.md)).
-25. If a portfolio screenshot was requested, transition the composited swapchain image to transfer source, copy it into a per-frame readback buffer, then return it to color-attachment layout.
-26. Run `ImGuiPass` to load the composited swapchain image as a color attachment and draw the debug UI overlay.
-27. Let the graph transition the swapchain image to present, submit with `vkQueueSubmit2` -- waiting on the async compute semaphore at every stage that reads the cluster lists, and signalling the frame timeline -- and present.
-28. Recreate the swapchain, post-process images, TAA history, depth pyramid resources, and ImGui swapchain-dependent backend state if presentation reports an out-of-date or resized surface.
+16. If ray-traced sun shadows are on and the device can trace, run `RayTracingSceneBuild`: a barrier ordering the previous frame's ray queries and builds against this one, then a full rebuild of the one top-level acceleration structure from this frame's casting draw items. The graph orders the build against every pass below that runs the main fragment shader. See [ray_traced_shadows.md](ray_traced_shadows.md).
+17. With `renderer.enableDepthPrepass` (on by default, and wherever the multi-draw indirect path exists), replay the opaque and masked buckets depth-only into the main depth image as `DepthPrepass`, so the pass below loads that depth instead of clearing it and its `LESS_OR_EQUAL` test lets early-Z reject fragments it would otherwise shade and overwrite. Masked geometry runs the same cutout test the shadow path uses; blended geometry is never prepassed. See `design_decisions.md`.
+18. Let the graph transition the HDR scene color image, the thin G-buffer, the velocity buffer, the shadow images and main depth for `MainHDRPass`; begin it, draw the skybox, bind global and bindless material descriptors when available, and issue indirect indexed mesh draws into `sceneColor_`.
+19. With two-phase occlusion active, rebuild the pyramid from this frame's depth (`DepthPyramidMidPass`), re-test phase 1's rejects (`MainGpuCullingPhase2`), and draw the rescued items in a load-op pass (`MainHDRPhase2`).
+20. If SSR is active, copy scene colour at half resolution and trace (`SSRCopyPass`, `SSRTracePass`); if GTAO is on, trace and upsample it (`GTAOPass`, `GTAOBlurPass`). Then draw the blended bucket, sorted back to front, in `TransparentPass`.
+21. Run `DepthPyramidPass` to write the max-depth Hi-Z pyramid for the next frame's culling and page marking, unless nothing will read it.
+22. If TAA is enabled, run `TAAResolvePass`, which reconstructs at presentation resolution from the jittered render-resolution samples and so also performs the upscale, drops history that depth says is disoccluded, and records each pixel's view depth in the history's alpha for the next frame; otherwise keep `sceneColor_` as the active post-process source.
+23. Run bloom: the mip-chain downsample and upsample passes by default, or the legacy extract and separable blur when the mip chain is off.
+24. Run the exposure reduction for the selected mode: `HistogramExposurePass` bins HDR luminance and reduces it into the GPU exposure state buffer (the default), or `LuminancePass` reduces log-average luminance; the reduce stage manually preserves host readback visibility, and the graph makes the exposure buffer visible to `CompositePass`.
+25. Run `CompositePass` to combine the active HDR source + selected bloom * intensity, apply manual or GPU exposure, apply Reinhard or ACES tone mapping and, when the frame is upscaled, contrast-adaptive sharpening, and write the final color to the swapchain. With TAA off this is where a reduced render scale is upscaled (see [render_scale.md](render_scale.md)).
+26. If a portfolio screenshot was requested, transition the composited swapchain image to transfer source, copy it into a per-frame readback buffer, then return it to color-attachment layout.
+27. Run `ImGuiPass` to load the composited swapchain image as a color attachment and draw the debug UI overlay.
+28. Let the graph transition the swapchain image to present, submit with `vkQueueSubmit2` -- waiting on the async compute semaphore at every stage that reads the cluster lists, and signalling the frame timeline -- and present.
+29. Recreate the swapchain, post-process images, TAA history, depth pyramid resources, and ImGui swapchain-dependent backend state if presentation reports an out-of-date or resized surface.
 
 ## Current Descriptor Contract
 
@@ -81,6 +82,10 @@ reads:
   sampler is VUID-vkCmdDrawIndexed-viewType-07752)
 - binding 15 = punctual shadow atlas again, through the same immutable compare
   sampler, sampled as `sampler2DShadow` for the hardware-filtered lookup
+- binding 16 = the scene's top-level acceleration structure, for the main pass's
+  sun shadow rays. In the layout only when the device has ray query, and declared
+  only by the ray-query variant of `simple_bindless.frag`; written once, because
+  the structure is rebuilt in place rather than replaced
 
 Bindings 13-15 carry the immutable compare sampler in the layout itself rather
 than in the descriptor write: MoltenVK allows a mutable comparison sampler only

@@ -51,6 +51,11 @@ overview; these documents describe implementation details and limitations.
 - [Punctual Shadows](punctual_shadows.md): The spot/point shadow atlas, its tile
   allocator and slot encoding, the dedicated caster vertex shader, cube-face
   point lights, and the tile budget.
+- [Ray-Traced Sun Shadows](ray_traced_shadows.md): Ray-query sun shadows
+  against a per-frame top-level acceleration structure, with the shadow maps as
+  the fallback: what casts, why there is one TLAS, the synchronization edges and
+  why sync validation cannot see them, and the scenes where the cascades turned
+  out to be the ones missing casters. Off by default.
 - [Virtual Shadow Maps](virtual_shadow_maps.md): The clipmap page model, why the
   page grid is absolute rather than camera-centred, why the page table stores
   identity rather than just residency, page marking from the previous frame's

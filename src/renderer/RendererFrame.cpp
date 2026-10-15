@@ -1843,6 +1843,15 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     // and folding its cost into frame prep would make the numbers it exists to
     // inform unreadable.
     analyzeMeshletCulling(cameraFrustum);
+    // Before the object data upload, which writes FrameConstants and so the flag
+    // this latches. After buildDrawItems, whose frameDataIndex values become the
+    // instances' custom indices.
+    frameRayTracedShadowsActive_ = rayTracedShadowSettings_.enabled && rayQueryShadingAvailable() &&
+                                   rayTracingScene_.ready() && !allDrawItems_.empty();
+    if (frameRayTracedShadowsActive_) {
+        const ScopedCpuTimer timer = cpuScope(CpuScope::RayTracingInstances);
+        writeRayTracingInstances(frameIndex);
+    }
     {
         const ScopedCpuTimer timer = cpuScope(CpuScope::ObjectFrameDataUpload);
         uploadObjectFrameData(frameIndex);
@@ -1944,6 +1953,7 @@ void Renderer::resetFrameStateForEmptyScene(uint32_t frameIndex)
     frameClusterConsumerStages_ = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
     frameSsrActive_ = false;
     frameGtaoActive_ = false;
+    frameRayTracedShadowsActive_ = false;
     frameProbeCaptureActive_ = false;
     irradianceProbes_.clearCaptureBatch();
     // Same reasoning as the cache flags above: this path never runs buildDrawItems,
@@ -2466,7 +2476,71 @@ void Renderer::uploadFrameConstants(uint32_t frameIndex, uint32_t cascadeCount)
         constants.vsmPageTable.w |= 8u;
     }
 
+    // Ray-traced sun shadows. The flag word is zero on every frame that does not
+    // trace, which is what keeps the ray-query fragment shader on the shadow-map
+    // path -- the same contract as the VSM flag above.
+    if (frameRayTracedShadowsActive_) {
+        const VkDeviceAddress geometryTable = rayTracingScene_.geometryTableAddress(frameIndex);
+        uint32_t flags = renderer::kRtShadowFlagEnabled;
+        if (rayTracedShadowSettings_.debugVisibility) {
+            flags |= renderer::kRtShadowFlagDebugVisibility;
+        }
+        if (rayTracedShadowSettings_.debugCompareCascades) {
+            flags |= renderer::kRtShadowFlagDebugCompareCascades;
+        }
+        constants.rayTracedShadow = glm::uvec4(static_cast<uint32_t>(geometryTable & 0xFFFFFFFFull),
+                                               static_cast<uint32_t>(geometryTable >> 32),
+                                               flags,
+                                               0u);
+        // The LOD budget only bounds the drawn level's error under screen-space
+        // selection; the radius rule has no pixel bound to add.
+        const float lodErrorPixels =
+            (lodSettings_.enabled && lodSettings_.screenSpaceError) ? lodSettings_.maxErrorPixels : 0.0f;
+        // A sun ray never needs to leave the scene's far plane: anything past it
+        // is not drawn, so it cannot cast onto anything that is.
+        constants.rayTracedShadowParams =
+            glm::vec4(rayTracedShadowSettings_.normalOffset,
+                      renderer::rayTracedShadowOffsetPerDistance(rayTracedShadowSettings_.pixelFootprintOffset,
+                                                                 lodErrorPixels,
+                                                                 camera_.verticalFovRadians,
+                                                                 renderResolution_.extent().height),
+                      std::max(camera_.farPlane, 1.0f),
+                      0.0f);
+    }
+
     frameConstantsBuffers_.at(frameIndex).upload(std::as_bytes(std::span<const FrameConstants>(&constants, 1)));
+}
+
+bool Renderer::isRayTracedShadowActive() const
+{
+    return frameRayTracedShadowsActive_;
+}
+
+// One instance per draw item that casts, in draw-item order. The cascades'
+// caster rules, applied to the same list: blended items cast nothing, cutouts
+// cast what their alpha test keeps, and the debug caster isolation narrows the
+// set exactly as it narrows the cascades' -- which is what makes it usable as a
+// negative control for this path too.
+void Renderer::writeRayTracingInstances(uint32_t frameIndex)
+{
+    rayTracingInstanceInputs_.clear();
+    rayTracingInstanceInputs_.reserve(allDrawItems_.size());
+    for (const DrawItem& drawItem : allDrawItems_) {
+        const renderer::RayTracedCasterKind kind = renderer::rayTracedCasterKind(drawItem.bucket);
+        if (kind == renderer::RayTracedCasterKind::None || drawItem.mesh == nullptr ||
+            drawItem.objectIndex >= frameModelMatrices_.size() || isShadowCasterIsolatedOut(drawItem.objectIndex)) {
+            continue;
+        }
+        renderer::RayTracingInstanceInput input{};
+        input.mesh = drawItem.mesh;
+        input.firstIndex = drawItem.firstIndex;
+        input.indexCount = drawItem.indexCount;
+        input.model = frameModelMatrices_[drawItem.objectIndex];
+        input.frameDataIndex = drawItem.frameDataIndex;
+        input.kind = kind;
+        rayTracingInstanceInputs_.push_back(input);
+    }
+    rayTracingScene_.writeInstances(frameIndex, rayTracingInstanceInputs_);
 }
 
 } // namespace ve

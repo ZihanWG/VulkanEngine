@@ -1100,6 +1100,14 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
                                             VK_BUFFER_USAGE_TRANSFER_DST_BIT),
         .exposureState = bufferResource(
             "ExposureState", postProcess_.exposureBuffers(), currentFrame_, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT),
+        // The one TLAS, not a per-frame copy: see renderer/RayTracingScene.h.
+        .rayTracingTopLevel =
+            renderer::RenderGraphBufferResource{"RayTracingTopLevel",
+                                                rayTracingScene_.topLevelBuffer(),
+                                                rayTracingScene_.topLevelSize(),
+                                                VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
+                                                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                true},
         .taaEnabled = postProcess_.isTaaActive(),
         .twoPhaseOcclusionEnabled = frameTwoPhaseOcclusionActive_,
         .depthPrepassEnabled = frameDepthPrepassActive_,
@@ -1121,6 +1129,7 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         .vsmDirtyPageCount =
             isVsmPageRenderingActive() ? static_cast<uint32_t>(virtualShadowMap_.dirtyPages().size()) : 0u,
         .volumetricFogEnabled = isVolumetricFogActive(),
+        .rayTracedShadowsEnabled = isRayTracedShadowActive(),
         .irradianceProbeUpdateEnabled = isIrradianceProbeUpdateActive(),
         .probeCaptureEnabled = frameProbeCaptureActive_,
         // GpuCulling's own answer to "will recordMainCull record anything", not a
@@ -2893,6 +2902,19 @@ void Renderer::recordIrradianceProbePasses(VkCommandBuffer commandBuffer)
     }
 }
 
+void Renderer::recordRayTracingSceneBuild(VkCommandBuffer commandBuffer)
+{
+    if (!isRayTracedShadowActive()) {
+        return;
+    }
+    const renderer::GpuProfileScope profileScope(gpuProfiler_, currentFrame_, commandBuffer, "RayTracingSceneBuild");
+    rhi::debug::beginLabel(commandBuffer, "RayTracingSceneBuild");
+    renderGraph_.beginRayTracingSceneBuildPass();
+    rayTracingScene_.recordTopLevelBuild(commandBuffer, currentFrame_);
+    renderGraph_.endRayTracingSceneBuildPass();
+    rhi::debug::endLabel(commandBuffer);
+}
+
 void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex)
 {
     // Recording boundary: beginFrame imports resources and compiles the logical
@@ -2935,7 +2957,7 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
     // changed is who decides it, and that the endFrame backstop now checks a
     // frame the graph itself sequenced.
     using Builtin = renderer::RenderGraphBuiltinPass;
-    std::array<renderer::RenderGraphScheduledUnit, 17> frameUnits{{
+    std::array<renderer::RenderGraphScheduledUnit, 18> frameUnits{{
         {renderGraph_.builtinPassIndex(Builtin::VsmPageMark),
          [this, commandBuffer]() {
              // Page marking reads the depth pyramid the previous frame left, so it
@@ -2998,6 +3020,8 @@ void Renderer::recordRenderCommands(VkCommandBuffer commandBuffer, uint32_t imag
          [this, commandBuffer]() { recordVolumetricFogPass(commandBuffer); }},
         {renderGraph_.builtinPassIndex(Builtin::ProbeCapture),
          [this, commandBuffer]() { recordIrradianceProbePasses(commandBuffer); }},
+        {renderGraph_.builtinPassIndex(Builtin::RayTracingSceneBuild),
+         [this, commandBuffer]() { recordRayTracingSceneBuild(commandBuffer); }},
         {renderGraph_.builtinPassIndex(Builtin::MainHdr),
          [this, commandBuffer]() { recordMainPassGeometry(commandBuffer); }},
         {renderGraph_.builtinPassIndex(renderer::RenderGraphBuiltinPass::DepthPyramid),
