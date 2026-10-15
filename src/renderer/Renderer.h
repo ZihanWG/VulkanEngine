@@ -894,6 +894,10 @@ private:
     // One BLAS per mesh primitive. After createScene, the one point at which
     // every mesh the renderer will ever draw exists.
     void buildRayTracingBottomLevel();
+    // The skinned mesh as a caster: its positions buffer, BLAS storage and
+    // pre-skin pipeline. After the skinned mesh is created. A failure is logged
+    // and leaves the static scene tracing without it.
+    void createRayTracingSkinnedCaster();
     // Whether the shading pipelines were built with the ray-query fragment
     // shader. Requires the TLAS and the bindless path, the only one that traces.
     [[nodiscard]] bool rayQueryShadingAvailable() const

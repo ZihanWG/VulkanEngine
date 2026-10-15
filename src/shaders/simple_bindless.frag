@@ -171,11 +171,8 @@ layout(buffer_reference, std430) readonly buffer RtIndices {
     uint values[];
 };
 
-// renderer::Vertex as floats. Mirrors kRtVertexStrideFloats and
-// kRtVertexUvOffsetFloats in src/renderer/RayTracedShadows.h, which pins both
-// against the C++ struct.
-const uint kRtVertexStrideFloats = 15u;
-const uint kRtVertexUvOffsetFloats = 6u;
+// renderer::Vertex as floats (kRtVertexStrideFloats, kRtVertexUvOffsetFloats).
+#include "ray_traced_shadows.glsl"
 
 vec2 rtVertexUv(RtVertexFloats vertices, uint vertexIndex)
 {

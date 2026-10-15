@@ -53,19 +53,23 @@ VkAccelerationStructureBuildGeometryInfoKHR buildInfo(VkAccelerationStructureTyp
     return info;
 }
 
-// Orders one build's scratch and destination writes against the next build's
-// reads and writes of the same scratch and of the structures it consumes.
-void accelerationStructureBuildBarrier(VkCommandBuffer commandBuffer,
-                                       VkPipelineStageFlags2 sourceStages,
-                                       VkAccessFlags2 sourceAccess)
+constexpr VkAccessFlags2 kAccelerationStructureReadWrite =
+    VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+
+// A global memory barrier, deliberately unscoped: acceleration-structure reads
+// reach every BLAS a TLAS references, which no single buffer barrier names.
+void accelerationStructureBarrier(VkCommandBuffer commandBuffer,
+                                  VkPipelineStageFlags2 sourceStages,
+                                  VkAccessFlags2 sourceAccess,
+                                  VkPipelineStageFlags2 destinationStages,
+                                  VkAccessFlags2 destinationAccess)
 {
     VkMemoryBarrier2 barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
     barrier.srcStageMask = sourceStages;
     barrier.srcAccessMask = sourceAccess;
-    barrier.dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
-    barrier.dstAccessMask =
-        VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+    barrier.dstStageMask = destinationStages;
+    barrier.dstAccessMask = destinationAccess;
 
     VkDependencyInfo dependency{};
     dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
@@ -274,18 +278,8 @@ void RayTracingScene::buildBottomLevel(const rhi::VulkanCommandContext& commandC
         largestBatch = std::max(largestBatch, batchScratch);
         begin = end;
     }
-    const VkDeviceSize scratchNeeded =
-        std::max(largestBatch, alignUpPowerOfTwo(topLevelScratchSize_, alignment)) + alignment;
-    if (scratch_.size() < scratchNeeded) {
-        rhi::VulkanBufferCreateInfo scratchInfo{};
-        scratchInfo.size = scratchNeeded;
-        scratchInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-        scratchInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-        scratchInfo.requestDeviceAddress = true;
-        scratch_.create(context, scratchInfo);
-        rhi::debug::setObjectName(device, scratch_.buffer(), VK_OBJECT_TYPE_BUFFER, "AccelerationStructureScratch");
-    }
-    const VkDeviceAddress scratchBase = alignUpPowerOfTwo(scratch_.deviceAddress(), alignment);
+    ensureScratch(largestBatch);
+    const VkDeviceAddress scratchBase = this->scratchBase();
 
     VkCommandBufferAllocateInfo allocateInfo{};
     allocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -336,9 +330,11 @@ void RayTracingScene::buildBottomLevel(const rhi::VulkanCommandContext& commandC
             commandBuffer, static_cast<uint32_t>(infos.size()), infos.data(), ranges.data());
         // The next batch reuses the scratch, and the TLAS build below reads
         // every BLAS this one wrote.
-        accelerationStructureBuildBarrier(commandBuffer,
-                                          VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-                                          VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR);
+        accelerationStructureBarrier(commandBuffer,
+                                     VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                                     VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+                                     VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                                     kAccelerationStructureReadWrite);
     }
 
     // An empty TLAS, so the descriptor names a built structure from the first
@@ -384,8 +380,54 @@ void RayTracingScene::buildBottomLevel(const rhi::VulkanCommandContext& commandC
     ready_ = true;
 }
 
+void RayTracingScene::createSkinned(const RayTracingSkinnedSource& source,
+                                    const std::filesystem::path& preSkinShaderPath)
+{
+    if (!ready_ || context_ == nullptr) {
+        throw std::logic_error("RayTracingScene::createSkinned called before buildBottomLevel.");
+    }
+    skinned_.create(*context_, source, preSkinShaderPath);
+    try {
+        // The first frame builds and every later one refits, sharing the scratch
+        // with the TLAS build that follows them in the same pass.
+        ensureScratch(std::max(skinned_.buildScratchSize(), skinned_.updateScratchSize()));
+    } catch (...) {
+        skinned_.destroy();
+        throw;
+    }
+    stats_.scratchBytes = scratch_.size();
+}
+
+void RayTracingScene::ensureScratch(VkDeviceSize bytes)
+{
+    const VkDeviceSize alignment =
+        std::max<VkDeviceSize>(context_->device().accelerationStructureScratchAlignment(), 1);
+    // The TLAS build always shares it, so it never shrinks below that.
+    const VkDeviceSize needed =
+        std::max(alignUpPowerOfTwo(bytes, alignment), alignUpPowerOfTwo(topLevelScratchSize_, alignment)) + alignment;
+    if (scratch_.size() >= needed) {
+        return;
+    }
+    rhi::VulkanBufferCreateInfo scratchInfo{};
+    scratchInfo.size = needed;
+    scratchInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    scratchInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+    scratchInfo.requestDeviceAddress = true;
+    scratch_.create(*context_, scratchInfo);
+    rhi::debug::setObjectName(
+        context_->vkDevice(), scratch_.buffer(), VK_OBJECT_TYPE_BUFFER, "AccelerationStructureScratch");
+}
+
+VkDeviceAddress RayTracingScene::scratchBase() const
+{
+    const VkDeviceSize alignment =
+        std::max<VkDeviceSize>(context_->device().accelerationStructureScratchAlignment(), 1);
+    return alignUpPowerOfTwo(scratch_.deviceAddress(), alignment);
+}
+
 void RayTracingScene::destroy()
 {
+    skinned_.destroy();
     ready_ = false;
     frames_.clear();
     scratch_.reset();
@@ -414,14 +456,36 @@ uint32_t RayTracingScene::writeInstances(uint32_t frameIndex, std::span<const Ra
     uint32_t count = 0;
     uint32_t alphaTested = 0;
     uint32_t missing = 0;
+    frame.skinnedPalette = 0;
     for (const RayTracingInstanceInput& input : inputs) {
         if (input.kind == RayTracedCasterKind::None) {
             continue;
         }
-        const auto found = bottomLevelIndex_.find({input.mesh, input.firstIndex, input.indexCount});
-        if (found == bottomLevelIndex_.end() || count >= maxInstances_ || input.frameDataIndex >= geometryCapacity) {
+        VkDeviceAddress bottomLevel = 0;
+        RayTracingGeometryRecord record{};
+        if (input.skinned) {
+            if (skinned_.valid() && input.jointPalette != 0) {
+                bottomLevel = skinned_.bottomLevelAddress();
+                // Positions, not renderer::Vertex: nothing reads this record,
+                // because the skinned caster is opaque and never runs the
+                // alpha test that would.
+                record = {skinned_.positionsAddress(), skinned_.indexAddress()};
+            }
+        } else {
+            const auto found = bottomLevelIndex_.find({input.mesh, input.firstIndex, input.indexCount});
+            if (found != bottomLevelIndex_.end()) {
+                bottomLevel = bottomLevels_[found->second].deviceAddress();
+                record = {input.mesh->vertexBufferAddress(),
+                          input.mesh->indexBufferAddress() +
+                              static_cast<uint64_t>(input.firstIndex) * sizeof(uint32_t)};
+            }
+        }
+        if (bottomLevel == 0 || count >= maxInstances_ || input.frameDataIndex >= geometryCapacity) {
             ++missing;
             continue;
+        }
+        if (input.skinned) {
+            frame.skinnedPalette = input.jointPalette;
         }
 
         // Built whole on the stack and copied once: the destination is
@@ -442,12 +506,8 @@ uint32_t RayTracingScene::writeInstances(uint32_t frameIndex, std::span<const Ra
             flags |= VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR;
         }
         instance.flags = flags;
-        instance.accelerationStructureReference = bottomLevels_[found->second].deviceAddress();
+        instance.accelerationStructureReference = bottomLevel;
         std::memcpy(&instances[count], &instance, sizeof(instance));
-
-        const RayTracingGeometryRecord record{input.mesh->vertexBufferAddress(),
-                                              input.mesh->indexBufferAddress() +
-                                                  static_cast<uint64_t>(input.firstIndex) * sizeof(uint32_t)};
         std::memcpy(&geometry[input.frameDataIndex], &record, sizeof(record));
         ++count;
     }
@@ -461,31 +521,52 @@ uint32_t RayTracingScene::writeInstances(uint32_t frameIndex, std::span<const Ra
     stats_.instances = count;
     stats_.alphaTestedInstances = alphaTested;
     stats_.instancesWithoutBottomLevel = missing;
+    stats_.skinnedInstance = frame.skinnedPalette != 0;
     return count;
 }
 
-void RayTracingScene::recordTopLevelBuild(VkCommandBuffer commandBuffer, uint32_t frameIndex) const
+void RayTracingScene::recordTopLevelBuild(VkCommandBuffer commandBuffer, uint32_t frameIndex)
 {
     if (!ready_ || frameIndex >= frames_.size()) {
         return;
     }
     const FrameBuffers& frame = frames_[frameIndex];
-    const VkDeviceSize alignment =
-        std::max<VkDeviceSize>(context_->device().accelerationStructureScratchAlignment(), 1);
 
-    // The previous frame traced this structure from its fragment shaders and the
-    // previous build wrote it and the scratch. The graph cannot see either: it
-    // rebuilds buffer state every frame.
-    accelerationStructureBuildBarrier(
-        commandBuffer,
-        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-        VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR);
+    // What the previous frame left in flight that this one is about to rewrite:
+    // its rays read the TLAS and the skinned BLAS, its builds wrote both and the
+    // scratch, and its refit read the skinned positions the pre-skin below
+    // overwrites. The graph cannot see any of it -- it rebuilds buffer state
+    // every frame. The fragment-shader destination is for the BLASes built at
+    // startup, whose writes no later barrier makes visible to the rays.
+    accelerationStructureBarrier(commandBuffer,
+                                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                                     VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                                 kAccelerationStructureReadWrite,
+                                 VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
+                                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                 kAccelerationStructureReadWrite | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+
+    if (frame.skinnedPalette != 0 && skinned_.valid()) {
+        skinned_.record(commandBuffer, frame.skinnedPalette, scratchBase());
+        // The refit wrote a BLAS this frame's TLAS build reads and its rays
+        // traverse, and the scratch the TLAS build reuses. The graph's barrier
+        // after the build names only the TLAS buffer, so the rays' half of this
+        // has to be here.
+        accelerationStructureBarrier(commandBuffer,
+                                     VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                                     VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+                                     VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
+                                         VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                     kAccelerationStructureReadWrite);
+        stats_.skinnedBuilds = skinned_.builds();
+        stats_.skinnedRefits = skinned_.refits();
+    }
 
     const VkAccelerationStructureGeometryKHR geometry = instanceGeometry(frame.instances.deviceAddress());
     VkAccelerationStructureBuildGeometryInfoKHR info =
         buildInfo(VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR, &geometry);
     info.dstAccelerationStructure = topLevel_.handle();
-    info.scratchData.deviceAddress = alignUpPowerOfTwo(scratch_.deviceAddress(), alignment);
+    info.scratchData.deviceAddress = scratchBase();
     VkAccelerationStructureBuildRangeInfoKHR range{};
     range.primitiveCount = frame.instanceCount;
     const VkAccelerationStructureBuildRangeInfoKHR* rangePointer = &range;

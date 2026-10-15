@@ -541,6 +541,26 @@ void Renderer::buildRayTracingBottomLevel()
     }
 }
 
+void Renderer::createRayTracingSkinnedCaster()
+{
+    if (!rayTracingScene_.ready() || !skinnedMesh_.valid()) {
+        return;
+    }
+    renderer::RayTracingSkinnedSource source{};
+    source.vertices = skinnedMesh_.geometryBufferAddress();
+    source.skinning = skinnedMesh_.skinningBufferAddress();
+    source.indices = skinnedMesh_.indexBufferAddress();
+    source.vertexCount = skinnedMesh_.vertexCount();
+    source.indexCount = skinnedMesh_.indexCount();
+    try {
+        rayTracingScene_.createSkinned(source, shaderPath("skin_positions.comp.spv"));
+        Logger::info("Ray-traced shadows: skinned caster ready (" + std::to_string(source.vertexCount) + " vertices, " +
+                     std::to_string(source.indexCount / 3) + " triangles), refitted per frame.");
+    } catch (const std::exception& error) {
+        Logger::warn(std::string("Ray-traced shadows: the skinned mesh will not cast; ") + error.what());
+    }
+}
+
 void Renderer::createMainGraphicsPipeline()
 {
     const VkVertexInputBindingDescription binding = renderer::vertexBindingDescription();

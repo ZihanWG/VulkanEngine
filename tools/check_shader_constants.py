@@ -133,8 +133,13 @@ PAIRS: list[tuple[str, str, list[str]]] = [
     ),
     (
         "src/renderer/RayTracedShadows.h",
-        "src/shaders/simple_bindless.frag",
-        ["kRtVertexStrideFloats", "kRtVertexUvOffsetFloats"],
+        "src/shaders/ray_traced_shadows.glsl",
+        [
+            "kRtVertexStrideFloats",
+            "kRtVertexUvOffsetFloats",
+            "kRtSkinnedPositionStrideFloats",
+            "kRtPreSkinLocalSize",
+        ],
     ),
 ]
 

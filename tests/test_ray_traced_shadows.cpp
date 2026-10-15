@@ -115,6 +115,23 @@ TEST_CASE("Scratch addresses round up to the device's alignment", "[raytracing]"
     CHECK(alignUpPowerOfTwo(77, 0) == 77);
 }
 
+TEST_CASE("The pre-skin dispatch covers every vertex with no spare group", "[raytracing]")
+{
+    using ve::renderer::kRtPreSkinLocalSize;
+    using ve::renderer::rayTracingPreSkinGroupCount;
+
+    CHECK(rayTracingPreSkinGroupCount(0) == 0);
+    CHECK(rayTracingPreSkinGroupCount(1) == 1);
+    CHECK(rayTracingPreSkinGroupCount(kRtPreSkinLocalSize) == 1);
+    CHECK(rayTracingPreSkinGroupCount(kRtPreSkinLocalSize + 1) == 2);
+    // Enough threads for the last vertex, never a whole idle group past it.
+    for (const uint32_t vertices : {7u, 64u, 65u, 1000u, 4096u}) {
+        const uint32_t groups = rayTracingPreSkinGroupCount(vertices);
+        CHECK(groups * kRtPreSkinLocalSize >= vertices);
+        CHECK((groups - 1) * kRtPreSkinLocalSize < vertices);
+    }
+}
+
 TEST_CASE("Ray-traced shadow flag bits are distinct single bits", "[raytracing]")
 {
     // The shader tests them with &, so two sharing a bit would turn one debug

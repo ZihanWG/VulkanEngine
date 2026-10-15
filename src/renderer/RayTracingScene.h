@@ -35,8 +35,17 @@
 // - mesh upload (transfer) -> BLAS build: a barrier at the top of the one-time
 //   build command buffer, whose first scope covers the earlier upload
 //   submissions on the same queue.
+// - every BLAS -> the rays: the graph's barrier names only the TLAS buffer, and a
+//   ray reads the BLASes it reaches through it. The entry barrier makes the
+//   startup builds visible to fragment shaders, and the barrier after the skinned
+//   refit does the same for the one BLAS written inside the frame.
+// - skinned caster (renderer/RayTracingSkinning.h): previous refit's reads of the
+//   positions -> this frame's pre-skin writes, by the entry barrier; pre-skin
+//   writes -> refit reads, inside RayTracingSkinnedCaster::record; refit ->
+//   TLAS build and rays, by the barrier after it.
 
 #include "renderer/RayTracedShadows.h"
+#include "renderer/RayTracingSkinning.h"
 #include "rhi/VulkanAccelerationStructure.h"
 #include "rhi/VulkanBuffer.h"
 
@@ -44,6 +53,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <span>
 #include <unordered_map>
 #include <vector>
@@ -68,6 +78,11 @@ struct RayTracingInstanceInput {
     // ObjectFrameData and RayTracingGeometryRecord through it.
     uint32_t frameDataIndex = 0;
     RayTracedCasterKind kind = RayTracedCasterKind::Opaque;
+    // The skinned caster instead of a mesh primitive: mesh and index range are
+    // ignored, the instance references the skinned BLAS, and this frame's build
+    // pre-skins and refits it from jointPalette first.
+    bool skinned = false;
+    VkDeviceAddress jointPalette = 0;
 };
 
 struct RayTracingSceneStats {
@@ -83,6 +98,11 @@ struct RayTracingSceneStats {
     // Inputs naming geometry no BLAS was built for. Zero unless the mesh set
     // changed after buildBottomLevel, which nothing in the renderer does.
     uint32_t instancesWithoutBottomLevel = 0;
+    // Whether the last frame written held the skinned caster, and how often its
+    // BLAS has been built in full and refitted since startup.
+    bool skinnedInstance = false;
+    uint64_t skinnedBuilds = 0;
+    uint64_t skinnedRefits = 0;
 };
 
 class RayTracingScene final {
@@ -107,6 +127,16 @@ public:
     // anything traces. Startup only: one submission, waited on with a fence.
     void buildBottomLevel(const rhi::VulkanCommandContext& commandContext, std::span<const Mesh* const> meshes);
 
+    // The skinned caster: its positions buffer, its BLAS storage and the pre-skin
+    // pipeline, with the shared scratch grown to cover its build. Nothing is
+    // built here; the first frame that traces with it builds, later ones refit.
+    // Throws on failure, leaving the static scene usable.
+    void createSkinned(const RayTracingSkinnedSource& source, const std::filesystem::path& preSkinShaderPath);
+    [[nodiscard]] bool hasSkinned() const
+    {
+        return skinned_.valid();
+    }
+
     void destroy();
 
     // The TLAS exists, so its descriptor can be written.
@@ -126,9 +156,9 @@ public:
     // recordTopLevelBuild for this slot will build.
     uint32_t writeInstances(uint32_t frameIndex, std::span<const RayTracingInstanceInput> inputs);
 
-    // The entry barrier, then a full TLAS build over the instances last written
-    // to this slot.
-    void recordTopLevelBuild(VkCommandBuffer commandBuffer, uint32_t frameIndex) const;
+    // The entry barrier, the skinned caster's pre-skin and refit when this slot
+    // holds it, then a full TLAS build over the instances last written to it.
+    void recordTopLevelBuild(VkCommandBuffer commandBuffer, uint32_t frameIndex);
 
     [[nodiscard]] VkAccelerationStructureKHR topLevelHandle() const
     {
@@ -163,7 +193,15 @@ private:
         rhi::VulkanBuffer instances;
         rhi::VulkanBuffer geometry;
         uint32_t instanceCount = 0;
+        // Non-zero when this slot's instances include the skinned caster: the
+        // palette its pre-skin reads.
+        VkDeviceAddress skinnedPalette = 0;
     };
+
+    // Grows the shared scratch to hold `bytes` past an aligned base. Startup only:
+    // it replaces the buffer.
+    void ensureScratch(VkDeviceSize bytes);
+    [[nodiscard]] VkDeviceAddress scratchBase() const;
 
     rhi::VulkanContext* context_ = nullptr;
     uint32_t maxInstances_ = 0;
@@ -173,6 +211,7 @@ private:
     VkDeviceSize topLevelScratchSize_ = 0;
     rhi::VulkanBuffer scratch_;
     std::vector<FrameBuffers> frames_;
+    RayTracingSkinnedCaster skinned_;
     RayTracingSceneStats stats_{};
     bool ready_ = false;
 };

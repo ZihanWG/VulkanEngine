@@ -73,8 +73,11 @@ pausing holds the pose), and a reset-to-bind-pose button.
 
 ## Casting shadows
 
-The skinned mesh casts into all three shadow paths: the cascades, the punctual
-atlas, and the virtual shadow map's page pool. Until it did, it was drawn into
+The skinned mesh casts into every shadow path: the cascades, the punctual
+atlas, the virtual shadow map's page pool, and -- where the device has ray
+query -- the ray-traced sun shadows, through positions a compute pass skins out
+each frame and a bottom-level structure refitted from them
+([ray_traced_shadows.md](ray_traced_shadows.md)). Until it cast, it was drawn into
 the main pass and lit by the sun while throwing no shadow at all.
 
 It cannot join the casters that were already there. Those go through indirect

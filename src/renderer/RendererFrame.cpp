@@ -2540,6 +2540,19 @@ void Renderer::writeRayTracingInstances(uint32_t frameIndex)
         input.kind = kind;
         rayTracingInstanceInputs_.push_back(input);
     }
+    // The skinned mesh casts under exactly the cascades' condition for it, and
+    // like its cascade caster it is not narrowed by the caster isolation, which
+    // selects render objects and it is not one. Opaque: its material has no
+    // alpha test. Its object record is the reserved last slot.
+    if (skinnedCasterActive() && rayTracingScene_.hasSkinned()) {
+        renderer::RayTracingInstanceInput skinned{};
+        skinned.skinned = true;
+        skinned.jointPalette = skinnedMesh_.jointPaletteAddress(frameIndex);
+        skinned.model = skinnedMesh_.modelMatrix();
+        skinned.frameDataIndex = kSkinnedObjectFrameSlot;
+        skinned.kind = renderer::RayTracedCasterKind::Opaque;
+        rayTracingInstanceInputs_.push_back(skinned);
+    }
     rayTracingScene_.writeInstances(frameIndex, rayTracingInstanceInputs_);
 }
 

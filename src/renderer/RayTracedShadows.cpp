@@ -51,6 +51,11 @@ float rayTracedShadowOffsetPerDistance(float pixelFootprints,
     return pixels * pixelAngle;
 }
 
+uint32_t rayTracingPreSkinGroupCount(uint32_t vertexCount)
+{
+    return (vertexCount + kRtPreSkinLocalSize - 1) / kRtPreSkinLocalSize;
+}
+
 uint64_t alignUpPowerOfTwo(uint64_t value, uint64_t alignment)
 {
     if (alignment <= 1) {

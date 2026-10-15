@@ -16,6 +16,7 @@
 #include <glm/mat4x4.hpp>
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 
 namespace ve::renderer {
@@ -34,9 +35,39 @@ inline constexpr uint32_t kRtShadowFlagDebugCompareCascades = 4u;
 // shader reads candidate triangles' UVs straight out of the vertex buffer by
 // device address, so these restate renderer::Vertex for GLSL; the .cpp pins
 // both against the struct with static_asserts, and
-// tools/check_shader_constants.py pins the GLSL copies against these.
+// tools/check_shader_constants.py pins the GLSL copies in
+// src/shaders/ray_traced_shadows.glsl against these.
 inline constexpr uint32_t kRtVertexStrideFloats = 15;
 inline constexpr uint32_t kRtVertexUvOffsetFloats = 6;
+
+// The skinned caster. Its BLAS is built from positions a compute pass skins out
+// every frame that traces (skin_positions.comp), three floats per vertex, in
+// workgroups of this many threads.
+inline constexpr uint32_t kRtSkinnedPositionStrideFloats = 3;
+inline constexpr uint32_t kRtPreSkinLocalSize = 64;
+
+// Workgroups that cover vertexCount with kRtPreSkinLocalSize threads each; the
+// shader returns early past the end.
+[[nodiscard]] uint32_t rayTracingPreSkinGroupCount(uint32_t vertexCount);
+
+// The pre-skin dispatch's push block, all device addresses. Mirrors
+// PreSkinPushConstants in src/shaders/skin_positions.comp, whose reflected
+// offsets tests/golden/shader_interface.txt pins.
+struct RayTracingPreSkinPushConstants {
+    // renderer::Vertex stream, bind pose; only the position is read.
+    uint64_t sourceVertices = 0;
+    // renderer::SkinningVertex stream, parallel to the vertices.
+    uint64_t skinning = 0;
+    // This frame slot's joint palette; the shader reads the current half.
+    uint64_t jointPalette = 0;
+    uint64_t skinnedPositions = 0;
+    uint32_t vertexCount = 0;
+};
+static_assert(offsetof(RayTracingPreSkinPushConstants, skinning) == 8);
+static_assert(offsetof(RayTracingPreSkinPushConstants, jointPalette) == 16);
+static_assert(offsetof(RayTracingPreSkinPushConstants, skinnedPositions) == 24);
+static_assert(offsetof(RayTracingPreSkinPushConstants, vertexCount) == 32);
+static_assert(sizeof(RayTracingPreSkinPushConstants) == 40);
 
 // One row per draw item, indexed by the instance's custom index -- which is the
 // draw item's frameDataIndex, so the same index also reaches its

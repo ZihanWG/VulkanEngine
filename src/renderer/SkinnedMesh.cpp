@@ -62,12 +62,26 @@ void SkinnedMesh::buildBuffers(rhi::VulkanContext& context,
                                std::span<const uint32_t> indices)
 {
     indexCount_ = static_cast<uint32_t>(indices.size());
+    vertexCount_ = static_cast<uint32_t>(geometry.size());
 
+    // With ray query the three streams also feed the ray-traced shadow caster:
+    // the pre-skin dispatch reads the first two by device address, and the
+    // skinned BLAS is built over the index buffer (renderer/RayTracingSkinning.h).
+    // Only then -- the build-input usage bit belongs to an extension a device
+    // without ray query was not created with.
+    const bool rayQuery = context.rayQueryEnabled();
+    const VkBufferUsageFlags traced = rayQuery ? VK_BUFFER_USAGE_STORAGE_BUFFER_BIT : 0;
     geometryBuffer_.createDeviceLocal(
-        context, commandContext, std::as_bytes(geometry), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        context, commandContext, std::as_bytes(geometry), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | traced, rayQuery);
     skinningBuffer_.createDeviceLocal(
-        context, commandContext, std::as_bytes(skinning), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-    indexBuffer_.createDeviceLocal(context, commandContext, std::as_bytes(indices), VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+        context, commandContext, std::as_bytes(skinning), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | traced, rayQuery);
+    indexBuffer_.createDeviceLocal(
+        context,
+        commandContext,
+        std::as_bytes(indices),
+        VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+            (rayQuery ? VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | traced : 0),
+        rayQuery);
 
     // A rebuilt rig starts with no previous pose: its joints need not mean what
     // the old rig's did, so the first frame reports zero joint motion.

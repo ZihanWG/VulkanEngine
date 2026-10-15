@@ -91,8 +91,8 @@ not a full game engine. Implemented systems include:
   caching, and optional virtual shadow maps behind their own stage gates.
   Alpha-tested casters and a shadow LOD bias apply to the cascades. Where the
   device has ray query, the sun can instead be traced with one ray per pixel
-  against a per-frame top-level acceleration structure; off by default, and the
-  skinned mesh does not cast into it yet.
+  against a per-frame top-level acceleration structure, the skinned mesh
+  refitted into it every frame; off by default.
 - Indirect lighting beyond IBL, all optional: irradiance-probe GI, screen-space
   reflections against the thin G-buffer, GTAO, and volumetric fog.
 - A depth prepass (on by default), GPU frustum culling, two-phase Hi-Z occlusion

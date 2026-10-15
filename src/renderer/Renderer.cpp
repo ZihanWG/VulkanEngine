@@ -273,6 +273,7 @@ Renderer::Renderer(Window& window, const RendererStartupOverrides& overrides) : 
             context_, commandContext_, static_cast<uint32_t>(frames_.size()), assetPath("models/skinned_rig.gltf"))) {
         skinnedMesh_.create(context_, commandContext_, static_cast<uint32_t>(frames_.size()));
     }
+    createRayTracingSkinnedCaster();
     createIndirectDrawBuffers();
     createShadowIndirectDrawBuffers();
     createGpuCullingResources();

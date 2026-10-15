@@ -1057,6 +1057,14 @@ void Renderer::drawShadowsDebugUi()
                         stats.instances,
                         stats.alphaTestedInstances,
                         isRayTracedShadowActive() ? "" : " -- last frame that traced");
+            if (rayTracingScene_.hasSkinned()) {
+                ImGui::Text("Skinned caster: %s, %llu build(s), %llu refit(s)",
+                            stats.skinnedInstance ? "in the scene" : "not in the last traced frame",
+                            static_cast<unsigned long long>(stats.skinnedBuilds),
+                            static_cast<unsigned long long>(stats.skinnedRefits));
+            } else {
+                ImGui::TextDisabled("Skinned caster: unavailable (see the log).");
+            }
             if (stats.instancesWithoutBottomLevel > 0) {
                 ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f),
                                    "%u draw item(s) had no BLAS or no instance slot and cast nothing.",

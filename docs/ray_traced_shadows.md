@@ -6,11 +6,11 @@ shaded pixel, built with `VK_KHR_ray_query` from the fragment shader, against a
 top-level structure rebuilt every frame from the draw items that cast. The
 shadow maps stay as the fallback and keep rendering underneath.
 
-**Status: correct and off by default, not yet measured for cost.** Static
-geometry casts, opaque and alpha-tested alike; the skinned mesh does not yet
-(below). The cascades are still rendered whether or not anything traces, so this
-step makes no performance claim -- skipping them, and timing the result, is the
-next one.
+**Status: correct and off by default, not yet measured for cost.** Everything
+that casts into the cascades casts here: static geometry, opaque and
+alpha-tested, and the skinned mesh, refitted every frame. The cascades are still
+rendered whether or not anything traces, so this makes no performance claim --
+skipping them, and timing the result, is the next step.
 
 `rayTracedShadows.enabled` in the runtime settings, or the *Ray-traced sun
 shadows* checkbox under *Shadows*. It needs a device with ray query (an RTX
@@ -52,6 +52,11 @@ The cascades' rules, applied to the same draw-item list (`docs/transparency.md`)
 - `csm.debugOnlyShadowCasterObject` narrows the instances exactly as it narrows
   the cascades' casters, which is what makes it a negative control for this
   path too.
+- **The skinned mesh** casts under the cascades' own condition for it
+  (`skinnedCasterActive`: shown, with a pose and bounds), as an opaque instance
+  -- its material has no alpha test, like its cascade caster -- whose custom
+  index is the reserved `kSkinnedObjectFrameSlot`. Like its cascade caster, it is
+  not narrowed by the caster isolation, which selects render objects.
 
 An instance's custom index is its draw item's `frameDataIndex`. That one number
 reaches both the draw item's `ObjectFrameData` (its material) and a per-frame
@@ -70,12 +75,23 @@ caster faces the sun.
 | Scratch | renderer, shared by every build | with the TLAS; grown once for the BLAS batch | same |
 | Instance buffer (`VkAccelerationStructureInstanceKHR` x 8192) | per frame slot, host-visible | with the TLAS | same |
 | Geometry records (`RayTracingGeometryRecord` x 8192) | per frame slot, host-visible | with the TLAS | same |
+| Skinned positions (3 floats per vertex) | renderer, one buffer | `createRayTracingSkinnedCaster`, after the skinned mesh | `RayTracingScene::destroy` |
+| Skinned BLAS (`ALLOW_UPDATE`) | renderer, one structure | storage with the positions; built by the first frame that traces with the mesh shown, refitted by every later one | same |
+| Pre-skin pipeline (`skin_positions.comp`, push constants only) | renderer | with the positions | same |
 | Set 0 binding 16, `ACCELERATION_STRUCTURE_KHR` | written once into the shared bindless set | `createMaterialDescriptorSet` | with the pool |
 
 The mesh set is fixed after construction -- every scene preset draws the
 built-in cube and sphere, and the sample scene is imported at startup only -- so
 nothing rebuilds a BLAS. The BLAS build is one submission waited on with a
 fence, at startup.
+
+The skinned caster follows the TLAS: one positions buffer and one BLAS,
+rewritten in place. A refit keeps the hierarchy built for the first pose and
+moves its boxes, which is what makes a per-frame update cheap and what makes its
+quality drift with how far the mesh bends from that pose; the demo rig bends
+about 22 degrees a joint. The pre-skin is the same linear blend
+`simple_skinned.vert` runs, from the same half of the same palette, so a ray
+finds the pose the main pass draws.
 
 There is one TLAS rather than one per frame slot because binding 16 lives in the
 environment set every material shares, and a set in use by a frame in flight
@@ -96,10 +112,21 @@ KiB of BLAS, Sponza's 105 primitives (264487 triangles) into 18350 KiB, in
 | previous frame's ray queries (fragment, AS read) and previous builds (TLAS and scratch writes) -> this frame's build | a global barrier `RayTracingScene::recordTopLevelBuild` records first |
 | this frame's build -> its ray queries | the render graph: `RayTracingSceneBuild` declares `AccelerationStructureBuild` on the TLAS storage buffer, and `MainHDRPass`, `MainHDRPhase2` and `TransparentPass` declare `AccelerationStructureRead` |
 | mesh upload (transfer) -> BLAS build | a barrier at the top of the startup build, whose first scope reaches back over the earlier upload submissions on the same queue |
+| previous frame's refit reads of the skinned positions -> this frame's pre-skin writes | the same entry barrier, which names the compute stage as a destination |
+| pre-skin writes -> refit reads | a barrier inside `RayTracingSkinnedCaster::record` |
+| refit -> TLAS build, and -> the rays | a global barrier after the refit |
+| startup BLAS builds -> the rays | the entry barrier, which names the fragment stage as a destination |
 
 The second edge is explicit because the graph rebuilds buffer state every frame
 and so has nothing to order a frame's first write against -- the same situation
 as the probe shading-parameter buffer in [render_graph.md](render_graph.md).
+
+The last two exist because the graph's barrier names one buffer, the TLAS's,
+while a ray reads every BLAS the TLAS references. Bottom-level writes are made
+visible to the fragment stage by global barriers instead -- the entry barrier for
+the structures built at startup, the post-refit barrier for the one rewritten
+inside the frame. The first version of this path had only the graph's barrier,
+which left the startup BLASes formally unordered against the rays.
 
 Adding the third edge found a hole in the graph. Its write mask had no
 acceleration-structure write bit, so a build followed by a trace read as a read
@@ -132,6 +159,11 @@ read the TLAS, so no queue-family ownership is involved.
 - **The vertex layout** the alpha test reads by address, `kRtVertexStrideFloats`
   and `kRtVertexUvOffsetFloats`, is pinned against `renderer::Vertex` by
   `static_assert` and against the shader by the same checker.
+- **The pre-skin dispatch** pushes four addresses and a count
+  (`RayTracingPreSkinPushConstants`, offsets pinned by `static_assert` and by the
+  shader interface golden). Its constants -- the source vertex stride, the
+  three-float position stride, the 64-thread workgroup -- live in
+  `ray_traced_shadows.glsl`, shared with the fragment shader's alpha test.
 - **The ray-query variant** is `simple_bindless.frag` compiled again with
   `VE_RAY_QUERY` (`SHADER_VARIANTS` in `CMakeLists.txt`). It also declares the
   push block's leading `objectFrameData` address, which the plain variant does
@@ -178,12 +210,22 @@ backstop.
 | --- | --- |
 | ray query off, against the build before this change | 0/921600 pixels differ |
 | enabled with `--disable-ray-query`, against disabled | 0/921600 pixels differ |
-| enabled, no casters (`csm.debugOnlyShadowCasterObject` = 99999), exposure pinned, against the cascades with the same isolation | 925 pixels differ, every one in the shadow of the skinned mesh, which the isolation does not reach and the TLAS does not hold |
-| enabled, against disabled, default scene | 7026 pixels differ, max channel delta 10 |
+| enabled, no casters but the skinned mesh (`csm.debugOnlyShadowCasterObject` = 99999), exposure pinned, against the cascades with the same isolation | 2981 pixels differ, all in the skinned mesh's shadow; against the virtual shadow map with the same isolation, 1572 (the cascades: 4078) |
+| enabled, against disabled, default scene | 7026 pixels differ before the skinned caster, max channel delta 10 |
 
 Unpinned, the no-caster comparison also differed by single steps scattered over
-the frame: auto-exposure follows total scene luminance, and the missing
-skinned shadow moves it. Pinning exposure removed every one of them.
+the frame: auto-exposure follows total scene luminance, and any change in shadow
+area moves it. Pinning exposure removed every one of them.
+
+In the skinned-only comparison all three regions that differ -- the tube's own
+upper side, the tip of its shadow on the floor, the top row of the lattice --
+read the same under the ray and the virtual shadow map and different under the
+cascades (the floor region: 114.64 and 114.69 mean luminance against 115.73), so
+the residue is the cascades again. The capture is frame 30 of a fixed-step run,
+so the pose has moved every frame and the BLAS has been refitted 29 times. An
+`api_dump` of the first four frames shows the order: a full build on the first
+traced frame and `MODE_UPDATE` after it, each preceded by the pre-skin dispatch
+and its barrier and followed by the TLAS build.
 
 **The cascades are the outlier on the two scenes with a strong sun.** On
 `--scene sunlit` the traced image shows a long shadow across the right of the
@@ -202,9 +244,9 @@ change and is recorded here because this path is what exposed it.
 
 ## Limitations
 
-- **The skinned mesh does not cast.** Its vertices move every frame and the
-  BLAS is built once; it needs a compute pre-skin and a refit, which is the next
-  step. It still receives.
+- **The skinned BLAS is refitted, never rebuilt** after its first build, so its
+  hierarchy quality depends on the pose it was first built in. Fine for the demo
+  rig; a mesh that deforms far from its first pose would want a periodic rebuild.
 - **Hard shadows only.** No sun angular radius and no denoising.
 - **The cascades keep rendering.** Fog, probe capture and the non-bindless
   shader read them, so nothing is saved yet.
