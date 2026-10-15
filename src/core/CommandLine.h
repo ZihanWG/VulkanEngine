@@ -172,6 +172,11 @@ struct LaunchOptions {
     // rhi/PortabilityFallbacks.h. Device-creation policy, so startup only.
     bool portabilityFallbacks = false;
 
+    // Create the device without acceleration structures or ray query even when
+    // the GPU has them, so the shadow-map path a device without ray tracing
+    // takes runs here too. Device-creation policy, so startup only.
+    bool disableRayQuery = false;
+
     // Capture the swapchain image of this frame (1-based) to captureOutput. The
     // loop keeps drawing past it until the readback lands, then exits.
     uint64_t captureFrame = 0;

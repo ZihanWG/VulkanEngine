@@ -221,6 +221,11 @@ bool parseLaunchOptions(int argc, char** argv, LaunchOptions& options)
             continue;
         }
 
+        if (argument == "--disable-ray-query") {
+            options.disableRayQuery = true;
+            continue;
+        }
+
         if (argument == "--overdraw") {
             options.overdraw = true;
             continue;

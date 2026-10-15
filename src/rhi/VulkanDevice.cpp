@@ -67,7 +67,61 @@ std::vector<VkExtensionProperties> enumerateDeviceExtensions(VkPhysicalDevice ca
 struct DeviceExtensionPlan {
     std::vector<const char*> enabled;
     std::vector<ExtensionOutcome> optionalOutcomes;
+    // Acceleration structures and ray query both survived selection, so their
+    // feature structs have to be chained into device creation.
+    bool rayQuery = false;
 };
+
+// The selection table spells these as literals to stay Vulkan-free; the device
+// is created from the macros. A typo on either side would read as "not exposed
+// by the device" at runtime, which is the one answer nobody would question.
+static_assert(kDeferredHostOperationsExtensionName == std::string_view(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME));
+static_assert(kAccelerationStructureExtensionName == std::string_view(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME));
+static_assert(kRayQueryExtensionName == std::string_view(VK_KHR_RAY_QUERY_EXTENSION_NAME));
+
+bool containsName(std::span<const std::string_view> names, std::string_view name)
+{
+    return std::find(names.begin(), names.end(), name) != names.end();
+}
+
+// Queried only for an extension the device exposes, so an absent one reads as
+// unsupported without asking the driver to fill in a struct for something it
+// does not have.
+RayQueryFeatureSupport queryRayQueryFeatures(VkPhysicalDevice physicalDevice,
+                                             std::span<const std::string_view> available)
+{
+    const bool accelerationStructureExposed = containsName(available, kAccelerationStructureExtensionName);
+    const bool rayQueryExposed = containsName(available, kRayQueryExtensionName);
+    if (!accelerationStructureExposed && !rayQueryExposed) {
+        return {};
+    }
+
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR accelerationStructureFeatures{};
+    accelerationStructureFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+    VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures{};
+    rayQueryFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
+
+    void* chain = nullptr;
+    if (rayQueryExposed) {
+        rayQueryFeatures.pNext = chain;
+        chain = &rayQueryFeatures;
+    }
+    if (accelerationStructureExposed) {
+        accelerationStructureFeatures.pNext = chain;
+        chain = &accelerationStructureFeatures;
+    }
+
+    VkPhysicalDeviceFeatures2 features{};
+    features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    features.pNext = chain;
+    vkGetPhysicalDeviceFeatures2(physicalDevice, &features);
+
+    RayQueryFeatureSupport support{};
+    support.accelerationStructure =
+        accelerationStructureExposed && accelerationStructureFeatures.accelerationStructure == VK_TRUE;
+    support.rayQuery = rayQueryExposed && rayQueryFeatures.rayQuery == VK_TRUE;
+    return support;
+}
 
 // The anisotropy ratio material samplers ask for, before the device limit is
 // applied. 16x is where the quality curve flattens and is the minimum a device
@@ -75,7 +129,7 @@ struct DeviceExtensionPlan {
 // by accident.
 constexpr float kMaxSamplerAnisotropy = 16.0f;
 
-DeviceExtensionPlan planDeviceExtensions(VkPhysicalDevice physicalDevice)
+DeviceExtensionPlan planDeviceExtensions(VkPhysicalDevice physicalDevice, bool declineRayQuery)
 {
     DeviceExtensionPlan plan{};
     plan.enabled.assign(kRequiredDeviceExtensions.begin(), kRequiredDeviceExtensions.end());
@@ -95,18 +149,35 @@ DeviceExtensionPlan planDeviceExtensions(VkPhysicalDevice physicalDevice)
     // asking the compiler. On a native driver it is absent and the row reports
     // exactly that.
     //
-    // A ray query or mesh shader path is added here as one row plus its feature
-    // predicate; selectOptionalExtensions already handles dependency chains and
-    // is pinned by tests/test_device_extension_selection.cpp.
-    static constexpr std::array<const char*, 1> kOptionalExtensionNames{
+    // A further path is added here as rows plus their feature predicates;
+    // selectOptionalExtensions already handles dependency chains and is pinned by
+    // tests/test_device_extension_selection.cpp. The ray query rows come from
+    // rayQueryExtensionRequests so the tests exercise this exact table.
+    static constexpr std::array<const char*, 1 + kRayQueryExtensionRequestCount> kOptionalExtensionNames{
         kPortabilitySubsetExtensionName,
+        VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
+        VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
+        VK_KHR_RAY_QUERY_EXTENSION_NAME,
     };
-    const std::array<OptionalExtensionRequest, kOptionalExtensionNames.size()> requests{
+    const std::array<OptionalExtensionRequest, kRayQueryExtensionRequestCount> rayQueryRequests =
+        rayQueryExtensionRequests(queryRayQueryFeatures(physicalDevice, available), declineRayQuery);
+    std::array<OptionalExtensionRequest, kOptionalExtensionNames.size()> requests{
         OptionalExtensionRequest{
             kOptionalExtensionNames[0], {}, true, "required by portability-layer drivers such as MoltenVK"},
     };
+    std::copy(rayQueryRequests.begin(), rayQueryRequests.end(), requests.begin() + 1);
+
+    // The names handed to vkCreateDevice are taken by index below, so a row
+    // whose position disagrees with kOptionalExtensionNames would enable a
+    // different extension from the one that was judged.
+    for (size_t index = 0; index < requests.size(); ++index) {
+        if (requests[index].name != std::string_view(kOptionalExtensionNames[index])) {
+            throw std::logic_error("Optional device extension table is out of order at row " + std::to_string(index));
+        }
+    }
 
     plan.optionalOutcomes = selectOptionalExtensions(available, requests);
+    plan.rayQuery = rayQueryEnabled(plan.optionalOutcomes);
     // Indexed rather than taking outcome.name.data(): a string_view is not
     // required to be null-terminated, and this is the one place a name reaches a
     // C API. selectOptionalExtensions returns one outcome per request in request
@@ -148,12 +219,14 @@ VulkanDevice::~VulkanDevice()
 void VulkanDevice::initialize(VkInstance instance,
                               VkSurfaceKHR surface,
                               std::filesystem::path shaderDirectory,
-                              bool portabilityFallbacks)
+                              bool portabilityFallbacks,
+                              bool disableRayQuery)
 {
     instance_ = instance;
     surface_ = surface;
     shaderDirectory_ = std::move(shaderDirectory);
     portabilityFallbacks_ = portabilityFallbacks;
+    rayQueryDeclined_ = disableRayQuery;
 
     pickPhysicalDevice();
     createLogicalDevice();
@@ -193,6 +266,10 @@ void VulkanDevice::cleanup()
     maxSamplerAnisotropy_ = 1.0f;
     drawIndexedIndirectCountAvailable_ = false;
     maxDrawIndirectCount_ = 0;
+    rayQueryEnabled_ = false;
+    rayQueryDeclined_ = false;
+    accelerationStructureScratchAlignment_ = 0;
+    maxAccelerationStructureInstanceCount_ = 0;
 }
 
 void VulkanDevice::pickPhysicalDevice()
@@ -443,15 +520,29 @@ void VulkanDevice::createLogicalDevice()
         enabled12.descriptorBindingSampledImageUpdateAfterBind = descriptorUpdateAfterBindEnabled_ ? VK_TRUE : VK_FALSE;
     }
 
-    const DeviceExtensionPlan extensionPlan = planDeviceExtensions(physicalDevice_);
+    const DeviceExtensionPlan extensionPlan = planDeviceExtensions(physicalDevice_, rayQueryDeclined_);
     const std::vector<const char*>& enabledExtensions = extensionPlan.enabled;
 #ifndef NDEBUG
     logEnabledExtensions("Enabled Vulkan device extensions:", enabledExtensions);
 #endif
 
+    // Chained only when both extensions were enabled: a feature struct for an
+    // extension the device was not created with is a validation error. The
+    // selection already refused the rows whose feature bit was false, so
+    // reaching here means both bits are supported.
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR enabledAccelerationStructure{};
+    enabledAccelerationStructure.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+    enabledAccelerationStructure.pNext = &enabled12;
+    enabledAccelerationStructure.accelerationStructure = VK_TRUE;
+    VkPhysicalDeviceRayQueryFeaturesKHR enabledRayQuery{};
+    enabledRayQuery.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
+    enabledRayQuery.pNext = &enabledAccelerationStructure;
+    enabledRayQuery.rayQuery = VK_TRUE;
+
     VkDeviceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    createInfo.pNext = &enabled12;
+    createInfo.pNext =
+        extensionPlan.rayQuery ? static_cast<const void*>(&enabledRayQuery) : static_cast<const void*>(&enabled12);
     createInfo.pEnabledFeatures = &enabledCore;
     createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
     createInfo.pQueueCreateInfos = queueCreateInfos.data();
@@ -487,6 +578,26 @@ void VulkanDevice::createLogicalDevice()
     // unused, which is also what MoltenVK's missing entry point amounts to.
     drawIndexedIndirectCountAvailable_ = !portabilityFallbacks_ && supported12.drawIndirectCount == VK_TRUE &&
                                          vkCmdDrawIndexedIndirectCount != nullptr && maxDrawIndirectCount_ > 0;
+
+    // The entry points are checked as well as the extension, the same way the
+    // indirect-count path is: volk resolves them only for an extension the
+    // device was created with, and a null one here would surface as a crash
+    // inside the first build rather than as a refused path.
+    rayQueryEnabled_ = extensionPlan.rayQuery && vkCreateAccelerationStructureKHR != nullptr &&
+                       vkGetAccelerationStructureBuildSizesKHR != nullptr &&
+                       vkCmdBuildAccelerationStructuresKHR != nullptr &&
+                       vkGetAccelerationStructureDeviceAddressKHR != nullptr;
+    if (rayQueryEnabled_) {
+        VkPhysicalDeviceAccelerationStructurePropertiesKHR accelerationStructureProperties{};
+        accelerationStructureProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR;
+        VkPhysicalDeviceProperties2 properties2{};
+        properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+        properties2.pNext = &accelerationStructureProperties;
+        vkGetPhysicalDeviceProperties2(physicalDevice_, &properties2);
+        accelerationStructureScratchAlignment_ =
+            accelerationStructureProperties.minAccelerationStructureScratchOffsetAlignment;
+        maxAccelerationStructureInstanceCount_ = accelerationStructureProperties.maxInstanceCount;
+    }
 
     logCapabilityReport(extensionPlan.optionalOutcomes);
 }
@@ -548,6 +659,12 @@ void VulkanDevice::logCapabilityReport(std::span<const ExtensionOutcome> optiona
                     transferQueueAvailable_,
                     transferQueueAvailable_ ? "dedicated DMA family " + std::to_string(transferQueueFamily_)
                                             : "uploads stay on the graphics queue"});
+    rows.push_back({"ray query",
+                    rayQueryEnabled_,
+                    rayQueryEnabled_
+                        ? "acceleration structures, max " + std::to_string(maxAccelerationStructureInstanceCount_) +
+                              " instances, scratch alignment " + std::to_string(accelerationStructureScratchAlignment_)
+                        : "no ray-traced path; shadow maps only"});
 
     size_t labelWidth = 0;
     for (const Row& row : rows) {
@@ -588,6 +705,10 @@ void VulkanDevice::logCapabilityReport(std::span<const ExtensionOutcome> optiona
     if (portabilityFallbacks_) {
         Logger::info("Portability fallbacks forced by --portability-fallbacks: indirect draw count, async compute "
                      "queue and transfer queue are off, as under MoltenVK's default queue families.");
+    }
+    if (rayQueryDeclined_) {
+        Logger::info("Ray query declined by --disable-ray-query: the device is created without acceleration "
+                     "structure or ray query extensions, as one without ray tracing would be.");
     }
 
     // A single warn keeps a degraded run greppable at one level, which is what

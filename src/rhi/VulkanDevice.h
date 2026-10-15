@@ -45,10 +45,15 @@ public:
     // portabilityFallbacks forces the capabilities MoltenVK lacks by default off
     // on whatever GPU this is -- see rhi/PortabilityFallbacks.h and
     // VulkanContextOptions::portabilityFallbacks.
+    //
+    // disableRayQuery creates the device without the acceleration structure and
+    // ray query extensions even when it has them -- see
+    // VulkanContextOptions::disableRayQuery.
     void initialize(VkInstance instance,
                     VkSurfaceKHR surface,
                     std::filesystem::path shaderDirectory,
-                    bool portabilityFallbacks = false);
+                    bool portabilityFallbacks = false,
+                    bool disableRayQuery = false);
     void cleanup();
 
     [[nodiscard]] VkPhysicalDevice physicalDevice() const
@@ -156,6 +161,31 @@ public:
     {
         return portabilityFallbacks_;
     }
+    // Acceleration structures and ray queries: both extensions enabled, both
+    // feature bits on, and the entry points resolved. Says nothing about whether
+    // a renderer path uses them -- that is the renderer's decision.
+    [[nodiscard]] bool rayQueryEnabled() const
+    {
+        return rayQueryEnabled_;
+    }
+    // True when the run asked for ray query to stay off, whatever the device
+    // could do. Kept apart from rayQueryEnabled() so a caller can tell a decline
+    // from an absence.
+    [[nodiscard]] bool rayQueryDeclined() const
+    {
+        return rayQueryDeclined_;
+    }
+    // VkPhysicalDeviceAccelerationStructurePropertiesKHR, read only when
+    // rayQueryEnabled(). A build's scratch address must be a multiple of the
+    // alignment, which is not implied by the buffer's own allocation alignment.
+    [[nodiscard]] uint32_t accelerationStructureScratchAlignment() const
+    {
+        return accelerationStructureScratchAlignment_;
+    }
+    [[nodiscard]] uint64_t maxAccelerationStructureInstanceCount() const
+    {
+        return maxAccelerationStructureInstanceCount_;
+    }
     [[nodiscard]] uint32_t maxDrawIndirectCount() const
     {
         return maxDrawIndirectCount_;
@@ -219,6 +249,10 @@ private:
     bool samplerAnisotropyEnabled_ = false;
     float maxSamplerAnisotropy_ = 1.0f;
     bool pipelineStatisticsQueryEnabled_ = false;
+    bool rayQueryEnabled_ = false;
+    bool rayQueryDeclined_ = false;
+    uint32_t accelerationStructureScratchAlignment_ = 0;
+    uint64_t maxAccelerationStructureInstanceCount_ = 0;
 };
 
 } // namespace ve::rhi

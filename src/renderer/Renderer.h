@@ -139,6 +139,10 @@ struct RendererStartupOverrides {
     // Run on the paths MoltenVK takes by default. Device-creation policy; see
     // rhi::VulkanContextOptions::portabilityFallbacks.
     bool portabilityFallbacks = false;
+
+    // Create the device without ray query. Device-creation policy; see
+    // rhi::VulkanContextOptions::disableRayQuery.
+    bool disableRayQuery = false;
 };
 
 // Whether this build carries the fetched sample scene, and what to do when it

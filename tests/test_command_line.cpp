@@ -92,6 +92,20 @@ TEST_CASE("Portability fallbacks are off unless asked for")
     CHECK(forced.portabilityFallbacks);
 }
 
+TEST_CASE("Ray query stays available unless the run disables it")
+{
+    LaunchOptions defaults{};
+    REQUIRE(parse({"--deterministic"}, defaults));
+    CHECK_FALSE(defaults.disableRayQuery);
+
+    LaunchOptions disabled{};
+    REQUIRE(parse({"--disable-ray-query"}, disabled));
+    CHECK(disabled.disableRayQuery);
+    // Independent of the portability fallbacks: the two reproduce different
+    // devices and are wanted apart.
+    CHECK_FALSE(disabled.portabilityFallbacks);
+}
+
 TEST_CASE("The self-test flag implies the check it tests")
 {
     // A self-test with synchronization validation off would report the exact

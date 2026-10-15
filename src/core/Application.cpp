@@ -82,6 +82,7 @@ void Application::initialize()
     overrides.synchronizationValidation = config_.syncValidation;
     // Device-creation policy, decided before the renderer for the same reason.
     overrides.portabilityFallbacks = config_.portabilityFallbacks;
+    overrides.disableRayQuery = config_.disableRayQuery;
     if (config_.vsm.has_value()) {
         // The stages are cumulative, which is what makes one mode name safe to
         // expand into three booleans here.

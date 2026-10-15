@@ -37,6 +37,13 @@ struct VulkanContextOptions {
     // otherwise run only on a Mac; this puts them in reach of any GPU and of the
     // lavapipe CI job. See rhi/PortabilityFallbacks.h.
     bool portabilityFallbacks = false;
+
+    // Create the device without acceleration structures or ray query even when
+    // it has them, so the paths a device without ray tracing takes run on one
+    // that has it. Kept separate from portabilityFallbacks: that flag reproduces
+    // MoltenVK's queue and indirect-count gaps, and the two are wanted apart --
+    // a ray-traced path and the fixed-slot indirect path are independent axes.
+    bool disableRayQuery = false;
 };
 
 class VulkanContext final {
@@ -106,6 +113,10 @@ public:
     [[nodiscard]] bool transferQueueAvailable() const
     {
         return device_.transferQueueAvailable();
+    }
+    [[nodiscard]] bool rayQueryEnabled() const
+    {
+        return device_.rayQueryEnabled();
     }
     [[nodiscard]] VmaAllocator allocator() const
     {
