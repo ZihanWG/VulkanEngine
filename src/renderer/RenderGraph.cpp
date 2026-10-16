@@ -948,7 +948,7 @@ void RenderGraph::declareRayTracedShadowRead(RenderGraphBuilder& builder)
     if (frame_.rayTracingTopLevel.valid()) {
         builder.readBuffer(frame_.rayTracingTopLevel,
                            RGAccess::AccelerationStructureRead,
-                           "Traces sun shadow rays against this frame's top-level acceleration structure.");
+                           "Traces sun shadow rays against the top-level acceleration structure.");
     }
 }
 
@@ -2399,8 +2399,10 @@ void RenderGraph::declareGeometryPasses()
     // that run the main fragment shader, which is what keeps it alive; the
     // previous frame's reads of the same structure are ordered by the barrier
     // RayTracingScene records at the top of the build, because buffer state
-    // here is rebuilt every frame and has nothing to order them against.
-    if (frame_.rayTracingTopLevel.valid()) {
+    // here is rebuilt every frame and has nothing to order them against. Absent
+    // on a frame that keeps the structure an earlier frame built: the reads are
+    // still declared, and with no write before them they emit nothing.
+    if (frame_.rayTracingTopLevel.valid() && frame_.resources.rayTracingSceneBuildEnabled) {
         frame_.passIndices.rayTracingSceneBuild =
             addPass("RayTracingSceneBuild",
                     RenderPassType::RayTracingSceneBuild,

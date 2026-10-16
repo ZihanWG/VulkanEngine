@@ -3,13 +3,14 @@
 The main pass can ask the scene's acceleration structure whether the sun is
 visible instead of reading the cascades or the virtual shadow map: one ray per
 shaded pixel, built with `VK_KHR_ray_query` from the fragment shader, against a
-top-level structure rebuilt every frame from the draw items that cast. The
+top-level structure built from the draw items that cast and rebuilt only on
+frames where one of them changed. The
 shadow maps stay as the fallback, and the cascades keep rendering whenever
 something besides the main pass reads them.
 
 **Status: correct and off by default.** Everything that casts into the
 cascades casts here: static geometry, opaque and alpha-tested, and the skinned
-mesh, refitted every frame. On a frame that traces, the cascades are not drawn
+mesh, refitted whenever its pose moves. On a frame that traces, the cascades are not drawn
 unless something else reads them (below).
 
 `rayTracedShadows.enabled` in the runtime settings, or the *Ray-traced sun
@@ -63,6 +64,53 @@ skipped: with tracing on, the frame with the cascades skipped and the frame with
 `sunlit` and `stress`. The ImGui cascade preview keeps showing the last cascades
 drawn while they are skipped, and the panel says so.
 
+## Keeping the top-level structure
+
+A frame that traces rebuilds the TLAS only when what it would build differs
+from what the structure already holds (`RayTracingTopLevelTracker` in
+`renderer/RayTracedShadows.h`). The comparison is on exactly what the build
+reads: this frame's `VkAccelerationStructureInstanceKHR` records, byte for byte
+and in order -- every instance's transform, custom index, mask, flags and BLAS
+address -- staged in cached memory before anything is copied into the slot's
+write-combined buffer. A moved object, an instance added or dropped (the caster
+isolation, the skinned mesh hidden), a flag change and a reordered draw list all
+differ. The last one matters because the custom index is the draw item's
+`frameDataIndex`: two frames can hold the same objects in the same places and
+still need a rebuild, because the index that reaches each one's material moved.
+Opaque and masked items are ordered by batch key, which does not depend on the
+camera, and only blended items -- which cast nothing -- are re-sorted by depth,
+so a camera moving through a still scene keeps the structure.
+
+The skinned mesh's instance record does not move with its pose, so the pose is
+tracked on its own: `SkinnedMesh::poseHash`, the digest of the palette uploaded
+this frame, which the cascade cache already keys on. The BLAS is pre-skinned and
+refitted only when the pose differs from the one it was last refitted to, and a
+refit always rebuilds the TLAS, which copied that BLAS's bounds into its
+instance when it was built.
+
+Three things go stale separately and are tracked separately:
+
+| State | Brought up to date when |
+| --- | --- |
+| the TLAS | the instance records differ from the ones it was last built from, or the skinned BLAS refits |
+| the skinned BLAS | the pose differs from the one it was last refitted to |
+| a frame slot's instance and geometry-record buffers | the slot holds older records than the frame traces -- on a frame that keeps the TLAS too, because the rays read this slot's geometry records through the custom index |
+
+A build counts only once it is recorded: frame prep plans and
+`recordTopLevelBuild` commits, so a frame that throws between the two leaves the
+next one building.
+
+On a frame that keeps the structure, `RayTracingSceneBuild` is neither declared
+nor recorded: no entry barrier, no build, no timestamp scope. The traced passes
+still declare their reads, and with no write before them in the frame the graph
+emits no barrier for the TLAS; the barrier recorded after the last real build
+orders them (Synchronization, below).
+
+`rayTracedShadows.rebuildEveryFrame` turns the detection off: every traced
+frame rewrites its slot, refits and rebuilds, which is what every frame did
+before it existed. It is the A side of the cost series below and the control the
+detection is checked against.
+
 ## Cost
 
 RTX 3080 Ti Laptop, clocks pinned 800/7001, `--scene sponza` with its animation
@@ -87,7 +135,9 @@ nothing, as on any cache hit). What this row compares is therefore *reading* the
 shadow: one ray against the cascade lookup and its filtering, which
 `docs/profiling.md` found to be more than half of `MainHDRPass` on this scene.
 The ray is 0.889 ms cheaper there and still 0.691 ms cheaper after paying for
-the TLAS.
+the TLAS. That series predates the change detection and rebuilt the structure
+on every traced frame; a still frame no longer pays the 0.233 ms (the last
+series below).
 
 **Skipping the cascades when they would redraw.** Both sides trace. A keeps the
 cascades (`renderCascades`) with the cascade cache off, so all four redraw every
@@ -116,6 +166,30 @@ A first attempt at this series moved the camera with `--camera-orbit` instead.
 The orbit carried it outside the building, where the frame costs under a third
 as much, and the control drifted 2.2%; holding the view and turning the cache off
 measures the same redraw without changing what is on screen.
+
+**Keeping the TLAS on a still frame.** Both sides trace, on the same binary with
+one setting flipped -- not a comparison of two builds. A sets
+`rayTracedShadows.rebuildEveryFrame`, which rebuilds the TLAS on every traced
+frame as every frame did before the change detection above; B leaves it off and
+keeps the structure. Control drift 0.09%, 25099 and 27993 samples:
+
+```
+python tools/dev/measure_gpu.py ab --repeat 2 --duration 75 --every-frame --freeze-animation --a-set rayTracedShadows.enabled=true --a-set rayTracedShadows.rebuildEveryFrame=true --b-set rayTracedShadows.enabled=true --a-label rebuild --b-label keep --args --scene sponza
+```
+
+| Pass | rebuild every frame | keep | Delta |
+| --- | --- | --- | --- |
+| `Frame total` | 4.640 | 4.417 | **−0.223 (−4.8%)** |
+| `MainHDRPass` | 3.421 | 3.410 | −0.011 (−0.3%) |
+| `RayTracingSceneBuild` | 0.233 | — | on 0 of 27993 frames of B |
+
+The frame total moves by what the build cost, and the build's scope is absent
+from every sampled frame of B. Nothing that casts moves in Sponza -- its lights
+animate, but a light is not an instance -- so with or without
+`--freeze-animation` every frame after the first keeps the structure. A scene
+where something casting moves pays the A column on every frame; the skinned
+demo mesh is enough, so the default, sunlit and stress scenes rebuild every
+frame unless their animation is frozen.
 
 ## What casts
 
@@ -158,7 +232,7 @@ caster faces the sun.
 | Instance buffer (`VkAccelerationStructureInstanceKHR` x 8192) | per frame slot, host-visible | with the TLAS | same |
 | Geometry records (`RayTracingGeometryRecord` x 8192) | per frame slot, host-visible | with the TLAS | same |
 | Skinned positions (3 floats per vertex) | renderer, one buffer | `createRayTracingSkinnedCaster`, after the skinned mesh | `RayTracingScene::destroy` |
-| Skinned BLAS (`ALLOW_UPDATE`) | renderer, one structure | storage with the positions; built by the first frame that traces with the mesh shown, refitted by every later one | same |
+| Skinned BLAS (`ALLOW_UPDATE`) | renderer, one structure | storage with the positions; built by the first frame that traces with the mesh shown, refitted by every later one whose pose moved | same |
 | Pre-skin pipeline (`skin_positions.comp`, push constants only) | renderer | with the positions | same |
 | Set 0 binding 16, `ACCELERATION_STRUCTURE_KHR` | written once into the shared bindless set | `createMaterialDescriptorSet` | with the pool |
 
@@ -191,10 +265,11 @@ KiB of BLAS, Sponza's 105 primitives (264487 triangles) into 18350 KiB, in
 | Edge | Ordered by |
 | --- | --- |
 | CPU writes this slot's instances -> this frame's TLAS build | the slot's fence, then the submit's host-write guarantee |
-| previous frame's ray queries (fragment, AS read) and previous builds (TLAS and scratch writes) -> this frame's build | a global barrier `RayTracingScene::recordTopLevelBuild` records first |
+| earlier frames' ray queries (fragment, AS read) and builds (TLAS and scratch writes) -> this frame's build | a global barrier `RayTracingScene::recordTopLevelBuild` records first |
 | this frame's build -> its ray queries | the render graph: `RayTracingSceneBuild` declares `AccelerationStructureBuild` on the TLAS storage buffer, and `MainHDRPass`, `MainHDRPhase2` and `TransparentPass` declare `AccelerationStructureRead` |
+| an earlier frame's build -> the ray queries of a frame that keeps the TLAS | the graph's barrier on the frame that built it, whose second scope is every later command on the queue; the keeping frame declares the reads alone, which as the structure's first use in the frame emit nothing, and the next build's entry barrier waits for them |
 | mesh upload (transfer) -> BLAS build | a barrier at the top of the startup build, whose first scope reaches back over the earlier upload submissions on the same queue |
-| previous frame's refit reads of the skinned positions -> this frame's pre-skin writes | the same entry barrier, which names the compute stage as a destination |
+| earlier frames' refit reads of the skinned positions -> this frame's pre-skin writes | the same entry barrier, which names the compute stage as a destination |
 | pre-skin writes -> refit reads | a barrier inside `RayTracingSkinnedCaster::record` |
 | refit -> TLAS build, and -> the rays | a global barrier after the refit |
 | startup BLAS builds -> the rays | the entry barrier, which names the fragment stage as a destination |
@@ -224,7 +299,11 @@ by what was recorded instead. An `api_dump` of a frame shows the entry barrier
 AS read and write) immediately before the build, and the graph's buffer barrier
 on `SceneTopLevelAccelerationStructureStorage` (build to `FRAGMENT_SHADER`,
 `ACCELERATION_STRUCTURE_READ`) at the start of `MainHDRPass`, before its first
-traced draw.
+traced draw. A frame that keeps the structure shows none of it -- no
+`RayTracingSceneBuild` label, no build, no acceleration-structure barrier and
+no barrier on the TLAS buffer -- while `MainHDRPass`, `MainHDRPhase2` and the
+skinned draw run as before: four frames of `--scene default
+--freeze-animation` record one build, then three frames without one.
 
 Everything runs on the graphics queue. The asynchronous cluster passes never
 read the TLAS, so no queue-family ownership is involved.
@@ -282,13 +361,15 @@ The shadow is hard: one ray toward a light with no extent.
 | --- | --- | --- |
 | `rayTracedShadows.enabled` | false | |
 | `rayTracedShadows.renderCascades` | false | keep drawing the cascades while tracing |
+| `rayTracedShadows.rebuildEveryFrame` | false | rebuild the TLAS and refit the skinned BLAS on every traced frame, as before change detection; the A/B control and the image control for it |
 | `rayTracedShadows.normalOffset` | 0.02 | world units, clamped to [0, 1] |
 | `rayTracedShadows.pixelFootprintOffset` | 1.0 | pixels, clamped to [0, 16] |
 | `rayTracedShadows.debugVisibility` | false | the traced term alone, white lit |
 | `rayTracedShadows.debugCompareCascades` | false | red where only the ray finds an occluder, blue where only the cascades do; wins over the visibility view |
 
 The CI sweep renders it enabled (cascades skipped), enabled with both debug
-views and `renderCascades`, and enabled with `--disable-ray-query`
+views, `renderCascades` and `rebuildEveryFrame`, enabled on a still scene
+(`--freeze-animation`, which keeps the TLAS), and enabled with `--disable-ray-query`
 (`config/ci/`). Mesa's lavapipe exposes all three extensions, so the first two
 run the traced path in CI, under validation.
 
@@ -304,6 +385,8 @@ backstop.
 | enabled with `--disable-ray-query`, against disabled | 0/921600 pixels differ |
 | enabled, no casters but the skinned mesh (`csm.debugOnlyShadowCasterObject` = 99999), exposure pinned, against the cascades with the same isolation | 2981 pixels differ, all in the skinned mesh's shadow; against the virtual shadow map with the same isolation, 1572 (the cascades: 4078) |
 | enabled, against disabled, default scene | 7026 pixels differ before the skinned caster, max channel delta 10 |
+| enabled, keeping the TLAS, against `rebuildEveryFrame` and against the build before change detection: `--scene default`, `sunlit` and `stress`, animated and frozen, and Sponza (Release) animated and frozen | 0/921600 pixels differ in every one; the frozen scenes and both Sponza runs keep the structure on 39 of 40 frames, the animated scenes rebuild all 40 |
+| the same animated scenes with the detection broken to build and refit only once | 3903 (default), 10847 (sunlit) and 206 (stress) pixels differ: a stale structure shows |
 
 Unpinned, the no-caster comparison also differed by single steps scattered over
 the frame: auto-exposure follows total scene luminance, and any change in shadow
@@ -344,8 +427,14 @@ change and is recorded here because this path is what exposed it.
   those frames tracing adds its cost without removing theirs.
 - **Virtual shadow map pages still render** when VSM is enabled alongside
   tracing, though nothing samples them.
-- **The TLAS is rebuilt every frame that traces,** static scene or not: 0.233
-  ms on Sponza at the 800 MHz pin, a third of what tracing saves there.
+- **One moving caster rebuilds the whole TLAS.** Keeping the structure is all
+  or nothing, so a scene with anything casting in motion -- the skinned demo
+  mesh is enough -- pays the full build (0.233 ms on Sponza at the 800 MHz pin)
+  on every frame. Updating only the moved instances would need `ALLOW_UPDATE` on
+  the TLAS and a fixed instance count.
+- **The skinned pose is compared by digest.** `SkinnedMesh::poseHash` is 64 bits
+  over the palette and the model matrix, the key the cascade cache already uses;
+  a collision would keep a stale skinned BLAS until the pose moved again.
 - **Shadow terminator on coarse spheres.** The comparison view shows a red rim
   where the ray crosses the faceted geometry just past the smooth terminator.
   It sits where `N.L` is near zero, so it is barely visible in the shaded image

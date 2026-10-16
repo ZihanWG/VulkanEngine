@@ -555,11 +555,17 @@ struct RenderGraphFrameResources {
     uint32_t vsmDirtyPageCount = 0;
     // Declares the volumetric fog compute pass for this frame.
     bool volumetricFogEnabled = false;
-    // Declares RayTracingSceneBuild and a read of the structure it builds on
-    // every pass that runs the main fragment shader. Exactly the condition the
-    // renderer sets its FrameConstants ray-tracing flag on, so a frame that
-    // traces always has the edge and a frame that does not has neither.
+    // Declares a read of the top-level acceleration structure on every pass
+    // that runs the main fragment shader. Exactly the condition the renderer
+    // sets its FrameConstants ray-tracing flag on, so a frame that traces always
+    // declares what it reads and a frame that does not declares nothing.
     bool rayTracedShadowsEnabled = false;
+    // Declares RayTracingSceneBuild ahead of those reads, which then order
+    // against it. Only on a frame that traces and whose instances changed: a
+    // frame that keeps the structure declares the reads alone, so the TLAS is
+    // first touched by a read, which needs no barrier, and the build it reads
+    // is ordered by the barrier recorded on the frame that built it.
+    bool rayTracingSceneBuildEnabled = false;
     // Declares the probe-atlas update compute pass for this frame. The two
     // atlases are imported and read by the main pass whenever they exist, the
     // same asymmetry the punctual shadow atlas uses: a frame that updates no

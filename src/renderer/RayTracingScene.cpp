@@ -24,9 +24,9 @@ namespace {
 // budget and the batches share the buffer, separated by a barrier.
 constexpr VkDeviceSize kBottomLevelScratchBudget = 64ull * 1024ull * 1024ull;
 
-// Rays are traced, never refit or updated in P1: a full rebuild of the TLAS
-// every frame, and BLAS built once. Fast trace is the right half of the trade
-// for both.
+// The static structures are never refit or updated: a full rebuild of the TLAS
+// on any frame whose instances changed, and each BLAS built once. Fast trace is
+// the right half of the trade for both.
 constexpr VkBuildAccelerationStructureFlagsKHR kBuildFlags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
 
 VkAccelerationStructureGeometryKHR instanceGeometry(VkDeviceAddress instances)
@@ -377,6 +377,10 @@ void RayTracingScene::buildBottomLevel(const rhi::VulkanCommandContext& commandC
     stats_.scratchBytes = scratch_.size();
     stats_.bottomLevelBuildMs =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - buildStart).count();
+    // The empty structure above is not what any frame traces, so the first
+    // frame that does builds.
+    topLevelTracker_.reset(static_cast<uint32_t>(frames_.size()));
+    plan_ = {};
     ready_ = true;
 }
 
@@ -437,26 +441,31 @@ void RayTracingScene::destroy()
     topLevelScratchSize_ = 0;
     maxInstances_ = 0;
     stats_ = {};
+    stagedInstances_.clear();
+    stagedRecords_.clear();
+    topLevelTracker_.reset(0);
+    plan_ = {};
+    planFrameIndex_ = 0;
     context_ = nullptr;
 }
 
-uint32_t RayTracingScene::writeInstances(uint32_t frameIndex, std::span<const RayTracingInstanceInput> inputs)
+RayTracingTopLevelPlan RayTracingScene::writeInstances(uint32_t frameIndex,
+                                                       std::span<const RayTracingInstanceInput> inputs,
+                                                       bool rebuildEveryFrame)
 {
+    plan_ = {};
     if (!ready_ || frameIndex >= frames_.size()) {
-        return 0;
+        return plan_;
     }
     FrameBuffers& frame = frames_[frameIndex];
+    const size_t geometryCapacity = frame.geometry.size() / sizeof(RayTracingGeometryRecord);
 
-    const std::span<std::byte> instanceBytes = frame.instances.mapRange(0, frame.instances.size());
-    auto* instances = reinterpret_cast<VkAccelerationStructureInstanceKHR*>(instanceBytes.data());
-    const std::span<std::byte> geometryBytes = frame.geometry.mapRange(0, frame.geometry.size());
-    auto* geometry = reinterpret_cast<RayTracingGeometryRecord*>(geometryBytes.data());
-    const size_t geometryCapacity = geometryBytes.size() / sizeof(RayTracingGeometryRecord);
-
-    uint32_t count = 0;
+    stagedInstances_.clear();
+    stagedRecords_.clear();
     uint32_t alphaTested = 0;
     uint32_t missing = 0;
-    frame.skinnedPalette = 0;
+    VkDeviceAddress skinnedPalette = 0;
+    uint64_t skinnedPose = 0;
     for (const RayTracingInstanceInput& input : inputs) {
         if (input.kind == RayTracedCasterKind::None) {
             continue;
@@ -464,7 +473,7 @@ uint32_t RayTracingScene::writeInstances(uint32_t frameIndex, std::span<const Ra
         VkDeviceAddress bottomLevel = 0;
         RayTracingGeometryRecord record{};
         if (input.skinned) {
-            if (skinned_.valid() && input.jointPalette != 0) {
+            if (skinned_.valid() && input.jointPalette != 0 && input.skinnedPose != 0) {
                 bottomLevel = skinned_.bottomLevelAddress();
                 // Positions, not renderer::Vertex: nothing reads this record,
                 // because the skinned caster is opaque and never runs the
@@ -480,16 +489,17 @@ uint32_t RayTracingScene::writeInstances(uint32_t frameIndex, std::span<const Ra
                               static_cast<uint64_t>(input.firstIndex) * sizeof(uint32_t)};
             }
         }
-        if (bottomLevel == 0 || count >= maxInstances_ || input.frameDataIndex >= geometryCapacity) {
+        if (bottomLevel == 0 || stagedInstances_.size() >= maxInstances_ || input.frameDataIndex >= geometryCapacity) {
             ++missing;
             continue;
         }
         if (input.skinned) {
-            frame.skinnedPalette = input.jointPalette;
+            skinnedPalette = input.jointPalette;
+            skinnedPose = input.skinnedPose;
         }
 
-        // Built whole on the stack and copied once: the destination is
-        // write-combined memory, where field-by-field stores are the slow way.
+        // Value-initialised, so every byte the comparison reads is defined:
+        // the record has no padding, and the bitfields share their words.
         VkAccelerationStructureInstanceKHR instance{};
         const std::array<float, 12> transform = rayTracingInstanceTransform(input.model);
         std::memcpy(&instance.transform, transform.data(), sizeof(instance.transform));
@@ -507,37 +517,68 @@ uint32_t RayTracingScene::writeInstances(uint32_t frameIndex, std::span<const Ra
         }
         instance.flags = flags;
         instance.accelerationStructureReference = bottomLevel;
-        std::memcpy(&instances[count], &instance, sizeof(instance));
-        std::memcpy(&geometry[input.frameDataIndex], &record, sizeof(record));
-        ++count;
+        stagedInstances_.push_back(instance);
+        stagedRecords_.emplace_back(input.frameDataIndex, record);
     }
+    const uint32_t count = static_cast<uint32_t>(stagedInstances_.size());
 
-    frame.instances.flush(0, static_cast<VkDeviceSize>(count) * sizeof(VkAccelerationStructureInstanceKHR));
-    frame.instances.unmap();
-    frame.geometry.flush(0, frame.geometry.size());
-    frame.geometry.unmap();
+    // The geometry records need no comparison of their own: each one follows
+    // from its instance's BLAS and custom index, which the bytes compared here
+    // already hold.
+    plan_ =
+        topLevelTracker_.plan(frameIndex, std::as_bytes(std::span(stagedInstances_)), skinnedPose, rebuildEveryFrame);
+    planFrameIndex_ = frameIndex;
 
-    frame.instanceCount = count;
+    if (plan_.writeSlot) {
+        // One copy each: the destination is write-combined memory, where
+        // field-by-field stores are the slow way.
+        const VkDeviceSize instanceBytes =
+            static_cast<VkDeviceSize>(count) * sizeof(VkAccelerationStructureInstanceKHR);
+        if (count > 0) {
+            const std::span<std::byte> instances = frame.instances.mapRange(0, frame.instances.size());
+            std::memcpy(instances.data(), stagedInstances_.data(), static_cast<size_t>(instanceBytes));
+            frame.instances.flush(0, instanceBytes);
+            frame.instances.unmap();
+        }
+        const std::span<std::byte> geometryBytes = frame.geometry.mapRange(0, frame.geometry.size());
+        auto* geometry = reinterpret_cast<RayTracingGeometryRecord*>(geometryBytes.data());
+        for (const auto& [index, record] : stagedRecords_) {
+            std::memcpy(&geometry[index], &record, sizeof(record));
+        }
+        frame.geometry.flush(0, frame.geometry.size());
+        frame.geometry.unmap();
+        frame.instanceCount = count;
+    }
+    // Every frame, whatever the plan: the palette is this slot's own buffer,
+    // and a refit reads the slot it runs in.
+    frame.skinnedPalette = skinnedPalette;
+
     stats_.instances = count;
     stats_.alphaTestedInstances = alphaTested;
     stats_.instancesWithoutBottomLevel = missing;
-    stats_.skinnedInstance = frame.skinnedPalette != 0;
-    return count;
+    stats_.skinnedInstance = skinnedPalette != 0;
+    stats_.topLevelKeptLastFrame = !plan_.build;
+    if (!plan_.build) {
+        ++stats_.topLevelKeeps;
+    }
+    return plan_;
 }
 
 void RayTracingScene::recordTopLevelBuild(VkCommandBuffer commandBuffer, uint32_t frameIndex)
 {
-    if (!ready_ || frameIndex >= frames_.size()) {
+    if (!ready_ || frameIndex >= frames_.size() || frameIndex != planFrameIndex_ || !plan_.build) {
         return;
     }
     const FrameBuffers& frame = frames_[frameIndex];
 
-    // What the previous frame left in flight that this one is about to rewrite:
-    // its rays read the TLAS and the skinned BLAS, its builds wrote both and the
-    // scratch, and its refit read the skinned positions the pre-skin below
-    // overwrites. The graph cannot see any of it -- it rebuilds buffer state
-    // every frame. The fragment-shader destination is for the BLASes built at
-    // startup, whose writes no later barrier makes visible to the rays.
+    // What earlier frames left in flight that this one is about to rewrite:
+    // their rays read the TLAS and the skinned BLAS, their builds wrote both and
+    // the scratch, and their refits read the skinned positions the pre-skin
+    // below overwrites. The graph cannot see any of it -- it rebuilds buffer
+    // state every frame -- and the frames since the last build may have kept the
+    // structure and recorded nothing at all. The fragment-shader destination is
+    // for the BLASes built at startup, whose writes no later barrier makes
+    // visible to the rays; the first frame that traces always builds.
     accelerationStructureBarrier(commandBuffer,
                                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
                                      VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
@@ -546,7 +587,9 @@ void RayTracingScene::recordTopLevelBuild(VkCommandBuffer commandBuffer, uint32_
                                      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                                  kAccelerationStructureReadWrite | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
 
-    if (frame.skinnedPalette != 0 && skinned_.valid()) {
+    // Only when the pose moved: an unchanged pose would skin and refit to the
+    // same positions and the same boxes.
+    if (plan_.refitSkinned && frame.skinnedPalette != 0 && skinned_.valid()) {
         skinned_.record(commandBuffer, frame.skinnedPalette, scratchBase());
         // The refit wrote a BLAS this frame's TLAS build reads and its rays
         // traverse, and the scratch the TLAS build reuses. The graph's barrier
@@ -571,6 +614,10 @@ void RayTracingScene::recordTopLevelBuild(VkCommandBuffer commandBuffer, uint32_
     range.primitiveCount = frame.instanceCount;
     const VkAccelerationStructureBuildRangeInfoKHR* rangePointer = &range;
     vkCmdBuildAccelerationStructuresKHR(commandBuffer, 1, &info, &rangePointer);
+
+    topLevelTracker_.commitBuild();
+    plan_ = {};
+    ++stats_.topLevelBuilds;
 }
 
 VkDeviceAddress RayTracingScene::geometryTableAddress(uint32_t frameIndex) const

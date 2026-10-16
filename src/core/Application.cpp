@@ -256,6 +256,7 @@ void Application::mainLoop()
     for (const std::string& finding : backstop.firstIssueDetails) {
         Logger::warn(finding);
     }
+    renderer_->logRayTracingSceneSummary();
 
     if (config_.assetLoadStats) {
         renderer_->finalizeAssetLoadStats(rendererInitMs_, firstFrameMs);

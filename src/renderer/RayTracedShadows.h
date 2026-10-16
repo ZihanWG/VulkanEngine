@@ -2,7 +2,8 @@
 
 // The GPU-free half of ray-traced sun shadows: which draw items cast, how an
 // instance's transform is laid out, how far a shadow ray starts off its
-// surface, and the binary contracts the fragment shader reads. Everything that
+// surface, when the top-level structure has to be rebuilt, and the binary
+// contracts the fragment shader reads. Everything that
 // touches Vulkan -- acceleration structures, the build pass, descriptors --
 // lives in renderer/RayTracingScene.h.
 //
@@ -19,6 +20,8 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <span>
+#include <vector>
 
 namespace ve::renderer {
 
@@ -42,8 +45,8 @@ inline constexpr uint32_t kRtVertexStrideFloats = 15;
 inline constexpr uint32_t kRtVertexUvOffsetFloats = 6;
 
 // The skinned caster. Its BLAS is built from positions a compute pass skins out
-// every frame that traces (skin_positions.comp), three floats per vertex, in
-// workgroups of this many threads.
+// on every frame that traces with the pose moved (skin_positions.comp), three
+// floats per vertex, in workgroups of this many threads.
 inline constexpr uint32_t kRtSkinnedPositionStrideFloats = 3;
 inline constexpr uint32_t kRtPreSkinLocalSize = 64;
 
@@ -135,5 +138,67 @@ inline constexpr float kRtFallbackRayLength = 1.0e6f;
 // minAccelerationStructureScratchOffsetAlignment, and a buffer's own allocation
 // alignment does not imply it.
 [[nodiscard]] uint64_t alignUpPowerOfTwo(uint64_t value, uint64_t alignment);
+
+// What one frame that traces has to do for the top-level structure.
+struct RayTracingTopLevelPlan {
+    // Record the TLAS build and declare its pass. False when the structure
+    // already holds exactly what this frame would build into it.
+    bool build = false;
+    // Pre-skin and refit the skinned BLAS ahead of the build. Never set without
+    // build: a refit moves the bounds the TLAS cached for that instance.
+    bool refitSkinned = false;
+    // Write this frame slot's instance and geometry-record buffers, which hold
+    // an older generation than the one this frame traces. Independent of build,
+    // because the fragment shader reads this slot's geometry records through
+    // the custom index whether or not the structure was rebuilt.
+    bool writeSlot = false;
+};
+
+// Decides RayTracingTopLevelPlan from exactly what the build would read: the
+// instance records, byte for byte, and the skinned caster's pose. The bytes are
+// every instance's transform, custom index, mask, flags and BLAS address in
+// order, so a moved object, a reordered draw list (the custom index is the draw
+// item's frameDataIndex), an instance added or dropped and a mode change all
+// differ; the pose is SkinnedMesh::poseHash, because the skinned BLAS changes
+// under an instance record that does not.
+//
+// Three things are tracked apart, because they go stale apart: the content the
+// structure was last built from, the pose the skinned BLAS was last refitted
+// to, and per frame slot, the content that slot's buffers hold. A build is
+// committed only when it is recorded (commitBuild), so a frame that planned one
+// and never recorded it leaves the next frame building.
+class RayTracingTopLevelTracker {
+public:
+    // Forgets everything: the next plan builds, refits and writes.
+    void reset(uint32_t frameSlots);
+
+    // skinnedPose is 0 when the instances hold no skinned caster, and never 0
+    // when they do. rebuildEveryFrame builds, refits and writes regardless,
+    // which is what every frame did before this existed.
+    [[nodiscard]] RayTracingTopLevelPlan
+    plan(uint32_t frameSlot, std::span<const std::byte> instances, uint64_t skinnedPose, bool rebuildEveryFrame);
+
+    // The build the last plan asked for was recorded. Does nothing when that
+    // plan built nothing.
+    void commitBuild();
+
+    // Bumped by every plan whose instance records differ from the ones before.
+    [[nodiscard]] uint64_t generation() const
+    {
+        return generation_;
+    }
+
+private:
+    std::vector<std::byte> content_;
+    bool hasContent_ = false;
+    uint64_t generation_ = 0;
+    // Zero until something this tracker planned has been built.
+    uint64_t builtGeneration_ = 0;
+    uint64_t refittedPose_ = 0;
+    std::vector<uint64_t> slotGenerations_;
+    RayTracingTopLevelPlan planned_{};
+    uint64_t plannedGeneration_ = 0;
+    uint64_t plannedPose_ = 0;
+};
 
 } // namespace ve::renderer
