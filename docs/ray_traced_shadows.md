@@ -213,6 +213,13 @@ the sum into world units per unit of distance
 (`rayTracedShadowOffsetPerDistance`). Where nothing faces the sun the ray is
 skipped, because the term it produces multiplies zero.
 
+The ray is as long as the diagonal of the world bounds of everything drawn this
+frame (`rayTracedShadowRayLength`). The first version stopped it at the camera's
+far plane, which is the wrong bound: the far plane limits which receivers are
+drawn, not how far away their occluders are, and the TLAS holds every caster,
+in view or not. A tall caster further than the far plane along the sun direction
+from a visible receiver would have been missed.
+
 The shadow is hard: one ray toward a light with no extent.
 
 ## Debug views and settings

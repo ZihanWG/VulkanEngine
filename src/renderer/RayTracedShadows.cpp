@@ -51,6 +51,21 @@ float rayTracedShadowOffsetPerDistance(float pixelFootprints,
     return pixels * pixelAngle;
 }
 
+float rayTracedShadowRayLength(const Aabb& sceneBounds)
+{
+    if (!sceneBounds.valid()) {
+        return kRtFallbackRayLength;
+    }
+    const glm::vec3 extent = sceneBounds.max - sceneBounds.min;
+    const float diagonal = std::sqrt(extent.x * extent.x + extent.y * extent.y + extent.z * extent.z);
+    if (!std::isfinite(diagonal)) {
+        return kRtFallbackRayLength;
+    }
+    // The margin covers the origin's own offset off its surface, and a scene
+    // whose draw items all sit at one point.
+    return diagonal * 1.01f + 1.0f;
+}
+
 uint32_t rayTracingPreSkinGroupCount(uint32_t vertexCount)
 {
     return (vertexCount + kRtPreSkinLocalSize - 1) / kRtPreSkinLocalSize;

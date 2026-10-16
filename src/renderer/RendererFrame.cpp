@@ -2500,15 +2500,15 @@ void Renderer::uploadFrameConstants(uint32_t frameIndex, uint32_t cascadeCount)
         // selection; the radius rule has no pixel bound to add.
         const float lodErrorPixels =
             (lodSettings_.enabled && lodSettings_.screenSpaceError) ? lodSettings_.maxErrorPixels : 0.0f;
-        // A sun ray never needs to leave the scene's far plane: anything past it
-        // is not drawn, so it cannot cast onto anything that is.
+        // The ray length is the scene's extent, not the camera's far plane: see
+        // renderer::rayTracedShadowRayLength.
         constants.rayTracedShadowParams =
             glm::vec4(rayTracedShadowSettings_.normalOffset,
                       renderer::rayTracedShadowOffsetPerDistance(rayTracedShadowSettings_.pixelFootprintOffset,
                                                                  lodErrorPixels,
                                                                  camera_.verticalFovRadians,
                                                                  renderResolution_.extent().height),
-                      std::max(camera_.farPlane, 1.0f),
+                      frameRayTracedShadowRayLength_,
                       0.0f);
     }
 
@@ -2539,6 +2539,19 @@ void Renderer::writeRayTracingInstances(uint32_t frameIndex)
 {
     rayTracingInstanceInputs_.clear();
     rayTracingInstanceInputs_.reserve(allDrawItems_.size());
+    // Every drawn item, casting or not: blended surfaces and isolated-out objects
+    // still receive, so the ray length has to reach from them as well.
+    renderer::Aabb sceneBounds{};
+    for (const DrawItem& drawItem : allDrawItems_) {
+        if (drawItem.objectIndex < frameWorldBounds_.size() && frameWorldBounds_[drawItem.objectIndex].valid()) {
+            sceneBounds.merge(frameWorldBounds_[drawItem.objectIndex]);
+        }
+    }
+    if (skinnedCasterActive()) {
+        sceneBounds.merge(skinnedMesh_.worldBounds());
+    }
+    frameRayTracedShadowRayLength_ = renderer::rayTracedShadowRayLength(sceneBounds);
+
     for (const DrawItem& drawItem : allDrawItems_) {
         const renderer::RayTracedCasterKind kind = renderer::rayTracedCasterKind(drawItem.bucket);
         if (kind == renderer::RayTracedCasterKind::None || drawItem.mesh == nullptr ||

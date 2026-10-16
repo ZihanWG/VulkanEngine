@@ -11,6 +11,7 @@
 // error, so each one is pinned by tests/test_ray_traced_shadows.cpp instead of
 // being inferred from a capture. See docs/ray_traced_shadows.md.
 
+#include "renderer/Bounds.h"
 #include "renderer/DrawItemBatching.h"
 
 #include <glm/mat4x4.hpp>
@@ -118,6 +119,16 @@ enum class RayTracedCasterKind : uint8_t {
                                                      float lodErrorPixels,
                                                      float verticalFovRadians,
                                                      uint32_t renderHeight);
+
+// How far a sun ray has to travel to find any occluder: the diagonal of the
+// world bounds of everything drawn this frame, with a margin. Every receiver is
+// one of those draw items and so is every caster, so no occluder of any shaded
+// pixel can be further away than that. The camera's far plane is the wrong bound
+// -- it limits which receivers are drawn, not how far their occluders are -- and
+// the TLAS holds casters well outside the view. Invalid bounds give a large
+// fallback rather than zero, which would light every pixel.
+inline constexpr float kRtFallbackRayLength = 1.0e6f;
+[[nodiscard]] float rayTracedShadowRayLength(const Aabb& sceneBounds);
 
 // Rounds value up to a multiple of alignment, which must be a power of two.
 // Scratch addresses for acceleration-structure builds must be aligned to

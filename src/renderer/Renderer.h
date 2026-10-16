@@ -1910,6 +1910,9 @@ private:
     RayTracedShadowSettings rayTracedShadowSettings_{};
     // Reused every frame so writing the instances does not allocate.
     std::vector<renderer::RayTracingInstanceInput> rayTracingInstanceInputs_;
+    // This frame's shadow-ray length, from the union of every drawn item's world
+    // bounds (renderer::rayTracedShadowRayLength). Written with the instances.
+    float frameRayTracedShadowRayLength_ = renderer::kRtFallbackRayLength;
 };
 
 } // namespace ve

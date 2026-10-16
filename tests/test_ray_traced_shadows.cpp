@@ -5,6 +5,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <glm/ext/matrix_transform.hpp>
+#include <glm/geometric.hpp>
 #include <glm/vec4.hpp>
 
 #include <cmath>
@@ -102,6 +103,31 @@ TEST_CASE("The distance offset degenerates to zero rather than to infinity", "[r
     // Negative inputs from a hand-edited file add nothing instead of pulling the
     // origin into the surface.
     CHECK(rayTracedShadowOffsetPerDistance(-3.0f, -1.0f, fov, 720) == 0.0f);
+}
+
+TEST_CASE("The shadow ray reaches across the whole scene, not to the far plane", "[raytracing]")
+{
+    using ve::renderer::Aabb;
+    using ve::renderer::rayTracedShadowRayLength;
+
+    // Any receiver and any caster are both inside these bounds, so the diagonal
+    // is the farthest an occluder can be.
+    Aabb bounds{};
+    bounds.expand(glm::vec3(-100.0f, 0.0f, -50.0f));
+    bounds.expand(glm::vec3(200.0f, 40.0f, 350.0f));
+    const float diagonal = glm::length(bounds.max - bounds.min);
+    CHECK(rayTracedShadowRayLength(bounds) >= diagonal);
+    // With a margin, not a multiple: the ray stays proportionate to the scene.
+    CHECK(rayTracedShadowRayLength(bounds) < diagonal * 1.1f + 2.0f);
+
+    // A scene collapsed to a point still gets a ray longer than the origin offset.
+    Aabb point{};
+    point.expand(glm::vec3(3.0f));
+    CHECK(rayTracedShadowRayLength(point) >= 1.0f);
+
+    // No bounds at all must not produce a zero-length ray, which would light
+    // every pixel.
+    CHECK(rayTracedShadowRayLength(Aabb{}) == ve::renderer::kRtFallbackRayLength);
 }
 
 TEST_CASE("Scratch addresses round up to the device's alignment", "[raytracing]")
