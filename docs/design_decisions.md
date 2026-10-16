@@ -273,6 +273,24 @@ closest of the three shadow-map paths to the traced reference. Mean absolute
 luminance difference is 0.126 on sunlit and 0.0009 on Sponza, against 0.148 and
 0.0017 for the virtual shadow map.
 
+**The same fit also flipped Y with one element.** It negated `[1][1]` for
+Vulkan's clip space and left the `[3][1]` translation that `glm::ortho` writes
+for a box not centred on the light view. Its box is centred on the slice
+centroid, which the slice's light-space bounds do not straddle evenly. The map
+then covered the box mirrored about that centroid. Rendering and lookup still
+agreed, because they share the matrix, but the part of the slice outside the
+mirror image read as lit.
+
+The test that pins the slice's coverage found it: on its default camera a slice
+corner landed at |NDC y| 1.37. On the presets it is latent. Negating the whole
+row, as the virtual shadow map's page projection always did, leaves agreement
+with the virtual shadow map and the traced image where it was (Sponza 0.045% to
+0.044%, sunlit 2.219% to 2.211%). It only shifts texel grids: 1518 default-scene
+pixels by at most 2 steps, 44 of them beyond the gate's tolerance, and 860
+sunlit pixels on shadow edges by more than two luma steps. The stable fit's box
+is symmetric (plus and minus the radius), so its `[3][1]` is zero and one
+element is enough there.
+
 **Trade-offs.**
 
 - **The depth box is about 1.8x deeper.** On Sponza, cascade 0 goes from 17.3 to
@@ -287,9 +305,11 @@ luminance difference is 0.126 on sunlit and 0.0009 on Sponza, against 0.148 and
   cache keys the same way, because the matrix is still a function of the camera
   and the light alone. But a frame that redraws draws about twice as much on
   Sponza, and a moving caster now dirties the cascades it was always in.
-- **The golden image moved.** 4196 pixels change on the default scene, 1817 of
-  them beyond the gate's tolerance. They are a shadow wedge on the back wall, the
-  bent tube shadowing its own upper side, and the contact edges above.
+- **The golden image moved.** Both fixes together change 5416 pixels on the
+  default scene, 1847 of them beyond the gate's tolerance. The near plane
+  accounts for 1817: a shadow wedge on the back wall, the bent tube shadowing its
+  own upper side, and the contact edges above. The Y flip accounts for the
+  texel-grid steps.
 
 **Limit that remains.** A caster more than `zPadding` beyond the slice toward
 the sun is still lost. No preset has one.

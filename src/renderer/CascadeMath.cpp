@@ -212,8 +212,18 @@ CascadeBuildOutput computeShadowCascades(const CascadeBuildInput& input)
         const float orthoNear = -maxBounds.z - zPadding;
         const float orthoFar = -minBounds.z + zPadding;
 
+        // Vulkan's clip space has Y pointing the other way, so the whole second
+        // row is negated. The box is not symmetric about the light-view centre --
+        // that is the slice centroid, which the light-space bounds of a frustum
+        // slice do not straddle evenly -- so glm::ortho leaves a translation in
+        // [3][1]. Negating only [1][1] then maps the box mirrored about the
+        // centre: rendering and lookup still agree, because they share this
+        // matrix, but the map covers the mirror image, and the part of the slice
+        // outside it reads as lit. The stable fit's box is symmetric, so its
+        // [3][1] is zero and one element is enough there.
         glm::mat4 lightProjection = glm::ortho(minBounds.x, maxBounds.x, minBounds.y, maxBounds.y, orthoNear, orthoFar);
         lightProjection[1][1] *= -1.0f;
+        lightProjection[3][1] *= -1.0f;
 
         ShadowCascade& cascade = output.cascades[cascadeIndex];
         cascade.lightViewProjection = lightProjection * lightView;

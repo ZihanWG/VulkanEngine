@@ -471,9 +471,11 @@ glm::mat4 vsmPageViewProjection(const VsmClipmapSettings& settings,
     // negated, not just the diagonal element: a page's rect is asymmetric about
     // the light-space origin, so glm::ortho leaves a non-zero translation in
     // [3][1] and flipping only [1][1] would offset the page by twice its centre
-    // instead of mirroring it. (The cascades get away with flipping one element
-    // because they use the same matrix to render and to look up, so any
-    // consistent mapping works there.)
+    // instead of mirroring it. Using one matrix to render and to look up does
+    // not make the single-element flip safe: the mapping stays consistent, but
+    // the map then covers the rect mirrored about the light-space origin rather
+    // than the rect itself. The cascades' AABB fit had exactly that bug until it
+    // negated the whole row too.
     projection[1][1] *= -1.0f;
     projection[3][1] *= -1.0f;
 
