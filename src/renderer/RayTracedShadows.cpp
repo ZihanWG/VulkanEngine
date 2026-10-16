@@ -66,6 +66,11 @@ float rayTracedShadowRayLength(const Aabb& sceneBounds)
     return diagonal * 1.01f + 1.0f;
 }
 
+uint32_t rayTracedShadowMaskGroupCount(uint32_t pixels)
+{
+    return (pixels + kRtMaskLocalSize - 1u) / kRtMaskLocalSize;
+}
+
 uint32_t rayTracingPreSkinGroupCount(uint32_t vertexCount)
 {
     return (vertexCount + kRtPreSkinLocalSize - 1) / kRtPreSkinLocalSize;

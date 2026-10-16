@@ -129,7 +129,13 @@ PAIRS: list[tuple[str, str, list[str]]] = [
     (
         "src/renderer/RayTracedShadows.h",
         "src/shaders/object_frame_data.glsl",
-        ["kRtShadowFlagEnabled", "kRtShadowFlagDebugVisibility", "kRtShadowFlagDebugCompareCascades"],
+        [
+            "kRtShadowFlagEnabled",
+            "kRtShadowFlagDebugVisibility",
+            "kRtShadowFlagDebugCompareCascades",
+            "kRtShadowFlagScreenMask",
+            "kRtShadowFlagDebugMaskSource",
+        ],
     ),
     (
         "src/renderer/RayTracedShadows.h",
@@ -139,6 +145,7 @@ PAIRS: list[tuple[str, str, list[str]]] = [
             "kRtVertexUvOffsetFloats",
             "kRtSkinnedPositionStrideFloats",
             "kRtPreSkinLocalSize",
+            "kRtMaskLocalSize",
         ],
     ),
 ]

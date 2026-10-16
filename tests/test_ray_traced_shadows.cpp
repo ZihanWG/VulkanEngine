@@ -135,6 +135,61 @@ TEST_CASE("The shadow ray reaches across the whole scene, not to the far plane",
     CHECK(rayTracedShadowRayLength(Aabb{}) == ve::renderer::kRtFallbackRayLength);
 }
 
+TEST_CASE("The shadow mask covers the sub-rect in whole workgroups", "[raytracing][mask]")
+{
+    using ve::renderer::kRtMaskLocalSize;
+    using ve::renderer::rayTracedShadowMaskGroupCount;
+
+    CHECK(rayTracedShadowMaskGroupCount(0) == 0);
+    CHECK(rayTracedShadowMaskGroupCount(1) == 1);
+    CHECK(rayTracedShadowMaskGroupCount(kRtMaskLocalSize) == 1);
+    CHECK(rayTracedShadowMaskGroupCount(kRtMaskLocalSize + 1) == 2);
+    // 720 rows are exactly 90 groups; the 1280 columns of a full-resolution
+    // frame are 160. A render-scaled sub-rect rounds up, and the shader returns
+    // early on the overhang.
+    CHECK(rayTracedShadowMaskGroupCount(720) == 90);
+    CHECK(rayTracedShadowMaskGroupCount(1280) == 160);
+    CHECK(rayTracedShadowMaskGroupCount(721) == 91);
+}
+
+TEST_CASE("The shadow mask runs only where it has depth to trace from", "[raytracing][mask]")
+{
+    using ve::renderer::rayTracedShadowMaskActive;
+
+    CHECK(rayTracedShadowMaskActive(true, true, true, true));
+    // Each condition alone turns it off: a frame that does not trace, a frame
+    // with no depth prepass to reconstruct surfaces from, a device or build
+    // where the pass could not be created, and the setting, which is the A/B
+    // control. In every case the main pass traces inline, as before the mask.
+    CHECK_FALSE(rayTracedShadowMaskActive(false, true, true, true));
+    CHECK_FALSE(rayTracedShadowMaskActive(true, false, true, true));
+    CHECK_FALSE(rayTracedShadowMaskActive(true, true, false, true));
+    CHECK_FALSE(rayTracedShadowMaskActive(true, true, true, false));
+
+    // On by default, behind ray-traced shadows themselves, which are off.
+    const ve::RayTracedShadowSettings defaults{};
+    CHECK(defaults.screenSpaceMask);
+    CHECK_FALSE(defaults.debugMaskSource);
+}
+
+TEST_CASE("The frame the mask turns on rebuilds the top-level structure", "[raytracing][mask]")
+{
+    using ve::renderer::rayTracedShadowMaskNeedsFreshBuild;
+
+    // A kept structure is only visible to the stages that read it on the frame
+    // that built it. Built with the mask off, that is the fragment stage alone,
+    // so the first frame the mask's compute rays need it has to build again.
+    CHECK(rayTracedShadowMaskNeedsFreshBuild(true, false));
+    // Built with the mask on, both stages were covered, and stay covered for as
+    // long as the structure is kept -- including across the mask going off and
+    // back on.
+    CHECK_FALSE(rayTracedShadowMaskNeedsFreshBuild(true, true));
+    // Turning the mask off leaves only the fragment reads, which every build
+    // covers.
+    CHECK_FALSE(rayTracedShadowMaskNeedsFreshBuild(false, true));
+    CHECK_FALSE(rayTracedShadowMaskNeedsFreshBuild(false, false));
+}
+
 TEST_CASE("Scratch addresses round up to the device's alignment", "[raytracing]")
 {
     CHECK(alignUpPowerOfTwo(0, 128) == 0);

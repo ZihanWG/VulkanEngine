@@ -579,8 +579,10 @@ void RayTracingScene::recordTopLevelBuild(VkCommandBuffer commandBuffer, uint32_
     // structure and recorded nothing at all. The fragment-shader destination is
     // for the BLASes built at startup, whose writes no later barrier makes
     // visible to the rays; the first frame that traces always builds.
+    // The compute stage is the shadow mask's rays, which trace the same
+    // structure ahead of the main pass.
     accelerationStructureBarrier(commandBuffer,
-                                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
                                      VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
                                  kAccelerationStructureReadWrite,
                                  VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
@@ -599,6 +601,7 @@ void RayTracingScene::recordTopLevelBuild(VkCommandBuffer commandBuffer, uint32_
                                      VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
                                      VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
                                      VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
+                                         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
                                          VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                                      kAccelerationStructureReadWrite);
         stats_.skinnedBuilds = skinned_.builds();

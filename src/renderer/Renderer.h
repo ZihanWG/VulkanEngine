@@ -30,6 +30,7 @@
 #include "renderer/MeshLod.h"
 #include "renderer/ObjectTransformCache.h"
 #include "renderer/PostProcessStack.h"
+#include "renderer/RayTracedShadowMask.h"
 #include "renderer/RayTracingScene.h"
 #include "renderer/RenderGraph.h"
 #include "renderer/RenderObject.h"
@@ -938,6 +939,16 @@ private:
     // tracing, the cascades are skipped exactly when this is false.
     [[nodiscard]] bool cascadeShadowMapReadBeyondMainPass() const;
     void recordRayTracingSceneBuild(VkCommandBuffer commandBuffer);
+    // The shadow mask's pipeline, on every pipeline rebuild when the main pass
+    // can trace. A failure is logged and leaves every fragment tracing inline.
+    void createRayTracedShadowMaskPipeline();
+    // Points binding 17 of the material sets at the mask image, which every
+    // resize recreates. A no-op before the first material set exists, which
+    // writes the binding itself.
+    void refreshMaterialRayTracedShadowMaskDescriptors();
+    // Between DepthPrepass and MainHDRPass, on frames that set
+    // frameRayTracedShadowMaskActive_.
+    void recordRayTracedShadowMask(VkCommandBuffer commandBuffer);
     // Drops the depth of pages whose casters moved, before residency decides
     // what to draw. Without it a moved object leaves its shadow behind: the page
     // keeps its identity and its physical page, so nothing else notices.
@@ -1834,6 +1845,13 @@ private:
     // have to agree; a frame that traces without it declares the reads alone and
     // traces the structure an earlier frame built.
     bool frameRayTracingSceneBuildRequired_ = false;
+    // This frame traces the shadow mask ahead of the main pass, which reads it
+    // (renderer::rayTracedShadowMaskActive). Gates the mask pass's declaration,
+    // its recording and the FrameConstants flag, which have to agree.
+    bool frameRayTracedShadowMaskActive_ = false;
+    // Whether the mask was active on the last frame that built the TLAS; see
+    // renderer::rayTracedShadowMaskNeedsFreshBuild.
+    bool rayTracingTopLevelBuiltWithMask_ = false;
     // This frame traces and nothing else reads the cascades, so they are not
     // drawn. Gates the cascade pass's declaration and its recording, which have
     // to agree, and leaves the cascade cache's resident keys alone: the image
@@ -1935,6 +1953,9 @@ private:
     // Ray-traced sun shadows. The scene holds its own copy of every mesh's
     // geometry once built, so it does not depend on the meshes outliving it.
     renderer::RayTracingScene rayTracingScene_;
+    // The per-pixel trace ahead of the main pass (renderer/RayTracedShadowMask.h).
+    // After rayTracingScene_, so it is destroyed first.
+    renderer::RayTracedShadowMask rayTracedShadowMask_{context_, swapchain_, pipelineStore_, renderResolution_};
     RayTracedShadowSettings rayTracedShadowSettings_{};
     // Reused every frame so writing the instances does not allocate.
     std::vector<renderer::RayTracingInstanceInput> rayTracingInstanceInputs_;

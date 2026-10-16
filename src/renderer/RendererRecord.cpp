@@ -31,6 +31,7 @@
 #include <glm/ext/matrix_transform.hpp>
 #include <glm/geometric.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <glm/matrix.hpp>
 #include <glm/gtc/matrix_inverse.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #define GLM_ENABLE_EXPERIMENTAL
@@ -755,6 +756,29 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             name.c_str(), postProcess_.bloomMipUpsampleImages()[level], postProcess_.bloomMipUpsampleLayouts()[level]));
     }
 
+    // Imported whenever it exists, traced this frame or not: the main pass
+    // declares its read on every frame so the image is always in the layout
+    // binding 17 records. See renderer/RayTracedShadowMask.h.
+    renderer::RenderGraphImageResource rayTracedShadowMaskResource{};
+    if (rayTracedShadowMask_.imageReady()) {
+        const VkExtent3D maskExtent = rayTracedShadowMask_.image().extent();
+        rayTracedShadowMaskResource = renderer::RenderGraphImageResource{
+            .name = "RayTracedShadowMask",
+            .image = rayTracedShadowMask_.image().image(),
+            .imageView = rayTracedShadowMask_.image().imageView(),
+            .extent = VkExtent2D{maskExtent.width, maskExtent.height},
+            .layout = rayTracedShadowMask_.layoutPtr(),
+            .format = renderer::RayTracedShadowMask::kFormat,
+            .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .clearValue = VkClearValue{},
+            .hasClearValue = false,
+            .imported = true,
+        };
+    }
+
     renderer::RenderGraphImageResource gtaoRawResource{};
     if (gtao_.available()) {
         // Raw AO is half resolution; import its actual extent, not the scene's.
@@ -1113,6 +1137,7 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
                                                 VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
                                                     VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                                                 true},
+        .rayTracedShadowMask = rayTracedShadowMaskResource,
         .taaEnabled = postProcess_.isTaaActive(),
         .twoPhaseOcclusionEnabled = frameTwoPhaseOcclusionActive_,
         .depthPrepassEnabled = frameDepthPrepassActive_,
@@ -1137,6 +1162,8 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         .rayTracedShadowsEnabled = isRayTracedShadowActive(),
         // The same flag recordRayTracingSceneBuild returns on.
         .rayTracingSceneBuildEnabled = isRayTracedShadowActive() && frameRayTracingSceneBuildRequired_,
+        // The same flag recordRayTracedShadowMask returns on.
+        .rayTracedShadowMaskEnabled = frameRayTracedShadowMaskActive_,
         .irradianceProbeUpdateEnabled = isIrradianceProbeUpdateActive(),
         .probeCaptureEnabled = frameProbeCaptureActive_,
         // GpuCulling's own answer to "will recordMainCull record anything", not a
@@ -2268,6 +2295,9 @@ void Renderer::recordMainPassGeometry(VkCommandBuffer commandBuffer)
     // render pass of its own, and the depth it leaves behind is what the main
     // pass loads instead of clearing.
     recordDepthPrepass(commandBuffer);
+    // Between the two: it traces from the depth the prepass left, and the main
+    // pass reads what it wrote.
+    recordRayTracedShadowMask(commandBuffer);
 
     const bool mainHdrProfileScope = gpuProfiler_.beginScope(currentFrame_, commandBuffer, "MainHDRPass");
     rhi::debug::beginLabel(commandBuffer, "MainHDRPass");
@@ -2913,6 +2943,31 @@ void Renderer::recordIrradianceProbePasses(VkCommandBuffer commandBuffer)
             gpuProfiler_.endScope(currentFrame_, commandBuffer);
         }
     }
+}
+
+void Renderer::recordRayTracedShadowMask(VkCommandBuffer commandBuffer)
+{
+    if (!frameRayTracedShadowMaskActive_) {
+        return;
+    }
+
+    const renderer::GpuProfileScope profileScope(gpuProfiler_, currentFrame_, commandBuffer, "RayTracedShadowMask");
+    rhi::debug::beginLabel(commandBuffer, "RayTracedShadowMask");
+    renderGraph_.beginRayTracedShadowMaskPass();
+
+    const VkExtent2D extent = renderResolution_.extent();
+    renderer::RayTracedShadowMaskPushConstants push{};
+    push.frameConstants = frameConstantsBuffers_.at(currentFrame_).deviceAddress();
+    push.objectFrameData = frameObjectDataBuffers_.at(currentFrame_).deviceAddress();
+    push.extent = glm::uvec2(extent.width, extent.height);
+    push.inverseExtent = glm::vec2(1.0f / static_cast<float>(extent.width), 1.0f / static_cast<float>(extent.height));
+    // The matrix the prepass rasterised with, jitter included, so a pixel centre
+    // reconstructs to the surface point the main pass shades at that pixel.
+    push.inverseViewProjection = glm::inverse(frameJitteredViewProjection_);
+    rayTracedShadowMask_.record(commandBuffer, push, bindlessTextureHeap_.descriptorSet());
+
+    renderGraph_.endRayTracedShadowMaskPass();
+    rhi::debug::endLabel(commandBuffer);
 }
 
 void Renderer::recordRayTracingSceneBuild(VkCommandBuffer commandBuffer)

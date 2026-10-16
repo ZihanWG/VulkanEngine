@@ -16,6 +16,7 @@
 #include "renderer/DrawItemBatching.h"
 
 #include <glm/mat4x4.hpp>
+#include <glm/vec2.hpp>
 
 #include <array>
 #include <cstddef>
@@ -34,6 +35,12 @@ inline constexpr uint32_t kRtShadowFlagDebugVisibility = 2u;
 // Colours each pixel by whether the ray and the cascades agree. Wins over the
 // visibility view when both are set.
 inline constexpr uint32_t kRtShadowFlagDebugCompareCascades = 4u;
+// The main pass reads the ray-traced shadow mask where it covers the fragment
+// and traces inline only where it does not. See RayTracedShadowMask.h.
+inline constexpr uint32_t kRtShadowFlagScreenMask = 8u;
+// Colours each pixel by where its visibility came from: the mask, checked
+// against an inline ray, or the inline fallback. Wins over both views above.
+inline constexpr uint32_t kRtShadowFlagDebugMaskSource = 16u;
 
 // Where a mesh vertex keeps what the alpha test needs, in floats. The fragment
 // shader reads candidate triangles' UVs straight out of the vertex buffer by
@@ -53,6 +60,52 @@ inline constexpr uint32_t kRtPreSkinLocalSize = 64;
 // Workgroups that cover vertexCount with kRtPreSkinLocalSize threads each; the
 // shader returns early past the end.
 [[nodiscard]] uint32_t rayTracingPreSkinGroupCount(uint32_t vertexCount);
+
+// The ray-traced shadow mask's square workgroup (ray_traced_shadow_mask.comp).
+inline constexpr uint32_t kRtMaskLocalSize = 8;
+
+// Workgroups along one axis that cover `pixels` with kRtMaskLocalSize each; the
+// shader returns early outside the sub-rect.
+[[nodiscard]] uint32_t rayTracedShadowMaskGroupCount(uint32_t pixels);
+
+// Whether this frame traces the mask ahead of the main pass. The mask is only
+// as wide as the depth prepass: without one there is no depth to trace from,
+// and every fragment traces inline exactly as before the mask existed.
+[[nodiscard]] constexpr bool
+rayTracedShadowMaskActive(bool tracing, bool depthPrepass, bool maskAvailable, bool enabled)
+{
+    return tracing && depthPrepass && maskAvailable && enabled;
+}
+
+// Whether the frame the mask turns on must rebuild the top-level structure
+// whether or not anything moved. A frame that keeps the structure relies on the
+// barrier the building frame recorded after its build, and that barrier names
+// only the stages that read the structure on that frame. Until the mask, the
+// fragment stage was the only one; the mask adds the compute stage, which a
+// structure built while the mask was off was never made visible to.
+[[nodiscard]] constexpr bool rayTracedShadowMaskNeedsFreshBuild(bool activeNow, bool activeWhenLastBuilt)
+{
+    return activeNow && !activeWhenLastBuilt;
+}
+
+// The mask dispatch's push block. Mirrors MaskPushConstants in
+// src/shaders/ray_traced_shadow_mask.comp, whose reflected offsets
+// tests/golden/shader_interface.txt pins.
+struct RayTracedShadowMaskPushConstants {
+    // FrameConstants and ObjectFrameData for this frame slot, by address.
+    uint64_t frameConstants = 0;
+    uint64_t objectFrameData = 0;
+    // The render-resolution sub-rect the depth prepass drew, and 1 / it.
+    glm::uvec2 extent{0u};
+    glm::vec2 inverseExtent{0.0f};
+    // Inverse of the jittered view-projection the prepass rasterised with.
+    glm::mat4 inverseViewProjection{1.0f};
+};
+static_assert(offsetof(RayTracedShadowMaskPushConstants, objectFrameData) == 8);
+static_assert(offsetof(RayTracedShadowMaskPushConstants, extent) == 16);
+static_assert(offsetof(RayTracedShadowMaskPushConstants, inverseExtent) == 24);
+static_assert(offsetof(RayTracedShadowMaskPushConstants, inverseViewProjection) == 32);
+static_assert(sizeof(RayTracedShadowMaskPushConstants) == 96);
 
 // The pre-skin dispatch's push block, all device addresses. Mirrors
 // PreSkinPushConstants in src/shaders/skin_positions.comp, whose reflected
@@ -79,7 +132,7 @@ static_assert(sizeof(RayTracingPreSkinPushConstants) == 40);
 // colour alpha the cascades' masked shadow pass reads. Only the geometry is
 // new: where its vertices are, and where its first index is.
 //
-// Mirrors RtGeometryRecord in src/shaders/simple_bindless.frag (two uvec2).
+// Mirrors RtGeometryRecord in src/shaders/ray_traced_shadow_trace.glsl (two uvec2).
 struct RayTracingGeometryRecord {
     uint64_t vertexAddress = 0;
     // Already advanced to the draw item's firstIndex, so the shader indexes it

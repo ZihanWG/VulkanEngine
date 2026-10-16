@@ -211,6 +211,8 @@ const char* renderPassTypeName(RenderPassType type)
     switch (type) {
     case RenderPassType::RayTracingSceneBuild:
         return "Ray Tracing Scene Build";
+    case RenderPassType::RayTracedShadowMask:
+        return "Ray Traced Shadow Mask";
     case RenderPassType::Shadow:
         return "Shadow";
     case RenderPassType::ShadowGpuCulling:
@@ -343,6 +345,8 @@ const char* rgAccessName(RGAccess access)
         return "AccelerationStructureBuild";
     case RGAccess::AccelerationStructureRead:
         return "AccelerationStructureRead";
+    case RGAccess::AccelerationStructureComputeRead:
+        return "AccelerationStructureComputeRead";
     }
 
     return "Unknown";
@@ -612,6 +616,14 @@ void RenderGraph::importFrameBuffers()
     // declare their read, and that read must not outlive the build.
     if (frame_.resources.rayTracedShadowsEnabled) {
         frame_.rayTracingTopLevel = importBuffer(frame_.resources.rayTracingTopLevel);
+    }
+    // An image, imported here beside the structure it is traced against. On
+    // every frame it exists, unlike the TLAS: see declareRayTracedShadowMaskRead.
+    // Imported, not graph-managed, so a frame that reads it without tracing it
+    // reads defined contents -- whatever the last traced frame left, which the
+    // main pass never uses because the flag that would make it is clear.
+    if (frame_.resources.rayTracedShadowMask.image != VK_NULL_HANDLE) {
+        frame_.rayTracedShadowMask = importTexture(frame_.resources.rayTracedShadowMask);
     }
 }
 
@@ -950,6 +962,40 @@ void RenderGraph::declareRayTracedShadowRead(RenderGraphBuilder& builder)
                            RGAccess::AccelerationStructureRead,
                            "Traces sun shadow rays against the top-level acceleration structure.");
     }
+}
+
+void RenderGraph::declareRayTracedShadowMaskRead(RenderGraphBuilder& builder)
+{
+    if (frame_.rayTracedShadowMask.valid()) {
+        builder.readTexture(frame_.rayTracedShadowMask,
+                            RGAccess::ShaderRead,
+                            "Reads each pixel's traced sun visibility where the depth prepass drew it.");
+    }
+}
+
+void RenderGraph::beginRayTracedShadowMaskPass()
+{
+    requireFrameActive("RenderGraph::beginRayTracedShadowMaskPass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginRayTracedShadowMaskPass called while another pass is active.");
+    }
+    if (!beginDeclaredPass(frame_.passIndices.rayTracedShadowMask)) {
+        throw std::logic_error(
+            "RenderGraph::beginRayTracedShadowMaskPass was culled but the renderer attempted to record it.");
+    }
+
+    activePass_ = ActivePass::RayTracedShadowMask;
+}
+
+void RenderGraph::endRayTracedShadowMaskPass()
+{
+    requireFrameActive("RenderGraph::endRayTracedShadowMaskPass");
+    if (activePass_ != ActivePass::RayTracedShadowMask) {
+        throw std::logic_error(
+            "RenderGraph::endRayTracedShadowMaskPass called without an active ray-traced shadow mask pass.");
+    }
+
+    activePass_ = ActivePass::None;
 }
 
 void RenderGraph::beginRayTracingSceneBuildPass()
@@ -2449,6 +2495,32 @@ void RenderGraph::declareGeometryPasses()
                     });
     }
 
+    // After the prepass whose depth it traces from and the build whose structure
+    // it traces against, before the main pass that reads what it writes. The
+    // renderer records it on exactly this condition; the mask and the TLAS
+    // handles are valid whenever the flag is set, since the flag implies a frame
+    // that traces on a device whose mask image exists.
+    if (frame_.resources.rayTracedShadowMaskEnabled && frame_.rayTracedShadowMask.valid() &&
+        frame_.rayTracingTopLevel.valid()) {
+        frame_.passIndices.rayTracedShadowMask = addPass(
+            "RayTracedShadowMask",
+            RenderPassType::RayTracedShadowMask,
+            RenderPassExecutionType::Compute,
+            false,
+            [this](RenderGraphBuilder& builder) {
+                builder.readTexture(frame_.mainDepth,
+                                    RGAccess::ShaderRead,
+                                    "Reconstructs each pixel's surface from the depth the prepass wrote.");
+                builder.readBuffer(frame_.rayTracingTopLevel,
+                                   RGAccess::AccelerationStructureComputeRead,
+                                   "Traces one sun shadow ray per pixel against the top-level acceleration structure.");
+                frame_.rayTracedShadowMask =
+                    builder.writeTexture(frame_.rayTracedShadowMask,
+                                         RGAccess::StorageImageWrite,
+                                         "Writes each pixel's sun visibility and the depth it was traced at.");
+            });
+    }
+
     frame_.passIndices.mainHdr = addPass(
         "MainHDRPass",
         RenderPassType::MainHdr,
@@ -2458,6 +2530,7 @@ void RenderGraph::declareGeometryPasses()
             builder.readTexture(
                 frame_.shadowMapDepth, RGAccess::ShaderRead, "Samples the cascaded shadow-map array for lighting.");
             declareRayTracedShadowRead(builder);
+            declareRayTracedShadowMaskRead(builder);
             if (frame_.punctualShadowAtlas != nullptr) {
                 // Declared unconditionally (not just when slots exist) so the
                 // atlas always reaches the layout the material descriptors
@@ -2590,6 +2663,7 @@ void RenderGraph::declareGeometryPasses()
                 builder.readTexture(
                     frame_.shadowMapDepth, RGAccess::ShaderRead, "Samples the cascaded shadow-map array for lighting.");
                 declareRayTracedShadowRead(builder);
+                declareRayTracedShadowMaskRead(builder);
                 if (frame_.ambientOcclusion.valid()) {
                     // A history read for the same reason phase 1's is: GTAO has
                     // not run yet at this point in the frame.
@@ -2717,6 +2791,7 @@ void RenderGraph::declareGeometryPasses()
                 // The shared fragment shader traces for blended surfaces too:
                 // glass receives the sun shadow, it just does not cast one.
                 declareRayTracedShadowRead(builder);
+                declareRayTracedShadowMaskRead(builder);
                 if (frame_.ambientOcclusion.valid()) {
                     // Same shared-shader reason as normalRoughness below: this
                     // pass reuses the main fragment shader, so it samples the
@@ -3914,6 +3989,7 @@ TextureAccessState textureAccessState(VkImageAspectFlags aspectMask, RGAccess ac
     case RGAccess::HostRead:
     case RGAccess::AccelerationStructureBuild:
     case RGAccess::AccelerationStructureRead:
+    case RGAccess::AccelerationStructureComputeRead:
         state.layout = currentLayout;
         state.stage = VK_PIPELINE_STAGE_2_NONE;
         state.access = VK_ACCESS_2_NONE;
@@ -4016,6 +4092,16 @@ BufferAccessState bufferAccessState(RGAccess access)
         break;
     case RGAccess::AccelerationStructureRead:
         state.stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        state.access = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+        break;
+    // The fragment stage is named as well as the compute stage the mask's rays
+    // run in. On a frame the mask traces, it is the first reader after the
+    // build, and the main pass's own rays read the structure next; this graph
+    // orders a read after a read with nothing, whatever its stage, so the
+    // barrier in front of the mask is the only one that can make the build
+    // visible to them. Named here, they are covered by it.
+    case RGAccess::AccelerationStructureComputeRead:
+        state.stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
         state.access = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
         break;
     case RGAccess::Unknown:

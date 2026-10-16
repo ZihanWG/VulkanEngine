@@ -1056,11 +1056,26 @@ void Renderer::drawShadowsDebugUi()
                               "distance, on top of the LOD error budget the renderer adds itself.\n"
                               "Rays see level 0 of every mesh while the raster pass may have drawn\n"
                               "a coarser one; this keeps the coarse surface from shadowing itself.");
+        ImGui::Checkbox("Trace a screen-space mask", &rayTracedShadowSettings_.screenSpaceMask);
+        ImGui::SetItemTooltip("On, a compute pass after the depth prepass traces one ray per pixel and\n"
+                              "the main pass reads it. Fragments the prepass did not draw -- the skinned\n"
+                              "mesh, phase-two rescues, blended surfaces -- still trace inline, as does\n"
+                              "every fragment on a frame without a prepass. Off, every fragment traces\n"
+                              "inline.");
+        ImGui::Text("Mask: %s",
+                    frameRayTracedShadowMaskActive_    ? "traced this frame"
+                    : rayTracedShadowMask_.available() ? "available, not traced this frame"
+                                                       : "unavailable");
         ImGui::Checkbox("Debug: ray-traced visibility", &rayTracedShadowSettings_.debugVisibility);
         ImGui::Checkbox("Debug: compare with cascades", &rayTracedShadowSettings_.debugCompareCascades);
         ImGui::SetItemTooltip("Red: only the ray finds an occluder. Blue: only the cascades do.\n"
                               "Grey: they agree. Past the cascades' shadow distance they report lit,\n"
                               "so red there is their range limit. Wins over the visibility view.");
+        ImGui::Checkbox("Debug: mask source", &rayTracedShadowSettings_.debugMaskSource);
+        ImGui::SetItemTooltip("Green: the mask answered and an inline ray from the fragment agrees.\n"
+                              "Magenta: the mask answered and the inline ray disagrees. Blue: the\n"
+                              "fragment traces inline. Grey: it faces away from the sun and traces\n"
+                              "nothing. Wins over both views above.");
         if (rayTracingScene_.ready()) {
             const renderer::RayTracingSceneStats& stats = rayTracingScene_.stats();
             ImGui::Text("BLAS: %u (%llu triangles, %.1f MiB), built in %.1f ms",

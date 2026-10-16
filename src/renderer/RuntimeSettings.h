@@ -571,6 +571,13 @@ struct RayTracedShadowSettings {
     // and as the control the change detection is checked against: both settings
     // must render the same image.
     bool rebuildEveryFrame = false;
+    // Trace the sun's visibility once per pixel the depth prepass covered, in a
+    // compute pass ahead of the main pass, and have the main pass read it
+    // rather than trace per fragment. Fragments the prepass did not draw -- the
+    // skinned mesh, phase-two rescues, blended surfaces -- still trace inline,
+    // as does every fragment on a frame without a prepass. Off, every fragment
+    // traces inline: the control the mask is compared against.
+    bool screenSpaceMask = true;
     // Ray origin offset along the surface normal, in world units, at any
     // distance. What keeps a flat surface from hitting itself.
     float normalOffset = 0.02f;
@@ -587,6 +594,11 @@ struct RayTracedShadowSettings {
     // finds an occluder, blue where only the cascades do. Wins over
     // debugVisibility when both are on.
     bool debugCompareCascades = false;
+    // Colours each pixel by where its visibility came from: green where the mask
+    // answered and an inline ray agrees, magenta where they disagree, blue where
+    // the fragment traces inline, grey where it faces away from the sun and so
+    // traces nothing at all. Wins over both views above.
+    bool debugMaskSource = false;
 
     [[nodiscard]] bool operator==(const RayTracedShadowSettings&) const = default;
 };

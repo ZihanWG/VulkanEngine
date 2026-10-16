@@ -20,4 +20,22 @@ const uint kRtSkinnedPositionStrideFloats = 3u;
 // Threads per pre-skin workgroup.
 const uint kRtPreSkinLocalSize = 64u;
 
+// Side of the ray-traced shadow mask's square workgroup.
+const uint kRtMaskLocalSize = 8u;
+
+// What a shadow-mask texel holds in place of a visibility when it was not
+// traced: nothing covered the pixel, or its neighbours gave no surface to take
+// a normal from. Any fragment reading it traces inline instead. Written by
+// ray_traced_shadow_mask.comp, read by simple_bindless.frag; nothing on the CPU
+// side reads the mask.
+const float kRtMaskNotTraced = -1.0;
+
+// Added to a shadow-mask visibility traced from a surface whose reconstructed
+// normal faces away from the sun, so the reader can tell those texels apart.
+// Such a ray starts on the sun's side of a surface that faces away from it,
+// which is right for a normal-mapped wall past the sun's horizon and wrong at
+// the terminator of a smooth-shaded surface, where the inline ray starts from
+// the vertex normal instead. Only the fragment knows which of the two it is.
+const float kRtMaskBackFacingBias = 2.0;
+
 #endif // VE_RAY_TRACED_SHADOWS_GLSL

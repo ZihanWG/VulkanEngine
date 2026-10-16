@@ -361,6 +361,13 @@ void Renderer::recreatePostProcessResources()
                               brdfLutTexture_.imageView(),
                               brdfLutTexture_.sampler());
     gtao_.createResources(postProcess_.normalRoughness().imageView(), static_cast<uint32_t>(frames_.size()));
+    // Whenever the device can trace, pass or no pass: binding 17 needs an image
+    // on every frame the ray-query variant draws. After the depth image, whose
+    // view the pass's set samples.
+    if (rayTracingScene_.hasTopLevel()) {
+        rayTracedShadowMask_.createResources(rayTracingScene_.topLevelHandle());
+    }
+    refreshMaterialRayTracedShadowMaskDescriptors();
     createDepthPyramidResources();
     // The material sets hold a view of the ambient-occlusion target, which was
     // just recreated at the new size. No-op on the first call, before any

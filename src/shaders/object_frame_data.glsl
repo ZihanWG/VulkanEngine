@@ -94,6 +94,14 @@ struct FrameConstants {
 const uint kRtShadowFlagEnabled = 1u;
 const uint kRtShadowFlagDebugVisibility = 2u;
 const uint kRtShadowFlagDebugCompareCascades = 4u;
+// The main pass reads the ray-traced shadow mask where it covers the fragment,
+// and traces only where it does not.
+const uint kRtShadowFlagScreenMask = 8u;
+// Colours each pixel by where its visibility came from: the mask (green where it
+// agrees with an inline ray, magenta where it does not) or the inline fallback
+// (blue where the shaded frame traces it, grey where it faces away from the sun
+// and never does). Wins over the other two debug views.
+const uint kRtShadowFlagDebugMaskSource = 16u;
 
 layout(buffer_reference, std430) readonly buffer FrameConstantsBuffer {
     FrameConstants values;

@@ -552,10 +552,12 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readBool(*rayTraced, "enabled", settings.rayTracedShadows.enabled);
         readBool(*rayTraced, "renderCascades", settings.rayTracedShadows.renderCascades);
         readBool(*rayTraced, "rebuildEveryFrame", settings.rayTracedShadows.rebuildEveryFrame);
+        readBool(*rayTraced, "screenSpaceMask", settings.rayTracedShadows.screenSpaceMask);
         readFloat(*rayTraced, "normalOffset", settings.rayTracedShadows.normalOffset);
         readFloat(*rayTraced, "pixelFootprintOffset", settings.rayTracedShadows.pixelFootprintOffset);
         readBool(*rayTraced, "debugVisibility", settings.rayTracedShadows.debugVisibility);
         readBool(*rayTraced, "debugCompareCascades", settings.rayTracedShadows.debugCompareCascades);
+        readBool(*rayTraced, "debugMaskSource", settings.rayTracedShadows.debugMaskSource);
     }
 
     if (const Json* gi = objectMember(json, "gi")) {
@@ -733,10 +735,12 @@ Json toJson(const RuntimeSettings& settings)
          Json{{"enabled", settings.rayTracedShadows.enabled},
               {"renderCascades", settings.rayTracedShadows.renderCascades},
               {"rebuildEveryFrame", settings.rayTracedShadows.rebuildEveryFrame},
+              {"screenSpaceMask", settings.rayTracedShadows.screenSpaceMask},
               {"normalOffset", settings.rayTracedShadows.normalOffset},
               {"pixelFootprintOffset", settings.rayTracedShadows.pixelFootprintOffset},
               {"debugVisibility", settings.rayTracedShadows.debugVisibility},
-              {"debugCompareCascades", settings.rayTracedShadows.debugCompareCascades}}},
+              {"debugCompareCascades", settings.rayTracedShadows.debugCompareCascades},
+              {"debugMaskSource", settings.rayTracedShadows.debugMaskSource}}},
         {"gi",
          Json{{"enabled", settings.gi.enabled},
               {"debugPattern", settings.gi.debugPattern},

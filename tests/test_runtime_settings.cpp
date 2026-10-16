@@ -116,10 +116,12 @@ RuntimeSettings makeNonDefaultSettings()
     settings.rayTracedShadows.enabled = true;
     settings.rayTracedShadows.renderCascades = true;
     settings.rayTracedShadows.rebuildEveryFrame = true;
+    settings.rayTracedShadows.screenSpaceMask = false;
     settings.rayTracedShadows.normalOffset = 0.05f;
     settings.rayTracedShadows.pixelFootprintOffset = 2.5f;
     settings.rayTracedShadows.debugVisibility = true;
     settings.rayTracedShadows.debugCompareCascades = true;
+    settings.rayTracedShadows.debugMaskSource = true;
 
     settings.debugUi.showRenderGraphPanel = false;
     settings.debugUi.showSceneHierarchyPanel = false;
@@ -165,11 +167,13 @@ TEST_CASE("RuntimeSettings save -> load round-trips every persisted field", "[se
     CHECK(loaded.rayTracedShadows.enabled == original.rayTracedShadows.enabled);
     CHECK(loaded.rayTracedShadows.renderCascades == original.rayTracedShadows.renderCascades);
     CHECK(loaded.rayTracedShadows.rebuildEveryFrame == original.rayTracedShadows.rebuildEveryFrame);
+    CHECK(loaded.rayTracedShadows.screenSpaceMask == original.rayTracedShadows.screenSpaceMask);
     CHECK(loaded.rayTracedShadows.normalOffset == Catch::Approx(original.rayTracedShadows.normalOffset));
     CHECK(loaded.rayTracedShadows.pixelFootprintOffset ==
           Catch::Approx(original.rayTracedShadows.pixelFootprintOffset));
     CHECK(loaded.rayTracedShadows.debugVisibility == original.rayTracedShadows.debugVisibility);
     CHECK(loaded.rayTracedShadows.debugCompareCascades == original.rayTracedShadows.debugCompareCascades);
+    CHECK(loaded.rayTracedShadows.debugMaskSource == original.rayTracedShadows.debugMaskSource);
 
     CHECK(loaded.bloom.enabled == original.bloom.enabled);
     CHECK(loaded.bloom.useMipChain == original.bloom.useMipChain);

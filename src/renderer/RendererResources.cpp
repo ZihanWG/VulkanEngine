@@ -110,7 +110,7 @@ void Renderer::destroyShadowCompareSampler()
 void Renderer::createMaterialDescriptorSetLayout()
 {
     createShadowCompareSampler();
-    std::array<VkDescriptorSetLayoutBinding, 17> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 18> bindings{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[0].descriptorCount = 1;
@@ -230,7 +230,14 @@ void Renderer::createMaterialDescriptorSetLayout()
     bindings[16].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
     bindings[16].descriptorCount = 1;
     bindings[16].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    const size_t bindingCount = rayTracingScene_.hasTopLevel() ? 17 : 16;
+    // The ray-traced shadow mask, on the same condition as the TLAS: the
+    // ray-query variant declares both and is the only shader that reads either.
+    // An integer image, read with texelFetch through a nearest sampler.
+    bindings[17].binding = 17;
+    bindings[17].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[17].descriptorCount = 1;
+    bindings[17].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    const size_t bindingCount = rayTracingScene_.hasTopLevel() ? 18 : 16;
 
     materialDescriptorSetLayout_.create(context_.vkDevice(),
                                         std::span<const VkDescriptorSetLayoutBinding>(bindings.data(), bindingCount));
@@ -440,6 +447,7 @@ void Renderer::createPipeline()
     gtao_.createPipeline(
         shaderPath("fullscreen.vert.spv"), shaderPath("gtao.frag.spv"), shaderPath("gtao_blur.frag.spv"));
     createComputePipelines();
+    createRayTracedShadowMaskPipeline();
     // Re-registered here, not only from the constructor, because every ref into
     // the store must be reissued after the reset above -- one that is not becomes
     // a dangling pointer into a destroyed entry. It no-ops on the constructor's
@@ -508,6 +516,59 @@ void Renderer::createRayTracingScene()
     } catch (const std::exception& error) {
         rayTracingScene_.destroy();
         Logger::warn(std::string("Ray-traced shadows are unavailable; the shadow maps stay in use: ") + error.what());
+    }
+}
+
+void Renderer::createRayTracedShadowMaskPipeline()
+{
+    // The cutout test samples the bindless heap, and only the bindless path
+    // traces at all, so without it there is nothing for the mask to serve.
+    if (!rayQueryShadingAvailable()) {
+        return;
+    }
+    try {
+        rayTracedShadowMask_.createPipeline(shaderPath("ray_traced_shadow_mask.comp.spv"),
+                                            bindlessTextureHeap_.descriptorSetLayout());
+    } catch (const std::exception& error) {
+        Logger::warn(std::string("Ray-traced shadow mask unavailable; every fragment traces inline: ") + error.what());
+    }
+}
+
+void Renderer::refreshMaterialRayTracedShadowMaskDescriptors()
+{
+    if (!rayTracingScene_.hasTopLevel() || !rayTracedShadowMask_.imageReady()) {
+        return;
+    }
+
+    VkDescriptorImageInfo shadowMaskInfo{};
+    shadowMaskInfo.sampler = rayTracedShadowMask_.sampler();
+    shadowMaskInfo.imageView = rayTracedShadowMask_.image().imageView();
+    shadowMaskInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    const auto rewrite = [&](VkDescriptorSet descriptorSet) {
+        if (descriptorSet == VK_NULL_HANDLE) {
+            return;
+        }
+        VkWriteDescriptorSet write{};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = descriptorSet;
+        write.dstBinding = 17;
+        write.dstArrayElement = 0;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.pImageInfo = &shadowMaskInfo;
+        vkUpdateDescriptorSets(context_.vkDevice(), 1, &write, 0, nullptr);
+    };
+
+    // The same walk as the ambient-occlusion refresh: one shared set under
+    // bindless, otherwise every material's own.
+    if (sharedEnvironmentDescriptorSet_ != VK_NULL_HANDLE) {
+        rewrite(sharedEnvironmentDescriptorSet_);
+        return;
+    }
+    rewrite(checkerboardMaterial_.descriptorSet);
+    for (const renderer::Material& material : materialVariants_) {
+        rewrite(material.descriptorSet);
     }
 }
 
@@ -1414,12 +1475,13 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     // structure when the layout has binding 16.
     std::array<VkDescriptorPoolSize, 3> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    // 15 combined image samplers per set: bindings 0-10 and 12-15. Binding 11
-    // is the probe params uniform buffer and is counted below. This count was
-    // already one short before binding 15 existed -- binding 14, the VSM page
-    // pool, was added without updating it, which only stayed invisible because
-    // far fewer than kMaxMaterialDescriptorSets sets are ever allocated.
-    poolSizes[0].descriptorCount = kMaxMaterialDescriptorSets * 15;
+    // 16 combined image samplers per set: bindings 0-10, 12-15 and the
+    // ray-traced shadow mask at 17. Binding 11 is the probe params uniform buffer
+    // and is counted below; binding 16, the TLAS, is the third pool size. This
+    // count was already one short before binding 15 existed -- binding 14, the
+    // VSM page pool, was added without updating it, which only stayed invisible
+    // because far fewer than kMaxMaterialDescriptorSets sets are ever allocated.
+    poolSizes[0].descriptorCount = kMaxMaterialDescriptorSets * 16;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSizes[1].descriptorCount = kMaxMaterialDescriptorSets;
     poolSizes[2].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
@@ -1560,7 +1622,7 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     VkDescriptorImageInfo punctualCompareInfo = punctualShadowInfo;
     punctualCompareInfo.sampler = VK_NULL_HANDLE;
 
-    std::array<VkWriteDescriptorSet, 17> writes{};
+    std::array<VkWriteDescriptorSet, 18> writes{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = material.descriptorSet;
     writes[0].dstBinding = 0;
@@ -1668,7 +1730,21 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     topLevelInfo.pAccelerationStructures = &topLevel;
     makeWrite(16, 16, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR);
     writes[16].pNext = &topLevelInfo;
-    const size_t writeCount = rayTracingScene_.hasTopLevel() ? 17 : 16;
+    // The shadow mask, under the same reasoning as the TLAS above, except that a
+    // resize replaces the image: refreshMaterialRayTracedShadowMaskDescriptors
+    // rewrites it then. The image exists whenever the TLAS does; only an
+    // allocation failure leaves it absent, and then the binding stays unwritten
+    // and the mask flag is never set.
+    VkDescriptorImageInfo shadowMaskInfo{};
+    shadowMaskInfo.sampler = rayTracedShadowMask_.sampler();
+    shadowMaskInfo.imageView = rayTracedShadowMask_.image().imageView();
+    shadowMaskInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    makeWrite(17, 17, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+    writes[17].pImageInfo = &shadowMaskInfo;
+    size_t writeCount = 16;
+    if (rayTracingScene_.hasTopLevel()) {
+        writeCount = rayTracedShadowMask_.imageReady() ? 18 : 17;
+    }
 
     // The material descriptor stores sampled images only: base color at binding 0,
     // cascaded shadow-map array at binding 1, normal map at binding 2, and metallic-roughness

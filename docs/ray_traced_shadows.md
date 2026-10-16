@@ -2,11 +2,13 @@
 
 The main pass can ask the scene's acceleration structure whether the sun is
 visible instead of reading the cascades or the virtual shadow map: one ray per
-shaded pixel, built with `VK_KHR_ray_query` from the fragment shader, against a
-top-level structure built from the draw items that cast and rebuilt only on
-frames where one of them changed. The
-shadow maps stay as the fallback, and the cascades keep rendering whenever
-something besides the main pass reads them.
+shaded pixel, built with `VK_KHR_ray_query`, against a top-level structure built
+from the draw items that cast and rebuilt only on frames where one of them
+changed. The ray is traced ahead of the main pass, once for every pixel the
+depth prepass drew ([the screen-space mask](#the-screen-space-mask)), and from
+the fragment shader for whatever the prepass did not draw. The shadow maps stay
+as the fallback, and the cascades keep rendering whenever something besides the
+main pass reads them.
 
 **Status: correct and off by default.** Everything that casts into the
 cascades casts here: static geometry, opaque and alpha-tested, and the skinned
@@ -256,6 +258,10 @@ caster faces the sun.
 | Skinned BLAS (`ALLOW_UPDATE`) | renderer, one structure | storage with the positions; built by the first frame that traces with the mesh shown, refitted by every later one whose pose moved | same |
 | Pre-skin pipeline (`skin_positions.comp`, push constants only) | renderer | with the positions | same |
 | Set 0 binding 16, `ACCELERATION_STRUCTURE_KHR` | written once into the shared bindless set | `createMaterialDescriptorSet` | with the pool |
+| Shadow mask image, `R32G32_UINT` at the render-resolution allocation extent | renderer, one image, written and read within a frame; its layout is tracked across frames | `RayTracedShadowMask::createResources`, from `recreatePostProcessResources`, whenever the TLAS exists | every resize, and the destructor |
+| Its nearest sampler and the pass's descriptor set (depth, TLAS, mask) | same | same | same |
+| Set 0 binding 17, `COMBINED_IMAGE_SAMPLER` (`usampler2D`) | the shared bindless set, whenever the TLAS exists | `createMaterialDescriptorSet`; rewritten by `refreshMaterialRayTracedShadowMaskDescriptors` on resize | with the pool |
+| Mask pipeline (`ray_traced_shadow_mask.comp`; set 0 its own, set 1 the bindless heap) | renderer | `createRayTracedShadowMaskPipeline`, on every pipeline rebuild; its set layout once | the pipeline store |
 
 The mesh set is fixed after construction -- every scene preset draws the
 built-in cube and sphere, and the sample scene is imported at startup only -- so
@@ -286,14 +292,17 @@ KiB of BLAS, Sponza's 105 primitives (264487 triangles) into 18350 KiB, in
 | Edge | Ordered by |
 | --- | --- |
 | CPU writes this slot's instances -> this frame's TLAS build | the slot's fence, then the submit's host-write guarantee |
-| earlier frames' ray queries (fragment, AS read) and builds (TLAS and scratch writes) -> this frame's build | a global barrier `RayTracingScene::recordTopLevelBuild` records first |
-| this frame's build -> its ray queries | the render graph: `RayTracingSceneBuild` declares `AccelerationStructureBuild` on the TLAS storage buffer, and `MainHDRPass`, `MainHDRPhase2` and `TransparentPass` declare `AccelerationStructureRead` |
-| an earlier frame's build -> the ray queries of a frame that keeps the TLAS | the graph's barrier on the frame that built it, whose second scope is every later command on the queue; the keeping frame declares the reads alone, which as the structure's first use in the frame emit nothing, and the next build's entry barrier waits for them |
+| earlier frames' ray queries (fragment and compute, AS read) and builds (TLAS and scratch writes) -> this frame's build | a global barrier `RayTracingScene::recordTopLevelBuild` records first |
+| this frame's build -> its ray queries | the render graph: `RayTracingSceneBuild` declares `AccelerationStructureBuild` on the TLAS storage buffer; `RayTracedShadowMask` declares `AccelerationStructureComputeRead`, whose scope names the compute and the fragment stage; `MainHDRPass`, `MainHDRPhase2` and `TransparentPass` declare `AccelerationStructureRead` |
+| an earlier frame's build -> the ray queries of a frame that keeps the TLAS | the graph's barrier on the frame that built it, whose second scope is the stages it names in every later command: the fragment stage, and the compute stage when the mask traced that frame. The frame the mask turns on rebuilds (`rayTracedShadowMaskNeedsFreshBuild`), so a keeping frame never reads in a stage its build's barrier did not name. The keeping frame declares the reads alone, which as the structure's first use in the frame emit nothing, and the next build's entry barrier waits for them |
+| depth prepass writes -> the mask's depth reads -> the main pass's depth test | the graph: `DepthPrepass` writes main depth, `RayTracedShadowMask` reads it (`DEPTH_READ_ONLY_OPTIMAL`), `MainHDRPass` takes it back as an attachment |
+| the mask's storage writes -> the main shader's reads | the graph: `GENERAL` to `SHADER_READ_ONLY_OPTIMAL`, compute to fragment |
+| the previous frame's mask reads -> this frame's mask writes | the graph's first-use barrier, whose source is the layout the image ended the previous frame in |
 | mesh upload (transfer) -> BLAS build | a barrier at the top of the startup build, whose first scope reaches back over the earlier upload submissions on the same queue |
 | earlier frames' refit reads of the skinned positions -> this frame's pre-skin writes | the same entry barrier, which names the compute stage as a destination |
 | pre-skin writes -> refit reads | a barrier inside `RayTracingSkinnedCaster::record` |
-| refit -> TLAS build, and -> the rays | a global barrier after the refit |
-| startup BLAS builds -> the rays | the entry barrier, which names the fragment stage as a destination |
+| refit -> TLAS build, and -> the rays | a global barrier after the refit, naming the compute and fragment stages |
+| startup BLAS builds -> the rays | the entry barrier, which names the compute and fragment stages as destinations |
 
 The second edge is explicit because the graph rebuilds buffer state every frame
 and so has nothing to order a frame's first write against -- the same situation
@@ -326,6 +335,27 @@ no barrier on the TLAS buffer -- while `MainHDRPass`, `MainHDRPhase2` and the
 skinned draw run as before: four frames of `--scene default
 --freeze-animation` record one build, then three frames without one.
 
+**The mask found a second hole, and this one is in how the graph orders reads.**
+A read after a read gets no barrier, whatever stage it is in, so only the first
+reader after a write is ordered against it. Until the mask, every ray was in the
+fragment stage and that never mattered. With the mask first, the graph's barrier
+after the build named the compute stage alone -- an `api_dump` of the first
+version shows `ACCELERATION_STRUCTURE_BUILD` to `COMPUTE_SHADER` in front of the
+mask and nothing in front of `MainHDRPass` -- which left the main pass's own rays
+unordered against the build. The mask's access names the fragment stage as well,
+since on a frame it traces it is always that first reader, and the same dump now
+shows `ACCELERATION_STRUCTURE_BUILD` to `FRAGMENT_SHADER | COMPUTE_SHADER`.
+`tests/test_render_graph.cpp` pins the scope. The general fix, a graph that
+tracks the stages each write has been made visible to, is not made here; see
+[render_graph.md](render_graph.md).
+
+The same dump shows the edges the mask adds and nothing else changed: the entry
+barrier's first scope and both destinations now include `COMPUTE_SHADER`, the
+mask image goes `UNDEFINED` to `GENERAL` on its first frame and
+`SHADER_READ_ONLY_OPTIMAL` to `GENERAL` on every later one, and four frames of
+`--scene sunlit --freeze-animation` record one build and then three frames that
+dispatch the mask with no acceleration-structure barrier at all.
+
 Everything runs on the graphics queue. The asynchronous cluster passes never
 read the TLAS, so no queue-family ownership is involved.
 
@@ -335,9 +365,23 @@ read the TLAS, so no queue-family ownership is involved.
   record address as a uvec2, then the `kRtShadowFlag*` word) at offset 624 and
   `rayTracedShadowParams` (normal offset, offset per unit of distance, ray
   length) at 640. Pinned by `static_assert` in `RendererInternal.h`.
-- **The flag word** is `kRtShadowFlagEnabled`, `kRtShadowFlagDebugVisibility`
-  and `kRtShadowFlagDebugCompareCascades`, mirrored in
-  `object_frame_data.glsl` and pinned by `tools/check_shader_constants.py`.
+- **The flag word** is `kRtShadowFlagEnabled`, `kRtShadowFlagDebugVisibility`,
+  `kRtShadowFlagDebugCompareCascades`, `kRtShadowFlagScreenMask` and
+  `kRtShadowFlagDebugMaskSource`, mirrored in `object_frame_data.glsl` and
+  pinned by `tools/check_shader_constants.py`.
+- **The shadow mask** is set 0 binding 17 in the ray-query variant, a
+  `usampler2D` read with `texelFetch`: x is the visibility's float bits, y the
+  depth bits it was traced at. `kRtMaskNotTraced` (-1) marks a texel with no
+  surface to trace from, and `kRtMaskBackFacingBias` (+2) one traced from a
+  surface facing away from the sun; both live in `ray_traced_shadows.glsl`, which
+  both shaders include and nothing on the CPU reads. The dispatch's workgroup,
+  `kRtMaskLocalSize`, is paired with C++ by the checker.
+- **The mask dispatch** pushes two addresses, the sub-rect, its reciprocal and
+  the inverse jittered view-projection (`RayTracedShadowMaskPushConstants`, 96
+  bytes, offsets pinned by `static_assert` and by the shader interface golden).
+- **The trace itself** lives once, in `ray_traced_shadow_trace.glsl`, and takes
+  the frame-constants and object-data addresses as arguments, so the mask and the
+  inline fallback cannot drift apart.
 - **The vertex layout** the alpha test reads by address, `kRtVertexStrideFloats`
   and `kRtVertexUvOffsetFloats`, is pinned against `renderer::Vertex` by
   `static_assert` and against the shader by the same checker.
@@ -364,8 +408,9 @@ while the raster pass drew whichever level the cull chose, and under
 screen-space error selection that level is at most `lod.maxErrorPixels` off level
 0 on screen. The renderer adds that budget to `pixelFootprintOffset` and turns
 the sum into world units per unit of distance
-(`rayTracedShadowOffsetPerDistance`). Where nothing faces the sun the ray is
-skipped, because the term it produces multiplies zero.
+(`rayTracedShadowOffsetPerDistance`). In the fragment shader, where nothing
+faces the sun the ray is skipped, because the term it produces multiplies zero;
+the mask traces those pixels anyway (below).
 
 The ray is as long as the diagonal of the world bounds of everything drawn this
 frame (`rayTracedShadowRayLength`). The first version stopped it at the camera's
@@ -376,6 +421,60 @@ from a visible receiver would have been missed.
 
 The shadow is hard: one ray toward a light with no extent.
 
+## The screen-space mask
+
+`RayTracedShadowMask` is a compute pass between `DepthPrepass` and `MainHDRPass`
+that traces one ray for every pixel the prepass drew and writes the answer to an
+image the main pass reads. It turns per-fragment work into per-pixel work, and
+it is what a soft shadow needs: a filter has to see the visibility before
+anything is shaded with it.
+
+It runs when the frame traces, the prepass ran, the mask is available -- its
+pipeline exists, main depth can be sampled and is 32-bit float, and the
+bindless heap is there for the cutout test -- and
+`rayTracedShadows.screenSpaceMask` is on (`rayTracedShadowMaskActive`).
+Otherwise every fragment traces inline, as before the mask.
+
+**What it traces from.** Each pixel's position is the prepass depth unprojected
+through the inverse of the jittered view-projection the prepass rasterised with,
+so it is the surface point the main pass shades at that pixel. Its normal comes
+from depth too, because the prepass has no fragment shader and no colour target
+by design ([design_decisions.md](design_decisions.md)): along each axis the
+position difference towards whichever neighbour is closer in depth, so a
+silhouette takes its tangent from its own surface, crossed and turned towards the
+camera. The ray is then exactly the inline one -- the same function, the same
+offsets -- from that position and normal.
+
+**Which fragments may read it.** A texel holds the visibility and the depth bits
+it was traced at. The main pass uses it only when its fragment's depth is
+exactly those bits. The prepass drew opaque and cutout geometry, and the main
+pass tests `LESS_OR_EQUAL` against it with the same positions, so a fragment of
+a surface the prepass drew has exactly the depth it wrote, and everything else
+-- the skinned mesh, phase-two rescues, blended surfaces, cutouts when the heap
+is missing -- is strictly in front of it and traces inline. No draw needs a flag.
+
+**Surfaces facing away from the sun.** The mask traces them too. The first
+version left them untraced, reasoning that they are dark, and on Sponza that
+sent 35.9% of the lit fragments to the inline fallback: a normal map tilts the
+shading normal of a wall just past the sun's horizon back towards it, so the
+main pass still needs the term. A ray from such a surface starts on its far side
+and usually stops on the first triangle it tests, its own. But one case is not
+the mask's to answer: the terminator of a smooth-shaded surface, where the face
+faces away while the vertex normal still faces the sun. There the inline ray,
+offset along the vertex normal, is the one that matches the shading, and the
+mask's answer differed on a band as bright as delta 159 on `--scene sunlit`. So
+those texels are marked, and a fragment uses one only when its own vertex
+normal faces away as well.
+
+**How much it covers**, by the mask-source debug view (Debug, frame 30 of a
+fixed-step run, 1280x720, exposure pinned):
+
+| Scene | Fragments the mask answers | Lit fragments still traced inline |
+| --- | --- | --- |
+| default | 88.9% of the frame | 3.78% -- the skinned tube and the two blended panels |
+| stress | 67.5% (the rest is sky) | 0.20% |
+| Sponza | 99.0% | 0.10% |
+
 ## Debug views and settings
 
 | Setting | Default | |
@@ -383,15 +482,17 @@ The shadow is hard: one ray toward a light with no extent.
 | `rayTracedShadows.enabled` | false | |
 | `rayTracedShadows.renderCascades` | false | keep drawing the cascades while tracing |
 | `rayTracedShadows.rebuildEveryFrame` | false | rebuild the TLAS and refit the skinned BLAS on every traced frame, as before change detection; the A/B control and the image control for it |
+| `rayTracedShadows.screenSpaceMask` | true | trace the mask ahead of the main pass; off, every fragment traces inline -- the A/B control for the mask |
 | `rayTracedShadows.normalOffset` | 0.02 | world units, clamped to [0, 1] |
 | `rayTracedShadows.pixelFootprintOffset` | 1.0 | pixels, clamped to [0, 16] |
 | `rayTracedShadows.debugVisibility` | false | the traced term alone, white lit |
 | `rayTracedShadows.debugCompareCascades` | false | red where only the ray finds an occluder, blue where only the cascades do; wins over the visibility view |
+| `rayTracedShadows.debugMaskSource` | false | green where the mask answered and an inline ray from the fragment agrees, magenta where it does not, blue where the fragment traces inline, grey where it faces away and traces nothing; wins over both views above |
 
 The CI sweep renders it enabled (cascades skipped), enabled with both debug
 views, `renderCascades` and `rebuildEveryFrame`, enabled on a still scene
-(`--freeze-animation`, which keeps the TLAS), and enabled with `--disable-ray-query`
-(`config/ci/`). Mesa's lavapipe exposes all three extensions, so the first two
+(`--freeze-animation`, which keeps the TLAS), enabled with the mask off and its
+source view on, and enabled with `--disable-ray-query` (`config/ci/`). Mesa's lavapipe exposes all three extensions, so the first two
 run the traced path in CI, under validation.
 
 ## Verification
@@ -408,6 +509,24 @@ backstop.
 | enabled, against disabled, default scene | 7026 pixels differ before the skinned caster, max channel delta 10 |
 | enabled, keeping the TLAS, against `rebuildEveryFrame` and against the build before change detection: `--scene default`, `sunlit` and `stress`, animated and frozen, and Sponza (Release) animated and frozen | 0/921600 pixels differ in every one; the frozen scenes and both Sponza runs keep the structure on 39 of 40 frames, the animated scenes rebuild all 40 |
 | the same animated scenes with the detection broken to build and refit only once | 3903 (default), 10847 (sunlit) and 206 (stress) pixels differ: a stale structure shows |
+
+The mask against the inline path it replaces, each traced with the other's
+setting the only change (Debug with validation and `--sync-validation`, exposure
+pinned; Sponza from `build/debug`, which has the asset). Zero validation errors,
+zero sync hazards and a clean backstop in all twelve runs:
+
+| Scene | Pixels differing | by more than 2 | by more than 8 | Max delta |
+| --- | --- | --- | --- | --- |
+| default | 47 | 47 | 25 | 11 |
+| sunlit | 1084 | 41 | 37 | 52 |
+| stress | 171 | 129 | 66 | 21 |
+| Sponza | 43 | 12 | 0 | 6 |
+
+Sunlit's small differences are bloom spreading its 41 real ones. Where the real
+ones sit is what the reconstructed normal predicts: silhouettes, contact points
+where a sphere meets the floor, the one-pixel bars of the cutout lattice -- each
+a depth discontinuity the normal is taken across -- and the last pixels of a
+terminator.
 
 Unpinned, the no-caster comparison also differed by single steps scattered over
 the frame: auto-exposure follows total scene luminance, and any change in shadow
@@ -473,4 +592,11 @@ under that isolation differ from the traced image on 1000 pixels rather than
   It sits where `N.L` is near zero, so it is barely visible in the shaded image
   on these scenes.
 - **Alpha tests at texture level 0,** where the cascades sample a mip.
+- **The mask's normal is the face normal from depth.** Where depth is
+  discontinuous within a pixel's neighbourhood -- silhouettes, contact points,
+  one-pixel cutout bars -- it is approximate, and the mask and the inline ray
+  can disagree there (the table above). The prepass could write the shading
+  normal instead, at the price of the fragment work it exists to avoid.
+- **The mask needs a 32-bit float depth format,** the depth prepass and the
+  bindless heap; without any of them every fragment traces inline.
 - **Synchronization validation is blind to it,** as above.

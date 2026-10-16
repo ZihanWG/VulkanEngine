@@ -176,6 +176,11 @@ Buffer declarations use existing buffer-oriented `RGAccess` values such as:
   passes that trace against it ([ray_traced_shadows.md](ray_traced_shadows.md)).
   Adding them found that the write mask had no acceleration-structure write bit,
   which made a build followed by a trace look like two reads and emit nothing.
+- `AccelerationStructureComputeRead`, the same read from the ray-traced shadow
+  mask's compute pass. Its scope names the fragment stage as well as the compute
+  stage, because it is the first trace after the build and the main pass's
+  fragment-stage rays come next with no barrier of their own (see the read-after-
+  read limitation below).
 
 At pass begin, the graph maps buffer accesses to conservative Synchronization2 buffer barriers. It tracks the previous stage/access for each imported buffer during the frame and emits full-buffer barriers when a declared pass-to-pass dependency includes a write-after-read, read-after-write, or write-after-write hazard. Read-after-read usage does not emit a barrier.
 
@@ -444,7 +449,7 @@ sequenced by the graph from end to end.
 | `recordVolumetricFogPass` | `VolumetricFogPass` |
 | `recordIrradianceProbePasses` | `ProbeCapture` |
 | `recordRayTracingSceneBuild` | `RayTracingSceneBuild` |
-| `recordMainPassGeometry` | `MainHDRPass` |
+| `recordMainPassGeometry` | `MainHDRPass`; it also records `DepthPrepass` and `RayTracedShadowMask` ahead of it |
 | the seven post-process recorders | `DepthPyramidPass` … `CompositePass` |
 | screenshot copies and the ImGui overlay | `ImGuiPass` |
 
@@ -1031,6 +1036,14 @@ the default.
   is **off by default** (`enableTransientAliasing`). See "Transient memory
   aliasing" below.
 - No resource pooling overhaul.
+- A read after a read emits no barrier, whatever its stage. Only the first reader
+  after a write is ordered against it, so a buffer written and then read in two
+  different stages leaves the second reader unordered unless the first reader's
+  declared scope already names its stage. The ray-traced shadow mask is the one
+  case that hit it -- its compute read precedes the main pass's fragment read of
+  the same structure -- and its access names both stages for that reason
+  ([ray_traced_shadows.md](ray_traced_shadows.md#synchronization)). The general
+  fix is to track, per buffer, the stages each write has been made visible to.
 - Transient scene/bloom resources and persistent TAA history resources are graph-described but still physically allocated by `Renderer`.
 - Intra-pass sequencing remains manual, and always will: the graph emits at pass
   boundaries, so a buffer filled, dispatched against, copied and made
