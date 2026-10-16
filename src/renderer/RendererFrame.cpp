@@ -1779,7 +1779,9 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     bool transformsMoved = false;
     {
         const ScopedCpuTimer timer = cpuScope(CpuScope::AnimatedTransforms);
-        transformsMoved = updateAnimatedTransforms(elapsedSeconds);
+        // Frozen: the objects keep the transforms the scene was built with,
+        // and nothing invalidates the depth pyramid on their account.
+        transformsMoved = sceneAnimationFrozen_ ? false : updateAnimatedTransforms(elapsedSeconds);
     }
     if (transformsMoved) {
         invalidateDepthPyramid();
@@ -1843,6 +1845,15 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     // and folding its cost into frame prep would make the numbers it exists to
     // inform unreadable.
     analyzeMeshletCulling(cameraFrustum);
+    // Before the object data upload, which writes FrameConstants and so the flag
+    // this latches. After buildDrawItems, whose frameDataIndex values become the
+    // instances' custom indices.
+    frameRayTracedShadowsActive_ = rayTracedShadowSettings_.enabled && rayQueryShadingAvailable() &&
+                                   rayTracingScene_.ready() && !allDrawItems_.empty();
+    if (frameRayTracedShadowsActive_) {
+        const ScopedCpuTimer timer = cpuScope(CpuScope::RayTracingInstances);
+        writeRayTracingInstances(frameIndex);
+    }
     {
         const ScopedCpuTimer timer = cpuScope(CpuScope::ObjectFrameDataUpload);
         uploadObjectFrameData(frameIndex);
@@ -1901,6 +1912,9 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         // it fall back to the fill.
         irradianceProbes_.clearCaptureBatch();
     }
+
+    // After the probe batch above, which is one of the readers this asks about.
+    frameCascadesReplacedByRayTracing_ = frameRayTracedShadowsActive_ && !cascadeShadowMapReadBeyondMainPass();
 }
 
 // Called from drawFrame after command recording: both the object-data upload and
@@ -1944,6 +1958,8 @@ void Renderer::resetFrameStateForEmptyScene(uint32_t frameIndex)
     frameClusterConsumerStages_ = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
     frameSsrActive_ = false;
     frameGtaoActive_ = false;
+    frameRayTracedShadowsActive_ = false;
+    frameCascadesReplacedByRayTracing_ = false;
     frameProbeCaptureActive_ = false;
     irradianceProbes_.clearCaptureBatch();
     // Same reasoning as the cache flags above: this path never runs buildDrawItems,
@@ -2466,7 +2482,107 @@ void Renderer::uploadFrameConstants(uint32_t frameIndex, uint32_t cascadeCount)
         constants.vsmPageTable.w |= 8u;
     }
 
+    // Ray-traced sun shadows. The flag word is zero on every frame that does not
+    // trace, which is what keeps the ray-query fragment shader on the shadow-map
+    // path -- the same contract as the VSM flag above.
+    if (frameRayTracedShadowsActive_) {
+        const VkDeviceAddress geometryTable = rayTracingScene_.geometryTableAddress(frameIndex);
+        uint32_t flags = renderer::kRtShadowFlagEnabled;
+        if (rayTracedShadowSettings_.debugVisibility) {
+            flags |= renderer::kRtShadowFlagDebugVisibility;
+        }
+        if (rayTracedShadowSettings_.debugCompareCascades) {
+            flags |= renderer::kRtShadowFlagDebugCompareCascades;
+        }
+        constants.rayTracedShadow = glm::uvec4(static_cast<uint32_t>(geometryTable & 0xFFFFFFFFull),
+                                               static_cast<uint32_t>(geometryTable >> 32),
+                                               flags,
+                                               0u);
+        // The LOD budget only bounds the drawn level's error under screen-space
+        // selection; the radius rule has no pixel bound to add.
+        const float lodErrorPixels =
+            (lodSettings_.enabled && lodSettings_.screenSpaceError) ? lodSettings_.maxErrorPixels : 0.0f;
+        // The ray length is the scene's extent, not the camera's far plane: see
+        // renderer::rayTracedShadowRayLength.
+        constants.rayTracedShadowParams =
+            glm::vec4(rayTracedShadowSettings_.normalOffset,
+                      renderer::rayTracedShadowOffsetPerDistance(rayTracedShadowSettings_.pixelFootprintOffset,
+                                                                 lodErrorPixels,
+                                                                 camera_.verticalFovRadians,
+                                                                 renderResolution_.extent().height),
+                      frameRayTracedShadowRayLength_,
+                      0.0f);
+    }
+
     frameConstantsBuffers_.at(frameIndex).upload(std::as_bytes(std::span<const FrameConstants>(&constants, 1)));
+}
+
+bool Renderer::isRayTracedShadowActive() const
+{
+    return frameRayTracedShadowsActive_;
+}
+
+bool Renderer::cascadeShadowMapReadBeyondMainPass() const
+{
+    // Everything that samples the cascade array other than the main fragment
+    // shader, which traces instead on a frame that traces. The transparent pass
+    // and the skinned draw run that same shader, and the non-bindless one never
+    // traces, so none of them appear here.
+    return rayTracedShadowSettings_.renderCascades || isVolumetricFogActive() || frameProbeCaptureActive_ ||
+           rayTracedShadowSettings_.debugCompareCascades || vsmSettings_.debugCascadeDepthDelta;
+}
+
+// One instance per draw item that casts, in draw-item order. The cascades'
+// caster rules, applied to the same list: blended items cast nothing, cutouts
+// cast what their alpha test keeps, and the debug caster isolation narrows the
+// set exactly as it narrows the cascades' -- which is what makes it usable as a
+// negative control for this path too.
+void Renderer::writeRayTracingInstances(uint32_t frameIndex)
+{
+    rayTracingInstanceInputs_.clear();
+    rayTracingInstanceInputs_.reserve(allDrawItems_.size());
+    // Every drawn item, casting or not: blended surfaces and isolated-out objects
+    // still receive, so the ray length has to reach from them as well.
+    renderer::Aabb sceneBounds{};
+    for (const DrawItem& drawItem : allDrawItems_) {
+        if (drawItem.objectIndex < frameWorldBounds_.size() && frameWorldBounds_[drawItem.objectIndex].valid()) {
+            sceneBounds.merge(frameWorldBounds_[drawItem.objectIndex]);
+        }
+    }
+    if (skinnedCasterActive()) {
+        sceneBounds.merge(skinnedMesh_.worldBounds());
+    }
+    frameRayTracedShadowRayLength_ = renderer::rayTracedShadowRayLength(sceneBounds);
+
+    for (const DrawItem& drawItem : allDrawItems_) {
+        const renderer::RayTracedCasterKind kind = renderer::rayTracedCasterKind(drawItem.bucket);
+        if (kind == renderer::RayTracedCasterKind::None || drawItem.mesh == nullptr ||
+            drawItem.objectIndex >= frameModelMatrices_.size() || isShadowCasterIsolatedOut(drawItem.objectIndex)) {
+            continue;
+        }
+        renderer::RayTracingInstanceInput input{};
+        input.mesh = drawItem.mesh;
+        input.firstIndex = drawItem.firstIndex;
+        input.indexCount = drawItem.indexCount;
+        input.model = frameModelMatrices_[drawItem.objectIndex];
+        input.frameDataIndex = drawItem.frameDataIndex;
+        input.kind = kind;
+        rayTracingInstanceInputs_.push_back(input);
+    }
+    // The skinned mesh casts under exactly the cascades' condition for it, and
+    // like its cascade caster it is not narrowed by the caster isolation, which
+    // selects render objects and it is not one. Opaque: its material has no
+    // alpha test. Its object record is the reserved last slot.
+    if (skinnedCasterActive() && rayTracingScene_.hasSkinned()) {
+        renderer::RayTracingInstanceInput skinned{};
+        skinned.skinned = true;
+        skinned.jointPalette = skinnedMesh_.jointPaletteAddress(frameIndex);
+        skinned.model = skinnedMesh_.modelMatrix();
+        skinned.frameDataIndex = kSkinnedObjectFrameSlot;
+        skinned.kind = renderer::RayTracedCasterKind::Opaque;
+        rayTracingInstanceInputs_.push_back(skinned);
+    }
+    rayTracingScene_.writeInstances(frameIndex, rayTracingInstanceInputs_);
 }
 
 } // namespace ve

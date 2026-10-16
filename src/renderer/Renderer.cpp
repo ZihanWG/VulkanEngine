@@ -174,6 +174,7 @@ Renderer::Renderer(Window& window, const RendererStartupOverrides& overrides) : 
     rhi::VulkanContextOptions contextOptions{};
     contextOptions.synchronizationValidation = overrides.synchronizationValidation;
     contextOptions.portabilityFallbacks = overrides.portabilityFallbacks;
+    contextOptions.disableRayQuery = overrides.disableRayQuery;
     context_.initialize(window_, shaderDirectory(), contextOptions);
 
     // Startup-only, and read here rather than from the settings struct because
@@ -189,6 +190,9 @@ Renderer::Renderer(Window& window, const RendererStartupOverrides& overrides) : 
     updateRenderResolution();
     imguiLayer_.initialize(
         window_, context_, swapchain_.colorFormat(), swapchain_.imageCount(), defaultDebugUiLayoutPath());
+    // Before the material set layout and the pipelines: both are built
+    // differently when the TLAS exists, and only this decides whether it does.
+    createRayTracingScene();
     createMaterialDescriptorSetLayout();
     createBindlessMaterialTextureHeap();
     createSkyboxDescriptorSetLayout();
@@ -251,6 +255,9 @@ Renderer::Renderer(Window& window, const RendererStartupOverrides& overrides) : 
                  (isBindlessMaterialTextureActive() ? ", bindless: one shared environment set)" : ", per material)"));
     assetLoadStats_.timings.sceneCreateMs =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - sceneCreateStart).count();
+    // Outside sceneCreateMs, which the asset-load baseline compares across
+    // machines that have no ray query at all.
+    buildRayTracingBottomLevel();
     createObjectFrameDataBuffers();
     clusteredLighting_.create(context_,
                               static_cast<uint32_t>(frames_.size()),
@@ -266,6 +273,7 @@ Renderer::Renderer(Window& window, const RendererStartupOverrides& overrides) : 
             context_, commandContext_, static_cast<uint32_t>(frames_.size()), assetPath("models/skinned_rig.gltf"))) {
         skinnedMesh_.create(context_, commandContext_, static_cast<uint32_t>(frames_.size()));
     }
+    createRayTracingSkinnedCaster();
     createIndirectDrawBuffers();
     createShadowIndirectDrawBuffers();
     createGpuCullingResources();
@@ -1192,6 +1200,8 @@ const char* Renderer::cpuScopeName(CpuScope scope)
         return "main culling frame data";
     case CpuScope::ObjectFrameDataUpload:
         return "object frame data upload";
+    case CpuScope::RayTracingInstances:
+        return "ray tracing instances";
     case CpuScope::Count:
         break;
     }
@@ -1335,6 +1345,20 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
 
     const double now = frameClock_.elapsedSeconds();
     if (now - lastGpuTimingPrintSeconds_ < 1.0) {
+        // Between the once-a-second blocks, a frame's timings only: no CPU
+        // breakdown and no culling report, which would make the log an order of
+        // magnitude larger for numbers nothing samples per frame. The full block
+        // below covers its own frame, so each frame is printed exactly once.
+        if (gpuTimingsEveryFrame_) {
+            std::ostringstream frameBlock;
+            frameBlock << std::fixed << std::setprecision(3) << "GPU timings:\n"
+                       << "  elapsed: " << now << " s\n"
+                       << "  Frame total: " << results.totalGpuTimeMs << " ms\n";
+            for (const renderer::GpuProfiler::ScopeResult& scope : results.scopes) {
+                frameBlock << "  " << scope.name << ": " << scope.elapsedMs << " ms\n";
+            }
+            Logger::info(frameBlock.str());
+        }
         return;
     }
 
@@ -1346,7 +1370,11 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
     emitOverdrawReadout(frameIndex);
 
     std::ostringstream message;
+    // The elapsed stamp is how tools/dev/measure_gpu.py discards its warm-up
+    // when blocks no longer arrive one a second. Seconds, not "ms", so it is
+    // never mistaken for a scope.
     message << std::fixed << std::setprecision(3) << "GPU timings:\n"
+            << "  elapsed: " << now << " s\n"
             << "  Frame total: " << results.totalGpuTimeMs << " ms\n";
     // CPU frame preparation next to the GPU frame total, because the pair is the
     // question -- prep that is comfortably inside the GPU frame is hidden, and
@@ -1901,6 +1929,15 @@ void Renderer::logImageMemoryAliasingProbe()
     }
 }
 
+void Renderer::freezeSceneAnimation()
+{
+    sceneAnimationFrozen_ = true;
+    animateLights_ = false;
+    animateSkinnedMesh_ = false;
+    Logger::info("Scene animation frozen by --freeze-animation: the demo lights, the skinned pose and animated "
+                 "object transforms hold their starting state; the frame clock still runs.");
+}
+
 void Renderer::useDeterministicFrameClock(double stepSeconds)
 {
     frameClock_.useFixedStep(stepSeconds);
@@ -2238,6 +2275,12 @@ void Renderer::applyRuntimeSettings(const RuntimeSettings& settings, RuntimeSett
         virtualShadowMap_.invalidateResidency();
     }
 
+    // Whole-struct and outside the startup/runtime split: it owns no resource.
+    // Availability is decided per frame (isRayTracedShadowActive), so the
+    // setting can be on while the device cannot honour it, and a settings file
+    // carried to a machine without ray query keeps its value.
+    rayTracedShadowSettings_ = settings.rayTracedShadows;
+
     // Outside the startup/runtime split: it owns no resource, so toggling it
     // mid-run just starts or stops the poll.
     shaderHotReloadEnabled_ = settings.enableShaderHotReload;
@@ -2316,6 +2359,7 @@ RuntimeSettings Renderer::captureRuntimeSettings() const
     settings.gi = giSettings_;
     settings.csm = csmSettings_;
     settings.vsm = vsmSettings_;
+    settings.rayTracedShadows = rayTracedShadowSettings_;
     settings.debugUi = debugUiSettings_;
     settings.enableTransientAliasing = useTransientAliasing_;
     settings.useGpuCulling = useGpuCulling_;
@@ -2643,6 +2687,7 @@ void Renderer::clampRuntimeSettings()
                              lodSettings_,
                              giSettings_,
                              debugUiSettings_);
+    ve::clampRayTracedShadowSettings(rayTracedShadowSettings_);
 
     // Pushed here rather than at each edit site: clampRuntimeSettings runs after
     // every settings change (load, UI edit, reset), so the volume's copy of the

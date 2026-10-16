@@ -105,6 +105,24 @@ std::array<VkVertexInputAttributeDescription, 5> vertexAttributeDescriptions()
     return attributes;
 }
 
+namespace {
+
+// Vertex and index buffers double as acceleration-structure build input when
+// the device has ray query: the BLAS build reads them by device address, and
+// the shadow ray's alpha test reads UVs and indices out of them the same way
+// (renderer/RayTracingScene.h). Only then -- the build-input usage bit belongs
+// to an extension a device without ray query was not created with.
+[[nodiscard]] VkBufferUsageFlags geometryBufferUsage(const rhi::VulkanContext& context, VkBufferUsageFlags usage)
+{
+    if (context.rayQueryEnabled()) {
+        usage |=
+            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    }
+    return usage;
+}
+
+} // namespace
+
 Mesh Mesh::createCube(rhi::VulkanContext& context,
                       const rhi::VulkanCommandContext& commandContext,
                       bool buildMeshletTable,
@@ -118,11 +136,13 @@ Mesh Mesh::createCube(rhi::VulkanContext& context,
         mesh.localBounds_.expand(vertex.position);
     }
 
+    mesh.vertexCount_ = static_cast<uint32_t>(geometry.vertices.size());
     mesh.vertexBuffer_.createDeviceLocal(
         context,
         commandContext,
         std::as_bytes(std::span<const Vertex>(geometry.vertices.data(), geometry.vertices.size())),
-        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        geometryBufferUsage(context, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT),
+        context.rayQueryEnabled());
 
     mesh.indexCount_ = static_cast<uint32_t>(geometry.indices.size());
 
@@ -157,7 +177,8 @@ Mesh Mesh::createCube(rhi::VulkanContext& context,
     mesh.indexBuffer_.createDeviceLocal(context,
                                         commandContext,
                                         std::as_bytes(std::span<const uint32_t>(indices.data(), indices.size())),
-                                        VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+                                        geometryBufferUsage(context, VK_BUFFER_USAGE_INDEX_BUFFER_BIT),
+                                        context.rayQueryEnabled());
 
     return mesh;
 }
@@ -179,10 +200,12 @@ Mesh Mesh::createUvSphere(rhi::VulkanContext& context,
         mesh.localBounds_.expand(vertex.position);
     }
 
+    mesh.vertexCount_ = static_cast<uint32_t>(vertices.size());
     mesh.vertexBuffer_.createDeviceLocal(context,
                                          commandContext,
                                          std::as_bytes(std::span<const Vertex>(vertices.data(), vertices.size())),
-                                         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+                                         geometryBufferUsage(context, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT),
+                                         context.rayQueryEnabled());
 
     mesh.indexCount_ = static_cast<uint32_t>(indices.size());
     mesh.lods_ = buildLodChain(indices,
@@ -206,7 +229,8 @@ Mesh Mesh::createUvSphere(rhi::VulkanContext& context,
     mesh.indexBuffer_.createDeviceLocal(context,
                                         commandContext,
                                         std::as_bytes(std::span<const uint32_t>(indices.data(), indices.size())),
-                                        VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+                                        geometryBufferUsage(context, VK_BUFFER_USAGE_INDEX_BUFFER_BIT),
+                                        context.rayQueryEnabled());
 
     rhi::debug::setObjectName(
         context.vkDevice(), mesh.vertexBuffer_.buffer(), VK_OBJECT_TYPE_BUFFER, "PortfolioSphereVertexBuffer");
@@ -229,16 +253,19 @@ Mesh Mesh::createFromGeometry(rhi::VulkanContext& context,
     mesh.meshletRangesPerLod_ = std::move(geometry.meshletRangesPerLod);
     mesh.localBounds_ = geometry.localBounds;
 
+    mesh.vertexCount_ = static_cast<uint32_t>(geometry.vertices.size());
     mesh.vertexBuffer_.createDeviceLocal(
         context,
         commandContext,
         std::as_bytes(std::span<const Vertex>(geometry.vertices.data(), geometry.vertices.size())),
-        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        geometryBufferUsage(context, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT),
+        context.rayQueryEnabled());
     mesh.indexBuffer_.createDeviceLocal(
         context,
         commandContext,
         std::as_bytes(std::span<const uint32_t>(geometry.indices.data(), geometry.indices.size())),
-        VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+        geometryBufferUsage(context, VK_BUFFER_USAGE_INDEX_BUFFER_BIT),
+        context.rayQueryEnabled());
 
     const std::string debugName(debugNamePrefix);
     rhi::debug::setObjectName(

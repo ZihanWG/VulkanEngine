@@ -1,0 +1,71 @@
+#version 460
+
+#extension GL_EXT_buffer_reference : require
+
+// Skins the demo mesh's vertex positions into a buffer the skinned BLAS is built
+// and refitted from (docs/ray_traced_shadows.md). The raster passes skin in their
+// vertex stage and keep nothing; a ray needs the deformed triangles to exist in
+// memory, so this writes them out once per frame that traces.
+//
+// The same linear blend as simple_skinned.vert, from the same palette half
+// (this frame's, at [0, kMaxSkinJoints)), so the shadow a ray finds is the pose
+// the main pass draws. Everything is reached by device address; the pipeline has
+// no descriptor sets.
+
+#include "joint_palette.glsl"
+#include "ray_traced_shadows.glsl"
+
+layout(local_size_x = kRtPreSkinLocalSize) in;
+
+// renderer::Vertex as raw floats; only the position is read.
+layout(buffer_reference, std430) readonly buffer PreSkinSourceVertices {
+    float values[];
+};
+
+// Mirrors renderer::SkinningVertex (32 bytes).
+struct PreSkinWeights {
+    uvec4 jointIndices;
+    vec4 weights;
+};
+layout(buffer_reference, std430) readonly buffer PreSkinWeightBuffer {
+    PreSkinWeights vertices[];
+};
+
+layout(buffer_reference, std430) writeonly buffer PreSkinPositions {
+    float values[];
+};
+
+// Mirrors ve::renderer::RayTracingPreSkinPushConstants.
+layout(push_constant) uniform PreSkinPushConstants {
+    PreSkinSourceVertices sourceVertices;
+    PreSkinWeightBuffer skinning;
+    JointPalette jointPalette;
+    PreSkinPositions skinnedPositions;
+    uint vertexCount;
+} pc;
+
+void main()
+{
+    uint vertexIndex = gl_GlobalInvocationID.x;
+    if (vertexIndex >= pc.vertexCount) {
+        return;
+    }
+
+    uint source = vertexIndex * kRtVertexStrideFloats;
+    vec4 position = vec4(pc.sourceVertices.values[source],
+                         pc.sourceVertices.values[source + 1u],
+                         pc.sourceVertices.values[source + 2u],
+                         1.0);
+
+    PreSkinWeights influence = pc.skinning.vertices[vertexIndex];
+    mat4 skinMatrix = influence.weights.x * pc.jointPalette.jointMatrices[influence.jointIndices.x] +
+                      influence.weights.y * pc.jointPalette.jointMatrices[influence.jointIndices.y] +
+                      influence.weights.z * pc.jointPalette.jointMatrices[influence.jointIndices.z] +
+                      influence.weights.w * pc.jointPalette.jointMatrices[influence.jointIndices.w];
+    vec3 skinned = (skinMatrix * position).xyz;
+
+    uint destination = vertexIndex * kRtSkinnedPositionStrideFloats;
+    pc.skinnedPositions.values[destination] = skinned.x;
+    pc.skinnedPositions.values[destination + 1u] = skinned.y;
+    pc.skinnedPositions.values[destination + 2u] = skinned.z;
+}

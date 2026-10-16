@@ -17,6 +17,8 @@
 // needs and passes the answer in as a bool. That keeps this in a translation
 // unit the headless tests already link.
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string_view>
@@ -40,6 +42,12 @@ struct OptionalExtensionRequest {
     bool featuresSupported = true;
     // What path this unlocks. Reported, never part of the decision.
     std::string_view purpose;
+    // The run asked for this path to stay off -- a startup flag such as
+    // --disable-ray-query, which puts the fallback in reach of a device that
+    // could take the real path. Refused like any other refusal, so dependents
+    // come down with it, but reported under its own reason: "the device cannot"
+    // and "this run chose not to" lead to different conclusions.
+    bool declined = false;
 };
 
 enum class ExtensionDecision : uint8_t {
@@ -50,6 +58,8 @@ enum class ExtensionDecision : uint8_t {
     DependencyUnavailable,
     // It exists, but the caller's feature predicate said no.
     FeaturesUnsupported,
+    // It exists, but the request said to leave it off.
+    Declined,
 };
 
 struct ExtensionOutcome {
@@ -79,5 +89,45 @@ selectOptionalExtensions(std::span<const std::string_view> available,
 
 // Stable spelling for logs and test failure messages.
 [[nodiscard]] const char* extensionDecisionName(ExtensionDecision decision);
+
+// --- Ray query ---------------------------------------------------------------
+//
+// The rows a ray query path needs, as a function rather than a literal in
+// VulkanDevice.cpp, so the table the device is actually created from is the one
+// the tests exercise. Vulkan's chain: ray query needs acceleration structures,
+// which need deferred host operations. Its other dependencies (SPIR-V 1.4,
+// descriptor indexing, buffer device address) are Vulkan 1.2 core, and this
+// renderer refuses anything below 1.3.
+//
+// Spelled as literals because this unit is Vulkan-free; VulkanDevice.cpp pins
+// each against its VK_*_EXTENSION_NAME macro with a static_assert.
+inline constexpr std::string_view kDeferredHostOperationsExtensionName = "VK_KHR_deferred_host_operations";
+inline constexpr std::string_view kAccelerationStructureExtensionName = "VK_KHR_acceleration_structure";
+inline constexpr std::string_view kRayQueryExtensionName = "VK_KHR_ray_query";
+
+// The two feature bits the path needs, as the device reports them. Both false
+// when the extension is absent: the feature struct is only queried for an
+// extension the device exposes.
+struct RayQueryFeatureSupport {
+    // VkPhysicalDeviceAccelerationStructureFeaturesKHR::accelerationStructure
+    bool accelerationStructure = false;
+    // VkPhysicalDeviceRayQueryFeaturesKHR::rayQuery
+    bool rayQuery = false;
+};
+
+inline constexpr size_t kRayQueryExtensionRequestCount = 3;
+
+// Every row carries `declined` when the run asked for ray query to stay off.
+// All three rather than only the top one, so the device is created exactly as
+// one without ray tracing would be -- leaving acceleration structures enabled
+// and unused would make the fallback run differ from the real one in a way
+// nothing reports.
+[[nodiscard]] std::array<OptionalExtensionRequest, kRayQueryExtensionRequestCount>
+rayQueryExtensionRequests(RayQueryFeatureSupport features, bool declined);
+
+// Whether the ray query path survived selection. Asks for both extensions by
+// name rather than trusting propagation alone, so an outcome list that came
+// from some other table cannot report a path whose dependency is missing.
+[[nodiscard]] bool rayQueryEnabled(std::span<const ExtensionOutcome> outcomes);
 
 } // namespace ve::rhi

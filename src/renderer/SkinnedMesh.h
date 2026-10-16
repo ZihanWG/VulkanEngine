@@ -90,6 +90,24 @@ public:
     {
         return indexCount_;
     }
+    [[nodiscard]] uint32_t vertexCount() const
+    {
+        return vertexCount_;
+    }
+    // Zero unless the device has ray query, which is the only reason the
+    // streams are created addressable (see buildBuffers).
+    [[nodiscard]] VkDeviceAddress geometryBufferAddress() const
+    {
+        return geometryBuffer_.deviceAddress();
+    }
+    [[nodiscard]] VkDeviceAddress skinningBufferAddress() const
+    {
+        return skinningBuffer_.deviceAddress();
+    }
+    [[nodiscard]] VkDeviceAddress indexBufferAddress() const
+    {
+        return indexBuffer_.deviceAddress();
+    }
     [[nodiscard]] uint32_t jointCount() const
     {
         return static_cast<uint32_t>(skeleton_.jointCount());
@@ -139,6 +157,7 @@ private:
     rhi::VulkanBuffer geometryBuffer_;
     rhi::VulkanBuffer skinningBuffer_;
     rhi::VulkanBuffer indexBuffer_;
+    uint32_t vertexCount_ = 0;
     uint32_t indexCount_ = 0;
     // Per frame slot, 2 * kMaxJoints matrices: this frame's palette, then the
     // previous frame's (see kSkinPreviousPaletteOffset).

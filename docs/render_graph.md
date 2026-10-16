@@ -171,6 +171,11 @@ Buffer declarations use existing buffer-oriented `RGAccess` values such as:
 - `TransferSrc`
 - `TransferDst`
 - `HostRead`
+- `AccelerationStructureBuild` and `AccelerationStructureRead`, declared on a
+  top-level acceleration structure's storage buffer by the build and by the
+  passes that trace against it ([ray_traced_shadows.md](ray_traced_shadows.md)).
+  Adding them found that the write mask had no acceleration-structure write bit,
+  which made a build followed by a trace look like two reads and emit nothing.
 
 At pass begin, the graph maps buffer accesses to conservative Synchronization2 buffer barriers. It tracks the previous stage/access for each imported buffer during the frame and emits full-buffer barriers when a declared pass-to-pass dependency includes a write-after-read, read-after-write, or write-after-write hazard. Read-after-read usage does not emit a barrier.
 
@@ -423,7 +428,7 @@ result is exactly the order the passes were declared in — handing the order to
 the graph changes nothing about what runs or when. What it changes is who
 decides, and a unit test pins that the two still agree.
 
-`Renderer::recordRenderCommands` is now a list of seventeen recorders handed to
+`Renderer::recordRenderCommands` is now a list of recorders handed to
 `RenderGraph::recordScheduledUnits`, and nothing else: `beginFrame`, the units,
 `endFrame`. It went from ~980 lines to ~160, and the frame it describes is
 sequenced by the graph from end to end.
@@ -438,6 +443,7 @@ sequenced by the graph from end to end.
 | fog volume first-use clear | *none* |
 | `recordVolumetricFogPass` | `VolumetricFogPass` |
 | `recordIrradianceProbePasses` | `ProbeCapture` |
+| `recordRayTracingSceneBuild` | `RayTracingSceneBuild` |
 | `recordMainPassGeometry` | `MainHDRPass` |
 | the seven post-process recorders | `DepthPyramidPass` … `CompositePass` |
 | screenshot copies and the ImGui overlay | `ImGuiPass` |

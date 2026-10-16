@@ -30,6 +30,7 @@
 #include "renderer/MeshLod.h"
 #include "renderer/ObjectTransformCache.h"
 #include "renderer/PostProcessStack.h"
+#include "renderer/RayTracingScene.h"
 #include "renderer/RenderGraph.h"
 #include "renderer/RenderObject.h"
 #include "renderer/RenderResolution.h"
@@ -139,6 +140,10 @@ struct RendererStartupOverrides {
     // Run on the paths MoltenVK takes by default. Device-creation policy; see
     // rhi::VulkanContextOptions::portabilityFallbacks.
     bool portabilityFallbacks = false;
+
+    // Create the device without ray query. Device-creation policy; see
+    // rhi::VulkanContextOptions::disableRayQuery.
+    bool disableRayQuery = false;
 };
 
 // Whether this build carries the fetched sample scene, and what to do when it
@@ -162,6 +167,12 @@ public:
     void drawFrame();
     void handleEvent(const SDL_Event& event);
     void waitIdle();
+
+    // Holds the demo lights, the skinned pose and animated object transforms at
+    // their starting state for the rest of the run. The frame clock keeps
+    // running, so exposure still adapts; only what the scene contains stops
+    // changing. See LaunchOptions::freezeAnimation.
+    void freezeSceneAnimation();
 
     // Builds one of the startup scene presets. The individual loaders are
     // private because they are ImGui button handlers; this is the one entry
@@ -242,6 +253,13 @@ public:
     void setOverdrawReadoutEnabled(bool enabled)
     {
         overdrawReadoutEnabled_ = enabled;
+    }
+
+    // A "GPU timings:" block for every frame rather than once a second
+    // (--gpu-timings-every-frame). See LaunchOptions::gpuTimingsEveryFrame.
+    void setGpuTimingsEveryFrame(bool enabled)
+    {
+        gpuTimingsEveryFrame_ = enabled;
     }
 
     // Yaw the camera around its target by this much every frame
@@ -417,6 +435,7 @@ private:
         CascadeShadowCache,
         MainCullingFrameData,
         ObjectFrameDataUpload,
+        RayTracingInstances,
         Count
     };
     static constexpr size_t kCpuScopeCount = static_cast<size_t>(CpuScope::Count);
@@ -876,6 +895,42 @@ private:
     }
     // Records the page-marking dispatch inside the graph's declared pass.
     void recordVsmPageMarkPass(VkCommandBuffer commandBuffer);
+
+    // --- Ray-traced sun shadows (docs/ray_traced_shadows.md) ---
+    //
+    // The TLAS, its scratch and its per-frame buffers. Before the material
+    // descriptor set layout, which gains binding 16 only when this succeeds,
+    // and before the pipelines, which pick the ray-query fragment shader on the
+    // same condition. A failure here is logged and leaves the device's ray query
+    // unused rather than ending startup.
+    void createRayTracingScene();
+    // One BLAS per mesh primitive. After createScene, the one point at which
+    // every mesh the renderer will ever draw exists.
+    void buildRayTracingBottomLevel();
+    // The skinned mesh as a caster: its positions buffer, BLAS storage and
+    // pre-skin pipeline. After the skinned mesh is created. A failure is logged
+    // and leaves the static scene tracing without it.
+    void createRayTracingSkinnedCaster();
+    // Whether the shading pipelines were built with the ray-query fragment
+    // shader. Requires the TLAS and the bindless path, the only one that traces.
+    [[nodiscard]] bool rayQueryShadingAvailable() const
+    {
+        return rayTracingScene_.hasTopLevel() && isBindlessMaterialTextureActive();
+    }
+    // The bindless fragment shader, or its ray-query variant when the pipelines
+    // can trace. Both main pipelines and the transparent one share it.
+    [[nodiscard]] std::filesystem::path bindlessFragmentShaderPath() const;
+    // Whether this frame traces sun shadow rays. Latched in frame prep, where
+    // the instances are written, and read by the FrameConstants upload, the
+    // graph declaration and the recorder, which must all agree.
+    [[nodiscard]] bool isRayTracedShadowActive() const;
+    void writeRayTracingInstances(uint32_t frameIndex);
+    // Whether anything besides the main pass reads the cascaded shadow map this
+    // frame: fog injection, probe capture, the ray-traced comparison view, the
+    // VSM cascade-depth view, or the setting that keeps them on purpose. While
+    // tracing, the cascades are skipped exactly when this is false.
+    [[nodiscard]] bool cascadeShadowMapReadBeyondMainPass() const;
+    void recordRayTracingSceneBuild(VkCommandBuffer commandBuffer);
     // Drops the depth of pages whose casters moved, before residency decides
     // what to draw. Without it a moved object leaves its shadow behind: the page
     // keeps its identity and its physical page, so nothing else notices.
@@ -1393,6 +1448,7 @@ private:
     // Frame-clock seconds, so the periodic diagnostics sample the same frame
     // numbers on every deterministic run instead of drifting with machine speed.
     double lastGpuTimingPrintSeconds_ = 0.0;
+    bool gpuTimingsEveryFrame_ = false;
     double lastExposureLogPrintSeconds_ = 0.0;
     std::chrono::steady_clock::time_point lastFrameStartTime_ = std::chrono::steady_clock::now();
     std::array<glm::vec4, 6> frameFrustumPlanes_{};
@@ -1698,6 +1754,8 @@ private:
     // Procedural skinned bone-chain demo: draw it, and animate (vs hold bind pose).
     bool showSkinnedMesh_ = true;
     bool animateSkinnedMesh_ = true;
+    // Set once by freezeSceneAnimation; never cleared.
+    bool sceneAnimationFrozen_ = false;
     float skinnedAnimationSpeed_ = 1.0f;
     float skinnedAnimationTime_ = 0.0f;   // accumulated playback time (scaled by speed)
     float previousElapsedSeconds_ = 0.0f; // for the per-frame delta
@@ -1763,6 +1821,13 @@ private:
     VkPipelineStageFlags2 frameClusterConsumerStages_ = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
     bool frameSsrActive_ = false;
     bool frameGtaoActive_ = false;
+    bool frameRayTracedShadowsActive_ = false;
+    // This frame traces and nothing else reads the cascades, so they are not
+    // drawn. Gates the cascade pass's declaration and its recording, which have
+    // to agree, and leaves the cascade cache's resident keys alone: the image
+    // still holds what they describe, so turning tracing off redraws only what
+    // changed meanwhile.
+    bool frameCascadesReplacedByRayTracing_ = false;
     // Whether this frame captures probes. Latched during frame prep alongside
     // the batch it refers to, because the graph declaration and the recording
     // have to agree and choosing the batch advances the round-robin cursor.
@@ -1854,6 +1919,16 @@ private:
     // Virtual shadow map page marking. Reads the depth pyramid, so it follows it
     // in declaration order for the same reason gpuCulling_ does.
     renderer::VirtualShadowMapPass virtualShadowMap_{context_, depthPyramid_, gpuProfiler_};
+
+    // Ray-traced sun shadows. The scene holds its own copy of every mesh's
+    // geometry once built, so it does not depend on the meshes outliving it.
+    renderer::RayTracingScene rayTracingScene_;
+    RayTracedShadowSettings rayTracedShadowSettings_{};
+    // Reused every frame so writing the instances does not allocate.
+    std::vector<renderer::RayTracingInstanceInput> rayTracingInstanceInputs_;
+    // This frame's shadow-ray length, from the union of every drawn item's world
+    // bounds (renderer::rayTracedShadowRayLength). Written with the instances.
+    float frameRayTracedShadowRayLength_ = renderer::kRtFallbackRayLength;
 };
 
 } // namespace ve

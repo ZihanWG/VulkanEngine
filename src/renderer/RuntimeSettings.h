@@ -549,6 +549,46 @@ struct VsmSettings {
     [[nodiscard]] bool operator==(const VsmSettings&) const = default;
 };
 
+// Ray-traced sun shadows (docs/ray_traced_shadows.md). The main pass asks the
+// scene's acceleration structure whether the sun is visible instead of reading
+// the cascades or the virtual shadow map.
+//
+// Needs a device with ray query and the bindless shading path; on anything else
+// the setting is kept and ignored, and the shadow-map path it would have
+// replaced keeps running.
+struct RayTracedShadowSettings {
+    bool enabled = false;
+    // Keep rendering the cascades on frames that trace. Off, they are skipped
+    // whenever nothing but the main pass would read them -- fog, probe capture
+    // and the cascade-reading debug views all still bring them back -- so this
+    // exists for the A/B that separates what tracing costs from what skipping
+    // the cascades saves.
+    bool renderCascades = false;
+    // Ray origin offset along the surface normal, in world units, at any
+    // distance. What keeps a flat surface from hitting itself.
+    float normalOffset = 0.02f;
+    // A further offset of this many pixels' world footprint at the fragment's
+    // distance, on top of the LOD selection's own error budget, which the
+    // renderer adds by itself (renderer::rayTracedShadowOffsetPerDistance).
+    // Rays see every mesh at level 0 while the raster pass may have drawn a
+    // coarser level, so without it a distant simplified surface shadows itself
+    // against its own detailed version.
+    float pixelFootprintOffset = 1.0f;
+    // Writes the ray-traced visibility on its own, white lit and black shadowed.
+    bool debugVisibility = false;
+    // Colours each pixel by agreement with the cascades: red where only the ray
+    // finds an occluder, blue where only the cascades do. Wins over
+    // debugVisibility when both are on.
+    bool debugCompareCascades = false;
+
+    [[nodiscard]] bool operator==(const RayTracedShadowSettings&) const = default;
+};
+
+// Clamped on its own rather than inside clampRuntimeSettings, whose parameter
+// list is one struct per subsystem and already thirteen long; the renderer
+// calls both from the same place.
+void clampRayTracedShadowSettings(RayTracedShadowSettings& settings);
+
 // Ceiling for RuntimeSettings::framesInFlight. Lives here rather than in
 // rhi/VulkanCommon.h because the setting it bounds lives here, and this header
 // is deliberately Vulkan-free so the clamp and its tests stay device-free -- the
@@ -572,6 +612,7 @@ struct RuntimeSettings {
     PunctualShadowSettings punctualShadows;
     CsmSettings csm;
     VsmSettings vsm;
+    RayTracedShadowSettings rayTracedShadows;
     LodSettings lod;
     GiSettings gi;
     DebugUiSettings debugUi;

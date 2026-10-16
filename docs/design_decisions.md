@@ -453,7 +453,8 @@ shared constants and the round-trip test are the guard against drift.
 **Decision.** Optional device extensions go through a request table resolved by a
 pure function, `selectOptionalExtensions` in `src/rhi/DeviceExtensionSelection.h`,
 which returns one outcome per request saying whether it was taken and, if not,
-which of the four reasons applied. `VulkanDevice` evaluates whatever
+which reason applied: the device does not expose it, a dependency was refused,
+a feature the caller checked is unsupported, or the run declined it. `VulkanDevice` evaluates whatever
 `VkPhysicalDevice*Features` predicate a row needs and passes the answer in as a
 bool, so the policy itself names no Vulkan type and is exercised headless by
 `tests/test_device_extension_selection.cpp`.
@@ -475,6 +476,17 @@ on how the table happens to be written is one that changes when somebody regroup
 it for readability. There is a test that runs the same table forwards and
 backwards and asserts the decisions match.
 
+The first rows to use the chain are ray query's. `rayQueryExtensionRequests`
+returns them -- deferred host operations, acceleration structures, ray query --
+so the table the device is created from is the one the tests run, and
+`VulkanDevice` chains the two feature structs into device creation only when
+both extensions survived. `--disable-ray-query` declines all three rows rather
+than the top one, so an RTX run can reproduce a device without ray tracing
+exactly instead of one with acceleration structures enabled and unused. A
+decline is its own outcome: "the device cannot" and "this run chose not to"
+send a reader to different places, and an extension the device lacks is still
+reported as absent, since declining it changed nothing.
+
 Moving portability_subset onto the table also made it slightly more correct. The
 spec requires it to be enabled whenever the device exposes it, which is a property
 of the driver, not of the host OS; asking the device instead of the compiler
@@ -487,26 +499,36 @@ half is what the renderer does instead:
 
 ```
 Device capability report:
-  bindless material textures : on  -- descriptor indexing, with update-after-bind
-  multi-draw indirect        : on  -- object data indexed by firstInstance
-  indirect draw count        : on  -- vkCmdDrawIndexedIndirectCount, max 4294967295
-  layered cascade shadows    : on  -- multiview, one pass for all cascades
-  independent blend          : on  -- per-attachment blend state
-  async compute queue        : on  -- dedicated compute-only family 2
-  transfer queue             : on  -- dedicated DMA family 1
-  VK_KHR_portability_subset  : off -- not exposed by the device; required by portability-layer drivers such as MoltenVK
+  bindless material textures      : on  -- descriptor indexing, with update-after-bind
+  multi-draw indirect             : on  -- object data indexed by firstInstance
+  indirect draw count             : on  -- vkCmdDrawIndexedIndirectCount, max 4294967295
+  layered cascade shadows         : on  -- multiview, one pass for all cascades
+  independent blend               : on  -- per-attachment blend state
+  anisotropic filtering           : on  -- 16x on material samplers
+  pipeline statistics             : on  -- fragment invocation counting for --overdraw
+  async compute queue             : on  -- dedicated compute-only family 2
+  transfer queue                  : on  -- dedicated DMA family 1
+  ray query                       : on  -- acceleration structures, max 16777215 instances, scratch alignment 128
+  VK_KHR_portability_subset       : off -- not exposed by the device; required by portability-layer drivers such as MoltenVK
+  VK_KHR_deferred_host_operations : on  -- enabled; required by VK_KHR_acceleration_structure
+  VK_KHR_acceleration_structure   : on  -- enabled; bottom- and top-level acceleration structures
+  VK_KHR_ray_query                : on  -- enabled; ray queries from fragment shaders
 ```
+
+That is an RTX 3080 Ti Laptop. With `--disable-ray-query` the three extension
+rows read `declined by a startup flag`; on the Intel UHD 770 in the same
+machine they read `not exposed by the device`.
 
 A single `Logger::warn` follows when any row is off, so a degraded run stays
 greppable at one level the way the individual warn lines used to be.
 
-**Trade-offs.** Nine capability booleans still live as separate members and
+**Trade-offs.** The capability booleans still live as separate members and
 getters on `VulkanDevice`, so adding a *feature* fallback is still three edits.
 Only the extension half is table-driven. The report is also the third place a
 capability is spelled out, after the member and the getter, and nothing enforces
 that a new capability gets a row.
 
-**More time.** Fold the nine booleans into one `DeviceCapabilities` struct the
+**More time.** Fold the booleans into one `DeviceCapabilities` struct the
 report iterates, so a capability that is negotiated but not reported becomes a
 compile error rather than an omission. Timeline semaphores deliberately do not
 belong in this table: they are a mandatory Vulkan 1.2 core feature and the device

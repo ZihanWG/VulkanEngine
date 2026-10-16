@@ -83,10 +83,17 @@ enum class RGAccess {
     // "clears and writes" and none of their barriers covered the clear.
     StorageBufferClearAndReadWrite,
     IndirectRead,
-    HostRead
+    HostRead,
+    // A top-level acceleration structure build, declared on the structure's
+    // storage buffer: it writes the structure and reads what it was built from.
+    AccelerationStructureBuild,
+    // Ray queries against an acceleration structure from fragment shaders. The
+    // only tracing this renderer does is the main pass's sun shadow ray.
+    AccelerationStructureRead
 };
 
 enum class RenderPassType {
+    RayTracingSceneBuild,
     Shadow,
     ShadowGpuCulling,
     VsmPageMark,
@@ -507,6 +514,9 @@ struct RenderGraphFrameResources {
     RenderGraphBufferResource luminanceHistogram;
     RenderGraphBufferResource histogramReadback;
     RenderGraphBufferResource exposureState;
+    // The top-level acceleration structure's storage buffer. Imported only on
+    // frames that trace; see rayTracedShadowsEnabled.
+    RenderGraphBufferResource rayTracingTopLevel;
     bool taaEnabled = false;
     // Declares the two-phase occlusion passes (mid-frame depth pyramid, cull
     // phase 2, second main HDR pass) for this frame.
@@ -545,6 +555,11 @@ struct RenderGraphFrameResources {
     uint32_t vsmDirtyPageCount = 0;
     // Declares the volumetric fog compute pass for this frame.
     bool volumetricFogEnabled = false;
+    // Declares RayTracingSceneBuild and a read of the structure it builds on
+    // every pass that runs the main fragment shader. Exactly the condition the
+    // renderer sets its FrameConstants ray-tracing flag on, so a frame that
+    // traces always has the edge and a frame that does not has neither.
+    bool rayTracedShadowsEnabled = false;
     // Declares the probe-atlas update compute pass for this frame. The two
     // atlases are imported and read by the main pass whenever they exist, the
     // same asymmetry the punctual shadow atlas uses: a frame that updates no
@@ -644,6 +659,7 @@ struct RenderGraphUnitCost {
 // with a recorder factored out far enough to be invoked by the graph; the rest
 // of the frame is still recorded in place.
 enum class RenderGraphBuiltinPass {
+    RayTracingSceneBuild,
     VsmPageMark,
     Shadow,
     PunctualShadow,
@@ -755,6 +771,10 @@ public:
     void endProbeCapturePass();
     void beginMainGpuCullingPass();
     void endMainGpuCullingPass();
+    // The top-level acceleration structure rebuild. Neither graphics nor compute
+    // work in the dispatch sense, and recorded outside any rendering scope.
+    void beginRayTracingSceneBuildPass();
+    void endRayTracingSceneBuildPass();
     // The GPU shadow caster cull. Recorded inside the cascade shadow recorder,
     // ahead of the first cascade, which is why its declaration sits immediately
     // before CSMShadowPass: a declared order that disagrees with the recorded one
@@ -949,8 +969,13 @@ private:
     // Shared body of the per-cascade and layered shadow passes; viewMask == 0
     // selects the single-layer form.
     void beginShadowPassInternal(uint32_t cascadeLayer, uint32_t viewMask);
+    // Every pass that runs the main fragment shader declares this, because that
+    // shader is what traces: the main pass, the phase-2 re-draw and the
+    // transparent pass. Declares nothing on a frame that does not trace.
+    void declareRayTracedShadowRead(RenderGraphBuilder& builder);
     enum class ActivePass {
         None,
+        RayTracingSceneBuild,
         VsmPageMark,
         VsmPage,
         Shadow,
@@ -1042,6 +1067,7 @@ private:
     };
 
     struct BuiltinPassIndices {
+        uint32_t rayTracingSceneBuild = kInvalidRenderGraphHandle;
         uint32_t vsmPageMark = kInvalidRenderGraphHandle;
         uint32_t vsmPage = kInvalidRenderGraphHandle;
         uint32_t shadow = kInvalidRenderGraphHandle;
@@ -1133,6 +1159,7 @@ private:
         RGBufferHandle luminanceHistogram{};
         RGBufferHandle histogramReadback{};
         RGBufferHandle exposureState{};
+        RGBufferHandle rayTracingTopLevel{};
     };
 
     // The HDR target the post-process chain reads: the TAA resolve's output when

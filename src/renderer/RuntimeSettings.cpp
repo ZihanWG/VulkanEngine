@@ -44,6 +44,15 @@ void applyCsmSettings(const CsmSettings& incoming, CsmSettings& current, bool st
     }
 }
 
+void clampRayTracedShadowSettings(RayTracedShadowSettings& settings)
+{
+    // Zero is a real A/B point for both offsets: it is what shows the acne they
+    // exist to hide. The ceilings are far past anything useful and only keep a
+    // hand-edited file from pushing every ray origin out of the scene.
+    settings.normalOffset = std::clamp(settings.normalOffset, 0.0f, 1.0f);
+    settings.pixelFootprintOffset = std::clamp(settings.pixelFootprintOffset, 0.0f, 16.0f);
+}
+
 uint32_t clampFramesInFlight(uint32_t requested)
 {
     return std::clamp(requested, 1U, kMaxFramesInFlight);
@@ -539,6 +548,15 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readInt(*vsm, "debugOnlyCasterObject", settings.vsm.debugOnlyCasterObject);
     }
 
+    if (const Json* rayTraced = objectMember(json, "rayTracedShadows")) {
+        readBool(*rayTraced, "enabled", settings.rayTracedShadows.enabled);
+        readBool(*rayTraced, "renderCascades", settings.rayTracedShadows.renderCascades);
+        readFloat(*rayTraced, "normalOffset", settings.rayTracedShadows.normalOffset);
+        readFloat(*rayTraced, "pixelFootprintOffset", settings.rayTracedShadows.pixelFootprintOffset);
+        readBool(*rayTraced, "debugVisibility", settings.rayTracedShadows.debugVisibility);
+        readBool(*rayTraced, "debugCompareCascades", settings.rayTracedShadows.debugCompareCascades);
+    }
+
     if (const Json* gi = objectMember(json, "gi")) {
         readBool(*gi, "enabled", settings.gi.enabled);
         readBool(*gi, "debugPattern", settings.gi.debugPattern);
@@ -710,6 +728,13 @@ Json toJson(const RuntimeSettings& settings)
               {"debugDepthDelta", settings.vsm.debugDepthDelta},
               {"debugCascadeDepthDelta", settings.vsm.debugCascadeDepthDelta},
               {"debugOnlyCasterObject", settings.vsm.debugOnlyCasterObject}}},
+        {"rayTracedShadows",
+         Json{{"enabled", settings.rayTracedShadows.enabled},
+              {"renderCascades", settings.rayTracedShadows.renderCascades},
+              {"normalOffset", settings.rayTracedShadows.normalOffset},
+              {"pixelFootprintOffset", settings.rayTracedShadows.pixelFootprintOffset},
+              {"debugVisibility", settings.rayTracedShadows.debugVisibility},
+              {"debugCompareCascades", settings.rayTracedShadows.debugCompareCascades}}},
         {"gi",
          Json{{"enabled", settings.gi.enabled},
               {"debugPattern", settings.gi.debugPattern},

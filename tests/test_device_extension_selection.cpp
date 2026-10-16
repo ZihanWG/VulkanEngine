@@ -10,6 +10,9 @@ using ve::rhi::ExtensionDecision;
 using ve::rhi::extensionDecisionName;
 using ve::rhi::ExtensionOutcome;
 using ve::rhi::OptionalExtensionRequest;
+using ve::rhi::rayQueryEnabled;
+using ve::rhi::rayQueryExtensionRequests;
+using ve::rhi::RayQueryFeatureSupport;
 using ve::rhi::selectOptionalExtensions;
 
 namespace {
@@ -197,11 +200,12 @@ TEST_CASE("Every decision has a distinct spelling for the startup report")
 {
     // The report is the only place a user sees why a path is off, so two
     // decisions rendering identically would make it useless.
-    const std::array<ExtensionDecision, 4> decisions{
+    const std::array<ExtensionDecision, 5> decisions{
         ExtensionDecision::Enabled,
         ExtensionDecision::ExtensionUnavailable,
         ExtensionDecision::DependencyUnavailable,
         ExtensionDecision::FeaturesUnsupported,
+        ExtensionDecision::Declined,
     };
     for (size_t i = 0; i < decisions.size(); ++i) {
         CHECK(std::string_view(extensionDecisionName(decisions[i])).size() > 0);
@@ -210,4 +214,134 @@ TEST_CASE("Every decision has a distinct spelling for the startup report")
                   std::string_view(extensionDecisionName(decisions[j])));
         }
     }
+}
+
+TEST_CASE("A declined extension is refused for that reason and takes its dependents with it")
+{
+    static constexpr std::array<std::string_view, 1> kDeps{kAccelerationStructure};
+    const std::vector<ExtensionOutcome> outcomes =
+        select({kRayQuery, kAccelerationStructure},
+               {
+                   OptionalExtensionRequest{kAccelerationStructure, {}, true, "BLAS/TLAS", true},
+                   OptionalExtensionRequest{kRayQuery, kDeps, true, "ray-traced shadows"},
+               });
+
+    CHECK(outcomeFor(outcomes, kAccelerationStructure).decision == ExtensionDecision::Declined);
+    CHECK(outcomeFor(outcomes, kRayQuery).decision == ExtensionDecision::DependencyUnavailable);
+    CHECK(outcomeFor(outcomes, kRayQuery).blockedBy == kAccelerationStructure);
+}
+
+TEST_CASE("Absence outranks a decline, and a decline outranks an unsupported feature")
+{
+    // The report says what the device can do first. A decline on a device that
+    // never had the extension changed nothing, so it must not be what the report
+    // blames; and a run that declined a path never needed its features judged.
+    const std::vector<ExtensionOutcome> absent =
+        select({}, {OptionalExtensionRequest{kMeshShader, {}, true, "mesh shading path", true}});
+    CHECK(absent[0].decision == ExtensionDecision::ExtensionUnavailable);
+
+    const std::vector<ExtensionOutcome> unsupported =
+        select({kMeshShader}, {OptionalExtensionRequest{kMeshShader, {}, false, "mesh shading path", true}});
+    CHECK(unsupported[0].decision == ExtensionDecision::Declined);
+}
+
+// --- The ray query table VulkanDevice is created from ------------------------
+
+namespace {
+
+const std::vector<std::string_view> kAllRayQueryExtensions{kRayQuery, kAccelerationStructure, kDeferredHostOperations};
+
+std::vector<ExtensionOutcome>
+selectRayQuery(const std::vector<std::string_view>& available, RayQueryFeatureSupport features, bool declined)
+{
+    const auto requests = rayQueryExtensionRequests(features, declined);
+    return selectOptionalExtensions(available, requests);
+}
+
+} // namespace
+
+TEST_CASE("The ray query table names the extensions Vulkan chains together")
+{
+    // The literals in DeviceExtensionSelection.h are pinned to the VK_* macros in
+    // VulkanDevice.cpp; this pins the chain itself: ray query on acceleration
+    // structures, acceleration structures on deferred host operations.
+    CHECK(ve::rhi::kRayQueryExtensionName == kRayQuery);
+    CHECK(ve::rhi::kAccelerationStructureExtensionName == kAccelerationStructure);
+    CHECK(ve::rhi::kDeferredHostOperationsExtensionName == kDeferredHostOperations);
+
+    const auto requests = rayQueryExtensionRequests({true, true}, false);
+    for (const OptionalExtensionRequest& request : requests) {
+        if (request.name == kRayQuery) {
+            REQUIRE(request.dependencies.size() == 1);
+            CHECK(request.dependencies[0] == kAccelerationStructure);
+        } else if (request.name == kAccelerationStructure) {
+            REQUIRE(request.dependencies.size() == 1);
+            CHECK(request.dependencies[0] == kDeferredHostOperations);
+        } else {
+            CHECK(request.name == kDeferredHostOperations);
+            CHECK(request.dependencies.empty());
+        }
+    }
+}
+
+TEST_CASE("A device with every extension and both features takes the ray query path")
+{
+    const std::vector<ExtensionOutcome> outcomes = selectRayQuery(kAllRayQueryExtensions, {true, true}, false);
+
+    REQUIRE(outcomes.size() == ve::rhi::kRayQueryExtensionRequestCount);
+    for (const ExtensionOutcome& outcome : outcomes) {
+        CHECK(outcome.decision == ExtensionDecision::Enabled);
+    }
+    CHECK(rayQueryEnabled(outcomes));
+}
+
+TEST_CASE("Declining ray query refuses all three extensions, not only the top one")
+{
+    // The run is meant to create the device as one without ray tracing would be,
+    // so acceleration structures must not stay enabled and unused underneath.
+    const std::vector<ExtensionOutcome> outcomes = selectRayQuery(kAllRayQueryExtensions, {true, true}, true);
+
+    for (const ExtensionOutcome& outcome : outcomes) {
+        CHECK(outcome.decision == ExtensionDecision::Declined);
+    }
+    CHECK_FALSE(rayQueryEnabled(outcomes));
+}
+
+TEST_CASE("A missing deferred-host-operations extension takes the ray query path down")
+{
+    const std::vector<ExtensionOutcome> outcomes =
+        selectRayQuery({kRayQuery, kAccelerationStructure}, {true, true}, false);
+
+    CHECK(outcomeFor(outcomes, kAccelerationStructure).decision == ExtensionDecision::DependencyUnavailable);
+    CHECK(outcomeFor(outcomes, kRayQuery).decision == ExtensionDecision::DependencyUnavailable);
+    CHECK_FALSE(rayQueryEnabled(outcomes));
+}
+
+TEST_CASE("Each feature bit refuses its own row, and the path, by name")
+{
+    const std::vector<ExtensionOutcome> noAcceleration = selectRayQuery(kAllRayQueryExtensions, {false, true}, false);
+    CHECK(outcomeFor(noAcceleration, kAccelerationStructure).decision == ExtensionDecision::FeaturesUnsupported);
+    CHECK(outcomeFor(noAcceleration, kRayQuery).decision == ExtensionDecision::DependencyUnavailable);
+    CHECK(outcomeFor(noAcceleration, kRayQuery).blockedBy == kAccelerationStructure);
+    CHECK_FALSE(rayQueryEnabled(noAcceleration));
+
+    const std::vector<ExtensionOutcome> noRayQuery = selectRayQuery(kAllRayQueryExtensions, {true, false}, false);
+    CHECK(outcomeFor(noRayQuery, kRayQuery).decision == ExtensionDecision::FeaturesUnsupported);
+    CHECK_FALSE(rayQueryEnabled(noRayQuery));
+}
+
+TEST_CASE("The ray query path needs both extensions by name, not ray query alone")
+{
+    // An outcome list from some other table that enabled ray query without its
+    // dependency must not read as a usable path.
+    const std::vector<ExtensionOutcome> rayQueryOnly{
+        ExtensionOutcome{kRayQuery, ExtensionDecision::Enabled, "", ""},
+    };
+    CHECK_FALSE(rayQueryEnabled(rayQueryOnly));
+
+    const std::vector<ExtensionOutcome> both{
+        ExtensionOutcome{kAccelerationStructure, ExtensionDecision::Enabled, "", ""},
+        ExtensionOutcome{kRayQuery, ExtensionDecision::Enabled, "", ""},
+    };
+    CHECK(rayQueryEnabled(both));
 }

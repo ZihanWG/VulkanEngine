@@ -110,7 +110,7 @@ void Renderer::destroyShadowCompareSampler()
 void Renderer::createMaterialDescriptorSetLayout()
 {
     createShadowCompareSampler();
-    std::array<VkDescriptorSetLayoutBinding, 16> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 17> bindings{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[0].descriptorCount = 1;
@@ -221,8 +221,19 @@ void Renderer::createMaterialDescriptorSetLayout()
     // and binding 7 is the punctual (spot/point) shadow atlas. The per-slot
     // projections that go with binding 7 ride the BDA path, not a descriptor.
     // Object MVP/model/light/material data stays on the BDA + vertex push constant path.
-    materialDescriptorSetLayout_.create(
-        context_.vkDevice(), std::span<const VkDescriptorSetLayoutBinding>(bindings.data(), bindings.size()));
+    // The scene's top-level acceleration structure, for the main pass's sun
+    // shadow rays. Present only when createRayTracingScene succeeded: the
+    // descriptor type belongs to an extension a device without ray query was not
+    // created with, so the layout cannot even name it there. Only the ray-query
+    // variant of simple_bindless.frag declares it.
+    bindings[16].binding = 16;
+    bindings[16].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+    bindings[16].descriptorCount = 1;
+    bindings[16].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    const size_t bindingCount = rayTracingScene_.hasTopLevel() ? 17 : 16;
+
+    materialDescriptorSetLayout_.create(context_.vkDevice(),
+                                        std::span<const VkDescriptorSetLayoutBinding>(bindings.data(), bindingCount));
     rhi::debug::setObjectName(context_.vkDevice(),
                               materialDescriptorSetLayout_.handle(),
                               VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
@@ -474,6 +485,82 @@ void Renderer::logPipelineStoreContents() const
     }
 }
 
+std::filesystem::path Renderer::bindlessFragmentShaderPath() const
+{
+    // The ray-query variant whenever the pipelines can trace, whether or not
+    // this frame does: tracing is gated by a uniform branch on a FrameConstants
+    // flag, so turning ray-traced shadows on or off never rebuilds a pipeline.
+    return rayQueryShadingAvailable() ? shaderPath("simple_bindless_rq.frag.spv")
+                                      : shaderPath("simple_bindless.frag.spv");
+}
+
+void Renderer::createRayTracingScene()
+{
+    if (!context_.rayQueryEnabled()) {
+        return;
+    }
+    try {
+        rayTracingScene_.createTopLevel(context_, static_cast<uint32_t>(frames_.size()), kMaxDrawItems);
+        const renderer::RayTracingSceneStats& stats = rayTracingScene_.stats();
+        Logger::info("Ray-traced shadows: top-level acceleration structure for " + std::to_string(kMaxDrawItems) +
+                     " instances, " + std::to_string(stats.topLevelBytes / 1024) + " KiB, scratch " +
+                     std::to_string(stats.scratchBytes / 1024) + " KiB.");
+    } catch (const std::exception& error) {
+        rayTracingScene_.destroy();
+        Logger::warn(std::string("Ray-traced shadows are unavailable; the shadow maps stay in use: ") + error.what());
+    }
+}
+
+void Renderer::buildRayTracingBottomLevel()
+{
+    if (!rayTracingScene_.hasTopLevel()) {
+        return;
+    }
+    // Every mesh a RenderObject can point at. The presets all draw the built-in
+    // cube and sphere, and the sample scene is imported at startup only, so this
+    // list is complete for the renderer's lifetime. The skinned mesh is not on it:
+    // its vertices move every frame and need a refit, which is the next step.
+    std::vector<const renderer::Mesh*> meshes{&cubeMesh_, &portfolioSphereMesh_};
+    meshes.reserve(meshes.size() + importedMeshes_.size());
+    for (const renderer::Mesh& mesh : importedMeshes_) {
+        meshes.push_back(&mesh);
+    }
+
+    try {
+        rayTracingScene_.buildBottomLevel(commandContext_, meshes);
+        const renderer::RayTracingSceneStats& stats = rayTracingScene_.stats();
+        std::ostringstream message;
+        message << "Ray-traced shadows: built " << stats.bottomLevelCount << " bottom-level acceleration structures ("
+                << stats.bottomLevelTriangles << " triangles, " << (stats.bottomLevelBytes / 1024) << " KiB) in "
+                << std::fixed << std::setprecision(1) << stats.bottomLevelBuildMs << " ms.";
+        Logger::info(message.str());
+    } catch (const std::exception& error) {
+        // The TLAS stays: its descriptor is already in the material set and the
+        // pipelines were built to read it. Nothing traces without ready().
+        Logger::warn(std::string("Ray-traced shadows are unavailable; the bottom-level build failed: ") + error.what());
+    }
+}
+
+void Renderer::createRayTracingSkinnedCaster()
+{
+    if (!rayTracingScene_.ready() || !skinnedMesh_.valid()) {
+        return;
+    }
+    renderer::RayTracingSkinnedSource source{};
+    source.vertices = skinnedMesh_.geometryBufferAddress();
+    source.skinning = skinnedMesh_.skinningBufferAddress();
+    source.indices = skinnedMesh_.indexBufferAddress();
+    source.vertexCount = skinnedMesh_.vertexCount();
+    source.indexCount = skinnedMesh_.indexCount();
+    try {
+        rayTracingScene_.createSkinned(source, shaderPath("skin_positions.comp.spv"));
+        Logger::info("Ray-traced shadows: skinned caster ready (" + std::to_string(source.vertexCount) + " vertices, " +
+                     std::to_string(source.indexCount / 3) + " triangles), refitted per frame.");
+    } catch (const std::exception& error) {
+        Logger::warn(std::string("Ray-traced shadows: the skinned mesh will not cast; ") + error.what());
+    }
+}
+
 void Renderer::createMainGraphicsPipeline()
 {
     const VkVertexInputBindingDescription binding = renderer::vertexBindingDescription();
@@ -493,7 +580,7 @@ void Renderer::createMainGraphicsPipeline()
     rhi::VulkanPipelineCreateInfo pipelineInfo{};
     pipelineInfo.vertexShaderPath = shaderPath("simple.vert.spv");
     pipelineInfo.fragmentShaderPath =
-        bindlessMaterialTexturesActive ? shaderPath("simple_bindless.frag.spv") : shaderPath("simple.frag.spv");
+        bindlessMaterialTexturesActive ? bindlessFragmentShaderPath() : shaderPath("simple.frag.spv");
     pipelineInfo.colorFormat = kSceneColorFormat;
     pipelineInfo.colorFormats = std::span<const VkFormat>(mainPassColorFormats.data(), mainPassColorFormats.size());
     pipelineInfo.depthFormat = swapchain_.depthFormat();
@@ -717,7 +804,7 @@ void Renderer::createSkinnedPipeline()
 
     rhi::VulkanPipelineCreateInfo pipelineInfo{};
     pipelineInfo.vertexShaderPath = shaderPath("simple_skinned.vert.spv");
-    pipelineInfo.fragmentShaderPath = shaderPath("simple_bindless.frag.spv");
+    pipelineInfo.fragmentShaderPath = bindlessFragmentShaderPath();
     pipelineInfo.colorFormat = kSceneColorFormat;
     pipelineInfo.colorFormats = std::span<const VkFormat>(mainPassColorFormats.data(), mainPassColorFormats.size());
     pipelineInfo.depthFormat = swapchain_.depthFormat();
@@ -766,7 +853,7 @@ void Renderer::createTransparentPipeline()
 
     rhi::VulkanPipelineCreateInfo pipelineInfo{};
     pipelineInfo.vertexShaderPath = shaderPath("simple.vert.spv");
-    pipelineInfo.fragmentShaderPath = shaderPath("simple_bindless.frag.spv");
+    pipelineInfo.fragmentShaderPath = bindlessFragmentShaderPath();
     pipelineInfo.colorFormat = kSceneColorFormat;
     pipelineInfo.colorFormats =
         std::span<const VkFormat>(transparentColorFormats.data(), transparentColorFormats.size());
@@ -1323,8 +1410,9 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
         throw std::runtime_error("Cannot create a material descriptor set without a valid BRDF LUT texture.");
     }
 
-    // Twelve samplers and one uniform buffer per set.
-    std::array<VkDescriptorPoolSize, 2> poolSizes{};
+    // Fifteen samplers and one uniform buffer per set, plus the acceleration
+    // structure when the layout has binding 16.
+    std::array<VkDescriptorPoolSize, 3> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     // 15 combined image samplers per set: bindings 0-10 and 12-15. Binding 11
     // is the probe params uniform buffer and is counted below. This count was
@@ -1334,10 +1422,13 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     poolSizes[0].descriptorCount = kMaxMaterialDescriptorSets * 15;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSizes[1].descriptorCount = kMaxMaterialDescriptorSets;
+    poolSizes[2].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+    poolSizes[2].descriptorCount = kMaxMaterialDescriptorSets;
+    const size_t poolSizeCount = rayTracingScene_.hasTopLevel() ? 3 : 2;
 
     if (materialDescriptorPool_.handle() == VK_NULL_HANDLE) {
         materialDescriptorPool_.create(context_.vkDevice(),
-                                       std::span<const VkDescriptorPoolSize>(poolSizes.data(), poolSizes.size()),
+                                       std::span<const VkDescriptorPoolSize>(poolSizes.data(), poolSizeCount),
                                        kMaxMaterialDescriptorSets);
     }
 
@@ -1469,7 +1560,7 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     VkDescriptorImageInfo punctualCompareInfo = punctualShadowInfo;
     punctualCompareInfo.sampler = VK_NULL_HANDLE;
 
-    std::array<VkWriteDescriptorSet, 16> writes{};
+    std::array<VkWriteDescriptorSet, 17> writes{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = material.descriptorSet;
     writes[0].dstBinding = 0;
@@ -1565,6 +1656,20 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     makeWrite(15, 15, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
     writes[15].pImageInfo = &punctualCompareInfo;
 
+    // Written once, here: the TLAS is one structure rebuilt in place, never
+    // replaced, so the handle this set holds stays the one every frame builds.
+    // A per-material set on the non-bindless path has the binding too and never
+    // reads it -- simple.frag does not trace -- so it is written there as well,
+    // which keeps every set complete rather than relying on static use.
+    const VkAccelerationStructureKHR topLevel = rayTracingScene_.topLevelHandle();
+    VkWriteDescriptorSetAccelerationStructureKHR topLevelInfo{};
+    topLevelInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
+    topLevelInfo.accelerationStructureCount = 1;
+    topLevelInfo.pAccelerationStructures = &topLevel;
+    makeWrite(16, 16, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR);
+    writes[16].pNext = &topLevelInfo;
+    const size_t writeCount = rayTracingScene_.hasTopLevel() ? 17 : 16;
+
     // The material descriptor stores sampled images only: base color at binding 0,
     // cascaded shadow-map array at binding 1, normal map at binding 2, and metallic-roughness
     // map at binding 3. Bindings 4-6 are diffuse irradiance, prefiltered specular
@@ -1573,7 +1678,7 @@ void Renderer::createMaterialDescriptorSet(renderer::Material& material)
     // irradiance and visibility atlases, and binding 11 -- the one exception to
     // "sampled images only" -- carries the probe grid parameters that address
     // them. Object data remains outside descriptors.
-    vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writeCount), writes.data(), 0, nullptr);
 
     // Remember it so every later material gets this one instead of a copy. Only
     // under bindless: without it, bindings 0/2/3 are this material's own textures

@@ -128,6 +128,14 @@
         "debugCascadeDepthDelta": false,
         "debugOnlyCasterObject": -1
     },
+    "rayTracedShadows": {
+        "enabled": false,
+        "renderCascades": false,
+        "normalOffset": 0.02,
+        "pixelFootprintOffset": 1.0,
+        "debugVisibility": false,
+        "debugCompareCascades": false
+    },
     "gi": {
         "enabled": false,
         "debugPattern": false,

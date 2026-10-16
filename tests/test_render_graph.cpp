@@ -436,6 +436,40 @@ TEST_CASE("Host reads sync against the host stage", "[rendergraph][barriers]")
     CHECK(state.access == VK_ACCESS_2_HOST_READ_BIT);
 }
 
+TEST_CASE("Acceleration-structure accesses sync the build against the fragment trace", "[rendergraph][barriers]")
+{
+    using ve::renderer::bufferAccessState;
+    using ve::renderer::RGAccess;
+
+    const auto build = bufferAccessState(RGAccess::AccelerationStructureBuild);
+    CHECK(build.stage == VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR);
+    CHECK((build.access & VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR) != 0);
+
+    // The only tracing is the main pass's sun ray, from the fragment stage.
+    const auto trace = bufferAccessState(RGAccess::AccelerationStructureRead);
+    CHECK(trace.stage == VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+    CHECK(trace.access == VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR);
+}
+
+TEST_CASE("A build followed by a trace emits a barrier", "[rendergraph][barriers]")
+{
+    using ve::renderer::bufferAccessState;
+    using ve::renderer::bufferBarrierRequired;
+    using ve::renderer::RGAccess;
+
+    // The acceleration-structure write bit was missing from the graph's write
+    // mask when this access was added, which made build -> trace look like a
+    // read after a read: no barrier, every call legal, rays against a
+    // half-built structure.
+    const auto build = bufferAccessState(RGAccess::AccelerationStructureBuild);
+    const auto trace = bufferAccessState(RGAccess::AccelerationStructureRead);
+    CHECK(bufferBarrierRequired(true, RGAccess::AccelerationStructureBuild, build.access, trace.access));
+
+    // Two traces in a row -- the main pass, then the transparent pass -- need
+    // nothing between them.
+    CHECK_FALSE(bufferBarrierRequired(true, RGAccess::AccelerationStructureRead, trace.access, trace.access));
+}
+
 TEST_CASE("An image access on a buffer emits no barrier", "[rendergraph][barriers]")
 {
     using ve::renderer::bufferAccessState;

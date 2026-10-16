@@ -166,6 +166,15 @@ struct FrameConstants {
     // xy = camera in light space, which decides which pages are addressable,
     // z = normal-offset bias in world units, w = constant depth bias.
     glm::vec4 vsmCamera{0.0f};
+    // --- ray-traced sun shadows (docs/ray_traced_shadows.md) ---
+    //
+    // xy = this frame slot's RayTracingGeometryRecord table address as a uvec2,
+    // z = renderer::kRtShadowFlag* bits, zero unless this frame traces, w spare.
+    glm::uvec4 rayTracedShadow{0u};
+    // x = ray origin offset along the normal in world units, y = further offset
+    // per unit of camera distance (renderer::rayTracedShadowOffsetPerDistance),
+    // z = ray length, w spare.
+    glm::vec4 rayTracedShadowParams{0.0f};
 };
 
 static_assert(offsetof(FrameConstants, cascadeViewProjection) == 0);
@@ -183,10 +192,12 @@ static_assert(offsetof(FrameConstants, vsmLightView) == 512);
 static_assert(offsetof(FrameConstants, vsmPageTable) == 576);
 static_assert(offsetof(FrameConstants, vsmParams) == 592);
 static_assert(offsetof(FrameConstants, vsmCamera) == 608);
+static_assert(offsetof(FrameConstants, rayTracedShadow) == 624);
+static_assert(offsetof(FrameConstants, rayTracedShadowParams) == 640);
 // Every member is a multiple of 16 bytes, which is what makes the C++ and std430
 // layouts agree -- see the note in object_frame_data.glsl. A bare float or vec3
 // added here breaks that silently.
-static_assert(sizeof(FrameConstants) == 624);
+static_assert(sizeof(FrameConstants) == 656);
 
 // Draw-item capacity. The ceiling is 65535: cull.comp packs the object-data
 // slot into the low 16 bits of firstInstance (the high bits carry the selected

@@ -63,9 +63,13 @@ bool accessReads(RenderResourceAccess access)
 
 bool accessMaskWrites(VkAccessFlags2 access)
 {
+    // Every write bit a declared access can produce. One left out turns that
+    // writer's edge into a read-after-read, which emits no barrier at all -- the
+    // acceleration-structure write was the most recent way to get it wrong.
     constexpr VkAccessFlags2 kWriteMask =
         VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
-        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_HOST_WRITE_BIT;
+        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_HOST_WRITE_BIT |
+        VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
     return (access & kWriteMask) != 0;
 }
 
@@ -205,6 +209,8 @@ RenderGraph::RenderGraph() = default;
 const char* renderPassTypeName(RenderPassType type)
 {
     switch (type) {
+    case RenderPassType::RayTracingSceneBuild:
+        return "Ray Tracing Scene Build";
     case RenderPassType::Shadow:
         return "Shadow";
     case RenderPassType::ShadowGpuCulling:
@@ -333,6 +339,10 @@ const char* rgAccessName(RGAccess access)
         return "IndirectRead";
     case RGAccess::HostRead:
         return "HostRead";
+    case RGAccess::AccelerationStructureBuild:
+        return "AccelerationStructureBuild";
+    case RGAccess::AccelerationStructureRead:
+        return "AccelerationStructureRead";
     }
 
     return "Unknown";
@@ -597,6 +607,12 @@ void RenderGraph::importFrameBuffers()
     frame_.luminanceHistogram = importBuffer(frame_.resources.luminanceHistogram);
     frame_.histogramReadback = importBuffer(frame_.resources.histogramReadback);
     frame_.exposureState = importBuffer(frame_.resources.exposureState);
+    // Only on a frame that traces: an imported buffer nothing declares is
+    // harmless, but a valid handle is also what tells the main passes to
+    // declare their read, and that read must not outlive the build.
+    if (frame_.resources.rayTracedShadowsEnabled) {
+        frame_.rayTracingTopLevel = importBuffer(frame_.resources.rayTracingTopLevel);
+    }
 }
 
 void RenderGraph::beginVsmPageMarkPass()
@@ -922,6 +938,40 @@ void RenderGraph::endIrradianceProbePass()
     requireFrameActive("RenderGraph::endIrradianceProbePass");
     if (activePass_ != ActivePass::IrradianceProbes) {
         throw std::logic_error("RenderGraph::endIrradianceProbePass called without an active probe pass.");
+    }
+
+    activePass_ = ActivePass::None;
+}
+
+void RenderGraph::declareRayTracedShadowRead(RenderGraphBuilder& builder)
+{
+    if (frame_.rayTracingTopLevel.valid()) {
+        builder.readBuffer(frame_.rayTracingTopLevel,
+                           RGAccess::AccelerationStructureRead,
+                           "Traces sun shadow rays against this frame's top-level acceleration structure.");
+    }
+}
+
+void RenderGraph::beginRayTracingSceneBuildPass()
+{
+    requireFrameActive("RenderGraph::beginRayTracingSceneBuildPass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginRayTracingSceneBuildPass called while another pass is active.");
+    }
+    if (!beginDeclaredPass(frame_.passIndices.rayTracingSceneBuild)) {
+        throw std::logic_error(
+            "RenderGraph::beginRayTracingSceneBuildPass was culled but the renderer attempted to record it.");
+    }
+
+    activePass_ = ActivePass::RayTracingSceneBuild;
+}
+
+void RenderGraph::endRayTracingSceneBuildPass()
+{
+    requireFrameActive("RenderGraph::endRayTracingSceneBuildPass");
+    if (activePass_ != ActivePass::RayTracingSceneBuild) {
+        throw std::logic_error(
+            "RenderGraph::endRayTracingSceneBuildPass called without an active ray tracing scene build pass.");
     }
 
     activePass_ = ActivePass::None;
@@ -1918,6 +1968,8 @@ VkBuffer RenderGraph::buffer(RGBufferHandle handle) const
 uint32_t RenderGraph::builtinPassIndex(RenderGraphBuiltinPass pass) const
 {
     switch (pass) {
+    case RenderGraphBuiltinPass::RayTracingSceneBuild:
+        return frame_.passIndices.rayTracingSceneBuild;
     case RenderGraphBuiltinPass::VsmPageMark:
         return frame_.passIndices.vsmPageMark;
     case RenderGraphBuiltinPass::Shadow:
@@ -2343,6 +2395,25 @@ void RenderGraph::declareGeometryPasses()
                 }
             });
     }
+    // Ahead of the first pass that traces. Its only consumers are the passes
+    // that run the main fragment shader, which is what keeps it alive; the
+    // previous frame's reads of the same structure are ordered by the barrier
+    // RayTracingScene records at the top of the build, because buffer state
+    // here is rebuilt every frame and has nothing to order them against.
+    if (frame_.rayTracingTopLevel.valid()) {
+        frame_.passIndices.rayTracingSceneBuild =
+            addPass("RayTracingSceneBuild",
+                    RenderPassType::RayTracingSceneBuild,
+                    RenderPassExecutionType::Compute,
+                    false,
+                    [this](RenderGraphBuilder& builder) {
+                        frame_.rayTracingTopLevel = builder.writeBuffer(
+                            frame_.rayTracingTopLevel,
+                            RGAccess::AccelerationStructureBuild,
+                            "Rebuilds the top-level acceleration structure from this frame's draw items.");
+                    });
+    }
+
     if (frame_.resources.depthPrepassEnabled) {
         frame_.passIndices.depthPrepass =
             addPass("DepthPrepass",
@@ -2384,6 +2455,7 @@ void RenderGraph::declareGeometryPasses()
         [this](RenderGraphBuilder& builder) {
             builder.readTexture(
                 frame_.shadowMapDepth, RGAccess::ShaderRead, "Samples the cascaded shadow-map array for lighting.");
+            declareRayTracedShadowRead(builder);
             if (frame_.punctualShadowAtlas != nullptr) {
                 // Declared unconditionally (not just when slots exist) so the
                 // atlas always reaches the layout the material descriptors
@@ -2515,6 +2587,7 @@ void RenderGraph::declareGeometryPasses()
             [this](RenderGraphBuilder& builder) {
                 builder.readTexture(
                     frame_.shadowMapDepth, RGAccess::ShaderRead, "Samples the cascaded shadow-map array for lighting.");
+                declareRayTracedShadowRead(builder);
                 if (frame_.ambientOcclusion.valid()) {
                     // A history read for the same reason phase 1's is: GTAO has
                     // not run yet at this point in the frame.
@@ -2639,6 +2712,9 @@ void RenderGraph::declareGeometryPasses()
                 builder.readTexture(frame_.mainDepth,
                                     RGAccess::DepthStencilAttachmentWrite,
                                     "Depth-tests blended geometry against the opaque depth buffer (no writes).");
+                // The shared fragment shader traces for blended surfaces too:
+                // glass receives the sun shadow, it just does not cast one.
+                declareRayTracedShadowRead(builder);
                 if (frame_.ambientOcclusion.valid()) {
                     // Same shared-shader reason as normalRoughness below: this
                     // pass reuses the main fragment shader, so it samples the
@@ -3834,6 +3910,8 @@ TextureAccessState textureAccessState(VkImageAspectFlags aspectMask, RGAccess ac
     case RGAccess::StorageBufferClearAndReadWrite:
     case RGAccess::IndirectRead:
     case RGAccess::HostRead:
+    case RGAccess::AccelerationStructureBuild:
+    case RGAccess::AccelerationStructureRead:
         state.layout = currentLayout;
         state.stage = VK_PIPELINE_STAGE_2_NONE;
         state.access = VK_ACCESS_2_NONE;
@@ -3924,6 +4002,19 @@ BufferAccessState bufferAccessState(RGAccess access)
     case RGAccess::HostRead:
         state.stage = VK_PIPELINE_STAGE_2_HOST_BIT;
         state.access = VK_ACCESS_2_HOST_READ_BIT;
+        break;
+    // The build writes the structure and, as a source of the declared edge,
+    // also stands for its reads of the instance data; the shader-read half of
+    // that is the host-written instance buffer, which the queue submit already
+    // makes visible.
+    case RGAccess::AccelerationStructureBuild:
+        state.stage = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+        state.access =
+            VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        break;
+    case RGAccess::AccelerationStructureRead:
+        state.stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        state.access = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
         break;
     case RGAccess::Unknown:
     case RGAccess::ShaderRead:

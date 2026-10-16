@@ -221,6 +221,21 @@ bool parseLaunchOptions(int argc, char** argv, LaunchOptions& options)
             continue;
         }
 
+        if (argument == "--freeze-animation") {
+            options.freezeAnimation = true;
+            continue;
+        }
+
+        if (argument == "--gpu-timings-every-frame") {
+            options.gpuTimingsEveryFrame = true;
+            continue;
+        }
+
+        if (argument == "--disable-ray-query") {
+            options.disableRayQuery = true;
+            continue;
+        }
+
         if (argument == "--overdraw") {
             options.overdraw = true;
             continue;
