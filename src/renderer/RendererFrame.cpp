@@ -1910,6 +1910,9 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         // it fall back to the fill.
         irradianceProbes_.clearCaptureBatch();
     }
+
+    // After the probe batch above, which is one of the readers this asks about.
+    frameCascadesReplacedByRayTracing_ = frameRayTracedShadowsActive_ && !cascadeShadowMapReadBeyondMainPass();
 }
 
 // Called from drawFrame after command recording: both the object-data upload and
@@ -1954,6 +1957,7 @@ void Renderer::resetFrameStateForEmptyScene(uint32_t frameIndex)
     frameSsrActive_ = false;
     frameGtaoActive_ = false;
     frameRayTracedShadowsActive_ = false;
+    frameCascadesReplacedByRayTracing_ = false;
     frameProbeCaptureActive_ = false;
     irradianceProbes_.clearCaptureBatch();
     // Same reasoning as the cache flags above: this path never runs buildDrawItems,
@@ -2514,6 +2518,16 @@ void Renderer::uploadFrameConstants(uint32_t frameIndex, uint32_t cascadeCount)
 bool Renderer::isRayTracedShadowActive() const
 {
     return frameRayTracedShadowsActive_;
+}
+
+bool Renderer::cascadeShadowMapReadBeyondMainPass() const
+{
+    // Everything that samples the cascade array other than the main fragment
+    // shader, which traces instead on a frame that traces. The transparent pass
+    // and the skinned draw run that same shader, and the non-bindless one never
+    // traces, so none of them appear here.
+    return rayTracedShadowSettings_.renderCascades || isVolumetricFogActive() || frameProbeCaptureActive_ ||
+           rayTracedShadowSettings_.debugCompareCascades || vsmSettings_.debugCascadeDepthDelta;
 }
 
 // One instance per draw item that casts, in draw-item order. The cascades'

@@ -1028,6 +1028,15 @@ void Renderer::drawShadowsDebugUi()
         } else if (!rayTracingScene_.ready()) {
             ImGui::TextDisabled("Unavailable: the bottom-level build failed (see the log).");
         }
+        ImGui::Checkbox("Keep rendering the cascades", &rayTracedShadowSettings_.renderCascades);
+        ImGui::SetItemTooltip("While tracing, the cascades are skipped unless fog, probe capture or a\n"
+                              "cascade-reading debug view needs them. This keeps them on regardless,\n"
+                              "for the A/B that separates tracing's cost from what skipping saves.");
+        if (isRayTracedShadowActive()) {
+            ImGui::TextDisabled(frameCascadesReplacedByRayTracing_
+                                    ? "Cascades: skipped this frame; their preview shows the last drawn."
+                                    : "Cascades: still rendered, something else reads them.");
+        }
         if (ImGui::SliderFloat("Ray normal offset", &rayTracedShadowSettings_.normalOffset, 0.0f, 0.2f, "%.3f")) {
             clampRuntimeSettings();
         }

@@ -644,6 +644,11 @@ void Renderer::recordPunctualShadowPass(VkCommandBuffer commandBuffer, bool gpuC
 
 bool Renderer::anyCascadeShadowRedrawRequired() const
 {
+    // Ahead of the cache-off case: with tracing in charge and no other reader,
+    // nothing is drawn even when the cache would have redrawn everything.
+    if (frameCascadesReplacedByRayTracing_) {
+        return false;
+    }
     return !csmSettings_.enableCascadeCache || cascadeShadowCascadesRedrawn_ > 0;
 }
 
@@ -1782,6 +1787,12 @@ void Renderer::recordCascadeShadowPass(VkCommandBuffer commandBuffer)
     const bool layeredCascades = isLayeredCascadeRenderingActive();
     const bool cascadeCacheActive = csmSettings_.enableCascadeCache;
     const auto cascadeNeedsRedraw = [&](uint32_t cascadeIndex) {
+        // The same answer anyCascadeShadowRedrawRequired gives the graph, so no
+        // cascade pass is begun that was not declared -- and no resident key is
+        // committed below for a layer that was not drawn.
+        if (frameCascadesReplacedByRayTracing_) {
+            return false;
+        }
         if (!cascadeCacheActive) {
             return true;
         }

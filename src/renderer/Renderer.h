@@ -912,6 +912,11 @@ private:
     // graph declaration and the recorder, which must all agree.
     [[nodiscard]] bool isRayTracedShadowActive() const;
     void writeRayTracingInstances(uint32_t frameIndex);
+    // Whether anything besides the main pass reads the cascaded shadow map this
+    // frame: fog injection, probe capture, the ray-traced comparison view, the
+    // VSM cascade-depth view, or the setting that keeps them on purpose. While
+    // tracing, the cascades are skipped exactly when this is false.
+    [[nodiscard]] bool cascadeShadowMapReadBeyondMainPass() const;
     void recordRayTracingSceneBuild(VkCommandBuffer commandBuffer);
     // Drops the depth of pages whose casters moved, before residency decides
     // what to draw. Without it a moved object leaves its shadow behind: the page
@@ -1801,6 +1806,12 @@ private:
     bool frameSsrActive_ = false;
     bool frameGtaoActive_ = false;
     bool frameRayTracedShadowsActive_ = false;
+    // This frame traces and nothing else reads the cascades, so they are not
+    // drawn. Gates the cascade pass's declaration and its recording, which have
+    // to agree, and leaves the cascade cache's resident keys alone: the image
+    // still holds what they describe, so turning tracing off redraws only what
+    // changed meanwhile.
+    bool frameCascadesReplacedByRayTracing_ = false;
     // Whether this frame captures probes. Latched during frame prep alongside
     // the batch it refers to, because the graph declaration and the recording
     // have to agree and choosing the batch advances the round-robin cursor.

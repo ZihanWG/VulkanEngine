@@ -550,6 +550,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
 
     if (const Json* rayTraced = objectMember(json, "rayTracedShadows")) {
         readBool(*rayTraced, "enabled", settings.rayTracedShadows.enabled);
+        readBool(*rayTraced, "renderCascades", settings.rayTracedShadows.renderCascades);
         readFloat(*rayTraced, "normalOffset", settings.rayTracedShadows.normalOffset);
         readFloat(*rayTraced, "pixelFootprintOffset", settings.rayTracedShadows.pixelFootprintOffset);
         readBool(*rayTraced, "debugVisibility", settings.rayTracedShadows.debugVisibility);
@@ -729,6 +730,7 @@ Json toJson(const RuntimeSettings& settings)
               {"debugOnlyCasterObject", settings.vsm.debugOnlyCasterObject}}},
         {"rayTracedShadows",
          Json{{"enabled", settings.rayTracedShadows.enabled},
+              {"renderCascades", settings.rayTracedShadows.renderCascades},
               {"normalOffset", settings.rayTracedShadows.normalOffset},
               {"pixelFootprintOffset", settings.rayTracedShadows.pixelFootprintOffset},
               {"debugVisibility", settings.rayTracedShadows.debugVisibility},

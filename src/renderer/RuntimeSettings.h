@@ -555,10 +555,15 @@ struct VsmSettings {
 //
 // Needs a device with ray query and the bindless shading path; on anything else
 // the setting is kept and ignored, and the shadow-map path it would have
-// replaced keeps running -- the cascades are rendered either way, because fog,
-// probe capture and the non-bindless shader still read them.
+// replaced keeps running.
 struct RayTracedShadowSettings {
     bool enabled = false;
+    // Keep rendering the cascades on frames that trace. Off, they are skipped
+    // whenever nothing but the main pass would read them -- fog, probe capture
+    // and the cascade-reading debug views all still bring them back -- so this
+    // exists for the A/B that separates what tracing costs from what skipping
+    // the cascades saves.
+    bool renderCascades = false;
     // Ray origin offset along the surface normal, in world units, at any
     // distance. What keeps a flat surface from hitting itself.
     float normalOffset = 0.02f;

@@ -4,13 +4,13 @@ The main pass can ask the scene's acceleration structure whether the sun is
 visible instead of reading the cascades or the virtual shadow map: one ray per
 shaded pixel, built with `VK_KHR_ray_query` from the fragment shader, against a
 top-level structure rebuilt every frame from the draw items that cast. The
-shadow maps stay as the fallback and keep rendering underneath.
+shadow maps stay as the fallback, and the cascades keep rendering whenever
+something besides the main pass reads them.
 
-**Status: correct and off by default, not yet measured for cost.** Everything
-that casts into the cascades casts here: static geometry, opaque and
-alpha-tested, and the skinned mesh, refitted every frame. The cascades are still
-rendered whether or not anything traces, so this makes no performance claim --
-skipping them, and timing the result, is the next step.
+**Status: correct and off by default.** Everything that casts into the
+cascades casts here: static geometry, opaque and alpha-tested, and the skinned
+mesh, refitted every frame. On a frame that traces, the cascades are not drawn
+unless something else reads them (below).
 
 `rayTracedShadows.enabled` in the runtime settings, or the *Ray-traced sun
 shadows* checkbox under *Shadows*. It needs a device with ray query (an RTX
@@ -34,6 +34,34 @@ trace, whether or not a frame does. The branch that traces is uniform on a
 FrameConstants flag, so the setting flips at runtime without rebuilding a
 pipeline, and with the flag clear the variant renders the same image as the
 plain shader -- pinned below.
+
+## Skipping the cascades
+
+On a frame that traces, the main pass, the phase-two re-draw, the transparent
+pass and the skinned draw all run the ray-query shader and never sample the
+cascades. Five things still can, and any one of them keeps the cascades drawn
+(`Renderer::cascadeShadowMapReadBeyondMainPass`):
+
+- volumetric fog, whose injection shadows the froxels from the cascades;
+- probe capture, on a frame that captures;
+- the ray-traced comparison view, which samples them to compare against;
+- the virtual shadow map's cascade-depth view;
+- `rayTracedShadows.renderCascades`, which keeps them on regardless, for the
+  A/B that separates what tracing costs from what skipping saves.
+
+Otherwise `CSMShadowPass` and the GPU caster cull ahead of it are neither
+declared nor recorded. The cascade cache's resident keys are committed only when
+a cascade is actually drawn, so a skipped frame leaves them describing what the
+image still holds: turning tracing off redraws exactly the cascades whose content
+changed meanwhile, and none of the others. The CPU half -- cascade fitting, the
+per-cascade caster lists and their keys -- still runs, because those keys are
+what that comparison needs.
+
+Skipping changes no pixel, because nothing that was drawn reads what was
+skipped: with tracing on, the frame with the cascades skipped and the frame with
+`renderCascades` forcing them match at 0/921600 pixels on `--scene default`,
+`sunlit` and `stress`. The ImGui cascade preview keeps showing the last cascades
+drawn while they are skipped, and the panel says so.
 
 ## What casts
 
@@ -192,13 +220,16 @@ The shadow is hard: one ray toward a light with no extent.
 | Setting | Default | |
 | --- | --- | --- |
 | `rayTracedShadows.enabled` | false | |
+| `rayTracedShadows.renderCascades` | false | keep drawing the cascades while tracing |
 | `rayTracedShadows.normalOffset` | 0.02 | world units, clamped to [0, 1] |
 | `rayTracedShadows.pixelFootprintOffset` | 1.0 | pixels, clamped to [0, 16] |
 | `rayTracedShadows.debugVisibility` | false | the traced term alone, white lit |
 | `rayTracedShadows.debugCompareCascades` | false | red where only the ray finds an occluder, blue where only the cascades do; wins over the visibility view |
 
-The CI sweep renders it enabled, with both debug views, and enabled with
-`--disable-ray-query` (`config/ci/`).
+The CI sweep renders it enabled (cascades skipped), enabled with both debug
+views and `renderCascades`, and enabled with `--disable-ray-query`
+(`config/ci/`). Mesa's lavapipe exposes all three extensions, so the first two
+run the traced path in CI, under validation.
 
 ## Verification
 
@@ -248,8 +279,10 @@ change and is recorded here because this path is what exposed it.
   hierarchy quality depends on the pose it was first built in. Fine for the demo
   rig; a mesh that deforms far from its first pose would want a periodic rebuild.
 - **Hard shadows only.** No sun angular radius and no denoising.
-- **The cascades keep rendering.** Fog, probe capture and the non-bindless
-  shader read them, so nothing is saved yet.
+- **The cascades come back with fog or probe capture,** which read them, so on
+  those frames tracing adds its cost without removing theirs.
+- **Virtual shadow map pages still render** when VSM is enabled alongside
+  tracing, though nothing samples them.
 - **The TLAS is rebuilt every frame that traces,** static scene or not.
 - **Shadow terminator on coarse spheres.** The comparison view shows a red rim
   where the ray crosses the faceted geometry just past the smooth terminator.
