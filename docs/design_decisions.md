@@ -300,13 +300,36 @@ element is enough there.
   range-independent. That growth is the default scene's 94 brightened pixels:
   contact shadows detaching by about a pixel row at the base of the cutout
   lattice and the boxes.
-- **Each cascade now draws what it should.** Sponza's four caster lists went
-  from 55, 57, 30 and 2 draws (144) to 64, 87, 77 and 65 (293). The cascade
-  cache keys the same way, because the matrix is still a function of the camera
-  and the light alone. But a frame that redraws draws about twice as much on
-  Sponza, and a moving caster now dirties the cascades it was always in.
+- **Each cascade now draws and reads what it should, and that costs.** Sponza's
+  four caster lists went from 55, 57, 30 and 2 draws (144) to 64, 87, 77 and 65
+  (293). Measured with the cascade cache off, so all four redraw every frame as
+  they do whenever the camera moves, the fix costs **0.659 ms of a 6.363 ms
+  frame (+10.4%)**. That is p10 on an RTX 3080 Ti Laptop: clocks pinned
+  800/7001, Sponza frozen, 1280x720, every frame, A/B/A/B, control drift 0.66%,
+  21166 and 17807 samples. Two passes carry it:
+  - `CSMShadowPass` takes 0.226 ms (0.603 to 0.829), for the doubled caster
+    lists.
+  - `MainHDRPass` takes 0.377 ms (4.237 to 4.614). The only main-pass difference
+    is which receivers reach the filtering loop: under the clamp, those outside
+    the box returned lit before any shadow fetch.
+
+  Both sides of that series are slower than 160 fps, so p10 is a time-sliced
+  frame on each ([profiling.md](profiling.md#two-mainhdrpass-modes-on-identical-work-the-gpu-is-shared)),
+  and the medians agree (+0.660). It ran on one measurement-only binary, where
+  `vsm.debugOnlyCasterObject = -2` (unread with the virtual shadow map off)
+  restored the clamp. That switch was not committed. Its fixed mode rendered
+  0/921600 pixels different from the committed code, and its log named the fit
+  each run used:
+
+  ```
+  python tools/dev/measure_gpu.py ab --repeat 2 --duration 75 --every-frame --freeze-animation --a-set csm.enableCascadeCache=false --a-set vsm.debugOnlyCasterObject=-2 --b-set csm.enableCascadeCache=false --a-label clamped --b-label fixed --args --scene sponza
+  ```
+
+  The cascade cache keys the same way, because the matrix is still a function of
+  the camera and the light alone, so a still camera still skips the redraw. A
+  moving caster now dirties the cascades it was always in.
 - **The golden image moved.** Both fixes together change 5416 pixels on the
-  default scene, 1847 of them beyond the gate's tolerance. The near plane
+  default scene, 1847 of them beyond the gate's tolerance (lavapipe: 1841). The near plane
   accounts for 1817: a shadow wedge on the back wall, the bent tube shadowing its
   own upper side, and the contact edges above. The Y flip accounts for the
   texel-grid steps.
