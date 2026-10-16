@@ -220,6 +220,86 @@ runtime instead of through a shader edit. A rotated-Poisson or variable-radius
 filter is the next step up in quality, and now costs four fetches to start from
 rather than nine.
 
+## The cascades' depth box reaches past the slice toward the sun
+
+**Decision.** The default (AABB) cascade fit pads its orthographic box by
+`zPadding` -- twice the cascade's view-depth range, and at least 10 world units
+-- past its camera slice along the light, on both sides. On the sunward side that
+puts the near plane behind the light view's eye, which sits one unit from the
+slice centre, so the near distance is negative. An orthographic projection takes
+that like any other value.
+
+**Why.** From the first cascade commit until this fix, that near distance was
+clamped to +0.001, as if the projection were perspective. The padded value is
+always negative, so the clamp always won, and the near plane sat one unit
+sunward of the slice centre whatever the padding said. Everything further toward
+the sun was lost three ways at once:
+
+- clipped by the rasterizer, because no shadow pipeline enables depth clamp;
+- rejected by both caster culls, since the CPU lists and `cull.comp` test the
+  same six planes;
+- on the receiving side, read as lit, because a lookup below depth 0 returns 1.
+
+The default scene hid it: every object the golden image shows falls in cascade
+0, close to its slice centre. The ray-traced sun shadows exposed it
+([ray_traced_shadows.md](ray_traced_shadows.md#verification)), because two
+independent methods agreed and the cascades disagreed with both.
+
+Isolated on an RTX 3080 Ti Laptop: Release, `--deterministic`, frame 30,
+1280x720, exposure pinned. The stable fit is the control. It shares the culls,
+the shader, the cache and the bias, and differs only in how the projection is
+built; its view stands `max(4r, 10)` back, so it never had the problem.
+
+| Configuration | sunlit, pixels differing from VSM | Sponza |
+| --- | --- | --- |
+| AABB fit, clamped | 18.2% | 29.5% |
+| stable fit | 2.2% | 0.013% |
+| AABB fit, clamp removed and nothing else | 2.2% | 0.045% |
+
+A temporary log ran against the engine's own matrices and world bounds. For each
+cascade it counted the casters the cascade overlapped laterally and how many of
+those lay wholly in front of its near plane:
+
+| Scene | Cascades 0-3, clamped | Clamp removed |
+| --- | --- | --- |
+| Sponza | 9/64, 30/87, 47/77, 63/65 | 0 in every cascade |
+| default | 0/11, 6/9, 1/2, 0/1 | 0 in every cascade |
+| occlusion | 0/7, 0/113, 44/126, 126/126 | 0 in every cascade |
+
+Losing casters only ever brightens the image. Against the ray-traced frame, the
+clamped cascades were brighter on 96146 sunlit pixels and 65127 Sponza pixels,
+and darker on only 714 and 0. With the clamp removed, the cascades are the
+closest of the three shadow-map paths to the traced reference. Mean absolute
+luminance difference is 0.126 on sunlit and 0.0009 on Sponza, against 0.148 and
+0.0017 for the virtual shadow map.
+
+**Trade-offs.**
+
+- **The depth box is about 1.8x deeper.** On Sponza, cascade 0 goes from 17.3 to
+  30.7 world units and cascade 3 from 89.3 to 168.4. `csm.depthBiasConstant` and
+  the shader's slope term are fractions of that depth, so their size in world
+  units grows by the same factor. The raster slope bias does not, being
+  range-independent. That growth is the default scene's 94 brightened pixels:
+  contact shadows detaching by about a pixel row at the base of the cutout
+  lattice and the boxes.
+- **Each cascade now draws what it should.** Sponza's four caster lists went
+  from 55, 57, 30 and 2 draws (144) to 64, 87, 77 and 65 (293). The cascade
+  cache keys the same way, because the matrix is still a function of the camera
+  and the light alone. But a frame that redraws draws about twice as much on
+  Sponza, and a moving caster now dirties the cascades it was always in.
+- **The golden image moved.** 4196 pixels change on the default scene, 1817 of
+  them beyond the gate's tolerance. They are a shadow wedge on the back wall, the
+  bent tube shadowing its own upper side, and the contact edges above.
+
+**Limit that remains.** A caster more than `zPadding` beyond the slice toward
+the sun is still lost. No preset has one.
+
+**More time.** Shadow pancaking would remove the limit and make the box
+shallower than it ever was: enable depth clamp in the cascade pipelines, put the
+near plane at the slice, and have both caster culls skip it. The price is a
+device feature and its fallback, plus a bias re-tune for the smaller world-space
+bias.
+
 ## Graphics pipelines are looked up by state, not by name
 
 **Decision.** `rhi::VulkanPipelineStore` owns every `Renderer`-built graphics

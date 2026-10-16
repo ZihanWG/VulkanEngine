@@ -263,6 +263,13 @@ screenshots.
   under a moving camera needs the cascade anchored to the camera position rather
   than to the frustum slice, which is a different and lossier trade and is not
   implemented.
+- The default cascade fit's depth box reaches past its camera slice toward the
+  sun by twice the cascade's depth range, and at least 10 world units. A caster
+  further sunward than that is clipped and culled from that cascade. Until
+  Milestone 99 the reach was about one unit from the slice centre, which lost
+  most of Sponza's casters beyond cascade 0 (design_decisions.md). No preset has
+  a caster past the current reach. Shadow pancaking (depth clamp plus a
+  five-plane caster cull) would remove the limit and is not implemented.
 - Occlusion culling is conservative and AABB based, on by default. Phase 1 uses
   the previous frame's depth pyramid; phase 2 re-tests its rejects against a
   mid-frame rebuild, so disocclusions are rescued in the same frame rather than

@@ -194,11 +194,23 @@ CascadeBuildOutput computeShadowCascades(const CascadeBuildInput& input)
             maxBounds.y += worldUnitsPerTexel;
         }
 
+        // The box reaches zPadding past the slice along the light on both sides.
+        // The sunward side is the one that matters -- a caster between the sun
+        // and the slice is what shadows it -- and it lies behind this view's eye,
+        // which sits one unit from the slice centre. So the near plane is
+        // negative, which an orthographic projection takes in its stride.
+        //
+        // It used to be clamped to +0.001, as if this were a perspective
+        // projection. That put the near plane one unit sunward of the slice
+        // centre whatever zPadding said: every caster beyond it was clipped by
+        // the rasterizer and rejected by both caster culls, which test the same
+        // six planes, and every receiver beyond it read as lit. On Sponza that
+        // was 63 of the 65 casters the last cascade overlapped.
         const glm::mat4 lightView = glm::lookAt(lightViewCenter - lightDirection, lightViewCenter, lightUp);
         const float depthRange = std::max(cascadeFar - cascadeNear, 1.0f);
         const float zPadding = std::max(depthRange * 2.0f, 10.0f);
-        const float orthoNear = std::max(0.001f, -maxBounds.z - zPadding);
-        const float orthoFar = std::max(orthoNear + 0.001f, -minBounds.z + zPadding);
+        const float orthoNear = -maxBounds.z - zPadding;
+        const float orthoFar = -minBounds.z + zPadding;
 
         glm::mat4 lightProjection = glm::ortho(minBounds.x, maxBounds.x, minBounds.y, maxBounds.y, orthoNear, orthoFar);
         lightProjection[1][1] *= -1.0f;

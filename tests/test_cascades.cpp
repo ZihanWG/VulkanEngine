@@ -344,3 +344,115 @@ TEST_CASE("The stable fit still covers its slice", "[cascades][stable-fit]")
         }
     }
 }
+
+// --- Depth range: what reaches a cascade from the sun's side ----------------
+//
+// The AABB fit used to clamp its ortho near plane to +0.001 in front of a light
+// view that sits one unit from the slice centre, so anything more than a unit
+// sunward of the centre was clipped and culled -- slice included. Nothing here
+// caught it: the only coverage test was the stable fit's, and the slice-centre
+// test above checks the one point the clamp could never lose. These two pin the
+// AABB fit's depth range from both ends: the slice it shades, and the casters
+// beyond the slice that shade it.
+
+namespace {
+
+std::array<glm::vec3, 8> sliceCorners(const CascadeBuildInput& input, float nearDepth, float farDepth)
+{
+    const glm::vec3 forward = glm::normalize(input.cameraTarget - input.cameraPosition);
+    const glm::vec3 right = glm::normalize(glm::cross(forward, input.cameraUp));
+    const glm::vec3 up = glm::normalize(glm::cross(right, forward));
+    const float tanHalfFov = std::tan(input.cameraVerticalFovRadians * 0.5f);
+
+    std::array<glm::vec3, 8> corners{};
+    size_t index = 0;
+    for (const float depth : {nearDepth, farDepth}) {
+        const float halfHeight = tanHalfFov * depth;
+        const float halfWidth = halfHeight * input.aspectRatio;
+        const glm::vec3 center = input.cameraPosition + forward * depth;
+        for (const float x : {-halfWidth, halfWidth}) {
+            for (const float y : {-halfHeight, halfHeight}) {
+                corners[index++] = center + right * x + up * y;
+            }
+        }
+    }
+    return corners;
+}
+
+// Light-space depth of a point in a cascade, 0 at the near plane and 1 at the
+// far one. The projection is orthographic, so w stays 1.
+float cascadeDepth(const glm::mat4& viewProjection, const glm::vec3& point)
+{
+    return (viewProjection * glm::vec4(point, 1.0f)).z;
+}
+
+// A high sun, a low one, and one steep enough to switch the light basis's up
+// vector -- each with the camera looking along, across and against it.
+const std::array<glm::vec3, 3> kLightDirections{
+    glm::vec3(-0.3f, -1.0f, -0.2f), glm::vec3(-0.55f, -0.62f, 0.55f), glm::vec3(0.05f, -1.0f, 0.02f)};
+const std::array<glm::vec3, 3> kCameraDirections{
+    glm::vec3(0.0f, -0.3f, -1.0f), glm::vec3(1.0f, -0.1f, 0.0f), glm::vec3(-0.3f, 0.5f, -0.8f)};
+
+} // namespace
+
+TEST_CASE("The AABB fit's depth range covers its own slice", "[cascades]")
+{
+    for (const glm::vec3& lightDirection : kLightDirections) {
+        for (const glm::vec3& cameraDirection : kCameraDirections) {
+            CascadeBuildInput input = defaultInput();
+            input.lightDirection = glm::normalize(lightDirection);
+            input.cameraTarget = input.cameraPosition + glm::normalize(cameraDirection);
+            const CascadeBuildOutput output = computeShadowCascades(input);
+
+            for (uint32_t c = 0; c < 4; ++c) {
+                const ve::renderer::ShadowCascade& cascade = output.cascades[c];
+                for (const glm::vec3& corner : sliceCorners(input, cascade.nearDepth, cascade.farDepth)) {
+                    const float depth = cascadeDepth(cascade.lightViewProjection, corner);
+                    REQUIRE(depth >= 0.0f);
+                    REQUIRE(depth <= 1.0f);
+                }
+            }
+        }
+    }
+}
+
+// A caster between the sun and the slice is the whole point of a shadow map, so
+// every point of the slice, moved toward the sun, must still land on the inside
+// of the cascade's near plane: the rasterizer clips there, and the CPU and GPU
+// caster culls test that plane along with the other five. The slice centre, so
+// moved, must pass all six. Five world units is inside what both fits promise:
+// the AABB fit pads at least ten past its slice, and the stable fit stands its
+// view at least ten back from a centre no slice point is further than its
+// radius from.
+TEST_CASE("A caster sunward of the slice is inside its cascade's near plane", "[cascades]")
+{
+    constexpr float kSunwardReach = 5.0f;
+
+    for (const bool stableFit : {false, true}) {
+        for (const glm::vec3& lightDirection : kLightDirections) {
+            for (const glm::vec3& cameraDirection : kCameraDirections) {
+                CascadeBuildInput input = defaultInput();
+                input.enableStableFit = stableFit;
+                input.lightDirection = glm::normalize(lightDirection);
+                input.cameraTarget = input.cameraPosition + glm::normalize(cameraDirection);
+                const CascadeBuildOutput output = computeShadowCascades(input);
+
+                for (uint32_t c = 0; c < 4; ++c) {
+                    INFO("stable fit " << stableFit << ", cascade " << c);
+                    const ve::renderer::ShadowCascade& cascade = output.cascades[c];
+                    const std::array<glm::vec3, 8> corners = sliceCorners(input, cascade.nearDepth, cascade.farDepth);
+                    const glm::vec3 sunward = -input.lightDirection * kSunwardReach;
+
+                    glm::vec3 sliceCenter{0.0f};
+                    for (const glm::vec3& corner : corners) {
+                        sliceCenter += corner / 8.0f;
+                        const glm::vec3 caster = corner + sunward;
+                        REQUIRE(cascadeDepth(cascade.lightViewProjection, caster) >= 0.0f);
+                        REQUIRE(cascade.lightFrustum.planes[Frustum::Near].signedDistance(caster) >= -1e-3f);
+                    }
+                    REQUIRE(pointInsideFrustum(cascade.lightFrustum, sliceCenter + sunward, 1e-3f));
+                }
+            }
+        }
+    }
+}

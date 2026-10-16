@@ -117,6 +117,13 @@ RTX 3080 Ti Laptop, clocks pinned 800/7001, `--scene sponza` with its animation
 frozen, 1280x720, p10 over every frame of A/B/A/B series with the control
 repeated (`docs/profiling.md` explains both flags).
 
+**The first two series were taken against broken cascades.** Their near plane
+was clamped (see Verification below), so on Sponza they drew 144 of the 293
+caster draws they should have. Fixed cascades draw more on a frame that redraws
+them. That makes the skip saving below an underestimate, and the first series,
+which compares reading the shadow, is unaffected in kind. Both are to be
+re-measured against the fixed cascades.
+
 **Tracing against the cascades.** Control drift 0.04%, 21744 and 24795 samples:
 
 ```
@@ -402,20 +409,32 @@ so the pose has moved every frame and the BLAS has been refitted 29 times. An
 traced frame and `MODE_UPDATE` after it, each preceded by the pre-skin dispatch
 and its barrier and followed by the TLAS build.
 
-**The cascades are the outlier on the two scenes with a strong sun.** On
-`--scene sunlit` the traced image shows a long shadow across the right of the
-yard and a second sphere shadow that the cascades do not draw; the virtual
-shadow map draws both. On Sponza, against the virtual shadow map:
+**The cascades were the outlier on the two scenes with a strong sun, and they
+were wrong.** On `--scene sunlit` the traced image showed two shadows that the
+cascades did not draw and the virtual shadow map did: a long shadow across the
+right of the yard and a second sphere shadow. On Sponza, against the virtual
+shadow map (Debug build, auto exposure):
 
 | Path | Pixels differing from VSM | Mean absolute luminance difference |
 | --- | --- | --- |
 | ray-traced | 15062 (1.6%), max delta 7 | 0.006 |
 | cascades | 374721 (40.7%), max delta 11 | 0.397 |
 
-Two independent methods agree and the cascades disagree with both, so the
-cascades are missing casters there -- most likely casters outside a cascade's
-light-space depth range, though that has not been isolated. It predates this
-change and is recorded here because this path is what exposed it.
+Two independent methods agreed and the cascades disagreed with both. The cause
+was the cascade fit's near plane, clamped to one unit sunward of each slice's
+centre. It clipped and culled every caster beyond that, and it predated this
+path; see [design_decisions.md](design_decisions.md#the-cascades-depth-box-reaches-past-the-slice-toward-the-sun)
+for how it was isolated. With it fixed, a Release build with exposure pinned
+gives these differences against the virtual shadow map:
+
+| Scene | traced | cascades before | cascades after |
+| --- | --- | --- | --- |
+| sunlit | 5.6% | 18.2% | 2.2% |
+| Sponza | 0.074% | 29.5% | 0.045% |
+
+Most of the skinned-only residue above was the same clamp. Fixed, the cascades
+under that isolation differ from the traced image on 1000 pixels rather than
+2981, and from the virtual shadow map on 2172 rather than 4078.
 
 ## Limitations
 
