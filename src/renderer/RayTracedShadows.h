@@ -45,8 +45,8 @@ inline constexpr uint32_t kRtVertexStrideFloats = 15;
 inline constexpr uint32_t kRtVertexUvOffsetFloats = 6;
 
 // The skinned caster. Its BLAS is built from positions a compute pass skins out
-// every frame that traces (skin_positions.comp), three floats per vertex, in
-// workgroups of this many threads.
+// on every frame that traces with the pose moved (skin_positions.comp), three
+// floats per vertex, in workgroups of this many threads.
 inline constexpr uint32_t kRtSkinnedPositionStrideFloats = 3;
 inline constexpr uint32_t kRtPreSkinLocalSize = 64;
 

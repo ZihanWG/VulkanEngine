@@ -9,9 +9,10 @@
 // full the first time and refitted after that.
 //
 // Ownership follows the TLAS (renderer/RayTracingScene.h): one positions buffer
-// and one BLAS, rewritten in place by every frame that traces with the mesh
-// visible. The previous frame's refit read the positions and its rays read the
-// BLAS; RayTracingScene's entry barrier orders both against this frame's writes.
+// and one BLAS, rewritten in place by a frame that traces with the mesh visible
+// and its pose moved (renderer::RayTracingTopLevelTracker decides). Earlier
+// frames' refits read the positions and their rays read the BLAS;
+// RayTracingScene's entry barrier orders both against this frame's writes.
 // What this records itself is the edge inside the build: the dispatch's position
 // writes against the build's reads of them.
 
