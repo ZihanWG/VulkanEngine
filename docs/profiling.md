@@ -240,7 +240,10 @@ yields ~10000 samples instead of ~64, the share of clean frames is pinned to a
 fraction of a percent, and p10 lands in the same place every run. The same
 cascades-against-traced series then held its control to **0.04%**, over 21744
 and 24795 samples a side, and gave the same answer the frozen once-a-second
-series had reached by luck (−0.691 against −0.641 ms frame total).
+series had reached by luck (−0.691 against −0.641 ms frame total). Those
+figures predate the cascade near-plane fix; the current saving is in
+[ray_traced_shadows.md](ray_traced_shadows.md#cost), and that re-run is the
+caveat below in practice.
 
 One caveat survives it. p10 is a clean frame only while more than 10% of frames
 escape the chunk, which at 144 Hz means a frame rate above ~160 fps. A

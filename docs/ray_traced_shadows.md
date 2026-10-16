@@ -117,7 +117,16 @@ RTX 3080 Ti Laptop, clocks pinned 800/7001, `--scene sponza` with its animation
 frozen, 1280x720, p10 over every frame of A/B/A/B series with the control
 repeated (`docs/profiling.md` explains both flags).
 
-**Tracing against the cascades.** Control drift 0.04%, 21744 and 24795 samples:
+**The first two series are re-measured against fixed cascades.** They were
+first taken while the cascade fit clamped its near plane (see Verification
+below). On Sponza the cascades then drew 144 of the 293 caster draws they
+should have, and receivers outside their depth box returned lit before any
+shadow fetch. Fixed cascades cost more to draw and to read
+([design_decisions.md](design_decisions.md#the-cascades-depth-box-reaches-past-the-slice-toward-the-sun)),
+so tracing saves more than first measured. The numbers below are the re-runs,
+with the first measurement given for each.
+
+**Tracing against the cascades.** Control drift 0.46%, 20552 and 26099 samples:
 
 ```
 python tools/dev/measure_gpu.py ab --repeat 2 --duration 75 --every-frame --freeze-animation --a-set rayTracedShadows.enabled=false --b-set rayTracedShadows.enabled=true --args --scene sponza
@@ -125,24 +134,33 @@ python tools/dev/measure_gpu.py ab --repeat 2 --duration 75 --every-frame --free
 
 | Pass | cascades | traced | Delta |
 | --- | --- | --- | --- |
-| `Frame total` | 5.316 | 4.625 | **−0.691 (−13.0%)** |
-| `MainHDRPass` | 4.290 | 3.401 | −0.889 (−20.7%) |
-| `RayTracingSceneBuild` | — | 0.233 | traced only |
+| `Frame total`, p10 | 6.020 | 4.391 | −1.629, not like for like (below) |
+| `Frame total`, p5 / median | 5.595 / 6.237 | 4.364 / 4.997 | **−1.231 / −1.240 (about −20%)** |
+| `MainHDRPass` | 4.588 | 3.410 | −1.178 (−25.7%) |
+
+The p10 frame-total delta is not the number. The fixed cascades run this scene
+at about 160 fps, the line below which fewer than 10% of frames escape another
+process's time slice
+([profiling.md](profiling.md#two-mainhdrpass-modes-on-identical-work-the-gpu-is-shared)).
+So the cascades' p10 is a sliced frame, while tracing's, at about 200 fps, is a
+clean one. Like for like -- p5, clean on both sides, or the median, sliced on
+both -- tracing saves 1.23 to 1.24 ms. `MainHDRPass` p10 is clean on both sides
+and agrees. The first measurement read −0.691 ms (5.316 to 4.625), with the
+traced side then also rebuilding the TLAS on every frame. It no longer does on
+a still frame (the last series below), and `RayTracingSceneBuild` is absent
+from every sampled frame of B here.
 
 The camera is still, so the cascade cache hits on every frame of A and
 `CSMShadowPass` draws nothing on either side (its scope still opens, around
 nothing, as on any cache hit). What this row compares is therefore *reading* the
 shadow: one ray against the cascade lookup and its filtering, which
 `docs/profiling.md` found to be more than half of `MainHDRPass` on this scene.
-The ray is 0.889 ms cheaper there and still 0.691 ms cheaper after paying for
-the TLAS. That series predates the change detection and rebuilt the structure
-on every traced frame; a still frame no longer pays the 0.233 ms (the last
-series below).
 
 **Skipping the cascades when they would redraw.** Both sides trace. A keeps the
 cascades (`renderCascades`) with the cascade cache off, so all four redraw every
 frame, as they do on any frame the camera moves; B skips them. Control drift
-0.33%, 22126 and 24481 samples:
+0.42%, 23795 and 25991 samples. A first run, started after 25 minutes of
+continuous load, was refused at 2.0% and repeated after the card had cooled:
 
 ```
 python tools/dev/measure_gpu.py ab --repeat 2 --duration 75 --every-frame --freeze-animation --a-set rayTracedShadows.enabled=true --a-set rayTracedShadows.renderCascades=true --a-set csm.enableCascadeCache=false --b-set rayTracedShadows.enabled=true --b-set csm.enableCascadeCache=false --args --scene sponza
@@ -150,17 +168,20 @@ python tools/dev/measure_gpu.py ab --repeat 2 --duration 75 --every-frame --free
 
 | Pass | traced + cascades | traced | Delta |
 | --- | --- | --- | --- |
-| `Frame total` | 5.177 | 4.664 | **−0.513 (−9.9%)** |
-| `CSMShadowPass` | 0.564 | 0.000 | −0.564 |
-| `ShadowGpuCulling` | 0.029 | — | A only |
-| `MainHDRPass` | 3.372 | 3.423 | +0.051 (+1.5%) |
+| `Frame total` | 5.198 | 4.410 | **−0.788 (−15.2%)** |
+| `CSMShadowPass` | 0.829 | 0.000 | −0.829 |
+| `ShadowGpuCulling` | 0.027 | — | A only |
+| `MainHDRPass` | 3.371 | 3.425 | +0.054 (+1.6%) |
 
-`MainHDRPass` moved 0.051 ms the wrong way although both sides run the same
-shader; it clears its own control drift, but nothing in the change explains it,
-so `Frame total` is the number: skipping saves about half a millisecond on every
-frame whose cascades would have redrawn. The two series were measured separately
-and do not add exactly, but together they put tracing on a moving camera at
-roughly 1.2 ms cheaper than the cascades on this scene.
+Both sides' p10 are clean frames, and the medians agree (−0.807). `MainHDRPass`
+moved about 0.05 ms the wrong way, as it did in the first measurement (+0.051),
+although both sides run the same shader. Nothing in the change explains it, so
+`Frame total` is the number: skipping saves about 0.8 ms on every frame whose
+cascades would have redrawn. The first measurement read −0.513 ms, with a
+`CSMShadowPass` of 0.564 for the clamped cascades. The two series were measured
+separately and do not add exactly. Together they put tracing on a moving camera
+at roughly 2 ms cheaper than the cascades on this scene, against roughly 1.2 ms
+when the cascades were missing casters.
 
 A first attempt at this series moved the camera with `--camera-orbit` instead.
 The orbit carried it outside the building, where the frame costs under a third
@@ -402,20 +423,32 @@ so the pose has moved every frame and the BLAS has been refitted 29 times. An
 traced frame and `MODE_UPDATE` after it, each preceded by the pre-skin dispatch
 and its barrier and followed by the TLAS build.
 
-**The cascades are the outlier on the two scenes with a strong sun.** On
-`--scene sunlit` the traced image shows a long shadow across the right of the
-yard and a second sphere shadow that the cascades do not draw; the virtual
-shadow map draws both. On Sponza, against the virtual shadow map:
+**The cascades were the outlier on the two scenes with a strong sun, and they
+were wrong.** On `--scene sunlit` the traced image showed two shadows that the
+cascades did not draw and the virtual shadow map did: a long shadow across the
+right of the yard and a second sphere shadow. On Sponza, against the virtual
+shadow map (Debug build, auto exposure):
 
 | Path | Pixels differing from VSM | Mean absolute luminance difference |
 | --- | --- | --- |
 | ray-traced | 15062 (1.6%), max delta 7 | 0.006 |
 | cascades | 374721 (40.7%), max delta 11 | 0.397 |
 
-Two independent methods agree and the cascades disagree with both, so the
-cascades are missing casters there -- most likely casters outside a cascade's
-light-space depth range, though that has not been isolated. It predates this
-change and is recorded here because this path is what exposed it.
+Two independent methods agreed and the cascades disagreed with both. The cause
+was the cascade fit's near plane, clamped to one unit sunward of each slice's
+centre. It clipped and culled every caster beyond that, and it predated this
+path; see [design_decisions.md](design_decisions.md#the-cascades-depth-box-reaches-past-the-slice-toward-the-sun)
+for how it was isolated. With it fixed, a Release build with exposure pinned
+gives these differences against the virtual shadow map:
+
+| Scene | traced | cascades before | cascades after |
+| --- | --- | --- | --- |
+| sunlit | 5.6% | 18.2% | 2.2% |
+| Sponza | 0.074% | 29.5% | 0.045% |
+
+Most of the skinned-only residue above was the same clamp. Fixed, the cascades
+under that isolation differ from the traced image on 1000 pixels rather than
+2981, and from the virtual shadow map on 2172 rather than 4078.
 
 ## Limitations
 
