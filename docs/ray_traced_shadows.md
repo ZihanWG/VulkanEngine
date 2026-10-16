@@ -63,6 +63,60 @@ skipped: with tracing on, the frame with the cascades skipped and the frame with
 `sunlit` and `stress`. The ImGui cascade preview keeps showing the last cascades
 drawn while they are skipped, and the panel says so.
 
+## Cost
+
+RTX 3080 Ti Laptop, clocks pinned 800/7001, `--scene sponza` with its animation
+frozen, 1280x720, p10 over every frame of A/B/A/B series with the control
+repeated (`docs/profiling.md` explains both flags).
+
+**Tracing against the cascades.** Control drift 0.04%, 21744 and 24795 samples:
+
+```
+python tools/dev/measure_gpu.py ab --repeat 2 --duration 75 --every-frame --freeze-animation --a-set rayTracedShadows.enabled=false --b-set rayTracedShadows.enabled=true --args --scene sponza
+```
+
+| Pass | cascades | traced | Delta |
+| --- | --- | --- | --- |
+| `Frame total` | 5.316 | 4.625 | **−0.691 (−13.0%)** |
+| `MainHDRPass` | 4.290 | 3.401 | −0.889 (−20.7%) |
+| `RayTracingSceneBuild` | — | 0.233 | traced only |
+
+The camera is still, so the cascade cache hits on every frame of A and
+`CSMShadowPass` draws nothing on either side (its scope still opens, around
+nothing, as on any cache hit). What this row compares is therefore *reading* the
+shadow: one ray against the cascade lookup and its filtering, which
+`docs/profiling.md` found to be more than half of `MainHDRPass` on this scene.
+The ray is 0.889 ms cheaper there and still 0.691 ms cheaper after paying for
+the TLAS.
+
+**Skipping the cascades when they would redraw.** Both sides trace. A keeps the
+cascades (`renderCascades`) with the cascade cache off, so all four redraw every
+frame, as they do on any frame the camera moves; B skips them. Control drift
+0.33%, 22126 and 24481 samples:
+
+```
+python tools/dev/measure_gpu.py ab --repeat 2 --duration 75 --every-frame --freeze-animation --a-set rayTracedShadows.enabled=true --a-set rayTracedShadows.renderCascades=true --a-set csm.enableCascadeCache=false --b-set rayTracedShadows.enabled=true --b-set csm.enableCascadeCache=false --args --scene sponza
+```
+
+| Pass | traced + cascades | traced | Delta |
+| --- | --- | --- | --- |
+| `Frame total` | 5.177 | 4.664 | **−0.513 (−9.9%)** |
+| `CSMShadowPass` | 0.564 | 0.000 | −0.564 |
+| `ShadowGpuCulling` | 0.029 | — | A only |
+| `MainHDRPass` | 3.372 | 3.423 | +0.051 (+1.5%) |
+
+`MainHDRPass` moved 0.051 ms the wrong way although both sides run the same
+shader; it clears its own control drift, but nothing in the change explains it,
+so `Frame total` is the number: skipping saves about half a millisecond on every
+frame whose cascades would have redrawn. The two series were measured separately
+and do not add exactly, but together they put tracing on a moving camera at
+roughly 1.2 ms cheaper than the cascades on this scene.
+
+A first attempt at this series moved the camera with `--camera-orbit` instead.
+The orbit carried it outside the building, where the frame costs under a third
+as much, and the control drifted 2.2%; holding the view and turning the cache off
+measures the same redraw without changing what is on screen.
+
 ## What casts
 
 The cascades' rules, applied to the same draw-item list (`docs/transparency.md`):
@@ -290,7 +344,8 @@ change and is recorded here because this path is what exposed it.
   those frames tracing adds its cost without removing theirs.
 - **Virtual shadow map pages still render** when VSM is enabled alongside
   tracing, though nothing samples them.
-- **The TLAS is rebuilt every frame that traces,** static scene or not.
+- **The TLAS is rebuilt every frame that traces,** static scene or not: 0.233
+  ms on Sponza at the 800 MHz pin, a third of what tracing saves there.
 - **Shadow terminator on coarse spheres.** The comparison view shows a red rim
   where the ray crosses the faceted geometry just past the smooth terminator.
   It sits where `N.L` is near zero, so it is barely visible in the shaded image
