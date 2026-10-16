@@ -116,7 +116,7 @@ RuntimeSettings makeNonDefaultSettings()
     settings.rayTracedShadows.enabled = true;
     settings.rayTracedShadows.renderCascades = true;
     settings.rayTracedShadows.rebuildEveryFrame = true;
-    settings.rayTracedShadows.screenSpaceMask = false;
+    settings.rayTracedShadows.screenSpaceMask = true;
     settings.rayTracedShadows.normalOffset = 0.05f;
     settings.rayTracedShadows.pixelFootprintOffset = 2.5f;
     settings.rayTracedShadows.debugVisibility = true;

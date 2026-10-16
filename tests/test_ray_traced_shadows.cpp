@@ -166,9 +166,9 @@ TEST_CASE("The shadow mask runs only where it has depth to trace from", "[raytra
     CHECK_FALSE(rayTracedShadowMaskActive(true, true, false, true));
     CHECK_FALSE(rayTracedShadowMaskActive(true, true, true, false));
 
-    // On by default, behind ray-traced shadows themselves, which are off.
+    // Off by default: measured, it only costs while the shadow is hard.
     const ve::RayTracedShadowSettings defaults{};
-    CHECK(defaults.screenSpaceMask);
+    CHECK_FALSE(defaults.screenSpaceMask);
     CHECK_FALSE(defaults.debugMaskSource);
 }
 

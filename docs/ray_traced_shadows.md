@@ -4,9 +4,10 @@ The main pass can ask the scene's acceleration structure whether the sun is
 visible instead of reading the cascades or the virtual shadow map: one ray per
 shaded pixel, built with `VK_KHR_ray_query`, against a top-level structure built
 from the draw items that cast and rebuilt only on frames where one of them
-changed. The ray is traced ahead of the main pass, once for every pixel the
-depth prepass drew ([the screen-space mask](#the-screen-space-mask)), and from
-the fragment shader for whatever the prepass did not draw. The shadow maps stay
+changed. The ray is traced from the fragment shader, or optionally ahead of
+the main pass, once for every pixel the depth prepass drew
+([the screen-space mask](#the-screen-space-mask)), which is off by default
+because a hard shadow gains nothing from it. The shadow maps stay
 as the fallback, and the cascades keep rendering whenever something besides the
 main pass reads them.
 
@@ -213,6 +214,30 @@ animate, but a light is not an instance -- so with or without
 where something casting moves pays the A column on every frame; the skinned
 demo mesh is enough, so the default, sunlit and stress scenes rebuild every
 frame unless their animation is frozen.
+
+**The screen-space mask, against tracing inline.** Both sides trace and keep
+the TLAS, on the same binary with `screenSpaceMask` the only change. Control
+drift 0.74%, 25731 and 22793 samples, after a throwaway warm-up run; the pin
+held at 802/7001 with no throttle reason:
+
+```
+python tools/dev/measure_gpu.py ab --repeat 2 --duration 75 --every-frame --freeze-animation --a-set rayTracedShadows.enabled=true --a-set rayTracedShadows.screenSpaceMask=false --b-set rayTracedShadows.enabled=true --b-set rayTracedShadows.screenSpaceMask=true --a-label inline --b-label mask --args --scene sponza
+```
+
+| Pass | inline | mask | Delta |
+| --- | --- | --- | --- |
+| `Frame total` | 4.446 | 5.089 | **+0.643 (+14.5%)** |
+| `RayTracedShadowMask` | — | 0.554 | mask only |
+| `MainHDRPass` | 3.444 | 3.418 | inside the noise floor: not measured |
+
+The mask answers 99% of Sponza's lit fragments, so the main pass stopped
+tracing almost entirely -- and got no faster. Its rays were not what it was
+waiting on. The likely reading, not isolated here: [profiling.md](profiling.md)
+found much of this pass's cost on Sponza to be per-triangle work and quad
+overshading, and the rays ran alongside it. Moved into a pass of their own they cost
+0.554 ms, plus roughly 0.09 ms more of frame total for the depth transitions and
+the serialisation around a compute pass. For a hard shadow the mask is pure
+cost, which is why it is off by default; it is there for a soft one.
 
 ## What casts
 
@@ -425,9 +450,10 @@ The shadow is hard: one ray toward a light with no extent.
 
 `RayTracedShadowMask` is a compute pass between `DepthPrepass` and `MainHDRPass`
 that traces one ray for every pixel the prepass drew and writes the answer to an
-image the main pass reads. It turns per-fragment work into per-pixel work, and
-it is what a soft shadow needs: a filter has to see the visibility before
-anything is shaded with it.
+image the main pass reads. It is what a soft shadow needs: a filter has to see
+the visibility before anything is shaded with it. For the hard shadow traced
+today it only costs (below), so `rayTracedShadows.screenSpaceMask` is off by
+default.
 
 It runs when the frame traces, the prepass ran, the mask is available -- its
 pipeline exists, main depth can be sampled and is 32-bit float, and the
@@ -482,7 +508,7 @@ fixed-step run, 1280x720, exposure pinned):
 | `rayTracedShadows.enabled` | false | |
 | `rayTracedShadows.renderCascades` | false | keep drawing the cascades while tracing |
 | `rayTracedShadows.rebuildEveryFrame` | false | rebuild the TLAS and refit the skinned BLAS on every traced frame, as before change detection; the A/B control and the image control for it |
-| `rayTracedShadows.screenSpaceMask` | true | trace the mask ahead of the main pass; off, every fragment traces inline -- the A/B control for the mask |
+| `rayTracedShadows.screenSpaceMask` | false | trace the mask ahead of the main pass; off, every fragment traces inline. Off by default on measured cost |
 | `rayTracedShadows.normalOffset` | 0.02 | world units, clamped to [0, 1] |
 | `rayTracedShadows.pixelFootprintOffset` | 1.0 | pixels, clamped to [0, 16] |
 | `rayTracedShadows.debugVisibility` | false | the traced term alone, white lit |
@@ -491,7 +517,7 @@ fixed-step run, 1280x720, exposure pinned):
 
 The CI sweep renders it enabled (cascades skipped), enabled with both debug
 views, `renderCascades` and `rebuildEveryFrame`, enabled on a still scene
-(`--freeze-animation`, which keeps the TLAS), enabled with the mask off and its
+(`--freeze-animation`, which keeps the TLAS), enabled with the mask and its
 source view on, and enabled with `--disable-ray-query` (`config/ci/`). Mesa's lavapipe exposes all three extensions, so the first two
 run the traced path in CI, under validation.
 

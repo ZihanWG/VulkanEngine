@@ -576,8 +576,14 @@ struct RayTracedShadowSettings {
     // rather than trace per fragment. Fragments the prepass did not draw -- the
     // skinned mesh, phase-two rescues, blended surfaces -- still trace inline,
     // as does every fragment on a frame without a prepass. Off, every fragment
-    // traces inline: the control the mask is compared against.
-    bool screenSpaceMask = true;
+    // traces inline.
+    //
+    // Off by default: for a hard shadow it only costs. On Sponza the pass took
+    // 0.554 ms and the main pass gave back nothing, its inline rays having been
+    // hidden behind its own bottleneck (docs/ray_traced_shadows.md#cost). It
+    // exists for the soft shadow, whose filter needs the visibility before
+    // anything is shaded with it.
+    bool screenSpaceMask = false;
     // Ray origin offset along the surface normal, in world units, at any
     // distance. What keeps a flat surface from hitting itself.
     float normalOffset = 0.02f;

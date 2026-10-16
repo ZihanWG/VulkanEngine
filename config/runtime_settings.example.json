@@ -132,7 +132,7 @@
         "enabled": false,
         "renderCascades": false,
         "rebuildEveryFrame": false,
-        "screenSpaceMask": true,
+        "screenSpaceMask": false,
         "normalOffset": 0.02,
         "pixelFootprintOffset": 1.0,
         "debugVisibility": false,
