@@ -176,9 +176,8 @@ public:
     // geometry-record buffers are written. Inputs whose geometry has no BLAS
     // are skipped and counted; past maxInstances the rest are dropped and
     // counted the same way. rebuildEveryFrame does all three every frame.
-    [[nodiscard]] RayTracingTopLevelPlan writeInstances(uint32_t frameIndex,
-                                                        std::span<const RayTracingInstanceInput> inputs,
-                                                        bool rebuildEveryFrame);
+    [[nodiscard]] RayTracingTopLevelPlan
+    writeInstances(uint32_t frameIndex, std::span<const RayTracingInstanceInput> inputs, bool rebuildEveryFrame);
 
     // What the last writeInstances for this slot planned: the entry barrier,
     // the skinned caster's pre-skin and refit when planned, then a full TLAS

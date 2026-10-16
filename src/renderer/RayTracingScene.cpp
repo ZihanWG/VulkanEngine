@@ -525,14 +525,15 @@ RayTracingTopLevelPlan RayTracingScene::writeInstances(uint32_t frameIndex,
     // The geometry records need no comparison of their own: each one follows
     // from its instance's BLAS and custom index, which the bytes compared here
     // already hold.
-    plan_ = topLevelTracker_.plan(
-        frameIndex, std::as_bytes(std::span(stagedInstances_)), skinnedPose, rebuildEveryFrame);
+    plan_ =
+        topLevelTracker_.plan(frameIndex, std::as_bytes(std::span(stagedInstances_)), skinnedPose, rebuildEveryFrame);
     planFrameIndex_ = frameIndex;
 
     if (plan_.writeSlot) {
         // One copy each: the destination is write-combined memory, where
         // field-by-field stores are the slow way.
-        const VkDeviceSize instanceBytes = static_cast<VkDeviceSize>(count) * sizeof(VkAccelerationStructureInstanceKHR);
+        const VkDeviceSize instanceBytes =
+            static_cast<VkDeviceSize>(count) * sizeof(VkAccelerationStructureInstanceKHR);
         if (count > 0) {
             const std::span<std::byte> instances = frame.instances.mapRange(0, frame.instances.size());
             std::memcpy(instances.data(), stagedInstances_.data(), static_cast<size_t>(instanceBytes));

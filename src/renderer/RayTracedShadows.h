@@ -175,10 +175,8 @@ public:
     // skinnedPose is 0 when the instances hold no skinned caster, and never 0
     // when they do. rebuildEveryFrame builds, refits and writes regardless,
     // which is what every frame did before this existed.
-    [[nodiscard]] RayTracingTopLevelPlan plan(uint32_t frameSlot,
-                                              std::span<const std::byte> instances,
-                                              uint64_t skinnedPose,
-                                              bool rebuildEveryFrame);
+    [[nodiscard]] RayTracingTopLevelPlan
+    plan(uint32_t frameSlot, std::span<const std::byte> instances, uint64_t skinnedPose, bool rebuildEveryFrame);
 
     // The build the last plan asked for was recorded. Does nothing when that
     // plan built nothing.
