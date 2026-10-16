@@ -92,6 +92,36 @@ TEST_CASE("Portability fallbacks are off unless asked for")
     CHECK(forced.portabilityFallbacks);
 }
 
+TEST_CASE("Scene animation runs unless the run freezes it")
+{
+    LaunchOptions defaults{};
+    REQUIRE(parse({"--deterministic"}, defaults));
+    CHECK_FALSE(defaults.freezeAnimation);
+
+    LaunchOptions frozen{};
+    REQUIRE(parse({"--freeze-animation", "--scene", "sponza"}, frozen));
+    CHECK(frozen.freezeAnimation);
+    // Independent of the fixed-step clock: freezing stops what the scene
+    // contains from changing, it does not stop time.
+    CHECK_FALSE(frozen.deterministic);
+}
+
+TEST_CASE("GPU timings print once a second unless the run asks for every frame")
+{
+    LaunchOptions defaults{};
+    REQUIRE(parse({"--scene", "sponza"}, defaults));
+    CHECK_FALSE(defaults.gpuTimingsEveryFrame);
+
+    LaunchOptions everyFrame{};
+    REQUIRE(parse({"--gpu-timings-every-frame", "--freeze-animation"}, everyFrame));
+    CHECK(everyFrame.gpuTimingsEveryFrame);
+    // Sampling is not content: it must not freeze anything on its own.
+    CHECK(everyFrame.freezeAnimation);
+    LaunchOptions alone{};
+    REQUIRE(parse({"--gpu-timings-every-frame"}, alone));
+    CHECK_FALSE(alone.freezeAnimation);
+}
+
 TEST_CASE("Ray query stays available unless the run disables it")
 {
     LaunchOptions defaults{};

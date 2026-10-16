@@ -63,7 +63,8 @@ SCHEMA_PATH = REPO_ROOT / "config" / "runtime_settings.example.json"
 RELEASE_BINARY = REPO_ROOT / "build" / "release" / ("VulkanEngine.exe" if os.name == "nt" else "VulkanEngine")
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "build" / "measurements"
 
-# Timings are printed once per second, so these are also sample counts.
+# Timings are printed once per second, so these are also sample counts --
+# except under --every-frame, where a second is a frame rate's worth of them.
 DEFAULT_WARMUP_SECONDS = 10
 DEFAULT_DURATION_SECONDS = 30
 
@@ -154,6 +155,9 @@ FRAME_TOTAL = "Frame total"
 
 BLOCK_START_RE = re.compile(r"^(?:\[\w+\s*\]\s+)?GPU timings:\s*$")
 SCOPE_RE = re.compile(r"^ {2,}(.+?):\s*([0-9]+(?:\.[0-9]+)?)\s*ms\s*$")
+# Frame-clock seconds at which the block was printed. Seconds rather than "ms",
+# so SCOPE_RE never reads it as a pass. Older binaries do not print it.
+ELAPSED_RE = re.compile(r"^ {2,}elapsed:\s*([0-9]+(?:\.[0-9]+)?)\s*s\s*$")
 QUERY_LIMIT_RE = re.compile(r"^ {2,}warning: timestamp query capacity was exceeded\s*$")
 # The renderer stamps the scene it actually built, and the resolution it built it
 # at, on its own unindented line (see Application::initialize). Two of the four
@@ -218,17 +222,28 @@ class Samples:
         return len(self.scopes.get(scope, ()))
 
 
-def parse_log(text: str, label: str, warmup_blocks: int) -> Samples:
-    """Extract ``GPU timings:`` blocks, dropping the first ``warmup_blocks``."""
+def parse_log(text: str, label: str, warmup: int) -> Samples:
+    """Extract ``GPU timings:`` blocks, dropping the first ``warmup`` seconds.
+
+    A block stamped with its elapsed time is dropped by that stamp. An unstamped
+    one -- from a binary older than the stamp -- is assumed to be one of the
+    once-a-second blocks, so the first ``warmup`` blocks go instead. The two agree
+    on a once-a-second log; only the stamp survives --every-frame, where ten
+    blocks are a twentieth of a second.
+    """
     result = Samples(label=label)
     blocks: list[dict[str, float]] = []
+    stamps: list[float | None] = []
     current: dict[str, float] | None = None
+    stamp: float | None = None
 
     for line in text.splitlines():
         if BLOCK_START_RE.match(line):
             if current is not None:
                 blocks.append(current)
+                stamps.append(stamp)
             current = {}
+            stamp = None
             continue
 
         if current is None:
@@ -244,6 +259,11 @@ def parse_log(text: str, label: str, warmup_blocks: int) -> Samples:
             result.query_limit_exceeded = True
             continue
 
+        elapsed_match = ELAPSED_RE.match(line)
+        if elapsed_match:
+            stamp = float(elapsed_match.group(1))
+            continue
+
         scope_match = SCOPE_RE.match(line)
         if scope_match:
             current[scope_match.group(1).strip()] = float(scope_match.group(2))
@@ -255,14 +275,19 @@ def parse_log(text: str, label: str, warmup_blocks: int) -> Samples:
             continue
 
         blocks.append(current)
+        stamps.append(stamp)
         current = None
         if "error" in line.lower() and "validation" in line.lower():
             result.validation_errors.append(line.strip())
 
     if current is not None:
         blocks.append(current)
+        stamps.append(stamp)
 
-    kept = blocks[warmup_blocks:]
+    if stamps and all(value is not None for value in stamps):
+        kept = [block for block, value in zip(blocks, stamps) if value >= warmup]
+    else:
+        kept = blocks[warmup:]
     result.block_count = len(kept)
     for block in kept:
         for name, value in block.items():
@@ -959,7 +984,7 @@ def samples_to_json(samples: Samples) -> dict:
 def cmd_run(args: argparse.Namespace) -> int:
     ensure_binary(args.build, args.settle)
     output_dir = Path(args.out)
-    samples = run_once(args.label, args.set, args.warmup, args.duration, output_dir, args.args)
+    samples = run_once(args.label, args.set, args.warmup, args.duration, output_dir, renderer_arguments(args))
     print()
     print(format_single(samples))
     summary = write_summary(
@@ -990,14 +1015,14 @@ def cmd_ab(args: argparse.Namespace) -> int:
     # entirely on one configuration.
     for index in range(1, args.repeat + 1):
         run_a = run_once(
-            f"{args.a_label}-{index}", args.a_set, args.warmup, args.duration, output_dir, args.args
+            f"{args.a_label}-{index}", args.a_set, args.warmup, args.duration, output_dir, renderer_arguments(args)
         )
         pooled_a.add(run_a)
         first_a = first_a or run_a
         last_a = run_a
 
         run_b = run_once(
-            f"{args.b_label}-{index}", args.b_set, args.warmup, args.duration, output_dir, args.args
+            f"{args.b_label}-{index}", args.b_set, args.warmup, args.duration, output_dir, renderer_arguments(args)
         )
         pooled_b.add(run_b)
 
@@ -1058,6 +1083,14 @@ def cmd_parse(args: argparse.Namespace) -> int:
     return 0
 
 
+def renderer_arguments(args: argparse.Namespace) -> list[str]:
+    """The renderer's command line for every launch of a run or a series."""
+    extra = ["--freeze-animation"] if getattr(args, "freeze_animation", False) else []
+    if getattr(args, "every_frame", False):
+        extra.append("--gpu-timings-every-frame")
+    return list(args.args) + extra
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="measure_gpu.py",
@@ -1088,6 +1121,28 @@ def build_parser() -> argparse.ArgumentParser:
             "--build",
             action="store_true",
             help="build the Release preset before measuring",
+        )
+        # Every frame's timings instead of one frame a second, for every launch.
+        # p10 over ~64 once-a-second samples is the 6th-lowest of them, and on a
+        # GPU that other processes time-slice that is decided by how many
+        # uncontended frames a run happened to catch -- see docs/profiling.md.
+        # The same run then yields thousands of samples. Warm-up is discarded by
+        # the elapsed time each block carries, not by counting blocks.
+        target.add_argument(
+            "--every-frame",
+            action="store_true",
+            help="sample every frame (passes --gpu-timings-every-frame to the renderer)",
+        )
+        # Holds the scene's animation still for every launch, A and B alike, so
+        # the content is not a variable. Sponza's MainHDRPass is bimodal frame to
+        # frame either way -- freezing changes how often each mode is sampled,
+        # not whether there are two -- so read docs/profiling.md before trusting
+        # a p10 there. The renderer stamps "+frozen" into the scene it reports,
+        # so a frozen series and an animated one can never be pooled.
+        target.add_argument(
+            "--freeze-animation",
+            action="store_true",
+            help="hold the scene's lights and animation still (passes --freeze-animation to the renderer)",
         )
         # Scene is a launch flag, not a persisted setting, so --set cannot reach
         # it. Without this the harness can only ever measure the default scene --
@@ -1158,7 +1213,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--warmup-blocks",
         type=int,
         default=DEFAULT_WARMUP_SECONDS,
-        help=f"leading blocks to discard (default {DEFAULT_WARMUP_SECONDS})",
+        help=(
+            f"warm-up to discard (default {DEFAULT_WARMUP_SECONDS}): seconds, read from each "
+            "block's elapsed stamp, or leading blocks for a log from a binary that predates it"
+        ),
     )
     parse_cmd.set_defaults(func=cmd_parse)
 

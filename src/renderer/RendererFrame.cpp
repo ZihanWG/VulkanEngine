@@ -1779,7 +1779,9 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     bool transformsMoved = false;
     {
         const ScopedCpuTimer timer = cpuScope(CpuScope::AnimatedTransforms);
-        transformsMoved = updateAnimatedTransforms(elapsedSeconds);
+        // Frozen: the objects keep the transforms the scene was built with,
+        // and nothing invalidates the depth pyramid on their account.
+        transformsMoved = sceneAnimationFrozen_ ? false : updateAnimatedTransforms(elapsedSeconds);
     }
     if (transformsMoved) {
         invalidateDepthPyramid();

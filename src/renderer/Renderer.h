@@ -168,6 +168,12 @@ public:
     void handleEvent(const SDL_Event& event);
     void waitIdle();
 
+    // Holds the demo lights, the skinned pose and animated object transforms at
+    // their starting state for the rest of the run. The frame clock keeps
+    // running, so exposure still adapts; only what the scene contains stops
+    // changing. See LaunchOptions::freezeAnimation.
+    void freezeSceneAnimation();
+
     // Builds one of the startup scene presets. The individual loaders are
     // private because they are ImGui button handlers; this is the one entry
     // point that exists so a preset can be selected from the command line, which
@@ -247,6 +253,13 @@ public:
     void setOverdrawReadoutEnabled(bool enabled)
     {
         overdrawReadoutEnabled_ = enabled;
+    }
+
+    // A "GPU timings:" block for every frame rather than once a second
+    // (--gpu-timings-every-frame). See LaunchOptions::gpuTimingsEveryFrame.
+    void setGpuTimingsEveryFrame(bool enabled)
+    {
+        gpuTimingsEveryFrame_ = enabled;
     }
 
     // Yaw the camera around its target by this much every frame
@@ -1435,6 +1448,7 @@ private:
     // Frame-clock seconds, so the periodic diagnostics sample the same frame
     // numbers on every deterministic run instead of drifting with machine speed.
     double lastGpuTimingPrintSeconds_ = 0.0;
+    bool gpuTimingsEveryFrame_ = false;
     double lastExposureLogPrintSeconds_ = 0.0;
     std::chrono::steady_clock::time_point lastFrameStartTime_ = std::chrono::steady_clock::now();
     std::array<glm::vec4, 6> frameFrustumPlanes_{};
@@ -1740,6 +1754,8 @@ private:
     // Procedural skinned bone-chain demo: draw it, and animate (vs hold bind pose).
     bool showSkinnedMesh_ = true;
     bool animateSkinnedMesh_ = true;
+    // Set once by freezeSceneAnimation; never cleared.
+    bool sceneAnimationFrozen_ = false;
     float skinnedAnimationSpeed_ = 1.0f;
     float skinnedAnimationTime_ = 0.0f;   // accumulated playback time (scaled by speed)
     float previousElapsedSeconds_ = 0.0f; // for the per-frame delta

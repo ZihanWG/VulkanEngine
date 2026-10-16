@@ -157,13 +157,22 @@ void Application::initialize()
     // two-space-indented in there is parsed as a GPU scope. Resolution rides
     // along because it is the other half of a comparison that two runs can
     // silently disagree about.
-    Logger::info("Scene: " + std::string(scenePresetName(config_.scene)) + " at " + std::to_string(config_.width) +
-                 "x" + std::to_string(config_.height));
+    //
+    // A frozen run is a different scene as far as a comparison goes, so it says
+    // so in the token the harness pools by: "sponza+frozen" and "sponza" are two
+    // scenes, and a series that mixes them is refused rather than averaged.
+    // After the preset, which may set up its own animation state.
+    if (config_.freezeAnimation) {
+        renderer_->freezeSceneAnimation();
+    }
+    Logger::info("Scene: " + std::string(scenePresetName(config_.scene)) + (config_.freezeAnimation ? "+frozen" : "") +
+                 " at " + std::to_string(config_.width) + "x" + std::to_string(config_.height));
 
     // Independent of --capture-frame: the analysis reports into the log every
     // second and has nothing to do with capturing a frame.
     renderer_->setMeshletAnalysisEnabled(config_.meshletAnalysis);
     renderer_->setOverdrawReadoutEnabled(config_.overdraw);
+    renderer_->setGpuTimingsEveryFrame(config_.gpuTimingsEveryFrame);
     // After the preset, so the orbit turns the preset's own camera.
     renderer_->setScriptedCameraOrbit(config_.cameraOrbitRadiansPerFrame);
     if (config_.captureFrame != 0) {

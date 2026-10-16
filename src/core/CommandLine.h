@@ -172,6 +172,26 @@ struct LaunchOptions {
     // rhi/PortabilityFallbacks.h. Device-creation policy, so startup only.
     bool portabilityFallbacks = false;
 
+    // Hold every time-driven input to the scene at its starting state -- the demo
+    // light swarm, the skinned pose, animated object transforms -- while the
+    // frame clock keeps running, so exposure still adapts. For measurement: a
+    // scene that moves is a different workload every second, so freezing it takes
+    // the content out of the variance. It does not explain or remove Sponza's
+    // bimodal MainHDRPass, which is there frozen or not; see docs/profiling.md.
+    // Stamped into the scene line, so a series cannot pool a frozen run with an
+    // animated one.
+    bool freezeAnimation = false;
+
+    // Print a "GPU timings:" block for every frame instead of once a second
+    // (--gpu-timings-every-frame). For measurement: p10 over one frame a second
+    // is the 6th-lowest of ~64, and when another process time-slices the GPU on
+    // most frames, whether that sample is a clean frame or a contended one is
+    // down to how many clean frames the run happened to catch. Every frame gives
+    // thousands of samples in the same run. Most frames get a compact block --
+    // elapsed time, frame total, the scopes -- and the full block keeps its
+    // once-a-second cadence, so no frame is counted twice.
+    bool gpuTimingsEveryFrame = false;
+
     // Create the device without acceleration structures or ray query even when
     // the GPU has them, so the shadow-map path a device without ray tracing
     // takes runs here too. Device-creation policy, so startup only.

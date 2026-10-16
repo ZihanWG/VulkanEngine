@@ -1345,6 +1345,20 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
 
     const double now = frameClock_.elapsedSeconds();
     if (now - lastGpuTimingPrintSeconds_ < 1.0) {
+        // Between the once-a-second blocks, a frame's timings only: no CPU
+        // breakdown and no culling report, which would make the log an order of
+        // magnitude larger for numbers nothing samples per frame. The full block
+        // below covers its own frame, so each frame is printed exactly once.
+        if (gpuTimingsEveryFrame_) {
+            std::ostringstream frameBlock;
+            frameBlock << std::fixed << std::setprecision(3) << "GPU timings:\n"
+                       << "  elapsed: " << now << " s\n"
+                       << "  Frame total: " << results.totalGpuTimeMs << " ms\n";
+            for (const renderer::GpuProfiler::ScopeResult& scope : results.scopes) {
+                frameBlock << "  " << scope.name << ": " << scope.elapsedMs << " ms\n";
+            }
+            Logger::info(frameBlock.str());
+        }
         return;
     }
 
@@ -1356,7 +1370,11 @@ void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
     emitOverdrawReadout(frameIndex);
 
     std::ostringstream message;
+    // The elapsed stamp is how tools/dev/measure_gpu.py discards its warm-up
+    // when blocks no longer arrive one a second. Seconds, not "ms", so it is
+    // never mistaken for a scope.
     message << std::fixed << std::setprecision(3) << "GPU timings:\n"
+            << "  elapsed: " << now << " s\n"
             << "  Frame total: " << results.totalGpuTimeMs << " ms\n";
     // CPU frame preparation next to the GPU frame total, because the pair is the
     // question -- prep that is comfortably inside the GPU frame is hidden, and
@@ -1909,6 +1927,15 @@ void Renderer::logImageMemoryAliasingProbe()
     } else {
         Logger::warn(message);
     }
+}
+
+void Renderer::freezeSceneAnimation()
+{
+    sceneAnimationFrozen_ = true;
+    animateLights_ = false;
+    animateSkinnedMesh_ = false;
+    Logger::info("Scene animation frozen by --freeze-animation: the demo lights, the skinned pose and animated "
+                 "object transforms hold their starting state; the frame clock still runs.");
 }
 
 void Renderer::useDeterministicFrameClock(double stepSeconds)

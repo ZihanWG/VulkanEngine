@@ -95,6 +95,7 @@ Raising the duration to 75 seconds — 63 samples — moved p10 onto the body an
 - **A refused frame-level control on a sub-1% real effect is worth diagnosing before believing.** Print the raw blocks; if the medians agree and only p10 disagrees, the gate tripped on the statistic.
 - **Do not switch statistics to rescue a series.** Raise the sample count instead. Re-reading the same data with the number that gives the answer you want is how a measurement protocol stops meaning anything.
 - Budget roughly 60+ samples when the frame total is the gate. The pass-level control is far more robust at the default and usually passes when the frame level does not.
+- `--every-frame` is the cheap way to get them: the same launch yields a frame rate's worth of samples a second rather than one. The "anomalously fast blocks" above are most likely the same thing Sponza later showed plainly -- frames the GPU spent entirely on this process -- though that was not checked on that scene; see [Two `MainHDRPass` modes](#two-mainhdrpass-modes-on-identical-work-the-gpu-is-shared).
 
 ### Which machine a number came from
 
@@ -192,6 +193,60 @@ frame-total drift **worse**. And it is not a ramp *within* a run — at the 900 
 each run is flat across its own thirds (7.447 / 7.427 / 7.344) and the whole
 drift is a step *between* runs, which is why reducing the heat the series
 generates is what fixed it rather than sampling longer.
+
+#### Two `MainHDRPass` modes on identical work: the GPU is shared
+
+At the 800 pin the gate came back: a cascades-against-traced series failed at
+**11.7%** (30-second runs) and **4.9%** (75-second runs), with the control's
+medians 1.0% and 1.4% apart. `MainHDRPass` on Sponza is bimodal frame to frame -- about
+4.25 and 4.9 ms with the cascades, 3.4 and 4.0 traced -- and p10 over ~64
+once-a-second samples is the 6th or 7th lowest of them, which is right where the
+lower mode runs out.
+
+A temporary per-frame log (not committed) settled what the two modes are, on a
+frozen Sponza (`--freeze-animation`, below) under the default MAILBOX present
+mode:
+
+- **The work is identical in every frame.** All 5789 frames of one run drew 67
+  visible draw items and 164927 triangles with the same LOD histogram, occlusion
+  culling active throughout. The fast frames split 2083/2070 across the two frame
+  slots. Nothing the renderer decides differs between the modes.
+- **It is a chunk of about 0.6 ms of wall-clock time, charged to whichever pass
+  is running.** In a third of the frames whose `MainHDRPass` was fast (282 of
+  835), the rest of the frame carried the same ~0.6 ms instead (1.5–1.6 ms
+  against 0.9–1.0). Timestamps measure elapsed GPU time, so time the GPU spends
+  on another process lands in the scope that is open; `MainHDRPass` is about 75%
+  of this frame, so it catches most of it.
+- **It arrives at a rate the renderer does not set.** Slow frames per second came
+  to ~125 under MAILBOX (169 fps), IMMEDIATE (167 fps) and FIFO (144 fps) alike.
+  Frames with no chunk anywhere were 15.5% of the MAILBOX run, against
+  1 − 144/169 = 14.9% if it arrives once per refresh of the 144 Hz monitor the
+  window was on.
+- **Hiding the window changed it but did not remove it** (+0.4 ms, a different
+  beat). Some twenty other processes hold graphics contexts on this GPU --
+  browser, overlay, launcher, the desktop shell. Which one it is was not
+  isolated; that it is outside the renderer is what matters, because it means
+  there is nothing in the engine to fix.
+
+`--deterministic` and the orbiting lights were not the cause, and freezing the
+animation does not remove it: a frozen run is just as bimodal. The frozen series
+passed (0.23%) because a frozen frame is cheaper, so slightly more of its frames
+escape the chunk (11–14% of frame totals against 8–11%), which moved p10 off the
+edge -- luck of the margin, not a fix.
+
+**The fix is the sample count, which is the rule two sections up.** `--every-frame`
+makes the renderer print a timing block for every frame, so a 75-second run
+yields ~10000 samples instead of ~64, the share of clean frames is pinned to a
+fraction of a percent, and p10 lands in the same place every run. The same
+cascades-against-traced series then held its control to **0.04%**, over 21744
+and 24795 samples a side, and gave the same answer the frozen once-a-second
+series had reached by luck (−0.691 against −0.641 ms frame total).
+
+One caveat survives it. p10 is a clean frame only while more than 10% of frames
+escape the chunk, which at 144 Hz means a frame rate above ~160 fps. A
+configuration slower than that has a contended p10. Both sides of an A/B
+normally fall on the same side of that line; if a change moves the frame rate
+across it, compare `Frame total` medians as well before believing the delta.
 
 #### What `MainHDRPass` is made of here: more than half is shadow filtering
 
@@ -409,7 +464,7 @@ What the harness enforces:
 - **Release only, and not a stale one.** It runs `build/release/VulkanEngine` and nothing else -- it checks that the path exists rather than inspecting the binary's configuration, so pointing that path at a Debug build would defeat it. Staleness is checked per artifact, not with one timestamp: each `.cpp`/`.h` against the binary, each shader against its own `.spv`, a shared `.glsl` against the oldest `.spv`, and `CMakeLists.txt` against `build.ninja`. This is a hard gate, not a warning: an SSR A/B once ran against a binary 17 commits behind and reported `SSRTrace` at 0.805 ms where the rebuilt binary read 0.158 ms.
 - **A settle period after `--build`.** A parallel build leaves the machine hot and the first control run would absorb all of it. The same series drifted 0.41% from a cold start and 28.5% when it began immediately after a build, so `--build` now idles 90 seconds first (`--settle`).
 - **A fixed scene and camera.** Both are left at their launch defaults, which is what makes separate launches comparable.
-- **A discarded warm-up.** 10 seconds by default, out of a 30-second launch, leaving roughly 20 samples.
+- **A discarded warm-up.** 10 seconds by default, out of a 30-second launch, leaving roughly 20 samples -- or a frame rate's worth per second with `--every-frame`.
 - **A low percentile, with min and max reported** so a delta smaller than the run-to-run spread is visible as such. `QUOTED_PERCENTILE` is p10, not the median: on this hardware the median got a delta's *sign* wrong where p10 did not (see below). Numbers quoted elsewhere in this repository as medians predate that change and are not comparable with p10 ones.
 - **Per-pass sample coverage.** Every row shows how many sampled frames actually contained that pass. A conditional pass is marked intermittent below 90% coverage, because its median is the cost of the frames that ran it rather than of the configuration. Without this, `DepthPyramid` — built in 1-2 frames out of 29 while occlusion culling is suspended — appeared as a clean `A only` row and read as a pass that one configuration had and the other did not. Coverage is judged only on the sides where the pass runs at all, so a pass genuinely absent from one configuration (`SSRTrace` with SSR off) is not mislabelled as sampling luck.
 - **A stability check on one-sided rows.** A pass present in only one configuration has no delta to test its control drift against, so the drift is compared with the pass's own median and the row is marked unstable above a quarter. `SSRTrace` reported 0.158 ms this way while moving 0.137 ms between the two control runs; it reads between 0.106 and 0.458 ms across runs of an identical build, so no single number is its cost. Passes that swing like this need far more than 30 samples.
@@ -427,6 +482,13 @@ python3 tools/dev/measure_gpu.py ab --b-set ssr.enabled=false --args --scene fra
 ```
 
 `--args` is an argparse `REMAINDER`, so it swallows everything after it: `--repeat`, `--warmup` and the rest must come before it. A hand-captured log still works and is still fed to `parse`.
+
+Two harness flags reach the renderer for every launch of a run or a series, A and B alike, and like `--repeat` they go before `--args`:
+
+- **`--every-frame`** passes `--gpu-timings-every-frame`: a compact `GPU timings:` block (elapsed time, frame total, the scopes) for every frame, with the full block still once a second, so each frame is printed exactly once. Use it whenever the frame total is the gate on a GPU other processes share -- which on this machine is always -- for the reason in [Two `MainHDRPass` modes](#two-mainhdrpass-modes-on-identical-work-the-gpu-is-shared). A 75-second run then logs about 7 MB.
+- **`--freeze-animation`** holds the demo lights, the skinned pose and animated object transforms at their starting state while the frame clock runs on, so exposure still adapts. The scene line reads `sponza+frozen`, and an `ab` series refuses to pool a frozen run with an animated one.
+
+Every block carries its frame-clock `elapsed:` time, and the warm-up is discarded by that stamp. A log from a binary older than the stamp falls back to dropping the first `--warmup` blocks, which was the same thing at one block a second.
 
 ## Frame Latency
 
