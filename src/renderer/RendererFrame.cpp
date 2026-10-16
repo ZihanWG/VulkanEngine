@@ -1847,9 +1847,11 @@ void Renderer::updateFrameData(uint32_t frameIndex)
     analyzeMeshletCulling(cameraFrustum);
     // Before the object data upload, which writes FrameConstants and so the flag
     // this latches. After buildDrawItems, whose frameDataIndex values become the
-    // instances' custom indices.
+    // instances' custom indices, and after the skinned mesh's update, whose pose
+    // digest decides whether its BLAS is refitted.
     frameRayTracedShadowsActive_ = rayTracedShadowSettings_.enabled && rayQueryShadingAvailable() &&
                                    rayTracingScene_.ready() && !allDrawItems_.empty();
+    frameRayTracingSceneBuildRequired_ = false;
     if (frameRayTracedShadowsActive_) {
         const ScopedCpuTimer timer = cpuScope(CpuScope::RayTracingInstances);
         writeRayTracingInstances(frameIndex);
@@ -1959,6 +1961,7 @@ void Renderer::resetFrameStateForEmptyScene(uint32_t frameIndex)
     frameSsrActive_ = false;
     frameGtaoActive_ = false;
     frameRayTracedShadowsActive_ = false;
+    frameRayTracingSceneBuildRequired_ = false;
     frameCascadesReplacedByRayTracing_ = false;
     frameProbeCaptureActive_ = false;
     irradianceProbes_.clearCaptureBatch();
@@ -2577,12 +2580,18 @@ void Renderer::writeRayTracingInstances(uint32_t frameIndex)
         renderer::RayTracingInstanceInput skinned{};
         skinned.skinned = true;
         skinned.jointPalette = skinnedMesh_.jointPaletteAddress(frameIndex);
+        // The digest of that same palette, taken by the update() that uploaded
+        // it this frame: what tells the scene whether the BLAS has to move.
+        skinned.skinnedPose = skinnedMesh_.poseHash();
         skinned.model = skinnedMesh_.modelMatrix();
         skinned.frameDataIndex = kSkinnedObjectFrameSlot;
         skinned.kind = renderer::RayTracedCasterKind::Opaque;
         rayTracingInstanceInputs_.push_back(skinned);
     }
-    rayTracingScene_.writeInstances(frameIndex, rayTracingInstanceInputs_);
+    frameRayTracingSceneBuildRequired_ =
+        rayTracingScene_
+            .writeInstances(frameIndex, rayTracingInstanceInputs_, rayTracedShadowSettings_.rebuildEveryFrame)
+            .build;
 }
 
 } // namespace ve

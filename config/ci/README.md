@@ -91,12 +91,16 @@ wrong — several spell out the whole configuration they mean, such as
 really about — but a leg whose *every* key is already the default is a no-op and
 the coverage check rejects it.
 
-Two things a leg cannot express, and take command-line flags instead:
+Three things a leg cannot express, and take command-line flags instead:
 
 - **VSM stages** (`--vsm mark|render|shadows`). The page pool is allocated in the
   renderer constructor and gated on the marking stage, so it cannot be reached by
   a setting applied afterwards.
 - **Scene presets** (`--scene ...`). Not persisted settings at all.
+- **A still scene** (`--freeze-animation`). Under `--deterministic` the demo
+  lights, the skinned pose and the animated objects move every frame, so a frame
+  that has nothing to rebuild -- such as one that keeps the ray-traced shadows'
+  acceleration structure -- never happens without it.
 
 ## Running the sweep locally
 

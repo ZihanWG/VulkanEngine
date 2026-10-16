@@ -1037,6 +1037,12 @@ void Renderer::drawShadowsDebugUi()
                                     ? "Cascades: skipped this frame; their preview shows the last drawn."
                                     : "Cascades: still rendered, something else reads them.");
         }
+        ImGui::Checkbox("Rebuild the TLAS every frame", &rayTracedShadowSettings_.rebuildEveryFrame);
+        ImGui::SetItemTooltip("Off, a frame whose instances and skinned pose match what the structure\n"
+                              "already holds keeps it and records no build. On, every traced frame\n"
+                              "rebuilds and refits as if everything had moved: the A/B that prices the\n"
+                              "rebuild, and a check on the change detection, which must not change\n"
+                              "the image.");
         if (ImGui::SliderFloat("Ray normal offset", &rayTracedShadowSettings_.normalOffset, 0.0f, 0.2f, "%.3f")) {
             clampRuntimeSettings();
         }
@@ -1066,6 +1072,10 @@ void Renderer::drawShadowsDebugUi()
                         stats.instances,
                         stats.alphaTestedInstances,
                         isRayTracedShadowActive() ? "" : " -- last frame that traced");
+            ImGui::Text("TLAS: %s; %llu frame(s) rebuilt, %llu kept",
+                        stats.topLevelKeptLastFrame ? "kept" : "rebuilt",
+                        static_cast<unsigned long long>(stats.topLevelBuilds),
+                        static_cast<unsigned long long>(stats.topLevelKeeps));
             if (rayTracingScene_.hasSkinned()) {
                 ImGui::Text("Skinned caster: %s, %llu build(s), %llu refit(s)",
                             stats.skinnedInstance ? "in the scene" : "not in the last traced frame",

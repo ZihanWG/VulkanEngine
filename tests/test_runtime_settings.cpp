@@ -115,6 +115,7 @@ RuntimeSettings makeNonDefaultSettings()
 
     settings.rayTracedShadows.enabled = true;
     settings.rayTracedShadows.renderCascades = true;
+    settings.rayTracedShadows.rebuildEveryFrame = true;
     settings.rayTracedShadows.normalOffset = 0.05f;
     settings.rayTracedShadows.pixelFootprintOffset = 2.5f;
     settings.rayTracedShadows.debugVisibility = true;
@@ -163,6 +164,7 @@ TEST_CASE("RuntimeSettings save -> load round-trips every persisted field", "[se
 
     CHECK(loaded.rayTracedShadows.enabled == original.rayTracedShadows.enabled);
     CHECK(loaded.rayTracedShadows.renderCascades == original.rayTracedShadows.renderCascades);
+    CHECK(loaded.rayTracedShadows.rebuildEveryFrame == original.rayTracedShadows.rebuildEveryFrame);
     CHECK(loaded.rayTracedShadows.normalOffset == Catch::Approx(original.rayTracedShadows.normalOffset));
     CHECK(loaded.rayTracedShadows.pixelFootprintOffset ==
           Catch::Approx(original.rayTracedShadows.pixelFootprintOffset));

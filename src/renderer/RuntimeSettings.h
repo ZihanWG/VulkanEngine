@@ -564,6 +564,13 @@ struct RayTracedShadowSettings {
     // exists for the A/B that separates what tracing costs from what skipping
     // the cascades saves.
     bool renderCascades = false;
+    // Rebuild the top-level acceleration structure, refit the skinned caster
+    // and rewrite the instances on every frame that traces, as if everything
+    // had moved. Off, a frame whose instances and skinned pose match what the
+    // structure already holds keeps it. For the A/B that prices the rebuild,
+    // and as the control the change detection is checked against: both settings
+    // must render the same image.
+    bool rebuildEveryFrame = false;
     // Ray origin offset along the surface normal, in world units, at any
     // distance. What keeps a flat surface from hitting itself.
     float normalOffset = 0.02f;

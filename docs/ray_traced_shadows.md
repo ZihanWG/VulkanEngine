@@ -3,13 +3,14 @@
 The main pass can ask the scene's acceleration structure whether the sun is
 visible instead of reading the cascades or the virtual shadow map: one ray per
 shaded pixel, built with `VK_KHR_ray_query` from the fragment shader, against a
-top-level structure rebuilt every frame from the draw items that cast. The
+top-level structure built from the draw items that cast and rebuilt only on
+frames where one of them changed. The
 shadow maps stay as the fallback, and the cascades keep rendering whenever
 something besides the main pass reads them.
 
 **Status: correct and off by default.** Everything that casts into the
 cascades casts here: static geometry, opaque and alpha-tested, and the skinned
-mesh, refitted every frame. On a frame that traces, the cascades are not drawn
+mesh, refitted whenever its pose moves. On a frame that traces, the cascades are not drawn
 unless something else reads them (below).
 
 `rayTracedShadows.enabled` in the runtime settings, or the *Ray-traced sun
@@ -282,13 +283,15 @@ The shadow is hard: one ray toward a light with no extent.
 | --- | --- | --- |
 | `rayTracedShadows.enabled` | false | |
 | `rayTracedShadows.renderCascades` | false | keep drawing the cascades while tracing |
+| `rayTracedShadows.rebuildEveryFrame` | false | rebuild the TLAS and refit the skinned BLAS on every traced frame, as before change detection; the A/B control and the image control for it |
 | `rayTracedShadows.normalOffset` | 0.02 | world units, clamped to [0, 1] |
 | `rayTracedShadows.pixelFootprintOffset` | 1.0 | pixels, clamped to [0, 16] |
 | `rayTracedShadows.debugVisibility` | false | the traced term alone, white lit |
 | `rayTracedShadows.debugCompareCascades` | false | red where only the ray finds an occluder, blue where only the cascades do; wins over the visibility view |
 
 The CI sweep renders it enabled (cascades skipped), enabled with both debug
-views and `renderCascades`, and enabled with `--disable-ray-query`
+views, `renderCascades` and `rebuildEveryFrame`, enabled on a still scene
+(`--freeze-animation`, which keeps the TLAS), and enabled with `--disable-ray-query`
 (`config/ci/`). Mesa's lavapipe exposes all three extensions, so the first two
 run the traced path in CI, under validation.
 
@@ -344,8 +347,16 @@ change and is recorded here because this path is what exposed it.
   those frames tracing adds its cost without removing theirs.
 - **Virtual shadow map pages still render** when VSM is enabled alongside
   tracing, though nothing samples them.
-- **The TLAS is rebuilt every frame that traces,** static scene or not: 0.233
-  ms on Sponza at the 800 MHz pin, a third of what tracing saves there.
+- **One moving caster rebuilds the whole TLAS.** A traced frame keeps the
+  structure only when its instance records match the last build byte for byte
+  and the skinned pose (`SkinnedMesh::poseHash`, a 64-bit digest) has not moved
+  (`RayTracingTopLevelTracker`). Kept frames declare and record no
+  `RayTracingSceneBuild`; the graph barrier recorded after the last real build
+  orders their rays, and api_dump shows no build, AS barrier or TLAS buffer
+  barrier on them. Frozen default/sunlit/stress and Sponza (lights animated or
+  not) keep 39 of 40 frames; the animated default scenes rebuild every frame.
+  Captures match the build before this change and `rebuildEveryFrame` at
+  0/921600; a deliberately stale TLAS differs by 206-10847 pixels.
 - **Shadow terminator on coarse spheres.** The comparison view shows a red rim
   where the ray crosses the faceted geometry just past the smooth terminator.
   It sits where `N.L` is near zero, so it is barely visible in the shaded image

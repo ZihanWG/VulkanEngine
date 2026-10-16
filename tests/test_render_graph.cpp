@@ -470,6 +470,22 @@ TEST_CASE("A build followed by a trace emits a barrier", "[rendergraph][barriers
     CHECK_FALSE(bufferBarrierRequired(true, RGAccess::AccelerationStructureRead, trace.access, trace.access));
 }
 
+TEST_CASE("A frame that keeps the acceleration structure records no barrier for it", "[rendergraph][barriers]")
+{
+    using ve::renderer::bufferAccessState;
+    using ve::renderer::bufferBarrierRequired;
+    using ve::renderer::RGAccess;
+
+    // No build is declared on such a frame, so the structure's first use is a
+    // trace of an imported buffer nothing has touched this frame. The build it
+    // reads ran on an earlier frame, and that frame's barrier after it already
+    // covers every later command on the queue; a second one here would only
+    // stall the pass that needs it least.
+    const auto trace = bufferAccessState(RGAccess::AccelerationStructureRead);
+    CHECK_FALSE(bufferBarrierRequired(false, RGAccess::Unknown, VK_ACCESS_2_NONE, trace.access));
+    CHECK_FALSE(bufferBarrierRequired(true, RGAccess::AccelerationStructureRead, trace.access, trace.access));
+}
+
 TEST_CASE("An image access on a buffer emits no barrier", "[rendergraph][barriers]")
 {
     using ve::renderer::bufferAccessState;
@@ -651,6 +667,19 @@ TEST_CASE("Reading an imported resource before writing it is fine", "[rendergrap
     const std::vector<RGResourceValidationInfo> textures{kImported};
 
     CHECK(validateDeclarations(passes, textures, {}).empty());
+}
+
+TEST_CASE("Tracing a kept acceleration structure is a legal declaration", "[rendergraph][declarations]")
+{
+    // A frame that keeps the TLAS declares its traces and no build. That is
+    // only legal because the structure is imported: as a transient it would be
+    // a read of something nothing produced.
+    std::vector<RenderPassNode> passes{
+        pass("MainHDRPass", {buffer(0, RenderResourceAccess::Read)}, true),
+        pass("TransparentPass", {buffer(0, RenderResourceAccess::Read)}, true),
+    };
+    CHECK(validateDeclarations(passes, {}, std::vector<RGResourceValidationInfo>{kImported}).empty());
+    CHECK_FALSE(validateDeclarations(passes, {}, std::vector<RGResourceValidationInfo>{kTransient}).empty());
 }
 
 TEST_CASE("A declared history read is not an issue", "[rendergraph][declarations]")

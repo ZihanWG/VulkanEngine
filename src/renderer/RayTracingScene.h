@@ -12,13 +12,18 @@
 //   every scene preset draws the built-in cube and sphere, and the sample scene
 //   is imported at startup only -- so nothing rebuilds them. A BLAS holds its
 //   own copy of the geometry; the mesh buffers are only its build input.
-// - TLAS: ONE structure, rebuilt in place by every frame that traces. It is
-//   bound once into the bindless environment descriptor set, which is shared by
-//   every material and cannot be rewritten while a frame in flight uses it, so a
-//   copy per frame slot would need a descriptor per slot. The shadow map works
-//   the same way: one image, redrawn every frame, read by the frame before.
+// - TLAS: ONE structure, rebuilt in place by a frame that traces when what it
+//   would hold differs from what it holds (RayTracingTopLevelTracker), and kept
+//   otherwise. It is bound once into the bindless environment descriptor set,
+//   which is shared by every material and cannot be rewritten while a frame in
+//   flight uses it, so a copy per frame slot would need a descriptor per slot.
+//   The shadow map works the same way: one image, redrawn when it changes, read
+//   by every frame after.
 // - Instance and geometry-record buffers: one per frame slot, host-visible,
-//   written by the CPU after that slot's fence has signalled.
+//   written by the CPU after that slot's fence has signalled, and only when the
+//   slot holds an older generation than the frame traces. The geometry records
+//   are read by the frame's rays, so a slot is brought up to date even on a
+//   frame that keeps the TLAS.
 // - Scratch: one buffer, shared by every build on the graphics queue.
 //
 // Synchronization (the edges, not just the barriers):
@@ -32,6 +37,11 @@
 // - this frame's build -> this frame's ray queries: the render graph, from the
 //   AccelerationStructureBuild / AccelerationStructureRead declarations on the
 //   TLAS storage buffer.
+// - an earlier frame's build -> the ray queries of a frame that keeps the TLAS:
+//   the barrier the graph recorded after that build. Its second scope is every
+//   later command on the queue, and the kept structure is not written again
+//   until a build whose entry barrier waits for these reads, so the keeping
+//   frame declares only the reads and records no barrier of its own.
 // - mesh upload (transfer) -> BLAS build: a barrier at the top of the one-time
 //   build command buffer, whose first scope covers the earlier upload
 //   submissions on the same queue.
@@ -56,6 +66,7 @@
 #include <filesystem>
 #include <span>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace ve::rhi {
@@ -79,10 +90,14 @@ struct RayTracingInstanceInput {
     uint32_t frameDataIndex = 0;
     RayTracedCasterKind kind = RayTracedCasterKind::Opaque;
     // The skinned caster instead of a mesh primitive: mesh and index range are
-    // ignored, the instance references the skinned BLAS, and this frame's build
-    // pre-skins and refits it from jointPalette first.
+    // ignored, the instance references the skinned BLAS, and the build
+    // pre-skins and refits it from jointPalette first whenever skinnedPose
+    // differs from the pose it was last refitted to.
     bool skinned = false;
     VkDeviceAddress jointPalette = 0;
+    // SkinnedMesh::poseHash of the palette jointPalette holds. A skinned input
+    // without one casts nothing, like one without a palette.
+    uint64_t skinnedPose = 0;
 };
 
 struct RayTracingSceneStats {
@@ -103,6 +118,11 @@ struct RayTracingSceneStats {
     bool skinnedInstance = false;
     uint64_t skinnedBuilds = 0;
     uint64_t skinnedRefits = 0;
+    // Frames that traced since startup, by whether they rebuilt the TLAS or
+    // kept the one an earlier frame built, and which of the two the last one did.
+    uint64_t topLevelBuilds = 0;
+    uint64_t topLevelKeeps = 0;
+    bool topLevelKeptLastFrame = false;
 };
 
 class RayTracingScene final {
@@ -150,14 +170,20 @@ public:
         return ready_;
     }
 
-    // Writes this frame slot's instances and geometry records. Inputs whose
-    // geometry has no BLAS are skipped and counted; past maxInstances the rest
-    // are dropped and counted the same way. Returns the instance count the next
-    // recordTopLevelBuild for this slot will build.
-    uint32_t writeInstances(uint32_t frameIndex, std::span<const RayTracingInstanceInput> inputs);
+    // Turns this frame's inputs into instance records and decides from them
+    // what the frame has to record: whether the TLAS is rebuilt, whether the
+    // skinned BLAS is refitted first, and whether this slot's instance and
+    // geometry-record buffers are written. Inputs whose geometry has no BLAS
+    // are skipped and counted; past maxInstances the rest are dropped and
+    // counted the same way. rebuildEveryFrame does all three every frame.
+    [[nodiscard]] RayTracingTopLevelPlan writeInstances(uint32_t frameIndex,
+                                                        std::span<const RayTracingInstanceInput> inputs,
+                                                        bool rebuildEveryFrame);
 
-    // The entry barrier, the skinned caster's pre-skin and refit when this slot
-    // holds it, then a full TLAS build over the instances last written to it.
+    // What the last writeInstances for this slot planned: the entry barrier,
+    // the skinned caster's pre-skin and refit when planned, then a full TLAS
+    // build over the instances the slot holds. Records nothing when the plan
+    // kept the structure, which is also when the renderer declares no pass.
     void recordTopLevelBuild(VkCommandBuffer commandBuffer, uint32_t frameIndex);
 
     [[nodiscard]] VkAccelerationStructureKHR topLevelHandle() const
@@ -213,6 +239,14 @@ private:
     std::vector<FrameBuffers> frames_;
     RayTracingSkinnedCaster skinned_;
     RayTracingSceneStats stats_{};
+    // This frame's instance records and geometry rows, built in cached memory:
+    // the comparison reads them, and a frame that keeps the TLAS never copies
+    // them into the write-combined slot buffers at all.
+    std::vector<VkAccelerationStructureInstanceKHR> stagedInstances_;
+    std::vector<std::pair<uint32_t, RayTracingGeometryRecord>> stagedRecords_;
+    RayTracingTopLevelTracker topLevelTracker_;
+    RayTracingTopLevelPlan plan_{};
+    uint32_t planFrameIndex_ = 0;
     bool ready_ = false;
 };
 

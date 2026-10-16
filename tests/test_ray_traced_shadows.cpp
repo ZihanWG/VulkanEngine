@@ -8,8 +8,13 @@
 #include <glm/geometric.hpp>
 #include <glm/vec4.hpp>
 
+#include <array>
 #include <cmath>
+#include <cstddef>
+#include <cstring>
+#include <initializer_list>
 #include <numbers>
+#include <vector>
 
 using ve::renderer::alignUpPowerOfTwo;
 using ve::renderer::RayTracedCasterKind;
@@ -196,4 +201,303 @@ TEST_CASE("Ray-traced shadow settings clamp into their ranges", "[raytracing][se
     ve::clampRayTracedShadowSettings(clamped);
     CHECK(clamped == defaults);
     CHECK_FALSE(defaults.enabled);
+}
+
+// The top-level structure's change detection. The tracker sees bytes, so the
+// tests stand in short word sequences for the instance records; what matters is
+// that equal content keeps the structure and any difference rebuilds it.
+namespace {
+
+using ve::renderer::RayTracingTopLevelPlan;
+using ve::renderer::RayTracingTopLevelTracker;
+
+std::vector<std::byte> instanceBytes(std::initializer_list<uint32_t> words)
+{
+    std::vector<std::byte> bytes(words.size() * sizeof(uint32_t));
+    size_t offset = 0;
+    for (const uint32_t word : words) {
+        std::memcpy(bytes.data() + offset, &word, sizeof(word));
+        offset += sizeof(word);
+    }
+    return bytes;
+}
+
+// One planned frame whose build is recorded, which is what every frame of a
+// run that does not throw between frame prep and recording looks like.
+RayTracingTopLevelPlan tracedFrame(RayTracingTopLevelTracker& tracker,
+                                   uint32_t slot,
+                                   const std::vector<std::byte>& instances,
+                                   uint64_t pose = 0,
+                                   bool rebuildEveryFrame = false)
+{
+    const RayTracingTopLevelPlan plan = tracker.plan(slot, instances, pose, rebuildEveryFrame);
+    tracker.commitBuild();
+    return plan;
+}
+
+} // namespace
+
+TEST_CASE("The first traced frame builds, refits and writes its slot", "[raytracing][tlas]")
+{
+    // The structure built at startup is empty, so whatever the first frame
+    // traces has to be built -- even when it is empty too.
+    RayTracingTopLevelTracker tracker;
+    tracker.reset(2);
+    const RayTracingTopLevelPlan first = tracedFrame(tracker, 0, instanceBytes({1, 2, 3}), 7);
+    CHECK(first.build);
+    CHECK(first.refitSkinned);
+    CHECK(first.writeSlot);
+
+    RayTracingTopLevelTracker empty;
+    empty.reset(2);
+    const RayTracingTopLevelPlan nothing = tracedFrame(empty, 0, {});
+    CHECK(nothing.build);
+    CHECK_FALSE(nothing.refitSkinned);
+}
+
+TEST_CASE("An unchanged frame keeps the structure and catches up only a stale slot", "[raytracing][tlas]")
+{
+    RayTracingTopLevelTracker tracker;
+    tracker.reset(2);
+    const std::vector<std::byte> scene = instanceBytes({10, 20, 30, 40});
+    REQUIRE(tracedFrame(tracker, 0, scene).build);
+
+    // Slot 1 has never been written, and the frame's rays read its geometry
+    // records whether or not the structure is rebuilt.
+    const RayTracingTopLevelPlan second = tracedFrame(tracker, 1, scene);
+    CHECK_FALSE(second.build);
+    CHECK_FALSE(second.refitSkinned);
+    CHECK(second.writeSlot);
+
+    // Both slots hold this generation now: nothing left to do.
+    for (uint32_t frame = 0; frame < 4; ++frame) {
+        const RayTracingTopLevelPlan steady = tracedFrame(tracker, frame % 2, scene);
+        CHECK_FALSE(steady.build);
+        CHECK_FALSE(steady.writeSlot);
+    }
+}
+
+TEST_CASE("Any difference in the instance records rebuilds the structure", "[raytracing][tlas]")
+{
+    // Stand-ins for the fields the bytes carry: a moved transform, a custom
+    // index that moved because the draw list was reordered, an instance flag,
+    // an instance dropped, one added, and all of them gone.
+    const std::vector<std::byte> scene = instanceBytes({1, 2, 3, 4});
+    const std::vector<std::vector<std::byte>> changes{
+        instanceBytes({9, 2, 3, 4}),
+        instanceBytes({1, 2, 3, 5}),
+        instanceBytes({1, 2, 3u | 0x80000000u, 4}),
+        instanceBytes({1, 2, 3}),
+        instanceBytes({1, 2, 3, 4, 0}),
+        {},
+    };
+    for (const std::vector<std::byte>& changed : changes) {
+        RayTracingTopLevelTracker tracker;
+        tracker.reset(2);
+        REQUIRE(tracedFrame(tracker, 0, scene).build);
+        REQUIRE_FALSE(tracedFrame(tracker, 1, scene).build);
+
+        const RayTracingTopLevelPlan plan = tracedFrame(tracker, 0, changed);
+        CHECK(plan.build);
+        CHECK(plan.writeSlot);
+        CHECK_FALSE(plan.refitSkinned);
+        // And once built, the new content is kept like the old.
+        CHECK_FALSE(tracedFrame(tracker, 1, changed).build);
+    }
+}
+
+TEST_CASE("A moving pose refits and rebuilds; a held one does neither", "[raytracing][tlas]")
+{
+    RayTracingTopLevelTracker tracker;
+    tracker.reset(2);
+    const std::vector<std::byte> scene = instanceBytes({5, 6});
+    REQUIRE(tracedFrame(tracker, 0, scene, 100).refitSkinned);
+
+    // The instance records do not move with the pose -- same BLAS, same
+    // transform -- which is exactly why the pose is tracked apart from them.
+    const RayTracingTopLevelPlan moved = tracedFrame(tracker, 1, scene, 101);
+    CHECK(moved.refitSkinned);
+    CHECK(moved.build);
+
+    const RayTracingTopLevelPlan held = tracedFrame(tracker, 0, scene, 101);
+    CHECK_FALSE(held.refitSkinned);
+    CHECK_FALSE(held.build);
+    // Slot 0 was written on the first frame and the records have not moved
+    // since, so a pose alone never costs a slot write.
+    CHECK_FALSE(held.writeSlot);
+}
+
+TEST_CASE("The skinned caster coming back in the pose it left rebuilds without a refit", "[raytracing][tlas]")
+{
+    // Hiding the mesh drops its instance, which changes the content; showing it
+    // again in the same pose changes it back. The BLAS was never touched in
+    // between, so it still holds that pose -- only the TLAS has to move.
+    RayTracingTopLevelTracker tracker;
+    tracker.reset(2);
+    const std::vector<std::byte> withSkinned = instanceBytes({1, 2, 99});
+    const std::vector<std::byte> without = instanceBytes({1, 2});
+    REQUIRE(tracedFrame(tracker, 0, withSkinned, 42).refitSkinned);
+
+    const RayTracingTopLevelPlan hidden = tracedFrame(tracker, 1, without, 0);
+    CHECK(hidden.build);
+    CHECK_FALSE(hidden.refitSkinned);
+
+    const RayTracingTopLevelPlan shown = tracedFrame(tracker, 0, withSkinned, 42);
+    CHECK(shown.build);
+    CHECK_FALSE(shown.refitSkinned);
+}
+
+TEST_CASE("Content that returns to an earlier state is still rebuilt", "[raytracing][tlas]")
+{
+    // The structure holds the latest build, not every build: A, then B, then A
+    // again has to rebuild A. So does the slot that last held A, because it was
+    // written for an older generation than the one now traced.
+    RayTracingTopLevelTracker tracker;
+    tracker.reset(2);
+    const std::vector<std::byte> a = instanceBytes({1});
+    const std::vector<std::byte> b = instanceBytes({2});
+    REQUIRE(tracedFrame(tracker, 0, a).build);
+    REQUIRE(tracedFrame(tracker, 1, b).build);
+    const RayTracingTopLevelPlan back = tracedFrame(tracker, 0, a);
+    CHECK(back.build);
+    CHECK(back.writeSlot);
+}
+
+TEST_CASE("A build that was planned and never recorded is planned again", "[raytracing][tlas]")
+{
+    // Frame prep plans, recording commits. A frame that throws in between built
+    // nothing, and the next one must not trust that it did.
+    RayTracingTopLevelTracker tracker;
+    tracker.reset(2);
+    const std::vector<std::byte> scene = instanceBytes({3, 1, 4});
+    REQUIRE(tracker.plan(0, scene, 8, false).build);
+
+    const RayTracingTopLevelPlan retry = tracker.plan(1, scene, 8, false);
+    CHECK(retry.build);
+    CHECK(retry.refitSkinned);
+    tracker.commitBuild();
+
+    // A second commit with nothing planned changes nothing.
+    tracker.commitBuild();
+    CHECK_FALSE(tracker.plan(0, scene, 8, false).build);
+}
+
+TEST_CASE("Rebuilding every frame does all of it every frame", "[raytracing][tlas]")
+{
+    // The setting reproduces what every frame did before the tracker, which is
+    // what makes it the control for an A/B and for the image.
+    RayTracingTopLevelTracker tracker;
+    tracker.reset(2);
+    const std::vector<std::byte> scene = instanceBytes({1, 1, 2, 3, 5});
+    for (uint32_t frame = 0; frame < 6; ++frame) {
+        const RayTracingTopLevelPlan plan = tracedFrame(tracker, frame % 2, scene, 77, true);
+        CHECK(plan.build);
+        CHECK(plan.refitSkinned);
+        CHECK(plan.writeSlot);
+    }
+    // Without the skinned caster there is nothing to refit, setting or not.
+    CHECK_FALSE(tracedFrame(tracker, 0, scene, 0, true).refitSkinned);
+    // And turning it off keeps what the last forced build left.
+    CHECK_FALSE(tracedFrame(tracker, 1, scene, 0, false).build);
+}
+
+TEST_CASE("Reset forgets the structure and every slot", "[raytracing][tlas]")
+{
+    RayTracingTopLevelTracker tracker;
+    tracker.reset(2);
+    const std::vector<std::byte> scene = instanceBytes({4, 4});
+    tracedFrame(tracker, 0, scene, 5);
+    tracedFrame(tracker, 1, scene, 5);
+    REQUIRE_FALSE(tracedFrame(tracker, 0, scene, 5).build);
+
+    tracker.reset(2);
+    const RayTracingTopLevelPlan after = tracedFrame(tracker, 0, scene, 5);
+    CHECK(after.build);
+    CHECK(after.refitSkinned);
+    CHECK(after.writeSlot);
+}
+
+TEST_CASE("Following the plans keeps the structure, the BLAS and every slot current", "[raytracing][tlas]")
+{
+    // A model of what the GPU holds, driven only by the plans: a slot changes
+    // when the plan writes it, the BLAS when it refits, the structure when it
+    // builds -- from the slot, as the real build reads the slot's instance
+    // buffer. Over a long random run of content, pose, slot, the setting, and
+    // frames whose recording never happens, every frame that ran must trace
+    // exactly what it meant to.
+    const std::vector<std::vector<std::byte>> contents{
+        instanceBytes({1, 2, 3}), instanceBytes({1, 2, 4}), instanceBytes({7}), {}};
+    const std::array<uint64_t, 3> poses{0, 11, 12};
+    constexpr uint32_t kSlots = 3;
+    constexpr uint32_t kFrames = 4000;
+
+    RayTracingTopLevelTracker tracker;
+    tracker.reset(kSlots);
+    std::array<std::vector<std::byte>, kSlots> slots{};
+    std::array<bool, kSlots> slotWritten{};
+    std::vector<std::byte> structure;
+    bool structureBuilt = false;
+    uint64_t blasPose = 0;
+    uint32_t builds = 0;
+    uint32_t mismatches = 0;
+
+    // A fixed linear congruential sequence rather than <random>, whose
+    // distributions differ between standard libraries.
+    uint32_t state = 12345u;
+    const auto next = [&state](uint32_t range) {
+        state = state * 1664525u + 1013904223u;
+        return (state >> 8) % range;
+    };
+
+    size_t content = 0;
+    uint64_t pose = poses[1];
+    for (uint32_t frame = 0; frame < kFrames; ++frame) {
+        // Mostly still frames, which is the case being optimised.
+        if (next(8) == 0) {
+            content = next(static_cast<uint32_t>(contents.size()));
+        }
+        if (next(10) == 0) {
+            pose = poses[next(static_cast<uint32_t>(poses.size()))];
+        }
+        const uint32_t slot = frame % kSlots;
+        const bool forced = next(50) == 0;
+        const bool recorded = next(40) != 0;
+
+        const RayTracingTopLevelPlan plan = tracker.plan(slot, contents[content], pose, forced);
+        if (plan.refitSkinned && (!plan.build || pose == 0)) {
+            ++mismatches;
+        }
+        // The CPU writes the slot in frame prep, recorded or not.
+        if (plan.writeSlot) {
+            slots[slot] = contents[content];
+            slotWritten[slot] = true;
+        }
+        if (!recorded) {
+            continue;
+        }
+        if (plan.build) {
+            if (plan.refitSkinned) {
+                blasPose = pose;
+            }
+            if (!slotWritten[slot]) {
+                ++mismatches;
+            }
+            structure = slots[slot];
+            structureBuilt = true;
+            ++builds;
+            tracker.commitBuild();
+        }
+
+        // What this frame's rays see: the structure, the slot's geometry
+        // records, and the skinned BLAS.
+        if (!structureBuilt || structure != contents[content] || slots[slot] != contents[content] ||
+            (pose != 0 && blasPose != pose)) {
+            ++mismatches;
+        }
+    }
+    CHECK(mismatches == 0u);
+    // And it did skip: a change lands on about one frame in five here, so far
+    // fewer builds than frames.
+    CHECK(builds > 0u);
+    CHECK(builds < kFrames / 2u);
 }

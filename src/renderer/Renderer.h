@@ -297,6 +297,12 @@ public:
         return renderGraph_.backstopSummary();
     }
 
+    // One line for the whole run: how many traced frames rebuilt the TLAS and
+    // how many kept it, and how often the skinned BLAS was built and refitted.
+    // Nothing on a run where the scene never became traceable. A capture omits
+    // the debug UI that shows the same counts, so a scripted run needs this.
+    void logRayTracingSceneSummary() const;
+
 private:
     static constexpr uint32_t kMaxShadowCascades = renderer::kMaxShadowCascades;
     static constexpr size_t kDebugHistoryCapacity = 240;
@@ -924,6 +930,7 @@ private:
     // the instances are written, and read by the FrameConstants upload, the
     // graph declaration and the recorder, which must all agree.
     [[nodiscard]] bool isRayTracedShadowActive() const;
+    // Also latches frameRayTracingSceneBuildRequired_ from what it wrote.
     void writeRayTracingInstances(uint32_t frameIndex);
     // Whether anything besides the main pass reads the cascaded shadow map this
     // frame: fog injection, probe capture, the ray-traced comparison view, the
@@ -1822,6 +1829,11 @@ private:
     bool frameSsrActive_ = false;
     bool frameGtaoActive_ = false;
     bool frameRayTracedShadowsActive_ = false;
+    // This frame traces and its instances differ from what the TLAS holds, so
+    // it rebuilds. Gates the build pass's declaration and its recording, which
+    // have to agree; a frame that traces without it declares the reads alone and
+    // traces the structure an earlier frame built.
+    bool frameRayTracingSceneBuildRequired_ = false;
     // This frame traces and nothing else reads the cascades, so they are not
     // drawn. Gates the cascade pass's declaration and its recording, which have
     // to agree, and leaves the cascade cache's resident keys alone: the image

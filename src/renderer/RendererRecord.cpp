@@ -1135,6 +1135,8 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             isVsmPageRenderingActive() ? static_cast<uint32_t>(virtualShadowMap_.dirtyPages().size()) : 0u,
         .volumetricFogEnabled = isVolumetricFogActive(),
         .rayTracedShadowsEnabled = isRayTracedShadowActive(),
+        // The same flag recordRayTracingSceneBuild returns on.
+        .rayTracingSceneBuildEnabled = isRayTracedShadowActive() && frameRayTracingSceneBuildRequired_,
         .irradianceProbeUpdateEnabled = isIrradianceProbeUpdateActive(),
         .probeCaptureEnabled = frameProbeCaptureActive_,
         // GpuCulling's own answer to "will recordMainCull record anything", not a
@@ -2915,7 +2917,10 @@ void Renderer::recordIrradianceProbePasses(VkCommandBuffer commandBuffer)
 
 void Renderer::recordRayTracingSceneBuild(VkCommandBuffer commandBuffer)
 {
-    if (!isRayTracedShadowActive()) {
+    // The pass is declared under the same two flags, and this unit runs even
+    // when it is not (as part of the unit before it), so returning here is what
+    // keeps a frame that keeps the structure from recording an undeclared pass.
+    if (!isRayTracedShadowActive() || !frameRayTracingSceneBuildRequired_) {
         return;
     }
     const renderer::GpuProfileScope profileScope(gpuProfiler_, currentFrame_, commandBuffer, "RayTracingSceneBuild");

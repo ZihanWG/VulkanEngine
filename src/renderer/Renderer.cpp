@@ -1334,6 +1334,23 @@ void Renderer::emitOverdrawReadout(uint32_t frameIndex)
     Logger::info(message.str());
 }
 
+void Renderer::logRayTracingSceneSummary() const
+{
+    if (!rayTracingScene_.ready()) {
+        return;
+    }
+    const renderer::RayTracingSceneStats& stats = rayTracingScene_.stats();
+    if (stats.topLevelBuilds + stats.topLevelKeeps == 0) {
+        return;
+    }
+    std::ostringstream message;
+    message << "Ray-traced shadows: top-level builds " << stats.topLevelBuilds << ", kept " << stats.topLevelKeeps
+            << " of " << (stats.topLevelBuilds + stats.topLevelKeeps) << " traced frames; skinned BLAS builds "
+            << stats.skinnedBuilds << ", refits " << stats.skinnedRefits
+            << (rayTracedShadowSettings_.rebuildEveryFrame ? " (rebuildEveryFrame)" : "");
+    Logger::info(message.str());
+}
+
 void Renderer::tryPrintGpuTimings(uint32_t frameIndex)
 {
     renderer::GpuProfiler::FrameResults results{};
