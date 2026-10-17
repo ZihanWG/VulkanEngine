@@ -136,6 +136,7 @@ PAIRS: list[tuple[str, str, list[str]]] = [
             "kRtShadowFlagScreenMask",
             "kRtShadowFlagDebugMaskSource",
             "kRtShadowFlagDebugHitDistance",
+            "kRtShadowFlagDebugPenumbraRadius",
         ],
     ),
     (
@@ -148,6 +149,8 @@ PAIRS: list[tuple[str, str, list[str]]] = [
             "kRtPreSkinLocalSize",
             "kRtMaskLocalSize",
             "kRtReferenceMaxSamples",
+            "kRtMaskBackFacingBias",
+            "kRtFilterMaxRadius",
         ],
     ),
 ]

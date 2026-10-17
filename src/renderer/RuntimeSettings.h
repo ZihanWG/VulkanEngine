@@ -594,6 +594,12 @@ struct RayTracedShadowSettings {
     // rays; off, one ray per pixel. A penumbra is low-frequency, so half
     // resolution should lose little of it; contact shadows are what it risks.
     bool halfResolutionMask = true;
+    // Filter a soft shadow's mask before anything is shaded with it: a penumbra
+    // radius from the hit distances around each texel, then a separable
+    // bilateral blur over that radius, at the trace's resolution. Off, the one
+    // ray per texel is used as traced, which is noise wherever the sun is
+    // partly covered. Never applies to a hard shadow or the reference.
+    bool filter = true;
     // Ray origin offset along the surface normal, in world units, at any
     // distance. What keeps a flat surface from hitting itself.
     float normalOffset = 0.02f;
@@ -621,8 +627,14 @@ struct RayTracedShadowSettings {
     // judged against, and far too slow to ship.
     uint32_t debugReferenceSamples = 0;
     // The mask carries how far each ray went instead of whether it reached the
-    // sun, shown on its own: dark where the occluder is near.
+    // sun, shown on its own: dark where the occluder is near. Turns the filter
+    // off, which writes over the hit distance it reads.
     bool debugHitDistance = false;
+    // The mask carries the filter's penumbra radius, the larger of its two
+    // axes, instead of the visibility, shown on its own: black where the filter
+    // leaves a texel alone, white at renderer::kRtFilterMaxRadius trace texels.
+    // Only while the filter runs, so not with debugHitDistance.
+    bool debugPenumbraRadius = false;
 
     [[nodiscard]] bool operator==(const RayTracedShadowSettings&) const = default;
 };

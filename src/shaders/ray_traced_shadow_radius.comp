@@ -1,0 +1,80 @@
+#version 460
+
+// The soft shadow filter's first pass: how wide a blur each trace texel gets.
+// A penumbra is as wide as the occluder is far from the receiver, scaled by the
+// sun's angular size, so the radius comes from the hit distances of the rays
+// around the texel -- the mean over the ones that hit, which is the blocker
+// search of percentage-closer soft shadows run on traced rays. Where no ray
+// near the texel hit anything there is nothing to soften and the radius is
+// zero, so lit ground away from any shadow is never blurred. See
+// docs/ray_traced_shadows.md#the-filter.
+//
+// The radius is per screen axis, because a surface seen at an angle spans more
+// world per texel along one axis than the other, and the blur is separable.
+//
+// Reads the trace image, writes the filter image: the trace texel with y
+// replaced by the radius along screen y and z by the radius along screen x, in
+// trace texels. The hit distance is gone after this, which is why the
+// hit-distance view turns the filter off.
+
+#include "ray_traced_shadows.glsl"
+#include "ray_traced_shadow_filter.glsl"
+
+// The smaller of the camera-distance steps to this texel's two neighbours along
+// one axis, from a traced neighbour only: across a depth edge one side steps far
+// and the other does not, and the near side is the surface this texel is on.
+float rtDistanceStep(ivec2 texel, ivec2 axis, float distanceToCamera)
+{
+    float step = 3.0e38;
+    for (int side = -1; side <= 1; side += 2) {
+        ivec2 position = texel + side * axis;
+        if (!rtFilterInside(position)) {
+            continue;
+        }
+        vec4 neighbour = texelFetch(uFilterSource, position, 0);
+        if (neighbour.x >= 0.0) {
+            step = min(step, abs(neighbour.w - distanceToCamera));
+        }
+    }
+    return step < 3.0e38 ? step : 0.0;
+}
+
+void main()
+{
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+    if (!rtFilterInside(texel)) {
+        return;
+    }
+    vec4 centre = texelFetch(uFilterSource, texel, 0);
+    vec2 radius = vec2(0.0);
+    if (rtFilterUsable(centre)) {
+        float hitSum = 0.0;
+        float hits = 0.0;
+        for (int y = -kRtFilterSearchRadius; y <= kRtFilterSearchRadius; y += kRtFilterSearchStride) {
+            for (int x = -kRtFilterSearchRadius; x <= kRtFilterSearchRadius; x += kRtFilterSearchStride) {
+                ivec2 position = texel + ivec2(x, y);
+                if (!rtFilterInside(position)) {
+                    continue;
+                }
+                vec4 tap = texelFetch(uFilterSource, position, 0);
+                // A ray from another surface says nothing about this one's
+                // penumbra; the tolerance is loose because the window is wide
+                // and nothing here corrects for the surface's slope.
+                if (!rtFilterUsable(tap) || tap.y < 0.0 ||
+                    abs(tap.w - centre.w) > kRtFilterSearchTolerance * centre.w) {
+                    continue;
+                }
+                hitSum += tap.y;
+                hits += 1.0;
+            }
+        }
+        if (hits > 0.0) {
+            float occluderDistance = hitSum / hits;
+            float acrossX = rtWorldPerTexel(centre.w, pc.texelsPerUnit, rtDistanceStep(texel, ivec2(1, 0), centre.w));
+            float acrossY = rtWorldPerTexel(centre.w, pc.texelsPerUnit, rtDistanceStep(texel, ivec2(0, 1), centre.w));
+            radius = vec2(rtPenumbraRadius(occluderDistance, pc.tanSunRadius, acrossX),
+                          rtPenumbraRadius(occluderDistance, pc.tanSunRadius, acrossY));
+        }
+    }
+    imageStore(uFilterDestination, texel, vec4(centre.x, radius.y, radius.x, centre.w));
+}

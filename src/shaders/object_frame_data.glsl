@@ -107,6 +107,11 @@ const uint kRtShadowFlagDebugMaskSource = 16u;
 // kRtShadowFlagDebugVisibility: dark where the occluder is near, white where
 // nothing was hit.
 const uint kRtShadowFlagDebugHitDistance = 32u;
+// The mask's resolve writes the soft shadow filter's penumbra radius, the
+// larger of its two axes, instead of the visibility, as a fraction of
+// kRtFilterMaxRadius, and the main pass shows the term on its own: black where
+// the filter left the texel alone.
+const uint kRtShadowFlagDebugPenumbraRadius = 64u;
 
 layout(buffer_reference, std430) readonly buffer FrameConstantsBuffer {
     FrameConstants values;

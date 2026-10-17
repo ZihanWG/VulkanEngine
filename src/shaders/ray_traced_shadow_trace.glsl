@@ -1,6 +1,6 @@
 // The sun shadow ray, shared by the two places that trace it: the ray-query
 // variant of simple_bindless.frag, inline per fragment, and
-// ray_traced_shadow_mask.comp, per pixel ahead of the main pass. One copy, so the
+// ray_traced_shadow_trace.comp, per pixel ahead of the main pass. One copy, so the
 // mask and the inline fallback cannot drift apart -- the main pass mixes the two
 // pixel by pixel, and any difference between them would show as a seam. See
 // docs/ray_traced_shadows.md.
@@ -119,18 +119,6 @@ float rayTracedSunVisibilityAlong(FrameConstantsBuffer frame,
     return 0.0;
 }
 
-// The hard shadow: one ray towards the sun's centre.
-float rayTracedSunVisibility(FrameConstantsBuffer frame,
-                             ObjectFrameDataBuffer objects,
-                             vec3 worldPosition,
-                             vec3 surfaceNormal,
-                             vec3 towardLight)
-{
-    float hitDistance;
-    return rayTracedSunVisibilityAlong(
-        frame, objects, worldPosition, surfaceNormal, towardLight, towardLight, hitDistance);
-}
-
 // --- Sampling the sun's disc --------------------------------------------------
 //
 // Mirrored in C++ by renderer::concentricDiskSample, renderer::orthonormalBasis
@@ -186,6 +174,47 @@ vec3 rtSunConeDirection(vec3 towardLight, float tanRadius, vec2 u)
 float rtInterleavedGradientNoise(vec2 pixel)
 {
     return fract(52.9829189 * fract(dot(floor(pixel), vec2(0.06711056, 0.00583715))));
+}
+
+// The sun's visibility from one fragment, traced inline where the mask did not
+// answer for it. A hard shadow is one ray towards the sun's centre. A soft one,
+// with no filter to smooth it here, is kRtInlineSoftGridSide squared rays over
+// the sun's disc, one per stratum of the unit square, the strata jittered
+// together by interleaved gradient noise at the fragment's pixel -- the same
+// noise, frame offset included, the mask's trace draws its one ray with. Four
+// rays give a penumbra five levels instead of two, which is what keeps a
+// fallback fragment from showing a hard edge inside a soft shadow the mask drew
+// around it.
+//
+// Both go through one call of the traversal, in a loop whose count is not a
+// constant, so the shader holds one copy of it.
+float rayTracedSunVisibility(FrameConstantsBuffer frame,
+                             ObjectFrameDataBuffer objects,
+                             vec3 worldPosition,
+                             vec3 surfaceNormal,
+                             vec3 towardLight,
+                             vec2 pixel)
+{
+    float tanRadius = frame.values.rayTracedShadowParams.w;
+    bool soft = tanRadius > 0.0;
+    uint samples = soft ? kRtInlineSoftGridSide * kRtInlineSoftGridSide : 1u;
+    vec2 jitter = vec2(0.5);
+    if (soft) {
+        vec2 noisePixel = pixel + 5.588238 * float(frame.values.rayTracedShadow.w);
+        jitter = vec2(rtInterleavedGradientNoise(noisePixel), rtInterleavedGradientNoise(noisePixel + vec2(47.0, 17.0)));
+    }
+    float lit = 0.0;
+    for (uint index = 0u; index < samples; ++index) {
+        vec3 direction = towardLight;
+        if (soft) {
+            vec2 stratum = vec2(float(index % kRtInlineSoftGridSide), float(index / kRtInlineSoftGridSide));
+            direction = rtSunConeDirection(towardLight, tanRadius, (stratum + jitter) / float(kRtInlineSoftGridSide));
+        }
+        float hitDistance;
+        lit += rayTracedSunVisibilityAlong(
+            frame, objects, worldPosition, surfaceNormal, towardLight, direction, hitDistance);
+    }
+    return lit / float(samples);
 }
 
 #endif // VE_RAY_TRACED_SHADOW_TRACE_GLSL

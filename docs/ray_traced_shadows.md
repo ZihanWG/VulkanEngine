@@ -334,9 +334,11 @@ caster faces the sun.
 | Set 0 binding 16, `ACCELERATION_STRUCTURE_KHR` | written once into the shared bindless set | `createMaterialDescriptorSet` | with the pool |
 | Shadow mask image, `R32G32_UINT` at the render-resolution allocation extent | renderer, one image, written and read within a frame; its layout is tracked across frames | `RayTracedShadowMask::createResources`, from `recreatePostProcessResources`, whenever the TLAS exists | every resize, and the destructor |
 | Trace image, `R16G16B16A16_SFLOAT` at the same extent; half resolution fills a quarter of it | same | same, when the passes can run | same |
-| Its nearest sampler and the passes' two descriptor sets (trace: depth, TLAS, trace image; resolve: depth, trace image, mask) | same | same | same |
+| Filter image, the trace image's format and extent, allocated with it whether or not the filter runs | same | same | same |
+| Its nearest sampler and the passes' five descriptor sets (trace: depth, TLAS, trace image; resolve, twice: depth, trace or filter image, mask; filter, twice: one image sampled, the other storage) | same | same | same |
 | Set 0 binding 17, `COMBINED_IMAGE_SAMPLER` (`usampler2D`) | the shared bindless set, whenever the TLAS exists | `createMaterialDescriptorSet`; rewritten by `refreshMaterialRayTracedShadowMaskDescriptors` on resize | with the pool |
-| Trace and resolve pipelines (`ray_traced_shadow_trace.comp`, set 0 its own and set 1 the bindless heap; `ray_traced_shadow_resolve.comp`, its own set) | renderer | `createRayTracedShadowMaskPipeline`, on every pipeline rebuild; their set layouts once | the pipeline store |
+| Trace, resolve, radius and blur pipelines (`ray_traced_shadow_trace.comp`, set 0 its own and set 1 the bindless heap; `ray_traced_shadow_resolve.comp`, its own set; `ray_traced_shadow_radius.comp` and `ray_traced_shadow_blur.comp`, one set layout and one push block between them, the blur running both axes) | renderer | `createRayTracedShadowMaskPipeline`, on every pipeline rebuild; their set layouts once | the pipeline store |
+| Readback buffer and one-time command buffer for `--rt-shadow-dump` | the dump | `RayTracedShadowMask::dumpVisibility`, after the capture frame presents, behind `vkDeviceWaitIdle` | the same call, after `vkQueueWaitIdle` |
 
 The mesh set is fixed after construction -- every scene preset draws the
 built-in cube and sphere, and the sample scene is imported at startup only -- so
@@ -372,8 +374,10 @@ KiB of BLAS, Sponza's 105 primitives (264487 triangles) into 18350 KiB, in
 | an earlier frame's build -> the ray queries of a frame that keeps the TLAS | the graph's barrier on the frame that built it, whose second scope is the stages it names in every later command: the fragment stage, and the compute stage when the mask traced that frame. The frame the mask turns on rebuilds (`rayTracedShadowMaskNeedsFreshBuild`), so a keeping frame never reads in a stage its build's barrier did not name. The keeping frame declares the reads alone, which as the structure's first use in the frame emit nothing, and the next build's entry barrier waits for them |
 | depth prepass writes -> the trace's and resolve's depth reads -> the main pass's depth test | the graph: `DepthPrepass` writes main depth, `RayTracedShadowTrace` and `RayTracedShadowResolve` read it (`DEPTH_READ_ONLY_OPTIMAL`), `MainHDRPass` takes it back as an attachment |
 | the trace's storage writes -> the resolve's reads | the graph: `GENERAL` to `SHADER_READ_ONLY_OPTIMAL`, compute to compute |
+| with the filter: trace -> radius -> horizontal blur -> vertical blur -> resolve | the graph, one pass each: every pass reads one of the two images (`SHADER_READ_ONLY_OPTIMAL`) and writes the other (`GENERAL`), so each edge is a write followed by a read or a read followed by a write, compute to compute, and none is a read after a read |
+| the resolve's and the main pass's reads -> the readback's copy, and the copy -> the next frame's writes | `dumpVisibility` waits for the device to idle, takes the mask from its tracked layout to `TRANSFER_SRC_OPTIMAL` and back, and waits for the queue: a debug capture outside the frame |
 | the resolve's storage writes to the mask -> the main shader's reads | the graph: `GENERAL` to `SHADER_READ_ONLY_OPTIMAL`, compute to fragment |
-| the previous frame's reads of either image -> this frame's writes | the graph's first-use barrier, whose source is the layout the image ended the previous frame in |
+| the previous frame's reads of any of the three images -> this frame's writes | the graph's first-use barrier, whose source is the layout the image ended the previous frame in |
 | mesh upload (transfer) -> BLAS build | a barrier at the top of the startup build, whose first scope reaches back over the earlier upload submissions on the same queue |
 | earlier frames' refit reads of the skinned positions -> this frame's pre-skin writes | the same entry barrier, which names the compute stage as a destination |
 | pre-skin writes -> refit reads | a barrier inside `RayTracingSkinnedCaster::record` |
@@ -443,35 +447,45 @@ read the TLAS, so no queue-family ownership is involved.
   length) at 640. Pinned by `static_assert` in `RendererInternal.h`.
 - **The flag word** is `kRtShadowFlagEnabled`, `kRtShadowFlagDebugVisibility`,
   `kRtShadowFlagDebugCompareCascades`, `kRtShadowFlagScreenMask` and
-  `kRtShadowFlagDebugMaskSource`, mirrored in `object_frame_data.glsl` and
-  pinned by `tools/check_shader_constants.py`.
+  `kRtShadowFlagDebugMaskSource`, `kRtShadowFlagDebugHitDistance` and
+  `kRtShadowFlagDebugPenumbraRadius` (64), mirrored in `object_frame_data.glsl`
+  and pinned by `tools/check_shader_constants.py`.
 - **The shadow mask** is set 0 binding 17 in the ray-query variant, a
   `usampler2D` read with `texelFetch`: x is the visibility's float bits, y the
   depth bits it was traced at. `kRtMaskNotTraced` (-1) marks a texel with no
   surface to trace from, and `kRtMaskBackFacingBias` (+2) one traced from a
-  surface facing away from the sun; both live in `ray_traced_shadows.glsl`, which
-  the shaders include and nothing on the CPU reads. The dispatches' workgroup,
-  `kRtMaskLocalSize`, and the reference mode's ceiling, `kRtReferenceMaxSamples`,
-  are paired with C++ by the checker.
+  surface facing away from the sun; both live in `ray_traced_shadows.glsl`, and
+  the debug readback strips the second with its C++ mirror. The dispatches'
+  workgroup, `kRtMaskLocalSize`, the reference mode's ceiling,
+  `kRtReferenceMaxSamples`, the back-facing bias and the filter's radius clamp,
+  `kRtFilterMaxRadius`, are paired with C++ by the checker.
 - **The trace image** holds, per texel, the visibility with the same two
   encodings, the hit distance (negative where the ray hit nothing) and the camera
-  distance of the surface traced from, which the resolve's depth test compares.
+  distance of the surface traced from, which the filter and the resolve compare.
+  The filter image has the same layout, with the penumbra radius along screen y
+  and x in place of the hit distance and the unused z once the radius pass has
+  run.
 - **The two dispatches** push the frame-constants address, the sub-rect and its
   reciprocal and the inverse jittered view-projection; the trace adds the
   object-data address, the trace grid's extent and scale and the reference
   sample count (`RayTracedShadowTracePushConstants`, 112 bytes;
-  `RayTracedShadowResolvePushConstants`, 96), offsets pinned by `static_assert`
-  and by the shader interface golden.
+  `RayTracedShadowResolvePushConstants`, 96, whose former padding word is now
+  `filtered`, set when it reads the filter image), offsets pinned by
+  `static_assert` and by the shader interface golden. The filter's three
+  dispatches share `RayTracedShadowFilterPushConstants` (24 bytes): the trace
+  grid's extent, the blur axis, trace texels per world unit at unit distance and
+  tan(half the sun's angular diameter).
 - **The sun's disc** is `rayTracedShadowParams.w`, tan(half the angular
   diameter), and the frame index for moving the sampling pattern is
   `rayTracedShadow.w` (zero until temporal accumulation exists): both were spare,
-  so `FrameConstants` did not change size. `kRtShadowFlagDebugHitDistance` is the
-  sixth flag bit.
+  so `FrameConstants` did not change size.
 - **The trace itself** lives once, in `ray_traced_shadow_trace.glsl`, with the
   disc sampling beside it, and takes the frame-constants and object-data
   addresses as arguments, so the mask and the inline fallback cannot drift
-  apart. `ray_traced_shadow_reconstruct.glsl` holds the surface reconstruction
-  both mask passes share.
+  apart; the inline soft fallback takes the fragment's pixel for its noise.
+  `ray_traced_shadow_reconstruct.glsl` holds the surface reconstruction both mask
+  passes share, and `ray_traced_shadow_filter.glsl` the filter passes' bindings
+  and push block.
 - **The vertex layout** the alpha test reads by address, `kRtVertexStrideFloats`
   and `kRtVertexUvOffsetFloats`, is pinned against `renderer::Vertex` by
   `static_assert` and against the shader by the same checker.
@@ -509,7 +523,9 @@ drawn, not how far away their occluders are, and the TLAS holds every caster,
 in view or not. A tall caster further than the far plane along the sun direction
 from a visible receiver would have been missed.
 
-The shadow is hard: one ray toward a light with no extent.
+With no sun extent the shadow is hard: one ray toward the sun's centre. With
+one, the mask samples the disc and filters it, and the inline fallback takes
+four rays (below).
 
 ## The screen-space mask
 
@@ -520,8 +536,8 @@ block, and writes the visibility, the hit distance and the camera distance of
 the surface it traced from. `RayTracedShadowResolve` turns that into the
 full-resolution mask: the trace's own texel at full resolution, an upsample at
 half. It is what a soft shadow needs -- a filter has to see the visibility
-before anything is shaded with it, and the filter will go between the two -- and
-for the hard shadow it only costs (below), so `rayTracedShadows.screenSpaceMask`
+before anything is shaded with it, and the filter goes between the two (below)
+-- and for the hard shadow it only costs, so `rayTracedShadows.screenSpaceMask`
 is off by default.
 
 They run when the frame traces, the prepass ran, the mask is available -- both
@@ -554,10 +570,14 @@ on the disc per pixel -- a golden-angle spiral rotated per pixel -- at full
 resolution, averaged with no filter. It is the converged soft shadow anything
 cheaper is judged against, and as slow as it sounds.
 
-**The soft shadow is unfiltered for now.** One ray per texel is a dithered
-penumbra, at half resolution a blocky one, until the filter that P4.2b adds.
-The skinned mesh, blended surfaces and phase-two draws, which trace inline,
-stay hard.
+**Where the mask does not reach.** The skinned mesh, blended surfaces,
+phase-two draws and every fragment of a frame without the prepass trace inline.
+With a sun of some extent that is four rays over its disc, one in each quarter
+of the unit square under the concentric map, the four jittered together by the
+same per-pixel noise the mask's trace uses: a penumbra of five levels rather
+than a hard edge inside a soft shadow the mask drew around it. Unfiltered, so it
+is coarser than the mask beside it, and four times the rays of the hard shadow
+on the fragments that take it.
 
 **What it traces from.** Each pixel's position is the prepass depth unprojected
 through the inverse of the jittered view-projection the prepass rasterised with,
@@ -599,6 +619,99 @@ fixed-step run, 1280x720, exposure pinned):
 | stress | 67.5% (the rest is sky) | 0.20% |
 | Sponza | 99.0% | 0.10% |
 
+## The filter
+
+One ray per texel is noise wherever the sun is partly covered. Three compute
+passes between the trace and the resolve smooth it, at the trace's resolution,
+before anything is shaded with it (`rayTracedShadows.filter`, on by default;
+`rayTracedShadowFilterActive`). They run only on a frame that traces the mask
+with a sun of some extent: never for the hard shadow, whose one ray towards the
+centre is the answer, and never for the reference, which is what the filter is
+graded against.
+
+**`RayTracedShadowRadius`** decides how far each texel may be blurred. A
+penumbra is as wide as its occluder is far from the receiver, scaled by the
+sun's size: across the sun ray it is 2 x distance x tan(sun radius). The pass
+takes the mean hit distance of the rays around the texel -- every second texel
+of a 9x9 window, on the same surface and facing the sun -- which is the blocker
+search of percentage-closer soft shadows run on traced rays. Where none of them
+hit anything there is nothing to soften and the radius is zero, so lit ground
+away from any shadow is never touched. The world width becomes texels per screen
+axis: a texel spans the width it subtends at the surface's camera distance,
+combined with how far the surface recedes to the next texel along that axis, so
+a floor seen at a glance gets a short radius down the screen and a long one
+across it. The radius is clamped to `kRtFilterMaxRadius`, 16 texels.
+
+It is the narrowest width the penumbra can have, not its width. A penumbra that
+runs along the sun's direction on a slanted receiver stretches by 1 / cos, but
+the side of a long shadow does not, and the error is not symmetric: a kernel
+narrower than the penumbra leaves noise, a wider one bends the penumbra's ends
+towards its middle. The first version stretched by 1 / cos and used one radius
+for both axes. On `--scene sunlit` that took the penumbra error (below) from
+0.378 to 0.150, with the reference's darkest quarter of the penumbra lifted 0.20
+on average and its lightest quarter darkened as much. Per axis and narrowest, it
+is 0.070.
+
+**`RayTracedShadowBlurH` and `RayTracedShadowBlurV`** are one separable
+Gaussian, sigma half the radius along that axis, taps out to two sigma. A
+symmetric kernel leaves a linear ramp as it was, so inside a penumbra wider than
+the kernel it removes noise without widening the shadow. Each tap is weighted by
+how far its reciprocal camera distance strays from the centre's plane extended
+that far (`kRtFilterDistanceTolerance`), with the plane's slope taken towards the
+nearer neighbour so that a depth edge does not set it -- reciprocal, because
+that is what changes linearly across the screen on a plane. Texels traced from a
+surface facing away from the sun are neither blurred nor blurred into anything:
+whether their answer applies is the fragment's decision (above).
+
+**Two images, three passes.** The filter image has the trace image's format and
+extent. The radius pass reads the trace image into it, the horizontal blur reads
+it back into the trace image, and the vertical blur writes it again, which the
+resolve then reads instead of the trace image. The texel layout stays the
+trace's -- x the visibility with its encodings, w the camera distance -- except
+that the radius pass writes the radius along screen y into y and along x into z,
+over the hit distance. That is why the hit-distance view turns the filter off.
+
+**Error against the reference.** `--rt-shadow-dump <file.pfm>`, which needs
+`--capture-frame`, reads the mask back after the capture frame presents and
+writes its visibility as linear floats -- the back-facing mark stripped, NaN
+where nothing was traced -- and `tools/dev/compare_shadow_visibility.py`
+compares it with the 64-ray reference from the same frame. The debug views
+cannot: they go through exposure and tone mapping. Penumbra MAE is the mean
+absolute error where the reference is strictly between 0.05 and 0.95; a leak is
+a pixel the reference calls umbra (at most 0.05) that the mask lights to 0.5 or
+more. Frame 30 of a fixed-step run at 1280x720, Debug with validation and
+`--sync-validation`, zero errors and zero hazards in every run:
+
+| Scene, sun | Penumbra pixels | Full, unfiltered | Full, filtered | Half, unfiltered | Half, filtered |
+| --- | --- | --- | --- | --- | --- |
+| sunlit, 2 degrees | 11668 | 0.378 | **0.070** | 0.268 | 0.103 |
+| Sponza, 2 degrees | 689 | 0.380 | **0.092** | 0.267 | 0.146 |
+| default, 2 degrees | 2059 | 0.351 | **0.172** | 0.270 | 0.209 |
+| stress, 2 degrees | 1748 | 0.353 | **0.204** | 0.269 | 0.222 |
+| sunlit, 0.53 degrees | 3090 | 0.380 | **0.121** | 0.268 | 0.188 |
+| Sponza, 0.53 degrees | 184 | 0.381 | 0.232 | 0.270 | **0.218** |
+| default, 0.53 degrees | 529 | 0.351 | **0.204** | 0.266 | 0.227 |
+| stress, 0.53 degrees | 508 | 0.376 | **0.221** | 0.298 | 0.246 |
+
+The filter adds no leaks: at full resolution it has as many as unfiltered or
+fewer on every row (sunlit at two degrees: 59 to 1), and it lowers the error
+over the whole frame too (sunlit: 0.0064 to 0.0020), so it does not trade the
+penumbra for its surroundings. Half resolution leaks a few hundred pixels
+filtered or not; those are its upsample at shadow edges, not the filter.
+
+The filter is worth most where penumbrae are wide, as sunlit's long shadows and
+Sponza's are. On the default and stress presets nearly every penumbra is a
+contact shadow a texel or two wide (median radius 1.0 texel on default), where
+one ray per texel is noise that no spatial kernel removes without bending the
+ramp; that is what temporal accumulation is for. Sponza's penumbrae at the real
+sun's 0.53 degrees cover 184 pixels, too few for its two filtered columns to be
+told apart.
+
+Both kernel constants were swept against this table. Sigma at the full radius
+rather than half: sunlit 0.070 to 0.090, with more leaks. A floor of one texel
+under sigma: default 0.172 to 0.143 and stress 0.204 to 0.173, but light leaking
+at contacts went from 8 to 124 and from 16 to 130 pixels. Both rejected.
+
 ## Debug views and settings
 
 | Setting | Default | |
@@ -609,20 +722,23 @@ fixed-step run, 1280x720, exposure pinned):
 | `rayTracedShadows.screenSpaceMask` | false | trace the mask ahead of the main pass; off, every fragment traces inline. Off by default on measured cost |
 | `rayTracedShadows.sunAngularDiameterDegrees` | 0 | degrees, clamped to [0, 5]; zero is the hard shadow, above zero samples the sun's disc and turns the mask on. The real sun is about 0.53 |
 | `rayTracedShadows.halfResolutionMask` | true | trace one pixel per 2x2 block and upsample |
+| `rayTracedShadows.filter` | true | filter a soft shadow's mask: a penumbra radius per screen axis from the hit distances around each texel, then a separable bilateral blur. Never the hard shadow or the reference |
 | `rayTracedShadows.normalOffset` | 0.02 | world units, clamped to [0, 1] |
 | `rayTracedShadows.pixelFootprintOffset` | 1.0 | pixels, clamped to [0, 16] |
 | `rayTracedShadows.debugVisibility` | false | the traced term alone, white lit |
 | `rayTracedShadows.debugCompareCascades` | false | red where only the ray finds an occluder, blue where only the cascades do; wins over the visibility view |
 | `rayTracedShadows.debugMaskSource` | false | green where the mask answered and an inline ray from the fragment agrees, magenta where it does not, blue where the fragment traces inline, grey where it faces away and traces nothing; wins over both views above |
 | `rayTracedShadows.debugReferenceSamples` | 0 | rays per pixel for the reference, clamped to [0, 64]; turns the mask on, at full resolution |
-| `rayTracedShadows.debugHitDistance` | false | the mask carries how far each ray went, shown as the visibility term: dark near, white where nothing was hit |
+| `rayTracedShadows.debugHitDistance` | false | the mask carries how far each ray went, shown as the visibility term: dark near, white where nothing was hit. Turns the filter off, which writes over the hit distance |
+| `rayTracedShadows.debugPenumbraRadius` | false | the mask carries the filter's radius, the larger of its two axes, shown as the visibility term: black where the filter left a texel alone, white at 16 texels. Only while the filter runs |
 
 The CI sweep renders it enabled (cascades skipped), enabled with both debug
 views, `renderCascades` and `rebuildEveryFrame`, enabled on a still scene
 (`--freeze-animation`, which keeps the TLAS), enabled with the mask at full
 resolution and its source view, the hit-distance view and a four-ray reference
-on, enabled with a one-degree sun at half resolution, and enabled with
-`--disable-ray-query` (`config/ci/`). Mesa's lavapipe exposes all three extensions, so the first two
+on, enabled with a one-degree sun at half resolution under the penumbra-radius
+view, the same sun with the filter off, and enabled with `--disable-ray-query`
+(`config/ci/`). Mesa's lavapipe exposes all three extensions, so the first two
 run the traced path in CI, under validation.
 
 ## Verification
@@ -678,6 +794,34 @@ the reference needs the mask's own values, which P4.2b reads back. Sponza is the
 measuring scene but under its default sun almost all of its interior is in
 shadow, so it says little about penumbrae.
 
+**The filter and the soft inline fallback** (the same conditions): zero errors,
+zero hazards and a clean backstop in all 60 runs -- on each of default, sunlit,
+stress and Sponza, the two hard-shadow legs, the two-degree sun unfiltered at
+full and half resolution, the reference, the hit-distance view, the mask-source
+view, the filtered sun at both resolutions, the penumbra-radius view, the shaded
+frame, and two frames of the mask read back at each resolution filtered and not.
+Against their P4.2a captures:
+
+| Leg | default | sunlit | stress | Sponza |
+| --- | --- | --- | --- | --- |
+| inline hard shadow | 0 | 0 | 0 | 2 |
+| full-resolution hard mask | 0 | 0 | 0 | 0 |
+| two-degree sun, filter off, full resolution | 90 | 7 | 0 | 1 |
+| the same at half resolution | 91 | 7 | 0 | 1 |
+| reference | 90 | 7 | 0 | 1 |
+
+Sponza's two inline pixels are the two that differ between two runs of one
+binary. Every other differing pixel is a fragment the mask does not answer --
+blue in the mask-source view on default and sunlit (the skinned tube, a
+silhouette column), on Sponza a fragment facing away that the debug view traces
+-- which is the inline fallback now taking four rays, and the one extra pixel
+at half resolution is a fallback the full-resolution source view does not have.
+The masks themselves, read back with the filter off, are bit-identical to the
+P4.2a code's on sunlit and Sponza at both resolutions. Two consecutive frames of
+a still camera read back bit-identical with the filter on and off: the pattern
+is fixed to the screen, so nothing in the mask moves while nothing in the frame
+does.
+
 Unpinned, the no-caster comparison also differed by single steps scattered over
 the frame: auto-exposure follows total scene luminance, and any change in shadow
 area moves it. Pinning exposure removed every one of them.
@@ -724,7 +868,6 @@ under that isolation differ from the traced image on 1000 pixels rather than
 - **The skinned BLAS is refitted, never rebuilt** after its first build, so its
   hierarchy quality depends on the pose it was first built in. Fine for the demo
   rig; a mesh that deforms far from its first pose would want a periodic rebuild.
-- **Hard shadows only.** No sun angular radius and no denoising.
 - **The cascades come back with fog or probe capture,** which read them, so on
   those frames tracing adds its cost without removing theirs.
 - **Virtual shadow map pages still render** when VSM is enabled alongside
@@ -749,9 +892,19 @@ under that isolation differ from the traced image on 1000 pixels rather than
   normal instead, at the price of the fragment work it exists to avoid.
 - **The mask needs a 32-bit float depth format,** the depth prepass and the
   bindless heap; without any of them every fragment traces inline.
-- **The soft shadow is unfiltered** until P4.2b: a dithered penumbra, blocky at
-  half resolution. What traces inline -- the skinned mesh, blended surfaces,
-  phase-two draws -- stays hard.
+- **The filter is spatial only.** A contact shadow's penumbra is a texel or two
+  wide, too narrow to blur without bending it, so there the one ray per texel
+  stays noise (the default and stress rows of the error table); temporal
+  accumulation is what reaches it.
+- **The radius is the narrowest the penumbra can be,** so a penumbra stretched
+  along the sun's direction on a slanted receiver is blurred less than it could
+  be and keeps more noise.
+- **Half resolution leaks at shadow edges,** a few hundred pixels a frame on
+  these scenes, from its upsample rather than the filter.
+- **What traces inline is soft but unfiltered:** four rays, a five-level
+  penumbra, on the skinned mesh, blended surfaces and phase-two draws.
 - **The sampling pattern is fixed to the screen** until temporal accumulation
-  moves it, so it swims when the camera does.
+  moves it, so it swims when the camera does. How much the filter calms that is
+  not measured: comparing two frames of a moving camera needs the reprojection
+  temporal accumulation brings.
 - **Synchronization validation is blind to it,** as above.

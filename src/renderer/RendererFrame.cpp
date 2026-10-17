@@ -1860,6 +1860,12 @@ void Renderer::updateFrameData(uint32_t frameIndex)
         renderer::rayTracedShadowMaskRequested(rayTracedShadowSettings_.screenSpaceMask,
                                                rayTracedShadowSettings_.sunAngularDiameterDegrees,
                                                rayTracedShadowSettings_.debugReferenceSamples));
+    frameRayTracedShadowFilterActive_ =
+        renderer::rayTracedShadowFilterActive(frameRayTracedShadowMaskActive_,
+                                              rayTracedShadowSettings_.filter,
+                                              rayTracedShadowSettings_.sunAngularDiameterDegrees,
+                                              rayTracedShadowSettings_.debugReferenceSamples,
+                                              rayTracedShadowSettings_.debugHitDistance);
     frameRayTracingSceneBuildRequired_ = false;
     if (frameRayTracedShadowsActive_) {
         const ScopedCpuTimer timer = cpuScope(CpuScope::RayTracingInstances);
@@ -1971,6 +1977,7 @@ void Renderer::resetFrameStateForEmptyScene(uint32_t frameIndex)
     frameGtaoActive_ = false;
     frameRayTracedShadowsActive_ = false;
     frameRayTracedShadowMaskActive_ = false;
+    frameRayTracedShadowFilterActive_ = false;
     frameRayTracingSceneBuildRequired_ = false;
     frameCascadesReplacedByRayTracing_ = false;
     frameProbeCaptureActive_ = false;
@@ -2515,6 +2522,9 @@ void Renderer::uploadFrameConstants(uint32_t frameIndex, uint32_t cascadeCount)
         }
         if (rayTracedShadowSettings_.debugHitDistance && frameRayTracedShadowMaskActive_) {
             flags |= renderer::kRtShadowFlagDebugHitDistance;
+        }
+        if (rayTracedShadowSettings_.debugPenumbraRadius && frameRayTracedShadowFilterActive_) {
+            flags |= renderer::kRtShadowFlagDebugPenumbraRadius;
         }
         constants.rayTracedShadow = glm::uvec4(static_cast<uint32_t>(geometryTable & 0xFFFFFFFFull),
                                                static_cast<uint32_t>(geometryTable >> 32),

@@ -779,9 +779,11 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         };
     }
 
-    // The trace image, only when the passes can run at all; the graph imports it
-    // only on a frame the mask traces.
+    // The trace image and the filter image, only when the passes can run at all;
+    // the graph imports the one on a frame the mask traces, the other on a frame
+    // the filter runs.
     renderer::RenderGraphImageResource rayTracedShadowTraceResource{};
+    renderer::RenderGraphImageResource rayTracedShadowFilterResource{};
     if (rayTracedShadowMask_.available()) {
         const VkExtent3D traceExtent = rayTracedShadowMask_.traceImage().extent();
         rayTracedShadowTraceResource = renderer::RenderGraphImageResource{
@@ -790,6 +792,22 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
             .imageView = rayTracedShadowMask_.traceImage().imageView(),
             .extent = VkExtent2D{traceExtent.width, traceExtent.height},
             .layout = rayTracedShadowMask_.traceLayoutPtr(),
+            .format = renderer::RayTracedShadowMask::kTraceFormat,
+            .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .clearValue = VkClearValue{},
+            .hasClearValue = false,
+            .imported = true,
+        };
+        const VkExtent3D filterExtent = rayTracedShadowMask_.filterImage().extent();
+        rayTracedShadowFilterResource = renderer::RenderGraphImageResource{
+            .name = "RayTracedShadowFilter",
+            .image = rayTracedShadowMask_.filterImage().image(),
+            .imageView = rayTracedShadowMask_.filterImage().imageView(),
+            .extent = VkExtent2D{filterExtent.width, filterExtent.height},
+            .layout = rayTracedShadowMask_.filterLayoutPtr(),
             .format = renderer::RayTracedShadowMask::kTraceFormat,
             .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
             .mipLevels = 1,
@@ -1161,6 +1179,7 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
                                                 true},
         .rayTracedShadowMask = rayTracedShadowMaskResource,
         .rayTracedShadowTrace = rayTracedShadowTraceResource,
+        .rayTracedShadowFilter = rayTracedShadowFilterResource,
         .taaEnabled = postProcess_.isTaaActive(),
         .twoPhaseOcclusionEnabled = frameTwoPhaseOcclusionActive_,
         .depthPrepassEnabled = frameDepthPrepassActive_,
@@ -1187,6 +1206,8 @@ renderer::RenderGraphFrameResources Renderer::renderGraphFrameResources()
         .rayTracingSceneBuildEnabled = isRayTracedShadowActive() && frameRayTracingSceneBuildRequired_,
         // The same flag recordRayTracedShadowMask returns on.
         .rayTracedShadowMaskEnabled = frameRayTracedShadowMaskActive_,
+        // The same flag recordRayTracedShadowMask records the filter on.
+        .rayTracedShadowFilterEnabled = frameRayTracedShadowFilterActive_,
         .irradianceProbeUpdateEnabled = isIrradianceProbeUpdateActive(),
         .probeCaptureEnabled = frameProbeCaptureActive_,
         // GpuCulling's own answer to "will recordMainCull record anything", not a
@@ -2983,6 +3004,8 @@ void Renderer::recordRayTracedShadowMask(VkCommandBuffer commandBuffer)
     const glm::mat4 inverseViewProjection = glm::inverse(frameJitteredViewProjection_);
     const uint32_t traceScale = renderer::rayTracedShadowTraceScale(rayTracedShadowSettings_.halfResolutionMask,
                                                                     rayTracedShadowSettings_.debugReferenceSamples);
+    const glm::uvec2 traceExtent(renderer::rayTracedShadowTraceExtent(fullExtent.x, traceScale),
+                                 renderer::rayTracedShadowTraceExtent(fullExtent.y, traceScale));
     const VkDeviceAddress frameConstantsAddress = frameConstantsBuffers_.at(currentFrame_).deviceAddress();
 
     {
@@ -2996,12 +3019,35 @@ void Renderer::recordRayTracedShadowMask(VkCommandBuffer commandBuffer)
         push.inverseViewProjection = inverseViewProjection;
         push.fullExtent = fullExtent;
         push.inverseFullExtent = inverseFullExtent;
-        push.traceExtent = glm::uvec2(renderer::rayTracedShadowTraceExtent(fullExtent.x, traceScale),
-                                      renderer::rayTracedShadowTraceExtent(fullExtent.y, traceScale));
+        push.traceExtent = traceExtent;
         push.traceScale = traceScale;
         push.referenceSamples = rayTracedShadowSettings_.debugReferenceSamples;
         rayTracedShadowMask_.recordTrace(commandBuffer, push, bindlessTextureHeap_.descriptorSet());
         renderGraph_.endRayTracedShadowTracePass();
+        rhi::debug::endLabel(commandBuffer);
+    }
+    if (frameRayTracedShadowFilterActive_) {
+        // One profiler scope over the three dispatches: the filter's cost is the
+        // question, and each scope is two more timestamps in a pass this small.
+        const renderer::GpuProfileScope profileScope(
+            gpuProfiler_, currentFrame_, commandBuffer, "RayTracedShadowFilter");
+        rhi::debug::beginLabel(commandBuffer, "RayTracedShadowFilter");
+        renderer::RayTracedShadowFilterPushConstants push{};
+        push.traceExtent = traceExtent;
+        // The jittered projection's scale is the unjittered one's: jitter only
+        // moves the centre.
+        push.texelsPerUnit =
+            renderer::rayTracedShadowTexelsPerUnit(frameJitteredProjection_[1][1], extent.height, traceScale);
+        push.tanSunRadius = renderer::sunConeTangent(rayTracedShadowSettings_.sunAngularDiameterDegrees);
+        for (const renderer::RayTracedShadowFilterStage stage : {renderer::RayTracedShadowFilterStage::Radius,
+                                                                 renderer::RayTracedShadowFilterStage::BlurHorizontal,
+                                                                 renderer::RayTracedShadowFilterStage::BlurVertical}) {
+            push.direction =
+                stage == renderer::RayTracedShadowFilterStage::BlurVertical ? glm::ivec2(0, 1) : glm::ivec2(1, 0);
+            renderGraph_.beginRayTracedShadowFilterPass(stage);
+            rayTracedShadowMask_.recordFilter(commandBuffer, stage, push);
+            renderGraph_.endRayTracedShadowFilterPass();
+        }
         rhi::debug::endLabel(commandBuffer);
     }
     {
@@ -3012,6 +3058,7 @@ void Renderer::recordRayTracedShadowMask(VkCommandBuffer commandBuffer)
         renderer::RayTracedShadowResolvePushConstants push{};
         push.frameConstants = frameConstantsAddress;
         push.traceScale = traceScale;
+        push.filtered = frameRayTracedShadowFilterActive_ ? 1u : 0u;
         push.fullExtent = fullExtent;
         push.inverseFullExtent = inverseFullExtent;
         push.inverseViewProjection = inverseViewProjection;

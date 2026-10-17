@@ -177,6 +177,9 @@ void Application::initialize()
     renderer_->setScriptedCameraOrbit(config_.cameraOrbitRadiansPerFrame);
     if (config_.captureFrame != 0) {
         renderer_->requestFrameCaptureAt(config_.captureFrame, config_.captureOutput, config_.captureIncludeUi);
+        if (!config_.rtShadowDump.empty()) {
+            renderer_->requestRayTracedShadowDumpAt(config_.captureFrame, config_.rtShadowDump);
+        }
         if (!config_.vsmDumpPool.empty()) {
             renderer_->requestVsmPagePoolDumpAt(config_.captureFrame, config_.vsmDumpPool);
         }

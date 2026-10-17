@@ -1,16 +1,22 @@
 #include "renderer/RayTracedShadowMask.h"
 
 #include "core/Logger.h"
+#include "core/PfmWriter.h"
+#include "rhi/VulkanBuffer.h"
 #include "rhi/VulkanComputePipeline.h"
 #include "rhi/VulkanContext.h"
 #include "rhi/VulkanDebugUtils.h"
 #include "rhi/VulkanSwapchain.h"
 
 #include <array>
+#include <bit>
+#include <cstring>
 #include <exception>
+#include <limits>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace ve::renderer {
 
@@ -24,6 +30,19 @@ VkDescriptorSetLayoutBinding computeBinding(uint32_t binding, VkDescriptorType t
     layoutBinding.descriptorCount = 1;
     layoutBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     return layoutBinding;
+}
+
+VkWriteDescriptorSet
+imageWrite(VkDescriptorSet set, uint32_t binding, VkDescriptorType type, const VkDescriptorImageInfo* imageInfo)
+{
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = set;
+    write.dstBinding = binding;
+    write.descriptorCount = 1;
+    write.descriptorType = type;
+    write.pImageInfo = imageInfo;
+    return write;
 }
 
 // The main pass's test of whether a mask texel is about its fragment compares
@@ -50,6 +69,8 @@ RayTracedShadowMask::~RayTracedShadowMask()
 
 void RayTracedShadowMask::createPipelines(const std::filesystem::path& traceShaderPath,
                                           const std::filesystem::path& resolveShaderPath,
+                                          const std::filesystem::path& radiusShaderPath,
+                                          const std::filesystem::path& blurShaderPath,
                                           VkDescriptorSetLayout bindlessSetLayout)
 {
     if (bindlessSetLayout == VK_NULL_HANDLE) {
@@ -85,6 +106,20 @@ void RayTracedShadowMask::createPipelines(const std::filesystem::path& traceShad
     resolveInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&resolvePush, 1);
     resolveInfo.pipelineCache = context_.pipelineCache();
     resolvePipeline_ = pipelineStore_.get(context_.vkDevice(), resolveInfo, "RayTracedShadowResolvePipeline");
+
+    // The filter's two shaders share a set layout and a push block; the blur
+    // runs both axes from one pipeline, with the axis in the push block.
+    const VkDescriptorSetLayout filterLayout = filterSetLayout_.handle();
+    const VkPushConstantRange filterPush{
+        VK_SHADER_STAGE_COMPUTE_BIT, 0, static_cast<uint32_t>(sizeof(RayTracedShadowFilterPushConstants))};
+    rhi::VulkanComputePipelineCreateInfo filterInfo{};
+    filterInfo.descriptorSetLayouts = std::span<const VkDescriptorSetLayout>(&filterLayout, 1);
+    filterInfo.pushConstantRanges = std::span<const VkPushConstantRange>(&filterPush, 1);
+    filterInfo.pipelineCache = context_.pipelineCache();
+    filterInfo.shaderPath = radiusShaderPath;
+    radiusPipeline_ = pipelineStore_.get(context_.vkDevice(), filterInfo, "RayTracedShadowRadiusPipeline");
+    filterInfo.shaderPath = blurShaderPath;
+    blurPipeline_ = pipelineStore_.get(context_.vkDevice(), filterInfo, "RayTracedShadowBlurPipeline");
 }
 
 void RayTracedShadowMask::createDescriptorSetLayouts()
@@ -113,6 +148,18 @@ void RayTracedShadowMask::createDescriptorSetLayouts()
                               resolveSetLayout_.handle(),
                               VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
                               "RayTracedShadowResolveSetLayout");
+
+    const std::array<VkDescriptorSetLayoutBinding, 2> filterBindings{
+        computeBinding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER),
+        computeBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE),
+    };
+    filterSetLayout_.create(
+        context_.vkDevice(),
+        std::span<const VkDescriptorSetLayoutBinding>(filterBindings.data(), filterBindings.size()));
+    rhi::debug::setObjectName(context_.vkDevice(),
+                              filterSetLayout_.handle(),
+                              VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
+                              "RayTracedShadowFilterSetLayout");
 }
 
 void RayTracedShadowMask::destroyPipelines()
@@ -120,8 +167,11 @@ void RayTracedShadowMask::destroyPipelines()
     available_ = false;
     tracePipeline_.reset();
     resolvePipeline_.reset();
+    radiusPipeline_.reset();
+    blurPipeline_.reset();
     traceSetLayout_.reset();
     resolveSetLayout_.reset();
+    filterSetLayout_.reset();
 }
 
 void RayTracedShadowMask::createResources(VkAccelerationStructureKHR topLevel)
@@ -134,7 +184,8 @@ void RayTracedShadowMask::createResources(VkAccelerationStructureKHR topLevel)
         maskInfo.width = extent.width;
         maskInfo.height = extent.height;
         maskInfo.format = kFormat;
-        maskInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        // Transfer source for dumpVisibility, the debug readback.
+        maskInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
         maskInfo.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         maskInfo.debugName = "RayTracedShadowMask";
         mask_.create(context_, maskInfo);
@@ -155,6 +206,7 @@ void RayTracedShadowMask::createResources(VkAccelerationStructureKHR topLevel)
         // The passes need everything below; the mask image alone is enough for
         // binding 17, which is why a failure from here on leaves it in place.
         if (tracePipeline_.pipeline() == VK_NULL_HANDLE || resolvePipeline_.pipeline() == VK_NULL_HANDLE ||
+            radiusPipeline_.pipeline() == VK_NULL_HANDLE || blurPipeline_.pipeline() == VK_NULL_HANDLE ||
             traceSetLayout_.handle() == VK_NULL_HANDLE || topLevel == VK_NULL_HANDLE) {
             return;
         }
@@ -170,25 +222,37 @@ void RayTracedShadowMask::createResources(VkAccelerationStructureKHR topLevel)
         }
 
         rhi::VulkanImageCreateInfo traceInfo = maskInfo;
+        traceInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         traceInfo.format = kTraceFormat;
         traceInfo.debugName = "RayTracedShadowTrace";
         trace_.create(context_, traceInfo);
         traceLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+        // Allocated with the trace image whether or not the filter runs, so
+        // turning the filter on is a branch, not a reallocation.
+        traceInfo.debugName = "RayTracedShadowFilter";
+        filter_.create(context_, traceInfo);
+        filterLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 
+        // Five sets: trace; resolve from the trace image and from the filter
+        // image; the filter's two directions between the images.
         const std::array<VkDescriptorPoolSize, 3> poolSizes{{
-            {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3},
+            {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 7},
             {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1},
-            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2},
+            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 5},
         }};
         descriptorPool_.create(
-            context_.vkDevice(), std::span<const VkDescriptorPoolSize>(poolSizes.data(), poolSizes.size()), 2);
+            context_.vkDevice(), std::span<const VkDescriptorPoolSize>(poolSizes.data(), poolSizes.size()), 5);
         rhi::debug::setObjectName(context_.vkDevice(),
                                   descriptorPool_.handle(),
                                   VK_OBJECT_TYPE_DESCRIPTOR_POOL,
                                   "RayTracedShadowMaskDescriptorPool");
 
-        const std::array<VkDescriptorSetLayout, 2> setLayouts{traceSetLayout_.handle(), resolveSetLayout_.handle()};
-        std::array<VkDescriptorSet, 2> sets{};
+        const std::array<VkDescriptorSetLayout, 5> setLayouts{traceSetLayout_.handle(),
+                                                              resolveSetLayout_.handle(),
+                                                              resolveSetLayout_.handle(),
+                                                              filterSetLayout_.handle(),
+                                                              filterSetLayout_.handle()};
+        std::array<VkDescriptorSet, 5> sets{};
         VkDescriptorSetAllocateInfo allocateInfo{};
         allocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
         allocateInfo.descriptorPool = descriptorPool_.handle();
@@ -197,6 +261,9 @@ void RayTracedShadowMask::createResources(VkAccelerationStructureKHR topLevel)
         VK_CHECK(vkAllocateDescriptorSets(context_.vkDevice(), &allocateInfo, sets.data()));
         traceSet_ = sets[0];
         resolveSet_ = sets[1];
+        resolveFilteredSet_ = sets[2];
+        traceToFilterSet_ = sets[3];
+        filterToTraceSet_ = sets[4];
 
         VkDescriptorImageInfo depthInfo{};
         depthInfo.sampler = sampler_;
@@ -217,29 +284,37 @@ void RayTracedShadowMask::createResources(VkAccelerationStructureKHR topLevel)
         traceSampledInfo.imageView = trace_.imageView();
         traceSampledInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
+        VkDescriptorImageInfo filterStorageInfo{};
+        filterStorageInfo.imageView = filter_.imageView();
+        filterStorageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+        VkDescriptorImageInfo filterSampledInfo{};
+        filterSampledInfo.sampler = sampler_;
+        filterSampledInfo.imageView = filter_.imageView();
+        filterSampledInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
         VkDescriptorImageInfo maskStorageInfo{};
         maskStorageInfo.imageView = mask_.imageView();
         maskStorageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
-        std::array<VkWriteDescriptorSet, 6> writes{};
-        for (uint32_t index = 0; index < writes.size(); ++index) {
-            writes[index].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[index].dstSet = index < 3 ? traceSet_ : resolveSet_;
-            writes[index].dstBinding = index % 3;
-            writes[index].descriptorCount = 1;
-        }
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[0].pImageInfo = &depthInfo;
-        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+        constexpr VkDescriptorType kSampled = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        constexpr VkDescriptorType kStorage = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        std::array<VkWriteDescriptorSet, 13> writes{
+            imageWrite(traceSet_, 0, kSampled, &depthInfo),
+            imageWrite(traceSet_, 1, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, nullptr),
+            imageWrite(traceSet_, 2, kStorage, &traceStorageInfo),
+            imageWrite(resolveSet_, 0, kSampled, &depthInfo),
+            imageWrite(resolveSet_, 1, kSampled, &traceSampledInfo),
+            imageWrite(resolveSet_, 2, kStorage, &maskStorageInfo),
+            imageWrite(resolveFilteredSet_, 0, kSampled, &depthInfo),
+            imageWrite(resolveFilteredSet_, 1, kSampled, &filterSampledInfo),
+            imageWrite(resolveFilteredSet_, 2, kStorage, &maskStorageInfo),
+            imageWrite(traceToFilterSet_, 0, kSampled, &traceSampledInfo),
+            imageWrite(traceToFilterSet_, 1, kStorage, &filterStorageInfo),
+            imageWrite(filterToTraceSet_, 0, kSampled, &filterSampledInfo),
+            imageWrite(filterToTraceSet_, 1, kStorage, &traceStorageInfo),
+        };
         writes[1].pNext = &topLevelInfo;
-        writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        writes[2].pImageInfo = &traceStorageInfo;
-        writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[3].pImageInfo = &depthInfo;
-        writes[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[4].pImageInfo = &traceSampledInfo;
-        writes[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        writes[5].pImageInfo = &maskStorageInfo;
         vkUpdateDescriptorSets(context_.vkDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 
         available_ = true;
@@ -254,15 +329,148 @@ void RayTracedShadowMask::destroyResources()
     available_ = false;
     traceSet_ = VK_NULL_HANDLE;
     resolveSet_ = VK_NULL_HANDLE;
+    resolveFilteredSet_ = VK_NULL_HANDLE;
+    traceToFilterSet_ = VK_NULL_HANDLE;
+    filterToTraceSet_ = VK_NULL_HANDLE;
     descriptorPool_.reset();
     if (sampler_ != VK_NULL_HANDLE) {
         vkDestroySampler(context_.vkDevice(), sampler_, nullptr);
         sampler_ = VK_NULL_HANDLE;
     }
+    filter_.reset();
+    filterLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     trace_.reset();
     traceLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     mask_.reset();
     maskLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+}
+
+bool RayTracedShadowMask::dumpVisibility(const std::filesystem::path& path,
+                                         VkExtent2D extent,
+                                         VkCommandPool commandPool,
+                                         VkQueue queue)
+{
+    if (!imageReady() || extent.width == 0 || extent.height == 0) {
+        Logger::error("Ray-traced shadow dump: no mask image to read.");
+        return false;
+    }
+    if (commandPool == VK_NULL_HANDLE || queue == VK_NULL_HANDLE) {
+        Logger::error("Ray-traced shadow dump: no command pool or queue to submit the copy on.");
+        return false;
+    }
+
+    const VkDevice device = context_.vkDevice();
+    const size_t texelCount = static_cast<size_t>(extent.width) * static_cast<size_t>(extent.height);
+    // R32G32_UINT: visibility bits, then depth bits.
+    const VkDeviceSize byteCount = static_cast<VkDeviceSize>(texelCount) * 2u * sizeof(uint32_t);
+
+    vkDeviceWaitIdle(device);
+
+    rhi::VulkanBufferCreateInfo bufferInfo{};
+    bufferInfo.size = byteCount;
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    bufferInfo.memoryUsage = VMA_MEMORY_USAGE_AUTO;
+    bufferInfo.allocationFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+    rhi::VulkanBuffer staging;
+    staging.createBuffer(context_, bufferInfo);
+    if (!staging.valid()) {
+        Logger::error("Ray-traced shadow dump: could not allocate the readback buffer.");
+        return false;
+    }
+
+    VkCommandBufferAllocateInfo allocateInfo{};
+    allocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocateInfo.commandPool = commandPool;
+    allocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocateInfo.commandBufferCount = 1;
+    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+    if (vkAllocateCommandBuffers(device, &allocateInfo, &commandBuffer) != VK_SUCCESS) {
+        Logger::error("Ray-traced shadow dump: could not allocate a command buffer.");
+        return false;
+    }
+
+    // Back to the layout the graph tracks, so the next frame's first-use barrier
+    // starts from what the image is actually in.
+    const VkImageLayout restoreLayout =
+        maskLayout_ == VK_IMAGE_LAYOUT_UNDEFINED ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : maskLayout_;
+    VkImageMemoryBarrier2 barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    barrier.oldLayout = maskLayout_;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = mask_.image();
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.layerCount = 1;
+    VkDependencyInfo dependency{};
+    dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dependency.imageMemoryBarrierCount = 1;
+    dependency.pImageMemoryBarriers = &barrier;
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(commandBuffer, &beginInfo);
+    vkCmdPipelineBarrier2(commandBuffer, &dependency);
+    VkBufferImageCopy region{};
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent = {extent.width, extent.height, 1};
+    vkCmdCopyImageToBuffer(
+        commandBuffer, mask_.image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging.buffer(), 1, &region);
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.newLayout = restoreLayout;
+    vkCmdPipelineBarrier2(commandBuffer, &dependency);
+    vkEndCommandBuffer(commandBuffer);
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+    const VkResult submitted = vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
+    if (submitted == VK_SUCCESS) {
+        vkQueueWaitIdle(queue);
+        maskLayout_ = restoreLayout;
+    }
+    vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+    if (submitted != VK_SUCCESS) {
+        Logger::error("Ray-traced shadow dump: the copy submission failed.");
+        return false;
+    }
+
+    std::vector<uint32_t> raw(texelCount * 2u);
+    staging.download(std::as_writable_bytes(std::span<uint32_t>(raw.data(), raw.size())));
+    std::vector<float> visibility(texelCount);
+    size_t traced = 0;
+    for (size_t index = 0; index < texelCount; ++index) {
+        float value = std::bit_cast<float>(raw[index * 2u]);
+        // The mask's two encodings: below zero nothing speaks for the pixel, and
+        // two or more is a visibility traced from a surface facing away.
+        if (value < 0.0f) {
+            value = std::numeric_limits<float>::quiet_NaN();
+        } else {
+            if (value >= kRtMaskBackFacingBias) {
+                value -= kRtMaskBackFacingBias;
+            }
+            ++traced;
+        }
+        visibility[index] = value;
+    }
+    if (!writePfmGray(path, extent.width, extent.height, visibility)) {
+        return false;
+    }
+    Logger::info("Ray-traced shadow dump: wrote " + std::to_string(extent.width) + "x" + std::to_string(extent.height) +
+                 " visibility to " + path.string() + " (" + std::to_string(traced) + " pixels traced).");
+    return true;
 }
 
 void RayTracedShadowMask::recordTrace(VkCommandBuffer commandBuffer,
@@ -291,12 +499,31 @@ void RayTracedShadowMask::recordTrace(VkCommandBuffer commandBuffer,
                   1);
 }
 
+void RayTracedShadowMask::recordFilter(VkCommandBuffer commandBuffer,
+                                       RayTracedShadowFilterStage stage,
+                                       const RayTracedShadowFilterPushConstants& push) const
+{
+    const rhi::ComputePipelineRef& pipeline =
+        stage == RayTracedShadowFilterStage::Radius ? radiusPipeline_ : blurPipeline_;
+    const VkDescriptorSet set =
+        stage == RayTracedShadowFilterStage::BlurHorizontal ? filterToTraceSet_ : traceToFilterSet_;
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline());
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.layout(), 0, 1, &set, 0, nullptr);
+    vkCmdPushConstants(
+        commandBuffer, pipeline.layout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, static_cast<uint32_t>(sizeof(push)), &push);
+    vkCmdDispatch(commandBuffer,
+                  rayTracedShadowMaskGroupCount(push.traceExtent.x),
+                  rayTracedShadowMaskGroupCount(push.traceExtent.y),
+                  1);
+}
+
 void RayTracedShadowMask::recordResolve(VkCommandBuffer commandBuffer,
                                         const RayTracedShadowResolvePushConstants& push) const
 {
+    const VkDescriptorSet set = push.filtered != 0 ? resolveFilteredSet_ : resolveSet_;
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, resolvePipeline_.pipeline());
     vkCmdBindDescriptorSets(
-        commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, resolvePipeline_.layout(), 0, 1, &resolveSet_, 0, nullptr);
+        commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, resolvePipeline_.layout(), 0, 1, &set, 0, nullptr);
     vkCmdPushConstants(commandBuffer,
                        resolvePipeline_.layout(),
                        VK_SHADER_STAGE_COMPUTE_BIT,

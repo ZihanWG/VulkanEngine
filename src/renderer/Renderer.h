@@ -243,6 +243,10 @@ public:
     // frame. Diagnostic: it stalls the device, so it runs once and never on a
     // frame anyone is timing.
     void requestVsmPagePoolDumpAt(uint64_t frameNumber, std::filesystem::path outputPath);
+    // Writes the ray-traced shadow mask's visibility as a linear PFM after frame
+    // `frameNumber` presents (--rt-shadow-dump). See
+    // renderer::RayTracedShadowMask::dumpVisibility.
+    void requestRayTracedShadowDumpAt(uint64_t frameNumber, std::filesystem::path outputPath);
     // Turns on the overdraw readout (--overdraw): fragment shader invocations
     // over the main opaque geometry, divided by rendered pixels, printed once a
     // second. Reports only.
@@ -1172,6 +1176,8 @@ private:
     uint64_t frameCaptureTargetFrame_ = 0;
     uint64_t vsmPagePoolDumpTargetFrame_ = 0;
     std::filesystem::path vsmPagePoolDumpPath_;
+    uint64_t rayTracedShadowDumpTargetFrame_ = 0;
+    std::filesystem::path rayTracedShadowDumpPath_;
     bool frameCapturePending_ = false;
     bool frameCaptureRecorded_ = false;
     bool frameCaptureComplete_ = false;
@@ -1849,6 +1855,11 @@ private:
     // (renderer::rayTracedShadowMaskActive). Gates the mask pass's declaration,
     // its recording and the FrameConstants flag, which have to agree.
     bool frameRayTracedShadowMaskActive_ = false;
+    // This frame filters the mask between its trace and its resolve
+    // (renderer::rayTracedShadowFilterActive). Gates the filter passes'
+    // declaration, their recording, which image the resolve reads and the
+    // penumbra-radius debug flag, which have to agree.
+    bool frameRayTracedShadowFilterActive_ = false;
     // Whether the mask was active on the last frame that built the TLAS; see
     // renderer::rayTracedShadowMaskNeedsFreshBuild.
     bool rayTracingTopLevelBuiltWithMask_ = false;

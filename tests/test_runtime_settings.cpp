@@ -119,6 +119,8 @@ RuntimeSettings makeNonDefaultSettings()
     settings.rayTracedShadows.screenSpaceMask = true;
     settings.rayTracedShadows.sunAngularDiameterDegrees = 1.25f;
     settings.rayTracedShadows.halfResolutionMask = false;
+    settings.rayTracedShadows.filter = false;
+    settings.rayTracedShadows.debugPenumbraRadius = true;
     settings.rayTracedShadows.debugReferenceSamples = 16;
     settings.rayTracedShadows.debugHitDistance = true;
     settings.rayTracedShadows.normalOffset = 0.05f;
@@ -175,6 +177,8 @@ TEST_CASE("RuntimeSettings save -> load round-trips every persisted field", "[se
     CHECK(loaded.rayTracedShadows.sunAngularDiameterDegrees ==
           Catch::Approx(original.rayTracedShadows.sunAngularDiameterDegrees));
     CHECK(loaded.rayTracedShadows.halfResolutionMask == original.rayTracedShadows.halfResolutionMask);
+    CHECK(loaded.rayTracedShadows.filter == original.rayTracedShadows.filter);
+    CHECK(loaded.rayTracedShadows.debugPenumbraRadius == original.rayTracedShadows.debugPenumbraRadius);
     CHECK(loaded.rayTracedShadows.debugReferenceSamples == original.rayTracedShadows.debugReferenceSamples);
     CHECK(loaded.rayTracedShadows.debugHitDistance == original.rayTracedShadows.debugHitDistance);
     CHECK(loaded.rayTracedShadows.normalOffset == Catch::Approx(original.rayTracedShadows.normalOffset));

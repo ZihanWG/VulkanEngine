@@ -562,6 +562,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readBool(*rayTraced, "screenSpaceMask", settings.rayTracedShadows.screenSpaceMask);
         readFloat(*rayTraced, "sunAngularDiameterDegrees", settings.rayTracedShadows.sunAngularDiameterDegrees);
         readBool(*rayTraced, "halfResolutionMask", settings.rayTracedShadows.halfResolutionMask);
+        readBool(*rayTraced, "filter", settings.rayTracedShadows.filter);
         readFloat(*rayTraced, "normalOffset", settings.rayTracedShadows.normalOffset);
         readFloat(*rayTraced, "pixelFootprintOffset", settings.rayTracedShadows.pixelFootprintOffset);
         readBool(*rayTraced, "debugVisibility", settings.rayTracedShadows.debugVisibility);
@@ -569,6 +570,7 @@ void fromJson(const Json& json, RuntimeSettings& settings)
         readBool(*rayTraced, "debugMaskSource", settings.rayTracedShadows.debugMaskSource);
         readUint32(*rayTraced, "debugReferenceSamples", settings.rayTracedShadows.debugReferenceSamples);
         readBool(*rayTraced, "debugHitDistance", settings.rayTracedShadows.debugHitDistance);
+        readBool(*rayTraced, "debugPenumbraRadius", settings.rayTracedShadows.debugPenumbraRadius);
     }
 
     if (const Json* gi = objectMember(json, "gi")) {
@@ -749,13 +751,15 @@ Json toJson(const RuntimeSettings& settings)
               {"screenSpaceMask", settings.rayTracedShadows.screenSpaceMask},
               {"sunAngularDiameterDegrees", settings.rayTracedShadows.sunAngularDiameterDegrees},
               {"halfResolutionMask", settings.rayTracedShadows.halfResolutionMask},
+              {"filter", settings.rayTracedShadows.filter},
               {"normalOffset", settings.rayTracedShadows.normalOffset},
               {"pixelFootprintOffset", settings.rayTracedShadows.pixelFootprintOffset},
               {"debugVisibility", settings.rayTracedShadows.debugVisibility},
               {"debugCompareCascades", settings.rayTracedShadows.debugCompareCascades},
               {"debugMaskSource", settings.rayTracedShadows.debugMaskSource},
               {"debugReferenceSamples", settings.rayTracedShadows.debugReferenceSamples},
-              {"debugHitDistance", settings.rayTracedShadows.debugHitDistance}}},
+              {"debugHitDistance", settings.rayTracedShadows.debugHitDistance},
+              {"debugPenumbraRadius", settings.rayTracedShadows.debugPenumbraRadius}}},
         {"gi",
          Json{{"enabled", settings.gi.enabled},
               {"debugPattern", settings.gi.debugPattern},

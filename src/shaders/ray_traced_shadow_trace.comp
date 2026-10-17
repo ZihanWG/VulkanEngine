@@ -22,7 +22,7 @@ layout(set = 0, binding = 1) uniform accelerationStructureEXT uSceneTopLevel;
 // x = visibility (kRtMaskNotTraced where nothing was traced, plus
 // kRtMaskBackFacingBias where the surface faces away from the sun), y = hit
 // distance (negative where the ray hit nothing), z unused, w = the surface's
-// distance from the camera, which the resolve's depth test compares.
+// distance from the camera, which the filter and the resolve compare.
 layout(set = 0, binding = 2, rgba16f) uniform writeonly image2D uShadowTrace;
 // The bindless base colour heap, at the set the main pass also binds it at, for
 // the cutout test.

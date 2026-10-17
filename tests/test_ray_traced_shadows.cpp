@@ -193,6 +193,70 @@ TEST_CASE("A soft shadow or the reference asks for the mask by itself", "[raytra
     CHECK(defaults.halfResolutionMask);
 }
 
+TEST_CASE("Only a traced soft shadow is filtered, and never the reference", "[raytracing][mask][filter]")
+{
+    using ve::renderer::rayTracedShadowFilterActive;
+
+    CHECK(rayTracedShadowFilterActive(true, true, 0.53f, 0, false));
+    // Nothing to filter without the mask, and a hard shadow's single ray is the
+    // answer.
+    CHECK_FALSE(rayTracedShadowFilterActive(false, true, 0.53f, 0, false));
+    CHECK_FALSE(rayTracedShadowFilterActive(true, true, 0.0f, 0, false));
+    CHECK_FALSE(rayTracedShadowFilterActive(true, false, 0.53f, 0, false));
+    // The reference is what the filter is graded against, and the hit-distance
+    // view shows the rays as traced.
+    CHECK_FALSE(rayTracedShadowFilterActive(true, true, 0.53f, 64, false));
+    CHECK_FALSE(rayTracedShadowFilterActive(true, true, 0.53f, 0, true));
+
+    // On by default, so a soft shadow is filtered unless asked not to be.
+    const ve::RayTracedShadowSettings defaults{};
+    CHECK(defaults.filter);
+    CHECK_FALSE(defaults.debugPenumbraRadius);
+}
+
+TEST_CASE("The penumbra radius follows the occluder, the sun and the surface's footprint", "[raytracing][mask][filter]")
+{
+    using ve::renderer::kRtFilterMaxRadius;
+    using ve::renderer::rayTracedShadowPenumbraRadius;
+    using ve::renderer::rayTracedShadowTexelsPerUnit;
+    using ve::renderer::rayTracedShadowWorldPerTexel;
+
+    // A 60-degree vertical field of view on a 720-pixel sub-rect: [1][1] is
+    // 1/tan(30 degrees), and a unit at one unit away covers 623.5 pixels.
+    const float yScale = 1.0f / std::tan(std::numbers::pi_v<float> / 6.0f);
+    CHECK(rayTracedShadowTexelsPerUnit(yScale, 720, 1) == Catch::Approx(623.538f).epsilon(1e-4));
+    // Half resolution halves it, and the Vulkan Y flip's sign does not matter.
+    CHECK(rayTracedShadowTexelsPerUnit(-yScale, 720, 2) == Catch::Approx(311.769f).epsilon(1e-4));
+    CHECK(rayTracedShadowTexelsPerUnit(yScale, 720, 0) == 0.0f);
+
+    // Facing the camera 10 units away, a texel spans 10 / 623.5 units; a floor
+    // receding 0.05 units per texel spans more, dominated by the recession.
+    const float texelsPerUnit = rayTracedShadowTexelsPerUnit(yScale, 720, 1);
+    const float facing = rayTracedShadowWorldPerTexel(10.0f, texelsPerUnit, 0.0f);
+    CHECK(facing == Catch::Approx(10.0f / texelsPerUnit));
+    const float receding = rayTracedShadowWorldPerTexel(10.0f, texelsPerUnit, 0.05f);
+    CHECK(receding == Catch::Approx(std::sqrt(facing * facing + 0.05f * 0.05f)));
+    CHECK(receding > 3.0f * facing);
+
+    // An occluder 1 unit along the sun ray, the sun 1 degree across: half the
+    // penumbra is tan(0.5 deg) = 0.0087 units, which on the facing surface is
+    // 0.544 texels.
+    const float tanRadius = std::tan(0.5f * std::numbers::pi_v<float> / 180.0f);
+    const float base = rayTracedShadowPenumbraRadius(1.0f, tanRadius, facing);
+    CHECK(base == Catch::Approx(tanRadius / facing));
+    CHECK(base == Catch::Approx(0.544f).epsilon(1e-2));
+    // Linear in the occluder's distance, fewer texels where each spans more, and
+    // clamped.
+    CHECK(rayTracedShadowPenumbraRadius(4.0f, tanRadius, facing) == Catch::Approx(4.0f * base));
+    CHECK(rayTracedShadowPenumbraRadius(1.0f, tanRadius, receding) == Catch::Approx(tanRadius / receding));
+    CHECK(rayTracedShadowPenumbraRadius(1000.0f, tanRadius, facing) == kRtFilterMaxRadius);
+    // No occluder, no sun, or no footprint: nothing to blur.
+    CHECK(rayTracedShadowPenumbraRadius(-1.0f, tanRadius, facing) == 0.0f);
+    CHECK(rayTracedShadowPenumbraRadius(1.0f, 0.0f, facing) == 0.0f);
+    CHECK(rayTracedShadowPenumbraRadius(1.0f, tanRadius, 0.0f) == 0.0f);
+    CHECK(rayTracedShadowPenumbraRadius(std::numeric_limits<float>::quiet_NaN(), tanRadius, facing) == 0.0f);
+}
+
 TEST_CASE("The trace grid covers the sub-rect at either resolution", "[raytracing][mask]")
 {
     using ve::renderer::rayTracedShadowTraceExtent;

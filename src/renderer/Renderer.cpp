@@ -662,6 +662,20 @@ void Renderer::drawFrame()
     // After present, so this frame's page pass is submitted and the pool holds
     // what the matching capture was shaded against. The dump idles the device
     // itself, so there is nothing to wait for here.
+    // The same moment and the same idle as the pool dump below: this frame's
+    // mask is complete and nothing has started writing the next one.
+    if (rayTracedShadowDumpTargetFrame_ != 0 && frameClock_.frameCount() >= rayTracedShadowDumpTargetFrame_) {
+        rayTracedShadowDumpTargetFrame_ = 0;
+        if (!frameRayTracedShadowMaskActive_) {
+            Logger::error("Ray-traced shadow dump: the capture frame did not trace the mask, so there is nothing "
+                          "to write. Enable rayTracedShadows with a sun angle, the reference or screenSpaceMask.");
+        } else {
+            static_cast<void>(rayTracedShadowMask_.dumpVisibility(rayTracedShadowDumpPath_,
+                                                                  renderResolution_.extent(),
+                                                                  commandContext_.commandPool(),
+                                                                  context_.graphicsQueue()));
+        }
+    }
     if (vsmPagePoolDumpTargetFrame_ != 0 && frameClock_.frameCount() >= vsmPagePoolDumpTargetFrame_) {
         vsmPagePoolDumpTargetFrame_ = 0;
         // Every failure path inside the dump logs its own reason, so the caller has
@@ -1002,6 +1016,16 @@ void Renderer::requestFrameCaptureAt(uint64_t frameNumber, std::filesystem::path
     frameCaptureIncludesUi_ = includeUi;
     Logger::info("Frame capture requested at frame " + std::to_string(frameNumber) + " -> " +
                  frameCaptureOutputPath_.string() + (includeUi ? " (including the ImGui overlay)" : ""));
+}
+
+void Renderer::requestRayTracedShadowDumpAt(uint64_t frameNumber, std::filesystem::path outputPath)
+{
+    if (frameNumber == 0 || outputPath.empty()) {
+        Logger::error("A ray-traced shadow dump needs a frame number of at least 1 and a non-empty output path.");
+        return;
+    }
+    rayTracedShadowDumpTargetFrame_ = frameNumber;
+    rayTracedShadowDumpPath_ = std::move(outputPath);
 }
 
 void Renderer::requestVsmPagePoolDumpAt(uint64_t frameNumber, std::filesystem::path outputPath)

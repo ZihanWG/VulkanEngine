@@ -82,6 +82,28 @@ float sunConeTangent(float angularDiameterDegrees)
     return std::tan(0.5f * angularDiameterDegrees * std::numbers::pi_v<float> / 180.0f);
 }
 
+float rayTracedShadowWorldPerTexel(float cameraDistance, float texelsPerUnit, float distanceStep)
+{
+    const float across = cameraDistance / std::max(texelsPerUnit, 1.0e-6f);
+    return std::sqrt(across * across + distanceStep * distanceStep);
+}
+
+float rayTracedShadowPenumbraRadius(float occluderDistance, float tanSunRadius, float worldPerTexel)
+{
+    if (!(occluderDistance > 0.0f) || !(worldPerTexel > 0.0f)) {
+        return 0.0f;
+    }
+    return std::min(occluderDistance * tanSunRadius / worldPerTexel, kRtFilterMaxRadius);
+}
+
+float rayTracedShadowTexelsPerUnit(float projectionYScale, uint32_t fullHeight, uint32_t traceScale)
+{
+    if (traceScale == 0) {
+        return 0.0f;
+    }
+    return std::abs(projectionYScale) * 0.5f * static_cast<float>(fullHeight) / static_cast<float>(traceScale);
+}
+
 glm::vec2 concentricDiskSample(glm::vec2 u)
 {
     const glm::vec2 offset = 2.0f * u - 1.0f;

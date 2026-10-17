@@ -5,7 +5,7 @@
 # has to be accompanied by the matching C++ descriptor or push-constant
 # change, which is the pairing this file exists to make visible.
 #
-# 48 modules.
+# 50 modules.
 
 bloom_blur.frag
   push_constant pc : BloomBlurPushConstants{texelSize:vec2@0, horizontal:uint@8, padding:uint@12, sourceUvScale:vec2@16}
@@ -143,8 +143,18 @@ punctual_shadow_cull.comp
   set=0 binding=3   ssbos        CasterFlagBuffer : CasterFlagBuffer{flags[0]:uint@0}
   set=0 binding=4   ssbos        BatchVisibleCountBuffer : BatchVisibleCountBuffer{visibleCounts[0]:uint@0}
 
+ray_traced_shadow_blur.comp
+  push_constant pc : FilterPushConstants{traceExtent:uvec2@0, direction:ivec2@8, texelsPerUnit:float@16, tanSunRadius:float@20}
+  set=0 binding=0   textures     uFilterSource : sampler2D
+  set=0 binding=1   images       uFilterDestination : image2D
+
+ray_traced_shadow_radius.comp
+  push_constant pc : FilterPushConstants{traceExtent:uvec2@0, direction:ivec2@8, texelsPerUnit:float@16, tanSunRadius:float@20}
+  set=0 binding=0   textures     uFilterSource : sampler2D
+  set=0 binding=1   images       uFilterDestination : image2D
+
 ray_traced_shadow_resolve.comp
-  push_constant pc : ResolvePushConstants{frameConstants:FrameConstantsBuffer{values:FrameConstants{cascadeViewProjection[4]:mat4@0, jitteredViewProjection:mat4@256, viewProjection:mat4@320, lightDirection:vec4@384, lightColor:vec4@400, ambientColor:vec4@416, cascadeSplits:vec4@432, shadowSettings:vec4@448, cameraPosition:vec4@464, cameraForward:vec4@480, shadowQuality:vec4@496, vsmLightView:mat4@512, vsmPageTable:uvec4@576, vsmParams:vec4@592, vsmCamera:vec4@608, rayTracedShadow:uvec4@624, rayTracedShadowParams:vec4@640}@0}*@0, traceScale:uint@8, padding:uint@12, fullExtent:uvec2@16, inverseFullExtent:vec2@24, inverseViewProjection:mat4@32}
+  push_constant pc : ResolvePushConstants{frameConstants:FrameConstantsBuffer{values:FrameConstants{cascadeViewProjection[4]:mat4@0, jitteredViewProjection:mat4@256, viewProjection:mat4@320, lightDirection:vec4@384, lightColor:vec4@400, ambientColor:vec4@416, cascadeSplits:vec4@432, shadowSettings:vec4@448, cameraPosition:vec4@464, cameraForward:vec4@480, shadowQuality:vec4@496, vsmLightView:mat4@512, vsmPageTable:uvec4@576, vsmParams:vec4@592, vsmCamera:vec4@608, rayTracedShadow:uvec4@624, rayTracedShadowParams:vec4@640}@0}*@0, traceScale:uint@8, filtered:uint@12, fullExtent:uvec2@16, inverseFullExtent:vec2@24, inverseViewProjection:mat4@32}
   set=0 binding=0   textures     uSceneDepth : sampler2D
   set=0 binding=1   textures     uShadowTrace : sampler2D
   set=0 binding=2   images       uRayTracedShadowMask : uimage2D

@@ -1018,8 +1018,10 @@ void main()
 #ifdef VE_RAY_QUERY
         // Where nothing faces the sun the term multiplies zero, so the ray is
         // skipped -- unless a debug view is about to show the term itself.
-        bool rayTracedDebug = (rayTracedFlags & (kRtShadowFlagDebugVisibility | kRtShadowFlagDebugCompareCascades |
-                                                 kRtShadowFlagDebugMaskSource | kRtShadowFlagDebugHitDistance)) != 0u;
+        bool rayTracedDebug =
+            (rayTracedFlags & (kRtShadowFlagDebugVisibility | kRtShadowFlagDebugCompareCascades |
+                               kRtShadowFlagDebugMaskSource | kRtShadowFlagDebugHitDistance |
+                               kRtShadowFlagDebugPenumbraRadius)) != 0u;
         if (normalLight > 0.0 || rayTracedDebug) {
             float masked = (rayTracedFlags & kRtShadowFlagScreenMask) != 0u
                                ? rayTracedShadowFromMask(normalize(vNormal), lightDirection)
@@ -1030,7 +1032,8 @@ void main()
                                                                       pc.objectFrameData,
                                                                       vWorldPosition,
                                                                       normalize(vNormal),
-                                                                      lightDirection);
+                                                                      lightDirection,
+                                                                      gl_FragCoord.xy);
         }
 #endif
     } else if ((pc.frameConstants.values.vsmPageTable.w & kVsmFlagEnabled) != 0u) {
@@ -1249,7 +1252,8 @@ void main()
     // about the scene.
     if ((rayTracedFlags & kRtShadowFlagEnabled) != 0u &&
         (rayTracedFlags & (kRtShadowFlagDebugVisibility | kRtShadowFlagDebugCompareCascades |
-                           kRtShadowFlagDebugMaskSource | kRtShadowFlagDebugHitDistance)) != 0u) {
+                           kRtShadowFlagDebugMaskSource | kRtShadowFlagDebugHitDistance |
+                           kRtShadowFlagDebugPenumbraRadius)) != 0u) {
         vec3 debugColor = vec3(shadowFactor);
 #ifdef VE_RAY_QUERY
         if ((rayTracedFlags & kRtShadowFlagDebugMaskSource) != 0u) {
@@ -1260,8 +1264,12 @@ void main()
             // the surface faces away from the sun and the term multiplies zero.
             vec3 verdict = normalLight > 0.0 ? vec3(0.15, 0.35, 1.0) : vec3(0.3);
             if (rayTracedFromMask) {
-                float inlineVisibility = rayTracedSunVisibility(
-                    pc.frameConstants, pc.objectFrameData, vWorldPosition, normalize(vNormal), lightDirection);
+                float inlineVisibility = rayTracedSunVisibility(pc.frameConstants,
+                                                                pc.objectFrameData,
+                                                                vWorldPosition,
+                                                                normalize(vNormal),
+                                                                lightDirection,
+                                                                gl_FragCoord.xy);
                 verdict = (inlineVisibility > 0.5) == (shadowFactor > 0.5) ? vec3(0.2, 0.85, 0.3)
                                                                             : vec3(1.0, 0.1, 1.0);
             }

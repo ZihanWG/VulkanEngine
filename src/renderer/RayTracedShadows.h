@@ -45,6 +45,9 @@ inline constexpr uint32_t kRtShadowFlagDebugMaskSource = 16u;
 // The mask's resolve writes how far each ray went instead of whether it reached
 // the sun, and the main pass shows that term on its own.
 inline constexpr uint32_t kRtShadowFlagDebugHitDistance = 32u;
+// The mask's resolve writes the soft shadow filter's penumbra radius instead of
+// the visibility, and the main pass shows that term on its own.
+inline constexpr uint32_t kRtShadowFlagDebugPenumbraRadius = 64u;
 
 // Where a mesh vertex keeps what the alpha test needs, in floats. The fragment
 // shader reads candidate triangles' UVs straight out of the vertex buffer by
@@ -72,6 +75,11 @@ inline constexpr uint32_t kRtMaskLocalSize = 8;
 // Workgroups along one axis that cover `pixels` with kRtMaskLocalSize each; the
 // shader returns early outside the sub-rect.
 [[nodiscard]] uint32_t rayTracedShadowMaskGroupCount(uint32_t pixels);
+
+// Added to a mask visibility traced from a surface facing away from the sun.
+// Mirrors kRtMaskBackFacingBias in ray_traced_shadows.glsl; the CPU reads it
+// only to strip it from the debug readback.
+inline constexpr float kRtMaskBackFacingBias = 2.0f;
 
 // Most rays a pixel traces in the reference mode, and the clamp on
 // RayTracedShadowSettings::debugReferenceSamples. Mirrored in
@@ -111,6 +119,56 @@ rayTracedShadowMaskActive(bool tracing, bool depthPrepass, bool maskAvailable, b
 {
     return tracing && depthPrepass && maskAvailable && enabled;
 }
+
+// --- The soft shadow filter ---------------------------------------------------
+//
+// Between the trace and the resolve, at the trace's resolution: a radius pass
+// that turns the hit distances around each texel into a penumbra radius, then a
+// separable bilateral blur over that radius, one axis at a time. See
+// docs/ray_traced_shadows.md#the-filter.
+
+// The filter's three dispatches, in recording order. The radius pass and the
+// vertical axis write the filter image; the horizontal axis writes the trace
+// image back, which is the ping-pong that lets two images serve three passes.
+enum class RayTracedShadowFilterStage : uint32_t {
+    Radius = 0,
+    BlurHorizontal = 1,
+    BlurVertical = 2,
+};
+inline constexpr uint32_t kRayTracedShadowFilterStageCount = 3;
+
+// Whether this frame filters the mask. Only a frame that traces the mask has
+// anything to filter, and only a soft shadow needs it: a hard shadow's single
+// ray is the answer. Never the reference mode, which is the converged answer the
+// filter is judged against, and never under the hit-distance view, which shows
+// the rays as traced: the radius pass writes over the hit distance it reads.
+[[nodiscard]] constexpr bool rayTracedShadowFilterActive(
+    bool maskActive, bool filter, float sunAngularDiameterDegrees, uint32_t referenceSamples, bool debugHitDistance)
+{
+    return maskActive && filter && sunAngularDiameterDegrees > 0.0f && referenceSamples == 0 && !debugHitDistance;
+}
+
+// Most trace texels the blur reaches either side of a texel, and the clamp on
+// the radius. Mirrored in ray_traced_shadows.glsl.
+inline constexpr float kRtFilterMaxRadius = 16.0f;
+// How much surface one trace texel spans along a screen axis, in world units:
+// the width a texel subtends at cameraDistance, combined with distanceStep, how
+// far the surface recedes from one texel to the next along that axis. Mirrors
+// rtWorldPerTexel in ray_traced_shadows.glsl.
+[[nodiscard]] float rayTracedShadowWorldPerTexel(float cameraDistance, float texelsPerUnit, float distanceStep);
+
+// Half the narrowest width the penumbra of an occluder `occluderDistance` along
+// the sun ray can have on the receiver -- 2 * distance * tanSunRadius across --
+// in texels that each span worldPerTexel, clamped to kRtFilterMaxRadius. Zero
+// without an occluder. The narrowest because a kernel wider than the penumbra
+// bends its ends towards its middle, where a narrower one only leaves noise.
+// Mirrors rtPenumbraRadius in ray_traced_shadows.glsl.
+[[nodiscard]] float rayTracedShadowPenumbraRadius(float occluderDistance, float tanSunRadius, float worldPerTexel);
+
+// Trace texels per world unit at one unit from the camera: a width w at camera
+// distance d covers w * this / d texels. projectionYScale is the projection
+// matrix's [1][1], whose sign the Vulkan Y flip may have turned.
+[[nodiscard]] float rayTracedShadowTexelsPerUnit(float projectionYScale, uint32_t fullHeight, uint32_t traceScale);
 
 // --- Sampling the sun's disc -------------------------------------------------
 //
@@ -176,7 +234,8 @@ static_assert(sizeof(RayTracedShadowTracePushConstants) == 112);
 struct RayTracedShadowResolvePushConstants {
     uint64_t frameConstants = 0;
     uint32_t traceScale = 1;
-    uint32_t padding = 0;
+    // 1 when the resolve reads the filter image rather than the trace image.
+    uint32_t filtered = 0;
     glm::uvec2 fullExtent{0u};
     glm::vec2 inverseFullExtent{0.0f};
     glm::mat4 inverseViewProjection{1.0f};
@@ -185,7 +244,25 @@ static_assert(offsetof(RayTracedShadowResolvePushConstants, traceScale) == 8);
 static_assert(offsetof(RayTracedShadowResolvePushConstants, fullExtent) == 16);
 static_assert(offsetof(RayTracedShadowResolvePushConstants, inverseFullExtent) == 24);
 static_assert(offsetof(RayTracedShadowResolvePushConstants, inverseViewProjection) == 32);
+static_assert(offsetof(RayTracedShadowResolvePushConstants, filtered) == 12);
 static_assert(sizeof(RayTracedShadowResolvePushConstants) == 96);
+
+// The filter passes' push block, shared by the radius pass and both blur axes.
+// Mirrors FilterPushConstants in src/shaders/ray_traced_shadow_filter.glsl.
+struct RayTracedShadowFilterPushConstants {
+    // rayTracedShadowTraceExtent of the sub-rect at the trace scale.
+    glm::uvec2 traceExtent{0u};
+    // The blur's axis, (1, 0) or (0, 1); unused by the radius pass.
+    glm::ivec2 direction{0};
+    // rayTracedShadowTexelsPerUnit for this frame.
+    float texelsPerUnit = 0.0f;
+    // sunConeTangent of the sun's angular diameter.
+    float tanSunRadius = 0.0f;
+};
+static_assert(offsetof(RayTracedShadowFilterPushConstants, direction) == 8);
+static_assert(offsetof(RayTracedShadowFilterPushConstants, texelsPerUnit) == 16);
+static_assert(offsetof(RayTracedShadowFilterPushConstants, tanSunRadius) == 20);
+static_assert(sizeof(RayTracedShadowFilterPushConstants) == 24);
 
 // The pre-skin dispatch's push block, all device addresses. Mirrors
 // PreSkinPushConstants in src/shaders/skin_positions.comp, whose reflected

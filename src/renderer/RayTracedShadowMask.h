@@ -11,10 +11,15 @@
 // half resolution it fills one quarter of that image, one texel per 2x2 block.
 // RayTracedShadowResolve turns it into the mask, R32G32_UINT at the same extent:
 // x is the visibility's float bits (kRtMaskNotTraced where nothing speaks for
-// the pixel), y the depth bits the prepass wrote there. A soft shadow's filter
-// will sit between the two.
+// the pixel), y the depth bits the prepass wrote there.
 //
-// Ownership. Both images are written and read within one frame, so neither is
+// A soft shadow's filter sits between the two, at the trace's resolution, with
+// a third image, the filter image, in the trace image's format and extent: the
+// radius pass reads the trace image into it, the blur's horizontal axis reads it
+// back into the trace image, and the vertical axis writes it again, which the
+// resolve then reads instead of the trace image.
+//
+// Ownership. All three images are written and read within one frame, so none is
 // frame-indexed or history. They persist across frames only so their layouts
 // can be tracked: the render graph imports them with those layouts, which is
 // what orders the previous frame's reads before this frame's writes. Created
@@ -61,6 +66,8 @@ public:
     // caller leaves the mask unavailable.
     void createPipelines(const std::filesystem::path& traceShaderPath,
                          const std::filesystem::path& resolveShaderPath,
+                         const std::filesystem::path& radiusShaderPath,
+                         const std::filesystem::path& blurShaderPath,
                          VkDescriptorSetLayout bindlessSetLayout);
     void destroyPipelines();
 
@@ -75,9 +82,24 @@ public:
     void recordTrace(VkCommandBuffer commandBuffer,
                      const RayTracedShadowTracePushConstants& push,
                      VkDescriptorSet bindlessSet) const;
-    // Dispatches over push.fullExtent. The graph pass put the trace image in
-    // SHADER_READ_ONLY_OPTIMAL and the mask in GENERAL.
+    // One of the filter's dispatches over push.traceExtent. The graph pass put
+    // the image it reads in SHADER_READ_ONLY_OPTIMAL and the one it writes in
+    // GENERAL: see RayTracedShadowFilterStage for which is which.
+    void recordFilter(VkCommandBuffer commandBuffer,
+                      RayTracedShadowFilterStage stage,
+                      const RayTracedShadowFilterPushConstants& push) const;
+    // Dispatches over push.fullExtent, reading the filter image when
+    // push.filtered is set and the trace image otherwise. The graph pass put
+    // that image in SHADER_READ_ONLY_OPTIMAL and the mask in GENERAL.
     void recordResolve(VkCommandBuffer commandBuffer, const RayTracedShadowResolvePushConstants& push) const;
+
+    // Copies the mask's `extent` sub-rect to the host and writes its visibility
+    // to a single-channel PFM: linear, the back-facing mark stripped, NaN where
+    // nothing speaks for the pixel. A debug capture, never the frame path: it
+    // idles the queue, like the virtual shadow map's pool dump it is modelled on.
+    // Logs and returns false on any failure.
+    [[nodiscard]] bool
+    dumpVisibility(const std::filesystem::path& path, VkExtent2D extent, VkCommandPool commandPool, VkQueue queue);
 
     // The mask image exists, so binding 17 can be written.
     [[nodiscard]] bool imageReady() const
@@ -92,7 +114,8 @@ public:
         // the store reset since it was issued reads null until it is requested
         // again.
         return available_ && tracePipeline_.pipeline() != VK_NULL_HANDLE &&
-               resolvePipeline_.pipeline() != VK_NULL_HANDLE;
+               resolvePipeline_.pipeline() != VK_NULL_HANDLE && radiusPipeline_.pipeline() != VK_NULL_HANDLE &&
+               blurPipeline_.pipeline() != VK_NULL_HANDLE;
     }
 
     [[nodiscard]] const rhi::VulkanImage& image() const
@@ -111,6 +134,14 @@ public:
     {
         return &traceLayout_;
     }
+    [[nodiscard]] const rhi::VulkanImage& filterImage() const
+    {
+        return filter_;
+    }
+    [[nodiscard]] VkImageLayout* filterLayoutPtr()
+    {
+        return &filterLayout_;
+    }
     [[nodiscard]] VkSampler sampler() const
     {
         return sampler_;
@@ -127,17 +158,28 @@ private:
     rhi::VulkanPipelineStore& pipelineStore_;
     const RenderResolution& renderResolution_;
 
-    // Trace: depth, TLAS, trace image (storage). Resolve: depth, trace image
-    // (sampled), mask (storage).
+    // Trace: depth, TLAS, trace image (storage). Resolve: depth, trace or
+    // filter image (sampled), mask (storage). Filter: one image sampled, the
+    // other storage.
     rhi::VulkanDescriptorSetLayout traceSetLayout_;
     rhi::VulkanDescriptorSetLayout resolveSetLayout_;
+    rhi::VulkanDescriptorSetLayout filterSetLayout_;
     rhi::ComputePipelineRef tracePipeline_;
     rhi::ComputePipelineRef resolvePipeline_;
+    rhi::ComputePipelineRef radiusPipeline_;
+    rhi::ComputePipelineRef blurPipeline_;
     rhi::VulkanDescriptorPool descriptorPool_;
     VkDescriptorSet traceSet_ = VK_NULL_HANDLE;
     VkDescriptorSet resolveSet_ = VK_NULL_HANDLE;
+    VkDescriptorSet resolveFilteredSet_ = VK_NULL_HANDLE;
+    // The radius pass and the vertical axis read the trace image and write the
+    // filter image; the horizontal axis the other way round.
+    VkDescriptorSet traceToFilterSet_ = VK_NULL_HANDLE;
+    VkDescriptorSet filterToTraceSet_ = VK_NULL_HANDLE;
     rhi::VulkanImage trace_;
     VkImageLayout traceLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+    rhi::VulkanImage filter_;
+    VkImageLayout filterLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     rhi::VulkanImage mask_;
     VkImageLayout maskLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     // Nearest, clamped. Everything here is read with texelFetch, and the mask is

@@ -215,6 +215,11 @@ struct LaunchOptions {
     // it produced are from the same moment, and a VSM mode that allocates the
     // pool at all.
     std::string vsmDumpPool;
+    // Write the ray-traced shadow mask's visibility to this PFM at the capture
+    // frame: linear floats, the back-facing mark stripped, NaN where nothing was
+    // traced. Requires --capture-frame, for the same reason as the pool dump, and
+    // a frame that traces the mask. Read by tools/dev/compare_shadow_visibility.py.
+    std::string rtShadowDump;
 
     // Reports whether this driver can bind two images into one allocation, and
     // whether they provably share bytes, then continues as normal. Kept as the

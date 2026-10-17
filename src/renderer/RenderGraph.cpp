@@ -2,6 +2,7 @@
 
 #include "core/Logger.h"
 #include "renderer/IrradianceProbes.h"
+#include "renderer/RayTracedShadows.h"
 #include "rhi/VulkanShadowMap.h"
 #include "rhi/VulkanSwapchain.h"
 
@@ -213,6 +214,8 @@ const char* renderPassTypeName(RenderPassType type)
         return "Ray Tracing Scene Build";
     case RenderPassType::RayTracedShadowTrace:
         return "Ray Traced Shadow Trace";
+    case RenderPassType::RayTracedShadowFilter:
+        return "Ray Traced Shadow Filter";
     case RenderPassType::RayTracedShadowResolve:
         return "Ray Traced Shadow Resolve";
     case RenderPassType::Shadow:
@@ -630,6 +633,10 @@ void RenderGraph::importFrameBuffers()
     if (frame_.resources.rayTracedShadowMaskEnabled && frame_.resources.rayTracedShadowTrace.image != VK_NULL_HANDLE) {
         frame_.rayTracedShadowTrace = importTexture(frame_.resources.rayTracedShadowTrace);
     }
+    if (frame_.resources.rayTracedShadowMaskEnabled && frame_.resources.rayTracedShadowFilterEnabled &&
+        frame_.resources.rayTracedShadowFilter.image != VK_NULL_HANDLE) {
+        frame_.rayTracedShadowFilter = importTexture(frame_.resources.rayTracedShadowFilter);
+    }
 }
 
 void RenderGraph::beginVsmPageMarkPass()
@@ -998,6 +1005,31 @@ void RenderGraph::endRayTracedShadowTracePass()
     if (activePass_ != ActivePass::RayTracedShadowTrace) {
         throw std::logic_error(
             "RenderGraph::endRayTracedShadowTracePass called without an active ray-traced shadow trace pass.");
+    }
+
+    activePass_ = ActivePass::None;
+}
+
+void RenderGraph::beginRayTracedShadowFilterPass(RayTracedShadowFilterStage stage)
+{
+    requireFrameActive("RenderGraph::beginRayTracedShadowFilterPass");
+    if (activePass_ != ActivePass::None) {
+        throw std::logic_error("RenderGraph::beginRayTracedShadowFilterPass called while another pass is active.");
+    }
+    if (!beginDeclaredPass(frame_.passIndices.rayTracedShadowFilter.at(static_cast<size_t>(stage)))) {
+        throw std::logic_error(
+            "RenderGraph::beginRayTracedShadowFilterPass was culled but the renderer attempted to record it.");
+    }
+
+    activePass_ = ActivePass::RayTracedShadowFilter;
+}
+
+void RenderGraph::endRayTracedShadowFilterPass()
+{
+    requireFrameActive("RenderGraph::endRayTracedShadowFilterPass");
+    if (activePass_ != ActivePass::RayTracedShadowFilter) {
+        throw std::logic_error(
+            "RenderGraph::endRayTracedShadowFilterPass called without an active ray-traced shadow filter pass.");
     }
 
     activePass_ = ActivePass::None;
@@ -2549,17 +2581,66 @@ void RenderGraph::declareGeometryPasses()
                                          RGAccess::StorageImageWrite,
                                          "Writes each trace texel's visibility, hit distance and camera distance.");
             });
+
+        // The soft shadow filter, between the two at the trace's resolution. Two
+        // images serve three passes by ping-pong: the radius pass reads the trace
+        // image into the filter image, the horizontal axis reads that back into
+        // the trace image, and the vertical axis writes the filter image again,
+        // which is what the resolve then reads.
+        const bool filtered = frame_.resources.rayTracedShadowFilterEnabled && frame_.rayTracedShadowFilter.valid();
+        if (filtered) {
+            static_assert(kRayTracedShadowFilterStageCount == 3);
+            struct FilterPassDeclaration {
+                const char* name;
+                RayTracedShadowFilterStage stage;
+                const char* readPurpose;
+                const char* writePurpose;
+            };
+            static constexpr std::array<FilterPassDeclaration, kRayTracedShadowFilterStageCount> kFilterPasses{{
+                {"RayTracedShadowRadius",
+                 RayTracedShadowFilterStage::Radius,
+                 "Reads the hit distances around each trace texel.",
+                 "Writes each trace texel with the penumbra radius its blur takes."},
+                {"RayTracedShadowBlurH",
+                 RayTracedShadowFilterStage::BlurHorizontal,
+                 "Reads each texel's row neighbours and radius.",
+                 "Writes the visibility blurred along the row."},
+                {"RayTracedShadowBlurV",
+                 RayTracedShadowFilterStage::BlurVertical,
+                 "Reads each texel's column neighbours and radius.",
+                 "Writes the visibility blurred along both axes, which the resolve reads."},
+            }};
+            for (const FilterPassDeclaration& declaration : kFilterPasses) {
+                const bool toFilterImage = declaration.stage != RayTracedShadowFilterStage::BlurHorizontal;
+                frame_.passIndices.rayTracedShadowFilter.at(static_cast<size_t>(declaration.stage)) =
+                    addPass(declaration.name,
+                            RenderPassType::RayTracedShadowFilter,
+                            RenderPassExecutionType::Compute,
+                            false,
+                            [this, toFilterImage, declaration](RenderGraphBuilder& builder) {
+                                RGTextureHandle& source =
+                                    toFilterImage ? frame_.rayTracedShadowTrace : frame_.rayTracedShadowFilter;
+                                RGTextureHandle& destination =
+                                    toFilterImage ? frame_.rayTracedShadowFilter : frame_.rayTracedShadowTrace;
+                                builder.readTexture(source, RGAccess::ShaderRead, declaration.readPurpose);
+                                destination = builder.writeTexture(
+                                    destination, RGAccess::StorageImageWrite, declaration.writePurpose);
+                            });
+            }
+        }
+
         frame_.passIndices.rayTracedShadowResolve = addPass(
             "RayTracedShadowResolve",
             RenderPassType::RayTracedShadowResolve,
             RenderPassExecutionType::Compute,
             false,
-            [this](RenderGraphBuilder& builder) {
+            [this, filtered](RenderGraphBuilder& builder) {
                 builder.readTexture(frame_.mainDepth,
                                     RGAccess::ShaderRead,
                                     "Matches each full-resolution pixel to the trace texels about its surface.");
-                builder.readTexture(
-                    frame_.rayTracedShadowTrace, RGAccess::ShaderRead, "Reads the trace texels around each pixel.");
+                builder.readTexture(filtered ? frame_.rayTracedShadowFilter : frame_.rayTracedShadowTrace,
+                                    RGAccess::ShaderRead,
+                                    "Reads the trace texels around each pixel, filtered or as traced.");
                 frame_.rayTracedShadowMask =
                     builder.writeTexture(frame_.rayTracedShadowMask,
                                          RGAccess::StorageImageWrite,
