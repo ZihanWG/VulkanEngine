@@ -74,6 +74,27 @@ bool accessMaskWrites(VkAccessFlags2 access)
     return (access & kWriteMask) != 0;
 }
 
+// Whether some barrier since the last write named every stage in `stage`
+// together with every access in `access`. Checked one stage bit at a time,
+// because each recorded scope only makes its own accesses visible to its own
+// stages.
+bool bufferWriteVisibleTo(const BufferSyncState& state, VkPipelineStageFlags2 stage, VkAccessFlags2 access)
+{
+    for (VkPipelineStageFlags2 remaining = stage; remaining != 0; remaining &= remaining - 1) {
+        const VkPipelineStageFlags2 stageBit = remaining & (~remaining + 1);
+        VkAccessFlags2 visible = VK_ACCESS_2_NONE;
+        for (uint32_t i = 0; i < state.visibleScopeCount; ++i) {
+            if ((state.visibleScopes[i].stage & stageBit) != 0) {
+                visible |= state.visibleScopes[i].access;
+            }
+        }
+        if ((visible & access) != access) {
+            return false;
+        }
+    }
+    return true;
+}
+
 RenderGraph::TextureAccessState accessStateFromLayout(VkImageLayout layout, VkImageAspectFlags aspectMask)
 {
     (void)aspectMask;
@@ -4009,21 +4030,17 @@ uint32_t RenderGraph::transitionBuffer(RGBufferHandle handle, RGAccess access, B
         return 0;
     }
 
-    const BufferAccessState previous = resource.lastAccess;
-    const bool needsOrdering =
-        bufferBarrierRequired(resource.usedThisFrame, previous.declaredAccess, previous.access, desired.access);
-    if (!needsOrdering) {
-        resource.lastAccess = desired;
-        resource.usedThisFrame = true;
+    const std::optional<BufferBarrierScopes> scopes = advanceBufferSync(resource.sync, desired);
+    if (!scopes) {
         return 0;
     }
 
     VkBufferMemoryBarrier2 barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-    barrier.srcStageMask = previous.stage;
-    barrier.srcAccessMask = previous.access;
-    barrier.dstStageMask = desired.stage;
-    barrier.dstAccessMask = desired.access;
+    barrier.srcStageMask = scopes->srcStage;
+    barrier.srcAccessMask = scopes->srcAccess;
+    barrier.dstStageMask = scopes->dstStage;
+    barrier.dstAccessMask = scopes->dstAccess;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.buffer = resource.buffer;
@@ -4035,9 +4052,6 @@ uint32_t RenderGraph::transitionBuffer(RGBufferHandle handle, RGAccess access, B
     }
     batch.bufferBarriers.push_back(barrier);
     batch.touchedBuffers.push_back(handle.index);
-
-    resource.lastAccess = desired;
-    resource.usedThisFrame = true;
     return 1;
 }
 
@@ -4131,13 +4145,42 @@ RenderGraph::BufferAccessState RenderGraph::accessStateForBuffer(RGAccess access
     return bufferAccessState(access);
 }
 
-bool bufferBarrierRequired(bool usedThisFrame,
-                           RGAccess previousDeclared,
-                           VkAccessFlags2 previousAccess,
-                           VkAccessFlags2 desiredAccess)
+std::optional<BufferBarrierScopes> advanceBufferSync(BufferSyncState& state, const BufferAccessState& access)
 {
-    const bool touched = usedThisFrame || previousDeclared != RGAccess::Unknown;
-    return touched && (accessMaskWrites(previousAccess) || accessMaskWrites(desiredAccess));
+    const bool firstUse = !state.touched;
+    state.touched = true;
+
+    if (accessMaskWrites(access.access)) {
+        // The last write is in the first scope as well as the readers since it:
+        // with no reader in between it is the whole of what this write follows.
+        std::optional<BufferBarrierScopes> barrier;
+        if (!firstUse) {
+            barrier = BufferBarrierScopes{state.writeStage | state.readStages,
+                                          state.writeAccess | state.readAccesses,
+                                          access.stage,
+                                          access.access};
+        }
+        state.writeStage = access.stage;
+        state.writeAccess = access.access;
+        state.readStages = VK_PIPELINE_STAGE_2_NONE;
+        state.readAccesses = VK_ACCESS_2_NONE;
+        state.visibleScopeCount = 0;
+        return barrier;
+    }
+
+    state.readStages |= access.stage;
+    state.readAccesses |= access.access;
+    if (state.writeAccess == VK_ACCESS_2_NONE || bufferWriteVisibleTo(state, access.stage, access.access)) {
+        return std::nullopt;
+    }
+
+    // Full only past eight distinct read scopes after one write, which no frame
+    // comes near. A scope left out costs a redundant barrier later, never a
+    // missing one.
+    if (state.visibleScopeCount < BufferSyncState::kMaxVisibleScopes) {
+        state.visibleScopes[state.visibleScopeCount++] = BufferAccessScope{access.stage, access.access};
+    }
+    return BufferBarrierScopes{state.writeStage, state.writeAccess, access.stage, access.access};
 }
 
 bool barrierBatchNeedsFlush(std::span<const uint32_t> batched, uint32_t resource)
@@ -4158,7 +4201,8 @@ bool textureBarrierRequired(VkImageLayout oldLayout,
     if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED) {
         return false;
     }
-    return bufferBarrierRequired(usedThisFrame, previousDeclared, previousAccess, desiredAccess);
+    const bool touched = usedThisFrame || previousDeclared != RGAccess::Unknown;
+    return touched && (accessMaskWrites(previousAccess) || accessMaskWrites(desiredAccess));
 }
 
 BufferAccessState bufferAccessState(RGAccess access)
@@ -4221,14 +4265,13 @@ BufferAccessState bufferAccessState(RGAccess access)
         state.stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
         state.access = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
         break;
-    // The fragment stage is named as well as the compute stage the mask's rays
-    // run in. On a frame the mask traces, it is the first reader after the
-    // build, and the main pass's own rays read the structure next; this graph
-    // orders a read after a read with nothing, whatever its stage, so the
-    // barrier in front of the mask is the only one that can make the build
-    // visible to them. Named here, they are covered by it.
+    // The compute stage alone. On a frame the mask traces it is the first reader
+    // after the build, and it used to name the fragment stage as well, because
+    // a read after a read got no barrier whatever its stage and the main pass's
+    // rays had no other way to be ordered against the build. advanceBufferSync
+    // gives them their own barrier now.
     case RGAccess::AccelerationStructureComputeRead:
-        state.stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        state.stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         state.access = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
         break;
     case RGAccess::Unknown:
