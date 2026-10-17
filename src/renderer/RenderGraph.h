@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -91,10 +92,8 @@ enum class RGAccess {
     // Ray queries against an acceleration structure from fragment shaders: the
     // main fragment shader's inline sun shadow ray.
     AccelerationStructureRead,
-    // The same from a compute shader: the ray-traced shadow mask, which traces
-    // one ray per pixel ahead of the main pass. Its scope names the fragment
-    // stage too, for the main pass's rays that follow it; see
-    // accessStateForBuffer.
+    // The same from a compute shader: the ray-traced shadow mask's trace pass,
+    // which runs ahead of the main pass.
     AccelerationStructureComputeRead
 };
 
@@ -243,22 +242,72 @@ textureAccessState(VkImageAspectFlags aspectMask, RGAccess access, VkImageLayout
 
 [[nodiscard]] BufferAccessState bufferAccessState(RGAccess access);
 
-// Whether a transition has to emit a barrier, split out of transitionTexture /
-// transitionBuffer for the same reason cullUnusedPasses was: pure decisions that
-// need no device, and both are easy to get subtly wrong in ways nothing checks.
-//
-// `usedThisFrame` and `previousDeclared` together answer "has this resource been
-// touched yet". A resource on its first use with no recorded access needs no
-// ordering -- there is nothing to order against -- which is why the two are
-// OR'd rather than either being sufficient alone.
-[[nodiscard]] bool bufferBarrierRequired(bool usedThisFrame,
-                                         RGAccess previousDeclared,
-                                         VkAccessFlags2 previousAccess,
-                                         VkAccessFlags2 desiredAccess);
+// One scope a buffer's last write has been made visible to: the second scope of
+// a barrier the graph emitted after that write.
+struct BufferAccessScope {
+    VkPipelineStageFlags2 stage = VK_PIPELINE_STAGE_2_NONE;
+    VkAccessFlags2 access = VK_ACCESS_2_NONE;
+};
 
-// A layout change always needs a barrier. Otherwise the same rule as buffers,
-// plus: an UNDEFINED old layout means the contents are not being preserved, so
-// there is nothing to order against either.
+// What one buffer has been through so far this frame, as far as ordering goes.
+// Rebuilt every frame with the rest of the graph's buffer state, so a frame's
+// first access orders against nothing; cross-frame edges are the subsystems'.
+//
+// Comparing each access with the one before it is not enough for buffers. A
+// barrier after a write orders it against the stages and accesses its second
+// scope names and nothing else, so the first reader's barrier does not cover a
+// second reader in another stage; and a write has to wait for every reader
+// since the last write, not only the most recent one. Images get away with the
+// pairwise rule because every read of one layout names the same stages, and a
+// change of layout is a barrier that chains from the one before it.
+struct BufferSyncState {
+    static constexpr uint32_t kMaxVisibleScopes = 8;
+
+    bool touched = false;
+    // The last write's scope. NONE until something writes the buffer this frame.
+    VkPipelineStageFlags2 writeStage = VK_PIPELINE_STAGE_2_NONE;
+    VkAccessFlags2 writeAccess = VK_ACCESS_2_NONE;
+    // Every read since the last write -- or since the frame began, while nothing
+    // has written. The next write's first scope.
+    VkPipelineStageFlags2 readStages = VK_PIPELINE_STAGE_2_NONE;
+    VkAccessFlags2 readAccesses = VK_ACCESS_2_NONE;
+    // The second scopes of the barriers emitted since the last write. Pairs, not
+    // one stage mask and one access mask: a barrier makes its accesses visible
+    // to its own stages only, so (compute, AS read) and (fragment, storage read)
+    // do not add up to (fragment, AS read).
+    std::array<BufferAccessScope, kMaxVisibleScopes> visibleScopes{};
+    uint32_t visibleScopeCount = 0;
+};
+
+struct BufferBarrierScopes {
+    VkPipelineStageFlags2 srcStage = VK_PIPELINE_STAGE_2_NONE;
+    VkAccessFlags2 srcAccess = VK_ACCESS_2_NONE;
+    VkPipelineStageFlags2 dstStage = VK_PIPELINE_STAGE_2_NONE;
+    VkAccessFlags2 dstAccess = VK_ACCESS_2_NONE;
+};
+
+// Applies one declared access to a buffer's state and returns the barrier it
+// needs in front of it, or nothing. Split out of transitionBuffer for the same
+// reason cullUnusedPasses was: a pure decision that needs no device, and easy to
+// get subtly wrong in ways nothing checks -- synchronization validation does not
+// see acceleration-structure edges at all.
+//
+// - A buffer's first use this frame needs nothing.
+// - A write waits for the last write and every read since it.
+// - A read waits for the last write unless a barrier since has already made it
+//   visible to the read's stage and access; a read before any write this frame
+//   waits for nothing.
+//
+// `access` is a mapped buffer access: a stage and an access that are not NONE.
+[[nodiscard]] std::optional<BufferBarrierScopes> advanceBufferSync(BufferSyncState& state,
+                                                                   const BufferAccessState& access);
+
+// Whether a texture transition has to emit a barrier. A layout change always
+// needs one. Otherwise one is needed when either side writes, unless the image
+// has not been touched -- `usedThisFrame` and `previousDeclared` together, since
+// an image carried over from the previous frame holds a real last access before
+// its first use -- or its old layout is UNDEFINED, which means the contents are
+// not being preserved, so there is nothing to order against either.
 [[nodiscard]] bool textureBarrierRequired(VkImageLayout oldLayout,
                                           VkImageLayout desiredLayout,
                                           bool usedThisFrame,
@@ -1117,8 +1166,7 @@ private:
         RGBufferDesc desc;
         uint32_t currentVersion = 0;
         VkBuffer buffer = VK_NULL_HANDLE;
-        BufferAccessState lastAccess{};
-        bool usedThisFrame = false;
+        BufferSyncState sync{};
         bool graphManaged = false;
     };
 

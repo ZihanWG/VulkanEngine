@@ -488,8 +488,8 @@ KiB of BLAS, Sponza's 105 primitives (264487 triangles) into 18350 KiB, in
 | --- | --- |
 | CPU writes this slot's instances -> this frame's TLAS build | the slot's fence, then the submit's host-write guarantee |
 | earlier frames' ray queries (fragment and compute, AS read) and builds (TLAS and scratch writes) -> this frame's build | a global barrier `RayTracingScene::recordTopLevelBuild` records first |
-| this frame's build -> its ray queries | the render graph: `RayTracingSceneBuild` declares `AccelerationStructureBuild` on the TLAS storage buffer; `RayTracedShadowTrace` declares `AccelerationStructureComputeRead`, whose scope names the compute and the fragment stage; `MainHDRPass`, `MainHDRPhase2` and `TransparentPass` declare `AccelerationStructureRead` |
-| an earlier frame's build -> the ray queries of a frame that keeps the TLAS | the graph's barrier on the frame that built it, whose second scope is the stages it names in every later command: the fragment stage, and the compute stage when the mask traced that frame. The frame the mask turns on rebuilds (`rayTracedShadowMaskNeedsFreshBuild`), so a keeping frame never reads in a stage its build's barrier did not name. The keeping frame declares the reads alone, which as the structure's first use in the frame emit nothing, and the next build's entry barrier waits for them |
+| this frame's build -> its ray queries | the render graph: `RayTracingSceneBuild` declares `AccelerationStructureBuild` on the TLAS storage buffer; `RayTracedShadowTrace` declares `AccelerationStructureComputeRead` (compute stage); `MainHDRPass`, `MainHDRPhase2` and `TransparentPass` declare `AccelerationStructureRead` (fragment stage). Each stage gets its own barrier from the build: one in front of the trace, one in front of `MainHDRPass` |
+| an earlier frame's build -> the ray queries of a frame that keeps the TLAS | the graph's barriers on the frame that built it, whose second scopes reach every later command in the stages they name: the fragment stage, and the compute stage when the mask traced that frame. The frame the mask turns on rebuilds (`rayTracedShadowMaskNeedsFreshBuild`), so a keeping frame never reads in a stage its build's barriers did not name. The keeping frame declares the reads alone, which with no write before them in the frame emit nothing, and the next build's entry barrier waits for them |
 | depth prepass writes -> the trace's and resolve's depth reads -> the main pass's depth test | the graph: `DepthPrepass` writes main depth, `RayTracedShadowTrace` and `RayTracedShadowResolve` read it (`DEPTH_READ_ONLY_OPTIMAL`), `MainHDRPass` takes it back as an attachment |
 | the trace's storage writes -> the resolve's reads | the graph: `GENERAL` to `SHADER_READ_ONLY_OPTIMAL`, compute to compute |
 | with the filter: trace -> radius -> horizontal blur -> vertical blur -> resolve | the graph, one pass each: every pass reads one of the two images (`SHADER_READ_ONLY_OPTIMAL`) and writes the other (`GENERAL`), so each edge is a write followed by a read or a read followed by a write, compute to compute, and none is a read after a read |
@@ -533,26 +533,36 @@ no barrier on the TLAS buffer -- while `MainHDRPass`, `MainHDRPhase2` and the
 skinned draw run as before: four frames of `--scene default
 --freeze-animation` record one build, then three frames without one.
 
-**The mask found a second hole, and this one is in how the graph orders reads.**
-A read after a read gets no barrier, whatever stage it is in, so only the first
-reader after a write is ordered against it. Until the mask, every ray was in the
-fragment stage and that never mattered. With the mask first, the graph's barrier
-after the build named the compute stage alone -- an `api_dump` of the first
-version shows `ACCELERATION_STRUCTURE_BUILD` to `COMPUTE_SHADER` in front of the
-mask and nothing in front of `MainHDRPass` -- which left the main pass's own rays
-unordered against the build. The mask's access names the fragment stage as well,
-since on a frame it traces it is always that first reader, and the same dump now
-shows `ACCELERATION_STRUCTURE_BUILD` to `FRAGMENT_SHADER | COMPUTE_SHADER`.
-`tests/test_render_graph.cpp` pins the scope. The general fix, a graph that
-tracks the stages each write has been made visible to, is not made here; see
-[render_graph.md](render_graph.md).
+**The mask found a second hole, in how the graph ordered reads.** A read after a
+read got no barrier, whatever stage it was in, so only the first reader after a
+write was ordered against it. Until the mask, every ray was in the fragment stage
+and that never mattered. With the mask first, the graph's barrier after the build
+named the compute stage alone -- an `api_dump` of the first version shows
+`ACCELERATION_STRUCTURE_BUILD` to `COMPUTE_SHADER` in front of the mask and
+nothing in front of `MainHDRPass` -- which left the main pass's own rays unordered
+against the build. The first fix named the fragment stage in the mask's access as
+well.
 
-The same dump shows the edges the mask adds and nothing else changed: the entry
-barrier's first scope and both destinations now include `COMPUTE_SHADER`, the
-mask image goes `UNDEFINED` to `GENERAL` on its first frame and
-`SHADER_READ_ONLY_OPTIMAL` to `GENERAL` on every later one, and four frames of
-`--scene sunlit --freeze-animation` record one build and then three frames that
-dispatch the mask with no acceleration-structure barrier at all.
+The graph has since been fixed in general: it tracks, per buffer, the scopes each
+write has been made visible to, and a read in a stage no barrier has reached gets
+one of its own ([render_graph.md](render_graph.md#synchronization-inference)). So
+the trace's access names the compute stage alone again. An `api_dump` of three
+frames of the default scene (`--deterministic --exit-after-frames 3`) with the
+hard mask on, and again with a 2-degree sun and the filter, shows on every frame
+the barrier on `SceneTopLevelAccelerationStructureStorage` from
+`ACCELERATION_STRUCTURE_BUILD` to `COMPUTE_SHADER` in front of
+`RayTracedShadowTrace`, and a second one from `ACCELERATION_STRUCTURE_BUILD` to
+`FRAGMENT_SHADER` in front of `MainHDRPass`, in the same `vkCmdPipelineBarrier2`
+as that pass's image barriers. The filter's passes touch only the two images, so
+the soft mask adds no buffer barrier. Four frames of `--scene sunlit
+--freeze-animation` show both on the frame that builds and no
+acceleration-structure barrier at all on the three that keep the structure.
+`tests/test_render_graph.cpp` pins the scope and both barriers.
+
+The mask's first dump also shows the edges the mask adds and nothing else
+changed: the entry barrier's first scope and both destinations now include
+`COMPUTE_SHADER`, and the mask image goes `UNDEFINED` to `GENERAL` on its first
+frame and `SHADER_READ_ONLY_OPTIMAL` to `GENERAL` on every later one.
 
 Everything runs on the graphics queue. The asynchronous cluster passes never
 read the TLAS, so no queue-family ownership is involved.

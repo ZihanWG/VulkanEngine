@@ -9,6 +9,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdint>
+#include <iterator>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -451,65 +453,87 @@ TEST_CASE("Acceleration-structure accesses sync the build against the fragment t
     CHECK(trace.access == VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR);
 }
 
+namespace {
+
+using ve::renderer::BufferBarrierScopes;
+using ve::renderer::BufferSyncState;
+
+// One declared buffer access, applied the way transitionBuffer applies it.
+std::optional<BufferBarrierScopes> declare(BufferSyncState& state, ve::renderer::RGAccess access)
+{
+    return ve::renderer::advanceBufferSync(state, ve::renderer::bufferAccessState(access));
+}
+
+} // namespace
+
 TEST_CASE("A build followed by a trace emits a barrier", "[rendergraph][barriers]")
 {
-    using ve::renderer::bufferAccessState;
-    using ve::renderer::bufferBarrierRequired;
     using ve::renderer::RGAccess;
 
     // The acceleration-structure write bit was missing from the graph's write
     // mask when this access was added, which made build -> trace look like a
     // read after a read: no barrier, every call legal, rays against a
     // half-built structure.
-    const auto build = bufferAccessState(RGAccess::AccelerationStructureBuild);
-    const auto trace = bufferAccessState(RGAccess::AccelerationStructureRead);
-    CHECK(bufferBarrierRequired(true, RGAccess::AccelerationStructureBuild, build.access, trace.access));
+    BufferSyncState tlas;
+    CHECK_FALSE(declare(tlas, RGAccess::AccelerationStructureBuild));
+    const auto mainPass = declare(tlas, RGAccess::AccelerationStructureRead);
+    REQUIRE(mainPass);
+    CHECK(mainPass->srcStage == VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR);
+    CHECK((mainPass->srcAccess & VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR) != 0);
+    CHECK(mainPass->dstStage == VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+    CHECK(mainPass->dstAccess == VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR);
 
     // Two traces in a row -- the main pass, then the transparent pass -- need
     // nothing between them.
-    CHECK_FALSE(bufferBarrierRequired(true, RGAccess::AccelerationStructureRead, trace.access, trace.access));
+    CHECK_FALSE(declare(tlas, RGAccess::AccelerationStructureRead));
 }
 
-TEST_CASE("The shadow mask's rays read the structure from the compute stage", "[rendergraph][barriers]")
+TEST_CASE("The shadow mask's rays and the main pass's are each ordered against the build", "[rendergraph][barriers]")
 {
     using ve::renderer::bufferAccessState;
-    using ve::renderer::bufferBarrierRequired;
     using ve::renderer::RGAccess;
 
+    // The mask names the stage its rays run in and nothing else. It used to name
+    // the fragment stage too: a read after a read got no barrier whatever its
+    // stage, and an api_dump of the mask's first version showed the build's only
+    // barrier naming COMPUTE_SHADER, with the main pass's rays unordered behind it.
     const auto maskTrace = bufferAccessState(RGAccess::AccelerationStructureComputeRead);
-    CHECK((maskTrace.stage & VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT) != 0);
+    CHECK(maskTrace.stage == VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
     CHECK(maskTrace.access == VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR);
 
-    // The build is followed by the mask first, so the barrier in front of the
-    // mask is the one that orders the build against every ray of the frame.
-    const auto build = bufferAccessState(RGAccess::AccelerationStructureBuild);
-    CHECK(bufferBarrierRequired(true, RGAccess::AccelerationStructureBuild, build.access, maskTrace.access));
+    BufferSyncState tlas;
+    CHECK_FALSE(declare(tlas, RGAccess::AccelerationStructureBuild));
+    const auto mask = declare(tlas, RGAccess::AccelerationStructureComputeRead);
+    REQUIRE(mask);
+    CHECK(mask->dstStage == VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
 
-    // The main pass's inline rays come next, and a read after a read gets no
-    // barrier of its own whatever its stage. So the fragment stage has to be in
-    // the mask's scope already: an api_dump of the first version showed the
-    // barrier naming the compute stage alone, leaving the main pass's rays
-    // unordered against the build.
-    const auto fragmentTrace = bufferAccessState(RGAccess::AccelerationStructureRead);
-    CHECK_FALSE(bufferBarrierRequired(
-        true, RGAccess::AccelerationStructureComputeRead, maskTrace.access, fragmentTrace.access));
-    CHECK((maskTrace.stage & fragmentTrace.stage) == fragmentTrace.stage);
+    // The main pass traces from the fragment stage, which the mask's barrier
+    // does not reach, so it gets a barrier of its own, from the build.
+    const auto mainPass = declare(tlas, RGAccess::AccelerationStructureRead);
+    REQUIRE(mainPass);
+    CHECK(mainPass->srcStage == VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR);
+    CHECK(mainPass->dstStage == VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+    CHECK(mainPass->dstAccess == VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR);
+
+    // The transparent pass's rays are in a stage that barrier already reached.
+    CHECK_FALSE(declare(tlas, RGAccess::AccelerationStructureRead));
 }
 
 TEST_CASE("A frame that keeps the acceleration structure records no barrier for it", "[rendergraph][barriers]")
 {
-    using ve::renderer::bufferAccessState;
-    using ve::renderer::bufferBarrierRequired;
     using ve::renderer::RGAccess;
 
     // No build is declared on such a frame, so the structure's first use is a
     // trace of an imported buffer nothing has touched this frame. The build it
-    // reads ran on an earlier frame, and that frame's barrier after it already
-    // covers every later command on the queue; a second one here would only
-    // stall the pass that needs it least.
-    const auto trace = bufferAccessState(RGAccess::AccelerationStructureRead);
-    CHECK_FALSE(bufferBarrierRequired(false, RGAccess::Unknown, VK_ACCESS_2_NONE, trace.access));
-    CHECK_FALSE(bufferBarrierRequired(true, RGAccess::AccelerationStructureRead, trace.access, trace.access));
+    // reads ran on an earlier frame, and that frame's barriers after it already
+    // cover every later command on the queue in the stages they named; a second
+    // one here would only stall the pass that needs it least. Nor does a read in
+    // a second stage change that: with no write this frame there is nothing for
+    // it to wait on.
+    BufferSyncState tlas;
+    CHECK_FALSE(declare(tlas, RGAccess::AccelerationStructureComputeRead));
+    CHECK_FALSE(declare(tlas, RGAccess::AccelerationStructureRead));
+    CHECK_FALSE(declare(tlas, RGAccess::AccelerationStructureRead));
 }
 
 TEST_CASE("An image access on a buffer emits no barrier", "[rendergraph][barriers]")
@@ -550,54 +574,199 @@ TEST_CASE("Buffer transfer directions use distinct stages", "[rendergraph][barri
 // correctly on the machine it was written on, which is the worst failure mode
 // this file guards against.
 
-TEST_CASE("Read after read needs no buffer barrier", "[rendergraph][barriers]")
+TEST_CASE("Reads with no write before them need no buffer barrier", "[rendergraph][barriers]")
 {
-    using ve::renderer::bufferBarrierRequired;
     using ve::renderer::RGAccess;
 
-    // Two reads cannot race, however many passes touch the buffer.
-    CHECK_FALSE(bufferBarrierRequired(/*usedThisFrame=*/true,
-                                      RGAccess::StorageBufferRead,
-                                      VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-                                      VK_ACCESS_2_SHADER_STORAGE_READ_BIT));
+    // Nothing has written the buffer this frame, so two reads cannot race,
+    // whatever stages they are in.
+    BufferSyncState buffer;
+    CHECK_FALSE(declare(buffer, RGAccess::StorageBufferRead));
+    CHECK_FALSE(declare(buffer, RGAccess::IndirectRead));
+    CHECK_FALSE(declare(buffer, RGAccess::StorageBufferRead));
 }
 
 TEST_CASE("Any write on either side needs a buffer barrier", "[rendergraph][barriers]")
 {
-    using ve::renderer::bufferBarrierRequired;
     using ve::renderer::RGAccess;
 
     // write -> read
-    CHECK(bufferBarrierRequired(true,
-                                RGAccess::StorageBufferWrite,
-                                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                                VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT));
+    BufferSyncState writeThenRead;
+    CHECK_FALSE(declare(writeThenRead, RGAccess::StorageBufferWrite));
+    CHECK(declare(writeThenRead, RGAccess::IndirectRead));
+
     // read -> write
-    CHECK(bufferBarrierRequired(
-        true, RGAccess::StorageBufferRead, VK_ACCESS_2_SHADER_STORAGE_READ_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT));
+    BufferSyncState readThenWrite;
+    CHECK_FALSE(declare(readThenWrite, RGAccess::StorageBufferRead));
+    CHECK(declare(readThenWrite, RGAccess::StorageBufferWrite));
+
     // write -> write
-    CHECK(bufferBarrierRequired(
-        true, RGAccess::StorageBufferWrite, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT));
+    BufferSyncState writeThenWrite;
+    CHECK_FALSE(declare(writeThenWrite, RGAccess::StorageBufferWrite));
+    const auto second = declare(writeThenWrite, RGAccess::TransferDst);
+    REQUIRE(second);
+    CHECK(second->srcAccess == VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+    CHECK(second->dstAccess == VK_ACCESS_2_TRANSFER_WRITE_BIT);
 }
 
 TEST_CASE("An untouched buffer needs no barrier on its first use", "[rendergraph][barriers]")
 {
-    using ve::renderer::bufferBarrierRequired;
     using ve::renderer::RGAccess;
 
-    // Nothing has run against it yet, so there is nothing to order against even
-    // though the incoming access writes.
-    CHECK_FALSE(bufferBarrierRequired(
-        /*usedThisFrame=*/false, RGAccess::Unknown, VK_ACCESS_2_NONE, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT));
+    // Nothing has run against it yet this frame, so there is nothing to order
+    // against even though the incoming access writes.
+    BufferSyncState buffer;
+    CHECK_FALSE(declare(buffer, RGAccess::StorageBufferWrite));
+}
 
-    // But either half of "has been touched" is enough to require one: a
-    // resource carried over from a previous frame has usedThisFrame false while
-    // still holding a real last access.
-    CHECK(bufferBarrierRequired(false,
-                                RGAccess::StorageBufferWrite,
-                                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                                VK_ACCESS_2_SHADER_STORAGE_READ_BIT));
-    CHECK(bufferBarrierRequired(true, RGAccess::Unknown, VK_ACCESS_2_NONE, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT));
+TEST_CASE("A second reader in another stage gets its own barrier from the write", "[rendergraph][barriers]")
+{
+    using ve::renderer::RGAccess;
+
+    // A cull writes draw commands, the draw fetches them, then a shader reads
+    // them. The draw's barrier names DRAW_INDIRECT only, which orders nothing in
+    // the shader stages; before the graph tracked what each write had been made
+    // visible to, the shader read was a read after a read and got nothing.
+    BufferSyncState commands;
+    CHECK_FALSE(declare(commands, RGAccess::StorageBufferWrite));
+
+    const auto draw = declare(commands, RGAccess::IndirectRead);
+    REQUIRE(draw);
+    CHECK(draw->dstStage == VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT);
+
+    const auto shader = declare(commands, RGAccess::StorageBufferRead);
+    REQUIRE(shader);
+    // From the write, not from the draw: the read waits on what produced the
+    // data, and a read after a read needs no ordering of its own.
+    CHECK(shader->srcStage == draw->srcStage);
+    CHECK(shader->srcAccess == VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+    CHECK((shader->dstStage & VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT) != 0);
+    CHECK(shader->dstAccess == VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+}
+
+TEST_CASE("Repeat reads in a stage already reached need no barrier", "[rendergraph][barriers]")
+{
+    using ve::renderer::RGAccess;
+
+    BufferSyncState buffer;
+    CHECK_FALSE(declare(buffer, RGAccess::StorageBufferWrite));
+    CHECK(declare(buffer, RGAccess::StorageBufferRead));
+    CHECK_FALSE(declare(buffer, RGAccess::StorageBufferRead));
+
+    // Nor after a second stage has been added: each earlier scope still counts.
+    CHECK(declare(buffer, RGAccess::IndirectRead));
+    CHECK_FALSE(declare(buffer, RGAccess::IndirectRead));
+    CHECK_FALSE(declare(buffer, RGAccess::StorageBufferRead));
+}
+
+TEST_CASE("A write after two readers waits for both of them", "[rendergraph][barriers]")
+{
+    using ve::renderer::RGAccess;
+
+    // Naming only the most recent reader leaves the first one racing the write.
+    BufferSyncState buffer;
+    CHECK_FALSE(declare(buffer, RGAccess::StorageBufferWrite));
+    CHECK(declare(buffer, RGAccess::IndirectRead));
+    CHECK(declare(buffer, RGAccess::TransferSrc));
+
+    const auto write = declare(buffer, RGAccess::StorageBufferWrite);
+    REQUIRE(write);
+    CHECK((write->srcStage & VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT) != 0);
+    CHECK((write->srcStage & VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT) != 0);
+    CHECK((write->srcAccess & VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT) != 0);
+    CHECK((write->srcAccess & VK_ACCESS_2_TRANSFER_READ_BIT) != 0);
+    // And the write before them, which is the whole first scope when no reader
+    // comes between two writes.
+    CHECK((write->srcStage & VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT) != 0);
+    CHECK((write->srcAccess & VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT) != 0);
+}
+
+TEST_CASE("Readers before the frame's first write are all in its first scope", "[rendergraph][barriers]")
+{
+    using ve::renderer::RGAccess;
+
+    BufferSyncState buffer;
+    CHECK_FALSE(declare(buffer, RGAccess::IndirectRead));
+    CHECK_FALSE(declare(buffer, RGAccess::HostRead));
+
+    const auto write = declare(buffer, RGAccess::TransferDst);
+    REQUIRE(write);
+    CHECK(write->srcStage == (VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_HOST_BIT));
+    CHECK(write->srcAccess == (VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_HOST_READ_BIT));
+}
+
+TEST_CASE("A new write starts over what has been made visible", "[rendergraph][barriers]")
+{
+    using ve::renderer::RGAccess;
+
+    // The barrier in front of the first read made the first write visible to
+    // that stage, not the second write.
+    BufferSyncState buffer;
+    CHECK_FALSE(declare(buffer, RGAccess::StorageBufferWrite));
+    CHECK(declare(buffer, RGAccess::IndirectRead));
+    CHECK(declare(buffer, RGAccess::StorageBufferWrite));
+    CHECK(declare(buffer, RGAccess::IndirectRead));
+
+    // And the first write's readers are already behind the second write, so a
+    // third write straight after the second waits on it alone.
+    BufferSyncState noReaders;
+    CHECK_FALSE(declare(noReaders, RGAccess::StorageBufferWrite));
+    CHECK(declare(noReaders, RGAccess::IndirectRead));
+    CHECK(declare(noReaders, RGAccess::StorageBufferWrite));
+    const auto third = declare(noReaders, RGAccess::TransferDst);
+    REQUIRE(third);
+    CHECK((third->srcStage & VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT) == 0);
+    CHECK(third->srcAccess == VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+}
+
+TEST_CASE("Visibility is tracked per stage and access pair", "[rendergraph][barriers]")
+{
+    using ve::renderer::BufferAccessState;
+    using ve::renderer::RGAccess;
+
+    // The compute stage has seen the acceleration-structure read and the
+    // fragment stage the storage read. Together the two barriers name both
+    // stages and both accesses, but neither made the write visible to an
+    // acceleration-structure read in the fragment stage.
+    BufferSyncState buffer;
+    CHECK_FALSE(declare(buffer, RGAccess::AccelerationStructureBuild));
+    CHECK(declare(buffer, RGAccess::AccelerationStructureComputeRead));
+    CHECK(ve::renderer::advanceBufferSync(
+        buffer, BufferAccessState{VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT}));
+    CHECK(declare(buffer, RGAccess::AccelerationStructureRead));
+}
+
+TEST_CASE("Visible scopes past the state's room cost barriers, never miss them", "[rendergraph][barriers]")
+{
+    using ve::renderer::BufferAccessState;
+    using ve::renderer::RGAccess;
+
+    // One more distinct read scope than the state keeps. The one it has no room
+    // for is not recorded, so a repeat of it is barriered again: redundant, and
+    // the safe direction to be wrong in.
+    constexpr VkPipelineStageFlags2 kStages[] = {
+        VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
+        VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT,
+        VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+        VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT,
+        VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT,
+        VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT,
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+    };
+    static_assert(std::size(kStages) == BufferSyncState::kMaxVisibleScopes + 1);
+
+    BufferSyncState buffer;
+    CHECK_FALSE(declare(buffer, RGAccess::StorageBufferWrite));
+    for (const VkPipelineStageFlags2 stage : kStages) {
+        CHECK(ve::renderer::advanceBufferSync(buffer, BufferAccessState{stage, VK_ACCESS_2_SHADER_STORAGE_READ_BIT}));
+    }
+    CHECK(buffer.visibleScopeCount == BufferSyncState::kMaxVisibleScopes);
+    CHECK_FALSE(
+        ve::renderer::advanceBufferSync(buffer, BufferAccessState{kStages[0], VK_ACCESS_2_SHADER_STORAGE_READ_BIT}));
+    CHECK(ve::renderer::advanceBufferSync(
+        buffer, BufferAccessState{kStages[BufferSyncState::kMaxVisibleScopes], VK_ACCESS_2_SHADER_STORAGE_READ_BIT}));
 }
 
 TEST_CASE("A layout change always needs a texture barrier", "[rendergraph][barriers]")
@@ -635,6 +804,34 @@ TEST_CASE("Same layout falls back to the write rule", "[rendergraph][barriers]")
                                  RGAccess::StorageImageWrite,
                                  VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                                  VK_ACCESS_2_SHADER_STORAGE_READ_BIT));
+}
+
+TEST_CASE("An image carried over from the previous frame is touched before its first use", "[rendergraph][barriers]")
+{
+    using ve::renderer::RGAccess;
+    using ve::renderer::textureBarrierRequired;
+
+    // Unlike a buffer, an image's state survives the frame: its first use sees
+    // usedThisFrame false while it still holds a real last access, and either
+    // half of "has been touched" is enough to require a barrier.
+    CHECK(textureBarrierRequired(VK_IMAGE_LAYOUT_GENERAL,
+                                 VK_IMAGE_LAYOUT_GENERAL,
+                                 /*usedThisFrame=*/false,
+                                 RGAccess::StorageImageWrite,
+                                 VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                                 VK_ACCESS_2_SHADER_STORAGE_READ_BIT));
+    CHECK(textureBarrierRequired(VK_IMAGE_LAYOUT_GENERAL,
+                                 VK_IMAGE_LAYOUT_GENERAL,
+                                 /*usedThisFrame=*/true,
+                                 RGAccess::Unknown,
+                                 VK_ACCESS_2_NONE,
+                                 VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT));
+    CHECK_FALSE(textureBarrierRequired(VK_IMAGE_LAYOUT_GENERAL,
+                                       VK_IMAGE_LAYOUT_GENERAL,
+                                       /*usedThisFrame=*/false,
+                                       RGAccess::Unknown,
+                                       VK_ACCESS_2_NONE,
+                                       VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT));
 }
 
 TEST_CASE("An UNDEFINED old layout orders against nothing", "[rendergraph][barriers]")
