@@ -1060,7 +1060,14 @@ void main()
                                kRtShadowFlagDebugMaskSource | kRtShadowFlagDebugHitDistance |
                                kRtShadowFlagDebugPenumbraRadius)) != 0u;
         if ((normalLight > 0.0 || rayTracedDebug) && !gl_HelperInvocation) {
-            float masked = (rayTracedFlags & kRtShadowFlagScreenMask) != 0u
+            // Half of a LOD cross-fade never reads the mask. The prepass writes
+            // its dithered depth when renderer.enablePrepassEarlyDepthTest is on,
+            // so its depth can match a texel -- but a texel traced from that
+            // dithered depth shadowed lit fading surfaces in single-pixel specks
+            // on an orbiting camera (why was not isolated). The inline ray is
+            // what a fade got before the prepass wrote its depth.
+            bool lodFading = (vLodIndex & kLodInstanceFading) != 0u;
+            float masked = (rayTracedFlags & kRtShadowFlagScreenMask) != 0u && !lodFading
                                ? rayTracedShadowFromMask(normalize(vNormal), lightDirection)
                                : kRtMaskNotTraced;
             rayTracedFromMask = masked >= 0.0;

@@ -1189,6 +1189,20 @@ removing it: with the setting on and the replay skipped, the orbiting frame
 differs from the setting-off one in 3081 pixels on `default` and 258 on
 `stress`.
 
+**With the ray-traced shadow mask on**, checked once the mask was on `main`
+(the same captures, with `rayTracedShadows.screenSpaceMask` and separately a
+0.53-degree sun): still frames stay bit-identical on `default`, `stress` and
+Sponza, and so does the inline traced path. Orbiting, the first version was not.
+The fades' depth was now in the prepass, so it matched mask texels, and reading
+them put single-pixel dark specks on fading surfaces -- 266 pixels on `default`
+at a channel delta up to 16, 164 on `stress` up to 29. Fading fragments now skip
+the mask and trace inline, which is what they did before the prepass wrote their
+depth. What remains is 30 and 76 pixels with the hard mask and 53 and 146 with
+the soft sun, none above 6/255, on the silhouettes of fading objects, where the
+mask's trace sees the fade's depth rather than whatever was behind it. With
+fades off (`lod.transitionSeconds = 0`) both are bit-identical, so all of it is
+fades.
+
 **What it is worth.** RTX 3080 Ti Laptop, `--scene sponza` at 1280x720 with
 the preset camera and animation frozen, clocks pinned 700/7001, setting on (A)
 against off (B):
