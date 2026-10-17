@@ -259,12 +259,34 @@ A disc sample costs what the centre did: the trace is 0.560 ms against the
 single-pass mask's 0.554, so on Sponza the jittered rays lose no coherence worth
 measuring.
 
-Half resolution against full is **not measured**. Three series failed the drift
-gate at 3.7%, 1.3% and 3.0%, with four- and six-minute cool-downs between them;
-the comparison changes the frame rate, which on this machine has needed a lower
-pin than 800 before. A series whose control moved is not evidence, so none of
-their rows is quoted here. It is re-measured with the filter, where the choice
-is actually made.
+**Half resolution against full**, both tracing the 0.53-degree sun. At the 800
+MHz pin three series failed the drift gate (3.7%, 1.3%, 3.0%) despite
+cool-downs: the comparison changes the frame rate, which on this machine has
+needed a lower pin before. At **700/7001** -- so the absolutes below do not
+compare with the 800 MHz tables above -- control drift 0.24%, 18142 and 19283
+samples, after a throwaway run, the pin holding at 705/7001:
+
+```
+python tools/dev/measure_gpu.py ab --repeat 2 --duration 75 --every-frame --freeze-animation --a-set rayTracedShadows.enabled=true --a-set rayTracedShadows.sunAngularDiameterDegrees=0.53 --a-set rayTracedShadows.halfResolutionMask=false --b-set rayTracedShadows.enabled=true --b-set rayTracedShadows.sunAngularDiameterDegrees=0.53 --b-set rayTracedShadows.halfResolutionMask=true --a-label soft-full --b-label soft-half --args --scene sponza
+```
+
+| Pass | full resolution | half resolution | Delta |
+| --- | --- | --- | --- |
+| `Frame total` | 6.343 | 5.948 | **-0.395 (-6.2%)** |
+| `RayTracedShadowTrace` | 0.641 | 0.177 | -0.464 (-72.4%) |
+| `RayTracedShadowResolve` | 0.036 | 0.100 | +0.064 |
+| `MainHDRPass` | 3.941 | 4.115 | +0.174 (+4.4%) |
+
+The trace costs about a quarter as much, as a quarter of the rays should, and
+the resolve's four-texel upsample gives a little of it back. `MainHDRPass` rising
+is not something half resolution does to it: the share of lit fragments that
+trace inline is 0.10% at full resolution and 0.11% at half (the mask-source
+view, Debug), so it has no more rays to trace. A pass this change does not
+touch moving the other way to one that shrank reads as work shifting across a
+pass boundary, so `Frame total` is the number. Both sides run below 160 fps at
+this pin, about 140 and 148, so neither p10 is a frame free of the GPU's other
+tenant ([profiling.md](profiling.md)) and they are alike in that; the medians
+agree, about -0.5 ms.
 
 ## What casts
 
