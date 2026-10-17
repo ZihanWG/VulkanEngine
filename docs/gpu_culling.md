@@ -39,7 +39,8 @@ The renderer uses normal-Z depth:
 - nearer depth values are smaller
 - depth compare is `LESS`, or `LESS_OR_EQUAL` when the depth prepass runs (the
   default), so the main pass admits fragments at exactly the depth the prepass
-  wrote
+  wrote; batches the prepass covered then draw without writing depth, with
+  early fragment tests (`renderer.enablePrepassEarlyDepthTest`)
 
 The Hi-Z pyramid stores the maximum depth in each source footprint. For normal-Z, that is conservative for occlusion because the stored value represents the farthest depth among the sampled occluder texels. An object is culled only when its nearest projected depth is greater than the sampled max depth plus bias.
 

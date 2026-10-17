@@ -289,10 +289,15 @@ bit 31 would turn it negative.
 - The main fragment shader discards its half first, before any texture work.
   That is safe ahead of implicit-LOD sampling because `discard` compiles to
   `OpDemoteToHelperInvocation` here, so a quad's derivatives survive it.
-- The depth prepass leaves fading draws out -- their vertices land outside the
-  clip volume -- because a full-coverage prepass depth would let the main pass
-  keep neither half where the two levels' outlines disagree. The main pass,
-  which tests `LESS_OR_EQUAL` and writes depth, lays down theirs.
+- The depth prepass's ordinary replay leaves fading draws out -- their
+  vertices land outside the clip volume -- because a full-coverage prepass depth
+  would let the main pass keep neither half where the two levels' outlines
+  disagree. With `renderer.enablePrepassEarlyDepthTest` a second replay,
+  `depth_prepass_fade`, keeps only the fading draws and runs the same keep test
+  on the same noise, so the depth it writes is the depth of the half each pixel
+  shows, and the main pass draws them early-tested without writing depth. With
+  the setting off the main pass, which tests `LESS_OR_EQUAL` and writes depth,
+  lays down theirs instead.
 - Shadows switch outright. Shadow-map resolution and filtering hide the pop far
   better than the main view does, and fading them would double the casters'
   work for nothing visible.
@@ -519,7 +524,8 @@ Selecting by error at 1 px is what the default spends of it (see above).
   The noise is fixed per pixel, so it does not crawl -- and for the same reason
   TAA does not average it away either.
 - **Shadow maps still pop**, and a fading draw pays full main-pass cost for its
-  fade, since it draws twice and is left out of the depth prepass. At the default
+  fade, since it draws twice. (It was also left out of the depth prepass when
+  this was measured; it now takes part, through the fade replay above.) At the default
   length that cost is below what a moving-camera measurement resolves; with
   eightfold fades it is a fifth of `MainHDRPass` (see above).
 - **The error weighs positions and normals, nothing else.** Texture

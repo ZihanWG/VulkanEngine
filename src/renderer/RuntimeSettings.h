@@ -827,6 +827,23 @@ struct RuntimeSettings {
     // there is no coplanar pair for the tie-break to resolve differently. The
     // three scenes that do move are the ones with authored contact surfaces.
     bool enableDepthPrepass = true;
+    // Draw the geometry the depth prepass covered with depth writes off and
+    // early fragment tests. The main fragment shader can discard, which with
+    // depth writes on lets a driver run the depth test after shading, so
+    // fragments the prepass had already hidden were shaded in full and then
+    // rejected. The prepass also writes the LOD cross-fades it otherwise leaves
+    // to the main pass, so its depth is final and the main pass has nothing to
+    // write. Needs the prepass and the bindless heap; without them it does
+    // nothing. Runtime, not startup-only: both pipelines exist, and this picks
+    // one per frame.
+    //
+    // ON by default, and pixel-identical to off on default, sunlit, stress and
+    // sponza, still and orbiting: 0 of 921600 pixels at tolerance 0. On
+    // --scene sponza (RTX 3080 Ti Laptop, 1280x720, 700 pin) it shaded 1.041
+    // fragments per pixel instead of 1.421 and took the frame median from
+    // 7.054 to 5.767 ms. Off is the fallback if a driver mishandles early
+    // tests; see docs/design_decisions.md.
+    bool enablePrepassEarlyDepthTest = true;
     // Suspend Hi-Z occlusion culling (and the pyramid build that feeds it) while
     // it is culling nothing, re-probing periodically. Never changes the image --
     // skipping occlusion culling can only draw more, never less.

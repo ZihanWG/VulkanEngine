@@ -1537,6 +1537,15 @@ void Renderer::drawGpuCullingDebugUi()
     const char* depthPyramidStatus =
         depthPyramid_.buildAvailable() ? (depthPyramid_.valid() ? "valid" : "invalid/warming up") : "unavailable";
     ImGui::Text("Depth pyramid: %s, %u mip(s)", depthPyramidStatus, depthPyramid_.mipLevels());
+
+    ImGui::Checkbox("Early depth test after the prepass", &usePrepassEarlyDepthTest_);
+    ImGui::SetItemTooltip("Draws what the depth prepass covered with depth writes off and early\n"
+                          "fragment tests, so fragments the prepass already hid are never shaded.\n"
+                          "Needs the depth prepass and bindless material textures.");
+    ImGui::SameLine();
+    ImGui::TextDisabled(framePrepassEarlyDepthTestActive_    ? "(active)"
+                        : isPrepassEarlyDepthTestAvailable() ? "(inactive)"
+                                                             : "(unavailable)");
 }
 
 void Renderer::drawEnvironmentDebugUi()

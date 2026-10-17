@@ -9,6 +9,18 @@
 #ifdef VE_RAY_QUERY
 #extension GL_EXT_ray_query : require
 #endif
+// The _early variants test depth before this shader runs. They are bound only
+// for geometry the depth prepass already wrote, and with depth writes off: the
+// prepass left exactly the depth these fragments would write, so the only thing
+// a write could still do is the wrong thing -- write the depth of a fragment
+// this shader goes on to discard. Without the mode, the discards below are
+// enough for a driver to run the test after shading, and every fragment the
+// prepass already hid is shaded in full and then thrown away. Nothing here has
+// a side effect beyond its attachment writes, so testing first changes which
+// fragments run, never what a surviving one computes.
+#ifdef VE_EARLY_FRAGMENT_TESTS
+layout(early_fragment_tests) in;
+#endif
 
 // FrameConstants and its buffer reference, needed by the push block below and by
 // the virtual shadow map lookup. The fragment stage reads the same block the
@@ -178,9 +190,13 @@ const float kRtMaskFragmentHidden = -2.0;
 // instead, and traces nothing. Every pass that reads the mask tests depth with
 // LESS or LESS_OR_EQUAL against a buffer that only moves nearer after the
 // prepass, so such a fragment is rejected after it is shaded and nothing it
-// computes is seen. It is shaded at all because this shader can discard, which
-// lets the driver run the depth test late. Before this, each one traced the
-// inline fallback: see docs/ray_traced_shadows.md#cost.
+// computes is seen. It is shaded at all only where this shader runs with depth
+// writes on: it can discard, which then lets the driver run the depth test
+// late. The _early pipelines for prepassed batches never shade one (see
+// VE_EARLY_FRAGMENT_TESTS above); the writing pipelines still can -- with
+// renderer.enablePrepassEarlyDepthTest off, and for draws the prepass does not
+// cover. Before this, each one traced the inline fallback: see
+// docs/ray_traced_shadows.md#cost.
 //
 // A texel traced from a surface facing away from the sun is used only when this
 // fragment's vertex normal faces away as well -- a normal-mapped wall past the
@@ -1044,7 +1060,14 @@ void main()
                                kRtShadowFlagDebugMaskSource | kRtShadowFlagDebugHitDistance |
                                kRtShadowFlagDebugPenumbraRadius)) != 0u;
         if ((normalLight > 0.0 || rayTracedDebug) && !gl_HelperInvocation) {
-            float masked = (rayTracedFlags & kRtShadowFlagScreenMask) != 0u
+            // Half of a LOD cross-fade never reads the mask. The prepass writes
+            // its dithered depth when renderer.enablePrepassEarlyDepthTest is on,
+            // so its depth can match a texel -- but a texel traced from that
+            // dithered depth shadowed lit fading surfaces in single-pixel specks
+            // on an orbiting camera (why was not isolated). The inline ray is
+            // what a fade got before the prepass wrote its depth.
+            bool lodFading = (vLodIndex & kLodInstanceFading) != 0u;
+            float masked = (rayTracedFlags & kRtShadowFlagScreenMask) != 0u && !lodFading
                                ? rayTracedShadowFromMask(normalize(vNormal), lightDirection)
                                : kRtMaskNotTraced;
             rayTracedFromMask = masked >= 0.0;

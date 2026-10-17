@@ -918,6 +918,10 @@ only:
 | `DepthPrepass` costs | 0.071 ms | 0.032 ms |
 | control drift | 0.22% | 0.24% |
 
+Those numbers are the prepass while the main pass still wrote depth, which left a
+quarter of its fragment shading in place behind the prepass. "Early depth testing
+behind the prepass", below, measures what that was worth.
+
 **Two predictions this made and broke, which is the part worth keeping.**
 
 The cost estimate was wrong by a factor of forty. The reasoning before building
@@ -1106,6 +1110,155 @@ the pass that exists is depth-only and runs where the main pass does. GTAO needs
 the thin G-buffer's normal, which the prepass does not write, so it still applies
 the previous frame's term; and page marking is scheduled ahead of the prepass,
 so it still reads the previous frame's pyramid.
+
+## Early depth testing behind the prepass, measured and BUILT
+
+**Status: built, measured, and on by default -- `renderer.enablePrepassEarlyDepthTest`.**
+The section above says the prepass lets early-Z reject what the main pass would
+otherwise shade. It did that only in part, and nobody had counted the rest.
+
+**What was being shaded.** `simple_bindless.frag` can `discard` -- the LOD
+cross-fade dither and the glTF cutout -- and the main pipeline wrote depth. A
+shader that can discard while depth writes are on lets a driver run the depth
+test after shading, because the write depends on whether the fragment survives.
+Some fragments were still rejected before shading -- the prepass did take the
+count from 2.014 to 1.421 -- but the rest of the hidden ones were shaded first
+and thrown away after. Which part of the driver drew that line was not
+investigated; how much fell on the wrong side of it was.
+`--overdraw` counts it (RTX 3080 Ti Laptop, `--scene sponza`, 1280x720, the
+frozen preset camera, `--deterministic`):
+
+| main pass | shaded invocations / pixel |
+| --- | --- |
+| no prepass | 2.014 |
+| prepass, as it was | 1.421 |
+| prepass, main pass not writing depth | 1.041 |
+| prepass, not writing depth, `early_fragment_tests` | 1.041 |
+
+So with the prepass on, **27% of the main pass's opaque fragment shading was
+fragments the prepass had already hidden**. The last two rows were a throwaway
+probe that turned depth writes off for every draw, which is wrong for the draws
+the prepass does not cover; it measured the ceiling, not the fix.
+
+**The fix.** Batches the prepass covered draw through a second pair of main
+pipelines: depth writes off, and the `_early` build of the fragment shader,
+which declares `layout(early_fragment_tests)`. The argument that this is
+pixel-identical is short. Those batches' depth is already in the buffer, bit for
+bit -- `invariant gl_Position` on both vertex stages, `LESS_OR_EQUAL` in the
+main pass -- so a write could only ever store the same value again or, for a
+fragment the shader then discards, store the wrong one. With nothing to write,
+testing first changes which fragments run and nothing a surviving one computes,
+because the shader has no side effect beyond its attachments. Helper lanes still
+run for derivatives either way.
+
+Everything the prepass does not cover keeps the writing pipeline: phase-two
+rescues, the skinned mesh, blended geometry, masked geometry without the
+bindless heap, and the whole non-bindless path, whose `simple.frag` has no early
+build. The prepass and the main pass decide coverage by the same function,
+`depthPrepassPipelineFor`, which is also why it stopped substituting the
+single-sided prepass pipeline for a missing double-sided one: harmless while the
+main pass wrote depth, a hole in the depth buffer once it does not.
+
+**The one thing the prepass did not write was the LOD cross-fades.** It left
+them out because a full-coverage depth for either half would let the main pass
+keep neither half where the two outlines disagree, and the main pass wrote their
+depth instead. With the main pass no longer writing, the prepass now replays the
+same batches a second time through `depth_prepass_fade`: its vertex stage keeps
+only the fading instances, and its fragment stage runs the main pass's keep test
+on the same per-pixel noise, plus the cutout test, so the depth it writes is the
+depth of the half that pixel will show. That replay runs only on frames that use
+the early pipelines; with the setting off the frame is the one it always was.
+
+**Verified by pixels, and the pixels were shown to be able to fail.**
+Debug, validation and `--sync-validation`, exposure pinned, frame 30, tolerance
+0, setting off against on:
+
+| preset | still camera | `--camera-orbit 0.03` |
+| --- | --- | --- |
+| `default` | 0 / 921600 | 0 / 921600 |
+| `sunlit` | 0 / 921600 | 0 / 921600 |
+| `stress` | 0 / 921600 | 0 / 921600 |
+| `sponza` | 0 / 921600 | 0 / 921600 |
+
+with no validation message in any of the sixteen runs. An orbiting match only
+says something about fades if the captured frame has some, so that was checked
+rather than assumed: with `lod.transitionSeconds = 0` the same orbiting frame
+differs in 297 pixels on `default` and 693 on `stress` (Sponza's orbit view
+fades nothing at frame 30). And the fade replay was shown to be load-bearing by
+removing it: with the setting on and the replay skipped, the orbiting frame
+differs from the setting-off one in 3081 pixels on `default` and 258 on
+`stress`.
+
+**With the ray-traced shadow mask on**, checked once the mask was on `main`
+(the same captures, with `rayTracedShadows.screenSpaceMask` and separately a
+0.53-degree sun): still frames stay bit-identical on `default`, `stress` and
+Sponza, and so does the inline traced path. Orbiting, the first version was not.
+The fades' depth was now in the prepass, so it matched mask texels, and reading
+them put single-pixel dark specks on fading surfaces -- 266 pixels on `default`
+at a channel delta up to 16, 164 on `stress` up to 29. Fading fragments now skip
+the mask and trace inline, which is what they did before the prepass wrote their
+depth. What remains is 30 and 76 pixels with the hard mask and 53 and 146 with
+the soft sun, none above 6/255, on the silhouettes of fading objects, where the
+mask's trace sees the fade's depth rather than whatever was behind it. With
+fades off (`lod.transitionSeconds = 0`) both are bit-identical, so all of it is
+fades.
+
+**On lavapipe that guard costs one step of blue on 38 pixels.** The CI pixel
+gate passes -- nothing over its tolerance of 1 -- but against the golden, 38
+pixels of the default scene's cutout panel are exactly 1 higher in blue and in
+nothing else. The panel is the scene's only masked, double-sided opaque draw,
+so it is the only thing drawn through the double-sided early-tested pipeline.
+The early depth test is not what moved them: lavapipe rendered the golden bit
+for bit before the ray-traced shadows were merged in, and again after the merge
+without the guard (a one-off CI run of that commit). They appear with the
+guard, whose code sits in a ray-traced branch that does not run in that frame,
+so it changes how lavapipe compiles the shader rather than what the shader
+computes there. Which part of that compile rounds differently was not
+isolated; the NVIDIA driver renders every configuration above bit for bit.
+
+**What it is worth.** RTX 3080 Ti Laptop, `--scene sponza` at 1280x720 with
+the preset camera and animation frozen, clocks pinned 700/7001, setting on (A)
+against off (B):
+
+```bash
+python3 tools/dev/measure_gpu.py ab --repeat 2 --duration 75 --every-frame --freeze-animation --b-set renderer.enablePrepassEarlyDepthTest=false --args --scene sponza --deterministic
+```
+
+| | off | on | |
+| --- | --- | --- | --- |
+| `Frame total`, median | 7.054 ms | 5.767 ms | **-1.287 ms (-18.2%)** |
+| `MainHDRPass`, median | 5.920 ms | 4.660 ms | -1.260 ms (-21.3%) |
+| top-level passes summed, median | 6.998 ms | 5.704 ms | -1.294 ms (-18.5%) |
+| `DepthPrepass`, p10 | 0.065 ms | 0.066 ms | +0.001 ms |
+
+Medians, over 9645 to 12190 per-frame samples a run, because the off side runs
+at 140-143 fps -- under the ~160 fps line below which p10 on this shared GPU is
+no longer a clean frame (`docs/profiling.md`, "Two `MainHDRPass` modes"). Each
+side's two runs agree: frame medians 5.762 and 5.772 ms on, 7.119 and 6.989
+off. The harness's own p10 gate passed at 0.08% control drift and reads the
+same direction, larger at the frame level because the off side's p10 is the
+contended one: `Frame total` 6.871 -> 5.108 ms, `MainHDRPass` 5.286 -> 3.992.
+
+The frame falls by almost exactly what `MainHDRPass` does, and the pass falls by
+less than the 27% of fragments it stopped shading, which is the shape this
+should have: the triangles, the skybox and the per-draw work are all still
+there, and only the hidden fragments' shading is gone.
+
+**What it costs.** The fade replay is the only new GPU work, and with nothing
+fading it rasterizes nothing: `DepthPrepass` moved by 0.001 ms. On a moving
+camera it draws the fading instances once more, depth-only, which was not
+measured; the cross-fades themselves were already below what a moving-camera
+series resolves at their default length (`docs/mesh_lod.md`). Four more
+pipelines exist whenever the prepass and the bindless heap do -- two builds of
+the full main fragment shader and two small fade-replay ones -- and they are
+built whatever the setting says, so the setting is a per-frame choice and flips
+from the culling panel without a rebuild. A cold pipeline cache pays for them
+once (single launches, not a measurement: the startup pipeline build read 30 ms
+on the parent commit, 49 ms on this build's first launch and 9 ms after).
+
+Not measured: any other preset's frame cost, and any other GPU. A tiler with
+hidden-surface removal gives the prepass little to save in the first place, so
+there is no reason to expect the M3 number to look like this one.
 
 ## Specialization constants for the uber-shader, measured and rejected
 

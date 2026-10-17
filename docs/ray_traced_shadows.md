@@ -320,6 +320,23 @@ unguarded versions exactly. The second one only exists where the mask does, so
 the inline path without a mask still shades and traces whatever the depth test
 will throw away.
 
+Both were measured with the main pass still testing depth after shading. Since
+`renderer.enablePrepassEarlyDepthTest` (on by default; see
+[design_decisions.md](design_decisions.md), "Early depth testing behind the
+prepass") a prepassed draw rejects such a fragment before it runs, mask or no
+mask, so the second guard now matters only with that setting off and for draws
+the prepass does not cover. The traced paths' costs in this document predate
+it and have not been re-measured against it.
+
+The same setting makes the prepass write the LOD cross-fades' dithered depth, so
+a fading fragment would match the mask. It does not read it: a texel traced from
+that depth put single-pixel dark specks on fading surfaces, so `lodFading`
+fragments take the inline ray, as they did before. During a fade the
+silhouettes of fading objects can still differ from the setting off by a few
+dozen pixels at up to 6/255, because the trace sees the fade's depth; see
+[design_decisions.md](design_decisions.md), "Early depth testing behind the
+prepass".
+
 The series below are on that build, at **700/7001**, after a throwaway run,
 the pin holding at 705/7001 under load.
 

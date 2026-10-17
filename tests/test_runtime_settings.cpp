@@ -109,6 +109,7 @@ RuntimeSettings makeNonDefaultSettings()
     settings.enableTwoPhaseOcclusion = false;
     settings.enableLayeredCascades = true;
     settings.enableBackfaceCulling = true;
+    settings.enablePrepassEarlyDepthTest = false;
     settings.useClusteredLighting = false;
     settings.enableAsyncCompute = false;
     settings.enableBindlessMaterialTextures = false;
@@ -250,6 +251,7 @@ TEST_CASE("RuntimeSettings save -> load round-trips every persisted field", "[se
     CHECK(loaded.enableTwoPhaseOcclusion == original.enableTwoPhaseOcclusion);
     CHECK(loaded.enableLayeredCascades == original.enableLayeredCascades);
     CHECK(loaded.enableBackfaceCulling == original.enableBackfaceCulling);
+    CHECK(loaded.enablePrepassEarlyDepthTest == original.enablePrepassEarlyDepthTest);
     CHECK(loaded.useClusteredLighting == original.useClusteredLighting);
     CHECK(loaded.enableAsyncCompute == original.enableAsyncCompute);
     CHECK(loaded.enableBindlessMaterialTextures == original.enableBindlessMaterialTextures);

@@ -401,7 +401,9 @@ loses the line and says so once in the capability report.
 
 **What it counts, and why that is the useful number.** Invocations are what
 survives early depth testing, so this is the shading that actually happens rather
-than the geometric layer count — which is exactly the work a depth prepass could
+than the geometric layer count -- and a fragment the depth test rejects only
+after shading still counts, which is how this readout found the main pass doing
+exactly that behind the depth prepass (see `DepthPrepass` below) — which is exactly the work a depth prepass could
 remove. The two differ far more than expected here: `gpu-stress` is built from
 twenty-four full-frame slabs and shades **1.276** fragments per pixel, because
 stacked full-screen quads occlude each other perfectly and early-Z rejects nearly
@@ -429,6 +431,20 @@ early-Z rejects fragments that pass would otherwise shade and overwrite. On
 `--scene sponza` it costs **0.071 ms** and takes **1.221 ms** off `MainHDRPass`;
 see `design_decisions.md` for the full A/B and for why a 0.071 ms pass was
 predicted to cost 2.9.
+
+That A/B was taken while the main pass still wrote depth from a fragment shader
+that can discard, which let the driver test depth after shading: `--overdraw`
+then read 1.421 invocations per pixel on Sponza with the prepass on, and 1.041
+once `renderer.enablePrepassEarlyDepthTest` drew the prepassed batches without
+writing depth and with early fragment tests. That setting, on by default, took
+the Sponza frame median from 7.054 to 5.767 ms (-18.2%, 700 pin; the full table
+and why it quotes medians are in `design_decisions.md`). It is a per-frame
+choice of pipeline, so it A/Bs inside one binary the same way, with B set to
+`false`:
+
+```bash
+python3 tools/dev/measure_gpu.py ab --repeat 2 --duration 75 --every-frame --freeze-animation --b-set renderer.enablePrepassEarlyDepthTest=false --args --scene sponza --deterministic
+```
 
 It is a runtime setting rather than a build flag precisely so this harness can
 A/B it inside one binary. **Set B to `false`**: A is the unchanged persisted
