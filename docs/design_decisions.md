@@ -1203,6 +1203,19 @@ mask's trace sees the fade's depth rather than whatever was behind it. With
 fades off (`lod.transitionSeconds = 0`) both are bit-identical, so all of it is
 fades.
 
+**On lavapipe that guard costs one step of blue on 38 pixels.** The CI pixel
+gate passes -- nothing over its tolerance of 1 -- but against the golden, 38
+pixels of the default scene's cutout panel are exactly 1 higher in blue and in
+nothing else. The panel is the scene's only masked, double-sided opaque draw,
+so it is the only thing drawn through the double-sided early-tested pipeline.
+The early depth test is not what moved them: lavapipe rendered the golden bit
+for bit before the ray-traced shadows were merged in, and again after the merge
+without the guard (a one-off CI run of that commit). They appear with the
+guard, whose code sits in a ray-traced branch that does not run in that frame,
+so it changes how lavapipe compiles the shader rather than what the shader
+computes there. Which part of that compile rounds differently was not
+isolated; the NVIDIA driver renders every configuration above bit for bit.
+
 **What it is worth.** RTX 3080 Ti Laptop, `--scene sponza` at 1280x720 with
 the preset camera and animation frozen, clocks pinned 700/7001, setting on (A)
 against off (B):
