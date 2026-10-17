@@ -787,7 +787,14 @@ struct RuntimeSettings {
     // to the main pass, so its depth is final and the main pass has nothing to
     // write. Needs the prepass and the bindless heap; without them it does
     // nothing. Runtime, not startup-only: both pipelines exist, and this picks
-    // one per frame. See docs/design_decisions.md for what it measured.
+    // one per frame.
+    //
+    // ON by default, and pixel-identical to off on default, sunlit, stress and
+    // sponza, still and orbiting: 0 of 921600 pixels at tolerance 0. On
+    // --scene sponza (RTX 3080 Ti Laptop, 1280x720, 700 pin) it shaded 1.041
+    // fragments per pixel instead of 1.421 and took the frame median from
+    // 7.054 to 5.767 ms. Off is the fallback if a driver mishandles early
+    // tests; see docs/design_decisions.md.
     bool enablePrepassEarlyDepthTest = true;
     // Suspend Hi-Z occlusion culling (and the pyramid build that feeds it) while
     // it is culling nothing, re-probing periodically. Never changes the image --
