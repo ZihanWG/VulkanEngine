@@ -239,6 +239,12 @@ overshading, and the rays ran alongside it. Moved into a pass of their own they 
 the serialisation around a compute pass. For a hard shadow the mask is pure
 cost, which is why it is off by default; it is there for a soft one.
 
+The main pass had not in fact stopped tracing. Helper lanes and fragments the
+prepass had already hidden never match the mask and traced inline, invisible in
+every view. With both guarded, the full-resolution mask takes 0.242 ms off
+MainHDRPass where this series found no change -- and is still a cost, +0.499 ms
+of frame (below, at the 700 MHz pin, so not comparable with this table).
+
 **The soft mask's trace, at full resolution, against the hard inline shadow.**
 A is the default traced path; B samples a 0.53-degree sun -- the real one -- one
 ray per pixel through the trace and resolve, unfiltered. Control drift 0.57%,
@@ -287,6 +293,101 @@ pass boundary, so `Frame total` is the number. Both sides run below 160 fps at
 this pin, about 140 and 148, so neither p10 is a frame free of the GPU's other
 tenant ([profiling.md](profiling.md)) and they are alike in that; the medians
 agree, about -0.5 ms.
+
+**What the inline fallback was tracing.** Getting ready to measure the filter
+found MainHDRPass at 5.98 ms with a 0.53-degree sun at half resolution, where
+P4.2a had measured 4.12 at this pin. The filter was not it -- the same 5.98 with
+it off -- and the four-ray soft fallback was: with one ray it was 4.03. The
+mask-source view says one lit fragment in a thousand takes that path, which
+cannot cost two milliseconds, so the fragments taking it were ones no image
+shows. Two kinds, each confirmed by guarding it (single 45-second runs at the
+700 MHz pin, so these numbers place the problem and are not an A/B):
+
+- **Helper invocations**, the lanes a 2x2 quad runs past a triangle's edge only
+  for derivatives. Their depth is extrapolated, so it never matches the mask,
+  and every one traced the fallback. Skipping them when `gl_HelperInvocation` is
+  set: 6.07 to 5.50 ms with the soft sun, 4.08 to 3.90 with the hard mask.
+- **Fragments behind the prepass's surface.** The main shader can discard, so
+  the driver may run its depth test after shading, and a fragment the prepass
+  already hid is shaded in full before it is rejected. It never matches the
+  mask either. The mask texel holds the prepass's depth, and the depth buffer
+  only moves nearer after the prepass, so a fragment behind that depth is
+  certain to be rejected and now traces nothing. With both guards: 3.95 ms with
+  the soft sun, 3.70 with the hard mask.
+
+Both guards change no pixel: the 44 regression captures below match their
+unguarded versions exactly. The second one only exists where the mask does, so
+the inline path without a mask still shades and traces whatever the depth test
+will throw away.
+
+The series below are on that build, at **700/7001**, after a throwaway run,
+the pin holding at 705/7001 under load.
+
+**The soft shadow, half resolution and filtered, against the hard inline
+shadow.** The defaults for a soft sun -- half resolution, filter on -- at the
+real sun's 0.53 degrees. Control drift 0.30%, 22693 and 21266 samples, both
+sides above 160 fps. A first series at 1.0% drift was discarded:
+
+```
+python tools/dev/measure_gpu.py ab --repeat 2 --duration 75 --every-frame --freeze-animation --a-set rayTracedShadows.enabled=true --b-set rayTracedShadows.enabled=true --b-set rayTracedShadows.sunAngularDiameterDegrees=0.53 --a-label hard-inline --b-label soft-half-filtered --args --scene sponza
+```
+
+| Pass | hard inline | soft, half, filtered | Delta |
+| --- | --- | --- | --- |
+| `Frame total` | 4.973 | 5.413 | **+0.440 (+8.8%)** |
+| `RayTracedShadowTrace` | — | 0.176 | soft only |
+| `RayTracedShadowFilter` | — | 0.091 | soft only |
+| `RayTracedShadowResolve` | — | 0.123 | soft only |
+| `MainHDRPass` | 3.856 | 3.941 | +0.085 (+2.2%) |
+
+**Full resolution against half, both filtered.** Control drift 0.72%, 19203 and
+21215 samples:
+
+```
+python tools/dev/measure_gpu.py ab --repeat 2 --duration 75 --every-frame --freeze-animation --a-set rayTracedShadows.enabled=true --a-set rayTracedShadows.sunAngularDiameterDegrees=0.53 --a-set rayTracedShadows.halfResolutionMask=false --b-set rayTracedShadows.enabled=true --b-set rayTracedShadows.sunAngularDiameterDegrees=0.53 --a-label soft-full-filtered --b-label soft-half-filtered --args --scene sponza
+```
+
+| Pass | full, filtered | half, filtered | Delta |
+| --- | --- | --- | --- |
+| `Frame total` | 6.387 | 5.426 | -0.961 (-15.0%), see below |
+| `RayTracedShadowTrace` | 0.638 | 0.179 | -0.459 (-71.9%) |
+| `RayTracedShadowFilter` | 0.319 | 0.091 | -0.228 (-71.5%) |
+| `RayTracedShadowResolve` | 0.115 | 0.109 | -0.006 |
+| `MainHDRPass` | 3.814 | 3.948 | +0.134 (+3.5%) |
+
+The passes add up to -0.56 ms and the frame totals' medians differ by -0.59.
+The p10's -0.96 is larger because the full-resolution side runs at 157 fps,
+below the 160 at which p10 is a frame clear of the GPU's other tenant, so the
+half-resolution saving is about 0.6 ms of a 6 ms frame. The filter costs what
+its texel count says: a quarter of the texels, 29% of the time.
+
+**The hard mask again, with the guards.** P4.1 measured it as pure cost. The
+guards took a third of a millisecond out of its MainHDRPass, so it was measured
+again, full resolution against inline, control drift 0.34%, 24398 and 21011
+samples:
+
+```
+python tools/dev/measure_gpu.py ab --repeat 2 --duration 75 --every-frame --freeze-animation --a-set rayTracedShadows.enabled=true --b-set rayTracedShadows.enabled=true --b-set rayTracedShadows.screenSpaceMask=true --b-set rayTracedShadows.halfResolutionMask=false --a-label hard-inline --b-label hard-mask-full --args --scene sponza
+```
+
+| Pass | inline | mask, full | Delta |
+| --- | --- | --- | --- |
+| `Frame total` | 4.987 | 5.486 | **+0.499 (+10.0%)** |
+| `RayTracedShadowTrace` | — | 0.639 | mask only |
+| `RayTracedShadowResolve` | — | 0.037 | mask only |
+| `MainHDRPass` | 3.858 | 3.616 | -0.242 (-6.3%) |
+
+Still a cost (medians: +0.38 ms), so `screenSpaceMask` stays off. MainHDRPass
+now does get faster when the mask takes its rays, by about a third of what the
+trace costs.
+
+**Defaults, on these numbers.** `filter` stays on: 0.091 ms takes the penumbra
+error on Sponza at two degrees from 0.380 to 0.092 at full resolution and from
+0.267 to 0.146 at half. `halfResolutionMask` stays on: full resolution is the
+better image (sunlit 0.070 against 0.103) for about 0.6 ms more, and stays the
+setting for that. `sunAngularDiameterDegrees` stays 0: the soft shadow costs
+0.44 ms over the hard one, and on contact shadows -- most of the shadow in the
+default and stress scenes -- it stays noisy until temporal accumulation.
 
 ## What casts
 
@@ -577,7 +678,8 @@ of the unit square under the concentric map, the four jittered together by the
 same per-pixel noise the mask's trace uses: a penumbra of five levels rather
 than a hard edge inside a soft shadow the mask drew around it. Unfiltered, so it
 is coarser than the mask beside it, and four times the rays of the hard shadow
-on the fragments that take it.
+on the fragments that take it. Helper invocations and fragments behind the
+prepass's surface take none (Cost).
 
 **What it traces from.** Each pixel's position is the prepass depth unprojected
 through the inverse of the jittered view-projection the prepass rasterised with,
@@ -821,6 +923,10 @@ P4.2a code's on sunlit and Sponza at both resolutions. Two consecutive frames of
 a still camera read back bit-identical with the filter on and off: the pattern
 is fixed to the screen, so nothing in the mask moves while nothing in the frame
 does.
+
+Re-run with the two fallback guards described under Cost, the 44 captures
+above that are images match their unguarded versions on every pixel, with zero
+errors, zero hazards and a clean backstop.
 
 Unpinned, the no-caster comparison also differed by single steps scattered over
 the frame: auto-exposure follows total scene luminance, and any change in shadow

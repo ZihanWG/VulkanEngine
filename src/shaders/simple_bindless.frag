@@ -162,6 +162,10 @@ layout(set = 0, binding = 17) uniform usampler2D uRayTracedShadowMask;
 
 #include "ray_traced_shadow_trace.glsl"
 
+// What rayTracedShadowFromMask returns for a fragment behind the surface the
+// prepass drew at its pixel. Never stored in the mask.
+const float kRtMaskFragmentHidden = -2.0;
+
 // The mask's visibility for this fragment, or kRtMaskNotTraced when this
 // fragment has to trace for itself. The depth test is what makes the mask safe
 // to read: the prepass drew opaque and cutout geometry only, and this pass tests
@@ -169,6 +173,14 @@ layout(set = 0, binding = 17) uniform usampler2D uRayTracedShadowMask;
 // surface the prepass drew has exactly the depth it wrote. The skinned mesh,
 // phase-two rescues and blended surfaces are strictly in front of it and never
 // match, which sends each of them to the inline ray without a per-draw flag.
+//
+// A fragment strictly behind the prepass's depth gets kRtMaskFragmentHidden
+// instead, and traces nothing. Every pass that reads the mask tests depth with
+// LESS or LESS_OR_EQUAL against a buffer that only moves nearer after the
+// prepass, so such a fragment is rejected after it is shaded and nothing it
+// computes is seen. It is shaded at all because this shader can discard, which
+// lets the driver run the depth test late. Before this, each one traced the
+// inline fallback: see docs/ray_traced_shadows.md#cost.
 //
 // A texel traced from a surface facing away from the sun is used only when this
 // fragment's vertex normal faces away as well -- a normal-mapped wall past the
@@ -180,7 +192,7 @@ float rayTracedShadowFromMask(vec3 vertexNormal, vec3 towardLight)
 {
     uvec2 texel = texelFetch(uRayTracedShadowMask, ivec2(gl_FragCoord.xy), 0).xy;
     if (texel.y != floatBitsToUint(gl_FragCoord.z)) {
-        return kRtMaskNotTraced;
+        return gl_FragCoord.z > uintBitsToFloat(texel.y) ? kRtMaskFragmentHidden : kRtMaskNotTraced;
     }
     float visibility = uintBitsToFloat(texel.x);
     if (visibility >= kRtMaskBackFacingBias) {
@@ -1018,22 +1030,34 @@ void main()
 #ifdef VE_RAY_QUERY
         // Where nothing faces the sun the term multiplies zero, so the ray is
         // skipped -- unless a debug view is about to show the term itself.
+        //
+        // Nor does a helper invocation trace: it runs only so its quad has
+        // derivatives, writes nothing, and nothing after this takes a derivative
+        // of the term. It also never matches the mask -- its depth is
+        // extrapolated past its triangle's edge -- so without this every helper
+        // lane on every triangle edge took the inline fallback, which no debug
+        // view can show because helpers draw no pixel. On Sponza at the 700 MHz
+        // pin it took MainHDRPass from 6.07 to 5.50 ms with a soft sun and from
+        // 4.08 to 3.90 ms with the hard mask (single runs, not an A/B series).
         bool rayTracedDebug =
             (rayTracedFlags & (kRtShadowFlagDebugVisibility | kRtShadowFlagDebugCompareCascades |
                                kRtShadowFlagDebugMaskSource | kRtShadowFlagDebugHitDistance |
                                kRtShadowFlagDebugPenumbraRadius)) != 0u;
-        if (normalLight > 0.0 || rayTracedDebug) {
+        if ((normalLight > 0.0 || rayTracedDebug) && !gl_HelperInvocation) {
             float masked = (rayTracedFlags & kRtShadowFlagScreenMask) != 0u
                                ? rayTracedShadowFromMask(normalize(vNormal), lightDirection)
                                : kRtMaskNotTraced;
             rayTracedFromMask = masked >= 0.0;
-            shadowFactor = rayTracedFromMask ? masked
-                                             : rayTracedSunVisibility(pc.frameConstants,
-                                                                      pc.objectFrameData,
-                                                                      vWorldPosition,
-                                                                      normalize(vNormal),
-                                                                      lightDirection,
-                                                                      gl_FragCoord.xy);
+            if (rayTracedFromMask) {
+                shadowFactor = masked;
+            } else if (masked != kRtMaskFragmentHidden) {
+                shadowFactor = rayTracedSunVisibility(pc.frameConstants,
+                                                      pc.objectFrameData,
+                                                      vWorldPosition,
+                                                      normalize(vNormal),
+                                                      lightDirection,
+                                                      gl_FragCoord.xy);
+            }
         }
 #endif
     } else if ((pc.frameConstants.values.vsmPageTable.w & kVsmFlagEnabled) != 0u) {
